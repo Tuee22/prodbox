@@ -61,9 +61,20 @@ resources:
     properties:
       name: ${subzoneName}
       comment: prodbox AWS-substrate per-substrate subzone (managed by Pulumi stack ${stackName})
+      # Sprint 7.48: the zone is per-run and holds records this program does not
+      # declare -- the public-edge A record the reconcile writes through the
+      # Provider and the cert-manager DNS01 challenge records -- and Route 53
+      # refuses to delete a zone that still has any (HostedZoneNotEmpty). Without
+      # this a healthy run ended with the destroy failing and the billable zone
+      # left behind. It applies to a zone this program creates; a subzone made
+      # before this change keeps the value its state recorded.
+      forceDestroy: true
       tags:
         Name: ${stackName}
         prodbox.io/substrate: aws
+        # The postflight tag sweep queries this key; a zone without it is invisible
+        # to the sweep that gates the cascade uninstall.
+        prodbox.io/managed-by: prodbox
 
   # NS delegation record in the operator-owned parent zone. The four NS values
   # come from the subzone's authoritative name servers, so queries for the

@@ -2957,7 +2957,9 @@ None.
 validated workload-demand plan and its rendered scheduling units.
 **Implementation**: new `src/Prodbox/Capacity/Placement.hs` owns the placement algebra — a
 `renderedNamespace substrate` resolver (home co-locates keycloak into the vscode namespace, counted
-**exactly once**; AWS is the identity placement), separate scheduler-request and containment-limit
+**exactly once**; AWS is the identity placement) [**superseded 2026-10-08 by Sprint `7.46`**: the resolver
+now co-locates keycloak into vscode on every substrate, and the AWS gateway profile is sized by the
+substrate's emitter count], separate scheduler-request and containment-limit
 axes in `planNamespaceAdmission`, `planNamespaceQuota`/`planNamespaceLimits`, and the
 `WorkloadConcurrency = Steady | ExclusiveWindow` model. Named exclusive windows take a componentwise
 peak for mutually exclusive init/main or Job scheduling units; independent windows and steady units
@@ -3002,7 +3004,7 @@ workloads exactly.
 ### Deliverables
 
 - `Prodbox.Capacity.Placement` owns `renderedNamespace substrate` (home keycloak→vscode co-location
-  counted exactly once; AWS identity), pod/job scheduling-unit composition, init-container peak
+  counted exactly once; AWS identity) [superseded 2026-10-08 by Sprint `7.46`: keycloak→vscode on every substrate], pod/job scheduling-unit composition, init-container peak
   semantics, `planNamespaceQuota`/`planNamespaceLimits`, and `WorkloadConcurrency = Steady |
   ExclusiveWindow`.
 - Every render path consumes the derived quota (through the shared `Capacity.Render`), so cluster config
@@ -4676,6 +4678,66 @@ unready. The StatefulSet reports `currentRevision=lifecycle-authority-55d7df9b44
    `sha256:3f44873d…`, and `sha256:46631647…`. Fresh Pod
    `c300d852-c83c-464f-bffe-2865e0fadb80` is Ready with annotation and image ID equal to the local
    image; the same reconcile crosses handoff and reaches the next component.
+
+## Sprint 3.47: A Token Issued Over The In-Cluster Backchannel Must Carry The Public Issuer [✅ Done]
+
+**Status**: Done (2026-10-12), live-proven. Phase `3` own-surface reopen (Standards A/N/P) on the `keycloak` chart this phase
+owns, registered before any behavior change. `charts-api` failed live on 2026-10-12, after its restore cycle had
+succeeded, with the Envoy body `Jwt issuer is not configured`: the API route's `SecurityPolicy` accepts the issuer
+`https://test.resolvefintech.com/auth/realms/prodbox`, and the access token the harness obtained carries
+`"iss":"http://test.resolvefintech.com:8080/auth/realms/prodbox"` (its audience, authorized party and
+`prodbox_route` claim are right; only the issuer differs). The cause is how Keycloak 26 builds its frontend URL:
+`kc.sh start` is given `--hostname=<publicHost>` with no scheme, so the scheme and port come from the request, and
+`--proxy-headers=xforwarded` supplies them only when the request carries `X-Forwarded-*` headers. A request over the
+in-cluster backchannel carries none. The harness issues its tokens inside the Pod through `kcadm.sh` against
+`http://127.0.0.1:8080/auth`, so that the client secrets never leave the Pod; the harness before that change
+requested them through the public issuer URL, and so got the public issuer. The same request shape serves the
+`websocket` workload's own token exchange over the backchannel, and Keycloak's `execute-actions-email` builds its
+links the same way, so invite links are built from the same unproxied request. Measured on 2026-10-12 against the
+pinned image (`keycloak:26.0.0`, a local `start-dev` container, `--proxy-headers=xforwarded --http-relative-path=/auth`):
+`--hostname=https://test.resolvefintech.com` gives the issuer `https://test.resolvefintech.com/realms/master` (the
+`/auth` path is dropped), and `--hostname=https://test.resolvefintech.com/auth` gives
+`https://test.resolvefintech.com/auth/realms/master` for a plain request and for one with another `Host` header,
+with the loopback password-grant endpoint still answering 200.
+**Doctrine**: [Helm Chart Platform Doctrine](../documents/engineering/helm_chart_platform_doctrine.md).
+**Implementation**: `charts/keycloak/templates/deployment.yaml` and `test/unit/KeycloakPublicIssuer.hs`.
+**Blocked by**: none.
+**Live-proof**: observed (2026-10-12). The Keycloak Deployment's pod template changed, so the repair reached the
+cluster at the next `charts reconcile`; `charts-api` then passed (`{"mode":"api","path":"/api","pod":"api-..."}`)
+where it had failed with `Jwt issuer is not configured`. `charts-websocket` got past the token step and stopped at
+a different defect (Sprint `5.55`).
+**Deployment qualification**: pending — **invalidated**: the identity provider's configuration changes.
+**Independent Validation**: the chart template's start arguments, read from the repository; the issuer behaviour is
+the measurement above.
+**Docs to update**: this file, `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`documents/engineering/helm_chart_platform_doctrine.md`.
+
+### Objective
+
+Make the issuer of every token Keycloak issues the one the shared edge validates, whatever request it was asked
+over.
+
+### Deliverables
+
+- `kc.sh start` receives `--hostname=https://<publicHost><httpRelativePath>`, the full public URL including the
+  path, so the frontend URL, and with it the issuer, token endpoint and email links, no longer depends on the
+  request. `--http-relative-path` and `--proxy-headers=xforwarded` are unchanged.
+- The doctrine states the rule: Envoy validates JWTs against the public issuer, so Keycloak is configured with the
+  public URL and a backchannel request cannot mint a token under another issuer.
+
+### Validation
+
+1. The template passes the full public URL with the relative path as `--hostname`, keeps `--http-relative-path`,
+   and no longer passes the bare host (red on the commit before this sprint).
+2. **Canonical gate.** Focused group, primary unit suite, and `prodbox dev check` at 0.
+3. **Live.** After `charts reconcile`, a token issued in the Pod carries the public issuer and `charts-api` and
+   `charts-websocket` pass.
+
+### Remaining Work
+
+No sprint-owned work remains. The `vscode` and MinIO `SecurityPolicy` OIDC providers already name the public issuer
+and the in-cluster token endpoint; whether Envoy's OIDC filter checks the ID token's issuer was not established, so
+the repair is expected to change nothing for them, and a regression there would be found by `charts-vscode`.
 
 ## Related Documents
 

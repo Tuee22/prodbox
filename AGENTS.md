@@ -41,8 +41,12 @@ bounded workers/adapters remain available for every AWS-targeted operation.
   expected operation, not an unauthorized state change. The current cascade is a pre-cutover
   implementation, and **neither exit code is evidence about AWS**: a non-zero result is unresolved,
   and a zero result is not a completion receipt. The no-install short-circuit belongs to local-only
-  delete alone — a cascade with no RKE2 install reaches no phase and exits non-zero — so no cascade
-  exit reports a success it did not observe. Neither exit licenses deleting the retained root — see
+  delete alone: a cascade with no RKE2 install reaches no phase and exits non-zero, unless it asked
+  AWS read-only on that invocation and every condition of the
+  [no-install cascade conjunction](documents/engineering/lifecycle_reconciliation_doctrine.md#5a0-a-cascade-that-reaches-no-phase-may-still-query-aws)
+  held. Even that zero is evidence of no per-run tagged residue in the swept regions, not of an empty
+  account, so no cascade exit reports a success it did not observe. Neither exit licenses deleting
+  the retained root — see
   [Retained Storage Lifecycle Doctrine § 7](documents/engineering/storage_lifecycle_doctrine.md#7-the-single-retained-operator-host-root)
   rule 10 for what does. Target behavior and rollout status live in
   [DEVELOPMENT_PLAN/README.md → Resume Here](DEVELOPMENT_PLAN/README.md#resume-here).
@@ -267,9 +271,12 @@ prompts, you have picked the wrong command, not hit a blocker.
 | Inspect AWS state | `aws sts get-caller-identity`, `prodbox aws quotas check` (after `aws.*` populated) | same |
 
 The automation path simulates the operator admin-credential prompt from
-`aws_admin_for_test_simulation.*` in `test-secrets.dhall` via the
-suite-level IAM harness, mints the operational `aws.*` credential into Vault KV, runs validations, then clears `aws.*` and
-uses its cleanup wrapper. Once `runWithAwsHarnessCleanup` is entered, the current
+`aws_admin_for_test_simulation.*` in `test-secrets.dhall` through the Credential Provisioner
+(every harness-tier suite takes that one path), provisions the Lifecycle-provider credential into
+Vault KV, runs validations, and then uses its cleanup wrapper. A completed cleanup **retains** that
+credential and prints `OPERATIONAL_CREDENTIAL_DISPOSITION=retained`: no production path revokes it
+yet (Sprint `5.51` owns the revocation lane), and an incomplete cleanup preserves it for recovery
+and fails the suite. Once `runWithAwsHarnessCleanup` is entered, the current
 Lifecycle-Authority-backed durable wrapper schedules per-run cleanup on success, failure, or
 Ctrl-C. Some preparation mutations still precede that wrapper, so the current harness does not
 promise every-exit durable registration.

@@ -69,8 +69,10 @@ The target native Haskell lifecycle reconciles registry state in this order:
    `ReconcileManagedResourceAbsent` intent and read back absence. Failure/unobservability is typed,
    retained in the cleanup report, and blocks only the conflicting registry apply—not independent
    always-run cleanup.
-3. Registry storage-backend bootstrap from public `quay.io/minio/*` image refs, including MinIO
-   reconcile plus the `prodbox-harbor-registry` bucket and credential bootstrap. The bootstrap Job
+3. Registry storage-backend bootstrap from public `quay.io/minio/*` image refs, **seeded into RKE2
+   containerd from the host Docker cache immediately before each consumer** (see *Pre-registry image
+   seeding* below), including MinIO reconcile plus the `prodbox-harbor-registry` bucket and credential
+   bootstrap. The bootstrap Job
    reads MinIO root credentials through the `minio` service account and Vault Kubernetes auth; the
    registry itself receives a generated, persisted MinIO user in its `harbor-registry-s3` storage
    Secret (whose keys are `REGISTRY_STORAGE_S3_ACCESSKEY` / `REGISTRY_STORAGE_S3_SECRETKEY`,
@@ -98,7 +100,7 @@ The target native Haskell lifecycle reconciles registry state in this order:
     The current optional direct Route 53 bootstrap call is pre-cutover residue removed by Sprint
     `4.50`; AWS-substrate A records are Lifecycle Authority provider intents owned by Sprint `7.33`.
 14. MinIO steady-state re-reconcile, kept on the **public** `quay.io/minio/minio` image (never
-    the registry mirror): MinIO is the registry's own storage backend, so it cannot source its
+    the registry mirror; the seed above keeps that name present in containerd): MinIO is the registry's own storage backend, so it cannot source its
     image from the registry — a circular dependency a non-surging single-replica StatefulSet
     cannot break (a registry-sourced MinIO image would deadlock: MinIO down → registry 5xx → MinIO
     `ImagePullBackOff`). The earlier bitnami Deployment masked this by surging a replacement pod
@@ -112,10 +114,34 @@ steady-state) is unchanged.
 The critical split is:
 
 - pre-registry-ready public pulls: the registry plus the current registry storage-backend
-  bootstrap only
+  bootstrap only, and the storage-backend images (the MinIO server and the `mc` client) reach
+  containerd from the host Docker cache rather than from the kubelet's pull
 - post-registry-ready publication: mirror required public images and push custom images into the
   registry
 - later Helm deployment: registry-backed images only
+
+**Pre-registry image seeding.** MinIO is the registry's own storage backend, so the MinIO server and the
+`mc` client its two bootstrap Jobs run are the home cluster's only images that cannot come from the registry.
+Their public upstream, `quay.io/minio/*`, no longer serves an anonymous pull (a token is issued, then the
+manifest and tag-list requests are refused with HTTP 401; Docker Hub's `minio/*` is refused the same way), and
+the kubelet's image garbage collection, which prodbox runs at a 70 % high and 60 % low threshold, removes an
+image no container uses once the disk crosses 70 %. A reconcile that left the two images to the kubelet
+therefore worked only while both stayed cached, and a rebuilt cluster, whose containerd is empty, could not
+start MinIO at all. `Prodbox.Infra.BootstrapImageSeed` owns the policy and `ensureBootstrapImagesSeeded` runs
+it on the home substrate inside `ensureMinioRuntime`, before the registry bucket Job, before the gateway MinIO
+bootstrap Job and in the harness restore step:
+
+- an image RKE2 containerd lists under its exact name is left alone, whatever digest it carries;
+- one containerd lacks and the host Docker cache holds is saved out of the cache and imported;
+- one neither holds is pulled into the cache first, which is the only step that needs the network;
+- every import is read back, and every refusal names the image, what each store lacked, the registry's first
+  line of answer, and the two ways to restore it (`docker load -i <archive>`, or `docker pull` from a mirror
+  followed by `docker tag` to the exact name).
+
+The seed is a host-side step: the AWS substrate's EKS nodes pull the same refs themselves and have no host
+containerd to seed, which is an open decision of Sprint `7.47`. A host whose Docker cache does not hold the two
+images has no source; keeping an offline copy under the retained root is a policy choice the seeding does not
+make.
 
 ### 2.1 Registry Readiness Contract
 
@@ -129,9 +155,26 @@ deadline. This capability discipline and the dedicated Broker/Authority/Agent/Ga
 are defined in
 [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
 
+**Probe vantage (Sprint `7.46`).** The probes below address the registry of the substrate being
+reconciled, from the place that registry is reached from. The home registry is probed from the operator
+host through its NodePort on `127.0.0.1:30080`. The EKS registry cannot be: the host has no network path
+into the EKS nodes, so the same loopback address answers for the home registry, and an AWS run that probed
+it proved the wrong registry. The EKS probes therefore run inside the registry Deployment's own container
+(`kubectl exec deployment/registry`, a raw HTTP/1.0 request written with `printf` and sent with `nc` to the
+container's own port), on the cluster the run's `KUBECONFIG` selects. The response arrives exactly as the
+registry wrote it, so the `Docker-Upload-UUID` header a `202` carries, which is the receipt the deep gate's
+witness is minted from, does not depend on how a client treats a status other than 200. Both scripts were run
+against the `registry:2` image (Alpine 3.18, BusyBox 1.36.1, distribution 2.8.3) and answered `200` and `202`
+with that header. The exec runs under a wall-clock bound, since nothing else bounds its stream.
+`Prodbox.Lib.RegistryProbe` owns the choice (`registryProbeVantageFor`) and renders the command for either
+vantage; every probe function takes a vantage or a substrate and none has a default. The pod vantage proves the registry process reaches its MinIO backend, which is the edge the deep
+gate exists to prove; the Service and NodePort routing that chart pods use is exercised by the in-cluster
+mirror Job and the runtime-image push that follow the gate.
+
 Policy:
 
-1. Registry readiness is a plain `GET /v2/` probe on `127.0.0.1:30080`, expecting HTTP `200` or
+1. Registry readiness is a plain `GET /v2/` probe on `127.0.0.1:30080` (the home vantage above),
+   expecting HTTP `200` or
    `401`. There is no nginx `/readyz` readiness patch — `registry:2` serves the OCI distribution
    API directly, so `/v2/` is the canonical readiness event.
 2. Registry bootstrap remains event-driven.
@@ -145,7 +188,8 @@ Policy:
    any image write** (home substrate, Sprint `4.43`) is the deep gate
    `ensureRegistryStorageBackendEdgeReady`: it opens a blob-upload session against the registry
    (`POST /v2/<name>/blobs/uploads/`), which the S3 storage driver services by writing to MinIO, so a
-   `201`/`202` proves the registry reached its MinIO backend. A curl-level failure is `Unreachable`
+   `201`/`202` proves the registry reached its MinIO backend. A probe that obtains no HTTP response (a
+   curl-level failure on the host, a failed exec or no answer from the pod) is `Unreachable`
    and gates closed (doctrine Statement 4); a registry `5xx` (it cannot reach MinIO) is retryable.
    This runs before `mirrorClusterImagesOnce` and every downstream registry write, closing the
    transient `minio.prodbox.svc.cluster.local` resolution race that front-door-only gating left open.
@@ -502,7 +546,12 @@ Credential Provisioner and Target materialization Jobs use `imagePullPolicy: Alw
 Kubernetes reports the pulled registry manifest in `status.containerStatuses[].imageID`. Their
 signed attestation identity is therefore the independently resolved repository-manifest digest.
 The registered Target Agent identity that supplies the downstream Target-worker expectation is
-derived from that manifest digest too, never from the Docker-local rollout token. The standing
+derived from that manifest digest too, never from the Docker-local rollout token. On the AWS substrate
+the publication never pushes or pulls from the host, so the host's `.RepoDigests` is empty or names an
+earlier push to the home registry; the digest is instead the one the EKS registry reports for the
+reference the in-cluster crane pod just pushed (`crane digest`), recorded in the
+`harbor/prodbox-runtime-image-digest` ConfigMap and read when the charts are planned. An absent record
+leaves the image without a digest, so the control-plane charts refuse the plan by name. The standing
 Target Agent Pod's `IfNotPresent` runtime representation may remain the bare config identity; that
 separate observation neither authorizes nor substitutes for the downstream `Always`-pull join.
 

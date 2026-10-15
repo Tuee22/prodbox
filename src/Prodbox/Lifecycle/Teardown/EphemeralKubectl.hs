@@ -57,6 +57,7 @@ module Prodbox.Lifecycle.Teardown.EphemeralKubectl
   , EphemeralKubectlUnavailable (..)
   , withEphemeralKubectlForProjection
   , withEphemeralKubeconfigPath
+  , replaceEphemeralBearer
   , ephemeralKubectlLimits
   , ephemeralKubectlRequestTimeoutSeconds
   , ephemeralKubectlDiscoveryAttempts
@@ -83,6 +84,10 @@ import Prodbox.ControlPlane.EksClientAuthProjection
   , eksClientAuthClusterName
   , eksClientAuthEndpoint
   )
+import Prodbox.Infra.EphemeralKubeconfigPath
+  ( ephemeralKubeconfigFileName
+  , ephemeralKubectlDirectoryPrefix
+  )
 import Prodbox.Lifecycle.Teardown.Model (ObservationFailure (..))
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
@@ -90,8 +95,9 @@ import Prodbox.Subprocess
   , Subprocess (..)
   , captureSubprocessBounded
   )
+import System.Directory (removeFile, renameFile)
 import System.Exit (ExitCode (..))
-import System.FilePath ((</>))
+import System.FilePath (takeDirectory, takeFileName, (</>))
 import System.IO.Temp (withSystemTempDirectory)
 import System.Posix.Files
   ( ownerReadMode
@@ -172,9 +178,9 @@ withEphemeralKubeconfigPath
   -> (Either EphemeralKubectlUnavailable FilePath -> IO result)
   -> IO result
 withEphemeralKubeconfigPath projection consume =
-  withSystemTempDirectory "prodbox-ephemeral-kubectl-" $ \directory -> do
-    let kubeconfigPath = directory </> "kubeconfig.json"
-        tokenPath = directory </> "bearer-token"
+  withSystemTempDirectory ephemeralKubectlDirectoryPrefix $ \directory -> do
+    let kubeconfigPath = directory </> ephemeralKubeconfigFileName
+        tokenPath = directory </> ephemeralBearerFileName
         tokenBytes = TextEncoding.encodeUtf8 (eksClientAuthBearerToken projection)
     prepared <-
       try
@@ -208,6 +214,65 @@ withEphemeralKubeconfigPath projection consume =
               )
           )
       Right () -> consume (Right kubeconfigPath)
+
+-- | The credential's name inside an ephemeral directory, shared by the creator
+-- and the replacer so the two cannot disagree about where the credential lives.
+-- The kubeconfig's own name and the directory's prefix are defined in
+-- "Prodbox.Infra.EphemeralKubeconfigPath", because the resolvers that must leave
+-- such a path out of a fallback need them too.
+ephemeralBearerFileName :: FilePath
+ephemeralBearerFileName = "bearer-token"
+
+-- | Replace the bearer credential beside a live ephemeral kubeconfig with a
+-- newly issued one, atomically.
+--
+-- A projection's bearer lasts at most the Provider's short lifetime, and a
+-- caller that holds one kubeconfig across a long bracket outlives it: every
+-- invocation after expiry is then rejected as unauthorized. The kubeconfig
+-- names its credential by path and @kubectl@ reads that path afresh on every
+-- invocation (twice, measured above), so replacing the file is enough and no
+-- invocation needs to be restarted.
+--
+-- The replacement is written beside the credential with the same
+-- exclusive-create, no-follow, owner-only protections the first write had,
+-- read back, and then renamed over it. A rename within one directory is atomic,
+-- so a concurrent invocation reads either the old complete bearer or the new
+-- one, never a partial file. The kubeconfig document itself is untouched: the
+-- endpoint and the cluster authority do not change for the same cluster.
+--
+-- The path guard is only the file name: a path whose last component is not the
+-- name the creator gives its kubeconfig is refused, which stops a caller
+-- passing some other file by mistake. It does not prove the directory was made
+-- by the creator, so the caller must pass the path it was handed.
+replaceEphemeralBearer
+  :: FilePath
+  -> EksClientAuthProjection
+  -> IO (Either EphemeralKubectlUnavailable ())
+replaceEphemeralBearer kubeconfigPath projection
+  | takeFileName kubeconfigPath /= ephemeralKubeconfigFileName =
+      pure (Left (unavailable "not an ephemeral kubeconfig path"))
+  | otherwise = do
+      let directory = takeDirectory kubeconfigPath
+          tokenPath = directory </> ephemeralBearerFileName
+          replacementPath = tokenPath <> ".next"
+          tokenBytes = TextEncoding.encodeUtf8 (eksClientAuthBearerToken projection)
+      replaced <-
+        try
+          ( do
+              _ <- try (removeFile replacementPath) :: IO (Either IOException ())
+              writePrivateFile replacementPath tokenBytes
+              readBack <- ByteString.readFile replacementPath
+              if readBack == tokenBytes
+                then renameFile replacementPath tokenPath
+                else ioError (userError "replacement bearer credential did not read back")
+          )
+          :: IO (Either IOException ())
+      pure $ case replaced of
+        Left err ->
+          Left (unavailable ("could not replace the ephemeral bearer: " <> Text.pack (show err)))
+        Right () -> Right ()
+ where
+  unavailable detail = EphemeralKubectlUnavailable (ObservationFailure detail)
 
 runBoundedKubectl
   :: FilePath

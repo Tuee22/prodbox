@@ -21,6 +21,9 @@ module Prodbox.Lifecycle.TagSweep
   , tagSweepVerdictExit
   , renderTagSweepVerdict
   , discoverClusterTaggedAwsResources
+  , discoverClusterTaggedAwsResourcesWith
+  , discoverClusterTaggedAwsResourcesForAll
+  , boundedTagPageRunner
   , tagSweepRegions
   , tagSweepQueries
   , unionTaggedResources
@@ -45,12 +48,21 @@ import Data.List (intercalate, nub)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.Aws.Region (awsGlobalServiceRegion)
+import Prodbox.Error (AppError (..))
 import Prodbox.Lifecycle.TaggedResourceQuery
-  ( TaggedResourceEntry (..)
+  ( TaggedPageRunner
+  , TaggedResourceEntry (..)
   , TaggedResourceFilter (..)
   , TaggedResourceListing (..)
   , TaggedResourceQueryInput (..)
-  , discoverTaggedResources
+  , discoverTaggedResourcesVia
+  )
+import Prodbox.Result (Result (..))
+import Prodbox.Subprocess
+  ( KillableSubprocessLimits (..)
+  , KillableSubprocessOutcome (..)
+  , captureSubprocessKillable
+  , captureSubprocessResult
   )
 import System.Exit (ExitCode (..))
 
@@ -119,23 +131,49 @@ data TaggedResource = TaggedResource
 -- union is never reported as a complete one.
 discoverClusterTaggedAwsResources
   :: TagSweepInput -> IO (Either String [TaggedResource])
-discoverClusterTaggedAwsResources input = do
-  results <- traverse runOne (tagSweepQueries input)
-  pure (unionTaggedResources <$> sequence results)
+discoverClusterTaggedAwsResources = discoverClusterTaggedAwsResourcesWith captureSubprocessResult
+
+-- | 'discoverClusterTaggedAwsResources' over an explicit page runner. A path
+-- that used to be offline (a cascade with no cluster) passes
+-- 'boundedTagPageRunner', so an AWS call that never answers fails the discovery
+-- and the verdict becomes 'TagSweepUnconfirmed' rather than a hang.
+discoverClusterTaggedAwsResourcesWith
+  :: TaggedPageRunner -> TagSweepInput -> IO (Either String [TaggedResource])
+discoverClusterTaggedAwsResourcesWith runner input =
+  discoverClusterTaggedAwsResourcesForAll runner [input]
+
+-- | The queries of several inputs that differ only in region, each issued once
+-- and in order, stopping at the first failure.
+--
+-- A fan-out over authored regions repeats the global-service region for every
+-- input; deduplicating the @(region, filter)@ pairs asks each question once. A
+-- failure of any query fails the whole discovery, so there is nothing to gain
+-- from asking the rest, and on a path that used to be offline every further call
+-- is another wait on a service that is not answering.
+discoverClusterTaggedAwsResourcesForAll
+  :: TaggedPageRunner -> [TagSweepInput] -> IO (Either String [TaggedResource])
+discoverClusterTaggedAwsResourcesForAll runner inputs = case inputs of
+  [] -> pure (Right [])
+  shared : _ -> go shared (nub (concatMap tagSweepQueries inputs)) []
  where
-  runOne (regionValue, filterValue) = do
+  go _ [] gathered = pure (Right (unionTaggedResources (reverse gathered)))
+  go shared ((regionValue, filterValue) : remaining) gathered = do
     listed <-
-      discoverTaggedResources
+      discoverTaggedResourcesVia
+        runner
         TaggedResourceQueryInput
-          { taggedResourceQueryEnvironment = tagSweepEnvironment input
-          , taggedResourceQueryWorkingDirectory = tagSweepWorkingDirectory input
+          { taggedResourceQueryEnvironment = tagSweepEnvironment shared
+          , taggedResourceQueryWorkingDirectory = tagSweepWorkingDirectory shared
           , taggedResourceQueryFilter = filterValue
           , taggedResourceQueryRegion = regionValue
           }
-    pure
-      ( concatMap (taggedResourceRowsFor filterValue) . taggedResourceListingEntries
-          <$> listed
-      )
+    case listed of
+      Left err -> pure (Left err)
+      Right listing ->
+        go
+          shared
+          remaining
+          (concatMap (taggedResourceRowsFor filterValue) (taggedResourceListingEntries listing) : gathered)
 
 -- | The regions one sweep asks, in order, without repeats.
 --
@@ -147,6 +185,24 @@ discoverClusterTaggedAwsResources input = do
 tagSweepRegions :: TagSweepInput -> [Text]
 tagSweepRegions input =
   nub [tagSweepRunRegion input, awsGlobalServiceRegion]
+
+-- | A page runner with a wall-clock bound. The child leads its own process
+-- group and is stopped by SIGTERM and then SIGKILL, so a call that never
+-- answers cannot strand the caller. A timeout is a failure, never an empty page.
+boundedTagPageRunner :: TaggedPageRunner
+boundedTagPageRunner spec = do
+  outcome <-
+    captureSubprocessKillable
+      KillableSubprocessLimits
+        { killableSubprocessTimeoutMicros = 120 * 1000000
+        , killableSubprocessKillGraceMicros = 10 * 1000000
+        }
+      spec
+  pure $ case outcome of
+    Left err -> Failure (Text.unpack (errorMsg err))
+    Right (KillableSubprocessCompleted output) -> Success output
+    Right (KillableSubprocessTimedOut _) ->
+      Failure "the call exceeded its wall-clock bound and was stopped"
 
 -- | Every (region, filter) pair this sweep issues as its own call.
 tagSweepQueries :: TagSweepInput -> [(Text, TaggedResourceFilter)]

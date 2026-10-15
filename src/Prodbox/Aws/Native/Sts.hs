@@ -17,6 +17,7 @@ module Prodbox.Aws.Native.Sts
   , AssumedRoleSession
   , assumedRoleSessionHandle
   , assumedRoleSessionCredentials
+  , assumedRoleSessionExpiresAtMicros
   , CallerIdentity (..)
   , newStsClient
   , getCallerIdentityForSession
@@ -34,7 +35,11 @@ import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as BS8
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
+import Data.Time.Clock (UTCTime)
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
+import Data.Time.Format.ISO8601 (iso8601ParseM)
 import Numeric.Natural (Natural)
 import Prodbox.Aws.CredentialHandle
   ( BaseCredentialHandle
@@ -95,6 +100,7 @@ data CallerIdentity = CallerIdentity
 data AssumedRoleSession = AssumedRoleSession
   { internalAssumedRoleSessionHandle :: !SessionCredentialHandle
   , internalAssumedRoleSessionCredentials :: !Credentials
+  , internalAssumedRoleSessionExpiresAtMicros :: !Natural
   }
 
 assumedRoleSessionHandle :: AssumedRoleSession -> SessionCredentialHandle
@@ -102,6 +108,11 @@ assumedRoleSessionHandle = internalAssumedRoleSessionHandle
 
 assumedRoleSessionCredentials :: AssumedRoleSession -> Credentials
 assumedRoleSessionCredentials = internalAssumedRoleSessionCredentials
+
+-- | When STS will stop honouring the session, in microseconds since the POSIX
+-- epoch, so it compares directly with Authority time.
+assumedRoleSessionExpiresAtMicros :: AssumedRoleSession -> Natural
+assumedRoleSessionExpiresAtMicros = internalAssumedRoleSessionExpiresAtMicros
 
 data StsClient = StsClient
   { assumeRole :: AssumeRoleRequest -> IO (Either AwsClientError AssumedRoleSession)
@@ -211,6 +222,7 @@ runAssumeRole handle sender req = do
   pure $ do
     body <- raw
     arc <- first AwsResponseParseFailure (parseAssumeRoleResponse body)
+    expiresAt <- first AwsResponseParseFailure (parseExpirationMicros (arcExpiration arc))
     sessionHandle <-
       first
         credentialErrorToClient
@@ -230,7 +242,16 @@ runAssumeRole handle sender req = do
               , session_token = Just (decodeUtf8 (unSecret (arcToken arc)))
               , region = decodeUtf8 (credentialHandleRegion handle)
               }
+        , internalAssumedRoleSessionExpiresAtMicros = expiresAt
         }
+
+-- | The session expiry STS reported, as microseconds since the POSIX epoch.  A
+-- session whose expiry cannot be read cannot be bounded, so it is refused.
+parseExpirationMicros :: Text -> Either String Natural
+parseExpirationMicros raw = case iso8601ParseM (Text.unpack raw) :: Maybe UTCTime of
+  Nothing -> Left ("AssumeRole: unparsable <Expiration> " ++ show raw)
+  Just expiry ->
+    Right (fromInteger (max 0 (floor (utcTimeToPOSIXSeconds expiry * 1000000))))
 
 runGetCallerIdentity
   :: CredentialHandle origin

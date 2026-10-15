@@ -16,11 +16,6 @@ where
 
 import Data.List (sort)
 import Prodbox.CLI.Rke2
-import Prodbox.Lifecycle.TagSweep
-  ( TagSweepVerdict (..)
-  , TaggedResource (..)
-  )
-import System.Exit (ExitCode (ExitSuccess))
 import TestSupport
 
 clusterDeleteEntryArmSuite :: SuiteBuilder ()
@@ -133,37 +128,6 @@ clusterDeleteEntryArmSuite =
         `shouldSatisfy` isInfixOfString "No local cluster was installed."
       unlines (retainedRootInventoryLines DeleteArmCascadeNoInstall "/srv/elsewhere")
         `shouldSatisfy` isInfixOfString "no cascade phase ran"
-
-    it "mints a confirmed no-install cascade only from a confirming sweep" $ do
-      -- The entry table cannot return this: it is a different type whose
-      -- constructor this module cannot name. `confirmCascadeNoInstall` is the
-      -- only producer in scope, and its admitting cases are exactly the two
-      -- that `decideCascadeUninstallGate` admits.
-      fmap confirmedNoInstallCascadeExit (confirmCascadeNoInstall CascadeSweepNotOwed)
-        `shouldBe` Just ExitSuccess
-      fmap
-        confirmedNoInstallCascadeExit
-        (confirmCascadeNoInstall (CascadeSweepRan (TagSweepConfirmedClean [])))
-        `shouldBe` Just ExitSuccess
-      confirmCascadeNoInstall (CascadeSweepNotRun "credential absent")
-        `shouldBe` Nothing
-      confirmCascadeNoInstall (CascadeSweepRan (TagSweepEscaped [] [escapedFixture]))
-        `shouldBe` Nothing
-      confirmCascadeNoInstall (CascadeSweepRan (TagSweepUnconfirmed "unreadable"))
-        `shouldBe` Nothing
-
--- | One escaped row is all the verdict needs to be non-empty; the sweep's own
--- suite owns what a row means.
-escapedFixture :: TaggedResource
-escapedFixture =
-  TaggedResource
-    { taggedResourceArn =
-        "arn:aws:ec2:"
-          ++ fixtureAwsRegion FixtureEuWest2
-          ++ ":000000000000:vpc/vpc-escaped"
-    , taggedResourceMatchedTagKey = "prodbox.io/run-scope"
-    , taggedResourceMatchedTagValue = "escaped-fixture"
-    }
 
 containsAll :: [String] -> String -> Bool
 containsAll needles haystack = all (`isInfixOfString` haystack) needles

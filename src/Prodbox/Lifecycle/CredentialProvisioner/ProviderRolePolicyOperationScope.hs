@@ -156,9 +156,16 @@ validateProviderRolePolicyOperationCounterexample counterexample
 frozenSupersededScope :: Text
 frozenSupersededScope = "cascade-qualification:pre-1"
 
+-- | The revision of the current policy document. Re-frozen when the policy was
+-- completed against the CLI verbs its interpreters run (the SES receipt-rule and
+-- DKIM observers, the capture-bucket tagging calls, and the owned-resource tag
+-- listing); the value before that was
+-- @bacc2854e31887da758e66bf3d8574e8399086511289ea57d59f75bd8e55394a@. The
+-- revision is a function of the document, so it moves with every deliberate
+-- policy change, and the next run selects a successor operation by it.
 frozenReplacementRevision :: Text
 frozenReplacementRevision =
-  "bacc2854e31887da758e66bf3d8574e8399086511289ea57d59f75bd8e55394a"
+  "209a4b7eef1842483983e994116c816ccd872070bdc210aa1f31f697fa7d34d7"
 
 frozenReplacementScope :: Text
 frozenReplacementScope =

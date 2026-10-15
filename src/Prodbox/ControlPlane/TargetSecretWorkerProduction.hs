@@ -888,8 +888,6 @@ classifyTargetWorkerSessionPrepareError err = case err of
         TargetWorkerSessionPreparePrecleanAuditorEvidenceInvalid
       VaultAccessorObservationFailed ->
         TargetWorkerSessionPreparePrecleanObservationFailed
-      VaultAccessorClassificationAbsent ->
-        TargetWorkerSessionPreparePrecleanClassificationAbsent
       VaultAccessorClassificationUnavailable ->
         TargetWorkerSessionPreparePrecleanClassificationUnavailable
       VaultAccessorClassificationFailed ->

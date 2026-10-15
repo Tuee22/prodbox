@@ -34,7 +34,11 @@ The supported chart doctrine is:
    namespace-local in `api`, and targets the shared-host JWT-protected `/api` route by attaching
    to the shared `public-edge` `Gateway` published from the `vscode` namespace. Envoy validates
    JWTs against the public issuer but fetches JWKS through an in-cluster backchannel to
-   `keycloak.vscode.svc.cluster.local`.
+   `keycloak.vscode.svc.cluster.local`. Keycloak is started with the full public URL
+   (`--hostname=https://<publicHost>/auth`, scheme and path included), because a bare host takes the
+   scheme and port from the request and a backchannel request carries no forwarded headers: a token
+   requested in-cluster would then be issued under `http://<publicHost>:8080/...`, which Envoy rejects
+   with `Jwt issuer is not configured`.
 7. `websocket` runs from the shared `prodbox-runtime` union image (`workload start` via the pod `args:`), keeps its workload and
    `redis` resources namespace-local in `websocket`, owns workload-managed OIDC bootstrap on
    `/ws/oidc`, targets the shared-host JWT-protected `/ws` route by attaching to the shared
@@ -179,9 +183,11 @@ future template edit cannot accidentally omit the values-backed resource stanza;
 `BestEffort`/QoS proof is owned by the canonical `resource-guardrails` validation. Namespace
 `ResourceQuota` and `LimitRange` manifests are not authored — they are derived projections of the
 namespace's workload draws (Σ replicas × limit) carried by the `AllocatedResourcePlan`, with
-keycloak's cross-namespace co-location counted exactly once through a substrate `renderedNamespace`
-resolver, so a namespace quota lower than the sum of its profiles is unrepresentable rather than a
-checked error, and quota and container limits agree by construction (Sprint `3.27`). The authored
+keycloak's cross-namespace co-location counted exactly once through the `renderedNamespace`
+resolver (on every substrate: a dependency chart is installed into its root chart's namespace) and
+the gateway profile sized by the substrate's emitter count (`gatewayNodeIdsForSubstrate`, two on the
+home and three on EKS) rather than by the plan's home replica count, so a namespace quota lower than
+the sum of its profiles is unrepresentable rather than a checked error, and quota and container limits agree by construction (Sprint `3.27`). The authored
 `namespace_quotas` input, its `NamespaceQuota` type, `concurrentNamespaceQuotas`, and the
 keycloak-vscode hand-fold are retired in favor of a typed `WorkloadConcurrency`
 (`Steady | ExclusiveWindow`) that models co-location and burst structurally; a `GuaranteedEnvelope`
@@ -544,7 +550,13 @@ Rules:
    emitter is also a stable one-replica StatefulSet identity and binds one separately registered
    identity-bound emitter-journal PVC. On EKS that static EBS CSI claim is
    `ReadWriteOncePod`; on home the local/`hostPath` PV is node-affined and exclusion instead composes
-   node pinning, the OS lock, durable incarnation, and Kubernetes Lease.
+   node pinning, the OS lock, durable incarnation, and Kubernetes Lease. The EKS journal volume is
+   pre-provisioned through the same retained-EBS path as every other retained workload, one per
+   emitter the substrate names, under the claim name the StatefulSet controller gives the chart's
+   `emitter-journal` template (`emitter-journal-gateway-<node>-0`): the `manual` class provisions
+   nothing, so a claim with no volume of that name stays unbound and its emitter pod never schedules
+   (Sprint `7.46`). The volume's size is `gatewayEmitterJournalMiB`, the same number the namespace
+   quota admits and the claim requests.
 6. The MinIO PV at `.data/prodbox/minio/0` holds the generic `prodbox-state` bucket. Sprint `4.30`
    routes Model-B logical objects, including the production in-force config read, through
    `prodbox-envelope-v2` Vault-Transit envelopes stored under Vault-keyed-HMAC opaque IDs

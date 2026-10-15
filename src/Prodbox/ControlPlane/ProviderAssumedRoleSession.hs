@@ -15,6 +15,7 @@ module Prodbox.ControlPlane.ProviderAssumedRoleSession
   , lifecycleProviderSessionDurationSeconds
   , providerRoleForIntent
   , providerAssumeRoleRequest
+  , providerAssumeRoleRequestFor
   , lifecycleProviderAssumeRoleRequest
   , expectedLifecycleProviderBaseUserArn
   , expectedLifecycleProviderAssumedRoleArn
@@ -33,6 +34,7 @@ import Prodbox.Capacity.ProviderWorkerBudget
   , ProviderWorkerEphemeralCausalProfile (..)
   , ProviderWorkerResourceEnvelope (..)
   )
+import Prodbox.ControlPlane.OperationBudget (sessionMinimumSeconds)
 import Prodbox.Lifecycle.DnsRecord (AwsAccountId, awsAccountIdText)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork (ProviderIntent (..))
 
@@ -88,10 +90,13 @@ lifecycleProviderRoleName = "prodbox-lifecycle-provider"
 lifecycleProviderSessionName :: Text
 lifecycleProviderSessionName = "prodbox-provider-worker"
 
--- | AWS STS requires at least 900 seconds.  Rank-2 callback scope, rather than
--- remote credential expiry, prevents use after the Provider action returns.
+-- | The shortest session STS will issue.  This is the readiness probe's
+-- request and the frozen counterexample's; an operation derives its own
+-- lifetime from its deadline (see 'Prodbox.ControlPlane.OperationBudget').
+-- Rank-2 callback scope, rather than remote credential expiry, prevents use
+-- after the Provider action returns.
 lifecycleProviderSessionDurationSeconds :: Natural
-lifecycleProviderSessionDurationSeconds = 900
+lifecycleProviderSessionDurationSeconds = sessionMinimumSeconds
 
 -- | Exhaustive selection from the closed signed intent.  There is no
 -- caller-controlled role name and a new intent constructor is incomplete until
@@ -130,10 +135,24 @@ providerRoleForIntent intent = case intent of
   ObserveOwnedResourceTags _ -> LifecycleProviderRole
   ObserveNativeStackFamily _ _ -> LifecycleProviderRole
   ReapNativeStackFamily {} -> LifecycleProviderRole
+  EnsureValidationHostedZone {} -> LifecycleProviderRole
+  ObserveSesInviteMail {} -> LifecycleProviderRole
+  ReapSesInviteMail {} -> LifecycleProviderRole
+  EnsureRetainedEbsVolumes {} -> LifecycleProviderRole
 
+-- | The request at the STS floor.  Production derives the duration per
+-- operation with 'providerAssumeRoleRequestFor'.
 providerAssumeRoleRequest :: ProviderIntent -> AwsAccountId -> AssumeRoleRequest
 providerAssumeRoleRequest intent =
   assumeRoleRequestFor (providerRoleForIntent intent)
+
+-- | The request for one operation, with the lifetime its deadline calls for.
+providerAssumeRoleRequestFor
+  :: Natural -> ProviderIntent -> AwsAccountId -> AssumeRoleRequest
+providerAssumeRoleRequestFor durationSeconds intent account =
+  (providerAssumeRoleRequest intent account)
+    { assumeRoleDurationSeconds = durationSeconds
+    }
 
 lifecycleProviderAssumeRoleRequest :: AwsAccountId -> AssumeRoleRequest
 lifecycleProviderAssumeRoleRequest = assumeRoleRequestFor LifecycleProviderRole

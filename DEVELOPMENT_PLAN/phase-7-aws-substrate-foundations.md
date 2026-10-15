@@ -11,6 +11,51 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-10-08 on Sprints `7.46`–`7.48` (Standards A/N).** Sprint `7.48` was added by a third audit
+(the home and shared arms of `prodbox test all`): the per-run subzone could not be deleted while it held the
+public-edge A record the run wrote, and the destroy would have failed on every healthy AWS aggregate (predicted
+from the code and Route 53's refusal; no live record of the outcome exists). Sprint `7.48` repairs it and is `Done`
+(live proof pending). An own-surface reopen on the
+AWS substrate platform plan, which this phase owns. A second static audit of `prodbox test all
+--substrate aws` (five read-only tracers, every serious finding checked by a skeptic) found that the
+plan installs six control-plane roles on EKS where the doctrine places two (the plan now deploys three
+fewer, observes two of them on the home cluster instead and leaves the third to its own workflow; the
+fourth, the EKS Lifecycle Authority copy, is Sprint `7.47`'s to decide), and that most of what the EKS side
+needs has no writer. The Bootstrap Broker's readiness target is the wrong kind for the probe the
+graph declares for it, and its barrier allows three attempts where the home driver allows sixty; the
+Authority Backup, Provider Worker and TLS Retention charts wait on Vault credentials that only the home
+first-reconcile plan ever writes, and their own chart headers say they are home-only; the gateway
+namespace quota is sized for the two home emitters while EKS renders three; the `vscode` quota omits the
+Keycloak workloads that share its namespace; the registry barrier probes the home registry; and the
+control-plane charts' image digest has no producer on the AWS arm. A review of the repair added that the
+AWS gateway emitters' journal claims have no volume at all. Sprint `7.46` repairs those, the registry
+barrier included, which now asks the registry from inside its own pod. Sprint
+`7.47` owns the material no production code delivers to the EKS Vault (the ACME EAB, the SES SMTP secret
+and the AWS-run DNS01 credential) and the source of the MinIO images the per-run cluster starts from, and is
+parked on four operator decisions. None of this touches the home
+substrate or Sprint `6.5`'s campaign, whose cycles run home. Sprints `7.46` and `7.48` are `Done` (live proof
+pending); until Sprint `7.47` is `Done`, the AWS-substrate rows of Deployment Qualification cannot be attempted.
+
+✅ **Reclosed 2026-10-07 on Sprint `7.45` (Standards A/N).** An own-surface reopen on the Provider
+role's permissions policy, which this phase owns. The policy and the AWS CLI verbs the Provider's
+interpreters run were written by hand in two places and nothing compared them, so a verb the policy
+omitted was denied only when a live run reached it, which had cost a cycle twice (the hosted-zone
+create, 2026-09-05 and 2026-09-06). Sprint `7.45` adds a table of the IAM actions each verb is
+authorized by and a `prodbox dev check` rule that fails on a verb the table does not name or an action
+the policy does not allow. It found seven actions no run had yet reached — the SES DKIM attributes, the
+receipt-rule describe and update, the active-rule-set describe, the capture bucket's tag read and
+write, and the owned-resource tag listing — and the policy now allows them. Live proof remains
+pending: the next harness run puts the completed policy through a successor operation.
+
+✅ **Reclosed 2026-10-05 on Sprint `7.44` (Standards A/N).** An own-surface reopen on the EKS
+client-auth admission, which this phase owns. The admission parsed the caller-identity evidence with
+a position that the leading `arn` field shifted by one, so it refused every well-formed ARN and the
+2026-09-29 cascade's drain never reached a cluster. Sprint `7.44` gives the evidence one codec and
+closes the parse code-locally; live proof and destructive-cleanup deployment qualification remain
+pending. The Provider-side half of the same incident — the destroy fold, the failure channel, the
+Pulumi child and the session lifetime — is Phase `4`'s own surface and is closed there by Sprints
+`4.102`–`4.105`.
+
 ✅ **Reclosed 2026-09-15 on Sprints `7.41` and `7.42` (Standards A/L/P).** The own-surface reopen
 of 2026-09-12 was on the registered stack-creation lane and the bounded legacy-adoption protocol
 this phase built. An EKS cluster created 2026-09-08 billed for four days and was removed by hand;
@@ -6637,9 +6682,9 @@ None owned by this sprint. Two things are **stated rather than closed**, and bot
 - Record the Phase `7` own-surface reopen in [README.md](README.md) and
   [00-overview.md](00-overview.md).
 
-## Sprint 7.43: What A Controller Made, No Create Can Record [📋 Planned]
+## Sprint 7.43: What A Controller Made, No Create Can Record [✅ Done]
 
-**Status**: Planned. New work on Phase `7`'s AWS substrate surface. Phase `7` reclosed 2026-09-15 on
+**Status**: Done (2026-10-07), in two increments. New work on Phase `7`'s AWS substrate surface. Phase `7` reclosed 2026-09-15 on
 Sprints `7.41` and `7.42`; this row opens no reopen, because it names a gap those sprints' own
 records already register rather than a defect in what they landed.
 **Doctrine**: [AWS Integration Environment
@@ -6650,15 +6695,23 @@ kind"](../documents/engineering/lifecycle_reconciliation_doctrine.md#32a-record-
 `src/Prodbox/Infra/AwsSesStack.hs`, `src/Prodbox/Lifecycle/EbsVolume.hs`,
 `src/Prodbox/Lifecycle/CredentialProvisioner/ProductionIam.hs`,
 `src/Prodbox/Lifecycle/Teardown/AwsLoadBalancerControllerFamilyAdapter.hs`, and
-`src/Prodbox/Lifecycle/Dns01Challenge.hs`.
+`src/Prodbox/Lifecycle/Dns01Challenge.hs`, with the new declaration
+`src/Prodbox/Lifecycle/Teardown/CreateRecordCoverage.hs` and its gate in `src/Prodbox/CheckCode.hs`, and
+the attribution `src/Prodbox/Lifecycle/ControllerFamilyAttribution.hs`.
 **Blocked by**: none.
 **Docs**: `documents/engineering/aws_integration_environment_doctrine.md`,
-`documents/engineering/storage_lifecycle_doctrine.md`, and
+`documents/engineering/storage_lifecycle_doctrine.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md` §3.2a, and
 `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
 **Live-proof**: pending and non-blocking. The 2026-09-08 incident is the worked example: a cluster
 lost before teardown takes the controllers' owner records with it.
-**Deployment qualification**: pending — **invalidated** on persistence protocol if the ownership
-manifest gains a new writer.
+**Deployment qualification**: pending, **not invalidated**. The spec's invalidation clause is
+conditional on the ownership manifest gaining a new writer, and this sprint adds none: a check in
+`prodbox dev check` fails the build if any module under `src/Prodbox` outside the manifest repository,
+its transport (client and endpoint), the submitter and the manifest builder names one of the seven
+identifiers that commit or append a manifest, at the client layer or the repository layer beneath it.
+That is a token scan, so it catches a second caller of those names and not a reimplementation of
+them; the statement is mechanical to that extent and no further.
 **Independent Validation**: importer and call-graph facts over the tree, plus pure cases over a
 constructed manifest; no live AWS.
 
@@ -6673,18 +6726,25 @@ nameable after the cluster is gone.
 - **Three of four Pulumi programs reach the write-ahead lane; the long-lived one does not.**
   `src/Prodbox/Infra/AwsSesStack.hs` is not an importer of the submitter. Decide and record whether
   the retained stack should be on the lane or is deliberately excluded, and make the exclusion
-  legible rather than incidental.
+  legible rather than incidental. **Landed 2026-10-07 (increment 1): deliberately excluded.**
 - **Stackless creators can be in no manifest at all.** Retained EBS volumes and the production IAM
   principals are created outside any registered stack create, so no manifest entry can contain them
   and no destroy order can be derived for them. This is already stated in the tree as a consequence;
-  it needs an owner.
+  it needs an owner. **Landed 2026-10-07 (increment 1): each carries a checked structural bar and a
+  named destroy path.**
 - **Controller-created resources cannot be hooked at the create.** The load balancer controller's
   children and cert-manager's DNS01 challenge records are created by controllers reconciling
   Kubernetes objects, not by any `prodbox` create with an execute step to bind, and the provider-side
   run-scope stamp reaches only the per-run Pulumi programs. Record them by something that outlives
   the cluster — an Authority-side observation appended to the run's manifest before the cluster can
   be lost, or a run-scope stamp the controllers themselves apply — so the postflight sweep's escaped
-  rows carry the scope that makes them destroyable.
+  rows carry the scope that makes them destroyable. **Landed 2026-10-07 (increment 2), narrower than
+  written, and said so.** The EKS stack's manifest already declares both tag-identifiable families,
+  by key and coordinate digest, before any effect; the missing piece was only the join from an escaped
+  row to that declaration, and it is pure. It names a family and an owning stack, and it does not name
+  a run: the controllers' tag sets are constant for a cluster name. No writer, stamp or observation was
+  added, because each would change the persistence protocol or the Provider image to write data no
+  destroy reads.
 - This sprint owns the manifest's **input**. The destroy routes for both controller families landed
   in Sprint `7.36` and are not reopened; they assume an input this sprint says may not exist.
 
@@ -6695,13 +6755,682 @@ nameable after the cluster is gone.
 2. Each stackless creator either reaches a manifest or carries a recorded reason it cannot, with the
    destroy path that covers it named.
 3. A controller-created resource observed after its cluster is gone is nameable from a durable
-   record, demonstrated over a constructed manifest.
+   record, demonstrated over a constructed manifest. The production consumer reads no manifest: it
+   attributes from the registry's declaration of what each stack's manifest holds, and its narration
+   says so.
 4. The Sprint `7.36` destroy families are unchanged, and the record says so.
 5. **Canonical gate.** Focused group, primary unit suite, and `prodbox dev check` at 0.
 
+### Landed — increment 1 (2026-10-07)
+
+Deliverables 1 and 2 are decisions made mechanical, with no change to behavior.
+`Prodbox.Lifecycle.Teardown.CreateRecordCoverage` is a pure declaration: one row per creator, each
+with its lane relation, its run-scope tag decision (a separate field), the destroy path that covers it,
+and the reason. A check in `prodbox dev check` (`checkCreateRecordCoverage`) keeps it true:
+
+- every Pulumi program has exactly one row; a program on the lane names the stack its `Pulumi.yaml`
+  declares, imports the submitter and calls it outside its import list; a program off the lane does not
+  import it; and a program's tag decision matches its `Main.yaml`;
+- every registered key has exactly one row, and the relation is the one the registry derives (a stack is
+  on the lane, a controller-owned family is declared by the edge that already exists, anything else is
+  off the lane because it is not a stack);
+- the modules that create through the native IAM or S3 client are exactly the rows that say so, because
+  the create-verb scan reads quoted CLI literals and cannot see them;
+- every destroy path a row cites is defined at the top level of the module it names; and
+- only the manifest repository, its transport client and endpoint, the submitter and the manifest builder
+  reference the seven identifiers that commit or append a manifest, at the client layer and at the
+  repository layer beneath it.
+
+The checks read comments, string literals and character literals as nothing, in one pass, so a message
+that names an identifier is neither a writer nor a creator.
+
+Verification corrected three premises. The aws-ses *tag* exclusion was already recorded and tested; the
+*lane* exclusion is a different fact and is now declared with its own reasons. The stackless set was
+missing a creator, the validation hosted zone. And the stale `aws-ses` exemption text, which promised
+a typed descriptor with the Sprint `7.36` adapters that never arrived, is replaced. Focused group
+**12/12**. The two ledger rows for deliverables 1 and 2 move to Completed.
+
+### Landed — increment 2 (2026-10-07)
+
+`Prodbox.Lifecycle.ControllerFamilyAttribution` joins a sweep's escaped rows to the family entries a
+stack's write-ahead manifest declares. The recognizable families are derived from the registry (a
+coordinate that a tag can identify, with an owning stack by edge), never authored, and the function over
+coordinates is total, so a new coordinate shape is an exhaustiveness error until it is classified.
+Attribution requires every tag a family needs, and it refuses rather than guesses: no family matches, a
+family matches and this manifest does not declare it, the declared coordinate digest disagrees with the
+registry, or two families match. The result carries the manifest's scope as supplied by the caller and
+never as something the rows proved. Validation 3 is demonstrated over a constructed manifest on the real
+creation surface, with the negative controls the verdict depends on (a partial tag set, tags only a
+retained resource carries, a stack that owns no family, a drifted digest, ambiguity, and the sweep alone).
+Its one production consumer is the cascade postflight, which appends the attribution to the rendered
+verdict from the registry alone, reads no manifest and says so, and can neither change the verdict nor
+the exit code. The refusals that compare a declared entry with the registry can therefore not fire
+there; they are exercised over constructed manifests and are for the day a reader of a durable manifest
+supplies the facts. Validation 4 is
+pinned: the ownership edges and the empty identity lists the Sprint `7.36` destroy families assume are
+exactly what they were, and no Teardown adapter, interpreter, Provider module or Pulumi program changed,
+so no image roll is needed for correctness. Focused groups **22/22**.
+
+Verification corrected the row's premise. The ledger said no create-side path observes the controllers'
+children; in fact the manifest declares their families and an Authority-side record of the load
+balancer's child ARNs already exists. It is cluster-keyed rather than run-keyed and nothing reads it.
+Neither makes the destroy route depend on a member list: the family reap takes its name and tags from the
+registry coordinate. The closure the row asked for, a record at run scope, is not what was built, so the
+row moves to Completed with that stated and one **Unowned** row registers what remains: no run-granular
+attribution, a write-only controller-owner record, and the DNS01 residual.
+
+### Landed — adversarial review (2026-10-07)
+
+A four-lens adversarial review (gate correctness, attribution safety, tests, documentation truth;
+26 agents, every claim re-verified against the tree) confirmed 14 findings. All are fixed:
+
+- The single-appender rule scanned three client names. The repository operations beneath them
+  (`commitOwnershipManifestWriteAheadAttempt`, `commitOwnershipManifestCompletionAttempt`,
+  `createOrReplayOwnershipManifest`, `createOrReplayOwnershipManifestCompletion`) were outside it, and
+  a fourth committing module, the transport endpoint that applies a write, was missing from the list of
+  allowed modules, so the documents' list of three was incomplete. It now scans seven identifiers and
+  names the endpoint; the sentence in the documents says "client and endpoint".
+- "Imports and calls the submitter" was satisfied by the import list alone. The call check now reads
+  the module without its import declarations, and the import check accepts both spellings of
+  `qualified`.
+- A lane row must now name the stack its program's `Pulumi.yaml` declares, so swapping two rows no
+  longer passes.
+- The text rules read string literals and character literals as code, and a dash pair inside a literal
+  as a comment. One masking pass now treats all three as nothing, with the cases that broke the older
+  helpers pinned: a dash pair in a literal, a comment opener in a literal, a double-quote character
+  literal, a string gap, and operators such as `-->`.
+- The cascade narration said an owning stack's manifest had declared a family before it acted, while the
+  postflight reads no manifest. It now says the registry declares the family in that stack's manifest
+  and that none was read. A test pins the wording, and pins that the registry's facts equal a
+  constructed manifest's entries, so a change in one cannot make the other untrue.
+- The validation-zone row said the zone is tagged at create. It is tagged by a second call, and the row
+  now names the window.
+- Every gate rule now has a failing input that targets it alone: a duplicated program row, a missing
+  tag decision, a program declared inside a manifest, a key with two rows, an unregistered key, an
+  undefined native entry point, a creator through the S3 client, a row naming no destroy path, and each
+  of the seven writer identifiers. The attribution's owner check and its wrong-value tag controls have
+  inputs too. Focused groups **29/29**. Canonical `prodbox dev check` exits 0 on the corrected tree:
+  primary unit **5,331/5,331** plus auxiliaries **27/27**, **35/35** and **40/40**.
+
 ### Remaining Work
 
-1. Everything above; nothing is started.
+None.
+
+## Sprint 7.44: The EKS Client-Auth Identity Parse Refused Every Well-Formed ARN [✅ Done]
+
+**Status**: Done (2026-10-05). Phase `7` own-surface reopen (Standards A/N) on the EKS client-auth
+admission this phase owns.
+**Doctrine**: [Lifecycle Reconciliation
+Doctrine](../documents/engineering/lifecycle_reconciliation_doctrine.md).
+**Implementation**: `src/Prodbox/Aws/StsIdentity.hs`,
+`src/Prodbox/ControlPlane/EksClientAuthClient.hs`, `src/Prodbox/Aws.hs`,
+`src/Prodbox/ControlPlane/ProviderProduction.hs`, and `test/unit/StsIdentity.hs`.
+**Blocked by**: none.
+**Docs to update**: `DEVELOPMENT_PLAN/README.md` and `DEVELOPMENT_PLAN/00-overview.md`.
+**Live-proof**: pending. The Provider Worker image must be rebuilt and rolled before the producer
+change runs live; the host-side parse needs only a rebuilt binary.
+**Deployment qualification**: pending — not invalidated: the sprint repairs a parse and changes no
+destroy ordering or session lifetime.
+**Independent Validation**: pure cases over real caller-identity ARN shapes; no AWS, no cluster.
+
+### Objective
+
+Make the account a caller-identity ARN names readable. The EKS client-auth admission split the
+identity evidence on colons and bound the fourth field, but the split includes the leading `arn`
+field, so every position shifted by one and the fourth field was the empty region. The parse
+returned nothing for an IAM user, an assumed role and a regional ARN alike, so the admission could
+never succeed against a real caller: the 2026-09-29 cascade's drain refused with
+`EksClientAuthIdentityEvidenceInvalid` before it reached any cluster. No test exercised the parse.
+
+### Deliverables
+
+- `Prodbox.Aws.StsIdentity` owns the `sts-identity:` marker, the 2,048-character evidence bound, the
+  renderer and the parser. The parser admits the `aws`, `aws-cn` and `aws-us-gov` partitions, the
+  `iam` and `sts` services and a twelve-digit account, ignores the region field, and classifies the
+  principal (IAM user, federated user, assumed role, root, other).
+- The EKS client-auth admission, the operator identity probe and the Provider's identity producer all
+  use it; the probe's own second ARN splitter and the producer's inline renderer are retired. The
+  marker and the bound are byte-identical to the shipped wire text.
+- The `ObserveOperationalIdentity` round trip is unchanged: its wire shape is pinned across the
+  Provider boundary, and a typed account observation (`ObserveProviderAwsScope`) is a separate
+  decision.
+
+### Validation
+
+1. Every real caller-identity shape — assumed role, user, user under a path, federated user, root,
+   `aws-cn` and `aws-us-gov` — parses to its account and principal, and round-trips through the
+   production renderer.
+2. A short, long, non-numeric or empty account, an unknown partition, a service other than `iam` or
+   `sts`, an empty resource and a truncated ARN are refused.
+3. The pre-fix pattern, kept verbatim as a negative control, returns nothing for every well-formed
+   ARN.
+4. **Canonical gate.** Focused group, primary unit suite, and `prodbox dev check` at 0.
+
+### Remaining Work
+
+None.
+
+### Validation Result
+
+- The focused `StsIdentity` group passes **26/26**.
+- A verbatim copy of the pre-fix parse returns nothing for all seven real shapes, which is the
+  failure the 2026-09-29 drain hit.
+- The parse is stricter than the probe's old last-field split: a user-shaped resource inside an
+  ARN that is not otherwise well formed is no longer read as a user and is reported as an
+  unrecognised caller.
+
+## Sprint 7.45: The Provider Role Was Never Compared With The Verbs Its Interpreters Run [✅ Done]
+
+**Status**: Done (2026-10-07). Phase `7` own-surface reopen (Standards A/N) on the Provider role policy
+this phase owns.
+**Doctrine**: [AWS Admin Credentials](../documents/engineering/aws_admin_credentials.md).
+**Implementation**: `src/Prodbox/Lifecycle/CredentialProvisioner/ProviderCliActions.hs`,
+`src/Prodbox/Lifecycle/CredentialProvisioner/ProductionIam.hs`,
+`src/Prodbox/Lifecycle/CredentialProvisioner/ProviderRolePolicyOperationScope.hs`,
+`src/Prodbox/CheckCode.hs`, `test/unit/CredentialProvisioner.hs`.
+**Blocked by**: none.
+**Docs to update**: `documents/engineering/aws_admin_credentials.md`, `DEVELOPMENT_PLAN/README.md`.
+**Live-proof**: pending. The role policy is revisioned into the credential operation's scope, so the
+next harness run selects a successor operation and puts the completed policy; no AWS call is made by
+this sprint.
+**Deployment qualification**: pending — not invalidated: the sprint changes an IAM policy document and
+adds a gate, and changes no destroy ordering.
+**Independent Validation**: pure cases over the table, the policy and synthetic module text; no AWS,
+no cluster.
+
+### Objective
+
+Make a missing Provider permission a gate finding instead of a live denial. The Provider's interpreters
+run AWS CLI verbs under one assumed role, and the role's permissions policy was written by hand beside
+them. Nothing compared the two, so a verb the policy omitted was denied only when a live run reached it,
+at the cost of a cycle each time: the hosted-zone create on 2026-09-05 and again under the assumed role
+on 2026-09-06. Reading the verbs the interpreters spell out against the policy found seven more actions
+that no run had yet reached: the SES DKIM attributes, the receipt-rule describe, the active-rule-set
+describe and the receipt-rule update; the capture-bucket tag read and write; and the owned-resource tag
+listing the terminal audit uses.
+
+### Deliverables
+
+- `ProviderCliActions` names, for every verb a Provider-run module invokes, the IAM actions AWS
+  authorizes it with, including the ones that do not share the verb's name (`head-bucket` is
+  `s3:ListBucket`, `head-object` is `s3:GetObject`) and the one that needs none
+  (`sts get-caller-identity`).
+- The Provider role policy allows the seven missing actions; the revision the credential operation
+  scope derives from the policy document moves, so the next run puts the completed policy.
+- `prodbox dev check` fails when a Provider-run module invokes a verb the table does not name, when the
+  policy does not allow a named action, and when a module chooses its verb at run time without being
+  declared in the table with the verbs it may choose.
+- The bound is stated: the rule reads verbs the interpreters spell out as adjacent string literals. It
+  does not describe the Pulumi programs the Provider runs or the native clients the Credential
+  Provisioner runs under the admin credential.
+
+### Validation
+
+1. The real tree satisfies the rule, and each of the seven actions is in the policy.
+2. A verb the table does not name, a verb whose action the policy lacks (with the same site passing once
+   the action is allowed), a service-wide wildcard, an undeclared dynamic-verb site and a miscounted one
+   are each refused.
+3. A verb in a comment is never read, and a flag after a service token is a dynamic-verb site rather than
+   a verb.
+4. **Canonical gate.** Focused group, primary unit suite, and `prodbox dev check` at 0.
+
+### Remaining Work
+
+None.
+
+### Validation Result
+
+- The Credential Provisioner group passes **99/99**, including eight cases new to this sprint: the real
+  tree against the rule, the seven actions in the policy, a verb the table does not name, a verb whose
+  action the policy lacks (red without the action, green with it), a service-wide wildcard, an
+  undeclared and a miscounted dynamic-verb site, comment and flag handling, and the table's own shape.
+- The role-policy revision the credential operation scope derives moves from `bacc2854…` to
+  `209a4b7e…`; `frozenReplacementRevision` and its pin are re-frozen at the completed policy, and the
+  old value is kept in the source comment. The mutation exercise (removing `route53:CreateHostedZone`)
+  still changes the revision.
+- Canonical `prodbox dev check` exits 0 (primary unit **5,424/5,424**). The gate's first run refused
+  the new table module under the create-call-site rule, because the table names creation verbs; the
+  module is now exempt from that scan the way the lint module itself is, since it describes verbs
+  rather than running them.
+- A latent `-Werror` error in `test/unit/ControlPlaneAuthorityBackupEndpoint.hs` surfaced when an
+  upstream interface changed: the in-memory transport lacked the `replaceAdapterObjectIfVersion` field
+  added on 2026-09-23. GHC does not rebuild a module because a warning flag changed, so the earlier
+  green gates had never compiled it under `-Werror`. Fixed here; the lesson is that a forced full
+  rebuild belongs before any identity freeze.
+
+## Sprint 7.46: The AWS Platform Plan Names Roles That Cannot Become Ready [✅ Done]
+
+**Status**: Done (2026-10-08). Phase `7` own-surface reopen (Standards A/N) on the AWS substrate
+platform plan this phase owns, registered before any behavior change. Live proof is pending.
+**Doctrine**: [Lifecycle Control-Plane Architecture](../documents/engineering/lifecycle_control_plane_architecture.md),
+[Bootstrap Readiness Doctrine](../documents/engineering/bootstrap_readiness_doctrine.md),
+[Local Registry Pipeline](../documents/engineering/local_registry_pipeline.md), and
+[Substrates](substrates.md).
+**Implementation**: `src/Prodbox/Lib/AwsSubstratePlatform.hs`, `src/Prodbox/Lib/AwsControlPlaneIsolation.hs`,
+`src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Substrate.hs`, `src/Prodbox/Capacity/Placement.hs`,
+`src/Prodbox/Lifecycle/ReadinessObservation.hs`, `src/Prodbox/CLI/Rke2.hs`,
+`src/Prodbox/Lib/RegistryProbe.hs`, `src/Prodbox/Lib/Storage.hs`, `src/Prodbox/Infra/MinioBackend.hs`, and
+`src/Prodbox/TestValidation.hs`.
+**Blocked by**: none.
+**Live-proof**: pending. Nothing here can be proven without the operator's `test-secrets.dhall` and a
+live EKS cluster.
+**Deployment qualification**: pending — invalidated for the AWS-substrate rows. The sprint changes the
+plan a Standard-P production composition runs.
+**Independent Validation**: pure cases over the step plan, the readiness targets against the graph's
+probes, the placement arithmetic and the registry steps; no AWS, no cluster.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`, `documents/engineering/local_registry_pipeline.md`,
+`documents/engineering/helm_chart_platform_doctrine.md`, `documents/engineering/resource_scaling_doctrine.md`,
+`documents/engineering/storage_lifecycle_doctrine.md`, `DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md`
+(supersession pointers), and `DEVELOPMENT_PLAN/README.md`. All are updated by the landings so far.
+
+### Objective
+
+Make the AWS platform plan something a fresh EKS cluster can finish. The second `--substrate aws` audit
+read the plan against the producers of everything it waits for; each finding below survived a skeptic.
+
+- **The Broker barrier cannot pass.** The graph declares the Bootstrap Broker's probe as
+  `ProbeResourceExists`; the AWS driver builds a rollout target, which the readiness decision refuses for
+  that probe on every run. After that, the AWS barrier gives the two charts installed without `--wait`
+  three attempts (about two seconds) where the home driver gives sixty, and a fresh node cannot pull an
+  image and start a pod in two seconds.
+- **Three roles are installed where the doctrine does not put them.** The plan deploys Authority Backup,
+  Provider Worker and TLS Retention onto EKS. Their chart headers and the doctrine say home-only; the
+  credentials each waits for (`secret/aws/authority-backup-store`, `secret/aws/lifecycle-provider`,
+  `secret/aws/tls-retention-store`) have no writer on the EKS Vault; the TLS Retention binding is eager, so
+  its pod crash-loops; and no host client addresses any of the three. The registry that validates the plan
+  also lists the Provider Worker as an EKS service.
+- **Quotas model the home.** The gateway namespace quota is derived from a plan whose gateway replica
+  count models the two home emitters, so EKS's three gateway pods (2,250m of CPU requests) exceed a
+  1,750m quota before Pulsar is counted. The `vscode` quota omits the Keycloak and Patroni workloads the
+  root chart installs into the same namespace (about 1,330m of requests against a 550m quota), so the
+  `vscode` pod itself is rejected. The quota's `requests.storage` also counted only Pulsar's claim, not the three
+  1Gi retained-EBS journal claims the AWS emitters create, so the first journal claim would be refused and
+  the emitter pods left Pending.
+- **The registry steps prove the wrong registry.** Three AWS steps and the registry barrier curl
+  `127.0.0.1:30080` from the host, which is the home registry. The in-cluster mirror Job and the runtime
+  image push do exercise the EKS registry, so this is a false witness rather than a failure that hides.
+- **The control-plane charts' image digest has no producer.** The AWS publication never pushes or pulls
+  from the host, so the digest read from the host's `.RepoDigests` is absent, or is the digest an earlier
+  home push left on the same image id; the strict per-pod image-id check then compares against a digest
+  the EKS registry may not hold.
+- **The AWS emitters' journal claims have no volume.** Each AWS gateway emitter is a one-replica
+  StatefulSet with an `emitter-journal` claim template on the `manual` class, which provisions nothing, and
+  the gateway chart's storage definition lists none, so no retained-EBS volume or PV is ever created for
+  the three claims. The claim stays unbound, the emitter pod never schedules, and the gateway rollout
+  cannot finish. It predates this sprint (Sprint `3.26` rendered the claim and left the physical volume
+  to "the harness/AWS stack"); the quota repair above made it the next refusal.
+
+### Deliverables
+
+- The Broker's AWS readiness target is the home driver's resource-exists target over the Deployment
+  revision, and every AWS-mapped component's target is checked against the probe the graph declares.
+- The AWS barrier uses the same per-component retry policy as the home driver.
+- Authority Backup and Provider Worker are home-resident in the AWS plan: nothing is deployed for them on
+  EKS, the isolation registry places the Provider Worker at the retained home, and each is one
+  readiness-only step observed against the home cluster with the home kubeconfig (the retained cluster's
+  own file or the user's synced copy; the process's `KUBECONFIG` is the EKS one and is never a candidate,
+  so a host that can read neither refuses by name). Dropping the steps outright was the first repair and a
+  review of it found the flaw: the anchored executor admits a mutation only against an observation of every
+  dependency the graph declares, and cert-manager, Envoy Gateway, the Percona operator and the gateway
+  depend on these roles, so every AWS run would have been refused with a missing admission at the first of
+  those mutations. Observing the roles where they run mints the admission from evidence, and refreshes it
+  if it ages out. The cluster each role is observed against is data (`awsReadinessVantage`), asserted over
+  every required component. TLS Retention is home-only too, but nothing the AWS plan installs depends on
+  it, so its step minted an admission nothing consumed and added a late refusal whenever the home adapter
+  was down; it is out of the plan, and the public-edge TLS workflow fails at the home adapter with its own
+  typed error. The EKS Lifecycle Authority copy stays: the EKS Agent's one-shot workers take their
+  committed intents from it, and Sprint `7.47` owns whether that changes.
+- The gateway quota is derived from the substrate's emitter count and the journal claims those emitters
+  create (one source for the claim's size and the quota's demand). The plan's gateway profile states only the
+  shape the home renders, and a plan that states another replica count or durable storage the substrate
+  overrides is refused at decode instead of passing the over-commit proof for pods the chart does not
+  render. The `vscode` quota includes the
+  workloads installed into its namespace on both substrates. This supersedes Sprint `3.27`'s "AWS is the
+  identity placement", which rested on the premise that AWS keeps Keycloak in a namespace of its own; the
+  AWS restore set reconciles `vscode` and never a `keycloak` root, so it does not.
+- The AWS registry steps and the registry barrier stop observing the home registry; their evidence comes
+  from inside the EKS registry's own pod (`Prodbox.Lib.RegistryProbe`): a raw HTTP/1.0 request over the
+  container's loopback, so the `Docker-Upload-UUID` header the witness is minted from arrives as the
+  registry wrote it (run against the `registry:2` image, 2026-10-08), under a wall-clock bound. Every probe
+  function takes a vantage or a substrate and none has a default, so an AWS step cannot reach the host's
+  loopback by omission; the home commands are unchanged. Every AWS barrier gets the longer observation
+  window, and `charts deploy --substrate aws` builds its plan inside the EKS bracket, so the digest record
+  and the API egress coordinate are read from the selected cluster rather than the ambient one.
+- Each AWS gateway emitter's journal claim has a volume. The gateway chart's storage definition lists one
+  retained-EBS volume per emitter the substrate names, under the claim name the StatefulSet controller gives
+  the `emitter-journal` template, pre-provisioned through the same retained-EBS path as every other
+  retained workload, sized from the number the quota admits and the chart claims, and `ReadWriteOncePod`
+  end to end (the access mode is now a field of the binding, so the volume and the pre-created claim
+  declare what the template asks for).
+- The AWS monitor, the Provider Worker's barrier and the digest reader take the repairs the review of the
+  third landing found: the monitor records a kubeconfig refusal only while enabled and under the
+  observation lock and backs off from one second to thirty; the Provider Worker takes the longer
+  requested-revision window; an unreadable digest record is refused with its cause instead of read as an
+  absent one.
+- The runtime image's manifest digest on the AWS arm is the one the EKS registry holds after the
+  in-cluster push.
+- The host clients of the retained home cluster (`resolveLocalKubeconfig`: the Authority, Provider Worker,
+  Target Secret Agent, TLS Retention and Authority Backup clients, and the host-direct MinIO backend) no
+  longer fall back to a kubeconfig prodbox minted for another cluster. An AWS run exports the EKS cluster's
+  ephemeral kubeconfig through `KUBECONFIG` for one bracket, and with both home files unreadable that
+  fallback would have addressed EKS, which runs its own Lifecycle Authority copy, and said nothing. The
+  resolver now leaves a path of exactly that shape out (`Prodbox.Infra.EphemeralKubeconfigPath`, whose names
+  the creator imports, so the two cannot disagree); a kubeconfig the operator exported still resolves.
+- The AWS ACME step no longer says "Home DNS01" about the AWS materializer.
+
+### Validation
+
+1. For every AWS-mapped component, the readiness target implements the probe the graph declares for it.
+2. The AWS plan deploys nothing for a home-resident role and observes each at its step, and a fourth unmapped
+   dependency is refused (negative control). The anchored executor, run over the real component graph and
+   the real AWS step order with stub barriers, admits every mutation and asks for the home roles'
+   admission; the same run over the plan as it stood when those roles had no step is refused with a
+   missing admission naming one of them (negative control). A second run makes every step outlast the
+   longest admission bound, so each dependency is re-observed before the mutation that needs it, the Authority
+   Backup role more than once, and a refused re-observation is the run's outcome. The vantage of every
+   required component is pinned, the home environment replaces the ambient `KUBECONFIG`, and the home
+   candidates never contain it.
+3. `planNamespaceAdmission` for the AWS gateway namespace is pinned on all four axes at three emitters,
+   one Pulsar and three 1024Mi journal claims, the claims the chart renders sum into `requests.storage`,
+   and the home arithmetic is unchanged; the `vscode` quota covers the Keycloak workloads on both
+   substrates. A plan whose gateway profile states another replica count, or durable storage, is refused,
+   and placement leaves an accepted plan exactly as authored on the home.
+4. No AWS registry step or barrier references the host registry endpoint: the AWS command renders
+   `kubectl exec` into the registry container and never names the host's endpoint, the production command is
+   pinned exactly, the home commands are byte-identical to the curl invocations they replace, output with no
+   HTTP response is reported as what was written, and the barrier run through a fake runner asks only
+   `kubectl` and mints its witness from the session the pod's registry named.
+5. The AWS arm of the runtime-image resolution, with both its observers supplied (so no container runtime is
+   consulted), takes its digest from the record whatever digest the host's image carries, leaves none when
+   the record is absent, and refuses with the cause when the record could not be read; the `crane digest`
+   argument list is pinned.
+6. The AWS gateway's journal claims each have a volume: one spec per emitter under the claim names the
+   StatefulSet controller gives them (checked against the chart template), none on the home, sized as the
+   quota admits and the chart claims, `ReadWriteOncePod` on the volume and the pre-created claim, the mode,
+   class and claim name joined to the values the chart renders rather than compared with literals, the
+   four volumes of the gateway root plan (Pulsar's and the three journals) accepted by the Provider's own
+   validator, and the plan unadjusted by the substrate has no allocation to size them from (negative
+   control).
+7. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
+
+### Current Validation State
+
+Landed code-locally and unit-covered: the Broker's resource-exists target and a case that checks every
+AWS-mapped component's target against the probe the graph declares (the Broker's rollout target is its
+negative control); the per-component retry policy; the three home-resident roles out of the plan, with the
+Provider Worker placed at the retained home in the isolation registry; the AWS gateway quota at three
+emitters; the `vscode` quota carrying its Keycloak workloads on both substrates; and the AWS DNS01 materializer's messages naming the AWS credential.
+Canonical `prodbox dev check` exits 0 for that landing (primary unit **5,478/5,478**). A second landing
+adds the runtime image's manifest digest: after the in-cluster push the publication asks the EKS registry
+for the digest it holds (`crane digest`) and records it in a `ConfigMap` beside the registry, the chart
+planner reads that record for the AWS substrate and never the host's `.RepoDigests`, and an absent record
+leaves the image without a digest so the control-plane charts refuse by name; canonical `prodbox dev check`
+exits 0 for it as well (primary unit **5,483/5,483**, with the Phase `5` half of the same audit).
+
+An adversarial review of both landings (four reviewers, each finding checked by a skeptic) found two defects
+the mirrored cases could not, and they are repaired in a third landing: the removal of the three home roles
+from the plan refused every AWS run at its first dependent mutation (see the Deliverables), and the AWS
+gateway quota omitted the emitters' journal claims. The same review's weaker findings are also repaired: the
+suite-long monitor now acknowledges a refresh requested while it cannot build a kubeconfig, the validation
+classification is an exhaustive match so a new validation cannot take a default cluster unasked, the quota
+pins cover all four axes, and the digest wiring has a case that routes the AWS arm through a supplied record
+reader. Canonical `prodbox dev check` exits 0 for that landing too (primary unit **5,486/5,486**).
+
+A second review, of the third landing (three reviewers, each serious finding checked by a skeptic), found no
+defect that landing introduced and a set of weaknesses and drifts, repaired in a fourth landing: the TLS
+Retention step had no consumer and a late refusal; the home observation fell back to the process's
+`KUBECONFIG`, the EKS one, when both home files were unreadable; the Provider Worker's barrier gave an
+operator-started rollout two seconds; the monitor recorded its refusal while paused and re-minted
+credentials every second for the length of a suite; the digest reader turned every failure into an absent
+record and its wiring case touched the host's image store; and neither the home-observation wiring nor the
+refresh path of the executor had a case that could fail. The review also showed that the quota repair had
+made a defect that predates it reachable: the AWS emitters' journal claims had no volume at all, so the
+gateway rollout could not finish. The same landing closes the sprint's registry item, replacing the host
+probes of the EKS registry with probes from inside its pod. Canonical `prodbox dev check` exits 0 for that
+landing (primary unit **5,504/5,504**).
+
+A third review, of the fourth landing (three reviewers, each serious finding checked by a skeptic), found no
+defect in the journal volumes and a set of weaknesses repaired in a fifth landing. It put the pod probe's
+tool in doubt (whether a BusyBox `wget` would show the `Docker-Upload-UUID` header of a `202`), and the
+doubt was settled by running the probe: both `wget -S` and a raw HTTP/1.0 request sent with `nc` show it
+against the `registry:2` image (Alpine 3.18, BusyBox 1.36.1, distribution 2.8.3), so the choice of `nc` rests
+on its not depending on any client's treatment of a status, not on a defect. The same review
+had the pod probe run under a wall-clock bound (an exec stream has none of its own), every AWS barrier take
+the longer observation window, `charts deploy --substrate aws` build its plan inside the EKS bracket (the
+digest record had been read from the ambient cluster, and an unreadable record is now a hard refusal),
+the monitor's backoff end early for a refresh, the home observation's wiring and the journal claim's mode,
+class and name be joined to the chart's own values by cases, and the stale statements of three observed
+roles and an open registry barrier be corrected. The fit proof and the quota can no longer describe
+different clusters: the plan's gateway profile is held to the home shape at decode, and the retained
+inventory's MinIO and Vault sizes are pinned to the plan's. Canonical `prodbox dev check` exits 0 for that
+landing (primary unit **5,510/5,510**). Nothing has run against a live system.
+
+A sixth landing closes the host clients' kubeconfig fallback (see the Deliverables), with cases over the
+exclusion, the look-alikes that stay, and the creator's own minted path. Canonical `prodbox dev check` exits 0
+(primary unit **5,534/5,534**).
+
+### Known Limits
+
+These bound what the sprint claims; none is sprint-owned code work.
+
+- **A long-lived EKS cluster that still carries the pre-landing gateway release needs one
+  `charts delete gateway --substrate aws`.** That release's quota admits only Pulsar's claim, and the
+  journal claims are applied before helm replaces it. The harness cluster is per-run and has no such
+  quota, so only a manually retained cluster is affected.
+- **The fit proof does not see the AWS emitters.** It proves the home host's capacity and reads the plan as
+  authored; the AWS cluster's capacity is the node group's, and its third emitter and the journals are
+  applied at placement only. This is the design, stated, not a gap: the proof and the home quota cannot
+  disagree, because the plan's gateway profile is held to the home shape at decode.
+- **Second literals.** The retained inventory fixes MinIO at `20Gi` and Vault at `1Gi` beside the plan's
+  values, and three renderers format Gi/Mi quantities. A case pins the inventory equal to the default plan's
+  durable storage, so a change to the default plan fails a unit case; an operator who authors a different
+  MinIO durable storage in their own plan would still leave the AWS volume and its claim disagreeing, and
+  deriving the inventory from the plan is the repair if that ever matters.
+- **Two assumptions only a live run can make.** The EBS CSI driver on the cluster accepts
+  `ReadWriteOncePod` on a static volume, and the user's `~/.kube/config` exists on the host (otherwise the
+  AWS run refuses at the first home role's barrier and names both files, after the barrier's sixty-attempt
+  window, because an unreachable observation is retried).
+
+### Remaining Work
+
+None. Live proof is a `Live-proof: pending` note and is non-blocking under Standard O.
+
+## Sprint 7.47: Material No Production Code Delivers To The EKS Vault [📋 Planned]
+
+**Status**: Planned (2026-10-08). Phase `7` own-surface reopen (Standards A/N), registered before any
+behavior change. It is parked behind four operator decisions because two of its three delivery routes
+add a trust edge to the control plane, and the fourth is a supply-chain choice only the operator can make.
+**Doctrine**: [Vault Doctrine](../documents/engineering/vault_doctrine.md),
+[Lifecycle Control-Plane Architecture](../documents/engineering/lifecycle_control_plane_architecture.md),
+and [AWS Admin Credentials](../documents/engineering/aws_admin_credentials.md).
+**Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/ControlPlane/Runtime.hs`,
+`src/Prodbox/ControlPlane/TargetIntentAuthorityProduction.hs`, `src/Prodbox/Vault/Reconcile.hs`,
+`src/Prodbox/Lib/AwsSubstratePlatform.hs`, `src/Prodbox/Lib/ChartPlatform.hs`, and, if the operator
+chooses a workload role for DNS01, `pulumi/aws-eks/Main.yaml`.
+**Blocked by**: none.
+**Live-proof**: pending. Nothing here can be proven without the operator's `test-secrets.dhall`.
+**Deployment qualification**: pending — invalidated: the sprint changes which material reaches a target.
+**Independent Validation**: pure cases over the registered delivery targets, the rendered ACME manifests
+and the Vault policy; fake-boundary cases over the delivery lane; no AWS.
+**Docs to update**: `documents/engineering/vault_doctrine.md`,
+`documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/aws_admin_credentials.md`, `DEVELOPMENT_PLAN/substrates.md`, and
+`DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Give the EKS cluster the three objects its platform and workloads read and no production code writes.
+Each was verified absent by a producer search over `src/`, `charts/`, `pulumi/`, `docker/`, `share/` and
+`test/`, and each lost its host-side writer on 2026-08-02 in `f59ccfc` without a replacement.
+
+- **`secret/aws/cert-manager/aws/dns01`.** The AWS ACME step applies a materializer Job that reads this
+  object from the EKS Vault and waits 300 seconds. `mkAwsRunDns01IamParameters` has no caller, the
+  first-reconcile plan refuses the class, the Target Secret Worker's Vault policy excludes the identity on
+  every Vault, and `TargetWorkerAwsRunIssuanceNotImplemented` is declared and never constructed.
+- **`secret/acme/eab`.** The AWS arm skips the fixture seed. The home external-material ingress delivers
+  to the home cluster, and the Authority's retained-delivery boundary refuses any target but the one
+  registered agent. Until it exists, `zerossl-dns01` cannot become Ready on EKS under any DNS01 option;
+  before `f59ccfc` the host seeded it directly for every substrate.
+- **`secret/keycloak/smtp`.** The retained SES step checks the home Target Agent's readiness and delivers
+  the SMTP secret to the home sink only, so Keycloak on EKS finds nothing. Every other Vault path a
+  workload chart reads on EKS is generated inside the EKS Vault by the Broker's reconcile.
+- **The MinIO server and `mc` images.** `ensureMinioRuntime SubstrateAws MinioBootstrapPublic` makes the EKS
+  nodes pull `quay.io/minio/minio`, and the registry bucket Job and the gateway bootstrap Job pull
+  `quay.io/minio/mc`. Measured 2026-10-08: the upstream issues a pull token and then refuses the manifest and
+  tag-list requests with HTTP 401, for both repositories and for Docker Hub's `minio/minio` and `minio/mc` at the
+  exact pinned tags, so MinIO cannot start on a per-run cluster; and the in-cluster image mirror Job cannot
+  repair it, because it pulls the same two sources. Sprint `4.106` seeds the home cluster's containerd from the
+  host Docker cache; an EKS node has no such path.
+
+### Design
+
+The doctrine's route for the EAB and the SMTP secret is a rewrap by one-shot workers from the retained
+home Agent to each attested selected Agent. The pieces that exist are the closed rewrap endpoint for
+exactly those two schemas, the selected-Agent transport the public-edge TLS workflow already uses, and
+the SES target-sink registry. The piece that does not is the Authority's retained-delivery boundary, which
+holds one registered agent identity, and the host-bridged lane that carries the rewrap across the two
+clusters. The EKS Lifecycle Authority copy is the intent source for the EKS Agent's one-shot workers; the
+skeptic found that removing it would strand that lane, so Sprint `7.46` keeps it and this sprint decides.
+
+Operator decisions, written here so the work does not guess:
+
+- **D5, DNS01 on EKS.** (a) A workload IAM role for cert-manager in the `aws-eks` stack, bound to the
+  cert-manager ServiceAccount by the cluster's existing OIDC provider, with the Route 53 policy limited to
+  challenge TXT records under the substrate subzone; the AWS materializer, the `aws-cert-manager-run`
+  Vault role and the run-scoped credential class are then retired. This removes a static access key and
+  adds no control-plane trust edge, but it contradicts the sentences in four governed documents that
+  describe the run-scoped Vault generation, and the zone has to reach the stack. (b) Implement the
+  doctrine as written: issue the AWS-run credential through the Credential Provisioner and deliver it to
+  the EKS Agent. That needs a selected-Agent lane for credentials, a substrate-aware Target Secret Worker
+  policy and a new Provisioner entry. Recommended: (a).
+- **D6, EAB on EKS.** Register the canonical EKS agent identity as a second retained-delivery target and
+  add the host-bridged lane the TLS workflow already shapes. There is no alternative that keeps the EAB off
+  the host. Unmeasured: whether ZeroSSL accepts a fresh ACME account key for the same EAB on every per-run
+  cluster; if it treats an EAB pair as single use, every second AWS run fails registration.
+- **D7, SMTP on EKS.** The same lane, for the SES schema.
+  The premise that the home arm already delivers the SMTP secret to its own sink was wrong: nothing submitted
+  the Credential Provisioner permit that creates the family (Sprint `8.13` supplies the home harness's
+  submission). The EKS lane therefore also needs the family to exist in retained-home custody before any rewrap.
+- **D8, the MinIO source on EKS.** MinIO is the registry's own storage backend, so these two images cannot come
+  from the in-cluster registry. (a) Pin a maintained fork or a frozen legacy image that is still served; the
+  operator must vet its provenance and licence. Measured available to an anonymous client on 2026-10-08, and not
+  vetted: `docker.io/pgsty/minio`, `docker.io/bitnamilegacy/minio` and `docker.io/bitnamilegacy/minio-client`
+  (`cgr.dev/chainguard/minio` requires authentication). (b) Build the pinned MinIO release from source on the
+  operator host and publish it through the in-cluster crane pod the runtime image already uses, which needs a
+  filesystem-backed bootstrap registry for these two images alone to break the circularity. (c) Replace MinIO as
+  the registry and Authority object store, which is a design change of its own. A fresh host whose Docker cache
+  does not hold the two images has the same question for the home substrate.
+
+### Deliverables
+
+- Whichever route the operator chooses for D5, D6 and D7, with the producer search repeated and a test that
+  every Vault path the AWS materializers read is the target of a compiled production writer.
+- The AWS arm's ACME step either converges or is skipped for a stated reason, and never waits on an
+  object nothing writes.
+
+### Validation
+
+1. A producer-coverage case: for `SubstrateAws`, every Vault path a rendered materializer reads is
+   written by some compiled production route.
+2. The Vault policy rendered for the EKS Vault grants the worker only what the chosen route needs, and the
+   home policy is unchanged.
+3. A delivery request naming the canonical EKS agent is accepted when it is registered and refused when it
+   is not.
+4. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
+
+### Remaining Work
+
+The operator's decisions D5–D8, then the repairs.
+## Sprint 7.48: The Per-Run Subzone Could Not Be Deleted While It Held What The Run Wrote [✅ Done]
+
+**Status**: Done (2026-10-08). Phase `7` own-surface reopen (Standards A/N) on the AWS per-run subzone's
+teardown, registered before any behavior change. The audit that opened Sprint `5.52` found that the
+AWS-substrate public-edge reconcile writes its A record into the per-run subzone through the Provider and that
+nothing deletes it: the zone's Pulumi program declares no `forceDestroy`, the native stack-family reaper deleted
+the zone without pruning, and Route 53 refuses to delete a hosted zone that still holds a record other than its
+SOA and NS. By that reading the destroy of the zone fails on every healthy AWS aggregate, the cleanup run ends
+with a failed node, and the billable zone is left behind; the outcome is predicted from the code and Route 53's
+documented refusal, and no live record of it exists. The host-side prune that used to precede the destroy was
+deleted in `f59ccfc`.
+**Doctrine**: [AWS Integration Environment Doctrine](../documents/engineering/aws_integration_environment_doctrine.md)
+and [Lifecycle Reconciliation Doctrine](../documents/engineering/lifecycle_reconciliation_doctrine.md).
+**Implementation**: `pulumi/aws-eks-subzone/Main.yaml` and
+`src/Prodbox/Lifecycle/AwsNativeStackFamily.hs`.
+**Blocked by**: none.
+**Live-proof**: pending. Nothing here can be proven without the operator's `test-secrets.dhall` and a live
+EKS cluster.
+**Deployment qualification**: pending — invalidated: the sprint changes destructive cleanup.
+**Independent Validation**: fake-runner cases over the native reaper's call order and its refusals, and a case that
+reads the Pulumi program for the two lines it must carry; the destroy itself runs only against a live zone.
+**Docs to update**: `DEVELOPMENT_PLAN/system-components.md` and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Make the per-run subzone deletable after a run that wrote records into it.
+
+### Deliverables
+
+- The subzone's Pulumi zone is `forceDestroy`, so the stack destroy removes the records the run wrote. It
+  applies to a zone the program creates; a subzone made before this change keeps the value its state recorded.
+- The zone carries `prodbox.io/managed-by: prodbox`, the key the postflight tag sweep queries, so a leaked zone is
+  visible to the sweep that gates the cascade uninstall.
+- The native stack-family reaper, which deletes the zone when the checkpoint is gone, lists the zone's records
+  other than SOA and NS and deletes them before the zone. A failed or unreadable listing refuses to delete.
+
+### Validation
+
+1. A leftover A record in the subzone is deleted in a change batch after the parent delegation and before the
+   zone; each leftover record (an A record, a TXT challenge with a quoted value, an alias) travels whole; the
+   listing is the one call the prune may make (the zone it goes on to delete, as JSON, through the SOA/NS filter);
+   the zone delete is asserted by presence and by the zone id it names; an empty zone gets no record batch; an
+   unreadable listing, a failed one and one that is not an array never reach `delete-hosted-zone`, and a listing
+   that says the zone is already gone still lets the delete run; the zone's block in the Pulumi program carries
+   `forceDestroy: true` and both tags as declared lines.
+2. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
+
+### Current Validation State
+
+Landed code-locally and unit-covered (primary unit **5,517/5,517** with the landing and **5,522/5,522** after an
+adversarial review of it, **5,532/5,532** after a second review of the surrounding changes, `prodbox dev check`
+exits 0), together with Sprint `5.52`'s. The reviews tightened the reaper's cases: the zone delete is asserted by
+presence and by the zone id it names, the prune's listing is the one call the fake answers, each leftover record is
+checked to travel whole, the listing's failure arms are named, and the Pulumi program's lines are read. Nothing has
+run against a live system.
+
+### Known Limits
+
+These bound what the repair claims; none is sprint-owned code work.
+
+- A subzone made before this sprint keeps `forceDestroy: false` in its Pulumi state. Its destroy from a verified
+  checkpoint (`DestroyRegisteredStack`, a plain `pulumi destroy`) still refuses with `HostedZoneNotEmpty` while
+  the zone holds a record, because the native reaper, the only caller of the prune, is built only for the
+  destroy that has no usable checkpoint. Reconciling the stack once (`prodbox aws stack aws-subzone reconcile
+  --yes`) is expected to update the recorded value in place, after which the destroy empties the zone; that is
+  a runbook step for a zone that already exists, not code, and it has not been exercised live.
+- The Provider still has no desired-absent operation for the public A record: it can observe and ensure it and
+  cannot delete it, no registered family owns it, and a cleanup that stops at the zone cannot say the record
+  was removed. That row of the removal ledger is `Unowned` (Sprint `6.5` is its natural owner if the operator
+  assigns it; Sprint `4.50` owns only the home lane's equivalent); this sprint closes only its consequence for
+  the per-run subzone.
+- The prune's filter keeps every `NS` record, not only the apex's, so a child delegation inside the zone (nothing
+  in this repository writes one) would still make the zone delete fail closed with `HostedZoneNotEmpty`. The exact
+  form keeps only the apex SOA and NS.
+- The reaper does not wait for the prune's change batch to be `INSYNC` before it deletes the zone, as the
+  host-side prune it replaced did. Whether Route 53 can answer `HostedZoneNotEmpty` for a delete that is still
+  pending is not settled offline; if live shows it, a bounded `get-change` poll belongs between the two steps.
+- The prune is bounded by the zone id and name the ownership manifest admitted, not by a tag read-back of the
+  zone: a zone created before this sprint carries no `prodbox.io/managed-by` tag, so a tag requirement would
+  refuse exactly the zones the reaper exists for. A zone pinned by `aws_substrate.hosted_zone_id` to a foreign
+  zone of the same name is the case that rests on the manifest alone.
+
+### Remaining Work
+
+None. Live proof of the destroy against a zone that holds a real A record is a `Live-proof: pending` note and is
+non-blocking under Standard O.
+
 
 ## Documentation Requirements
 

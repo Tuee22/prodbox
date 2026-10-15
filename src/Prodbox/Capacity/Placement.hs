@@ -7,28 +7,40 @@ module Prodbox.Capacity.Placement
   , planNamespaceQuota
   , planNamespaceAdmission
   , planNamespaceLimits
+  , planForSubstrate
   )
 where
 
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
+import Numeric.Natural (Natural)
 import Prodbox.Capacity.Config
   ( ResourceEnvelope (..)
   , ResourcePlan (..)
   , ResourceVector (..)
   , WorkloadConcurrency (..)
+  , WorkloadDemandSpec (..)
   , WorkloadResourceProfile (..)
   , resourceVectorScale
   , resources
   )
-import Prodbox.Substrate (Substrate (..))
+import Prodbox.Substrate (Substrate, gatewayEmitterJournalMiB, gatewayNodeIdsForSubstrate)
 
+-- | The namespace a profile's workloads are installed into. The Keycloak
+-- workloads are a dependency of the @vscode@ root chart, and a dependency is
+-- installed into its root chart's namespace on every substrate, so they are
+-- placed with @vscode@ on every substrate. A standalone @keycloak@ namespace
+-- exists only as the dormant guardrail the home reconcile applies, and
+-- 'placedProfiles' falls back to the profile namespace for it.
+--
+-- This once merged only on the home substrate, on the premise that AWS kept
+-- Keycloak separate; the AWS restore set reconciles @vscode@ and never a
+-- @keycloak@ root, so the AWS @vscode@ quota omitted roughly 1,330m of CPU
+-- requests its own pods needed and admission rejected the @vscode@ Deployment.
 renderedNamespace :: Substrate -> Text -> Text
-renderedNamespace substrate namespace =
-  case substrate of
-    SubstrateHomeLocal
-      | namespace == "keycloak" -> "vscode"
-    _ -> namespace
+renderedNamespace _ namespace
+  | namespace == "keycloak" = "vscode"
+  | otherwise = namespace
 
 planNamespaceQuota :: Substrate -> Text -> ResourcePlan -> Either String ResourceVector
 planNamespaceQuota substrate namespace plan =
@@ -63,17 +75,49 @@ placedProfiles :: Substrate -> Text -> ResourcePlan -> [WorkloadResourceProfile]
 placedProfiles substrate namespace plan =
   case rendered of
     [] ->
-      [ profile
+      [ substrateProfile substrate profile
       | profile <- workload_profiles plan
       , profile_namespace profile == namespace
       ]
     profiles -> profiles
  where
   rendered =
-    [ profile
+    [ substrateProfile substrate profile
     | profile <- workload_profiles plan
     , renderedNamespace substrate (profile_namespace profile) == namespace
     ]
+
+-- | The profile as the substrate renders it. The gateway chart renders one
+-- StatefulSet per entry of 'gatewayNodeIdsForSubstrate', two on the home and
+-- three on EKS, whatever replica count the plan's profile states, and the AWS
+-- emitters each claim a retained-EBS journal the home ones do not. A quota
+-- derived from the plan's profile admitted two of the three AWS pods and left
+-- the journal claims out of @requests.storage@. The default plan states the
+-- home count, so the home numbers do not move.
+substrateProfile :: Substrate -> WorkloadResourceProfile -> WorkloadResourceProfile
+substrateProfile substrate profile
+  | profile_id profile == "gateway" =
+      profile
+        { replicas = gatewayEmitterCount substrate
+        , workload_demand =
+            (workload_demand profile)
+              { demanded_durable_storage_mib = gatewayEmitterJournalMiB substrate
+              }
+        }
+  | otherwise = profile
+
+-- | The plan as a substrate renders it, every profile through
+-- 'substrateProfile'. A claim that is sized from a profile's durable storage has
+-- to read it from here: the plan's own gateway profile states no durable storage
+-- at all, so a journal claim sized from the plan alone is refused as having "no
+-- durable PVC allocation" while the quota, which is placed through
+-- 'substrateProfile', admits it.
+planForSubstrate :: Substrate -> ResourcePlan -> ResourcePlan
+planForSubstrate substrate plan =
+  plan {workload_profiles = map (substrateProfile substrate) (workload_profiles plan)}
+
+gatewayEmitterCount :: Substrate -> Natural
+gatewayEmitterCount = fromIntegral . length . gatewayNodeIdsForSubstrate
 
 -- | Draws that may coexist at cluster scope. Steady workloads are independent
 -- allocations; mutually exclusive named windows contribute their componentwise

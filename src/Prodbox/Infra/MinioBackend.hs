@@ -20,6 +20,9 @@ module Prodbox.Infra.MinioBackend
   , localKubeconfigCandidates
   , firstReadableKubeconfigCandidate
   , resolveLocalKubeconfig
+  , ambientHomeKubeconfig
+  , homeClusterKubeconfigCandidates
+  , resolveHomeClusterKubeconfig
   , minioAwsEnv
   , parseDeletedMinioExportHostPath
   )
@@ -43,6 +46,7 @@ import Data.Maybe (maybeToList)
 import Data.Text qualified as Text
 import Prodbox.CLI.Output (writeOutputLine)
 import Prodbox.Error (AppError)
+import Prodbox.Infra.EphemeralKubeconfigPath (isEphemeralKubeconfigPath)
 import Prodbox.Minio.ObjectStoreTypes (defaultObjectStoreBucket, minioSigningRegion)
 import Prodbox.Minio.RootCredential (minioRootPassword, minioRootUser)
 import Prodbox.Result (Result (..))
@@ -119,9 +123,25 @@ resolveLocalKubeconfig = do
   kubeconfigEnv <- lookupEnv "KUBECONFIG"
   homeDir <- lookupEnv "HOME"
   readableCandidate <-
-    firstReadableKubeconfigCandidate (localKubeconfigCandidates homeDir kubeconfigEnv)
+    firstReadableKubeconfigCandidate
+      (localKubeconfigCandidates homeDir (ambientHomeKubeconfig kubeconfigEnv))
   pure
     (maybe (Left "no readable kubeconfig found for the local RKE2 cluster") Right readableCandidate)
+
+-- | The process's own @KUBECONFIG@ as a fallback for a client of the retained
+-- home cluster, unless it is a kubeconfig prodbox minted for another cluster.
+--
+-- An AWS-substrate run exports the EKS cluster's ephemeral kubeconfig there for
+-- the length of one bracket. With both home files unreadable, a home client that
+-- took it would address EKS (which runs its own Lifecycle Authority copy) and say
+-- nothing about the substitution. A kubeconfig the operator exported is not of
+-- that shape and still resolves, so a development host whose only kubeconfig is
+-- exported keeps working.
+ambientHomeKubeconfig :: Maybe FilePath -> Maybe FilePath
+ambientHomeKubeconfig ambient =
+  case ambient of
+    Just path | isEphemeralKubeconfigPath path -> Nothing
+    _ -> ambient
 
 -- | Candidate order for the home-local MinIO backend. The per-run Pulumi
 -- backend is anchored in the local RKE2 cluster, so callers must not inherit
@@ -131,6 +151,35 @@ localKubeconfigCandidates homeDir kubeconfigEnv =
   [localRke2KubeconfigPath]
     ++ maybe [] (\home -> [home </> ".kube" </> "config"]) homeDir
     ++ maybeToList kubeconfigEnv
+
+-- | The home cluster's kubeconfig candidates with the process's own
+-- @KUBECONFIG@ left out.
+--
+-- 'localKubeconfigCandidates' ends with the ambient value so that a
+-- development host whose only kubeconfig is exported still resolves. An AWS
+-- run exports the EKS cluster's kubeconfig there, so a caller that has to
+-- address the retained home cluster during one cannot take that fallback: with
+-- both home files unreadable it would observe the wrong cluster and say
+-- nothing about the substitution.
+homeClusterKubeconfigCandidates :: Maybe FilePath -> [FilePath]
+homeClusterKubeconfigCandidates homeDir = localKubeconfigCandidates homeDir Nothing
+
+resolveHomeClusterKubeconfig :: IO (Either String FilePath)
+resolveHomeClusterKubeconfig = do
+  homeDir <- lookupEnv "HOME"
+  readableCandidate <-
+    firstReadableKubeconfigCandidate (homeClusterKubeconfigCandidates homeDir)
+  pure
+    ( maybe
+        ( Left
+            ( "no readable kubeconfig found for the retained home cluster (checked "
+                ++ localRke2KubeconfigPath
+                ++ " and the user's ~/.kube/config; the process's own KUBECONFIG is not a home candidate)"
+            )
+        )
+        Right
+        readableCandidate
+    )
 
 firstReadableKubeconfigCandidate :: [FilePath] -> IO (Maybe FilePath)
 firstReadableKubeconfigCandidate [] = pure Nothing

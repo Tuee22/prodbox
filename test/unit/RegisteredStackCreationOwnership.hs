@@ -67,6 +67,7 @@ import Prodbox.Lifecycle.Teardown.AuditFieldOfView
   ( DeclaredAwsResource (declaredResourceName, declaredResourceTags)
   , parseProvisioningProgram
   )
+import Prodbox.Lifecycle.Teardown.CreateRecordCoverage (perRunProgramDirectories)
 import Prodbox.Lifecycle.Teardown.LegacyAdoptionPlan
   ( AdminLegacyAdoptionPermitRequest (..)
   , ConfirmedLegacyAdoptionPlan
@@ -362,9 +363,10 @@ registeredStackCreationOwnershipSuite =
         rendered `shouldSatisfy` ("Nothing was created" `isInfixOf`)
 
 -- | The three programs a per-run create makes resources with.  @aws-ses@ is
--- deliberately absent.
+-- deliberately absent. Projected from the create-record declaration, so the
+-- list cannot be hand-edited apart from the decision it states.
 perRunProvisioningPrograms :: [String]
-perRunProvisioningPrograms = ["aws-eks", "aws-eks-subzone", "aws-test"]
+perRunProvisioningPrograms = map Text.unpack perRunProgramDirectories
 
 overlongValue :: Text.Text
 overlongValue = Text.replicate (maximumProviderRunMarkerLength + 1) "x"

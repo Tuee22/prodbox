@@ -221,10 +221,7 @@ escapeCoverageRules =
   , EscapeCoverageRule
       { coverageRuleCategory = Tier0GenericAwsCredentialAggregate
       , coverageRuleSymbol = "resolveLifecycleProviderCredentials"
-      , coverageRuleSites =
-          [ "src/Prodbox/Settings.hs"
-          , "src/Prodbox/TestValidation.hs"
-          ]
+      , coverageRuleSites = ["src/Prodbox/Settings.hs"]
       , coverageRuleLedgerRow = "generic Tier-0 aws.* aggregate"
       }
   , EscapeCoverageRule

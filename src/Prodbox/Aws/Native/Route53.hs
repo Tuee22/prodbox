@@ -58,7 +58,7 @@ import Prodbox.Aws.Native.Wire
   , buildSignedRequest
   , performAwsRequest
   )
-import Prodbox.Aws.Native.Xml (extractAll, extractFirst, xmlEscape)
+import Prodbox.Aws.Native.Xml (extractAll, extractFirst, xmlEscape, xmlUnescape)
 import Prodbox.Aws.Region (awsGlobalServiceRegion)
 import Text.Read (readMaybe)
 
@@ -237,7 +237,7 @@ parseListResourceRecordSetsResponse requestedName requestedType body = do
     _ -> Left "Route53: bounded exact-record response returned multiple record sets"
  where
   parseExact record = do
-    returnedName <- decodeUtf8 <$> recordElement "Name" record
+    returnedName <- decodeUtf8 . xmlUnescape <$> recordElement "Name" record
     returnedType <- recordElement "Type" record >>= parseRecordType
     if normalizeRecordName returnedName /= normalizeRecordName requestedName
       || returnedType /= requestedType
@@ -255,7 +255,7 @@ parseListResourceRecordSetsResponse requestedName requestedType body = do
           note
             "Route53: exact record is missing <ResourceRecords>"
             (extractFirst "<ResourceRecords>" "</ResourceRecords>" record)
-        let values = map decodeUtf8 (extractAll "<Value>" "</Value>" valuesContainer)
+        let values = map (decodeUtf8 . xmlUnescape) (extractAll "<Value>" "</Value>" valuesContainer)
         if null values
           then Left "Route53: exact record has no resource-record values"
           else
@@ -444,7 +444,7 @@ parseScannedResourceRecordSetsResponse requestedType body = do
     "true" -> Right True
     "false" -> Right False
     _ -> Left "Route53: scan response has an invalid <IsTruncated>"
-  let nextName = decodeUtf8 <$> extractFirst "<NextRecordName>" "</NextRecordName>" body
+  let nextName = decodeUtf8 . xmlUnescape <$> extractFirst "<NextRecordName>" "</NextRecordName>" body
       nextType = decodeUtf8 <$> extractFirst "<NextRecordType>" "</NextRecordType>" body
   if truncated && (nextName == Nothing || nextType == Nothing)
     then Left "Route53: truncated scan response carries no continuation cursor"
@@ -457,7 +457,7 @@ parseScannedResourceRecordSetsResponse requestedType body = do
       }
  where
   parseScanned record = do
-    returnedName <- decodeUtf8 <$> recordElement "Name" record
+    returnedName <- decodeUtf8 . xmlUnescape <$> recordElement "Name" record
     returnedType <- recordElement "Type" record >>= parseRecordType
     if returnedType /= requestedType
       then Right Nothing
@@ -474,7 +474,7 @@ parseScannedResourceRecordSetsResponse requestedType body = do
           note
             "Route53: scanned record is missing <ResourceRecords>"
             (extractFirst "<ResourceRecords>" "</ResourceRecords>" record)
-        let values = map decodeUtf8 (extractAll "<Value>" "</Value>" valuesContainer)
+        let values = map (decodeUtf8 . xmlUnescape) (extractAll "<Value>" "</Value>" valuesContainer)
         if null values
           then Left "Route53: scanned record has no resource-record values"
           else

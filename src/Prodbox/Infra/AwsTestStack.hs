@@ -8,6 +8,7 @@ module Prodbox.Infra.AwsTestStack
   ( AwsTestNode (..)
   , AwsTestStackSnapshot (..)
   , awsTestStackName
+  , awsTestProviderReceiptLabel
   , ensureAwsTestStackResources
   , ensureAwsTestStackResourcesWithAuthentication
   , destroyAwsTestStack
@@ -98,6 +99,11 @@ data AwsTestStackSnapshot = AwsTestStackSnapshot
   }
   deriving (Eq, Show)
 
+-- | What @aws stack test reconcile@ prints before the Provider receipt. One
+-- value, read by the producer and by the validations that assert the output.
+awsTestProviderReceiptLabel :: String
+awsTestProviderReceiptLabel = "AWS test Provider receipt: "
+
 ensureAwsTestStackResources :: FilePath -> IO ExitCode
 ensureAwsTestStackResources repoRoot =
   withOperatorLifecycleAuthority repoRoot $ \authentication ->
@@ -117,7 +123,7 @@ ensureAwsTestStackResourcesWithAuthentication authentication repoRoot = do
         authentication
         repoRoot
         "operator-reconcile-aws-test"
-        "AWS test Provider receipt: "
+        awsTestProviderReceiptLabel
         revision
         (ReconcileRegisteredStack ref revision config)
     (refResult, revisionResult, providerConfigResult) ->

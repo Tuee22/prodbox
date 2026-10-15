@@ -21,6 +21,7 @@ module Prodbox.Lifecycle.Teardown.OwnershipManifest
   , registeredStackClusters
   , controllerOwnedFamiliesWithoutRegisteredStack
   , projectRegisteredOwnershipEdge
+  , initialManifestEntries
   , WriteAheadManifestIntent
   , mkWriteAheadManifestIntent
   , initialWriteAheadManifestWrite

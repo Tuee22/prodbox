@@ -17,6 +17,7 @@ module Prodbox.ControlPlane.AuthorityProviderEndpoint
   , providerDispatchFormatVersion
   , authorityProviderDispatchAuthenticatedHandler
   , AuthorityProviderClientError (..)
+  , renderAuthorityProviderClientError
   , AuthorityProviderResponseObservation (..)
   , AuthorityProviderResponseShapeObservation (..)
   , AuthorityProviderResponseSizeObservation (..)
@@ -588,6 +589,27 @@ data AuthorityProviderClientError
   | AuthorityProviderResponseStatusMismatch !Int
   | AuthorityProviderRemoteRefused !Int !Text
   deriving stock (Eq, Show)
+
+-- | Operator-facing text for a Provider dispatch failure. A refusal's detail
+-- is already rendered text and is carried unchanged; the structural arms hold
+-- typed values with no free-form text, so 'show' is exact for them.
+renderAuthorityProviderClientError :: AuthorityProviderClientError -> Text
+renderAuthorityProviderClientError err = case err of
+  AuthorityProviderReplayOutcomeNotRetained operation ->
+    "the Authority replayed an already-settled operation and retained no outcome kind: "
+      <> Text.pack (show operation)
+  AuthorityProviderTransportFailed detail ->
+    "Authority Provider dispatch transport failed: " <> Text.pack (show detail)
+  AuthorityProviderResponseInvalid codecError observation ->
+    "Authority Provider dispatch response invalid: "
+      <> Text.pack (show codecError)
+      <> " ("
+      <> renderAuthorityProviderResponseObservation observation
+      <> ")"
+  AuthorityProviderResponseStatusMismatch status ->
+    "Authority Provider dispatch response status mismatch: HTTP " <> Text.pack (show status)
+  AuthorityProviderRemoteRefused status detail ->
+    "Authority refused the Provider dispatch (HTTP " <> Text.pack (show status) <> "): " <> detail
 
 -- | Value-free classification of a Provider-dispatch HTTP response. It is
 -- diagnostic only: recognizing another canonical envelope or a known static

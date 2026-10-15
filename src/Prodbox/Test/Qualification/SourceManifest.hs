@@ -10,6 +10,7 @@
 module Prodbox.Test.Qualification.SourceManifest
   ( SourceManifestCaptureError (..)
   , captureSourceIdentity
+  , captureSourceIdentityPair
   , captureCommittedSourceIdentity
   )
 where
@@ -28,14 +29,17 @@ import Prodbox.Subprocess
   , captureSubprocessResult
   )
 import Prodbox.Test.Qualification.SourceIdentity
-  ( ManifestFileType (..)
+  ( GitHead
+  , ManifestFileType (..)
   , SourceCandidate (..)
   , SourceIdentity
   , SourceIdentityError
   , SourcePathDisposition (..)
+  , SourceScope (..)
   , WorktreeState (..)
   , classifySourcePath
   , mkGitHead
+  , mkScopedSourceIdentity
   , mkSourceIdentity
   )
 import System.Exit (ExitCode (..))
@@ -65,6 +69,41 @@ captureSourceIdentity
   -> [Text]
   -> IO (Either SourceManifestCaptureError SourceIdentity)
 captureSourceIdentity repoRoot configuredSecretRoots = do
+  inputs <- captureWorktreeInputs repoRoot configuredSecretRoots
+  pure (inputs >>= identityOver FullSurface configuredSecretRoots)
+
+-- | The full-surface and executable-surface identities of one capture: the
+-- worktree is read once, so the two describe the same bytes and a file that
+-- changes between two reads cannot make them disagree about what they saw.
+captureSourceIdentityPair
+  :: FilePath
+  -> [Text]
+  -> IO (Either SourceManifestCaptureError (SourceIdentity, SourceIdentity))
+captureSourceIdentityPair repoRoot configuredSecretRoots = do
+  inputs <- captureWorktreeInputs repoRoot configuredSecretRoots
+  pure $ do
+    captured <- inputs
+    full <- identityOver FullSurface configuredSecretRoots captured
+    executable <- identityOver ExecutableSurface configuredSecretRoots captured
+    Right (full, executable)
+
+identityOver
+  :: SourceScope
+  -> [Text]
+  -> (GitHead, WorktreeState, [SourceCandidate])
+  -> Either SourceManifestCaptureError SourceIdentity
+identityOver scope configuredSecretRoots (gitHead, worktree, candidates) =
+  either
+    (Left . SourceManifestIdentityRejected)
+    Right
+    (mkScopedSourceIdentity scope gitHead worktree configuredSecretRoots candidates)
+
+-- | The head, the dirty bit and the candidate bytes of the worktree.
+captureWorktreeInputs
+  :: FilePath
+  -> [Text]
+  -> IO (Either SourceManifestCaptureError (GitHead, WorktreeState, [SourceCandidate]))
+captureWorktreeInputs repoRoot configuredSecretRoots = do
   headResult <- runGit repoRoot ["rev-parse", "--verify", "HEAD"]
   statusResult <- runGit repoRoot ["status", "--porcelain=v1", "--untracked-files=all"]
   pathsResult <- runGit repoRoot ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]
@@ -80,10 +119,7 @@ captureSourceIdentity repoRoot configuredSecretRoots = do
           pure $ do
             candidates <- candidatesResult
             let worktree = if null rawStatus then WorktreeClean else WorktreeDirty
-            either
-              (Left . SourceManifestIdentityRejected)
-              Right
-              (mkSourceIdentity gitHead worktree configuredSecretRoots candidates)
+            Right (gitHead, worktree, candidates)
     _ ->
       pure
         ( Left

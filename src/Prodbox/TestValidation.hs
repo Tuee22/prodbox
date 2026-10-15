@@ -5,9 +5,11 @@ module Prodbox.TestValidation
   , cascadeQualificationCycleVariable
   , NativeValidationKubeconfigMode (..)
   , nativeValidationKubeconfigMode
+  , overlayKubeconfig
   , namespaceResourceQuotaHardFields
   , namespaceLimitRangeContainerFields
   , gatewayRuntimeExpectedReplicas
+  , gatewayRuntimeKubeconfigRetryDelayMicroseconds
   , runNativeValidationWithGatewayStability
   , GatewayRuntimeStabilityRecorder
   , GatewayRuntimeStabilityMonitor
@@ -35,6 +37,7 @@ module Prodbox.TestValidation
   , sealedVaultAuditReport
   , sealedVaultForbiddenPatterns
   , resourceGuardrailReport
+  , quantitiesEquivalent
   , volumeRebindReport
   , verifyAwsTestSshReachability
   , assertInviteOidcClaims
@@ -48,6 +51,14 @@ module Prodbox.TestValidation
   , daemonBootstrapHostRootTokenPatterns
   , renderGatewayValidationConfigDhall
   , demoOidcSessionValidationAgentManifest
+  , gatewayEmitterStatefulSets
+  , sealStateFromVaultStatusOutput
+  , observedBrokerRouteLine
+  , keycloakInviteRecipient
+  , retryWhileGatewayDnsPending
+  , InviteMailObservation (..)
+  , parseInviteMailEvidence
+  , parseValidationZoneEvidence
   )
 where
 
@@ -74,7 +85,7 @@ import Control.Exception
   , finally
   , try
   )
-import Control.Monad (filterM, foldM, forM, void, when)
+import Control.Monad (foldM, void, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -99,7 +110,7 @@ import Data.Foldable (asum)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (intercalate, isInfixOf, isPrefixOf, isSuffixOf, nub, sort)
 import Data.Map.Strict qualified as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, listToMaybe)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
@@ -127,8 +138,10 @@ import Numeric.Natural (Natural)
 import Prodbox.Aws
   ( runAwsIamHarnessInspect
   )
-import Prodbox.AwsEnvironment
-  ( overlayAwsCredentials
+import Prodbox.Bootstrap.Broker.Client (BrokerEndpoint, brokerRouteUrl)
+import Prodbox.Bootstrap.Broker.PortForward
+  ( renderBrokerHostConnectionError
+  , withBrokerHostConnection
   )
 import Prodbox.Bootstrap.Broker.Routes
   ( BrokerRoute (..)
@@ -146,8 +159,10 @@ import Prodbox.CLI.Output
   )
 import Prodbox.CLI.Rke2
   ( RetainedStorageInventoryEntry (..)
+  , resolveRetainedManualPvRoot
   , retainedStorageInventoryEntries
   )
+import Prodbox.CLI.Vault (brokerHostConnection, freshVaultIdempotencyKey)
 import Prodbox.Capacity.Config qualified as Capacity
 import Prodbox.Capacity.MeasuredProfile qualified as MeasuredProfile
 import Prodbox.Capacity.Placement qualified as Placement
@@ -155,7 +170,6 @@ import Prodbox.Capacity.Render qualified as CapacityRender
 import Prodbox.Cbor
   ( CborPayload (..)
   )
-import Prodbox.CheckCode (listRepoOwnedPaths)
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.ControlPlane.Capacity qualified as EmitterCapacity
 import Prodbox.ControlPlane.Deadline qualified as Deadline
@@ -193,22 +207,25 @@ import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
 import Prodbox.Infra.StackOutputs (StackName (..))
 import Prodbox.Keycloak.CredentialSetupForm qualified as CredentialSetupForm
-import Prodbox.Keycloak.Email qualified
-import Prodbox.Lib.Storage
-  ( defaultChartDataRootRelative
-  , testManualPvHostRootEnv
-  )
-import Prodbox.Lifecycle.CleanupRunEntry
-  ( lifecycleCleanupResultSucceeded
-  )
+import Prodbox.Lib.Storage (testManualPvHostRootEnv)
 import Prodbox.Lifecycle.LiveResidue
   ( awsEksTestStackName
   , awsTestStackName
   , fetchPerRunStackOutputs
   )
+import Prodbox.Lifecycle.OwnedResourceTags (dnsValidationHostedZoneNamePrefix)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
-  ( ProviderIntent (ObserveProviderReadiness)
+  ( ProviderIntent
+      ( EnsureValidationHostedZone
+      , ObserveProviderReadiness
+      , ObservePublicARecord
+      , ObserveSesInviteMail
+      , ReapSesInviteMail
+      , ReapValidationHostedZones
+      , ReconcilePublicARecord
+      )
   , ProviderReadinessProbe (ProviderReadinessRoute53Zone)
+  , mkPublicARecordRef
   )
 import Prodbox.Lifecycle.ResourceClass
   ( LifecycleClass (..)
@@ -223,6 +240,7 @@ import Prodbox.PublicEdge
   ( PublicEdgeReadinessObservation (..)
   , PublicEdgeRoute (..)
   , classifyPublicEdgeReadinessObservation
+  , gatewayDnsWriteAuthorityNotReadyDiagnostic
   , publicEdgeReadyClassification
   , publicFqdn
   , publicRoutePathPrefix
@@ -276,15 +294,12 @@ import Prodbox.Pulsar.TopicResidue
   , topicDiscover
   )
 import Prodbox.Result (Result (..))
-import Prodbox.Ses.Capture qualified
 import Prodbox.Settings
   ( ValidatedCoordinates (..)
   , ValidatedServedHost (..)
   , ValidatedSettings (..)
-  , aws
   , homeZoneIdTextForRendering
   , requireHomeZoneId
-  , resolveLifecycleProviderCredentials
   , validateAndLoadSettings
   , validatedCoordinates
   )
@@ -293,6 +308,7 @@ import Prodbox.Settings.Coordinate
   ( awsRegionText
   , dnsTtlSeconds
   , route53ZoneIdText
+  , s3BucketNameText
   )
 import Prodbox.Subprocess
   ( BackgroundProcess
@@ -307,19 +323,32 @@ import Prodbox.Subprocess
   , startBackgroundProcess
   , stopBackgroundProcess
   )
-import Prodbox.Substrate (Substrate (..), substrateId)
+import Prodbox.Substrate (Substrate (..), gatewayNodeIdsForSubstrate, substrateId)
 import Prodbox.Test.CascadeQualification
-  ( cascadeQualificationEvidenceDigest
+  ( cascadeQualificationAttempt
+  , cascadeQualificationCycleOutcome
+  , cascadeQualificationCyclePassed
+  , cascadeQualificationEvidenceDigest
   , cascadeQualificationEvidencePath
+  , cascadeQualificationIdentityKey
+  , cascadeQualificationLedgerEntries
+  , cascadeQualificationLedgerTip
   , cascadeQualificationLifecycleResult
   , cascadeQualificationRunId
   , runCascadeQualificationCandidate
+  )
+import Prodbox.Test.CascadeQualificationReceipt
+  ( ReceiptReport (..)
+  , ledgerScanMode
+  , ledgerSummaryLines
+  , runCascadeQualificationReceipt
   )
 import Prodbox.Test.CertificateScopeServing
   ( renderCertificateServingDefect
   , validatePresentedDnsSans
   )
 import Prodbox.Test.CleanRoomHandoff qualified as CleanRoom
+import Prodbox.Test.CleanRoomScan (productionSources)
 import Prodbox.Test.CounterexampleValidation
   ( runControlPlaneCounterexampleValidation
   , runCreateInterruptedValidation
@@ -347,7 +376,6 @@ import Prodbox.UsersAdmin qualified
 import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
-  , doesFileExist
   , removeFile
   , renameFile
   )
@@ -712,13 +740,13 @@ gatewayRuntimeKubectlDeadlineMicroseconds :: Int
 gatewayRuntimeKubectlDeadlineMicroseconds = 15000000
 
 newGatewayRuntimeStabilityRecorder
-  :: FilePath -> IO (Either String GatewayRuntimeStabilityRecorder)
-newGatewayRuntimeStabilityRecorder repoRoot = do
+  :: Substrate -> FilePath -> IO (Either String GatewayRuntimeStabilityRecorder)
+newGatewayRuntimeStabilityRecorder substrate repoRoot = do
   settingsResult <- validateAndLoadSettings repoRoot
   case settingsResult of
     Left err -> pure (Left ("load settings for gateway runtime stability: " ++ err))
     Right settings ->
-      case gatewayRuntimeStabilityPolicy settings of
+      case gatewayRuntimeStabilityPolicy substrate settings of
         Left err -> pure (Left err)
         Right policy -> do
           stateVar <- newMVar (initialGatewayStabilityState policy)
@@ -792,11 +820,13 @@ gatewayRuntimeAwsMonitorLoop
   -> MVar ()
   -> IO ()
 gatewayRuntimeAwsMonitorLoop repoRoot monitor firstObservationComplete =
-  go Nothing
+  go Nothing 0
  where
-  go maybeRefreshAcknowledgement = do
-    nextRefreshAcknowledgement <-
-      AwsEks.withEksKubeconfig repoRoot $ \kubeconfigPath -> do
+  recorder = gatewayRuntimeMonitorRecorder monitor
+
+  go maybeRefreshAcknowledgement refusedAttempts = do
+    scoped <-
+      AwsEks.withEksKubeconfigResult repoRoot $ \kubeconfigPath -> do
         baseEnvironment <- getEnvironment
         let monitorEnvironment =
               ("KUBECONFIG", kubeconfigPath)
@@ -806,7 +836,72 @@ gatewayRuntimeAwsMonitorLoop repoRoot monitor firstObservationComplete =
           (GatewayRuntimeKubectlContext repoRoot (Just monitorEnvironment))
           monitor
           firstObservationComplete
-    go nextRefreshAcknowledgement
+    case scoped of
+      Right nextRefreshAcknowledgement -> go nextRefreshAcknowledgement 0
+      Left refusal -> do
+        -- The worker used to raise an untyped error here, which `link` carried
+        -- into the suite and aborted it mid-flight. Record the refusal in the
+        -- fold, whose absorbing outcome fails the final gate with this reason,
+        -- release whoever waits on the first observation, a refresh the worker
+        -- already took, and a refresh requested while no bracket can be opened
+        -- (the request is read only inside a bracket, so without this it would
+        -- wait for one that may never open), and keep the worker alive so those
+        -- handshakes still complete.
+        --
+        -- The refusal is recorded only while the monitor is enabled and under the
+        -- observation lock, the way a sample is: a planned pause means "do not
+        -- judge the gateway now", and the absorbing outcome cannot be cleared by a
+        -- later healthy sample. A refusal that outlasts the pause is recorded by
+        -- the next attempt. Each attempt opens a bracket, which mints credentials,
+        -- so the retry backs off rather than repeating at the sample rate for the
+        -- length of the suite.
+        recordRefusalWhileObserving refusal
+        mapM_ (`putMVar` ()) maybeRefreshAcknowledgement
+        pendingRefresh <-
+          modifyMVar
+            (gatewayRuntimeMonitorRefreshRequest monitor)
+            (\request -> pure (Nothing, request))
+        mapM_ (`putMVar` ()) pendingRefresh
+        void (tryPutMVar firstObservationComplete ())
+        interruptibleRetryDelay (gatewayRuntimeKubeconfigRetryDelayMicroseconds refusedAttempts)
+        go Nothing (refusedAttempts + 1)
+
+  -- The backoff sleeps in sample-interval slices and ends early when a refresh is
+  -- requested, so a refresh does not wait out a thirty-second delay for its turn.
+  interruptibleRetryDelay remaining
+    | remaining <= 0 = pure ()
+    | otherwise = do
+        pending <- readMVar (gatewayRuntimeMonitorRefreshRequest monitor)
+        case pending of
+          Just _ -> pure ()
+          Nothing -> do
+            threadDelay (min remaining gatewayRuntimeSampleDelayMicroseconds)
+            interruptibleRetryDelay (remaining - gatewayRuntimeSampleDelayMicroseconds)
+
+  recordRefusalWhileObserving refusal =
+    withMVar (gatewayRuntimeObservationLock recorder) $ \() -> do
+      enabled <- readMVar (gatewayRuntimeMonitorEnabled monitor)
+      when enabled $
+        void
+          ( recordGatewayRuntimeFailure
+              recorder
+              GatewayPodsPayload
+              (AwsEks.renderEksKubeconfigError refusal)
+          )
+
+-- | The delay before the AWS monitor next tries to open a kubeconfig bracket
+-- after it was refused one: the sample interval, doubling per consecutive
+-- refusal, capped. A persistent refusal (the stack gone, the Authority sealed)
+-- costs a credential mint per attempt, and the first refusal already carries
+-- everything a thousand more would.
+gatewayRuntimeKubeconfigRetryDelayMicroseconds :: Int -> Int
+gatewayRuntimeKubeconfigRetryDelayMicroseconds refusedAttempts =
+  min
+    gatewayRuntimeKubeconfigRetryCeilingMicroseconds
+    (gatewayRuntimeSampleDelayMicroseconds * 2 ^ min 5 (max 0 refusedAttempts))
+
+gatewayRuntimeKubeconfigRetryCeilingMicroseconds :: Int
+gatewayRuntimeKubeconfigRetryCeilingMicroseconds = 30000000
 
 gatewayRuntimeMonitorLoop
   :: GatewayRuntimeKubectlContext
@@ -867,30 +962,30 @@ resumeGatewayRuntimeStabilityMonitor monitor =
     (const (pure True))
 
 gatewayRuntimeStabilityPolicy
-  :: ValidatedSettings
+  :: Substrate
+  -> ValidatedSettings
   -> Either String GatewayStabilityPolicy
-gatewayRuntimeStabilityPolicy settings = do
+gatewayRuntimeStabilityPolicy substrate settings = do
   let capacitySection =
         Prodbox.Settings.capacity
           (Prodbox.Settings.validatedConfig settings)
   runtimePlan <- Capacity.runtimeMemoryPlanForProfile capacitySection "gateway"
-  expectedReplicas <- gatewayRuntimeExpectedReplicas (Capacity.resource_plan capacitySection)
   Bifunctor.first
     (("gateway runtime stability policy: " ++) . show)
     ( mkGatewayStabilityPolicy
-        expectedReplicas
+        (gatewayRuntimeExpectedReplicas substrate)
         gatewayRuntimeRequiredStableSamples
         runtimePlan
     )
 
-gatewayRuntimeExpectedReplicas :: Capacity.ResourcePlan -> Either String Natural
-gatewayRuntimeExpectedReplicas resourcePlan =
-  case filter
-    ((== "gateway") . Capacity.profile_id)
-    (Capacity.workload_profiles resourcePlan) of
-    [profile] -> Right (Capacity.replicas profile)
-    [] -> Left "capacity.resource_plan is missing the gateway workload profile"
-    _ -> Left "capacity.resource_plan contains duplicate gateway workload profiles"
+-- | The gateway pods a substrate runs, which is what the stable-observation
+-- fold must see in full before it counts a sample. It is the number of
+-- StatefulSets the gateway chart renders, not the capacity plan's gateway
+-- replica count: the plan models the two home emitters, and EKS renders
+-- three, so a fold that waited for the plan's count could never complete
+-- there.
+gatewayRuntimeExpectedReplicas :: Substrate -> Natural
+gatewayRuntimeExpectedReplicas = fromIntegral . length . gatewayNodeIdsForSubstrate
 
 resetGatewayRuntimeStabilityHealthyWindow
   :: GatewayRuntimeStabilityRecorder -> IO ()
@@ -945,7 +1040,7 @@ runGatewayRuntimeStabilityGate substrate repoRoot recorder = do
 -- cgroup counters plus daemon-owned heap/object-store telemetry.
 recordGatewayMeasuredProfile :: Substrate -> FilePath -> IO ExitCode
 recordGatewayMeasuredProfile substrate repoRoot = do
-  recorderResult <- newGatewayRuntimeStabilityRecorder repoRoot
+  recorderResult <- newGatewayRuntimeStabilityRecorder substrate repoRoot
   case recorderResult of
     Left err -> failWith err
     Right recorder -> do
@@ -1361,6 +1456,14 @@ runNativeValidationWithGatewayStability maybeGatewayStability substrate repoRoot
     case nativeValidationKubeconfigMode validation of
       ValidationUsesSelectedSubstrateKubeconfig ->
         withSubstrateKubeconfigEnv repoRoot substrate runSubstrateValidation
+      ValidationUsesHomeCluster -> do
+        when (substrate /= SubstrateHomeLocal) $
+          writeDiagnosticLine
+            ( "[validation="
+                ++ nativeValidationId validation
+                ++ "] addresses the retained home cluster, whichever substrate is selected"
+            )
+        runSubstrateValidation
       ValidationOwnsKubeconfigScopes -> runSubstrateValidation
   writeDiagnosticLine
     ( "[validation="
@@ -1384,14 +1487,14 @@ runNativeValidationWithGatewayStability maybeGatewayStability substrate repoRoot
         assertProducedOutputContainsAll
           "aws-iam harness inspection"
           (runAwsIamHarnessInspect repoRoot)
-          ["IAM_USER=prodbox", "CONFIG_PATH="]
+          ["PROVIDER_ROLE=", "IAM_PRINCIPAL=assumed-role", "CONFIG_PATH="]
       ValidationAwsEks ->
         runSequentially
           [ assertNativeCommandOutputContainsAll
               repoRoot
               environment
               ["aws", "stack", "eks", "reconcile"]
-              ["STACK=" ++ AwsEks.awsEksTestStackName, "CLUSTER_NAME=", "NODE_GROUP_NAME="]
+              [AwsEks.awsEksProviderReceiptLabel ++ "sha256:"]
           , verifyAwsEksSnapshot repoRoot
           ]
       ValidationPulumi ->
@@ -1400,7 +1503,7 @@ runNativeValidationWithGatewayStability maybeGatewayStability substrate repoRoot
               repoRoot
               environment
               ["aws", "stack", "test", "reconcile"]
-              ["STACK=" ++ AwsTest.awsTestStackName, "NODE_COUNT=3"]
+              [AwsTest.awsTestProviderReceiptLabel ++ "sha256:"]
           , verifyAwsTestSnapshot repoRoot
           ]
       ValidationHaRke2Aws ->
@@ -1409,6 +1512,7 @@ runNativeValidationWithGatewayStability maybeGatewayStability substrate repoRoot
       ValidationGatewayPods ->
         runGatewayPodsValidation
           repoRoot
+          substrate
           environment
           maybeGatewayStability
       ValidationControlPlaneCounterexample -> runControlPlaneCounterexampleValidation repoRoot
@@ -1418,6 +1522,8 @@ runNativeValidationWithGatewayStability maybeGatewayStability substrate repoRoot
       ValidationCleanRoomHandoff -> runCleanRoomHandoffValidation repoRoot
       ValidationCascadeQualification ->
         runCascadeQualificationValidation repoRoot environment substrate
+      ValidationCascadeQualificationReceipt ->
+        runCascadeQualificationReceiptValidation repoRoot environment
       ValidationChartsPlatform ->
         runSequentially
           [ assertNativeCommandOutputContainsAll
@@ -1432,9 +1538,9 @@ runNativeValidationWithGatewayStability maybeGatewayStability substrate repoRoot
               ["CHART_STATUS", "NAME=vscode"]
           ]
       ValidationResourceGuardrails ->
-        runResourceGuardrailsValidation repoRoot
+        runResourceGuardrailsValidation repoRoot substrate
       ValidationDaemonBootstrap ->
-        runDaemonBootstrapValidation
+        runDaemonBootstrapValidation repoRoot
       ValidationPulsarBroker ->
         runPulsarBrokerValidation repoRoot environment substrate
       ValidationChartsStorage ->
@@ -1493,8 +1599,25 @@ runNativeValidationWithGatewayStability maybeGatewayStability substrate repoRoot
 -- RKE2, while its cloud nodes acquire operation-bound ephemeral EKS clients
 -- through the Provider.  An outer EKS kubeconfig is both redundant and an
 -- invalid prerequisite when recovery starts from a retired checkpoint.
+--
+-- The @aws-eks@ validation is the one that creates the EKS checkpoint a
+-- suite-scoped kubeconfig is projected from, and it runs no kubectl against
+-- the cluster: it reconciles through the Authority and reads the retained
+-- outputs back.  Wrapping it would ask for the checkpoint it is about to
+-- create.
+--
+-- Three validations address the retained home cluster whichever substrate is
+-- selected: their body is a chain of @prodbox@ children and probes that have no
+-- substrate argument and are spawned with the environment captured before the
+-- run, so wrapping them in the EKS kubeconfig changed nothing they touched while
+-- making the declaration lie. @charts-platform@ and @charts-storage@ list,
+-- inspect and delete the home vscode release, and @gateway-daemon@ reads the home
+-- orders, forwards to a home daemon and expects the home DNS write gate. Naming
+-- the home as their target says what they prove on an AWS run; it does not
+-- extend them to EKS.
 data NativeValidationKubeconfigMode
   = ValidationUsesSelectedSubstrateKubeconfig
+  | ValidationUsesHomeCluster
   | ValidationOwnsKubeconfigScopes
   deriving (Eq, Show)
 
@@ -1503,7 +1626,58 @@ nativeValidationKubeconfigMode
 nativeValidationKubeconfigMode validation =
   case validation of
     ValidationCascadeQualification -> ValidationOwnsKubeconfigScopes
-    _ -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationAwsEks -> ValidationOwnsKubeconfigScopes
+    ValidationChartsPlatform -> ValidationUsesHomeCluster
+    ValidationChartsStorage -> ValidationUsesHomeCluster
+    ValidationGatewayDaemon -> ValidationUsesHomeCluster
+    -- Every other validation is listed, with no wildcard, so a validation added
+    -- to the closed set cannot compile until someone decides which cluster it
+    -- addresses; a default would take the selected substrate without anyone
+    -- having asked.
+    ValidationChartsVscode -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationChartsApi -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationChartsWebsocket -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationAdminRoutes -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationPublicDns -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationDnsAws -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationAwsIam -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationPulumi -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationHaRke2Aws -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationGatewayPods -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationControlPlaneCounterexample -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationTeardownRecovery -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationCreateInterrupted -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationCertificateScope -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationCleanRoomHandoff -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationCascadeQualificationReceipt -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationResourceGuardrails -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationDaemonBootstrap -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationPulsarBroker -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationEksVolumeRebind -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationLifecycle -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationKeycloakInvite -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationSealedVault -> ValidationUsesSelectedSubstrateKubeconfig
+
+-- | The environment a child process needs to address the substrate a validation
+-- runs against.
+--
+-- The scope wrapper selects the EKS cluster by setting the process's
+-- @KUBECONFIG@, which only reaches subprocesses spawned without an explicit
+-- environment. A child spawned with the list captured before the run carries
+-- no such entry and addressed the home cluster. For the AWS substrate this
+-- overlays the process's current value; the home substrate keeps the captured
+-- list, which is what selects the home cluster.
+selectedSubstrateEnvironment :: Substrate -> [(String, String)] -> IO [(String, String)]
+selectedSubstrateEnvironment substrate environment =
+  case substrate of
+    SubstrateHomeLocal -> pure environment
+    SubstrateAws -> (`overlayKubeconfig` environment) <$> lookupEnv "KUBECONFIG"
+
+overlayKubeconfig :: Maybe FilePath -> [(String, String)] -> [(String, String)]
+overlayKubeconfig scoped environment =
+  case scoped of
+    Nothing -> environment
+    Just path -> ("KUBECONFIG", path) : filter ((/= "KUBECONFIG") . fst) environment
 
 -- | Wrap a validation action with substrate-aware `KUBECONFIG` plus AWS_*
 -- credentials for the AWS substrate.
@@ -1526,14 +1700,17 @@ withSubstrateKubeconfigResult
 withSubstrateKubeconfigResult repoRoot substrate action =
   case substrate of
     SubstrateHomeLocal -> Right <$> action
-    SubstrateAws ->
-      AwsEks.withEksKubeconfig repoRoot $ \kubeconfigPath -> do
-        previousValue <- lookupEnv "KUBECONFIG"
-        Right
-          <$> bracket_
+    SubstrateAws -> do
+      -- A refused kubeconfig is a typed result the callers already handle, where
+      -- it used to be an `error` that bypassed their `Left` arms.
+      scoped <-
+        AwsEks.withEksKubeconfigResult repoRoot $ \kubeconfigPath -> do
+          previousValue <- lookupEnv "KUBECONFIG"
+          bracket_
             (setEnv "KUBECONFIG" kubeconfigPath)
             (restoreOne (("KUBECONFIG", kubeconfigPath), previousValue))
             action
+      pure (Bifunctor.first AwsEks.renderEksKubeconfigError scoped)
  where
   restoreOne :: ((String, String), Maybe String) -> IO ()
   restoreOne ((name, _), Nothing) = unsetEnv name
@@ -1802,8 +1979,9 @@ runSealedVaultValidation repoRoot environment = do
         Left err -> failWith err
         Right statusOutput -> do
           let statusText = processStdout statusOutput ++ processStderr statusOutput
-              startedUnsealed = "sealed=False" `isInfixOf` statusText
-              startedSealed = "sealed=True" `isInfixOf` statusText
+              sealState = sealStateFromVaultStatusOutput statusText
+              startedUnsealed = sealState == Just False
+              startedSealed = sealState == Just True
           if not (startedUnsealed || startedSealed)
             then
               failWith ("could not determine Vault seal state from `vault status`: " ++ outputDetail statusOutput)
@@ -1844,11 +2022,11 @@ runSealedVaultValidation repoRoot environment = do
 -- @documents/engineering/bootstrap_readiness_doctrine.md § 0.5@ — never a
 -- canned pass. The fixture arms keep their fixture provenance, which the
 -- emitted block now states.
-runDaemonBootstrapValidation :: IO ExitCode
-runDaemonBootstrapValidation = do
+runDaemonBootstrapValidation :: FilePath -> IO ExitCode
+runDaemonBootstrapValidation repoRoot = do
   fixture <- lookupEnv "PRODBOX_TEST_DAEMON_BOOTSTRAP_AUDIT"
   case fixture of
-    Nothing -> runObservedDaemonBootstrapAudit
+    Nothing -> runObservedDaemonBootstrapAudit repoRoot
     Just "pass" -> emitDaemonBootstrapAudit defaultDaemonBootstrapAuditInput
     Just "legacy-minio-port-forward" ->
       emitDaemonBootstrapAudit
@@ -1888,21 +2066,44 @@ runDaemonBootstrapValidation = do
 -- distinction is enough to observe the required-route surface without issuing a
 -- single mutation, which is the whole point — a validation may not initialise
 -- Vault to prove it could.
-runObservedDaemonBootstrapAudit :: IO ExitCode
-runObservedDaemonBootstrapAudit = do
-  healthProbe <- probeBrokerRouteStatus BrokerHealth
+runObservedDaemonBootstrapAudit :: FilePath -> IO ExitCode
+runObservedDaemonBootstrapAudit repoRoot = do
+  keyResult <- freshVaultIdempotencyKey
+  case keyResult of
+    Left err -> failWith ("daemon-bootstrap validation could not mint a probe key: " ++ err)
+    Right key -> do
+      -- The Broker listens on its pod's loopback behind a ClusterIP Service, so
+      -- the only host path to it is the Service port-forward every Broker command
+      -- uses. The probe used to curl a fixed host address that nothing binds,
+      -- which made the unset-fixture arm refuse on every cluster.
+      connected <-
+        withBrokerHostConnection
+          (brokerHostConnection repoRoot)
+          key
+          (\endpoint _context -> observeBrokerRouteSurface endpoint)
+      case connected of
+        Left err ->
+          failWith
+            ( "daemon-bootstrap validation measured nothing and refuses: no "
+                ++ "PRODBOX_TEST_DAEMON_BOOTSTRAP_AUDIT fixture was selected and no Bootstrap "
+                ++ "Broker daemon answered through its Service port-forward ("
+                ++ renderBrokerHostConnectionError err
+                ++ "). Run it against a cluster whose broker is serving, or select a "
+                ++ "repository fixture explicitly."
+            )
+        Right outcome -> pure outcome
+
+-- | Observe the broker's route surface through an established endpoint.
+observeBrokerRouteSurface :: BrokerEndpoint -> IO ExitCode
+observeBrokerRouteSurface endpoint = do
+  healthProbe <- probeBrokerRouteStatus endpoint BrokerHealth
   case healthProbe of
     Left err ->
       failWith
-        ( "daemon-bootstrap validation measured nothing and refuses: no "
-            ++ "PRODBOX_TEST_DAEMON_BOOTSTRAP_AUDIT fixture was selected and no Bootstrap "
-            ++ "Broker daemon answered at "
-            ++ daemonBootstrapBrokerBaseUrl
-            ++ brokerRoutePath BrokerHealth
-            ++ " ("
+        ( "daemon-bootstrap validation could not observe "
+            ++ brokerRouteUrl endpoint BrokerHealth
+            ++ ": "
             ++ err
-            ++ "). Run it against a cluster whose broker is serving, or select a "
-            ++ "repository fixture explicitly."
         )
     Right healthStatus -> do
       routeProbes <- traverse probeRequiredRoute daemonBootstrapRequiredRoutes
@@ -1927,7 +2128,7 @@ runObservedDaemonBootstrapAudit = do
               }
  where
   probeRequiredRoute route = do
-    probe <- probeBrokerRouteStatus route
+    probe <- probeBrokerRouteStatus endpoint route
     pure $ case probe of
       Left err -> Left (brokerRoutePath route ++ ": " ++ err)
       Right 404 ->
@@ -1936,20 +2137,24 @@ runObservedDaemonBootstrapAudit = do
               ++ brokerRoutePath route
               ++ " (404); this broker cannot have carried a daemon-bootstrap run"
           )
-      Right status ->
-        Right
-          ( "OBSERVED "
-              ++ show status
-              ++ " GET "
-              ++ daemonBootstrapBrokerBaseUrl
-              ++ brokerRoutePath route
-          )
+      Right status -> Right (observedBrokerRouteLine status route)
+
+-- | One observed broker route, as the audit corpus records it.
+--
+-- The forward's local port is not part of the line.  It is an ephemeral port
+-- chosen at connection time, and the audit refuses any corpus containing the
+-- legacy MinIO forward's literal port; a line that embedded the live port
+-- would be refused on the run in which the kernel handed out that number.  The
+-- route path is what the audit's required-route check reads.
+observedBrokerRouteLine :: Int -> BrokerRoute -> String
+observedBrokerRouteLine status route =
+  "OBSERVED " ++ show status ++ " GET broker-service-forward" ++ brokerRoutePath route
 
 -- | Read-only @GET@ probe of one broker route, reporting the HTTP status the
 -- daemon answered with. A transport failure is a @Left@ and never a status,
 -- so "nothing answered" cannot be read as "the route is absent".
-probeBrokerRouteStatus :: BrokerRoute -> IO (Either String Int)
-probeBrokerRouteStatus route = do
+probeBrokerRouteStatus :: BrokerEndpoint -> BrokerRoute -> IO (Either String Int)
+probeBrokerRouteStatus endpoint route = do
   result <-
     captureSubprocessResult
       Subprocess
@@ -1962,7 +2167,7 @@ probeBrokerRouteStatus route = do
             , "/dev/null"
             , "-w"
             , "%{http_code}"
-            , daemonBootstrapBrokerBaseUrl ++ brokerRoutePath route
+            , brokerRouteUrl endpoint route
             ]
         , subprocessEnvironment = Nothing
         , subprocessWorkingDirectory = Nothing
@@ -1985,10 +2190,47 @@ probeBrokerRouteStatus route = do
                 ++ show (processStdout output)
             )
 
+-- | The seal state a @prodbox vault status@ output reports, if it reports one.
+--
+-- The command prints the Bootstrap Broker's JSON status after a label
+-- (@Vault status: {"sealed":false,...}@). The @sealed=True@ spelling this
+-- validation once matched no longer occurs in that output (it survives only in
+-- the one-line renderer the cluster status surfaces use), so a substring match
+-- on it could never succeed and the validation refused before it sealed
+-- anything.
+sealStateFromVaultStatusOutput :: String -> Maybe Bool
+sealStateFromVaultStatusOutput output =
+  listToMaybe
+    [ sealed
+    | line <- lines output
+    , let payload = dropWhile (/= '{') line
+    , not (null payload)
+    , Right (Object fields) <- [decodeJsonStringUtf8 payload]
+    , Just (Bool sealed) <- [KeyMap.lookup (Key.fromString "sealed") fields]
+    ]
+
+-- | Assert that @prodbox vault status@ reports a sealed Vault.
+assertVaultReportsSealed :: FilePath -> [(String, String)] -> IO ExitCode
+assertVaultReportsSealed repoRoot environment = do
+  statusResult <- captureNativeCliCommand repoRoot environment ["vault", "status"]
+  case statusResult of
+    Left err -> failWith err
+    Right statusOutput ->
+      let statusText = processStdout statusOutput ++ processStderr statusOutput
+       in case sealStateFromVaultStatusOutput statusText of
+            Just True -> pure ExitSuccess
+            observed ->
+              failWith
+                ( "expected `prodbox vault status` to report a sealed Vault, observed "
+                    ++ show observed
+                    ++ ": "
+                    ++ outputDetail statusOutput
+                )
+
 runSealedVaultAssertions :: FilePath -> [(String, String)] -> IO ExitCode
 runSealedVaultAssertions repoRoot environment =
   runSequentially
-    [ assertNativeCommandOutputContainsAll repoRoot environment ["vault", "status"] ["sealed=True"]
+    [ assertVaultReportsSealed repoRoot environment
     , assertNativeCommandFailureContainsAll
         repoRoot
         environment
@@ -2033,33 +2275,85 @@ runSealedVaultHostAndK8sAudit repoRoot = do
                   , sealedVaultKubernetesObjectNames = filter (/= "") (lines k8sOutput)
                   }
 
+-- | Where the MinIO volume the sealed-Vault audit scans lives on the host.
+--
+-- It is the root the retained storage is bound at, which is the configured
+-- @storage.manual_pv_host_root@: the harness generates a config rooted at
+-- @.test-data/legacy-aggregate@, so the audit that looked under the production
+-- @.data@ either refused ("root missing") or, on a host that kept an unused
+-- @.data@ tree, scanned a directory MinIO does not write to and passed without
+-- examining anything. The topology runner's override, when set, wins; a host with
+-- no readable config falls back to the production default.
 sealedVaultHostDiskRoot :: FilePath -> IO FilePath
 sealedVaultHostDiskRoot repoRoot = do
   maybeTestRoot <- lookupEnv testManualPvHostRootEnv
-  let manualPvRoot =
-        case maybeTestRoot of
-          Just testRoot | not (null testRoot) -> testRoot
-          _ -> repoRoot </> defaultChartDataRootRelative
+  manualPvRoot <-
+    case maybeTestRoot of
+      Just testRoot | not (null testRoot) -> pure testRoot
+      _ -> resolveRetainedManualPvRoot repoRoot
   pure (manualPvRoot </> "prodbox" </> "minio" </> "0")
+
+-- | The StatefulSets that run the gateway emitters, from the output of
+-- @kubectl get statefulset -o name@.
+--
+-- The gateway namespace has held only StatefulSets since Sprint 3.26 (one per
+-- emitter, beside the unrelated Pulsar broker), so the Deployment-availability
+-- wait of @cluster wait@ matches nothing there and refuses with "no matching
+-- resources". This selects the ones whose rollout the gateway validations are
+-- about, and leaves the broker out so its health cannot fail a gateway check.
+gatewayEmitterStatefulSets :: String -> [String]
+gatewayEmitterStatefulSets listing =
+  [ name
+  | line <- lines listing
+  , let name = trim line
+  , "statefulset.apps/gateway-" `isPrefixOf` name
+  ]
+
+-- | Wait for every gateway emitter StatefulSet to finish rolling out.
+waitForGatewayEmitters :: FilePath -> [(String, String)] -> IO ExitCode
+waitForGatewayEmitters repoRoot environment = do
+  listed <- runTextCommand (kubectlInGatewayNamespace ["get", "statefulset", "-o", "name"])
+  case listed of
+    Left err -> failWith err
+    Right output ->
+      case gatewayEmitterStatefulSets output of
+        [] ->
+          failWith
+            ( "namespace `"
+                ++ gatewayValidationNamespace
+                ++ "` holds no gateway emitter StatefulSet, so there is nothing to wait for"
+            )
+        refs ->
+          runSequentially
+            [ runCommandForExitCode
+                (kubectlInGatewayNamespace ["rollout", "status", ref, "--timeout=300s"])
+            | ref <- refs
+            ]
+ where
+  kubectlInGatewayNamespace arguments =
+    Subprocess
+      { subprocessPath = "kubectl"
+      , subprocessArguments = ["--namespace", gatewayValidationNamespace] ++ arguments
+      , subprocessEnvironment = Just environment
+      , subprocessWorkingDirectory = Just repoRoot
+      }
 
 runGatewayPodsValidation
   :: FilePath
+  -> Substrate
   -> [(String, String)]
   -> Maybe GatewayRuntimeStabilityRecorder
   -> IO ExitCode
-runGatewayPodsValidation repoRoot environment maybeRecorder = do
-  readyExit <-
-    runNativeCliCommandForExitCode
-      repoRoot
-      environment
-      ["cluster", "wait", "--namespace", gatewayValidationNamespace]
+runGatewayPodsValidation repoRoot substrate capturedEnvironment maybeRecorder = do
+  environment <- selectedSubstrateEnvironment substrate capturedEnvironment
+  readyExit <- waitForGatewayEmitters repoRoot environment
   case readyExit of
     failure@(ExitFailure _) -> pure failure
     ExitSuccess -> do
       recorderResult <-
         case maybeRecorder of
           Just recorder -> pure (Right recorder)
-          Nothing -> newGatewayRuntimeStabilityRecorder repoRoot
+          Nothing -> newGatewayRuntimeStabilityRecorder substrate repoRoot
       case recorderResult of
         Left err -> failWith err
         Right recorder -> do
@@ -2083,8 +2377,15 @@ runGatewayPodsValidation repoRoot environment maybeRecorder = do
                 , "20"
                 ]
 
-resourceGuardrailRootNamespaces :: [String]
-resourceGuardrailRootNamespaces = ["keycloak", "vscode", "api", "websocket", "gateway"]
+-- | The root namespaces whose guardrails the cluster must carry. The standalone
+-- @keycloak@ namespace is capped only by the dormant guardrail the home
+-- reconcile applies; the AWS platform has no such step, and Keycloak runs in
+-- @vscode@ there, so requiring a @keycloak@ quota on EKS could never pass.
+resourceGuardrailRootNamespaces :: Substrate -> [String]
+resourceGuardrailRootNamespaces substrate =
+  case substrate of
+    SubstrateHomeLocal -> ["keycloak", "vscode", "api", "websocket", "gateway"]
+    SubstrateAws -> ["vscode", "api", "websocket", "gateway"]
 
 data ResourceGuardrailPodSummary = ResourceGuardrailPodSummary
   { resourceGuardrailPodsChecked :: Int
@@ -2092,8 +2393,8 @@ data ResourceGuardrailPodSummary = ResourceGuardrailPodSummary
   }
   deriving (Eq, Show)
 
-runResourceGuardrailsValidation :: FilePath -> IO ExitCode
-runResourceGuardrailsValidation repoRoot = do
+runResourceGuardrailsValidation :: FilePath -> Substrate -> IO ExitCode
+runResourceGuardrailsValidation repoRoot substrate = do
   settingsResult <- validateAndLoadSettings repoRoot
   case settingsResult of
     Left err -> failWith ("load settings for resource guardrail validation: " ++ err)
@@ -2107,7 +2408,7 @@ runResourceGuardrailsValidation repoRoot = do
         (_, Left err, _) -> failWith err
         (_, _, Left err) -> failWith err
         (Right pods, Right quotas, Right limitRanges) ->
-          emitResourceGuardrailReport plan pods quotas limitRanges
+          emitResourceGuardrailReport substrate plan pods quotas limitRanges
  where
   kubectlJson args =
     runJsonCommand
@@ -2119,20 +2420,20 @@ runResourceGuardrailsValidation repoRoot = do
         }
 
 emitResourceGuardrailReport
-  :: Capacity.ResourcePlan -> Value -> Value -> Value -> IO ExitCode
-emitResourceGuardrailReport plan pods quotas limitRanges =
-  case resourceGuardrailReport plan pods quotas limitRanges of
+  :: Substrate -> Capacity.ResourcePlan -> Value -> Value -> Value -> IO ExitCode
+emitResourceGuardrailReport substrate plan pods quotas limitRanges =
+  case resourceGuardrailReport substrate plan pods quotas limitRanges of
     Left err -> failWith err
     Right report -> do
       writeOutput report
       pure ExitSuccess
 
 resourceGuardrailReport
-  :: Capacity.ResourcePlan -> Value -> Value -> Value -> Either String String
-resourceGuardrailReport plan podPayload quotaPayload limitRangePayload = do
-  podSummary <- resourceGuardrailPodSummary plan podPayload
-  quotaNamespaces <- resourceGuardrailQuotaNamespaces plan quotaPayload
-  limitRangeNamespaces <- resourceGuardrailLimitRangeNamespaces plan limitRangePayload
+  :: Substrate -> Capacity.ResourcePlan -> Value -> Value -> Value -> Either String String
+resourceGuardrailReport substrate plan podPayload quotaPayload limitRangePayload = do
+  podSummary <- resourceGuardrailPodSummary substrate plan podPayload
+  quotaNamespaces <- resourceGuardrailQuotaNamespaces substrate plan quotaPayload
+  limitRangeNamespaces <- resourceGuardrailLimitRangeNamespaces substrate plan limitRangePayload
   pure
     ( unlines
         [ "RESOURCE_GUARDRAILS_VALIDATION"
@@ -2146,8 +2447,8 @@ resourceGuardrailReport plan podPayload quotaPayload limitRangePayload = do
     )
 
 resourceGuardrailPodSummary
-  :: Capacity.ResourcePlan -> Value -> Either String ResourceGuardrailPodSummary
-resourceGuardrailPodSummary _plan payload = do
+  :: Substrate -> Capacity.ResourcePlan -> Value -> Either String ResourceGuardrailPodSummary
+resourceGuardrailPodSummary substrate _plan payload = do
   items <- jsonArrayAt ["items"] payload
   checked <- traverse (resourceGuardrailPodCheck expectedNamespaces) items
   let relevant = [summary | Just summary <- checked]
@@ -2168,7 +2469,7 @@ resourceGuardrailPodSummary _plan payload = do
               }
         else Left (intercalate "; " failures)
  where
-  expectedNamespaces = resourceGuardrailRootNamespaces
+  expectedNamespaces = resourceGuardrailRootNamespaces substrate
 
 resourceGuardrailPodCheck
   :: [String] -> Value -> Either String (Maybe ((Int, String), [String]))
@@ -2234,15 +2535,18 @@ resourceQuantityFailures containerId path value =
     Right Nothing -> [containerId ++ " is missing `" ++ intercalate "." path ++ "`"]
     Left err -> [containerId ++ " has malformed resources: " ++ err]
 
-resourceGuardrailQuotaNamespaces :: Capacity.ResourcePlan -> Value -> Either String [String]
-resourceGuardrailQuotaNamespaces plan payload = do
+resourceGuardrailQuotaNamespaces
+  :: Substrate -> Capacity.ResourcePlan -> Value -> Either String [String]
+resourceGuardrailQuotaNamespaces substrate plan payload = do
   items <- jsonArrayAt ["items"] payload
-  traverse (requireResourceQuotaForNamespace plan items) resourceGuardrailRootNamespaces
+  traverse
+    (requireResourceQuotaForNamespace substrate plan items)
+    (resourceGuardrailRootNamespaces substrate)
 
 requireResourceQuotaForNamespace
-  :: Capacity.ResourcePlan -> [Value] -> String -> Either String String
-requireResourceQuotaForNamespace plan items namespace = do
-  expected <- namespaceResourceQuotaHardFields plan namespace
+  :: Substrate -> Capacity.ResourcePlan -> [Value] -> String -> Either String String
+requireResourceQuotaForNamespace substrate plan items namespace = do
+  expected <- namespaceResourceQuotaHardFields substrate plan namespace
   quotaObject <- requireK8sObjectInNamespace "ResourceQuota" namespace items
   mapM_ (requireQuantityEquals ("ResourceQuota " ++ namespace) ["spec", "hard"] quotaObject) expected
   Right namespace
@@ -2258,9 +2562,9 @@ requireResourceQuotaForNamespace plan items namespace = do
 -- and this one had already drifted: the fixture declared the gateway at
 -- 250m × 3 replicas where the plan declares 750m × 2.
 namespaceResourceQuotaHardFields
-  :: Capacity.ResourcePlan -> String -> Either String [(String, String)]
-namespaceResourceQuotaHardFields plan namespace = do
-  admission <- Placement.planNamespaceAdmission SubstrateHomeLocal (Text.pack namespace) plan
+  :: Substrate -> Capacity.ResourcePlan -> String -> Either String [(String, String)]
+namespaceResourceQuotaHardFields substrate plan namespace = do
+  admission <- Placement.planNamespaceAdmission substrate (Text.pack namespace) plan
   let requested = Capacity.request admission
       limited = Capacity.limit admission
   Right
@@ -2273,17 +2577,21 @@ namespaceResourceQuotaHardFields plan namespace = do
     , ("requests.storage", memoryQuantity (Capacity.durable_storage_mib requested))
     ]
 
-resourceGuardrailLimitRangeNamespaces :: Capacity.ResourcePlan -> Value -> Either String [String]
-resourceGuardrailLimitRangeNamespaces plan payload = do
+resourceGuardrailLimitRangeNamespaces
+  :: Substrate -> Capacity.ResourcePlan -> Value -> Either String [String]
+resourceGuardrailLimitRangeNamespaces substrate plan payload = do
   items <- jsonArrayAt ["items"] payload
-  traverse (requireLimitRangeForNamespace plan items) resourceGuardrailRootNamespaces
+  traverse
+    (requireLimitRangeForNamespace substrate plan items)
+    (resourceGuardrailRootNamespaces substrate)
 
-requireLimitRangeForNamespace :: Capacity.ResourcePlan -> [Value] -> String -> Either String String
-requireLimitRangeForNamespace plan items namespace = do
+requireLimitRangeForNamespace
+  :: Substrate -> Capacity.ResourcePlan -> [Value] -> String -> Either String String
+requireLimitRangeForNamespace substrate plan items namespace = do
   limitRangeObject <- requireK8sObjectInNamespace "LimitRange" namespace items
   limits <- jsonArrayAt ["spec", "limits"] limitRangeObject
   containerLimit <- requireContainerLimitRange namespace limits
-  expected <- namespaceLimitRangeContainerFields plan namespace
+  expected <- namespaceLimitRangeContainerFields substrate plan namespace
   mapM_
     ( \(prefix, fieldName, expectedQuantity) ->
         requireQuantityEquals
@@ -2300,9 +2608,9 @@ requireLimitRangeForNamespace plan items namespace = do
 -- 'namespaceResourceQuotaHardFields': the fixture's observed cluster state is
 -- rendered from this projection rather than restating its numbers.
 namespaceLimitRangeContainerFields
-  :: Capacity.ResourcePlan -> String -> Either String [([String], String, String)]
-namespaceLimitRangeContainerFields plan namespace = do
-  envelope <- Placement.planNamespaceLimits SubstrateHomeLocal (Text.pack namespace) plan
+  :: Substrate -> Capacity.ResourcePlan -> String -> Either String [([String], String, String)]
+namespaceLimitRangeContainerFields substrate plan namespace = do
+  envelope <- Placement.planNamespaceLimits substrate (Text.pack namespace) plan
   let requestVector = Capacity.request envelope
       limitVector = Capacity.limit envelope
   Right
@@ -2359,13 +2667,23 @@ requireQuantityEquals label prefix value (fieldName, expectedQuantity) = do
             ++ "`"
         )
 
+-- | Whether two printed Kubernetes quantities are the same amount.
+--
+-- CPU is compared in milli-cores (@m@ and bare integers), memory and storage in
+-- bytes (binary-SI @Ki@ to @Ti@ and bare integers), so zero is zero in any of
+-- those units and @60Gi@ is @61440Mi@. It is closed over the forms the API server
+-- prints for the values this suite compares and refuses everything else: a form
+-- it cannot read (@Pi@, @k@, decimal-SI such as @1G@, a fraction, an exponent) is
+-- never judged equivalent to a different spelling, so an unrecognised spelling is
+-- reported as a mismatch naming both strings and is never equated silently (the
+-- caller accepts two identical spellings before it asks).
 quantitiesEquivalent :: String -> String -> Bool
 quantitiesEquivalent expected actual =
   case (parseCpuMilliQuantity expected, parseCpuMilliQuantity actual) of
     (Just expectedMilli, Just actualMilli) | expectedMilli == actualMilli -> True
     _ ->
-      case (parseMebiQuantity expected, parseMebiQuantity actual) of
-        (Just expectedMebi, Just actualMebi) -> expectedMebi == actualMebi
+      case (parseByteQuantity expected, parseByteQuantity actual) of
+        (Just expectedBytes, Just actualBytes) -> expectedBytes == actualBytes
         _ -> False
 
 parseCpuMilliQuantity :: String -> Maybe Integer
@@ -2374,18 +2692,24 @@ parseCpuMilliQuantity raw =
     Just milliText -> parseIntegerQuantity milliText
     Nothing -> (* 1000) <$> parseIntegerQuantity raw
 
-parseMebiQuantity :: String -> Maybe Integer
-parseMebiQuantity raw =
+-- | A binary-SI or bare-integer quantity in bytes, the way Kubernetes prints one:
+-- @20Gi@, @61440Mi@, and — for a quantity of zero in any unit — the bare @0@. A
+-- ResourceQuota the chart applies as @0Mi@ is read back as @0@, so a comparison
+-- that knew only the suffixed forms refused every namespace with no durable
+-- storage.
+parseByteQuantity :: String -> Maybe Integer
+parseByteQuantity raw =
   asum
-    [ parseWithUnit "Ki" (`div` 1024)
-    , parseWithUnit "Mi" id
-    , parseWithUnit "Gi" (* 1024)
-    , parseWithUnit "Ti" (* 1048576)
+    [ parseWithUnit "Ki" 1024
+    , parseWithUnit "Mi" 1048576
+    , parseWithUnit "Gi" 1073741824
+    , parseWithUnit "Ti" 1099511627776
+    , parseIntegerQuantity raw
     ]
  where
   parseWithUnit suffix scale = do
     quantityText <- stripQuantitySuffix suffix raw
-    scale <$> parseIntegerQuantity quantityText
+    (* scale) <$> parseIntegerQuantity quantityText
 
 stripQuantitySuffix :: String -> String -> Maybe String
 stripQuantitySuffix suffix raw
@@ -2785,7 +3109,7 @@ provisionAndVerifyAwsTestStack repoRoot environment =
         repoRoot
         environment
         ["aws", "stack", "test", "reconcile"]
-        ["STACK=" ++ AwsTest.awsTestStackName, "NODE_COUNT=3"]
+        [AwsTest.awsTestProviderReceiptLabel ++ "sha256:"]
     , verifyAwsTestSnapshot repoRoot
     ]
 gatewayPartitionValidationReport :: IO (Either String String)
@@ -4420,11 +4744,13 @@ demoOidcSessionValidationAgentManifest publicWebsocketBaseUrl =
                                            .= object
                                              [ "cpu" .= ("25m" :: String)
                                              , "memory" .= ("64Mi" :: String)
+                                             , "ephemeral-storage" .= demoOidcAgentEphemeralStorageRequest
                                              ]
                                        , "limits"
                                            .= object
                                              [ "cpu" .= ("25m" :: String)
                                              , "memory" .= ("64Mi" :: String)
+                                             , "ephemeral-storage" .= demoOidcAgentEphemeralStorageLimit
                                              ]
                                        ]
                                  , "volumeMounts"
@@ -4460,11 +4786,13 @@ demoOidcSessionValidationAgentManifest publicWebsocketBaseUrl =
                                            .= object
                                              [ "cpu" .= ("10m" :: String)
                                              , "memory" .= ("32Mi" :: String)
+                                             , "ephemeral-storage" .= demoOidcAgentEphemeralStorageRequest
                                              ]
                                        , "limits"
                                            .= object
                                              [ "cpu" .= ("10m" :: String)
                                              , "memory" .= ("32Mi" :: String)
+                                             , "ephemeral-storage" .= demoOidcAgentEphemeralStorageLimit
                                              ]
                                        ]
                                  , "volumeMounts"
@@ -4489,8 +4817,12 @@ demoOidcSessionValidationAgentManifest publicWebsocketBaseUrl =
                                            .= [ object
                                                   [ "serviceAccountToken"
                                                       .= object
-                                                        [ "audience" .= ("vault" :: String)
-                                                        , "expirationSeconds" .= (600 :: Int)
+                                                        [ -- No audience: the Vault role this Job logs in to
+                                                          -- (a chart-secret consumer role) carries none, so Vault
+                                                          -- reviews the token against the API server's own
+                                                          -- audience, and a token minted for another audience
+                                                          -- fails that review.
+                                                          "expirationSeconds" .= (600 :: Int)
                                                         , "path" .= ("token" :: String)
                                                         ]
                                                   ]
@@ -4519,6 +4851,19 @@ demoOidcSessionValidationAgentManifest publicWebsocketBaseUrl =
           ]
     ]
 
+-- | The ephemeral storage the validation Job's containers declare. The Job writes
+-- only into memory-backed volumes, so its writable layers and logs are a few
+-- kilobytes; but a container that declares nothing is charged the namespace
+-- LimitRange default (a 1Gi request and a 2Gi limit), and the @vscode@ quota has
+-- about 1Gi of limit headroom beside the workloads it hosts, so the Job's Pod was
+-- refused with @exceeded quota@ and the suite failed at "OIDC session validation
+-- Agent command failed" without naming the quota.
+demoOidcAgentEphemeralStorageRequest :: String
+demoOidcAgentEphemeralStorageRequest = "32Mi"
+
+demoOidcAgentEphemeralStorageLimit :: String
+demoOidcAgentEphemeralStorageLimit = "64Mi"
+
 demoOidcVaultMaterializerScript :: String
 demoOidcVaultMaterializerScript =
   unlines
@@ -4542,7 +4887,7 @@ demoOidcSessionValidationScript =
     , "login_body=/run/prodbox-oidc/login-body"
     , "login_response=/run/prodbox-oidc/login-response"
     , "curl -sS -L --fail-with-body -c \"${cookie_jar}\" -b \"${cookie_jar}\" -o \"${login_body}\" \"${PUBLIC_WEBSOCKET_BASE_URL}/oidc/start\""
-    , "form_action=\"$(sed -n 's/.*action=\"\\([^\"]*\\)\".*/\\1/p' \"${login_body}\" | head -n 1 | sed 's/&amp;/\\\&/g')\""
+    , "form_action=\"$(sed -n 's/.*action=\"\\([^\"]*\\)\".*/\\1/p' \"${login_body}\" | head -n 1 | sed 's/&amp;/\\&/g')\""
     , "test -n \"${form_action}\""
     , "curl -sS -L --fail-with-body -c \"${cookie_jar}\" -b \"${cookie_jar}\" --data-urlencode username=demo-user --data-urlencode password@/vault-materialized/demo-password -o \"${login_response}\" \"${form_action}\""
     , "curl -sS -L --fail-with-body -c \"${cookie_jar}\" -b \"${cookie_jar}\" \"${PUBLIC_WEBSOCKET_BASE_URL}/oidc/session\""
@@ -5210,54 +5555,46 @@ runCertificateScopeServingValidation repoRoot substrate = do
 
 runCleanRoomHandoffValidation :: FilePath -> IO ExitCode
 runCleanRoomHandoffValidation repoRoot = do
-  paths <- listRepoOwnedPaths repoRoot
-  sourcePaths <-
-    filterM
-      (doesFileExist . (repoRoot </>))
-      (filter isProductionPath paths)
-  sources <-
-    forM
-      sourcePaths
-      ( \path -> do
-          source <- readFile (repoRoot </> path)
-          pure (path, Text.pack source)
-      )
-  case CleanRoom.legacyResidueViolations paths sources of
-    residue : _ -> failWith ("clean-room legacy residue remains: " ++ show residue)
-    [] ->
-      case CleanRoom.legacyCutoverResidueViolations
-        CleanRoom.LegacyScanPreActivation
-        sources of
-        residue : _ ->
-          failWith ("clean-room legacy cutover inventory drifted: " ++ show residue)
-        [] -> do
-          writeOutput (CleanRoom.renderCleanRoomPlan [])
-          case fixedCascadeCandidatePlanSummary of
-            Left err -> failWith err
-            Right summary ->
-              writeOutput
-                ( unlines
-                    [ "QUALIFICATION_ONLY_CASCADE_CANDIDATE"
-                    , "CLEANUP_RUN_ID="
-                        ++ Text.unpack (cascadeCandidateSummaryRunId summary)
-                    , "GRAPH_DIGEST="
-                        ++ Text.unpack (cascadeCandidateSummaryGraphDigest summary)
-                    , "DESCRIPTOR_DIGEST="
-                        ++ Text.unpack (cascadeCandidateSummaryDescriptorDigest summary)
-                    , "TERMINAL_OPERATION_ID="
-                        ++ Text.unpack
-                          (cascadeCandidateSummaryTerminalOperationId summary)
-                    ]
-                )
-                >> mapM_
-                  (writeOutput . CleanRoom.renderInstalledCascadeTrace)
-                  CleanRoom.fixedInstalledCascadeTraces
-                >> pure ExitSuccess
- where
-  isProductionPath path =
-    any (`isPrefixOf` path) ["app/", "src/", "charts/"]
-      && path /= "src/Prodbox/CheckCode.hs"
-      && path /= "src/Prodbox/Test/CleanRoomHandoff.hs"
+  (paths, sources) <- productionSources repoRoot
+  -- The scan follows the cycle ledger's phase: the exact pre-activation inventory
+  -- while the legacy source is in the tree, nothing at all once the deletion is
+  -- recorded. With no ledger the phase is pre-activation, as it has always been;
+  -- a ledger that cannot be read fails here rather than defaulting.
+  scanModeResult <- ledgerScanMode repoRoot
+  case scanModeResult of
+    Left err -> failWith ("clean-room qualification ledger is refused: " ++ err)
+    Right scanMode ->
+      case CleanRoom.legacyResidueViolations paths sources of
+        residue : _ -> failWith ("clean-room legacy residue remains: " ++ show residue)
+        [] ->
+          case CleanRoom.legacyCutoverResidueViolations scanMode sources of
+            residue : _ ->
+              failWith ("clean-room legacy cutover inventory drifted: " ++ show residue)
+            [] -> do
+              writeOutput (CleanRoom.renderCleanRoomPlan [])
+              summaryLines <- ledgerSummaryLines repoRoot
+              writeOutput (unlines summaryLines)
+              case fixedCascadeCandidatePlanSummary of
+                Left err -> failWith err
+                Right summary ->
+                  writeOutput
+                    ( unlines
+                        [ "QUALIFICATION_ONLY_CASCADE_CANDIDATE"
+                        , "CLEANUP_RUN_ID="
+                            ++ Text.unpack (cascadeCandidateSummaryRunId summary)
+                        , "GRAPH_DIGEST="
+                            ++ Text.unpack (cascadeCandidateSummaryGraphDigest summary)
+                        , "DESCRIPTOR_DIGEST="
+                            ++ Text.unpack (cascadeCandidateSummaryDescriptorDigest summary)
+                        , "TERMINAL_OPERATION_ID="
+                            ++ Text.unpack
+                              (cascadeCandidateSummaryTerminalOperationId summary)
+                        ]
+                    )
+                    >> mapM_
+                      (writeOutput . CleanRoom.renderInstalledCascadeTrace)
+                      CleanRoom.fixedInstalledCascadeTraces
+                    >> pure ExitSuccess
 
 runCascadeQualificationValidation
   :: FilePath -> [(String, String)] -> Substrate -> IO ExitCode
@@ -5291,20 +5628,49 @@ runCascadeQualificationValidation repoRoot environment substrate =
                     ( unlines
                         [ "CASCADE_QUALIFICATION_RESULT"
                         , "CYCLE=" ++ cycleLabel
+                        , "ATTEMPT=" ++ show (cascadeQualificationAttempt outcome)
                         , "CLEANUP_RUN_ID="
                             ++ Text.unpack (cascadeQualificationRunId outcome)
+                        , "IDENTITY_KEY="
+                            ++ Text.unpack (cascadeQualificationIdentityKey outcome)
                         , "EVIDENCE_PATH=" ++ cascadeQualificationEvidencePath outcome
                         , "EVIDENCE_DIGEST="
                             ++ Text.unpack (cascadeQualificationEvidenceDigest outcome)
                         , "LIFECYCLE_RESULT=" ++ show result
+                        , "CYCLE_OUTCOME="
+                            ++ Text.unpack (cascadeQualificationCycleOutcome outcome)
+                        , "LEDGER_ENTRIES="
+                            ++ show (cascadeQualificationLedgerEntries outcome)
+                        , "LEDGER_TIP="
+                            ++ Text.unpack (cascadeQualificationLedgerTip outcome)
                         ]
                     )
-                  if lifecycleCleanupResultSucceeded result
+                  if cascadeQualificationCyclePassed outcome
                     then pure ExitSuccess
-                    else failWith "cascade qualification did not reach exact terminal success"
+                    else
+                      failWith
+                        ( "cascade qualification cycle did not qualify ("
+                            ++ Text.unpack (cascadeQualificationCycleOutcome outcome)
+                            ++ "); a failed, interrupted or drifted attempt is recorded in the cycle ledger and breaks the count"
+                        )
 
 cascadeQualificationCycleVariable :: String
 cascadeQualificationCycleVariable = "PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE"
+
+-- | Read-only: report whether the cycle ledger holds two consecutive qualifying
+-- cascade cycles on one deployment that is still the current tree. It mutates
+-- nothing and needs no cluster or AWS credential; it exits zero only for a
+-- qualifying verdict, so it is deliberately outside @test all@, where the
+-- campaign being pending is a normal state.
+runCascadeQualificationReceiptValidation :: FilePath -> [(String, String)] -> IO ExitCode
+runCascadeQualificationReceiptValidation repoRoot environment = do
+  report <- runCascadeQualificationReceipt repoRoot environment
+  writeOutput (unlines (map Text.unpack (receiptLines report)))
+  if receiptQualified report
+    then pure ExitSuccess
+    else
+      failWith
+        "the cycle ledger does not hold two consecutive qualifying cascade cycles on the current tree"
 
 curlTlsServingProbe :: FilePath -> String -> IO (Either String ())
 curlTlsServingProbe repoRoot host = do
@@ -5412,198 +5778,98 @@ inspectCertificateSans repoRoot certificate = do
 
 runDnsAwsValidation :: FilePath -> IO ExitCode
 runDnsAwsValidation repoRoot = do
-  settingsEnvResult <- settingsAwsEnvironment repoRoot
-  case settingsEnvResult of
+  settingsResult <- validateAndLoadSettings repoRoot
+  case settingsResult of
     Left err -> failWith err
-    Right (settings, awsEnvironment) -> do
-      baseZoneNameResult <- configuredHostedZoneName repoRoot awsEnvironment settings
-      case baseZoneNameResult of
-        Left err -> failWith err
-        Right baseZoneName -> do
-          nonce <- validationNonce
-          let zoneName = Route53ValidationZone.validationHostedZoneName nonce baseZoneName
-              recordName = "gateway." ++ zoneName
-              recordIp = "203.0.113.10"
-              callerReference =
-                Route53ValidationZone.validationHostedZoneCallerReference nonce
-          -- Sprint 5.28: the create verb lives in its registered owner, and the
-          -- always-run cleanup DAG sweeps by this caller reference whether or
-          -- not the flow below reaches its own teardown.
-          createZoneResult <-
-            Route53ValidationZone.createValidationHostedZone
-              repoRoot
-              awsEnvironment
-              zoneName
-              callerReference
-          case createZoneResult of
-            Left err -> failWith err
-            Right hostedZoneId -> do
-              validationExit <- do
-                upsertExit <- changeRoute53Record repoRoot awsEnvironment hostedZoneId "UPSERT" recordName recordIp
-                case upsertExit of
-                  ExitFailure _ -> pure upsertExit
-                  ExitSuccess -> do
-                    verifyResult <-
-                      runTextCommand
-                        Subprocess
-                          { subprocessPath = "aws"
-                          , subprocessArguments =
-                              [ "route53"
-                              , "list-resource-record-sets"
-                              , "--hosted-zone-id"
-                              , hostedZoneId
-                              , "--query"
-                              , "ResourceRecordSets[?Name == '"
-                                  ++ ensureTrailingDot recordName
-                                  ++ "'].ResourceRecords[0].Value | [0]"
-                              , "--output"
-                              , "text"
-                              ]
-                          , subprocessEnvironment = Just awsEnvironment
-                          , subprocessWorkingDirectory = Just repoRoot
-                          }
-                    case verifyResult of
-                      Left err -> failWith err
-                      Right value ->
-                        if trim value == recordIp
-                          then pure ExitSuccess
-                          else
-                            failWith
-                              ( "Route 53 record lifecycle validation failed: expected "
-                                  ++ recordIp
-                                  ++ " but found "
-                                  ++ trim value
-                              )
-              cleanupExit <- cleanupDnsAwsValidation repoRoot awsEnvironment hostedZoneId recordName recordIp
-              case (validationExit, cleanupExit) of
-                (ExitSuccess, ExitSuccess) -> pure ExitSuccess
-                (ExitFailure _, _) -> pure validationExit
-                (_, ExitFailure _) -> pure cleanupExit
+    -- Sprint 1.89: refuse before dispatching rather than observe the zone `""`.
+    Right settings -> case requireHomeZoneId settings of
+      Left err -> failWith err
+      Right homeZoneId -> do
+        baseZoneResult <- observeHomeZoneName repoRoot (route53ZoneIdText homeZoneId)
+        case baseZoneResult of
+          Left err -> failWith err
+          Right baseZoneName -> do
+            nonce <- validationNonce
+            runDnsAwsLifecycle repoRoot (Text.pack nonce) baseZoneName
 
-configuredHostedZoneName
-  :: FilePath -> [(String, String)] -> ValidatedSettings -> IO (Either String String)
-configuredHostedZoneName repoRoot awsEnvironment settings =
-  -- Sprint 1.89: `get-hosted-zone --id ""` is a request nobody meant to make.
-  case requireHomeZoneId settings of
+-- | The home zone's name, read through the Provider because the host holds no
+-- AWS credential.
+observeHomeZoneName :: FilePath -> Text.Text -> IO (Either String String)
+observeHomeZoneName repoRoot homeZoneId = do
+  zoneEvidence <-
+    dispatchHostProviderIntentFresh
+      LifecycleAuthorityTestHarness
+      repoRoot
+      "validation-dns-aws-base-zone"
+      (ObserveProviderReadiness (ProviderReadinessRoute53Zone homeZoneId))
+  pure $ do
+    evidence <- Bifunctor.first renderProviderCallerError zoneEvidence
+    payload <- decodeRoute53ZoneEvidence evidence
+    (zoneName, _) <- hostedZoneDelegation payload
+    Right (trimTrailingDot zoneName)
+
+-- | Create a throwaway zone, write and read back one record in it, and remove
+-- the zone, every step through the Provider.
+--
+-- The zone is created by the registered validation-zone owner from the nonce, so
+-- the name this validation derives is only used to name the record. The family
+-- sweep runs whether or not the flow reaches its own teardown, and its result
+-- is part of the verdict: a zone the sweep could not remove is a failure.
+runDnsAwsLifecycle :: FilePath -> Text.Text -> String -> IO ExitCode
+runDnsAwsLifecycle repoRoot nonce baseZoneName = do
+  ensured <-
+    dispatchDnsAws repoRoot "validation-dns-aws-zone" $
+      EnsureValidationHostedZone nonce (Text.pack baseZoneName)
+  validationResult <- case ensured >>= parseValidationZoneEvidence of
     Left err -> pure (Left err)
-    Right homeZoneId -> do
-      zonePayloadResult <-
-        runJsonCommand
-          Subprocess
-            { subprocessPath = "aws"
-            , subprocessArguments =
-                [ "route53"
-                , "get-hosted-zone"
-                , "--id"
-                , textValue (route53ZoneIdText homeZoneId)
-                , "--output"
-                , "json"
-                ]
-            , subprocessEnvironment = Just awsEnvironment
-            , subprocessWorkingDirectory = Just repoRoot
-            }
-      case zonePayloadResult of
-        Left err -> pure (Left err)
-        Right payload ->
-          case hostedZoneDelegation payload of
-            Left err -> pure (Left err)
-            Right (zoneName, _) -> pure (Right (trimTrailingDot zoneName))
+    Right zoneId -> exerciseValidationRecord repoRoot nonce baseZoneName zoneId
+  swept <-
+    dispatchDnsAws repoRoot "validation-dns-aws-sweep" $
+      ReapValidationHostedZones dnsValidationHostedZoneNamePrefix
+  case (validationResult, swept) of
+    (Right (), Right _) -> pure ExitSuccess
+    (Left err, _) -> failWith err
+    (Right (), Left err) -> failWith ("validation hosted-zone sweep failed: " ++ err)
 
-cleanupDnsAwsValidation
-  :: FilePath
-  -> [(String, String)]
-  -> String
-  -> String
-  -> String
-  -> IO ExitCode
-cleanupDnsAwsValidation repoRoot awsEnvironment hostedZoneId recordName recordIp = do
-  deleteRecordExit <-
-    changeRoute53Record repoRoot awsEnvironment hostedZoneId "DELETE" recordName recordIp
-  case deleteRecordExit of
-    ExitFailure _ -> pure deleteRecordExit
-    ExitSuccess -> do
-      -- Sprint 5.28: delete and prove absent, through the registered owner.
-      deleted <-
-        Route53ValidationZone.deleteValidationHostedZone repoRoot awsEnvironment hostedZoneId
-      case deleted of
-        Right () -> pure ExitSuccess
-        Left err -> failWith err
+exerciseValidationRecord :: FilePath -> Text.Text -> String -> Text.Text -> IO (Either String ())
+exerciseValidationRecord repoRoot nonce baseZoneName zoneId =
+  case mkPublicARecordRef zoneId (Text.pack recordName) 60 [Text.pack recordIp] of
+    Left err -> pure (Left ("build the validation record: " ++ show err))
+    Right ref -> do
+      written <- dispatchDnsAws repoRoot "validation-dns-aws-record" (ReconcilePublicARecord ref)
+      case written of
+        Left err -> pure (Left ("Route 53 record write failed: " ++ err))
+        Right _ -> do
+          observed <- dispatchDnsAws repoRoot "validation-dns-aws-verify" (ObservePublicARecord ref)
+          pure $ case observed of
+            Left err -> Left ("Route 53 record read-back failed: " ++ err)
+            Right evidence
+              | evidence == expectedEvidence -> Right ()
+              | otherwise ->
+                  Left
+                    ( "Route 53 record lifecycle validation failed: expected "
+                        ++ Text.unpack expectedEvidence
+                        ++ " but found "
+                        ++ Text.unpack evidence
+                    )
+ where
+  zoneName =
+    Route53ValidationZone.validationHostedZoneName (Text.unpack nonce) baseZoneName
+  recordName = "gateway." ++ zoneName
+  recordIp = "203.0.113.10"
+  expectedEvidence = "public-a-values:" <> Text.pack recordIp
 
-changeRoute53Record
-  :: FilePath
-  -> [(String, String)]
-  -> String
-  -> String
-  -> String
-  -> String
-  -> IO ExitCode
-changeRoute53Record repoRoot awsEnvironment hostedZoneId action recordName recordIp = do
-  (batchPath, handle) <- openTempFile repoRoot "route53-change-batch.json"
-  hClose handle
-  writeResult <-
-    try
-      ( writeFile
-          batchPath
-          (route53ChangeBatch action recordName recordIp)
-      )
-      :: IO (Either IOException ())
-  case writeResult of
-    Left err -> failWith ("failed to write Route 53 change batch: " ++ show err)
-    Right () -> do
-      changeResult <-
-        runTextCommand
-          Subprocess
-            { subprocessPath = "aws"
-            , subprocessArguments =
-                [ "route53"
-                , "change-resource-record-sets"
-                , "--hosted-zone-id"
-                , hostedZoneId
-                , "--change-batch"
-                , "file://" ++ batchPath
-                , "--query"
-                , "ChangeInfo.Id"
-                , "--output"
-                , "text"
-                ]
-            , subprocessEnvironment = Just awsEnvironment
-            , subprocessWorkingDirectory = Just repoRoot
-            }
-      _ <- try (removeFile batchPath) :: IO (Either IOException ())
-      case changeResult of
-        Left err -> failWith err
-        Right changeId ->
-          runCommandForExitCode
-            Subprocess
-              { subprocessPath = "aws"
-              , subprocessArguments =
-                  [ "route53"
-                  , "wait"
-                  , "resource-record-sets-changed"
-                  , "--id"
-                  , trim changeId
-                  ]
-              , subprocessEnvironment = Just awsEnvironment
-              , subprocessWorkingDirectory = Just repoRoot
-              }
+dispatchDnsAws :: FilePath -> Text.Text -> ProviderIntent -> IO (Either String Text.Text)
+dispatchDnsAws repoRoot prefix intent =
+  Bifunctor.first renderProviderCallerError
+    <$> dispatchHostProviderIntentFresh LifecycleAuthorityTestHarness repoRoot prefix intent
 
-route53ChangeBatch :: String -> String -> String -> String
-route53ChangeBatch action recordName recordIp =
-  unlines
-    [ "{"
-    , "  \"Changes\": ["
-    , "    {"
-    , "      \"Action\": \"" ++ action ++ "\","
-    , "      \"ResourceRecordSet\": {"
-    , "        \"Name\": \"" ++ ensureTrailingDot recordName ++ "\","
-    , "        \"Type\": \"A\","
-    , "        \"TTL\": 60,"
-    , "        \"ResourceRecords\": [{\"Value\": \"" ++ recordIp ++ "\"}]"
-    , "      }"
-    , "    }"
-    , "  ]"
-    , "}"
-    ]
+-- | The zone id a validation-zone ensure names.
+parseValidationZoneEvidence :: Text.Text -> Either String Text.Text
+parseValidationZoneEvidence evidence =
+  case Text.stripPrefix "validation-zone:" evidence of
+    Just zoneId | not (Text.null zoneId) -> Right zoneId
+    _ -> Left ("the Provider named no validation hosted zone: " ++ Text.unpack evidence)
 
 runGatewayDaemonValidation :: FilePath -> [(String, String)] -> IO ExitCode
 runGatewayDaemonValidation repoRoot environment = do
@@ -5611,11 +5877,7 @@ runGatewayDaemonValidation repoRoot environment = do
   case settingsResult of
     Left err -> failWith err
     Right settings -> do
-      readyExit <-
-        runNativeCliCommandForExitCode
-          repoRoot
-          environment
-          ["cluster", "wait", "--namespace", gatewayValidationNamespace]
+      readyExit <- waitForGatewayEmitters repoRoot environment
       case readyExit of
         ExitFailure _ -> pure readyExit
         ExitSuccess -> do
@@ -6143,7 +6405,11 @@ verifyConfiguredPublicDnsRecords repoRoot settings publicIp =
     case exitCode of
       ExitFailure _ -> pure exitCode
       ExitSuccess -> do
-        recordResult <- queryRoute53Record repoRoot settings fqdn
+        recordResult <-
+          retryWhileGatewayDnsPending
+            publicDnsWriteAuthorityAttempts
+            publicDnsWriteAuthorityDelayMicroseconds
+            (queryRoute53Record repoRoot settings fqdn)
         case recordResult of
           Left err -> failWith err
           Right Nothing ->
@@ -6182,6 +6448,34 @@ verifyConfiguredPublicDnsRecords repoRoot settings publicIp =
                                   ++ " but found "
                                   ++ show resolvedIps
                               )
+
+-- | How long the DNS validation waits for the Gateway-DNS write authority: the
+-- gateway state is served by whichever node the loopback endpoint reaches and
+-- only the node that holds the ownership claim reports that it can write, so a
+-- run that follows a credential change or a gateway restart sees the refusal
+-- until the claim settles. The public-edge wait already treats exactly this
+-- refusal as retryable; the validation that reads the same observation did not.
+publicDnsWriteAuthorityAttempts :: Int
+publicDnsWriteAuthorityAttempts = 30
+
+publicDnsWriteAuthorityDelayMicroseconds :: Int
+publicDnsWriteAuthorityDelayMicroseconds = 10 * 1000 * 1000
+
+-- | Repeat an observation while it answers the one transient Gateway-DNS
+-- convergence refusal, up to the attempts given. Every other answer, success or
+-- failure, ends the wait at once, and the last answer is returned unchanged when
+-- the attempts run out.
+retryWhileGatewayDnsPending
+  :: Int -> Int -> IO (Either String value) -> IO (Either String value)
+retryWhileGatewayDnsPending attemptsLeft delayMicros observe = do
+  result <- observe
+  case result of
+    Left err
+      | attemptsLeft > 1
+      , gatewayDnsWriteAuthorityNotReadyDiagnostic `isInfixOf` err -> do
+          threadDelay delayMicros
+          retryWhileGatewayDnsPending (attemptsLeft - 1) delayMicros observe
+    _ -> pure result
 
 assertPublicHttpRedirect
   :: FilePath -> ValidatedSettings -> Substrate -> PublicEdgeRoute -> IO ExitCode
@@ -6269,27 +6563,6 @@ decodeJsonTextUtf8 :: Text.Text -> Either String Value
 decodeJsonTextUtf8 =
   eitherDecode . BL.fromStrict . TextEncoding.encodeUtf8
 
-settingsAwsEnvironment :: FilePath -> IO (Either String (ValidatedSettings, [(String, String)]))
-settingsAwsEnvironment repoRoot = do
-  settingsResult <- validateAndLoadSettings repoRoot
-  case settingsResult of
-    Left err -> pure (Left err)
-    Right settings -> do
-      currentEnvironment <- getEnvironment
-      credentialsResult <-
-        resolveLifecycleProviderCredentials
-          repoRoot
-          "aws"
-          (aws (validatedConfig settings))
-      pure $
-        case credentialsResult of
-          Left err -> Left ("load operational AWS credentials from Vault: " ++ err)
-          Right credentials ->
-            Right
-              ( settings
-              , overlayAwsCredentials currentEnvironment credentials
-              )
-
 decodeRoute53ZoneEvidence :: Text.Text -> Either String Value
 decodeRoute53ZoneEvidence evidence = do
   encoded <-
@@ -6351,12 +6624,6 @@ validationNonce = show . (round :: Rational -> Integer) . toRational <$> getPOSI
 normalizeDnsValue :: String -> String
 normalizeDnsValue = trimTrailingDot . map toLowerAscii . trim
 
-ensureTrailingDot :: String -> String
-ensureTrailingDot value =
-  if null value || last value == '.'
-    then value
-    else value ++ "."
-
 trimTrailingDot :: String -> String
 trimTrailingDot value =
   if not (null value) && last value == '.'
@@ -6398,7 +6665,7 @@ failWith message = do
 -- 1. Generate a unique recipient at `ses.receive_subdomain`.
 -- 2. Call `UsersAdmin.inviteUser` (live Keycloak admin API). Asserts the created
 --    user lands with `emailVerified=false`.
--- 3. Poll the SES capture bucket via `Prodbox.Ses.Capture.pollSesCapture` for the
+-- 3. Poll the SES capture bucket through the Provider (`ObserveSesInviteMail`) for the
 --    inbound message (60 s deadline).
 -- 4. Extract the action-token URL via `Prodbox.Keycloak.Email.parseKeycloakInviteLink`.
 -- 5. Follow the link with a cookie jar, parse and POST the Keycloak
@@ -6406,98 +6673,172 @@ failWith message = do
 -- 6. Perform a fresh OIDC password-grant login for the invited user and assert the
 --    token claims include the selected issuer, `email=<recipient>`, and
 --    `email_verified=true`.
--- 7. Cleanup: `UsersAdmin.revokeUser ident --delete` and `deleteCapturedEmail`.
+-- 7. Cleanup: `UsersAdmin.revokeUser ident --delete` and `ReapSesInviteMail`.
 runKeycloakInviteValidation :: FilePath -> Substrate -> [(String, String)] -> IO ExitCode
 runKeycloakInviteValidation repoRoot substrate _environment = do
-  envResult <- settingsAwsEnvironment repoRoot
-  case envResult of
+  settingsResult <- validateAndLoadSettings repoRoot
+  case settingsResult of
     Left err -> failWith err
-    Right (settings, awsEnv) -> do
+    Right settings -> do
       readyExit <- waitForPublicEdgeReady repoRoot substrate
       case readyExit of
         ExitFailure _ -> pure readyExit
         ExitSuccess -> do
           nonce <- generateInviteNonce
-          let subdomain =
-                Text.unpack
-                  ( Text.strip
-                      ( Prodbox.Settings.receive_subdomain
-                          (Prodbox.Settings.ses (Prodbox.Settings.validatedConfig settings))
-                      )
-                  )
+          let sesSection = Prodbox.Settings.ses (Prodbox.Settings.validatedConfig settings)
+              recipientResult =
+                keycloakInviteRecipient
+                  nonce
+                  (Prodbox.Settings.sender_domain sesSection)
+                  (Prodbox.Settings.receive_subdomain sesSection)
+              captureBucket =
+                s3BucketNameText
+                  <$> Prodbox.Settings.coordinateSesCaptureBucket
+                    (Prodbox.Settings.validatedCoordinates settings)
           -- Sprint 1.84: the served host is resolved through the refusing
-          -- accessor, beside the subdomain guard that already refuses on the
+          -- accessor, beside the recipient guard that already refuses on the
           -- same shape of missing config.
-          case (null subdomain, requireSubstratePublicFqdn settings substrate) of
-            (True, _) ->
-              failWith
-                "ValidationKeycloakInvite: ses.receive_subdomain must be set in prodbox.dhall."
-            (False, Left err) -> failWith err
-            (False, Right keycloakPublicHost) -> do
-              let recipient = "test-" ++ nonce ++ "@" ++ subdomain
-                  invitePassword = inviteCredentialPassword nonce
-              writeOutputLine ("KEYCLOAK_INVITE_PUBLIC_FQDN=" ++ keycloakPublicHost)
-              writeOutputLine ("KEYCLOAK_INVITE_RECIPIENT=" ++ recipient)
-              inviteResult <-
-                Prodbox.UsersAdmin.inviteUserAtPublicHost
-                  repoRoot
-                  (Text.pack keycloakPublicHost)
-                  recipient
-                  Nothing
-              case inviteResult of
-                Left err -> failWith ("invite failed: " ++ err)
-                Right summary -> do
-                  let userId = Text.unpack (Prodbox.UsersAdmin.userSummaryId summary)
-                  writeOutputLine ("KEYCLOAK_INVITE_USER_ID=" ++ userId)
-                  captureResult <-
-                    Prodbox.Ses.Capture.pollSesCapture awsEnv settings (Text.pack recipient) 60
-                  (outcome, maybeCapturedKey) <- case captureResult of
-                    Failure err -> pure (Failure ("S3 capture poll failed: " ++ err), Nothing)
-                    Success captured -> do
-                      let key = Prodbox.Ses.Capture.capturedEmailKey captured
-                      writeOutputLine ("KEYCLOAK_INVITE_S3_KEY=" ++ Text.unpack key)
-                      flowResult <-
-                        case Prodbox.Keycloak.Email.parseKeycloakInviteLink
-                          (Prodbox.Ses.Capture.capturedEmailBody captured) of
-                          Left err -> pure (Failure ("invite-link parse failed: " ++ err))
-                          Right inviteUrl -> do
-                            writeOutputLine "KEYCLOAK_INVITE_LINK_PARSED=true"
-                            credentialResult <-
-                              completeInviteCredentialSetup repoRoot inviteUrl invitePassword
-                            case credentialResult of
-                              Failure err ->
-                                pure (Failure ("credential setup failed: " ++ err))
-                              Success () -> do
-                                writeOutputLine "KEYCLOAK_INVITE_CREDENTIAL_SET=true"
-                                claimResult <-
-                                  waitForInviteOidcClaims
-                                    repoRoot
-                                    settings
-                                    substrate
-                                    recipient
-                                    invitePassword
-                                case claimResult of
-                                  Left err -> pure (Failure ("OIDC claim assertion failed: " ++ err))
-                                  Right () -> do
-                                    writeOutputLine "KEYCLOAK_INVITE_OIDC_CLAIMS_VERIFIED=true"
-                                    pure (Success ())
-                      pure (flowResult, Just key)
-                  _ <-
-                    Prodbox.UsersAdmin.revokeUserAtPublicHost
-                      repoRoot
-                      (Text.pack keycloakPublicHost)
-                      userId
-                      True
-                  case maybeCapturedKey of
-                    Nothing -> pure ()
-                    Just key -> do
-                      _ <- Prodbox.Ses.Capture.deleteCapturedEmail awsEnv settings key
-                      pure ()
-                  case outcome of
-                    Failure err -> failWith err
-                    Success () -> do
-                      writeOutputLine "KEYCLOAK_INVITE_CLEANUP=true"
-                      pure ExitSuccess
+          case (recipientResult, requireSubstratePublicFqdn settings substrate, captureBucket) of
+            (Left err, _, _) -> failWith ("ValidationKeycloakInvite: " ++ err)
+            (_, Left err, _) -> failWith err
+            (_, _, Nothing) ->
+              failWith "ValidationKeycloakInvite: ses.capture_bucket must be set in prodbox.dhall."
+            (Right recipient, Right keycloakPublicHost, Just bucket) ->
+              runInviteFlow repoRoot settings substrate keycloakPublicHost bucket recipient nonce
+
+-- | Invite a throwaway user, read the invite message back through the Provider,
+-- complete the credential setup, and remove the user and the message.
+--
+-- The captured message is read and deleted by the Provider because the host
+-- holds no AWS credential. Cleanup runs whether or not the flow succeeded, and
+-- a failure of the flow is never replaced by a failure of its cleanup.
+runInviteFlow
+  :: FilePath
+  -> Prodbox.Settings.ValidatedSettings
+  -> Substrate
+  -> String
+  -> Text.Text
+  -> String
+  -> String
+  -> IO ExitCode
+runInviteFlow repoRoot settings substrate keycloakPublicHost bucket recipient nonce = do
+  let invitePassword = inviteCredentialPassword nonce
+  writeOutputLine ("KEYCLOAK_INVITE_PUBLIC_FQDN=" ++ keycloakPublicHost)
+  writeOutputLine ("KEYCLOAK_INVITE_RECIPIENT=" ++ recipient)
+  inviteResult <-
+    Prodbox.UsersAdmin.inviteUserAtPublicHost
+      repoRoot
+      (Text.pack keycloakPublicHost)
+      recipient
+      Nothing
+  case inviteResult of
+    Left err -> failWith ("invite failed: " ++ err)
+    Right summary -> do
+      let userId = Text.unpack (Prodbox.UsersAdmin.userSummaryId summary)
+      writeOutputLine ("KEYCLOAK_INVITE_USER_ID=" ++ userId)
+      mailResult <- awaitInviteMail repoRoot bucket (Text.pack recipient) inviteMailAttempts
+      outcome <- case mailResult of
+        Left err -> pure (Failure ("S3 capture poll failed: " ++ err))
+        Right (key, inviteUrl) -> do
+          writeOutputLine ("KEYCLOAK_INVITE_S3_KEY=" ++ key)
+          writeOutputLine "KEYCLOAK_INVITE_LINK_PARSED=true"
+          completeInviteFlow repoRoot settings substrate recipient invitePassword inviteUrl
+      _ <-
+        Prodbox.UsersAdmin.revokeUserAtPublicHost
+          repoRoot
+          (Text.pack keycloakPublicHost)
+          userId
+          True
+      reaped <-
+        dispatchDnsAws repoRoot "validation-invite-mail-reap" $
+          ReapSesInviteMail bucket (Text.pack recipient)
+      case (outcome, reaped) of
+        (Failure err, _) -> failWith err
+        (Success (), Left err) -> failWith ("captured invite message was not removed: " ++ err)
+        (Success (), Right _) -> do
+          writeOutputLine "KEYCLOAK_INVITE_CLEANUP=true"
+          pure ExitSuccess
+
+completeInviteFlow
+  :: FilePath
+  -> Prodbox.Settings.ValidatedSettings
+  -> Substrate
+  -> String
+  -> String
+  -> String
+  -> IO (Result ())
+completeInviteFlow repoRoot settings substrate recipient invitePassword inviteUrl = do
+  credentialResult <- completeInviteCredentialSetup repoRoot inviteUrl invitePassword
+  case credentialResult of
+    Failure err -> pure (Failure ("credential setup failed: " ++ err))
+    Success () -> do
+      writeOutputLine "KEYCLOAK_INVITE_CREDENTIAL_SET=true"
+      claimResult <-
+        waitForInviteOidcClaims repoRoot settings substrate recipient invitePassword
+      case claimResult of
+        Left err -> pure (Failure ("OIDC claim assertion failed: " ++ err))
+        Right () -> do
+          writeOutputLine "KEYCLOAK_INVITE_OIDC_CLAIMS_VERIFIED=true"
+          pure (Success ())
+
+-- | What the invite-mail observation reported.
+data InviteMailObservation
+  = InviteMailPending
+  | InviteMailArrived !String !String
+  deriving (Eq, Show)
+
+-- | Read the Provider's invite-mail evidence: @ses-invite:pending@, or
+-- @ses-invite:\<object-key> \<invite-link>@.
+parseInviteMailEvidence :: Text.Text -> Either String InviteMailObservation
+parseInviteMailEvidence evidence =
+  case Text.stripPrefix "ses-invite:" evidence of
+    Nothing -> Left ("unexpected invite-mail evidence: " ++ Text.unpack evidence)
+    Just "pending" -> Right InviteMailPending
+    Just arrived -> case Text.words arrived of
+      [key, inviteLink] ->
+        Right (InviteMailArrived (Text.unpack key) (Text.unpack inviteLink))
+      _ -> Left "invite-mail evidence is not an object key and a link"
+
+-- | Poll the Provider for the invite message, one observation per attempt.
+awaitInviteMail
+  :: FilePath -> Text.Text -> Text.Text -> Int -> IO (Either String (String, String))
+awaitInviteMail repoRoot bucket recipient attemptsLeft
+  | attemptsLeft <= 0 =
+      pure
+        ( Left
+            ( "no inbound message addressed to "
+                ++ Text.unpack recipient
+                ++ " arrived within the deadline"
+            )
+        )
+  | otherwise = do
+      observed <-
+        dispatchDnsAws repoRoot "validation-invite-mail" (ObserveSesInviteMail bucket recipient)
+      case observed >>= parseInviteMailEvidence of
+        Left err -> pure (Left err)
+        Right (InviteMailArrived key inviteLink) -> pure (Right (key, inviteLink))
+        Right InviteMailPending -> do
+          threadDelay inviteMailPollDelayMicroseconds
+          awaitInviteMail repoRoot bucket recipient (attemptsLeft - 1)
+
+inviteMailAttempts :: Int
+inviteMailAttempts = 20
+
+inviteMailPollDelayMicroseconds :: Int
+inviteMailPollDelayMicroseconds = 3_000_000
+
+-- | The address the invite validation sends to: a local part unique to the run
+-- at the dotted receive domain the SES receipt rule is registered for.
+--
+-- @ses.receive_subdomain@ is a single DNS label, so the bare configured value
+-- is not a mail domain and no captured message can carry it in its @To:@
+-- header.  The domain is composed by the one rule the SES Provider references
+-- use, and an unset label refuses by name rather than producing an address
+-- nothing could receive.
+keycloakInviteRecipient :: String -> Text.Text -> Text.Text -> Either String String
+keycloakInviteRecipient nonce senderDomain receiveLabel =
+  (\domain -> "test-" ++ nonce ++ "@" ++ Text.unpack domain)
+    <$> Prodbox.Settings.sesReceiveDomain senderDomain receiveLabel
 
 -- | Generate a 16-character lowercase hex nonce from the current `POSIXTime` for
 -- per-test recipient uniqueness. Avoids pulling in a stronger RNG; sub-second

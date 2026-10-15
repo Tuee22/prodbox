@@ -1,16 +1,40 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module CleanRoomHandoff (cleanRoomHandoffSuite) where
 
+import CycleLedgerFixtures
+  ( Step (..)
+  , Variant (..)
+  , deletionMarkFor
+  , extendLedger
+  , ledgerOf
+  , markFor
+  , proofForIdentity
+  )
 import Data.ByteString.Char8 qualified as ByteString8
 import Data.ByteString.Lazy.Char8 qualified as ByteString
+import Data.Map.Strict qualified as Map
+import Data.Maybe (fromMaybe, isJust)
 import Data.Text qualified as Text
 import Prodbox.Test.CleanRoomHandoff
+import Prodbox.Test.Qualification.CascadeCycleIdentity
+  ( canonicalKeyPolicy
+  , partsOfIdentity
+  )
+import Prodbox.Test.Qualification.CascadeCycleLedger
+  ( CutoverEpoch (EpochPostActivation)
+  , CutoverMarkKind (..)
+  , CycleLedger
+  , LedgerRecord (RecordCutoverMark)
+  , appendRecord
+  , emptyCycleLedger
+  , epochOfLedger
+  , ledgerPhase
+  )
 import Prodbox.Test.Qualification.Evidence
-  ( QualificationEvidence
-  , QualificationEvidenceInput (..)
+  ( QualificationEvidenceInput (..)
   , QualificationIdentity (..)
-  , mkQualificationEvidence
   )
 import Prodbox.Test.Qualification.SourceIdentity
   ( ManifestFileType (ManifestRegularFile)
@@ -78,21 +102,19 @@ cleanRoomHandoffSuite =
 
     it "keeps exactly one writer across the type-indexed cutover" $ do
       input <- QualificationEvidence.validInput
-      evidence <- accepted (mkQualificationEvidence input)
       let replacement = evidenceReplacementIdentity input
           pre = initialCutoverState replacement
       cutoverStatePhase (rollbackLegacy pre) `shouldBe` PreActivation
       cutoverStateHasLegacyWriter pre `shouldBe` True
       cutoverStateHasReplacementWriter pre `shouldBe` False
-      passed <- accepted (qualifyReplacement replacement evidence)
+      passed <- witnessFor replacement
       active <- accepted (activateReplacement passed pre)
       cutoverStatePhase active `shouldBe` PostActivation
       cutoverStateHasLegacyWriter active `shouldBe` False
       cutoverStateHasReplacementWriter active `shouldBe` True
       afterDeletion <- postDeletionIdentity input
       deleted <- accepted (deleteLegacyRoute passed afterDeletion active)
-      postEvidence <- postDeletionEvidence input
-      postPassed <- accepted (qualifyReplacement afterDeletion postEvidence)
+      postPassed <- witnessFor afterDeletion
       complete <- accepted (qualifyPostActivation postPassed deleted)
       cutoverStatePhase complete `shouldBe` PostActivationQualified
       cutoverStateHasLegacyWriter complete `shouldBe` False
@@ -104,36 +126,52 @@ cleanRoomHandoffSuite =
       -- would still satisfy `qualifyPostActivation`, and the deployment would
       -- stay called qualified after the source it was qualified on had gone.
       input <- QualificationEvidence.validInput
-      evidence <- accepted (mkQualificationEvidence input)
       let replacement = evidenceReplacementIdentity input
-      passed <- accepted (qualifyReplacement replacement evidence)
+      passed <- witnessFor replacement
       active <- accepted (activateReplacement passed (initialCutoverState replacement))
       cutoverRefusal (deleteLegacyRoute passed replacement active)
         `shouldBe` Just CutoverDeletionIdentityUnchanged
 
     it "refuses a deletion carrying another identity's witness" $ do
       input <- QualificationEvidence.validInput
-      evidence <- accepted (mkQualificationEvidence input)
       let replacement = evidenceReplacementIdentity input
-      passed <- accepted (qualifyReplacement replacement evidence)
+      passed <- witnessFor replacement
       active <- accepted (activateReplacement passed (initialCutoverState replacement))
-      postEvidence <- postDeletionEvidence input
       afterDeletion <- postDeletionIdentity input
-      elsewhere <- accepted (qualifyReplacement afterDeletion postEvidence)
+      elsewhere <- witnessFor afterDeletion
       cutoverRefusal (deleteLegacyRoute elsewhere afterDeletion active)
         `shouldBe` Just (CutoverStageWitnessMismatch PlanDeleteLegacyRouteAndIdentity)
 
-    it "refuses a qualification receipt for another replacement identity" $ do
+    it "mints a witness only for the identity the cycle proof names" $ do
       input <- QualificationEvidence.validInput
-      evidence <- accepted (mkQualificationEvidence input)
-      qualifyReplacement (evidenceSupersededIdentity input) evidence
-        `shouldBe` Left CutoverQualificationIdentityMismatch
+      let replacement = evidenceReplacementIdentity input
+          proof = proofForIdentity replacement
+          mismatch = Just CutoverQualificationIdentityMismatch
+      cutoverRefusal (qualifyReplacement replacement proof) `shouldBe` Nothing
+      -- A proof for another deployment is not a proof for this one.
+      cutoverRefusal (qualifyReplacement (evidenceSupersededIdentity input) proof)
+        `shouldBe` mismatch
+      -- Images are a set: the same deployment observed in another order is the same identity.
+      cutoverRefusal
+        ( qualifyReplacement
+            replacement
+              { qualificationComponentImageDigests = reverse (qualificationComponentImageDigests replacement)
+              }
+            proof
+        )
+        `shouldBe` Nothing
+      -- Any one digest moving is another deployment.
+      cutoverRefusal
+        ( qualifyReplacement
+            replacement {qualificationLoadFaultDigest = qualificationResourceEnvelopeDigest replacement}
+            proof
+        )
+        `shouldBe` mismatch
 
     it "requires exact staged cutover order" $ do
       input <- QualificationEvidence.validInput
-      evidence <- accepted (mkQualificationEvidence input)
       let replacement = evidenceReplacementIdentity input
-      passed <- accepted (qualifyReplacement replacement evidence)
+      passed <- witnessFor replacement
       admitted <- accepted (admitCutoverPlan replacement (Just passed) canonicalCutoverPlan)
       resumeCutoverPlan [] `shouldBe` Right canonicalCutoverPlan
       outOfOrder <-
@@ -170,13 +208,106 @@ cleanRoomHandoffSuite =
 
     it "refuses to admit a witness-bearing stage for another identity" $ do
       input <- QualificationEvidence.validInput
-      evidence <- accepted (mkQualificationEvidence input)
-      passed <- accepted (qualifyReplacement (evidenceReplacementIdentity input) evidence)
+      passed <- witnessFor (evidenceReplacementIdentity input)
       admitCutoverStage
         (evidenceSupersededIdentity input)
         (Just passed)
         PlanActivateSingleReplacementWriter
         `shouldBe` Left (CutoverStageWitnessMismatch PlanActivateSingleReplacementWriter)
+
+    it "selects the legacy scan from the phase the ledger replays to" $ do
+      map
+        legacyScanModeForPhase
+        [PreActivation, PostActivation, LegacyRouteDeleted, PostActivationQualified]
+        `shouldBe` [ LegacyScanPreActivation
+                   , LegacyScanPreActivation
+                   , LegacyScanPostActivation
+                   , LegacyScanPostActivation
+                   ]
+      input <- QualificationEvidence.validInput
+      afterDeletion <- postDeletionIdentity input
+      let before = deployment (evidenceReplacementIdentity input)
+          after = deployment afterDeletion
+          phaseAfter steps = cutoverPhaseOfLedger (ledgerPhase (fst (ledgerOf steps)))
+          activated = preHistory before ++ [Activate ["pre-1", "pre-2"] before]
+          deleted = activated ++ [DeleteRoute after]
+      -- No ledger is the phase the validation has always scanned for.
+      cutoverPhaseOfLedger (ledgerPhase emptyCycleLedger) `shouldBe` PreActivation
+      map
+        phaseAfter
+        [ preHistory before
+        , activated
+        , deleted
+        , deleted ++ postHistory after ++ [QualifyPost ["post-a", "post-b"] after]
+        ]
+        `shouldBe` [PreActivation, PostActivation, LegacyRouteDeleted, PostActivationQualified]
+
+    it "resumes a state only on the tree the last mark was recorded on" $ do
+      input <- QualificationEvidence.validInput
+      afterDeletion <- postDeletionIdentity input
+      let replacement = evidenceReplacementIdentity input
+          before = deployment replacement
+          phase = ledgerPhase (fst (ledgerOf (preHistory before ++ [Activate ["pre-1", "pre-2"] before])))
+      -- Before the activating edit lands, the tree is still the recorded one.
+      fmap someCutoverStatePhase (resumeCutoverState phase replacement)
+        `shouldBe` Right PostActivation
+      -- A tree that has moved on has a different identity and is refused, not relabelled.
+      fmap someCutoverStatePhase (resumeCutoverState phase afterDeletion)
+        `shouldBe` Left CutoverQualificationIdentityMismatch
+
+    it "qualifies the post-deletion state only from the phase a deletion leaves it in" $ do
+      input <- QualificationEvidence.validInput
+      afterDeletion <- postDeletionIdentity input
+      let replacement = evidenceReplacementIdentity input
+          before = deployment replacement
+          after = deployment afterDeletion
+          deletedPhase =
+            ledgerPhase
+              ( fst
+                  ( ledgerOf
+                      (preHistory before ++ [Activate ["pre-1", "pre-2"] before, DeleteRoute after])
+                  )
+              )
+      passed <- witnessFor afterDeletion
+      resumed <- accepted (resumeCutoverState deletedPhase afterDeletion)
+      qualifyResumedPostActivation passed resumed `shouldBe` Right PostActivationQualified
+      -- A state resumed in another phase is refused.
+      early <- accepted (resumeCutoverState (ledgerPhase emptyCycleLedger) replacement)
+      qualifyResumedPostActivation passed early
+        `shouldBe` Left (CutoverResumedPhaseUnexpected PreActivation)
+
+    it "agrees with the typed machine about which cutover transitions are legal, in every order" $ do
+      -- The ledger replays marks by key because the identity the typed state is
+      -- indexed by cannot be recomputed after the activating edit. These are the
+      -- same three transitions, so every order of them must be legal in both or
+      -- in neither, step by step.
+      input <- QualificationEvidence.validInput
+      afterDeletion <- postDeletionIdentity input
+      let replacement = evidenceReplacementIdentity input
+          before = deployment replacement
+          after = deployment afterDeletion
+          allTransitions = [TransitionActivate, TransitionDelete, TransitionQualify]
+          scripts = concatMap (\width -> mapM (const allTransitions) [1 .. width]) [0 .. 3 :: Int]
+      activation <- witnessFor replacement
+      qualification <- witnessFor afterDeletion
+      let start = (MachinePre (initialCutoverState replacement), baseLedger before)
+          advance (seen, (machine, ledger)) transition =
+            let typed = typedStep activation qualification afterDeletion machine transition
+                recorded = ledgerStep before after ledger transition
+             in ( seen ++ [(isJust typed, isJust recorded)]
+                , (fromMaybe machine typed, fromMaybe ledger recorded)
+                )
+          decisions script = fst (foldl advance ([], start) script)
+      mapM_
+        (\script -> mapM_ (\(typed, recorded) -> typed `shouldBe` recorded) (decisions script))
+        scripts
+      -- The legal path exists in both, and nothing else completes it.
+      decisions [TransitionActivate, TransitionDelete, TransitionQualify]
+        `shouldBe` [(True, True), (True, True), (True, True)]
+      decisions [TransitionDelete, TransitionActivate]
+        `shouldBe` [(False, False), (True, True)]
+      decisions [TransitionActivate, TransitionActivate]
+        `shouldBe` [(True, True), (False, False)]
 
     it "bounds pre-activation legacy sites and requires zero after deletion" $ do
       let sources =
@@ -279,9 +410,9 @@ cutoverRefusal = either Just (const Nothing)
 -- deployment is a different identity from the one activation was qualified on
 -- — which is the whole reason deletion returns qualification to pending. The
 -- change has to be in the source manifest rather than in a digest field,
--- because that manifest digest is what `mkQualificationEvidence` compares when
--- it refuses a reused identity, and a deletion that left it equal would be a
--- deletion that removed no source.
+-- because the source manifest digest is what the qualification key and the
+-- reused-identity check both compare, and a deletion that left it equal would
+-- be a deletion that removed no source.
 postDeletionIdentity :: QualificationEvidenceInput -> IO QualificationIdentity
 postDeletionIdentity input = do
   deletedSource <- fixtureSourceIdentity "src/Prodbox/Test/New.hs" "new-without-legacy-route"
@@ -291,18 +422,72 @@ postDeletionIdentity input = do
         }
     )
 
--- | The artifact a post-deletion campaign would emit: the activated deployment
--- is now the superseded side, and the post-deletion identity is the replacement.
-postDeletionEvidence :: QualificationEvidenceInput -> IO QualificationEvidence
-postDeletionEvidence input = do
-  afterDeletion <- postDeletionIdentity input
-  accepted
-    ( mkQualificationEvidence
-        input
-          { evidenceSupersededIdentity = evidenceReplacementIdentity input
-          , evidenceReplacementIdentity = afterDeletion
-          }
-    )
+-- | The step of the cutover each side of the conformance test is asked to take.
+data Transition = TransitionActivate | TransitionDelete | TransitionQualify
+  deriving (Eq, Show)
+
+-- | The typed machine in whichever phase it is, so a script can try a step the
+-- types would not let a caller write down.
+data Machine
+  = MachinePre (CutoverState 'PreActivation)
+  | MachinePost (CutoverState 'PostActivation)
+  | MachineDeleted (CutoverState 'LegacyRouteDeleted)
+  | MachineQualified (CutoverState 'PostActivationQualified)
+
+typedStep
+  :: QualificationPassed
+  -> QualificationPassed
+  -> QualificationIdentity
+  -> Machine
+  -> Transition
+  -> Maybe Machine
+typedStep activation qualification afterDeletion machine transition =
+  case (machine, transition) of
+    (MachinePre state, TransitionActivate) ->
+      either (const Nothing) (Just . MachinePost) (activateReplacement activation state)
+    (MachinePost state, TransitionDelete) ->
+      either (const Nothing) (Just . MachineDeleted) (deleteLegacyRoute activation afterDeletion state)
+    (MachineDeleted state, TransitionQualify) ->
+      either (const Nothing) (Just . MachineQualified) (qualifyPostActivation qualification state)
+    _ -> Nothing
+
+-- | The same step as a mark by key. A qualification is preceded by the two
+-- post-deletion cycles that would license it, when the ledger is in the epoch
+-- they count in; otherwise the mark is attempted on its own, to be refused.
+ledgerStep :: Variant -> Variant -> CycleLedger -> Transition -> Maybe CycleLedger
+ledgerStep before after ledger transition = case transition of
+  TransitionActivate ->
+    record ledger (markFor MarkActivated ["pre-1", "pre-2"] before ledger)
+  TransitionDelete -> record ledger (deletionMarkFor after ledger)
+  TransitionQualify
+    | isPostEpoch ->
+        let withCycles = fst (extendLedger (ledger, Map.empty) (postHistory after))
+         in record withCycles (markFor MarkPostActivationQualified ["post-a", "post-b"] after withCycles)
+    | otherwise ->
+        record ledger (markFor MarkPostActivationQualified ["post-a", "post-b"] after ledger)
+ where
+  record target mark = either (const Nothing) (Just . fst) (appendRecord target (RecordCutoverMark mark))
+  isPostEpoch = case epochOfLedger ledger of
+    EpochPostActivation _ -> True
+    _ -> False
+
+-- | The ledger every script starts from: one qualifying pair, not yet activated.
+baseLedger :: Variant -> CycleLedger
+baseLedger before = fst (ledgerOf (preHistory before))
+
+-- | The cycles of an identity's tree, as a deployment a history can run on.
+deployment :: QualificationIdentity -> Variant
+deployment = DeploymentParts . partsOfIdentity canonicalKeyPolicy
+
+preHistory :: Variant -> [Step]
+preHistory before = [Pass "pre-1" before, Pass "pre-2" before]
+
+postHistory :: Variant -> [Step]
+postHistory after = [Pass "post-a" after, Pass "post-b" after]
+
+-- | The witness two consecutive qualifying cycles on exactly this identity earn.
+witnessFor :: QualificationIdentity -> IO QualificationPassed
+witnessFor identity = accepted (qualifyReplacement identity (proofForIdentity identity))
 
 fixtureSourceIdentity :: String -> String -> IO SourceIdentity
 fixtureSourceIdentity path contents = do

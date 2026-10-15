@@ -15,6 +15,7 @@ module Prodbox.ControlPlane.ProviderWorkerClient
   , providerWorkerExecutionAuthenticatedHandlerObserved
   , decodeProviderWorkerResponse
   , dispatchProviderCommittedIntent
+  , renderProviderWorkerClientError
   )
 where
 
@@ -66,6 +67,8 @@ import Prodbox.ControlPlane.ProviderWorkerExecution
   , admitProviderCommittedIntent
   , executeVerifiedProviderIntentBound
   , executeVerifiedProviderIntentBoundObserved
+  , renderProviderIntentAdmissionError
+  , renderProviderIntentExecutionError
   )
 import Prodbox.ControlPlane.RequestAuthentication
   ( verifiedCallerSlotPrincipal
@@ -93,6 +96,23 @@ data ProviderWorkerClientError
   | ProviderWorkerResponseStatusMismatch !Int
   | ProviderWorkerRemoteRefused !Int !Text
   deriving stock (Eq, Show)
+
+-- | Operator-facing text for a Provider Worker dispatch failure. A refusal's
+-- detail is already rendered text and is carried unchanged; the structural
+-- arms hold typed values with no free-form text, so 'show' is exact for them.
+renderProviderWorkerClientError :: ProviderWorkerClientError -> Text
+renderProviderWorkerClientError err = case err of
+  ProviderWorkerTransportFailed detail ->
+    "Provider Worker transport failed: " <> Text.pack (show detail)
+  ProviderWorkerResponseInvalid detail ->
+    "Provider Worker response invalid: " <> Text.pack (show detail)
+  ProviderWorkerAuthenticatedRoleResponse observation ->
+    "Provider Worker answered with an authenticated-role response: "
+      <> Text.pack (show observation)
+  ProviderWorkerResponseStatusMismatch status ->
+    "Provider Worker response status mismatch: HTTP " <> Text.pack (show status)
+  ProviderWorkerRemoteRefused status detail ->
+    "Provider Worker refused (HTTP " <> Text.pack (show status) <> "): " <> detail
 
 providerWorkerResponseMaximumBytes :: Int
 providerWorkerResponseMaximumBytes = 64 * 1024
@@ -170,7 +190,7 @@ providerWorkerExecutionAuthenticatedHandlerWith observeStage boundary executeBou
         refuseStage ProviderWorkerIntentAdmission
         respond
           ReplyConflict
-          (ProviderWorkerAdmissionRefused (Text.pack (show err)))
+          (ProviderWorkerAdmissionRefused (renderProviderIntentAdmissionError err))
       Right verified -> do
         completeStage ProviderWorkerIntentAdmission
         executed <- executeBound verified
@@ -178,7 +198,7 @@ providerWorkerExecutionAuthenticatedHandlerWith observeStage boundary executeBou
           Left err ->
             respond
               ReplyServiceUnavailable
-              (ProviderWorkerExecutionFailed (Text.pack (show err)))
+              (ProviderWorkerExecutionFailed (renderProviderIntentExecutionError err))
           Right bound -> do
             observeStage ProviderWorkerAuthorityProjection ProviderWorkerStageStarted
             case providerExecutionResultForAuthority bound of

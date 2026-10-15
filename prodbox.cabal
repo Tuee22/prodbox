@@ -22,6 +22,7 @@ library
         Prodbox.Aws.Native.ServiceQuotas
         Prodbox.Aws.Region
         Prodbox.Aws.SigV4
+        Prodbox.Aws.StsIdentity
         Prodbox.AwsEnvironment
         Prodbox.Bootstrap.Broker
         Prodbox.Bootstrap.Broker.Admission
@@ -223,6 +224,7 @@ library
         Prodbox.ControlPlane.AuthorityBackupEndpoint
         Prodbox.ControlPlane.Capacity
         Prodbox.ControlPlane.Codec
+        Prodbox.ControlPlane.ClosedRefusalToken
         Prodbox.ControlPlane.ClosedSession
         Prodbox.ControlPlane.ServiceSessionJournal
         Prodbox.ControlPlane.ServiceSessionLifecycle
@@ -251,6 +253,8 @@ library
         Prodbox.ControlPlane.ProviderAssumedRoleSession
         Prodbox.ControlPlane.ProviderAwsScopeReceipt
         Prodbox.ControlPlane.ProviderCredentialSession
+        Prodbox.ControlPlane.OperationBudget
+        Prodbox.ControlPlane.ProviderFailureSummary
         Prodbox.ControlPlane.ProviderWorkEndpoint
         Prodbox.ControlPlane.ProviderNarrowSession
         Prodbox.ControlPlane.ProviderPulumiConfigProjection
@@ -425,6 +429,7 @@ library
         Prodbox.Lifecycle.ProviderWorker.Evidence.Internal
         Prodbox.Lifecycle.ProviderWorker.ProviderWork
         Prodbox.Lifecycle.AwsNativeStackFamily
+        Prodbox.Lifecycle.CascadeNoInstall
         Prodbox.Lifecycle.CredentialProvisioner.Execution
         Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
         Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAuthority
@@ -449,6 +454,7 @@ library
         Prodbox.Lifecycle.CredentialProvisioner.Substrate
         Prodbox.Lifecycle.CredentialProvisioner.RuntimeSecurity
         Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
+        Prodbox.Lifecycle.CredentialProvisioner.ProviderCliActions
         Prodbox.Lifecycle.CredentialProvisioner.ProviderRoute53Policy
         Prodbox.Lifecycle.CredentialProvisioner.ProviderRolePolicyOperationScope
         Prodbox.Lifecycle.CredentialProvisioner.ProductionIam
@@ -484,6 +490,7 @@ library
         Prodbox.Lifecycle.DependencyAdmission.Internal
         Prodbox.Lifecycle.DesiredPresence
         Prodbox.Lifecycle.Dns01Challenge
+        Prodbox.Lifecycle.ControllerFamilyAttribution
         Prodbox.Lifecycle.DnsRecord
         Prodbox.Lifecycle.DnsRecord.Owner
         Prodbox.Lifecycle.DnsRecord.Owner.Internal
@@ -499,6 +506,8 @@ library
         Prodbox.Lifecycle.ReadinessObservation
         Prodbox.Lifecycle.RegistryBackendWitness
         Prodbox.Lifecycle.RestoreGraph
+        Prodbox.Lifecycle.RetainedEbsProvider
+        Prodbox.Lifecycle.RetainedRootSurvey
         Prodbox.Lifecycle.ResidueStatus
         Prodbox.Lifecycle.OwnedResourceTags
         Prodbox.Lifecycle.ResourceClass
@@ -540,6 +549,7 @@ library
         Prodbox.Lifecycle.Teardown.CascadeTerminalAuditLane
         Prodbox.Lifecycle.Teardown.CheckpointAuthority
         Prodbox.Lifecycle.Teardown.CloudRuntime
+        Prodbox.Lifecycle.Teardown.CreateRecordCoverage
         Prodbox.Lifecycle.Teardown.CloudRuntimeProduction
         Prodbox.Lifecycle.Teardown.Decision
         Prodbox.Lifecycle.Teardown.EksDrainAttemptRecovery
@@ -600,6 +610,8 @@ library
         Prodbox.Ses.Workflow.Repository
         Prodbox.UsersAdmin
         Prodbox.Infra.MinioBackend
+        Prodbox.Infra.EphemeralKubeconfigPath
+        Prodbox.Infra.BootstrapImageSeed
         Prodbox.K8s
         Prodbox.K8s.InCluster
         Prodbox.Lib.AwsSubstratePlatform
@@ -608,6 +620,7 @@ library
         Prodbox.Lib.EksContainerdMirror
         Prodbox.Lib.EksCustomImagePush
         Prodbox.Lib.EksImageMirror
+        Prodbox.Lib.RegistryProbe
         Prodbox.Lib.Storage
         Prodbox.Lint
         Prodbox.Minio.EncryptedObject
@@ -651,9 +664,16 @@ library
         Prodbox.Test.GatewayRuntimeStability
         Prodbox.Test.CounterexampleValidation
         Prodbox.Test.CertificateScopeServing
+        Prodbox.Test.CascadeQualificationCycle
+        Prodbox.Test.CascadeQualificationReceipt
         Prodbox.Test.CleanRoomHandoff
+        Prodbox.Test.CleanRoomScan
         Prodbox.Test.LifecycleCleanupClient
         Prodbox.Test.TemporalQualification
+        Prodbox.Test.Qualification.CascadeCycleArtifact
+        Prodbox.Test.Qualification.CascadeCycleIdentity
+        Prodbox.Test.Qualification.CascadeCycleLedger
+        Prodbox.Test.Qualification.CascadeCycleLedgerStore
         Prodbox.Test.Qualification.CounterexampleProfile
         Prodbox.Test.Qualification.CreateInterruptedCounterexample
         Prodbox.Test.Qualification.FrozenCounterexample
@@ -702,6 +722,7 @@ library
         Prodbox.ControlPlane.CascadeHostRuntime.Internal
         Prodbox.Lifecycle.Teardown.CascadeCandidate.Internal
         Prodbox.Test.CascadeQualification
+        Prodbox.Test.CascadeQualificationLocal
         Prodbox.Lifecycle.Teardown.CapabilityCustody.Internal
         Prodbox.ControlPlane.CascadeRetainedSlotEndpoint.Internal
         Prodbox.ControlPlane.CascadeRetainedSlotClient.Internal
@@ -795,6 +816,16 @@ test-suite prodbox-unit
         AdminActionQuotaJournal
         AdminActionLifecycle
         Allocation
+        BootstrapImageSeed
+        EbsEnsure
+        HarnessSesSmtp
+        KeycloakConsumerScript
+        ProviderAwsRunner
+        PublicDnsWriteAuthority
+        KeycloakPublicIssuer
+        RetainedDeliveryRefusalLog
+        RegistryProbe
+        SesCapture
         AwsNativeClients
         AwsControlPlaneIsolation
         AwsSesDecommission
@@ -914,6 +945,7 @@ test-suite prodbox-unit
         ExternalMaterialIngressLifecycle
         EksClientAuthProjection
         EksClientAuthProjectionFixture
+        StsIdentity
         DecommissionCommit
         DecommissionAuthorityExport
         DecommissionControlPlaneClient
@@ -949,6 +981,9 @@ test-suite prodbox-unit
         LifecycleTeardownLegacyAdoptionPlan
         LifecycleTeardownAwsStackAdapter
         LifecycleTeardownAwsStackReaderInterpreter
+        CascadeNoInstallConfirmation
+        ControllerFamilyAttribution
+        CreateRecordCoverage
         ClusterDeleteEntryArm
         LifecycleTeardownCapabilityCustody
         LifecycleTeardownCascadeCandidate
@@ -1005,8 +1040,15 @@ test-suite prodbox-unit
         HelmRelease
         LifecycleLease
         ModelBCasTransportAdapter
+        CascadeCycleArtifactTests
+        CascadeCycleIdentityTests
+        CascadeCycleLedgerTests
+        CascadeQualificationCycleTests
+        CascadeQualificationReceiptTests
         CertificateScopeServing
         CleanRoomHandoff
+        CycleIdentityFixtures
+        CycleLedgerFixtures
         MeasuredProfile
         ObjectStoreNative
         OrdinaryTeardownRecovery
@@ -1033,6 +1075,9 @@ test-suite prodbox-unit
         AbsenceStratumWitness
         ProviderEvidenceCodec
         ProviderEvidenceQualification
+        OperationBudget
+        ProviderFailureSummary
+        SubprocessKillable
         StoreLifetimeWitness
         SupervisionWitness
         TargetCommitSmtp

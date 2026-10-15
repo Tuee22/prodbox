@@ -129,6 +129,7 @@ prodbox
       certificate-scope
       clean-room-handoff
       cascade-qualification
+      cascade-qualification-receipt
       ha-rke2-aws
       lifecycle
       pulumi

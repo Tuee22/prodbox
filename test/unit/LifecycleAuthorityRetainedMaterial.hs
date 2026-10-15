@@ -28,17 +28,36 @@ import Prodbox.ControlPlane.TargetIntentAuthority
   ( TargetIntentIssueRequest (..)
   )
 import Prodbox.ControlPlane.TargetIntentAuthorityProduction
-  ( selectRetainedAcmeEabDeliveryIntent
+  ( retainedSesSmtpPermitOperationFromObservation
+  , selectRetainedAcmeEabDeliveryIntent
   )
 import Prodbox.ControlPlane.TargetMaterialRegistry
-  ( TargetSecretId (TargetAcmeEab)
+  ( TargetSecretId (TargetAcmeEab, TargetSesSmtp)
   )
 import Prodbox.ControlPlane.TargetSecretAgentExecution
   ( mkTargetAgentIdentity
   )
+import Prodbox.ControlPlane.TargetSecretWorker
+  ( decodeTargetWorkerReceipt
+  , encodeTargetWorkerReceipt
+  , mkTargetWorkerReceiptProjection
+  , targetWorkerReceiptCommitment
+  , targetWorkerReceiptGeneration
+  , targetWorkerReceiptVaultVersion
+  )
 import Prodbox.Lifecycle.Authority.RetainedMaterial
 import Prodbox.Lifecycle.CheckpointAuthority
-  ( mkLongLivedCheckpointAuthority
+  ( ModelBObservation (..)
+  , mkLongLivedCheckpointAuthority
+  , mkModelBObjectVersion
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
+  ( AwsAdminTargetObservationCause (..)
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminRetainedCustody
+  ( RetainedCustodyDisposition (..)
+  , classifyRetainedCustodyForGeneration
+  , retainedSourceTargetReceipt
   )
 import Prodbox.Lifecycle.Lease
   ( AuthorityTime
@@ -150,6 +169,140 @@ lifecycleAuthorityRetainedMaterialSuite =
         sourceReceipt1
         []
         `shouldSatisfy` isLeft
+
+    it "Sprint 2.141 resolves the AWS-admin operation a pending retained SES SMTP delivery serves" $ do
+      -- The retained delivery runs under its own operation id. The prepared-target
+      -- outbox that authorizes the Target intent is keyed by the AWS-admin operation
+      -- that sealed the source, which the source carries; the issuer looked the
+      -- outbox up under the delivery's id and found nothing. The pending delivery
+      -- sits in the delivery outbox beside that source, so the issuer reads it there.
+      let smtpTarget = must (mkRetainedMaterialTarget SRetainedSesSmtpMaterial "home")
+          smtpSeal =
+            must (mkRetainedSealIntent operation1 generation1 permit1 digestA deadline grace1)
+          smtpSource =
+            must
+              ( mkRetainedMaterialSource
+                  generation1
+                  operation1
+                  sourceReceipt1
+                  digestA
+                  commitment1
+                  1
+                  now
+              )
+          smtpDelivery =
+            mkRetainedDeliveryIntent
+              deliveryOperation1
+              sourceReceipt1
+              smtpTarget
+              generation1
+              attestation1
+              digestC
+              deadline
+          current = committedSource smtpSeal smtpSource initialRetainedMaterialAggregate
+          (_, pending) =
+            stepRetainedMaterial
+              current
+              (BeginRetainedMaterialDelivery (RetainedCustodyPresent smtpSource) now smtpDelivery)
+          agent = must (mkTargetAgentIdentity ("home@sha256:" <> hexDigest 'f'))
+          requestFor operationId =
+            TargetIntentIssueRequest
+              { targetIntentIssueTarget = TargetSesSmtp
+              , targetIntentIssueExpectedAgentIdentity = agent
+              , targetIntentIssueExpectedGeneration = generation1
+              , targetIntentIssueExpectedReceiptDigest = digestA
+              , targetIntentIssueOperationId = operationId
+              , targetIntentIssueActionIndex = 0
+              , targetIntentIssueIdempotencyKey = operationId
+              }
+          observedAt aggregate =
+            ModelBObserved (must (mkModelBObjectVersion "etag-1")) aggregate
+          resolved operationId = retainedSesSmtpPermitOperationFromObservation (requestFor operationId)
+      -- The delivery's id resolves to the operation that sealed the source.
+      resolved "delivery-op-1" (observedAt pending) `shouldBe` Right (Just "seal-op-1")
+      -- A request that no pending delivery carries belongs to the prepared-target
+      -- outbox directly, as it always did; so does any request when nothing is
+      -- pending, and when no delivery outbox exists yet.
+      resolved "seal-op-1" (observedAt pending) `shouldBe` Right Nothing
+      resolved "delivery-op-1" (observedAt current) `shouldBe` Right Nothing
+      resolved "delivery-op-1" ModelBMissing `shouldBe` Right Nothing
+      -- A delivery outbox that cannot be read refuses: the request might be in it.
+      resolved "delivery-op-1" (ModelBCorrupt "bad bytes") `shouldSatisfy` isLeft
+      resolved "delivery-op-1" (ModelBEndpointUnready "not routable") `shouldSatisfy` isLeft
+      resolved "delivery-op-1" (ModelBUnobservable "no answer") `shouldSatisfy` isLeft
+
+    it "Sprint 4.107 projects a sealed SMTP source into a receipt the receipt codec accepts" $ do
+      -- The commitment of a worker receipt is a Vault HMAC. The projection used
+      -- the source's ciphertext digest, which the codec refuses, so the worker
+      -- never returned a receipt for a delivery the Authority had applied.
+      let hmacCommitment = ref "vault:v1:Y29tbWl0bWVudC1obWFj"
+          source =
+            must
+              ( mkRetainedMaterialSource
+                  generation1
+                  operation1
+                  sourceReceipt1
+                  digestA
+                  hmacCommitment
+                  3
+                  now
+              )
+          podUid = "4f1c1b5a-0000-4000-8000-000000000001"
+          imageDigest = "sha256:" <> hexDigest 'e'
+          projected = retainedSourceTargetReceipt digestB podUid imageDigest source
+          receipt = must projected
+      targetWorkerReceiptCommitment receipt `shouldBe` "vault:v1:Y29tbWl0bWVudC1obWFj"
+      targetWorkerReceiptGeneration receipt `shouldBe` generation1
+      targetWorkerReceiptVaultVersion receipt `shouldBe` 3
+      -- The host decodes the worker's receipt with the same codec.
+      fmap encodeTargetWorkerReceipt (decodeTargetWorkerReceipt (encodeTargetWorkerReceipt receipt))
+        `shouldBe` Right (encodeTargetWorkerReceipt receipt)
+      -- The derivation it replaced: the codec's refusal is the reason the commitment
+      -- is the HMAC, and stays executable.
+      mkTargetWorkerReceiptProjection
+        TargetSesSmtp
+        generation1
+        3
+        (targetValueDigestText digestA)
+        digestB
+        digestB
+        podUid
+        imageDigest
+        `shouldSatisfy` isLeft
+
+    it "Sprint 4.108 reads custody at an earlier generation as not yet sealed, so a rotation can seal" $ do
+      -- A rotation installs generation N+1 over custody at generation N. The
+      -- observation refused that as a generation mismatch, so the SMTP family
+      -- could be installed and never rotated.
+      let sourceAt generation =
+            must
+              ( mkRetainedMaterialSource
+                  (must (mkCredentialGeneration generation))
+                  operation1
+                  sourceReceipt1
+                  digestA
+                  commitment1
+                  1
+                  now
+              )
+          classify permitGeneration =
+            classifyRetainedCustodyForGeneration (must (mkCredentialGeneration permitGeneration))
+      -- Custody at the permit's own generation is delivered.
+      classify 2 (RetainedCustodyPresent (sourceAt 2))
+        `shouldBe` RetainedCustodyDeliverSource (sourceAt 2)
+      -- Custody at an earlier generation, or none, is a generation not yet sealed.
+      classify 2 (RetainedCustodyPresent (sourceAt 1)) `shouldBe` RetainedCustodyNotYetSealed
+      classify 1 (RetainedCustodyPositivelyAbsent absenceRef) `shouldBe` RetainedCustodyNotYetSealed
+      -- Custody at a later generation belongs to a newer operation.
+      classify 2 (RetainedCustodyPresent (sourceAt 3))
+        `shouldBe` RetainedCustodyRefused AwsAdminTargetObservationRetainedGenerationMismatch
+      -- Custody that cannot be read refuses, each under its own cause.
+      classify 1 (RetainedCustodyCorrupt "bad bytes")
+        `shouldBe` RetainedCustodyRefused AwsAdminTargetObservationRetainedCorrupt
+      classify 1 (RetainedCustodyDigestMismatch digestA digestB)
+        `shouldBe` RetainedCustodyRefused AwsAdminTargetObservationRetainedDigestMismatch
+      classify 1 (RetainedCustodyUnobservable "no answer")
+        `shouldBe` RetainedCustodyRefused AwsAdminTargetObservationRetainedUnobservable
 
     it "commits one exact generation and makes response-loss replay idempotent" $ do
       let (begin, begun) =
@@ -324,6 +477,64 @@ lifecycleAuthorityRetainedMaterialSuite =
         run
         `shouldReturn` Left "retained delivery remains pending until its absolute deadline"
       readIORef runs `shouldReturn` 1
+
+    it
+      "retires an expired delivery that an earlier attestation bound, and begins the renewed request's own"
+      $ do
+        -- A renewed credential operation derives a new prepared-target receipt, so the
+        -- attestation of its retained delivery changes. The 2026-10-12 SMTP delivery,
+        -- after one attempt left a pending delivery behind, was refused with
+        -- `RetainedDeliveryAlreadyPending` on every later attempt: the pending one
+        -- matched no request (another attestation), could not be replaced by a
+        -- successor (which must keep it), and so blocked the target for good.
+        let current = committedSource seal1 source1 initialRetainedMaterialAggregate
+            (_, pending) =
+              stepRetainedMaterial
+                current
+                (BeginRetainedMaterialDelivery (RetainedCustodyPresent source1) now delivery1)
+            renewedAttestation = ref "attestation-renewed"
+        state <- newIORef (0 :: Int, pending)
+        runs <- newIORef (0 :: Int)
+        let repository = ioRefRepository state
+            renewed =
+              RetainedMaterialDeliveryRequest
+                { retainedDeliveryRequestOperationId = deliveryOperation1
+                , retainedDeliveryRequestTarget = target1
+                , retainedDeliveryRequestGeneration = generation1
+                , retainedDeliveryRequestAttestationRef = renewedAttestation
+                , retainedDeliveryRequestDeadline = deadline
+                }
+            run _ _ = modifyIORef' runs (+ 1) >> pure (Left "stop-after-renewed-begin")
+        -- Inside the earlier delivery's deadline it is another attempt's: wait.
+        coordinateRetainedMaterialDelivery repository now source1 renewed (\_ -> pure (Right Nothing)) run
+          `shouldReturn` Left "retained delivery remains pending until its absolute deadline"
+        readIORef runs `shouldReturn` 0
+        -- Past it, the earlier delivery is retired and the request's own begins and runs once.
+        coordinateRetainedMaterialDelivery
+          repository
+          afterDeadline
+          source1
+          renewed
+          (\_ -> pure (Right Nothing))
+          run
+          `shouldReturn` Left "stop-after-renewed-begin"
+        readIORef runs `shouldReturn` 1
+        (_, renewedPending) <- readIORef state
+        case retainedMaterialPendingDeliveries renewedPending of
+          [begun] -> do
+            retainedDeliveryOperationId begun `shouldBe` deliveryOperation1
+            retainedDeliveryAttestationRef begun `shouldBe` renewedAttestation
+          other -> expectationFailure ("expected one renewed delivery, got " ++ show other)
+        -- The renewed delivery now resumes as the request's own.
+        coordinateRetainedMaterialDelivery
+          repository
+          afterDeadline
+          source1
+          renewed
+          (\_ -> pure (Right Nothing))
+          run
+          `shouldReturn` Left "retained delivery remains pending until its absolute deadline"
+        readIORef runs `shouldReturn` 1
 
     it "executes the exact successor after recovering an applied replacement response loss" $ do
       let current = committedSource seal1 source1 initialRetainedMaterialAggregate

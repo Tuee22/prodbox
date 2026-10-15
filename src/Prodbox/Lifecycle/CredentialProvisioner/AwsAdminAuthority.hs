@@ -194,7 +194,10 @@ data AwsAdminAttemptResourceObservation
 
 -- | Exact pre-target phases that require a cleanup-only continuation.  None
 -- carries a target receipt, so a fresh permit may first delete the bounded IAM
--- key family, prove stable absence, and only then consume its one remint.
+-- key family, prove stable absence, and only then consume its one remint.  The
+-- journal carrying no receipt does not mean the Target is empty: the attempt
+-- may have written it before dying, so the remint refuses (Sprint 4.108) rather
+-- than commit a Target that already holds its generation.
 data AwsAdminRecoveryCleanupPhase
   = AwsAdminRecoveryIntentCommittedRemintUsed
   | AwsAdminRecoveryCreateAttemptPreparedInitial

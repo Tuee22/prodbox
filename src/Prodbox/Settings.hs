@@ -43,6 +43,7 @@ module Prodbox.Settings
   , requireOperationalAwsRegion
   , requireAwsSubstrateProfile
   , requireSesCaptureBucket
+  , sesReceiveDomain
   , homeZoneIdTextForRendering
   , operationalAwsRegionTextForRendering
   , SeedInForceOutcome (..)
@@ -127,6 +128,7 @@ import Prodbox.Capacity.Config
   , WorkloadResourceProfile (..)
   , defaultCapacitySection
   , validateCapacitySection
+  , validateGatewayEmitterCapacity
   , validateOneShotSecretWorkerCapacity
   )
 import Prodbox.Cluster.Topology
@@ -205,6 +207,7 @@ import Prodbox.Settings.Coordinate
   , S3BucketName
   , SafeRelativePath
   , awsRegionText
+  , dnsLabelText
   , mkAcmeDirectoryUrl
   , mkAwsRegion
   , mkDnsLabel
@@ -250,6 +253,7 @@ import Prodbox.Tls.CertScope
   , Fqdn
   , bindListener
   , certScopeSetDnsNames
+  , fqdnText
   , mkDelegatedZone
   , mkFqdn
   , mkScopeSet
@@ -1142,6 +1146,7 @@ validateConfigWithContext repoRoot contextInput config = do
         Allocation.renderCompileError
         (Allocation.compileResourcePlanUncertified (resource_plan (capacity config)))
     validateOneShotSecretWorkerCapacity (resource_plan (capacity config))
+    validateGatewayEmitterCapacity (resource_plan (capacity config))
     -- Sprint 1.83: the public-edge parse is retained rather than repeated. The
     -- same call inside `validateLocalConfig` above is the refusal; this is the
     -- value, and it is the only one any consumer sees.
@@ -1375,6 +1380,23 @@ sesCoordinatesFor section = do
   captureBucket <-
     optionalCoordinateField "ses.capture_bucket" mkS3BucketName (capture_bucket section)
   Right (senderDomain, receiveSubdomain, captureBucket)
+
+-- | The domain mail to the receive subdomain is addressed to: the configured
+-- label under the sender domain.
+--
+-- @ses.receive_subdomain@ is one DNS label, but everything that names a record,
+-- a receipt rule or a mailbox needs the dotted name. The Provider's SES refs were
+-- built from the bare label, so the inbound MX record name failed its own
+-- two-label rule and the public-edge prerequisite gate refused before any
+-- validation ran; the invite validation addressed mail to a name with no domain.
+sesReceiveDomain :: Text -> Text -> Either String Text
+sesReceiveDomain senderDomain receiveLabel = do
+  label <- mapLeft (\e -> "ses.receive_subdomain: " ++ show e) (mkDnsLabel receiveLabel)
+  fqdn <-
+    mapLeft
+      (\e -> "ses receive domain: " ++ renderScopeError e)
+      (mkFqdn (dnsLabelText label <> "." <> Text.strip senderDomain))
+  Right (fqdnText fqdn)
 
 -- | An optional dotted name, minted through the repository's existing FQDN
 -- constructor rather than a second rule of the same shape.

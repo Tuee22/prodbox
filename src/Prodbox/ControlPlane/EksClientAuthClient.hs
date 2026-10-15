@@ -20,6 +20,7 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Prodbox.Aws.SigV4 (hexSha256)
+import Prodbox.Aws.StsIdentity (parseStsIdentityEvidence, stsIdentityAccount)
 import Prodbox.ControlPlane.EksClientAuthProjection
   ( EksClientAuthEnvelope
   , EksClientAuthProjection
@@ -94,12 +95,12 @@ withEksClientAuthProjection caller repoRoot requestedRegion requestedCluster act
       ObserveOperationalIdentity
   case identity of
     Left err -> pure (Left (EksClientAuthIdentityDispatchFailed err))
-    Right evidence -> case accountFromIdentityEvidence evidence of
+    Right evidence -> case parseStsIdentityEvidence evidence of
       Nothing -> pure (Left EksClientAuthIdentityEvidenceInvalid)
-      Just account ->
+      Just callerIdentity ->
         issueProjection
           (dispatchHostProviderIntentFresh caller repoRoot "eks-client-auth")
-          account
+          (stsIdentityAccount callerIdentity)
           requestedRegion
           requestedCluster
           action
@@ -235,16 +236,6 @@ issueProjection dispatch account requestedRegion requestedCluster action = do
                     || eksClientAuthClusterName projection /= requestedCluster
                     then pure (Left EksClientAuthProjectionBindingMismatch)
                     else Right <$> action projection
-
-accountFromIdentityEvidence :: Text -> Maybe Text
-accountFromIdentityEvidence evidence = do
-  arn <- Text.stripPrefix "sts-identity:" evidence
-  case Text.splitOn ":" arn of
-    _partition : _service : _region : account : _resource
-      | Text.length account == 12 && Text.all isAsciiDigit account -> Just account
-    _ -> Nothing
- where
-  isAsciiDigit character = character >= '0' && character <= '9'
 
 decodeEvidence :: Text -> Either EksClientAuthClientError EksClientAuthEnvelope
 decodeEvidence retainedEvidence = do

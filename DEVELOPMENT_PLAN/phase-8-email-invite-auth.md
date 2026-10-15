@@ -12,6 +12,14 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-10-13 on Sprints `8.13` and `8.14` (Standards A/N).** The first live `keycloak-invite` run found that
+no production code creates the SES SMTP identity or delivers it to the home sink: the permit, the worker, the
+custody and the sink lane exist, and nothing submits the request. Sprint `8.13` adds the home harness's
+submission. Once the family was installed and delivered, the run reached the invite and found that the Keycloak
+consumer script sends the invite email with a `kcadm` command that does not exist and reports every failure as a
+constant; Sprint `8.14` repairs both. Both are `Done` and live-proven: `keycloak-invite` passes on the home
+substrate (2026-10-13). The AWS substrate's own sink remains Sprint `7.47`'s.
+
 ✅ **Reclosed 2026-08-02 on Sprint `8.12`.** Sprint `8.11` replaces the long synchronous SES
 lease bracket with a revisioned, restart-resumable provider workflow whose mutation lease covers
 only non-idempotent provider work and whose target deliveries flow through a durable outbox.
@@ -1666,6 +1674,15 @@ and no 70-minute synchronous HTTP bracket or release response is a correctness b
 - Link Sprint `8.10` as the semantic classifier consumed by the revisioned workflow, not as a
   transaction/availability proof.
 
+### Correction To This Sprint's Own Registration (Standard C)
+
+**Recorded 2026-10-12.** The `Implementation` line above says production bindings reuse the landed
+Credential Provisioner and retained-material interpreters. `Prodbox.Ses.Workflow.*` has no production importer,
+and `mkSesSmtpIamParameters` has no caller outside its own module, so no production path creates the SMTP
+identity or delivers it to a sink. What this sprint delivered is real and tested (the revision-bound model, the
+worker's SMTP execution, the custody and delivery adapters); what it did not deliver is the submission. Sprint
+`8.13` supplies the home harness's submission. The workflow driver itself remains unwired.
+
 ## Sprint 8.12: Invite Fault Campaign and Current-Revision Qualification [✅ Done]
 
 **Status**: Done (2026-08-02)
@@ -1785,6 +1802,140 @@ has happened. The narrower observation above is unchanged and still stands:
 - The counterexample-falsifiability dependency recorded above was owned by Sprint `5.32` ✅
   (2026-08-11) and is discharged. It never reopened this phase (Standard N: a later-registered
   sprint never blocks an earlier phase).
+
+## Sprint 8.13: The SMTP Identity Had A Design, A Model And A Worker, And No Caller [✅ Done]
+
+**Status**: Done (2026-10-13), live-proven. Phase `8` own-surface reopen (Standards A/N), registered before any behavior
+change. The first live `keycloak-invite` run of the 2026-10-08 campaign got as far as Keycloak and failed there:
+the realm had no SMTP server, so the first `execute-actions-email` could not send. The cause is upstream of
+Keycloak. The Keycloak chart's Vault init container logged `No value found at secret/data/keycloak/smtp` and
+carried on (the fail-open idiom of the incident plan's `B10`, observed for the first time), so the
+materialised environment held empty `PRODBOX_SMTP_*` values; and nothing in the code base had ever written that
+secret. A producer search found the whole path built and unreachable: the permit vocabulary admits
+`SesSmtpIamParameters`, the Admin Action worker executes `SesSmtpRetainedCustodyCredential` (it creates the
+deterministic IAM identity, policy and key, derives the region-bound `SesSmtpSource` in bounded memory, seals it
+into retained-home custody and delivers it to the sink), the Target Secret Agent has the `TargetSesSmtp` lane,
+and `coordinateAwsAdminProvisioning` is generic over the credential class; but `mkSesSmtpIamParameters` has no
+caller, `firstReconcileIamParameters` refuses the class ("not a home first-reconcile member"), the retained SES
+preparation dispatches only its five non-credential Provider intents (its `sync-target` stage is a label in the
+plan trace with nothing behind it), and `Prodbox.Ses.Workflow` (Sprint `8.11`) has no production importer. The
+only time `keycloak-invite` passed (2026-06-26) the SMTP identity was still a Pulumi resource and the host held
+the key.
+**Doctrine**: [AWS Admin Credentials](../documents/engineering/aws_admin_credentials.md) (the suite-driven run
+and the canonical retained desired-present operation) and [Integration Fixture
+Doctrine](../documents/engineering/integration_fixture_doctrine.md).
+**Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/TestRunner.hs`, and `test/unit/HarnessSesSmtp.hs`.
+**Blocked by**: none.
+**Live-proof**: Observed (2026-10-12 and 13). The harness step installed the family at generation 1 and, under scope revision 2, rotated it to generation 2, and `keycloak-invite` passed (every `KEYCLOAK_INVITE_*` line through `KEYCLOAK_INVITE_CLEANUP=true`, exit 0, 2026-10-13 12:31 EDT).
+**Deployment qualification**: pending — invalidated: the harness gains a credential-provisioning step.
+**Independent Validation**: the request the harness builds, and which suites build it, over pure cases; the
+worker, custody and delivery keep their own suites.
+**Docs to update**: this file, `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md` (the premise of decision `D7`).
+
+### Objective
+
+Give the home cluster's invite path the SMTP identity the design says it has, by submitting the permit nothing
+submitted.
+
+### Deliverables
+
+- `reconcileHarnessCredential`, the harness's one submission of a credential request to the Credential
+  Provisioner, extracted from the Lifecycle-provider reconcile that `aws-iam` proves live and parameterised by
+  the credential class, its Target Secret, its operation scope and its exact IAM parameters. The
+  Lifecycle-provider reconcile is now an instance of it; its behaviour is unchanged.
+- `reconcileHarnessSesSmtpCredential`: the retained SES SMTP request for the operational region, the admin
+  credential's account and the configured sending identity (`sesSmtpCredentialRequest`, pure), in an operation
+  scope that is the same for every suite, because the family is long-lived and a per-suite scope would mint a
+  new generation, and delete the previous key, on every run. A rerun with a current generation finds the
+  completed operation and only recovers its receipt.
+- The harness runs it after the ACME EAB ingress and before the suite body, for the home suites that send an
+  invite (`harnessSesSmtpApplies`), so the secret exists when the chart that reads it is deployed. The AWS
+  substrate's own sink is Sprint `7.47`'s.
+- The scope names a revision, `test-harness:retained-ses-smtp:r2`. A completed operation is answered with its
+  receipt and never repeated, so the revision is the one supported lever for a family whose current generation
+  cannot be trusted. Revision 1 completed generation 1 with a key whose password nobody had sealed (Sprint
+  `4.108`'s finding); revision 2 is a new operation, the harness sees the Target generation already installed,
+  and the new operation rotates it to generation 2.
+
+### Validation
+
+1. The request names the retained-custody class, the SMTP Target Secret, the stable scope, the operational
+   region and the stripped sending identity; an identity, an account or a region the IAM program does not accept
+   is refused.
+2. The step applies to the invite suites on the home substrate (`keycloak-invite`, `all`, `test all`) and to no
+   other suite, and to no suite on the AWS substrate.
+3. **Canonical gate.** Focused group, primary unit suite, and `prodbox dev check` at 0.
+4. **Live.** After the runtime image is rolled, `keycloak-invite` finds `secret/keycloak/smtp` populated, the
+   realm's SMTP server configured by `reconcile-runtime`, the invite mail captured and the credential setup
+   completed.
+
+### Remaining Work
+
+The live run (validation item 4), and what it finds. Three things are known and owned elsewhere or not yet
+owned: the canonical entrypoint `prodbox aws stack aws-ses reconcile` still dispatches only the five
+non-credential intents; the Keycloak chart's init container still fails open on an absent secret (incident plan
+`B10`, tranche `1B`); and the consumer's diagnostic is scrubbed to "see Keycloak consumer Pod logs", which cost
+the first live run a log search.
+
+## Sprint 8.14: The Keycloak Consumer Called A kcadm Command That Does Not Exist, And Reported Its Failure As A Constant [✅ Done]
+
+**Status**: Done (2026-10-13), live-proven. Phase `8` own-surface reopen (Standards A/N), registered before any behavior
+change. With the SMTP family installed and delivered (Sprint `4.107`), the first live `keycloak-invite` run that
+reached its body ended `invite failed: Keycloak consumer operation failed: see Keycloak consumer Pod logs`.
+The realm held the throwaway user, so the step that failed was the one after the user's creation: the invite
+email. The consumer script (`Prodbox.UsersAdmin`, executed by `kubectl exec` inside the Keycloak Pod so no secret
+reaches the host) sends it with `kcadm.sh put users/<id>/execute-actions-email`. `kcadm` has no `put`. Its
+commands are `config`, `create`, `get`, `update`, `delete`, `get-roles`, `add-roles`, `remove-roles` and
+`set-password`, and the PUT of an endpoint that is not a resource is `update` with `--no-merge` (`-n`) and a body.
+Measured on the pinned `keycloak:26.0.0` in the live Pod: `kcadm.sh put ...` answers `Unmatched arguments`, and
+`kcadm.sh update users/<id>/execute-actions-email -r prodbox -n -b '["VERIFY_EMAIL","UPDATE_PASSWORD"]'` reaches
+the endpoint (it answered with the server's own SMTP error). No test ran the script. The reason also never reached
+anyone: the scrub replaced every failure with "see Keycloak consumer Pod logs", and the Pod's server log holds
+nothing for a usage error of the client in the same Pod, so naming the step took an exec into the Pod.
+**Doctrine**: [Helm Chart Platform Doctrine](../documents/engineering/helm_chart_platform_doctrine.md) (the
+Vault-projected workload consumer); no rule changes.
+**Implementation**: `src/Prodbox/UsersAdmin.hs` and `test/unit/KeycloakConsumerScript.hs`.
+**Blocked by**: none.
+**Live-proof**: Observed (2026-10-13). The invite created the user and the realm sent the mail through SES (SMTP over STARTTLS with the rotated key); the Provider's capture reader found the captured message (`KEYCLOAK_INVITE_S3_KEY`); the credential-setup form was followed, the verify-email continuation included; the invited user's token carried the public issuer and `email_verified=true`; and the user and the captured message were removed.
+**Deployment qualification**: pending - invalidated: the invite path changes.
+**Independent Validation**: the script text against the command set of the pinned `kcadm`, and the diagnostic
+over scripted output; no cluster.
+**Docs to update**: this file, `DEVELOPMENT_PLAN/README.md`, and `DEVELOPMENT_PLAN/00-overview.md`.
+
+### Objective
+
+Send the invite email with a command that exists, and let a failure of the consumer say which step it failed in.
+
+### Deliverables
+
+- The invite email is `kcadm update "users/<id>/execute-actions-email" -r <realm> -n -b '[...]'`.
+- The script announces `prodbox-stage=<stage>` on its standard error before each `kcadm` step, from a closed list
+  of twelve stages (`login/admin`, `reconcile/smtp`, `reconcile/clients`, `reconcile/demo-user`, `token/login`,
+  `token/emit`, `invite/create-user`, `invite/send-actions-email`, `invite/add-role`, `users/list`,
+  `users/disable`, `users/delete`). The host's message is the last announced stage from that list and the exit
+  status, and nothing else the command printed (an expanded argument may be in it). A marker not in the list is
+  never repeated.
+
+### Validation
+
+1. Every word the script puts after `${KCADM} ` is a `kcadm` command; the line this sprint replaced, run
+   through the same check, is flagged (the negative control), so the check is not vacuous.
+2. The invite email is an unmerged `update` of the endpoint with the two required actions.
+3. The stages the script announces and the closed list are the same set.
+4. The diagnostic names the last announced stage and the exit status and repeats neither the other text nor an
+   unlisted marker.
+5. **Canonical gate.** Focused group, primary unit suite, and `prodbox dev check` at 0.
+6. **Live.** The invite creates the user and the realm sends the mail.
+
+### Remaining Work
+
+The live proof, and what the rest of the invite finds: nothing after the email has run live in this campaign
+(the SES receipt into the capture bucket, the Provider's capture reader with Sprint `5.53`'s pagination and
+window, the credential-setup form, the claims assertion, the cleanup). One observation is recorded here because it
+cost a wrong diagnosis: `kcadm get realms/<realm> --fields smtpServer` prints `{ }` for a realm whose SMTP server
+is configured (the full representation holds the map), so it cannot be used to read the setting back; whether the
+setting took is read by asking the realm to send.
 
 ## Documentation Requirements
 

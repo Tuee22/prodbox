@@ -416,6 +416,23 @@ the original request untouched if the replacement misses its deadline. Unit/prop
 that queue, replacement, cancellation, threshold, and absolute-clock math. TLC owns the protocol
 consequence: no successful pre-publish phase crosses while the bounded deadline state is closed.
 
+### 5.1 Bounded delay and the runtime clock-skew bound
+
+The gateway models assume a bounded-delay network and clocks that agree within a bound: `AdvanceClock`
+steps every node's clock together, `HeartbeatTimeout` is a strict freshness window inside that finite
+domain, and `AcceptFrame` requires a non-regressing timestamp. TLC does not fix the bound's size and
+does not check that the runtime bound is small relative to the heartbeat timeout; that is a property
+of the operator's configuration. The runtime does not get the assumption for free. It enforces it in
+three places, and each names its bound and what an operator does when it is crossed:
+
+| Model assumption | Runtime enforcement | Bound | Operator response |
+|---|---|---|---|
+| Nodes share a time base | `prodbox host info` fails fast when `timedatectl` reports the clock unsynchronized (`NtpUnsynced`). A host without `timedatectl` reports an unknown disposition and is not blocked. | NTP synchronized | Restore NTP synchronization on the host before starting or restarting the daemon. |
+| Clocks agree within a bound | The daemon refuses an inbound event whose timestamp lies beyond the bound, and the push response lists it under `rejected` with the offending skew. | `max_clock_skew_seconds`: default 10 seconds, range `[0.1, 600]` | Find the node the rejection names and correct its time source; a widened bound is a configuration change that widens the window in which a stale claim can be accepted. |
+| Drift is visible before it matters | The daemon records the maximum inter-node skew it has observed on `/v1/state` as `max_clock_skew_seconds_observed`, beside `max_clock_skew_seconds_bound`. | observed maximum against the bound | Treat an observed maximum approaching the bound as the signal to correct the clock, before events begin to be rejected. |
+
+POSIX clock rollback and the conversion between wall-clock and monotonic time remain outside the model.
+
 The lifecycle create-ownership model additionally does not prove:
 
 - that any particular repository function implements the ordering it models. The model proves the

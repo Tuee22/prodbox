@@ -798,10 +798,15 @@ Forbidden patterns for this repository:
 - Project-level `Makefile`, `justfile`, `Taskfile.yml` that duplicate
   commands the tool already exposes. A wrapper that adds nothing is a drift
   vector.
+- Python sources (`*.py`, `*.pyi`, `__pycache__/`) and Python toolchain-ownership files
+  (`pyproject.toml`, `poetry.toml`, `poetry.lock`, `.python-version`, `Pipfile`, `Pipfile.lock`,
+  `requirements.txt`) anywhere in the repository. The supported implementation is Haskell; a
+  research probe or harness that needs another language lives outside the repository or is rewritten
+  in Haskell.
 
 **Current error-message contract.** On a forbidden-path hit,
 `renderDoctrineViolation` emits the matched path and the category-specific reason (workflow
-automation, hook tooling, or duplicate root build shim). There is no public pattern-key registry and
+automation, hook tooling, duplicate root build shim, or Python artifact). There is no public pattern-key registry and
 the current diagnostic carries no separate remedy field. The three-line path/key/regenerate contract
 elsewhere in this document applies to generated-artifact drift, not this negative-space predicate.
 

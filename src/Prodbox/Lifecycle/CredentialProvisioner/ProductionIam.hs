@@ -18,6 +18,7 @@ module Prodbox.Lifecycle.CredentialProvisioner.ProductionIam
   , credentialIamProgramRoleTrustPolicy
   , credentialIamProgramRolePolicyDocument
   , lifecycleProviderRolePolicyDocument
+  , lifecycleProviderRolePolicyActions
   , mkLifecycleProviderIamProgram
   , mkAuthorityBackupIamProgram
   , mkTlsRetentionIamProgram
@@ -52,6 +53,7 @@ module Prodbox.Lifecycle.CredentialProvisioner.ProductionIam
   , observeProductionIamFamilyAbsent
   , productionIamJointAuthorization
   , waitProductionIamVisibilityGrace
+  , userCarriesProgramTags
   )
 where
 
@@ -199,6 +201,27 @@ credentialIamProgramRolePolicyDocument = fmap programRolePermissionsPolicy . int
 -- completed credential receipt.
 lifecycleProviderRolePolicyDocument :: Text
 lifecycleProviderRolePolicyDocument = renderPolicy lifecycleProviderRolePolicy
+
+-- | Every action the Provider role's permissions policy allows, in document
+-- order. The CLI-verb coverage gate compares it with the actions the verbs a
+-- Provider interpreter runs are authorized by
+-- ("Prodbox.Lifecycle.CredentialProvisioner.ProviderCliActions").
+lifecycleProviderRolePolicyActions :: [Text]
+lifecycleProviderRolePolicyActions =
+  case lifecycleProviderRolePolicy of
+    Object document -> case AesonKeyMap.lookup "Statement" document of
+      Just (Array statements) -> concatMap allowedActions (Vector.toList statements)
+      _ -> []
+    _ -> []
+ where
+  allowedActions item = case item of
+    Object statementObject
+      | AesonKeyMap.lookup "Effect" statementObject == Just (String "Allow") ->
+          case AesonKeyMap.lookup "Action" statementObject of
+            Just (Array actions) -> [action | String action <- Vector.toList actions]
+            Just (String action) -> [action]
+            _ -> []
+    _ -> []
 
 mkLifecycleProviderIamProgram
   :: Text -> Text -> Text -> Either ProductionIamError CredentialIamProgram
@@ -1062,7 +1085,7 @@ ensureUserPolicyAndTags session = do
           case tags of
             Left err -> pure (Left (awsFailure "read back IAM user tags" err))
             Right actual
-              | sort actual /= sort expectedTags ->
+              | not (userCarriesProgramTags expectedTags actual) ->
                   pure (Left (ProductionIamTagReadBackMismatch actual))
               | otherwise -> ensurePolicy
  where
@@ -1115,6 +1138,19 @@ ensureUserPolicyAndTags session = do
           Right (IamUserPolicyPresent actual)
             | policiesEqual actual (credentialIamProgramPolicyDocument iamProgram) -> Right ()
             | otherwise -> Left ProductionIamPolicyReadBackMismatch
+
+-- | Whether an IAM user carries every tag the program owns, with the program's
+-- value; tags it does not own are not its to judge.
+--
+-- The read-back after tagging used to demand the program's tags and nothing else.
+-- An identity that predates the program carries tags of its own: the SMTP user was
+-- created by the Pulumi program this one replaced, with a substrate, a purpose and
+-- a name, and tagging adds the program's tags beside them, so the first live
+-- request for it failed with @tag-read-back-mismatch@ although every tag the
+-- program writes was present with its value. The program neither adds nor removes
+-- the others.
+userCarriesProgramTags :: [IamTag] -> [IamTag] -> Bool
+userCarriesProgramTags expected actual = all (`elem` actual) expected
 
 programTags :: CredentialIamProgram -> [IamTag]
 programTags iamProgram =
@@ -1284,10 +1320,12 @@ lifecycleProviderRolePolicy =
                , "s3:DeleteBucket"
                , "s3:GetBucketLocation"
                , "s3:GetBucketPolicy"
+               , "s3:GetBucketTagging"
                , "s3:GetBucketVersioning"
                , "s3:ListBucket"
                , "s3:ListBucketVersions"
                , "s3:PutBucketPolicy"
+               , "s3:PutBucketTagging"
                , "s3:PutBucketVersioning"
                , "s3:GetObject"
                , "s3:GetObjectVersion"
@@ -1298,19 +1336,27 @@ lifecycleProviderRolePolicy =
             <> fmap
               ("ses:" <>)
               [ "GetIdentityVerificationAttributes"
+              , "GetIdentityDkimAttributes"
               , "VerifyDomainIdentity"
               , "VerifyDomainDkim"
               , "SetIdentityNotificationTopic"
               , "SetIdentityMailFromDomain"
               , "CreateReceiptRuleSet"
               , "CreateReceiptRule"
+              , "UpdateReceiptRule"
               , "DescribeReceiptRuleSet"
+              , "DescribeReceiptRule"
+              , "DescribeActiveReceiptRuleSet"
               , "SetActiveReceiptRuleSet"
               , "DeleteReceiptRule"
               , "DeleteReceiptRuleSet"
               , "DeleteIdentity"
               ]
         )
+        ["*"]
+    , statement
+        "ObserveRegisteredOwnedResourceTags"
+        ["tag:GetResources"]
         ["*"]
     , statement
         "RegisteredIamRoleEffects"

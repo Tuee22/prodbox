@@ -35,6 +35,7 @@ import Prodbox.CLI.Command
   , runPlanWithOptions
   )
 import Prodbox.CLI.Output (writeDiagnosticLine, writeOutputLine)
+import Prodbox.Config.Basics (UnencryptedBasics (..))
 import Prodbox.ControlPlane.LegacyAdoptionCompositionRoot
   ( LegacyAdoptionCompositionError
   , maximumLegacyAdoptionConfirmationSeconds
@@ -90,18 +91,15 @@ import Prodbox.Lifecycle.Teardown.OwnershipManifest
   , OwnershipManifestDecisionView (..)
   , legacyAdoptionPlanDigestText
   )
-import Prodbox.Settings
-  ( validateAndLoadSettings
-  , validatedDeploymentContext
-  )
+import Prodbox.Settings (loadUnencryptedBasics)
 import Prodbox.Vault.Client
-  ( vaultSealStatus
+  ( VaultAddress (..)
+  , vaultSealStatus
   )
 import Prodbox.Vault.Gate
   ( VaultGateOutcome (..)
   , vaultGateOutcome
   )
-import Prodbox.Vault.Host (vaultAddressForDeploymentContext)
 import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
@@ -427,19 +425,23 @@ probePulumiVaultGate repoRoot = do
   case testGate of
     Just "allow" -> pure VaultGateProceed
     _ -> do
-      settingsResult <- validateAndLoadSettings repoRoot
-      case settingsResult of
+      -- The address comes from the Tier-0 floor, which is readable while Vault is
+      -- sealed. The settings loader resolves the in-force config through the
+      -- Lifecycle Authority, which needs an unsealed Vault, so asking it first
+      -- turned the one case this gate exists to name ("Vault is sealed") into a
+      -- failure to load the context the gate needed to ask.
+      basicsResult <- loadUnencryptedBasics repoRoot
+      case basicsResult of
         Left err ->
           pure
             ( VaultGateRefuse
-                ( "Blocked: could not load the sealed deployment context for the Vault gate: "
+                ( "Blocked: could not read the sealed-Vault floor for the Vault gate: "
                     ++ err
                 )
             )
-        Right settings ->
+        Right basics ->
           vaultGateOutcome
-            <$> vaultSealStatus
-              (vaultAddressForDeploymentContext (validatedDeploymentContext settings))
+            <$> vaultSealStatus (VaultAddress (basicsVaultAddress basics))
 
 buildPulumiExecutionPlan :: String -> Bool -> Plan String
 buildPulumiExecutionPlan commandName confirmed =

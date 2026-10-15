@@ -372,6 +372,23 @@ resources:
         - ${nodeGroup}
         - ${ebsCsiDriverPolicyAttachment}
 
+  # The runtime-stability sample reads the Kubernetes metrics API. RKE2 ships a
+  # metrics server and EKS does not, so the AWS substrate installs the managed
+  # add-on beside the CSI driver; it needs no IAM role and no node-local image.
+  metricsServerAddon:
+    type: aws:eks:Addon
+    properties:
+      clusterName: ${cluster.name}
+      addonName: metrics-server
+      resolveConflictsOnCreate: OVERWRITE
+      resolveConflictsOnUpdate: OVERWRITE
+      tags:
+        Name: ${stackName}-metrics-server
+        prodbox.io/managed-by: prodbox
+    options:
+      dependsOn:
+        - ${nodeGroup}
+
 outputs:
   backend_bucket: prodbox-state
   cluster_name: ${cluster.name}

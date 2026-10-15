@@ -31,13 +31,16 @@ import Prodbox.ControlPlane.VaultAccessorAudit
   ( VaultAccessorAuditDetailedError (..)
   , VaultAccessorAuditDetailedOps (..)
   , VaultAccessorAuditOps (..)
+  , VaultAccessorDetailedLookupError (..)
   , VaultAccessorLookupError (..)
   , VaultAccessorSubject (..)
+  , classifyVaultAccessorLookupResponse
   , isBoundedBatchAuditorLogin
   , isExactBoundedBatchAuditorLogin
   , revokeAndProveVaultAccessorSubjectAbsent
   , revokeAndProveVaultAccessorSubjectAbsentDetailed
   )
+import Prodbox.Http.Client (HttpError (..))
 import Prodbox.Lifecycle.AdminAction.Runner
   ( AdminActionRunnerError (..)
   , finishAdminActionRunnerSession
@@ -46,6 +49,7 @@ import Prodbox.Vault.Client
   ( TokenAccessorInfo (..)
   , VaultKubernetesLoginResult (..)
   , VaultToken (..)
+  , vaultAccessorLookupVanished
   )
 import TestSupport
 
@@ -166,6 +170,55 @@ vaultSessionSafetySuite =
       readIORef waits `shouldReturn` 2
 
     it
+      "Sprint 2.137 passes over an accessor that vanished between the inventory and its lookup and still revokes the members"
+      $ do
+        -- The 2026-10-12 live race: a token expires or a cleanup revokes it after the
+        -- LIST, the lookup then names it unknown, and the whole audit used to stop.
+        inventories <- newIORef [["gone", "member"], ["gone"], []]
+        revoked <- newIORef ([] :: [Text])
+        result <-
+          revokeAndProveVaultAccessorSubjectAbsent
+            VaultAccessorAuditOps
+              { auditListAccessors = popInventory inventories
+              , auditLookupAccessor = \accessor ->
+                  pure
+                    ( if accessor == "gone"
+                        then Left VaultAccessorLookupAbsent
+                        else Right matchingAccessorInfo
+                    )
+              , auditRevokeAccessor = \accessor ->
+                  modifyIORef' revoked (++ [accessor]) >> pure (Right ())
+              , auditObserveAccessorAbsent = \_ -> pure (Right True)
+              , auditWaitVisibilityGrace = pure (Right ())
+              }
+            accessorSubject
+            Nothing
+        result `shouldBe` Right ()
+        readIORef revoked `shouldReturn` ["member"]
+
+    it "Sprint 2.137 reads the answer Vault 1.18.3 measured for an unknown accessor, and nothing else" $ do
+      let invalidAccessor =
+            "{\"errors\":[\"1 error occurred:\\n\\t* invalid accessor\\n\\n\"]}"
+      vaultAccessorLookupVanished (HttpStatus 400 invalidAccessor) `shouldBe` True
+      map
+        vaultAccessorLookupVanished
+        [ HttpStatus 404 invalidAccessor
+        , HttpStatus 403 invalidAccessor
+        , HttpStatus 400 "{\"errors\":[\"missing accessor\"]}"
+        , HttpStatus 400 "{\"errors\":[\"failed to parse JSON input\"]}"
+        , HttpStatus 403 "{\"errors\":[\"permission denied\"]}"
+        , HttpStatus 503 ""
+        , HttpConnectionFailure invalidAccessor
+        , HttpTimeout invalidAccessor
+        , HttpDecode invalidAccessor
+        ]
+        `shouldBe` replicate 9 False
+      classifyVaultAccessorLookupResponse (Left (HttpStatus 400 invalidAccessor))
+        `shouldBe` Left VaultAccessorLookupAbsent
+      classifyVaultAccessorLookupResponse (Left (HttpStatus 404 invalidAccessor))
+        `shouldBe` Left VaultAccessorLookupUnavailable
+
+    it
       "Sprint 2.73 retains authoritative detailed audit failures and keeps revoke responses provisional"
       $ do
         let successfulOps :: VaultAccessorAuditDetailedOps IO Text
@@ -186,10 +239,19 @@ vaultSessionSafetySuite =
         run
           successfulOps
             { detailedAuditListAccessors = pure (Right ["accessor"])
-            , detailedAuditLookupAccessor = \_ -> pure (Left "lookup")
+            , detailedAuditLookupAccessor =
+                \_ -> pure (Left (VaultAccessorDetailedLookupFailed "lookup"))
             }
           Nothing
           `shouldReturn` Left (VaultAccessorAuditDetailedClassificationFailed "lookup")
+        -- An accessor Vault no longer knows is passed over, not a failure.
+        run
+          successfulOps
+            { detailedAuditListAccessors = pure (Right ["gone"])
+            , detailedAuditLookupAccessor = \_ -> pure (Left VaultAccessorDetailedLookupVanished)
+            }
+          Nothing
+          `shouldReturn` Right ()
         run
           successfulOps {detailedAuditObserveAccessorAbsent = \_ -> pure (Left "absence")}
           (Just "known-accessor")

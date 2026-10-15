@@ -12,11 +12,13 @@ module AwsNativeClients
   )
 where
 
-import Control.Monad (forM)
+import Control.Monad (forM, void)
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf, isSuffixOf)
+import Data.Text.Encoding (decodeUtf8)
 import Prodbox.Aws.CredentialHandle
   ( BaseCredentialHandle
   , CredentialHandle
@@ -102,6 +104,7 @@ import Prodbox.Aws.Native.Sts
   , CallerIdentity (..)
   , StsClient (..)
   , assumedRoleSessionCredentials
+  , assumedRoleSessionExpiresAtMicros
   , assumedRoleSessionHandle
   , encodeGetCallerIdentityForm
   , getCallerIdentityForSession
@@ -133,6 +136,7 @@ import Prodbox.Aws.Native.Wire
   , readBoundedNativeAwsHttpOutcome
   , renderFormBody
   )
+import Prodbox.Aws.Native.Xml (extractAll, xmlEscape, xmlUnescape)
 import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.Lifecycle.OwnedResourceTags (longLivedPulumiStateBucketTags)
 import Prodbox.Settings (Credentials (..))
@@ -336,6 +340,41 @@ scanLeavesPrefix =
     <> "<NextRecordName>zzz.example.test.</NextRecordName>"
     <> "<NextRecordType>TXT</NextRecordType>"
     <> "</ListResourceRecordSetsResponse>"
+
+-- | The verification token Route 53 hands back for the SES identity, as the
+-- service wraps it: quotation marks arrive as the entity.
+sesTokenValue :: ByteString
+sesTokenValue = "KHdxb7q9I+PIBxsQts2EiN1yUjbppRQI6s1k2+uVaaI="
+
+listExactTxtResponse :: ByteString
+listExactTxtResponse =
+  "<ListResourceRecordSetsResponse xmlns=\"https://route53.amazonaws.com/doc/2013-04-01/\">"
+    <> "<ResourceRecordSets><ResourceRecordSet>"
+    <> "<Name>_amazonses.demo.example.test.</Name><Type>TXT</Type><TTL>300</TTL>"
+    <> "<ResourceRecords><ResourceRecord><Value>&quot;"
+    <> sesTokenValue
+    <> "&quot;</Value></ResourceRecord>"
+    <> "</ResourceRecords></ResourceRecordSet></ResourceRecordSets>"
+    <> "<IsTruncated>false</IsTruncated><MaxItems>1</MaxItems>"
+    <> "</ListResourceRecordSetsResponse>"
+
+scanTxtPage :: ByteString
+scanTxtPage =
+  "<ListResourceRecordSetsResponse><ResourceRecordSets><ResourceRecordSet>"
+    <> "<Name>_amazonses.demo.example.test.</Name><Type>TXT</Type><TTL>300</TTL>"
+    <> "<ResourceRecords><ResourceRecord><Value>&quot;"
+    <> sesTokenValue
+    <> "&quot;</Value></ResourceRecord>"
+    <> "</ResourceRecords></ResourceRecordSet></ResourceRecordSets>"
+    <> "<IsTruncated>false</IsTruncated></ListResourceRecordSetsResponse>"
+
+scanTxtMarkup :: ByteString
+scanTxtMarkup =
+  "<ListResourceRecordSetsResponse><ResourceRecordSets><ResourceRecordSet>"
+    <> "<Name>a.demo.example.test.</Name><Type>TXT</Type><TTL>60</TTL>"
+    <> "<ResourceRecords><ResourceRecord><Value>&quot;a &amp; b &lt;/Value&gt;&quot;</Value></ResourceRecord>"
+    <> "</ResourceRecords></ResourceRecordSet></ResourceRecordSets>"
+    <> "<IsTruncated>false</IsTruncated></ListResourceRecordSetsResponse>"
 
 listSubsequentResponse :: ByteString
 listSubsequentResponse =
@@ -603,6 +642,21 @@ awsNativeClientsSuite =
           `shouldBe` Right "ASIAFAKE"
         fmap (session_token . assumedRoleSessionCredentials) result
           `shouldBe` Right (Just "tmpToken")
+      it "carries the STS expiry as POSIX microseconds so it compares with Authority time" $ do
+        -- Red on 0268f5d: the session discarded the expiry it was given, so
+        -- nothing downstream could bound a child by what the session had left.
+        let sts = newStsClient baseHandle (respond 200 assumeRoleBody)
+        result <- assumeRole sts (AssumeRoleRequest "arn:aws:iam::123:role/r" "sess" 900)
+        fmap assumedRoleSessionExpiresAtMicros result `shouldBe` Right (1784332800 * 1000000)
+      it "refuses a session whose expiry cannot be read, because it cannot be bounded" $ do
+        let unreadable =
+              "<AssumeRoleResponse><AssumeRoleResult><Credentials>"
+                <> "<AccessKeyId>ASIAFAKE</AccessKeyId><SecretAccessKey>tmpSecret</SecretAccessKey>"
+                <> "<SessionToken>tmpToken</SessionToken><Expiration>soon</Expiration>"
+                <> "</Credentials></AssumeRoleResult></AssumeRoleResponse>"
+            sts = newStsClient baseHandle (respond 200 unreadable)
+        result <- assumeRole sts (AssumeRoleRequest "arn:aws:iam::123:role/r" "sess" 900)
+        void result `shouldSatisfy` isParseFailure
       it "the session handle signs with the temporary secret (signature equality)" $ do
         let sts = newStsClient baseHandle (respond 200 assumeRoleBody)
         result <- assumeRole sts (AssumeRoleRequest "arn:aws:iam::123:role/r" "sess" 900)
@@ -650,6 +704,52 @@ awsNativeClientsSuite =
         fmap shrMethod request `shouldBe` Just "POST"
         fmap shrBody request
           `shouldBe` Just "Action=GetCallerIdentity&Version=2011-06-15"
+
+    describe "XML character data is read back as the characters that were written" $ do
+      it "decodes the five predefined entities" $
+        xmlUnescape "&amp;&lt;&gt;&quot;&apos;" `shouldBe` "&<>\"'"
+      it "decodes in a single pass, so an escaped ampersand never becomes the character after it" $ do
+        xmlUnescape "&amp;quot;" `shouldBe` "&quot;"
+        xmlUnescape "&amp;amp;" `shouldBe` "&amp;"
+        xmlUnescape "&amp;#34;" `shouldBe` "&#34;"
+      it "decodes decimal and hexadecimal character references, including above the basic plane" $ do
+        xmlUnescape "&#34;a&#34;" `shouldBe` "\"a\""
+        xmlUnescape "&#x22;&#X22;" `shouldBe` "\"\""
+        xmlUnescape "&#233;" `shouldBe` BS.pack [0xC3, 0xA9]
+        xmlUnescape "&#x1F600;" `shouldBe` BS.pack [0xF0, 0x9F, 0x98, 0x80]
+      it "leaves anything that is not a reference exactly as it came" $ do
+        xmlUnescape "plain" `shouldBe` "plain"
+        xmlUnescape "a & b" `shouldBe` "a & b"
+        xmlUnescape "&amp" `shouldBe` "&amp"
+        xmlUnescape "&unknown;" `shouldBe` "&unknown;"
+        xmlUnescape "&;" `shouldBe` "&;"
+        xmlUnescape "&#;" `shouldBe` "&#;"
+        xmlUnescape "&#xZZ;" `shouldBe` "&#xZZ;"
+        xmlUnescape "&#0;" `shouldBe` "&#0;"
+        xmlUnescape "&#xD800;" `shouldBe` "&#xD800;"
+        xmlUnescape "&#x110000;" `shouldBe` "&#x110000;"
+        xmlUnescape "&#0000000034;" `shouldBe` "&#0000000034;"
+        xmlUnescape "&&amp;&" `shouldBe` "&&&"
+      it "does not pair a stray ampersand with a semicolon beyond a reference's length" $
+        xmlUnescape "& and then, much later;" `shouldBe` "& and then, much later;"
+      propertyTest "xmlUnescape is the inverse of xmlEscape for every byte string" $
+        \bytes -> let value = BS.pack bytes in xmlUnescape (xmlEscape value) == value
+      it "gives an AWS error message its apostrophes and ampersands back" $
+        classifyOutcome
+          "op"
+          Idempotent
+          XmlErrorFormat
+          ( Right
+              ( HttpOutcome
+                  403
+                  []
+                  "<ErrorResponse><Error><Code>AccessDenied</Code><Message>User: &apos;x&apos; is not authorized &amp; denied</Message></Error></ErrorResponse>"
+              )
+          )
+          `shouldBe` Left
+            ( AwsServiceError
+                (AwsServiceFault 403 "AccessDenied" "User: 'x' is not authorized & denied" Nothing)
+            )
 
     describe "Route 53 change-batch XML is a deterministic function of the desired records" $ do
       it "renders a single A UPSERT with a trailing dot" $
@@ -701,6 +801,44 @@ awsNativeClientsSuite =
       it "parses only an exact name/type record with TTL and values" $
         parseListResourceRecordSetsResponse "demo.example.test" RecordA listExactAResponse
           `shouldBe` Right (Just (ResourceRecordSet "demo.example.test" RecordA 60 ["192.0.2.1"]))
+      it "reads a TXT value's quotation marks back as the characters that were written" $
+        parseListResourceRecordSetsResponse "_amazonses.demo.example.test" RecordTXT listExactTxtResponse
+          `shouldBe` Right
+            ( Just
+                ( ResourceRecordSet
+                    "_amazonses.demo.example.test"
+                    RecordTXT
+                    300
+                    ["\"KHdxb7q9I+PIBxsQts2EiN1yUjbppRQI6s1k2+uVaaI=\""]
+                )
+            )
+      it "reads a scanned TXT value back the same way, and never reads escaped markup as markup" $ do
+        parseScannedResourceRecordSetsResponse RecordTXT scanTxtPage
+          `shouldBe` Right
+            ( ScannedRecordSetPage
+                [ ResourceRecordSet
+                    "_amazonses.demo.example.test"
+                    RecordTXT
+                    300
+                    ["\"KHdxb7q9I+PIBxsQts2EiN1yUjbppRQI6s1k2+uVaaI=\""]
+                ]
+                Nothing
+                Nothing
+            )
+        parseScannedResourceRecordSetsResponse RecordTXT scanTxtMarkup
+          `shouldBe` Right
+            ( ScannedRecordSetPage
+                [ResourceRecordSet "a.demo.example.test" RecordTXT 60 ["\"a & b </Value>\""]]
+                Nothing
+                Nothing
+            )
+      it "reads back exactly the value the change batch wrote" $ do
+        let written = "\"v=spf1 include:a&b <x> 'y' -all\""
+            body =
+              renderChangeBatchXml
+                [(Upsert, ResourceRecordSet "demo.example.test" RecordTXT 300 [written])]
+        map (decodeUtf8 . xmlUnescape) (extractAll "<Value>" "</Value>" body)
+          `shouldBe` [written]
       it "reports a lexicographically subsequent first record as exact absence" $
         parseListResourceRecordSetsResponse "demo.example.test" RecordA listSubsequentResponse
           `shouldBe` Right Nothing

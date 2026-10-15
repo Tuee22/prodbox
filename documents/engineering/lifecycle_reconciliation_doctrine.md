@@ -316,9 +316,17 @@ phase carries one. The Genesis-or-normal replacement kind retains its existing p
 binds the digest of the exact predecessor signed permit; its distinct journal starts at
 `cleanup-required/initial-attempt`, deletes the bounded IAM key
 family, and must commit stable absence before it can advance to the one remint. It cannot inherit
-or copy a key-created phase and cannot mint first. Target committed, complete, embedded-permit
-mismatch, invalid bytes, authorization failure, timeout, and every other unobservable result still
-refuse; deadline expiry alone is never quiescence. The replacement still commits and reads back
+or copy a key-created phase and cannot mint first. A call that has just minted a key holds
+material delivered nowhere, so a Target that already holds the generation at its first observation
+was written by an attempt that died before committing its receipt, with a key this cleanup deleted;
+the call refuses by name (`target-holds-predecessor-material`) after the same bounded cleanup and
+never commits that Target's receipt over the new key, and the family rotates under a revised
+operation scope. A resumed remint refuses the same way, because it cannot tell its own delivery
+from a dead predecessor's. Only an initial attempt resumed by its own permit, whose journal is the
+only writer at the generation, adopts an observed Target, which is how an attempt that delivered
+and died before its commit finishes. Target committed,
+complete, embedded-permit mismatch, invalid bytes, authorization failure, timeout, and every other
+unobservable result still refuse; deadline expiry alone is never quiescence. The replacement still commits and reads back
 its prepared-target outbox before the exact Authorized-to-Prepared Authority CAS. Attested,
 Completed, noncanonical, corrupt, unready, cursor-invalid, or binding-drifted state fails closed.
 The immutable plan-member binding is optional but exact across that CAS: first-reconcile and
@@ -446,8 +454,9 @@ before rendering, so those values and exception detail cannot enter the Pod log 
 mistaken for diagnostic authority. An exact one-remint refusal additionally retains only its
 closed cleanup trigger: resumed cleanup-proven journal, nonempty inventory at intent,
 prepared-inventory divergence, create dispatch ambiguity, lost successful create result,
-predecessor collision, unavailable created material, invalid material, Target delivery failure, or
-Target receipt mismatch. The trigger is value-free and changes no cleanup, remint, journal, or
+predecessor collision, unavailable created material, invalid material, Target delivery failure,
+Target receipt mismatch, or a Target that already holds the generation when the call's own key has
+been delivered nowhere. The trigger is value-free and changes no cleanup, remint, journal, or
 delivery behavior. Its Target-delivery arm further distinguishes only the closed direct-preflight
 stage, authenticated Target-intent transport/codec/HTTP/refusal/unavailability/decoder class,
 Target-worker coordinator constructor, or retained-custody boundary. Every variable HTTP,
@@ -486,8 +495,11 @@ The session-revocation arm is likewise finite and value-free. It distinguishes a
 role cleanup from the fenced lifecycle's journal, binding, pre-clean, cleaned-login-ambiguity,
 cleanup, cleanup-exception, and cleanup-journal stages. Pre-clean and cleanup nest only closed
 identity, observation, classification, visibility-wait, and stable-zero causes. Classification
-distinguishes a lookup HTTP 404 after an accessor inventory from unavailable lookup and the generic
-fallback without admitting the HTTP body; every arm still refuses. Revoke transport
+distinguishes an unavailable lookup from the generic fallback without admitting the HTTP body; both
+refuse. An accessor Vault no longer knows when it is looked up after an inventory (an expiry, a
+concurrent cleanup, or a revocation the inventory still lists) answers HTTP 400 `invalid accessor`
+on Vault 1.18.3, never 404; it is no member of any subject, so the scan passes over it and the
+proof rests on the fresh inventories that follow. Revoke transport
 status remains provisional and cannot authorize a receipt; the independent accessor-absence proof
 still dominates every action outcome. No token, accessor, journal coordinate, Vault response,
 operation identity, target value, or receipt value is renderable.
@@ -868,6 +880,15 @@ must encode its result is still within its own budget. Admission-only and unrela
 requests retain their ordinary shorter budgets, and every sibling role retains the established
 300-second server envelope.
 
+The AWS session that licenses the effect is derived from the same deadline rather than fixed at the
+STS minimum. `Prodbox.ControlPlane.OperationBudget` requests the time remaining until the signed
+deadline plus a five-minute read-back grace, never below the 900-second STS floor and never above
+the role's declared 3,600-second maximum. The session carries its parsed expiry, a session with no
+usable window left starts no work, and each Pulumi child is bounded by the smaller of the child
+maximum and the window left, so the credential cannot expire under a running child. A child is
+stopped by SIGTERM and then, after a thirty-second grace, SIGKILL, together with the plugin
+processes in its process group; the same stop runs if its caller is cancelled.
+
 The authenticated request that waits for terminal delivery has a route-specific finite response
 budget containing that persisted five-minute operation plus 30 seconds for authenticated framing,
 projection, encoding, and socket completion. The host EAB path and in-cluster SES worker path
@@ -905,7 +926,7 @@ class.
 
 | Class | Credential class | How the credential is obtained |
 |---|---|---|
-| Per-run stacks and EBS | Lifecycle-provider generation narrowed through the sole registered role deterministically selected by the closed provider intent | The fenced provider worker alone reads `secret/aws/lifecycle-provider`; native STS validates the exact base caller, assumes and verifies the account-bound role, and projects only that temporary response to native clients/subprocesses inside a rank-2 callback. The fixed 900-second remote expiry is not an ownership grant: the handle cannot escape the callback, and effect work remains bounded by the mutation permit and absolute deadline. The harness binds the canonical role-policy digest into its durable credential-operation scope, so policy drift schedules a successor operation/Target generation with exact IAM put/read-back rather than reinterpreting an older completed receipt. |
+| Per-run stacks and EBS | Lifecycle-provider generation narrowed through the sole registered role deterministically selected by the closed provider intent | The fenced provider worker alone reads `secret/aws/lifecycle-provider`; native STS validates the exact base caller, assumes and verifies the account-bound role, and projects only that temporary response to native clients/subprocesses inside a rank-2 callback. The remote expiry is not an ownership grant: its lifetime is derived from the signed intent deadline (between the 900-second STS floor and the role's declared 3,600-second maximum), the handle cannot escape the callback, and effect work remains bounded by the mutation permit and absolute deadline. The harness binds the canonical role-policy digest into its durable credential-operation scope, so policy drift schedules a successor operation/Target generation with exact IAM put/read-back rather than reinterpreting an older completed receipt. |
 | Canonical `aws-ses` desired-present reconcile | Lifecycle-provider session for non-credential SES/S3; schema-indexed AWS-admin Provisioner permit for SMTP IAM | Fenced Provider Worker may reconcile only SES identity/DKIM/receipt-rule/S3 resources. Credential Provisioner alone installs/rotates/remints or repair-deletes the SMTP IAM identity/policy/key, derives `SesSmtpSource`, and hands it to retained-home custody under `OperatorMaterialPermit 'AwsAdminProvisioningIngress`. Readiness and target delivery hold neither session. |
 | Lifecycle Authority backup receipts/blobs | Authority-backup-store generation | The separately deployed Authority Backup Adapter alone reads `secret/aws/authority-backup-store` and may access only the configured long-lived backup bucket/prefix through `AuthorityBackupCommitReadBack`. Core Authority has only the typed adapter client; it cannot read that path, construct S3 clients, assume provider roles, or use `secret/aws/lifecycle-provider`. |
 | TLS ciphertext retention/restore | TLS-retention-store generation | The separate TLS Retention Adapter alone reads `secret/aws/tls-retention-store` and accesses exact `public-edge-tls/<substrate>/<canonical-scope-key>` objects. It sees only ciphertext/wrapped-DEK bytes; home Target Agent's dedicated Transit lane owns DEK issue/unwrap. |
@@ -1800,7 +1821,7 @@ Long-lived checkpoint retirement remains an explicit long-lived operation, never
 > read-back, and the append that gives it the identities the provider returned. What is still
 > outstanding is on the consuming side — no destroy yet reads the identity allowlist a manifest
 > carries — and the rule's third property below, which generalises past one resource kind, is
-> unimplemented. Status lives only in the
+> met by declaration and not by a record (Sprint `7.43`, below). Status lives only in the
 > [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 [Pure Functional Programming Standards](./pure_fp_standards.md#64-at-least-once-processing) owns the
@@ -1823,7 +1844,8 @@ Three properties are required of the manifest, and each has been observed absent
    increment as the commit, never a later one.
 3. **It generalises past one resource kind.** The rule is stated for stacks because that is where it
    is implemented; IAM identities, DNS records, volumes, and controller-created children are created
-   by this repository under the same obligation and are covered by no record today.
+   by this repository under the same obligation. They cannot all reach a stack manifest, and the rule
+   is met for them by a declaration instead (see "Every creator is classified" below).
 
 **What the record cannot do, and what covers the remainder.** A create and its record are not
 atomic. A process killed between the effect landing and the append leaves a resource the host has
@@ -1841,6 +1863,49 @@ now enumerable rather than invisible. The frozen counterexample `CREATE-INTERRUP
 states exactly where the two lanes differ: the superseded lane answers *orphan-unnameable* at every
 interruption at or after its effect, and the replacement lane answers *coordinates-named* at every
 interruption from its manifest commit onward.
+
+
+**Every creator is classified (Sprint `7.43`).** A manifest can only name what a registered stack
+create makes, so whether something else is recorded must be a stated decision and not the absence of
+an import. `createRecordCoverage` in `src/Prodbox/Lifecycle/Teardown/CreateRecordCoverage.hs` gives every
+creator one row: on the write-ahead lane (the three per-run stacks), declared inside a stack's manifest
+by the registry-derived edge that already exists (the per-run volumes, the cluster's IAM role family,
+the load balancer controller's children), or off the lane with the structural reason it cannot be on
+it and the destroy path that covers it (the retained `aws-ses` program, which has no registered key and
+which no cascade targets; retained production volumes, a volume family that the per-run intent refuses by
+construction and whose create is tagged by the same call; the validation hosted zone; the DNS01
+challenge records, which carry no tag and are deleted by their Kubernetes owner; the production IAM
+principals, which have no key and which the regional Tagging API cannot see). The lane decision and the
+provider-side run-scope tag decision are separate fields with separate reasons. The checks in
+`prodbox dev check` keep the table total over the registry, equal to the registry-derived edges,
+consistent with the source it describes, and honest about writers: only the manifest repository, its
+transport (the client and the endpoint that applies a write), the submitter and the manifest builder
+reference the seven identifiers that commit or append a manifest, at the client layer and the
+repository layer beneath it, so a second caller of those names fails the build. The scan is over tokens
+with comments and literals masked, so it catches a new caller and not a reimplementation. A lane
+program must also name the registered stack its `Pulumi.yaml` declares, and call the submitter outside
+its import list.
+
+**A controller's child is named from the declaration, not from a member list.** The EKS stack's manifest
+declares each family a cluster's controllers create, by key and registry coordinate digest, with an
+empty identity list, and nothing that destroys a family reads one: the family reap takes its name and
+tags from the registry coordinate. A resource found by tag after the cluster is gone is therefore named
+by joining its tags to the family that requires exactly those tags
+(`src/Prodbox/Lifecycle/ControllerFamilyAttribution.hs`): the families are derived from the registry,
+every required tag must be present with its value, and the join refuses rather than guesses — no
+family, a family this manifest does not declare, a declared digest the registry no longer gives, or two
+families at once. The cascade postflight reads no manifest: it joins against the entries the registry
+says a creation commits, and its narration says the registry declares the family and that no manifest
+was read, so the refusals that compare a declared entry with the registry are exercised over
+constructed manifests and not reached there. The
+result is a family and an owning stack, and the manifest's scope is reported back as *supplied*, because
+the controllers' tags are the same for every run of a cluster name: it is sound under at most one live
+EKS run per account and region, and a leaked child of an earlier run is never attributed a scope it did
+not carry. Recording member identities would need a second append against the manifest's immutable
+completion slot, a persistence-protocol change, to write data nothing reads; the DNS01 challenge
+records are not attributable at all, since a record set carries no tag and its family has no owning
+stack, and a challenge record leaked into the per-run subzone makes that zone's reaper fail rather than
+hide it.
 
 
 ### 3.3 Result-indexed programs and the durable cleanup graph
@@ -2538,7 +2603,9 @@ then selects a terminal arm from the (mode, presence) product: exactly one arm i
 success and it belongs to local-only delete, so the cascade mode cannot reach it and cannot be given
 it by a later caller. A cascade with no install present reaches no phase, names the durable cleanup
 run namespace it could not reach and the `RecoveryPlaneNotEstablished` disposition it reports, makes
-no statement about per-run AWS stacks, and exits non-zero.
+no statement about per-run AWS stacks, and exits non-zero — unless it asked AWS read-only on that
+invocation and the §5a.0 conjunction held, in which case it exits zero and says what that zero does
+not license.
 
 **The retained-state narration is a total function over those arms, and no arm is silent.** A
 local-only arm may say the retained root is preserved by what it did, because a local-only mode
@@ -2552,17 +2619,17 @@ rather than silently rendering nothing.
 **A confirmed no-install cascade is a type rather than a fifth arm.** The entry table decides from
 delete mode and install presence, and neither observes AWS, so a table row that could carry a
 confirmed result would be a row that could mint one from silence. `ConfirmedNoInstallCascade`
-(`src/Prodbox/CLI/Rke2.hs`) has an unexported constructor and one producer,
-`confirmCascadeNoInstall`, which takes the postflight sweep and admits exactly the two answers
-`decideCascadeUninstallGate` admits — not owed, and confirmed clean. Holding the value is the whole
-authorization for the zero exit §5a.0 describes; the query that would produce such a sweep on the
-no-install path is separate work.
+(`src/Prodbox/Lifecycle/CascadeNoInstall.hs`) has an unexported constructor and one producer,
+`confirmCascadeNoInstall`, which takes the whole `NoInstallObservation` — the owed scope, the sweep
+verdict, the regions the sweep actually queried, the account evidence, and the retained-root
+findings — and returns the typed reasons it refused rather than a bare absence. It confirms exactly
+one evidence shape (§5a.0). A sweep that was never owed is not that shape: it issued no query, so a
+confirmation built from it would be minted from silence. The full cascade's
+`decideCascadeUninstallGate` keeps admitting it, because that path has already run its destroy
+phases against exact checkpoints; the two admitting sets differ on purpose, and a unit test pins the
+divergence so neither is "repaired" into the other.
 
 #### 5a.0 A cascade that reaches no phase may still query AWS
-
-> **Target.** This subsection describes an accepted end state, not the current revision. Rollout
-> status lives only in [Development Plan → Resume
-> Here](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 The rule the (mode, presence) product enforces is *never mint success from silence*, not *a cascade
 may never exit zero without an install*. A run that queries AWS is not silent, and the postflight
@@ -2570,16 +2637,66 @@ tag sweep is reachable without a cluster: it needs the repository root, a Tier-0
 and an ephemeral admin credential, and it talks to the Tagging API directly — no Kubernetes, no
 Vault, no Lifecycle Authority.
 
-So the no-install cascade gains a second terminal arm that the product **cannot** return. The entry
+So the no-install cascade has a second terminal arm that the product **cannot** return. The entry
 table stays total and still selects the unproven arm for the cascade/no-install pair; the confirmed
-arm is produced only by a function taking the sweep verdict as its argument, which makes "success
-requires observation" a property of the type rather than of a table a later caller might extend.
+arm is produced only by `confirmCascadeNoInstall`, whose single argument is the whole observation the
+run gathered, which makes "success requires observation" a property of the type rather than of a
+table a later caller might extend.
 
-Exit zero on that arm requires all of: the sweep was owed and ran; an admin credential was
-available, because a credential that cannot be loaded is a refusal and never a confirmation; the
-escaped set is empty; the queried account and regions cover every authored AWS coordinate; and every
-retained root present in the worktree was examined rather than only the one the configuration
-resolves.
+Exit zero on that arm requires all of the following. The producer reports every one that is missing,
+in a fixed order, rather than the first:
+
+1. **The sweep was owed and ran.** A sweep that was never owed issued no query and observed nothing,
+   so it never confirms here, under any scope.
+2. **An admin credential was available.** A credential that cannot be loaded is a refusal and never
+   a confirmation.
+3. **The escaped set is empty.** An unconfirmed verdict — a Tagging API error, a pagination bound, a
+   wall-clock timeout — is not an empty set.
+4. **The queried regions cover every authored coordinate.**
+5. **The credential belongs to the deployment's account**, wherever a coordinate can say so.
+6. **Every retained root was examined.**
+
+The words in that list are defined, because each can be satisfied vacuously:
+
+- *Authored coordinate* is a Tier-0 field that names an AWS object and survives its shape check.
+  The list is closed and has ten members: `route53.zone_id`, `aws_substrate.hosted_zone_id`,
+  `aws_substrate.subzone_name`, `aws_substrate.profile`, `aws.region`,
+  `pulumi_state_backend.region`, `pulumi_state_backend.bucket_name`, `ses.sender_domain`,
+  `ses.receive_subdomain`, `ses.capture_bucket`. A blank field is not authored. A malformed field
+  makes the scope unreadable — owed and never confirmable — and never reads as unauthored. The state
+  backend key prefix is excluded because its shipped default is non-empty, and secret references,
+  ACME, domain, storage and deployment fields name no AWS object. This arm reads the Tier-0
+  configuration directly and never the in-force config, which needs the Lifecycle Authority this path
+  does not have.
+- *Regions covered* means every required region was among the regions the sweep actually asked. The
+  sweep issues one query set per distinct authored region plus the run region and the global-service
+  region (which answers for IAM and Route 53), and coverage is computed from the same inputs the
+  runner issued, so it is a fact about what was queried and not about what was intended.
+- *The account* is the one the admin credential belongs to; no coordinate names an account id. Where
+  a Route 53 hosted zone is authored (`route53.zone_id`, `aws_substrate.hosted_zone_id`) the run reads
+  it once, read-only and under a wall-clock bound, with that credential. A zone that is not visible,
+  or a read that does not answer, refuses: either the credential belongs to another account or the
+  zone no longer exists, and those are indistinguishable. With no zone authored nothing can pin the
+  account, and the narration says account coverage was not verified; buckets, SES identities and
+  regions are not pins, so authoring only those cannot lock the arm out.
+- *Examined* is a read-only look at each candidate root: the configured root, `.data/`, `.test-data/`,
+  and any immediate child of the repository root that carries a retained-root signature (a Vault or
+  object-store volume path). The producer derives the three candidate roots itself, so a caller
+  cannot pass a shorter list; a root the survey discovers under an immediate child arrives as an
+  additional finding, and one that cannot be examined blocks. An absent root is examined and named, a present root is narrated and does not block,
+  and a root that cannot be examined (a listing failure, a non-directory, a symbolic link that leaves
+  the worktree) blocks. The look is one existence test and one directory listing: it writes nothing,
+  creates nothing and does not recurse.
+
+**Ordering.** Every refusal that needs no network answer — nothing authored, an unreadable
+configuration, an unexamined root — is decided before the run asks for a credential, so an operator
+is never prompted for a run that cannot succeed. The run announces that it is about to query AWS
+before any prompt. Every call on this path runs under a wall-clock bound, so a call that never
+answers is an unconfirmed verdict and not a hang. `--dry-run` stays pure: the configuration read,
+the root survey, the credential prompt and the AWS calls run only in the apply path.
+
+**Nothing is persisted.** The verdict writes no marker, receipt or cache. A repeat cascade asks
+again.
 
 **What the confirmed arm does not license.** A confirmed-clean sweep is not a completion receipt,
 and §7 rule 10 of
@@ -2590,11 +2707,23 @@ sweep is tag-scoped and single-account, and it deliberately carves intentionally
 infrastructure out of its escaped set. The arm therefore narrates what it proved and what survives
 by design, and continues to state that this run establishes nothing about retiring the root.
 
-**Current revision.** The shipped binary takes neither half of this: a cascade with no install
-reaches no phase and exits non-zero without querying AWS, and the sweep is owed only when a
-substrate profile is declared — which the shipped default does not declare, so the uninstall gate's
-first admitting case is reached having issued no Tagging API call at all.
+The confirmed narration says so in words a test pins. It states that the result is per-run residue by
+tag in the queried regions and **not an empty account**; it names the retained rows by ARN when the
+query returned any and, always, the carve-out classes the sweep leaves in place (the
+`pulumi_state_backend` bucket, the `aws-ses` stack, retained-production EBS volumes) even when the
+query returned none, because absence from a tag query is not evidence they are gone; it says that
+untagged IAM principals, access keys and DNS records are invisible to the Tagging API; and it lists
+the retained roots as surveyed and not read.
 
+**Current revision.** Both halves ship. The no-install cascade runs the sequence above. The full
+cascade now owes the sweep for any authored coordinate rather than for a declared substrate profile
+alone, so a host that authors a Route 53 zone id and no profile, and has no admin credential, has its
+uninstall withheld and exits non-zero where it used to be admitted offline. Its uninstall gate still
+admits a sweep that was never owed, which now means no coordinate is authored at all, and that sweep
+queries the authored regions through the bounded runner, and an unreadable declaration never lets a
+clean answer from the run region admit the uninstall: the verdict is reported as unconfirmed. It does
+not run the account read or the root survey: the typed replacement carries the account in its scope, and Sprint `6.5`'s activation
+retires this path.
 
 ### 5a.1. Inotify Host-Prep (first host-prep step)
 
@@ -3003,14 +3132,28 @@ effects, and the lifecycle result decides whether every selected node succeeded.
 `clearOperationalCredsAfterPostflight` helper and the validation-authored callback graph have no
 surviving caller.
 
-Operational credential revocation is the remaining pre-cutover tail: until Sprint `6.5` releases
-the closed `OperationalTeardown` dispatcher, `runManagedAwsHarnessTeardown` runs only when
-`lifecycleCleanupNodesSucceeded` permits it. A failed, blocked, unobservable, or otherwise
-incomplete per-run node preserves operational `aws.*` and the operational user, emits the stable
-cleanup result for recovery, and makes the suite exit non-zero. This gate is deliberately a
-lifecycle-owned exact-node decision rather than a validation-side exit-code fold. It prevents
-stranding live AWS resources whose recovery still requires those credentials while making no false
-claim that the legacy IAM tail itself is already descriptor-bound.
+Operational credential revocation is the remaining pre-cutover tail, and no production path performs
+it. The legacy host IAM teardown that once stood here was a constant refusal and is off the runner's
+path; the Credential Provisioner's revoke is refused at its production delivery boundary, and the
+closed `OperationalTeardown` dispatcher is not released until Sprint `6.5`. A harness run therefore
+**retains** the Lifecycle-provider credential once `lifecycleCleanupNodesSucceeded` holds over every
+run the client formed and the zone-scoped families are established from evidence, and it says so with
+`OPERATIONAL_CREDENTIAL_DISPOSITION=retained` rather than claiming a teardown. A failed, blocked,
+unobservable, or otherwise incomplete per-run node, or a zone that could not be established,
+preserves operational `aws.*`, emits the stable cleanup result for recovery, and makes the suite exit
+non-zero. This gate is deliberately a lifecycle-owned exact-node decision rather than a
+validation-side exit-code fold. It prevents stranding live AWS resources whose recovery still requires
+those credentials while making no false claim that the credential's retirement is descriptor-bound.
+The revocation lane that would close the gap — IAM identity first, then the Vault generation, through
+a Provisioner-only permit-verified Target Agent route — is Sprint `5.51`, parked on operator
+decisions.
+
+The cleanup client authenticates as the operator, not the harness identity: the first node of every
+ordinary program posts the recovery-plane host observation, which only the operator may call, and the
+operator's ServiceAccount survives the cluster deletion a body may perform. It holds no authenticated
+session while the body runs, drives the zone-scoped run (registered after the body from the subzone
+stack's own checkpoint) before the main run, and ignores finished runs when deciding whether an
+invocation resumes or starts fresh.
 
 This is the per-run analog of §5's Sprint 7.9 change: Sprint 7.9 stopped the
 teardown from **refusing** on long-lived `aws-ses` residue. Clearing operational
@@ -3066,8 +3209,8 @@ cascade used to destroy the local control plane — the only surface this reposi
 AWS — and only then ask whether anything was left to mutate, so detection without remediation was the
 best outcome the ordering allowed. The sweep now precedes the uninstall, and an unconfirmed or
 non-empty result withholds it: the run still fails, and the retained local plane is what makes the
-failure recoverable. Whether the sweep is owed at all is decided from the **declared substrate**,
-which is a fact this repository authored, and never from per-run checkpoints reading absent — a
+failure recoverable. Whether the sweep is owed at all is decided from the **authored AWS coordinates**
+(any of the ten Tier-0 fields §5a.0 lists), which are facts this repository authored, and never from per-run checkpoints reading absent — a
 checkpoint is Pulumi state, and its absence is exactly the condition under which a resource is most
 likely to be stranded and least likely to be nameable.
 

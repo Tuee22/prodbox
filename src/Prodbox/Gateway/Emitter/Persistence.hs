@@ -16,6 +16,9 @@ module Prodbox.Gateway.Emitter.Persistence
   , persistenceLeaseName
   , persistenceServiceAccountName
   , emitterPersistenceValues
+  , gatewayEmitterStatefulSetName
+  , gatewayEmitterJournalVolumeName
+  , gatewayEmitterJournalClaimName
   )
 where
 
@@ -23,12 +26,13 @@ import Data.Aeson (Value, object, (.=))
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Numeric.Natural (Natural)
 import Prodbox.Gateway.Emitter.Lease
   ( LeaseName
   , leaseNameText
   , mkLeaseName
   )
-import Prodbox.Substrate (Substrate (..), substrateId)
+import Prodbox.Substrate (Substrate (..), gatewayEmitterJournalMiB, substrateId)
 import System.FilePath ((</>))
 
 data EmitterController = EmitterStatefulSet
@@ -60,6 +64,32 @@ data EmitterPersistenceBinding = EmitterPersistenceBinding
 journalMountPath :: FilePath
 journalMountPath = "/var/lib/prodbox/gateway-emitter"
 
+-- | The StatefulSet the gateway chart renders for one emitter node
+-- (@gateway-<node>@, one replica).
+gatewayEmitterStatefulSetName :: String -> String
+gatewayEmitterStatefulSetName node = "gateway-" ++ node
+
+-- | The name of the chart's @volumeClaimTemplates@ entry for the journal.
+gatewayEmitterJournalVolumeName :: String
+gatewayEmitterJournalVolumeName = "emitter-journal"
+
+-- | The claim the StatefulSet controller names after that template for the
+-- emitter's single replica: @<template>-<StatefulSet>-<ordinal>@. The AWS
+-- journal volume is pre-provisioned under exactly this name, because a claim
+-- the controller would create itself is bound to nothing: the @manual@
+-- class provisions no volume.
+gatewayEmitterJournalClaimName :: String -> String
+gatewayEmitterJournalClaimName node =
+  gatewayEmitterJournalVolumeName ++ "-" ++ gatewayEmitterStatefulSetName node ++ "-0"
+
+-- | A storage quantity for a claim, in the largest binary unit that holds it
+-- exactly.
+mebibytesQuantity :: Natural -> Text
+mebibytesQuantity mebibytes
+  | mebibytes > 0 && mebibytes `mod` 1024 == 0 =
+      Text.pack (show (mebibytes `div` 1024)) <> "Gi"
+  | otherwise = Text.pack (show mebibytes) <> "Mi"
+
 homeJournalRoot :: FilePath
 homeJournalRoot = "/var/lib/prodbox/gateway-emitter-journals"
 
@@ -80,10 +110,10 @@ mkEmitterPersistenceBinding substrate rawNode = do
           HomeNodePinnedHostPath (homeJournalRoot </> Text.unpack node)
         SubstrateAws ->
           AwsRetainedEbsClaim
-            { journalClaimName = "gateway-" <> node <> "-emitter-journal"
+            { journalClaimName = Text.pack (gatewayEmitterJournalClaimName (Text.unpack node))
             , journalStorageClassName = "manual"
             , journalAccessMode = "ReadWriteOncePod"
-            , journalRequestedStorage = "1Gi"
+            , journalRequestedStorage = mebibytesQuantity (gatewayEmitterJournalMiB substrate)
             }
   Right
     EmitterPersistenceBinding

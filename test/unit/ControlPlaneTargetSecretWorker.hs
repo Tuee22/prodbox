@@ -298,7 +298,6 @@ controlPlaneTargetSecretWorkerSuite =
           )
           [ VaultAccessorAuditIdentityInvalid
           , VaultAccessorObservationFailed
-          , VaultAccessorClassificationAbsent
           , VaultAccessorClassificationUnavailable
           , VaultAccessorClassificationFailed
           , VaultAccessorVisibilityWaitFailed
@@ -306,7 +305,6 @@ controlPlaneTargetSecretWorkerSuite =
           ]
           `shouldBe` [ "session-cleanup-failed/accessor-audit/identity-invalid"
                      , "session-cleanup-failed/accessor-audit/observation-failed"
-                     , "session-cleanup-failed/accessor-audit/classification-absent"
                      , "session-cleanup-failed/accessor-audit/classification-unavailable"
                      , "session-cleanup-failed/accessor-audit/classification-failed"
                      , "session-cleanup-failed/accessor-audit/visibility-wait-failed"
@@ -317,7 +315,7 @@ controlPlaneTargetSecretWorkerSuite =
         diagnostic "private-detail" `shouldBe` "session-cleanup-failed/unrecognized"
 
     it
-      "TLS-RETENTION-SELECTED-RESTORE-SESSION-PRECLEAN-FAILED-2026-09-04 separates an accessor that vanished after inventory from unavailable classification"
+      "TLS-RETENTION-SELECTED-RESTORE-SESSION-PRECLEAN-FAILED-2026-09-04 reads Vault's answer for an accessor that vanished after inventory, passes over it, and keeps an unavailable lookup fatal"
       $ do
         let causes = [minBound .. maxBound] :: [TargetWorkerSessionPrepareCause]
             diagnostic =
@@ -333,7 +331,6 @@ controlPlaneTargetSecretWorkerSuite =
                      , "session-prepare-failed/preclean/auditor-login-failed"
                      , "session-prepare-failed/preclean/auditor-evidence-invalid"
                      , "session-prepare-failed/preclean/observation-failed"
-                     , "session-prepare-failed/preclean/classification-absent"
                      , "session-prepare-failed/preclean/classification-unavailable"
                      , "session-prepare-failed/preclean/classification-failed"
                      , "session-prepare-failed/preclean/known-identity-mismatch"
@@ -367,7 +364,6 @@ controlPlaneTargetSecretWorkerSuite =
           , VaultAccessorAuditorLoginFailed
           , VaultAccessorAuditorEvidenceInvalid
           , VaultAccessorObservationFailed
-          , VaultAccessorClassificationAbsent
           , VaultAccessorClassificationUnavailable
           , VaultAccessorClassificationFailed
           , VaultAccessorKnownIdentityMismatch
@@ -379,7 +375,6 @@ controlPlaneTargetSecretWorkerSuite =
                      , TargetWorkerSessionPreparePrecleanAuditorLoginFailed
                      , TargetWorkerSessionPreparePrecleanAuditorEvidenceInvalid
                      , TargetWorkerSessionPreparePrecleanObservationFailed
-                     , TargetWorkerSessionPreparePrecleanClassificationAbsent
                      , TargetWorkerSessionPreparePrecleanClassificationUnavailable
                      , TargetWorkerSessionPreparePrecleanClassificationFailed
                      , TargetWorkerSessionPreparePrecleanKnownIdentityMismatch
@@ -388,16 +383,27 @@ controlPlaneTargetSecretWorkerSuite =
                      , TargetWorkerSessionPreparePrecleanStableAbsenceFailed
                      ]
         let privatePayload = "private-vault-response-body"
-        classifyVaultAccessorLookupResponse (Left (HttpStatus 404 privatePayload))
+            -- The body Vault 1.18.3 returned on 2026-10-12 for an accessor that
+            -- was never issued, was revoked, or had expired.
+            vaultInvalidAccessor =
+              "{\"errors\":[\"1 error occurred:\\n\\t* invalid accessor\\n\\n\"]}"
+        classifyVaultAccessorLookupResponse (Left (HttpStatus 400 vaultInvalidAccessor))
           `shouldBe` Left VaultAccessorLookupAbsent
+        -- Vault sends no 404 for this lookup, and no other failure is the
+        -- absence answer: each stays unavailable and fails the audit.
         map
           classifyVaultAccessorLookupResponse
-          [ Left (HttpConnectionFailure privatePayload)
+          [ Left (HttpStatus 404 privatePayload)
+          , Left (HttpStatus 404 vaultInvalidAccessor)
+          , Left (HttpStatus 400 privatePayload)
+          , Left (HttpStatus 400 "{\"errors\":[\"missing accessor\"]}")
+          , Left (HttpStatus 403 "{\"errors\":[\"permission denied\"]}")
+          , Left (HttpConnectionFailure privatePayload)
           , Left (HttpTimeout privatePayload)
           , Left (HttpStatus 503 privatePayload)
           , Left (HttpDecode privatePayload)
           ]
-          `shouldBe` replicate 4 (Left VaultAccessorLookupUnavailable)
+          `shouldBe` replicate 9 (Left VaultAccessorLookupUnavailable)
         let auditWith lookupFailure =
               VaultAccessorAuditOps
                 { auditListAccessors = pure (Right ["racing-accessor"])
@@ -406,11 +412,12 @@ controlPlaneTargetSecretWorkerSuite =
                 , auditObserveAccessorAbsent = \_ -> pure (Right True)
                 , auditWaitVisibilityGrace = pure (Right ())
                 }
+        -- A vanished accessor is no member of the subject, so the proof completes.
         revokeAndProveVaultAccessorSubjectAbsent
           (auditWith VaultAccessorLookupAbsent)
           targetWorkerRoleWideAccessorSubject
           Nothing
-          `shouldReturn` Left VaultAccessorClassificationAbsent
+          `shouldReturn` Right ()
         revokeAndProveVaultAccessorSubjectAbsent
           (auditWith VaultAccessorLookupUnavailable)
           targetWorkerRoleWideAccessorSubject

@@ -12,7 +12,7 @@ where
 
 import Codec.Serialise (Serialise, serialise)
 import Control.Exception (AsyncException (ThreadKilled), throwIO, try)
-import Control.Monad (forM_)
+import Control.Monad (forM_, void)
 import Crypto.Error (CryptoFailable (CryptoFailed, CryptoPassed))
 import Crypto.PubKey.Ed25519 qualified as Ed25519
 import Data.Aeson qualified as Aeson
@@ -22,7 +22,7 @@ import Data.ByteArray qualified as ByteArray
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
-import Data.List (nub)
+import Data.List (nub, sort)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
@@ -147,7 +147,8 @@ import Prodbox.ControlPlane.TargetSecretAgentExecution
   , mkTargetAgentIdentity
   )
 import Prodbox.ControlPlane.TargetSecretWorker
-  ( encodeTargetWorkerReceipt
+  ( TargetWorkerReceipt
+  , encodeTargetWorkerReceipt
   , mkTargetWorkerReceiptProjection
   )
 import Prodbox.ControlPlane.TargetSecretWorkerCoordinator
@@ -241,6 +242,10 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   , decodeAwsAdminWorkerReceipt
   , decodeAwsAdminWorkerReceiptTextEnvelope
   , encodeAwsAdminWorkerReceiptTextEnvelope
+  , executeAwsAdminPermit
+  , mkAwsAdminDeliveryBoundary
+  , mkAwsAdminExecutionJournalBoundary
+  , mkAwsAdminIamBoundary
   , renderAwsAdminRecoveryRemintCause
   , renderAwsAdminTargetDeliveryCause
   , renderAwsAdminTargetIntentIssueCause
@@ -263,6 +268,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecutionJournal
   ( AwsAdminExecutionEvent (..)
+  , AwsAdminExecutionJournal
   , AwsAdminExecutionJournalError (AwsAdminExecutionTransitionRefused)
   , AwsAdminExecutionPhase (..)
   , awsAdminExecutionJournalPhase
@@ -324,6 +330,12 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   , mkNormalAwsAdminPermitIntent
   , rebindAwsAdminPermitIntentPreparedTarget
   , withSomeSignedAwsAdminPermit
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.Execution
+  ( AccessKeyInventoryObservation (..)
+  , AwsAccessKeyCreateResult (..)
+  , ProvisionedAccessKeyId
+  , mkProvisionedAccessKeyId
   )
 import Prodbox.Lifecycle.CredentialProvisioner.FirstReconcileJournal
   ( FirstReconcileJournal
@@ -416,6 +428,9 @@ import Prodbox.Lifecycle.CredentialProvisioner.Substrate
   , credentialProvisionerSubstrateMatches
   , credentialProvisionerSubstrateObjectCount
   , reconcileCredentialProvisionerSubstrate
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.TargetMaterial
+  ( mkCreatedAwsAccessKey
   )
 import Prodbox.Lifecycle.Decommission.AuthorityExport
   ( AuthorityManifestSigner (..)
@@ -1535,7 +1550,9 @@ credentialProvisionerAwsAdminAuthoritySuite =
                      , "material-invalid"
                      ]
                        <> fmap ("target-delivery-failed/" <>) deliveryCauseTokens
-                       <> ["target-receipt-mismatch"]
+                       <> [ "target-receipt-mismatch"
+                          , "target-holds-predecessor-material"
+                          ]
                    )
       classifyExecution
         (AwsAdminRecoveryRemintAmbiguous AwsAdminRecoveryRemintCreateDispatchAmbiguous)
@@ -2975,6 +2992,198 @@ credentialProvisionerAwsAdminAuthoritySuite =
         `shouldBe` Nothing
       credentialProvisionerRuntimeManifestDigest (Text.toUpper imageDigest)
         `shouldBe` Nothing
+
+    it
+      "Sprint 4.108 refuses by name when a key this call minted finds the Target already holding the generation"
+      $ do
+        permit <- authorizedPermitFor permitIntent
+        let predecessorReceipt = scriptedTargetReceipt "vault:v1:predecessor-commitment" permitIntent
+            ownReceipt = scriptedTargetReceipt "vault:v1:own-commitment" permitIntent
+        world <-
+          newScriptedAwsAdminWorld
+            (initialAwsAdminExecutionJournal permit)
+            []
+            (Just predecessorReceipt)
+        outcome <- runScriptedAwsAdminPermit world permit ownReceipt
+        void outcome
+          `shouldBe` Left
+            ( AwsAdminRecoveryRemintAmbiguous
+                AwsAdminRecoveryRemintTargetHoldsPredecessorMaterial
+            )
+        -- The Target is exactly what the dead attempt left: nothing was delivered
+        -- over it and no receipt of the new key was committed in its place.
+        readIORef (scriptedWorldTarget world) >>= (`shouldBe` Just predecessorReceipt)
+        effects <- readIORef (scriptedWorldLog world)
+        filter (== "deliver") effects `shouldBe` []
+        -- Every key the refusing attempts minted was deleted again.
+        readIORef (scriptedWorldKeys world) >>= (`shouldBe` [])
+        length (filter (== "create-key") effects)
+          `shouldBe` length (filter (== "delete-key") effects)
+        phase <- awsAdminExecutionJournalPhase <$> readIORef (scriptedWorldJournal world)
+        phase `shouldBe` AwsAdminExecutionCleanupProven True
+
+    it "Sprint 4.108 still delivers and commits when the Target does not hold the generation" $ do
+      permit <- authorizedPermitFor permitIntent
+      let ownReceipt = scriptedTargetReceipt "vault:v1:own-commitment" permitIntent
+      world <-
+        newScriptedAwsAdminWorld (initialAwsAdminExecutionJournal permit) [] Nothing
+      outcome <- runScriptedAwsAdminPermit world permit ownReceipt
+      void outcome `shouldBe` Right ()
+      effects <- readIORef (scriptedWorldLog world)
+      filter (== "deliver") effects `shouldBe` ["deliver"]
+      length (filter (== "create-key") effects) `shouldBe` 1
+      keys <- readIORef (scriptedWorldKeys world)
+      length keys `shouldBe` 1
+      readIORef (scriptedWorldTarget world) >>= (`shouldBe` Just ownReceipt)
+
+    it "Sprint 4.108 refuses a resumed remint that finds the Target holding the generation" $ do
+      permit <- authorizedPermitFor permitIntent
+      let predecessorReceipt = scriptedTargetReceipt "vault:v1:predecessor-commitment" permitIntent
+          ownReceipt = scriptedTargetReceipt "vault:v1:own-commitment" permitIntent
+          resumedKey = must (mkProvisionedAccessKeyId "SCRIPTEDKEYREMINT")
+          -- A remint attempt whose process died after it minted a key: the
+          -- predecessor attempt (now cleaned up) delivered, so the Target holds
+          -- its material, and this call cannot tell that from its own delivery.
+          remintJournal =
+            foldl'
+              (\journal event -> must (stepAwsAdminExecutionJournal event journal))
+              (initialAwsAdminExecutionJournal permit)
+              [ CommitAwsAdminCreateAttempt [] False
+              , RequireAwsAdminStableCleanup False
+              , CommitAwsAdminStableCleanup False
+              , RestartAwsAdminAfterCleanup
+              , CommitAwsAdminCreateAttempt [] True
+              , CommitAwsAdminCreatedKey resumedKey [] True
+              ]
+      world <- newScriptedAwsAdminWorld remintJournal [resumedKey] (Just predecessorReceipt)
+      outcome <- runScriptedAwsAdminPermit world permit ownReceipt
+      void outcome
+        `shouldBe` Left
+          ( AwsAdminRecoveryRemintAmbiguous
+              AwsAdminRecoveryRemintTargetHoldsPredecessorMaterial
+          )
+      effects <- readIORef (scriptedWorldLog world)
+      filter (== "deliver") effects `shouldBe` []
+      filter (== "create-key") effects `shouldBe` []
+      readIORef (scriptedWorldKeys world) >>= (`shouldBe` [])
+      readIORef (scriptedWorldTarget world) >>= (`shouldBe` Just predecessorReceipt)
+
+    it
+      "Sprint 4.108 still adopts the Target when an initial attempt is resumed with no material in hand"
+      $ do
+        permit <- authorizedPermitFor permitIntent
+        let ownReceipt = scriptedTargetReceipt "vault:v1:own-commitment" permitIntent
+            resumedKey = must (mkProvisionedAccessKeyId "SCRIPTEDKEYRESUMED")
+            prepared =
+              must
+                ( stepAwsAdminExecutionJournal
+                    (CommitAwsAdminCreateAttempt [] False)
+                    (initialAwsAdminExecutionJournal permit)
+                )
+            resumed = must (stepAwsAdminExecutionJournal (CommitAwsAdminCreatedKey resumedKey [] False) prepared)
+        -- The process that minted the key delivered the material and died before it
+        -- committed the receipt; the only way that attempt can finish is to adopt the
+        -- Target it wrote.
+        world <- newScriptedAwsAdminWorld resumed [resumedKey] (Just ownReceipt)
+        outcome <- runScriptedAwsAdminPermit world permit ownReceipt
+        void outcome `shouldBe` Right ()
+        effects <- readIORef (scriptedWorldLog world)
+        filter (== "deliver") effects `shouldBe` []
+        filter (== "create-key") effects `shouldBe` []
+        readIORef (scriptedWorldKeys world) >>= (`shouldBe` [resumedKey])
+
+-- | Sprint 4.108: a scripted world for 'executeAwsAdminPermit': the journal
+-- cell, the account's access-key inventory, and the one Target generation the
+-- permit installs into. 'scriptedWorldLog' records every effect in order.
+data ScriptedAwsAdminWorld = ScriptedAwsAdminWorld
+  { scriptedWorldJournal :: !(IORef AwsAdminExecutionJournal)
+  , scriptedWorldKeys :: !(IORef [ProvisionedAccessKeyId])
+  , scriptedWorldTarget :: !(IORef (Maybe TargetWorkerReceipt))
+  , scriptedWorldMinted :: !(IORef Int)
+  , scriptedWorldLog :: !(IORef [Text])
+  }
+
+newScriptedAwsAdminWorld
+  :: AwsAdminExecutionJournal
+  -> [ProvisionedAccessKeyId]
+  -> Maybe TargetWorkerReceipt
+  -> IO ScriptedAwsAdminWorld
+newScriptedAwsAdminWorld journal keys target =
+  ScriptedAwsAdminWorld
+    <$> newIORef journal
+    <*> newIORef keys
+    <*> newIORef target
+    <*> newIORef 0
+    <*> newIORef []
+
+scriptedTargetReceipt :: Text -> AwsAdminPermitIntent -> TargetWorkerReceipt
+scriptedTargetReceipt commitment intent =
+  must
+    ( mkTargetWorkerReceiptProjection
+        (awsAdminPermitIntentTarget intent)
+        (awsAdminPermitIntentGeneration intent)
+        1
+        commitment
+        (awsAdminPermitIntentRequestDigest intent)
+        receiptDigest
+        "credential-provisioner-pod-1"
+        (awsAdminPermitIntentImageDigest intent)
+    )
+
+-- | Drive the production execution algebra over the scripted world. A delivery
+-- stores and returns @deliveredReceipt@; an observation reports whatever the
+-- Target currently holds, whoever wrote it.
+runScriptedAwsAdminPermit
+  :: ScriptedAwsAdminWorld
+  -> SignedAwsAdminPermit
+  -> TargetWorkerReceipt
+  -> IO (Either AwsAdminExecutionError AwsAdminWorkerReceipt)
+runScriptedAwsAdminPermit world permit deliveredReceipt =
+  executeAwsAdminPermit journalBoundary iamBoundary deliveryBoundary permit
+ where
+  record entry = modifyIORef' (scriptedWorldLog world) (<> [entry])
+  journalBoundary =
+    mkAwsAdminExecutionJournalBoundary
+      (Right <$> readIORef (scriptedWorldJournal world))
+      ( \current next -> do
+          stored <- readIORef (scriptedWorldJournal world)
+          if stored == current
+            then writeIORef (scriptedWorldJournal world) next >> pure (Right next)
+            else pure (Left "scripted journal compare-and-swap conflict")
+      )
+  iamBoundary =
+    mkAwsAdminIamBoundary
+      (pure (Right ()))
+      (AccessKeyInventoryObserved . sort <$> readIORef (scriptedWorldKeys world))
+      ( \keyId -> do
+          record "delete-key"
+          modifyIORef' (scriptedWorldKeys world) (filter (/= keyId))
+          pure (Right ())
+      )
+      ( do
+          minted <- readIORef (scriptedWorldMinted world)
+          writeIORef (scriptedWorldMinted world) (minted + 1)
+          let raw = "SCRIPTEDKEY" <> Text.pack (show minted)
+              keyId = must (mkProvisionedAccessKeyId raw)
+          record "create-key"
+          modifyIORef' (scriptedWorldKeys world) (<> [keyId])
+          pure (AwsAccessKeyCreated keyId (must (mkCreatedAwsAccessKey raw "one-time-secret")))
+      )
+      (pure (Right ()))
+      (pure (Right True))
+      (pure (Right ()))
+  deliveryBoundary =
+    mkAwsAdminDeliveryBoundary
+      ( \_ _ _ -> do
+          record "deliver"
+          writeIORef (scriptedWorldTarget world) (Just deliveredReceipt)
+          pure (Right deliveredReceipt)
+      )
+      (\_ _ -> pure (Right "revoked"))
+      ( \_ _ -> do
+          record "observe"
+          Right <$> readIORef (scriptedWorldTarget world)
+      )
 
 data WireAwsAdminWorkerReceiptFixture = WireAwsAdminWorkerReceiptFixture
   { fixtureWorkerReceiptVersion :: !Word16

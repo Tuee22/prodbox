@@ -546,6 +546,7 @@ data IntegrationSuite
   | IntegrationCertificateScope
   | IntegrationCleanRoomHandoff
   | IntegrationCascadeQualification
+  | IntegrationCascadeQualificationReceipt
   | IntegrationHaRke2Aws
   | IntegrationLifecycle
   | IntegrationPulumi

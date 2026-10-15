@@ -19,6 +19,11 @@ module Prodbox.ControlPlane.ProviderProduction
   , providerProductionReady
   , providerAwsCliLimits
   , withProviderChildProcessPermit
+  , validationZoneNames
+  , validDnsName
+  , parseRetainedEbsEnsure
+  , retainedEbsEnsureObservation
+  , retainedEbsBindingsEvidence
   )
 where
 
@@ -40,9 +45,11 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Base64 qualified as Base64
 import Data.ByteString.Lazy qualified as LazyByteString
+import Data.Char (isAsciiLower, isDigit)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.List (nub, sort)
 import Data.List.NonEmpty qualified as NonEmpty
+import Data.Maybe (fromMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -61,7 +68,9 @@ import Prodbox.Aws.Native.Route53 qualified as NativeRoute53
 import Prodbox.Aws.Native.Sts qualified as NativeSts
 import Prodbox.Aws.Native.Wire (AwsClientError, httpSend)
 import Prodbox.Aws.Region (awsGlobalServiceRegion)
+import Prodbox.Aws.StsIdentity (renderStsIdentityEvidence)
 import Prodbox.AwsEnvironment (awsCliSubprocessEnvironment)
+import Prodbox.Capacity.ProviderWorkerBudget (providerWorkerIntentLifetimeMicros)
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientTransport
   )
@@ -75,11 +84,18 @@ import Prodbox.ControlPlane.EksClientAuthProjection.Internal
   , mkEksClientAuthPublicKey
   , sealEksClientAuthProjection
   )
+import Prodbox.ControlPlane.OperationBudget
+  ( childLimitMicros
+  , declaredRoleMaximumSeconds
+  , planSessionDuration
+  , renderSessionWindowRefusal
+  , sessionWindowMicros
+  )
 import Prodbox.ControlPlane.ProviderAssumedRoleSession
   ( expectedLifecycleProviderAssumedRoleArn
   , expectedLifecycleProviderBaseUserArn
   , lifecycleProviderAssumeRoleRequest
-  , providerAssumeRoleRequest
+  , providerAssumeRoleRequestFor
   )
 import Prodbox.ControlPlane.ProviderCredentialSession.Internal
   ( ValidatedProviderCredentialSession
@@ -87,8 +103,15 @@ import Prodbox.ControlPlane.ProviderCredentialSession.Internal
   , validatedProviderCredentialSessionBindingInternal
   , validatedProviderCredentialSessionCredentialsInternal
   )
+import Prodbox.ControlPlane.ProviderFailureSummary
+  ( childTimeoutMarker
+  , renderCommandFailure
+  , transcriptReportsMissingStack
+  , transcriptReportsPreviewChanges
+  )
 import Prodbox.ControlPlane.ProviderNarrowSession
-  ( ProviderEffectObservation (..)
+  ( ApplyFailure (..)
+  , ProviderEffectObservation (..)
   , ProviderIntentCapabilities (..)
   , ProviderMutation (..)
   , ProviderNarrowSessionRunner (..)
@@ -101,6 +124,8 @@ import Prodbox.ControlPlane.ProviderPulumiConfigProjection
 import Prodbox.Error (errorMsg)
 import Prodbox.Http.Client (renderHttpError)
 import Prodbox.Infra.AwsEksTestStack (pulumiAwsProviderEnv)
+import Prodbox.Keycloak.Email (parseKeycloakInviteLink)
+import Prodbox.Lib.Storage (StaticEbsVolumeBinding (..))
 import Prodbox.Lifecycle.Authority.Genesis (AuthorityEpoch)
 import Prodbox.Lifecycle.AwsNativeStackFamily
   ( AwsNativeStackFamilyRunner (..)
@@ -142,6 +167,7 @@ import Prodbox.Lifecycle.DnsRecord
   )
 import Prodbox.Lifecycle.DnsRecord.Route53 (nativeDnsRecordSet, nativeDnsRecordType)
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
+import Prodbox.Lifecycle.Lease (AuthorityTime, authorityTimeMicros)
 import Prodbox.Lifecycle.OwnedResourceTagEvidence
   ( OwnedResourceTagEntry (..)
   , OwnedResourceTagObservation (..)
@@ -228,18 +254,23 @@ import Prodbox.Result (Result (..))
 import Prodbox.Runtime.Role
   ( RuntimeRole (LifecycleAuthorityRuntime, ProviderWorkerRuntime)
   )
+import Prodbox.Ses.Capture qualified as SesCapture
 import Prodbox.Settings (Credentials (..))
 import Prodbox.Settings.AwsSubstrateProfile
-  ( awsEksStackConfiguration
+  ( AwsEbsVolumeType
+  , awsEksStackConfiguration
   , awsTestStackConfiguration
+  , mkAwsEbsVolumeType
   , renderAwsSubstrateProfileError
   )
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
+  , KillableSubprocessLimits (..)
+  , KillableSubprocessOutcome (..)
   , ProcessOutput (..)
   , Subprocess (..)
   , captureSubprocessBounded
-  , captureSubprocessResult
+  , captureSubprocessKillable
   )
 import Prodbox.Substrate (Substrate (SubstrateAws))
 import Prodbox.Vault.Client
@@ -268,37 +299,65 @@ data ProviderProductionSession = ProviderProductionSession
   -- under, read on demand. A DNS coordinate binds an ownership generation,
   -- and the only truthful source of one is the Authority the role already
   -- trusts — not a number carried in the request.
+  , productionSessionExpiresAtMicros :: !Natural
+  -- ^ When STS stops honouring this session, in Authority-time microseconds.
+  -- A long child is bounded by what is left of it, so the session cannot
+  -- expire under a running child.
+  , productionSessionNowMicros :: !(IO (Either Text Natural))
+  -- ^ The Authority clock the session window is judged against.
   }
 
 providerProductionNarrowSession
   :: VaultSession
   -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
   -> IO (Either Text AuthorityEpoch)
+  -> IO (Either Text AuthorityTime)
   -> ProviderNarrowSessionRunner IO ProviderProductionSession
-providerProductionNarrowSession vaultSession authorityTransport readAuthorityEpoch =
+providerProductionNarrowSession vaultSession authorityTransport readAuthorityEpoch authorityNow =
   ProviderNarrowSessionRunner
-    { withProviderNarrowSession = \intent _deadline action -> do
+    { withProviderNarrowSession = \intent deadline action -> do
         credentialSession <- readProviderCredentialSession vaultSession
         case credentialSession of
           Left detail -> pure (Left detail)
           Right resolved -> do
-            assumed <-
-              assumeProviderRoleSession
-                (providerAssumeRoleRequest intent)
-                (validatedProviderCredentialSessionCredentialsInternal resolved)
-            case assumed of
-              Left detail -> pure (Left detail)
-              Right roleSession ->
-                action
-                  (Just (validatedProviderCredentialSessionBindingInternal resolved))
-                  ProviderProductionSession
-                    { productionSessionCredentials =
-                        NativeSts.assumedRoleSessionCredentials roleSession
-                    , productionSessionCredentialHandle =
-                        NativeSts.assumedRoleSessionHandle roleSession
-                    , productionSessionAuthorityTransport = authorityTransport
-                    , productionSessionAuthorityEpoch = readAuthorityEpoch
-                    }
+            requestedAt <- authorityNow
+            case requestedAt of
+              Left detail -> pure (Left ("Provider session clock unavailable: " <> detail))
+              Right now -> do
+                -- The session must outlive the operation it serves: its lifetime
+                -- is derived from the signed deadline, not fixed at the STS floor.
+                assumed <-
+                  assumeProviderRoleSession
+                    ( providerAssumeRoleRequestFor
+                        ( planSessionDuration
+                            declaredRoleMaximumSeconds
+                            (authorityTimeMicros now)
+                            (authorityTimeMicros deadline)
+                        )
+                        intent
+                    )
+                    (validatedProviderCredentialSessionCredentialsInternal resolved)
+                case assumed of
+                  Left detail -> pure (Left detail)
+                  Right roleSession -> do
+                    let expiresAt = NativeSts.assumedRoleSessionExpiresAtMicros roleSession
+                        clock = fmap (fmap authorityTimeMicros) authorityNow
+                    startingAt <- clock
+                    case startingAt >>= first renderSessionWindowRefusal . sessionWindowMicros expiresAt of
+                      Left detail -> pure (Left detail)
+                      Right _ ->
+                        action
+                          (Just (validatedProviderCredentialSessionBindingInternal resolved))
+                          ProviderProductionSession
+                            { productionSessionCredentials =
+                                NativeSts.assumedRoleSessionCredentials roleSession
+                            , productionSessionCredentialHandle =
+                                NativeSts.assumedRoleSessionHandle roleSession
+                            , productionSessionAuthorityTransport = authorityTransport
+                            , productionSessionAuthorityEpoch = readAuthorityEpoch
+                            , productionSessionExpiresAtMicros = expiresAt
+                            , productionSessionNowMicros = clock
+                            }
     }
 
 providerProductionCapabilities
@@ -352,6 +411,10 @@ providerProductionCapabilities =
     , observeEksClusterIdentityCapability = eksClusterIdentityObservation
     , observeNativeStackFamilyCapability = nativeStackFamilyObservation
     , reapNativeStackFamilyCapability = nativeStackFamilyReaperMutation
+    , ensureValidationHostedZoneCapability = validationHostedZoneEnsureMutation
+    , observeSesInviteMailCapability = sesInviteMailObservation
+    , reapSesInviteMailCapability = sesInviteMailReaperMutation
+    , ensureRetainedEbsVolumesCapability = retainedEbsEnsureMutation
     }
 
 -- | Deep readiness for the production worker: the exact Provider Vault KV
@@ -423,6 +486,9 @@ data CompiledStack = CompiledStack
   , compiledStackProjectDirectory :: !FilePath
   , compiledStackConfiguration :: ![(String, String)]
   , compiledStackApplication :: !CompiledStackApplication
+  , compiledStackChildLimits :: IO (Either Text KillableSubprocessLimits)
+  -- ^ The wall-clock bound for the next Pulumi child, read when that child
+  -- starts so each one is bounded by what is left of the session at that moment.
   }
 
 data CompiledStackApplication
@@ -487,6 +553,7 @@ compiledStackFor ref config marker = case (providerStackRefText ref, config) of
       , compiledStackProjectDirectory = providerBuildRoot </> "pulumi" </> subdirectory
       , compiledStackConfiguration = configuration ++ runMarkerConfiguration
       , compiledStackApplication = application
+      , compiledStackChildLimits = pure (Right pulumiChildLimits)
       }
 
   -- Sprint 7.41: the two values the provider stamps onto every resource it
@@ -514,8 +581,13 @@ pulumiMutation desired ref config marker =
     { observeProviderMutation = \session _coordinate ->
         observeDesiredStack session desired ref config marker
     , applyProviderMutation = \session _coordinate ->
-        applyDesiredStack session desired ref config marker
+        failedApply (applyDesiredStack session desired ref config marker)
     }
+
+-- | Every production apply reports a failure the effect itself produced; a
+-- lost response is only ever injected by a test that models one.
+failedApply :: IO (Either Text ()) -> IO (Either ApplyFailure ())
+failedApply = fmap (first ApplyFailed)
 
 observeDesiredStack
   :: ProviderProductionSession
@@ -525,7 +597,7 @@ observeDesiredStack
   -> Maybe ProviderRunMarker
   -> IO ProviderEffectObservation
 observeDesiredStack session desired ref config marker =
-  case compiledStackFor ref config marker of
+  case boundToSession session <$> compiledStackFor ref config marker of
     Left detail -> pure (ProviderEffectUnobservable detail)
     Right compiled
       | desired == DesiredPresent
@@ -554,7 +626,7 @@ applyDesiredStack
   -> Maybe ProviderRunMarker
   -> IO (Either Text ())
 applyDesiredStack session desired ref config marker =
-  case compiledStackFor ref config marker of
+  case boundToSession session <$> compiledStackFor ref config marker of
     Left detail -> pure (Left detail)
     Right compiled -> do
       environment <- pulumiEnvironment (productionSessionCredentials session)
@@ -592,7 +664,7 @@ observePulumiStack desired ref compiled environment = do
                     DesiredAbsent ->
                       ProviderEffectSatisfied (registeredStackAbsenceEvidence ref)
                 )
-          | otherwise -> pure (Right (ProviderEffectUnobservable (Text.pack (commandDetail selected))))
+          | otherwise -> pure (Right (ProviderEffectUnobservable (Text.pack (commandFailureDetail selected))))
         ExitSuccess -> case desired of
           DesiredAbsent -> pure (Right (ProviderEffectNeedsApply "registered stack is present"))
           DesiredPresent -> do
@@ -609,7 +681,7 @@ observePulumiStack desired ref compiled environment = do
               ExitFailure _
                 | previewReportsChanges preview ->
                     Right (ProviderEffectNeedsApply "Pulumi preview reports changes")
-                | otherwise -> Right (ProviderEffectUnobservable (Text.pack (commandDetail preview)))
+                | otherwise -> Right (ProviderEffectUnobservable (Text.pack (commandFailureDetail preview)))
 
 runPulumiMutation
   :: DesiredState
@@ -662,7 +734,15 @@ runPulumiMutation desired compiled environment = do
                   runPulumi
                     compiled
                     environment
-                    ["destroy", "--stack", stackName compiled, "--yes", "--skip-preview", "--non-interactive"]
+                    [ "destroy"
+                    , "--stack"
+                    , stackName compiled
+                    , "--yes"
+                    , "--skip-preview"
+                    , "--non-interactive"
+                    , "--refresh"
+                    , "--continue-on-error"
+                    ]
                 case commandSuccess destroyed of
                   Left detail -> pure (Left detail)
                   Right _ -> do
@@ -710,7 +790,7 @@ observeStackRef
   -> ProviderStackRef
   -> IO (Either Text Text)
 observeStackRef session ref =
-  case defaultCompiledStack ref of
+  case boundToSession session <$> defaultCompiledStack ref of
     Left detail -> pure (Left detail)
     Right compiled -> do
       environment <- pulumiEnvironment (productionSessionCredentials session)
@@ -740,6 +820,7 @@ defaultCompiledStack ref = case providerStackRefText ref of
         , compiledStackProjectDirectory = providerBuildRoot </> "pulumi" </> subdirectory
         , compiledStackConfiguration = []
         , compiledStackApplication = CompiledStackObservationOnly
+        , compiledStackChildLimits = pure (Right pulumiChildLimits)
         }
 
 -- | What a registered-stack read reports.  Sprint @4.98@ split this out of a
@@ -790,8 +871,24 @@ runPulumi
   -> [String]
   -> IO ProcessOutput
 runPulumi compiled environment arguments = do
+  limits <- compiledStackChildLimits compiled
+  case limits of
+    Left detail -> pure (ProcessOutput (ExitFailure 1) "" (Text.unpack detail))
+    Right bound -> runPulumiWithin bound compiled environment arguments
+
+-- | Run Pulumi under an explicit wall-clock bound.  The child is stopped by
+-- SIGTERM and then SIGKILL, so it cannot outlive the bound or its caller, and
+-- a child stopped at the bound still reports the transcript it had written.
+runPulumiWithin
+  :: KillableSubprocessLimits
+  -> CompiledStack
+  -> [(String, String)]
+  -> [String]
+  -> IO ProcessOutput
+runPulumiWithin limits compiled environment arguments = do
   result <- withProviderChildProcessPermit $ do
-    captureSubprocessResult
+    captureSubprocessKillable
+      limits
       Subprocess
         { subprocessPath = "/usr/local/bin/pulumi"
         , subprocessArguments = arguments
@@ -799,29 +896,99 @@ runPulumi compiled environment arguments = do
         , subprocessWorkingDirectory = Just (compiledStackProjectDirectory compiled)
         }
   pure $ case result of
-    Success output -> output
-    Failure detail -> ProcessOutput (ExitFailure 1) "" detail
+    Right (KillableSubprocessCompleted output) -> output
+    Right (KillableSubprocessTimedOut output) -> timedOutPulumiOutput limits output
+    Left detail -> ProcessOutput (ExitFailure 1) "" (Text.unpack (errorMsg detail))
+
+-- | The Pulumi child's own wall-clock bound.  It sits strictly inside the
+-- intent lifetime the handler enforces, so the innermost bound fires first and
+-- the operator receives the child's transcript rather than a bare timeout: the
+-- ordering the Provider budget states for child, server and caller.  The
+-- allowance covers admission, session and observation before the child starts.
+pulumiChildLimits :: KillableSubprocessLimits
+pulumiChildLimits =
+  KillableSubprocessLimits
+    { killableSubprocessTimeoutMicros =
+        fromIntegral providerWorkerIntentLifetimeMicros - pulumiPreChildAllowanceMicros
+    , killableSubprocessKillGraceMicros = 30 * 1000 * 1000
+    }
+
+pulumiPreChildAllowanceMicros :: Int
+pulumiPreChildAllowanceMicros = 120 * 1000 * 1000
+
+-- | Bound every Pulumi child of this stack by what is left of the session.
+boundToSession :: ProviderProductionSession -> CompiledStack -> CompiledStack
+boundToSession session compiled =
+  compiled {compiledStackChildLimits = pulumiChildLimitsForSession session}
+
+-- | The bound for the next Pulumi child: the child maximum, or the window left
+-- in the session once the read-back grace is reserved, whichever is smaller. A
+-- session with no usable window left starts no child.
+pulumiChildLimitsForSession
+  :: ProviderProductionSession -> IO (Either Text KillableSubprocessLimits)
+pulumiChildLimitsForSession session = do
+  nowResult <- productionSessionNowMicros session
+  pure $ do
+    now <- nowResult
+    window <-
+      first
+        renderSessionWindowRefusal
+        (sessionWindowMicros (productionSessionExpiresAtMicros session) now)
+    Right
+      pulumiChildLimits
+        { killableSubprocessTimeoutMicros =
+            fromIntegral
+              ( childLimitMicros
+                  (fromIntegral (killableSubprocessTimeoutMicros pulumiChildLimits))
+                  window
+              )
+        }
+
+-- | A child stopped at its bound is a failure whose transcript ends in the
+-- timeout marker, which the failure summary names as the consequence.
+timedOutPulumiOutput :: KillableSubprocessLimits -> ProcessOutput -> ProcessOutput
+timedOutPulumiOutput limits output =
+  output
+    { processExitCode = ExitFailure 124
+    , processStdout =
+        processStdout output
+          <> "\n"
+          <> Text.unpack childTimeoutMarker
+          <> " pulumi was stopped after "
+          <> show (killableSubprocessTimeoutMicros limits `div` 1000000)
+          <> " seconds"
+    }
 
 commandSuccess :: ProcessOutput -> Either String ProcessOutput
 commandSuccess output = case processExitCode output of
   ExitSuccess -> Right output
-  ExitFailure _ -> Left (commandDetail output)
+  ExitFailure _ -> Left (commandFailureDetail output)
 
+-- | The display text for a failed command: the cause and consequence first,
+-- then a bounded head and tail of the transcript. Display only; no predicate
+-- reads it, because a classifier must see the whole transcript.
+commandFailureDetail :: ProcessOutput -> String
+commandFailureDetail output =
+  Text.unpack
+    (renderCommandFailure (Text.pack (processStderr output)) (Text.pack (processStdout output)))
+
+-- | The first 4096 characters of the transcript, kept as it was for the AWS
+-- CLI predicates that match on it.
 commandDetail :: ProcessOutput -> String
 commandDetail output =
   let detail = processStderr output <> " " <> processStdout output
    in take 4096 detail
 
+-- | The whole transcript, standard error first.
+commandTranscript :: ProcessOutput -> Text
+commandTranscript output =
+  Text.pack (processStderr output) <> " " <> Text.pack (processStdout output)
+
 missingStack :: ProcessOutput -> Bool
-missingStack = containsAny ["no stack named", "could not find stack", "stack not found"] . commandDetail
+missingStack = transcriptReportsMissingStack . commandTranscript
 
 previewReportsChanges :: ProcessOutput -> Bool
-previewReportsChanges =
-  containsAny
-    [ "no changes were expected but changes were proposed"
-    , "error: no changes were expected"
-    ]
-    . commandDetail
+previewReportsChanges = transcriptReportsPreviewChanges . commandTranscript
 
 containsAny :: [String] -> String -> Bool
 containsAny needles haystack = any ((`Text.isInfixOf` lowered) . Text.pack) needles
@@ -884,25 +1051,17 @@ ebsReaperMutation clusterName =
     { observeProviderMutation = \session _ -> do
         environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
         observed <-
-          EbsVolume.discoverEbsVolumes
-            EbsVolume.EbsDiscoverInput
-              { EbsVolume.ebsDiscoverEnvironment = environment
-              , EbsVolume.ebsDiscoverWorkingDirectory = Nothing
-              , EbsVolume.ebsDiscoverScope = EbsVolume.EbsPerRunTest (Text.unpack clusterName)
-              }
+          EbsVolume.discoverEbsVolumesVia
+            (boundedAwsCliRun environment)
+            (EbsVolume.EbsPerRunTest (Text.unpack clusterName))
         pure $ case observed of
           Left detail -> ProviderEffectUnobservable (Text.pack detail)
           Right [] -> ProviderEffectSatisfied "test-scoped EBS volumes are absent"
           Right _ -> ProviderEffectNeedsApply "test-scoped EBS volumes remain"
-    , applyProviderMutation = \session _ -> do
+    , applyProviderMutation = \session _ -> failedApply $ do
         environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
         result <-
-          EbsVolume.runTestScopedEbsReaper
-            EbsVolume.TestEbsReaperInput
-              { EbsVolume.testEbsReaperEnvironment = environment
-              , EbsVolume.testEbsReaperWorkingDirectory = Nothing
-              , EbsVolume.testEbsReaperClusterName = Text.unpack clusterName
-              }
+          EbsVolume.runTestScopedEbsReaperVia (boundedAwsCliRun environment) (Text.unpack clusterName)
         pure (either (Left . Text.pack) (const (Right ())) result)
     }
 
@@ -917,13 +1076,9 @@ testEbsObservation clusterName = ProviderReadOnly $ \session _ providerBound ->
   sealProviderEvidence providerBound <$> do
     environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
     observed <-
-      EbsVolume.discoverEbsVolumes
-        EbsVolume.EbsDiscoverInput
-          { EbsVolume.ebsDiscoverEnvironment = environment
-          , EbsVolume.ebsDiscoverWorkingDirectory = Nothing
-          , EbsVolume.ebsDiscoverScope =
-              EbsVolume.EbsPerRunTest (Text.unpack clusterName)
-          }
+      EbsVolume.discoverEbsVolumesVia
+        (boundedAwsCliRun environment)
+        (EbsVolume.EbsPerRunTest (Text.unpack clusterName))
     pure $ case observed of
       Left detail -> Left (Text.pack detail)
       Right volumes ->
@@ -967,7 +1122,7 @@ nativeStackFamilyReaperMutation ref config admittedIdentities =
             | otherwise ->
                 ProviderEffectUnobservable
                   "registered native stack family exceeded its manifest allowlist"
-    , applyProviderMutation = \session _ -> do
+    , applyProviderMutation = \session _ -> failedApply $ do
         environment <-
           awsCliSubprocessEnvironment (productionSessionCredentials session)
         binding <- validateNativeStackFamilySession environment ref
@@ -1043,7 +1198,7 @@ eksIamRoleFamilyReaperMutation roleNames policyNames =
           Right (_, True) -> ProviderEffectSatisfied "registered EKS IAM family is absent"
           Right (_, False) -> ProviderEffectNeedsApply "registered EKS IAM family remains"
     , applyProviderMutation = \session _ ->
-        reapEksIamRoleFamily session roleNames policyNames
+        failedApply (reapEksIamRoleFamily session roleNames policyNames)
     }
 
 observeEksIamRoleFamily
@@ -1291,7 +1446,7 @@ eksLoadBalancerControllerFamilyReaperMutation loadBalancerName tags =
             ProviderEffectNeedsApply
               "registered EKS load-balancer controller family remains"
     , applyProviderMutation = \session _ ->
-        reapEksLoadBalancerControllerFamily session loadBalancerName tags
+        failedApply (reapEksLoadBalancerControllerFamily session loadBalancerName tags)
     }
 
 observeEksLoadBalancerControllerFamily
@@ -1746,9 +1901,7 @@ validationHostedZoneObservation
 validationHostedZoneObservation namePrefix = ProviderReadOnly $ \session _ providerBound -> do
   environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
   observed <-
-    Route53ValidationZone.discoverValidationHostedZones
-      providerWorkingDirectory
-      environment
+    Route53ValidationZone.discoverValidationHostedZones (boundedAwsCliText environment)
   pure $ case observed of
     Left detail -> Left (Text.pack detail)
     Right zones ->
@@ -1776,20 +1929,16 @@ validationHostedZoneReaperMutation _namePrefix =
     { observeProviderMutation = \session _ -> do
         environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
         observed <-
-          Route53ValidationZone.discoverValidationHostedZones
-            providerWorkingDirectory
-            environment
+          Route53ValidationZone.discoverValidationHostedZones (boundedAwsCliText environment)
         pure $ case observed of
           Left detail -> ProviderEffectUnobservable (Text.pack detail)
           Right [] ->
             ProviderEffectSatisfied "validation hosted zones are absent"
           Right _ -> ProviderEffectNeedsApply "validation hosted zones remain"
-    , applyProviderMutation = \session _ -> do
+    , applyProviderMutation = \session _ -> failedApply $ do
         environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
         result <-
-          Route53ValidationZone.destroyValidationHostedZones
-            providerWorkingDirectory
-            environment
+          Route53ValidationZone.destroyValidationHostedZones (boundedAwsCliText environment)
         pure $ case result of
           ExitSuccess -> Right ()
           ExitFailure code ->
@@ -1859,12 +2008,372 @@ renderDns01ChallengeEvidence providerBound zoneId recordNamePrefix scanned = cas
           )
       )
 
--- | The subprocess working directory for the Provider Worker's AWS calls.
+-- | Sprint 5.50: the @dns-aws@ validation's throwaway hosted zone, through the
+-- Provider rather than the host.
 --
--- The @aws@ CLI resolves nothing relative to it for these verbs; it is supplied
--- because the shared capture helper requires one.
-providerWorkingDirectory :: FilePath
-providerWorkingDirectory = "."
+-- The host holds no AWS credential, so the validation that created this zone
+-- inline could not run at all. The zone name and the caller reference are both
+-- derived here from the nonce by the registered validation-zone owner; an
+-- intent supplies a nonce and a base name, never a name to create. Satisfied
+-- means the zone exists /and/ reads back every owned tag, because a zone an
+-- interrupted create left untagged is invisible to the terminal audit.
+validationHostedZoneEnsureMutation
+  :: Text -> Text -> ProviderMutation IO ProviderProductionSession
+validationHostedZoneEnsureMutation nonce baseZone =
+  ProviderMutation
+    { observeProviderMutation = \session _ -> observeValidationZone session nonce baseZone
+    , applyProviderMutation = \session _ ->
+        failedApply $ case validationZoneNames nonce baseZone of
+          Left detail -> pure (Left detail)
+          Right (zoneName, callerReference, baseName) -> do
+            environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+            discovered <-
+              Route53ValidationZone.discoverValidationHostedZones (boundedAwsCliText environment)
+            case discovered of
+              Left detail -> pure (Left (Text.pack detail))
+              Right zones -> case zoneIdNamed zoneName zones of
+                Just zoneId ->
+                  first Text.pack
+                    <$> Route53ValidationZone.tagValidationHostedZone
+                      (boundedAwsCliText environment)
+                      zoneId
+                Nothing -> createBeneathExistingZone environment zoneName callerReference baseName
+    }
+
+-- | Create the zone only beneath a zone that already exists in this account.
+--
+-- A create names a zone the caller derived from its own nonce and base name.
+-- Requiring the base to be an existing hosted zone keeps an intent from
+-- minting a billable public zone under a name nobody here owns.
+createBeneathExistingZone
+  :: [(String, String)] -> String -> String -> String -> IO (Either Text ())
+createBeneathExistingZone environment zoneName callerReference baseName = do
+  everyZone <- Route53ValidationZone.discoverAllHostedZones (boundedAwsCliText environment)
+  case everyZone of
+    Left detail -> pure (Left (Text.pack detail))
+    Right zones -> case zoneIdNamed baseName zones of
+      Nothing ->
+        pure (Left ("the base hosted zone " <> Text.pack baseName <> " does not exist in this account"))
+      Just _ ->
+        fmap
+          (first Text.pack . Control.Monad.void)
+          ( Route53ValidationZone.createValidationHostedZone
+              (boundedAwsCliText environment)
+              zoneName
+              callerReference
+          )
+
+observeValidationZone
+  :: ProviderProductionSession -> Text -> Text -> IO ProviderEffectObservation
+observeValidationZone session nonce baseZone =
+  case validationZoneNames nonce baseZone of
+    Left detail -> pure (ProviderEffectUnobservable detail)
+    Right (zoneName, _, _) -> do
+      environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+      discovered <-
+        Route53ValidationZone.discoverValidationHostedZones (boundedAwsCliText environment)
+      case discovered of
+        Left detail -> pure (ProviderEffectUnobservable (Text.pack detail))
+        Right zones -> case zoneIdNamed zoneName zones of
+          Nothing -> pure (ProviderEffectNeedsApply "validation hosted zone is absent")
+          Just zoneId -> do
+            tagged <-
+              Route53ValidationZone.validationHostedZoneOwnedTagsPresent
+                (boundedAwsCliText environment)
+                zoneId
+            pure $ case tagged of
+              Left detail -> ProviderEffectUnobservable (Text.pack detail)
+              Right True -> ProviderEffectSatisfied (validationZoneEvidence zoneId)
+              Right False -> ProviderEffectNeedsApply (validationZoneEvidence zoneId)
+
+-- | The zone name and caller reference one nonce and base name derive, after
+-- both are checked to be what the registered owner would itself create.
+validationZoneNames :: Text -> Text -> Either Text (String, String, String)
+validationZoneNames nonce baseZone
+  | Text.null nonce
+      || Text.length nonce > 32
+      || not (Text.all (\character -> isAsciiLower character || isDigit character) nonce) =
+      Left "validation hosted-zone nonce is not a short lowercase alphanumeric token"
+  | not (validDnsName baseZone) =
+      Left "validation hosted-zone base name is not a valid DNS name"
+  | otherwise =
+      Right
+        ( Route53ValidationZone.validationHostedZoneName nonceText baseText
+        , Route53ValidationZone.validationHostedZoneCallerReference nonceText
+        , baseText
+        )
+ where
+  nonceText = Text.unpack nonce
+  baseText = Text.unpack (Text.dropWhileEnd (== '.') baseZone)
+
+-- | A dotted DNS name in lowercase letters, digits and hyphens, no label empty
+-- or edged with a hyphen, with an optional trailing dot.
+validDnsName :: Text -> Bool
+validDnsName raw =
+  not (Text.null trimmed)
+    && Text.length trimmed <= 190
+    && all validLabel (Text.splitOn "." trimmed)
+ where
+  trimmed = Text.dropWhileEnd (== '.') raw
+  validLabel label =
+    not (Text.null label)
+      && Text.length label <= 63
+      && Text.all (\character -> isAsciiLower character || isDigit character || character == '-') label
+      && Text.head label /= '-'
+      && Text.last label /= '-'
+
+-- | The id of the listed zone whose name is exactly the wanted one, which
+-- Route 53 reports with a trailing dot.
+zoneIdNamed :: String -> [(String, String)] -> Maybe String
+zoneIdNamed wanted zones =
+  case [zoneId | (zoneId, name) <- zones, name == wanted || name == wanted <> "."] of
+    zoneId : _ -> Just zoneId
+    [] -> Nothing
+
+validationZoneEvidence :: String -> Text
+validationZoneEvidence zoneId =
+  "validation-zone:" <> Text.pack (Route53ValidationZone.bareHostedZoneId zoneId)
+
+-- | Sprint 5.50: the captured invite message addressed to one recipient.
+--
+-- Read-only and single-shot: the validation polls by issuing the intent again,
+-- because a poll loop inside one Provider request would hold the request open
+-- for its whole deadline. The bucket is checked to be the SES capture bucket
+-- before it is read, because the Provider's object grants are not scoped to a
+-- bucket and the intent names one. The evidence is the object key and the
+-- invite link, or a statement that nothing has arrived. The link is a
+-- one-time action token for a throwaway user the validation deletes in the
+-- same run.
+sesInviteMailObservation
+  :: Text -> Text -> ProviderReadOnly IO ProviderProductionSession
+sesInviteMailObservation bucket recipient = ProviderReadOnly $ \session _ providerBound ->
+  sealProviderEvidence providerBound <$> do
+    environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+    guarded <- requireSesInviteTarget environment bucket recipient
+    case guarded of
+      Left detail -> pure (Left detail)
+      Right () -> do
+        found <- SesCapture.findCapturedEmail (captureRunner environment) (Text.unpack bucket) recipient
+        pure $ case found of
+          Failure detail -> Left (Text.pack detail)
+          Success Nothing -> Right "ses-invite:pending"
+          Success (Just captured) ->
+            case parseKeycloakInviteLink (SesCapture.capturedEmailBody captured) of
+              Left detail ->
+                Left ("captured message has no usable invite link: " <> Text.pack detail)
+              Right link
+                | Text.any (\character -> character <= ' ') (SesCapture.capturedEmailKey captured) ->
+                    Left "captured object key is not a single printable token"
+                | otherwise ->
+                    Right
+                      ( "ses-invite:"
+                          <> SesCapture.capturedEmailKey captured
+                          <> " "
+                          <> Text.pack link
+                      )
+
+-- | Sprint 5.50: delete every captured message addressed to that recipient, and
+-- prove none remains.
+sesInviteMailReaperMutation
+  :: Text -> Text -> ProviderMutation IO ProviderProductionSession
+sesInviteMailReaperMutation bucket recipient =
+  ProviderMutation
+    { observeProviderMutation = \session _ -> do
+        environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+        guarded <- requireSesInviteTarget environment bucket recipient
+        case guarded of
+          Left detail -> pure (ProviderEffectUnobservable detail)
+          Right () -> do
+            keys <- SesCapture.capturedEmailKeysFor (captureRunner environment) (Text.unpack bucket) recipient
+            pure $ case keys of
+              Failure detail -> ProviderEffectUnobservable (Text.pack detail)
+              Success [] ->
+                ProviderEffectSatisfied
+                  ( "ses invite mail is absent from the objects "
+                      <> Text.pack SesCapture.captureWindowStatement
+                  )
+              Success _ -> ProviderEffectNeedsApply "ses invite mail remains"
+    , applyProviderMutation = \session _ ->
+        failedApply $ do
+          environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+          guarded <- requireSesInviteTarget environment bucket recipient
+          case guarded of
+            Left detail -> pure (Left detail)
+            Right () -> do
+              keys <- SesCapture.capturedEmailKeysFor (captureRunner environment) (Text.unpack bucket) recipient
+              case keys of
+                Failure detail -> pure (Left (Text.pack detail))
+                Success found -> deleteEach environment found
+    }
+ where
+  deleteEach _ [] = pure (Right ())
+  deleteEach environment (key : rest) = do
+    deleted <- SesCapture.deleteCapturedObject (captureRunner environment) (Text.unpack bucket) key
+    case deleted of
+      Failure detail -> pure (Left (Text.pack detail))
+      Success () -> deleteEach environment rest
+
+-- | The Provider's bounded AWS CLI invocation, in the shape the capture reader
+-- takes, so every capture call carries the child-process permit and bound.
+captureRunner :: [(String, String)] -> SesCapture.CaptureRunner
+captureRunner environment =
+  SesCapture.CaptureRunner
+    { SesCapture.runCaptureAws = runAws environment
+    , SesCapture.captureNow = getPOSIXTime
+    }
+
+-- | The bucket must carry the SES capture-bucket owned tags, and the recipient
+-- must be a validation recipient, before anything is read or deleted.
+requireSesInviteTarget
+  :: [(String, String)] -> Text -> Text -> IO (Either Text ())
+requireSesInviteTarget environment bucket recipient
+  | not (validBucketName bucket) = pure (Left "SES invite bucket is not a valid bucket name")
+  | not (validRecipient recipient) = pure (Left "SES invite recipient is not a single mail address")
+  | otherwise = do
+      tagging <-
+        runAws
+          environment
+          ["s3api", "get-bucket-tagging", "--bucket", Text.unpack bucket, "--output", "json"]
+      pure $ case observedSesCaptureBucketTagging tagging of
+        Left detail -> Left detail
+        Right True -> Right ()
+        Right False ->
+          Left "the named bucket is not the SES capture bucket: it lacks the capture-bucket owned tags"
+ where
+  validBucketName name =
+    Text.length name >= 3
+      && Text.length name <= 63
+      && Text.all
+        (\character -> isAsciiLower character || isDigit character || character == '.' || character == '-')
+        name
+      && Text.head name /= '-'
+  -- The shape the invite validation addresses: @test-\<hex nonce>\@\<domain>@.
+  -- Narrower than a mail address on purpose: the same predicate decides what a
+  -- reap deletes from a bucket that also holds mail nobody here sent.
+  validRecipient address =
+    case Text.splitOn "@" address of
+      [localPart, domain] ->
+        Text.length address <= 254
+          && Text.isPrefixOf "test-" localPart
+          && validNonceToken (Text.drop 5 localPart)
+          && validDnsName domain
+      _ -> False
+  validNonceToken token =
+    not (Text.null token)
+      && Text.length token <= 32
+      && Text.all (\character -> isAsciiLower character || isDigit character) token
+
+-- | Sprint 5.50: the retained EBS volumes the AWS substrate's PersistentVolumes
+-- bind to, created through the Provider because the host holds no credential
+-- and the substrate platform used to invoke an ambient @aws@ directly.
+--
+-- The required volumes travel as @name:size-gib:zone@ entries joined by commas
+-- and are checked here, never taken as an argument vector. Satisfied means every
+-- required volume exists exactly once, in the required zone, and is attachable;
+-- the evidence is one line of @name=volume-id=zone@ bindings.
+retainedEbsEnsureMutation
+  :: Text -> Text -> ProviderMutation IO ProviderProductionSession
+retainedEbsEnsureMutation volumeType specs =
+  ProviderMutation
+    { observeProviderMutation = \session _ -> observeRetainedEbsEnsure session volumeType specs
+    , applyProviderMutation = \session _ ->
+        failedApply $ case parseRetainedEbsEnsure volumeType specs of
+          Left detail -> pure (Left detail)
+          Right (typed, required) -> do
+            environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+            ensured <-
+              EbsVolume.ensureRetainedEbsVolumesVia
+                (boundedAwsCliRun environment)
+                typed
+                required
+            pure (first Text.pack (Control.Monad.void ensured))
+    }
+
+observeRetainedEbsEnsure
+  :: ProviderProductionSession -> Text -> Text -> IO ProviderEffectObservation
+observeRetainedEbsEnsure session volumeType specs =
+  case parseRetainedEbsEnsure volumeType specs of
+    Left detail -> pure (ProviderEffectUnobservable detail)
+    Right (_, required) -> do
+      environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+      discovered <-
+        EbsVolume.discoverEbsVolumesVia (boundedAwsCliRun environment) (EbsVolume.EbsRetainedProduction)
+      pure (retainedEbsEnsureObservation required discovered)
+
+retainedEbsEnsureObservation
+  :: [EbsVolume.EbsRequiredVolume]
+  -> Either String [EbsVolume.EbsVolume]
+  -> ProviderEffectObservation
+retainedEbsEnsureObservation required discovered = case discovered of
+  Left detail -> ProviderEffectUnobservable (Text.pack detail)
+  Right volumes
+    | not (null (EbsVolume.missingRequiredVolumes required volumes)) ->
+        ProviderEffectNeedsApply
+          "retained EBS volumes are missing from the listing (a volume created moments ago can lag it: confirm whether it exists before creating it again)"
+    | otherwise ->
+        case EbsVolume.retainedEbsVolumeBindingsFromDiscovered required volumes of
+          Left detail -> ProviderEffectUnobservable (Text.pack detail)
+          Right bindings -> ProviderEffectSatisfied (retainedEbsBindingsEvidence bindings)
+
+parseRetainedEbsEnsure
+  :: Text -> Text -> Either Text (AwsEbsVolumeType, [EbsVolume.EbsRequiredVolume])
+parseRetainedEbsEnsure volumeType specs = do
+  typed <-
+    first
+      (Text.pack . renderAwsSubstrateProfileError)
+      (mkAwsEbsVolumeType volumeType)
+  entries <- traverse parseEntry (Text.splitOn "," specs)
+  let names = map EbsVolume.ebsRequiredPersistentVolumeName entries
+  if null entries || length entries > 64
+    then Left "retained EBS ensure names no volume, or more than 64"
+    else
+      if length (nub names) /= length names
+        then Left "retained EBS ensure names the same volume twice"
+        else Right (typed, entries)
+ where
+  parseEntry entry = case Text.splitOn ":" entry of
+    [name, sizeText, zone]
+      | validVolumeName name
+          && not (Text.null sizeText)
+          && Text.length sizeText <= 5
+          && Text.all isDigit sizeText
+          && validZone zone ->
+          let size = read (Text.unpack sizeText) :: Int
+           in if size >= 1 && size <= 16384
+                then
+                  Right
+                    EbsVolume.EbsRequiredVolume
+                      { EbsVolume.ebsRequiredPersistentVolumeName = Text.unpack name
+                      , EbsVolume.ebsRequiredSizeGiB = size
+                      , EbsVolume.ebsRequiredAvailabilityZone = Text.unpack zone
+                      }
+                else Left "retained EBS volume size is outside 1..16384 GiB"
+    _ -> Left "retained EBS volume entry is not name:size-gib:zone"
+  validVolumeName name =
+    not (Text.null name)
+      && Text.length name <= 128
+      && Text.all
+        (\character -> isAsciiLower character || isDigit character || character == '-' || character == '.')
+        name
+  validZone zone =
+    Text.length zone >= 3
+      && Text.length zone <= 32
+      && Text.all (\character -> isAsciiLower character || isDigit character || character == '-') zone
+
+-- | One line of bindings. @=@ cannot occur in a validated name, volume id or
+-- zone, so the line splits back without ambiguity.
+retainedEbsBindingsEvidence :: [StaticEbsVolumeBinding] -> Text
+retainedEbsBindingsEvidence bindings =
+  "retained-ebs-bindings:"
+    <> Text.intercalate
+      ","
+      [ Text.pack (staticEbsVolumeBindingPersistentVolumeName binding)
+          <> "="
+          <> Text.pack (staticEbsVolumeBindingVolumeHandle binding)
+          <> "="
+          <> Text.pack (staticEbsVolumeBindingAvailabilityZone binding)
+      | binding <- bindings
+      ]
 
 spotPriceObservation
   :: ProviderSpotPriceQuery
@@ -1911,9 +2420,7 @@ operationalIdentityObservation = ProviderReadOnly $ \session _ providerBound ->
       successful <- firstText (processStdout <$> commandSuccess output)
       root <- decodeObject successful
       arn <- requireTextField "Arn" root
-      if Text.null (Text.strip arn) || Text.length arn > 2048
-        then Left "STS identity ARN is absent or exceeds the evidence bound"
-        else Right ("sts-identity:" <> arn)
+      renderStsIdentityEvidence arn
 
 -- | Exact account/region observation for lifecycle admission.  Account comes
 -- only from a successful STS response under the scoped Provider session;
@@ -2167,6 +2674,29 @@ runAws environment arguments = do
     Right output -> output
     Left detail -> ProcessOutput (ExitFailure 1) "" (Text.unpack (errorMsg detail))
 
+-- | Sprint 5.53: the EBS interpreters start the AWS CLI through 'runAws', so
+-- they carry the child-process permit and the same physical bounds as every
+-- other AWS child the Provider starts. A process that cannot start is already
+-- folded into 'runAws'' output, so this runner never answers 'Failure'.
+boundedAwsCliRun :: [(String, String)] -> EbsVolume.AwsCliRun
+boundedAwsCliRun environment arguments = Success <$> runAws environment arguments
+
+-- | Sprint 5.53: the owned-tag listing runs each page through the same runner,
+-- so a Tagging API call that never answers is a failure after the bound and not
+-- a Provider request held open without one.
+boundedTaggedPageRunner :: TaggedResourceQuery.TaggedPageRunner
+boundedTaggedPageRunner subprocess =
+  Success
+    <$> runAws
+      (fromMaybe [] (subprocessEnvironment subprocess))
+      (subprocessArguments subprocess)
+
+-- | Sprint 5.53: the same runner, in the shape the Route 53 validation-zone
+-- interpreters take: standard output, or why the invocation failed.
+boundedAwsCliText :: [(String, String)] -> Route53ValidationZone.AwsCliText
+boundedAwsCliText environment arguments =
+  Route53ValidationZone.awsCliTextFromOutput arguments <$> runAws environment arguments
+
 firstText :: Either String value -> Either Text value
 firstText = either (Left . Text.pack) Right
 
@@ -2176,7 +2706,8 @@ scratchCheckpointMutation
 scratchCheckpointMutation checkpointRef =
   ProviderMutation
     { observeProviderMutation = observeScratchCheckpoint checkpointRef
-    , applyProviderMutation = applyScratchCheckpoint checkpointRef
+    , applyProviderMutation = \session coordinate ->
+        failedApply (applyScratchCheckpoint checkpointRef session coordinate)
     }
 
 observeScratchCheckpoint
@@ -2237,9 +2768,10 @@ sesIdentityMutation ref =
   ProviderMutation
     { observeProviderMutation = \session _ -> observeSesIdentity session ref
     , applyProviderMutation = \session _ ->
-        applySingleAwsCommand
-          session
-          ["ses", "verify-domain-identity", "--domain", Text.unpack (sesIdentityRefText ref)]
+        failedApply $
+          applySingleAwsCommand
+            session
+            ["ses", "verify-domain-identity", "--domain", Text.unpack (sesIdentityRefText ref)]
     }
 
 observeSesIdentity
@@ -2278,9 +2810,10 @@ sesDkimMutation ref =
   ProviderMutation
     { observeProviderMutation = \session _ -> observeSesDkim session ref
     , applyProviderMutation = \session _ ->
-        applySingleAwsCommand
-          session
-          ["ses", "verify-domain-dkim", "--domain", Text.unpack (sesIdentityRefText ref)]
+        failedApply $
+          applySingleAwsCommand
+            session
+            ["ses", "verify-domain-dkim", "--domain", Text.unpack (sesIdentityRefText ref)]
     }
 
 observeSesDkim
@@ -2323,7 +2856,7 @@ sesDnsMutation :: SesDnsRef -> ProviderMutation IO ProviderProductionSession
 sesDnsMutation ref =
   ProviderMutation
     { observeProviderMutation = \session _ -> observeSesDns session ref
-    , applyProviderMutation = \session _ -> applySesDns session ref
+    , applyProviderMutation = \session _ -> failedApply (applySesDns session ref)
     }
 
 publicARecordObservation
@@ -2341,7 +2874,7 @@ publicARecordMutation
 publicARecordMutation ref =
   ProviderMutation
     { observeProviderMutation = \session _ -> observePublicARecord session ref
-    , applyProviderMutation = \session _ -> applyPublicARecord session ref
+    , applyProviderMutation = \session _ -> failedApply (applyPublicARecord session ref)
     }
 
 observePublicARecord
@@ -3101,7 +3634,7 @@ sesReceiptRulesMutation
 sesReceiptRulesMutation ref =
   ProviderMutation
     { observeProviderMutation = \session _ -> observeSesReceiptRules session ref
-    , applyProviderMutation = \session _ -> applySesReceiptRules session ref
+    , applyProviderMutation = \session _ -> failedApply (applySesReceiptRules session ref)
     }
 
 observeSesReceiptRules
@@ -3212,7 +3745,7 @@ sesCaptureBucketMutation
 sesCaptureBucketMutation ref =
   ProviderMutation
     { observeProviderMutation = \session _ -> observeSesCaptureBucket session ref
-    , applyProviderMutation = \session _ -> applySesCaptureBucket session ref
+    , applyProviderMutation = \session _ -> failedApply (applySesCaptureBucket session ref)
     }
 
 observeSesCaptureBucket
@@ -3569,7 +4102,8 @@ ownedResourceTagObservation query = ProviderReadOnly $ \session _ providerBound 
   sealProviderEvidence providerBound <$> do
     environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
     listed <-
-      TaggedResourceQuery.discoverTaggedResources
+      TaggedResourceQuery.discoverTaggedResourcesVia
+        boundedTaggedPageRunner
         TaggedResourceQuery.TaggedResourceQueryInput
           { TaggedResourceQuery.taggedResourceQueryEnvironment = environment
           , TaggedResourceQuery.taggedResourceQueryWorkingDirectory = Nothing
@@ -3637,12 +4171,7 @@ retainedEbsObservation lifecycleValue = ProviderReadOnly $ \session _ providerBo
       else do
         environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
         observed <-
-          EbsVolume.discoverEbsVolumes
-            EbsVolume.EbsDiscoverInput
-              { EbsVolume.ebsDiscoverEnvironment = environment
-              , EbsVolume.ebsDiscoverWorkingDirectory = Nothing
-              , EbsVolume.ebsDiscoverScope = EbsVolume.EbsRetainedProduction
-              }
+          EbsVolume.discoverEbsVolumesVia (boundedAwsCliRun environment) (EbsVolume.EbsRetainedProduction)
         pure $ case observed of
           Left detail -> Left (Text.pack detail)
           Right volumes ->
@@ -3662,12 +4191,7 @@ retainedEbsReaperMutation lifecycleValue =
         withRetainedFamily $ do
           environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
           observed <-
-            EbsVolume.discoverEbsVolumes
-              EbsVolume.EbsDiscoverInput
-                { EbsVolume.ebsDiscoverEnvironment = environment
-                , EbsVolume.ebsDiscoverWorkingDirectory = Nothing
-                , EbsVolume.ebsDiscoverScope = EbsVolume.EbsRetainedProduction
-                }
+            EbsVolume.discoverEbsVolumesVia (boundedAwsCliRun environment) (EbsVolume.EbsRetainedProduction)
           pure $ case observed of
             Left detail -> ProviderEffectUnobservable (Text.pack detail)
             Right volumes ->
@@ -3677,16 +4201,12 @@ retainedEbsReaperMutation lifecycleValue =
                 _ -> ProviderEffectNeedsApply "retained EBS volumes remain"
     , applyProviderMutation = \session _ ->
         if wrongFamily
-          then pure (Left wrongFamilyDetail)
+          then pure (Left (ApplyFailed wrongFamilyDetail))
           else do
             environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
             result <-
-              EbsVolume.runRetainedEbsReaper
-                EbsVolume.RetainedEbsReaperInput
-                  { EbsVolume.retainedEbsReaperEnvironment = environment
-                  , EbsVolume.retainedEbsReaperWorkingDirectory = Nothing
-                  }
-            pure (either (Left . Text.pack) (const (Right ())) result)
+              EbsVolume.runRetainedEbsReaperVia (boundedAwsCliRun environment)
+            pure (either (Left . ApplyFailed . Text.pack) (const (Right ())) result)
     }
  where
   wrongFamily = Text.unpack lifecycleValue /= TagSweep.ebsRetainedLifecycleValue

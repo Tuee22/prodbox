@@ -108,7 +108,7 @@ spec:
                 --http-enabled=true \
                 --health-enabled=true \
                 --proxy-headers=xforwarded \
-                --hostname={{ .Values.keycloak.publicHost }} \
+                --hostname=https://{{ .Values.keycloak.publicHost }}{{ .Values.keycloak.httpRelativePath }} \
                 --http-relative-path={{ .Values.keycloak.httpRelativePath }} \
                 --import-realm
           ports:

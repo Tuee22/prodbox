@@ -32,19 +32,28 @@ awsControlPlaneIsolationSuite =
       ]
         `shouldBe` [RetainedHomeAuthorityClient]
 
-    it "keeps the Authority external to EKS while every target role is local" $ do
-      let authorityLocations =
-            [ awsTransportLocation transport
+    it
+      "keeps the Authority and the Provider Worker in the retained home while every target role is local"
+      $ do
+        let locationsOf predicate =
+              [ awsTransportLocation transport
+              | transport <- canonicalAwsRoleTransports
+              , predicate (awsTransportRole transport)
+              ]
+            homeRoles role = role `elem` [RetainedHomeAuthorityClient, AwsProviderWorker]
+        locationsOf (== RetainedHomeAuthorityClient) `shouldBe` [RetainedHomeService]
+        locationsOf (== AwsProviderWorker) `shouldBe` [RetainedHomeService]
+        locationsOf (not . homeRoles) `shouldSatisfy` all (== AwsEksService)
+
+    it "refuses a Provider Worker projected onto EKS" $ do
+      let projected =
+            [ if awsTransportRole transport == AwsProviderWorker
+                then transport {awsTransportLocation = AwsEksService}
+                else transport
             | transport <- canonicalAwsRoleTransports
-            , awsTransportRole transport == RetainedHomeAuthorityClient
             ]
-          targetLocations =
-            [ awsTransportLocation transport
-            | transport <- canonicalAwsRoleTransports
-            , awsTransportRole transport /= RetainedHomeAuthorityClient
-            ]
-      authorityLocations `shouldBe` [RetainedHomeService]
-      targetLocations `shouldSatisfy` all (== AwsEksService)
+      validateAwsControlPlaneIsolation projected
+        `shouldBe` Left AwsProviderProjectedAsEksWorkload
 
     it "rejects a missing role, duplicate role, and shared Service transport" $ do
       case canonicalAwsRoleTransports of

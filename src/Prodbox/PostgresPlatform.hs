@@ -25,7 +25,8 @@ where
 
 import Data.Text qualified as Text
 import Prodbox.Lib.Storage
-  ( ChartStorageSpec (..)
+  ( ChartStorageAccessMode (..)
+  , ChartStorageSpec (..)
   )
 import Prodbox.Naming (boundedResourceName)
 
@@ -97,6 +98,7 @@ patroniStorageSpecs rootChart =
       , chartStorageSpecWorkloadProfileId = Text.pack "keycloak-postgres"
       , chartStorageSpecOrdinal = ordinal
       , chartStorageSpecClaimSuffix = "data"
+      , chartStorageSpecAccessMode = ReadWriteOnceAccess
       }
 
 patroniCredentialsSecretName :: String -> String

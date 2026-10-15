@@ -5,10 +5,14 @@ module Prodbox.Subprocess
   , BoundedSubprocessLimits (..)
   , FramedSubprocessExchangeError (..)
   , FramedSubprocessExchangeTransportStage (..)
+  , KillableSubprocessLimits (..)
+  , KillableSubprocessOutcome (..)
   , ProcessOutput (..)
   , Subprocess (..)
+  , boundedSubprocessTimeoutDetail
   , capture
   , captureSubprocessBounded
+  , captureSubprocessKillable
   , captureSubprocessFramedExchangeBounded
   , captureSubprocessWithInputBounded
   , captureSubprocessResult
@@ -24,18 +28,25 @@ module Prodbox.Subprocess
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async, wait, waitEither, withAsync)
 import Control.Exception
   ( IOException
   , displayException
   , finally
+  , onException
   , try
+  , uninterruptibleMask_
   )
+import Control.Monad (void)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Builder qualified as ByteStringBuilder
+import Data.ByteString.Char8 qualified as ByteStringChar8
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.Error
@@ -47,7 +58,7 @@ import Prodbox.Result
   ( Result (..)
   )
 import System.Exit
-  ( ExitCode
+  ( ExitCode (ExitFailure)
   )
 import System.IO
   ( Handle
@@ -56,8 +67,10 @@ import System.IO
   )
 import System.Posix.Signals
   ( Signal
+  , sigKILL
   , sigTERM
   , signalProcess
+  , signalProcessGroup
   )
 import System.Process qualified as Process
 import System.Process.Typed qualified as Typed
@@ -93,6 +106,24 @@ data BoundedSubprocessLimits = BoundedSubprocessLimits
   , boundedSubprocessMaximumStderrBytes :: !Int
   , boundedSubprocessTimeoutMicros :: !Int
   }
+  deriving (Eq, Show)
+
+-- | Limits for a long-running child that must neither be stopped for what it
+-- prints nor be allowed to outlive its deadline.  Output is drained without a
+-- ceiling; the wall clock and the kill grace are the only bounds, and both
+-- must be positive.
+data KillableSubprocessLimits = KillableSubprocessLimits
+  { killableSubprocessTimeoutMicros :: !Int
+  , killableSubprocessKillGraceMicros :: !Int
+  }
+  deriving (Eq, Show)
+
+-- | How a killable child ended.  A child stopped at its deadline still reports
+-- what it wrote before it was stopped, because that transcript is what names
+-- the cause.
+data KillableSubprocessOutcome
+  = KillableSubprocessCompleted !ProcessOutput
+  | KillableSubprocessTimedOut !ProcessOutput
   deriving (Eq, Show)
 
 -- | Failure from a bounded two-stage exchange.  A decision refusal carries
@@ -226,7 +257,7 @@ captureSubprocessWithInputBounded limits input spec
                       (collectBoundedProcess process stdoutReader stderrReader)
           _ <- try (Typed.stopProcess process) :: IO (Either IOException ())
           pure $ case result of
-            Nothing -> Left (boundedSubprocessError "bounded subprocess exceeded its wall-clock timeout")
+            Nothing -> Left (boundedSubprocessError boundedSubprocessTimeoutDetail)
             Just bounded -> bounded
  where
   invalidLimits =
@@ -234,6 +265,143 @@ captureSubprocessWithInputBounded limits input spec
       || boundedSubprocessMaximumStdoutBytes limits <= 0
       || boundedSubprocessMaximumStderrBytes limits <= 0
       || boundedSubprocessTimeoutMicros limits <= 0
+
+-- | Run a long-lived child, such as a Pulumi destroy, under a wall-clock
+-- bound.  The child leads its own process group, so stopping it also stops the
+-- plugin processes it started.  It is stopped by SIGTERM and then, after the
+-- kill grace, by SIGKILL: waiting for a child that ignores SIGTERM would
+-- strand the caller past its deadline.  The same stop runs if the caller is
+-- cancelled, so no exit path leaves the child running.
+captureSubprocessKillable
+  :: KillableSubprocessLimits
+  -> Subprocess
+  -> IO (Either AppError KillableSubprocessOutcome)
+captureSubprocessKillable limits spec
+  | killableSubprocessTimeoutMicros limits <= 0
+      || killableSubprocessKillGraceMicros limits <= 0 =
+      pure (Left (boundedSubprocessError "killable subprocess limits must be positive"))
+  | otherwise = do
+      started <-
+        try
+          ( Typed.startProcess
+              ( Typed.setCreateGroup
+                  True
+                  ( Typed.setStdin
+                      Typed.nullStream
+                      ( Typed.setStdout
+                          Typed.createPipe
+                          (Typed.setStderr Typed.createPipe (typedProcessConfig False spec))
+                      )
+                  )
+              )
+          )
+          :: IO (Either IOException (Typed.Process () Handle Handle))
+      case started of
+        Left err -> pure (Left (subprocessIOException err))
+        Right process -> Right <$> runKillable limits process
+
+runKillable
+  :: KillableSubprocessLimits
+  -> Typed.Process () Handle Handle
+  -> IO KillableSubprocessOutcome
+runKillable limits process = do
+  stdoutChunks <- newIORef []
+  stderrChunks <- newIORef []
+  let snapshot exitCode = do
+        stdoutText <- chunksText <$> readIORef stdoutChunks
+        stderrText <- chunksText <$> readIORef stderrChunks
+        pure
+          ProcessOutput
+            { processExitCode = exitCode
+            , processStdout = stdoutText
+            , processStderr = stderrText
+            }
+  let supervise (stdoutReader, stderrReader) = do
+        finished <-
+          timeout
+            (killableSubprocessTimeoutMicros limits)
+            (Typed.waitExitCode process)
+        case finished of
+          Just exitCode -> do
+            settleReaders stdoutReader stderrReader
+            KillableSubprocessCompleted <$> snapshot exitCode
+          Nothing -> do
+            exitCode <- stopWithEscalation limits process
+            settleReaders stdoutReader stderrReader
+            KillableSubprocessTimedOut <$> snapshot exitCode
+  withAsync
+    (drainHandle (Typed.getStdout process) stdoutChunks)
+    ( \stdoutReader ->
+        withAsync
+          (drainHandle (Typed.getStderr process) stderrChunks)
+          (\stderrReader -> supervise (stdoutReader, stderrReader))
+    )
+    `onException` stopWithEscalation limits process
+
+-- | SIGTERM the child's group, give it the grace to leave, then SIGKILL the
+-- group.  Polling rather than waiting on a timer keeps the stop uninterruptible
+-- yet bounded, so a cancelled caller cannot skip the kill.
+stopWithEscalation
+  :: KillableSubprocessLimits -> Typed.Process stdin stdout stderr -> IO ExitCode
+stopWithEscalation limits process = uninterruptibleMask_ $ do
+  signalGroup sigTERM
+  terminated <- pollExit (killableSubprocessKillGraceMicros limits)
+  case terminated of
+    Just exitCode -> pure exitCode
+    Nothing -> do
+      signalGroup sigKILL
+      killed <- pollExit killConfirmationMicros
+      pure (fromMaybe (ExitFailure 137) killed)
+ where
+  signalGroup signal = do
+    maybePid <- Typed.getPid process
+    case maybePid of
+      Nothing -> pure ()
+      Just pid -> do
+        _ <- try (signalProcessGroup signal pid) :: IO (Either IOException ())
+        pure ()
+  pollExit budget = do
+    exited <- Typed.getExitCode process
+    case exited of
+      Just exitCode -> pure (Just exitCode)
+      Nothing
+        | budget <= 0 -> pure Nothing
+        | otherwise -> do
+            threadDelay killPollMicros
+            pollExit (budget - killPollMicros)
+
+-- | Read a handle to its end, keeping every chunk as it arrives so a child
+-- that is stopped before it finishes still has its transcript.
+drainHandle :: Handle -> IORef [ByteString] -> IO ()
+drainHandle handle chunks = loop
+ where
+  loop = do
+    chunk <- try (ByteString.hGetSome handle 65536) :: IO (Either IOException ByteString)
+    case chunk of
+      Right bytes
+        | not (ByteString.null bytes) -> do
+            atomicModifyIORef' chunks (\collected -> (bytes : collected, ()))
+            loop
+      _ -> pure ()
+
+-- | Give the readers a moment to reach end-of-file once the child is gone. A
+-- plugin that outlived it and kept a pipe open must not hold the caller.
+settleReaders :: Async () -> Async () -> IO ()
+settleReaders stdoutReader stderrReader = do
+  void (timeout readerSettleMicros (wait stdoutReader))
+  void (timeout readerSettleMicros (wait stderrReader))
+
+chunksText :: [ByteString] -> String
+chunksText = ByteStringChar8.unpack . ByteString.concat . reverse
+
+killPollMicros :: Int
+killPollMicros = 50 * 1000
+
+killConfirmationMicros :: Int
+killConfirmationMicros = 5 * 1000 * 1000
+
+readerSettleMicros :: Int
+readerSettleMicros = 5 * 1000 * 1000
 
 -- | Run a length-delimited two-stage stdin/stdout exchange.  The child first
 -- receives the framed initial payload, emits one framed provisional value,
@@ -299,7 +467,7 @@ captureSubprocessFramedExchangeBounded limits initialPayload decide spec
               Left
                 ( FramedSubprocessExchangeTransportError
                     FramedExchangeWallClockTimeout
-                    (boundedSubprocessError "bounded subprocess exceeded its wall-clock timeout")
+                    (boundedSubprocessError boundedSubprocessTimeoutDetail)
                 )
             Just exchangeResult -> exchangeResult
  where
@@ -627,6 +795,13 @@ subprocessIOException = fatalError . Text.pack . displayException
 
 boundedSubprocessError :: String -> AppError
 boundedSubprocessError = fatalError . Text.pack
+
+-- | The detail a bounded child's wall-clock timeout carries. Exported so a caller
+-- that must tell a bound that ended a child from a failure the child reported
+-- (an EC2 waiter killed at the Provider's per-child limit, which is a reason to
+-- run it again and not a verdict) matches the one text and not a copy of it.
+boundedSubprocessTimeoutDetail :: String
+boundedSubprocessTimeoutDetail = "bounded subprocess exceeded its wall-clock timeout"
 
 startBackgroundProcess :: Subprocess -> IO (Either AppError BackgroundProcess)
 startBackgroundProcess spec = do

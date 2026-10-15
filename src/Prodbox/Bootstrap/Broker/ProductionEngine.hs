@@ -340,6 +340,7 @@ import Prodbox.ControlPlane.VaultAccessorAudit
   ( VaultAccessorAuditDetailedError (..)
   , VaultAccessorAuditDetailedOps (..)
   , VaultAccessorAuditOps (..)
+  , VaultAccessorDetailedLookupError (..)
   , VaultAccessorSubject (..)
   , classifyVaultAccessorLookupResponse
   , isBoundedBatchAuditorLogin
@@ -2195,7 +2196,7 @@ auditVaultRoleStableZeroForProvisionerCleanup waitForVisibility settings token r
       , detailedAuditLookupAccessor =
           \accessor ->
             fmap
-              (mapLeft (provisionerAccessorCleanupHttpCause ProvisionerAccessorCleanupAuditLookupAccessor))
+              (mapLeft classifyLookupFailure)
               (Vault.vaultLookupTokenAccessorInfo address token accessor)
       , detailedAuditRevokeAccessor =
           \accessor ->
@@ -2210,6 +2211,11 @@ auditVaultRoleStableZeroForProvisionerCleanup waitForVisibility settings token r
       , detailedAuditWaitVisibilityGrace =
           fmap (mapLeft classifyProvisionerAccessorCleanupVisibility) waitForVisibility
       }
+  classifyLookupFailure failure
+    | Vault.vaultAccessorLookupVanished failure = VaultAccessorDetailedLookupVanished
+    | otherwise =
+        VaultAccessorDetailedLookupFailed
+          (provisionerAccessorCleanupHttpCause ProvisionerAccessorCleanupAuditLookupAccessor failure)
 
 roleAccessorsForProvisionerCleanup
   :: BootstrapBrokerSettings
@@ -2230,12 +2236,14 @@ roleAccessorsForProvisionerCleanup settings token role = do
   classify accessor = do
     info <- Vault.vaultLookupTokenAccessorInfo address token accessor
     pure $ case info of
-      Left failure ->
-        Left
-          ( provisionerAccessorCleanupHttpCause
-              ProvisionerAccessorCleanupInitialLookupAccessor
-              failure
-          )
+      Left failure
+        | Vault.vaultAccessorLookupVanished failure -> Right []
+        | otherwise ->
+            Left
+              ( provisionerAccessorCleanupHttpCause
+                  ProvisionerAccessorCleanupInitialLookupAccessor
+                  failure
+              )
       Right observed
         | vaultAccessorMatchesSubject (bootstrapBrokerRoleSubject role) observed ->
             Right [accessor]
@@ -2319,7 +2327,10 @@ roleAccessorsWithToken settings token role = do
   classify accessor = do
     info <- Vault.vaultLookupTokenAccessorInfo address token accessor
     pure $ case info of
-      Left _ -> Left (EngineBoundaryUnavailable "Vault token-accessor policy lookup is unavailable")
+      Left failure
+        | Vault.vaultAccessorLookupVanished failure -> Right []
+        | otherwise ->
+            Left (EngineBoundaryUnavailable "Vault token-accessor policy lookup is unavailable")
       Right observed
         | vaultAccessorMatchesSubject (bootstrapBrokerRoleSubject role) observed ->
             Right [accessor]
@@ -2382,14 +2393,16 @@ revokeProvisionerSession settings registry receipt =
   revokeTarget token accessor = do
     info <- Vault.vaultLookupTokenAccessorInfo address token accessor
     case info of
-      Left failure ->
-        pure
-          ( Left
-              ( provisionerAccessorRevocationHttpCause
-                  ProvisionerAccessorRevocationTargetLookupAccessor
-                  failure
+      Left failure
+        | Vault.vaultAccessorLookupVanished failure -> pure (Right ())
+        | otherwise ->
+            pure
+              ( Left
+                  ( provisionerAccessorRevocationHttpCause
+                      ProvisionerAccessorRevocationTargetLookupAccessor
+                      failure
+                  )
               )
-          )
       Right accessorInfo
         | vaultAccessorMatchesSubject
             (bootstrapBrokerRoleSubject bootstrapProvisionerRole)
@@ -2421,12 +2434,14 @@ revokeProvisionerSession settings registry receipt =
   matchesProvisionerSubject token accessor = do
     info <- Vault.vaultLookupTokenAccessorInfo address token accessor
     pure $ case info of
-      Left failure ->
-        Left
-          ( provisionerAccessorRevocationHttpCause
-              ProvisionerAccessorRevocationPostLookupAccessor
-              failure
-          )
+      Left failure
+        | Vault.vaultAccessorLookupVanished failure -> Right False
+        | otherwise ->
+            Left
+              ( provisionerAccessorRevocationHttpCause
+                  ProvisionerAccessorRevocationPostLookupAccessor
+                  failure
+              )
       Right observed ->
         Right
           ( vaultAccessorMatchesSubject
@@ -2489,12 +2504,14 @@ provisionerRoleAccessorsForAbsence settings token = do
   classify accessor = do
     info <- Vault.vaultLookupTokenAccessorInfo address token accessor
     pure $ case info of
-      Left failure ->
-        Left
-          ( ProvisionerAccessorAbsenceHttpFailure
-              ProvisionerAccessorAbsenceLookupAccessor
-              (classifyProvisionerAccessorAbsenceHttpFailure failure)
-          )
+      Left failure
+        | Vault.vaultAccessorLookupVanished failure -> Right []
+        | otherwise ->
+            Left
+              ( ProvisionerAccessorAbsenceHttpFailure
+                  ProvisionerAccessorAbsenceLookupAccessor
+                  (classifyProvisionerAccessorAbsenceHttpFailure failure)
+              )
       Right observed
         | vaultAccessorMatchesSubject
             (bootstrapBrokerRoleSubject bootstrapProvisionerRole)

@@ -83,18 +83,23 @@ runChartsCommand repoRoot command =
                 -- Gateway event keys are Vault materialized by chart init /
                 -- hook logic; the legacy host-side event-key cache is gone.
                 let gatewayEventKeys = Map.empty
-                buildResult <-
-                  buildChartDeploymentPlanForSubstrate
-                    substrate
-                    repoRoot
-                    settings
-                    rootChart
-                    chartSecrets
-                    gatewayEventKeys
-                case buildResult of
-                  Left err -> failWith err
-                  Right plan ->
-                    withSubstrateEnvironment repoRoot settings substrate $ do
+                -- The plan is built inside the substrate's environment: two of its
+                -- observations read the selected cluster (the Kubernetes API egress
+                -- coordinate and, on AWS, the EKS registry's digest record), and
+                -- outside the bracket they read the ambient one, which on an AWS
+                -- deploy is the retained home cluster.
+                withSubstrateEnvironment repoRoot settings substrate $ do
+                  buildResult <-
+                    buildChartDeploymentPlanForSubstrate
+                      substrate
+                      repoRoot
+                      settings
+                      rootChart
+                      chartSecrets
+                      gatewayEventKeys
+                  case buildResult of
+                    Left err -> failWith err
+                    Right plan -> do
                       platformExit <- ensurePlatformForSubstrate repoRoot settings substrate
                       case platformExit of
                         ExitFailure _ -> pure platformExit

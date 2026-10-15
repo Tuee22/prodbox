@@ -286,6 +286,22 @@ data ProviderIntentCapabilities m session = ProviderIntentCapabilities
       -> ProviderStackConfig
       -> [Text]
       -> ProviderMutation m session
+  , ensureValidationHostedZoneCapability
+      :: Text
+      -> Text
+      -> ProviderMutation m session
+  , observeSesInviteMailCapability
+      :: Text
+      -> Text
+      -> ProviderReadOnly m session
+  , reapSesInviteMailCapability
+      :: Text
+      -> Text
+      -> ProviderMutation m session
+  , ensureRetainedEbsVolumesCapability
+      :: Text
+      -> Text
+      -> ProviderMutation m session
   }
 
 -- | Bracket-like session capability. Rank-2 scoping prevents the credential or
@@ -554,6 +570,18 @@ validateProviderIntent intent = case intent of
     validateNativeStackFamilyRef ref
     validateStackConfig (providerNativeStackFamilyStackRef ref) config
     validateNativeStackFamilyIdentities admittedIdentities
+  EnsureValidationHostedZone nonce baseZone -> do
+    validateTextRef "validation-zone-nonce" nonce
+    validateTextRef "validation-zone-base" baseZone
+  ObserveSesInviteMail bucket recipient -> do
+    validateTextRef "ses-invite-bucket" bucket
+    validateTextRef "ses-invite-recipient" recipient
+  ReapSesInviteMail bucket recipient -> do
+    validateTextRef "ses-invite-bucket" bucket
+    validateTextRef "ses-invite-recipient" recipient
+  EnsureRetainedEbsVolumes volumeType specs -> do
+    validateTextRef "retained-ebs-volume-type" volumeType
+    validateTextRef "retained-ebs-volume-specs" specs
  where
   validateRef label rebuilt expected = case rebuilt of
     Left _ -> Left (ProviderWorkStateIntentInvalid label)
@@ -996,6 +1024,14 @@ operationForIntent capabilities intent = case intent of
   ReapNativeStackFamily ref config admittedIdentities ->
     IntentMutation
       (reapNativeStackFamilyCapability capabilities ref config admittedIdentities)
+  EnsureValidationHostedZone nonce baseZone ->
+    IntentMutation (ensureValidationHostedZoneCapability capabilities nonce baseZone)
+  ObserveSesInviteMail bucket recipient ->
+    IntentReadOnly (observeSesInviteMailCapability capabilities bucket recipient)
+  ReapSesInviteMail bucket recipient ->
+    IntentMutation (reapSesInviteMailCapability capabilities bucket recipient)
+  EnsureRetainedEbsVolumes volumeType specs ->
+    IntentMutation (ensureRetainedEbsVolumesCapability capabilities volumeType specs)
 
 markSnapshotRecovering
   :: (Monad m)

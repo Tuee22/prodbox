@@ -141,6 +141,14 @@ with `aws_substrate.profile`'s positive minimum and maximum before rendering the
 The profile owns the account-specific bounds; the topology owns the desired cluster shape. This
 keeps the existing Dhall wire field load-bearing without duplicating desired size in the profile.
 
+That ownership holds for a deployment whose cluster *is* EKS. A deployment whose cluster is the
+home RKE2 one has no `EksTopology`, and the `aws-eks` stack it provisions is a per-run test and
+recovery stack, not the cluster its workload runs on. For that case the desired count is the
+profile's authored minimum (`awsEksDesiredNodeCount`), checked against the same maximum, so a
+profile whose maximum is below its minimum is still refused by name. Refusing instead would let the
+same stack be created under an EKS configuration and be impossible to destroy or re-reconcile under
+the home one, and a destroy must not depend on which cluster the configuration describes.
+
 ### 2.2 Assert-carried relational invariants (rules f, i)
 
 Dhall lacks built-in union equality, so the static invariants ride on `assert`, exactly as jitML's

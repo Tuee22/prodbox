@@ -10,6 +10,7 @@ module Prodbox.Infra.AwsSesStack
   , AwsSesTargetSelection
   , AwsSesLifecycleAuthorityAuthentication
   , awsSesStackName
+  , awsSesProviderIntents
   , awsSesLegacyPulumiBackend
   , awsSesPresenceInventoryComplete
   , awsSesTargetSelectionForSink
@@ -142,6 +143,7 @@ import Prodbox.Settings
   , pulumi_state_backend
   , route53
   , ses
+  , sesReceiveDomain
   , validateAwsBootstrapConfig
   )
 import Prodbox.Subprocess
@@ -1046,9 +1048,11 @@ awsSesProviderIntents config = do
   validateAwsBootstrapConfig config
   let sesConfig = ses config
       sender = Text.strip (sender_domain sesConfig)
-      recipient = Text.strip (receive_subdomain sesConfig)
       bucketName = Text.strip (capture_bucket sesConfig)
       hostedZoneId = Text.strip (zone_id (route53 config))
+  -- The Provider names the inbound MX record and the receipt rule by the dotted
+  -- receive domain, not by the configured label.
+  recipient <- sesReceiveDomain sender (receive_subdomain sesConfig)
   identity <- first show (mkSesIdentityRef sender)
   bucket <- first show (mkSesBucketRef bucketName)
   dns <- first show (mkSesDnsRef hostedZoneId sender recipient)

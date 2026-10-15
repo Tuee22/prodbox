@@ -10,6 +10,7 @@ module Prodbox.ControlPlane.VaultAccessorAudit
   ( VaultAccessorAuditError (..)
   , VaultAccessorLookupError (..)
   , VaultAccessorAuditDetailedError (..)
+  , VaultAccessorDetailedLookupError (..)
   , VaultAccessorSubject (..)
   , VaultAccessorAuditOps (..)
   , VaultAccessorAuditDetailedOps (..)
@@ -29,11 +30,12 @@ import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Prodbox.Http.Client (HttpError (..))
+import Prodbox.Http.Client (HttpError)
 import Prodbox.Vault.Client
   ( TokenAccessorInfo (..)
   , VaultAddress
   , VaultKubernetesLoginResult (..)
+  , vaultAccessorLookupVanished
   , vaultKubernetesLoginWithLease
   , vaultTokenAccessorAbsent
   )
@@ -43,7 +45,6 @@ data VaultAccessorAuditError
   | VaultAccessorAuditorLoginFailed
   | VaultAccessorAuditorEvidenceInvalid
   | VaultAccessorObservationFailed
-  | VaultAccessorClassificationAbsent
   | VaultAccessorClassificationUnavailable
   | VaultAccessorClassificationFailed
   | VaultAccessorKnownIdentityMismatch
@@ -54,8 +55,9 @@ data VaultAccessorAuditError
 
 -- | Closed, payload-free result of classifying one accessor named by a
 -- preceding global inventory. Vault can legitimately remove that accessor
--- between LIST and lookup; that race is distinct from an unavailable lookup
--- even while both still fail closed at the lifecycle boundary.
+-- between LIST and lookup (a token expires, another cleanup revokes it, or a
+-- revocation is still listed). That answer is distinct from an unavailable
+-- lookup, and only the second fails the audit.
 data VaultAccessorLookupError
   = VaultAccessorLookupAbsent
   | VaultAccessorLookupUnavailable
@@ -96,21 +98,33 @@ data VaultAccessorAuditOps m = VaultAccessorAuditOps
   }
 
 -- | Erase HTTP payloads while retaining the one provider response that means
--- an accessor named by the preceding inventory no longer exists.
+-- an accessor named by the preceding inventory no longer exists. Vault answers
+-- that with HTTP 400 @invalid accessor@, not 404 ('vaultAccessorLookupVanished'),
+-- so every other failure stays unavailable.
 classifyVaultAccessorLookupResponse
   :: Either HttpError TokenAccessorInfo
   -> Either VaultAccessorLookupError TokenAccessorInfo
 classifyVaultAccessorLookupResponse response = case response of
-  Left (HttpStatus 404 _) -> Left VaultAccessorLookupAbsent
-  Left _ -> Left VaultAccessorLookupUnavailable
+  Left failure
+    | vaultAccessorLookupVanished failure -> Left VaultAccessorLookupAbsent
+    | otherwise -> Left VaultAccessorLookupUnavailable
   Right info -> Right info
+
+-- | What a lookup of one listed accessor can answer besides an identity: Vault
+-- no longer knows the accessor, which makes it no member of any subject, or the
+-- interpreter's closed failure for a lookup that could not decide.
+data VaultAccessorDetailedLookupError failure
+  = VaultAccessorDetailedLookupVanished
+  | VaultAccessorDetailedLookupFailed !failure
+  deriving stock (Eq, Show)
 
 -- | Typed counterpart to 'VaultAccessorAuditOps'. The interpreter supplies a
 -- closed failure type that identifies the exact operation without retaining
 -- arbitrary provider text.
 data VaultAccessorAuditDetailedOps m failure = VaultAccessorAuditDetailedOps
   { detailedAuditListAccessors :: m (Either failure [Text])
-  , detailedAuditLookupAccessor :: Text -> m (Either failure TokenAccessorInfo)
+  , detailedAuditLookupAccessor
+      :: Text -> m (Either (VaultAccessorDetailedLookupError failure) TokenAccessorInfo)
   , detailedAuditRevokeAccessor :: Text -> m (Either failure ())
   , detailedAuditObserveAccessorAbsent :: Text -> m (Either failure Bool)
   , detailedAuditWaitVisibilityGrace :: m (Either failure ())
@@ -168,7 +182,7 @@ revokeAndProveVaultAccessorSubjectAbsent ops subject maybeKnown =
           fmap (mapLeft VaultAccessorAuditGeneralFailure) (auditListAccessors ops)
       , detailedAuditLookupAccessor = \accessor ->
           fmap
-            (mapLeft VaultAccessorAuditLookupFailure)
+            (mapLeft detailedLookupError)
             (auditLookupAccessor ops accessor)
       , detailedAuditRevokeAccessor = \accessor ->
           fmap
@@ -184,21 +198,23 @@ revokeAndProveVaultAccessorSubjectAbsent ops subject maybeKnown =
             (auditWaitVisibilityGrace ops)
       }
 
+  detailedLookupError lookupError = case lookupError of
+    VaultAccessorLookupAbsent -> VaultAccessorDetailedLookupVanished
+    VaultAccessorLookupUnavailable ->
+      VaultAccessorDetailedLookupFailed VaultAccessorAuditLookupUnavailable
+
   collapseDetailedAuditError failure = case failure of
     VaultAccessorAuditDetailedIdentityInvalid -> VaultAccessorAuditIdentityInvalid
     VaultAccessorAuditDetailedObservationFailed _ -> VaultAccessorObservationFailed
     VaultAccessorAuditDetailedClassificationFailed operationFailure -> case operationFailure of
-      VaultAccessorAuditLookupFailure VaultAccessorLookupAbsent ->
-        VaultAccessorClassificationAbsent
-      VaultAccessorAuditLookupFailure VaultAccessorLookupUnavailable ->
-        VaultAccessorClassificationUnavailable
+      VaultAccessorAuditLookupUnavailable -> VaultAccessorClassificationUnavailable
       VaultAccessorAuditGeneralFailure _ -> VaultAccessorClassificationFailed
     VaultAccessorAuditDetailedVisibilityWaitFailed _ -> VaultAccessorVisibilityWaitFailed
     VaultAccessorAuditDetailedStableAbsenceFailed -> VaultAccessorStableAbsenceFailed
 
 data VaultAccessorAuditOperationFailure
   = VaultAccessorAuditGeneralFailure !Text
-  | VaultAccessorAuditLookupFailure !VaultAccessorLookupError
+  | VaultAccessorAuditLookupUnavailable
 
 -- | Typed stable-zero proof. The provider-specific failure is returned only
 -- for authoritative list, lookup, direct-absence, and visibility operations.
@@ -275,6 +291,10 @@ revokeAndProveVaultAccessorSubjectAbsentDetailed ops subject maybeKnown = do
 maximumVisibilityPolls :: Int
 maximumVisibilityPolls = 8
 
+-- | One LIST and one lookup per listed accessor. An accessor Vault no longer
+-- knows by the time it is looked up cannot be a live member of the subject, so
+-- the scan passes over it: the stable-zero proof rests on fresh inventories,
+-- never on this one. Any other lookup failure decides nothing and ends the scan.
 matchingAccessorsDetailed
   :: (Monad m)
   => VaultAccessorAuditDetailedOps m failure
@@ -291,7 +311,8 @@ matchingAccessorsDetailed ops subject = do
   classify matching (accessor : rest) = do
     lookedUp <- detailedAuditLookupAccessor ops accessor
     case lookedUp of
-      Left failure ->
+      Left VaultAccessorDetailedLookupVanished -> classify matching rest
+      Left (VaultAccessorDetailedLookupFailed failure) ->
         pure (Left (VaultAccessorAuditDetailedClassificationFailed failure))
       Right info ->
         classify

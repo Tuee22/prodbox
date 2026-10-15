@@ -5,10 +5,12 @@ module LifecycleAwsNativeStackFamily
   )
 where
 
+import Data.Aeson (Value, eitherDecodeStrict, object, (.=))
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
-import Data.List (find, findIndex, isInfixOf)
+import Data.List (find, findIndex, isInfixOf, isPrefixOf)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
   )
@@ -183,7 +185,57 @@ lifecycleAwsNativeStackFamilySuite =
         `shouldSatisfy` (< indexOf "delete-vpc" commands)
       length (filter (elem "delete-internet-gateway") commands) `shouldBe` 1
 
-    it "deletes the exact parent delegation before its hosted zone" $ do
+    it "deletes the exact parent delegation, then the zone's records, then the zone itself" $ do
+      calls <- newIORef []
+      reaped <-
+        reapAwsNativeStackFamily
+          (recordingRunner calls (subzoneResponseHolding leftoverRecordsJson))
+          subzoneRef
+          subzoneConfig
+      reaped `shouldBe` Right ()
+      commands <- readIORef calls
+      -- All three happen, each against the zone it is for, and in that order. The
+      -- zone delete is asserted by presence and by the zone id it names, because an
+      -- ordering assertion against an absent command holds vacuously.
+      let parentDelete = findIndex (isChangeFor "ZPARENT123") commands
+          zonePrune = findIndex (isChangeFor "ZSUBZONE123") commands
+          zoneDelete = findIndex (elem "delete-hosted-zone") commands
+      (parentDelete, zonePrune, zoneDelete) `shouldSatisfy` inOrder
+      find (elem "delete-hosted-zone") commands
+        `shouldBe` Just ["route53", "delete-hosted-zone", "--id", "ZSUBZONE123"]
+
+    it
+      "empties the subzone of the records the stack does not declare, exactly as the listing printed them"
+      $ do
+        -- The public-edge A record and the DNS01 challenge records land in the per-run
+        -- zone; Route 53 refuses to delete a zone that still holds them, and refuses a
+        -- delete that does not repeat a record's values (a TXT's quoted value, an alias
+        -- target), so each record travels whole.
+        calls <- newIORef []
+        reaped <-
+          reapAwsNativeStackFamily
+            (recordingRunner calls (subzoneResponseHolding leftoverRecordsJson))
+            subzoneRef
+            subzoneConfig
+        reaped `shouldBe` Right ()
+        commands <- readIORef calls
+        -- The listing is the one the prune is allowed to make: the zone it deletes, as JSON,
+        -- with the filter that keeps the zone's own SOA and NS.
+        commands `shouldSatisfy` elem pruneListingArguments
+        let zoneBatches =
+              [ batch
+              | command <- commands
+              , isChangeFor "ZSUBZONE123" command
+              , batch <- changeBatchOf command
+              ]
+            listed =
+              eitherDecodeStrict (TextEncoding.encodeUtf8 (Text.pack leftoverRecordsJson))
+                :: Either String [Value]
+            expected = fmap expectedDeleteBatch listed
+        length zoneBatches `shouldBe` 1
+        soleBatch zoneBatches `shouldBe` expected
+
+    it "leaves an already-empty subzone to a plain delete" $ do
       calls <- newIORef []
       reaped <-
         reapAwsNativeStackFamily
@@ -192,8 +244,87 @@ lifecycleAwsNativeStackFamilySuite =
           subzoneConfig
       reaped `shouldBe` Right ()
       commands <- readIORef calls
-      indexOf "change-resource-record-sets" commands
-        `shouldSatisfy` (< indexOf "delete-hosted-zone" commands)
+      length
+        [ command
+        | command <- commands
+        , "change-resource-record-sets" `elem` command
+        , "ZSUBZONE123" `elem` command
+        ]
+        `shouldBe` 0
+      find (elem "delete-hosted-zone") commands
+        `shouldBe` Just ["route53", "delete-hosted-zone", "--id", "ZSUBZONE123"]
+
+    it "refuses to delete a subzone whose records it could not read" $ do
+      calls <- newIORef []
+      reaped <-
+        reapAwsNativeStackFamily
+          (recordingRunner calls (subzoneResponseHolding "not json"))
+          subzoneRef
+          subzoneConfig
+      reaped `shouldSatisfy` either (const True) (const False)
+      commands <- readIORef calls
+      indexOf "delete-hosted-zone" commands `shouldBe` maxBound
+
+    it "names the listing when it fails or is not an array, and finds a vanished zone already gone" $ do
+      let answeringTheListing listing arguments
+            | arguments == pruneListingArguments = listing
+            | otherwise = subzoneResponse arguments
+          deletesTheZone commands =
+            find (elem "delete-hosted-zone") commands
+              == Just ["route53", "delete-hosted-zone", "--id", "ZSUBZONE123"]
+      -- A throttled or denied listing is reported as the listing's failure, and the zone
+      -- is not deleted behind it (the delete would only fail later under another name).
+      deniedCalls <- newIORef []
+      denied <-
+        reapAwsNativeStackFamily
+          ( recordingRunner
+              deniedCalls
+              ( answeringTheListing
+                  (failure "AccessDenied: not authorized to perform route53:ListResourceRecordSets")
+              )
+          )
+          subzoneRef
+          subzoneConfig
+      denied `shouldSatisfy` either (Text.isInfixOf "list Route 53 hosted zone records") (const False)
+      deniedCommands <- readIORef deniedCalls
+      indexOf "delete-hosted-zone" deniedCommands `shouldBe` maxBound
+      -- An object where the filter should have produced an array is not read as an empty zone.
+      objectCalls <- newIORef []
+      notAnArray <-
+        reapAwsNativeStackFamily
+          (recordingRunner objectCalls (answeringTheListing (success "{\"ResourceRecordSets\": []}")))
+          subzoneRef
+          subzoneConfig
+      notAnArray `shouldSatisfy` either (Text.isInfixOf "not an array") (const False)
+      objectCommands <- readIORef objectCalls
+      indexOf "delete-hosted-zone" objectCommands `shouldBe` maxBound
+      -- A listing that says the zone no longer exists has nothing to prune; the delete
+      -- is still attempted, because it is tolerant of the same answer.
+      goneCalls <- newIORef []
+      gone <-
+        reapAwsNativeStackFamily
+          ( recordingRunner
+              goneCalls
+              (answeringTheListing (failure "NoSuchHostedZone: No hosted zone found with ID: ZSUBZONE123"))
+          )
+          subzoneRef
+          subzoneConfig
+      gone `shouldBe` Right ()
+      goneCommands <- readIORef goneCalls
+      deletesTheZone goneCommands `shouldBe` True
+
+    it "declares the per-run subzone force-destroyed and tagged for the sweep that gates the uninstall" $ do
+      -- The unit cases above fake the AWS runner and nothing else reads the program, so a
+      -- program that lost either line would pass them and fail only on a live account.
+      program <- readFile "pulumi/aws-eks-subzone/Main.yaml"
+      let zoneBlock =
+            takeWhile
+              (not . ("  parentNsDelegation:" `isPrefixOf`))
+              (dropWhile (not . ("  subzone:" `isPrefixOf`)) (lines program))
+          declared wanted = wanted `elem` map (dropWhile (== ' ')) zoneBlock
+      declared "forceDestroy: true" `shouldBe` True
+      declared "prodbox.io/managed-by: prodbox" `shouldBe` True
+      declared "prodbox.io/substrate: aws" `shouldBe` True
 
     it "binds adapter requests and evidence to the typed stack config" $ do
       mkAwsNativeStackFamilyObservationRequest
@@ -289,9 +420,15 @@ awsTestResponse arguments
   | otherwise = success "{}"
 
 subzoneResponse :: [String] -> ProcessOutput
-subzoneResponse arguments
+subzoneResponse = subzoneResponseHolding "[]"
+
+-- | The subzone family's responses, with the given JSON listing of the records the
+-- zone holds beside its SOA and NS.
+subzoneResponseHolding :: String -> [String] -> ProcessOutput
+subzoneResponseHolding leftoverRecords arguments
   | "get-hosted-zone" `elem` arguments =
       success "/hostedzone/ZSUBZONE123\tAWS.EXAMPLE.TEST.\n"
+  | arguments == pruneListingArguments = success leftoverRecords
   | "list-resource-record-sets" `elem` arguments
   , "json" `elem` arguments =
       success
@@ -299,6 +436,63 @@ subzoneResponse arguments
   | "list-resource-record-sets" `elem` arguments =
       success "aws.example.test.\tNS\n"
   | otherwise = success "{}"
+
+-- | The one listing the prune is allowed to make: the zone it goes on to delete, as
+-- JSON, through the filter that keeps the zone's own SOA and NS. The fake answers
+-- this exact call with the leftover records and every other listing with something
+-- the prune refuses, so a prune that listed another zone, asked for another format
+-- or dropped the filter fails a case instead of passing against a forgiving fake.
+pruneListingArguments :: [String]
+pruneListingArguments =
+  [ "route53"
+  , "list-resource-record-sets"
+  , "--hosted-zone-id"
+  , "ZSUBZONE123"
+  , "--query"
+  , "ResourceRecordSets[?Type != 'SOA' && Type != 'NS']"
+  , "--output"
+  , "json"
+  ]
+
+-- | What a leftover zone holds beside its SOA and NS: a plain A record, a TXT
+-- challenge with a quoted value, and an alias, each as the listing prints it.
+leftoverRecordsJson :: String
+leftoverRecordsJson =
+  "[{\"Name\":\"edge.aws.example.test.\",\"Type\":\"A\",\"TTL\":60,\"ResourceRecords\":[{\"Value\":\"192.0.2.10\"}]},"
+    <> "{\"Name\":\"_acme-challenge.aws.example.test.\",\"Type\":\"TXT\",\"TTL\":60,\"ResourceRecords\":[{\"Value\":\"\\\"token-a\\\"\"}]},"
+    <> "{\"Name\":\"alias.aws.example.test.\",\"Type\":\"A\",\"AliasTarget\":{\"HostedZoneId\":\"ZALIASFIXTURE\",\"DNSName\":\"lb.example.test.\",\"EvaluateTargetHealth\":false}}]"
+
+-- | The change batch the prune must send for those records: one DELETE per record,
+-- each carrying the record whole.
+expectedDeleteBatch :: [Value] -> Value
+expectedDeleteBatch records =
+  object
+    [ "Comment" .= ("prodbox exact native stack-family cleanup" :: Text)
+    , "Changes"
+        .= [ object ["Action" .= ("DELETE" :: Text), "ResourceRecordSet" .= record]
+           | record <- records
+           ]
+    ]
+
+-- | Whether a command is a record change against the given hosted zone.
+isChangeFor :: String -> [String] -> Bool
+isChangeFor zoneId command = "change-resource-record-sets" `elem` command && zoneId `elem` command
+
+-- | The change batch a command carries.
+changeBatchOf :: [String] -> [String]
+changeBatchOf command =
+  [batch | (flag, batch) <- zip command (drop 1 command), flag == "--change-batch"]
+
+-- | The single change batch decoded, or why there is not exactly one.
+soleBatch :: [String] -> Either String Value
+soleBatch batches = case batches of
+  [batch] -> eitherDecodeStrict (TextEncoding.encodeUtf8 (Text.pack batch))
+  _ -> Left "expected exactly one zone-level change batch"
+
+-- | Three steps that all happened, in ascending order.
+inOrder :: (Maybe Int, Maybe Int, Maybe Int) -> Bool
+inOrder (Just earlier, Just middle, Just later) = earlier < middle && middle < later
+inOrder _ = False
 
 emptyEksResponse :: [String] -> ProcessOutput
 emptyEksResponse arguments

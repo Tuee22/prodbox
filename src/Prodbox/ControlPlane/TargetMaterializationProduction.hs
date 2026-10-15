@@ -512,8 +512,6 @@ renderTargetWorkerSessionPrepareCause cause = case cause of
   TargetWorkerSessionPreparePrecleanAuditorEvidenceInvalid ->
     "preclean/auditor-evidence-invalid"
   TargetWorkerSessionPreparePrecleanObservationFailed -> "preclean/observation-failed"
-  TargetWorkerSessionPreparePrecleanClassificationAbsent ->
-    "preclean/classification-absent"
   TargetWorkerSessionPreparePrecleanClassificationUnavailable ->
     "preclean/classification-unavailable"
   TargetWorkerSessionPreparePrecleanClassificationFailed ->
@@ -553,9 +551,6 @@ classifyTargetWorkerSessionCleanupFailure detail
   | detail
       == "ServiceSessionLifecycleCleanupFailed VaultAccessorObservationFailed" =
       "accessor-audit/observation-failed"
-  | detail
-      == "ServiceSessionLifecycleCleanupFailed VaultAccessorClassificationAbsent" =
-      "accessor-audit/classification-absent"
   | detail
       == "ServiceSessionLifecycleCleanupFailed VaultAccessorClassificationUnavailable" =
       "accessor-audit/classification-unavailable"

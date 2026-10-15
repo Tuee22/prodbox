@@ -34,8 +34,15 @@ import BootstrapBrokerRuntime (bootstrapBrokerRuntimeSuite)
 import BootstrapBrokerSafety (bootstrapBrokerSafetySuite)
 import BootstrapBrokerServerSafety (bootstrapBrokerServerSafetySuite)
 import BootstrapBrokerShutdownModel (bootstrapBrokerShutdownModelSuite)
+import BootstrapImageSeed (bootstrapImageSeedSuite)
 import BrokerChartStatics (brokerChartStaticsSuite)
 import CapabilityReadinessBarrierSuite (capabilityReadinessBarrierSuite)
+import CascadeCycleArtifactTests (cascadeCycleArtifactSuite)
+import CascadeCycleIdentityTests (cascadeCycleIdentitySuite)
+import CascadeCycleLedgerTests (cascadeCycleLedgerSuite)
+import CascadeNoInstallConfirmation (cascadeNoInstallConfirmationSuite)
+import CascadeQualificationCycleTests (cascadeQualificationCycleSuite)
+import CascadeQualificationReceiptTests (cascadeQualificationReceiptSuite)
 import CertScopeSuite (certScopeSuite)
 import CertificateScopeServing (certificateScopeServingSuite)
 import CleanRoomHandoff (cleanRoomHandoffSuite)
@@ -44,7 +51,7 @@ import ClusterDeleteEntryArm (clusterDeleteEntryArmSuite)
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (concurrently_)
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
-import Control.Exception (SomeException, finally, try)
+import Control.Exception (AsyncException (UserInterrupt), SomeException, finally, throwIO, try)
 import Control.Monad (forM_, unless, when)
 import ControlPlaneAdminActionAuthorityExecutionEndpoint
   ( controlPlaneAdminActionAuthorityExecutionEndpointSuite
@@ -136,6 +143,8 @@ import ControlPlaneServer (controlPlaneServerSuite)
 import ControlPlaneTargetSecretWorker (controlPlaneTargetSecretWorkerSuite)
 import ControlPlaneTlsRetentionEndpoint (controlPlaneTlsRetentionEndpointSuite)
 import ControlPlaneVaultSession (controlPlaneVaultSessionSuite)
+import ControllerFamilyAttribution (controllerFamilyAttributionSuite)
+import CreateRecordCoverage (createRecordCoverageSuite)
 import CredentialDeliveryHarness
   ( credentialDeliveryHarnessSuite
   , ephemeralKubectlCredentialSuite
@@ -189,6 +198,7 @@ import Data.Text.Encoding qualified as TextEncoding
 import Data.Time.Calendar (fromGregorian)
 import Data.Time.Clock (UTCTime (..), secondsToDiffTime)
 import Data.Vector qualified as Vector
+import Data.Word (Word64)
 import DecommissionAuthorityExport (decommissionAuthorityExportSuite)
 import DecommissionCommit (decommissionCommitSuite)
 import DecommissionControlPlaneClient (decommissionControlPlaneClientSuite)
@@ -210,6 +220,7 @@ import Dhall qualified
 import Dns01ChallengeSuite (dns01ChallengeSuite)
 import DnsOwnerAuthoritySuite (dnsOwnerAuthoritySuite)
 import DnsRecord (dnsRecordSuite)
+import EbsEnsure (ebsEnsureSuite)
 import EksClientAuthProjection (eksClientAuthProjectionSuite)
 import EscapeRegistry (escapeRegistrySuite)
 import ExternalMaterialIngressLifecycle
@@ -233,12 +244,15 @@ import GatewayProbe (gatewayProbeSuite)
 import GatewayReadiness (gatewayReadinessSuite)
 import GatewayRoutes (gatewayRoutesSuite)
 import GatewayRuntimeStability (gatewayRuntimeStabilitySuite)
+import HarnessSesSmtp (harnessSesSmtpSuite)
 import HelmRelease (helmReleaseSuite)
 import HostCleanupCompositionRoot (hostCleanupCompositionRootSuite)
 import HostCleanupIntent (hostCleanupIntentSuite)
 import HostCleanupRke2 (hostCleanupRke2Suite)
 import HostCleanupRunner (hostCleanupRunnerSuite)
 import InviteQualification (inviteQualificationSuite)
+import KeycloakConsumerScript (keycloakConsumerScriptSuite)
+import KeycloakPublicIssuer (keycloakPublicIssuerSuite)
 import LifecycleAuthorityAdminAction (lifecycleAuthorityAdminActionSuite)
 import LifecycleAuthorityBackupRepair (lifecycleAuthorityBackupRepairSuite)
 import LifecycleAuthorityBootstrapReconcile (lifecycleAuthorityBootstrapReconcileSuite)
@@ -446,6 +460,7 @@ import MeasuredProfile (measuredProfileSuite)
 import ModelBCasTransportAdapter (modelBCasTransportAdapterSuite)
 import Numeric.Natural (Natural)
 import ObjectStoreNative (objectStoreNativeSuite)
+import OperationBudget (operationBudgetSuite)
 import Options.Applicative
   ( ParserResult (..)
   , defaultPrefs
@@ -467,6 +482,7 @@ import Prodbox.Aws
   , ConfigSetupInput (..)
   , HarnessDeploymentInput (..)
   , IamProbe (..)
+  , OperationalIdentityProbe (..)
   , QuotaStatus (..)
   , ResidueError (..)
   , SessionTokenPromptShape (..)
@@ -489,10 +505,12 @@ import Prodbox.Aws
   , harnessPostflightResiduePolicy
   , harnessReceiveSubdomainLabel
   , inlineUserPolicyDeleteArguments
+  , inspectOperationalIdentity
   , longLivedResourceNames
   , operationalAwsConfigResidueFromKey
   , operationalCredentialsClearedDecision
   , operationalIamUserResidueFromExists
+  , operationalIdentityFromArn
   , operationalManagedResources
   , partitionResidueByLifecycle
   , perRunStackNames
@@ -532,7 +550,7 @@ import Prodbox.Bootstrap.Broker.Readiness
   , observerPeriodMicros
   , unobservedBrokerReadinessFacts
   )
-import Prodbox.Bootstrap.Broker.Routes (brokerRoutePath)
+import Prodbox.Bootstrap.Broker.Routes (BrokerRoute (BrokerVaultStatus), brokerRoutePath)
 import Prodbox.Bootstrap.Broker.Settings qualified as BrokerSettings
 import Prodbox.CLI.Charts
   ( renderChartDeletePlan
@@ -656,6 +674,7 @@ import Prodbox.CLI.Rke2
   , harborRegistryStorageWaitArguments
   , harborStorageBackendManifestItems
   , harnessLifecycleProviderCredentialCaller
+  , homeClusterObservationEnvironment
   , homeSubstratePlatformComponents
   , independentPhase
   , inferCascadeSubstrate
@@ -663,10 +682,12 @@ import Prodbox.CLI.Rke2
   , isRetryableHarborPublicationFailure
   , isRetryableHelmFailure
   , managedRuntimeImageRetentionInventoryArguments
+  , metallbRuntimeManifest
   , nativeComponentReadinessTarget
   , nativeHarnessBootstrapFloorStepOrder
   , nativeInstallStepOrder
   , nativeInstallStepOrderRespectsGraph
+  , observeHomeKubernetesReadinessWith
   , operationalAwsCredentialGateFromResult
   , parseRegistryStorageEdgeResponse
   , reconcileStepAnchor
@@ -1038,7 +1059,10 @@ import Prodbox.Gateway.Client qualified as GatewayClient
 import Prodbox.Gateway.Daemon
   ( daemonBootFieldsChanged
   , daemonPulumiObjectStoreConfig
+  , ordersViewIsCurrent
+  , raiseLatestObservedOrdersVersion
   )
+import Prodbox.Gateway.Emitter.Persistence qualified as EmitterPersistence
 import Prodbox.Gateway.Logging
   ( Severity (..)
   , severityFromLogLevel
@@ -1099,6 +1123,7 @@ import Prodbox.Host.Wsl2
 import Prodbox.Http.Client (HttpError (..))
 import Prodbox.Http.Client qualified
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
+import Prodbox.Infra.AwsSesStack (awsSesProviderIntents)
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
 import Prodbox.Infra.LongLivedPulumiBackend
   ( LongLivedBackendError (..)
@@ -1111,7 +1136,9 @@ import Prodbox.Infra.LongLivedPulumiBackend
   , renderLongLivedObjectVaultGateBlock
   )
 import Prodbox.Infra.MinioBackend
-  ( firstReadableKubeconfigCandidate
+  ( ambientHomeKubeconfig
+  , firstReadableKubeconfigCandidate
+  , homeClusterKubeconfigCandidates
   , localKubeconfigCandidates
   , parseDeletedMinioExportHostPath
   )
@@ -1141,6 +1168,7 @@ import Prodbox.Lib.ChartPlatform
   , PublicEdgePreserveOutcome (..)
   , PublicEdgeTlsNamespaceObservation (..)
   , ResolvedCustomImage (..)
+  , RuntimeImageObservers (..)
   , buildChartDeletePlan
   , buildChartDeletePlanForSubstrate
   , buildChartDeploymentPlan
@@ -1148,6 +1176,8 @@ import Prodbox.Lib.ChartPlatform
   , buildChartDeploymentPlanForSubstrateWithObservers
   , certManagerAdoptionAnnotations
   , chartReleasesToDeploy
+  , chartStorageBindingsForRelease
+  , chartStorageSpecsForRelease
   , classifyPublicEdgePreserve
   , classifyPublicEdgeTlsNamespaceObservation
   , classifyPublicEdgeTlsRestoreSlotCreate
@@ -1165,6 +1195,7 @@ import Prodbox.Lib.ChartPlatform
   , resolveChartSecrets
   , resolveDependencyOrder
   , resolvePerconaPatroniRuntimeBindings
+  , resolveRuntimeChartImageForSubstrateWith
   , resolvedCustomImageTargetAgentIdentity
   , retainedPublicEdgeTlsSecretManifest
   , selectRepositoryManifestDigest
@@ -1175,21 +1206,27 @@ import Prodbox.Lib.ChartPlatform
   , valuesForBootstrapBroker
   , valuesForLifecycleAuthority
   , valuesForTlsRetention
+  , withRegistryManifestDigest
   )
 import Prodbox.Lib.EksContainerdMirror qualified
 import Prodbox.Lib.EksCustomImagePush qualified
 import Prodbox.Lib.EksImageMirror qualified
 import Prodbox.Lib.Storage
-  ( ChartStorageBinding (..)
+  ( ChartStorageAccessMode (..)
+  , ChartStorageBinding (..)
   , ChartStorageSpec (..)
   , StaticEbsVolumeBinding (..)
   , chartEbsStorageManifest
+  , chartStorageClassName
+  , renderChartStorageAccessMode
   , retainedStatefulSetPersistentVolumeClaimName
   , retainedStatefulSetPersistentVolumeName
   , storageBinding
   , testManualPvHostRootEnv
+  , workloadStorageSize
   )
 import Prodbox.Lifecycle.CapabilityReadinessBarrier (evidenceFor)
+import Prodbox.Lifecycle.CascadeNoInstall (AuthoredAwsCoordinate (..))
 import Prodbox.Lifecycle.CheckpointAuthority
   ( ModelBObservation (..)
   , mkModelBObjectVersion
@@ -1237,6 +1274,11 @@ import Prodbox.Lifecycle.LiveResidue (PerRunResidueStatuses (..))
 import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.OwnedResourceTags qualified as OwnedResourceTags
 import Prodbox.Lifecycle.Preconditions qualified as Preconditions
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork
+  ( ProviderIntent (EnsureRetainedEbsVolumes, ReconcileSesDns, ReconcileSesReceiptRules)
+  , sesDnsReceiveSubdomain
+  , sesRuleSetRecipient
+  )
 import Prodbox.Lifecycle.ReadinessObservation
   ( BackendRoundTripResult (..)
   , ComponentReadinessTarget (..)
@@ -1244,6 +1286,7 @@ import Prodbox.Lifecycle.ReadinessObservation
   , ReadinessProbeResult (..)
   , observationPollOutcome
   , observeComponentReadiness
+  , readinessActionFor
   , readinessGateOpen
   , waitForComponentReadiness
   )
@@ -1251,6 +1294,10 @@ import Prodbox.Lifecycle.RegistryBackendWitness (registryBackendWitness)
 import Prodbox.Lifecycle.ResidueStatus qualified as Residue
 import Prodbox.Lifecycle.ResourceClass qualified as ResourceClass
 import Prodbox.Lifecycle.ResourceRegistry qualified as ResourceRegistry
+import Prodbox.Lifecycle.RetainedEbsProvider
+  ( parseRetainedEbsBindingsEvidence
+  , retainedEbsEnsureIntent
+  )
 import Prodbox.Lifecycle.TagSweep qualified as TagSweep
 import Prodbox.Lifecycle.TaggedResourceQuery qualified as TaggedResourceQuery
 import Prodbox.Lifecycle.TargetSinkVersion (targetSinkVersionValue)
@@ -1381,6 +1428,7 @@ import Prodbox.Service
   , serviceErrorMessage
   , serviceErrorRetryable
   )
+import Prodbox.Ses.Capture (messageAddressedTo)
 import Prodbox.Ses.SmtpPassword qualified
 import Prodbox.Settings
   ( AcmeSection (..)
@@ -1433,6 +1481,7 @@ import Prodbox.Settings
   , requireOperationalAwsRegion
   , requireSesCaptureBucket
   , servedHostCertScopes
+  , sesReceiveDomain
   , substrateServedHost
   , validateAndLoadSettingsAtPath
   , validateAwsBootstrapConfig
@@ -1473,15 +1522,18 @@ import Prodbox.Settings.SecretRef
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
   , ProcessOutput (..)
+  , Subprocess (..)
+  , captureSubprocessResult
   , renderSubprocess
-  , pattern Subprocess
   )
 import Prodbox.Substrate
   ( ElasticScalingBounds (..)
   , ScalingPolicy (..)
   , ScalingPolicyBySubstrate (..)
   , Substrate (..)
+  , allSubstrates
   , fixedScalingPolicyBySubstrate
+  , gatewayNodeIdsForSubstrate
   )
 import Prodbox.Test.GatewayRuntimeStability
   ( GatewayRuntimeStabilityReport (NotStableYet, StableObserved)
@@ -1520,7 +1572,6 @@ import Prodbox.TestRunner
   , cascadeQualificationBootstrapMode
   , guardTestDelete
   , harnessPostCredentialRuntimeCommand
-  , harnessRequiresStandaloneInForceConfigSync
   , integrationRunbookCommandArgs
   , lifecycleCleanupTargetsForSuite
   , nativeMayProvisionPerRunAwsStacks
@@ -1545,6 +1596,7 @@ import Prodbox.TestValidation
   ( DaemonBootstrapAuditInput (..)
   , DaemonBootstrapAuditProvenance (..)
   , GatewayRuntimeSampleOutcome (..)
+  , InviteMailObservation (..)
   , NativeValidationKubeconfigMode (..)
   , SealedVaultAuditInput (..)
   , VolumeRebindSnapshot (..)
@@ -1556,16 +1608,28 @@ import Prodbox.TestValidation
   , defaultDaemonBootstrapAuditInput
   , defaultSealedVaultAuditInput
   , demoOidcSessionValidationAgentManifest
+  , gatewayEmitterStatefulSets
   , gatewayPartitionCanonicalMembers
   , gatewayPartitionLegacyReport
   , gatewayPartitionLegacyReportFor
   , gatewayPartitionValidationReport
+  , gatewayRuntimeExpectedReplicas
+  , gatewayRuntimeKubeconfigRetryDelayMicroseconds
   , gatewayRuntimeSampleOutcome
   , gatewayRuntimeSampleOutcomeExit
+  , keycloakInviteRecipient
+  , namespaceLimitRangeContainerFields
+  , namespaceResourceQuotaHardFields
   , nativeValidationKubeconfigMode
+  , observedBrokerRouteLine
+  , overlayKubeconfig
+  , parseInviteMailEvidence
+  , parseValidationZoneEvidence
   , parseVolumeRebindSnapshot
+  , quantitiesEquivalent
   , renderGatewayValidationConfigDhall
   , resourceGuardrailReport
+  , sealStateFromVaultStatusOutput
   , sealedVaultAuditReport
   , sealedVaultForbiddenPatterns
   , sealedVaultHostDiskRoot
@@ -1580,6 +1644,7 @@ import Prodbox.Tls.CertScope
   , impliedBy
   , mkFqdn
   )
+import Prodbox.UsersAdmin (keycloakEmitAccessTokenFunction)
 import Prodbox.Vault.BootstrapBundle
   ( bootstrapObjectStoreConfig
   , bootstrapUnlockBundleKey
@@ -1701,8 +1766,11 @@ import Prodbox.Workload
   , workloadLiveConfigFromDhallWith
   )
 import Prodbox.Workload.Settings qualified as WorkloadSettings
+import ProviderAwsRunner (providerAwsRunnerSuite)
 import ProviderEvidenceCodec (providerEvidenceCodecSuite)
 import ProviderEvidenceQualification (providerEvidenceQualificationSuite)
+import ProviderFailureSummary (providerFailureSummarySuite)
+import PublicDnsWriteAuthority (publicDnsWriteAuthoritySuite)
 import QualificationCreateInterruptedCounterexample
   ( qualificationCreateInterruptedCounterexampleSuite
   )
@@ -1713,18 +1781,23 @@ import QualificationTeardownCounterexample
   ( qualificationTeardownCounterexampleSuite
   )
 import RegisteredStackCreationOwnership (registeredStackCreationOwnershipSuite)
+import RegistryProbe (registryProbeSuite)
 import ResponseObligationSuite (responseObligationSuite)
 import RestoreGraphSuite (restoreGraphSuite)
+import RetainedDeliveryRefusalLog (retainedDeliveryRefusalLogSuite)
 import RetainedSesPreparation (retainedSesPreparationSuite)
 import RetainedSesTargetRecovery (retainedSesTargetRecoverySuite)
 import RoleReadinessSuite (roleReadinessSuite)
 import ScopeCodecProperties (scopeCodecPropertiesSuite)
 import ScopeCodecWitness (scopeCodecWitnessSuite)
 import SealedConstructors (sealedConstructorsSuite)
+import SesCapture (sesCaptureSuite)
 import SesWorkflow (sesWorkflowSuite)
 import SigV4 (sigV4Suite)
 import SmtpKeyRepairInterpreter (smtpKeyRepairInterpreterSuite)
 import StoreLifetimeWitness (storeLifetimeWitnessSuite)
+import StsIdentity (stsIdentitySuite)
+import SubprocessKillable (subprocessKillableSuite)
 import SupervisionWitness (supervisionWitnessSuite)
 import System.Directory
   ( Permissions (..)
@@ -2953,6 +3026,16 @@ unitSuite = do
   gatewayEmitterKernelSuite
   gatewayEmitterLeaseSuite
   gatewayEmitterPersistenceSuite
+  registryProbeSuite
+  bootstrapImageSeedSuite
+  ebsEnsureSuite
+  harnessSesSmtpSuite
+  keycloakConsumerScriptSuite
+  providerAwsRunnerSuite
+  publicDnsWriteAuthoritySuite
+  keycloakPublicIssuerSuite
+  retainedDeliveryRefusalLogSuite
+  sesCaptureSuite
   lifecycleAuthorityAdminActionSuite
   lifecycleAuthorityBackupRepairSuite
   lifecycleAuthorityBootstrapReconcileSuite
@@ -3010,6 +3093,8 @@ unitSuite = do
   credentialProvisionerJointIamDispositionSuite
   externalMaterialIngressLifecycleSuite
   eksClientAuthProjectionSuite
+  stsIdentitySuite
+  subprocessKillableSuite
   vaultSessionSafetySuite
   lifecycleAuthorityOperationSuite
   lifecycleAuthorityOutboxSimSuite
@@ -3062,6 +3147,14 @@ unitSuite = do
   lifecycleTeardownAwsStackAdapterSuite
   lifecycleTeardownAwsStackReaderInterpreterSuite
   clusterDeleteEntryArmSuite
+  cascadeNoInstallConfirmationSuite
+  createRecordCoverageSuite
+  controllerFamilyAttributionSuite
+  cascadeCycleIdentitySuite
+  cascadeCycleArtifactSuite
+  cascadeCycleLedgerSuite
+  cascadeQualificationCycleSuite
+  cascadeQualificationReceiptSuite
   lifecycleTeardownCapabilityCustodySuite
   lifecycleTeardownCascadeCandidateSuite
   lifecycleTeardownCascadeFrozenCompositionSuite
@@ -3113,6 +3206,8 @@ unitSuite = do
   scopeCodecWitnessSuite
   absenceStratumWitnessSuite
   providerEvidenceCodecSuite
+  operationBudgetSuite
+  providerFailureSummarySuite
   providerEvidenceQualificationSuite
   storeLifetimeWitnessSuite
   supervisionWitnessSuite
@@ -4660,6 +4755,10 @@ unitSuite = do
       retryPolicyMaxAttempts (componentReadinessRetryPolicyFor ComponentChartBootstrapBroker)
         `shouldBe` 60
       retryPolicyMaxAttempts (componentReadinessRetryPolicyFor ComponentChartAuthorityBackup)
+        `shouldBe` 60
+      -- Sprint 7.46: an AWS run observes the Provider Worker on the retained home
+      -- cluster, where an operator-started rollout may be part-way through.
+      retryPolicyMaxAttempts (componentReadinessRetryPolicyFor ComponentChartProviderWorker)
         `shouldBe` 60
       retryPolicyMaxAttempts (componentReadinessRetryPolicyFor ComponentMinio)
         `shouldBe` retryPolicyMaxAttempts componentReadinessRetryPolicy
@@ -8412,6 +8511,23 @@ unitSuite = do
                    , ForbiddenHookSurface "hooks/pre-push"
                    ]
 
+    it "flags Python sources and toolchain ownership artifacts in the quality gate policy scan" $ do
+      doctrineViolationsInPaths
+        [ "documents/engineering/probe.py"
+        , "stubs/types.pyi"
+        , "pyproject.toml"
+        , "sub/.python-version"
+        , "pkg/__pycache__/module.pyc"
+        , "src/Prodbox/Main.hs"
+        , "documents/engineering/pure_fp_standards.md"
+        ]
+        `shouldBe` [ ForbiddenPythonArtifact "documents/engineering/probe.py"
+                   , ForbiddenPythonArtifact "stubs/types.pyi"
+                   , ForbiddenPythonArtifact "pyproject.toml"
+                   , ForbiddenPythonArtifact "sub/.python-version"
+                   , ForbiddenPythonArtifact "pkg/__pycache__/module.pyc"
+                   ]
+
     it "skips retained runtime state roots during doctrine scanning" $
       withSystemTempDirectory "prodbox-check-code" $ \tmpDir -> do
         let runtimeRoot = tmpDir </> ".data"
@@ -8830,7 +8946,29 @@ unitSuite = do
       awsTestInfra `shouldContain` "DestroyRegisteredStack"
       awsTestInfra `shouldNotContain` "describe-instances"
       providerProduction `shouldContain` "DesiredAbsent"
-      providerProduction `shouldContain` "[\"destroy\", \"--stack\""
+      providerProduction `shouldContain` "\"destroy\""
+      providerProduction `shouldContain` "\"--stack\""
+
+    it "runs Pulumi destroy with a refresh, without stopping at the first resource error" $ do
+      -- Red on 0268f5d: neither flag was passed, so a destroy worked from stale
+      -- state and stopped at the first resource it could not delete.
+      repoRoot <- getCurrentDirectory
+      providerProduction <-
+        readFile
+          (repoRoot </> "src" </> "Prodbox" </> "ControlPlane" </> "ProviderProduction.hs")
+
+      providerProduction `shouldContain` "\"--refresh\""
+      providerProduction `shouldContain` "\"--continue-on-error\""
+      -- That flag belongs to `pulumi refresh`: it forgets pending creates, which
+      -- manufactures the leaks this path exists to remove.
+      providerProduction `shouldNotContain` "clear-pending-creates"
+      -- `--continue-on-error` makes the exit status the only partial-failure
+      -- signal, so the stack is removed only from a destroy that exited cleanly.
+      providerProduction `shouldContain` "case commandSuccess destroyed of"
+      -- Every Pulumi child runs under the killable runner, so none can outlive
+      -- its bound or its caller.
+      providerProduction `shouldContain` "captureSubprocessKillable"
+      providerProduction `shouldNotContain` "captureSubprocessResult"
 
     it "runs Pulumi destroy only inside the Provider production interpreter" $ do
       repoRoot <- getCurrentDirectory
@@ -8842,7 +8980,7 @@ unitSuite = do
       awsTestInfra `shouldNotContain` "pulumiRefreshEither"
       awsTestInfra `shouldNotContain` "subprocessPath = \"pulumi\""
       providerProduction `shouldContain` "runPulumiMutation"
-      providerProduction `shouldContain` "[\"destroy\", \"--stack\""
+      providerProduction `shouldContain` "\"destroy\""
 
   describe "test planning" $ do
     let completeLifecyclePerRunTargets =
@@ -9181,9 +9319,6 @@ unitSuite = do
               nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
               nativeRequiresIntegrationRunbook suitePlan `shouldBe` True
               nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
-              harnessPostCredentialRuntimeCommand suitePlan
-                `shouldBe` Just (Rke2Reconcile (PlanOptions False Nothing) False)
-              harnessRequiresStandaloneInForceConfigSync suitePlan `shouldBe` False
               harnessLifecycleProviderCredentialCaller `shouldBe` LifecycleAuthorityOperator
               nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` False
               lifecycleCleanupTargetsForSuite suitePlan
@@ -9202,8 +9337,10 @@ unitSuite = do
                 `shouldBe` CascadeQualificationProvisionFresh
               nativeValidationKubeconfigMode ValidationCascadeQualification
                 `shouldBe` ValidationOwnsKubeconfigScopes
-              nativeValidationKubeconfigMode ValidationAwsEks
+              nativeValidationKubeconfigMode ValidationChartsVscode
                 `shouldBe` ValidationUsesSelectedSubstrateKubeconfig
+              nativeValidationKubeconfigMode ValidationAwsEks
+                `shouldBe` ValidationOwnsKubeconfigScopes
             DelegatedSuite _ -> expectationFailure "expected native cascade-qualification plan"
 
     it "maps cluster-backed named suites to native validations plus prerequisites" $ do
@@ -9339,9 +9476,88 @@ unitSuite = do
                 `shouldBe` ["aws_iam_harness_ready", "tool_aws"]
               nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
               nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
-              harnessPostCredentialRuntimeCommand suitePlan `shouldBe` Nothing
-              harnessRequiresStandaloneInForceConfigSync suitePlan `shouldBe` True
+              -- A named suite provisions its credential through the Credential
+              -- Provisioner like `test all` does. It once took the legacy host
+              -- IAM setup, whose last step is a constant refusal, because the
+              -- selector was the suite's own runtime-bootstrap flag.
+              nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` False
             DelegatedSuite _ -> expectationFailure "expected native aws-iam plan"
+
+    it "Sprint 5.50 declares which cluster every canonical validation addresses" $ do
+      -- Each validation is spawned against the substrate's kubeconfig, owns its own
+      -- scopes, or addresses the retained home cluster whichever substrate is
+      -- selected. A validation that ran home-shaped children inside the EKS
+      -- wrapper said it addressed EKS while touching none of it; the home ones are
+      -- now named. The classification is an exhaustive match with no default, so a
+      -- new validation cannot compile until it is placed; this case pins the two
+      -- narrow classes by name, which no totality check can.
+      let modeOf = nativeValidationKubeconfigMode
+      case testPlanExecutionMode (testExecutionPlan SubstrateAws TestAll) of
+        DelegatedSuite _ -> expectationFailure "expected a native test-all plan"
+        NativeSuite suitePlan -> do
+          let canonical = nativeValidations suitePlan
+              withMode mode = [v | v <- canonical, modeOf v == mode]
+          sort (map nativeValidationId (withMode ValidationUsesHomeCluster))
+            `shouldBe` sort
+              (map nativeValidationId [ValidationChartsPlatform, ValidationChartsStorage, ValidationGatewayDaemon])
+          -- The two that own their scopes are pinned by name (the cascade
+          -- candidate is a suite of its own and is not in this plan).
+          modeOf ValidationCascadeQualification `shouldBe` ValidationOwnsKubeconfigScopes
+          modeOf ValidationAwsEks `shouldBe` ValidationOwnsKubeconfigScopes
+          -- The gateway-pods validation and the workload validations address the
+          -- selected substrate.
+          modeOf ValidationGatewayPods `shouldBe` ValidationUsesSelectedSubstrateKubeconfig
+          modeOf ValidationChartsVscode `shouldBe` ValidationUsesSelectedSubstrateKubeconfig
+
+    it "Sprint 5.50 reaches the selected cluster from a child spawned with a captured environment" $ do
+      let captured = [("HOME", "/home/operator"), ("PATH", "/usr/bin")]
+      -- The home keeps the captured list (negative control: an unset scope
+      -- changes nothing), and the scoped EKS kubeconfig replaces any stale entry.
+      overlayKubeconfig Nothing captured `shouldBe` captured
+      let scoped = ("KUBECONFIG", "/tmp/eks-kubeconfig.json") : captured
+      overlayKubeconfig (Just "/tmp/eks-kubeconfig.json") captured `shouldBe` scoped
+      overlayKubeconfig (Just "/tmp/eks-kubeconfig.json") (("KUBECONFIG", "/stale") : captured)
+        `shouldBe` scoped
+
+    it "gives every harness-tier suite the Credential Provisioner path, on both substrates" $ do
+      -- Whether a suite is harness-tier is derived from its prerequisites. What
+      -- it must not depend on is the suite's own runtime-bootstrap flag: a named
+      -- suite once took the legacy host IAM setup, whose last step is a
+      -- constant refusal, because the selector was that flag.
+      let everywhere =
+            [ TestAll
+            , TestIntegration IntegrationAll
+            , TestIntegration IntegrationAwsIam
+            , TestIntegration IntegrationKeycloakInvite
+            ]
+          awsOnly =
+            [ TestIntegration IntegrationAwsEks
+            , TestIntegration IntegrationPulumi
+            , TestIntegration IntegrationHaRke2Aws
+            , TestIntegration IntegrationEksVolumeRebind
+            , TestIntegration IntegrationCascadeQualification
+            ]
+          harnessRequired substrate = case substrate of
+            SubstrateHomeLocal -> everywhere
+            SubstrateAws -> everywhere ++ awsOnly
+          nativePlan substrate scope =
+            case testPlanExecutionMode (testExecutionPlan substrate scope) of
+              NativeSuite suitePlan -> Just suitePlan
+              DelegatedSuite _ -> Nothing
+          requireHarnessTier substrate scope =
+            case nativePlan substrate scope of
+              Nothing -> expectationFailure ("expected a native plan for " ++ show scope)
+              Just suitePlan ->
+                unless
+                  (isJust (nativeManagedAwsHarnessPolicyTier suitePlan))
+                  (expectationFailure ("no harness tier for " ++ show (substrate, scope)))
+      -- Every harness-tier suite takes the one path: the retained bootstrap
+      -- floor, the Credential Provisioner, then this reconcile. The runner
+      -- enters it from the tier alone, so the tier is what has to be total.
+      harnessPostCredentialRuntimeCommand
+        `shouldBe` Rke2Reconcile (PlanOptions False Nothing) False
+      forM_ [SubstrateHomeLocal, SubstrateAws] $ \substrate -> do
+        forM_ (harnessRequired substrate) (requireHarnessTier substrate)
 
     it "includes curl in the gateway-daemon validation prerequisites" $ do
       case testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationGatewayDaemon) of
@@ -9521,6 +9737,32 @@ unitSuite = do
         Left err -> expectationFailure err
         Right report -> report `shouldContain` "AUDIT_PROVENANCE=observed-daemon"
 
+    it "records an observed broker route without the forward's ephemeral port" $ do
+      -- The audit refuses any corpus containing the legacy MinIO forward's
+      -- literal port, so a line that embedded the live forward port would be
+      -- refused on the run in which the kernel handed out that number.
+      let observedLines =
+            [observedBrokerRouteLine 405 route | route <- daemonBootstrapRequiredRoutes]
+      mapM_ (\line -> line `shouldNotContain` "127.0.0.1") observedLines
+      mapM_ (\line -> line `shouldNotContain` "39000") observedLines
+      case daemonBootstrapAuditReport
+        defaultDaemonBootstrapAuditInput
+          { daemonBootstrapProvenance = DaemonBootstrapObservedDaemon
+          , daemonBootstrapObservedTransports = observedLines
+          } of
+        Left err -> expectationFailure err
+        Right report -> report `shouldContain` "AUDIT_PROVENANCE=observed-daemon"
+      -- Negative control: the shape this replaces, with the forbidden port in the
+      -- recorded URL, is what the audit refuses.
+      case daemonBootstrapAuditReport
+        defaultDaemonBootstrapAuditInput
+          { daemonBootstrapObservedTransports =
+              ("OBSERVED 405 GET http://127.0.0.1:39000" ++ brokerRoutePath BrokerVaultStatus)
+                : observedLines
+          } of
+        Right report -> expectationFailure ("expected a refusal, got: " ++ report)
+        Left err -> err `shouldContain` "legacy transport"
+
     it "Sprint 5.33: an unavailable daemon refuses instead of rendering DAEMON_AVAILABLE=true" $
       case daemonBootstrapAuditReport
         defaultDaemonBootstrapAuditInput {daemonBootstrapDaemonAvailable = False} of
@@ -9658,6 +9900,7 @@ unitSuite = do
 
     it "Sprint 5.13 validates capped pod resources and namespace guardrail objects" $ do
       case resourceGuardrailReport
+        SubstrateHomeLocal
         Capacity.defaultResourcePlan
         resourceGuardrailPodsFixture
         resourceGuardrailQuotaFixture
@@ -9674,6 +9917,7 @@ unitSuite = do
 
     it "Sprint 5.13 accepts Kubernetes-canonicalized guardrail quantities" $ do
       case resourceGuardrailReport
+        SubstrateHomeLocal
         Capacity.defaultResourcePlan
         resourceGuardrailPodsFixture
         resourceGuardrailCanonicalQuotaFixture
@@ -9682,9 +9926,84 @@ unitSuite = do
         Right report ->
           report `shouldContain` "RESOURCE_GUARDRAILS_VALIDATION"
 
+    it "Sprint 5.52 still rejects a quota whose storage differs from the plan's, zero included" $ do
+      let withApiStorage storage =
+            object
+              [ "items"
+                  .= Array
+                    ( Vector.fromList
+                        [ resourceGuardrailQuota "keycloak" "1330m" "2736Mi" "4448Mi" "1825m" "3936Mi" "8896Mi" "60Gi"
+                        , resourceGuardrailQuota "vscode" "1880m" "3888Mi" "5728Mi" "2525m" "5472Mi" "11456Mi" "110Gi"
+                        , resourceGuardrailQuota "api" "500m" "512Mi" "1024Mi" "500m" "768Mi" "1024Mi" storage
+                        , resourceGuardrailQuota "websocket" "300m" "768Mi" "1536Mi" "450m" "768Mi" "1536Mi" "0"
+                        , resourceGuardrailQuota "gateway" "1750m" "1536Mi" "2048Mi" "2000m" "3072Mi" "5120Mi" "20Gi"
+                        ]
+                    )
+              ]
+          reportWith storage =
+            resourceGuardrailReport
+              SubstrateHomeLocal
+              Capacity.defaultResourcePlan
+              resourceGuardrailPodsFixture
+              (withApiStorage storage)
+              resourceGuardrailCanonicalLimitRangeFixture
+      -- Zero in any unit is zero ...
+      forM_ ["0", "0Mi", "0Gi"] $ \storage -> reportWith storage `shouldSatisfy` isRight
+      -- ... and a quota that grants storage the plan gives the namespace none of is wrong.
+      case reportWith "1Gi" of
+        Left err -> err `shouldContain` "requests.storage"
+        Right _ -> expectationFailure "expected a non-zero api storage quota to be rejected"
+
+    it "Sprint 5.52 compares printed quantities by value, and never equates one it cannot read" $ do
+      let judged expected actual = (expected, actual, quantitiesEquivalent expected actual)
+          same (expected, actual) = judged expected actual `shouldBe` (expected, actual, True)
+          differ (expected, actual) = judged expected actual `shouldBe` (expected, actual, False)
+      -- Memory and storage: the same number of bytes in any unit the API server prints,
+      -- zero included.
+      mapM_
+        same
+        [ ("0Mi", "0")
+        , ("0Mi", "0Ki")
+        , ("0Mi", "0Gi")
+        , ("0Mi", "0Ti")
+        , ("61440Mi", "60Gi")
+        , ("112640Mi", "110Gi")
+        , ("23552Mi", "23Gi")
+        , ("1024Mi", "1Gi")
+        , ("1048576Mi", "1Ti")
+        , ("1024Ki", "1Mi")
+        ]
+      -- CPU: milli-cores, with a bare integer counting cores.
+      mapM_ same [("2000m", "2"), ("1750m", "1750m"), ("0m", "0")]
+      -- A different amount differs in every direction and at every scale, so a comparison
+      -- that truncated a unit, scaled one wrongly or accepted "at least" would be caught.
+      mapM_
+        differ
+        [ ("61440Mi", "30Gi")
+        , ("30Gi", "61440Mi")
+        , ("0Mi", "1Ki")
+        , ("1Gi", "1000Mi")
+        , ("1Ti", "1000Gi")
+        , ("1750m", "2500m")
+        , ("2", "2m")
+        ]
+      -- A form it cannot read is never judged equivalent: a petabyte, a decimal-SI suffix,
+      -- a fraction and text that is not a quantity at all. The caller accepts two identical
+      -- spellings before it asks, which is why even a form against itself is refused here.
+      mapM_
+        differ
+        [ ("0Mi", "1Pi")
+        , ("1Gi", "1G")
+        , ("1Gi", "1.5Gi")
+        , ("0Mi", "garbage")
+        , ("0Mi", "")
+        , ("1Pi", "1Pi")
+        ]
+
     it "Sprint 5.13 rejects BestEffort or uncapped pods in resource namespaces" $ do
       let result =
             resourceGuardrailReport
+              SubstrateHomeLocal
               Capacity.defaultResourcePlan
               resourceGuardrailBadPodsFixture
               resourceGuardrailQuotaFixture
@@ -9695,6 +10014,118 @@ unitSuite = do
           err `shouldContain` "pod api/api-0 is BestEffort"
           err `shouldContain` "api/api-0 container api is missing `resources.requests.cpu`"
         Right _ -> expectationFailure "expected resource-guardrails report to reject uncapped pod"
+
+    it "Sprint 5.50 expects the AWS shape from the AWS guardrails and the home shape from the home ones" $ do
+      let plan = Capacity.defaultResourcePlan
+          hardOf substrate namespace =
+            either error id (namespaceResourceQuotaHardFields substrate plan namespace)
+          awsNamespaces = ["vscode", "api", "websocket", "gateway"]
+          awsPods =
+            object
+              [ "items"
+                  .= Array
+                    ( Vector.fromList
+                        [resourceGuardrailPod n (n ++ "-0") n | n <- awsNamespaces]
+                    )
+              ]
+          awsQuotas =
+            object
+              [ "items"
+                  .= Array
+                    (Vector.fromList [guardrailQuotaProjected SubstrateAws n | n <- awsNamespaces])
+              ]
+          awsLimitRanges =
+            object
+              [ "items"
+                  .= Array
+                    ( Vector.fromList
+                        [guardrailLimitRangeProjected SubstrateAws n | n <- awsNamespaces]
+                    )
+              ]
+      -- Independent anchors for the projection, all seven quota fields: three
+      -- 750m emitters, one Pulsar and three 1024Mi journal claims on EKS, two
+      -- emitters and one Pulsar on the home, Keycloak placed with vscode.
+      hardOf SubstrateAws "gateway"
+        `shouldBe` [ ("requests.cpu", "2500m")
+                   , ("limits.cpu", "2750m")
+                   , ("requests.memory", "1792Mi")
+                   , ("limits.memory", "3584Mi")
+                   , ("requests.ephemeral-storage", "2560Mi")
+                   , ("limits.ephemeral-storage", "5632Mi")
+                   , ("requests.storage", "23552Mi")
+                   ]
+      hardOf SubstrateHomeLocal "gateway"
+        `shouldBe` [ ("requests.cpu", "1750m")
+                   , ("limits.cpu", "2000m")
+                   , ("requests.memory", "1536Mi")
+                   , ("limits.memory", "3072Mi")
+                   , ("requests.ephemeral-storage", "2048Mi")
+                   , ("limits.ephemeral-storage", "5120Mi")
+                   , ("requests.storage", "20480Mi")
+                   ]
+      hardOf SubstrateAws "vscode"
+        `shouldBe` [ ("requests.cpu", "1880m")
+                   , ("limits.cpu", "2525m")
+                   , ("requests.memory", "3888Mi")
+                   , ("limits.memory", "5472Mi")
+                   , ("requests.ephemeral-storage", "5728Mi")
+                   , ("limits.ephemeral-storage", "11456Mi")
+                   , ("requests.storage", "112640Mi")
+                   ]
+      -- The AWS guardrails satisfy the AWS expectation, which names no
+      -- standalone keycloak namespace.
+      case resourceGuardrailReport SubstrateAws plan awsPods awsQuotas awsLimitRanges of
+        Left err -> expectationFailure err
+        Right report -> do
+          report `shouldContain` "PODS_CHECKED=4"
+          report `shouldContain` "QUOTA_NAMESPACES=vscode,api,websocket,gateway"
+      -- Negative controls: the home-sized gateway quota is refused on AWS, and
+      -- the AWS guardrails are refused by the home expectation because the
+      -- dormant keycloak quota exists only on the home.
+      resourceGuardrailReport
+        SubstrateAws
+        plan
+        awsPods
+        resourceGuardrailQuotaFixture
+        resourceGuardrailLimitRangeFixture
+        `shouldSatisfy` isLeft
+      resourceGuardrailReport
+        SubstrateHomeLocal
+        plan
+        resourceGuardrailPodsFixture
+        awsQuotas
+        awsLimitRanges
+        `shouldSatisfy` isLeft
+
+    it "Sprint 5.50 expects the gateway pods the substrate renders, not the plan's home replica count" $ do
+      -- The stable-observation fold counts a sample only when it sees the
+      -- complete replica set. The capacity plan's gateway profile models the
+      -- two home emitters, so a fold fed the plan's count never completed on
+      -- EKS, where the chart renders three StatefulSets.
+      gatewayRuntimeExpectedReplicas SubstrateHomeLocal `shouldBe` 2
+      gatewayRuntimeExpectedReplicas SubstrateAws `shouldBe` 3
+      forM_ allSubstrates $ \substrate ->
+        fromIntegral (gatewayRuntimeExpectedReplicas substrate)
+          `shouldBe` length (gatewayNodeIdsForSubstrate substrate)
+      -- The plan's own count is the one that disagrees on AWS (negative control).
+      [ Capacity.replicas profile
+        | profile <- Capacity.workload_profiles Capacity.defaultResourcePlan
+        , Capacity.profile_id profile == "gateway"
+        ]
+        `shouldBe` [2]
+
+    it "Sprint 7.46 backs the AWS monitor's kubeconfig retry off from the sample interval to a ceiling" $ do
+      -- Each attempt opens a bracket, which mints credentials; a persistent refusal
+      -- retried at the sample rate for a whole suite is a standing load on the
+      -- control plane that carries no information the first refusal lacked.
+      let delays = map gatewayRuntimeKubeconfigRetryDelayMicroseconds [0 .. 12]
+      take 4 delays `shouldBe` [1000000, 2000000, 4000000, 8000000]
+      last delays `shouldBe` 30000000
+      maximum delays `shouldBe` 30000000
+      and (zipWith (<=) delays (drop 1 delays)) `shouldBe` True
+      -- Out-of-range counts neither underflow into a zero delay nor overflow.
+      gatewayRuntimeKubeconfigRetryDelayMicroseconds (-3) `shouldBe` 1000000
+      gatewayRuntimeKubeconfigRetryDelayMicroseconds maxBound `shouldBe` 30000000
 
     it "Sprint 5.12 parses retained PV snapshots from Kubernetes JSON" $ do
       let pvJson =
@@ -10001,7 +10432,13 @@ unitSuite = do
       repoRoot <- getCurrentDirectory
       rke2Source <- readFile (repoRoot </> "src" </> "Prodbox" </> "CLI" </> "Rke2.hs")
 
-      rke2Source `shouldContain` "waitForHarborStableEndpoints repoRoot"
+      -- Sprint 7.46: every wait names the vantage it probes from. The AWS runtime
+      -- takes its vantage from the substrate and the home retention path names the
+      -- host; no call is left that takes the host's loopback by omission.
+      rke2Source
+        `shouldContain` "waitForHarborStableEndpoints (registryProbeVantageFor substrate) repoRoot"
+      rke2Source `shouldContain` "waitForHarborStableEndpoints RegistryProbeFromHost repoRoot"
+      rke2Source `shouldNotContain` "waitForHarborStableEndpoints repoRoot"
       rke2Source `shouldContain` "harborEndpointStabilitySuccesses = 6"
       rke2Source `shouldContain` "harborEndpointStabilityDelayMicroseconds = 5000000"
       rke2Source `shouldContain` "ensureHarborRegistryStorageBackend repoRoot"
@@ -11399,6 +11836,7 @@ unitSuite = do
               , chartStorageSpecWorkloadProfileId = "pulsar"
               , chartStorageSpecOrdinal = 0
               , chartStorageSpecClaimSuffix = "data"
+              , chartStorageSpecAccessMode = ReadWriteOnceAccess
               }
           binding =
             either
@@ -11958,6 +12396,7 @@ unitSuite = do
                            , chartStorageSpecWorkloadProfileId = "lifecycle-authority"
                            , chartStorageSpecOrdinal = 0
                            , chartStorageSpecClaimSuffix = "authority-journal"
+                           , chartStorageSpecAccessMode = ReadWriteOnceAccess
                            }
                        ]
 
@@ -12218,6 +12657,7 @@ unitSuite = do
               , chartStorageSpecWorkloadProfileId = "vscode"
               , chartStorageSpecOrdinal = 0
               , chartStorageSpecClaimSuffix = "data"
+              , chartStorageSpecAccessMode = ReadWriteOnceAccess
               }
           binding =
             either
@@ -12248,6 +12688,175 @@ unitSuite = do
           manifestJson `shouldContain` "\"volumeName\":\"prodbox-retained-vscode-vscode-0\""
           manifestJson `shouldNotContain` "\"hostPath\""
           manifestJson `shouldNotContain` "\"storageClassName\":\"gp2\""
+
+    it
+      "Sprint 7.46 pre-provisions one retained journal volume per AWS gateway emitter and none on the home"
+      $ do
+        -- The chart's `manual` claim class provisions nothing, so an emitter pod's
+        -- journal claim stays unbound, and the pod unscheduled, unless a volume
+        -- exists under the exact name the StatefulSet controller gives the claim.
+        let gatewayDefinition = either error id (resolveChart "/tmp/prodbox" "gateway")
+            specsOn substrate =
+              chartStorageSpecsForRelease substrate "gateway" "gateway" gatewayDefinition
+        specsOn SubstrateHomeLocal `shouldBe` []
+        map chartStorageSpecStatefulSetName (specsOn SubstrateAws)
+          `shouldBe` ["gateway-node-a", "gateway-node-b", "gateway-node-c"]
+        map chartStorageSpecPersistentVolumeClaimName (specsOn SubstrateAws)
+          `shouldBe` [ "emitter-journal-gateway-node-a-0"
+                     , "emitter-journal-gateway-node-b-0"
+                     , "emitter-journal-gateway-node-c-0"
+                     ]
+        map chartStorageSpecAccessMode (specsOn SubstrateAws)
+          `shouldBe` replicate 3 ReadWriteOncePodAccess
+        map chartStorageSpecStatefulSetName (specsOn SubstrateAws)
+          `shouldBe` map EmitterPersistence.gatewayEmitterStatefulSetName (gatewayNodeIdsForSubstrate SubstrateAws)
+        -- No other chart's storage depends on the substrate.
+        forM_ (filter (/= "gateway") supportedChartNames) $ \chartName -> do
+          let definition = either error id (resolveChart "/tmp/prodbox" chartName)
+          chartStorageSpecsForRelease SubstrateAws chartName chartName definition
+            `shouldBe` chartStorageSpecsForRelease SubstrateHomeLocal chartName chartName definition
+
+    it
+      "Sprint 7.46 hands the Provider the four volumes the gateway deployment needs, and the manifests bind them"
+      $ do
+        -- The gateway root plan is the Pulsar release and the gateway release: the volume
+        -- request the Provider validates is the composition of both.
+        let definitionOf name = either error id (resolveChart "/tmp/prodbox" name)
+            bindingsOf name =
+              either
+                error
+                id
+                ( chartStorageBindingsForRelease
+                    SubstrateAws
+                    Capacity.defaultResourcePlan
+                    "/tmp/prodbox/.data"
+                    "gateway"
+                    name
+                    (definitionOf name)
+                )
+            bindings = bindingsOf "pulsar" ++ bindingsOf "gateway"
+            zone = fixtureAwsRegion FixtureUsEast1 <> "a"
+            required =
+              either error id (mapM (EbsVolume.ebsRequiredVolumeFromChartStorageBinding zone) bindings)
+            volumeType = either (error . show) id (AwsSubstrateProfile.mkAwsEbsVolumeType "gp3")
+        map chartStorageBindingStorageSize bindings `shouldBe` ["20Gi", "1Gi", "1Gi", "1Gi"]
+        case retainedEbsEnsureIntent volumeType required of
+          EnsureRetainedEbsVolumes typeText specs ->
+            fmap snd (ProviderProduction.parseRetainedEbsEnsure typeText specs) `shouldBe` Right required
+          other -> expectationFailure ("expected a retained EBS ensure, got " ++ show other)
+        -- Every volume the Provider would return is matched by exactly one binding.
+        let ebsBindings =
+              [ StaticEbsVolumeBinding
+                  { staticEbsVolumeBindingPersistentVolumeName = chartStorageBindingPersistentVolumeName binding
+                  , staticEbsVolumeBindingVolumeHandle = "vol-" ++ show index
+                  , staticEbsVolumeBindingAvailabilityZone = zone
+                  }
+              | (index, binding) <- zip [1 :: Int ..] bindings
+              ]
+        case chartEbsStorageManifest "gateway" "gateway" bindings ebsBindings of
+          Left err -> expectationFailure err
+          Right _ -> pure ()
+        length (nub (map chartStorageBindingPersistentVolumeName bindings)) `shouldBe` 4
+
+    it "Sprint 7.46 names each journal claim the way the gateway chart's StatefulSet controller does" $ do
+      -- The claim a StatefulSet creates from a template is `<template>-<set>-<ordinal>`.
+      -- The volume is pre-provisioned under that name, so the name has to follow the
+      -- chart: a renamed template or set would leave the volume bound to nothing.
+      repoRoot <- getCurrentDirectory
+      template <-
+        readFile (repoRoot </> "charts" </> "gateway" </> "templates" </> "deployments.yaml")
+      template
+        `shouldContain` ("name: " ++ EmitterPersistence.gatewayEmitterStatefulSetName "{{ $nodeId }}")
+      -- The claim name ends in the replica's ordinal, and one pre-provisioned volume
+      -- per emitter assumes one replica.
+      template `shouldContain` "replicas: 1\n"
+      template
+        `shouldContain` ( "volumeClaimTemplates:\n    - metadata:\n        name: "
+                            ++ EmitterPersistence.gatewayEmitterJournalVolumeName
+                        )
+      EmitterPersistence.gatewayEmitterJournalClaimName "node-a"
+        `shouldBe` "emitter-journal-gateway-node-a-0"
+
+    it "Sprint 7.46 sizes each AWS journal volume as the quota admits it and the chart claims it" $ do
+      let gatewayDefinition = either error id (resolveChart "/tmp/prodbox" "gateway")
+          bindingsOn substrate =
+            chartStorageBindingsForRelease
+              substrate
+              Capacity.defaultResourcePlan
+              "/tmp/prodbox/.data"
+              "gateway"
+              "gateway"
+              gatewayDefinition
+          claimedByChart node =
+            case EmitterPersistence.mkEmitterPersistenceBinding SubstrateAws (Text.pack node) of
+              Right binding ->
+                case EmitterPersistence.persistenceJournalAccess binding of
+                  EmitterPersistence.AwsRetainedEbsClaim {EmitterPersistence.journalRequestedStorage = quantity} ->
+                    Text.unpack quantity
+                  EmitterPersistence.HomeNodePinnedHostPath _ -> ""
+              Left err -> error err
+          -- What the chart's claim template asks for, as the persistence values render it.
+          chartClaimFields node =
+            case EmitterPersistence.mkEmitterPersistenceBinding SubstrateAws (Text.pack node) of
+              Right binding ->
+                case EmitterPersistence.persistenceJournalAccess binding of
+                  EmitterPersistence.AwsRetainedEbsClaim
+                    { EmitterPersistence.journalAccessMode = mode
+                    , EmitterPersistence.journalStorageClassName = storageClass
+                    , EmitterPersistence.journalClaimName = claimName
+                    } -> (Text.unpack mode, Text.unpack storageClass, Text.unpack claimName)
+                  EmitterPersistence.HomeNodePinnedHostPath _ -> ("", "", "")
+              Left err -> error err
+      bindingsOn SubstrateHomeLocal `shouldBe` Right []
+      case bindingsOn SubstrateAws of
+        Left err -> expectationFailure err
+        Right bindings -> do
+          map chartStorageBindingStorageSize bindings
+            `shouldBe` map claimedByChart (gatewayNodeIdsForSubstrate SubstrateAws)
+          map chartStorageBindingStorageSize bindings `shouldBe` replicate 3 "1Gi"
+          map chartStorageBindingAccessMode bindings `shouldBe` replicate 3 ReadWriteOncePodAccess
+          -- The volume and the pre-created claim declare what the chart's template asks
+          -- for, or the claim would match no volume: the mode, the class and the name
+          -- are joined to the values the chart renders, not compared with literals.
+          let chartFields = map chartClaimFields (gatewayNodeIdsForSubstrate SubstrateAws)
+          map (renderChartStorageAccessMode . chartStorageBindingAccessMode) bindings
+            `shouldBe` [mode | (mode, _, _) <- chartFields]
+          replicate 3 chartStorageClassName `shouldBe` [storageClass | (_, storageClass, _) <- chartFields]
+          map chartStorageBindingPersistentVolumeClaimName bindings
+            `shouldBe` [claimName | (_, _, claimName) <- chartFields]
+          -- Distinct volumes, each accepted as a retained EBS volume of its size.
+          let volumeNames = map chartStorageBindingPersistentVolumeName bindings
+          length (nub volumeNames) `shouldBe` 3
+          map
+            ( fmap EbsVolume.ebsRequiredSizeGiB
+                . EbsVolume.ebsRequiredVolumeFromChartStorageBinding (fixtureAwsRegion FixtureUsEast1 <> "a")
+            )
+            bindings
+            `shouldBe` replicate 3 (Right 1)
+          -- The volume, and the claim that binds it, declare the mode the chart's claim
+          -- template asks for, or the claim would match no volume.
+          let ebsBindings =
+                [ StaticEbsVolumeBinding
+                    { staticEbsVolumeBindingPersistentVolumeName = volumeName
+                    , staticEbsVolumeBindingVolumeHandle = "vol-" ++ show index
+                    , staticEbsVolumeBindingAvailabilityZone = fixtureAwsRegion FixtureUsEast1 <> "a"
+                    }
+                | (index, volumeName) <- zip [1 :: Int ..] volumeNames
+                ]
+          case BL8.unpack . encode <$> chartEbsStorageManifest "gateway" "gateway" bindings ebsBindings of
+            Left err -> expectationFailure err
+            Right manifestJson -> do
+              manifestJson `shouldContain` "\"accessModes\":[\"ReadWriteOncePod\"]"
+              manifestJson `shouldNotContain` "\"accessModes\":[\"ReadWriteOnce\"]"
+              manifestJson `shouldContain` "\"name\":\"emitter-journal-gateway-node-c-0\""
+              manifestJson `shouldContain` "\"driver\":\"ebs.csi.aws.com\""
+      -- Negative control: sized from the plan alone, with no substrate adjustment,
+      -- the gateway has no durable allocation and the claim cannot be bound.
+      case chartStorageSpecsForRelease SubstrateAws "gateway" "gateway" gatewayDefinition of
+        spec : _ ->
+          storageBinding Capacity.defaultResourcePlan "/tmp/prodbox/.data" "gateway" "gateway" spec
+            `shouldSatisfy` isLeft
+        [] -> expectationFailure "the AWS gateway has no journal spec"
 
     -- Sprint 3.38: this case previously asserted the opposite — that a chart
     -- root whose releases are all present and `deployed` is an idempotent
@@ -12786,12 +13395,324 @@ unitSuite = do
             Just vaultAuth ->
               gatewayVaultAddress vaultAuth `shouldBe` "http://vault.vault.svc.cluster.local:8200"
 
+  describe "Keycloak access-token extraction" $ do
+    -- `kcadm config credentials` stores the bearer under `token`, and the Keycloak
+    -- image has no awk: the extractor matched `access_token` with awk and so found
+    -- nothing on every call.
+    let extract configText =
+          withSystemTempDirectory "kcadm-config" $ \tmp -> do
+            let path = tmp </> "kcadm.config"
+            writeFile path configText
+            captureSubprocessResult
+              Subprocess
+                { subprocessPath = "sh"
+                , subprocessArguments =
+                    [ "-c"
+                    , unlines keycloakEmitAccessTokenFunction ++ "\nemit_access_token \"$1\""
+                    , "sh"
+                    , path
+                    ]
+                , subprocessEnvironment = Nothing
+                , subprocessWorkingDirectory = Nothing
+                }
+        prettyConfig =
+          unlines
+            [ "{"
+            , "  \"endpoints\" : {"
+            , "    \"http://127.0.0.1:8080/auth\" : {"
+            , "      \"prodbox\" : {"
+            , "        \"endpoint\" : \"http://127.0.0.1:8080/auth\","
+            , "        \"token\" : \"header.payload.signature\","
+            , "        \"refreshToken\" : \"refresh.payload.signature\","
+            , "        \"signingToken\" : null,"
+            , "        \"grantType\" : \"password\""
+            , "      }"
+            , "    }"
+            , "  }"
+            , "}"
+            ]
+    it "reads the token from a pretty-printed config, not the refresh token" $ do
+      result <- extract prettyConfig
+      case result of
+        Result.Failure err -> expectationFailure err
+        Result.Success output -> do
+          processExitCode output `shouldBe` ExitSuccess
+          processStdout output `shouldBe` "header.payload.signature\n"
+
+    it "reads the token from a compact one-line config" $ do
+      result <-
+        extract "{\"endpoints\":{\"u\":{\"prodbox\":{\"token\":\"a.b.c\",\"refreshToken\":\"r.r.r\"}}}}\n"
+      case result of
+        Result.Failure err -> expectationFailure err
+        Result.Success output -> processStdout output `shouldBe` "a.b.c\n"
+
+    it "exits non-zero and prints nothing when the config holds no token, including the superseded key" $ do
+      result <- extract "{\n  \"access_token\" : \"x.y.z\",\n  \"refreshToken\" : \"r.r.r\"\n}\n"
+      case result of
+        Result.Failure err -> expectationFailure err
+        Result.Success output -> do
+          processExitCode output `shouldSatisfy` (/= ExitSuccess)
+          processStdout output `shouldBe` ""
+
+  describe "SES Provider intents name the dotted receive domain" $ do
+    -- `ses.receive_subdomain` is one DNS label. The Provider names the inbound MX
+    -- record and the receipt-rule recipient by the dotted name, and built them from
+    -- the bare label, so the MX name failed its two-label rule and the public-edge
+    -- prerequisite gate refused before any validation ran.
+    it
+      "builds the inbound DNS ref and the receipt-rule recipient from the label under the sender domain"
+      $ do
+        let config =
+              testValidatedConfigFile
+                { ses =
+                    SesSection
+                      { sender_domain = "test.example.test"
+                      , receive_subdomain = "inbox"
+                      , capture_bucket = "prodbox-test-ses-capture"
+                      }
+                }
+        case awsSesProviderIntents config of
+          Left err -> expectationFailure ("the SES intents were not built: " ++ err)
+          Right intents -> do
+            [sesDnsReceiveSubdomain ref | (_, _, ReconcileSesDns ref) <- intents]
+              `shouldBe` ["inbox.test.example.test"]
+            [sesRuleSetRecipient ref | (_, _, ReconcileSesReceiptRules ref) <- intents]
+              `shouldBe` ["inbox.test.example.test"]
+
+  describe "SES receive domain" $ do
+    -- `ses.receive_subdomain` is one DNS label; the Provider's inbound MX name and
+    -- receipt rule need the dotted name under the sender domain.
+    it "composes the configured label under the sender domain" $
+      sesReceiveDomain "example.com" "inbox" `shouldBe` Right "inbox.example.com"
+
+    it "strips surrounding whitespace on both inputs" $
+      sesReceiveDomain " example.com " " inbox " `shouldBe` Right "inbox.example.com"
+
+    it "refuses a dotted label, an empty label, and an empty sender domain" $ do
+      sesReceiveDomain "example.com" "a.b" `shouldSatisfy` isLeft
+      sesReceiveDomain "example.com" "" `shouldSatisfy` isLeft
+      sesReceiveDomain "" "inbox" `shouldSatisfy` isLeft
+
+    it "addresses the invite at the dotted receive domain the receipt rule names" $ do
+      -- The bare label is not a mail domain: no captured message's To: header
+      -- could carry `test-<nonce>@inbox`, so the capture poll never matched.
+      keycloakInviteRecipient "abc123" "example.com" "inbox"
+        `shouldBe` Right "test-abc123@inbox.example.com"
+      keycloakInviteRecipient "abc123" "example.com" "" `shouldSatisfy` isLeft
+
+  describe "Provider-brokered validation evidence" $ do
+    -- The host holds no AWS credential, so dns-aws, keycloak-invite and the
+    -- retained-EBS ensure ask the Provider and read its one-line evidence.
+    it "reads the invite-mail evidence as pending or as an object key and a link" $ do
+      parseInviteMailEvidence "ses-invite:pending" `shouldBe` Right InviteMailPending
+      parseInviteMailEvidence
+        "ses-invite:inbound/abc123 https://auth.example.test/realms/r/login-actions/action-token?key=k"
+        `shouldBe` Right
+          ( InviteMailArrived
+              "inbound/abc123"
+              "https://auth.example.test/realms/r/login-actions/action-token?key=k"
+          )
+      parseInviteMailEvidence "ses-invite:inbound/abc123" `shouldSatisfy` isLeft
+      parseInviteMailEvidence "ses-invite:a b c" `shouldSatisfy` isLeft
+      parseInviteMailEvidence "provider-readiness:sts" `shouldSatisfy` isLeft
+
+    it "names the validation zone's bare id from the Provider's evidence" $ do
+      parseValidationZoneEvidence "validation-zone:Z00231272QFGWVE1AJI2G"
+        `shouldBe` Right "Z00231272QFGWVE1AJI2G"
+      parseValidationZoneEvidence "validation-zone:" `shouldSatisfy` isLeft
+      parseValidationZoneEvidence "validation hosted zones are absent" `shouldSatisfy` isLeft
+
+    it "derives the validation zone name and caller reference from the nonce, never from a caller" $ do
+      ProviderProduction.validationZoneNames "1759900000" "example.test."
+        `shouldBe` Right
+          ( "prodbox-dns-aws-1759900000.example.test"
+          , "prodbox-dns-aws-1759900000"
+          , "example.test"
+          )
+      mapM_
+        (\nonce -> ProviderProduction.validationZoneNames nonce "example.test" `shouldSatisfy` isLeft)
+        ["", "Has-Upper", "has space", "../escape", Text.replicate 33 "1"]
+      mapM_
+        (\base -> ProviderProduction.validationZoneNames "1759900000" base `shouldSatisfy` isLeft)
+        ["", "-bad.example", "bad-.example", "a..b", "under_score.example", "--flag"]
+
+    it "matches a captured message only on a whole addressee of its To header" $ do
+      let raw = BL8.pack
+          recipient = "test-ab12@receive.example.test"
+          message toLine = raw ("From: a@b.test\r\n" ++ toLine ++ "\r\nSubject: invite\r\n\r\nbody\r\n")
+      messageAddressedTo recipient (message "To: test-ab12@receive.example.test") `shouldBe` True
+      messageAddressedTo recipient (message "To: \"Test\" <Test-AB12@Receive.Example.Test>, other@x.test")
+        `shouldBe` True
+      messageAddressedTo recipient (message "To: other@x.test,\r\n test-ab12@receive.example.test")
+        `shouldBe` True
+      -- Negative controls: a longer local part that merely contains the
+      -- recipient, a different domain, and a To line in the body.
+      messageAddressedTo recipient (message "To: xtest-ab12@receive.example.test") `shouldBe` False
+      messageAddressedTo recipient (message "To: test-ab12@receive.example.test.evil.test")
+        `shouldBe` False
+      messageAddressedTo
+        recipient
+        (raw "From: a@b.test\r\nTo: other@x.test\r\n\r\nTo: test-ab12@receive.example.test\r\n")
+        `shouldBe` False
+
+    it "round-trips the retained-EBS ensure through the intent and the evidence" $ do
+      let required =
+            [ EbsVolume.EbsRequiredVolume "pv-minio-0" 30 "ca-central-1a"
+            , EbsVolume.EbsRequiredVolume "pv-vault-0" 10 "ca-central-1a"
+            ]
+          volumeType = either (error . show) id (AwsSubstrateProfile.mkAwsEbsVolumeType "gp3")
+      case retainedEbsEnsureIntent volumeType required of
+        EnsureRetainedEbsVolumes typeText specs -> do
+          typeText `shouldBe` "gp3"
+          specs `shouldBe` "pv-minio-0:30:ca-central-1a,pv-vault-0:10:ca-central-1a"
+          fmap snd (ProviderProduction.parseRetainedEbsEnsure typeText specs)
+            `shouldBe` Right required
+        other -> expectationFailure ("expected a retained EBS ensure, got " ++ show other)
+      let bindings =
+            [ StaticEbsVolumeBinding "pv-minio-0" "vol-0aaa" "ca-central-1a"
+            , StaticEbsVolumeBinding "pv-vault-0" "vol-0bbb" "ca-central-1a"
+            ]
+      parseRetainedEbsBindingsEvidence (ProviderProduction.retainedEbsBindingsEvidence bindings)
+        `shouldBe` Right bindings
+
+    it "refuses a retained-EBS spec that is not name:size:zone, is oversized, or names too many volumes" $ do
+      mapM_
+        (\specs -> ProviderProduction.parseRetainedEbsEnsure "gp3" specs `shouldSatisfy` isLeft)
+        [ ""
+        , "pv-minio-0"
+        , "pv-minio-0:30"
+        , "pv-minio-0:0:ca-central-1a"
+        , "pv-minio-0:99999:ca-central-1a"
+        , "PV_UPPER:30:ca-central-1a"
+        , "pv-minio-0:30:Not A Zone"
+        , Text.intercalate "," (replicate 65 "pv-a:1:ca-central-1a")
+        , "pv-a:1:ca-central-1a,pv-a:2:ca-central-1a"
+        ]
+      ProviderProduction.parseRetainedEbsEnsure "magnetic-plus" "pv-a:1:ca-central-1a"
+        `shouldSatisfy` isLeft
+      parseRetainedEbsBindingsEvidence "retained-ebs-bindings:" `shouldSatisfy` isLeft
+      parseRetainedEbsBindingsEvidence "retained-ebs-bindings:a=b" `shouldSatisfy` isLeft
+      parseRetainedEbsBindingsEvidence "something-else" `shouldSatisfy` isLeft
+
+  describe "aws-iam Provider identity inspection" $ do
+    -- The Provider has run as the assumed role since the assume-role binding, so
+    -- an inspection that required an IAM user refused every healthy Provider.
+    let providerArn =
+          "arn:aws:sts::123456789012:assumed-role/prodbox-lifecycle-provider/prodbox-provider-worker"
+        configPath = ".build/prodbox.dhall"
+    it "classifies the Provider's STS ARN as the assumed role and session" $
+      operationalIdentityFromArn providerArn
+        `shouldBe` OperationalIdentityAssumedRole "prodbox-lifecycle-provider" "prodbox-provider-worker"
+
+    it "reports the Provider role, session and principal for the exact registered identity" $
+      case inspectOperationalIdentity configPath (operationalIdentityFromArn providerArn) of
+        Left err -> expectationFailure err
+        Right report -> do
+          report `shouldContain` "PROVIDER_ROLE=prodbox-lifecycle-provider"
+          report `shouldContain` "PROVIDER_SESSION=prodbox-provider-worker"
+          report `shouldContain` "IAM_PRINCIPAL=assumed-role"
+          report `shouldContain` ("CONFIG_PATH=" ++ configPath)
+
+    it "refuses the base IAM user, because seeing it means the assume-role binding is not in effect" $ do
+      let baseUser = operationalIdentityFromArn "arn:aws:iam::123456789012:user/prodbox-lifecycle-provider"
+      baseUser `shouldBe` OperationalIdentityIamUser "prodbox-lifecycle-provider"
+      case inspectOperationalIdentity configPath baseUser of
+        Right report -> expectationFailure ("expected a refusal, got: " ++ report)
+        Left err -> err `shouldContain` "assume-role binding is not in effect"
+
+    it "refuses another role or another session" $ do
+      inspectOperationalIdentity
+        configPath
+        (OperationalIdentityAssumedRole "some-other-role" "prodbox-provider-worker")
+        `shouldSatisfy` either (isInfixOf "some-other-role") (const False)
+      inspectOperationalIdentity
+        configPath
+        (OperationalIdentityAssumedRole "prodbox-lifecycle-provider" "a-different-session")
+        `shouldSatisfy` either (isInfixOf "a-different-session") (const False)
+
+    it "refuses a missing identity and a failed probe by name" $ do
+      inspectOperationalIdentity configPath OperationalCredentialsMissing
+        `shouldSatisfy` either (isInfixOf "ready Provider Worker identity") (const False)
+      inspectOperationalIdentity configPath (OperationalIdentityProbeFailed "no route")
+        `shouldSatisfy` either (isInfixOf "no route") (const False)
+
+  describe "sealed-vault status reading" $ do
+    -- `prodbox vault status` prints the Bootstrap Broker's JSON after a label; the
+    -- `sealed=True` spelling the validation once matched no longer occurs.
+    it "reads the sealed flag from the Broker's JSON status line" $ do
+      sealStateFromVaultStatusOutput
+        "Vault status: {\"initialization_ambiguous\":false,\"initialized\":true,\"sealed\":false,\"storage_generation\":\"1\"}"
+        `shouldBe` Just False
+      sealStateFromVaultStatusOutput
+        "Vault status: {\"initialized\":true,\"sealed\":true}\n"
+        `shouldBe` Just True
+
+    it "reads nothing from the superseded spelling, a refusal line, or no output" $ do
+      sealStateFromVaultStatusOutput "Vault: initialized=True sealed=True" `shouldBe` Nothing
+      sealStateFromVaultStatusOutput "Vault status failed: HTTP response decode error" `shouldBe` Nothing
+      sealStateFromVaultStatusOutput "" `shouldBe` Nothing
+      sealStateFromVaultStatusOutput "Vault status: {\"initialized\":true}" `shouldBe` Nothing
+
+  describe "gateway emitter workload selection" $ do
+    -- The gateway namespace holds only StatefulSets, so a Deployment wait over it
+    -- matches nothing; the validations wait on the emitter StatefulSets instead.
+    it "selects the per-emitter StatefulSets and leaves the Pulsar broker out" $
+      gatewayEmitterStatefulSets
+        ( unlines
+            [ "statefulset.apps/gateway-node-a"
+            , "statefulset.apps/gateway-node-b"
+            , "statefulset.apps/pulsar"
+            ]
+        )
+        `shouldBe` ["statefulset.apps/gateway-node-a", "statefulset.apps/gateway-node-b"]
+
+    it "selects nothing from an empty listing, which the wait reports rather than passes" $
+      gatewayEmitterStatefulSets "" `shouldBe` []
+
+  describe "gateway Orders-lag ownership gate" $ do
+    -- Exit item 38: Orders promotion is restart-based, so the only runtime
+    -- behaviour to prove is the refusal while this process is behind.
+    it "elects while the process holds the newest Orders any peer has presented" $ do
+      ordersViewIsCurrent 3 3 `shouldBe` True
+      ordersViewIsCurrent 2 3 `shouldBe` True
+
+    it "refuses to elect once a peer has presented a newer Orders than the process started against" $ do
+      ordersViewIsCurrent 4 3 `shouldBe` False
+      ordersViewIsCurrent (maxBound :: Int) 3 `shouldBe` False
+
+    it "never lowers the observed high-water mark" $ do
+      raiseLatestObservedOrdersVersion 5 3 `shouldBe` 5
+      raiseLatestObservedOrdersVersion 5 5 `shouldBe` 5
+      raiseLatestObservedOrdersVersion 5 6 `shouldBe` 6
+
+    it "saturates a wire version beyond the daemon state's range so it cannot wrap and clear the gate" $ do
+      let beyond = fromIntegral (maxBound :: Int) + 1 :: Word64
+      raiseLatestObservedOrdersVersion 1 beyond `shouldBe` (maxBound :: Int)
+      ordersViewIsCurrent (raiseLatestObservedOrdersVersion 1 beyond) 3 `shouldBe` False
+
+    it "keeps a rebooted daemon behind until it restarts against the newer Orders" $ do
+      -- A daemon that restarted against stale Orders (version 2) and then hears a
+      -- peer at version 3 stays gated no matter how many older frames follow.
+      let observed = foldl raiseLatestObservedOrdersVersion 2 [3, 2, 1, 2]
+      ordersViewIsCurrent observed 2 `shouldBe` False
+      -- Restarted against the newer Orders (version 3), the same history clears.
+      ordersViewIsCurrent observed 3 `shouldBe` True
+
   describe "gateway daemon full-mode reconcile (post-Vault pre-Vault-boot fix)" $ do
-    it "gatewayDaemonWorkloadRefs targets one StatefulSet per home gateway node (Sprint 3.26: home = 2)" $
-      gatewayDaemonWorkloadRefs
-        `shouldBe` [ "statefulset/gateway-node-a"
-                   , "statefulset/gateway-node-b"
-                   ]
+    it
+      "gatewayDaemonWorkloadRefs targets one StatefulSet per gateway node of the substrate (Sprint 3.26: home = 2, AWS = 3)"
+      $ do
+        gatewayDaemonWorkloadRefs SubstrateHomeLocal
+          `shouldBe` [ "statefulset/gateway-node-a"
+                     , "statefulset/gateway-node-b"
+                     ]
+        -- The AWS restart once named only the two home StatefulSets and left the
+        -- third on the old continuity state.
+        gatewayDaemonWorkloadRefs SubstrateAws
+          `shouldBe` [ "statefulset/gateway-node-a"
+                     , "statefulset/gateway-node-b"
+                     , "statefulset/gateway-node-c"
+                     ]
 
     it "classifyGatewayFullModeProbe: ready means continuity recovery completed" $
       classifyGatewayFullModeProbe Prodbox.Gateway.Client.GatewayReadyzReady
@@ -14308,7 +15229,9 @@ unitSuite = do
       presentNames residueFixturePresent minioDown residueFixturePresent
         `shouldBe` ["aws-eks", "aws-test"]
 
-    it "reconcileAbsent destroys present resources in order and stops fast on failure" $ do
+    it "reconcileAbsent still attempts the independent resources after a failure" $ do
+      -- Red on 0268f5d: the destroy fold was fail-fast, so "after-failure" was
+      -- never attempted and the log read ["first", "boom"].
       destroyed <- newIORef ([] :: [String])
       let pairs =
             [ (registryFixtureResource "first" ExitSuccess destroyed, residueFixturePresent)
@@ -14319,7 +15242,136 @@ unitSuite = do
       outcome <- ResourceRegistry.reconcileAbsent "/tmp" pairs
       ResourceRegistry.absentReconcileDestroyExit outcome `shouldBe` ExitFailure 1
       ResourceRegistry.absentReconcileExitCode outcome `shouldBe` ExitFailure 1
-      readIORef destroyed `shouldReturn` ["first", "boom"]
+      ResourceRegistry.absentReconcileFailed outcome `shouldBe` ["boom"]
+      ResourceRegistry.absentReconcileBlocked outcome `shouldBe` []
+      readIORef destroyed `shouldReturn` ["first", "boom", "after-failure"]
+
+    it "a failing aws-eks no longer strands the subzone and aws-test destroys" $ do
+      -- The 2026-09-29 incident: the aws-eks destroy failed and the subzone,
+      -- which is independent of it, was never attempted.
+      destroyed <- newIORef ([] :: [String])
+      let pairs =
+            [ (registryFixtureResource "aws-eks" (ExitFailure 1) destroyed, residueFixturePresent)
+            , (registryFixtureResource "aws-eks-subzone" ExitSuccess destroyed, residueFixturePresent)
+            , (registryFixtureResource "aws-test" ExitSuccess destroyed, residueFixturePresent)
+            ]
+      outcome <- ResourceRegistry.reconcileAbsent "/tmp" pairs
+      readIORef destroyed `shouldReturn` ["aws-eks", "aws-eks-subzone", "aws-test"]
+      ResourceRegistry.absentReconcileFailed outcome `shouldBe` ["aws-eks"]
+      ResourceRegistry.absentReconcileExitCode outcome `shouldBe` ExitFailure 1
+
+    describe "the operational batch keeps its success edges" $ do
+      let leaseRole = ResourceRegistry.operationalResourceName ResourceRegistry.OperationalAwsSesLeaseRole
+          iamUser = ResourceRegistry.operationalResourceName ResourceRegistry.OperationalIamUser
+          awsConfig = ResourceRegistry.operationalResourceName ResourceRegistry.OperationalAwsConfig
+          operationalPairs destroyed (roleExit, roleStatus) (userExit, userStatus) =
+            [ (registryFixtureResource leaseRole roleExit destroyed, roleStatus)
+            , (registryFixtureResource iamUser userExit destroyed, userStatus)
+            , (registryFixtureResource awsConfig ExitSuccess destroyed, residueFixturePresent)
+            ]
+
+      it "a failed user destroy blocks the aws.* clear, which would drop the only credential" $ do
+        -- A naive continue-all would clear the config here and fail this case.
+        destroyed <- newIORef ([] :: [String])
+        outcome <-
+          ResourceRegistry.reconcileAbsent
+            "/tmp"
+            ( operationalPairs
+                destroyed
+                (ExitSuccess, residueFixturePresent)
+                (ExitFailure 1, residueFixturePresent)
+            )
+        readIORef destroyed `shouldReturn` [leaseRole, iamUser]
+        ResourceRegistry.absentReconcileFailed outcome `shouldBe` [iamUser]
+        ResourceRegistry.absentReconcileBlocked outcome `shouldBe` [awsConfig]
+        ResourceRegistry.absentReconcileExitCode outcome `shouldBe` ExitFailure 1
+
+      it "a failed lease-role destroy blocks the user and then the config" $ do
+        destroyed <- newIORef ([] :: [String])
+        outcome <-
+          ResourceRegistry.reconcileAbsent
+            "/tmp"
+            ( operationalPairs
+                destroyed
+                (ExitFailure 1, residueFixturePresent)
+                (ExitSuccess, residueFixturePresent)
+            )
+        readIORef destroyed `shouldReturn` [leaseRole]
+        ResourceRegistry.absentReconcileFailed outcome `shouldBe` [leaseRole]
+        ResourceRegistry.absentReconcileBlocked outcome `shouldBe` [iamUser, awsConfig]
+
+      it "a predecessor observed absent does not block its dependents" $ do
+        destroyed <- newIORef ([] :: [String])
+        outcome <-
+          ResourceRegistry.reconcileAbsent
+            "/tmp"
+            ( operationalPairs
+                destroyed
+                (ExitSuccess, Residue.ResidueAbsent)
+                (ExitSuccess, residueFixturePresent)
+            )
+        readIORef destroyed `shouldReturn` [iamUser, awsConfig]
+        ResourceRegistry.absentReconcileBlocked outcome `shouldBe` []
+        ResourceRegistry.absentReconcileExitCode outcome `shouldBe` ExitSuccess
+
+      it "a predecessor that could not be observed blocks its dependents" $ do
+        let minioDown = Residue.ResidueUnreachable residueFixtureMinioReason
+        destroyed <- newIORef ([] :: [String])
+        outcome <-
+          ResourceRegistry.reconcileAbsent
+            "/tmp"
+            ( operationalPairs
+                destroyed
+                (ExitSuccess, minioDown)
+                (ExitSuccess, residueFixturePresent)
+            )
+        readIORef destroyed `shouldReturn` []
+        ResourceRegistry.absentReconcileUnobserved outcome `shouldBe` [leaseRole]
+        ResourceRegistry.absentReconcileBlocked outcome `shouldBe` [iamUser, awsConfig]
+        ResourceRegistry.absentReconcileDestroyExit outcome `shouldBe` ExitFailure 1
+
+      it "every named predecessor precedes its dependent in registry order" $
+        forM_ ResourceRegistry.operationalResourceIdentities $ \identity -> do
+          let names = map ResourceRegistry.operationalResourceName ResourceRegistry.operationalResourceIdentities
+              position name = lookup name (zip names [0 :: Int ..])
+          forM_
+            (ResourceRegistry.destroyRequiresSuccessOf (ResourceRegistry.operationalResourceName identity))
+            $ \required ->
+              (position required < position (ResourceRegistry.operationalResourceName identity))
+                `shouldBe` True
+
+    it "an exception thrown by one destroy is a failure and does not stop independent resources" $ do
+      destroyed <- newIORef ([] :: [String])
+      let thrower =
+            (registryFixtureResource "thrower" ExitSuccess destroyed)
+              { ResourceRegistry.resourceDestroy = \_ -> do
+                  modifyIORef' destroyed (++ ["thrower"])
+                  throwIO (userError "destroy raised")
+              }
+          pairs =
+            [ (thrower, residueFixturePresent)
+            , (registryFixtureResource "sibling" ExitSuccess destroyed, residueFixturePresent)
+            ]
+      outcome <- ResourceRegistry.reconcileAbsent "/tmp" pairs
+      readIORef destroyed `shouldReturn` ["thrower", "sibling"]
+      ResourceRegistry.absentReconcileFailed outcome `shouldBe` ["thrower"]
+      ResourceRegistry.absentReconcileExitCode outcome `shouldBe` ExitFailure 1
+
+    it "an interrupt is not swallowed as a failed destroy" $ do
+      destroyed <- newIORef ([] :: [String])
+      let interrupted =
+            (registryFixtureResource "interrupted" ExitSuccess destroyed)
+              { ResourceRegistry.resourceDestroy = \_ -> throwIO UserInterrupt
+              }
+          pairs =
+            [ (interrupted, residueFixturePresent)
+            , (registryFixtureResource "after" ExitSuccess destroyed, residueFixturePresent)
+            ]
+      result <-
+        try (ResourceRegistry.reconcileAbsent "/tmp" pairs)
+          :: IO (Either SomeException ResourceRegistry.AbsentReconcileOutcome)
+      either (const (pure ())) (const (expectationFailure "the interrupt was swallowed")) result
+      readIORef destroyed `shouldReturn` []
 
   describe "Sprint 4.76 reconcileAbsent separates observed-absent from unobserved" $ do
     let minioDown = Residue.ResidueUnreachable residueFixtureMinioReason
@@ -15192,15 +16244,32 @@ unitSuite = do
                 Nothing -> unsetEnv testManualPvHostRootEnv
                 Just value -> setEnv testManualPvHostRootEnv value
         original <- lookupEnv testManualPvHostRootEnv
-        ( do
-            unsetEnv testManualPvHostRootEnv
-            sealedVaultHostDiskRoot repoRoot
-              `shouldReturn` (repoRoot </> ".data" </> "prodbox" </> "minio" </> "0")
-            setEnv testManualPvHostRootEnv testRoot
-            sealedVaultHostDiskRoot repoRoot
-              `shouldReturn` (testRoot </> "prodbox" </> "minio" </> "0")
-          )
-          `finally` restoreEnv original
+        -- The root without an override is read from the sibling config, so the case
+        -- fixes that config (the production default) rather than assuming none exists.
+        let audited =
+              withBinarySiblingTier0 (tier0Fixture (sealedVaultAuditProjectConfig ".data")) $ do
+                unsetEnv testManualPvHostRootEnv
+                sealedVaultHostDiskRoot repoRoot
+                  `shouldReturn` (repoRoot </> ".data" </> "prodbox" </> "minio" </> "0")
+                setEnv testManualPvHostRootEnv testRoot
+                sealedVaultHostDiskRoot repoRoot
+                  `shouldReturn` (testRoot </> "prodbox" </> "minio" </> "0")
+        audited `finally` restoreEnv original
+
+    it "Sprint 5.52 audits the MinIO root the harness config binds, not the production one" $
+      withSystemTempDirectory "prodbox-sealed-vault-harness-root" $ \repoRoot -> do
+        -- The harness generates a config rooted at `.test-data/legacy-aggregate` and the
+        -- retained MinIO volume is bound there; an audit that looked under `.data` found
+        -- no directory (or, on a host that kept an unused one, scanned the wrong tree).
+        original <- lookupEnv testManualPvHostRootEnv
+        let audited =
+              withBinarySiblingTier0
+                (tier0Fixture (sealedVaultAuditProjectConfig ".test-data/legacy-aggregate"))
+                $ do
+                  unsetEnv testManualPvHostRootEnv
+                  sealedVaultHostDiskRoot repoRoot
+                    `shouldReturn` (repoRoot </> ".test-data" </> "legacy-aggregate" </> "prodbox" </> "minio" </> "0")
+        audited `finally` maybe (unsetEnv testManualPvHostRootEnv) (setEnv testManualPvHostRootEnv) original
 
     it "Sprint 5.11 maps authored suite names onto supported test scopes" $ do
       testScopeForTopologySuite "unit" `shouldBe` Right TestUnit
@@ -15528,7 +16597,8 @@ unitSuite = do
       -- resource is most likely to be stranded. It now comes from the declared
       -- substrate.
       cascadeSweepCredentialAbsentExit CascadeAwsUndeclared `shouldBe` ExitSuccess
-      cascadeSweepCredentialAbsentExit CascadeAwsDeclared `shouldBe` ExitFailure 1
+      cascadeSweepCredentialAbsentExit (CascadeAwsDeclared (AuthoredBackendBucket :| []))
+        `shouldBe` ExitFailure 1
 
     it "Sprint 6.5: an unreadable declaration is not a declaration of nothing" $
       cascadeSweepCredentialAbsentExit (CascadeAwsScopeUnreadable "settings refused")
@@ -15538,7 +16608,7 @@ unitSuite = do
     let escapee = TagSweep.TaggedResource "arn:aws:eks:x:1:cluster/c" "prodbox.io/managed-by" "prodbox"
 
     it "admits the uninstall when the sweep is not owed" $
-      -- A deployment with no declared AWS substrate has no account for residue
+      -- A deployment that authors no AWS coordinate has no account for residue
       -- to be in, so there is nothing for the gate to wait on.
       decideCascadeUninstallGate CascadeSweepNotOwed `shouldBe` CascadeUninstallAdmitted
 
@@ -16797,6 +17867,27 @@ unitSuite = do
       retainedStorageInventoryEntries SubstrateHomeLocal `shouldBe` expectedHome
       retainedStorageInventoryEntries SubstrateAws `shouldBe` expectedAws
 
+    it
+      "Sprint 7.46 keeps the retained inventory's MinIO and Vault sizes equal to the plan's durable storage"
+      $ do
+        -- The inventory fixes both sizes as literals beside the plan's values; until it
+        -- is derived from the plan, this is what stops an edit to one from leaving the
+        -- other disagreeing (a volume and its claim of different sizes stays unbound).
+        let inventorySize substrate statefulSet =
+              [ retainedStorageInventorySize
+              | RetainedStorageInventoryEntry
+                  { retainedStorageInventoryStatefulSet = name
+                  , retainedStorageInventoryStorageSize = retainedStorageInventorySize
+                  } <-
+                  retainedStorageInventoryEntries substrate
+              , name == statefulSet
+              ]
+            planSize profileId =
+              either error id (workloadStorageSize Capacity.defaultResourcePlan profileId)
+        forM_ allSubstrates $ \substrate -> do
+          inventorySize substrate "minio" `shouldBe` [planSize "minio"]
+          inventorySize substrate "vault" `shouldBe` [planSize "vault"]
+
     it "builds retained-production describe-volumes filters from the lifecycle tags" $
       EbsVolume.ebsDescribeVolumesArgs EbsVolume.EbsRetainedProduction
         `shouldBe` [ "ec2"
@@ -16838,19 +17929,21 @@ unitSuite = do
       EbsVolume.parseDescribeVolumesPayload
         ( "{\"Volumes\":[{\"VolumeId\":\"vol-0123\",\"State\":\"available\",\"AvailabilityZone\":\""
             <> (fixtureAwsRegion FixtureUsEast1)
-            <> "a\",\"Tags\":[{\"Key\":\"prodbox.io/persistent-volume\",\"Value\":\"pv-a\"}]},{\"VolumeId\":\"vol-0456\",\"State\":\"in-use\"}]}"
+            <> "a\",\"Size\":50,\"Tags\":[{\"Key\":\"prodbox.io/persistent-volume\",\"Value\":\"pv-a\"}]},{\"VolumeId\":\"vol-0456\",\"State\":\"in-use\"}]}"
         )
         `shouldBe` Right
           [ EbsVolume.EbsVolume
               { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId "vol-0123"
               , EbsVolume.ebsVolumeState = "available"
               , EbsVolume.ebsVolumeAvailabilityZone = Just (fixtureAwsRegion FixtureUsEast1 <> "a")
+              , EbsVolume.ebsVolumeSizeGiB = Just 50
               , EbsVolume.ebsVolumeTags = [("prodbox.io/persistent-volume", "pv-a")]
               }
           , EbsVolume.EbsVolume
               { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId "vol-0456"
               , EbsVolume.ebsVolumeState = "in-use"
               , EbsVolume.ebsVolumeAvailabilityZone = Nothing
+              , EbsVolume.ebsVolumeSizeGiB = Nothing
               , EbsVolume.ebsVolumeTags = []
               }
           ]
@@ -16866,6 +17959,7 @@ unitSuite = do
                   { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId "vol-0123"
                   , EbsVolume.ebsVolumeState = "available"
                   , EbsVolume.ebsVolumeAvailabilityZone = Just (fixtureAwsRegion FixtureUsEast1 <> "a")
+                  , EbsVolume.ebsVolumeSizeGiB = Nothing
                   , EbsVolume.ebsVolumeTags = []
                   }
               ]
@@ -16924,6 +18018,7 @@ unitSuite = do
                 { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId "vol-0123"
                 , EbsVolume.ebsVolumeState = "available"
                 , EbsVolume.ebsVolumeAvailabilityZone = Just (fixtureAwsRegion FixtureUsEast1 <> "a")
+                , EbsVolume.ebsVolumeSizeGiB = Just 50
                 , EbsVolume.ebsVolumeTags =
                     [ (EbsVolume.ebsPersistentVolumeTagKey, "prodbox-retained-vscode-vscode-0")
                     ]
@@ -16980,6 +18075,7 @@ unitSuite = do
               { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId volumeId
               , EbsVolume.ebsVolumeState = "available"
               , EbsVolume.ebsVolumeAvailabilityZone = Just (fixtureAwsRegion FixtureCaCentral1 <> "a")
+              , EbsVolume.ebsVolumeSizeGiB = Nothing
               , EbsVolume.ebsVolumeTags =
                   ("kubernetes.io/cluster/aws-eks-test-cluster", "owned")
                     : lifecycleTags
@@ -17050,6 +18146,7 @@ unitSuite = do
               { EbsVolume.ebsVolumeId = EbsVolume.EbsVolumeId "vol-cluster-only"
               , EbsVolume.ebsVolumeState = "available"
               , EbsVolume.ebsVolumeAvailabilityZone = Just (fixtureAwsRegion FixtureUsEast1 <> "a")
+              , EbsVolume.ebsVolumeSizeGiB = Nothing
               , EbsVolume.ebsVolumeTags =
                   [("kubernetes.io/cluster/aws-eks-test-cluster", "owned")]
               }
@@ -17213,6 +18310,28 @@ unitSuite = do
                    , "/tmp/aws-eks-kubeconfig"
                    ]
 
+    it
+      "Sprint 7.46 leaves a kubeconfig prodbox minted for another cluster out of the home clients' fallback"
+      $ do
+        let ephemeral = "/tmp/prodbox-ephemeral-kubectl-12345/kubeconfig.json"
+            operatorOwn = "/home/dev/.kube/kind-config"
+            lookalikes =
+              [ "/tmp/other-dir/kubeconfig.json"
+              , "/tmp/prodbox-ephemeral-kubectl-12345/bearer-token"
+              , "/tmp/prodbox-ephemeral-kubectl-12345/nested/kubeconfig.yaml"
+              ]
+        -- The EKS run's ephemeral kubeconfig, exported for one bracket, is no fallback for the
+        -- retained home cluster: with both home files unreadable the client would otherwise
+        -- address EKS and say nothing.
+        ambientHomeKubeconfig (Just ephemeral) `shouldBe` Nothing
+        localKubeconfigCandidates (Just "/home/operator") (ambientHomeKubeconfig (Just ephemeral))
+          `shouldBe` homeClusterKubeconfigCandidates (Just "/home/operator")
+        -- A kubeconfig the operator exported still resolves, so a development host whose only
+        -- kubeconfig is exported keeps working, and so does a path with only one of the two marks.
+        ambientHomeKubeconfig (Just operatorOwn) `shouldBe` Just operatorOwn
+        mapM_ (\path -> ambientHomeKubeconfig (Just path) `shouldBe` Just path) lookalikes
+        ambientHomeKubeconfig Nothing `shouldBe` Nothing
+
     it "skips unreadable local kubeconfig candidates before falling back" $
       withSystemTempDirectory "prodbox-kubeconfig-candidates" $ \tmpDir -> do
         let unreadableCandidate = tmpDir </> "rke2.yaml"
@@ -17243,6 +18362,55 @@ unitSuite = do
       resolvedCustomImageTargetAgentIdentity "prodbox-home" withoutManifest
         `shouldBe` Left
           "The runtime image has no immutable repository manifest digest for the Target Agent identity."
+
+    it
+      "Sprint 7.46 takes the AWS image's manifest digest from the registry's record and from nothing else"
+      $ do
+        let hostDigest = "sha256:" ++ replicate 64 'a'
+            registryDigest = "sha256:" ++ replicate 64 'c'
+            image =
+              ResolvedCustomImage
+                { resolvedCustomImageRepository = "127.0.0.1:30080/prodbox/prodbox-runtime"
+                , resolvedCustomImageTag = "prodbox-aws-substrate"
+                , resolvedCustomImageRolloutToken = Just ("sha256:" ++ replicate 64 'b')
+                , resolvedCustomImageManifestDigest = Just hostDigest
+                }
+        -- The registry's record replaces whatever the host's `.RepoDigests` held,
+        -- which on an AWS-only host is empty and otherwise names an earlier push to
+        -- the home registry.
+        fmap
+          targetAgentIdentityText
+          ( resolvedCustomImageTargetAgentIdentity
+              "aws-eks"
+              (withRegistryManifestDigest (Just registryDigest) image)
+          )
+          `shouldBe` Right (Text.pack ("aws-eks@" ++ registryDigest))
+        -- Negative control: with no record there is no digest, so the control-plane
+        -- charts refuse by name, even though the host holds a digest.
+        resolvedCustomImageManifestDigest (withRegistryManifestDigest Nothing image)
+          `shouldBe` Nothing
+        resolvedCustomImageTargetAgentIdentity "aws-eks" (withRegistryManifestDigest Nothing image)
+          `shouldSatisfy` isLeft
+        -- The AWS arm itself, with both observations supplied and no container
+        -- runtime consulted. The host holds an image carrying a digest of its own:
+        -- the record decides the digest regardless, and an absent record leaves the
+        -- image without one rather than falling back to the host's.
+        let observers record =
+              RuntimeImageObservers
+                { observeEksRegistryManifestDigest = pure record
+                , observeHostFixedTagImage = \_ _ -> pure (Right (Just image))
+                }
+            digestOf record = do
+              resolved <- resolveRuntimeChartImageForSubstrateWith (observers record) SubstrateAws
+              pure (fmap (fmap resolvedCustomImageManifestDigest) resolved)
+        digestOf (Right (Just registryDigest)) `shouldReturn` Right (Just (Just registryDigest))
+        digestOf (Right Nothing) `shouldReturn` Right (Just Nothing)
+        -- A record that could not be read is refused with its cause, not read as an
+        -- absent record, which would surface later as a missing digest on a plan
+        -- that never asked a cluster anything.
+        unreadable <-
+          resolveRuntimeChartImageForSubstrateWith (observers (Left "connection refused")) SubstrateAws
+        unreadable `shouldSatisfy` either (isInfixOf "connection refused") (const False)
 
     it "selects one exact repository manifest digest without accepting config-shaped substitutes" $ do
       let repository = "127.0.0.1:30080/prodbox/prodbox-runtime"
@@ -17639,6 +18807,62 @@ unitSuite = do
     let cfg = Prodbox.Lib.EksCustomImagePush.defaultEksCustomImagePushConfig
         manifest = Prodbox.Lib.EksCustomImagePush.eksCustomImagePushPodManifest cfg
         manifestJson = BL8.unpack (encode manifest)
+    it "Sprint 7.46 reads the digest crane prints, and nothing that is not exactly one digest" $ do
+      let digest = "sha256:" ++ replicate 64 'a'
+          parse = Prodbox.Lib.EksCustomImagePush.parseRegistryManifestDigest
+      parse (digest ++ "\n") `shouldBe` Just digest
+      parse ("  " ++ digest ++ "  \n") `shouldBe` Just digest
+      parse "" `shouldBe` Nothing
+      parse ("sha256:" ++ replicate 63 'a') `shouldBe` Nothing
+      parse ("sha256:" ++ replicate 64 'A') `shouldBe` Nothing
+      parse ("sha512:" ++ replicate 64 'a') `shouldBe` Nothing
+      parse (digest ++ "\n" ++ digest) `shouldBe` Nothing
+      parse ("Error: " ++ digest) `shouldBe` Nothing
+    it "Sprint 7.46 tells an absent digest record from a record that could not be read" $ do
+      let digest = "sha256:" ++ replicate 64 'e'
+          classify = Prodbox.Lib.EksCustomImagePush.classifyEksRegistryDigestRecordRead
+      classify ExitSuccess (digest ++ "\n") "" `shouldBe` Right (Just digest)
+      -- `kubectl get --ignore-not-found` answers an absent ConfigMap with no output.
+      classify ExitSuccess "" "" `shouldBe` Right Nothing
+      classify ExitSuccess "  \n" "" `shouldBe` Right Nothing
+      -- The cluster could not be asked: the cause reaches the caller.
+      classify (ExitFailure 1) "" "Unable to connect to the server: dial tcp: i/o timeout\n"
+        `shouldSatisfy` either (isInfixOf "i/o timeout") (const False)
+      classify (ExitFailure 1) "" "" `shouldSatisfy` isLeft
+      -- A record holding something else is a defect to name, not an absent record.
+      classify ExitSuccess "latest" "" `shouldSatisfy` isLeft
+      classify ExitSuccess (digest ++ "\n" ++ digest) "" `shouldSatisfy` isLeft
+    it
+      "Sprint 7.46 asks the push pod's crane for the digest of the reference it pushed to the in-cluster registry"
+      $ Prodbox.Lib.EksCustomImagePush.eksRegistryDigestCommandArguments
+        cfg
+        "127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-aws-substrate"
+        `shouldBe` [ "exec"
+                   , "-n"
+                   , "harbor"
+                   , "prodbox-custom-image-push"
+                   , "--"
+                   , "/ko-app/crane"
+                   , "digest"
+                   , "harbor.harbor.svc.cluster.local/prodbox/prodbox-runtime:prodbox-aws-substrate"
+                   , "--insecure"
+                   ]
+    it "Sprint 7.46 records the registry's digest in a ConfigMap beside the registry" $ do
+      let digest = "sha256:" ++ replicate 64 'd'
+          recordJson =
+            BL8.unpack
+              (encode (Prodbox.Lib.EksCustomImagePush.eksRuntimeImageDigestRecordManifest cfg digest))
+      recordJson `shouldContain` "\"kind\":\"ConfigMap\""
+      recordJson `shouldContain` "\"namespace\":\"harbor\""
+      recordJson
+        `shouldContain` ("\"name\":\"" ++ Prodbox.Lib.EksCustomImagePush.eksRuntimeImageDigestRecordName ++ "\"")
+      recordJson
+        `shouldContain` ( "\"data\":{\""
+                            ++ Prodbox.Lib.EksCustomImagePush.eksRuntimeImageDigestRecordKey
+                            ++ "\":\""
+                            ++ digest
+                            ++ "\"}"
+                        )
     it "default config pins the namespace, pod name, and both endpoints" $ do
       Prodbox.Lib.EksCustomImagePush.customPushPodNamespace cfg `shouldBe` "harbor"
       Prodbox.Lib.EksCustomImagePush.customPushPodName cfg `shouldBe` "prodbox-custom-image-push"
@@ -17813,20 +19037,17 @@ unitSuite = do
                      , "ensureGatewayMinioBootstrap"
                      , "ensureInternalControlPlaneChartReady SubstrateAws lifecycle-authority"
                      , "observeAwsLifecycleAuthorityReady"
-                     , "ensureInternalControlPlaneChartReady SubstrateAws authority-backup"
-                     , "observeAwsAuthorityBackupReady"
+                     , "observeHomeAuthorityBackupReady"
                      , "ensureAwsSubstrateEnvoyGatewayRuntime"
                      , "observeAwsEnvoyGatewayReady"
                      , "ensureAwsSubstrateCertManagerRuntime"
                      , "observeAwsCertManagerReady"
                      , "ensurePostgresOperatorRuntime"
                      , "observeAwsPostgresOperatorReady"
-                     , "ensureInternalControlPlaneChartReady SubstrateAws provider-worker"
-                     , "observeAwsProviderWorkerReady"
-                     , "ensureGatewayChartReadyPostVaultAt SubstrateAws"
+                     , "observeHomeProviderWorkerReady"
+                     , "ensureGatewayChartReady SubstrateAws"
+                     , "ensureGatewayDaemonFullModeAt SubstrateAws"
                      , "observeAwsGatewayFullReady"
-                     , "ensureInternalControlPlaneChartReady SubstrateAws tls-retention"
-                     , "observeAwsTlsRetentionReady"
                      , "ensureAwsSubstrateAcmeRuntime"
                      , "ensureAdminPublicEdgeRoutes SubstrateAws"
                      ]
@@ -17882,6 +19103,173 @@ unitSuite = do
                   )
               ]
               expectTarget
+      it
+        "Sprint 7.46 binds every AWS-owned component to a target that implements the probe the graph declares"
+        $ do
+          -- The component graph declares a probe per node and the driver builds a
+          -- target per component; `readinessActionFor` refuses a target of the wrong
+          -- kind for the probe, and the refusal surfaces only as an unreachable
+          -- observation on a live run. The Bootstrap Broker's rollout target was
+          -- refused for its resource-exists probe on every run, and the case above
+          -- only asked whether a target existed.
+          let endpoint = Just (Prodbox.Gateway.Client.hostLoopbackGatewayEndpoint 49152)
+              expectProbeImplemented dag component =
+                case ( lookupComponentNode component dag
+                     , Prodbox.Lib.AwsSubstratePlatform.awsComponentReadinessTarget
+                         "/tmp/prodbox"
+                         endpoint
+                         component
+                     ) of
+                  (Nothing, _) -> expectationFailure ("no graph node for " ++ show component)
+                  (_, Left reason) -> expectationFailure (Text.unpack reason)
+                  (Just node, Right target) ->
+                    case readinessActionFor target (readiness node) of
+                      Left reason -> expectationFailure (Text.unpack reason)
+                      Right _ -> pure ()
+          case validateComponentGraph defaultComponentGraph of
+            Left err -> expectationFailure (show err)
+            Right dag ->
+              forM_
+                [ component
+                | component <- componentReconcileOrder dag
+                , not
+                    ( null
+                        (Prodbox.Lib.AwsSubstratePlatform.awsStepsForComponent component)
+                    )
+                ]
+                (expectProbeImplemented dag)
+          -- Negative control: the rollout target the Broker once received is
+          -- refused for the probe the graph declares for it.
+          let rollout =
+                RolloutCompleteTarget
+                  ComponentChartBootstrapBroker
+                  (pure (Right ReadinessProbeReady))
+          case readinessActionFor rollout ProbeResourceExists of
+            Left _ -> pure ()
+            Right _ -> expectationFailure "a rollout target must not implement the resource-exists probe"
+
+      it
+        "Sprint 7.46 names the home-resident control-plane roles as readiness-only steps and installs nothing for them"
+        $ do
+          Prodbox.Lib.AwsSubstratePlatform.awsHomeResidentComponents
+            `shouldBe` [ ComponentChartAuthorityBackup
+                       , ComponentChartProviderWorker
+                       ]
+          -- TLS Retention is home-only too, but no component the AWS plan installs
+          -- depends on it in the graph: a step for it would mint an admission nothing
+          -- consumes and add a late refusal whenever the home adapter is down.
+          Prodbox.Lib.AwsSubstratePlatform.awsStepsForComponent ComponentChartTlsRetention
+            `shouldBe` []
+          Prodbox.Lib.AwsSubstratePlatform.awsRequiredComponents
+            `shouldSatisfy` notElem ComponentChartTlsRetention
+          -- Each role is one readiness-only step, never a chart deploy, and its step
+          -- is a readiness barrier so the executor mints the admission its dependents
+          -- require.
+          forM_ Prodbox.Lib.AwsSubstratePlatform.awsHomeResidentComponents $ \component -> do
+            Prodbox.Lib.AwsSubstratePlatform.awsStepsForComponent component
+              `shouldSatisfy` ((== 1) . length)
+            Prodbox.Lib.AwsSubstratePlatform.awsRequiredComponents `shouldContain` [component]
+          forM_ ["authority-backup", "provider-worker", "tls-retention"] $ \role ->
+            steps `shouldSatisfy` all (not . isInfixOf ("ChartReady SubstrateAws " ++ role))
+          steps
+            `shouldSatisfy` \ordered ->
+              all
+                (`elem` ordered)
+                [ "observeHomeAuthorityBackupReady"
+                , "observeHomeProviderWorkerReady"
+                ]
+          steps `shouldSatisfy` notElem "observeHomeTlsRetentionReady"
+          case validateComponentGraph defaultComponentGraph of
+            Left err -> expectationFailure (show err)
+            Right dag ->
+              Prodbox.Lib.AwsSubstratePlatform.validateAwsDependencyCoverage dag `shouldBe` Right ()
+          -- Negative control: an AWS-mapped component that depends on an unmapped
+          -- component is refused.
+          let withPulsarDependency node
+                | component_id node == ComponentGatewayDaemonFull =
+                    node {depends_on = depends_on node ++ [orderingOn ComponentChartPulsar]}
+                | otherwise = node
+          case validateComponentGraph (map withPulsarDependency defaultComponentGraph) of
+            Left err -> expectationFailure (show err)
+            Right dag ->
+              Prodbox.Lib.AwsSubstratePlatform.validateAwsDependencyCoverage dag
+                `shouldSatisfy` isLeft
+
+      it
+        "Sprint 7.46 observes exactly the home-resident roles against the retained home cluster"
+        $ do
+          -- The vantage is data, so the decision is asserted over every component
+          -- the plan requires rather than inferred from an opaque observation action.
+          let homeRoles = [ComponentChartAuthorityBackup, ComponentChartProviderWorker]
+          forM_ Prodbox.Lib.AwsSubstratePlatform.awsRequiredComponents $ \component ->
+            Prodbox.Lib.AwsSubstratePlatform.awsReadinessVantage component
+              `shouldBe` ( if component `elem` homeRoles
+                             then Prodbox.Lib.AwsSubstratePlatform.ObserveRetainedHomeCluster
+                             else Prodbox.Lib.AwsSubstratePlatform.ObserveSelectedCluster
+                         )
+          Prodbox.Lib.AwsSubstratePlatform.awsHomeResidentComponents `shouldBe` homeRoles
+      it "Sprint 7.46 gives every required AWS barrier a longer window than the shared three attempts" $ do
+        -- Every AWS observation crosses the Kubernetes API of a remote cluster, and a
+        -- blip of a few seconds is ordinary there; the shared policy refused a whole
+        -- run at a barrier whose component was healthy.
+        forM_ Prodbox.Lib.AwsSubstratePlatform.awsRequiredComponents $ \component ->
+          retryPolicyMaxAttempts (Prodbox.Lib.AwsSubstratePlatform.awsComponentReadinessRetryPolicy component)
+            `shouldSatisfy` (> retryPolicyMaxAttempts componentReadinessRetryPolicy)
+      it
+        "Sprint 7.46 hands the home observation the home kubeconfig, and observes nothing when none resolves"
+        $ do
+          seen <- newIORef ([] :: [Maybe [(String, String)]])
+          let observe environment _ _ = do
+                modifyIORef' seen (++ [environment])
+                pure (Right ReadinessProbeReady)
+              ambient = [("KUBECONFIG", "/tmp/aws-eks-kubeconfig"), ("PATH", "/usr/bin")]
+              homeEnvironment = [("KUBECONFIG", "/home/operator/.kube/config"), ("PATH", "/usr/bin")]
+          observed <-
+            observeHomeKubernetesReadinessWith
+              (pure (Right "/home/operator/.kube/config"))
+              (pure ambient)
+              observe
+              "/tmp/prodbox"
+              []
+          observed `shouldBe` Right ReadinessProbeReady
+          readIORef seen `shouldReturn` [Just homeEnvironment]
+          -- A host that can read neither home file refuses, and never falls back to the
+          -- environment's own kubeconfig, which on an AWS run is the EKS one.
+          refused <-
+            observeHomeKubernetesReadinessWith
+              (pure (Left "no readable kubeconfig found for the retained home cluster"))
+              (pure ambient)
+              observe
+              "/tmp/prodbox"
+              []
+          refused `shouldSatisfy` isLeft
+          readIORef seen `shouldReturn` [Just homeEnvironment]
+      it
+        "Sprint 7.46 observes the home cluster through the home kubeconfig and never through the ambient one"
+        $ do
+          let ambient =
+                [ ("PATH", "/usr/bin")
+                , ("KUBECONFIG", "/tmp/aws-eks-kubeconfig")
+                , ("HOME", "/home/operator")
+                ]
+              observed = homeClusterObservationEnvironment "/home/operator/.kube/config" ambient
+          lookup "KUBECONFIG" observed `shouldBe` Just "/home/operator/.kube/config"
+          length (filter ((== "KUBECONFIG") . fst) observed) `shouldBe` 1
+          lookup "PATH" observed `shouldBe` Just "/usr/bin"
+          lookup "HOME" observed `shouldBe` Just "/home/operator"
+          homeClusterObservationEnvironment "/etc/rancher/rke2/rke2.yaml" []
+            `shouldBe` [("KUBECONFIG", "/etc/rancher/rke2/rke2.yaml")]
+          -- The candidates for the home cluster leave out the ambient value that the
+          -- general resolver ends with: with both home files unreadable, an EKS run
+          -- would otherwise observe the wrong cluster and say nothing.
+          homeClusterKubeconfigCandidates (Just "/home/operator")
+            `shouldBe` ["/etc/rancher/rke2/rke2.yaml", "/home/operator/.kube/config"]
+          homeClusterKubeconfigCandidates Nothing `shouldBe` ["/etc/rancher/rke2/rke2.yaml"]
+          localKubeconfigCandidates (Just "/home/operator") (Just "/tmp/aws-eks-kubeconfig")
+            `shouldSatisfy` elem "/tmp/aws-eks-kubeconfig"
+          homeClusterKubeconfigCandidates (Just "/home/operator")
+            `shouldSatisfy` notElem "/tmp/aws-eks-kubeconfig"
+
       it "keeps MetalLB explicitly AWS-inapplicable while LB Controller belongs to cluster base" $ do
         Prodbox.Lib.AwsSubstratePlatform.awsStepsForComponent ComponentMetalLB
           `shouldBe` []
@@ -17943,12 +19331,18 @@ unitSuite = do
               vaultIndex = elemIndex "runVaultBootstrapViaBroker" steps
               minioIamIndex = elemIndex "ensureGatewayMinioBootstrap" steps
               authorityIndex = elemIndex "ensureInternalControlPlaneChartReady SubstrateAws lifecycle-authority" steps
-              fullIndex = elemIndex "ensureGatewayChartReadyPostVaultAt SubstrateAws" steps
+              deployIndex = elemIndex "ensureGatewayChartReady SubstrateAws" steps
+              fullIndex = elemIndex "ensureGatewayDaemonFullModeAt SubstrateAws" steps
           brokerIndex `shouldSatisfy` (`indexPrecedes` vaultIndex)
           vaultIndex `shouldSatisfy` (`indexPrecedes` minioIamIndex)
           minioIamIndex `shouldSatisfy` (`indexPrecedes` authorityIndex)
           vaultIndex `shouldSatisfy` (`indexPrecedes` authorityIndex)
           authorityIndex `shouldSatisfy` (`indexPrecedes` fullIndex)
+          -- The chart is deployed before the full-mode proof, because the proof
+          -- reaches the gateway through a Service port-forward that cannot be
+          -- opened until the chart that defines the Service exists.
+          deployIndex `shouldSatisfy` (`indexPrecedes` fullIndex)
+          authorityIndex `shouldSatisfy` (`indexPrecedes` deployIndex)
       it "does not retain the redundant steady-state MinIO reinstall" $
         steps `shouldNotContain` ["ensureMinioRuntime SubstrateAws MinioSteadyStateHarbor"]
       it
@@ -18454,6 +19848,54 @@ unitSuite = do
       rendered `shouldContain` "\"backoffLimit\":0"
       rendered `shouldContain` "\"restartPolicy\":\"Never\""
       rendered `shouldNotContain` "stringData"
+
+    it "Sprint 5.52 presents the OIDC validation Job's Vault login with the audience its role accepts" $ do
+      -- A chart-secret consumer role carries no audience, so Vault reviews the token
+      -- against the API server's own; a projected token minted for the audience "vault"
+      -- fails that review and the Job never gets past its init container.
+      let rendered =
+            BL8.unpack
+              ( encode
+                  (demoOidcSessionValidationAgentManifest "https://home.example.test/ws")
+              )
+          roleAudience =
+            [ vaultKubernetesRoleSpecAudience role
+            | role <- vaultReconcileKubernetesRoles defaultVaultReconcilePlan
+            , vaultKubernetesRoleSpecName role == "oidc-session-validation"
+            ]
+      roleAudience `shouldBe` [Nothing]
+      rendered `shouldContain` "\"serviceAccountToken\""
+      rendered `shouldNotContain` "\"audience\""
+
+    it
+      "Sprint 5.55 declares the ephemeral storage the OIDC validation Job needs instead of inheriting the namespace default"
+      $ do
+        -- The vscode LimitRange charges a container that declares none a 1Gi request and a
+        -- 2Gi limit, and the namespace quota had about 1Gi of limit headroom: every Pod the
+        -- Job tried to create was refused with `exceeded quota`, and the suite reported only
+        -- that `kubectl wait` timed out.
+        let rendered =
+              BL8.unpack
+                ( encode
+                    (demoOidcSessionValidationAgentManifest "https://home.example.test/ws")
+                )
+        -- A request and a limit for each of the init container and the container.
+        Text.count (Text.pack "\"ephemeral-storage\":") (Text.pack rendered) `shouldBe` 4
+        rendered `shouldContain` "\"ephemeral-storage\":\"32Mi\""
+        rendered `shouldContain` "\"ephemeral-storage\":\"64Mi\""
+
+    it "Sprint 5.55 unescapes the login form action with a sed that parses" $ do
+      -- The script's `sed 's/&amp;/\&/g'` turns an HTML-escaped form action back into a URL.
+      -- Written in Haskell with one backslash too many it rendered an escaped delimiter, and
+      -- every run of the Job died at `sed: unmatched '/'` before it reached the login form.
+      let rendered =
+            BL8.unpack
+              ( encode
+                  (demoOidcSessionValidationAgentManifest "https://home.example.test/ws")
+              )
+      -- In the JSON a single backslash is two characters.
+      rendered `shouldContain` "sed 's/&amp;/\\\\&/g'"
+      rendered `shouldNotContain` "sed 's/&amp;/\\\\/g'"
 
   describe "ZeroSSL ACME ClusterIssuer + cert retention key scheme" $ do
     let settings = testValidatedSettings "/tmp"
@@ -20930,6 +22372,66 @@ unitSuite = do
           awsTierConfigFile {aws_substrate = AwsSubstrateSection "Z123" "" Nothing}
           `shouldSatisfy` either (isInfixOf "aws_substrate.subzone_name") (const False)
 
+  describe "MetalLB runtime manifests" $ do
+    -- Exit item 18: both advertisement paths render a pool plus the resources
+    -- their mode needs, and the mode is read from the deployment section.
+    let baseSettings = testValidatedSettings "/tmp/prodbox/.data"
+        withAdvertisement mode peers =
+          baseSettings
+            { validatedConfig =
+                (validatedConfig baseSettings)
+                  { deployment =
+                      (deployment (validatedConfig baseSettings))
+                        { public_edge_advertisement_mode = mode
+                        , public_edge_bgp_peers = peers
+                        }
+                  }
+            }
+        kindsOf settings =
+          [ kind
+          | Object manifest <- metallbRuntimeManifest settings "prodbox-id" "prodbox-label" "192.0.2.240/29"
+          , Just (String kind) <- [KeyMap.lookup "kind" manifest]
+          ]
+        bgpPeer name address =
+          MetallbBgpPeer
+            { peer_name = name
+            , peer_address = address
+            , peer_asn = 64512
+            , my_asn = 64513
+            , ebgp_multi_hop = Nothing
+            }
+    it "renders the address pool and one L2Advertisement when no mode is configured" $
+      kindsOf (withAdvertisement Nothing Nothing) `shouldBe` ["IPAddressPool", "L2Advertisement"]
+
+    it "renders the address pool and one L2Advertisement for the l2 mode" $
+      kindsOf (withAdvertisement (Just AdvertiseLayer2) Nothing)
+        `shouldBe` ["IPAddressPool", "L2Advertisement"]
+
+    it
+      "renders the address pool, one BGPPeer per configured peer, and one BGPAdvertisement for the bgp mode"
+      $ kindsOf
+        ( withAdvertisement
+            (Just AdvertiseBgp)
+            (Just [bgpPeer "tor-a" "192.0.2.1", bgpPeer "tor-b" "192.0.2.2"])
+        )
+        `shouldBe` ["IPAddressPool", "BGPPeer", "BGPPeer", "BGPAdvertisement"]
+
+    it "carries each peer's address and autonomous-system numbers into its BGPPeer" $ do
+      let rendered =
+            BL8.unpack
+              ( encode
+                  ( metallbRuntimeManifest
+                      (withAdvertisement (Just AdvertiseBgp) (Just [bgpPeer "tor-a" "192.0.2.1"]))
+                      "prodbox-id"
+                      "prodbox-label"
+                      "192.0.2.240/29"
+                  )
+              )
+      rendered `shouldContain` "\"peerAddress\":\"192.0.2.1\""
+      rendered `shouldContain` "\"peerASN\":64512"
+      rendered `shouldContain` "\"myASN\":64513"
+      rendered `shouldContain` "192.0.2.240/29"
+
   describe "Sprint 1.80 advertisement mode as a Dhall union" $ do
     it "validates the mode by pattern match, with no string comparison left" $ do
       -- The Ring-2 arm that read "must be l2 or bgp when set" is gone, because
@@ -21324,6 +22826,39 @@ unitSuite = do
                 `shouldSatisfy` all (not . all isDigit)
           )
           [minBound .. maxBound :: AbsenceProbe]
+
+    describe "Provider session duration owner" $ do
+      it "refuses a number assigned to a session duration in the governed modules" $ do
+        -- Red on 0268f5d: the Provider module spelled the STS floor as a
+        -- literal, so nothing stopped the next author choosing another.
+        Prodbox.CheckCode.providerSessionDurationLiteralViolations
+          ( "src/Prodbox/ControlPlane/ProviderAssumedRoleSession.hs"
+          , "lifecycleProviderSessionDurationSeconds = 900"
+          )
+          `shouldSatisfy` ((== 1) . length)
+        Prodbox.CheckCode.providerSessionDurationLiteralViolations
+          ("src/Prodbox/Aws/Native/Sts.hs", "    , assumeRoleDurationSeconds = 3600")
+          `shouldSatisfy` ((== 1) . length)
+
+      it "admits the budget owner, an ungoverned module, and a derived duration" $ do
+        Prodbox.CheckCode.providerSessionDurationLiteralViolations
+          ( "src/Prodbox/ControlPlane/OperationBudget.hs"
+          , "sessionMinimumSeconds = 900"
+          )
+          `shouldBe` []
+        Prodbox.CheckCode.providerSessionDurationLiteralViolations
+          ("src/Prodbox/Lifecycle/LeaseRuntime.hs", "sessionDurationSeconds = 900")
+          `shouldBe` []
+        Prodbox.CheckCode.providerSessionDurationLiteralViolations
+          ( "src/Prodbox/ControlPlane/ProviderAssumedRoleSession.hs"
+          , "lifecycleProviderSessionDurationSeconds = sessionMinimumSeconds"
+          )
+          `shouldBe` []
+        Prodbox.CheckCode.providerSessionDurationLiteralViolations
+          ( "src/Prodbox/ControlPlane/ProviderAssumedRoleSession.hs"
+          , "lifecycleProviderSessionDurationSeconds :: Natural"
+          )
+          `shouldBe` []
 
     describe "Sprint 3.35 control-plane listen-port owner" $ do
       it "admits the owner and refuses every other src module" $ do
@@ -23997,6 +25532,39 @@ unitSuite = do
             `shouldSatisfy` either (const True) (const False)
           requireSubstratePublicFqdn settings SubstrateHomeLocal
             `shouldBe` Right (Text.unpack (demo_fqdn (domain homeOnlyConfig)))
+    it "Sprint 7.46: decoding refuses a gateway profile the substrate would override" $ do
+      -- The pure validator is exercised in Allocation; this holds the call in the decode
+      -- path, so removing it from validation fails here and not only on a live cluster.
+      let config = defaultConfigFile
+          capacitySection = capacity config
+          plan = Capacity.resource_plan capacitySection
+          changeGateway change profile =
+            if Capacity.profile_id profile == "gateway" then change profile else profile
+          withGateway change =
+            config
+              { capacity =
+                  capacitySection
+                    { Capacity.resource_plan =
+                        plan {Capacity.workload_profiles = map (changeGateway change) (Capacity.workload_profiles plan)}
+                    }
+              }
+          demand profile = Capacity.workload_demand profile
+          withDurable mebibytes profile =
+            profile
+              { Capacity.workload_demand = (demand profile) {Capacity.demanded_durable_storage_mib = mebibytes}
+              }
+          mentions needle = either (isInfixOf needle) (const False)
+      accepted <- validateConfigWithContext "." testDeploymentContextInput config
+      accepted `shouldSatisfy` isRight
+      moreEmitters <-
+        validateConfigWithContext
+          "."
+          testDeploymentContextInput
+          (withGateway (\profile -> profile {Capacity.replicas = 3}))
+      moreEmitters `shouldSatisfy` mentions "workload_profiles[gateway].replicas must be 2"
+      durable <-
+        validateConfigWithContext "." testDeploymentContextInput (withGateway (withDurable 1024))
+      durable `shouldSatisfy` mentions "demanded_durable_storage_mib must be 0"
     it "Sprint 1.87: the empty served host is unconstructible, not merely refused" $ do
       -- The `https:///path` rendering the deleted `substratePublicFqdn`
       -- produced is now unrepresentable rather than checked for:
@@ -24760,6 +26328,19 @@ harnessProjectConfig config input =
           }
     }
 
+-- | A Tier-0 config whose retained manual-PV root is the given path.
+sealedVaultAuditProjectConfig :: FilePath -> ProdboxProjectConfig
+sealedVaultAuditProjectConfig manualPvRoot =
+  harnessProjectConfig
+    syntheticConfigFile
+      { storage = (storage syntheticConfigFile) {manual_pv_host_root = Text.pack manualPvRoot}
+      }
+    ( DeploymentContextInput
+        "sealed-vault-audit-cluster"
+        "http://vault.fixture:8200"
+        "http://minio.fixture:9000"
+    )
+
 testTopologyDhallDocument :: FilePath -> String
 testTopologyDhallDocument repoRoot =
   unlines
@@ -24878,8 +26459,10 @@ resourceGuardrailCanonicalQuotaFixture =
           ( Vector.fromList
               [ resourceGuardrailQuota "keycloak" "1330m" "2736Mi" "4448Mi" "1825m" "3936Mi" "8896Mi" "60Gi"
               , resourceGuardrailQuota "vscode" "1880m" "3888Mi" "5728Mi" "2525m" "5472Mi" "11456Mi" "110Gi"
-              , resourceGuardrailQuota "api" "500m" "512Mi" "1024Mi" "500m" "768Mi" "1024Mi" "0Mi"
-              , resourceGuardrailQuota "websocket" "300m" "768Mi" "1536Mi" "450m" "768Mi" "1536Mi" "0Mi"
+              , -- The API server canonicalizes a zero quantity to a bare "0", whatever unit the
+                -- chart applied it in; the namespaces with no durable storage carry it.
+                resourceGuardrailQuota "api" "500m" "512Mi" "1024Mi" "500m" "768Mi" "1024Mi" "0"
+              , resourceGuardrailQuota "websocket" "300m" "768Mi" "1536Mi" "450m" "768Mi" "1536Mi" "0"
               , resourceGuardrailQuota "gateway" "1750m" "1536Mi" "2048Mi" "2000m" "3072Mi" "5120Mi" "20Gi"
               ]
           )
@@ -24934,6 +26517,56 @@ resourceGuardrailCanonicalLimitRangeFixture =
               ]
           )
     ]
+
+-- | A namespace's ResourceQuota as the projection says the substrate should
+-- render it, so an AWS fixture is derived rather than restated.
+guardrailQuotaProjected :: Substrate -> String -> Value
+guardrailQuotaProjected substrate namespace =
+  object
+    [ "metadata" .= object ["namespace" .= namespace, "name" .= (namespace ++ "-resource-quota")]
+    , "spec"
+        .= object
+          [ "hard"
+              .= object
+                [ Key.fromString field .= quantity
+                | (field, quantity) <-
+                    either error id (namespaceResourceQuotaHardFields substrate Capacity.defaultResourcePlan namespace)
+                ]
+          ]
+    ]
+
+-- | A namespace's container LimitRange as the projection says the substrate
+-- should render it.
+guardrailLimitRangeProjected :: Substrate -> String -> Value
+guardrailLimitRangeProjected substrate namespace =
+  object
+    [ "metadata" .= object ["namespace" .= namespace, "name" .= (namespace ++ "-limit-range")]
+    , "spec"
+        .= object
+          [ "limits"
+              .= Array
+                ( Vector.fromList
+                    [ object
+                        ( ("type" .= ("Container" :: String))
+                            : [ Key.fromString section
+                                  .= object
+                                    [ Key.fromString field .= quantity
+                                    | ([s], field, quantity) <- fields
+                                    , s == section
+                                    ]
+                              | section <- ["defaultRequest", "default"]
+                              ]
+                        )
+                    ]
+                )
+          ]
+    ]
+ where
+  fields =
+    either
+      error
+      id
+      (namespaceLimitRangeContainerFields substrate Capacity.defaultResourcePlan namespace)
 
 resourceGuardrailLimitRange
   :: String -> String -> String -> String -> String -> String -> String -> Value

@@ -17,6 +17,10 @@ module Prodbox.UsersAdmin
   , reconcileRealmOidcSecretsAtPublicHost
   , issueDemoOidcAccessToken
   , issueUserOidcAccessToken
+  , keycloakEmitAccessTokenFunction
+  , keycloakConsumerScript
+  , keycloakConsumerStageTokens
+  , consumerFailureDiagnostic
   )
 where
 
@@ -25,7 +29,8 @@ import Data.Aeson (eitherDecode)
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as ByteString8
 import Data.ByteString.Lazy.Char8 qualified as LazyChar8
-import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
+import Data.Char (isAsciiLower, isAsciiUpper, isDigit, isSpace)
+import Data.List (dropWhileEnd, stripPrefix)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.CLI.Command (UsersListStatus (..))
@@ -209,10 +214,10 @@ runKeycloakConsumerOperation repoRoot operation = do
     Left err -> Left (Text.unpack (errorMsg err))
     Right output -> case processExitCode output of
       ExitSuccess -> Right (Text.pack (processStdout output))
-      ExitFailure _ ->
+      ExitFailure code ->
         Left
           ( "Keycloak consumer operation failed: "
-              <> scrubConsumerDiagnostic (processStderr output <> processStdout output)
+              <> consumerFailureDiagnostic code (processStderr output <> processStdout output)
           )
 
 keycloakConsumerSubprocess :: FilePath -> KeycloakConsumerOperation -> Subprocess
@@ -280,107 +285,189 @@ keycloakConsumerLimits =
     , boundedSubprocessTimeoutMicros = 120 * 1000 * 1000
     }
 
+-- | The script function that reads the access token out of a @kcadm@ config file.
+--
+-- @kcadm config credentials@ stores the bearer it obtained under the key
+-- @token@ (beside @refreshToken@), not @access_token@, and the Keycloak image
+-- has no @awk@. The extractor was an @awk@ program matching @access_token@, so
+-- it found nothing and exited 1 on every call: every validation that mints an
+-- OIDC token (charts-vscode, charts-api, charts-websocket) failed
+-- deterministically. This uses @grep@, @head@ and @sed@, which the image has,
+-- reads the first @token@ key whether the file is pretty-printed or compact, and
+-- refuses an empty result so a missing key is an exit status rather than a blank
+-- line that the caller would treat as a token.
+keycloakEmitAccessTokenFunction :: [String]
+keycloakEmitAccessTokenFunction =
+  [ "emit_access_token() {"
+  , "  token=\"$(grep -o '\"token\" *: *\"[^\"]*\"' \"$1\" | head -n 1 | sed 's/^\"token\" *: *\"//; s/\"$//')\""
+  , "  test -n \"${token}\" || return 1"
+  , "  printf '%s\\n' \"${token}\""
+  , "}"
+  ]
+
 -- | Static closed dispatcher. Secret values are expanded only by this script
 -- inside the Keycloak container; they are absent from the host argv and output.
 keycloakConsumerScript :: String
 keycloakConsumerScript =
-  unlines
+  unlines $
     [ "set -eu"
     , ". /vault-materialized/keycloak.env"
     , "KCADM=/opt/keycloak/bin/kcadm.sh"
     , "KCADM_CONFIG=\"$(mktemp /run/prodbox-admin/kcadm.XXXXXX)\""
-    , "trap 'rm -f \"${KCADM_CONFIG}\"' EXIT"
-    , "${KCADM} config credentials --server http://127.0.0.1:8080/auth --realm master --user \"${KEYCLOAK_ADMIN:-admin}\" --password \"${KEYCLOAK_ADMIN_PASSWORD}\" --config \"${KCADM_CONFIG}\" >/dev/null"
-    , "realm=prodbox"
-    , "reconcile_client() {"
-    , "  client_name=\"$1\""
-    , "  client_secret=\"$2\""
-    , "  client_uuid=\"$(${KCADM} get clients -r \"${realm}\" -q clientId=\"${client_name}\" --fields id --format csv --noquotes --config \"${KCADM_CONFIG}\" | tail -n 1)\""
-    , "  test -n \"${client_uuid}\""
-    , "  ${KCADM} update \"clients/${client_uuid}\" -r \"${realm}\" -s \"secret=${client_secret}\" --config \"${KCADM_CONFIG}\" >/dev/null"
-    , "}"
-    , "reconcile_runtime() {"
-    , "  ${KCADM} update \"realms/${realm}\" --config \"${KCADM_CONFIG}\" -s \"smtpServer.host=${PRODBOX_SMTP_HOST}\" -s \"smtpServer.port=${PRODBOX_SMTP_PORT}\" -s \"smtpServer.from=${PRODBOX_SMTP_FROM}\" -s \"smtpServer.fromDisplayName=${PRODBOX_SMTP_FROM_DISPLAY_NAME}\" -s \"smtpServer.replyTo=${PRODBOX_SMTP_REPLY_TO}\" -s 'smtpServer.auth=true' -s 'smtpServer.starttls=true' -s 'smtpServer.ssl=false' -s \"smtpServer.user=${PRODBOX_SMTP_USER}\" -s \"smtpServer.password=${PRODBOX_SMTP_PASSWORD}\" >/dev/null"
-    , "  reconcile_client vscode \"${PRODBOX_VSCODE_CLIENT_SECRET}\""
-    , "  reconcile_client prodbox-api \"${PRODBOX_API_CLIENT_SECRET}\""
-    , "  reconcile_client prodbox-websocket \"${PRODBOX_WEBSOCKET_CLIENT_SECRET}\""
-    , "  ${KCADM} set-password -r \"${realm}\" --username demo-user --new-password \"${PRODBOX_DEMO_USER_PASSWORD}\" --config \"${KCADM_CONFIG}\" >/dev/null"
-    , "}"
-    , "resolve_user_id() {"
-    , "  candidate=\"$1\""
-    , "  case \"${candidate}\" in"
-    , "    *@*) ${KCADM} get users -r \"${realm}\" -q email=\"${candidate}\" --fields id --format csv --noquotes --config \"${KCADM_CONFIG}\" | tail -n 1 ;;"
-    , "    *) printf '%s\\n' \"${candidate}\" ;;"
-    , "  esac"
-    , "}"
-    , "operation=\"$1\""
-    , "shift"
-    , "case \"${operation}\" in"
-    , "  reconcile-runtime) reconcile_runtime ;;"
-    , "  issue-demo-token)"
-    , "    client_name=\"$1\""
-    , "    case \"${client_name}\" in"
-    , "      vscode) client_secret=\"${PRODBOX_VSCODE_CLIENT_SECRET}\" ;;"
-    , "      prodbox-api) client_secret=\"${PRODBOX_API_CLIENT_SECRET}\" ;;"
-    , "      prodbox-websocket) client_secret=\"${PRODBOX_WEBSOCKET_CLIENT_SECRET}\" ;;"
-    , "      *) echo 'unsupported closed OIDC client identity' >&2; exit 64 ;;"
-    , "    esac"
-    , "    ${KCADM} config credentials --server http://127.0.0.1:8080/auth --realm \"${realm}\" --user demo-user --password \"${PRODBOX_DEMO_USER_PASSWORD}\" --client \"${client_name}\" --secret \"${client_secret}\" --config \"${KCADM_CONFIG}\" >/dev/null"
-    , "    awk -F '\"' '/\"access_token\"/ { pri"
-        <> "nt $4; found=1; exit } END { if (!found) exit 1 }' \"${KCADM_CONFIG}\""
-    , "    ;;"
-    , "  issue-user-token)"
-    , "    client_name=\"$1\""
-    , "    case \"${client_name}\" in"
-    , "      vscode) client_secret=\"${PRODBOX_VSCODE_CLIENT_SECRET}\" ;;"
-    , "      prodbox-api) client_secret=\"${PRODBOX_API_CLIENT_SECRET}\" ;;"
-    , "      prodbox-websocket) client_secret=\"${PRODBOX_WEBSOCKET_CLIENT_SECRET}\" ;;"
-    , "      *) echo 'unsupported closed OIDC client identity' >&2; exit 64 ;;"
-    , "    esac"
-    , "    IFS= read -r username"
-    , "    IFS= read -r user_password"
-    , "    test -n \"${username}\""
-    , "    test -n \"${user_password}\""
-    , "    ${KCADM} config credentials --server http://127.0.0.1:8080/auth --realm \"${realm}\" --user \"${username}\" --password \"${user_password}\" --client \"${client_name}\" --secret \"${client_secret}\" --config \"${KCADM_CONFIG}\" >/dev/null"
-    , "    unset user_password"
-    , "    awk -F '\"' '/\"access_token\"/ { pri"
-        <> "nt $4; found=1; exit } END { if (!found) exit 1 }' \"${KCADM_CONFIG}\""
-    , "    ;;"
-    , "  invite)"
-    , "    email=\"$1\""
-    , "    requested_role=\"$2\""
-    , "    first_name=\"${email%%@*}\""
-    , "    test -n \"${first_name}\" || first_name=Invited"
-    , "    user_id=\"$(${KCADM} create users -r \"${realm}\" -i --config \"${KCADM_CONFIG}\" -s enabled=true -s emailVerified=false -s \"email=${email}\" -s \"username=${email}\" -s \"firstName=${first_name}\" -s lastName=Invitee -s 'requiredActions=[\"VERIFY_EMAIL\",\"UPDATE_PASSWORD\"]')\""
-    , "    test -n \"${user_id}\""
-    , "    ${KCADM} put \"users/${user_id}/execute-actions-email\" -r \"${realm}\" --config \"${KCADM_CONFIG}\" -b '[\"VERIFY_EMAIL\",\"UPDATE_PASSWORD\"]' >/dev/null"
-    , "    if [ -n \"${requested_role}\" ]; then"
-    , "      ${KCADM} add-roles -r \"${realm}\" --uusername \"${email}\" --rolename \"${requested_role}\" --config \"${KCADM_CONFIG}\" >/dev/null"
-    , "    fi"
-    , "    printf '%s\\n' \"${user_id}\""
-    , "    ;;"
-    , "  list) ${KCADM} get users -r \"${realm}\" --config \"${KCADM_CONFIG}\" --fields id,username,email,emailVerified,enabled ;;"
-    , "  disable)"
-    , "    user_id=\"$(resolve_user_id \"$1\")\""
-    , "    test -n \"${user_id}\""
-    , "    ${KCADM} update \"users/${user_id}\" -r \"${realm}\" --config \"${KCADM_CONFIG}\" -s enabled=false >/dev/null"
-    , "    ;;"
-    , "  delete)"
-    , "    user_id=\"$(resolve_user_id \"$1\")\""
-    , "    test -n \"${user_id}\""
-    , "    ${KCADM} delete \"users/${user_id}\" -r \"${realm}\" --config \"${KCADM_CONFIG}\" >/dev/null"
-    , "    ;;"
-    , "  *) echo 'unsupported closed Keycloak consumer operation' >&2; exit 64 ;;"
-    , "esac"
+    , "TOKEN_CONFIG="
+    , "trap 'rm -f \"${KCADM_CONFIG}\" \"${TOKEN_CONFIG}\"' EXIT"
+    , "stage() { printf 'prodbox-stage=%s\\n' \"$1\" >&2; }"
     ]
+      ++ keycloakEmitAccessTokenFunction
+      ++ keycloakConsumerOperations
+
+-- | The dispatcher body after its prologue.
+keycloakConsumerOperations :: [String]
+keycloakConsumerOperations =
+  [ "stage login/admin"
+  , "${KCADM} config credentials --server http://127.0.0.1:8080/auth --realm master --user \"${KEYCLOAK_ADMIN:-admin}\" --password \"${KEYCLOAK_ADMIN_PASSWORD}\" --config \"${KCADM_CONFIG}\" >/dev/null"
+  , "realm=prodbox"
+  , "reconcile_client() {"
+  , "  client_name=\"$1\""
+  , "  client_secret=\"$2\""
+  , "  client_uuid=\"$(${KCADM} get clients -r \"${realm}\" -q clientId=\"${client_name}\" --fields id --format csv --noquotes --config \"${KCADM_CONFIG}\" | tail -n 1)\""
+  , "  test -n \"${client_uuid}\""
+  , "  ${KCADM} update \"clients/${client_uuid}\" -r \"${realm}\" -s \"secret=${client_secret}\" --config \"${KCADM_CONFIG}\" >/dev/null"
+  , "}"
+  , "reconcile_runtime() {"
+  , "  stage reconcile/smtp"
+  , "  ${KCADM} update \"realms/${realm}\" --config \"${KCADM_CONFIG}\" -s \"smtpServer.host=${PRODBOX_SMTP_HOST}\" -s \"smtpServer.port=${PRODBOX_SMTP_PORT}\" -s \"smtpServer.from=${PRODBOX_SMTP_FROM}\" -s \"smtpServer.fromDisplayName=${PRODBOX_SMTP_FROM_DISPLAY_NAME}\" -s \"smtpServer.replyTo=${PRODBOX_SMTP_REPLY_TO}\" -s 'smtpServer.auth=true' -s 'smtpServer.starttls=true' -s 'smtpServer.ssl=false' -s \"smtpServer.user=${PRODBOX_SMTP_USER}\" -s \"smtpServer.password=${PRODBOX_SMTP_PASSWORD}\" >/dev/null"
+  , "  stage reconcile/clients"
+  , "  reconcile_client vscode \"${PRODBOX_VSCODE_CLIENT_SECRET}\""
+  , "  reconcile_client prodbox-api \"${PRODBOX_API_CLIENT_SECRET}\""
+  , "  reconcile_client prodbox-websocket \"${PRODBOX_WEBSOCKET_CLIENT_SECRET}\""
+  , "  stage reconcile/demo-user"
+  , "  ${KCADM} set-password -r \"${realm}\" --username demo-user --new-password \"${PRODBOX_DEMO_USER_PASSWORD}\" --config \"${KCADM_CONFIG}\" >/dev/null"
+  , "}"
+  , "resolve_user_id() {"
+  , "  candidate=\"$1\""
+  , "  case \"${candidate}\" in"
+  , "    *@*) ${KCADM} get users -r \"${realm}\" -q email=\"${candidate}\" --fields id --format csv --noquotes --config \"${KCADM_CONFIG}\" | tail -n 1 ;;"
+  , "    *) printf '%s\\n' \"${candidate}\" ;;"
+  , "  esac"
+  , "}"
+  , "operation=\"$1\""
+  , "shift"
+  , "case \"${operation}\" in"
+  , "  reconcile-runtime) reconcile_runtime ;;"
+  , "  issue-demo-token)"
+  , "    client_name=\"$1\""
+  , "    case \"${client_name}\" in"
+  , "      vscode) client_secret=\"${PRODBOX_VSCODE_CLIENT_SECRET}\" ;;"
+  , "      prodbox-api) client_secret=\"${PRODBOX_API_CLIENT_SECRET}\" ;;"
+  , "      prodbox-websocket) client_secret=\"${PRODBOX_WEBSOCKET_CLIENT_SECRET}\" ;;"
+  , "      *) echo 'unsupported closed OIDC client identity' >&2; exit 64 ;;"
+  , "    esac"
+  , "    TOKEN_CONFIG=\"$(mktemp /run/prodbox-admin/kcadm-token.XXXXXX)\""
+  , "    stage token/login"
+  , "    ${KCADM} config credentials --server http://127.0.0.1:8080/auth --realm \"${realm}\" --user demo-user --password \"${PRODBOX_DEMO_USER_PASSWORD}\" --client \"${client_name}\" --secret \"${client_secret}\" --config \"${TOKEN_CONFIG}\" >/dev/null"
+  , "    stage token/emit"
+  , "    emit_access_token \"${TOKEN_CONFIG}\""
+  , "    ;;"
+  , "  issue-user-token)"
+  , "    client_name=\"$1\""
+  , "    case \"${client_name}\" in"
+  , "      vscode) client_secret=\"${PRODBOX_VSCODE_CLIENT_SECRET}\" ;;"
+  , "      prodbox-api) client_secret=\"${PRODBOX_API_CLIENT_SECRET}\" ;;"
+  , "      prodbox-websocket) client_secret=\"${PRODBOX_WEBSOCKET_CLIENT_SECRET}\" ;;"
+  , "      *) echo 'unsupported closed OIDC client identity' >&2; exit 64 ;;"
+  , "    esac"
+  , "    IFS= read -r username"
+  , "    IFS= read -r user_password"
+  , "    test -n \"${username}\""
+  , "    test -n \"${user_password}\""
+  , "    TOKEN_CONFIG=\"$(mktemp /run/prodbox-admin/kcadm-token.XXXXXX)\""
+  , "    stage token/login"
+  , "    ${KCADM} config credentials --server http://127.0.0.1:8080/auth --realm \"${realm}\" --user \"${username}\" --password \"${user_password}\" --client \"${client_name}\" --secret \"${client_secret}\" --config \"${TOKEN_CONFIG}\" >/dev/null"
+  , "    unset user_password"
+  , "    stage token/emit"
+  , "    emit_access_token \"${TOKEN_CONFIG}\""
+  , "    ;;"
+  , "  invite)"
+  , "    email=\"$1\""
+  , "    requested_role=\"$2\""
+  , "    first_name=\"${email%%@*}\""
+  , "    test -n \"${first_name}\" || first_name=Invited"
+  , "    stage invite/create-user"
+  , "    user_id=\"$(${KCADM} create users -r \"${realm}\" -i --config \"${KCADM_CONFIG}\" -s enabled=true -s emailVerified=false -s \"email=${email}\" -s \"username=${email}\" -s \"firstName=${first_name}\" -s lastName=Invitee -s 'requiredActions=[\"VERIFY_EMAIL\",\"UPDATE_PASSWORD\"]')\""
+  , "    test -n \"${user_id}\""
+  , "    stage invite/send-actions-email"
+  , "    ${KCADM} update \"users/${user_id}/execute-actions-email\" -r \"${realm}\" --config \"${KCADM_CONFIG}\" -n -b '[\"VERIFY_EMAIL\",\"UPDATE_PASSWORD\"]' >/dev/null"
+  , "    if [ -n \"${requested_role}\" ]; then"
+  , "      stage invite/add-role"
+  , "      ${KCADM} add-roles -r \"${realm}\" --uusername \"${email}\" --rolename \"${requested_role}\" --config \"${KCADM_CONFIG}\" >/dev/null"
+  , "    fi"
+  , "    printf '%s\\n' \"${user_id}\""
+  , "    ;;"
+  , "  list)"
+  , "    stage users/list"
+  , "    ${KCADM} get users -r \"${realm}\" --config \"${KCADM_CONFIG}\" --fields id,username,email,emailVerified,enabled"
+  , "    ;;"
+  , "  disable)"
+  , "    user_id=\"$(resolve_user_id \"$1\")\""
+  , "    test -n \"${user_id}\""
+  , "    stage users/disable"
+  , "    ${KCADM} update \"users/${user_id}\" -r \"${realm}\" --config \"${KCADM_CONFIG}\" -s enabled=false >/dev/null"
+  , "    ;;"
+  , "  delete)"
+  , "    user_id=\"$(resolve_user_id \"$1\")\""
+  , "    test -n \"${user_id}\""
+  , "    stage users/delete"
+  , "    ${KCADM} delete \"users/${user_id}\" -r \"${realm}\" --config \"${KCADM_CONFIG}\" >/dev/null"
+  , "    ;;"
+  , "  *) echo 'unsupported closed Keycloak consumer operation' >&2; exit 64 ;;"
+  , "esac"
+  ]
+
+-- | The stages the consumer script announces on its standard error before the
+-- step they name. The list is closed: a stage the script does not announce, and a
+-- line that merely looks like one, is never repeated.
+keycloakConsumerStageTokens :: [String]
+keycloakConsumerStageTokens =
+  [ "login/admin"
+  , "reconcile/smtp"
+  , "reconcile/clients"
+  , "reconcile/demo-user"
+  , "token/login"
+  , "token/emit"
+  , "invite/create-user"
+  , "invite/send-actions-email"
+  , "invite/add-role"
+  , "users/list"
+  , "users/disable"
+  , "users/delete"
+  ]
+
+-- | Which of the script's stages was announced last.
+consumerFailureStage :: String -> Maybe String
+consumerFailureStage diagnostic =
+  case [ token
+       | line <- lines diagnostic
+       , Just token <- [stripPrefix "prodbox-stage=" (dropWhileEnd isSpace line)]
+       , token `elem` keycloakConsumerStageTokens
+       ] of
+    [] -> Nothing
+    tokens -> Just (last tokens)
 
 -- | Avoid replaying third-party diagnostics verbatim when they could echo an
--- expanded argument. The stable class is enough for the operator; detailed
--- server logs remain inside the consumer Pod.
-scrubConsumerDiagnostic :: String -> String
-scrubConsumerDiagnostic diagnostic
-  | null (Text.unpack (Text.strip (Text.pack diagnostic))) = "consumer returned no diagnostic"
-  | otherwise = "see Keycloak consumer Pod logs"
+-- expanded argument. What the operator is told is chosen by this module: the
+-- stage the script had announced last and the exit status. Everything else the
+-- command printed, which may carry an expanded argument, stays out of the
+-- message, and detailed server logs remain inside the consumer Pod. The scrub
+-- used to say only "see Keycloak consumer Pod logs", which named neither the step
+-- nor a reason, and the first live invite failed inside it.
+consumerFailureDiagnostic :: Int -> String -> String
+consumerFailureDiagnostic code diagnostic = case consumerFailureStage diagnostic of
+  Just stage -> "at stage " <> stage <> " (exit " <> show code <> "); see Keycloak consumer Pod logs"
+  Nothing
+    | null (Text.unpack (Text.strip (Text.pack diagnostic))) ->
+        "consumer returned no diagnostic (exit " <> show code <> ")"
+    | otherwise -> "see Keycloak consumer Pod logs (exit " <> show code <> ")"
 
 validateInviteArguments :: String -> Maybe String -> Either String (Text, Maybe Text)
 validateInviteArguments email maybeRole = do

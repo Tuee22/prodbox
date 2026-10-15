@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Production SES SMTP branch of the AWS-admin delivery boundary. The raw
@@ -6,12 +7,15 @@
 -- sealed into the retained-home schema lane; it never enters a direct Target
 -- materialization request.
 module Prodbox.Lifecycle.CredentialProvisioner.AwsAdminRetainedCustody
-  ( productionRetainedCustodyAwsAdminDelivery
+  ( RetainedCustodyDisposition (..)
+  , classifyRetainedCustodyForGeneration
+  , productionRetainedCustodyAwsAdminDelivery
+  , retainedSourceTargetReceipt
   , sesSmtpPayloadForIdentity
   )
 where
 
-import Data.Bifunctor (first)
+import Data.Bifunctor (bimap, first)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.ControlPlane.RetainedMaterialWorker
@@ -38,13 +42,18 @@ import Prodbox.Lifecycle.Authority.RetainedMaterial
   , SRetainedMaterialSchema (SRetainedSesSmtpMaterial)
   , mkRetainedMaterialRef
   , mkRetainedSealIntent
-  , retainedSourceCiphertextDigest
+  , retainedMaterialRefText
+  , retainedSourceCommitmentRef
   , retainedSourceGeneration
   , retainedSourceVaultVersion
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   ( AwsAdminDeliveryBoundary (..)
-  , AwsAdminTargetDeliveryCause (AwsAdminTargetDeliveryRetainedCustody)
+  , AwsAdminTargetDeliveryCause
+    ( AwsAdminTargetDeliveryRetainedCustody
+    , AwsAdminTargetDeliveryRetainedDelivery
+    , AwsAdminTargetDeliveryRetainedReceipt
+    )
   , AwsAdminTargetObservationCause (..)
   , mkAwsAdminDeliveryBoundary
   )
@@ -69,7 +78,9 @@ import Prodbox.Lifecycle.CredentialProvisioner.TargetMaterial
   )
 import Prodbox.Lifecycle.Lease (AuthorityTime)
 import Prodbox.Lifecycle.TargetCommitIntent
-  ( targetValueDigestText
+  ( CredentialGeneration
+  , TargetValueDigest
+  , credentialGenerationValue
   )
 import Prodbox.Vault.Session (VaultSession)
 
@@ -102,25 +113,19 @@ productionRetainedCustodyAwsAdminDelivery session observedAt deliverRetained fal
           SRetainedSesSmtpMaterial
           observedAt
           (retainedCustodyVaultBoundary session SRetainedSesSmtpMaterial)
-      case observation of
-        RetainedCustodyPresent source
-          | retainedSourceGeneration source
-              == awsAdminPermitIntentGeneration (signedAwsAdminPermitIntent permit) ->
-              do
-                delivered <- deliverSource permit source
-                pure
-                  ( first
-                      (const AwsAdminTargetObservationRetainedDeliveryFailed)
-                      (Just <$> delivered)
-                  )
-        RetainedCustodyPositivelyAbsent _ -> pure (Right Nothing)
-        RetainedCustodyPresent _ ->
-          pure (Left AwsAdminTargetObservationRetainedGenerationMismatch)
-        RetainedCustodyCorrupt _ -> pure (Left AwsAdminTargetObservationRetainedCorrupt)
-        RetainedCustodyDigestMismatch _ _ ->
-          pure (Left AwsAdminTargetObservationRetainedDigestMismatch)
-        RetainedCustodyUnobservable _ ->
-          pure (Left AwsAdminTargetObservationRetainedUnobservable)
+      case classifyRetainedCustodyForGeneration
+        (awsAdminPermitIntentGeneration (signedAwsAdminPermitIntent permit))
+        observation of
+        RetainedCustodyDeliverSource source -> do
+          delivered <- deliverSource permit source
+          pure
+            ( bimap
+                observationCauseFor
+                Just
+                delivered
+            )
+        RetainedCustodyNotYetSealed -> pure (Right Nothing)
+        RetainedCustodyRefused cause -> pure (Left cause)
 
   deliverFallback = internalDeliverCredentialTarget fallback
   revokeFallback = internalRevokeCredentialTarget fallback
@@ -139,15 +144,65 @@ productionRetainedCustodyAwsAdminDelivery session observedAt deliverRetained fal
             (sesSmtpPayloadForIdentity identity region username password)
         case sealed of
           Left _ -> pure (Left AwsAdminTargetDeliveryRetainedCustody)
-          Right result -> deliverSource permit (sealedSource result)
+          Right result ->
+            first deliveryCauseFor <$> deliverSource permit (sealedSource result)
 
+  -- The Authority's delivery call and the receipt of the delivered source fail
+  -- for different reasons and are different closed causes: the worker's
+  -- terminal line is the only record of which one it was.
   deliverSource permit source = do
     delivered <- deliverRetained source permit
     pure $ do
-      _ <- first (const AwsAdminTargetDeliveryRetainedCustody) delivered
-      first
-        (const AwsAdminTargetDeliveryRetainedCustody)
-        (receiptForSource permit source)
+      _ <- first (const RetainedSourceDeliveryFailed) delivered
+      first (const RetainedSourceReceiptInvalid) (receiptForSource permit source)
+
+  observationCauseFor failure = case failure of
+    RetainedSourceDeliveryFailed -> AwsAdminTargetObservationRetainedDeliveryFailed
+    RetainedSourceReceiptInvalid -> AwsAdminTargetObservationRetainedReceiptInvalid
+
+  deliveryCauseFor failure = case failure of
+    RetainedSourceDeliveryFailed -> AwsAdminTargetDeliveryRetainedDelivery
+    RetainedSourceReceiptInvalid -> AwsAdminTargetDeliveryRetainedReceipt
+
+-- | What an observation of retained custody means for the generation one permit
+-- installs. Custody at the permit's own generation is delivered. Custody at an
+-- earlier generation is the previous generation of a rotation: the permit's
+-- generation has not been sealed, which is the same answer as no custody, and
+-- the seal advances it. Custody at a later generation belongs to a newer
+-- operation and refuses, as does custody that cannot be read. The rotation case
+-- used to refuse as a generation mismatch, so no rotation of the SMTP family
+-- could ever get past its first observation.
+data RetainedCustodyDisposition
+  = RetainedCustodyDeliverSource !(RetainedMaterialSource 'RetainedSesSmtpMaterial)
+  | RetainedCustodyNotYetSealed
+  | RetainedCustodyRefused !AwsAdminTargetObservationCause
+  deriving stock (Eq, Show)
+
+classifyRetainedCustodyForGeneration
+  :: CredentialGeneration
+  -> RetainedCustodyObservation 'RetainedSesSmtpMaterial
+  -> RetainedCustodyDisposition
+classifyRetainedCustodyForGeneration permitGeneration observation = case observation of
+  RetainedCustodyPresent source
+    | retainedSourceGeneration source == permitGeneration ->
+        RetainedCustodyDeliverSource source
+    | credentialGenerationValue (retainedSourceGeneration source)
+        < credentialGenerationValue permitGeneration ->
+        RetainedCustodyNotYetSealed
+    | otherwise ->
+        RetainedCustodyRefused AwsAdminTargetObservationRetainedGenerationMismatch
+  RetainedCustodyPositivelyAbsent _ -> RetainedCustodyNotYetSealed
+  RetainedCustodyCorrupt _ ->
+    RetainedCustodyRefused AwsAdminTargetObservationRetainedCorrupt
+  RetainedCustodyDigestMismatch _ _ ->
+    RetainedCustodyRefused AwsAdminTargetObservationRetainedDigestMismatch
+  RetainedCustodyUnobservable _ ->
+    RetainedCustodyRefused AwsAdminTargetObservationRetainedUnobservable
+
+-- | What failed once a sealed source was to be delivered.
+data RetainedSourceFailure
+  = RetainedSourceDeliveryFailed
+  | RetainedSourceReceiptInvalid
 
 sesSmtpPayloadForIdentity :: Text -> Text -> Text -> Text -> TargetSecretPayload
 sesSmtpPayloadForIdentity identity region username password =
@@ -181,10 +236,27 @@ receiptForSource
   :: SignedAwsAdminPermit
   -> RetainedMaterialSource 'RetainedSesSmtpMaterial
   -> Either Text TargetWorkerReceipt
-receiptForSource permit source = do
-  let intent = signedAwsAdminPermitIntent permit
-      binding = signedAwsAdminPermitBinding permit
-      requestDigest = awsAdminPermitIntentRequestDigest intent
+receiptForSource permit =
+  retainedSourceTargetReceipt
+    (awsAdminPermitIntentRequestDigest intent)
+    (awsAdminJobPodUid (signedAwsAdminPermitBinding permit))
+    (awsAdminPermitIntentImageDigest intent)
+ where
+  intent = signedAwsAdminPermitIntent permit
+
+-- | The worker receipt for a sealed and delivered SMTP source: the request
+-- digest the permit carries (as its request and its action), the Pod and image
+-- it ran as, and the source's generation, Vault version and commitment. The
+-- commitment is the Vault HMAC the custody sealed the source with, which is
+-- what the receipt codec requires of a worker receipt; the ciphertext digest
+-- is a different value and the codec refuses it.
+retainedSourceTargetReceipt
+  :: TargetValueDigest
+  -> Text
+  -> Text
+  -> RetainedMaterialSource 'RetainedSesSmtpMaterial
+  -> Either Text TargetWorkerReceipt
+retainedSourceTargetReceipt requestDigest podUid imageDigest source =
   either
     (Left . showText)
     Right
@@ -192,11 +264,11 @@ receiptForSource permit source = do
         TargetSesSmtp
         (retainedSourceGeneration source)
         (retainedSourceVaultVersion source)
-        (targetValueDigestText (retainedSourceCiphertextDigest source))
+        (retainedMaterialRefText (retainedSourceCommitmentRef source))
         requestDigest
         requestDigest
-        (awsAdminJobPodUid binding)
-        (awsAdminPermitIntentImageDigest intent)
+        podUid
+        imageDigest
     )
 
 sealedSource

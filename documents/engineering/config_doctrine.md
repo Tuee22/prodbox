@@ -280,8 +280,10 @@ The profile has no optional members: `operator_cidr`, EKS instance/disk/minimum/
 three `aws-test` instance types, three root-volume types and sizes, a static EBS volume type, both
 VPC CIDRs, two EKS subnets, and three `aws-test` subnets. The outer `Optional` expresses only
 "this deployment does not provision AWS". The desired EKS count stays in the established
-`cluster_topology.Eks.node_group_size` wire field, is positive at the Dhall and Haskell seams, and
-is checked against the profile bounds when the exact Pulumi configuration is compiled.
+`cluster_topology.Eks.node_group_size` wire field when the deployment's cluster is EKS, is positive
+at the Dhall and Haskell seams, and is checked against the profile bounds when the exact Pulumi
+configuration is compiled. A deployment whose cluster is not EKS has no such field and provisions
+the `aws-eks` test and recovery stack at the profile's authored minimum.
 
 **A seeded non-empty default is a compiled default.** The disguise is the sharp case and it is
 worth naming, because a value that arrives in the operator's own `prodbox.dhall` reads as

@@ -169,6 +169,10 @@ data OperationalCredentialConsumer
   | EksLoadBalancerControllerFamilyReapConsumer
   | NativeStackFamilyObserveConsumer
   | NativeStackFamilyReapConsumer
+  | ValidationHostedZoneEnsureConsumer
+  | SesInviteMailObserveConsumer
+  | SesInviteMailReapConsumer
+  | RetainedEbsEnsureConsumer
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 operationalCredentialConsumerForIntent
@@ -208,6 +212,10 @@ operationalCredentialConsumerForIntent intent = case intent of
     EksLoadBalancerControllerFamilyReapConsumer
   ObserveNativeStackFamily {} -> NativeStackFamilyObserveConsumer
   ReapNativeStackFamily {} -> NativeStackFamilyReapConsumer
+  EnsureValidationHostedZone {} -> ValidationHostedZoneEnsureConsumer
+  ObserveSesInviteMail {} -> SesInviteMailObserveConsumer
+  ReapSesInviteMail {} -> SesInviteMailReapConsumer
+  EnsureRetainedEbsVolumes {} -> RetainedEbsEnsureConsumer
 
 operationalCredentialInventoryConsumers
   :: OperationalCredentialInventory -> [OperationalCredentialConsumer]

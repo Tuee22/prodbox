@@ -58,6 +58,7 @@ module Prodbox.ControlPlane.ProviderWorkerExecution
   , ProviderWorkerExecutionBoundary
   , mkProviderWorkerExecutionBoundary
   , ProviderIntentAdmissionError (..)
+  , renderProviderIntentAdmissionError
   , admitProviderCommittedIntent
   , ProviderIntentExecutionResult (..)
   , ProviderExecutionKind (..)
@@ -73,6 +74,7 @@ module Prodbox.ControlPlane.ProviderWorkerExecution
   , executedProviderIntentResult
   , executionResultCoordinate
   , ProviderIntentExecutionError (..)
+  , renderProviderIntentExecutionError
   , ProviderIntentCredentialBindingRegression
   , fixedProviderIntentCredentialBindingRegression
   , providerIntentCredentialBindingRegressionUnboundAccepted
@@ -122,7 +124,8 @@ import Prodbox.ControlPlane.ProviderCredentialSession.Internal
   , providerCredentialSessionBindingFromWireInternal
   )
 import Prodbox.ControlPlane.ProviderNarrowSession
-  ( ProviderEffectObservation (..)
+  ( ApplyFailure (..)
+  , ProviderEffectObservation (..)
   , ProviderIntentCapabilities
   , ProviderIntentOperation (..)
   , ProviderMutation (..)
@@ -671,6 +674,17 @@ wireProviderIntent intent = case intent of
   ObserveNativeStackFamily ref config -> nativeStackFamilyWire 31 (Just config) ref []
   ReapNativeStackFamily ref config admittedIdentities ->
     nativeStackFamilyWire 32 (Just config) ref admittedIdentities
+  -- Sprint 5.50: the nonce travels as the resource and the base zone name as the
+  -- secondary, so an envelope that lost the base decodes as a refusal rather
+  -- than as a create beneath no zone.
+  EnsureValidationHostedZone nonce baseZone ->
+    WireProviderIntent 33 nonce Nothing Nothing (Just baseZone) Nothing
+  ObserveSesInviteMail bucket recipient ->
+    WireProviderIntent 34 recipient Nothing Nothing (Just bucket) Nothing
+  ReapSesInviteMail bucket recipient ->
+    WireProviderIntent 35 recipient Nothing Nothing (Just bucket) Nothing
+  EnsureRetainedEbsVolumes volumeType specs ->
+    WireProviderIntent 36 volumeType Nothing Nothing (Just specs) Nothing
  where
   simple tag resource = WireProviderIntent tag resource Nothing Nothing Nothing Nothing
   publicARecordWire tag ref =
@@ -1350,6 +1364,18 @@ providerIntentFromWire wire = case wireProviderIntentTag wire of
     mapIntentValue (validateProviderStackConfig (providerNativeStackFamilyStackRef ref) config)
     validateNativeStackFamilyIdentities admittedIdentities
     pure (ReapNativeStackFamily ref config admittedIdentities)
+  33 -> do
+    (selector, baseZone) <- selectorAndSecondary "validation-zone nonce" "validation-zone base"
+    pure (EnsureValidationHostedZone selector baseZone)
+  34 -> do
+    (recipient, bucket) <- selectorAndSecondary "SES invite recipient" "SES invite bucket"
+    pure (ObserveSesInviteMail bucket recipient)
+  35 -> do
+    (recipient, bucket) <- selectorAndSecondary "SES invite recipient" "SES invite bucket"
+    pure (ReapSesInviteMail bucket recipient)
+  36 -> do
+    (volumeType, specs) <- selectorAndSecondary "retained EBS volume type" "retained EBS volume specs"
+    pure (EnsureRetainedEbsVolumes volumeType specs)
   tag -> Left (ProviderCommittedIntentUnsupportedAction tag)
  where
   resource = wireProviderIntentResource wire
@@ -1367,6 +1393,19 @@ providerIntentFromWire wire = case wireProviderIntentTag wire of
     if Text.null resource || Text.length resource > 253 || Text.any isControl resource
       then Left (ProviderCommittedIntentValueInvalid "invalid provider selector")
       else Right resource
+  -- A selector in the resource slot and a required text in the secondary one,
+  -- with nothing else present.
+  selectorAndSecondary resourceLabel secondaryLabel = do
+    noRevision wire
+    noStackConfig wire
+    noTertiary wire
+    if Text.null resource || Text.length resource > 253 || Text.any isControl resource
+      then Left (ProviderCommittedIntentValueInvalid ("invalid " <> resourceLabel))
+      else Right ()
+    secondary <- requireSecondary ("missing " <> secondaryLabel) wire
+    if Text.length secondary > 2048 || Text.any isControl secondary
+      then Left (ProviderCommittedIntentValueInvalid ("invalid " <> secondaryLabel))
+      else Right (resource, secondary)
   publicARecordIntent constructor = do
     noStackConfig wire
     ttl <- requireRequestedRevision wire
@@ -1745,6 +1784,55 @@ data ProviderIntentExecutionError
   | ProviderIntentExecutionWallClockTimeout
   deriving stock (Eq, Show)
 
+-- | Operator-facing text for an execution refusal. Detail text is carried
+-- verbatim: 'show' on these constructors escapes it, and every layer that
+-- relays the escaped text escapes it again.
+renderProviderIntentExecutionError :: ProviderIntentExecutionError -> Text
+renderProviderIntentExecutionError err = case err of
+  ProviderIntentExecutionTrustUnavailable detail ->
+    "provider trust unavailable: " <> detail
+  ProviderIntentExecutionTrustChanged ->
+    "provider trust changed while the intent was being served"
+  ProviderIntentExecutionAcceptedAuthorityBindingMismatch ->
+    "the accepted Authority binding does not match the intent"
+  ProviderIntentExecutionClockUnavailable detail ->
+    "Authority clock unavailable: " <> detail
+  ProviderIntentExecutionDeadlineReached now deadline ->
+    "intent deadline reached at "
+      <> Text.pack (show (authorityTimeMicros now))
+      <> " microseconds; the deadline was "
+      <> Text.pack (show (authorityTimeMicros deadline))
+  ProviderIntentExecutionSessionUnavailable detail ->
+    "provider session unavailable: " <> detail
+  ProviderIntentExecutionCredentialSessionBindingMissing ->
+    "the credential session binding is missing"
+  ProviderIntentExecutionCredentialSessionBindingMismatch ->
+    "the credential session binding does not match the intent"
+  ProviderIntentExecutionObservationUnavailable detail ->
+    "provider observation unavailable: " <> detail
+  ProviderIntentExecutionReadOnlyUnavailable detail ->
+    "provider read-only observation unavailable: " <> detail
+  ProviderIntentExecutionMutationNotConfirmed detail ->
+    "provider mutation not confirmed: " <> detail
+  ProviderIntentExecutionReadBackUnavailable detail ->
+    "provider read-back unavailable: " <> detail
+  ProviderIntentExecutionEvidenceInvalid detail -> detail
+  ProviderIntentExecutionWallClockTimeout ->
+    "the Provider execution exceeded its wall-clock bound"
+
+-- | Operator-facing text for an admission refusal; the same rule as
+-- 'renderProviderIntentExecutionError'.
+renderProviderIntentAdmissionError :: ProviderIntentAdmissionError -> Text
+renderProviderIntentAdmissionError err = case err of
+  ProviderIntentAdmissionCodecFailed codecError ->
+    "provider intent could not be decoded: " <> Text.pack (show codecError)
+  ProviderIntentAdmissionTrustUnavailable detail ->
+    "provider trust unavailable: " <> detail
+  ProviderIntentAdmissionClockUnavailable detail ->
+    "Authority clock unavailable: " <> detail
+  ProviderIntentAdmissionRefused refusal ->
+    "provider intent refused: " <> Text.pack (show refusal)
+
 -- | Fixed, non-authorizing diagnostics for the opaque credential-binding
 -- join.  No binding or constructor escapes through this value.
 data ProviderIntentCredentialBindingRegression
@@ -2037,10 +2125,14 @@ validateExecutionEvidence intent evidence =
     (ProviderIntentExecutionEvidenceInvalid . ("provider evidence is invalid: " <>))
     (validateProviderIntentEvidence intent evidence)
 
-attemptDetail :: Either Text () -> Text
+-- | What the apply attempt contributes to a mutation that was not confirmed.
+-- The two failures read differently on purpose: an apply that ran and failed
+-- must not be described as a response that never arrived.
+attemptDetail :: Either ApplyFailure () -> Text
 attemptDetail result = case result of
   Right () -> ""
-  Left detail -> "provider apply response unavailable: " <> detail <> "; "
+  Left (ApplyFailed detail) -> "provider apply failed: " <> detail <> "; "
+  Left (ApplyResponseLost detail) -> "provider apply response unavailable: " <> detail <> "; "
 
 parseProviderIntentPublicKey
   :: ProviderIntentPublicKey

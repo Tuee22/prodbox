@@ -20,6 +20,7 @@ module Prodbox.Settings.AwsSubstrateProfile
   , awsEbsVolumeTypeText
   , awsSubstrateOperatorCidr
   , awsSubstrateStaticEbsVolumeType
+  , awsSubstrateEksMinimumNodeCount
   , awsEksStackConfiguration
   , awsTestStackConfiguration
   , renderAwsSubstrateProfileError
@@ -175,6 +176,12 @@ awsSubstrateOperatorCidr = internalOperatorCidr
 
 awsSubstrateStaticEbsVolumeType :: AwsSubstrateProfile -> AwsEbsVolumeType
 awsSubstrateStaticEbsVolumeType = AwsEbsVolumeType . internalStaticEbsVolumeType
+
+-- | The smallest EKS node count the authored profile admits.  It is positive by
+-- construction, and 'awsEksStackConfiguration' accepts it as a desired count
+-- whenever the authored maximum is not below it.
+awsSubstrateEksMinimumNodeCount :: AwsSubstrateProfile -> Natural
+awsSubstrateEksMinimumNodeCount = internalEksNodeMinSize
 
 -- | Compile every EKS-program input.  The desired count comes from the
 -- committed @cluster_topology.Eks.node_group_size@ wire; the profile supplies

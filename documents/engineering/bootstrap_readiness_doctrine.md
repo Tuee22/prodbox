@@ -595,6 +595,24 @@ Authority transport, Provider Worker registration, target-local DNS01 generation
 cert-manager issuer admission and controller-owned public edge. A Gateway-ready observation cannot
 satisfy any Authority, Provider, or Target-Agent prerequisite.
 
+The Authority Backup Adapter, the Provider Worker and the TLS Retention Adapter run in the retained home
+cluster for every substrate. Components installed on EKS depend on the first two in the graph, so the AWS
+projection carries one readiness-only step for each of those two, observed against the home cluster with the
+home kubeconfig and the same checks the home driver makes of the same role, so the admission an EKS
+mutation requires is minted from an observation of the cluster the role runs on. Nothing is deployed for
+any of the three on EKS. Nothing the AWS projection installs depends on the TLS Retention Adapter, so it has
+no step: the public-edge TLS workflow reaches the home adapter itself and fails there with its own typed
+error. The home kubeconfig is the retained cluster's own file or the user's synced copy and never the
+process's `KUBECONFIG`, which an AWS run holds for EKS; a host that can read neither refuses the
+observation by name instead of reading the wrong cluster. The Provider Worker takes the longer
+requested-revision window, because an operator-started rollout of the home pod can be part-way through when
+an AWS run observes it.
+
+A home role that cannot be observed refuses the AWS run at that role's barrier, which is before the first
+mutation that depends on it and not before the first EKS mutation: the order is derived from the graph,
+and the roles' own graph dependencies are components installed on EKS. The admission a step mints ages out
+like any other, and the executor observes the role again when a later mutation finds it stale.
+
 The Broker is selected as a distinct runtime role by `prodbox bootstrap-broker start` with
 `--config <path>`. Its role-only document and loopback listener cannot be substituted with Gateway
 config or a generic endpoint. Completed Sprint `3.26` supplied chart/render foundations, but the

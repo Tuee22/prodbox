@@ -504,6 +504,7 @@ commandPathOfRequest request =
                     IntegrationCertificateScope -> ["certificate-scope"]
                     IntegrationCleanRoomHandoff -> ["clean-room-handoff"]
                     IntegrationCascadeQualification -> ["cascade-qualification"]
+                    IntegrationCascadeQualificationReceipt -> ["cascade-qualification-receipt"]
                     IntegrationHaRke2Aws -> ["ha-rke2-aws"]
                     IntegrationLifecycle -> ["lifecycle"]
                     IntegrationPulumi -> ["pulumi"]

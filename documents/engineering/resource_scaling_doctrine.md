@@ -263,6 +263,16 @@ The rendered Kubernetes shape follows directly from these values:
   that simultaneously sizes the PVC, the namespace `requests.storage` quota, and the fit proof, so a
   chart-local PVC-size literal can no longer drift from the quota (Sprint `3.29`). Durable storage is
   non-burstable (`request == limit`) and may be `0` for a stateless workload (no PVC).
+  **One exception, the gateway's emitter journals (Sprint `7.46`):** the plan states no durable storage
+  for the `gateway` profile (the home journals are host paths and claim nothing), and the AWS emitters
+  each claim a retained-EBS journal whose size is `gatewayEmitterJournalMiB` in `Prodbox.Substrate`. The
+  placement compiler applies that number, and the substrate's emitter count, to the gateway profile
+  (`planForSubstrate`), and both the journal volume's size and the namespace `requests.storage` quota
+  are read from the result, so they cannot drift from each other or from the claim the chart requests.
+  The fit proof reads the plan as authored and does not count the AWS journals: it proves the home
+  host's capacity, and the AWS cluster's capacity is the node group's. So that the proof and the home
+  quota cannot describe different clusters, the plan's gateway profile is held to the home shape at decode
+  (`validateGatewayEmitterCapacity`): the home emitter count as its replicas and no durable storage.
 
 No chart template may synthesize these values locally. Chart values consume a `ResourceProfileId`
 that resolves through the Haskell/Dhall resource registry. A chart whose profile is absent fails to

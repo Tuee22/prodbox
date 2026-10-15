@@ -18,6 +18,7 @@ module Prodbox.Lifecycle.ReadinessObservation
   , componentReadinessRetryPolicy
   , observationPollOutcome
   , observeComponentReadiness
+  , readinessActionFor
   , readinessGateOpen
   , waitForComponentReadiness
   )

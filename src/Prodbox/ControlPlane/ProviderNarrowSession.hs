@@ -7,7 +7,8 @@
 -- actions.  It contains no credential/admin/SMTP-IAM, generic AWS, Vault,
 -- object-store, subprocess, or Authority-state escape arm.
 module Prodbox.ControlPlane.ProviderNarrowSession
-  ( ProviderEffectObservation (..)
+  ( ApplyFailure (..)
+  , ProviderEffectObservation (..)
   , ProviderMutation (..)
   , ProviderReadOnly (..)
   , ProviderIntentCapabilities (..)
@@ -54,6 +55,18 @@ data ProviderEffectObservation
   | ProviderEffectUnobservable !Text
   deriving stock (Eq, Show)
 
+-- | Why one mutation's apply callback did not succeed.  The two arms are not
+-- interchangeable: a failed apply says the effect ran and reported a failure,
+-- while a lost response says the effect may have happened and no answer came
+-- back, so the read-back that follows is the only thing that can settle it.
+data ApplyFailure
+  = -- | The effect ran and reported a failure; the text is the rendered cause
+    -- and consequence.
+    ApplyFailed !Text
+  | -- | The effect may have run: no response was received.
+    ApplyResponseLost !Text
+  deriving stock (Eq, Show)
+
 -- | One mutation arm.  Both callbacks receive the stable signed intent
 -- coordinate and the same rank-2-scoped narrow session.
 data ProviderMutation m session = ProviderMutation
@@ -64,7 +77,7 @@ data ProviderMutation m session = ProviderMutation
   , applyProviderMutation
       :: session
       -> ProviderIntentCoordinate
-      -> m (Either Text ())
+      -> m (Either ApplyFailure ())
   }
 
 -- | One observation-only arm.  There is structurally no mutation callback.
@@ -201,6 +214,27 @@ data ProviderIntentCapabilities m session = ProviderIntentCapabilities
       -> ProviderStackConfig
       -> [Text]
       -> ProviderMutation m session
+  , ensureValidationHostedZoneCapability
+      :: Text
+      -> Text
+      -> ProviderMutation m session
+  -- ^ Sprint 5.50: the @dns-aws@ validation's throwaway zone, created beneath a
+  -- base zone name from a run nonce.
+  , observeSesInviteMailCapability
+      :: Text
+      -> Text
+      -> ProviderReadOnly m session
+  -- ^ Sprint 5.50: the captured invite message for one recipient, read-only.
+  , reapSesInviteMailCapability
+      :: Text
+      -> Text
+      -> ProviderMutation m session
+  , ensureRetainedEbsVolumesCapability
+      :: Text
+      -> Text
+      -> ProviderMutation m session
+  -- ^ Sprint 5.50: the retained EBS volumes the AWS substrate's PersistentVolumes
+  -- bind to.
   }
 
 -- | Rank-2 scoping prevents an assumed-role/session handle from escaping the
@@ -311,3 +345,15 @@ operationForProviderIntent capabilities intent = case intent of
   ReapNativeStackFamily ref config admittedIdentities ->
     ProviderIntentMutation
       (reapNativeStackFamilyCapability capabilities ref config admittedIdentities)
+  EnsureValidationHostedZone nonce baseZone ->
+    ProviderIntentMutation
+      (ensureValidationHostedZoneCapability capabilities nonce baseZone)
+  ObserveSesInviteMail bucket recipient ->
+    ProviderIntentReadOnly
+      (observeSesInviteMailCapability capabilities bucket recipient)
+  ReapSesInviteMail bucket recipient ->
+    ProviderIntentMutation
+      (reapSesInviteMailCapability capabilities bucket recipient)
+  EnsureRetainedEbsVolumes volumeType specs ->
+    ProviderIntentMutation
+      (ensureRetainedEbsVolumesCapability capabilities volumeType specs)

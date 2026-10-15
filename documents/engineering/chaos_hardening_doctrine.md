@@ -221,8 +221,8 @@ and Inject for the rare case that needs it, and is kept deliberately subordinate
 
 **And in this codebase, all three are Haskell.** That is not incidental. The quiet third move — make the
 decision a pure value — is the native idiom of a typed functional language, and prodbox already lives
-there: pure decision functions over bounded semantic replica state (`canWriteDns`, `nodeDisposition` in
-`src/Prodbox/Gateway/Types.hs`), the **Plan / Apply** split (a pure `build` produces a value; an effectful
+there: pure decision functions over bounded semantic replica state (`authorizeDnsWrite` in
+`src/Prodbox/Gateway/DnsAuthority.hs`, `gatewayStateLatestOwnership` in `src/Prodbox/Gateway/State.hs`), the **Plan / Apply** split (a pure `build` produces a value; an effectful
 `apply` is the only thing that touches the world), the type system as a zero-cost design check. The payoff,
 and the spine of §10, is a single ladder: make the **decision** pure (Extract), then the **command** pure
 (Plan / Apply), then — with `io-classes` and `io-sim` — the **whole concurrent program** pure, run as a

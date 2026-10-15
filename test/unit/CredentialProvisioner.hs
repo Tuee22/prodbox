@@ -16,7 +16,7 @@ import Data.IORef
   , readIORef
   , writeIORef
   )
-import Data.List (nub)
+import Data.List (isInfixOf, nub)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -27,6 +27,7 @@ import Options.Applicative
   , defaultPrefs
   , execParserPure
   )
+import Prodbox.Aws.Native.Iam (IamTag (..))
 import Prodbox.Aws.Native.Sts (AssumeRoleRequest (..))
 import Prodbox.Aws.Native.Wire
   ( DispatchPhase (PossiblySent)
@@ -43,6 +44,11 @@ import Prodbox.CLI.Command
 import Prodbox.CLI.Parser (Options (..), parserInfo)
 import Prodbox.Capacity.ProviderWorkerBudget
   ( ProviderWorkerResourceEnvelope (providerWorkerEnvelopeCpuMillicores)
+  )
+import Prodbox.CheckCode
+  ( checkProviderCliIamCoverage
+  , providerCliIamCoverageViolations
+  , providerCliSites
   )
 import Prodbox.ControlPlane.AuthorityBackupReconcileProduction
   ( normalAwsAdminOperationIdForScope
@@ -87,6 +93,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.FirstReconcileJournal
 import Prodbox.Lifecycle.CredentialProvisioner.Kubernetes
 import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
 import Prodbox.Lifecycle.CredentialProvisioner.ProductionIam
+import Prodbox.Lifecycle.CredentialProvisioner.ProviderCliActions
 import Prodbox.Lifecycle.CredentialProvisioner.ProviderRolePolicyOperationScope
 import Prodbox.Lifecycle.CredentialProvisioner.ProviderRoute53Policy
 import Prodbox.Lifecycle.CredentialProvisioner.TargetMaterial
@@ -102,7 +109,7 @@ import Prodbox.Native
   , credentialProvisionerRunPlan
   )
 import Prodbox.Settings qualified as Settings
-import System.Directory (doesFileExist)
+import System.Directory (doesFileExist, getCurrentDirectory)
 import System.FilePath ((</>))
 import TestSupport
 
@@ -397,6 +404,29 @@ credentialProvisionerSuite =
           }
         `shouldBe` Left ProviderRoute53PolicyEnvelopeChanged
 
+    it "reads an identity's tags as carrying the program's own and judges no others" $ do
+      let owned =
+            [ IamTag "prodbox.io/managed-by" "prodbox"
+            , IamTag "prodbox.io/credential-class" "ses-smtp-retained-custody"
+            ]
+          predating =
+            [ IamTag "prodbox.io/substrate" "shared"
+            , IamTag "prodbox.io/purpose" "ses-smtp"
+            , IamTag "Name" "aws-ses"
+            ]
+      userCarriesProgramTags owned owned `shouldBe` True
+      -- The SMTP user the Pulumi program created, after the program tagged it.
+      userCarriesProgramTags owned (predating <> owned) `shouldBe` True
+      userCarriesProgramTags owned predating `shouldBe` False
+      -- The right key with another value is a tag the program does not carry.
+      userCarriesProgramTags
+        owned
+        [ IamTag "prodbox.io/managed-by" "someone-else"
+        , IamTag "prodbox.io/credential-class" "ses-smtp-retained-custody"
+        ]
+        `shouldBe` False
+      userCarriesProgramTags owned [] `shouldBe` False
+      userCarriesProgramTags [] predating `shouldBe` True
     it "revisions the durable credential operation when the Provider role policy changes" $ do
       let counterexample = frozenProviderRolePolicyOperationCounterexample
           supersededScope = providerRolePolicyOperationSupersededScope counterexample
@@ -414,7 +444,7 @@ credentialProvisionerSuite =
       providerRolePolicyOperationIdentity counterexample
         `shouldBe` "LIFECYCLE-PROVIDER-ASSUMED-ROLE-ROUTE53-CREATE-DENIED-2026-09-06"
       providerRolePolicyOperationRevision
-        `shouldBe` "bacc2854e31887da758e66bf3d8574e8399086511289ea57d59f75bd8e55394a"
+        `shouldBe` "209a4b7eef1842483983e994116c816ccd872070bdc210aa1f31f697fa7d34d7"
       providerRolePolicyOperationReplacementRevision counterexample
         `shouldBe` providerRolePolicyOperationRevision
       providerRolePolicyOperationReplacementScope counterexample
@@ -428,8 +458,12 @@ credentialProvisionerSuite =
       rke2Source <- readFile "src/Prodbox/CLI/Rke2.hs"
       rke2Source
         `shouldContain` "providerRolePolicyOperationScope operationScope"
+      -- The Lifecycle-provider request is built with the revisioned scope, and the
+      -- shared resolver keys the durable operation on the scope its request carries.
       rke2Source
-        `shouldContain` "revisionedOperationScope\n                                  iamParameters"
+        `shouldContain` "(TargetAwsCredential AwsLifecycleProvider)\n          (providerRolePolicyOperationScope operationScope)"
+      rke2Source
+        `shouldContain` "operationScope = harnessCredentialScope request"
       validateProviderRolePolicyOperationCounterexample counterexample
         `shouldBe` Right
           ProviderRolePolicyOperationClosure
@@ -442,6 +476,90 @@ credentialProvisionerSuite =
             , providerRolePolicyOperationReplacementDisposition =
                 ProviderRevisedIamProgramScheduled replacementScope
             }
+
+    it "allows every action the Provider's AWS CLI verbs are authorized by" $ do
+      -- Red before the policy was completed: the SES receipt-rule and DKIM
+      -- observers, the capture-bucket tagging calls and the owned-resource tag
+      -- listing each needed an action the policy did not allow, and a live run
+      -- would have been denied at the first call that reached one of them.
+      repoRoot <- getCurrentDirectory
+      findings <- checkProviderCliIamCoverage repoRoot
+      findings `shouldBe` []
+
+    it "names the actions those verbs were missing" $
+      mapM_
+        (\action -> (action `elem` lifecycleProviderRolePolicyActions) `shouldBe` True)
+        [ "ses:GetIdentityDkimAttributes"
+        , "ses:DescribeReceiptRule"
+        , "ses:DescribeActiveReceiptRuleSet"
+        , "ses:UpdateReceiptRule"
+        , "s3:GetBucketTagging"
+        , "s3:PutBucketTagging"
+        , "tag:GetResources"
+        ]
+
+    it "fails the coverage rule on a verb the action table does not name" $ do
+      let findings =
+            providerCliIamCoverageViolations
+              lifecycleProviderRolePolicyActions
+              (withDynamicSite [("src/Prodbox/Lifecycle/Probe.hs", True, "x = [\"ses\", \"list-identities\"]")])
+      any ("list-identities" `isInfixOf`) findings `shouldBe` True
+      any ("does not name" `isInfixOf`) findings `shouldBe` True
+
+    it
+      "fails the coverage rule on a verb whose action the policy does not allow, and passes once it does"
+      $ do
+        let site = [("src/Prodbox/Lifecycle/Probe.hs", True, "x = [\"ses\", \"update-receipt-rule\"]")]
+            withoutAction = filter (/= "ses:UpdateReceiptRule") lifecycleProviderRolePolicyActions
+            denied = providerCliIamCoverageViolations withoutAction (withDynamicSite site)
+            allowed = providerCliIamCoverageViolations lifecycleProviderRolePolicyActions (withDynamicSite site)
+        any ("ses:UpdateReceiptRule" `isInfixOf`) denied `shouldBe` True
+        allowed `shouldBe` []
+
+    it "reads a service-wide wildcard as authorizing every verb of its service, and no other service" $ do
+      policyGrantsAction ["ec2:*"] "ec2:DeleteVpc" `shouldBe` True
+      policyGrantsAction ["eks:*"] "ec2:DeleteVpc" `shouldBe` False
+      policyGrantsAction ["ses:CreateReceiptRule"] "ses:UpdateReceiptRule" `shouldBe` False
+      policyGrantsAction ["ses:UpdateReceiptRule"] "ses:UpdateReceiptRule" `shouldBe` True
+      let ec2Site = [("src/Prodbox/Lifecycle/Probe.hs", True, "x = [\"ec2\", \"delete-vpc\"]")]
+      providerCliIamCoverageViolations lifecycleProviderRolePolicyActions (withDynamicSite ec2Site)
+        `shouldBe` []
+      any
+        ("ec2:*" `isInfixOf`)
+        ( providerCliIamCoverageViolations
+            (filter (/= "ec2:*") lifecycleProviderRolePolicyActions)
+            (withDynamicSite ec2Site)
+        )
+        `shouldBe` True
+
+    it "refuses an undeclared dynamic-verb site and a count that disagrees with the declaration" $ do
+      let undeclared =
+            providerCliIamCoverageViolations
+              lifecycleProviderRolePolicyActions
+              ( withDynamicSite
+                  [("src/Prodbox/Lifecycle/Probe.hs", True, "x = [\"s3api\", verb, \"--bucket\"]")]
+              )
+          extra =
+            providerCliIamCoverageViolations
+              lifecycleProviderRolePolicyActions
+              [(providerProductionPath, True, dynamicSiteText ++ "\n" ++ dynamicSiteText)]
+      any ("chooses the verb at run time" `isInfixOf`) undeclared `shouldBe` True
+      any ("declares 1" `isInfixOf`) extra `shouldBe` True
+
+    it "reads a verb only from code, never from a comment, and never invents a site from a flag" $ do
+      providerCliSites
+        ["ses", "s3api"]
+        "-- aws ses bogus-verb\nx = [\"s3api\", \"head-bucket\", \"--bucket\"] -- [\"ses\", \"also-bogus\"]"
+        `shouldBe` [("s3api", Just "head-bucket")]
+      providerCliSites ["ses"] "x = [\"ses\", verb, \"--rule-set-name\"]"
+        `shouldBe` [("ses", Nothing)]
+
+    it "keys the action table by service and verb, each action by its service" $ do
+      let keys = [(providerCliService entry, providerCliVerb entry) | entry <- providerCliActionTable]
+      length keys `shouldBe` length (nub keys)
+      forM_ providerCliActionTable $ \entry ->
+        forM_ (providerCliActions entry) $ \action ->
+          (":" `isInfixOf` Text.unpack action) `shouldBe` True
 
     it "rejects policy-revision, operation-scope, mutation, and envelope drift" $ do
       let counterexample = frozenProviderRolePolicyOperationCounterexample
@@ -535,8 +653,11 @@ credentialProvisionerSuite =
 
     it "binds production native and subprocess capabilities to the same verified role session" $ do
       productionSource <- readFile "src/Prodbox/ControlPlane/ProviderProduction.hs"
-      productionSource
-        `shouldContain` "assumeProviderRoleSession\n                (providerAssumeRoleRequest intent)"
+      -- One mint per operation, whose lifetime is derived from the signed
+      -- deadline rather than fixed at the STS floor.
+      productionSource `shouldContain` "assumeProviderRoleSession"
+      productionSource `shouldContain` "providerAssumeRoleRequestFor"
+      productionSource `shouldContain` "planSessionDuration"
       productionSource
         `shouldContain` "NativeSts.assumedRoleSessionCredentials roleSession"
       productionSource
@@ -1534,3 +1655,14 @@ fakeFirstReconcileJournalAdapter store =
 
 must :: (Show errorValue) => Either errorValue value -> value
 must = either (error . show) id
+
+providerProductionPath :: FilePath
+providerProductionPath = "src/Prodbox/ControlPlane/ProviderProduction.hs"
+
+-- | The one dynamic-verb site the real Provider module declares, so a synthetic
+-- source set does not trip the declaration-count check for an unrelated reason.
+dynamicSiteText :: String
+dynamicSiteText = "x = [\"ses\", verb, \"--rule-set-name\"]"
+
+withDynamicSite :: [(FilePath, Bool, String)] -> [(FilePath, Bool, String)]
+withDynamicSite extra = (providerProductionPath, True, dynamicSiteText) : extra

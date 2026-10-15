@@ -112,6 +112,7 @@ owning implementation change updates `CommandSpec` and regenerates this section.
 | `prodbox test integration certificate-scope` | Verify live TLS serving and the exact presented SAN scope |
 | `prodbox test integration clean-room-handoff` | Verify clean-room migration, rollback refusal, and legacy absence |
 | `prodbox test integration cascade-qualification` | Run one named destructive recover-to-clean cascade qualification cycle |
+| `prodbox test integration cascade-qualification-receipt` | Report whether the cycle ledger holds consecutive qualifying cascade cycles |
 | `prodbox test integration ha-rke2-aws` | Run HA RKE2 AWS integration tests |
 | `prodbox test integration lifecycle` | Run lifecycle integration tests |
 | `prodbox test integration pulumi` | Run Pulumi integration tests |

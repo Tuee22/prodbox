@@ -106,6 +106,13 @@ data TlsWorkflowRetainOutcome
   | TlsWorkflowRetainedReplacingUnopenableVersion
       !RetentionVersion
       !RetainedTlsRef
+  | -- | No version was claimed because none was needed: the live certificate
+    -- (serial, public-key digest and expiry) is the one the committed reference
+    -- already describes. Carries that reference. Reached only where the next
+    -- version could not be used, so the ordinary path, which retains a new
+    -- version for every request, is unchanged; the refusal it replaces was
+    -- about a slot a retain of an unchanged certificate has no reason to claim.
+    TlsWorkflowRetainedUnchanged !RetainedTlsRef
   deriving stock (Eq, Show)
 
 data TlsWorkflowRestoreOutcome
@@ -190,7 +197,8 @@ retainPublicEdgeTlsWorkflow workflow approval = do
         Nothing -> do
           let version = nextRetentionVersion state
           case currentRetainedRef state of
-            Just _ -> claimFreshVersion state version
+            Just current ->
+              claimFreshVersion state version >>= settleUnusableSlot current version
             Nothing -> do
               occupied <-
                 observeTlsRetentionVersion
@@ -204,6 +212,55 @@ retainPublicEdgeTlsWorkflow workflow approval = do
                 Right (TlsVersionEnvelopePresent envelope _) ->
                   adoptLegacy state version envelope
  where
+  -- A refusal to use the next slot is moot when the certificate has not
+  -- changed.
+  --
+  -- The Authority-lane store is durable across the Authority's own state and
+  -- the Authority's state is not: a reset of the latter leaves objects from the
+  -- earlier epoch in slots the new state will select, each sealed under a key
+  -- this control plane no longer holds. One bounded successor is admitted past
+  -- the first such object and a second refuses by name, which is right for a
+  -- retain that has something new to say and wrong for one that does not: the
+  -- chart delete that runs a retain refused forever, to preserve a certificate
+  -- the committed reference already preserves.
+  --
+  -- Only a refusal about the slot is reconsidered, so every other failure keeps
+  -- its meaning, and the certificate is read again from the selected Agent
+  -- rather than trusted from the refused attempt. Nothing is written.
+  settleUnusableSlot current version claimed = case claimed of
+    Left refusal
+      | slotRefusal refusal -> do
+          unchanged <- liveCertificateIs current version
+          pure
+            ( if unchanged
+                then Right (TlsWorkflowRetainedUnchanged current)
+                else Left refusal
+            )
+    _ -> pure claimed
+
+  slotRefusal refusal = case refusal of
+    TlsWorkflowRetentionVersionOccupied _ -> True
+    TlsWorkflowResumedRetentionVersionOccupied _ -> True
+    TlsWorkflowRetentionVersionUnopenable _ -> True
+    TlsWorkflowRetentionVersionCorrupt _ -> True
+    _ -> False
+
+  liveCertificateIs current version = do
+    homePreparedResult <-
+      prepareTlsDekDestination (tlsWorkflowRetainedHomeAgent workflow)
+    case homePreparedResult of
+      Left _ -> pure False
+      Right homePrepared -> do
+        retainedResult <-
+          retainSelectedPublicEdgeTls
+            (tlsWorkflowSelectedAgent workflow)
+            version
+            (tlsDekPreparedPublicKey homePrepared)
+        pure $ case retainedResult of
+          Right retained ->
+            tlsTargetRetainedCertificate retained == retainedCert current
+          Left _ -> False
+
   -- Observe the Authority lane before claiming a version on it.
   --
   -- The observation above this one reads the /legacy/ lane, and reads it to

@@ -7,6 +7,8 @@
 module Prodbox.Test.Qualification.Evidence
   ( PublicEvidenceDigest
   , mkPublicEvidenceDigest
+  , publicEvidenceDigestText
+  , hashPublicEvidence
   , QualificationIdentity (..)
   , QualificationEvidenceInput (..)
   , QualificationEvidence
@@ -24,6 +26,7 @@ import Data.Char (isDigit)
 import Data.List (group, sort)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Numeric (showHex)
 import Prodbox.Test.Qualification.FrozenCounterexample
   ( CounterexampleDisposition (..)
@@ -55,6 +58,15 @@ mkPublicEvidenceDigest raw =
         else Nothing
  where
   isLowerHex character = isDigit character || character >= 'a' && character <= 'f'
+
+-- | The digest as lowercase hexadecimal, without the @sha256:@ prefix.
+publicEvidenceDigestText :: PublicEvidenceDigest -> Text
+publicEvidenceDigestText (PublicEvidenceDigest value) = value
+
+-- | The SHA-256 of some text's UTF-8 bytes. Total: a SHA-256 of anything is a
+-- valid digest, so building one cannot fail.
+hashPublicEvidence :: Text -> PublicEvidenceDigest
+hashPublicEvidence = PublicEvidenceDigest . sha256Hex . TextEncoding.encodeUtf8
 
 data QualificationIdentity = QualificationIdentity
   { qualificationSourceIdentity :: !SourceIdentity

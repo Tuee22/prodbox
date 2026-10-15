@@ -11,6 +11,13 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-10-08 on Sprint `1.93` (Standards A/N).** The own-surface reopen on the native AWS
+clients' shared XML helper is complete. The helper could write XML-escaped text and could not read it back, so
+the first live Route 53 read-back of a quoted TXT value failed on the literal `&quot;` and the Provider's SES DNS
+lane could never converge. `xmlUnescape` is now the tested inverse of `xmlEscape` and is applied to the leaf text
+of the Route 53 and error-message readers. Focused proof and all local gates pass; live proof and Standard P
+re-qualification of the Provider's DNS lanes remain pending under Standards O and P.
+
 ✅ **Reclosed 2026-08-22 on Sprint `1.92` (Standards A/N); header corrected 2026-09-11.** The entry
 below was left in its reopened form after `1.92` reached `Done`, which is the drift this plan names
 at [README.md](README.md): the phase-document header is the only place a reclose must be written by
@@ -714,6 +721,11 @@ architecture under the one-host doctrine rather than the earlier dedicated-host 
   MetalLB `IPAddressPool` is sized to a single LAN IP, matching the one Envoy Gateway
   `LoadBalancer` Service the supported edge needs (`src/Prodbox/Host.hs` `selectMetallbRange`,
   `poolSize = 1`).
+- The "MetalLB runtime manifests" group in `test/unit/Main.hs` pins the manifest proof above for
+  both modes through `metallbRuntimeManifest`: the pool plus one `L2Advertisement` for L2, and the
+  pool plus one `BGPPeer` per configured peer and one `BGPAdvertisement` for BGP. A live BGP session
+  needs operator-supplied router peers and has never been recorded, so BGP is proven by rendered
+  manifests and config validation only.
 - `src/Prodbox/Aws.hs` now validates Route 53 hosted-zone alignment for the canonical hostname
   during `prodbox config setup`, while `src/Prodbox/TestValidation.hs` and the built-frontend
   suites align the config and lifecycle proofs with the one-host doctrine.
@@ -6954,6 +6966,64 @@ projections cannot return unnoticed.
 The generated schema, unit suite, built-frontend CLI/env suites, and canonical `prodbox dev check`
 pass on this revision. Deployment qualification remains pending under Standard O/P and does not
 hold this code-owned closure open.
+
+## Sprint 1.93: A Native Client That Only Ever Spoke To A Fake Could Not Read Back Its Own Quotation Marks [✅ Done]
+
+**Status**: Done (2026-10-08). Phase `1` own-surface reopen (Standards A/N) on the shared XML helper of the
+native AWS clients, which Sprint `1.62` authored. The first live `dns-aws` run of the 2026-10-08 campaign failed
+in its first prerequisite: the Provider's SES DNS lane wrote the `_amazonses` TXT record and then reported
+"read-back did not converge", the observed value being the verification token wrapped in the literal text
+`&quot;`. Route 53 returns every TXT value in quotation marks and XML-escapes them, `Prodbox.Aws.Native.Xml`
+had an escaper for the XML the clients emit and no unescaper for the text they extract, and the request-body
+fixture for a TXT record pinned only the emit side. A value containing a quotation mark, an ampersand or an
+angle bracket could therefore never read back equal to the value written. The Sprint `4.73` comment that Route 53
+"echoes back" the canonical spelling was true of its CNAME and MX values and had never been checked against a TXT
+value or against the service.
+**Doctrine**: [Pure Functional Programming Standards](../documents/engineering/pure_fp_standards.md) (an
+inverse is tested as an inverse) and [AWS Integration Environment
+Doctrine](../documents/engineering/aws_integration_environment_doctrine.md).
+**Implementation**: `src/Prodbox/Aws/Native/Xml.hs`, `src/Prodbox/Aws/Native/Route53.hs`,
+`src/Prodbox/Aws/Native/Wire.hs`, and `test/unit/AwsNativeClients.hs`.
+**Blocked by**: none.
+**Docs to update**: `DEVELOPMENT_PLAN/README.md` and `DEVELOPMENT_PLAN/00-overview.md`.
+**Live-proof**: observed, 2026-10-08. The native Route 53 client runs inside the Provider Worker, so the repair
+reached AWS only after the runtime image was rebuilt and the Provider rolled; `dns-aws` failed identically before
+that roll and passed after it, including the SES DNS lane's read-back of the quoted `_amazonses` TXT value and the
+validation hosted zone's create, record write, read-back and sweep.
+**Deployment qualification**: pending — invalidated: the Provider's DNS read-back changes.
+**Independent Validation**: pure cases over the unescaper, the Route 53 response parsers on canned XML, and a
+round trip through the change-batch renderer; no AWS.
+
+### Objective
+
+Make the native clients read the text they extract as the characters the service meant, and keep the structural
+extractors from ever doing so.
+
+### Deliverables
+
+- `xmlUnescape`, the inverse of `xmlEscape`: the five predefined entities and decimal or hexadecimal character
+  references, in a single left-to-right pass (so `&amp;quot;` is the six characters `&quot;`), bounded so a stray
+  ampersand cannot pair with a semicolon a paragraph away, and leaving anything that is not a reference exactly as
+  it came (an unknown name, an unclosed reference, a code point that is not a Unicode scalar value, an over-long
+  numeric reference).
+- It is applied to leaf text only: a Route 53 record's `<Value>` and `<Name>`, the scan cursor's
+  `<NextRecordName>`, and the AWS error `<Message>`. The structural extractors keep returning nested markup
+  untouched, because decoding that would turn an escaped closing tag inside a record value into a tag.
+
+### Validation
+
+1. The five entities, decimal and hexadecimal references (including a code point above the basic plane) decode;
+   a reference that is not one is left alone; decoding is a single pass.
+2. `xmlUnescape (xmlEscape x) == x` for every byte string (a property case).
+3. A Route 53 exact lookup and a family scan return a TXT value with its quotation marks, and a value carrying an
+   ampersand and an escaped closing tag comes back as that text and is never read as markup.
+4. The value the change-batch renderer writes is the value read back from the body it renders.
+5. An AWS error message returns its apostrophes and ampersands.
+6. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
+
+### Remaining Work
+
+None. Live proof is a `Live-proof: pending` note and is non-blocking under Standard O.
 
 ## Documentation Requirements
 

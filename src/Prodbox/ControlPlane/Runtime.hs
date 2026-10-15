@@ -297,6 +297,7 @@ import Prodbox.ControlPlane.Client
   , mkTlsRetentionEndpoint
   , newControlPlaneClient
   )
+import Prodbox.ControlPlane.ClosedRefusalToken (closedRefusalToken)
 import Prodbox.ControlPlane.ConfigBackupClient (configBackupClient)
 import Prodbox.ControlPlane.ConfigEndpoint
   ( aggregateConfigAuthorityRepository
@@ -426,6 +427,7 @@ import Prodbox.ControlPlane.ProviderWorkerClient
   ( dispatchProviderCommittedIntent
   , providerWorkerExecutionAuthenticatedHandlerObserved
   , providerWorkerResponseMaximumBytes
+  , renderProviderWorkerClientError
   )
 import Prodbox.ControlPlane.ProviderWorkerDiagnostic
   ( ProviderWorkerRequestCause (..)
@@ -508,6 +510,7 @@ import Prodbox.ControlPlane.RetainedMaterialDeliveryCoordinator
 import Prodbox.ControlPlane.RetainedMaterialDeliveryEndpoint
   ( RetainedMaterialDeliveryBoundary (..)
   , retainedMaterialDeliveryAuthenticatedHandler
+  , withRetainedDeliveryRefusalLog
   )
 import Prodbox.ControlPlane.RetainedMaterialDeliveryProduction
   ( productionRetainedMaterialDeliveryWithKeyPair
@@ -640,6 +643,7 @@ import Prodbox.ControlPlane.TargetRetainedMaterialRewrapClient
 import Prodbox.ControlPlane.TargetRetainedMaterialRewrapEndpoint
   ( TargetRetainedMaterialSourceObservation (..)
   , targetRetainedMaterialRewrapAuthenticatedHandler
+  , withTargetRetainedRewrapRefusalLog
   )
 import Prodbox.ControlPlane.TargetRetainedMaterialRewrapProduction
   ( productionTargetRetainedMaterialRewrapBoundary
@@ -2811,6 +2815,13 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                       Right outcome@(TlsWorkflowRetainedReplacingUnopenableVersion _ _) -> do
                         observeTlsWorkflowRetainNotice outcome
                         pure TlsRetentionWorkflowAuthorityRetained
+                      -- The committed reference already describes this
+                      -- certificate; the notice records that the next version
+                      -- was not claimed, because the slot it would have
+                      -- claimed was unusable and no failure line will say so.
+                      Right outcome@(TlsWorkflowRetainedUnchanged _) -> do
+                        observeTlsWorkflowRetainNotice outcome
+                        pure TlsRetentionWorkflowAuthorityRetained
                 TlsRetentionWorkflowAuthorityRestore substrate scope ->
                   runAuthorityTlsWorkflow substrate scope $ \workflow -> do
                     nowResult <- currentAuthorityTime
@@ -2938,102 +2949,111 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
               retainedRewrapClient =
                 targetRetainedMaterialRewrapClient targetOneShotTransport
               retainedDeliveryBoundary =
-                RetainedMaterialDeliveryBoundary
-                  { deliverRetainedSesSmtp = \now source request ->
-                      if retainedMaterialTargetText (retainedDeliveryRequestTarget request)
-                        /= targetAgentClusterIdentity registeredAgentIdentity
-                        then pure (Left "retained delivery target is not the registered Target Agent")
-                        else case mkCrossClusterDurableCoordinate
-                          authority
-                          ( "retained-material/delivery/"
-                              <> retainedMaterialSchemaToken SRetainedSesSmtpMaterial
-                              <> "/"
-                              <> retainedMaterialTargetText (retainedDeliveryRequestTarget request)
-                          ) of
-                          Left err -> pure (Left (Text.pack (show err)))
-                          Right outboxCoordinate -> do
-                            sourceReady <-
-                              ensureRetainedMaterialCurrentSource
-                                retainedSesSmtpRepository
-                                now
-                                source
-                            case sourceReady of
-                              Left detail -> pure (Left detail)
-                              Right () ->
-                                coordinateRetainedMaterialDelivery
-                                  ( modelBRetainedMaterialRepository
-                                      ( inClusterAuthorityModelBCasAdapter
-                                          store
-                                          authority
-                                          (retainedMaterialModelBCodec SRetainedSesSmtpMaterial)
-                                      )
-                                      outboxCoordinate
+                withRetainedDeliveryRefusalLog observeRetainedDeliveryRefusal $
+                  RetainedMaterialDeliveryBoundary
+                    { deliverRetainedSesSmtp = \now source request ->
+                        if retainedMaterialTargetText (retainedDeliveryRequestTarget request)
+                          /= targetAgentClusterIdentity registeredAgentIdentity
+                          then pure (Left "retained delivery target is not the registered Target Agent")
+                          else case mkCrossClusterDurableCoordinate
+                            authority
+                            ( "retained-material/delivery/"
+                                <> retainedMaterialSchemaToken SRetainedSesSmtpMaterial
+                                <> "/"
+                                <> retainedMaterialTargetText (retainedDeliveryRequestTarget request)
+                            ) of
+                            Left err -> pure (Left (Text.pack (show err)))
+                            Right outboxCoordinate -> do
+                              sourceReady <-
+                                observeRetainedDeliveryStage
+                                  "source-current"
+                                  ( ensureRetainedMaterialCurrentSource
+                                      retainedSesSmtpRepository
+                                      now
+                                      source
                                   )
-                                  now
-                                  source
-                                  request
-                                  (\_ -> retainedTargetObserver TargetSesSmtp)
-                                  ( \keyPair intent ->
-                                      fmap retainedMaterialDeliveryTargetReceipt
-                                        <$> productionRetainedMaterialDeliveryWithKeyPair
-                                          SRetainedSesSmtpMaterial
-                                          retainedTargetBoundary
-                                          retainedRewrapClient
-                                          registeredAgentIdentity
-                                          targetWorkerImage
-                                          now
-                                          keyPair
-                                          source
-                                          intent
+                              case sourceReady of
+                                Left detail -> pure (Left detail)
+                                Right () ->
+                                  coordinateRetainedMaterialDelivery
+                                    ( modelBRetainedMaterialRepository
+                                        ( inClusterAuthorityModelBCasAdapter
+                                            store
+                                            authority
+                                            (retainedMaterialModelBCodec SRetainedSesSmtpMaterial)
+                                        )
+                                        outboxCoordinate
+                                    )
+                                    now
+                                    source
+                                    request
+                                    (\_ -> observeRetainedDeliveryStage "sink-observe" (retainedTargetObserver TargetSesSmtp))
+                                    ( \keyPair intent ->
+                                        observeRetainedDeliveryStage "materialize" $
+                                          fmap retainedMaterialDeliveryTargetReceipt
+                                            <$> productionRetainedMaterialDeliveryWithKeyPair
+                                              SRetainedSesSmtpMaterial
+                                              retainedTargetBoundary
+                                              retainedRewrapClient
+                                              registeredAgentIdentity
+                                              targetWorkerImage
+                                              now
+                                              keyPair
+                                              source
+                                              intent
+                                    )
+                    , deliverRetainedAcmeEab = \now source request ->
+                        if retainedMaterialTargetText (retainedDeliveryRequestTarget request)
+                          /= targetAgentClusterIdentity registeredAgentIdentity
+                          then pure (Left "retained delivery target is not the registered Target Agent")
+                          else case mkCrossClusterDurableCoordinate
+                            authority
+                            ( "retained-material/delivery/"
+                                <> retainedMaterialSchemaToken SRetainedAcmeEabMaterial
+                                <> "/"
+                                <> retainedMaterialTargetText (retainedDeliveryRequestTarget request)
+                            ) of
+                            Left err -> pure (Left (Text.pack (show err)))
+                            Right outboxCoordinate -> do
+                              sourceReady <-
+                                observeRetainedDeliveryStage
+                                  "source-current"
+                                  ( ensureRetainedMaterialCurrentSource
+                                      retainedAcmeEabRepository
+                                      now
+                                      source
                                   )
-                  , deliverRetainedAcmeEab = \now source request ->
-                      if retainedMaterialTargetText (retainedDeliveryRequestTarget request)
-                        /= targetAgentClusterIdentity registeredAgentIdentity
-                        then pure (Left "retained delivery target is not the registered Target Agent")
-                        else case mkCrossClusterDurableCoordinate
-                          authority
-                          ( "retained-material/delivery/"
-                              <> retainedMaterialSchemaToken SRetainedAcmeEabMaterial
-                              <> "/"
-                              <> retainedMaterialTargetText (retainedDeliveryRequestTarget request)
-                          ) of
-                          Left err -> pure (Left (Text.pack (show err)))
-                          Right outboxCoordinate -> do
-                            sourceReady <-
-                              ensureRetainedMaterialCurrentSource
-                                retainedAcmeEabRepository
-                                now
-                                source
-                            case sourceReady of
-                              Left detail -> pure (Left detail)
-                              Right () ->
-                                coordinateRetainedMaterialDelivery
-                                  ( modelBRetainedMaterialRepository
-                                      ( inClusterAuthorityModelBCasAdapter
-                                          store
-                                          authority
-                                          (retainedMaterialModelBCodec SRetainedAcmeEabMaterial)
-                                      )
-                                      outboxCoordinate
-                                  )
-                                  now
-                                  source
-                                  request
-                                  (\_ -> retainedTargetObserver TargetAcmeEab)
-                                  ( \keyPair intent ->
-                                      fmap retainedMaterialDeliveryTargetReceipt
-                                        <$> productionRetainedMaterialDeliveryWithKeyPair
-                                          SRetainedAcmeEabMaterial
-                                          retainedTargetBoundary
-                                          retainedRewrapClient
-                                          registeredAgentIdentity
-                                          targetWorkerImage
-                                          now
-                                          keyPair
-                                          source
-                                          intent
-                                  )
-                  }
+                              case sourceReady of
+                                Left detail -> pure (Left detail)
+                                Right () ->
+                                  coordinateRetainedMaterialDelivery
+                                    ( modelBRetainedMaterialRepository
+                                        ( inClusterAuthorityModelBCasAdapter
+                                            store
+                                            authority
+                                            (retainedMaterialModelBCodec SRetainedAcmeEabMaterial)
+                                        )
+                                        outboxCoordinate
+                                    )
+                                    now
+                                    source
+                                    request
+                                    (\_ -> observeRetainedDeliveryStage "sink-observe" (retainedTargetObserver TargetAcmeEab))
+                                    ( \keyPair intent ->
+                                        observeRetainedDeliveryStage "materialize" $
+                                          fmap retainedMaterialDeliveryTargetReceipt
+                                            <$> productionRetainedMaterialDeliveryWithKeyPair
+                                              SRetainedAcmeEabMaterial
+                                              retainedTargetBoundary
+                                              retainedRewrapClient
+                                              registeredAgentIdentity
+                                              targetWorkerImage
+                                              now
+                                              keyPair
+                                              source
+                                              intent
+                                    )
+                    }
               manifestRepository =
                 modelBDecommissionCommitRepository
                   ( inClusterAuthorityModelBCasAdapter
@@ -3102,7 +3122,7 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                     , authorityProviderRevision =
                         pure (mkProviderRevision 1)
                     , authorityProviderWorkerDispatch =
-                        fmap (mapLeft (Text.pack . show))
+                        fmap (mapLeft renderProviderWorkerClientError)
                           . dispatchProviderCommittedIntent providerTransport
                     }
                   externalMaterialHandler
@@ -3980,6 +4000,7 @@ renderTlsWorkflowRetainCause :: TlsWorkflowRetainOutcome -> Text
 renderTlsWorkflowRetainCause outcome = case outcome of
   TlsWorkflowNothingToRetain -> "nothing-to-retain"
   TlsWorkflowRetained _ -> "retained"
+  TlsWorkflowRetainedUnchanged _ -> "retained-unchanged-certificate"
   TlsWorkflowRetainedPastUnopenableVersion (RetentionVersion skipped) _ ->
     "retained-past-unopenable-version/v" <> Text.pack (show skipped)
   TlsWorkflowRetainedReplacingUnopenableVersion (RetentionVersion replaced) _ ->
@@ -4020,6 +4041,36 @@ renderTlsWorkflowFailureCause failure = case failure of
 
 -- | Diagnostics cannot change an operation result. Async cancellation remains
 -- cancellation; an ordinary stderr failure is ignored.
+-- | Name the stage that refused a retained-material delivery. The Authority's
+-- answer reaches the Credential Provisioner worker, which erases it to its closed
+-- @retained/delivery-failed@ class, so this is the only record of the stage.
+observeRetainedDeliveryRefusal :: Text -> IO ()
+observeRetainedDeliveryRefusal line =
+  writeClosedDiagnostic ("retained-material/delivery refusal=" <> Text.unpack line)
+
+-- | Name the stage of a retained delivery that returned a refusal. The final
+-- answer carries only the last refusal and the worker erases it, so a delivery
+-- that fails after several stages says which one.
+observeRetainedDeliveryStage :: Text -> IO (Either Text value) -> IO (Either Text value)
+observeRetainedDeliveryStage stage action = do
+  result <- action
+  case result of
+    Left detail ->
+      writeClosedDiagnostic
+        ( "retained-material/delivery stage="
+            <> Text.unpack stage
+            <> " refusal="
+            <> Text.unpack (closedRefusalToken detail)
+        )
+    Right _ -> pure ()
+  pure result
+
+-- | Name the stage at which the retained-home Target Agent refused or could not
+-- serve a rewrap or a source observation.
+observeRetainedRewrapRefusal :: Text -> IO ()
+observeRetainedRewrapRefusal line =
+  writeClosedDiagnostic ("retained-material/rewrap refusal=" <> Text.unpack line)
+
 writeClosedDiagnostic :: String -> IO ()
 writeClosedDiagnostic line = do
   result <- try (writeDiagnosticLine line) :: IO (Either SomeException ())
@@ -4630,6 +4681,7 @@ providerWorkerRuntimeHandler vaultSession clusterId trustRegistry clientSigner =
               vaultSession
               authorityTransport
               (readRetainedAuthorityEpoch vaultSession)
+              currentAuthorityTime
           )
           providerProductionCapabilities
       -- Sprint 4.55: readiness used to read the retained Authority epoch and
@@ -4801,9 +4853,12 @@ targetSecretAgentRuntimeHandler vaultConfig vaultSession clusterId agentIdentity
                 targetRetainedMaterialRewrapAuthenticatedHandler
                   controlPlaneMaximumBodyBytes
                   currentAuthorityTime
-                  ( productionTargetRetainedMaterialRewrapBoundary
-                      vaultSession
-                      clusterId
+                  ( withTargetRetainedRewrapRefusalLog
+                      observeRetainedRewrapRefusal
+                      ( productionTargetRetainedMaterialRewrapBoundary
+                          vaultSession
+                          clusterId
+                      )
                   )
                   metadataOnlyFallback
               decommissionHandler =

@@ -53,6 +53,7 @@ data NativeValidation
   | ValidationCertificateScope
   | ValidationCleanRoomHandoff
   | ValidationCascadeQualification
+  | ValidationCascadeQualificationReceipt
   | ValidationChartsPlatform
   | ValidationResourceGuardrails
   | ValidationDaemonBootstrap
@@ -352,6 +353,12 @@ testExecutionPlan substrate scope =
               , nativeRequiresSupportedRuntimePostflight = False
               , nativeSubstrate = substrate
               }
+        IntegrationCascadeQualificationReceipt ->
+          nativeNamedSuite
+            "integration cascade-qualification-receipt"
+            "integration-cascade-qualification-receipt"
+            [ValidationCascadeQualificationReceipt]
+            False
         IntegrationHaRke2Aws ->
           nativeNamedSuite
             "integration ha-rke2-aws"
@@ -580,6 +587,7 @@ validationInitialPrerequisites validation =
     ValidationCertificateScope -> [PublicEdgeReady, ToolCurl, ToolOpenSsl]
     ValidationCleanRoomHandoff -> []
     ValidationCascadeQualification -> pulumiSubstratePrerequisites
+    ValidationCascadeQualificationReceipt -> []
     -- The chart-platform / storage / lifecycle validations operate on the
     -- local cluster: cluster only, no AWS credentials.
     ValidationChartsPlatform -> clusterPrerequisites
@@ -621,6 +629,7 @@ validationDeferredPrerequisites validation =
     ValidationCertificateScope -> []
     ValidationCleanRoomHandoff -> []
     ValidationCascadeQualification -> [PulumiLoggedIn]
+    ValidationCascadeQualificationReceipt -> []
     ValidationChartsPlatform -> []
     ValidationResourceGuardrails -> []
     ValidationDaemonBootstrap -> []
@@ -741,6 +750,7 @@ nativeValidationId validation =
     ValidationCertificateScope -> "certificate-scope"
     ValidationCleanRoomHandoff -> "clean-room-handoff"
     ValidationCascadeQualification -> "cascade-qualification"
+    ValidationCascadeQualificationReceipt -> "cascade-qualification-receipt"
     ValidationChartsPlatform -> "charts-platform"
     ValidationResourceGuardrails -> "resource-guardrails"
     ValidationDaemonBootstrap -> "daemon-bootstrap"

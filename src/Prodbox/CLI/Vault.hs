@@ -13,6 +13,8 @@ module Prodbox.CLI.Vault
   , runPostUnsealHandoffViaBroker
   , BrokerVaultSealStatus (..)
   , observeBrokerVaultSealStatus
+  , brokerHostConnection
+  , freshVaultIdempotencyKey
   )
 where
 

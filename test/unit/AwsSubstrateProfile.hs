@@ -8,7 +8,9 @@ where
 import Data.List (isInfixOf)
 import Data.Text qualified as Text
 import Dhall qualified
+import Prodbox.Cluster.Substrate qualified as ClusterSubstrate
 import Prodbox.Cluster.Topology qualified as ClusterTopology
+import Prodbox.Infra.AwsEksTestStack (awsEksDesiredNodeCount)
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderStackConfigView (..)
@@ -85,6 +87,29 @@ awsSubstrateProfileSuite =
           testConfig = mustRight (mkAwsTestProfileProviderStackConfig profile)
       providerStackConfigView eksConfig `shouldBe` AwsEksProfileConfig profile 3
       providerStackConfigView testConfig `shouldBe` AwsTestProfileConfig profile
+
+    it
+      "takes the EKS desired count from the topology when it is EKS and from the profile minimum otherwise"
+      $ do
+        let profile = mustRight (mkAwsSubstrateProfile validInput)
+            eksTopology = mustRight (ClusterTopology.mkEksTopology 4 ClusterSubstrate.LinuxCpu)
+            homeTopology = mustRight (ClusterTopology.mkSingleMachineRke2Topology "home-machine")
+        awsEksDesiredNodeCount profile eksTopology `shouldBe` 4
+        awsEksDesiredNodeCount profile homeTopology
+          `shouldBe` awsSubstrateEksMinimumNodeCount profile
+        awsSubstrateEksMinimumNodeCount profile `shouldBe` 2
+        let fallback = awsEksDesiredNodeCount profile homeTopology
+        awsEksStackConfiguration profile fallback
+          `shouldSatisfy` either (const False) (elem ("nodeDesiredSize", "2"))
+        providerStackConfigView
+          (mustRight (mkAwsEksProfileProviderStackConfig profile fallback))
+          `shouldBe` AwsEksProfileConfig profile 2
+
+    it "still refuses a profile whose maximum is below the minimum the fallback selects" $ do
+      let profile = mustRight (mkAwsSubstrateProfile (validInput {eks_node_min_size = 4, eks_node_max_size = 3}))
+          homeTopology = mustRight (ClusterTopology.mkSingleMachineRke2Topology "home-machine")
+      awsEksStackConfiguration profile (awsEksDesiredNodeCount profile homeTopology)
+        `shouldBe` Left (AwsSubstrateProfileMaximumBelowDesired 3 4)
 
     it "round-trips a present profile through the generated Tier-0 record codec" $ do
       let profile = mustRight (mkAwsSubstrateProfile validInput)

@@ -91,6 +91,7 @@ module Prodbox.Lifecycle.Teardown.CascadeCandidate.Internal
   , cascadeCandidateFreshPrimarySurvivesDeclaredLeaseClaim
   , CascadeCandidatePlanSummary (..)
   , fixedCascadeCandidatePlanSummary
+  , cascadeCandidateShapeSummary
   )
 where
 
@@ -782,8 +783,36 @@ data CascadeCandidatePlanSummary = CascadeCandidatePlanSummary
 fixedCascadeCandidatePlanSummary
   :: Either String CascadeCandidatePlanSummary
 fixedCascadeCandidatePlanSummary =
+  cascadeCandidateShapeSummary
+    (cascadeCandidateFoundation regressionInputs)
+    (cascadeCandidateAwsDnsZone regressionInputs)
+    (cascadeCandidateDeclaredLeaseMicros regressionInputs)
+
+-- | The identities of the compiled program for one foundation, DNS zone and
+-- declared lease, with everything that names a /run/ held constant: the run id,
+-- owner and terminal permit are the fixture's, and the AWS scope is the
+-- non-authorizing regression scope.
+--
+-- Two cycles of one deployment differ in all of those, so their own plans never
+-- agree; this is what they do agree on. It certifies the shape of the program
+-- compiled for this foundation and zone, not account-bound operation ids. The
+-- zone is real, so this is computed where the zone is known, before the cascade
+-- runs, and compared afterwards. It cannot authorize anything.
+cascadeCandidateShapeSummary
+  :: LinuxRke2FoundationId
+  -> Maybe HostedZoneId
+  -> Natural
+  -> Either String CascadeCandidatePlanSummary
+cascadeCandidateShapeSummary foundation dnsZone declaredLeaseMicros =
   first renderCascadeCandidateError $ do
-    plan <- resolveCascadeCandidatePlan regressionAwsScope regressionInputs
+    plan <-
+      resolveCascadeCandidatePlan
+        regressionAwsScope
+        regressionInputs
+          { cascadeCandidateFoundation = foundation
+          , cascadeCandidateAwsDnsZone = dnsZone
+          , cascadeCandidateDeclaredLeaseMicros = declaredLeaseMicros
+          }
     Right
       CascadeCandidatePlanSummary
         { cascadeCandidateSummaryRunId =

@@ -55,7 +55,14 @@ module Prodbox.Lib.AwsSubstratePlatform
   , ensureAwsSubstratePlatformRuntime
   , buildAwsSubstratePlatformExecutionPlan
   , runAwsSubstratePlatformPlanWith
+  , awsAnchoredOrderSpec
   , awsStepsForComponent
+  , awsHomeResidentComponents
+  , AwsReadinessVantage (..)
+  , awsReadinessVantage
+  , awsComponentReadinessRetryPolicy
+  , awsRequiredComponents
+  , validateAwsDependencyCoverage
   , awsSubstratePlatformStepOrderRespectsGraph
   , awsSubstratePlatformRuntimeStepDescriptions
   , awsSubstratePlatformComponents
@@ -84,12 +91,15 @@ import Prodbox.CLI.Output
   , writeOutputLine
   )
 import Prodbox.CLI.Rke2
-  ( KubernetesReadinessCheck (..)
+  ( AuthorityBackupReadinessStage (..)
+  , KubernetesReadinessCheck (..)
   , MinioImageSource (..)
   , RetainedStorageInventoryEntry (..)
+  , authorityBackupReadinessChecks
   , ensureAcmeRuntimeForSubstrate
   , ensureAdminPublicEdgeRoutes
-  , ensureGatewayChartReadyPostVaultAt
+  , ensureGatewayChartReady
+  , ensureGatewayDaemonFullModeAt
   , ensureGatewayMinioBootstrap
   , ensureHarborRegistryRuntime
   , ensureHarborRegistryStorageBackend
@@ -103,6 +113,7 @@ import Prodbox.CLI.Rke2
   , minioNamespace
   , minioReleaseName
   , observeGatewayBackendRoundTripOnceAt
+  , observeHomeKubernetesReadinessOnce
   , observeKubernetesReadinessOnce
   , observeRegistryBackendRoundTripOnce
   , observeVaultUnsealedOnce
@@ -170,7 +181,8 @@ import Prodbox.Lib.EksImageMirror
   , mirrorJobNamespace
   )
 import Prodbox.Lib.Storage
-  ( ChartStorageBinding (..)
+  ( ChartStorageAccessMode (..)
+  , ChartStorageBinding (..)
   , chartEbsPersistentVolumeManifest
   )
 import Prodbox.Lifecycle.AnchoredReconcile
@@ -204,8 +216,8 @@ import Prodbox.Lifecycle.ReadinessObservation
   ( BackendRoundTripResult (..)
   , ComponentReadinessTarget (..)
   , ReadinessProbeResult (..)
-  , componentReadinessRetryPolicy
   )
+import Prodbox.Lifecycle.RetainedEbsProvider (ensureRetainedEbsVolumesThroughProvider)
 import Prodbox.Lifecycle.Teardown.AwsLoadBalancerControllerFamilyAdapter
   ( awsLoadBalancerControllerObservationArns
   )
@@ -214,6 +226,7 @@ import Prodbox.Lifecycle.Teardown.Registry
   , awsEksLoadBalancerControllerTags
   )
 import Prodbox.Result (Result (..))
+import Prodbox.Retry (RetryPolicy, deploymentRevisionObservationRetryPolicy)
 import Prodbox.Settings
   ( ConfigFile (..)
   , DeploymentSection (..)
@@ -231,7 +244,6 @@ import Prodbox.Subprocess
   )
 import Prodbox.Substrate (Substrate (..), replicasForSubstrate)
 import System.Directory (getTemporaryDirectory, removeFile)
-import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.IO (hClose, openTempFile)
 
@@ -267,14 +279,11 @@ data AwsPlatformStepId
   | StepAwsLifecycleAuthority
   | StepAwsLifecycleAuthorityReady
   | StepAwsGatewayMinioBootstrap
+  | StepAwsGatewayChartDeploy
   | StepAwsGatewayPostVault
   | StepAwsGatewayFullReady
-  | StepAwsAuthorityBackup
-  | StepAwsAuthorityBackupReady
-  | StepAwsProviderWorker
-  | StepAwsProviderWorkerReady
-  | StepAwsTlsRetention
-  | StepAwsTlsRetentionReady
+  | StepAwsHomeAuthorityBackupReady
+  | StepAwsHomeProviderWorkerReady
   | StepAwsAcmeRuntime
   | StepAwsAdminPublicEdgeRoutes
   deriving (Eq, Show, Enum, Bounded)
@@ -316,14 +325,11 @@ awsStepToken step = case step of
   StepAwsLifecycleAuthority -> "ensureInternalControlPlaneChartReady SubstrateAws lifecycle-authority"
   StepAwsLifecycleAuthorityReady -> "observeAwsLifecycleAuthorityReady"
   StepAwsGatewayMinioBootstrap -> "ensureGatewayMinioBootstrap"
-  StepAwsGatewayPostVault -> "ensureGatewayChartReadyPostVaultAt SubstrateAws"
+  StepAwsGatewayChartDeploy -> "ensureGatewayChartReady SubstrateAws"
+  StepAwsGatewayPostVault -> "ensureGatewayDaemonFullModeAt SubstrateAws"
   StepAwsGatewayFullReady -> "observeAwsGatewayFullReady"
-  StepAwsAuthorityBackup -> "ensureInternalControlPlaneChartReady SubstrateAws authority-backup"
-  StepAwsAuthorityBackupReady -> "observeAwsAuthorityBackupReady"
-  StepAwsProviderWorker -> "ensureInternalControlPlaneChartReady SubstrateAws provider-worker"
-  StepAwsProviderWorkerReady -> "observeAwsProviderWorkerReady"
-  StepAwsTlsRetention -> "ensureInternalControlPlaneChartReady SubstrateAws tls-retention"
-  StepAwsTlsRetentionReady -> "observeAwsTlsRetentionReady"
+  StepAwsHomeAuthorityBackupReady -> "observeHomeAuthorityBackupReady"
+  StepAwsHomeProviderWorkerReady -> "observeHomeProviderWorkerReady"
   StepAwsAcmeRuntime -> "ensureAwsSubstrateAcmeRuntime"
   StepAwsAdminPublicEdgeRoutes -> "ensureAdminPublicEdgeRoutes SubstrateAws"
 
@@ -358,14 +364,11 @@ awsStepPhase step = case step of
   StepAwsLifecycleAuthority -> PhaseSteady
   StepAwsLifecycleAuthorityReady -> PhaseSteady
   StepAwsGatewayMinioBootstrap -> PhaseSteady
+  StepAwsGatewayChartDeploy -> PhaseSteady
   StepAwsGatewayPostVault -> PhaseSteady
   StepAwsGatewayFullReady -> PhaseSteady
-  StepAwsAuthorityBackup -> PhaseSteady
-  StepAwsAuthorityBackupReady -> PhaseSteady
-  StepAwsProviderWorker -> PhaseSteady
-  StepAwsProviderWorkerReady -> PhaseSteady
-  StepAwsTlsRetention -> PhaseSteady
-  StepAwsTlsRetentionReady -> PhaseSteady
+  StepAwsHomeAuthorityBackupReady -> PhaseSteady
+  StepAwsHomeProviderWorkerReady -> PhaseSteady
   StepAwsAcmeRuntime -> PhaseEdge
   StepAwsAdminPublicEdgeRoutes -> PhaseEdge
 
@@ -400,14 +403,11 @@ awsStepAnchor step = case step of
   StepAwsLifecycleAuthority -> ComponentMutation ComponentChartLifecycleAuthority
   StepAwsLifecycleAuthorityReady -> ComponentReadiness ComponentChartLifecycleAuthority
   StepAwsGatewayMinioBootstrap -> HostPrepBefore ComponentChartLifecycleAuthority
+  StepAwsGatewayChartDeploy -> ComponentMutation ComponentGatewayDaemonFull
   StepAwsGatewayPostVault -> ComponentMutation ComponentGatewayDaemonFull
   StepAwsGatewayFullReady -> ComponentReadiness ComponentGatewayDaemonFull
-  StepAwsAuthorityBackup -> ComponentMutation ComponentChartAuthorityBackup
-  StepAwsAuthorityBackupReady -> ComponentReadiness ComponentChartAuthorityBackup
-  StepAwsProviderWorker -> ComponentMutation ComponentChartProviderWorker
-  StepAwsProviderWorkerReady -> ComponentReadiness ComponentChartProviderWorker
-  StepAwsTlsRetention -> ComponentMutation ComponentChartTlsRetention
-  StepAwsTlsRetentionReady -> ComponentReadiness ComponentChartTlsRetention
+  StepAwsHomeAuthorityBackupReady -> ComponentReadiness ComponentChartAuthorityBackup
+  StepAwsHomeProviderWorkerReady -> ComponentReadiness ComponentChartProviderWorker
   StepAwsAcmeRuntime -> EdgeOnly
   StepAwsAdminPublicEdgeRoutes -> EdgeOnly
 
@@ -442,7 +442,8 @@ awsStepsForComponent component = case component of
     [StepAwsPostgresOperatorRuntime, StepAwsPostgresOperatorReady]
   ComponentGatewayDaemonPreVault -> []
   ComponentGatewayDaemonFull ->
-    [ StepAwsGatewayPostVault
+    [ StepAwsGatewayChartDeploy
+    , StepAwsGatewayPostVault
     , StepAwsGatewayFullReady
     ]
   ComponentChartPulsar -> []
@@ -460,12 +461,18 @@ awsStepsForComponent component = case component of
     , StepAwsLifecycleAuthority
     , StepAwsLifecycleAuthorityReady
     ]
-  ComponentChartProviderWorker ->
-    [StepAwsProviderWorker, StepAwsProviderWorkerReady]
-  ComponentChartAuthorityBackup ->
-    [StepAwsAuthorityBackup, StepAwsAuthorityBackupReady]
-  ComponentChartTlsRetention ->
-    [StepAwsTlsRetention, StepAwsTlsRetentionReady]
+  -- The roles the retained home cluster runs for every substrate
+  -- ('awsHomeResidentComponents'): the AWS plan installs nothing for them. It
+  -- observes each on the home cluster, because the executor admits a mutation
+  -- only against an observation of every dependency the graph declares, and
+  -- the components that depend on these roles are installed on EKS.
+  ComponentChartProviderWorker -> [StepAwsHomeProviderWorkerReady]
+  ComponentChartAuthorityBackup -> [StepAwsHomeAuthorityBackupReady]
+  -- TLS Retention is home-only too, but no component the AWS plan installs
+  -- depends on it in the graph: the AWS public-edge TLS workflow reaches the
+  -- home adapter itself and fails there with its own typed error. A step here
+  -- would mint an admission nothing consumes and add a late refusal.
+  ComponentChartTlsRetention -> []
   ComponentChartTargetSecretAgent ->
     [StepAwsTargetSecretAgent, StepAwsTargetSecretAgentReady]
 
@@ -488,8 +495,66 @@ awsRequiredComponents =
   , ComponentGatewayDaemonFull
   , ComponentChartAuthorityBackup
   , ComponentChartProviderWorker
-  , ComponentChartTlsRetention
   ]
+
+-- | The control-plane roles the retained home cluster runs and the AWS plan
+-- deliberately does not install on EKS, but does observe there.
+--
+-- The plan once deployed these two, and the TLS Retention Adapter, onto the
+-- EKS cluster. Their chart headers and the doctrine say home-only: the
+-- Authority Backup Adapter and the TLS Retention Adapter are the only readers
+-- of the long-lived store credentials, and the Provider Worker is the one
+-- fenced holder of the Lifecycle-provider credential, reached by registered
+-- intents through its private local transport. Their Vault credentials are
+-- written only by the home first-reconcile plan, so on a fresh EKS Vault the
+-- Backup pod never became ready, the Provider pod waited out a thirty-minute
+-- @helm --wait@, and the TLS Retention pod crash-looped at startup. No host
+-- client addressed any of them: the AWS public-edge TLS workflow already uses
+-- the home adapter and the selected EKS Agent. TLS Retention is not named
+-- here: nothing the AWS plan installs depends on it in the graph.
+--
+-- The plan still names each of the two, as a readiness-only step observed
+-- against the HOME cluster. The anchored executor admits a mutation only against an
+-- observation of every dependency the graph declares for the mutated
+-- component, and Envoy Gateway, cert-manager, the Percona operator and the
+-- gateway depend on these roles in the graph; dropping the steps outright left
+-- those mutations refused with a missing admission on every run. Observing the
+-- roles where they run mints that admission from evidence, and refreshes it
+-- when it ages out, instead of assuming the home reconcile that precedes every
+-- AWS run is still true.
+awsHomeResidentComponents :: [ComponentId]
+awsHomeResidentComponents =
+  [ ComponentChartAuthorityBackup
+  , ComponentChartProviderWorker
+  ]
+
+-- | Which cluster an AWS run observes a component's readiness against.
+--
+-- An AWS run holds the EKS cluster's kubeconfig in its environment. The roles
+-- in 'awsHomeResidentComponents' do not run there, so their readiness is read
+-- from the retained home cluster. The decision is a value rather than a call
+-- site, so that it can be asserted over every component the plan requires: an
+-- observation function chosen inline is an opaque action no test can inspect.
+data AwsReadinessVantage
+  = ObserveSelectedCluster
+  | ObserveRetainedHomeCluster
+  deriving (Eq, Show)
+
+awsReadinessVantage :: ComponentId -> AwsReadinessVantage
+awsReadinessVantage component
+  | component `elem` awsHomeResidentComponents = ObserveRetainedHomeCluster
+  | otherwise = ObserveSelectedCluster
+
+-- | One Kubernetes readiness observation, taken against the cluster the
+-- vantage names.
+observeKubernetesReadinessAt
+  :: AwsReadinessVantage
+  -> FilePath
+  -> [KubernetesReadinessCheck]
+  -> IO (Either Text.Text ReadinessProbeResult)
+observeKubernetesReadinessAt vantage = case vantage of
+  ObserveSelectedCluster -> observeKubernetesReadinessOnce
+  ObserveRetainedHomeCluster -> observeHomeKubernetesReadinessOnce
 
 awsAnchoredOrderSpec :: AnchoredOrderSpec AwsPlatformStepId
 awsAnchoredOrderSpec =
@@ -1628,7 +1693,7 @@ runAwsSubstratePlatformStep repoRoot settings prodboxId labelValue snapshot endp
     StepAwsContainerdMirror -> applyEksContainerdMirrorDaemonSet repoRoot
     StepAwsRegistryStorageBackend -> ensureHarborRegistryStorageBackend repoRoot
     StepAwsRegistryRuntime -> ensureHarborRegistryRuntime repoRoot SubstrateAws
-    StepAwsRegistryMinioEdge -> ensureRegistryStorageBackendEdgeReady repoRoot
+    StepAwsRegistryMinioEdge -> ensureRegistryStorageBackendEdgeReady repoRoot SubstrateAws
     StepAwsImageMirror -> applyEksImageMirrorJob repoRoot
     StepAwsRuntimeImage -> ensureRuntimeImageForSubstrate SubstrateAws repoRoot prodboxId
     StepAwsRegistryReady -> pure ExitSuccess
@@ -1670,35 +1735,14 @@ runAwsSubstratePlatformStep repoRoot settings prodboxId labelValue snapshot endp
         ComponentChartLifecycleAuthority
     StepAwsLifecycleAuthorityReady -> pure ExitSuccess
     StepAwsGatewayMinioBootstrap -> ensureGatewayMinioBootstrap repoRoot
+    StepAwsGatewayChartDeploy ->
+      ensureGatewayChartReady repoRoot settings SubstrateAws
     StepAwsGatewayPostVault ->
       withRequiredGatewayEndpoint step endpoint $ \gatewayEndpoint ->
-        ensureGatewayChartReadyPostVaultAt
-          repoRoot
-          settings
-          SubstrateAws
-          gatewayEndpoint
+        ensureGatewayDaemonFullModeAt SubstrateAws repoRoot gatewayEndpoint
     StepAwsGatewayFullReady -> pure ExitSuccess
-    StepAwsAuthorityBackup ->
-      ensureInternalControlPlaneChartReady
-        repoRoot
-        settings
-        SubstrateAws
-        ComponentChartAuthorityBackup
-    StepAwsAuthorityBackupReady -> pure ExitSuccess
-    StepAwsProviderWorker ->
-      ensureInternalControlPlaneChartReady
-        repoRoot
-        settings
-        SubstrateAws
-        ComponentChartProviderWorker
-    StepAwsProviderWorkerReady -> pure ExitSuccess
-    StepAwsTlsRetention ->
-      ensureInternalControlPlaneChartReady
-        repoRoot
-        settings
-        SubstrateAws
-        ComponentChartTlsRetention
-    StepAwsTlsRetentionReady -> pure ExitSuccess
+    StepAwsHomeAuthorityBackupReady -> pure ExitSuccess
+    StepAwsHomeProviderWorkerReady -> pure ExitSuccess
     StepAwsAcmeRuntime ->
       ensureAwsSubstrateAcmeRuntime repoRoot settings prodboxId labelValue
     StepAwsAdminPublicEdgeRoutes ->
@@ -1718,6 +1762,16 @@ withRequiredGatewayEndpoint step endpoint action =
             ++ "` requires the scoped gateway Service port-forward endpoint."
         )
     Just value -> action value
+
+-- | The window an AWS barrier gives a component's readiness observation.
+--
+-- Every AWS observation crosses the Kubernetes API of a remote cluster, and
+-- several go through an exec or a kubectl against the home cluster. A blip of a
+-- few seconds is ordinary there, and the shared three-attempt policy (about two
+-- seconds) refused a whole run at a barrier whose component was healthy. The
+-- window is the one the home driver gives the roles whose apply does not wait.
+awsComponentReadinessRetryPolicy :: ComponentId -> RetryPolicy
+awsComponentReadinessRetryPolicy = const deploymentRevisionObservationRetryPolicy
 
 requireAwsComponentReadiness
   :: FilePath
@@ -1753,7 +1807,7 @@ requireAwsComponentReadiness repoRoot dag endpoint component =
                   target
           result <-
             observeReadinessThroughCapability
-              componentReadinessRetryPolicy
+              (awsComponentReadinessRetryPolicy component)
               client
               component
               requirement
@@ -1820,7 +1874,7 @@ awsComponentReadinessTarget repoRoot endpoint component =
                     (mirrorNamespace defaultProdboxMirrorConfig)
                     (mirrorDaemonSetName defaultProdboxMirrorConfig)
                 ]
-                (observeRegistryBackendRoundTripOnce repoRoot)
+                (observeRegistryBackendRoundTripOnce repoRoot SubstrateAws)
             )
         )
     ComponentMetalLB ->
@@ -1874,7 +1928,18 @@ awsComponentReadinessTarget repoRoot endpoint component =
     ComponentChartApi -> unsupportedAwsReadiness component
     ComponentChartWebsocket -> unsupportedAwsReadiness component
     ComponentChartGateway -> unsupportedAwsReadiness component
-    ComponentChartBootstrapBroker -> deploymentRolloutTarget component "bootstrap-broker"
+    -- The graph declares the Broker's probe as resource-exists: its pod cannot
+    -- be Available before Vault is unsealed, which this component precedes. A
+    -- rollout target here was refused for that probe on every run.
+    ComponentChartBootstrapBroker ->
+      Right
+        ( ResourceExistsTarget
+            component
+            ( observeKubernetesReadinessOnce
+                repoRoot
+                [DeploymentRevisionObserved "bootstrap-broker" "bootstrap-broker"]
+            )
+        )
     ComponentChartLifecycleAuthority ->
       Right
         ( RolloutCompleteTarget
@@ -1884,9 +1949,13 @@ awsComponentReadinessTarget repoRoot endpoint component =
                 [StatefulSetReady "lifecycle-authority" "lifecycle-authority"]
             )
         )
-    ComponentChartProviderWorker -> deploymentRolloutTarget component "provider-worker"
-    ComponentChartAuthorityBackup -> deploymentRolloutTarget component "authority-backup"
-    ComponentChartTlsRetention -> deploymentRolloutTarget component "tls-retention"
+    ComponentChartProviderWorker ->
+      homeResidentTarget component [DeploymentAvailable "provider-worker" "provider-worker"]
+    ComponentChartAuthorityBackup ->
+      homeResidentTarget
+        component
+        (authorityBackupReadinessChecks AuthorityBackupProductionAdmission)
+    ComponentChartTlsRetention -> unsupportedAwsReadiness component
     ComponentChartTargetSecretAgent -> deploymentRolloutTarget component "target-secret-agent"
  where
   deploymentRolloutTarget targetComponent name =
@@ -1896,6 +1965,20 @@ awsComponentReadinessTarget repoRoot endpoint component =
           ( observeKubernetesReadinessOnce
               repoRoot
               [DeploymentAvailable name name]
+          )
+      )
+
+  -- The same observation the home driver makes of the same role, taken against
+  -- the cluster 'awsReadinessVantage' names for it: the home roles on the
+  -- retained home cluster, because the process's own kubeconfig is the EKS one.
+  homeResidentTarget targetComponent checks =
+    Right
+      ( RolloutCompleteTarget
+          targetComponent
+          ( observeKubernetesReadinessAt
+              (awsReadinessVantage targetComponent)
+              repoRoot
+              checks
           )
       )
 
@@ -2014,15 +2097,10 @@ ensureAwsSubstrateRetainedStorage repoRoot settings snapshot = do
     (Left err, _) -> failWith err
     (_, Left err) -> failWith err
     (Right required, Right authoredProfile) -> do
-      environment <- getEnvironment
       ebsBindingsResult <-
-        EbsVolume.ensureRetainedEbsVolumes
-          EbsVolume.EbsEnsureInput
-            { EbsVolume.ebsEnsureEnvironment = environment
-            , EbsVolume.ebsEnsureWorkingDirectory = Just repoRoot
-            , EbsVolume.ebsEnsureVolumeType =
-                awsSubstrateStaticEbsVolumeType authoredProfile
-            }
+        ensureRetainedEbsVolumesThroughProvider
+          repoRoot
+          (awsSubstrateStaticEbsVolumeType authoredProfile)
           required
       case ebsBindingsResult of
         Left err -> failWith ("AWS retained EBS storage reconcile failed: " ++ err)
@@ -2042,6 +2120,7 @@ ensureAwsSubstrateRetainedStorage repoRoot settings snapshot = do
       , chartStorageBindingHostPath = ""
       , chartStorageBindingOrdinal = retainedStorageInventoryOrdinal entry
       , chartStorageBindingClaimSuffix = "data"
+      , chartStorageBindingAccessMode = ReadWriteOnceAccess
       }
 
   storageNamespaces inventory =

@@ -232,6 +232,14 @@ fixtureCapabilities calls applied loseResponse unobservable =
         readOnly ("validation-zone-observe:" <> namePrefix)
     , reapValidationHostedZonesCapability = \namePrefix ->
         mutation ("validation-zone-reap:" <> namePrefix)
+    , ensureValidationHostedZoneCapability = \nonce baseZone ->
+        mutation ("validation-zone-ensure:" <> nonce <> ":" <> baseZone)
+    , observeSesInviteMailCapability = \bucket recipient ->
+        readOnly ("ses-invite-observe:" <> bucket <> ":" <> recipient)
+    , reapSesInviteMailCapability = \bucket recipient ->
+        mutation ("ses-invite-reap:" <> bucket <> ":" <> recipient)
+    , ensureRetainedEbsVolumesCapability = \volumeType specs ->
+        mutation ("retained-ebs-ensure:" <> volumeType <> ":" <> specs)
     , observeRetainedEbsVolumesCapability = \lifecycleValue ->
         readOnly ("retained-ebs-observe:" <> lifecycleValue)
     , observeEksIamRoleFamilyCapability = \roleNames policyNames ->
@@ -422,6 +430,10 @@ allIntents =
       )
   , ObserveNativeStackFamily nativeTestRef awsTestConfig
   , ReapNativeStackFamily nativeTestRef awsTestConfig ["vpc/vpc-fixture"]
+  , EnsureValidationHostedZone "1759900000" "example.test"
+  , ObserveSesInviteMail "capture-bucket" "test-1759900000@receive.example.test"
+  , ReapSesInviteMail "capture-bucket" "test-1759900000@receive.example.test"
+  , EnsureRetainedEbsVolumes "gp3" "pv-minio-0:30:ca-central-1a,pv-vault-0:10:ca-central-1a"
   ]
 
 expectedCalls :: ProviderIntent -> [(Text, ProviderIntentCoordinate)]
@@ -447,6 +459,8 @@ expectedCalls intent =
         ObserveEksClusterIdentity _ ->
           [call "session-open", call ("read:" <> intentLabel), call "session-close"]
         ObserveNativeStackFamily _ _ ->
+          [call "session-open", call ("read:" <> intentLabel), call "session-close"]
+        ObserveSesInviteMail _ _ ->
           [call "session-open", call ("read:" <> intentLabel), call "session-close"]
         _ ->
           [ call "session-open"
@@ -506,6 +520,14 @@ labelFor intent = case intent of
     "dns01-challenge-observe:" <> zoneId <> ":" <> recordNamePrefix
   ObserveNativeStackFamily _ _ -> "native-stack-family-observe"
   ReapNativeStackFamily {} -> "native-stack-family-reap"
+  EnsureValidationHostedZone nonce baseZone ->
+    "validation-zone-ensure:" <> nonce <> ":" <> baseZone
+  ObserveSesInviteMail bucket recipient ->
+    "ses-invite-observe:" <> bucket <> ":" <> recipient
+  ReapSesInviteMail bucket recipient ->
+    "ses-invite-reap:" <> bucket <> ":" <> recipient
+  EnsureRetainedEbsVolumes volumeType specs ->
+    "retained-ebs-ensure:" <> volumeType <> ":" <> specs
 
 readinessLabel :: ProviderReadinessProbe -> Text
 readinessLabel probe = case probe of

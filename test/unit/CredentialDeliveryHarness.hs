@@ -43,6 +43,8 @@ module CredentialDeliveryHarness
   )
 where
 
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (IOException, finally, try)
 import Control.Monad (unless)
 import Data.Aeson (Value, decodeFileStrict', encode, object, (.=))
@@ -50,16 +52,27 @@ import Data.Aeson.Types (Parser, parseEither, withObject, (.:))
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as ByteString8
 import Data.ByteString.Lazy qualified as LazyByteString
+import Data.IORef (atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import EksClientAuthProjectionFixture (testEksClientAuthProjection)
 import Prodbox.ControlPlane.EksClientAuthProjection (EksClientAuthProjection)
+import Prodbox.Infra.AwsEksTestStack
+  ( BearerRefresher (..)
+  , bearerRefreshDelayMicroseconds
+  , bearerRefreshRetryMicroseconds
+  , withBearerRefreshUsing
+  )
+import Prodbox.Infra.EphemeralKubeconfigPath (isEphemeralKubeconfigPath)
 import Prodbox.Lifecycle.Teardown.EphemeralKubectl
   ( EphemeralKubectl
   , EphemeralKubectlUnavailable
   , ephemeralKubeconfig
   , ephemeralKubectlWallClockSeconds
+  , replaceEphemeralBearer
   , runEphemeralKubectl
+  , withEphemeralKubeconfigPath
   , withEphemeralKubectlForProjection
   , writePrivateFile
   )
@@ -69,9 +82,10 @@ import Prodbox.Subprocess
   , Subprocess (..)
   , captureSubprocessBounded
   )
+import System.Directory (doesFileExist)
 import System.Environment (getEnvironment, getExecutablePath)
 import System.Exit (ExitCode (..))
-import System.FilePath ((</>))
+import System.FilePath (takeDirectory, (</>))
 import System.IO (hPutStrLn, stderr, stdout)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Posix.Files
@@ -92,6 +106,7 @@ import System.Posix.IO
   , openFd
   )
 import System.Posix.IO.ByteString qualified as PosixByteString
+import System.Timeout (timeout)
 import TestSupport
 
 -- | The argv sentinel that turns this test binary into the fake @kubectl@.
@@ -420,12 +435,128 @@ ephemeralKubectlCredentialSuite =
           clientWasBuilt
       built `shouldBe` True
 
+    it "replaces the bearer beside a live kubeconfig atomically and owner-only" $ do
+      -- A bracket that outlives its bearer was rejected as unauthorized on every
+      -- call after expiry; the kubeconfig names the credential by path, so
+      -- replacing the file renews it without restarting anything.
+      withEphemeralKubeconfigPath fixtureProjection exerciseBearerReplacement
+
+    it "mints the kubeconfig under the names the home clients' fallback leaves out" $
+      -- The creator and the resolver that excludes its output share one definition of the
+      -- names; this holds the creator to it, so a rename on either side fails here and not
+      -- on a live AWS run.
+      withEphemeralKubeconfigPath fixtureProjection $ \prepared ->
+        either
+          (const (expectationFailure "expected a prepared ephemeral kubeconfig"))
+          (\path -> isEphemeralKubeconfigPath path `shouldBe` True)
+          prepared
+
+    it "refuses to replace a bearer beside anything that is not an ephemeral kubeconfig" $
+      withSystemTempDirectory "prodbox-bearer-replace-refusal" $ \directory -> do
+        let stray = directory </> "operator-kubeconfig"
+        ByteString.writeFile (directory </> "bearer-token") "operator-owned"
+        refused <- replaceEphemeralBearer stray fixtureProjection
+        refused `shouldSatisfy` either (const True) (const False)
+        ByteString.readFile (directory </> "bearer-token") `shouldReturn` "operator-owned"
+
+    it "schedules a bearer refresh at half the remaining lifetime, bounded on both sides" $ do
+      bearerRefreshDelayMicroseconds 1_000 1_000 `shouldBe` 30_000_000
+      bearerRefreshDelayMicroseconds 1_000 2_000 `shouldBe` 500_000_000
+      bearerRefreshDelayMicroseconds 1_000 1_840 `shouldBe` 420_000_000
+      bearerRefreshDelayMicroseconds 1_000 100_000 `shouldBe` 1_200_000_000
+      -- An already-expired bearer is retried promptly rather than never.
+      bearerRefreshDelayMicroseconds 5_000 1_000 `shouldBe` 30_000_000
+
+    it "stops the refresher promptly when the action finishes while a renewal is in flight" $ do
+      -- The action finishing cancels the refresher and waits for it to stop. A
+      -- handler that absorbed that cancellation, as an unrestricted one does,
+      -- kept the loop alive and hung the caller for as long as it slept.
+      renewStarted <- newEmptyMVar
+      let refresher =
+            BearerRefresher
+              { refresherNow = pure 1_000
+              , refresherSleep = const (pure ())
+              , refresherRenew = do
+                  putMVar renewStarted ()
+                  threadDelay 60_000_000
+                  pure (Left "never reached")
+              , refresherReport = const (pure ())
+              }
+      finished <-
+        timeout
+          5_000_000
+          ( withBearerRefreshUsing refresher 1_800 $ do
+              takeMVar renewStarted
+              pure ("action finished" :: String)
+          )
+      finished `shouldBe` Just "action finished"
+
+    it "retries a failed renewal and renews again, reporting the failure" $ do
+      attempts <- newIORef (0 :: Int)
+      reports <- newIORef ([] :: [String])
+      sleeps <- newIORef ([] :: [Int])
+      secondRenewal <- newEmptyMVar
+      let refresher =
+            BearerRefresher
+              { refresherNow = pure 1_000
+              , refresherSleep = \microseconds -> modifyIORef' sleeps (++ [microseconds])
+              , refresherRenew = do
+                  attempt <- atomicModifyIORef' attempts (\count -> (count + 1, count + 1))
+                  case attempt of
+                    1 -> pure (Left "provider unavailable")
+                    _ -> do
+                      putMVar secondRenewal ()
+                      pure (Right 4_000)
+              , refresherReport = \line -> modifyIORef' reports (++ [line])
+              }
+      _ <-
+        timeout 5_000_000 $
+          withBearerRefreshUsing refresher 1_840 (takeMVar secondRenewal)
+      -- The scripted clock never advances and its sleep returns at once, so the
+      -- loop keeps renewing until the action stops it: at least the failed
+      -- attempt and the renewal the action waited for happened.
+      readIORef attempts >>= (`shouldSatisfy` (>= 2))
+      reported <- readIORef reports
+      length reported `shouldBe` 1
+      concat reported `shouldContain` "provider unavailable"
+      -- The first sleep is half the remaining lifetime; after the failure it
+      -- is the fixed retry delay, and after a success it is half the next one.
+      firstSleeps <- take 2 <$> readIORef sleeps
+      firstSleeps
+        `shouldBe` [bearerRefreshDelayMicroseconds 1_000 1_840, bearerRefreshRetryMicroseconds]
+
     it "keeps the bearer credential out of the rendered kubeconfig" $ do
       -- The absence assertion is still worth making; what changed is that it is
       -- no longer the only assertion about this credential.
       let rendered = show (ephemeralKubeconfig fixtureProjection "/tmp/bearer-token")
       rendered `shouldNotContain` Text.unpack fixtureBearerToken
       rendered `shouldContain` "tokenFile"
+
+-- | Replace the bearer beside a prepared kubeconfig twice and check each
+-- replacement is byte-exact, leaves nothing behind and stays owner-only.
+exerciseBearerReplacement :: Either EphemeralKubectlUnavailable FilePath -> IO ()
+exerciseBearerReplacement prepared = case prepared of
+  Left unavailable -> expectationFailure ("no ephemeral kubeconfig: " <> show unavailable)
+  Right kubeconfigPath -> do
+    let tokenPath = takeDirectory kubeconfigPath </> "bearer-token"
+        newBearer = "prodbox-ephemeral-bearer-token-renewed-0c44"
+    ByteString.readFile tokenPath
+      `shouldReturn` TextEncoding.encodeUtf8 fixtureBearerToken
+    kubeconfigBefore <- ByteString.readFile kubeconfigPath
+    replaced <- replaceEphemeralBearer kubeconfigPath (projectionWithBearer newBearer)
+    replaced `shouldBe` Right ()
+    ByteString.readFile tokenPath `shouldReturn` TextEncoding.encodeUtf8 newBearer
+    -- The kubeconfig is untouched, no replacement file is left behind, and
+    -- the credential keeps its owner-only mode.
+    ByteString.readFile kubeconfigPath `shouldReturn` kubeconfigBefore
+    doesFileExist (tokenPath <> ".next") `shouldReturn` False
+    status <- getFileStatus tokenPath
+    intersectFileModes (fileMode status) accessModes
+      `shouldBe` (ownerReadMode `unionFileModes` ownerWriteMode)
+    -- A second renewal replaces the first the same way.
+    again <- replaceEphemeralBearer kubeconfigPath fixtureProjection
+    again `shouldBe` Right ()
+    ByteString.readFile tokenPath `shouldReturn` TextEncoding.encodeUtf8 fixtureBearerToken
 
 -- | Drive one bounded call through a prepared client, flattening both failure
 -- shapes into the text a case can assert on.
@@ -451,7 +582,11 @@ fixtureRegion :: Text.Text
 fixtureRegion = fixtureAwsRegion FixtureCaCentral1
 
 fixtureProjection :: EksClientAuthProjection
-fixtureProjection =
+fixtureProjection = projectionWithBearer fixtureBearerToken
+
+-- | The same cluster with a different bearer, as a renewal would issue it.
+projectionWithBearer :: Text.Text -> EksClientAuthProjection
+projectionWithBearer bearer =
   case testEksClientAuthProjection
     "111122223333"
     fixtureRegion
@@ -459,7 +594,7 @@ fixtureProjection =
     ("arn:aws:eks:" <> fixtureRegion <> ":111122223333:cluster/prodbox-eks")
     "https://127.0.0.1:59999"
     "Y2EtZGF0YQ=="
-    fixtureBearerToken
+    bearer
     1_800 of
     Left err -> error ("CredentialDeliveryHarness: invalid fixture projection: " <> show err)
     Right projection -> projection

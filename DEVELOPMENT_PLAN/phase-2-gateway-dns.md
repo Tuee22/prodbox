@@ -11,6 +11,24 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-10-13 on Sprints `2.136`-`2.141` (Standards A/N/P).** The live campaign reopened this phase six
+times on its own surfaces and closed each with a live observation: a retain of an unchanged certificate needs no slot
+(`2.136`); the Vault accessor audit passes over an accessor that vanished between its inventory and its lookup
+(`2.137`); the Provisioner's IAM tag read-back accepts tags the program does not own (`2.138`); a refused retained
+delivery names its stage (`2.139`); a renewed operation's delivery retires the expired delivery its earlier
+attestation bound (`2.140`); and the Target-intent issuer authorizes a retained SMTP delivery from the operation that
+sealed its source (`2.141`). `keycloak-invite` passes live end to end. A lane the sprints repaired but did not
+change remains operator-gated: a changed public-edge certificate cannot be retained while the forty-six abandoned
+retention objects occupy the slots the lane selects.
+
+🔄 **Reopened 2026-10-12 on Sprint `2.136` (Standards A/N/P).** The retained public-edge TLS lane Sprint
+`2.135` repaired stopped again in the next live campaign, at the second case that sprint deliberately left
+refusing: the Authority's committed reference is `v4` and the store holds stale objects in every slot from `5`
+to `50`, left by earlier Authority epochs. Every chart delete that retains the certificate first was refused,
+though the committed reference already preserved the live certificate. Sprint `2.136` answers a retain of an
+unchanged certificate with the committed reference when the next slot cannot be used. The phase recloses when
+`2.136` reaches `Done`; until then this entry records an open reopen, not a closure.
+
 ✅ **Reclosed 2026-09-17 on Sprint `2.135` (Standards A/N/P).** The retained public-edge TLS lane
 admits exactly one successor version past an Authority-lane object proven unopenable, and admits it
 only from a committed current reference. The evidence is durable — the skipped version and the
@@ -1815,7 +1833,9 @@ partition heal that today is benign only because Route 53 UPSERT happens to be i
   Sprint `2.31` removes the historical commit-log carrier.
 - `dnsWriteLoop` writes the Route 53 record only when the local node is owner AND the most
   recent applicable claim event is the local node's claim AND no later yield from the local node
-  is present, via the runtime `canWriteDns` predicate.
+  is present, via the runtime DNS-write authority (`authorizeDnsWrite` in
+  `src/Prodbox/Gateway/DnsAuthority.hs`, which constructs write authority only when ready
+  credentials, a ready continuity fence, and a current local claim all agree).
 - `ClaimPrecedesWrite` and `YieldPrecedesReclaim` from the TLA+ spec hold on the bounded semantic
   ownership projection, not only on the model.
 - `/v1/state` exposes the current `node_disposition` and `peer_dispositions` plus `can_write_dns`.
@@ -1832,8 +1852,10 @@ partition heal that today is benign only because Route 53 UPSERT happens to be i
 
 ### Current Validation State
 
-- `nodeDisposition` and `canWriteDns` in `src/Prodbox/Gateway/Types.hs` compute the runtime
-  predicate without IO and are exercised in unit tests.
+- `authorizeDnsWrite` in `src/Prodbox/Gateway/DnsAuthority.hs` computes the runtime predicate
+  without IO and is exercised in `test/unit/GatewayAuthority.hs`; the daemon's
+  `boundedNodeDisposition` derives the local disposition from the bounded semantic ownership
+  projection. (The historical `canWriteDns`/`nodeDisposition` pair in `Types.hs` no longer exists.)
 - `gatewayLoop` records `statePreviousOwner` so transition detection is precise across cycles and
   publishes continuity-staged ownership assertions through the configured event key.
 - `/v1/state` now renders `can_write_dns`, `node_disposition`, and `peer_dispositions`
@@ -4519,7 +4541,10 @@ and the fail-closed `edge status` certificate-expiry rungs. The default exact-ho
 retains its historical object-key bytes. Wildcard/multi-SAN sets use a path-safe canonical key, and
 a different SAN set receives a different coordinate because cert-manager treats it as a distinct
 issuance specification. `impliedBy` remains the coverage/admission order only. Live serving proof is
-owned by the now-unblocked Sprint `5.22`.
+owned by the now-unblocked Sprint `5.22`. A wildcard scope is a certificate property only: each
+substrate still serves one explicit hostname behind one Route 53 record, and wildcard public DNS
+stays unsupported
+([acme_provider_guide.md §5](../documents/engineering/acme_provider_guide.md#5-configurable-certificate-scope)).
 **Live-proof**: pending — Sprint `5.22` owns the live serving proof.
 **Deployment qualification**: pending
 **Implementation**: ✅ **pure algebra landed** — `src/Prodbox/Tls/CertScope.hs` defines
@@ -14996,6 +15021,408 @@ answers `nothing-to-retain` only when no pending exists.
   versus `versions/<n>.envelope` and nothing about staging, promotion or version selection. The
   disjointness this sprint relies on is enforced by the two staging decisions' own state gates, and
   it is asserted directly in the counterexample case rather than inherited from that identifier.
+
+## Sprint 2.136: A Retain Of The Certificate The Reference Already Holds Needs No Slot [✅ Done]
+
+**Status**: Done (2026-10-12), live-proven. Phase `2` own-surface reopen (Standards A/N/P) on the retained public-edge TLS
+lane this phase owns, registered before any behavior change. Sprint `2.135` made the lane step past exactly one
+Authority-lane object proven unopenable and refuse by name if the successor slot is occupied too. The next live
+campaign hit the second case. Every chart suite that restores the supported runtime failed on 2026-10-12 at
+`charts delete vscode`, which retains the public-edge certificate first, with the opaque
+`TlsRetentionWorkflowAuthorityRestoreRefused`; the Authority's protected log named the cause,
+`retention-version-occupied/v6`. The measured state: the Authority's committed reference is `v4` (written by the
+2026-10-08 `keycloak-invite` run), and the store under `public-edge-tls/home-local/<served-host>/authority-v1/`
+holds objects at every version from `2` to `50`, written between 2026-09-08 and 2026-09-12 by earlier Authority
+epochs whose state lived under a root that has since been reset, plus an older `versions/` lane. The two
+lifetimes differ by construction: the store is long-lived, the Authority's state is cluster-retained, and a reset
+of the second leaves objects in slots the new state will select, each sealed under a key this control plane no
+longer holds. One skip is admitted past `v5`, `v6` is occupied, and every retain refuses; the chart delete that
+runs one refuses with it, to preserve a certificate the committed reference already preserves. The same cause
+made every retain write a new version for an unchanged certificate in the first place (forty-nine objects in four
+days).
+**Doctrine**: [Lifecycle Control-Plane Architecture](../documents/engineering/lifecycle_control_plane_architecture.md)
+(the unopenable-version admission) and [Lifecycle Reconciliation
+Doctrine](../documents/engineering/lifecycle_reconciliation_doctrine.md).
+**Implementation**: `src/Prodbox/ControlPlane/TlsRetentionWorkflow.hs`, `src/Prodbox/ControlPlane/Runtime.hs`,
+`src/Prodbox/Lib/ChartPlatform.hs`, and `test/unit/ControlPlaneTlsRetentionEndpoint.hs`.
+**Blocked by**: none.
+**Live-proof**: observed (2026-10-12). The workflow runs inside the Lifecycle Authority, so the repair reached the
+lane after the runtime image was rebuilt and the Authority rolled. With that image running, `charts-vscode`,
+`admin-routes` and `charts-storage` each crossed `charts delete vscode` against the stuck lane, and the Authority
+logged `tls-retention/workflow notice=retained-unchanged-certificate` for the retains that needed no slot.
+**Deployment qualification**: pending — **invalidated**: the retain workflow gains an outcome.
+**Independent Validation**: the workflow over scripted Authority, Adapter and Agent clients, including the
+2026-10-11 stacked-stale-slots state; no cluster, no AWS.
+**Docs to update**: this file, `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`documents/engineering/lifecycle_control_plane_architecture.md`.
+
+### Objective
+
+Stop a refusal about a slot from blocking a retain that has nothing new to retain.
+
+### Deliverables
+
+- `TlsWorkflowRetainedUnchanged`: when the next slot cannot be used (occupied, unopenable, corrupt, or the
+  resumed collision) and the committed reference is current, the live certificate is read again from the selected
+  Agent, and if its serial, public-key digest and expiry equal the reference's, the retain answers with the
+  committed reference and claims nothing. Nothing is staged, stored or promoted. Every other failure keeps its
+  meaning, a changed certificate keeps the refusal by name, and a certificate that cannot be read again keeps it
+  too. The ordinary path, which retains a new version for every request, is unchanged.
+- The Authority maps the outcome to the retained answer and writes
+  `tls-retention/workflow notice=retained-unchanged-certificate` to its protected log, because the operation
+  succeeded and no failure line would say the next version was not claimed.
+
+### Validation
+
+1. With the committed reference at `v4` and slots `5` and `6` holding envelopes nothing here opens, a retain of
+   the committed certificate answers `TlsWorkflowRetainedUnchanged` with the reference, after observing both slots
+   and re-reading the live certificate, and stages, stores and promotes nothing (red on the commit before this
+   sprint, which refuses with `retention-version-occupied/v6`).
+2. The same state with a renewed certificate refuses by name, as before; so does one whose second read fails.
+3. The existing forty workflow and endpoint cases pass unchanged.
+4. **Canonical gate.** Focused group, primary unit suite, and `prodbox dev check` at 0.
+5. **Live.** After the roll, `charts delete vscode` and the chart suites that restore the runtime pass against the
+   stuck lane.
+
+### Remaining Work
+
+No sprint-owned work remains; the live proof is recorded above. One thing this does not repair, and the operator owns,
+is the forty-six stale objects. A changed
+certificate (the next renewal) still refuses, because the store holds objects in the slots the lane will select;
+the doctrine's remedy is a retention deletion of the abandoned objects (`authority-v1/versions/5..50.envelope` and
+the older `versions/*.envelope` for the test served host), which is an AWS mutation outside the prodbox surface
+and so not one this work performs. Making the Authority's state recoverable from the store it fences, instead of
+fencing a store it cannot read, is Sprint `4.51`'s design.
+
+## Sprint 2.137: An Accessor That Vanished Between The Inventory And Its Lookup Is Not A Failure [✅ Done]
+
+**Status**: Done (2026-10-12), live-proven. Phase `2` own-surface reopen (Standards A/N/P) on the finite Vault-session
+audit this phase owns, registered before any behavior change. Sprint `2.136` let a chart delete retain an
+unchanged certificate. The next chart suites still failed, for a second reason the live runs measured rather than
+assumed: the Target Secret Agent's one-shot worker refuses its session audit, and a TLS workflow that cannot
+reach the Agent ends `selected-agent/.../one-shot-operation-unavailable`. In six hours of the 2026-10-12 campaign
+the Agent's protected log recorded three `classification-unavailable` refusals (`preclean/classification-unavailable`
+at a retain and at a restore, and `session-cleanup-failed/accessor-audit/classification-unavailable` at a
+prepare), which is the fixed token Sprint `6.5` added on 2026-09-24 so the cause would stop being erased. A restore
+that fails lets cert-manager issue a new certificate, which Sprint `2.136` then refuses to retain by name once the
+slots are occupied, so a transient audit refusal is how the retained lane wedges.
+The cause is a classification written from an assumption and never measured. The audit lists every Vault token
+accessor, then looks each one up. `classifyVaultAccessorLookupResponse` mapped exactly HTTP 404 to
+`VaultAccessorLookupAbsent` and every other failure to `VaultAccessorLookupUnavailable`, and the audit fails on
+either. Vault 1.18.3 (the image the Vault chart pins, run as an isolated local dev server on 2026-10-12) answers a
+lookup of an accessor that was never issued, was revoked by accessor, had expired (a 4 s token looked up 9 s
+later), or named a token that was revoked while it was the parent of 3,000 children, with **HTTP 400
+`{"errors":["1 error occurred:\n\t* invalid accessor\n\n"]}`**, and a live accessor with 200. It never sends
+404: four concurrent pollers made 3,775 lookups across an asynchronous revocation and saw only 200 and then 400,
+with no intermediate status. So the `Absent` arm could not fire, and every accessor that expired or was revoked
+between the LIST and its lookup (the churn of every Job login the restore cycle makes, and a just-revoked accessor
+Vault still lists for a bounded window, which the audit's own comment names) aborted the whole audit as
+`Unavailable`. **Corrects** the Sprint `6.5` record of 2026-09-24 (`phase-6-clean-room-handoff.md` and the Resume
+Here paragraph of that date), which states that exact HTTP 404 is `VaultAccessorLookupAbsent`.
+**Doctrine**: [Lifecycle Reconciliation Doctrine](../documents/engineering/lifecycle_reconciliation_doctrine.md)
+(the session-revocation arm) and [Lifecycle Control-Plane
+Architecture](../documents/engineering/lifecycle_control_plane_architecture.md) (the AWS-admin session-closure
+terminal), both already aligned.
+**Implementation**: `src/Prodbox/Vault/Client.hs`, `src/Prodbox/ControlPlane/VaultAccessorAudit.hs`,
+`src/Prodbox/Bootstrap/Broker/ProductionEngine.hs`, `src/Prodbox/ControlPlane/TargetSecretWorkerCoordinator.hs`,
+`src/Prodbox/ControlPlane/TargetSecretWorkerProduction.hs`, `src/Prodbox/ControlPlane/TargetMaterializationProduction.hs`,
+`src/Prodbox/Lifecycle/CredentialProvisioner/AwsAdminWorker.hs`, `test/unit/VaultSessionSafety.hs`, and
+`test/unit/ControlPlaneTargetSecretWorker.hs`.
+**Blocked by**: none.
+**Live-proof**: observed (2026-10-12). The audit runs inside the Target Secret Agent's one-shot worker and the
+Bootstrap Broker, so the repair reached the lane after the runtime image was rebuilt and the roles rolled. The Agent
+had logged three `classification-unavailable` refusals in the six hours before; read after the roll, once after the
+`charts-storage` pass and again after the `keycloak-invite` and `charts-api` runs, its protected log held no refusal,
+and `charts-storage` and `charts-api` passed through restore cycles.
+**Deployment qualification**: pending — **invalidated**: the audit's decision procedure changes.
+**Independent Validation**: the classifier over the measured wire body and its negative controls, and the audit over
+a scripted inventory in which a listed accessor is unknown at lookup; no cluster, no AWS.
+**Docs to update**: this file, `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md` and
+`documents/engineering/lifecycle_control_plane_architecture.md`.
+
+### Objective
+
+Stop a token that expired mid-audit from failing the audit that is looking for tokens to revoke.
+
+### Deliverables
+
+- `vaultAccessorLookupVanished`: the one predicate that reads Vault's answer for an accessor it no longer knows,
+  HTTP 400 whose error is `invalid accessor`. No other status qualifies, including 404, and no other 400 does
+  (a malformed request names a different error); a permission, transport, decode or server failure is not it.
+- `classifyVaultAccessorLookupResponse` uses it. The scan passes over a vanished accessor, because an accessor Vault
+  no longer knows is no member of any subject and the stable-zero proof rests on the fresh inventories that
+  follow, never on the first scan; every other lookup failure still ends the audit as `classification-unavailable`.
+  The detailed interface carries the same distinction as `VaultAccessorDetailedLookupError`.
+- Deleted, because they can no longer be produced: `VaultAccessorClassificationAbsent`,
+  `TargetWorkerSessionPreparePrecleanClassificationAbsent`, and the two `classification-absent` protected tokens.
+- The Bootstrap Broker's detailed audit uses the typed distinction, and its five direct list-then-lookup sites
+  (role-accessor inventory, provisioner cleanup inventory, revocation target lookup, post-revocation subject scan,
+  absence scan) pass over a vanished accessor with the same predicate.
+
+### Validation
+
+1. The classifier reads the measured body as absent and every negative control (404 with the same body, other
+   400 errors, 403 `permission denied`, connection, timeout, 5xx, decode) as unavailable.
+2. An audit whose first inventory lists a vanished accessor beside a member revokes only the member and completes
+   when the vanished accessor is still listed by the next inventory (red on the commit before this sprint, which
+   fails the audit with `VaultAccessorClassificationAbsent`); an audit whose lookup is unavailable still fails.
+3. The detailed interface passes over a vanished accessor and carries a failed lookup's own failure.
+4. The Target Agent's diagnostic enumerations lose the two retired tokens and keep the rest.
+5. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
+6. **Live.** After the roll, a restore cycle logs no `classification-unavailable` refusal and the chart suites pass.
+
+### Remaining Work
+
+No sprint-owned work remains. The two `attach-failed/completion-frame-read-unavailable` lines the Agent logged in
+the same six hours were not attributed by this sprint, and none appeared after the repair; the likelier reading is
+that they were the same race seen from the worker's side (a worker whose cleanup audit refuses exits before its
+terminal acknowledgement), which is not proven. The Broker's five direct sites have no unit seam (they are not
+exported and run against a live Vault), so they rest on the shared predicate's cases and on compilation.
+
+## Sprint 2.138: An Identity That Predates The Program Carries Tags The Program Does Not Own [✅ Done]
+
+**Status**: Done (2026-10-12), live-proven. Phase `2` own-surface reopen (Standards A/N/P) on the production IAM boundary this
+phase owns, registered before any behavior change. The first live `keycloak-invite` run after Sprint `8.13` made the
+harness request the SES SMTP credential reached the Credential Provisioner worker and was refused there with the
+terminal line class `execution-failed/iam-prerequisite-failed/tag-read-back-mismatch`. `ensureUserPolicyAndTags`
+tags the IAM user with the two tags the program owns (`prodbox.io/managed-by` and `prodbox.io/credential-class`),
+reads the user's tags back, and required the read-back to equal exactly that pair. The measured state (a read-only
+`ListUserTags` on `prodbox-ses-smtp`, 2026-10-12): the user carries both program tags with their values, and also
+`Name=aws-ses`, `prodbox.io/purpose=ses-smtp` and `prodbox.io/substrate=shared`, written by the Pulumi program this
+one replaced. The program neither adds nor removes those, so the check judged tags that were never its to judge, and
+every request for the one identity that predates the program was refused after its tags had been written.
+**Doctrine**: [AWS Admin Credentials](../documents/engineering/aws_admin_credentials.md); no rule changes.
+**Implementation**: `src/Prodbox/Lifecycle/CredentialProvisioner/ProductionIam.hs` and
+`test/unit/CredentialProvisioner.hs`.
+**Blocked by**: none.
+**Live-proof**: observed (2026-10-12). The check runs inside the Credential Provisioner Job, so the repair reached the
+harness after the runtime image was rebuilt and rolled. The `keycloak-invite` run that followed passed the prerequisite
+step: `prodbox-ses-smtp` now carries the inline policy `prodbox-ses-smtp-send` beside the legacy one, the program's two
+tags beside its three legacy ones, and the access key the same run went on to create (08:44Z).
+**Deployment qualification**: pending — **invalidated**: the Provisioner's IAM prerequisite step changes.
+**Independent Validation**: the read-back predicate over the 2026-10-12 tag sets; no cluster, no AWS.
+**Docs to update**: this file, `DEVELOPMENT_PLAN/README.md`, and `DEVELOPMENT_PLAN/00-overview.md`.
+
+### Objective
+
+Make the read-back after tagging prove what the program wrote, and nothing it does not own.
+
+### Deliverables
+
+- `userCarriesProgramTags expected actual`: every tag the program writes is present with its value. A missing tag,
+  or the right key with another value, is still `tag-read-back-mismatch`; tags the program does not own are not
+  judged.
+
+### Validation
+
+1. The predicate accepts the program's tags alone and beside the three tags of the 2026-10-12 user, and refuses an
+   empty set, a set without the program's tags, and a program key with another value (red on the commit before this
+   sprint, whose equality refused the second case).
+2. The existing Provisioner IAM cases pass unchanged.
+3. **Canonical gate.** Focused group, primary unit suite, and `prodbox dev check` at 0.
+4. **Live.** After the roll, `keycloak-invite` passes the SMTP request's IAM prerequisite step.
+
+### Remaining Work
+
+No sprint-owned work remains. The SMTP request's later steps showed their own first-live defect, the retained
+delivery refusal that Sprint `2.139` makes readable; the Keycloak runtime reconcile has not run live yet and may show
+another, which would be its own sprint.
+
+## Sprint 2.139: A Refused Retained Delivery Names Its Stage [✅ Done]
+
+**Status**: Done (2026-10-13), live-proven. Phase `2` own-surface reopen (Standards A/N/P) on the Authority's retained-material
+delivery this phase owns, registered before any behavior change. The `keycloak-invite` run of 2026-10-12 that
+followed Sprints `2.138` and `5.54` got the furthest the SMTP request has ever got, and each step it crossed is
+evidence for the sprint that repaired it: the Authority accepted the harness's fresh draft for the expired operation
+(authorized-attempt recovery, `5.54`), the worker's IAM prerequisites passed (the SMTP user now carries its
+`prodbox-ses-smtp-send` policy beside the legacy one, the program's tags beside its own, and one access key created at
+08:44:35Z, `2.138`), and the run then ended `execution-failed/target-observation-unobservable/retained/delivery-failed`.
+That class is closed on purpose: the worker's terminal line may carry no Authority text. It is produced only by a
+target observation that found retained custody for this generation and could not deliver it to the home sink: after
+the key was created, either custody already existed, or (the likelier reading, since the worker's own `deliver` seals
+before it delivers) the first observation found nothing, the worker sealed the derived SMTP source and its delivery
+request failed, and the read-back observation found the custody it had just sealed and failed to deliver it again.
+Either way a delivery request to the Authority failed. No Job event for a Target worker exists in that window, so the
+refusal came before the Authority created the worker that writes `secret/keycloak/smtp`. Which stage refused cannot
+be read anywhere: the Authority builds the refusal text (its own fixed sentences, or the `show` of the rewrap
+client's error, which wraps the Target Agent's fixed sentence) and drops it into the wire answer; the worker erases
+the answer; and neither the Authority nor the Agent logs it, where every other boundary on this lane writes a closed
+protected diagnostic.
+**Doctrine**: [Lifecycle Control-Plane Architecture](../documents/engineering/lifecycle_control_plane_architecture.md)
+(the protected diagnostic grammar); no rule changes.
+**Implementation**: `src/Prodbox/ControlPlane/ClosedRefusalToken.hs` (new),
+`src/Prodbox/ControlPlane/RetainedMaterialDeliveryEndpoint.hs`,
+`src/Prodbox/ControlPlane/TargetRetainedMaterialRewrapEndpoint.hs`, `src/Prodbox/ControlPlane/Runtime.hs`, and
+`test/unit/RetainedDeliveryRefusalLog.hs` (new).
+**Blocked by**: none.
+**Live-proof**: Observed (2026-10-12 and 13). The recorders named the refusing stage on the live runs that followed: `retained-material/delivery refusal=ses-smtp retained-delivery-refused/RetainedDeliveryAlreadyPending` (Sprint `2.140`'s defect) and `retained-material/delivery stage=materialize refusal=TargetMaterializationIntentIssueFailed/TargetIntentAuthorityUnavailable` (Sprint `2.141`'s). The later absence of any delivery line in the Authority's log, beside a worker that still failed, showed that the Authority had not refused and put the failure on the worker's side (Sprint `4.107`).
+**Deployment qualification**: pending — **invalidated**: the Authority's and the Agent's logging change.
+**Independent Validation**: the token function over fixed sentences, shown errors and hostile text; the two recorders
+over scripted boundaries; no cluster, no AWS.
+**Docs to update**: this file, `DEVELOPMENT_PLAN/README.md`, and `DEVELOPMENT_PLAN/00-overview.md`.
+
+### Objective
+
+Make a refused retained delivery say which stage refused it, without letting any refusal text or value into a log.
+
+### Deliverables
+
+- `closedRefusalToken`: the token for a refusal text, built segment by segment (a segment ends at `": "`) from three
+  sources only. An exact fixed sentence the delivery path authors becomes its own hyphenated token; plain prose
+  (ASCII letters, spaces and hyphens, at least two words, at most 96 characters, so no digit, quote, slash, dot,
+  underscore or digest can be in it) becomes its hyphenated words; and a `show`-shaped segment becomes its leading
+  constructor names (at most four, stopping at the first argument that is not a constructor name), followed by the
+  token of any fixed sentence it wraps. Everything else is `other`, so no digest, address, path, accessor or user
+  value reaches a log through it, and the token is bounded. The first live run showed why prose is needed: the
+  Authority's refusal was a fixed sentence the table did not list, and the token was `other`.
+- The Authority's delivery additionally records the stage that refused, for the three stages that return the
+  refusal (`source-current`, `sink-observe`, `materialize`), as `retained-material/delivery stage=<stage>
+  refusal=<token>`, because the final answer carries only the last refusal.
+- `withRetainedDeliveryRefusalLog` on the Authority's delivery boundary records `<schema> <token>`, and
+  `withTargetRetainedRewrapRefusalLog` on the Target Agent's rewrap boundary records `<request kind> refused|unavailable
+  <token>`, as `retained-material/delivery refusal=...` and `retained-material/rewrap refusal=...` in the protected
+  log. The wire answers are unchanged.
+
+### Validation
+
+1. A fixed sentence maps to its own token with no stray constructor, a shown error to its constructor names plus the
+   sentence it wraps, a fixed prefix followed by a shown error to the prefix's words and the constructor, hostile text
+   carrying a secret-shaped argument to the constructor alone, text with a digit, dot, slash or quote to `other`, and
+   any input to at most 240 characters.
+2. The Authority recorder logs the schema and token of a refused delivery and returns the boundary's answer
+   unchanged; the Agent recorder logs the request kind, the answer kind and the token for a refusal and an
+   unavailable answer and logs nothing for an absent source.
+3. **Canonical gate.** Focused group, primary unit suite, and `prodbox dev check` at 0.
+4. **Live.** After the roll, the next `keycloak-invite` names the refusing stage in the Authority's or the Agent's
+   protected log.
+
+### Remaining Work
+
+The live proof, and then the defect it names, which is its own sprint. This sprint repairs nothing in the delivery;
+it makes the next failure readable. The access key the failed run created is still in IAM; the worker's journal is
+at the key-created phase, and the next request recovers by the existing remint path.
+
+## Sprint 2.140: A Renewed Operation's Retained Delivery Retires The Expired Delivery Its Earlier Attestation Bound [✅ Done]
+
+**Status**: Done (2026-10-13), live-proven. Phase `2` own-surface reopen (Standards A/N/P) on the retained-material delivery this
+phase owns, registered before any behavior change. Sprint `2.139`'s recorders, live for the first time on the next
+`keycloak-invite` run, named the refusing stage: the Authority's protected log read
+`retained-material/delivery refusal=ses-smtp retained-delivery-refused/RetainedDeliveryAlreadyPending`. The
+aggregate refuses to begin a delivery for a target while another delivery for it is pending, and the first attempt of
+the operation (08:44Z, whose own failure was never read) had left one pending. That pending delivery matched no later
+request, could not be replaced, and was never retired, so every later attempt was refused. The coordinator
+(`coordinateRetainedMaterialDelivery`) resumes a pending delivery only when its attestation equals the request's, and
+a credential operation that is renewed (Sprint `5.54`) derives a new prepared-target receipt, which covers the
+deadline, the owner, the fence and the selected Agent, and the delivery's attestation is that receipt digest. A
+successor, the coordinator's only way to replace an expired pending delivery, must keep the predecessor's
+attestation (`decideDeliveryReplacement`), and the Target intent issuer authorizes a delivery only against the
+current receipt, so a successor could not have carried the renewed one either. The aggregate defines the command
+that removes an expired pending delivery (`ExpireRetainedMaterialDelivery`, unit-tested) and nothing called it.
+**Doctrine**: [Lifecycle Control-Plane Architecture](../documents/engineering/lifecycle_control_plane_architecture.md)
+(retained-material delivery); no rule changes.
+**Implementation**: `src/Prodbox/ControlPlane/RetainedMaterialDeliveryCoordinator.hs` and
+`test/unit/LifecycleAuthorityRetainedMaterial.hs`.
+**Blocked by**: none.
+**Live-proof**: Observed (2026-10-12). With the coordinator running, the SMTP delivery was no longer refused as already pending: it reached the `materialize` stage for the first time.
+**Deployment qualification**: pending — **invalidated**: the delivery coordinator changes.
+**Independent Validation**: the coordinator over a scripted repository and sink, including the state the live run
+left; no cluster, no AWS.
+**Docs to update**: this file, `DEVELOPMENT_PLAN/README.md`, and `DEVELOPMENT_PLAN/00-overview.md`.
+
+### Objective
+
+Let a renewed credential operation deliver its retained material after an earlier attempt of the same operation left
+a delivery pending.
+
+### Deliverables
+
+- A pending delivery of the request's operation lineage, source, target and generation that carries another
+  attestation is recognized as an earlier attempt's. The sink is observed first, and material it already holds is
+  committed as that delivery's receipt. Inside the delivery's deadline the request waits, as it does for its own
+  pending delivery (`retained delivery remains pending until its absolute deadline`). Past the deadline the
+  delivery is retired with the existing `ExpireRetainedMaterialDelivery` command and the request's own delivery
+  begins under its own attestation.
+- The match on attestation that resumes a request's own pending delivery is unchanged, so a retry within one
+  attempt, and every ACME EAB retry (whose attestation is stable), behave as before.
+
+### Validation
+
+1. A pending delivery bound to another attestation, inside its deadline, makes the request wait and run nothing;
+   past its deadline it is retired, the request's delivery begins with the request's attestation and runs once,
+   and a repeat call resumes it as the request's own and waits (red on the commit before this sprint, which answers
+   `retained delivery refused: RetainedDeliveryAlreadyPending`, the live text).
+2. The nineteen existing retained-material cases pass unchanged.
+3. **Canonical gate.** Focused group, primary unit suite, and `prodbox dev check` at 0.
+4. **Live.** After the roll, the SMTP delivery is no longer refused as already pending.
+
+### Remaining Work
+
+The live proof, and then whatever the delivery itself does. The first attempt's own failure, the one that left the
+delivery pending, was never read, and nothing after the retirement of the stale delivery has run live, so the next
+run may show a defect in the rewrap or in the one-shot worker that writes `secret/keycloak/smtp`; each would be its own
+sprint, and Sprint `2.139`'s recorders name its stage.
+
+## Sprint 2.141: The Target Intent Of A Retained SMTP Delivery Is Authorized By The Operation That Sealed Its Source [✅ Done]
+
+**Status**: Done (2026-10-13), live-proven. Phase `2` own-surface reopen (Standards A/N/P) on the Target-intent issuer this phase
+owns, registered before any behavior change. With Sprint `2.140` live, the SMTP delivery began for the first time and
+stopped one stage further, which Sprint `2.139`'s stage recorder named:
+`retained-material/delivery stage=materialize refusal=TargetMaterializationIntentIssueFailed/TargetIntentAuthorityUnavailable`.
+The Authority's own issuer, asked for the signed intent that the one-shot worker needs, answered unavailable. For
+`TargetSesSmtp` the issuer reads the AWS-admin prepared-target outbox at
+`authority/aws-admin-prepared-targets/<the request's operation id>`. The materialization of a retained delivery carries
+the delivery's operation id (`delivery-<AWS-admin operation>`, or a successor id derived from it by a hash), while that
+outbox is keyed by the AWS-admin operation itself, so the lookup found no outbox and the issuer reported it absent. The
+ACME EAB lane does not have the problem because its issuer finds the pending retained delivery by that id and takes the
+authorization from the delivery and the ingress receipt (`selectRetainedAcmeEabDeliveryIntent`); the SMTP lane was bound
+to the outbox as a "compatibility binding" for the direct path, which the SMTP class does not use, and its retained
+delivery was never wired to it.
+**Doctrine**: [Lifecycle Control-Plane Architecture](../documents/engineering/lifecycle_control_plane_architecture.md)
+(retained-material delivery); no rule changes.
+**Implementation**: `src/Prodbox/ControlPlane/TargetIntentAuthorityProduction.hs` and
+`test/unit/LifecycleAuthorityRetainedMaterial.hs`.
+**Blocked by**: none.
+**Live-proof**: Observed (2026-10-12 and 13). The Authority issued the one-shot worker's Target intent for the retained SMTP delivery (the next run logged no delivery refusal) and the delivery applied: the Keycloak Pod's materialized environment carried the delivered SMTP host, port, sender and user and a forty-four-character password, and the rotation to generation 2 and the final `keycloak-invite` run delivered again.
+**Deployment qualification**: pending — **invalidated**: the Target-intent issuer changes.
+**Independent Validation**: the resolver over scripted observations of a retained SES SMTP delivery outbox; no cluster, no AWS.
+**Docs to update**: this file, `DEVELOPMENT_PLAN/README.md`, and `DEVELOPMENT_PLAN/00-overview.md`.
+
+### Objective
+
+Let the issuer authorize the Target intent of a retained SMTP delivery from the operation that sealed the delivered source.
+
+### Deliverables
+
+- `retainedSesSmtpPermitOperationFromObservation`: the issuer reads the retained SES SMTP delivery outbox
+  (`retained-material/delivery/ses-smtp/<Target Agent>`, the coordinate the ACME EAB lane's issuer already reads for
+  its own deliveries), where the pending delivery sits beside the source it delivers. When exactly one pending
+  delivery carries the request's operation id, the AWS-admin operation is the operation id of the aggregate's current
+  source (the source was sealed under the permit's own identity, which is also the key of the prepared-target
+  outbox), provided the delivery is bound to that source's receipt. No delivery outbox, or no pending delivery with
+  that id, leaves the request to the prepared-target outbox directly, as before; more than one is refused as
+  ambiguous, and an outbox that cannot be read (corrupt, endpoint not ready, unobservable) refuses, because the
+  request might belong to a delivery in it. The issuer's constructor gains no parameter: it already holds the store
+  and the authority the EAB lane reads with. A first draft read the custody aggregate instead, which records the
+  source and never a pending delivery; the two aggregates are separate objects.
+- The issuer looks the outbox up under the resolved operation and keeps every other check it made (target, selected
+  Agent, generation, receipt digest), so the attestation must still equal the current permit's receipt.
+
+### Validation
+
+1. A pending SMTP delivery's id resolves to the sealing operation; an id no pending delivery carries, any id when
+   nothing is pending, and a missing delivery outbox resolve to nothing (the prepared-target outbox answers
+   directly); a corrupt, not-ready or unobservable delivery outbox refuses.
+2. The retained-material group passes with the new case in it.
+3. **Canonical gate.** Focused group, primary unit suite, and `prodbox dev check` at 0.
+4. **Live.** After the roll, the SMTP delivery's `materialize` stage gets past the intent.
+
+### Remaining Work
+
+The live proof, and then whatever the worker does next: nothing after the intent has run live (the one-shot worker's
+attestation and Vault write of `secret/keycloak/smtp`), and each defect there would be its own sprint with Sprint
+`2.139`'s recorders to name it. A successor delivery (a hash-derived id) is resolved through the aggregate like the
+first, which is why the mapping goes through the source and not through the delivery id's spelling.
 
 ## Documentation Requirements
 

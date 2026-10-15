@@ -536,6 +536,13 @@ removal as history.
 - The daemon records the maximum observed inter-node skew on
   `/v1/state` as `max_clock_skew_seconds_observed` so operators can
   detect drift before it crosses the configured bound.
+- Operator response: when the observed maximum approaches the bound, or an
+  event is rejected for skew, correct the time source of the node the
+  rejection names (restore NTP synchronization) rather than widening
+  `max_clock_skew_seconds`; the bound is the width of the window in which
+  a stale claim could otherwise be accepted. The mapping from this bound to
+  the TLA+ bounded-delay assumption is in
+  [tla_modelling_assumptions.md §5.1](./tla_modelling_assumptions.md#51-bounded-delay-and-the-runtime-clock-skew-bound).
 
 ## 7.5 Orders Promotion (Restart-Based, Journal-Migrated)
 

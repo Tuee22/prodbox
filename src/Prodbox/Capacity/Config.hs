@@ -35,6 +35,7 @@ module Prodbox.Capacity.Config
   , storageFitsWithin
   , plusBudget
   , validateCapacitySection
+  , validateGatewayEmitterCapacity
   , validateOneShotSecretWorkerCapacity
   , validateRawResourcePlanShape
   )
@@ -63,6 +64,7 @@ import Prodbox.Capacity.Derivation
 import Prodbox.Capacity.ProviderWorkerBudget qualified as ProviderWorkerBudget
 import Prodbox.Capacity.RuntimeMemory qualified as RuntimeMemory
 import Prodbox.Capacity.Types
+import Prodbox.Substrate (Substrate (..), gatewayNodeIdsForSubstrate)
 
 data CapacityBudget = CapacityBudget
   { budgetCpu :: Natural
@@ -737,6 +739,36 @@ validateOneShotSecretWorkerCapacity plan = do
     "capacity.resource_plan must carry the exact one-shot worker profile `"
       ++ Text.unpack profileId
       ++ "`"
+
+-- | The gateway profile states the shape the home renders, and nothing the
+-- substrate overrides.
+--
+-- The gateway chart renders one StatefulSet per node id its substrate names, two
+-- on the home, and the plan's profile is the home's: placement applies the
+-- substrate's own emitter count and journal size on top of it
+-- ('Prodbox.Capacity.Placement.planForSubstrate'). A plan that stated another
+-- replica count, or durable storage the home journals (host paths) never claim,
+-- would pass the over-commit proof for pods and storage the chart does not
+-- render and be quietly overridden at placement, so the proof and the quota
+-- would describe different clusters. It is refused here, by name, instead.
+validateGatewayEmitterCapacity :: ResourcePlan -> Either String ()
+validateGatewayEmitterCapacity plan =
+  case filter ((== "gateway") . profile_id) (workload_profiles plan) of
+    [profile]
+      | replicas profile /= homeEmitters ->
+          Left
+            ( "capacity.resource_plan.workload_profiles[gateway].replicas must be "
+                ++ show homeEmitters
+                ++ ", the emitters the gateway chart renders on the home substrate"
+            )
+      | demanded_durable_storage_mib (workload_demand profile) /= 0 ->
+          Left
+            ( "capacity.resource_plan.workload_profiles[gateway].workload_demand.demanded_durable_storage_mib must be 0: "
+                ++ "the home journals are host paths, and the AWS journals are sized by the substrate"
+            )
+    _ -> Right ()
+ where
+  homeEmitters = fromIntegral (length (gatewayNodeIdsForSubstrate SubstrateHomeLocal))
 
 unlessFits :: String -> CapacityBudget -> CapacityBudget -> Either String ()
 unlessFits message inner outer =

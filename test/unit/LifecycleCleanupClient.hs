@@ -9,11 +9,12 @@ where
 
 import Control.Exception
   ( AsyncException (ThreadKilled)
+  , ErrorCall (ErrorCall)
   , SomeException
   , throwIO
   , try
   )
-import Control.Monad (foldM, forM_, unless, when)
+import Control.Monad (foldM, forM_, unless, void, when)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as ByteString8
 import Data.ByteString.Lazy qualified as LazyByteString
@@ -34,6 +35,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Network.HTTP.Types.Header (Header)
 import Network.HTTP.Types.Method (Method)
+import Prodbox.CLI.Command (TestScope (TestAll))
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientProviders (..)
   , AuthenticatedServerProviders (..)
@@ -45,8 +47,11 @@ import Prodbox.ControlPlane.AuthenticatedTransport
   , mkAuthenticatedTransportBounds
   , mkRouteTrustRegistry
   )
+import Prodbox.ControlPlane.AuthenticationRegistry
+  ( callerMayCallRoute
+  )
 import Prodbox.ControlPlane.CallerPrincipal
-  ( CallerPrincipal (CallerOperatorCli)
+  ( CallerPrincipal (CallerOperatorCli, CallerTestHarness)
   )
 import Prodbox.ControlPlane.CleanupRunClient
   ( DescriptorBoundCleanupRunClient
@@ -75,6 +80,9 @@ import Prodbox.ControlPlane.Coordinate
   ( AuthorityScope
   , mkAuthorityScope
   )
+import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
+  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator)
+  )
 import Prodbox.ControlPlane.RequestAuthentication
   ( RequestNonce
   , RequestSigner
@@ -85,7 +93,8 @@ import Prodbox.ControlPlane.RequestAuthentication
   , trustedRequestKeyFromSigner
   )
 import Prodbox.ControlPlane.Route
-  ( ControlPlaneRoute (LifecycleCleanupRun)
+  ( ControlPlaneRoute (LifecycleCleanupRun, LifecycleLocalRke2HostObservation)
+  , allControlPlaneRoutes
   , routesForRole
   )
 import Prodbox.Http.Client (HttpBoundedError)
@@ -93,6 +102,7 @@ import Prodbox.Http.ReplyStatus (replyStatusCode)
 import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
 import Prodbox.Lifecycle.CleanupRun
 import Prodbox.Lifecycle.CleanupRunEntry
+import Prodbox.Lifecycle.DnsRecord (HostedZoneId, mkHostedZoneId)
 import Prodbox.Lifecycle.HostCleanupIntent
   ( HostCleanupIntentStore
   , HostTerminalPermitId
@@ -125,13 +135,42 @@ import Prodbox.Lifecycle.Teardown.Program
   , someTeardownOperationTag
   )
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
+import Prodbox.Substrate (Substrate (..))
+import Prodbox.Test.LifecycleCleanupClient
+  ( HarnessCleanupBracket (..)
+  , LifecycleTestHarnessCleanupError (LifecycleTestHarnessMainRunMissing)
+  , PrimaryDecision (..)
+  , ZoneDisposition (..)
+  , ZoneEvidence (..)
+  , ZoneTailPlan (..)
+  , harnessMainRunPrefix
+  , harnessZoneRunPrefix
+  , lifecycleTestHarnessCleanupCaller
+  , orchestrateHarnessCleanup
+  , partitionByZoneScope
+  , planZoneTail
+  , primaryDecision
+  , runIdBelongsTo
+  )
+import Prodbox.TestPlan
+  ( TestExecutionMode (..)
+  , TestExecutionPlan (..)
+  , testExecutionPlan
+  )
+import Prodbox.TestRunner (harnessCleanupSuiteId)
 import System.Directory (doesFileExist, listDirectory)
+import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 import TestSupport
 
 lifecycleCleanupClientSuite :: SuiteBuilder ()
-lifecycleCleanupClientSuite =
+lifecycleCleanupClientSuite = do
+  entryProtocolSuite
+  harnessCleanupCompositionSuite
+
+entryProtocolSuite :: SuiteBuilder ()
+entryProtocolSuite =
   describe "Sprint 5.36 lifecycle-owned validation cleanup client" $ do
     it "binds an ordinary per-run surface with no host record at all" $ do
       -- Sprint 5.36: the entry protocol was fixed to the cascade, and the
@@ -653,6 +692,258 @@ lifecycleCleanupClientSuite =
       testSource <- readFile "test/unit/LifecycleCleanupClient.hs"
       testSource
         `shouldNotContain` ("CleanupProgramDescriptor." <> "Internal")
+
+-- | Sprint 5.50: the composition around the validation body.
+harnessCleanupCompositionSuite :: SuiteBuilder ()
+harnessCleanupCompositionSuite =
+  describe "Sprint 5.50 harness cleanup composition" $ do
+    it "authenticates as the operator, which is trusted wherever the harness identity is" $ do
+      -- The first node of every ordinary program posts the host observation,
+      -- a route only the operator may call. The switch widens nothing: every
+      -- route that trusts the harness also trusts the operator.
+      lifecycleTestHarnessCleanupCaller `shouldBe` LifecycleAuthorityOperator
+      forM_ allControlPlaneRoutes $ \route ->
+        when (callerMayCallRoute CallerTestHarness route) $
+          callerMayCallRoute CallerOperatorCli route `shouldBe` True
+      callerMayCallRoute CallerOperatorCli LifecycleLocalRke2HostObservation `shouldBe` True
+      callerMayCallRoute CallerTestHarness LifecycleLocalRke2HostObservation `shouldBe` False
+
+    it "never names the harness identity as the cleanup caller" $ do
+      client <- readFile "src/Prodbox/Test/LifecycleCleanupClient.hs"
+      client `shouldContain` "LifecycleAuthorityOperator"
+      client `shouldNotContain` "LifecycleAuthorityTestHarness"
+
+    it "keeps no session open while the body runs, and drives afterwards with the primary outcome" $ do
+      trace <- newIORef ([] :: [String])
+      sessionOpen <- newIORef False
+      let record event = modifyIORef' trace (++ [event])
+          withSession name action = do
+            writeIORef sessionOpen True
+            record ("open:" ++ name)
+            result <- action
+            record ("close:" ++ name)
+            writeIORef sessionOpen False
+            pure result
+          bracket =
+            HarnessCleanupBracket
+              { bracketRegister = withSession "register" (pure (Right True))
+              , bracketDrive = \primary ->
+                  withSession "drive" $ do
+                    record ("primary:" ++ primaryTag primary)
+                    pure (Left LifecycleTestHarnessMainRunMissing)
+              }
+          body = do
+            open <- readIORef sessionOpen
+            record ("body:sessionOpen=" ++ show open)
+            pure (ExitFailure 3)
+      result <- orchestrateHarnessCleanup bracket body
+      leftOf result `shouldBe` Just LifecycleTestHarnessMainRunMissing
+      readIORef trace
+        `shouldReturn` [ "open:register"
+                       , "close:register"
+                       , "body:sessionOpen=False"
+                       , "open:drive"
+                       , "primary:exit3"
+                       , "close:drive"
+                       ]
+
+    it "can detect a session left open across the body (negative control)" $ do
+      sessionOpen <- newIORef False
+      observed <- newIORef Nothing
+      let leaking =
+            HarnessCleanupBracket
+              { bracketRegister = writeIORef sessionOpen True >> pure (Right True)
+              , bracketDrive = \_ -> pure (Left LifecycleTestHarnessMainRunMissing)
+              }
+      _ <-
+        orchestrateHarnessCleanup leaking $ do
+          readIORef sessionOpen >>= writeIORef observed . Just
+          pure ExitSuccess
+      readIORef observed `shouldReturn` Just True
+
+    it "adopts a leftover run without running the body again" $ do
+      bodyRuns <- newIORef (0 :: Int)
+      primaries <- newIORef ([] :: [String])
+      let bracket =
+            HarnessCleanupBracket
+              { bracketRegister = pure (Right False)
+              , bracketDrive = \primary -> do
+                  modifyIORef' primaries (++ [primaryTag primary])
+                  pure (Left LifecycleTestHarnessMainRunMissing)
+              }
+      _ <- orchestrateHarnessCleanup bracket (modifyIORef' bodyRuns (+ 1) >> pure ExitSuccess)
+      readIORef bodyRuns `shouldReturn` 0
+      readIORef primaries `shouldReturn` ["none"]
+
+    it "drives cleanup after a body that throws, recording the failure as the primary outcome" $ do
+      primaries <- newIORef ([] :: [String])
+      let bracket =
+            HarnessCleanupBracket
+              { bracketRegister = pure (Right True)
+              , bracketDrive = \primary -> do
+                  modifyIORef' primaries (++ [primaryTag primary])
+                  pure (Left LifecycleTestHarnessMainRunMissing)
+              }
+      result <- orchestrateHarnessCleanup bracket (throwIO (ErrorCall "validation exploded"))
+      leftOf result `shouldBe` Just LifecycleTestHarnessMainRunMissing
+      readIORef primaries `shouldReturn` ["thrown"]
+
+    it "runs cleanup masked after an asynchronous cancellation and then rethrows it" $ do
+      primaries <- newIORef ([] :: [String])
+      let bracket =
+            HarnessCleanupBracket
+              { bracketRegister = pure (Right True)
+              , bracketDrive = \primary -> do
+                  modifyIORef' primaries (++ [primaryTag primary])
+                  pure (Left LifecycleTestHarnessMainRunMissing)
+              }
+      outcome <-
+        try (void (orchestrateHarnessCleanup bracket (throwIO ThreadKilled)))
+          :: IO (Either SomeException ())
+      outcome `shouldSatisfy` isThreadKilled
+      readIORef primaries `shouldReturn` ["cancelled"]
+
+    it "does not run the body or the drive when registration fails" $ do
+      events <- newIORef ([] :: [String])
+      let bracket =
+            HarnessCleanupBracket
+              { bracketRegister = pure (Left LifecycleTestHarnessMainRunMissing)
+              , bracketDrive = \_ -> modifyIORef' events (++ ["drive"]) >> pure (Left LifecycleTestHarnessMainRunMissing)
+              }
+      result <-
+        orchestrateHarnessCleanup bracket (modifyIORef' events (++ ["body"]) >> pure ExitSuccess)
+      leftOf result `shouldBe` Just LifecycleTestHarnessMainRunMissing
+      readIORef events `shouldReturn` []
+
+    it "matches a run id only when it is the prefix followed by digits" $ do
+      let suite = "integration-aws"
+          mainPrefix = harnessMainRunPrefix suite
+          zonePrefix = harnessZoneRunPrefix suite
+          runId = mustRight . mkCleanupRunId
+      runIdBelongsTo mainPrefix (runId "test-harness-integration-aws-1700000000000000") `shouldBe` True
+      -- The suite whose id extends this one has runs of its own.
+      runIdBelongsTo mainPrefix (runId "test-harness-integration-aws-eks-1700000000000000")
+        `shouldBe` False
+      runIdBelongsTo mainPrefix (runId "test-harness-integration-aws-12x") `shouldBe` False
+      runIdBelongsTo mainPrefix (runId "test-harness-integration-aws-") `shouldBe` False
+      -- The two prefixes cannot select each other's runs.
+      runIdBelongsTo mainPrefix (runId "test-harness-zonetail.integration-aws-1700000000000000")
+        `shouldBe` False
+      runIdBelongsTo zonePrefix (runId "test-harness-integration-aws-1700000000000000")
+        `shouldBe` False
+      runIdBelongsTo zonePrefix (runId "test-harness-zonetail.integration-aws-1700000000000000")
+        `shouldBe` True
+
+    it "Sprint 5.53 gives the two substrates different cleanup suite ids for one suite" $ do
+      let cleanupSuiteIdFor substrate =
+            case testPlanExecutionMode (testExecutionPlan substrate TestAll) of
+              NativeSuite plan -> harnessCleanupSuiteId plan
+              DelegatedSuite _ -> error "test all is a native suite"
+          homeSuite = cleanupSuiteIdFor SubstrateHomeLocal
+          awsSuite = cleanupSuiteIdFor SubstrateAws
+          runId = mustRight . mkCleanupRunId
+      -- The home substrate keeps the id the runs already on record carry.
+      homeSuite `shouldBe` "all"
+      awsSuite `shouldNotBe` homeSuite
+      -- A live run one substrate left is not a run the other adopts, in either direction.
+      runIdBelongsTo (harnessMainRunPrefix homeSuite) (runId "test-harness-all-1700000000000000")
+        `shouldBe` True
+      runIdBelongsTo (harnessMainRunPrefix awsSuite) (runId "test-harness-all-1700000000000000")
+        `shouldBe` False
+      runIdBelongsTo
+        (harnessMainRunPrefix awsSuite)
+        (runId "test-harness-aws-substrate-all-1700000000000000")
+        `shouldBe` True
+      runIdBelongsTo
+        (harnessMainRunPrefix homeSuite)
+        (runId "test-harness-aws-substrate-all-1700000000000000")
+        `shouldBe` False
+      -- The prefix is not one an ordinary suite id begins with, so no home suite can claim
+      -- an AWS run by extending its own id.
+      awsSuite `shouldSatisfy` Text.isPrefixOf "aws-substrate-"
+
+    it "decides the zone-scoped families from evidence alone" $ do
+      let zone = mustZoneId "Z00231272QFGWVE1AJI2G"
+          zoneScoped = [AwsEksSubzoneKey, AwsDns01ChallengeRecordKey]
+      planZoneTail [] ZoneEvidenceAbsent `shouldBe` ZoneTailNone ZoneNotSelected
+      planZoneTail [] (ZoneEvidenceIncomplete "ignored") `shouldBe` ZoneTailNone ZoneNotSelected
+      planZoneTail zoneScoped ZoneEvidenceAbsent `shouldBe` ZoneTailNone ZoneNotApplicable
+      planZoneTail zoneScoped (ZoneEvidenceResolved zone)
+        `shouldBe` ZoneTailRegister zone zoneScoped
+      -- An unobservable stack is never read as an absent one.
+      planZoneTail zoneScoped (ZoneEvidenceIncomplete "unreachable")
+        `shouldBe` ZoneTailNone (ZoneIncomplete "unreachable")
+
+    it "partitions the selected targets so no zoneless program holds a zone-scoped key" $ do
+      let (zoneFree, zoneScoped) = partitionByZoneScope [minBound .. maxBound]
+      zoneScoped `shouldBe` [AwsEksSubzoneKey, AwsDns01ChallengeRecordKey]
+      forM_ zoneFree $ \key ->
+        registeredResourceKeyRequiresDnsZone key `shouldBe` False
+      (length zoneFree + length zoneScoped)
+        `shouldBe` length [minBound .. maxBound :: RegisteredResourceKey]
+
+    it "decides a run's primary outcome so that no run is left without one and a recorded one stands" $ do
+      primaryDecision Nothing (Just (Right ExitSuccess))
+        `shouldBe` PrimaryRecord (Just ExitSuccess) CleanupPrimarySucceeded
+      primaryDecision Nothing (Just (Right (ExitFailure 3)))
+        `shouldBe` PrimaryRecord (Just (ExitFailure 3)) (CleanupPrimaryExitFailure 3)
+      -- An adopted run's body was not run now: the outcome is unknown, and a
+      -- run with none could never become terminal.
+      primaryDecision Nothing Nothing `shouldBe` PrimaryRecord Nothing CleanupPrimaryCancelled
+      -- A recorded outcome stands over whatever this invocation observed; the
+      -- kernel would refuse a different one on every attempt.
+      primaryDecision (Just (CleanupPrimaryExitFailure 1)) (Just (Right ExitSuccess))
+        `shouldBe` PrimaryKeepRecorded (CleanupPrimaryExitFailure 1)
+      primaryDecision (Just CleanupPrimarySucceeded) Nothing
+        `shouldBe` PrimaryKeepRecorded CleanupPrimarySucceeded
+
+    it "ties the zone predicate to the two adapters that refuse a zoneless scope" $ do
+      -- Neither refusal is at program compile time: both are at request
+      -- construction, so the program compiles with or without a zone and a
+      -- compile cannot witness the predicate. The adapters are the witness.
+      dns01 <- readFile "src/Prodbox/Lifecycle/Teardown/Dns01ChallengeRecordAdapter.hs"
+      family <- readFile "src/Prodbox/Lifecycle/Teardown/AwsNativeStackFamilyAdapter.hs"
+      dns01 `shouldContain` "Dns01ChallengeHostedZoneMissing"
+      family `shouldContain` "AwsNativeStackFamilyZoneMissing"
+      registeredResourceKeyRequiresDnsZone AwsDns01ChallengeRecordKey `shouldBe` True
+      registeredResourceKeyRequiresDnsZone AwsEksSubzoneKey `shouldBe` True
+      -- No other family reads the scope's zone to refuse.
+      forM_ [minBound .. maxBound] $ \key ->
+        unless (key `elem` [AwsDns01ChallengeRecordKey, AwsEksSubzoneKey]) $
+          registeredResourceKeyRequiresDnsZone key `shouldBe` False
+
+    it "keeps the legacy host IAM setup and teardown out of the runner and says what is retained" $ do
+      runner <- readFile "src/Prodbox/TestRunner.hs"
+      runner `shouldNotContain` "runManagedAwsHarnessSetup"
+      runner `shouldNotContain` "runManagedAwsHarnessTeardown"
+      runner `shouldNotContain` "runAwsIamHarnessSetup"
+      runner `shouldNotContain` "runAwsIamHarnessTeardown"
+      runner `shouldNotContain` "proved the typed credential-revocation node"
+      runner `shouldContain` "OPERATIONAL_CREDENTIAL_DISPOSITION=retained"
+      -- The harness path is entered from the tier alone and has no second
+      -- selector or standalone config sync behind it.
+      runner `shouldNotContain` "harnessNeedsVaultBeforeSetup"
+      runner `shouldNotContain` "harnessRequiresStandaloneInForceConfigSync"
+      runner `shouldNotContain` "runReconcileInForceConfig"
+      runner `shouldContain` "runNativeHarnessBootstrapFloor repoRoot"
+      runner `shouldContain` "reconcileHarnessLifecycleProviderCredential"
+
+leftOf :: Either left right -> Maybe left
+leftOf result = case result of
+  Left err -> Just err
+  Right _ -> Nothing
+
+primaryTag :: Maybe (Either SomeException ExitCode) -> String
+primaryTag primary = case primary of
+  Nothing -> "none"
+  Just (Right ExitSuccess) -> "success"
+  Just (Right (ExitFailure code)) -> "exit" ++ show code
+  Just (Left exception)
+    | show exception == show ThreadKilled -> "cancelled"
+    | otherwise -> "thrown"
+
+mustZoneId :: Text -> HostedZoneId
+mustZoneId raw = mustRight (mkHostedZoneId raw)
 
 data MutationPrefix
   = ConfigRegenerationPrefix

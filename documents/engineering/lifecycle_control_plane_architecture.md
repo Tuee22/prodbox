@@ -67,7 +67,11 @@ On AWS the role topology is enforced before any substrate mutation by the total
 `AwsControlPlaneRole` registry. Bootstrap Broker, Gateway diagnostics, and Target Secret Agent use
 distinct EKS Service transports. Lifecycle Authority and the fenced Provider Worker are explicitly
 located in retained home RKE2; registered Provider intents reach that home-only worker through its
-private local transport, never through an EKS Provider Worker Service. Public-edge A-record
+private local transport, never through an EKS Provider Worker Service. The AWS platform plan deploys
+nothing for the Authority Backup Adapter, the Provider Worker or the TLS Retention Adapter. It observes the
+first two on the home cluster (a readiness-only step with the home kubeconfig), because the components it
+installs on EKS depend on them in the component graph; nothing it installs depends on the TLS Retention
+Adapter, whose workflow the public-edge TLS path reaches itself. Public-edge A-record
 observation/reconcile is a closed
 `ObservePublicARecord`/`ReconcilePublicARecord` Provider intent registered by exact zone and
 canonical FQDN. The EKS Gateway cannot represent either intent. AWS cert-manager receives only the
@@ -1659,9 +1663,12 @@ exact decoded equality. Observed names, ARNs, and policy bytes cannot enter the 
 The one-remint refusal is refined by the same rule. Its closed trigger distinguishes a resumed
 cleanup-proven journal, nonempty inventory at intent, prepared-inventory divergence, create
 dispatch ambiguity, a lost successful create result, predecessor collision, unavailable created
-material, invalid material, Target delivery failure, and Target receipt mismatch. The trigger
-carries no provider text, inventory, key identity, material, receipt, or delivery detail and changes
-no cleanup, remint, journal, or delivery behavior.
+material, invalid material, Target delivery failure, Target receipt mismatch, and a Target that
+already holds the generation when the call's own key has been delivered nowhere (a predecessor
+attempt wrote it; this last trigger names the refusal Sprint `4.108` added, where the algebra used to
+commit that Target's receipt). The trigger carries no provider text, inventory, key identity,
+material, receipt, or delivery detail, and reporting it changes no cleanup, remint, journal, or
+delivery behavior.
 
 The Target-delivery arm is itself a closed value-free hierarchy. Direct preflight distinguishes
 permit, payload, prepared-target, target-binding, retained-target, revocation, schema, image, time,
@@ -1706,8 +1713,10 @@ the closed lifecycle constructor for journal commit/availability, binding role/o
 pre-clean audit, cleaned login ambiguity, cleanup audit/exception, or cleanup-journal commit.
 Pre-clean and cleanup audit causes identify only identity, accessor observation, accessor
 classification, visibility wait, or stable-zero failure. Classification further distinguishes an
-accessor that disappeared after the authoritative inventory from an unavailable lookup and the
-generic non-production fallback; all three still fail closed. Direct revoke status stays provisional;
+unavailable lookup from the generic non-production fallback; both fail closed. An accessor that
+disappeared after the authoritative inventory is not classified at all: Vault answers HTTP 400
+`invalid accessor` for it (measured on 1.18.3; it sends no 404), it is no member of any subject, and
+the scan passes over it because the stable-zero proof rests on fresh inventories. Direct revoke status stays provisional;
 only the independent absence proof closes the session. Tokens, accessors, journal keys, Vault
 responses, operation identifiers, and receipt values cannot enter this diagnostic, and the
 classification changes no session, delivery, cleanup, completion, or receipt behavior.
@@ -2256,7 +2265,8 @@ The signed intent does not carry a caller-authored role string. Instead, the clo
 constructor without a role assignment is an incomplete match. At the production rank-2 session
 boundary, native STS first observes and validates the 12-digit account plus exact
 `prodbox-lifecycle-provider` base-user ARN, assumes the account-bound role with fixed session name
-`prodbox-provider-worker` and AWS-minimum 900-second credential duration, then verifies the exact
+`prodbox-provider-worker` and a credential duration derived from the signed intent deadline (at least
+the 900-second STS minimum, at most the role's declared maximum), then verifies the exact
 assumed-role ARN. The opaque session handle supplies native clients and a temporary credential
 projection created from that same STS response supplies AWS/Pulumi subprocesses. Neither projection
 can escape the callback, so callback scope and the operation deadline remain the authorization
@@ -2475,7 +2485,16 @@ is never read, overwritten, deleted, or promoted; it remains a registered `LongL
 only a retention deletion removes. A second skip stacked on the staged successor, evidence naming
 any version but the one this reference was about to claim, a candidate two versions past the skip,
 a successor re-asserting the skipped digest, an empty or pre-outbox state, a validity regression,
-and an unapproved key change each refuse under their own closed token. A retain that promotes such
+and an unapproved key change each refuse under their own closed token. A refusal about the slot itself (the
+next version occupied, unopenable or corrupt, or a resumed collision) is reconsidered once, and only
+when the committed reference is current: the live certificate is read again from the selected Agent,
+and if its serial, public-key digest and expiry equal the reference's, the retain answers with the
+committed reference as `TlsWorkflowRetainedUnchanged` and claims, stages, stores and promotes
+nothing, because that reference already preserves the live certificate. A renewed certificate, or one
+that cannot be read again, keeps the refusal by name. The lane's store outlives the Authority's own
+state, so a reset of the latter leaves earlier-epoch objects in the slots the new state selects;
+this rule keeps those from blocking a retain with nothing new to say, and does not remove them (a
+retention deletion does). A retain that promotes such
 a successor writes `tls-retention/workflow notice=retained-past-unopenable-version/v<n>` to the
 Authority's protected log, because the operation succeeded and no failure line would record the
 abandoned object.
@@ -3901,6 +3920,27 @@ the freeze and re-enables only the freeze-aware old writer. After the epoch CASâ
 `EpochAdmissionOpen`â€”rollback is a new forward migration with a strictly greater epoch; the old
 writer is never simply re-enabled. This prevents split authority, stale-fence resurrection, and a
 partially wired new writer accepting work.
+
+**What "the same deployment" means across qualification cycles.** Two cycles are comparable only
+through an identity built from what does not name a run. A cycle's cleanup run id, owner and terminal
+permit are derived from its label and every operation id hashes the run id, so a cycle's own topology
+and wiring digests differ from every other cycle's by construction; equality over them would refuse
+forever. The comparable identity is the executable source (governed documentation is left out, because it
+is read for existence and never for content, and recording a cycle in the plan must not change which
+deployment the cycle certified), the generated config, the component images, the shape of the compiled
+program with every run-scoped input held constant, the resource envelope, the load and fault digest, and
+the digests derived from the source. Git head, the dirty bit, the whole-tree digest and the running binary
+are recorded beside each cycle and not keyed, so an operator commit of byte-identical content does not
+reset a count of consecutive cycles. One codec writes and reads the cycle artifact, so a writer and a
+reader cannot disagree about a line; its self-digest detects accident and edit and is not authentication.
+
+The typed cutover state is indexed by an identity that cannot be recomputed once the activating edit has
+landed, because the source it names is the source that edit changes. The cycle ledger therefore records
+each step of the cutover by key and replays it: a mark carries the full key of the pair that licensed the
+step and the local key of the tree it was recorded on, where the local key leaves out the images and the
+shape of the compiled program, which are unknowable until a cycle observes them and are rebuilt by the
+cutover's own edits. Resuming the typed state from the ledger is permitted only while the tree still has
+the local key of the last mark.
 
 ## 13. Verification Boundary
 

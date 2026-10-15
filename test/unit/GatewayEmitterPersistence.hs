@@ -27,7 +27,7 @@ gatewayEmitterPersistenceSuite =
       binding <- expectRight (mkEmitterPersistenceBinding SubstrateAws "node-b")
       persistenceJournalAccess binding
         `shouldBe` AwsRetainedEbsClaim
-          { journalClaimName = "gateway-node-b-emitter-journal"
+          { journalClaimName = "emitter-journal-gateway-node-b-0"
           , journalStorageClassName = "manual"
           , journalAccessMode = "ReadWriteOncePod"
           , journalRequestedStorage = "1Gi"

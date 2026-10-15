@@ -114,7 +114,10 @@ coordinateRetainedMaterialDelivery repository now source request observeDelivery
           Nothing ->
             case pendingForOperation (retainedMaterialSnapshotAggregate snapshot) of
               Just pending -> recoverPending pending
-              Nothing -> beginFresh
+              Nothing ->
+                case reattestedPendingForOperation (retainedMaterialSnapshotAggregate snapshot) of
+                  Just stale -> retireReattested stale
+                  Nothing -> beginFresh
 
   beginFresh = do
     keyPair <- generateRetainedDestinationKeyPair
@@ -168,6 +171,36 @@ coordinateRetainedMaterialDelivery repository now source request observeDelivery
               Right decision -> pure (Left (unexpected "successor" decision))
               Left detail -> pure (Left detail)
 
+  -- A pending delivery of this operation that an earlier attempt bound to another
+  -- attestation. A renewed credential operation derives a new prepared-target
+  -- receipt (it covers the deadline, the owner, the fence and the selected Agent),
+  -- and the Target intent issuer authorizes a delivery only against the current
+  -- one, so the earlier delivery can be neither resumed nor replaced by a
+  -- successor, which must keep its attestation. The aggregate refuses a new
+  -- delivery for the target while it is pending, so once it has expired it is
+  -- retired and the request's own delivery begins. Until then it is another
+  -- attempt's, and the request waits as it would for its own.
+  retireReattested stale = do
+    observed <- observeDelivery stale
+    case observed of
+      Left detail -> pure (Left detail)
+      Right (Just workerReceipt) -> commitReceipt stale workerReceipt
+      Right Nothing
+        | authorityTimeMicros now
+            <= authorityTimeMicros (retainedDeliveryDeadline stale) ->
+            pure (Left "retained delivery remains pending until its absolute deadline")
+        | otherwise -> do
+            retired <-
+              applyRetainedMaterialCommand
+                repository
+                (ExpireRetainedMaterialDelivery (retainedDeliveryOperationId stale) now)
+            case retired of
+              Left detail -> pure (Left detail)
+              Right (RetainedDeliveryExpired _) -> beginFresh
+              Right (RetainedMaterialRefused refusal) ->
+                pure (Left ("retained delivery expiry refused: " <> Text.pack (show refusal)))
+              Right decision -> pure (Left (unexpected "expiry" decision))
+
   commitReceipt intent workerReceipt =
     case deliveryReceipt intent workerReceipt of
       Left detail -> pure (Left detail)
@@ -185,15 +218,21 @@ coordinateRetainedMaterialDelivery repository now source request observeDelivery
   pendingForOperation aggregate =
     find pendingMatchesRequest (retainedMaterialPendingDeliveries aggregate)
 
+  reattestedPendingForOperation aggregate =
+    find pendingMatchesLineage (retainedMaterialPendingDeliveries aggregate)
+
   completedForOperation aggregate =
     find completedMatchesRequest (retainedMaterialCompletedDeliveries aggregate)
 
   pendingMatchesRequest intent =
+    pendingMatchesLineage intent
+      && retainedDeliveryAttestationRef intent == retainedDeliveryRequestAttestationRef request
+
+  pendingMatchesLineage intent =
     operationBelongsToRequest (retainedDeliveryOperationId intent)
       && pendingSourceMatchesRequest intent
       && retainedDeliveryTarget intent == retainedDeliveryRequestTarget request
       && retainedDeliveryTargetGeneration intent == retainedDeliveryRequestGeneration request
-      && retainedDeliveryAttestationRef intent == retainedDeliveryRequestAttestationRef request
 
   pendingSourceMatchesRequest intent =
     retainedDeliverySourceReceipt intent == retainedSourceReceiptRef source

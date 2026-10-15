@@ -81,6 +81,7 @@ module Prodbox.Vault.Client
   , vaultLookupSelfAccessor
   , vaultLookupTokenAccessorPolicies
   , vaultLookupTokenAccessorInfo
+  , vaultAccessorLookupVanished
   , vaultTokenAccessorAbsent
   , vaultSeal
   , vaultKvReadV2
@@ -138,6 +139,7 @@ import Data.Aeson.KeyMap qualified as AesonKeyMap
 import Data.Aeson.Types (Pair, Parser)
 import Data.ByteString (ByteString)
 import Data.ByteString.Base64 qualified as B64
+import Data.List (isInfixOf)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
@@ -643,6 +645,19 @@ vaultLookupTokenAccessorInfo address token accessor =
       [vaultTokenHeader token]
       (vaultUrl address "/v1/auth/token/lookup-accessor")
       (RevokeTokenAccessorRequest accessor)
+
+-- | Whether a failed 'vaultLookupTokenAccessorInfo' is Vault's answer that the
+-- accessor no longer exists. Measured against Vault 1.18.3 (2026-10-12): an
+-- accessor that was never issued, was revoked, or had expired answers HTTP 400
+-- with the error @invalid accessor@, and a live one answers 200; Vault sends no
+-- 404 for this path. A permission, transport, decode or server failure is not
+-- this answer, and neither is any other 400 (a malformed request names a
+-- different error), so only the exact status together with the exact error
+-- text qualifies.
+vaultAccessorLookupVanished :: HttpError -> Bool
+vaultAccessorLookupVanished failure = case failure of
+  HttpStatus 400 body -> "invalid accessor" `isInfixOf` body
+  _ -> False
 
 -- | Authoritative post-revocation readback used before the broker may report
 -- generated-root session cleanup complete.

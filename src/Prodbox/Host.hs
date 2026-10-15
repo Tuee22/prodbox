@@ -135,12 +135,10 @@ data EdgeRuntime = EdgeRuntime
   , edgeVscodeRouteAccepted :: Bool
   , edgeApiRouteAccepted :: Bool
   , edgeWebsocketRouteAccepted :: Bool
-  , edgeHarborRouteAccepted :: Bool
   , edgeMinioRouteAccepted :: Bool
   , edgeVscodeSecurityPolicyAttached :: Bool
   , edgeApiSecurityPolicyAttached :: Bool
   , edgeWebsocketSecurityPolicyAttached :: Bool
-  , edgeHarborSecurityPolicyAttached :: Bool
   , edgeMinioSecurityPolicyAttached :: Bool
   , edgeCertificateReady :: String
   , edgeCertificateExpiry :: String
@@ -286,11 +284,6 @@ runHostPublicEdge repoRoot substrate = do
                 repoRoot
                 (Just "websocket")
                 ["get", "httproute", "websocket", "-o", "json", "--ignore-not-found=true"]
-            harborRouteResult <-
-              optionalKubectlJson
-                repoRoot
-                (Just "harbor")
-                ["get", "httproute", "harbor-ui", "-o", "json", "--ignore-not-found=true"]
             minioRouteResult <-
               optionalKubectlJson
                 repoRoot
@@ -311,11 +304,6 @@ runHostPublicEdge repoRoot substrate = do
                 repoRoot
                 (Just "websocket")
                 ["get", "securitypolicy", "websocket-jwt", "-o", "json", "--ignore-not-found=true"]
-            harborSecurityPolicyResult <-
-              optionalKubectlJson
-                repoRoot
-                (Just "harbor")
-                ["get", "securitypolicy", "harbor-oidc", "-o", "json", "--ignore-not-found=true"]
             minioSecurityPolicyResult <-
               optionalKubectlJson
                 repoRoot
@@ -337,12 +325,10 @@ runHostPublicEdge repoRoot substrate = do
               , toUnit httpRedirectRouteResult
               , toUnit apiRouteResult
               , toUnit websocketRouteResult
-              , toUnit harborRouteResult
               , toUnit minioRouteResult
               , toUnit vscodeSecurityPolicyResult
               , toUnit apiSecurityPolicyResult
               , toUnit websocketSecurityPolicyResult
-              , toUnit harborSecurityPolicyResult
               , toUnit minioSecurityPolicyResult
               , toUnit certificateResult
               ] of
@@ -359,12 +345,10 @@ runHostPublicEdge repoRoot substrate = do
                      , httpRedirectRouteResult
                      , apiRouteResult
                      , websocketRouteResult
-                     , harborRouteResult
                      , minioRouteResult
                      , vscodeSecurityPolicyResult
                      , apiSecurityPolicyResult
                      , websocketSecurityPolicyResult
-                     , harborSecurityPolicyResult
                      , minioSecurityPolicyResult
                      , certificateResult
                      ) of
@@ -379,12 +363,10 @@ runHostPublicEdge repoRoot substrate = do
                     , Right httpRedirectRouteDoc
                     , Right apiRouteDoc
                     , Right websocketRouteDoc
-                    , Right harborRouteDoc
                     , Right minioRouteDoc
                     , Right vscodeSecurityPolicyDoc
                     , Right apiSecurityPolicyDoc
                     , Right websocketSecurityPolicyDoc
-                    , Right harborSecurityPolicyDoc
                     , Right minioSecurityPolicyDoc
                     , Right certificateDoc
                     ) -> do
@@ -430,12 +412,10 @@ runHostPublicEdge repoRoot substrate = do
                                   , edgeVscodeRouteAccepted = httpRouteAccepted vscodeRouteDoc
                                   , edgeApiRouteAccepted = httpRouteAccepted apiRouteDoc
                                   , edgeWebsocketRouteAccepted = httpRouteAccepted websocketRouteDoc
-                                  , edgeHarborRouteAccepted = httpRouteAccepted harborRouteDoc
                                   , edgeMinioRouteAccepted = httpRouteAccepted minioRouteDoc
                                   , edgeVscodeSecurityPolicyAttached = securityPolicyAttached "vscode" vscodeSecurityPolicyDoc
                                   , edgeApiSecurityPolicyAttached = securityPolicyAttached "api" apiSecurityPolicyDoc
                                   , edgeWebsocketSecurityPolicyAttached = securityPolicyAttached "websocket" websocketSecurityPolicyDoc
-                                  , edgeHarborSecurityPolicyAttached = securityPolicyAttached "harbor-ui" harborSecurityPolicyDoc
                                   , edgeMinioSecurityPolicyAttached = securityPolicyAttached "minio-console" minioSecurityPolicyDoc
                                   , edgeCertificateReady = certificateReady certificateDoc
                                   , edgeCertificateExpiry =
@@ -499,12 +479,10 @@ renderPublicEdgeReport runtime =
     , "VSCODE_HTTPROUTE_ACCEPTED=" ++ boolText (edgeVscodeRouteAccepted runtime)
     , "API_HTTPROUTE_ACCEPTED=" ++ boolText (edgeApiRouteAccepted runtime)
     , "WEBSOCKET_HTTPROUTE_ACCEPTED=" ++ boolText (edgeWebsocketRouteAccepted runtime)
-    , "HARBOR_HTTPROUTE_ACCEPTED=" ++ boolText (edgeHarborRouteAccepted runtime)
     , "MINIO_HTTPROUTE_ACCEPTED=" ++ boolText (edgeMinioRouteAccepted runtime)
     , "VSCODE_SECURITY_POLICY_ATTACHED=" ++ boolText (edgeVscodeSecurityPolicyAttached runtime)
     , "API_SECURITY_POLICY_ATTACHED=" ++ boolText (edgeApiSecurityPolicyAttached runtime)
     , "WEBSOCKET_SECURITY_POLICY_ATTACHED=" ++ boolText (edgeWebsocketSecurityPolicyAttached runtime)
-    , "HARBOR_SECURITY_POLICY_ATTACHED=" ++ boolText (edgeHarborSecurityPolicyAttached runtime)
     , "MINIO_SECURITY_POLICY_ATTACHED=" ++ boolText (edgeMinioSecurityPolicyAttached runtime)
     , "CERTIFICATE_READY=" ++ edgeCertificateReady runtime
     , "CERTIFICATE_EXPIRY=" ++ edgeCertificateExpiry runtime

@@ -7,7 +7,7 @@
 -- invoked without.
 module DependencyAdmissionSuite (dependencyAdmissionSuite) where
 
-import Data.IORef (newIORef, readIORef, writeIORef)
+import Data.IORef (modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
 import Data.Maybe (isJust, isNothing)
 import Data.Text qualified as Text
@@ -28,7 +28,12 @@ import Prodbox.ControlPlane.CapabilityRequirement
   )
 import Prodbox.ControlPlane.Coordinate (coordAuthority, coordGeneration, coordService)
 import Prodbox.ControlPlane.Observation
-  ( ExternalEvidence (EvidencePending, EvidencePresentReady, EvidenceUnreachable)
+  ( ExternalEvidence
+      ( EvidencePending
+      , EvidencePresentReady
+      , EvidenceRoundTripConfirmed
+      , EvidenceUnreachable
+      )
   , FreshnessWindow (FreshnessWindow)
   , ObservationReading (..)
   , classifyObservation
@@ -36,9 +41,16 @@ import Prodbox.ControlPlane.Observation
   , observationFromRef
   )
 import Prodbox.ControlPlane.SCapability (SCapability, withKnownCapability)
-import Prodbox.Lib.AwsSubstratePlatform (runReconcileSlices)
+import Prodbox.Lib.AwsSubstratePlatform
+  ( AwsPlatformStepId (..)
+  , awsAnchoredOrderSpec
+  , awsHomeResidentComponents
+  , runReconcileSlices
+  )
 import Prodbox.Lifecycle.AnchoredReconcile
-  ( ReconcileStepAnchor (ComponentMutation, ComponentReadiness)
+  ( AnchoredOrderSpec (..)
+  , ReconcileStepAnchor (ComponentMutation, ComponentReadiness)
+  , compileAnchoredOrder
   , runAnchoredStepOrder
   , runFirstAnchoredStepOrder
   )
@@ -51,6 +63,7 @@ import Prodbox.Lifecycle.DependencyAdmission
 -- rule that bars this import is scoped to `src/`.
 import Prodbox.Lifecycle.DependencyAdmission.Internal (noAdmissions)
 import Prodbox.Lifecycle.Lease (authorityTimeFromMicros)
+import Prodbox.Lifecycle.RegistryBackendWitness (registryBackendWitness)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import TestSupport
 
@@ -302,6 +315,130 @@ dependencyAdmissionSuite =
       -- error and no lint.
       readIORef seen `shouldReturn` [False, True, True]
 
+    it
+      "Sprint 7.46: the AWS platform order is admitted end to end over the real graph, home-resident roles included"
+      $ do
+        -- The executor admits a mutation only against an observation of every
+        -- dependency the graph declares for the mutated component. Envoy Gateway,
+        -- cert-manager, the Percona operator and the gateway depend on two roles
+        -- the retained home cluster runs; the plan once dropped their steps outright
+        -- and every AWS run was then refused with a missing admission at the first of
+        -- those mutations. The static coverage rule could not see it: only running
+        -- the executor over the real graph does.
+        case compileAnchoredOrder awsAnchoredOrderSpec defaultComponentGraph of
+          Left err -> expectationFailure err
+          Right (awsDag, order) -> do
+            observed <- newIORef ([] :: [ComponentId])
+            let readinessFor component = do
+                  seen <- readIORef observed
+                  writeIORef observed (seen ++ [component])
+                  pure (maybe (Left (ExitFailure 97)) Right (anyAdmission component))
+            outcome <-
+              runFirstAnchoredStepOrder
+                awsDag
+                (pure now)
+                (anchoredStepAnchor awsAnchoredOrderSpec)
+                (\_ _ -> pure ExitSuccess)
+                (const (pure ExitSuccess))
+                readinessFor
+                order
+            case outcome of
+              Left refusal -> expectationFailure ("the AWS order was refused: " ++ show refusal)
+              Right (exitCode, _) -> exitCode `shouldBe` ExitSuccess
+            seen <- readIORef observed
+            mapM_ (\component -> seen `shouldSatisfy` elem component) awsHomeResidentComponents
+        -- Negative control: the plan as it stood when the two roles had no step.
+        let homeSteps =
+              [ StepAwsHomeAuthorityBackupReady
+              , StepAwsHomeProviderWorkerReady
+              ]
+            withoutHomeSteps =
+              awsAnchoredOrderSpec
+                { anchoredAllSteps = filter (`notElem` homeSteps) (anchoredAllSteps awsAnchoredOrderSpec)
+                , anchoredRequiredComponents =
+                    filter (`notElem` awsHomeResidentComponents) (anchoredRequiredComponents awsAnchoredOrderSpec)
+                , anchoredStepsForComponent = \component ->
+                    if component `elem` awsHomeResidentComponents
+                      then []
+                      else anchoredStepsForComponent awsAnchoredOrderSpec component
+                }
+        case compileAnchoredOrder withoutHomeSteps defaultComponentGraph of
+          Left err -> expectationFailure err
+          Right (awsDag, order) -> do
+            outcome <-
+              runFirstAnchoredStepOrder
+                awsDag
+                (pure now)
+                (anchoredStepAnchor withoutHomeSteps)
+                (\_ _ -> pure ExitSuccess)
+                (const (pure ExitSuccess))
+                (\component -> pure (maybe (Left (ExitFailure 97)) Right (anyAdmission component)))
+                order
+            case outcome of
+              Left (AdmissionMissing _ dependency) ->
+                awsHomeResidentComponents `shouldSatisfy` elem dependency
+              Left other -> expectationFailure ("unexpected refusal: " ++ show other)
+              Right (exitCode, _) ->
+                expectationFailure ("the unobserved roles were admitted: " ++ show exitCode)
+
+    it
+      "Sprint 7.46: an admission that ages out between steps is re-observed, and a refused re-observation surfaces"
+      $ case compileAnchoredOrder awsAnchoredOrderSpec defaultComponentGraph of
+        Left err -> expectationFailure err
+        Right (awsDag, order) -> do
+          -- Real installs take minutes against an admission bound of seconds, so in
+          -- production nearly every admission is stale by the next mutation. The case
+          -- above stamps every answer at one instant and never enters the refresh
+          -- path; this one makes every step outlast the longest bound, so each
+          -- dependency is re-observed before the mutation that needs it.
+          let longestBound =
+                maximum
+                  ( 0
+                      : [ bound
+                        | component <- [minBound .. maxBound]
+                        , Just bound <- [dependencyAdmissionBoundMicros awsDag component]
+                        ]
+                  )
+              stepDuration = longestBound + 1
+          let drive refusal = do
+                clock <- newIORef now
+                calls <- newIORef ([] :: [ComponentId])
+                let tick = modifyIORef' clock (+ stepDuration) >> pure ExitSuccess
+                    readinessFor component = do
+                      stampedAt <- readIORef clock
+                      before <- readIORef calls
+                      writeIORef calls (before ++ [component])
+                      let attempt = length (filter (== component) before) + 1
+                      pure $
+                        if refusal == Just (component, attempt)
+                          then Left (ExitFailure 97)
+                          else maybe (Left (ExitFailure 96)) Right (anyAdmissionAt stampedAt component)
+                outcome <-
+                  runFirstAnchoredStepOrder
+                    awsDag
+                    (readIORef clock)
+                    (anchoredStepAnchor awsAnchoredOrderSpec)
+                    (\_ _ -> tick)
+                    (const tick)
+                    readinessFor
+                    order
+                observed <- readIORef calls
+                pure (outcome, observed)
+          (admitted, observed) <- drive Nothing
+          case admitted of
+            Left refusal -> expectationFailure ("the aged AWS order was refused: " ++ show refusal)
+            Right (exitCode, _) -> exitCode `shouldBe` ExitSuccess
+          mapM_
+            (\component -> observed `shouldSatisfy` elem component)
+            awsHomeResidentComponents
+          -- A dependency whose admission aged out is observed again, home roles included.
+          length (filter (== ComponentChartAuthorityBackup) observed) `shouldSatisfy` (> 1)
+          -- A refused re-observation is the run's outcome, not a swallowed retry.
+          (refused, _) <- drive (Just (ComponentChartAuthorityBackup, 2))
+          case refused of
+            Left refusal -> expectationFailure ("unexpected typed refusal: " ++ show refusal)
+            Right (exitCode, _) -> exitCode `shouldBe` ExitFailure 97
+
     it "Sprint 4.69: a failing slice stops the run and no later slice observes" $ do
       ran <- newIORef (0 :: Int)
       let counting carried = do
@@ -336,6 +473,22 @@ rightToMaybe :: Either left right -> Maybe right
 rightToMaybe result = case result of
   Right value -> Just value
   Left _ -> Nothing
+
+-- | An admission for a component whichever evidence class its requirement
+-- declares: the read-shaped reading for a shallow probe, and a confirmed
+-- write/CAS round trip for a deep one (the registry and the gateway), which a
+-- read cannot satisfy.
+anyAdmission :: ComponentId -> Maybe DependencyAdmission
+anyAdmission = anyAdmissionAt now
+
+-- | 'anyAdmission' observed at a chosen instant.
+anyAdmissionAt :: Natural -> ComponentId -> Maybe DependencyAdmission
+anyAdmissionAt observedAt component =
+  case admissionFrom component EvidencePresentReady observedAt of
+    Just admission -> Just admission
+    Nothing ->
+      registryBackendWitness "session-0" (authorityTimeFromMicros observedAt)
+        >>= \witness -> admissionFrom component (EvidenceRoundTripConfirmed witness) observedAt
 
 admissionAt :: Natural -> ComponentId -> DependencyAdmission
 admissionAt observedAt component =

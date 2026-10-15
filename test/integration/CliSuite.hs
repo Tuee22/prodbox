@@ -23,7 +23,7 @@ import Data.Aeson qualified as Aeson
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy.Char8 qualified as LazyBS8
 import Data.Either (isLeft)
-import Data.List (find, findIndex, intercalate, isInfixOf, sort)
+import Data.List (find, findIndex, intercalate, isInfixOf, isPrefixOf, sort)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Time.Clock (nominalDiffTimeToSeconds)
@@ -78,6 +78,7 @@ import Prodbox.Settings.SecretRef
   , VaultSecretRef (..)
   )
 import Prodbox.Subprocess qualified as Subprocess
+import Prodbox.Substrate (Substrate (..))
 import Prodbox.TestRunner qualified as TestRunner
 import Prodbox.TestValidation qualified as TestValidation
 import System.Directory
@@ -920,6 +921,12 @@ integrationCliSuite = do
             envFor fixture =
               ("PRODBOX_TEST_DAEMON_BOOTSTRAP_AUDIT", fixture)
                 : baseEnvironment
+            -- The unset arm observes a live Broker, so on a host that runs the real
+            -- cluster it would be answered by it and exit 0. It is given an empty
+            -- home and no exported kubeconfig, so no cluster is reachable from it.
+            isolatedFromHostCluster =
+              ("HOME", tmpDir)
+                : filter (\entry -> fst entry `notElem` ["HOME", "KUBECONFIG"]) baseEnvironment
 
         (passExitCode, passStdout, passStderr) <-
           readCreateProcessWithExitCode
@@ -969,7 +976,7 @@ integrationCliSuite = do
           readCreateProcessWithExitCode
             (proc binary ["test", "integration", "daemon-bootstrap"])
               { cwd = Just tmpDir
-              , env = Just baseEnvironment
+              , env = Just isolatedFromHostCluster
               }
             ""
 
@@ -2280,6 +2287,155 @@ integrationCliSuite = do
         combined `shouldNotContain` "No RKE2 cluster to delete."
         -- The cascade orchestration never started.
         combined `shouldNotContain` "confirm-MinIO"
+        -- Sprint 6.6: this fixture authors AWS coordinates (a zone id, the
+        -- state backend, a region), so the run now announces that it will ask
+        -- AWS and then reports that it could not, because the temp repository
+        -- has no `test-secrets.dhall` and stdin is not a TTY. It must still be
+        -- a refusal that observed nothing, not a confirmation.
+        combined `shouldContain` "will now query AWS read-only"
+        combined `shouldContain` "owed and was not run"
+        combined `shouldNotContain` "NOT an empty account"
+
+    -- Sprint 6.6: nothing authored means there is no account for residue to be
+    -- in. The arm refuses offline: it never announces a query and never asks
+    -- for a credential, and it points at the local-only way out.
+    it
+      "Sprint 6.6: rke2 delete --cascade with no install and no authored AWS coordinate refuses offline"
+      $ withSystemTempDirectory "prodbox-hs-cli"
+      $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters syntheticConfigFile)
+        baseEnv <- withNoRke2Install <$> fakeRke2Environment tmpDir
+        envVars <- fakeCascadeAwsEnvironment tmpDir "clean" baseEnv
+
+        (deleteExitCode, deleteStdout, deleteStderr) <-
+          readCreateProcessWithExitCode
+            (proc binary ["cluster", "delete", "--yes", "--cascade"]) {cwd = Just tmpDir, env = Just envVars}
+            ""
+
+        let combined = deleteStdout ++ deleteStderr
+        deleteExitCode `shouldBe` ExitFailure 1
+        combined `shouldContain` "No AWS coordinate is authored"
+        combined `shouldContain` "prodbox cluster delete --yes"
+        combined `shouldContain` "durable cleanup run namespace"
+        combined `shouldNotContain` "will now query AWS"
+        -- The AWS CLI was never run, so no credential was ever needed.
+        awsRan <- doesFileExist (tmpDir </> "fake-cascade-aws.txt")
+        awsRan `shouldBe` False
+
+    -- Sprint 6.6: the host-only trace. No RKE2 install, an authored zone, a
+    -- credential from the harness fixture, and a fake `aws` that answers the
+    -- two read-only calls this arm makes. It is the only way to see the second
+    -- exit without leaving a cluster behind.
+    it "Sprint 6.6: rke2 delete --cascade with no install confirms only after a read-only AWS query" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        writeTier0Fixture
+          tmpDir
+          (tier0FixtureWithParameters validConfigWithBlankOperationalAwsAndConfiguredAdmin)
+        writeFile
+          (tmpDir </> "test-secrets.dhall")
+          ( testSecretsDhallWithAdmin
+              "CASCADEFIXTUREKEY"
+              "cascade-fixture-secret"
+              (fixtureAwsRegion FixtureUsEast1)
+              Nothing
+          )
+        baseEnv <- withNoRke2Install <$> fakeRke2Environment tmpDir
+        envVars <- fakeCascadeAwsEnvironment tmpDir "clean" baseEnv
+
+        (deleteExitCode, deleteStdout, deleteStderr) <-
+          readCreateProcessWithExitCode
+            (proc binary ["cluster", "delete", "--yes", "--cascade"]) {cwd = Just tmpDir, env = Just envVars}
+            ""
+
+        let combined = deleteStdout ++ deleteStderr
+        deleteExitCode `shouldBe` ExitSuccess
+        -- What the zero means, and what it does not.
+        combined `shouldContain` "NOT an empty account"
+        combined `shouldContain` "route53.zone_id"
+        combined `shouldContain` "(visible)"
+        combined `shouldContain` "Retained roots surveyed, not read"
+        combined `shouldContain` "not a completion receipt"
+        combined `shouldContain` "the pulumi_state_backend bucket"
+        combined `shouldNotContain` "reached no phase: no local RKE2 install"
+        -- Every call it made was one of the two read-only verbs, and it asked
+        -- the authored region as well as the global-service region.
+        calls <- lines <$> readFile (tmpDir </> "fake-cascade-aws.txt")
+        calls `shouldSatisfy` (not . null)
+        calls
+          `shouldSatisfy` all
+            ( \line ->
+                any
+                  (`isPrefixOf` line)
+                  [ "resourcegroupstaggingapi|get-resources|"
+                  , "route53|get-hosted-zone|--id|Z1234567890ABC|--output|json"
+                  ]
+            )
+        calls `shouldSatisfy` any (isInfixOf "route53|get-hosted-zone")
+        calls `shouldSatisfy` any (isInfixOf ("--region|" ++ fixtureAwsRegion FixtureUsEast1))
+
+    it
+      "Sprint 6.6: rke2 delete --cascade with no install refuses when the credential cannot see the authored zone"
+      $ withSystemTempDirectory "prodbox-hs-cli"
+      $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        writeTier0Fixture
+          tmpDir
+          (tier0FixtureWithParameters validConfigWithBlankOperationalAwsAndConfiguredAdmin)
+        writeFile
+          (tmpDir </> "test-secrets.dhall")
+          ( testSecretsDhallWithAdmin
+              "CASCADEFIXTUREKEY"
+              "cascade-fixture-secret"
+              (fixtureAwsRegion FixtureUsEast1)
+              Nothing
+          )
+        baseEnv <- withNoRke2Install <$> fakeRke2Environment tmpDir
+        envVars <- fakeCascadeAwsEnvironment tmpDir "zone-missing" baseEnv
+
+        (deleteExitCode, deleteStdout, deleteStderr) <-
+          readCreateProcessWithExitCode
+            (proc binary ["cluster", "delete", "--yes", "--cascade"]) {cwd = Just tmpDir, env = Just envVars}
+            ""
+
+        let combined = deleteStdout ++ deleteStderr
+        deleteExitCode `shouldBe` ExitFailure 1
+        combined `shouldContain` "could not be tied to this deployment's account"
+        combined `shouldContain` "did NOT confirm absence"
+        combined `shouldNotContain` "NOT an empty account"
+
+    it "Sprint 6.6: rke2 delete --cascade with no install refuses and lists residue the sweep finds" $
+      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        writeTier0Fixture
+          tmpDir
+          (tier0FixtureWithParameters validConfigWithBlankOperationalAwsAndConfiguredAdmin)
+        writeFile
+          (tmpDir </> "test-secrets.dhall")
+          ( testSecretsDhallWithAdmin
+              "CASCADEFIXTUREKEY"
+              "cascade-fixture-secret"
+              (fixtureAwsRegion FixtureUsEast1)
+              Nothing
+          )
+        baseEnv <- withNoRke2Install <$> fakeRke2Environment tmpDir
+        envVars <- fakeCascadeAwsEnvironment tmpDir "escaped" baseEnv
+
+        (deleteExitCode, deleteStdout, deleteStderr) <-
+          readCreateProcessWithExitCode
+            (proc binary ["cluster", "delete", "--yes", "--cascade"]) {cwd = Just tmpDir, env = Just envVars}
+            ""
+
+        let combined = deleteStdout ++ deleteStderr
+        deleteExitCode `shouldBe` ExitFailure 1
+        combined `shouldContain` "vpc/vpc-escaped"
+        combined `shouldContain` "this cascade did not destroy"
+        combined `shouldNotContain` "NOT an empty account"
 
     -- Sprint 8.8: the operator-only `prodbox nuke` total teardown is exercised
     -- through the same PRODBOX_ALLOW_NON_TTY_INTERACTIVE seam the other
@@ -3705,6 +3861,63 @@ fakeAwsEnvironment repoRoot = do
         : filtered
     )
 
+-- | Sprint 6.6: a fake @aws@ for the no-install cascade. It answers exactly the
+-- two read-only calls that arm makes and records every argv with an
+-- unambiguous separator, so a test can reject any other verb. The mode selects
+-- the answer: a clean sweep, one escaped resource, or a hosted zone the
+-- credential cannot see.
+fakeCascadeAwsEnvironment :: FilePath -> String -> [(String, String)] -> IO [(String, String)]
+fakeCascadeAwsEnvironment repoRoot mode baseEnvVars = do
+  let binDir = repoRoot </> "fake-cascade-aws-bin"
+  createDirectoryIfMissing True binDir
+  -- The mode is written into the script rather than passed in the environment:
+  -- the admin AWS environment the command builds does not inherit custom
+  -- variables, so a variable would silently read as unset.
+  writeExecutable (binDir </> "aws") (fakeCascadeAwsScript repoRoot mode)
+  let existingPath = maybe "" id (lookup "PATH" baseEnvVars)
+  pure (("PATH", binDir ++ ":" ++ existingPath) : filter ((/= "PATH") . fst) baseEnvVars)
+
+fakeCascadeAwsScript :: FilePath -> String -> String
+fakeCascadeAwsScript repoRoot mode =
+  unlines
+    [ "#!/bin/bash"
+    , "set -euo pipefail"
+    , "record_file=" ++ show (repoRoot </> "fake-cascade-aws.txt")
+    , "mode=" ++ show mode
+    , "first=1"
+    , "for arg in \"$@\"; do"
+    , "  if [[ $first -eq 0 ]]; then printf '|' >> \"$record_file\"; fi"
+    , "  first=0"
+    , "  printf '%s' \"$arg\" >> \"$record_file\""
+    , "done"
+    , "printf '\\n' >> \"$record_file\""
+    , "case \"$1 $2\" in"
+    , "  'resourcegroupstaggingapi get-resources')"
+    , "    if [[ $mode == escaped ]]; then"
+    , "      printf '%s\\n' " ++ show escapedPage
+    , "    else"
+    , "      printf '%s\\n' '{\"ResourceTagMappingList\":[],\"PaginationToken\":\"\"}'"
+    , "    fi"
+    , "    ;;"
+    , "  'route53 get-hosted-zone')"
+    , "    if [[ $mode == zone-missing ]]; then"
+    , "      printf '%s\\n' 'An error occurred (NoSuchHostedZone) when calling the GetHostedZone operation: no such zone' >&2"
+    , "      exit 254"
+    , "    fi"
+    , "    printf '%s\\n' '{\"HostedZone\":{\"Id\":\"/hostedzone/Z1234567890ABC\",\"Name\":\"example.test.\"}}'"
+    , "    ;;"
+    , "  *)"
+    , "    printf 'fake aws: unexpected call: %s\\n' \"$*\" >&2"
+    , "    exit 2"
+    , "    ;;"
+    , "esac"
+    ]
+ where
+  escapedPage =
+    "{\"ResourceTagMappingList\":[{\"ResourceARN\":\"arn:aws:ec2:"
+      ++ fixtureAwsRegion FixtureUsEast1
+      ++ ":123456789012:vpc/vpc-escaped\",\"Tags\":[{\"Key\":\"prodbox.io/managed-by\",\"Value\":\"prodbox\"}]}],\"PaginationToken\":\"\"}"
+
 -- | Sprint 8.10 built-frontend fixture.  Every supported arm is read-only and
 -- records its argv with an unambiguous separator so the test can reject
 -- mutation verbs as well as assert the exact semantic probes were reached.
@@ -4859,6 +5072,10 @@ fakeRke2KubectlScript =
     , "      statefulset)"
     , "        if [[ \"$*\" == *'jsonpath={.spec.replicas}'* ]]; then"
     , "          printf '1:1:1'"
+    , "        elif [[ \"$*\" == *'-o name'* ]]; then"
+    , "          # The gateway namespace holds one StatefulSet per home emitter beside the"
+    , "          # unrelated Pulsar broker; the gateway validations wait on the emitters only."
+    , "          printf 'statefulset.apps/gateway-node-a\\nstatefulset.apps/gateway-node-b\\nstatefulset.apps/pulsar\\n'"
     , "        fi"
     , "        ;;"
     , "      daemonset)"
@@ -6132,7 +6349,7 @@ renderFakeResourceQuotaItems =
   "{\"items\":[" ++ intercalate "," (map renderQuotaItem resourceGuardrailFakeNamespaces) ++ "]}"
  where
   renderQuotaItem namespace =
-    case TestValidation.namespaceResourceQuotaHardFields defaultResourcePlan namespace of
+    case TestValidation.namespaceResourceQuotaHardFields SubstrateHomeLocal defaultResourcePlan namespace of
       Left err ->
         error ("fake ResourceQuota fixture cannot project namespace " ++ namespace ++ ": " ++ err)
       Right fields ->
@@ -6159,7 +6376,7 @@ renderFakeLimitRangeItems =
   "{\"items\":[" ++ intercalate "," (map renderLimitItem resourceGuardrailFakeNamespaces) ++ "]}"
  where
   renderLimitItem namespace =
-    case TestValidation.namespaceLimitRangeContainerFields defaultResourcePlan namespace of
+    case TestValidation.namespaceLimitRangeContainerFields SubstrateHomeLocal defaultResourcePlan namespace of
       Left err ->
         error ("fake LimitRange fixture cannot project namespace " ++ namespace ++ ": " ++ err)
       Right fields ->
@@ -6187,9 +6404,7 @@ renderFakeLimitRangeItems =
 -- replica count behind in the fixture.
 gatewayRuntimeFakeReplicaIndices :: [Int]
 gatewayRuntimeFakeReplicaIndices =
-  case TestValidation.gatewayRuntimeExpectedReplicas defaultResourcePlan of
-    Left err -> error ("fake gateway fixture cannot project replica count: " ++ err)
-    Right replicas -> [0 .. fromIntegral replicas - 1]
+  [0 .. fromIntegral (TestValidation.gatewayRuntimeExpectedReplicas SubstrateHomeLocal) - 1]
 
 gatewayRuntimeFakeMemoryLimitQuantity :: String
 gatewayRuntimeFakeMemoryLimitQuantity =

@@ -70,6 +70,7 @@ data AwsIsolationDefect
   | AwsGatewayAuthorityCapabilityPresent
   | AwsGatewayProviderCapabilityPresent
   | AwsAuthorityProjectedAsEksWorkload
+  | AwsProviderProjectedAsEksWorkload
   deriving (Eq, Show)
 
 data AwsEksIamNames = AwsEksIamNames
@@ -142,7 +143,10 @@ canonicalAwsRoleTransports =
       "lifecycle-authority"
       "lifecycle-authority"
       8701
-  , AwsRoleTransport AwsProviderWorker AwsEksService "provider-worker" "provider-worker" 8702
+  , -- The fenced Provider Worker runs in the retained home cluster for every
+    -- substrate; registered intents reach it through its private local transport
+    -- and never through an EKS Service.
+    AwsRoleTransport AwsProviderWorker RetainedHomeService "provider-worker" "provider-worker" 8702
   ]
 
 roleCapabilities :: AwsControlPlaneRole -> [AwsCapability]
@@ -176,6 +180,8 @@ validateAwsControlPlaneIsolation transports = do
   validateLocation transport = case (awsTransportRole transport, awsTransportLocation transport) of
     (RetainedHomeAuthorityClient, RetainedHomeService) -> Right ()
     (RetainedHomeAuthorityClient, AwsEksService) -> Left AwsAuthorityProjectedAsEksWorkload
+    (AwsProviderWorker, RetainedHomeService) -> Right ()
+    (AwsProviderWorker, AwsEksService) -> Left AwsProviderProjectedAsEksWorkload
     (_, AwsEksService) -> Right ()
     (role, RetainedHomeService) -> Left (AwsRoleMissing role)
 

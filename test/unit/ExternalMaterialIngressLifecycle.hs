@@ -14,6 +14,7 @@ import Control.Exception
   , throwIO
   , try
   )
+import Control.Monad (forM_)
 import Data.Aeson (encode)
 import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as AesonKey
@@ -22,6 +23,7 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.ByteString.Lazy.Char8 qualified as LazyByteString8
+import Data.Either (isRight)
 import Data.IORef
   ( IORef
   , modifyIORef'
@@ -84,12 +86,14 @@ import Prodbox.ControlPlane.RetainedMaterialDeliveryEndpoint
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (LifecycleExternalMaterialIngress)
   )
+import Prodbox.ControlPlane.TargetMaterialFixture (acmeEabFixtureOperationId)
 import Prodbox.ControlPlane.TargetRetainedMaterialSourceClient
   ( TargetRetainedMaterialSourceClientError (..)
   , renderTargetRetainedMaterialSourceClientCause
   )
 import Prodbox.Http.ReplyStatus (ReplyStatus (ReplyOk))
 import Prodbox.Lifecycle.CheckpointAuthority (ModelBCodec (..))
+import Prodbox.Lifecycle.CredentialProvisioner.Execution (encodeExternalAcmeEabIngressFrame)
 import Prodbox.Lifecycle.CredentialProvisioner.ExternalIngress
   ( ExternalMaterialIngressIntent
   , ExternalMaterialIngressPhase (..)
@@ -495,6 +499,84 @@ externalMaterialIngressLifecycleSuite =
           "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
       fmap (authorityTimeMicros . externalMaterialWorkflowDeadline) permittedRenewal
         `shouldBe` Right (1000 + 30 * 60 * 1000000)
+
+    it
+      "Sprint 5.53 submits a changed EAB under a different operation id, so the rotate arm is reachable"
+      $ do
+        let frameFor keyId hmacKey = must (encodeExternalAcmeEabIngressFrame keyId hmacKey)
+            frameA = frameFor "eab-key-a" "aGVsbG8tYQ"
+            frameB = frameFor "eab-key-b" "aGVsbG8tYg"
+            idA = acmeEabFixtureOperationId "cluster-1" frameA
+            idB = acmeEabFixtureOperationId "cluster-1" frameB
+            select operationId observation =
+              externalMaterialRequestForObservation
+                operationId
+                fixtureImageRepository
+                fixtureImageDigestText
+                fixtureHeartbeatMicros
+                (Right (Just observation) :: Either () (Maybe ExternalMaterialIngressObservation))
+            -- The Authority retains a completed operation submitted under the first credential.
+            retainedA = fixtureReceiptObservation {externalMaterialObservedOperationId = idA}
+        -- An unchanged credential names the same operation, a changed one a different one,
+        -- and another cluster's is its own.
+        idA `shouldBe` acmeEabFixtureOperationId "cluster-1" frameA
+        idB `shouldNotBe` idA
+        acmeEabFixtureOperationId "cluster-2" frameA `shouldNotBe` idA
+        -- The id discloses neither half of the credential, and the Authority accepts it.
+        Text.isInfixOf "aGVsbG8tYQ" idA `shouldBe` False
+        Text.isInfixOf "eab-key-a" idA `shouldBe` False
+        mkOperatorMaterialOperationId idA `shouldSatisfy` isRight
+        -- Unchanged: the retained operation's generation is replayed, not installed again.
+        fmap externalMaterialWorkflowOperationId (select idA retainedA) `shouldBe` Right idA
+        fmap externalMaterialWorkflowGeneration (select idA retainedA)
+          `shouldBe` Right (externalMaterialChallengeGeneration (externalMaterialObservedChallenge retainedA))
+        -- Changed: the completed operation is answered with a rotation at the next generation.
+        fmap externalMaterialWorkflowAction (select idB retainedA) `shouldBe` Right ExternalMaterialRotate
+        fmap externalMaterialWorkflowGeneration (select idB retainedA)
+          `shouldBe` Right (externalMaterialChallengeGeneration (externalMaterialObservedChallenge retainedA) + 1)
+        fmap externalMaterialWorkflowOperationId (select idB retainedA) `shouldBe` Right idB
+
+    it "Sprint 5.53 finishes an operation in flight under another id before it rotates" $ do
+      let derivedId = "op-derived-from-the-credential"
+          select operationId heartbeat observation =
+            externalMaterialRequestForObservation
+              operationId
+              fixtureImageRepository
+              fixtureImageDigestText
+              heartbeat
+              (Right (Just observation) :: Either () (Maybe ExternalMaterialIngressObservation))
+          retainedGeneration observation =
+            externalMaterialChallengeGeneration (externalMaterialObservedChallenge observation)
+          permitted =
+            fixtureIntentObservation {externalMaterialObservedPhase = ExternalMaterialIngressPermitCommitted}
+          expired =
+            fixtureIntentObservation
+              { externalMaterialObservedChallenge =
+                  (externalMaterialObservedChallenge fixtureIntentObservation)
+                    { externalMaterialChallengeDeadlineMicros = 100
+                    }
+              }
+      -- A different credential's id meets an operation still committing: the Authority admits
+      -- a different intent only from an idle or completed state, so the request is the retained
+      -- operation's own, not a refusal and not a new id.
+      forM_ [fixtureIntentObservation, permitted] $ \inFlight -> do
+        fmap externalMaterialWorkflowOperationId (select derivedId fixtureHeartbeatMicros inFlight)
+          `shouldBe` Right fixtureOperationId
+        fmap externalMaterialWorkflowGeneration (select derivedId fixtureHeartbeatMicros inFlight)
+          `shouldBe` Right (retainedGeneration inFlight)
+      -- Its lapsed lease is renewed under the retained id, as for an unchanged credential.
+      fmap externalMaterialWorkflowOperationId (select derivedId 999 expired)
+        `shouldBe` Right fixtureOperationId
+      fmap externalMaterialWorkflowHeartbeatMicros (select derivedId 999 expired) `shouldBe` Right 999
+      -- The same observation under the retained id yields the same request: finishing it is not a
+      -- new rule for an old operation but the old rule applied to the id it carries.
+      select derivedId fixtureHeartbeatMicros fixtureIntentObservation
+        `shouldBe` select fixtureOperationId fixtureHeartbeatMicros fixtureIntentObservation
+      -- Once it completes, the derived id rotates at the next generation.
+      fmap
+        externalMaterialWorkflowAction
+        (select derivedId fixtureHeartbeatMicros fixtureReceiptObservation)
+        `shouldBe` Right ExternalMaterialRotate
 
     it "renews only an expired immutable-equivalent intent-committed attempt" $ do
       let retained = intentAt fixtureImageDigestText 1000 fixtureOperationId

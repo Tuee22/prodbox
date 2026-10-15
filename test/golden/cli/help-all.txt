@@ -486,7 +486,7 @@ Examples:
 ## prodbox cluster delete
 prodbox cluster delete - Delete the local cluster
 
-Delete the local cluster. Default mode is a PURE LOCAL UNINSTALL: it uninstalls RKE2 and preserves `.data/` (including the MinIO-backed per-run Pulumi state and the durable Vault PV) without querying, gating on, or destroying the per-run AWS Pulumi backend  so per-run AWS stacks (if any) are left untouched and remain destroyable afterward via `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`. With no RKE2 install present the default mode exits 0 having done nothing. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + postflight tag sweep + cluster uninstall) as one atomic operator action; the K8s drain phase skips gracefully within a reachable run, but a cascade with no RKE2 install present reaches no phase at all and exits non-zero rather than reporting a success it did not observe. The uninstall runs only on a confirmed-empty sweep: an unconfirmed or non-empty sweep leaves the local control plane running, because it is the only surface permitted to mutate AWS and destroying it would leave the answer with nothing able to act on it. No cascade exit authorizes deleting the retained root.
+Delete the local cluster. Default mode is a PURE LOCAL UNINSTALL: it uninstalls RKE2 and preserves `.data/` (including the MinIO-backed per-run Pulumi state and the durable Vault PV) without querying, gating on, or destroying the per-run AWS Pulumi backend  so per-run AWS stacks (if any) are left untouched and remain destroyable afterward via `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`. With no RKE2 install present the default mode exits 0 having done nothing. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + postflight tag sweep + cluster uninstall) as one atomic operator action; the K8s drain phase skips gracefully within a reachable run, but a cascade with no RKE2 install present reaches no phase at all and exits non-zero unless it asked AWS read-only on this invocation (it may prompt for a temporary admin credential) and the no-install conjunction held: an authored AWS coordinate, a clean sweep over every authored region, the credential tied to the deployment's account, and every retained root examined. Even then it reports no per-run residue in the swept regions, not an empty account, and it never reports a success it did not observe. The uninstall runs only on a confirmed-empty sweep: an unconfirmed or non-empty sweep leaves the local control plane running, because it is the only surface permitted to mutate AWS and destroying it would leave the answer with nothing able to act on it. No cascade exit authorizes deleting the retained root.
 Options:
 - --yes, -y - Confirm full cluster deletion
 - --cascade - Orchestrate the full teardown (K8s drain + per-run Pulumi destroys + postflight tag sweep + cluster uninstall) as one atomic operator action
@@ -1026,6 +1026,18 @@ Options:
 
 Examples:
 - prodbox test integration cascade-qualification  # Run the `cascade-qualification` integration suite.
+
+## prodbox test integration cascade-qualification-receipt
+prodbox test integration cascade-qualification-receipt - Report whether the cycle ledger holds consecutive qualifying cascade cycles
+
+Report whether the cycle ledger holds consecutive qualifying cascade cycles
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
+
+Examples:
+- prodbox test integration cascade-qualification-receipt  # Run the `cascade-qualification-receipt` integration suite.
 
 ## prodbox test integration ha-rke2-aws
 prodbox test integration ha-rke2-aws - Run HA RKE2 AWS integration tests

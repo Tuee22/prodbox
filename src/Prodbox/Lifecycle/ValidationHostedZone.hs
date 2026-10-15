@@ -23,15 +23,20 @@
 -- caller reference, so a zone leaked by any path remains discoverable by
 -- identity rather than by process memory.
 module Prodbox.Lifecycle.ValidationHostedZone
-  ( validationHostedZoneNamePrefix
+  ( AwsCliText
+  , awsCliTextFromOutput
+  , validationHostedZoneNamePrefix
   , validationHostedZoneName
   , validationHostedZoneCallerReference
   , validationHostedZoneTagPairs
   , validationHostedZoneTagCommand
   , bareHostedZoneId
   , createValidationHostedZone
+  , tagValidationHostedZone
+  , validationHostedZoneOwnedTagsPresent
   , deleteValidationHostedZone
   , discoverValidationHostedZones
+  , discoverAllHostedZones
   , destroyValidationHostedZones
   , parseHostedZoneListing
   )
@@ -46,12 +51,7 @@ import Data.List (isInfixOf, isPrefixOf)
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Prodbox.Lifecycle.OwnedResourceTags qualified as OwnedResourceTags
-import Prodbox.Result (Result (..))
-import Prodbox.Subprocess
-  ( ProcessOutput (..)
-  , Subprocess (..)
-  , captureSubprocessResult
-  )
+import Prodbox.Subprocess (ProcessOutput (..))
 import System.Exit (ExitCode (..))
 
 -- | Every zone this module creates is named and caller-referenced with this
@@ -96,16 +96,13 @@ validationHostedZoneCallerReference nonce = validationHostedZoneNamePrefix ++ no
 -- prefix-discoverable zone is strictly safer than reporting success with a zone
 -- the audit cannot see.
 createValidationHostedZone
-  :: FilePath
-  -> [(String, String)]
+  :: AwsCliText
   -> String
   -> String
   -> IO (Either String String)
-createValidationHostedZone repoRoot awsEnvironment zoneName callerReference = do
+createValidationHostedZone runAwsCli zoneName callerReference = do
   createResult <-
-    captureText
-      repoRoot
-      awsEnvironment
+    runAwsCli
       [ "route53"
       , "create-hosted-zone"
       , "--name"
@@ -120,7 +117,7 @@ createValidationHostedZone repoRoot awsEnvironment zoneName callerReference = do
   case trim <$> createResult of
     Left err -> pure (Left err)
     Right hostedZoneId -> do
-      tagged <- tagValidationHostedZone repoRoot awsEnvironment hostedZoneId
+      tagged <- tagValidationHostedZone runAwsCli hostedZoneId
       pure (hostedZoneId <$ tagged)
 
 -- | Author and read back the owned tags on one validation hosted zone.
@@ -130,15 +127,12 @@ createValidationHostedZone repoRoot awsEnvironment zoneName callerReference = do
 -- would leave the zone outside the audit's field of view while this function
 -- reported it inside.
 tagValidationHostedZone
-  :: FilePath
-  -> [(String, String)]
+  :: AwsCliText
   -> String
   -> IO (Either String ())
-tagValidationHostedZone repoRoot awsEnvironment hostedZoneId = do
+tagValidationHostedZone runAwsCli hostedZoneId = do
   tagResult <-
-    captureText
-      repoRoot
-      awsEnvironment
+    runAwsCli
       (validationHostedZoneTagCommand hostedZoneId)
   case tagResult of
     Left err ->
@@ -153,9 +147,7 @@ tagValidationHostedZone repoRoot awsEnvironment hostedZoneId = do
         )
     Right _ -> do
       listed <-
-        captureText
-          repoRoot
-          awsEnvironment
+        runAwsCli
           [ "route53"
           , "list-tags-for-resource"
           , "--resource-type"
@@ -185,6 +177,33 @@ tagValidationHostedZone repoRoot awsEnvironment hostedZoneId = do
  where
   tagPresentIn rendered (key, value) =
     key `isInfixOf` rendered && value `isInfixOf` rendered
+
+-- | Whether the zone already carries every owned tag, read from the tags
+-- themselves rather than inferred from a create having succeeded.
+validationHostedZoneOwnedTagsPresent
+  :: AwsCliText
+  -> String
+  -> IO (Either String Bool)
+validationHostedZoneOwnedTagsPresent runAwsCli hostedZoneId = do
+  listed <-
+    runAwsCli
+      [ "route53"
+      , "list-tags-for-resource"
+      , "--resource-type"
+      , "hostedzone"
+      , "--resource-id"
+      , bareHostedZoneId hostedZoneId
+      , "--output"
+      , "json"
+      ]
+  pure $ case listed of
+    Left err -> Left err
+    Right rendered ->
+      Right
+        ( all
+            (\(key, value) -> key `isInfixOf` rendered && value `isInfixOf` rendered)
+            validationHostedZoneTagPairs
+        )
 
 -- | The exact @change-tags-for-resource@ invocation, as data, so a unit case
 -- can pin its shape without an AWS call.
@@ -225,15 +244,12 @@ bareHostedZoneId hostedZoneId =
 -- change batch, an eventually-consistent read) would otherwise be recorded as
 -- cleanup.
 deleteValidationHostedZone
-  :: FilePath
-  -> [(String, String)]
+  :: AwsCliText
   -> String
   -> IO (Either String ())
-deleteValidationHostedZone repoRoot awsEnvironment hostedZoneId = do
+deleteValidationHostedZone runAwsCli hostedZoneId = do
   deleteResult <-
-    captureText
-      repoRoot
-      awsEnvironment
+    runAwsCli
       ["route53", "delete-hosted-zone", "--id", hostedZoneId]
   case deleteResult of
     Left err -> pure (Left err)
@@ -241,9 +257,7 @@ deleteValidationHostedZone repoRoot awsEnvironment hostedZoneId = do
  where
   observeAbsent = do
     getResult <-
-      captureText
-        repoRoot
-        awsEnvironment
+      runAwsCli
         ["route53", "get-hosted-zone", "--id", hostedZoneId, "--output", "json"]
     pure $ case getResult of
       Left err
@@ -272,33 +286,44 @@ deleteValidationHostedZone repoRoot awsEnvironment hostedZoneId = do
 -- | Every validation-owned hosted zone currently present, as
 -- @(hostedZoneId, zoneName)@ pairs.
 discoverValidationHostedZones
-  :: FilePath
-  -> [(String, String)]
+  :: AwsCliText
   -> IO (Either String [(String, String)])
-discoverValidationHostedZones repoRoot awsEnvironment = do
+discoverValidationHostedZones runAwsCli = do
   listResult <-
-    captureText
-      repoRoot
-      awsEnvironment
+    runAwsCli
       ["route53", "list-hosted-zones", "--output", "json"]
   pure (listResult >>= parseHostedZoneListing)
+
+-- | Every hosted zone in the account, as @(hostedZoneId, zoneName)@ pairs.
+discoverAllHostedZones
+  :: AwsCliText
+  -> IO (Either String [(String, String)])
+discoverAllHostedZones runAwsCli = do
+  listResult <-
+    runAwsCli
+      ["route53", "list-hosted-zones", "--output", "json"]
+  pure (listResult >>= parseAllHostedZones)
 
 -- | Pure projection of an @aws route53 list-hosted-zones@ payload down to the
 -- validation-owned zones. Exposed for unit tests.
 parseHostedZoneListing :: String -> Either String [(String, String)]
 parseHostedZoneListing payload =
+  filter (isPrefixOf validationHostedZoneNamePrefix . snd) <$> parseAllHostedZones payload
+
+-- | Every zone a listing names.
+parseAllHostedZones :: String -> Either String [(String, String)]
+parseAllHostedZones payload =
   case eitherDecode (LazyChar8.pack payload) of
     Left err -> Left ("Unable to decode hosted-zone listing: " ++ err)
-    Right value -> Right (ownedZones value)
+    Right value -> Right (allZones value)
  where
-  ownedZones value =
+  allZones value =
     [ (zoneId, zoneName)
     | Object zone <- zoneEntries value
     , Just (String zoneIdText) <- [KeyMap.lookup (Key.fromString "Id") zone]
     , let zoneId = Text.unpack zoneIdText
     , Just (String zoneNameText) <- [KeyMap.lookup (Key.fromString "Name") zone]
     , let zoneName = Text.unpack zoneNameText
-    , validationHostedZoneNamePrefix `isPrefixOf` zoneName
     ]
 
   zoneEntries value = case value of
@@ -311,9 +336,9 @@ parseHostedZoneListing payload =
 -- | The registered destroy action: sweep every validation-owned zone, deleting
 -- its record sets first (Route 53 refuses to delete a non-empty zone), and
 -- aggregate rather than short-circuit so one stuck zone cannot hide the others.
-destroyValidationHostedZones :: FilePath -> [(String, String)] -> IO ExitCode
-destroyValidationHostedZones repoRoot awsEnvironment = do
-  discovered <- discoverValidationHostedZones repoRoot awsEnvironment
+destroyValidationHostedZones :: AwsCliText -> IO ExitCode
+destroyValidationHostedZones runAwsCli = do
+  discovered <- discoverValidationHostedZones runAwsCli
   case discovered of
     -- Cannot observe is never silently treated as absent
     -- (lifecycle_reconciliation_doctrine.md section 3.1).
@@ -322,7 +347,7 @@ destroyValidationHostedZones repoRoot awsEnvironment = do
  where
   destroyOne accumulated (hostedZoneId, _) = do
     pruned <- pruneRecordSets hostedZoneId
-    deleted <- deleteValidationHostedZone repoRoot awsEnvironment hostedZoneId
+    deleted <- deleteValidationHostedZone runAwsCli hostedZoneId
     pure $ case (accumulated, pruned, deleted) of
       (ExitSuccess, Right (), Right ()) -> ExitSuccess
       _ -> ExitFailure 1
@@ -330,9 +355,7 @@ destroyValidationHostedZones repoRoot awsEnvironment = do
   -- Delete every non-SOA/NS record so the zone becomes deletable.
   pruneRecordSets hostedZoneId = do
     listed <-
-      captureText
-        repoRoot
-        awsEnvironment
+      runAwsCli
         [ "route53"
         , "list-resource-record-sets"
         , "--hosted-zone-id"
@@ -354,9 +377,7 @@ destroyValidationHostedZones repoRoot awsEnvironment = do
   deleteBatch hostedZoneId records = do
     let changeBatch = renderDeleteBatch records
     result <-
-      captureText
-        repoRoot
-        awsEnvironment
+      runAwsCli
         [ "route53"
         , "change-resource-record-sets"
         , "--hosted-zone-id"
@@ -376,29 +397,25 @@ destroyValidationHostedZones repoRoot awsEnvironment = do
   renderDelete record =
     "{\"Action\":\"DELETE\",\"ResourceRecordSet\":" <> encode record <> "}"
 
-captureText :: FilePath -> [(String, String)] -> [String] -> IO (Either String String)
-captureText repoRoot awsEnvironment arguments = do
-  outputResult <-
-    captureSubprocessResult
-      Subprocess
-        { subprocessPath = "aws"
-        , subprocessArguments = arguments
-        , subprocessEnvironment = Just awsEnvironment
-        , subprocessWorkingDirectory = Just repoRoot
-        }
-  pure $ case outputResult of
-    Failure err -> Left err
-    Success output -> case processExitCode output of
-      ExitSuccess -> Right (processStdout output)
-      ExitFailure code ->
-        Left
-          ( "aws "
-              ++ unwords arguments
-              ++ " failed with exit code "
-              ++ show code
-              ++ ": "
-              ++ processStderr output
-          )
+-- | One AWS CLI invocation, answered with its standard output or the reason it
+-- failed. The module starts no process of its own: the Provider Worker supplies
+-- its bounded, permit-serialised runner (Sprint 5.53), so these interpreters are
+-- held to the same physical limits as every other AWS child it starts.
+type AwsCliText = [String] -> IO (Either String String)
+
+-- | The standard output of a finished invocation, or why it failed.
+awsCliTextFromOutput :: [String] -> ProcessOutput -> Either String String
+awsCliTextFromOutput arguments output = case processExitCode output of
+  ExitSuccess -> Right (processStdout output)
+  ExitFailure code ->
+    Left
+      ( "aws "
+          ++ unwords arguments
+          ++ " failed with exit code "
+          ++ show code
+          ++ ": "
+          ++ processStderr output
+      )
 
 trim :: String -> String
 trim = dropWhile (`elem` whitespace) . reverse . dropWhile (`elem` whitespace) . reverse

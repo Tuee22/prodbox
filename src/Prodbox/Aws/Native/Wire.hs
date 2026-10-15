@@ -78,7 +78,7 @@ import Network.HTTP.Client
   )
 import Network.HTTP.Types.Header (Header)
 import Network.HTTP.Types.Status (statusCode)
-import Prodbox.Aws.Native.Xml (extractFirst)
+import Prodbox.Aws.Native.Xml (extractFirst, xmlUnescape)
 import Prodbox.Aws.SigV4
   ( SigV4Credentials
   , SigV4Request (..)
@@ -295,7 +295,7 @@ parseServiceFault XmlErrorFormat status _ body =
   AwsServiceFault
     status
     (maybe "" decodeUtf8 (extractFirst "<Code>" "</Code>" body))
-    (maybe "" decodeUtf8 (extractFirst "<Message>" "</Message>" body))
+    (maybe "" (decodeUtf8 . xmlUnescape) (extractFirst "<Message>" "</Message>" body))
     (decodeUtf8 <$> extractFirst "<RequestId>" "</RequestId>" body)
 parseServiceFault JsonErrorFormat status headers body =
   AwsServiceFault

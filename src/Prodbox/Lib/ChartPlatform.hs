@@ -53,6 +53,13 @@ module Prodbox.Lib.ChartPlatform
   , resolveChartSecrets
   , resolvedCustomImageTargetAgentIdentity
   , resolveRuntimeChartImageForSubstrate
+  , chartStorageSpecsForRelease
+  , chartStorageBindingsForRelease
+  , gatewayEmitterJournalStorageSpecs
+  , resolveRuntimeChartImageForSubstrateWith
+  , RuntimeImageObservers (..)
+  , productionRuntimeImageObservers
+  , withRegistryManifestDigest
   , selectRepositoryManifestDigest
   , resolveDependencyOrder
   , resolvePerconaPatroniRuntimeBindings
@@ -203,8 +210,16 @@ import Prodbox.Gateway.ChartStatics qualified as ChartStatics
 import Prodbox.Gateway.Emitter.Persistence qualified as EmitterPersistence
 import Prodbox.Gateway.Probe qualified as GatewayProbe
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
+import Prodbox.Lib.EksCustomImagePush
+  ( EksCustomImagePushConfig (customPushPodNamespace)
+  , classifyEksRegistryDigestRecordRead
+  , defaultEksCustomImagePushConfig
+  , eksRuntimeImageDigestRecordKey
+  , eksRuntimeImageDigestRecordName
+  )
 import Prodbox.Lib.Storage
-  ( ChartStorageBinding (..)
+  ( ChartStorageAccessMode (..)
+  , ChartStorageBinding (..)
   , ChartStorageSpec (..)
   , StaticEbsVolumeBinding
   , chartEbsPersistentVolumeManifest
@@ -231,6 +246,7 @@ import Prodbox.Lifecycle.ReadinessObservation
   , ReadinessProbeResult (..)
   , observeComponentReadiness
   )
+import Prodbox.Lifecycle.RetainedEbsProvider (ensureRetainedEbsVolumesThroughProvider)
 import Prodbox.Lifecycle.TargetSecretAgent.ChartStatics qualified as TargetSecretAgentStatics
 import Prodbox.Lifecycle.TlsRetention.ChartStatics qualified as TlsRetentionStatics
 import Prodbox.Minio.ObjectStoreTypes
@@ -302,7 +318,12 @@ import Prodbox.Subprocess
   , Subprocess (..)
   , captureSubprocessResult
   )
-import Prodbox.Substrate (Substrate (..), replicasForSubstrate, substrateId)
+import Prodbox.Substrate
+  ( Substrate (..)
+  , gatewayNodeIdsForSubstrate
+  , replicasForSubstrate
+  , substrateId
+  )
 import Prodbox.Tls.CertScope (CertScopeSet, certScopeSetDnsNames, renderCertScopeSet)
 import System.Directory
   ( createDirectoryIfMissing
@@ -399,24 +420,6 @@ publicEdgeWebsocketSecurityPolicyName = "websocket-jwt"
 
 publicEdgeRouteClaimName :: String
 publicEdgeRouteClaimName = "prodbox_route"
-
--- | The gateway emitter node identities, per substrate. Each id renders one
--- stable @gateway-\<nodeId>@ StatefulSet with its own registered retained
--- emitter journal (Sprint 2.32 / 3.26 Increment E).
---
--- Sprint 3.26 reduces the HOME substrate from three emitter identities to two.
--- The home cluster is a single physical node whose allocatable budget was
--- already fully committed (6450m of 6500m); dropping one 750m Guaranteed-QoS
--- gateway StatefulSet frees the 750m CPU / 512 MiB that funds the physically
--- separated control-plane workloads (Lifecycle Authority, Authority Backup /
--- TLS Retention Adapters, fenced Provider Worker, Target Secret Agent) on the
--- maxed single-node budget (operator-approved). The AWS substrate keeps three
--- identities across its EKS nodes with their own retained-EBS journals, so its
--- gateway resilience and its Sprint 7.28 static retained EBS provisioning are
--- unchanged.
-gatewayNodeIdsForSubstrate :: Substrate -> [String]
-gatewayNodeIdsForSubstrate SubstrateHomeLocal = ["node-a", "node-b"]
-gatewayNodeIdsForSubstrate SubstrateAws = ["node-a", "node-b", "node-c"]
 
 gatewayRestServiceName :: String
 gatewayRestServiceName = "gateway"
@@ -567,6 +570,7 @@ resolveChart repoRoot chartName =
                   , chartStorageSpecWorkloadProfileId = "vscode"
                   , chartStorageSpecOrdinal = 0
                   , chartStorageSpecClaimSuffix = "data"
+                  , chartStorageSpecAccessMode = ReadWriteOnceAccess
                   }
               ]
           , chartDefinitionRequiresPublicHost = True
@@ -591,6 +595,7 @@ resolveChart repoRoot chartName =
                   , chartStorageSpecWorkloadProfileId = "pulsar"
                   , chartStorageSpecOrdinal = 0
                   , chartStorageSpecClaimSuffix = "data"
+                  , chartStorageSpecAccessMode = ReadWriteOnceAccess
                   }
               ]
           , chartDefinitionRequiresPublicHost = False
@@ -671,6 +676,7 @@ controlPlaneChartStorage chartName =
           , chartStorageSpecWorkloadProfileId = "lifecycle-authority"
           , chartStorageSpecOrdinal = 0
           , chartStorageSpecClaimSuffix = "authority-journal"
+          , chartStorageSpecAccessMode = ReadWriteOnceAccess
           }
       ]
     _ -> []
@@ -840,9 +846,13 @@ buildChartDeletePlanForSubstrate substrate repoRoot maybeSettings chartName = do
     forM reversedOrder $ \releaseName -> do
       definition <- resolveChart repoRoot releaseName
       storageBindings <-
-        mapM
-          (storageBinding resourcePlan manualPvRoot chartName releaseName)
-          (chartStorageSpecsForRelease chartName releaseName definition)
+        chartStorageBindingsForRelease
+          substrate
+          resourcePlan
+          manualPvRoot
+          chartName
+          releaseName
+          definition
       pure
         ChartReleasePlan
           { chartReleasePlanChartName = releaseName
@@ -2086,14 +2096,13 @@ buildChartDeploymentPlanPure substrate repoRoot settings chartName chartSecrets 
   releases <-
     forM definitions $ \definition -> do
       storageBindings <-
-        mapM
-          ( storageBinding
-              (validatedResourcePlan settings)
-              (resolvedManualPvHostRoot settings)
-              chartName
-              (chartDefinitionName definition)
-          )
-          (chartStorageSpecsForRelease chartName (chartDefinitionName definition) definition)
+        chartStorageBindingsForRelease
+          substrate
+          (validatedResourcePlan settings)
+          (resolvedManualPvHostRoot settings)
+          chartName
+          (chartDefinitionName definition)
+          definition
       valuesJson <-
         renderReleaseValuesJson
           substrate
@@ -2273,11 +2282,55 @@ renderGatewayTier0Dhall config clusterId vaultAddress minioEndpoint =
           }
     )
 
-chartStorageSpecsForRelease :: String -> String -> ChartDefinition -> [ChartStorageSpec]
-chartStorageSpecsForRelease rootChart _releaseName definition =
+chartStorageSpecsForRelease
+  :: Substrate -> String -> String -> ChartDefinition -> [ChartStorageSpec]
+chartStorageSpecsForRelease substrate rootChart _releaseName definition =
   case chartDefinitionName definition of
     "keycloak-postgres" -> patroniStorageSpecs rootChart
+    "gateway" -> chartDefinitionStorage definition ++ gatewayEmitterJournalStorageSpecs substrate
     _ -> chartDefinitionStorage definition
+
+-- | The retained journal volume each gateway emitter claims on a substrate.
+--
+-- The AWS gateway chart renders each emitter as a one-replica StatefulSet with an
+-- @emitter-journal@ claim template on the @manual@ class, which provisions
+-- nothing. Without a volume under the exact name the controller gives that claim
+-- the claim stays unbound and the emitter pod never schedules, so the gateway
+-- rollout cannot finish. The volumes are pre-provisioned through the same
+-- retained-EBS path as every other repo-owned retained workload, one per emitter
+-- 'gatewayNodeIdsForSubstrate' names, under the claim names the chart produces.
+-- The home journals are host paths and claim nothing.
+gatewayEmitterJournalStorageSpecs :: Substrate -> [ChartStorageSpec]
+gatewayEmitterJournalStorageSpecs substrate =
+  case substrate of
+    SubstrateHomeLocal -> []
+    SubstrateAws ->
+      [ ChartStorageSpec
+          { chartStorageSpecStatefulSetName = EmitterPersistence.gatewayEmitterStatefulSetName node
+          , chartStorageSpecPersistentVolumeClaimName = EmitterPersistence.gatewayEmitterJournalClaimName node
+          , chartStorageSpecWorkloadProfileId = "gateway"
+          , chartStorageSpecOrdinal = 0
+          , chartStorageSpecClaimSuffix = EmitterPersistence.gatewayEmitterJournalVolumeName
+          , chartStorageSpecAccessMode = ReadWriteOncePodAccess
+          }
+      | node <- gatewayNodeIdsForSubstrate substrate
+      ]
+
+-- | The storage bindings of one release, sized from the plan as the substrate
+-- renders it ('planForSubstrate'), so a journal claim has the size the quota
+-- admits and the chart requests.
+chartStorageBindingsForRelease
+  :: Substrate
+  -> Capacity.ResourcePlan
+  -> FilePath
+  -> String
+  -> String
+  -> ChartDefinition
+  -> Either String [ChartStorageBinding]
+chartStorageBindingsForRelease substrate plan manualPvRoot rootChart releaseName definition =
+  mapM
+    (storageBinding (Placement.planForSubstrate substrate plan) manualPvRoot rootChart releaseName)
+    (chartStorageSpecsForRelease substrate rootChart releaseName definition)
 
 renderReleaseValuesJson
   :: Substrate
@@ -3864,17 +3917,98 @@ customImagePodAnnotationsValue maybeRolloutToken =
 -- | Resolve the single union runtime image consumed by every in-cluster role
 -- (gateway daemon + api / websocket workloads).
 resolveRuntimeChartImageForSubstrate :: Substrate -> IO (Either String (Maybe ResolvedCustomImage))
-resolveRuntimeChartImageForSubstrate substrate =
+resolveRuntimeChartImageForSubstrate =
+  resolveRuntimeChartImageForSubstrateWith productionRuntimeImageObservers
+
+-- | The two observations the AWS arm of the runtime-image resolution makes, named
+-- together so a deterministic case can supply both: one reads the EKS registry's
+-- digest record from the cluster, the other asks the host's container runtime
+-- for the image it holds. Only the first may decide the digest.
+data RuntimeImageObservers = RuntimeImageObservers
+  { observeEksRegistryManifestDigest :: IO (Either String (Maybe String))
+  , observeHostFixedTagImage
+      :: String -> String -> IO (Either String (Maybe ResolvedCustomImage))
+  }
+
+productionRuntimeImageObservers :: RuntimeImageObservers
+productionRuntimeImageObservers =
+  RuntimeImageObservers
+    { observeEksRegistryManifestDigest = readEksRegistryManifestDigest
+    , observeHostFixedTagImage = resolveCustomImageFixedTag
+    }
+
+-- | 'resolveRuntimeChartImageForSubstrate' with its observers supplied, so the
+-- AWS arm's wiring (the registry's digest replaces the host's, an absent record
+-- leaves none, an unreadable record is refused by name) is exercised without a
+-- cluster or a container runtime.
+resolveRuntimeChartImageForSubstrateWith
+  :: RuntimeImageObservers
+  -> Substrate
+  -> IO (Either String (Maybe ResolvedCustomImage))
+resolveRuntimeChartImageForSubstrateWith observers substrate =
   case substrate of
     SubstrateHomeLocal ->
       resolveCustomImageTag ContainerImage.harborRuntimeImageRepository
-    SubstrateAws ->
-      resolveCustomImageFixedTag
-        ContainerImage.harborRuntimeImageRepository
-        awsSubstrateCustomImageTag
+    SubstrateAws -> do
+      resolved <-
+        observeHostFixedTagImage
+          observers
+          ContainerImage.harborRuntimeImageRepository
+          awsSubstrateCustomImageTag
+      -- The digest the control-plane charts pin is the one the EKS registry
+      -- holds, read from the record the publication wrote after its push. The
+      -- host's own `.RepoDigests` is never consulted for it: it is empty on a
+      -- host that has only ever published to EKS, and otherwise belongs to an
+      -- earlier push to the home registry.
+      registryRecord <- observeEksRegistryManifestDigest observers
+      pure $ case registryRecord of
+        Left detail ->
+          Left
+            ( "the EKS registry's runtime-image digest record could not be read: "
+                ++ detail
+            )
+        Right registryDigest ->
+          fmap (fmap (withRegistryManifestDigest registryDigest)) resolved
 
 awsSubstrateCustomImageTag :: String
 awsSubstrateCustomImageTag = "prodbox-aws-substrate"
+
+-- | The image with its manifest digest taken from the EKS registry's record
+-- alone: an absent record leaves the image without a digest, so the control-plane
+-- charts refuse the plan by name instead of pinning a digest of another registry.
+withRegistryManifestDigest :: Maybe String -> ResolvedCustomImage -> ResolvedCustomImage
+withRegistryManifestDigest registryDigest image =
+  image {resolvedCustomImageManifestDigest = registryDigest}
+
+-- | Read the record the AWS publication wrote after pushing the runtime image.
+-- Run against the selected cluster, which on the AWS substrate is the EKS one.
+readEksRegistryManifestDigest :: IO (Either String (Maybe String))
+readEksRegistryManifestDigest = do
+  let cfg = defaultEksCustomImagePushConfig
+  result <-
+    captureSubprocessResult
+      Subprocess
+        { subprocessPath = "kubectl"
+        , subprocessArguments =
+            [ "get"
+            , "configmap"
+            , eksRuntimeImageDigestRecordName
+            , "--namespace"
+            , customPushPodNamespace cfg
+            , "--ignore-not-found"
+            , "-o"
+            , "jsonpath={.data." ++ eksRuntimeImageDigestRecordKey ++ "}"
+            ]
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Nothing
+        }
+  pure $ case result of
+    Failure err -> Left ("kubectl could not be started: " ++ err)
+    Success output ->
+      classifyEksRegistryDigestRecordRead
+        (processExitCode output)
+        (processStdout output)
+        (processStderr output)
 
 resolveCustomImageTag :: String -> IO (Either String (Maybe ResolvedCustomImage))
 resolveCustomImageTag repository = do
@@ -4129,15 +4263,10 @@ ensureChartStorage plan = do
         case (requiredResult, settingsResult >>= requireAwsSubstrateProfile) of
           (Left err, _) -> pure (Left err)
           (_, Left err) -> pure (Left err)
-          (Right required, Right authoredProfile) -> do
-            environment <- getEnvironment
-            EbsVolume.ensureRetainedEbsVolumes
-              EbsVolume.EbsEnsureInput
-                { EbsVolume.ebsEnsureEnvironment = environment
-                , EbsVolume.ebsEnsureWorkingDirectory = Just (chartDeploymentPlanRepoRoot plan)
-                , EbsVolume.ebsEnsureVolumeType =
-                    awsSubstrateStaticEbsVolumeType authoredProfile
-                }
+          (Right required, Right authoredProfile) ->
+            ensureRetainedEbsVolumesThroughProvider
+              (chartDeploymentPlanRepoRoot plan)
+              (awsSubstrateStaticEbsVolumeType authoredProfile)
               required
 
   applyAwsEbsStorageManifests
@@ -4848,6 +4977,9 @@ retainPublicEdgeTls repoRoot substrate scopeSet = case substrate of
         Right (TlsWorkflowRetainedPastUnopenableVersion _ _) ->
           Right PublicEdgeTlsRetainSucceeded
         Right (TlsWorkflowRetainedReplacingUnopenableVersion _ _) ->
+          Right PublicEdgeTlsRetainSucceeded
+        -- The committed reference already describes the live certificate.
+        Right (TlsWorkflowRetainedUnchanged _) ->
           Right PublicEdgeTlsRetainSucceeded
 
 classifyPublicEdgeTlsRetainResponse

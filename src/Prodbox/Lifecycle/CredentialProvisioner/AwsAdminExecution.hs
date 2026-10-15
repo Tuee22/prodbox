@@ -111,7 +111,7 @@ import Data.ByteString.Base64 qualified as Base64
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Char (isControl, isSpace)
 import Data.List (sort)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isNothing)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
@@ -312,6 +312,7 @@ data AwsAdminTargetObservationCause
   | AwsAdminTargetObservationRetainedDigestMismatch
   | AwsAdminTargetObservationRetainedUnobservable
   | AwsAdminTargetObservationRetainedDeliveryFailed
+  | AwsAdminTargetObservationRetainedReceiptInvalid
   deriving stock (Eq, Show)
 
 allAwsAdminTargetObservationCauses :: [AwsAdminTargetObservationCause]
@@ -325,6 +326,7 @@ allAwsAdminTargetObservationCauses =
        , AwsAdminTargetObservationRetainedDigestMismatch
        , AwsAdminTargetObservationRetainedUnobservable
        , AwsAdminTargetObservationRetainedDeliveryFailed
+       , AwsAdminTargetObservationRetainedReceiptInvalid
        ]
 
 renderAwsAdminTargetObservationCause :: AwsAdminTargetObservationCause -> Text
@@ -340,6 +342,7 @@ renderAwsAdminTargetObservationCause cause = case cause of
   AwsAdminTargetObservationRetainedDigestMismatch -> "retained/digest-mismatch"
   AwsAdminTargetObservationRetainedUnobservable -> "retained/unobservable"
   AwsAdminTargetObservationRetainedDeliveryFailed -> "retained/delivery-failed"
+  AwsAdminTargetObservationRetainedReceiptInvalid -> "retained/receipt-invalid"
 
 -- | Closed response-side causes for the initial Authority Target-intent call.
 -- Raw status numbers, response text, transport detail, and retained values do
@@ -664,6 +667,8 @@ data AwsAdminTargetDeliveryCause
   | AwsAdminTargetDeliveryIntentIssue !AwsAdminTargetIntentIssueCause
   | AwsAdminTargetDeliveryWorker !AwsAdminTargetWorkerCause
   | AwsAdminTargetDeliveryRetainedCustody
+  | AwsAdminTargetDeliveryRetainedDelivery
+  | AwsAdminTargetDeliveryRetainedReceipt
   deriving stock (Eq, Show)
 
 allAwsAdminTargetDeliveryCauses :: [AwsAdminTargetDeliveryCause]
@@ -685,7 +690,10 @@ allAwsAdminTargetDeliveryCauses =
   ]
     <> fmap AwsAdminTargetDeliveryIntentIssue allAwsAdminTargetIntentIssueCauses
     <> fmap AwsAdminTargetDeliveryWorker allAwsAdminTargetWorkerCauses
-    <> [AwsAdminTargetDeliveryRetainedCustody]
+    <> [ AwsAdminTargetDeliveryRetainedCustody
+       , AwsAdminTargetDeliveryRetainedDelivery
+       , AwsAdminTargetDeliveryRetainedReceipt
+       ]
 
 renderAwsAdminTargetDeliveryCause :: AwsAdminTargetDeliveryCause -> Text
 renderAwsAdminTargetDeliveryCause cause = case cause of
@@ -708,6 +716,8 @@ renderAwsAdminTargetDeliveryCause cause = case cause of
   AwsAdminTargetDeliveryWorker workerCause ->
     "worker/" <> renderAwsAdminTargetWorkerCause workerCause
   AwsAdminTargetDeliveryRetainedCustody -> "retained-custody"
+  AwsAdminTargetDeliveryRetainedDelivery -> "retained-delivery"
+  AwsAdminTargetDeliveryRetainedReceipt -> "retained-receipt"
 
 data AwsAdminDeliveryBoundary m = AwsAdminDeliveryBoundary
   { internalDeliverCredentialTarget
@@ -1777,11 +1787,29 @@ executeAwsAdminPermit journalBoundary iam delivery permit = do
                   recoveryUsed
                   (Just material)
 
+  -- Sprint 4.108: a Target that already holds the generation at the first
+  -- observation was written by somebody, and committing its receipt binds the
+  -- new key to whatever password that was (the SES SMTP family answered @535@
+  -- for hours). Only one writer is provably this attempt's own: an initial
+  -- attempt (no remint) resumed by the same permit, whose journal is the only
+  -- one that can have delivered at this generation, so that is the only case
+  -- that adopts. A call that has just minted its key (@maybeMaterial@ is @Just@)
+  -- has delivered nowhere; a remint exists because a predecessor attempt died
+  -- after creating a key, possibly after delivering it, and a resumed remint has
+  -- no way to tell its own delivery from the predecessor's. Both refuse by name
+  -- after the bounded cleanup instead of committing.
   resolveCreatedKey remaining journal keyId predecessors recoveryUsed maybeMaterial = do
     observedTarget <- internalObserveCredentialTarget delivery prepared permit
     case observedTarget of
       Left cause -> pure (Left (AwsAdminTargetObservationUnobservable cause))
-      Right (Just targetReceipt) -> commitObservedTarget targetReceipt
+      Right (Just targetReceipt)
+        | isNothing maybeMaterial && not recoveryUsed -> commitObservedTarget targetReceipt
+        | otherwise ->
+            requireCleanup
+              remaining
+              journal
+              recoveryUsed
+              AwsAdminRecoveryRemintTargetHoldsPredecessorMaterial
       Right Nothing -> case maybeMaterial of
         Nothing ->
           requireCleanup
@@ -2269,6 +2297,7 @@ data AwsAdminRecoveryRemintCause
   | AwsAdminRecoveryRemintMaterialInvalid
   | AwsAdminRecoveryRemintTargetDeliveryFailed !AwsAdminTargetDeliveryCause
   | AwsAdminRecoveryRemintTargetReceiptMismatch
+  | AwsAdminRecoveryRemintTargetHoldsPredecessorMaterial
   deriving stock (Eq, Show)
 
 allAwsAdminRecoveryRemintCauses :: [AwsAdminRecoveryRemintCause]
@@ -2283,7 +2312,9 @@ allAwsAdminRecoveryRemintCauses =
   , AwsAdminRecoveryRemintMaterialInvalid
   ]
     <> fmap AwsAdminRecoveryRemintTargetDeliveryFailed allAwsAdminTargetDeliveryCauses
-    <> [AwsAdminRecoveryRemintTargetReceiptMismatch]
+    <> [ AwsAdminRecoveryRemintTargetReceiptMismatch
+       , AwsAdminRecoveryRemintTargetHoldsPredecessorMaterial
+       ]
 
 renderAwsAdminRecoveryRemintCause :: AwsAdminRecoveryRemintCause -> Text
 renderAwsAdminRecoveryRemintCause cause = case cause of
@@ -2298,6 +2329,7 @@ renderAwsAdminRecoveryRemintCause cause = case cause of
   AwsAdminRecoveryRemintTargetDeliveryFailed deliveryCause ->
     "target-delivery-failed/" <> renderAwsAdminTargetDeliveryCause deliveryCause
   AwsAdminRecoveryRemintTargetReceiptMismatch -> "target-receipt-mismatch"
+  AwsAdminRecoveryRemintTargetHoldsPredecessorMaterial -> "target-holds-predecessor-material"
 
 recoveryRemintCauseForCreateAmbiguity
   :: AwsAccessKeyCreateAmbiguityCause -> AwsAdminRecoveryRemintCause

@@ -372,6 +372,7 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox test integration certificate-scope` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration clean-room-handoff` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration cascade-qualification` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration cascade-qualification-receipt` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration ha-rke2-aws` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration lifecycle` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration pulumi` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
@@ -618,34 +619,53 @@ Cascade does not use that shortcut. Local absence answers neither for AWS nor fo
 run, so cascade enters recovery as defined by
 [Lifecycle Reconciliation Doctrine §5a](lifecycle_reconciliation_doctrine.md#5a-local-only-no-install-short-circuit),
 and a cascade that reached no phase exits non-zero carrying the recovery-plane disposition it
-reports. The arm is selected by the delete mode over the (mode, presence) product: exactly one arm
-is a no-install success and it belongs to local-only delete, so no later caller can hand the cascade
-mode a success it did not observe.
+reports, unless it queried AWS on that invocation and the conjunction below held. The arm is
+selected by the delete mode over the (mode, presence) product: exactly one arm is a no-install
+success and it belongs to local-only delete, so no later caller can hand the cascade mode a success
+it did not observe.
 
-> **Target.** A no-install cascade has **two** operator-visible exits, and which one it takes is
-> decided by what the run observed, never by what a previous run recorded. It exits non-zero when it
-> observed nothing — the case above, and the only case the current revision can reach. It exits zero
-> only when it queried the provider on this invocation and the answer was empty, under the full
-> conjunction in
-> [Lifecycle Reconciliation Doctrine §5a.0](lifecycle_reconciliation_doctrine.md#5a0-a-cascade-that-reaches-no-phase-may-still-query-aws),
-> which owns the contract; this section does not restate it. The operator-facing consequence is the
-> reason the second exit exists: the non-zero exit says that removing this repository's untracked
-> state may strand a live resource, and the zero exit says the run looked and found none — while
-> still not licensing removal of the retained root, which §7 rule 10 of
-> [storage_lifecycle_doctrine.md](storage_lifecycle_doctrine.md#7-the-single-retained-operator-host-root)
-> governs on other grounds. A repeated cascade re-queries; it never replays an earlier verdict.
-> Status lives only in
-> [Development Plan → Resume Here](../../DEVELOPMENT_PLAN/README.md#resume-here).
+A no-install cascade has **two** operator-visible exits, and which one it takes is decided by what
+the run observed, never by what a previous run recorded.
+
+- **Non-zero** when it observed nothing, or observed something that did not confirm absence. The
+  output names the durable cleanup run namespace it could not reach and the
+  `RecoveryPlaneNotEstablished` disposition, then one block per reason, each saying what to do: no AWS
+  coordinate is authored (and `prodbox cluster delete --yes` is the local-only way out); the Tier-0
+  configuration could not be read; a retained root was not examined; no admin credential was
+  available; the sweep found residue or could not be confirmed; an authored region was not queried;
+  or the credential cannot see an authored hosted zone. A refusal that never asked AWS says nothing
+  was observed; one that did says the query did not confirm absence.
+- **Zero** only when it queried AWS read-only on this invocation and the answer was empty, under the
+  full conjunction in
+  [Lifecycle Reconciliation Doctrine §5a.0](lifecycle_reconciliation_doctrine.md#5a0-a-cascade-that-reaches-no-phase-may-still-query-aws),
+  which owns the contract; this section does not restate it. The output lists the authored
+  coordinates by field name, the regions queried, the retained roots surveyed, and what the zero does
+  not mean: per-run residue by tag in those regions only, **not an empty account**, with the retained
+  `pulumi_state_backend` bucket, `aws-ses` stack and retained EBS volumes named as surviving by
+  design.
+
+The operator-facing consequence is the reason the second exit exists: the non-zero exit says that
+removing this repository's untracked state may strand a live resource, and the zero exit says the
+run looked and found none — while still not licensing removal of the retained root, which §7 rule 10
+of [storage_lifecycle_doctrine.md](storage_lifecycle_doctrine.md#7-the-single-retained-operator-host-root)
+governs on other grounds. A repeated cascade re-queries; it never replays an earlier verdict, and
+nothing is written to remember one.
+
+The apply path may now prompt and use the network where it used to be offline. Every refusal that
+needs no network answer is decided before the first credential prompt, and a one-line announcement
+precedes the prompt. On a host with no TTY and no `test-secrets.dhall` the credential load fails
+immediately, so the run refuses without waiting on input. Every AWS call on
+the path runs under a wall-clock bound.
 
 `--dry-run` renders this plan without performing any of it. That purity is a property worth naming
-because the target arm above threatens it: `renderNativeDeletePlan` is a pure function of the
+because the no-install arm above would otherwise threaten it: `renderNativeDeletePlan` is a pure function of the
 repository root and the flags, and `--dry-run` deliberately skips the no-install short-circuit, the
 host prep, and every reconciler — just as dry-runs render Pulumi plans without probing Vault
 ([vault_doctrine.md §10](vault_doctrine.md#10-pulumi-backend-under-vault)). A provider query and the
-credential load it needs are effects, and an admin credential load can prompt on a TTY. Placing the
-new observation in the rendered plan would give `--dry-run` a network call and a possible
-interactive prompt; it belongs in the apply closure, and the rendered plan may name the step without
-performing it.
+credential load it needs are effects, and an admin credential load can prompt on a TTY. The
+Tier-0 configuration read, the retained-root survey, the credential prompt and the Tagging API and
+Route 53 calls therefore run only in the apply closure, and the rendered plan and its golden are
+unchanged.
 
 No cascade exit authorizes deleting the retained root. The retained-state narration is a total
 function over the command's terminal arms and no arm is silent: a local-only arm says the root is
@@ -1038,9 +1058,10 @@ Named suite commands:
 - runs the current shared-IAM harness for `prodbox test integration aws-iam`, targeted
   `prodbox test integration <name> --substrate aws` validations,
   `prodbox test integration all`, and `prodbox test all` before AWS-backed prerequisite checks
-  begin. That pre-cutover path still materializes and clears the shared operational identity; the
-  target role-specific Operational/LongLived split and dependency-ordered revocation remain
-  plan-tracked
+  begin. That pre-cutover path provisions the shared operational identity through the Credential
+  Provisioner for every harness-tier suite and **retains** it once cleanup completes, because no
+  production path revokes it yet; the target role-specific Operational/LongLived split and
+  dependency-ordered revocation remain plan-tracked (Sprint `5.51`)
 - applies the canonical aggregate ordering
 - uses the `aws_admin_for_test_simulation.*` fixture from `test-secrets.dhall` only to simulate
   the operator's elevated-credential prompt for operational setup/teardown, suite-driven

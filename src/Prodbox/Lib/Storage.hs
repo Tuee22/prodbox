@@ -1,7 +1,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.Lib.Storage
-  ( ChartStorageBinding (..)
+  ( ChartStorageAccessMode (..)
+  , ChartStorageBinding (..)
   , ChartStorageSpec (..)
   , StaticEbsVolumeBinding (..)
   , chartEbsPersistentVolumeManifest
@@ -10,6 +11,7 @@ module Prodbox.Lib.Storage
   , chartPersistentVolumeManifest
   , chartStorageManifest
   , defaultChartDataRootRelative
+  , renderChartStorageAccessMode
   , renderStorageReport
   , retainedStatefulSetPersistentVolumeClaimName
   , retainedStatefulSetPersistentVolumeName
@@ -54,12 +56,28 @@ testManualPvHostRootEnv = "PRODBOX_TEST_MANUAL_PV_HOST_ROOT"
 testCaseDataRoot :: FilePath -> FilePath
 testCaseDataRoot caseId = testDataRootRelative </> caseId
 
+-- | The access mode a retained claim and the volume it binds declare. A claim
+-- binds only a volume whose modes include its own, so the pre-provisioned PV and
+-- PVC have to carry the mode the workload's own claim template asks for.
+-- Everything retained is 'ReadWriteOnceAccess' except an emitter journal, which
+-- has exactly one writer by design and says so.
+data ChartStorageAccessMode
+  = ReadWriteOnceAccess
+  | ReadWriteOncePodAccess
+  deriving (Eq, Show)
+
+renderChartStorageAccessMode :: ChartStorageAccessMode -> String
+renderChartStorageAccessMode mode = case mode of
+  ReadWriteOnceAccess -> "ReadWriteOnce"
+  ReadWriteOncePodAccess -> "ReadWriteOncePod"
+
 data ChartStorageSpec = ChartStorageSpec
   { chartStorageSpecStatefulSetName :: String
   , chartStorageSpecPersistentVolumeClaimName :: String
   , chartStorageSpecWorkloadProfileId :: Text.Text
   , chartStorageSpecOrdinal :: Int
   , chartStorageSpecClaimSuffix :: String
+  , chartStorageSpecAccessMode :: ChartStorageAccessMode
   }
   deriving (Eq, Show)
 
@@ -72,6 +90,7 @@ data ChartStorageBinding = ChartStorageBinding
   , chartStorageBindingHostPath :: FilePath
   , chartStorageBindingOrdinal :: Int
   , chartStorageBindingClaimSuffix :: String
+  , chartStorageBindingAccessMode :: ChartStorageAccessMode
   }
   deriving (Eq, Show)
 
@@ -112,6 +131,7 @@ storageBinding plan manualPvRoot namespace releaseName spec = do
             </> show (chartStorageSpecOrdinal spec)
       , chartStorageBindingOrdinal = chartStorageSpecOrdinal spec
       , chartStorageBindingClaimSuffix = chartStorageSpecClaimSuffix spec
+      , chartStorageBindingAccessMode = chartStorageSpecAccessMode spec
       }
 
 workloadStorageSize :: ResourcePlan -> Text.Text -> Either String String
@@ -193,7 +213,7 @@ chartStorageManifest namespace rootChart bindings nodeHostname =
               ]
         , "spec"
             .= object
-              [ "accessModes" .= ["ReadWriteOnce" :: String]
+              [ "accessModes" .= [renderChartStorageAccessMode (chartStorageBindingAccessMode binding)]
               , "volumeMode" .= ("Filesystem" :: String)
               , "storageClassName" .= chartStorageClassName
               , "volumeName" .= chartStorageBindingPersistentVolumeName binding
@@ -255,7 +275,7 @@ chartEbsStorageManifest namespace rootChart bindings ebsVolumes = do
               ]
         , "spec"
             .= object
-              [ "accessModes" .= ["ReadWriteOnce" :: String]
+              [ "accessModes" .= [renderChartStorageAccessMode (chartStorageBindingAccessMode binding)]
               , "volumeMode" .= ("Filesystem" :: String)
               , "storageClassName" .= chartStorageClassName
               , "volumeName" .= chartStorageBindingPersistentVolumeName binding
@@ -361,7 +381,7 @@ persistentVolumeManifestItem namespace rootChart nodeHostname binding =
                 [ "storage" .= chartStorageBindingStorageSize binding
                 ]
           , "volumeMode" .= ("Filesystem" :: String)
-          , "accessModes" .= ["ReadWriteOnce" :: String]
+          , "accessModes" .= [renderChartStorageAccessMode (chartStorageBindingAccessMode binding)]
           , "persistentVolumeReclaimPolicy" .= ("Retain" :: String)
           , "storageClassName" .= chartStorageClassName
           , "claimRef"
@@ -417,7 +437,7 @@ persistentEbsVolumeManifestItem namespace rootChart binding ebsVolume =
                 [ "storage" .= chartStorageBindingStorageSize binding
                 ]
           , "volumeMode" .= ("Filesystem" :: String)
-          , "accessModes" .= ["ReadWriteOnce" :: String]
+          , "accessModes" .= [renderChartStorageAccessMode (chartStorageBindingAccessMode binding)]
           , "persistentVolumeReclaimPolicy" .= ("Retain" :: String)
           , "storageClassName" .= chartStorageClassName
           , "claimRef"

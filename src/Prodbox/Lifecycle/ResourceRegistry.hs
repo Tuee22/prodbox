@@ -44,11 +44,20 @@ module Prodbox.Lifecycle.ResourceRegistry
   , reconcileScopeLabel
   , residueGateRefusalList
   , absentReconcileExitCode
+  , destroyRequiresSuccessOf
   , reconcileAbsent
   , managedDestroyCapability
   )
 where
 
+import Control.Exception
+  ( SomeAsyncException
+  , SomeException
+  , displayException
+  , fromException
+  , throwIO
+  , try
+  )
 import Control.Monad (foldM, unless)
 import Data.List (intercalate, nub)
 import Data.Text qualified as Text
@@ -548,13 +557,21 @@ residueGateRefusalList pairs =
 -- distinguishable at the type level for every caller.
 data AbsentReconcileOutcome = AbsentReconcileOutcome
   { absentReconcileDestroyExit :: !ExitCode
-  -- ^ Exit of the destroy fold alone (not of the reconcile as a whole).
+  -- ^ Exit of the destroy fold alone (not of the reconcile as a whole):
+  -- success only when every present resource was destroyed, otherwise the
+  -- first failing destroy's exit, or @ExitFailure 1@ when the only problem
+  -- is a resource that was not attempted.
   , absentReconcileObservedAbsent :: ![String]
   -- ^ Resources positively observed gone. Nothing was run for these,
   -- and saying so is honest.
   , absentReconcileUnobserved :: ![String]
   -- ^ Resources whose live state could not be read. Their destroys were
   -- skipped, and their presence or absence remains unknown.
+  , absentReconcileFailed :: ![String]
+  -- ^ Resources whose destroy was attempted and failed, in attempt order.
+  , absentReconcileBlocked :: ![String]
+  -- ^ Resources whose destroy was not attempted because a resource they
+  -- require failed, was itself not attempted, or could not be observed.
   }
   deriving (Eq, Show)
 
@@ -581,12 +598,15 @@ reconcileScopeLabel pairs = case nub (map (resourceClass . fst) pairs) of
   [Operational] -> "Operational"
   _ -> "Managed"
 
--- | Reconcile the given (resource, status) pairs toward absent: destroy
--- every 'ResiduePresent' resource in list order, stopping fast on the
--- first non-zero destroy. Skips 'ResidueAbsent' and 'ResidueUnreachable'
--- alike (see 'resourcesToDestroy') but narrates them **separately**, and
--- reports the unobserved set to the caller so the skip can reach the
--- aggregate exit code.
+-- | Reconcile the given (resource, status) pairs toward absent: attempt the
+-- destroy of every 'ResiduePresent' resource, in list order, whose
+-- 'destroyRequiresSuccessOf' predecessors were destroyed or observed absent.
+-- A failure no longer discards the independent resources after it. A resource
+-- is skipped only when something it requires failed, was itself skipped, or
+-- could not be observed, and it is then reported as blocked rather than lost.
+-- Skips 'ResidueAbsent' and 'ResidueUnreachable' alike (see
+-- 'resourcesToDestroy') but narrates them **separately**, and reports the
+-- unobserved set to the caller so the skip can reach the aggregate exit code.
 reconcileAbsent
   :: FilePath -> [(ManagedResource, ResidueStatus)] -> IO AbsentReconcileOutcome
 reconcileAbsent repoRoot pairs = do
@@ -611,7 +631,13 @@ reconcileAbsent repoRoot pairs = do
           ++ "run cannot report success until the state is resolved — destroy "
           ++ "them explicitly once the backend is readable."
       )
-  destroyExit <- case present of
+  let initialRun =
+        DestroyRun
+          { runUnresolved = [(name, "not observed") | name <- unobserved]
+          , runFailed = []
+          , runBlocked = []
+          }
+  finalRun <- case present of
     [] -> do
       writeOutputLine
         ( scope
@@ -619,7 +645,7 @@ reconcileAbsent repoRoot pairs = do
             ++ narrateNoDestroys observedAbsent unobserved
             ++ ")."
         )
-      pure ExitSuccess
+      pure initialRun
     _ -> do
       writeOutputLine
         ( scope
@@ -627,12 +653,16 @@ reconcileAbsent repoRoot pairs = do
             ++ show (length present)
             ++ " destroy(s) against MinIO..."
         )
-      foldM (destroyStep repoRoot) ExitSuccess present
+      foldM (destroyStep scope repoRoot) initialRun present
+  unless (null (runFailed finalRun) && null (runBlocked finalRun)) $
+    writeDiagnosticLine (renderDestroySummary scope (length present) finalRun)
   pure
     AbsentReconcileOutcome
-      { absentReconcileDestroyExit = destroyExit
+      { absentReconcileDestroyExit = destroyRunExit finalRun
       , absentReconcileObservedAbsent = observedAbsent
       , absentReconcileUnobserved = unobserved
+      , absentReconcileFailed = map fst (runFailed finalRun)
+      , absentReconcileBlocked = runBlocked finalRun
       }
 
 -- | Why no destroy ran. Deliberately total over the two skip reasons, so
@@ -651,10 +681,109 @@ narrateNoDestroys observedAbsent unobserved = case (observedAbsent, unobserved) 
       ++ show (length unobserved)
       ++ " not observed"
 
--- | One fold step for 'reconcileAbsent': run the resource's destroy
--- only while the accumulated exit is still success (fail-fast), so the
--- first non-zero destroy short-circuits the rest.
-destroyStep :: FilePath -> ExitCode -> ManagedResource -> IO ExitCode
-destroyStep repoRoot acc resource = case acc of
-  ExitFailure _ -> pure acc
-  ExitSuccess -> resourceDestroy resource repoRoot
+-- | Success edges between the resources one reconcile batch destroys: a
+-- resource is attempted only once every name returned here was destroyed or
+-- observed absent. The vocabulary is "Prodbox.Lifecycle.RestoreGraph"'s (a
+-- required-success edge, a blocked dependent), kept as a table keyed by
+-- 'resourceName' so a registry entry does not grow a field.
+--
+-- Only the 'Operational' batch has edges. The lease role is deleted before its
+-- trusted user, and the operational @aws.*@ block is cleared only once the
+-- user is gone, because clearing it first would drop the only credential for a
+-- live user; that second edge is this registry's reading of the order, not a
+-- sentence of the doctrine. The per-run stacks have none: each owns its own
+-- VPC, and 'perRunStackIdentities' order is their attempt order, not a
+-- success edge.
+destroyRequiresSuccessOf :: String -> [String]
+destroyRequiresSuccessOf name
+  | name == operationalResourceName OperationalIamUser =
+      [operationalResourceName OperationalAwsSesLeaseRole]
+  | name == operationalResourceName OperationalAwsConfig =
+      [operationalResourceName OperationalIamUser]
+  | otherwise = []
+
+-- | The state of one attempt-all destroy fold: which resources are not proven
+-- gone and why, which destroys failed (with their exit), and which were not
+-- attempted.
+data DestroyRun = DestroyRun
+  { runUnresolved :: ![(String, String)]
+  , runFailed :: ![(String, ExitCode)]
+  , runBlocked :: ![String]
+  }
+
+-- | One fold step for 'reconcileAbsent': attempt the resource's destroy unless
+-- a resource it requires is unresolved, in which case record it as blocked.
+destroyStep :: String -> FilePath -> DestroyRun -> ManagedResource -> IO DestroyRun
+destroyStep scope repoRoot run resource = case blockers of
+  [] -> do
+    exitCode <- attemptDestroy repoRoot resource
+    pure $ case exitCode of
+      ExitSuccess -> run
+      failure@(ExitFailure _) ->
+        run
+          { runUnresolved = (name, "failed") : runUnresolved run
+          , runFailed = runFailed run ++ [(name, failure)]
+          }
+  _ -> do
+    writeDiagnosticLine
+      ( scope
+          ++ " destroy of "
+          ++ name
+          ++ " NOT attempted: it needs "
+          ++ intercalate ", " [required ++ " (" ++ why ++ ")" | (required, why) <- blockers]
+          ++ " destroyed or observed absent first."
+      )
+    pure
+      run
+        { runUnresolved = (name, "blocked") : runUnresolved run
+        , runBlocked = runBlocked run ++ [name]
+        }
+ where
+  name = resourceName resource
+  blockers =
+    [ (required, why)
+    | required <- destroyRequiresSuccessOf name
+    , Just why <- [lookup required (runUnresolved run)]
+    ]
+
+-- | Run one registered destroy. An exception it throws becomes a failed exit,
+-- so one resource's exception cannot stop independent resources; asynchronous
+-- exceptions (interrupt, timeout) still propagate.
+attemptDestroy :: FilePath -> ManagedResource -> IO ExitCode
+attemptDestroy repoRoot resource = do
+  result <- try (resourceDestroy resource repoRoot) :: IO (Either SomeException ExitCode)
+  case result of
+    Right exitCode -> pure exitCode
+    Left exception -> case fromException exception :: Maybe SomeAsyncException of
+      Just _ -> throwIO exception
+      Nothing -> do
+        writeDiagnosticLine
+          (resourceName resource ++ " destroy raised an exception: " ++ displayException exception)
+        pure (ExitFailure 1)
+
+-- | The fold's own verdict: the first failing destroy's exit, or a plain
+-- failure when the only problem is a resource that was not attempted.
+destroyRunExit :: DestroyRun -> ExitCode
+destroyRunExit run = case runFailed run of
+  (_, failure) : _ -> failure
+  []
+    | null (runBlocked run) -> ExitSuccess
+    | otherwise -> ExitFailure 1
+
+renderDestroySummary :: String -> Int -> DestroyRun -> String
+renderDestroySummary scope presentCount run =
+  scope
+    ++ " destroys: "
+    ++ show (presentCount - length (runBlocked run))
+    ++ " attempted, "
+    ++ show (length (runFailed run))
+    ++ " failed"
+    ++ namesOf (map fst (runFailed run))
+    ++ ", "
+    ++ show (length (runBlocked run))
+    ++ " not attempted"
+    ++ namesOf (runBlocked run)
+    ++ ". Every resource whose prerequisites held was still attempted."
+ where
+  namesOf [] = ""
+  namesOf names = " (" ++ intercalate ", " names ++ ")"

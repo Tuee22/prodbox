@@ -25,17 +25,158 @@ dependency licenses the deviation ([Standard N.2](development_plan_standards.md#
 
 | Order | Sprint | Phase | State | Dependency |
 |-------|--------|-------|-------|------------|
-| 1 | `6.5` | 6 | Next | — |
-| 2 | `6.6` | 6 | Parked | — |
-| 3 | `7.43` | 7 | Parked | — |
+| 1 | `5.51` | 5 | Next | — |
+| 2 | `5.53` | 5 | Parked | — |
+| 3 | `6.5` | 6 | Parked | — |
+| 4 | `7.47` | 7 | Parked | — |
 
-**Resume at Sprint `6.5`. Three rows remain, all opened on 2026-09-16 by Sprint `0.35`.** Phase `4`
+**Resume at Sprint `5.51`. Four rows remain: Sprints `5.51`, `5.53` and `7.47`, opened on 2026-10-08, and Sprint
+`6.5`, opened on 2026-09-16 by Sprint `0.35`.** On 2026-10-12 and 13 the
+first live `keycloak-invite` and chart-suite runs of the restored runtime opened, and closed with a live observation
+each, Sprints `2.136`-`2.141`, `3.47`, `4.107`, `5.54`, `5.55`, `8.13` and `8.14`, in the order the campaign reached
+them: the retained TLS lane refused every retain (`2.136`), the Vault accessor audit stopped on a token that expired
+between its inventory and its lookup because it waited for an HTTP 404 that Vault never sends (`2.137`), the
+Provisioner's IAM tag read-back rejected an identity that carried tags it did not own (`2.138`), the harness
+resubmitted the intent of an operation the Authority would only replace (`5.54`), Keycloak issued backchannel tokens
+under `http://<host>:8080/...` where Envoy validates `https://<host>/auth/...` (`3.47`), the direct-OIDC validation Job
+declared no ephemeral storage and carried a `sed` whose Haskell escape rendered an escaped delimiter (`5.55`), a
+refused retained delivery named no stage (`2.139`), a delivery left pending by one attempt blocked every later attempt
+of a renewed operation (`2.140`), the Target-intent issuer looked a retained SMTP delivery up under the delivery's
+operation id while its outbox is keyed by the operation that sealed the source (`2.141`), the worker's receipt for a
+delivered SMTP source carried a commitment the receipt codec refuses and its observation of custody refused the
+previous generation of a rotation (`4.107`), the harness gained the step that installs the SMTP family and a scope
+revision that rotates it (`8.13`), and the Keycloak consumer sent the invite email with a `kcadm` command that does
+not exist (`8.14`). **`keycloak-invite` passes live (2026-10-13 12:31 EDT, exit 0): the invited user is created, the
+mail goes out through SES and is captured, the credential-setup form is followed, the token carries the public issuer
+and `email_verified=true`, and the user and the captured message are removed.**
+Sprint `4.108` (opened 2026-10-12, `Done` 2026-10-15) closed the protocol gap the run's CloudTrail showed (a key
+deleted after its material was delivered left the Target holding a dead key): the execution algebra now refuses by
+name instead of committing a Target a predecessor wrote. Sprint `5.51` is first because it is the lowest-numbered open
+row, and it waits on operator decisions about a new trust edge, so the code-owned row worked ahead of it is `5.53`;
+Sprint `6.5` is the live campaign, runs home cycles, and waits on the operator
+(see the notes below). Sprints `5.52`, `7.46`
+and `7.48` are `Done` (2026-10-08, live proof pending): `5.52` repaired the validations a third static audit showed
+no healthy system could pass, `7.46` the AWS platform plan, and `7.48` the per-run subzone's teardown. Sprint `5.53`
+owns the weaknesses that audit found and no row owned (retained-volume size and interrupted creates, the secrets
+file's mode, the Provider interpreters, the missing cleanup families); it is a code-owned row, and it is
+worked ahead of `6.5` in practice because `6.5` is operator-gated. Sprint `7.47` owns the material delivered to the
+EKS Vault and the source of the EKS MinIO images, and waits on four operator decisions. Until `7.47` is `Done`, the AWS-substrate rows of Deployment
+Qualification cannot be attempted; the home rows no longer wait on a code-owned row, only on the live campaign and the
+operator's gateway-stability decision (Sprint `6.5`, item 4). Phase `4`
 reclosed on 2026-09-23 after Sprints `4.100` and `4.101` completed its own-surface repair. Sprint
-`6.6` takes the postflight sweep's owed-scope widening and the no-install cascade's fresh
-re-verification, on the surface Sprint `6.5` authored on 2026-09-14.
-Sprint `7.43` takes the resources no create-side record can name, because an in-cluster controller
-created them. None of the three is blocked on Sprint `6.5`'s campaign, and none of them performs the
-single-writer activation that campaign gates.
+`6.6` is `Done` (2026-10-07): the postflight sweep's owed scope widened and the no-install cascade
+re-verifies AWS read-only, on the surface Sprint `6.5` authored on 2026-09-14; its live proof is
+pending. Sprint `7.43` is `Done` (2026-10-07): every creator of AWS resources is classified against the
+write-ahead ownership lane by a mechanically checked declaration, and a controller's children are named
+from the manifest the stack already declares; its live proof is pending. Sprint `6.5` is not
+blocked on anything but its own live campaign, and the single-writer activation that campaign gates is
+still unstarted.
+
+**Sprints `5.49` and `5.50` are Done (2026-10-08): `prodbox test all` could not pass on either
+substrate, and the reasons on the suite's own surface are repaired.** A static audit traced all 29 canonical
+validations and aggregate steps against the source and found that 17 fail deterministically on a healthy
+system and 12 can pass. The expectations had been written against output, workload kinds, identities and
+routes the control plane stopped producing when host plaintext AWS access was disabled on 2026-08-02, and
+nothing compiles a validation's expectation against its producer, so `dev check` stayed green. Sprint
+`5.49` repairs the nine whose fix needs no new Provider capability: the stale `STACK=`/`NODE_COUNT=`
+assertions of `aws-eks`, `pulumi` and `ha-rke2-aws`, the Deployment waits in a StatefulSet-only gateway
+namespace, `sealed-vault`'s text parse and the Pulumi Vault gate's dependence on the Authority it was
+meant to name as unavailable, `daemon-bootstrap`'s unbound loopback probe, the SES receive label used where
+the dotted domain belongs (twice: `public-dns` and `keycloak-invite`), `aws-iam`'s demand for an IAM
+user, the Keycloak token extractor's `awk` and `access_token`, and the home substrate's refusal to
+provision `aws-eks` under an RKE2 topology. An adversarial review of the landing against the producing
+code found the `keycloak-invite` recipient and a port-embedding audit line that the unit cases had
+mirrored; both are repaired. Sprint
+`5.50` took the remaining findings. Its harness half: every harness-tier suite now provisions its credential through the
+Credential Provisioner (a named suite used to take a legacy setup that ends in a constant refusal), and the
+cleanup client authenticates as the operator, holds no session across the body, ignores finished runs,
+matches run ids exactly, and covers the zone-scoped families from the subzone stack's own checkpoint. A
+design panel established that **no production path can revoke that credential** — the Provisioner's revoke
+is refused at its delivery boundary and the worker destroys the Vault generation before the IAM identity —
+so a completed harness run now prints `OPERATIONAL_CREDENTIAL_DISPOSITION=retained` instead of claiming a
+teardown, and the revocation lane is Sprint `5.51`, parked on four operator decisions. The Provider-intent
+group (`dns-aws`, `keycloak-invite` and the retained-EBS ensure now reach AWS through four closed
+Provider intents instead of a host credential that has been refused since 2026-08-02) and the EKS
+bring-up group (the gateway chart deploys before its full-mode proof, the managed `metrics-server`
+add-on, and a bearer that renews in place while its bracket runs) are code-complete too. A second static audit of the AWS
+arm (2026-10-08) found the rest of the road to `--substrate aws` blocked in two places: the validations and
+the stability gate assume the home shape, which `5.50` repaired, and the platform plan installs roles that
+cannot become Ready and waits on material nothing delivers, which Sprints `7.46` and `7.47` own. Canonical
+`prodbox dev check` exits 0 (primary unit **5,458/5,458** with the harness half, **5,471/5,471** for the
+combined landing, **5,483/5,483** with the second audit's Phase `5` repairs, **5,486/5,486** after the
+review of those repairs, **5,504/5,504** after the review of that, **5,510/5,510** after a third review, **5,517/5,517** with the third audit's first repairs, Sprints `5.52` and `7.48`, and
+**5,522/5,522** after the review of that landing, **5,532/5,532** with Sprint `5.53`'s SES capture reader and the second review's fixes, **5,534/5,534** with Sprint
+`7.46`'s sixth landing, **5,544/5,544** with Sprint `4.106`, **5,554/5,554** with Sprint `1.93`, **5,563/5,563** with Sprints `8.13` and `2.136`, **5,566/5,566** with Sprints `2.137` and `2.138`, **5,573/5,573** with Sprints `3.47` and `5.54`, **5,580/5,580** with Sprints `2.139` and `5.55`, **5,582/5,582** with their second landing, `2.139`'s prose rule and `5.55`'s `sed` repair, **5,583/5,583** with Sprint `2.140`, **5,584/5,584** with Sprint `2.141`, **5,585/5,585** with Sprint `4.107`'s receipt, **5,592/5,592** with its rotation reading, Sprint `8.13`'s scope revision and Sprint `8.14`, **5,595/5,595** with Sprint `5.57`, and **5,599/5,599** with Sprint `4.108`, **5,603/5,603** with Sprint `5.53`'s second landing, and **5,608/5,608** with its third).
+**Live proof: pending for all three.**
+
+**Sprint `6.5`'s evidence observer is complete code-locally (2026-10-07, four landings).** "Two consecutive qualifying
+cycles on one frozen identity" had no consumer, and could not have had one: the cycle artifact's topology
+and wiring digests derive from the cycle label through the cleanup run id, so no two cycles of one
+deployment ever had equal identities. Landing 1 defines the identity a deployment actually has (the
+executable source with documentation left out, the generated config, the images, the shape of the compiled
+program with every run-scoped input held constant, and the digests derived from the source), writes and
+reads the cycle artifact through one codec (format version 2), and recomputes the local parts from the
+bootstrap seed in the runner and the observer alike. Landing 2 adds the
+record that cannot be skipped: an append-only, hash-chained ledger with a `Begun` made durable before the
+destructive candidate runs and a `Closed` after the artifact and a second look at the source, so a failure,
+an interruption or a source edit during a cycle breaks the count instead of leaving a file that is simply
+absent, and a read-only receipt leaf (`prodbox test integration cascade-qualification-receipt`) that says
+what it recomputed and what it could only compare. Landing 3 makes the witness
+a function of that proof: `qualifyReplacement` takes the sealed `ConsecutiveCycleProof` the judge alone
+mints, and the receipt runs the typed cutover machine in memory against it, so a report cannot say
+`QUALIFIED` while the machine would refuse. Landing 4 records the cutover steps in the same ledger by key
+(activation, legacy deletion, post-activation qualification), so the identity that necessarily changes at
+the activating edit does not lose the record; after an activation no cycle counts until the deletion is
+recorded, and the clean-room validation selects its legacy scan from the ledger's phase. Two policy
+decisions wait for the
+operator before the first counted cycle, because changing either resets the count: whether the key covers
+the executable surface and only records git provenance (the default built), and the Standard P wording that
+follows from it. Landing 1: focused groups **30/30**, canonical `prodbox dev check` exits 0 (primary unit
+**5,361/5,361**). Landing 2: focused groups **60/60** across the observer, canonical `prodbox dev check`
+exits 0 (primary unit **5,393/5,393**). Landings 3 and 4: canonical `prodbox dev check` exits 0 (primary
+unit **5,406/5,406**). The count of qualifying cycles remains zero, and the activation that the count gates
+is still unstarted.
+
+**Exit-definition hygiene landed (2026-10-07, no queue row).** A read-only scoping of the 52-item
+[Exit Definition](#exit-definition) against the tree found 19 items met in source, and named the
+documentation and small code leftovers that kept others open. Those are closed: item 37's
+bounded-delay-to-clock-skew mapping is in
+[tla_modelling_assumptions.md §5.1](../documents/engineering/tla_modelling_assumptions.md#51-bounded-delay-and-the-runtime-clock-skew-bound);
+item 38 is reworded to the restart-based Orders protocol that shipped, and the daemon's
+refuse-to-elect-while-behind comparison is now a pure function with unit tests; item 34's two orphaned
+Python probes (left behind when the shared-host-resource-protocol doctrine was deleted) are deleted,
+and `prodbox dev check` now refuses any Python source or toolchain-ownership file; item 48's sentence
+saying the `TEARDOWN-2026-08-15` inputs do not exist is corrected; item 36's retired `canWriteDns` name
+points at the DNS-write authority that exists; item 27's Harbor wording is explained by a naming note;
+the stale `HARBOR_*` diagnostics are gone from `edge status`; and item 18's L2 and BGP manifest sets are
+now pinned by unit tests, where there were none. Canonical `prodbox dev check` exits 0 (primary unit
+**5,416/5,416**). The scoping also found two things it had not classified correctly, and both change
+the work order rather than close an item. Item 6 is code, not documentation:
+`runAwsIamHarnessSetup` is still the transitional harness (it probes a pre-existing operational
+identity and deletes the dedicated IAM user before re-provisioning), not the single durable setup
+operation the item describes. And the `dns-aws` and `keycloak-invite` validations cannot pass on any
+substrate until their AWS access moves to the Lifecycle Authority: both obtain credentials through
+`settingsAwsEnvironment`, which calls `resolveLifecycleProviderCredentials`, and that function has
+returned a refusal unconditionally since host plaintext materialization was disabled on 2026-08-02.
+Both are in the canonical validation list, so a `test all` run fails at them before any live state
+matters.
+
+Phase `7` reclosed again on 2026-10-07 on Sprint `7.45` (the Provider role's permissions policy now
+agrees with the AWS CLI verbs its interpreters run, and a gate keeps it so). Phases `4` and `7` reclosed
+on 2026-10-05 after an own-surface reopen on the surfaces the 2026-09-29/30 cascade exposed. Sprints `4.102`–`4.105` (the managed-resource reconcile fold, the
+Provider failure channel, the Pulumi invocation and its child bound, and the session lifetime) and
+Sprint `7.44` (the EKS client-auth identity parse) are `Done` on their code-owned surfaces. None of
+them is a queue row and none changes the order above. Their live proof is pending: the Provider
+Worker image must be rebuilt and rolled before the changes run against AWS, the live role's
+`MaxSessionDuration` has not been read, and the AWS residue that incident left was the operator's to
+clear through the documented recovery procedure. **That residue was cleared on 2026-10-14**: with the operator's
+in-session authorization the leaked VPC-CNI network interface (`available`, unattached) and the orphaned EKS
+cluster security group were deleted by hand (the incident plan's step `A2`; the commands and the before and after
+state are in the operator's `~/prodbox-manual-recovery/20261014T215621Z/`), and the supported
+`prodbox aws stack aws-subzone destroy --yes` and `prodbox aws stack eks destroy --yes` then retired the rest
+through Pulumi (receipts `prodbox-registered-stack/v1:absent:aws-eks-subzone` and `...:absent:aws-eks`). A read-only
+inventory of `us-west-2`, `us-east-1` and `us-east-2` then found no non-default VPC, no instance, no EKS cluster and
+no `aws-eks-test-aws-lb-controller` policy, and the account's hosted zones were the retained parent zone only.
 
 Sprint `2.135` is `Done` and Phase `2` recloses (2026-09-17); the narrative is below. Sprint
 `6.5`'s remaining work is still the
@@ -523,6 +664,371 @@ replacement token, and proves arbitrary appended provider detail remains erased;
 `sha256:a501801fba7b328d893efe058c3e223c08cae701d0dd299783ee500ea85f2ed3`. The counterexample is
 closed code-locally; the next fresh live cycle owns the process-boundary re-cross.
 
+**Sprint `7.43` is Done (2026-10-07): a controller's child can be named after its cluster is gone, at the
+granularity the record has.** The second increment is a pure join from an escaped sweep row to the family
+the registry declares in the EKS stack's write-ahead manifest, by key and coordinate digest. The
+families are derived from the registry and the ownership edges, attribution requires every tag a family
+needs, and it refuses rather than guesses (no family, a family this manifest does not declare, a coordinate
+digest that disagrees with the registry, or two families at once). It names a family and an owning stack and
+not a run, because the controllers' tag sets are constant for a cluster name, and the result says so: the
+scope it reports back is the caller's, not something the rows proved. It has one production consumer, the
+cascade postflight, which appends the attribution to the sweep's rendering, reads no manifest and says so,
+and can change neither the verdict nor the exit code. No manifest writer, controller stamp or image roll was added: each would change
+the persistence protocol or the Provider image to write data no destroy reads, and a check now fails the
+build if a second module outside the manifest's own modules names one of the seven identifiers that commit
+or append a manifest. The row's premise was partly false, since the families were
+already declared, so it moves to Completed with the narrower closure stated and one Unowned row registers
+the residuals (no run-granular attribution, a write-only controller-owner record, the DNS01 challenge
+records a leak of which makes the subzone reaper fail). An adversarial review (four lenses, 14 confirmed
+findings, all fixed) widened the writer check from three client names to seven identifiers across both
+layers and named the transport endpoint, made the submitter check read the call and not the import list,
+held a lane row to the stack its program declares, masked literals as well as comments, and corrected the
+narration, which had said a manifest vouched for rows when none was read. Focused groups **29/29**;
+canonical `prodbox dev check` exits 0 (primary unit **5,331/5,331**). **Live-proof: pending.**
+**Deployment qualification: pending, not invalidated** (no persistence-protocol change).
+
+**Sprint `7.43`'s first increment (2026-10-07): every creator of AWS resources is classified, and
+a gate keeps the classification true.** Whether the retained `aws-ses` program is on the write-ahead
+lane had been recorded nowhere, so the absence of an import was the only statement of it. It is now
+declared outside the lane, for reasons that can be checked, as a decision separate from the run-scope
+tag it also does not carry. The stackless creators each have a structural bar and a named destroy path,
+and verification found one the sprint did not name, the validation hosted zone. The table is
+`createRecordCoverage`; its check fails the build if a Pulumi program has no row, if a program joins
+or leaves the lane without the declaration changing, if a registered key's row is not the relation
+the registry derives, if a module creates through the native IAM or S3 client unrecorded, if a cited
+destroy path does not exist, or if a second module outside the manifest's own modules names an identifier
+that commits or appends a manifest. That last rule, to the extent a token scan reaches, is what makes
+"no new writer, so qualification is not invalidated" a fact rather than a sentence. Two ledger rows
+move to Completed (pending **74**, unowned **10**, completed **374**, recounted). Focused group
+**12/12**. Controller-created children (deliverable 3) are the second increment: the EKS manifest
+already declares their families by key and coordinate digest, and what is missing is the function
+from an escaped sweep row to that entry.
+
+**Sprint `6.6` is Done (2026-10-07): a cascade with no cluster can still ask AWS, and no longer
+confirms from silence.** The no-install arm always exited non-zero, because it observed nothing and
+the entry table cannot mint success. It now reads the Tier-0 configuration (never the in-force
+config, which needs an Authority that is not there), surveys every retained root read-only, and only
+then — every refusal that needs no network answer already decided — asks for an admin credential and
+queries the Tagging API in each authored region under a wall-clock bound. It exits zero only for a
+sealed `ConfirmedNoInstallCascade`, whose single producer takes the whole observation and returns the
+typed reasons it refused. A sweep that was never owed never confirms there, though the full
+cascade's uninstall gate still admits it; a unit test pins the divergence.
+
+The owed predicate widened with it. "Declared" meant an `aws_substrate.profile` and nothing else, so
+a host that authored a Route 53 zone id and no profile reached the uninstall having issued no
+Tagging API call. It is now any of ten authored coordinates, which is a behavior change on the full
+cascade: such a host without an admin credential has its uninstall withheld. The narration says what
+a confirmed zero does not mean — per-run residue by tag in the queried regions, **not an empty
+account**, with the retained state bucket, `aws-ses` and retained EBS named as surviving by design.
+Focused group **32/32**; primary unit **5,301/5,301** with the known-flaky SSH case excluded; four
+host-only integration cases drive the installed binary with no RKE2 install and a fake `aws`
+(`prodbox test integration cli` **74/74**); canonical `prodbox dev check` exits 0. **Live proof: pending** — a repeat cascade against a real account. **Deployment qualification: pending**
+on destructive cleanup and lifecycle orchestration under Standard P.
+
+**Sprint `2.136` is Done (2026-10-12): a retain of the certificate the reference already holds needs no slot.**
+Every chart suite that restores the supported runtime failed at `charts delete vscode`, which retains the public-edge
+certificate before it deletes the namespace, with the opaque `TlsRetentionWorkflowAuthorityRestoreRefused`; the
+Authority's protected log named `retention-version-occupied/v6`. The committed reference is `v4` and the long-lived
+store holds objects at every version from `5` to `50`, left by earlier Authority epochs whose state lived under a
+since-reset root and sealed under keys the control plane no longer holds. Sprint `2.135` admits one skip and
+refuses a second by design, which is right for a retain with something new to say and wrong for one without: the
+live certificate (serial, key digest, expiry) is the committed one, so the committed reference already preserves it
+and no slot is needed. The workflow now answers that case with the reference when the next slot is unusable and
+leaves every other failure, including a renewed certificate, as it was. Forty existing cases pass unchanged and
+three new ones, with two mutations of the comparison killed; canonical `prodbox dev check` exits 0 (primary unit
+**5,563/5,563**). **The forty-six stale objects remain** and a renewal
+will still refuse until the operator deletes them (the doctrine's retention deletion, which is an AWS mutation this
+work does not perform). **Live proof: observed 2026-10-12 (with the Sprint `2.136` image running, `charts-vscode`, `admin-routes` and `charts-storage` crossed `charts delete vscode` against the stuck lane).** **Deployment qualification: pending** under Standard P.
+
+**Sprint `2.137` is Done (2026-10-12): an accessor that vanished between the inventory and its lookup is not a
+failure.** Three times in six hours the Target Secret Agent's one-shot worker refused its Vault session audit with
+`classification-unavailable`, and a TLS workflow that cannot reach the Agent ends `one-shot-operation-unavailable`;
+a restore that fails lets cert-manager issue a new certificate, which Sprint `2.136` then cannot retain, so a
+transient audit refusal is how the retained lane wedges. The audit lists every token accessor and looks each up, and
+treated a lookup as "absent" only on HTTP 404. Measured on 2026-10-12 against an isolated Vault 1.18.3 (the chart's
+pinned image): an accessor that was never issued, was revoked, had expired or belonged to a revoked parent of 3,000
+children answers **HTTP 400 `invalid accessor`**, a live one answers 200, and Vault sends no 404 (3,775 lookups across
+an asynchronous revocation saw only 200 then 400). So the "absent" arm could not fire and every accessor that expired
+between the LIST and its lookup aborted the audit. The classifier now reads the measured answer, the scan passes over
+a vanished accessor (it is no member of any subject, and the stable-zero proof rests on the fresh inventories), the
+now-unreachable `classification-absent` constructor and tokens are deleted, and the Bootstrap Broker's detailed audit
+and five direct list-then-lookup sites use the same predicate. This corrects the 2026-09-24 record that exact 404 is
+"absent". Both new cases are red on the commit before (the old classifier reads the measured body as unavailable; the
+old audit fails a vanished accessor with `VaultAccessorClassificationAbsent`); canonical `prodbox dev check` exits 0
+(primary unit **5,566/5,566**). **Live proof: observed 2026-10-12 (no refusal in the Agent's protected log after the roll, and `charts-storage` and `charts-api` passed through restore cycles).** **Deployment qualification: pending** under Standard P.
+
+**Sprint `2.138` is Done (2026-10-12): an identity that predates the program carries tags the program does not
+own.** The first live `keycloak-invite` run after Sprint `8.13` reached the Credential Provisioner worker and was
+refused with `iam-prerequisite-failed/tag-read-back-mismatch`: the SES SMTP user `prodbox-ses-smtp` carries the two
+tags the program writes and also `Name`, `prodbox.io/purpose` and `prodbox.io/substrate`, written by the Pulumi program
+the Provisioner replaced, and the read-back demanded exactly the program's pair. It now demands that every tag the
+program writes is present with its value and judges no others; one new case, and the same gate. **Live proof:
+observed 2026-10-12 (the worker passed the IAM prerequisite step and went on to create the SMTP user's access key).**
+**Deployment qualification: pending** under Standard P.
+
+**Sprint `2.139` is Done (2026-10-13): a refused retained delivery names its stage.** The `keycloak-invite` run that
+followed Sprints `2.138` and `5.54` got the furthest the SMTP request has ever got (the Authority replaced the
+expired operation by authorized-attempt recovery, the worker's IAM prerequisites passed, the SMTP user carries its
+`prodbox-ses-smtp-send` policy, the program's tags and a new access key) and ended
+`execution-failed/target-observation-unobservable/retained/delivery-failed`, a closed class by design. The refusal came
+from before the Authority creates the Target worker (no Job event exists) and no log anywhere names the stage:
+the Authority builds the text and drops it into the wire answer, the worker erases the answer, and neither the
+Authority nor the Target Agent logs it. A closed token (an exact fixed sentence, or the leading constructor names of
+a shown error, or `other`; never a value) now stands for the text, recorded by the Authority's delivery boundary and
+the Agent's rewrap boundary as `retained-material/delivery refusal=...` and `retained-material/rewrap refusal=...`.
+Six new cases; canonical `prodbox dev check` exits 0 (primary unit **5,582/5,582**). **Live proof: observed (2026-10-13)**, recorded in the sprint block.
+**Deployment qualification: pending** under Standard P.
+
+**Sprint `2.140` is Done (2026-10-13): a renewed operation's retained delivery retires the expired delivery its
+earlier attestation bound.** Sprint `2.139`'s recorders read the SMTP delivery's refusal on their first live run:
+`retained-delivery-refused/RetainedDeliveryAlreadyPending`. The first attempt (whose own failure was never read) left a
+delivery pending; the aggregate refuses a second delivery for the target while it is; and the coordinator resumed a
+pending delivery only when its attestation equalled the request's, but a renewed operation (Sprint `5.54`) derives a
+new prepared-target receipt (it covers the deadline, owner, fence and Agent), which is the attestation. The stale
+delivery matched nothing, a successor must keep its attestation and the Target intent issuer accepts only the current
+one, and the aggregate's expire command had no caller, so every later attempt was refused. The coordinator now
+recognizes such a delivery as an earlier attempt's: it commits the sink's material if the delivery already landed,
+waits inside the delivery's deadline, and past it retires the delivery and begins the request's own. One new case,
+red on the old coordinator with the live text; canonical `prodbox dev check` exits 0 (primary unit **5,583/5,583**).
+**Live proof: observed (2026-10-13)**, recorded in the sprint block. **Deployment qualification: pending** under Standard P.
+
+**Sprint `2.141` is Done (2026-10-13): the Target intent of a retained SMTP delivery is authorized by the operation
+that sealed its source.** With Sprint `2.140` live the SMTP delivery began for the first time and stopped at
+`stage=materialize refusal=TargetMaterializationIntentIssueFailed/TargetIntentAuthorityUnavailable`: the Authority's
+own issuer would not issue the one-shot worker's signed intent. For `TargetSesSmtp` it looks up the AWS-admin
+prepared-target outbox under the request's operation id, and a retained delivery's materialization carries the
+delivery's id (`delivery-<operation>`, or a hash-derived successor), while the outbox is keyed by the AWS-admin
+operation; the ACME EAB lane finds its own pending delivery and has no such gap. The issuer now reads the SMTP
+delivery outbox (where the pending delivery sits beside the source it delivers, as the EAB lane's issuer reads its
+own), takes the AWS-admin operation from that source (sealed under that operation's identity), leaves every request
+no pending delivery carries to the prepared-target outbox as before, and refuses when the delivery outbox cannot be
+read; one new case, which also pins the missing, corrupt, not-ready and unobservable outboxes; canonical
+`prodbox dev check` exits 0 (primary unit **5,584/5,584**). **Live proof: observed (2026-10-13)**, recorded in the sprint block. **Deployment qualification:
+pending** under Standard P.
+
+**Sprint `4.107` is Done (2026-10-13): a sealed SMTP source's receipt must carry the commitment the receipt codec
+accepts.** The first live run after Sprints `2.139`-`2.141` ended
+`execution-failed/target-observation-unobservable/retained/delivery-failed` with no refusal in the Authority's log
+(its recorders write a line for every delivery stage that refuses), which put the failure on the worker's side of
+the delivery. The worker projects the sealed source into a Target worker receipt with the source's ciphertext
+digest as the commitment; the receipt codec accepts only a Vault HMAC (`vault:v...`); and the worker erases that
+refusal and a failed delivery call into the same closed token. No test imports the delivery boundary and the
+retained-material fixtures spell their commitments `commitment-1`, so the projection's first execution was live.
+The commitment is now the source's own HMAC reference, the refusal of the receipt and of the delivery are
+separate closed causes, and a unit case projects a source sealed with a Vault HMAC through the codec and keeps
+the old derivation as its negative control (restoring the old derivation fails that case with the live text,
+`commitment is not a Vault HMAC`). The same boundary had a second defect that only the repair of the family finds:
+its observation of custody refused a generation earlier than the permit's, which is the previous generation of a
+rotation, so the family could be installed and never rotated; the reading is now a pure classifier (earlier
+generation or none is a generation not yet sealed). Canonical `prodbox dev check` exits 0 (primary unit
+**5,592/5,592**). **Live proof: observed (2026-10-13)**, recorded in the sprint block. **Deployment qualification: pending** under
+Standard P.
+
+**Sprint `8.14` is Done (2026-10-13): the Keycloak consumer called a `kcadm` command that does not exist, and
+reported its failure as a constant.** With the SMTP family installed and delivered, the first live
+`keycloak-invite` run that reached its body ended `invite failed: Keycloak consumer operation failed: see Keycloak
+consumer Pod logs`. The realm held the throwaway user, so the failing step was the invite email, which the consumer
+script sends with `kcadm.sh put`; `kcadm` has no `put` (a PUT of an endpoint that is not a resource is `update -n
+-b`), measured in the live Pod. No test ran the script, and the scrub hid the reason: the Pod's server log holds
+nothing for a client usage error. The email is now an unmerged `update`, the script announces a stage from a closed
+list of twelve before each step, the host reports the last stage and the exit status and nothing else, and a unit
+case checks every `${KCADM}` word against the command set of the pinned `kcadm` (with the replaced line as its
+negative control); canonical `prodbox dev check` exits 0 (primary unit **5,592/5,592**). **Live proof: observed (2026-10-13)**, recorded in the sprint block.
+**Deployment qualification: pending** under Standard P.
+
+**Sprint `4.108` is Done (2026-10-15): a key deleted after its material was delivered no longer leaves the Target
+holding a dead key.** CloudTrail for `prodbox-ses-smtp` shows that each of the six harness runs between 04:44 and
+11:14 EDT deleted the family's key and minted another, while the custody sealed at the first stayed; the last run
+committed the receipt of a key whose password nobody sealed, and Keycloak held the password of a key deleted hours
+earlier (SES: `535 Authentication Credentials Invalid`). The AWS-admin recovery assumed the phases that continue a dead
+attempt carry no target receipt; the retained lane writes its Target before the journal commits one, and the execution
+algebra committed whatever receipt it observed. It now adopts an observed Target only for an initial attempt resumed
+by its own permit; a freshly minted key, and any remint, runs the bounded cleanup and refuses by name
+(`recovery-remint-ambiguous/target-holds-predecessor-material`), leaving no key behind and writing nothing over the
+Target. Four new cases drive the production algebra over a scripted journal, IAM inventory and Target (red on the old
+line: `got: Right ()`), and canonical `prodbox dev check` exits 0 (primary unit **5,599/5,599**). **Live proof: none
+to give**: the window needs a process death between a delivery and its commit, which no suite produces. Adopting the
+dead attempt's key instead of refusing is not built, and the block says so; Sprint `8.13`'s scope revision is the
+rotation a refused family takes. **Deployment qualification: pending** under Standard P (invalidated: the AWS-admin
+worker's recovery changed).
+
+**Sprint `5.53` is Active (2026-10-15): four more deliverables landed code-locally.** The retained-volume ensure
+refuses a listed volume smaller than the plan, or one that reports no size, naming the volume and both sizes and
+before it creates anything for the others (the conservative arm of the operator decision; growing in place is not
+built); the cleanup client's suite id is substrate-scoped, so a live run one substrate left is not adopted by the
+other (`all` was `all` on both); and the harness submits its ACME EAB fixture under an operation id that carries a
+digest of the credential frame, where it was the cluster alone, so a changed `acme_eab` is installed as a rotation
+at the next generation instead of replaying the retained one; and the Provider's EBS, Route 53 validation-zone and
+owned-tag interpreters, which started their own unbounded `aws` process, now take the runner as an argument and the
+Provider passes its bounded, permit-serialised one. Nine new cases, three of them shown red by a mutation exercise
+that removed each check in turn (the volume size check twice and the suite id), and canonical `prodbox dev check`
+exits 0 (primary unit
+**5,608/5,608**). The rest of the sprint is listed in its block. **Live proof: pending**; nothing here can be proven
+without a live account, the EAB case needs a changed `acme_eab`, and the Provider changes reach a cluster only with
+the next runtime image.
+
+**Sprint `5.57` is Done (2026-10-15): the DNS validation waits for the Gateway-DNS write authority.** The final
+regression sweep ran `public-dns` right after `aws-iam` and `dns-aws` and it failed in two minutes with `Gateway-DNS
+observation is bound to the requested record but its write authority is not ready`; `dns check` answered the same for a
+few minutes and then `in-sync`. Only the gateway node that holds the ownership claim reports it can write, the state is
+served by whichever node the loopback endpoint reaches, and each gateway Pod restarts about every ninety minutes. The
+public-edge wait already retries exactly this refusal; the validation read it once. It now retries it up to thirty
+times ten seconds apart and ends the wait at once on anything else; three new cases, and canonical `prodbox dev check`
+exits 0 (primary unit **5,595/5,595**). **Live proof: observed 2026-10-15** — `public-dns` passed the Route 53 and
+resolver checks right after `dns-aws` and failed only at the HTTP redirect while the `lifecycle` suite's rebuild had left
+no Gateway, then passed in full once `charts reconcile vscode` restored the edge; the validation is silent when the wait
+absorbs a refusal, so the three scripted cases remain the proof of the absorbing path. **Deployment qualification:
+pending** under Standard P (not invalidated).
+
+**Sprint `3.47` is Done (2026-10-12): a token issued over the in-cluster backchannel must carry the public
+issuer.** `charts-api` failed live, after its restore cycle succeeded, with Envoy's `Jwt issuer is not configured`.
+The API route accepts the issuer `https://test.resolvefintech.com/auth/realms/prodbox`; the harness's token carries
+`http://test.resolvefintech.com:8080/auth/realms/prodbox` (audience and the `prodbox_route` claim are right). Keycloak
+is started with `--hostname=<publicHost>` and no scheme, so scheme and port come from the request, and a request
+inside the Pod (where the harness issues tokens so the client secrets never leave it) carries no `X-Forwarded-*`
+headers. Measured against the pinned `keycloak:26.0.0` in a local container: `--hostname=https://<host>/auth` makes
+the issuer `https://<host>/auth/realms/<realm>` for any request, while `--hostname=https://<host>` drops the `/auth`
+path. The chart now passes the full public URL; the websocket workload's token exchange and Keycloak's emailed
+links share the same request shape and are repaired by the same line; two new cases (red on the chart before),
+canonical `prodbox dev check` exits 0 (primary unit **5,573/5,573**). **Live proof: observed 2026-10-12 (`charts-api` passed live after the Keycloak Deployment rolled).** **Deployment
+qualification: pending** under Standard P.
+
+**Sprint `5.55` is Done (2026-10-12): the OIDC session validation Job declares what it uses and its script parses.**
+`charts-websocket` failed with the bare `OIDC session validation Agent command failed` once Sprint `3.47` had made
+`charts-api` pass. The cause was in the namespace's events: the validation Job (one init container and one `curl`
+container, memory-backed volumes only) declares CPU and memory and no ephemeral storage, so the namespace
+`LimitRange` charged it its default of a 1Gi request and a 2Gi limit, and `vscode-resource-quota` (limits 11,456Mi,
+10,432Mi used) refused every Pod the Job tried to create until `kubectl wait` ran out its 180 seconds. Both
+containers now declare 32Mi/64Mi. With the Pod admitted the Job died at `sed: unmatched '/'`: the script's
+`sed 's/&amp;/\&/g'` was written `\\\&` in Haskell, which the language reads as one backslash plus the empty-string
+escape, so the shell saw an escaped delimiter. Run by hand with one backslash fewer, the Job succeeded and printed
+the session projection the validation compares. Two cases; canonical `prodbox dev check` exits 0 (primary unit
+**5,582/5,582**). **Live proof: observed 2026-10-12 (`charts-websocket` passed its direct OIDC login and upgrade
+checks).** **Deployment qualification: pending** under Standard P.
+
+**Sprint `5.54` is Done (2026-10-12): a harness credential whose retained operation expired is replaced, not
+resubmitted.** The harness asks the Authority for a credential by resubmitting the intent the Authority already
+retains for the operation, so that a response lost after Target material advances recovers the same operation. The
+Authority admits an unfinished operation only for byte-identical intent until its thirty-minute deadline and after
+it only for a replacement draft that keeps every immutable binding and carries a later deadline. The first
+`keycloak-invite` run was refused by the IAM tag read-back (Sprint `2.138`) and left the SMTP operation Authorized;
+the retry two hours later resubmitted that intent and the Authority answered `prepared-target/deadline-expired`,
+and would have for as long as the operation existed. The resolver now resubmits the retained intent when its
+operation completed or its deadline is ahead of the host clock, and otherwise compiles the draft a first request
+would send, with the retained action and generation; five new cases, canonical `prodbox dev check` exits 0
+(primary unit **5,573/5,573**). **Live proof: observed 2026-10-12 (the Authority accepted the fresh draft and recovered the expired authorized attempt).** **Deployment qualification: pending** under Standard P.
+
+**Sprint `8.13` is Done (2026-10-13): the SMTP identity had a design, a model and a worker, and no caller.** The
+first live `keycloak-invite` run failed at Keycloak, whose realm had no SMTP server because
+`secret/keycloak/smtp` held nothing: the Keycloak chart's Vault init container logged `No value found` and
+continued (the incident plan's `B10`, now observed), and no production code had ever submitted the permit that
+creates the retained SES SMTP key family. The permit vocabulary, the worker's SMTP execution (IAM identity,
+policy and key, a bounded-memory derived source sealed into retained-home custody, delivery to the sink), the
+`TargetSesSmtp` lane and the class-generic coordinator all exist; `mkSesSmtpIamParameters` has no caller,
+`firstReconcileIamParameters` refuses the class, the retained SES preparation's `sync-target` stage is a label,
+and `Prodbox.Ses.Workflow` has no production importer. The sprint extracts the harness's single credential
+submission from the Lifecycle-provider reconcile that `aws-iam` proves live, instantiates it for the retained
+SES SMTP family in a stable operation scope, and runs it before the body of the home suites that send an invite.
+Sprint `7.47`'s decision `D7` assumed the home arm already delivered; it did not. **Live proof: observed (2026-10-13)**, recorded in the sprint block
+(nothing has run); the first run is also the first run of the Provisioner, custody and delivery for SMTP.
+Focused group **6/6**; canonical `prodbox dev check` exits 0 (primary unit **5,563/5,563**). **Deployment
+qualification: pending.**
+
+**Sprint `1.93` is Done (2026-10-08): the native AWS clients read back the text they write.** The first live
+`dns-aws` run failed in its first prerequisite: the Provider wrote the SES verification TXT record and reported
+that the read-back did not converge, the observed value being the token wrapped in the literal text `&quot;`.
+Route 53 returns a TXT value in XML-escaped quotation marks; the shared XML helper had an escaper for the
+requests it emits and no unescaper for the text it extracts, so a value with a quotation mark, an ampersand or an
+angle bracket could never read back equal to what was written, and only the emit side of the request body had a
+fixture. `xmlUnescape` is the new inverse (five entities and numeric references, one pass, bounded, leaf text
+only) and the Route 53 value, name and cursor readers and the AWS error message use it. Focused cases **10/10**
+added to the native-client group; canonical `prodbox dev check` exits 0 (primary unit **5,554/5,554**). The native
+client runs inside the Provider Worker, so the repair reaches AWS only after the runtime image is rebuilt and the
+Provider rolled. **Live proof: observed** — `dns-aws` failed identically before that roll and passed after it
+(2026-10-08). **Deployment qualification: pending** on the Provider's DNS lanes under Standard P.
+
+**Sprint `4.106` is Done (2026-10-08): a bootstrap image whose upstream is gone is no longer a pull the
+kubelet makes.** The first live `cluster reconcile` of the campaign stopped twice on
+`ImagePullBackOff` for `quay.io/minio/mc`. The upstream now issues a token and then refuses the manifest and
+tag-list requests (HTTP 401, for `quay.io/minio/minio` and `mc`, and for Docker Hub's `minio/*`), and the
+kubelet's garbage collection, which prodbox runs at 70 % high and 60 % low, removed the unused image between the
+two Jobs that need it once the reconcile's own image build had taken the disk over 70 %. A rebuilt cluster, whose
+containerd is empty, could not have started MinIO at all, which is the first thing each of Sprint `6.5`'s
+recover-to-clean cycles does. `Prodbox.Infra.BootstrapImageSeed` now owns the policy (containerd lists the name:
+leave it; the host Docker cache holds it: import; neither: pull into the cache, then import; every import read
+back; every refusal names the image and both remedies), and `ensureBootstrapImagesSeeded` runs it inside
+`ensureMinioRuntime`, before the registry bucket Job, before the gateway MinIO bootstrap Job and in the harness
+restore step. Home substrate only. Focused group **10/10**; canonical `prodbox dev check` exits 0 (primary unit **5,544/5,544**); `prodbox test integration cli` **74/74**. **Two things remain the operator's:** the AWS
+substrate's nodes pull these images themselves (decision `D8` of Sprint `7.47`, with three images measured
+available and not vetted), and a host whose Docker cache lacks the two images has no source. **Live proof: the
+kubelet-collection arm is observed** (the fourth live reconcile of the campaign found the `mc` image gone and restored it
+from the Docker cache before the Job that needs it); **the rebuilt-cluster arm is pending** — the first recover-to-clean
+cycle. **Deployment qualification: pending** on the home reconcile under Standard P.
+
+**Sprint `4.105` is Done (2026-10-05): a Provider session outlives the operation it serves.** The
+session was a fixed 900 seconds for an operation allowed thirty minutes, so a destroy that kept
+retrying one dependency error past the fifteenth minute failed on an expired credential and the
+credential error replaced the cause. `Prodbox.ControlPlane.OperationBudget` now derives the
+requested duration from the signed deadline plus a five-minute read-back grace, between the
+900-second STS floor and the role's declared 3,600-second maximum. The native STS client carries
+the parsed expiry, a session with no usable window starts no work, and each Pulumi child is bounded
+by the smaller of the child maximum and the window left. A `dev check` rule refuses a number
+assigned to a session duration in the Provider modules. Focused groups pass: budget **12/12**,
+duration rule **2/2**, STS **7/7**. The declared maximum is inferred rather than read, and the
+ledger registers that gap. **Deployment qualification: pending** on destructive cleanup under
+Standard P.
+
+**Sprint `4.104` is Done (2026-10-05): a Pulumi destroy refreshes, continues and cannot outlive its
+bound.** The destroy now passes `--refresh --continue-on-error` (both confirmed on the pinned
+3.228.0 binary) and never `--clear-pending-creates`, which belongs to `pulumi refresh`. Every Pulumi
+child runs under a killable runner that leads its own process group, stops it with SIGTERM and then
+SIGKILL, keeps the transcript a stopped child had written, and runs the same stop if its caller is
+cancelled; a bound strictly inside the intent lifetime lets the innermost bound fire first. The
+runner's six cases pass in the unit suite and in a standalone harness built without `-threaded`, as
+the production executable is. Whether a SIGKILLed destroy is resumable is not established until a
+live interrupted destroy. **Deployment qualification: pending** on destructive cleanup under
+Standard P.
+
+**Sprint `4.103` is Done (2026-10-05): a failed Provider apply names its cause, not only its last
+consequence.** The operator saw the first 4,096 characters of a transcript, escaped again by `show`
+at three layers, so a final credential-expiry error displaced the dependency error before it.
+`Prodbox.ControlPlane.ProviderFailureSummary` names the first AWS error as the cause and the last
+differing one as the consequence ahead of a bounded head and tail, classification of stack-command
+output reads the whole transcript, the apply callback distinguishes a failed apply from a lost
+response, and the execution, Worker-client and Authority-client errors each carry a detail
+unchanged. The focused groups pass (summary **12/12**, apply-label case **1/1**). No real Pulumi
+transcript is committed, so the first live failure after the image roll is the real test of the
+fixture's wording.
+
+**Sprint `4.102` is Done (2026-10-05): a destroy that fails no longer hides the independent
+destroys after it.** `reconcileAbsent` attempts every present resource and blocks only one whose
+prerequisite failed, was not attempted, or could not be observed. The per-run stacks carry no
+success edge; the operational batch keeps its chain (lease role, then user, then the `aws.*`
+block). The outcome names what failed and what was not attempted, an exception is a failed destroy,
+and an interrupt still propagates. The cases a continue-all fold fails pass. Positional
+`reconcileAbsent` remains the callback-era surface the doctrine removes with Sprint `6.5`'s
+cutover, and the ledger registers it. **Deployment qualification: pending** on destructive cleanup
+under Standard P.
+
+**Sprint `7.45` is Done (2026-10-07): the Provider role's permissions policy is held complete against
+the AWS CLI verbs its interpreters run.** `Prodbox.Lifecycle.CredentialProvisioner.ProviderCliActions`
+names the IAM actions each verb is authorized by, and `prodbox dev check` fails when a Provider-run
+module invokes a verb the table does not name, when the policy lacks a named action, or when a module
+chooses its verb at run time without declaring the verbs it may choose. Reading the verbs against the
+policy found seven actions no run had reached (the SES DKIM attributes, the receipt-rule describe and
+update, the active-rule-set describe, the capture bucket's tag read and write, and the owned-resource
+tag listing), and the policy now allows them. The role-policy revision the credential operation scope
+derives from the document moves, so the next harness run selects a successor operation. Canonical
+`prodbox dev check` exits 0 (primary unit **5,424/5,424**). **Live proof: pending.**
+
+**Sprint `7.44` is Done (2026-10-05): the EKS client-auth identity parse no longer refuses every
+well-formed ARN.** The admission split the identity evidence on colons and bound the fourth field,
+which the leading `arn` field made the empty region, so the 2026-09-29 drain refused before it
+reached a cluster. `Prodbox.Aws.StsIdentity` now owns the marker, the 2,048-character bound, the
+renderer and the parser; the admission, the operator identity probe and the Provider's producer
+use it, and the probe's second splitter is retired. The focused group passes **26/26**, and a
+verbatim copy of the pre-fix parse returns nothing for all seven real shapes.
+
 **Sprint `4.101` is Done (2026-09-23): an existing empty checkpoint cannot mint provider
 absence.** `CheckpointEmpty` now becomes `ResidueUnreachable` with the exact stack and cause. The
 destroy-only projection remains empty by design, while `resourcesUnobserved`, the per-run
@@ -556,7 +1062,7 @@ one producer that takes the postflight sweep, admitting exactly the two answers
 `decideCascadeUninstallGate` admits; a `checkSealedConstructors` row fails the build if that export
 list ever widens. So "never mint success from silence" is a fact the gate holds rather than a
 property of a table somebody must keep reading correctly. What the sprint does *not* do is reach it:
-`confirmCascadeNoInstall` is representable and uncalled, because the no-install path runs no sweep.
+`confirmCascadeNoInstall` is representable and uncalled, because the no-install path runs no sweep (**superseded 2026-10-07 by Sprint `6.6`**, which gives that path its sweep and its one caller).
 That boundary is the deliverable's own, and `cli_command_surface.md`'s Target region already says
 the current revision can reach only the non-zero exit.
 
@@ -761,7 +1267,7 @@ global-service region through the same bounded cursor-following listing the comp
 runs *before* the local uninstall and gates it: an unconfirmed or non-empty sweep leaves the local
 control plane running, because it is the only surface permitted to mutate AWS and destroying it is
 what turned detection into detection without remediation. And whether the sweep is owed now comes
-from the declared substrate rather than from three per-run checkpoints reading absent — a checkpoint
+from the declared substrate (since widened by Sprint `6.6` to any authored AWS coordinate) rather than from three per-run checkpoints reading absent — a checkpoint
 is Pulumi state, and its absence is exactly the condition under which a resource is most likely to be
 stranded.
 
@@ -15501,10 +16007,12 @@ This plan is complete only when all of the following are true:
     correspondence docs name that bound, the operator response, and how the model's bounded-delay
     assumption maps to a runtime-enforced skew limit.
 38. Orders documents carry a monotonic version field, daemons reject inbound peer evidence from a
-    peer presenting an older Orders version, a new Orders version propagates through bounded delta
-    gossip and is adopted by every live daemon before the next election tick, and a daemon
-    rebooting against a stale Orders version refuses to claim ownership until its Orders view
-    catches up.
+    peer presenting an older Orders version, and a newer Orders version is promoted by restart
+    rather than live adoption: every peer frame carries the sender's Orders version, a running
+    daemon that observes a newer one refuses to claim ownership until it is restarted against the
+    newer Orders (the restart migrates the retained journal behind an authenticated Orders-scope
+    invalidation before readiness), and a daemon rebooting against a stale Orders version refuses
+    to claim ownership until its Orders view catches up.
 39. Invite-capable suite plans submit an idempotent durable operation to the retained Lifecycle
     Authority. Provider mutation, exact-revision semantic readiness, SMTP generation, and
     per-target delivery are journaled and resumable; only mutation stages hold narrow fences, and
@@ -15582,10 +16090,11 @@ This plan is complete only when all of the following are true:
     fault schedule, and topology-normalized total CPU, memory, ephemeral storage, and persistence
     constant; records every exact old→new envelope mapping, expected superseded failure, and
     replacement-reference pass; and keeps the independently justified rendered production profile
-    separate. Sprint `5.35` must add the target repository inputs under
-    `test/qualification/TEARDOWN-2026-08-15.*`; they do not exist in the current tree. Once landed, a
-    reference-oracle pass may correctly expect `CascadeIncomplete` when the independent
-    caller-observation failure remains, and cannot be narrated as cascade success.
+    separate. Sprint `5.35` ✅ landed those repository inputs under
+    `test/qualification/TEARDOWN-2026-08-15.*` (the trace, the dispositions and their mutation
+    fixture, the causal profile, and the production profile); the qualification run that consumes
+    them remains pending. A reference-oracle pass may correctly expect `CascadeIncomplete` when the
+    independent caller-observation failure remains, and cannot be narrated as cascade success.
 49. Lifecycle Authority alone owns the in-force config generation/reference; every component uses a
     role-scoped projection, and no host/Gateway/direct-MinIO config path remains.
 50. Lifecycle-provider, Authority-backup, TLS-retention, Gateway-DNS, per-substrate

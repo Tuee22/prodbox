@@ -12,6 +12,8 @@ module Prodbox.Gateway.Daemon
   , runGatewayDaemonWithRuntimeDependencies
   , daemonBootFieldsChanged
   , daemonPulumiObjectStoreConfig
+  , ordersViewIsCurrent
+  , raiseLatestObservedOrdersVersion
   )
 where
 
@@ -4176,7 +4178,10 @@ gatewayLoop env = forever $ do
   let nodeId = daemonNodeId config
       rule = ordersGatewayRule orders
       heartbeatTimeout = fromIntegral (heartbeatTimeoutSeconds rule)
-      ordersOk = stateLatestObservedOrdersVersion state <= stateOrdersVersionUtc state
+      ordersOk =
+        ordersViewIsCurrent
+          (stateLatestObservedOrdersVersion state)
+          (stateOrdersVersionUtc state)
       localEmitterReady = case envEmitterTopology env of
         LegacyModelBEmitter ->
           maybe False (const True) (emitterAuthorityContinuityRuntime emitterAuthority)
@@ -4234,6 +4239,36 @@ gatewayLoop env = forever $ do
       }
   liveConfig <- readTVarIO (envLiveConfig env)
   threadDelay (round (liveHeartbeatInterval liveConfig * 1000000))
+
+-- | Whether this process may elect an owner at all.
+--
+-- Orders is boot configuration: a running process is bound to the version it
+-- started against, and a newer Orders is adopted by restart rather than live
+-- reload. Once any peer has presented a newer version than the one this process
+-- started against, the process elects no owner, so it can claim no ownership and
+-- write no DNS, until it is restarted against the newer Orders. The comparison is
+-- the whole gate; a daemon that reboots against a stale Orders starts with an
+-- observed version above its own the moment its first peer frame arrives.
+ordersViewIsCurrent
+  :: Int
+  -- ^ the newest Orders version any peer has presented
+  -> Int
+  -- ^ the Orders version this process started against
+  -> Bool
+ordersViewIsCurrent latestObservedVersion startupBoundVersion =
+  latestObservedVersion <= startupBoundVersion
+
+-- | The observed-Orders high-water mark after one peer frame. The mark never
+-- falls, and a wire version beyond the range of the daemon state saturates
+-- rather than wrapping into a small number that would clear the gate.
+raiseLatestObservedOrdersVersion :: Int -> Word64 -> Int
+raiseLatestObservedOrdersVersion current observedVersion =
+  max
+    current
+    ( if observedVersion > fromIntegral (maxBound :: Int)
+        then maxBound
+        else fromIntegral observedVersion
+    )
 
 -- | Write Route 53 only when the runtime CanWriteDns predicate holds: the
 -- local node must be the elected owner AND the most recent claim/yield
@@ -5281,12 +5316,9 @@ handlePeerClient sock env =
           atomically $ modifyTVar' (envState env) $ \state ->
             state
               { stateLatestObservedOrdersVersion =
-                  max
+                  raiseLatestObservedOrdersVersion
                     (stateLatestObservedOrdersVersion state)
-                    ( if observedVersion > fromIntegral (maxBound :: Int)
-                        then maxBound
-                        else fromIntegral observedVersion
-                    )
+                    observedVersion
               }
         liveConfig <- readTVarIO (envLiveConfig env)
         let nowSeconds =

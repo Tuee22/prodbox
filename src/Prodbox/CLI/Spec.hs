@@ -628,6 +628,8 @@ parserForPath path =
       Just (withCoverage (TestIntegration IntegrationCleanRoomHandoff))
     ["test", "integration", "cascade-qualification"] ->
       Just (withCoverage (TestIntegration IntegrationCascadeQualification))
+    ["test", "integration", "cascade-qualification-receipt"] ->
+      Just (withCoverage (TestIntegration IntegrationCascadeQualificationReceipt))
     ["test", "integration", "ha-rke2-aws"] -> Just (withCoverage (TestIntegration IntegrationHaRke2Aws))
     ["test", "integration", "lifecycle"] -> Just (withCoverage (TestIntegration IntegrationLifecycle))
     ["test", "integration", "pulumi"] -> Just (withCoverage (TestIntegration IntegrationPulumi))
@@ -1298,9 +1300,12 @@ rke2DeleteFlagsParser =
                 ++ "even when an earlier one fails, and the run reports "
                 ++ "success only if each phase could confirm its own outcome. "
                 ++ "With no RKE2 install present the cascade reaches no phase "
-                ++ "and exits non-zero: local absence is not per-run AWS "
-                ++ "absence. Without --cascade, `cluster delete` is a pure "
-                ++ "local uninstall and leaves per-run AWS stacks untouched."
+                ++ "and exits non-zero unless it queried AWS read-only on this "
+                ++ "invocation (it may ask for a temporary admin credential) and "
+                ++ "every condition of the no-install conjunction held: local "
+                ++ "absence is not per-run AWS absence. Without --cascade, "
+                ++ "`cluster delete` is a pure local uninstall and leaves "
+                ++ "per-run AWS stacks untouched."
             )
       )
 
@@ -2392,7 +2397,7 @@ clusterGroup =
     , leaf
         "delete"
         "Delete the local cluster"
-        "Delete the local cluster. Default mode is a PURE LOCAL UNINSTALL: it uninstalls RKE2 and preserves `.data/` (including the MinIO-backed per-run Pulumi state and the durable Vault PV) without querying, gating on, or destroying the per-run AWS Pulumi backend — so per-run AWS stacks (if any) are left untouched and remain destroyable afterward via `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`. With no RKE2 install present the default mode exits 0 having done nothing. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + postflight tag sweep + cluster uninstall) as one atomic operator action; the K8s drain phase skips gracefully within a reachable run, but a cascade with no RKE2 install present reaches no phase at all and exits non-zero rather than reporting a success it did not observe. The uninstall runs only on a confirmed-empty sweep: an unconfirmed or non-empty sweep leaves the local control plane running, because it is the only surface permitted to mutate AWS and destroying it would leave the answer with nothing able to act on it. No cascade exit authorizes deleting the retained root."
+        "Delete the local cluster. Default mode is a PURE LOCAL UNINSTALL: it uninstalls RKE2 and preserves `.data/` (including the MinIO-backed per-run Pulumi state and the durable Vault PV) without querying, gating on, or destroying the per-run AWS Pulumi backend — so per-run AWS stacks (if any) are left untouched and remain destroyable afterward via `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`. With no RKE2 install present the default mode exits 0 having done nothing. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + postflight tag sweep + cluster uninstall) as one atomic operator action; the K8s drain phase skips gracefully within a reachable run, but a cascade with no RKE2 install present reaches no phase at all and exits non-zero unless it asked AWS read-only on this invocation (it may prompt for a temporary admin credential) and the no-install conjunction held: an authored AWS coordinate, a clean sweep over every authored region, the credential tied to the deployment's account, and every retained root examined. Even then it reports no per-run residue in the swept regions, not an empty account, and it never reports a success it did not observe. The uninstall runs only on a confirmed-empty sweep: an unconfirmed or non-empty sweep leaves the local control plane running, because it is the only surface permitted to mutate AWS and destroying it would leave the answer with nothing able to act on it. No cascade exit authorizes deleting the retained root."
         [ flagOption "yes" (Just 'y') Nothing "Confirm full cluster deletion"
         , flagOption
             "cascade"
@@ -2694,6 +2699,9 @@ testGroupSpec =
         , integrationLeaf
             "cascade-qualification"
             "Run one named destructive recover-to-clean cascade qualification cycle"
+        , integrationLeaf
+            "cascade-qualification-receipt"
+            "Report whether the cycle ledger holds consecutive qualifying cascade cycles"
         , integrationLeaf "ha-rke2-aws" "Run HA RKE2 AWS integration tests"
         , integrationLeaf "lifecycle" "Run lifecycle integration tests"
         , integrationLeaf "pulumi" "Run Pulumi integration tests"

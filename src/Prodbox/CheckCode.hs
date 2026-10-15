@@ -45,7 +45,17 @@ module Prodbox.CheckCode
   , controlPlaneChartLints
   , controlPlaneChartStaticViolations
   , checkCommittedValueHygiene
+  , checkProviderCliIamCoverage
+  , providerCliIamCoverageViolations
+  , providerCliSites
   , checkCreateCallSiteCoverage
+  , CreateRecordCorpus (..)
+  , checkCreateRecordCoverage
+  , readCreateRecordCorpus
+  , createRecordCoverageViolations
+  , manifestWriterIdentifiers
+  , manifestWriterModules
+  , maskHaskellCommentsAndLiterals
   , managedResourceRegistryParityViolations
   , untypedLifecycleInventoryExemptions
   , untypedLifecycleInventoryViolations
@@ -156,6 +166,7 @@ module Prodbox.CheckCode
   , validatedSettingsConstructionFields
   , validatedSettingsMinterViolations
   , controlPlaneListenPortLiteralViolations
+  , providerSessionDurationLiteralViolations
   , controlPlaneReplyStatusViolations
   , dependencyAdmissionInternalSourceViolations
   , responseObligationViolations
@@ -250,6 +261,16 @@ import Prodbox.Legacy.EscapeRegistry
 import Prodbox.Lib.ChartPlatform qualified as ChartPlatform
 import Prodbox.Lifecycle.Authority.ChartStatics qualified as AuthorityStatics
 import Prodbox.Lifecycle.AuthorityBackup.ChartStatics qualified as AuthorityBackupStatics
+import Prodbox.Lifecycle.CredentialProvisioner.ProductionIam (lifecycleProviderRolePolicyActions)
+import Prodbox.Lifecycle.CredentialProvisioner.ProviderCliActions
+  ( ProviderCliDynamicSite (..)
+  , ProviderCliEntry (..)
+  , policyGrantsAction
+  , providerCliActionTable
+  , providerCliDynamicVerbSites
+  , providerCliEntryFor
+  , providerCliRunModules
+  )
 import Prodbox.Lifecycle.Decommission.ProgramTag
   ( decommissionInterpreterIdentityViolations
   , decommissionProgramTagParityViolations
@@ -274,6 +295,17 @@ import Prodbox.Lifecycle.Teardown.AuditFieldOfView
   )
 import Prodbox.Lifecycle.Teardown.CapabilityCustody.Internal
   ( capabilityDependantDerivationViolations
+  )
+import Prodbox.Lifecycle.Teardown.CreateRecordCoverage
+  ( CreateRecordRow (..)
+  , CreatorSubject (..)
+  , DerivedRecordRelation (..)
+  , DestroyCite (..)
+  , OffLaneBar (..)
+  , RecordRelation (..)
+  , RunScopeTagDecision (..)
+  , createRecordCoverage
+  , derivedRelationOfRegistry
   )
 import Prodbox.Lifecycle.Teardown.Model
   ( CleanupSurface
@@ -350,6 +382,7 @@ import System.FilePath
   ( normalise
   , splitDirectories
   , takeDirectory
+  , takeExtension
   , takeFileName
   , (</>)
   )
@@ -359,6 +392,7 @@ data DoctrineViolation
   = ForbiddenWorkflowDirectory FilePath
   | ForbiddenHookSurface FilePath
   | ForbiddenBuildShim FilePath
+  | ForbiddenPythonArtifact FilePath
   deriving (Eq, Show)
 
 data GeneratedSectionRule = GeneratedSectionRule
@@ -655,12 +689,28 @@ doctrineViolationsInPaths =
     | takeFileName relativePath `elem` forbiddenHookScripts
         && (isRepoRootPath relativePath || "hooks" `elem` splitDirectories relativePath) =
         [ForbiddenHookSurface relativePath]
+    | isPythonArtifact relativePath = [ForbiddenPythonArtifact relativePath]
     | otherwise = []
 
   forbiddenHookDirectories = [".githooks", ".husky"]
   forbiddenHookConfigs = [".pre-commit-config.yaml", ".pre-commit-hooks.yaml", "lefthook.yml"]
   forbiddenHookScripts = ["pre-commit", "pre-push", "post-commit", "pre-merge-commit"]
   forbiddenBuildShims = ["Makefile", "justfile", "Taskfile.yml"]
+  -- Exit item 34: the supported implementation is Haskell, so neither a Python
+  -- source nor a Python toolchain-ownership file belongs in the repository.
+  isPythonArtifact relativePath =
+    takeExtension relativePath `elem` [".py", ".pyi"]
+      || takeFileName relativePath `elem` pythonToolchainFiles
+      || "__pycache__" `elem` splitDirectories relativePath
+  pythonToolchainFiles =
+    [ "pyproject.toml"
+    , "poetry.toml"
+    , "poetry.lock"
+    , ".python-version"
+    , "Pipfile"
+    , "Pipfile.lock"
+    , "requirements.txt"
+    ]
   isRepoRootPath relativePath = takeDirectory relativePath `elem` [".", ""]
 
 runCheckCode :: FilePath -> IO ExitCode
@@ -1941,6 +1991,12 @@ runDoctrineAlignmentCheck repoRoot = do
   -- 'awsCreateSiteViolations') is a doctrine-alignment check, so it is
   -- wired here rather than alongside the Haskell-style lints.
   createCallSiteViolations <- checkCreateCallSiteCoverage repoRoot
+  -- Sprint 7.43: the declaration of what reaches the write-ahead ownership lane
+  -- and what does not, kept true against the registry and the source it
+  -- describes. Wired beside the create-site gate because it answers the other
+  -- half of the same question: not whether a create site is registered, but
+  -- whether it is recorded before it acts.
+  createRecordCoverageFindings <- checkCreateRecordCoverage repoRoot
   -- Sprint 0.28: the production `PRODBOX_*` read registry. Wired beside the
   -- create-site coverage gate because it is the same shape — a registry the
   -- worktree must agree with, rather than a claim about it.
@@ -1985,6 +2041,7 @@ runDoctrineAlignmentCheck repoRoot = do
     ++ map ("- " ++) inlineRetryListViolations
     ++ map ("- " ++) planOptionsHonoredViolations'
     ++ map ("- " ++) createCallSiteViolations
+    ++ map ("- " ++) createRecordCoverageFindings
     ++ map ("- " ++) managedResourceRegistryParityViolations
     ++ map ("- " ++) untypedLifecycleInventoryViolations
     ++ map ("- " ++) legacyOperationalResourceParityViolations
@@ -2071,6 +2128,9 @@ haskellStyleViolations repoRoot = do
   validatedSettingsFindings <- forceViolationFindings (checkValidatedSettingsMinter repoRoot)
   tier0CoordinateFindings <- forceViolationFindings (checkTier0CoordinateReads repoRoot)
   listenPortFindings <- forceViolationFindings (checkControlPlaneListenPortOwner repoRoot)
+  sessionDurationFindings <-
+    forceViolationFindings (checkProviderSessionDurationOwner repoRoot)
+  providerCliIamFindings <- forceViolationFindings (checkProviderCliIamCoverage repoRoot)
   residueMinterFindings <- forceViolationFindings (checkResidueObservationMinter repoRoot)
   absenceMinterFindings <- forceViolationFindings (checkAbsenceMinterProvenance repoRoot)
   evidenceSealFindings <- forceViolationFindings (checkProviderEvidenceSeal repoRoot)
@@ -2111,6 +2171,8 @@ haskellStyleViolations repoRoot = do
         ++ validatedSettingsFindings
         ++ tier0CoordinateFindings
         ++ listenPortFindings
+        ++ sessionDurationFindings
+        ++ providerCliIamFindings
         ++ workerImagePullFindings
         ++ testNamespaceFindings
         ++ residueMinterFindings
@@ -2284,6 +2346,219 @@ controlPlaneListenPortLiteral = "8600"
 
 controlPlaneListenPortOwnerPaths :: [FilePath]
 controlPlaneListenPortOwnerPaths = ["src/Prodbox/ControlPlane/ListenPort.hs"]
+
+-- | The Provider role's permissions policy covers every AWS CLI verb a
+-- Provider-run module invokes.
+--
+-- The policy and the verbs were written by hand in two places and nothing
+-- compared them, so a verb the policy omitted was denied only when a live run
+-- reached it, which cost a live cycle each time (the hosted-zone create on
+-- 2026-09-05 and again under the assumed role on 2026-09-06). The SES
+-- receipt-rule observers, the capture-bucket tagging calls and the owned-resource
+-- tag listing carried the same defect and had not yet been reached.
+--
+-- 'providerCliActionTable' is the third thing both must agree with: it names
+-- the IAM actions AWS authorizes each verb with. This rule fails the gate when a
+-- Provider-run module invokes a verb the table does not name, and when the
+-- policy does not allow an action the table names for a verb in use.
+--
+-- __The bound is stated__: this is a text rule over adjacent string literals
+-- (a service token followed by a verb token). It reads the verbs the Provider
+-- interpreters spell out and does not follow an argument vector built at run
+-- time, which is why a site that chooses its verb dynamically must be listed in
+-- 'providerCliDynamicVerbSites' with the verbs it may choose. Pulumi programs
+-- and the native clients the Credential Provisioner runs under the admin
+-- credential authorize through other policies and are not described here.
+checkProviderCliIamCoverage :: FilePath -> IO [String]
+checkProviderCliIamCoverage repoRoot = do
+  sources <-
+    forM
+      providerCliRunModules
+      ( \relativePath -> do
+          let absolutePath = repoRoot </> relativePath
+          exists <- doesFileExist absolutePath
+          contents <- if exists then readFileStrict absolutePath else pure ""
+          pure (relativePath, exists, contents)
+      )
+  pure (providerCliIamCoverageViolations lifecycleProviderRolePolicyActions sources)
+
+-- | The pure decision under 'checkProviderCliIamCoverage': the policy's allowed
+-- actions, and each Provider-run module's path, whether it exists, and its text.
+providerCliIamCoverageViolations
+  :: [Text.Text] -> [(FilePath, Bool, String)] -> [String]
+providerCliIamCoverageViolations granted sources =
+  nub
+    ( concatMap moduleFindings sources
+        ++ concatMap dynamicSiteFindings providerCliDynamicVerbSites
+    )
+ where
+  knownServices = nub (map providerCliService providerCliActionTable)
+
+  moduleFindings (path, exists, contents)
+    | not exists =
+        [ path
+            ++ " is named in providerCliRunModules but does not exist; update"
+            ++ " Prodbox.Lifecycle.CredentialProvisioner.ProviderCliActions."
+        ]
+    | otherwise =
+        concat
+          [ verbFindings path service verb
+          | (service, Just verb) <- providerCliSites knownServices contents
+          ]
+          ++ undeclaredDynamicSiteFindings path (providerCliSites knownServices contents)
+
+  verbFindings path service verb =
+    case providerCliEntryFor service verb of
+      Nothing ->
+        [ path
+            ++ " invokes `aws "
+            ++ Text.unpack service
+            ++ " "
+            ++ Text.unpack verb
+            ++ "`, which providerCliActionTable"
+            ++ " (Prodbox.Lifecycle.CredentialProvisioner.ProviderCliActions) does not"
+            ++ " name. Add the IAM actions AWS authorizes it with and allow them in"
+            ++ " lifecycleProviderRolePolicy."
+        ]
+      Just entry ->
+        [ path
+            ++ " invokes `aws "
+            ++ Text.unpack service
+            ++ " "
+            ++ Text.unpack verb
+            ++ "`, but the Provider role policy (lifecycleProviderRolePolicy) does"
+            ++ " not allow "
+            ++ Text.unpack action
+            ++ ". A live run would be denied; allow it."
+        | action <- providerCliActions entry
+        , not (policyGrantsAction granted action)
+        ]
+
+  undeclaredDynamicSiteFindings path sites =
+    [ path
+        ++ " names the `aws "
+        ++ Text.unpack service
+        ++ "` service and chooses the verb at run time; list it in"
+        ++ " providerCliDynamicVerbSites with the verbs it may choose, so the"
+        ++ " policy is checked against them."
+    | service <- nub [service | (service, Nothing) <- sites]
+    , null
+        [ ()
+        | declared <- providerCliDynamicVerbSites
+        , providerCliDynamicModule declared == path
+        , providerCliDynamicService declared == service
+        ]
+    ]
+
+  dynamicSiteFindings declared =
+    let path = providerCliDynamicModule declared
+        service = providerCliDynamicService declared
+        found =
+          length
+            [ ()
+            | (candidatePath, True, contents) <- sources
+            , candidatePath == path
+            , (siteService, Nothing) <- providerCliSites knownServices contents
+            , siteService == service
+            ]
+     in [ path
+            ++ " has "
+            ++ show found
+            ++ " dynamic-verb `aws "
+            ++ Text.unpack service
+            ++ "` site(s) but providerCliDynamicVerbSites declares "
+            ++ show (providerCliDynamicCount declared)
+            ++ "; review the new site and update the declaration."
+        | found /= providerCliDynamicCount declared
+        ]
+          ++ concat
+            [ verbFindings path service verb
+            | verb <- providerCliDynamicVerbs declared
+            ]
+
+-- | The @aws@ CLI invocations a source spells out: a service token followed
+-- by a verb token yields @(service, Just verb)@, and a service token followed
+-- by a flag (the verb having been supplied by a variable) yields
+-- @(service, Nothing)@.
+providerCliSites :: [Text.Text] -> String -> [(Text.Text, Maybe Text.Text)]
+providerCliSites knownServices contents =
+  [ site
+  | (first, second) <- zip literals (drop 1 literals)
+  , first `elem` knownServices
+  , Just site <- [classify first second]
+  ]
+ where
+  literals = map Text.pack (extractStringLiterals contents)
+  classify service next
+    | isVerbToken next = Just (service, Just next)
+    | startsWithDash next = Just (service, Nothing)
+    | otherwise = Nothing
+  startsWithDash = Text.isPrefixOf (Text.pack "-")
+  isVerbToken token =
+    not (Text.null token)
+      && not (startsWithDash token)
+      && Text.all (\character -> isAsciiLower character || isDigit character || character == '-') token
+
+-- | An AWS session duration is derived, never typed.
+--
+-- The Provider asked STS for a fixed 900 seconds for an operation that could
+-- run for thirty minutes, and the credential expiry that followed hid the
+-- dependency error that had caused it. The lifetime now has one owner,
+-- 'Prodbox.ControlPlane.OperationBudget', which derives it from the signed
+-- intent deadline. This rule stops a number from re-acquiring authors in the
+-- modules that mint or use a Provider session.
+--
+-- __The bound is stated__: it is a text rule over the Provider modules and the
+-- native STS client, so it refuses a literal assigned to a @DurationSeconds@
+-- name; it does not make a wrong duration unrepresentable. What keeps the value
+-- right is that the budget module is the only place that computes one.
+checkProviderSessionDurationOwner :: FilePath -> IO [String]
+checkProviderSessionDurationOwner repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [path | path <- repoPaths, providerSessionDurationGoverned path]
+      ( \path -> do
+          contents <- readFileStrict (repoRoot </> path)
+          pure (providerSessionDurationLiteralViolations (path, contents))
+      )
+
+providerSessionDurationGoverned :: FilePath -> Bool
+providerSessionDurationGoverned path =
+  path == "src/Prodbox/Aws/Native/Sts.hs"
+    || ( "src/Prodbox/ControlPlane/Provider" `isPrefixOf` path
+           && ".hs" `isSuffixOf` path
+       )
+
+providerSessionDurationLiteralViolations :: (FilePath, String) -> [String]
+providerSessionDurationLiteralViolations (path, contents) =
+  [ path
+      ++ ":"
+      ++ show lineNumber
+      ++ " assigns a number to an AWS session duration. A session lifetime is"
+      ++ " derived from the signed intent deadline: use"
+      ++ " Prodbox.ControlPlane.OperationBudget (planSessionDuration), which"
+      ++ " owns the floor, the grace and the role maximum."
+  | providerSessionDurationGoverned path
+  , (lineNumber, codeLine, False) <- numberedCodeLines contents
+  , spellsDurationLiteral codeLine
+  ]
+ where
+  spellsDurationLiteral codeLine =
+    any assignsNumber (afterEachOccurrence "DurationSeconds" codeLine)
+
+  assignsNumber rest = case dropWhile isSpace (dropWhile isAlphaNum rest) of
+    '=' : afterEquals -> case dropWhile isSpace afterEquals of
+      character : _ -> isDigit character
+      [] -> False
+    _ -> False
+
+  afterEachOccurrence needle haystack = case haystack of
+    [] -> []
+    _ : remaining
+      | needle `isPrefixOf` haystack ->
+          drop (length needle) haystack : afterEachOccurrence needle remaining
+      | otherwise -> afterEachOccurrence needle remaining
 
 -- | Sprint 2.51: a Bootstrap Broker Pod's @image@ field is __observed, never
 -- assembled__.
@@ -2761,7 +3036,7 @@ hostLifecycleContextRequiredFragments =
     ( "src/Prodbox/CLI/Pulumi.hs"
     ,
       [ "probePulumiVaultGate repoRoot"
-      , "vaultAddressForDeploymentContext (validatedDeploymentContext settings)"
+      , "vaultSealStatus (VaultAddress (basicsVaultAddress basics))"
       ]
     )
   ,
@@ -4448,14 +4723,40 @@ data SealedConstructorOrigin
 sealedConstructorRegistry :: [SealedConstructorType]
 sealedConstructorRegistry =
   [ SealedConstructorType
-      "src/Prodbox/CLI/Rke2.hs"
+      "src/Prodbox/Lifecycle/CascadeNoInstall.hs"
       "ConfirmedNoInstallCascade"
       SealedDeclaredHere
-      "Sprint 4.100: a no-install cascade carrying a confirmed result is \
-      \unrepresentable outside `confirmCascadeNoInstall`, which takes the \
-      \postflight sweep. Exporting the constructor would let the entry table \
-      \-- which observes only delete mode and install presence -- mint success \
-      \from silence again, which is the defect Sprint 4.88 closed."
+      "Sprint 4.100, moved by Sprint 6.6: a no-install cascade carrying a \
+      \confirmed result is unrepresentable outside `confirmCascadeNoInstall`, \
+      \which takes the whole observation (owed scope, sweep verdict, queried \
+      \regions, account evidence and retained-root findings). Exporting the \
+      \constructor would let the entry table -- which observes only delete mode \
+      \and install presence -- mint success from silence again, which is the \
+      \defect Sprint 4.88 closed."
+  , SealedConstructorType
+      "src/Prodbox/Test/Qualification/CascadeCycleLedger.hs"
+      "ConsecutiveCycleProof"
+      SealedDeclaredHere
+      "Sprint 6.5: two consecutive qualifying cycles are a fact about every \
+      \attempt only while `judgeConsecutiveCycles`, which reads the whole \
+      \ledger and the artifacts its counted attempts name, is the sole \
+      \producer; a proof built any other way could count a pair the ledger \
+      \shows a failure between."
+  , SealedConstructorType
+      "src/Prodbox/Test/Qualification/CascadeCycleLedger.hs"
+      "LedgerPhase"
+      SealedDeclaredHere
+      "Sprint 6.5: a phase the cycle ledger replays to is a phase its marks \
+      \support only while `ledgerPhase` is the sole producer, and a ledger can \
+      \exist only if every mark in it passed the append rules."
+  , SealedConstructorType
+      "src/Prodbox/Test/Qualification/CascadeCycleLedger.hs"
+      "CycleLedger"
+      SealedDeclaredHere
+      "Sprint 6.5: a ledger that obeys the append rules and carries an unbroken \
+      \digest chain exists only as the empty ledger, the result of \
+      \`appendRecord`, or the result of `parseCycleLedger`, which replays the \
+      \same rules; a ledger built any other way is not evidence of an order."
   , SealedConstructorType
       "src/Prodbox/Test/CleanRoomHandoff.hs"
       "CutoverState"
@@ -4467,7 +4768,8 @@ sealedConstructorRegistry =
       "QualificationPassed"
       SealedDeclaredHere
       "Sprint 6.5: activation without qualification is unrepresentable only while \
-      \the witness can be minted nowhere but `qualifyReplacement`."
+      \the witness can be minted nowhere but `qualifyReplacement`, which takes a \
+      \`ConsecutiveCycleProof` and not a value anyone can construct."
   , SealedConstructorType
       "src/Prodbox/Test/CleanRoomHandoff.hs"
       "AdmittedCutoverStage"
@@ -7130,6 +7432,87 @@ stripHaskellComments = go 0
   masked '\n' = '\n'
   masked _ = ' '
 
+-- | Mask comments, string literals and character literals in one pass, keeping
+-- every newline so line structure survives.
+--
+-- 'stripHaskellComments' and 'stripStringLiterals' each assume the other has
+-- already run: a dash pair inside a literal reads as a comment, and a quote
+-- inside a comment or a double-quote character literal reads as a string. A
+-- rule that matches identifiers needs one scan that knows which of the four
+-- it is inside.
+maskHaskellCommentsAndLiterals :: String -> String
+maskHaskellCommentsAndLiterals = maskCode ' '
+ where
+  maskCode :: Char -> String -> String
+  maskCode _ [] = []
+  maskCode _ ('"' : remaining) = ' ' : maskString remaining
+  maskCode _ ('{' : '-' : remaining) = ' ' : ' ' : maskBlock (1 :: Int) remaining
+  maskCode previous ('-' : '-' : remaining)
+    | startsLineComment previous remaining = ' ' : ' ' : maskLineComment remaining
+  maskCode previous ('\'' : remaining)
+    | not (identifierCharacter previous)
+    , Just (literalLength, afterLiteral) <- characterLiteral remaining =
+        replicate (1 + literalLength) ' ' ++ maskCode '\'' afterLiteral
+  maskCode _ (character : remaining) = character : maskCode character remaining
+
+  maskString :: String -> String
+  maskString [] = []
+  maskString ('\\' : escaped : remaining)
+    | isSpace escaped = ' ' : masked escaped : maskGap remaining
+    | otherwise = ' ' : masked escaped : maskString remaining
+  maskString ('"' : remaining) = ' ' : maskCode '"' remaining
+  maskString (character : remaining) = masked character : maskString remaining
+
+  -- A string gap runs from a backslash and whitespace to the next backslash.
+  maskGap :: String -> String
+  maskGap [] = []
+  maskGap ('\\' : remaining) = ' ' : maskString remaining
+  maskGap (character : remaining)
+    | isSpace character = masked character : maskGap remaining
+    | otherwise = maskString (character : remaining)
+
+  maskBlock :: Int -> String -> String
+  maskBlock _ [] = []
+  maskBlock depth ('-' : '}' : remaining)
+    | depth == 1 = ' ' : ' ' : maskCode '}' remaining
+    | otherwise = ' ' : ' ' : maskBlock (depth - 1) remaining
+  maskBlock depth ('{' : '-' : remaining) = ' ' : ' ' : maskBlock (depth + 1) remaining
+  maskBlock depth (character : remaining) = masked character : maskBlock depth remaining
+
+  maskLineComment :: String -> String
+  maskLineComment [] = []
+  maskLineComment ('\n' : remaining) = '\n' : maskCode '\n' remaining
+  maskLineComment (_ : remaining) = ' ' : maskLineComment remaining
+
+  -- A run of dashes opens a comment unless a symbol character touches it, which
+  -- makes it an operator such as @-->@ or @<--@.
+  startsLineComment :: Char -> String -> Bool
+  startsLineComment previous remaining =
+    not (symbolCharacter previous)
+      && not (any symbolCharacter (take 1 (dropWhile (== '-') remaining)))
+
+  -- The text after an opening quote, when it is a character literal: how many
+  -- characters it consumes, closing quote included, and what follows. A quote
+  -- that ends an identifier, or opens a promoted constructor, is not one.
+  characterLiteral :: String -> Maybe (Int, String)
+  characterLiteral ('\\' : _ : remaining) =
+    case break (== '\'') (take 8 remaining) of
+      (body, '\'' : _) -> Just (2 + length body + 1, drop (length body + 1) remaining)
+      _ -> Nothing
+  characterLiteral (character : '\'' : remaining)
+    | character /= '\'' && character /= '\\' = Just (2, remaining)
+  characterLiteral _ = Nothing
+
+  identifierCharacter :: Char -> Bool
+  identifierCharacter character = isAlphaNum character || character == '_' || character == '\''
+
+  symbolCharacter :: Char -> Bool
+  symbolCharacter character = character `elem` "!#$%&*+./<=>?@\\^|~:"
+
+  masked :: Char -> Char
+  masked '\n' = '\n'
+  masked _ = ' '
+
 topLevelRetryClassifierBodies :: String -> [(String, String)]
 topLevelRetryClassifierBodies = go . lines
  where
@@ -9634,8 +10017,10 @@ untypedLifecycleInventoryExemptions =
     )
   ,
     ( "aws-ses"
-    , "the long-lived SES stack, whose teardown is operator-explicit and whose "
-        ++ "typed descriptor lands with the Sprint 7.36 AWS adapters"
+    , "the long-lived SES stack, whose teardown is operator-explicit; it has no "
+        ++ "registered key by decision, and createRecordCoverage in "
+        ++ "Prodbox.Lifecycle.Teardown.CreateRecordCoverage states why it is "
+        ++ "off the write-ahead lane"
     )
   ,
     ( "public-edge-tls"
@@ -9821,6 +10206,398 @@ ownershipEdgeDerivationViolations =
     , managedResourceKind descriptor == Stack
     ]
 
+-- | What the create-record coverage rules read: the text of every Pulumi
+-- program and of every Haskell source, with comments, string literals and
+-- character literals masked, so a rule matches code and not a sentence about
+-- code or a message that names an identifier.
+data CreateRecordCorpus = CreateRecordCorpus
+  { corpusPulumiMain :: [(String, String)]
+  -- ^ program directory name, and the text of its @Main.yaml@
+  , corpusPulumiProject :: [(String, Text.Text)]
+  -- ^ program directory name, and the project name its @Pulumi.yaml@ declares
+  , corpusSources :: [(FilePath, String)]
+  -- ^ every @src\/Prodbox\/**\/*.hs@ path, masked by 'maskHaskellCommentsAndLiterals'
+  }
+
+-- | Sprint 7.43: keep 'createRecordCoverage' true.
+--
+-- The table says, for every creator of AWS resources, whether it is on the
+-- write-ahead ownership lane, declared inside a stack's manifest, or off it, and
+-- which destroy path covers it. A table that is only prose is an inference
+-- waiting to rot, so each claim is checked against the thing it describes:
+--
+--   * every Pulumi program has exactly one row, and every row names a program
+--     that exists;
+--   * a program on the lane names the registered stack its @Pulumi.yaml@
+--     declares, imports the submitter and calls it outside its import list, a
+--     program off the lane does not import it, and a program's run-scope tag
+--     decision matches its @Main.yaml@;
+--   * every registered key has exactly one row, and the row's relation is the
+--     one the registry derives (a stack is on the lane, a controller-owned
+--     family is declared by the edge that already exists, anything else is off
+--     the lane because it is not a stack);
+--   * the modules that create through the native clients are exactly the rows
+--     that say so, because the create-verb scan reads quoted CLI literals only;
+--   * every destroy path a row cites exists; and
+--   * no module other than the manifest repository, its transport (the client
+--     and the endpoint that applies its writes) and the submitter references an
+--     identifier that commits or appends a manifest at either layer, so \"no new
+--     writer\" is a fact the gate holds and not a sentence in a sprint block.
+createRecordCoverageViolations :: [CreateRecordRow] -> CreateRecordCorpus -> [String]
+createRecordCoverageViolations rows corpus =
+  concat
+    [ programParityViolations
+    , concatMap programRowViolations programRows
+    , registryRelationViolations
+    , nativeCreatorViolations
+    , concatMap destroyCiteViolations rows
+    , singleAppenderViolations
+    ]
+ where
+  programRows =
+    [ (Text.unpack directory, infraModule, rowRelation row, rowRunScopeTag row)
+    | row <- rows
+    , PulumiProgramCreator directory infraModule <- [rowSubject row]
+    ]
+  sourceOf path = lookup path (corpusSources corpus)
+  keyText = Text.unpack . registeredResourceKeyText
+  registeredPulumiProject key =
+    case [ project
+         | SomeManagedResourceDescriptor descriptor <- managedResourceRegistry
+         , managedResourceKey descriptor == key
+         , AwsPulumiStackCoordinate project _ <- [managedResourceCoordinate descriptor]
+         ] of
+      project : _ -> Just project
+      [] -> Nothing
+
+  programParityViolations =
+    [ "pulumi/"
+        ++ directory
+        ++ " has a Main.yaml but createRecordCoverage has no row for it; state whether "
+        ++ "it is on the write-ahead lane and why (lifecycle_reconciliation_doctrine.md section 3.2a)."
+    | directory <- map fst (corpusPulumiMain corpus)
+    , directory `notElem` [name | (name, _, _, _) <- programRows]
+    ]
+      ++ [ "createRecordCoverage names Pulumi program `"
+             ++ name
+             ++ "`, which has no pulumi/"
+             ++ name
+             ++ "/Main.yaml."
+         | (name, _, _, _) <- programRows
+         , name `notElem` map fst (corpusPulumiMain corpus)
+         ]
+      ++ [ "createRecordCoverage lists Pulumi program `" ++ name ++ "` more than once."
+         | name <- nub [name | (name, _, _, _) <- programRows]
+         , length [() | (other, _, _, _) <- programRows, other == name] > 1
+         ]
+
+  programRowViolations (name, infraModule, relation, tagDecision) =
+    moduleViolations ++ laneViolations ++ tagViolations
+   where
+    moduleText = sourceOf infraModule
+    importsSubmitter =
+      maybe False (any importsRegisteredStackCreationSubmitter . lines) moduleText
+    -- A call is a use outside the import list: the list names the identifier
+    -- whether or not anything still calls it.
+    submitsCreation =
+      maybe
+        False
+        (elem "submitRegisteredStackCreation" . tokenizeSource . withoutImportDeclarations)
+        moduleText
+    declaredProject = lookup name (corpusPulumiProject corpus)
+    moduleViolations =
+      [ "createRecordCoverage names Infra module "
+          ++ infraModule
+          ++ " for program `"
+          ++ name
+          ++ "`, which does not exist."
+      | moduleText == Nothing
+      ]
+    laneViolations = case relation of
+      OnWriteAheadLane key ->
+        [ "program `"
+            ++ name
+            ++ "` is declared on the write-ahead lane for `"
+            ++ keyText key
+            ++ "`, which the registry does not derive as a Stack."
+        | lookup key derivedRelationOfRegistry /= Just DerivedStack
+        ]
+          ++ [ "program `"
+                 ++ name
+                 ++ "` is declared on the write-ahead lane for `"
+                 ++ keyText key
+                 ++ "`, whose registered Pulumi project is `"
+                 ++ Text.unpack registered
+                 ++ "`, but pulumi/"
+                 ++ name
+                 ++ "/Pulumi.yaml declares `"
+                 ++ maybe "nothing" Text.unpack declaredProject
+                 ++ "`; a lane row must name the stack its program creates."
+             | Just registered <- [registeredPulumiProject key]
+             , declaredProject /= Just registered
+             ]
+          ++ [ "program `"
+                 ++ name
+                 ++ "` is declared on the write-ahead lane but "
+                 ++ infraModule
+                 ++ " does not import the submitter and call it outside the import list, so its create is not recorded before it acts."
+             | not (importsSubmitter && submitsCreation)
+             ]
+      OffWriteAheadLane _ ->
+        [ "program `"
+            ++ name
+            ++ "` is declared off the write-ahead lane but "
+            ++ infraModule
+            ++ " now imports the submitter. Decide whether it joined the lane, then update createRecordCoverage."
+        | importsSubmitter
+        ]
+      DeclaredInStackManifest _ ->
+        [ "program `"
+            ++ name
+            ++ "` cannot be declared inside another stack's manifest; a program is on the lane or off it."
+        ]
+    stamped = maybe False (elem "prodboxRunScope" . tokenizeSource) (lookup name (corpusPulumiMain corpus))
+    tagViolations = case tagDecision of
+      Just RunScopeTagStamped ->
+        [ "program `"
+            ++ name
+            ++ "` is declared run-scope tagged but its Main.yaml does not mention prodboxRunScope."
+        | not stamped
+        ]
+      Just RunScopeTagWithheld ->
+        [ "program `"
+            ++ name
+            ++ "` is declared run-scope tag withheld but its Main.yaml mentions prodboxRunScope."
+        | stamped
+        ]
+      Nothing ->
+        ["program `" ++ name ++ "` has no run-scope tag decision; it is a separate decision from the lane."]
+
+  registryKeys = map fst derivedRelationOfRegistry
+  rowKeys row = case (rowSubject row, rowRelation row) of
+    (PulumiProgramCreator _ _, OnWriteAheadLane key) -> [key]
+    (PulumiProgramCreator _ _, OffWriteAheadLane _) -> []
+    (PulumiProgramCreator _ _, DeclaredInStackManifest _) -> []
+    (RegisteredKeyCreator key, _) -> [key]
+    (NativeClientCreator _ _, _) -> []
+  registryRelationViolations =
+    concatMap keyViolations derivedRelationOfRegistry
+      ++ [ "createRecordCoverage has a row for `"
+             ++ keyText key
+             ++ "`, which is not a registered resource key."
+         | row <- rows
+         , key <- rowKeys row
+         , key `notElem` registryKeys
+         ]
+   where
+    keyViolations (key, derived) = case [row | row <- rows, key `elem` rowKeys row] of
+      [] ->
+        [ "registered key `"
+            ++ keyText key
+            ++ "` has no createRecordCoverage row; state how it relates to the "
+            ++ "write-ahead lane and which destroy path covers it."
+        ]
+      [row] -> relationViolations key derived (rowRelation row)
+      _ ->
+        ["registered key `" ++ keyText key ++ "` has more than one createRecordCoverage row."]
+    relationViolations key derived relation = case (derived, relation) of
+      (DerivedStack, OnWriteAheadLane declared) | declared == key -> []
+      (DerivedControllerFamily owner, DeclaredInStackManifest declared) | declared == owner -> []
+      (DerivedStandalone, OffWriteAheadLane BarKeyIsNotStack) -> []
+      _ ->
+        [ "createRecordCoverage declares `"
+            ++ keyText key
+            ++ "` as "
+            ++ renderRelation relation
+            ++ ", but the registry derives "
+            ++ renderDerived derived
+            ++ "."
+        ]
+    renderRelation relation = case relation of
+      OnWriteAheadLane key -> "on the write-ahead lane for `" ++ keyText key ++ "`"
+      DeclaredInStackManifest owner -> "declared in the manifest of `" ++ keyText owner ++ "`"
+      OffWriteAheadLane bar -> "off the lane (" ++ show bar ++ ")"
+    renderDerived derived = case derived of
+      DerivedStack -> "a stack, which belongs on the lane"
+      DerivedControllerFamily owner -> "a family declared by the manifest of `" ++ keyText owner ++ "`"
+      DerivedStandalone -> "a standalone family that is not a stack"
+
+  nativeRows = [(modulePath, entry) | row <- rows, NativeClientCreator modulePath entry <- [rowSubject row]]
+  nativeImportMarkers = ["Prodbox.Aws.Native.Iam", "Prodbox.Aws.Native.S3"]
+  nativeCreateIdentifiers =
+    [ "createUser"
+    , "createAccessKey"
+    , "createRole"
+    , "putUserInlinePolicy"
+    , "putRoleInlinePolicy"
+    , "createBucket"
+    , "putBucketHardening"
+    ]
+  detectedNativeCreators =
+    [ path
+    | (path, text) <- corpusSources corpus
+    , not ("src/Prodbox/Aws/Native/" `isPrefixOf` path)
+    , any
+        (\marker -> any (\line -> "import" `isPrefixOf` line && marker `isInfixOf` line) (lines text))
+        nativeImportMarkers
+    , any (`elem` tokenizeSource text) nativeCreateIdentifiers
+    ]
+  nativeCreatorViolations =
+    [ path
+        ++ " creates through the native IAM or S3 client but has no NativeClientCreator row in createRecordCoverage; "
+        ++ "state why it is off the write-ahead lane and which destroy path covers it."
+    | path <- detectedNativeCreators
+    , path `notElem` map fst nativeRows
+    ]
+      ++ [ "createRecordCoverage declares "
+             ++ path
+             ++ " a native-client creator, but it no longer creates through the "
+             ++ "native IAM or S3 client; remove the stale row."
+         | (path, _) <- nativeRows
+         , path `notElem` detectedNativeCreators
+         ]
+      ++ [ "createRecordCoverage names entry point `"
+             ++ Text.unpack entry
+             ++ "` in "
+             ++ path
+             ++ ", which does not define it."
+         | (path, entry) <- nativeRows
+         , not (maybe False (definesTopLevel (Text.unpack entry)) (sourceOf path))
+         ]
+
+  definesTopLevel identifier text = any ((identifier ++ " ") `isPrefixOf`) (lines text)
+  destroyCiteViolations row =
+    [ "createRecordCoverage cites "
+        ++ citeModule cite
+        ++ " "
+        ++ Text.unpack (citeIdentifier cite)
+        ++ " as a destroy path, but that identifier is not defined at the top level of that module."
+    | cite <- rowDestroy row
+    , not (maybe False (definesTopLevel (Text.unpack (citeIdentifier cite))) (sourceOf (citeModule cite)))
+    ]
+      ++ [ "createRecordCoverage row for "
+             ++ renderSubject (rowSubject row)
+             ++ " is off the write-ahead lane or declared inside a manifest and names no destroy path."
+         | relationNeedsDestroyPath (rowRelation row)
+         , null (rowDestroy row)
+         ]
+  relationNeedsDestroyPath relation = case relation of
+    OnWriteAheadLane _ -> False
+    DeclaredInStackManifest _ -> True
+    OffWriteAheadLane _ -> True
+  renderSubject subject = case subject of
+    PulumiProgramCreator directory _ -> "Pulumi program `" ++ Text.unpack directory ++ "`"
+    RegisteredKeyCreator key -> "key `" ++ keyText key ++ "`"
+    NativeClientCreator modulePath entry -> Text.unpack entry ++ " in " ++ modulePath
+
+  singleAppenderViolations =
+    [ path
+        ++ " references "
+        ++ identifier
+        ++ ", which commits or appends a write-ahead ownership manifest. "
+        ++ "Only the manifest repository, its transport (client and endpoint), the submitter and the "
+        ++ "manifest builder may; a new writer changes the persistence protocol and invalidates "
+        ++ "deployment qualification."
+    | (path, text) <- corpusSources corpus
+    , path `notElem` manifestWriterModules
+    , let tokens = tokenizeSource text
+    , identifier <- manifestWriterIdentifiers
+    , identifier `elem` tokens
+    ]
+
+-- | Every identifier that commits or appends a write-ahead ownership manifest,
+-- at both layers: the client entry points a submitter calls, and the
+-- repository operations the Authority applies beneath them. Scanning only the
+-- client names let a second writer through the repository without a hit.
+manifestWriterIdentifiers :: [String]
+manifestWriterIdentifiers =
+  [ "attemptOwnershipManifestWriteAheadCommit"
+  , "attemptOwnershipManifestCompletionCommit"
+  , "appendObservedIdentitiesToWriteAheadManifest"
+  , "commitOwnershipManifestWriteAheadAttempt"
+  , "commitOwnershipManifestCompletionAttempt"
+  , "createOrReplayOwnershipManifest"
+  , "createOrReplayOwnershipManifestCompletion"
+  ]
+
+-- | The only modules that may reference 'manifestWriterIdentifiers': the
+-- repository that defines them, the transport client that carries a write, the
+-- endpoint that applies it, the submitter that opens one, and the manifest
+-- builder that appends observed identities.
+manifestWriterModules :: [FilePath]
+manifestWriterModules =
+  [ "src/Prodbox/ControlPlane/OwnershipManifestEndpoint.hs"
+  , "src/Prodbox/ControlPlane/OwnershipManifestRepository.hs"
+  , "src/Prodbox/ControlPlane/OwnershipManifestTransportClient.hs"
+  , "src/Prodbox/ControlPlane/RegisteredStackCreationSubmitter.hs"
+  , "src/Prodbox/Lifecycle/Teardown/OwnershipManifest.hs"
+  ]
+
+-- | Whether a source line imports the registered-stack creation submitter, in
+-- either spelling of @qualified@.
+importsRegisteredStackCreationSubmitter :: String -> Bool
+importsRegisteredStackCreationSubmitter line =
+  "import" `isPrefixOf` line
+    && "Prodbox.ControlPlane.RegisteredStackCreationSubmitter" `isInfixOf` line
+
+-- | A module's text with every import declaration removed: an @import@ line
+-- and the indented lines that continue it.
+withoutImportDeclarations :: String -> String
+withoutImportDeclarations = unlines . go . lines
+ where
+  go [] = []
+  go (sourceLine : remaining)
+    | "import" `isPrefixOf` sourceLine = go (dropWhile continuesDeclaration remaining)
+    | otherwise = sourceLine : go remaining
+  continuesDeclaration sourceLine = case sourceLine of
+    character : _ -> character == ' ' || character == '\t'
+    [] -> False
+
+-- | Read the corpus and apply 'createRecordCoverageViolations' to the table.
+checkCreateRecordCoverage :: FilePath -> IO [String]
+checkCreateRecordCoverage repoRoot =
+  createRecordCoverageViolations createRecordCoverage <$> readCreateRecordCorpus repoRoot
+
+-- | The text the rules read, from the repository at @repoRoot@.
+readCreateRecordCorpus :: FilePath -> IO CreateRecordCorpus
+readCreateRecordCorpus repoRoot = do
+  programDirectories <- listDirectory (repoRoot </> "pulumi")
+  mains <-
+    fmap concat . forM (sort programDirectories) $ \directory -> do
+      let mainPath = repoRoot </> "pulumi" </> directory </> "Main.yaml"
+      present <- doesFileExist mainPath
+      if present
+        then (\text -> [(directory, text)]) <$> readFileStrict mainPath
+        else pure []
+  projects <-
+    fmap concat . forM (sort programDirectories) $ \directory -> do
+      let projectPath = repoRoot </> "pulumi" </> directory </> "Pulumi.yaml"
+      present <- doesFileExist projectPath
+      if present
+        then
+          (\text -> [(directory, project) | Just project <- [pulumiProjectNameIn text]])
+            <$> readFileStrict projectPath
+        else pure []
+  repoPaths <- listRepoOwnedPaths repoRoot
+  sources <-
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/Prodbox/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , path /= "src/Prodbox/CheckCode.hs"
+      ]
+      ( \relativePath -> do
+          contents <- readFileStrict (repoRoot </> relativePath)
+          pure (relativePath, maskHaskellCommentsAndLiterals contents)
+      )
+  pure
+    CreateRecordCorpus
+      { corpusPulumiMain = mains
+      , corpusPulumiProject = projects
+      , corpusSources = sources
+      }
+
 managedResourceRegistryParityViolations :: [String]
 managedResourceRegistryParityViolations =
   concatMap descriptorViolations managedResourceRegistry
@@ -9863,13 +10640,23 @@ checkCreateCallSiteCoverage repoRoot = do
         | path <- repoPaths
         , "src/Prodbox/" `isPrefixOf` path
         , ".hs" `isSuffixOf` path
-        , path /= "src/Prodbox/CheckCode.hs"
+        , path `notElem` awsCreateSiteScanExemptPaths
         ]
         ( \relativePath -> do
             contents <- readFileStrict (repoRoot </> relativePath)
             pure (awsCreateSiteViolations relativePath contents)
         )
   pure (pulumiViolations ++ awsViolations)
+
+-- | Modules whose creation-verb literals are not call sites. The lint module's
+-- own literals describe the verbs it scans for, and the Provider CLI action
+-- table names every verb a Provider interpreter runs, creation verbs included,
+-- so that the role policy can be checked against them; neither shells out.
+awsCreateSiteScanExemptPaths :: [FilePath]
+awsCreateSiteScanExemptPaths =
+  [ "src/Prodbox/CheckCode.hs"
+  , "src/Prodbox/Lifecycle/CredentialProvisioner/ProviderCliActions.hs"
+  ]
 
 -- | The explicit map from a Pulumi stack-creation constructor name to
 -- the registered stack name it provisions. Every entry's value must be
@@ -11673,6 +12460,9 @@ renderDoctrineViolation violation =
     ForbiddenBuildShim relativePath ->
       relativePath
         ++ " is forbidden because root build-shim automation must not duplicate the `prodbox` CLI surface."
+    ForbiddenPythonArtifact relativePath ->
+      relativePath
+        ++ " is forbidden because the supported implementation is Haskell and no Python source or toolchain ownership artifact is supported."
 
 runSubprocessStreaming :: FilePath -> [(String, String)] -> FilePath -> [String] -> IO ExitCode
 runSubprocessStreaming repoRoot environment subprocessPath arguments = do

@@ -1166,7 +1166,7 @@ manifest or substituted across substrates.
 For canonical `aws-ses` work, the Lifecycle-provider bootstrap credential is only an AssumeRole source for
 the exact-trust `prodbox-lifecycle-provider` role. The fenced provider worker receives a session
 bounded in-process by one narrow non-credential SES identity/DKIM/receipt-rule/S3 provider callback
-and the absolute operation deadline. STS's fixed 900-second credential duration is not the ownership
+and the absolute operation deadline. STS's credential duration, derived from the signed deadline, is not the ownership
 bound: the opaque handle and subprocess projection cannot escape the rank-2 callback. It has no SMTP
 IAM identity/policy/key authority. Schema-indexed
 Credential Provisioner owns SMTP identity/policy/key install/rotate/remint and repair-time delete,

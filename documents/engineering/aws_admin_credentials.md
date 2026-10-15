@@ -310,13 +310,26 @@ ordered lifecycle.
    Lifecycle-provider identity is used only to assume the account-bound
    `prodbox-lifecycle-provider` role deterministically selected by the closed intent for a narrow
    non-credential provider fence over registered SES/S3/DNS resources. Native STS validates both
-   the base-user and assumed-role ARNs before any capability runs. Its fixed 900-second remote
-   credential duration does not widen the operation: the opaque handle and temporary subprocess
+   the base-user and assumed-role ARNs before any capability runs. Its remote
+   credential duration is derived from the operation's signed deadline and does not widen the
+   operation: the opaque handle and temporary subprocess
    projection cannot escape the rank-2 callback, and effect work remains bounded by the absolute
    deadline. SMTP IAM/key work uses
    only the Credential Provisioner path in step 3. Propagation waiting and Target Secret Agent
    outbox delivery hold no mutation session. The base identity is not passed to Pulumi/AWS mutation
-   children.
+   children. The role's permissions policy is held complete against the AWS CLI verbs its interpreters
+   run: `Prodbox.Lifecycle.CredentialProvisioner.ProviderCliActions` names the IAM actions each verb is
+   authorized by, and `prodbox dev check` fails when a Provider-run module invokes a verb the table
+   does not name or when the policy does not allow a named action, so a missing action is a gate
+   finding rather than a denial found by a live run. Pulumi programs the Provider runs are outside
+   that rule. The validations and the AWS substrate platform reach AWS through closed intents rather
+   than a host credential: `EnsureValidationHostedZone` creates the `dns-aws` validation zone,
+   `ObserveSesInviteMail` and `ReapSesInviteMail` read and remove the captured invite message (and
+   refuse any bucket that does not carry the SES capture-bucket owned tags, because the role's object
+   grants are not scoped to a bucket), and `EnsureRetainedEbsVolumes` creates the retained volumes the
+   AWS substrate's PersistentVolumes bind to. Their families (`ses:invite-mail`, `ebs-ensure:retained`)
+   join the production resource allowlist, which is compiled into the control-plane runtime image, so
+   an Authority or Provider image built with the older list refuses them until it is rebuilt and rolled.
 5. **Run explicit admin actions separately.** When a selected validation owns SES destroy, legacy
    backend migration/retained-store compatibility, or quota request/status read-back, Authority commits a distinct
    backup-receipted `AdminActionPermit`. Only the attested one-shot Admin Action Runner receives the
@@ -419,6 +432,11 @@ distinguish *who answers the prompt*, not separate credential stores:
 | Suite-driven runs | **Test-harness simulation path**: feed `aws_admin_for_test_simulation.*` from `test-secrets.dhall` to the same permit-bound Jobs, register cleanup before mutation, revoke Operational identities only after their dependants are absent, and retain the LongLived set. | `prodbox test integration aws-iam`, `prodbox test integration keycloak-invite`, `prodbox test integration <name> --substrate aws`, `prodbox test integration all`, `prodbox test all` |
 | Canonical retained desired-present operation | **Split provider/material path**: submit one durable operation ID; Provider Worker assumes only the account-bound `prodbox-lifecycle-provider` role for non-credential SES/S3/DNS, while Credential Provisioner receives separate `OperatorMaterialPermit`s for the deterministic SMTP IAM family and commits only after retained-home source custody. One absolute deadline bounds queue and effect work; propagation and attested Agent-to-Agent target materialization hold no AWS session and expose no generic export. | `prodbox aws stack aws-ses reconcile` |
 | Long-lived destructive/compatibility operations | **Admin Action Runner prompt path**: after consumers quiesce, `DestroyAwsSes` deletes/read-backs the exact registered SMTP IAM family and composes it with non-credential stack absence; while Agents remain live, every owned target/retained-home custody KV-v2 version is then physically destroyed and its metadata deleted/read back. `migrate-backend`, retained-store compatibility, and quota request/status read-back use their own exact `AdminActionPermit`. `prodbox nuke` uses the same external-first/Agent-physical-deletion ordering through its standalone Decommission Runner only after signed external-receipt export; neither path is a generic secret export. | `prodbox aws stack aws-ses destroy --yes`, `prodbox aws stack aws-ses migrate-backend`, `prodbox aws quotas request`, `prodbox nuke` |
+
+A suite-driven run that sends an invite submits the retained SES SMTP permit itself: the harness,
+not the retained SES preparation (which reconciles only the non-credential Provider resources),
+requests the deterministic SMTP identity, so the permit, the sealed retained-home custody and the
+delivery to `secret/keycloak/smtp` exist on the home cluster before the Keycloak chart is deployed.
 
 These paths remain distinct even when one suite uses all of them. A standalone substrate run first
 reconciles the mandatory local RKE2 control plane, then uses `prodbox aws setup` and

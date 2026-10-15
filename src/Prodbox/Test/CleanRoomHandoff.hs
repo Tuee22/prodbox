@@ -10,10 +10,16 @@ module Prodbox.Test.CleanRoomHandoff
   , RollbackDisposition (..)
   , CutoverPhase (..)
   , CutoverState
+  , SomeCutoverState
+  , someCutoverStatePhase
   , QualificationPassed
   , CutoverRefusal (..)
   , initialCutoverState
   , qualifyReplacement
+  , resumeCutoverState
+  , qualifyResumedPostActivation
+  , cutoverPhaseOfLedger
+  , legacyScanModeForPhase
   , rollbackLegacy
   , activateReplacement
   , deleteLegacyRoute
@@ -66,11 +72,20 @@ import Prodbox.Lifecycle.Teardown.Registry
   , managedResourceKey
   , managedResourceRegistry
   )
-import Prodbox.Test.Qualification.Evidence
-  ( QualificationEvidence
-  , QualificationIdentity
-  , qualificationEvidenceReplacementIdentity
+import Prodbox.Test.Qualification.CascadeCycleIdentity
+  ( canonicalKeyPolicy
+  , identityKeyOfParts
+  , localKeyOfParts
+  , partsOfIdentity
   )
+import Prodbox.Test.Qualification.CascadeCycleLedger
+  ( ConsecutiveCycleProof
+  , CutoverEpoch (..)
+  , LedgerPhase
+  , phaseEpoch
+  , proofKey
+  )
+import Prodbox.Test.Qualification.Evidence (QualificationIdentity)
 
 -- Typed single-writer cutover ------------------------------------------------
 
@@ -87,9 +102,10 @@ data LegacyWriterPermit = LegacyWriterPermit
 data ReplacementWriterPermit = ReplacementWriterPermit
   deriving (Show)
 
--- | Evidence that the complete Standard-P validator accepted one exact
--- replacement identity.  Its constructor is private; the only producer
--- consumes an already-validated 'QualificationEvidence'.
+-- | Evidence that two consecutive qualifying cycles ran on one exact
+-- replacement identity.  Its constructor is private; the only producer,
+-- 'qualifyReplacement', consumes the 'ConsecutiveCycleProof' that the cycle
+-- ledger's judge alone can mint.
 data QualificationPassed = QualificationPassed !QualificationIdentity
   deriving (Eq, Show)
 
@@ -130,6 +146,8 @@ data CutoverRefusal
   | CutoverStageWitnessMissing !CutoverPlanStage
   | CutoverStageWitnessMismatch !CutoverPlanStage
   | CutoverDeletionIdentityUnchanged
+  | -- | A state resumed from a ledger was in another phase than the step needs.
+    CutoverResumedPhaseUnexpected !CutoverPhase
   deriving (Eq, Show)
 
 initialCutoverState
@@ -137,12 +155,19 @@ initialCutoverState
 initialCutoverState identity =
   CutoverPreActivation identity LegacyWriterPermit
 
+-- | The sole producer of 'QualificationPassed'.
+--
+-- The proof says that the last two attempts passed in a row on one identity key
+-- and that their artifacts agree with the ledger. The witness is for the
+-- identity whose key that is. That the tree is still that identity is not the
+-- proof's claim; the observer asks it before it requests a witness, so a stale
+-- tree never reaches this function with a proof that would match.
 qualifyReplacement
   :: QualificationIdentity
-  -> QualificationEvidence
+  -> ConsecutiveCycleProof
   -> Either CutoverRefusal QualificationPassed
-qualifyReplacement expected evidence
-  | qualificationEvidenceReplacementIdentity evidence == expected =
+qualifyReplacement expected proof
+  | identityKeyOfParts (partsOfIdentity canonicalKeyPolicy expected) == proofKey proof =
       Right (QualificationPassed expected)
   | otherwise = Left CutoverQualificationIdentityMismatch
 
@@ -201,6 +226,71 @@ qualifyPostActivation (QualificationPassed qualified) state = case state of
         Right
           (CutoverPostActivationQualified expected ReplacementWriterPermit)
     | otherwise -> Left CutoverQualificationIdentityMismatch
+
+-- | A cutover state of whichever phase a ledger records.
+data SomeCutoverState where
+  SomeCutoverState :: CutoverState phase -> SomeCutoverState
+
+-- | The phase a resumed state is in.
+someCutoverStatePhase :: SomeCutoverState -> CutoverPhase
+someCutoverStatePhase (SomeCutoverState state) = cutoverStatePhase state
+
+-- | The phase a ledger replays to, as a cutover phase.
+--
+-- An activated tree is 'PostActivation' until the legacy route is deleted: the
+-- replacement is the sole writer, and the legacy source is still in the tree.
+cutoverPhaseOfLedger :: LedgerPhase -> CutoverPhase
+cutoverPhaseOfLedger phase = case phaseEpoch phase of
+  EpochPreActivation -> PreActivation
+  EpochAwaitingDeletion _ -> PostActivation
+  EpochPostActivation _ -> LegacyRouteDeleted
+  EpochComplete _ -> PostActivationQualified
+
+-- | Which scan of the legacy route a phase calls for: the exact pre-activation
+-- inventory while the legacy source is in the tree, and none of it afterwards.
+legacyScanModeForPhase :: CutoverPhase -> LegacyScanMode
+legacyScanModeForPhase phase = case phase of
+  PreActivation -> LegacyScanPreActivation
+  PostActivation -> LegacyScanPreActivation
+  LegacyRouteDeleted -> LegacyScanPostActivation
+  PostActivationQualified -> LegacyScanPostActivation
+
+-- | The state a ledger records, rebuilt over the identity of the tree that
+-- exists now.
+--
+-- The ledger replays its marks by key, because the identity the typed state is
+-- indexed by cannot be recomputed once the activating edit has landed. Resuming
+-- is therefore permitted only while the tree still has the local key the last
+-- mark was recorded on; a tree that has moved on has a legitimately different
+-- identity and is refused rather than relabelled.
+resumeCutoverState
+  :: LedgerPhase
+  -> QualificationIdentity
+  -> Either CutoverRefusal SomeCutoverState
+resumeCutoverState phase identity = case phaseEpoch phase of
+  EpochPreActivation -> Right (SomeCutoverState (initialCutoverState identity))
+  EpochAwaitingDeletion local ->
+    onRecordedTree local (SomeCutoverState (CutoverPostActivation identity ReplacementWriterPermit))
+  EpochPostActivation local ->
+    onRecordedTree local (SomeCutoverState (CutoverLegacyRouteDeleted identity ReplacementWriterPermit))
+  EpochComplete local ->
+    onRecordedTree
+      local
+      (SomeCutoverState (CutoverPostActivationQualified identity ReplacementWriterPermit))
+ where
+  onRecordedTree local state
+    | localKeyOfParts (partsOfIdentity canonicalKeyPolicy identity) == local = Right state
+    | otherwise = Left CutoverQualificationIdentityMismatch
+
+-- | Qualify a resumed post-deletion state, which is the only phase that step
+-- applies to.
+qualifyResumedPostActivation
+  :: QualificationPassed
+  -> SomeCutoverState
+  -> Either CutoverRefusal CutoverPhase
+qualifyResumedPostActivation passed (SomeCutoverState state) = case state of
+  CutoverLegacyRouteDeleted {} -> cutoverStatePhase <$> qualifyPostActivation passed state
+  _ -> Left (CutoverResumedPhaseUnexpected (cutoverStatePhase state))
 
 cutoverStatePhase :: CutoverState phase -> CutoverPhase
 cutoverStatePhase state = case state of

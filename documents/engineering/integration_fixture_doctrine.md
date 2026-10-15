@@ -126,6 +126,15 @@ mutation enabled. Pure IAM-harness suites create no local runtime and use neithe
 ordering is not permission to install a Provider chart directly or to weaken normal Provider
 readiness.
 
+Between the ACME EAB ingress and the suite body, a home suite that sends an invite installs the
+retained SES SMTP key family through the same Credential Provisioner: the retained SES preparation
+reconciles only the non-credential Provider resources, so without this step nothing creates the
+SMTP identity or delivers it to `secret/keycloak/smtp`, the Keycloak chart reads an absent secret,
+and the realm is left with no SMTP server. The request is submitted in one operation scope shared by
+every suite, because the family is long-lived: a rerun with a current generation finds the completed
+operation and only recovers its receipt, and a per-suite scope would mint a new generation, and
+delete the previous key, on every run. The AWS substrate's own sink is a separate lane.
+
 The harness never interprets an admin prompt mutation in-process. Identity/store setup submits the
 stable backup-receipted `OperatorMaterialPermit` (or the first-run `GenesisBackupPermit`) and sends
 fixture prompt bytes over authenticated exec/attach stdin only after verifying the Credential
@@ -493,6 +502,28 @@ post-cutover legacy rollback are refusal cases. The installed-binary validation 
 repository doctrine scan and checks that every retired gateway/host-direct transport source path is
 absent. Real cluster deletion and consecutive aggregates remain deployment-qualification evidence,
 not substitutes for these deterministic fixtures.
+
+The consecutive aggregate itself is counted, not narrated. Each qualification cycle appends a record
+to an append-only, hash-chained ledger under `.test-data/qualification/` immediately before its
+destructive candidate runs and another after its artifact is written, so a failure, an interruption or
+a source edit during a cycle is a recorded fact that breaks the count rather than a file that is
+simply absent. `prodbox test integration cascade-qualification-receipt` reads that ledger and the
+artifacts it names, writes nothing, and exits zero only when the last two attempts passed in a row on
+one deployment that is still the current tree. It prints what it recomputed (the executable source,
+the generated config, the resource envelope, the load and fault digest, the frozen fixture facts) and
+what it could only compare, because the cluster is gone after a cascade (the images that ran, the shape
+of the program that ran, the account and region). The ledger and the artifacts are self-digested and
+not authenticated; they detect accident, edit and reordering, not a local writer who rewrites them
+together, and a ledger that must be abandoned is deleted, which restarts the count at zero.
+
+The same ledger records the single-writer cutover. Activation, deletion of the legacy route and
+post-activation qualification are appended as marks that carry the full key of the pair that licensed the
+step and the local key of the tree it was recorded on, and the ledger replays them under the append rules.
+After an activation no cycle counts until the deletion is recorded; after the deletion only cycles on the
+tree it was recorded on count; a mark is a boundary a walk does not cross. A mark is requested through the
+receipt leaf, which re-runs the whole observation, requires an anchor the plan recorded, and drives the
+typed cutover machine wherever it can be driven with real identities, so a mark never records a transition
+the types refused. The clean-room validation selects its scan of the legacy route from the ledger's phase.
 
 ## Cross-References
 

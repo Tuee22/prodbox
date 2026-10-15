@@ -10,6 +10,13 @@ module Prodbox.Test.CascadeQualification
   , cascadeQualificationLifecycleResult
   , cascadeQualificationEvidenceDigest
   , cascadeQualificationEvidencePath
+  , cascadeQualificationAttempt
+  , cascadeQualificationIdentityKey
+  , cascadeQualificationCycleOutcome
+  , cascadeQualificationCyclePassed
+  , cascadeQualificationLedgerEntries
+  , cascadeQualificationLedgerTip
+  , frozenFactLines
   , runCascadeQualificationCandidate
   )
 where
@@ -18,11 +25,13 @@ import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Bifunctor (first)
 import Data.ByteString qualified as ByteString
 import Data.List (nub, sort)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Text.IO qualified as TextIO
 import Data.Time.Clock (UTCTime, getCurrentTime)
+import Data.Time.Format.ISO8601 (iso8601Show)
 import Numeric (showHex)
 import Numeric.Natural (Natural)
 import Prodbox.CLI.Rke2
@@ -69,6 +78,8 @@ import Prodbox.Lifecycle.Teardown.CascadeCandidate.Internal
   ( CascadeCandidateEnvironment (..)
   , CascadeCandidateInputs (..)
   , CascadeCandidateOutcome (..)
+  , CascadeCandidatePlanSummary (..)
+  , cascadeCandidateShapeSummary
   , renderCascadeCandidateError
   , runCascadeCandidate
   )
@@ -98,7 +109,6 @@ import Prodbox.Settings
   , validateAndLoadSettings
   , validatedConfig
   , validatedCoordinates
-  , validatedResourcePlan
   )
 import Prodbox.Settings.Coordinate (s3BucketNameText)
 import Prodbox.Subprocess
@@ -107,11 +117,58 @@ import Prodbox.Subprocess
   , captureSubprocessResult
   )
 import Prodbox.Substrate (Substrate (SubstrateAws, SubstrateHomeLocal))
-import Prodbox.Test.Qualification.SourceIdentity
-  ( SourceIdentity
-  , sourceManifestDigest
+import Prodbox.Test.CascadeQualificationCycle
+  ( CycleEffects (..)
+  , CycleReport (..)
+  , driveQualificationCycle
   )
-import Prodbox.Test.Qualification.SourceManifest (captureSourceIdentity)
+import Prodbox.Test.CascadeQualificationLocal
+  ( executableBinaryDigest
+  , recaptureExecutableKey
+  , recomputeLocalParts
+  , renderLocalRecomputeError
+  )
+import Prodbox.Test.Qualification.CascadeCycleArtifact
+  ( CascadeArtifactFields (..)
+  , CycleLabel
+  , cascadeArtifactFileName
+  , cycleLabelText
+  , mkCycleLabel
+  , renderCascadeArtifact
+  )
+import Prodbox.Test.Qualification.CascadeCycleIdentity
+  ( CompareOnlyParts (..)
+  , CycleAnnotations
+  , CycleIdentityParts
+  , IdentityKey
+  , RecomputedLocalParts (..)
+  , annotationsOf
+  , canonicalKeyPolicy
+  , identityKeyOfParts
+  , identityKeyText
+  , partsFromLocal
+  , topologyWiringDigest
+  )
+import Prodbox.Test.Qualification.CascadeCycleLedger
+  ( CycleOutcome (..)
+  , LedgerEntry (..)
+  , LedgerRefusal
+  , labelDisposition
+  , renderCycleOutcome
+  , renderLedgerRefusal
+  )
+import Prodbox.Test.Qualification.CascadeCycleLedgerStore
+  ( appendCycleRecord
+  , cycleLedgerPath
+  , readCycleLedger
+  , renderLedgerStoreError
+  )
+import Prodbox.Test.Qualification.Evidence
+  ( PublicEvidenceDigest
+  , hashPublicEvidence
+  , mkPublicEvidenceDigest
+  , publicEvidenceDigestText
+  )
 import Prodbox.Test.Qualification.TeardownCounterexample
   ( FrozenCompositionIdentity (..)
   , FrozenSourceIdentity (..)
@@ -144,6 +201,11 @@ data CascadeQualificationOutcome = CascadeQualificationOutcome
   , internalQualificationLifecycleResult :: !LifecycleCleanupResult
   , internalQualificationEvidenceDigest :: !Text
   , internalQualificationEvidencePath :: !FilePath
+  , internalQualificationAttempt :: !Int
+  , internalQualificationIdentityKey :: !IdentityKey
+  , internalQualificationCycleOutcome :: !CycleOutcome
+  , internalQualificationLedgerEntries :: !Int
+  , internalQualificationLedgerTip :: !Text
   }
 
 cascadeQualificationRunId :: CascadeQualificationOutcome -> Text
@@ -159,6 +221,33 @@ cascadeQualificationEvidenceDigest = internalQualificationEvidenceDigest
 cascadeQualificationEvidencePath :: CascadeQualificationOutcome -> FilePath
 cascadeQualificationEvidencePath = internalQualificationEvidencePath
 
+-- | Which attempt of its label this cycle was.
+cascadeQualificationAttempt :: CascadeQualificationOutcome -> Int
+cascadeQualificationAttempt = internalQualificationAttempt
+
+-- | The key of the deployment the cycle began on, as lowercase hexadecimal.
+cascadeQualificationIdentityKey :: CascadeQualificationOutcome -> Text
+cascadeQualificationIdentityKey = identityKeyText . internalQualificationIdentityKey
+
+-- | How the cycle ended, as one word: @passed@, @source-drifted@, or
+-- @failed-...@ with the class of failure.
+cascadeQualificationCycleOutcome :: CascadeQualificationOutcome -> Text
+cascadeQualificationCycleOutcome = renderCycleOutcome . internalQualificationCycleOutcome
+
+-- | Whether the cycle qualifies: it ended in success and on the source it began
+-- with. A cycle whose lifecycle succeeded but whose source moved does not.
+cascadeQualificationCyclePassed :: CascadeQualificationOutcome -> Bool
+cascadeQualificationCyclePassed outcome =
+  internalQualificationCycleOutcome outcome == CyclePassed
+
+-- | How many entries the ledger holds after this cycle closed.
+cascadeQualificationLedgerEntries :: CascadeQualificationOutcome -> Int
+cascadeQualificationLedgerEntries = internalQualificationLedgerEntries
+
+-- | The ledger's tip after this cycle closed, to be recorded in the plan.
+cascadeQualificationLedgerTip :: CascadeQualificationOutcome -> Text
+cascadeQualificationLedgerTip = internalQualificationLedgerTip
+
 -- | Drive one named qualification cycle.  The cycle identifier is part of
 -- every durable identity, so restarting the same cycle resumes it while the
 -- second consecutive cycle must use a distinct identifier.
@@ -167,72 +256,214 @@ runCascadeQualificationCandidate
   -> [(String, String)]
   -> Text
   -> IO (Either String CascadeQualificationOutcome)
-runCascadeQualificationCandidate repoRoot environment cycleLabel = do
+runCascadeQualificationCandidate repoRoot environment rawLabel =
+  case mkCycleLabel rawLabel of
+    Left err -> pure (Left ("invalid qualification cycle label: " ++ show err))
+    Right cycleLabel -> runLabelledCycle repoRoot environment cycleLabel
+
+runLabelledCycle
+  :: FilePath
+  -> [(String, String)]
+  -> CycleLabel
+  -> IO (Either String CascadeQualificationOutcome)
+runLabelledCycle repoRoot environment cycleLabel = do
   startedAt <- getCurrentTime
   settingsResult <- validateAndLoadSettings repoRoot
   basicsResult <- loadUnencryptedBasics repoRoot
-  sourceResult <- captureSourceIdentity repoRoot []
+  localResult <- recomputeLocalParts repoRoot
   fixtureResult <- loadTeardownCounterexampleFixture repoRoot CanonicalTeardownTrace
   oracleResult <-
     case fixtureResult of
       Left _ -> pure Nothing
       Right fixture ->
         Just <$> runTeardownRecoveryOracle fixture (canonicalTeardownRecoveryInterpreter fixture)
-  case (settingsResult, basicsResult, sourceResult, fixtureResult, oracleResult) of
+  case (settingsResult, basicsResult, localResult, fixtureResult, oracleResult) of
     (Left err, _, _, _, _) -> pure (Left ("load qualification settings: " ++ err))
     (_, Left err, _, _, _) -> pure (Left ("load qualification Tier-0 floor: " ++ err))
-    (_, _, Left err, _, _) -> pure (Left ("capture qualification source identity: " ++ show err))
+    (_, _, Left err, _, _) -> pure (Left (renderLocalRecomputeError err))
     (_, _, _, Left err, _) -> pure (Left ("load teardown counterexample: " ++ show err))
     (_, _, _, _, Just (Left err)) -> pure (Left ("run teardown counterexample oracle: " ++ show err))
     (_, _, _, _, Nothing) -> pure (Left "the teardown counterexample oracle was not constructed")
-    (Right settings, Right basics, Right sourceIdentity, Right fixture, Just (Right oracle)) -> do
-      dnsZoneResult <- resolveQualificationDnsZone repoRoot settings
-      case dnsZoneResult >>= \dnsZone ->
-        qualificationComposition repoRoot environment cycleLabel settings basics dnsZone of
-        Left err -> pure (Left err)
-        Right (runId, inputs, candidateEnvironment, retainedBinding) -> do
-          -- The candidate's terminal node uninstalls the local cluster, so
-          -- bind the immutable running-image inventory before that mutation.
-          -- Capturing afterward would either fail to reach Kubernetes or,
-          -- worse, identify a subsequently rebuilt deployment.
-          imageInventoryResult <- observeComponentImageInventory repoRoot environment
-          case imageInventoryResult of
+    (Right settings, Right basics, Right local, Right fixture, Just (Right oracle))
+      | inForceConfigDigest settings /= localGeneratedConfig local ->
+          pure (Left bootstrapConfigDisagrees)
+      | otherwise -> do
+          dnsZoneResult <- resolveQualificationDnsZone repoRoot settings
+          case dnsZoneResult >>= \dnsZone ->
+            qualificationComposition repoRoot environment cycleLabel settings basics dnsZone of
             Left err -> pure (Left err)
-            Right imageInventory -> do
-              driven <- runCascadeCandidate inputs candidateEnvironment
-              case driven of
-                Left err -> pure (Left (renderCascadeCandidateError err))
-                Right candidateOutcome -> do
-                  completedAt <- getCurrentTime
-                  artifact <-
-                    writeQualificationEvidence
-                      repoRoot
-                      cycleLabel
-                      runId
-                      startedAt
-                      completedAt
-                      sourceIdentity
-                      settings
-                      retainedBinding
-                      fixture
-                      oracle
-                      imageInventory
-                      candidateOutcome
-                  pure $ do
-                    (artifactPath, artifactDigest) <- artifact
-                    Right
-                      CascadeQualificationOutcome
-                        { internalQualificationRunId = runId
-                        , internalQualificationLifecycleResult =
-                            cascadeCandidateOutcomeLifecycleResult candidateOutcome
-                        , internalQualificationEvidenceDigest = artifactDigest
-                        , internalQualificationEvidencePath = artifactPath
-                        }
+            Right (runId, inputs, candidateEnvironment, retainedBinding) -> do
+              -- The candidate's terminal node uninstalls the local cluster, so
+              -- bind the immutable running-image inventory before that mutation.
+              -- Capturing afterward would either fail to reach Kubernetes or,
+              -- worse, identify a subsequently rebuilt deployment.
+              observed <- observeIdentityParts repoRoot environment local inputs
+              case observed of
+                Left err -> pure (Left err)
+                Right (imageInventory, parts) -> do
+                  binaryDigest <- executableBinaryDigest
+                  let annotations = annotationsOf (localFullSource local) binaryDigest
+                      context =
+                        CycleContext
+                          { contextRepoRoot = repoRoot
+                          , contextLabel = cycleLabel
+                          , contextStartedAt = startedAt
+                          , contextRunId = runId
+                          , contextParts = parts
+                          , contextAnnotations = annotations
+                          , contextSettings = settings
+                          , contextRetainedBinding = retainedBinding
+                          , contextFixture = fixture
+                          , contextOracle = oracle
+                          , contextImageInventory = imageInventory
+                          , contextInputs = inputs
+                          , contextEnvironment = candidateEnvironment
+                          }
+                  driven <- driveQualificationCycle (productionCycleEffects context) cycleLabel parts annotations
+                  pure (outcomeOf context <$> driven)
+
+-- | The config the Lifecycle Authority holds, as a digest. A cycle's identity is
+-- recomputed after the cascade from the bootstrap seed, because the Authority
+-- is gone by then; the two have to agree, or what was certified is not what
+-- can be recomputed.
+inForceConfigDigest :: ValidatedSettings -> PublicEvidenceDigest
+inForceConfigDigest settings =
+  hashPublicEvidence (Text.pack (renderConfigDhall (validatedConfig settings)))
+
+bootstrapConfigDisagrees :: String
+bootstrapConfigDisagrees =
+  "the bootstrap seed config (prodbox.dhall) is not the config the Lifecycle Authority holds in force, "
+    ++ "so this cycle's identity could not be recomputed after the cascade; nothing was mutated and nothing "
+    ++ "was recorded. Submit the seed (`prodbox cluster reconcile`) or regenerate prodbox.dhall, then rerun."
+
+-- | Everything one cycle needs from the repository, the cluster and its own plan.
+data CycleContext = CycleContext
+  { contextRepoRoot :: !FilePath
+  , contextLabel :: !CycleLabel
+  , contextStartedAt :: !UTCTime
+  , contextRunId :: !CleanupRunId
+  , contextParts :: !CycleIdentityParts
+  , contextAnnotations :: !CycleAnnotations
+  , contextSettings :: !ValidatedSettings
+  , contextRetainedBinding :: !RetainedNameBinding
+  , contextFixture :: !FrozenTeardownCounterexample
+  , contextOracle :: !ReplacementTeardownResult
+  , contextImageInventory :: ![Text]
+  , contextInputs :: !CascadeCandidateInputs
+  , contextEnvironment :: !CascadeCandidateEnvironment
+  }
+
+-- | The effects of a cycle over the real ledger, source tree and cluster.
+productionCycleEffects :: CycleContext -> CycleEffects IO CascadeCandidateOutcome
+productionCycleEffects context =
+  CycleEffects
+    { effectAttemptNumber = attemptNumberFor ledgerPath (contextLabel context)
+    , effectNow = Text.pack . iso8601Show <$> getCurrentTime
+    , effectAppend = \record -> first renderLedgerStoreError <$> appendCycleRecord ledgerPath record
+    , effectRunCandidate =
+        first renderCascadeCandidateError
+          <$> runCascadeCandidate (contextInputs context) (contextEnvironment context)
+    , effectWriteArtifact = \attempt candidate ->
+        fmap snd <$> writeQualificationEvidence context attempt candidate
+    , effectRecaptureKey =
+        first renderLocalRecomputeError
+          <$> recaptureExecutableKey (contextRepoRoot context) (contextParts context)
+    , effectCandidateSucceeded =
+        lifecycleCleanupResultSucceeded . cascadeCandidateOutcomeLifecycleResult
+    , effectCleanupRunId = cleanupRunIdText (contextRunId context)
+    }
+ where
+  ledgerPath = cycleLedgerPath (contextRepoRoot context)
+
+-- | Which attempt of a label the ledger says the next run is, or why it is none.
+attemptNumberFor :: FilePath -> CycleLabel -> IO (Either String Int)
+attemptNumberFor ledgerPath label = do
+  ledgerResult <- readCycleLedger ledgerPath
+  pure $ case ledgerResult of
+    Left err -> Left (renderLedgerStoreError err)
+    Right ledger -> first renderRefusal (labelDisposition ledger label)
+ where
+  renderRefusal :: LedgerRefusal -> String
+  renderRefusal = Text.unpack . renderLedgerRefusal
+
+-- | What the caller of a cycle is told once the cycle has closed.
+outcomeOf
+  :: CycleContext
+  -> CycleReport CascadeCandidateOutcome
+  -> CascadeQualificationOutcome
+outcomeOf context report =
+  CascadeQualificationOutcome
+    { internalQualificationRunId = contextRunId context
+    , internalQualificationLifecycleResult =
+        cascadeCandidateOutcomeLifecycleResult (reportCandidate report)
+    , internalQualificationEvidenceDigest = fromMaybe "none" (reportArtifactDigest report)
+    , internalQualificationEvidencePath =
+        contextRepoRoot context
+          </> ".test-data"
+          </> "qualification"
+          </> cascadeArtifactFileName (contextLabel context)
+    , internalQualificationAttempt = reportAttempt report
+    , internalQualificationIdentityKey = identityKeyOfParts (contextParts context)
+    , internalQualificationCycleOutcome = reportOutcome report
+    , internalQualificationLedgerEntries = entrySequence (reportLastEntry report) + 1
+    , internalQualificationLedgerTip = publicEvidenceDigestText (entryDigest (reportLastEntry report))
+    }
+
+-- | The running images, observed while the cluster still exists, and the
+-- identity parts that depend on them and on the compiled program's shape.
+observeIdentityParts
+  :: FilePath
+  -> [(String, String)]
+  -> RecomputedLocalParts
+  -> CascadeCandidateInputs
+  -> IO (Either String ([Text], CycleIdentityParts))
+observeIdentityParts repoRoot environment local inputs = do
+  inventoryResult <- observeComponentImageInventory repoRoot environment
+  pure $ do
+    imageInventory <- inventoryResult
+    parts <- qualificationIdentityParts local inputs imageInventory
+    Right (imageInventory, parts)
+
+-- | The parts of the qualification identity that are not recomputable once the
+-- cluster is gone: the images that ran and the shape of the program that ran.
+-- The shape holds the run id, owner and terminal permit constant, so two cycles
+-- of one deployment agree on it even though their own plans never do.
+qualificationIdentityParts
+  :: RecomputedLocalParts
+  -> CascadeCandidateInputs
+  -> [Text]
+  -> Either String CycleIdentityParts
+qualificationIdentityParts local inputs imageInventory = do
+  images <- traverse inventoryImageDigest imageInventory
+  shape <-
+    cascadeCandidateShapeSummary
+      (cascadeCandidateFoundation inputs)
+      (cascadeCandidateAwsDnsZone inputs)
+      (cascadeCandidateDeclaredLeaseMicros inputs)
+  Right
+    ( partsFromLocal
+        canonicalKeyPolicy
+        local
+        CompareOnlyParts
+          { compareImages = images
+          , compareTopologyWiring =
+              topologyWiringDigest
+                (cascadeCandidateSummaryGraphDigest shape)
+                (cascadeCandidateSummaryDescriptorDigest shape)
+          }
+    )
+
+-- | The digest of one @component=sha256:hex@ inventory line.
+inventoryImageDigest :: Text -> Either String PublicEvidenceDigest
+inventoryImageDigest line =
+  case mkPublicEvidenceDigest (snd (Text.breakOnEnd "=sha256:" line)) of
+    Just digest | "=sha256:" `Text.isInfixOf` line -> Right digest
+    _ -> Left ("qualification component image identity is not an immutable sha256: " ++ Text.unpack line)
 
 qualificationComposition
   :: FilePath
   -> [(String, String)]
-  -> Text
+  -> CycleLabel
   -> ValidatedSettings
   -> UnencryptedBasics
   -> HostedZoneId
@@ -247,15 +478,15 @@ qualificationComposition repoRoot environment cycleLabel settings basics dnsZone
   runId <-
     first
       Text.unpack
-      (mkCleanupRunId ("cascade-qualification-" <> cycleLabel))
+      (mkCleanupRunId ("cascade-qualification-" <> cycleLabelText cycleLabel))
   owner <-
     first
       Text.unpack
-      (mkCleanupOwnerId ("cascade-qualification-owner-" <> cycleLabel))
+      (mkCleanupOwnerId ("cascade-qualification-owner-" <> cycleLabelText cycleLabel))
   terminalPermit <-
     first
       show
-      (mkHostTerminalPermitId ("cascade-qualification-permit-" <> cycleLabel))
+      (mkHostTerminalPermitId ("cascade-qualification-permit-" <> cycleLabelText cycleLabel))
   apiWait <- first Text.unpack (mkSubstrateApiWait 120 5_000_000)
   admissionWait <-
     first Text.unpack (mkLifecycleAuthorityAdmissionWait 180 5_000_000)
@@ -403,160 +634,119 @@ normalizeComponentImageLine raw =
     character >= '0' && character <= '9' || character >= 'a' && character <= 'f'
 
 writeQualificationEvidence
-  :: FilePath
-  -> Text
-  -> CleanupRunId
-  -> UTCTime
-  -> UTCTime
-  -> SourceIdentity
-  -> ValidatedSettings
-  -> RetainedNameBinding
-  -> FrozenTeardownCounterexample
-  -> ReplacementTeardownResult
-  -> [Text]
+  :: CycleContext
+  -> Int
   -> CascadeCandidateOutcome
   -> IO (Either String (FilePath, Text))
-writeQualificationEvidence repoRoot cycleLabel runId startedAt completedAt sourceIdentity settings retainedBinding fixture oracle imageInventory candidateOutcome = do
-  let artifactDirectory = repoRoot </> ".test-data" </> "qualification"
-      artifactPath =
-        artifactDirectory
-          </> ("cascade-" ++ Text.unpack (Text.take 24 (sha256Text cycleLabel)) ++ ".evidence")
+writeQualificationEvidence context attempt candidateOutcome = do
+  completedAt <- getCurrentTime
+  let repoRoot = contextRepoRoot context
+      cycleLabel = contextLabel context
+      artifactDirectory = repoRoot </> ".test-data" </> "qualification"
+      artifactPath = artifactDirectory </> cascadeArtifactFileName cycleLabel
       result = cascadeCandidateOutcomeLifecycleResult candidateOutcome
       succeeded = lifecycleCleanupResultSucceeded result
       AwsScope (AwsAccountId awsAccount) (AwsRegion awsRegion) =
         cascadeCandidateOutcomeAwsScope candidateOutcome
-      supersededIdentity = frozenTeardownSupersededIdentity fixture
-      frozenReplacementIdentity = frozenTeardownReplacementIdentity fixture
-      causalProfile = frozenTeardownCausalProfile fixture
-      productionProfile = frozenTeardownProductionProfile fixture
-      configDigest = sha256Text (Text.pack (renderConfigDhall (validatedConfig settings)))
-      imageInventoryDigest = sha256Text (Text.unlines imageInventory)
-      sourceDigest = sourceManifestDigest sourceIdentity
-      graphDigest = cleanupDigestText (cascadeCandidateOutcomeGraphDigest candidateOutcome)
-      descriptorDigest =
-        cleanupDigestText (cascadeCandidateOutcomeDescriptorDigest candidateOutcome)
-      normalizedEnvelopeMappingDigest =
-        digestValue (causalProfile, productionProfile)
-      authoredLoadFaultDigest =
-        digestValue
-          ( frozenTeardownExternalStateRows fixture
-          , frozenTeardownInterruptionSchedule fixture
-          , causalProfile
-          , productionProfile
-          )
-      resourceEnvelopeDigest = digestValue (validatedResourcePlan settings)
-      supersededResourceEnvelopeDigest = digestValue causalProfile
-      supersededLoadFaultDigest =
-        digestValue
-          ( frozenTeardownExternalStateRows fixture
-          , frozenTeardownInterruptionSchedule fixture
-          , causalProfile
-          )
-      supersededInterpreterDigest =
-        sha256Text
-          ( frozenSourceDigest supersededIdentity
-              <> "\NULlegacy-runNativeDeleteCascade/v1"
-          )
-      supersededPersistenceDigest =
-        sha256Text
-          ( frozenSourceDigest supersededIdentity
-              <> "\NULlegacy-resource-registry/v1"
-          )
-      supersededCleanupSchemaDigest =
-        sha256Text
-          ( frozenSourceDigest supersededIdentity
-              <> "\NULlegacy-cascade-report/v1"
-          )
-      replacementInterpreterDigest =
-        sha256Text
-          ( sourceDigest
-              <> "\NULdescriptor-bound-cascade-dispatch/v2"
-          )
-      replacementPersistenceDigest =
-        sha256Text
-          ( sourceDigest
-              <> "\NULcleanup-program-descriptor/v2\NULauthority-aggregate/v1"
-          )
-      replacementCleanupSchemaDigest =
-        sha256Text
-          ( sourceDigest
-              <> "\NULcleanup-run-report/v1\NULcascade-complete-evidence/v1"
-          )
-      baseLines =
-        [ "format_version=1"
-        , "qualification_kind=typed-recover-to-clean-cascade"
-        , "cycle=" <> cycleLabel
-        , "control_plane_substrate=home-local"
-        , "managed_target_substrate=aws"
-        , "canonical_command=PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE="
-            <> cycleLabel
-            <> " prodbox test integration cascade-qualification --substrate aws"
-        , "started_at=" <> Text.pack (show startedAt)
-        , "completed_at=" <> Text.pack (show completedAt)
-        , "aws_account=" <> awsAccount
-        , "aws_region=" <> awsRegion
-        , "cleanup_run_id=" <> cleanupRunIdText runId
-        , "superseded_source_identity=" <> Text.pack (show (frozenCompositionSource supersededIdentity))
-        , "superseded_generated_config_digest=" <> frozenCompositionGeneratedConfigDigest supersededIdentity
-        , "superseded_component_images=" <> Text.pack (show (frozenCompositionImages supersededIdentity))
-        , "superseded_topology_digest=" <> frozenCompositionTopologyDigest supersededIdentity
-        , "superseded_wiring_digest=" <> frozenCompositionWiringDigest supersededIdentity
-        , "superseded_resource_envelope_digest=" <> supersededResourceEnvelopeDigest
-        , "superseded_load_fault_digest=" <> supersededLoadFaultDigest
-        , "superseded_interpreter_digest=" <> supersededInterpreterDigest
-        , "superseded_persistence_digest=" <> supersededPersistenceDigest
-        , "superseded_cleanup_schema_digest=" <> supersededCleanupSchemaDigest
-        , "replacement_source_identity=" <> Text.pack (show sourceIdentity)
-        , "replacement_generated_config_digest=" <> configDigest
-        , "replacement_component_image_inventory_digest=" <> imageInventoryDigest
-        , "replacement_topology_digest=" <> graphDigest
-        , "replacement_wiring_digest=" <> descriptorDigest
-        , "replacement_resource_envelope_digest=" <> resourceEnvelopeDigest
-        , "replacement_load_fault_digest=" <> authoredLoadFaultDigest
-        , "replacement_interpreter_digest=" <> replacementInterpreterDigest
-        , "replacement_persistence_digest=" <> replacementPersistenceDigest
-        , "replacement_cleanup_schema_digest=" <> replacementCleanupSchemaDigest
-        , "frozen_replacement_identity=" <> Text.pack (show frozenReplacementIdentity)
-        , "normalized_envelope_mapping_digest=" <> normalizedEnvelopeMappingDigest
-        , "causal_profile=" <> Text.pack (show causalProfile)
-        , "production_profile=" <> Text.pack (show productionProfile)
-        , "counterexample_id=" <> teardownFixtureIdText (frozenTeardownFixtureId fixture)
-        , "counterexample_artifact_digest="
-            <> teardownArtifactDigestText (frozenTeardownArtifactDigest fixture)
-        , "counterexample_superseded_result="
-            <> Text.pack (show (supersededGlobalCopyOracle fixture))
-        , "counterexample_replacement_result=" <> Text.pack (show oracle)
-        , "intended_retained_set=" <> Text.pack (show retainedBinding)
-        , "aggregate_succeeded=" <> renderBool succeeded
-        , "cleanup_residue_absent=" <> renderBool succeeded
-        , "lifecycle_result=" <> Text.pack (show result)
-        ]
-          ++ map (("component_image=" <>) . escapeEvidenceLine) imageInventory
-          ++ map
-            (("fault_external_state=" <>) . escapeEvidenceLine . Text.pack . show)
-            (frozenTeardownExternalStateRows fixture)
-          ++ map
-            (("fault_interruption=" <>) . escapeEvidenceLine . Text.pack . show)
-            (frozenTeardownInterruptionSchedule fixture)
-      artifactDigest = sha256Text (Text.unlines baseLines)
-      artifactText = Text.unlines (baseLines ++ ["evidence_digest=" <> artifactDigest])
-  created <- tryIOError (createDirectoryIfMissing True artifactDirectory)
-  case created of
-    Left err -> pure (Left ("create qualification evidence directory: " ++ show err))
-    Right () -> do
-      written <- tryIOError (TextIO.writeFile artifactPath artifactText)
-      pure $ case written of
-        Left err -> Left ("write qualification evidence: " ++ show err)
-        Right () -> Right (artifactPath, artifactDigest)
+      fields =
+        CascadeArtifactFields
+          { fieldsLabel = cycleLabel
+          , fieldsAttempt = attempt
+          , fieldsCanonicalCommand =
+              "PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE="
+                <> cycleLabelText cycleLabel
+                <> " prodbox test integration cascade-qualification --substrate aws"
+          , fieldsStartedAt = Text.pack (iso8601Show (contextStartedAt context))
+          , fieldsCompletedAt = Text.pack (iso8601Show completedAt)
+          , fieldsAwsAccount = awsAccount
+          , fieldsAwsRegion = awsRegion
+          , fieldsCleanupRunId = cleanupRunIdText (contextRunId context)
+          , fieldsParts = contextParts context
+          , fieldsAnnotations = contextAnnotations context
+          , fieldsComponentImages = contextImageInventory context
+          , fieldsRunScopedTopologyDigest =
+              cleanupDigestText (cascadeCandidateOutcomeGraphDigest candidateOutcome)
+          , fieldsRunScopedWiringDigest =
+              cleanupDigestText (cascadeCandidateOutcomeDescriptorDigest candidateOutcome)
+          , fieldsInForceConfigDigest =
+              publicEvidenceDigestText (inForceConfigDigest (contextSettings context))
+          , fieldsFrozenLines =
+              frozenFactLines (contextFixture context) (contextOracle context)
+                ++ [("intended_retained_set", Text.pack (show (contextRetainedBinding context)))]
+          , fieldsAggregateSucceeded = succeeded
+          , fieldsResidueAbsent = succeeded
+          , fieldsLifecycleSucceeded = succeeded
+          , fieldsLifecycleResult = Text.pack (show result)
+          }
+  case renderCascadeArtifact fields of
+    Left err -> pure (Left ("render qualification evidence: " ++ show err))
+    Right (artifactText, artifactDigest) -> do
+      created <- tryIOError (createDirectoryIfMissing True artifactDirectory)
+      case created of
+        Left err -> pure (Left ("create qualification evidence directory: " ++ show err))
+        Right () -> do
+          written <- tryIOError (TextIO.writeFile artifactPath artifactText)
+          pure $ case written of
+            Left err -> Left ("write qualification evidence: " ++ show err)
+            Right () -> Right (artifactPath, artifactDigest)
+
+-- | The superseded-side and counterexample facts of a cycle, as artifact lines.
+--
+-- They live here, not in the artifact codec, because the superseded
+-- interpreter formula names the legacy route the single-writer cutover deletes,
+-- and the clean-room scan registers this module as one of that route's sites.
+frozenFactLines
+  :: FrozenTeardownCounterexample -> ReplacementTeardownResult -> [(Text, Text)]
+frozenFactLines fixture oracle =
+  [ ("superseded_source_identity", shown (frozenCompositionSource supersededIdentity))
+  , ("superseded_generated_config_digest", frozenCompositionGeneratedConfigDigest supersededIdentity)
+  , ("superseded_component_images", shown (frozenCompositionImages supersededIdentity))
+  , ("superseded_topology_digest", frozenCompositionTopologyDigest supersededIdentity)
+  , ("superseded_wiring_digest", frozenCompositionWiringDigest supersededIdentity)
+  , ("superseded_resource_envelope_digest", digestValue causalProfile)
+  ,
+    ( "superseded_load_fault_digest"
+    , digestValue
+        ( frozenTeardownExternalStateRows fixture
+        , frozenTeardownInterruptionSchedule fixture
+        , causalProfile
+        )
+    )
+  ,
+    ( "superseded_interpreter_digest"
+    , sha256Text (frozenSourceDigest supersededIdentity <> "\NULlegacy-runNativeDeleteCascade/v1")
+    )
+  ,
+    ( "superseded_persistence_digest"
+    , sha256Text (frozenSourceDigest supersededIdentity <> "\NULlegacy-resource-registry/v1")
+    )
+  ,
+    ( "superseded_cleanup_schema_digest"
+    , sha256Text (frozenSourceDigest supersededIdentity <> "\NULlegacy-cascade-report/v1")
+    )
+  , ("frozen_replacement_identity", shown (frozenTeardownReplacementIdentity fixture))
+  , ("normalized_envelope_mapping_digest", digestValue (causalProfile, productionProfile))
+  , ("causal_profile", shown causalProfile)
+  , ("production_profile", shown productionProfile)
+  , ("counterexample_id", teardownFixtureIdText (frozenTeardownFixtureId fixture))
+  ,
+    ( "counterexample_artifact_digest"
+    , teardownArtifactDigestText (frozenTeardownArtifactDigest fixture)
+    )
+  , ("counterexample_superseded_result", shown (supersededGlobalCopyOracle fixture))
+  , ("counterexample_replacement_result", shown oracle)
+  ]
+    ++ [("fault_external_state", shown row) | row <- frozenTeardownExternalStateRows fixture]
+    ++ [("fault_interruption", shown item) | item <- frozenTeardownInterruptionSchedule fixture]
+ where
+  supersededIdentity = frozenTeardownSupersededIdentity fixture
+  causalProfile = frozenTeardownCausalProfile fixture
+  productionProfile = frozenTeardownProductionProfile fixture
+  shown :: (Show value) => value -> Text
+  shown = Text.pack . show
 
 frozenSourceDigest :: FrozenCompositionIdentity -> Text
 frozenSourceDigest = frozenSourceManifestDigest . frozenCompositionSource
-
-escapeEvidenceLine :: Text -> Text
-escapeEvidenceLine = Text.replace "\n" "\\n" . Text.replace "\r" "\\r"
-
-renderBool :: Bool -> Text
-renderBool value = if value then "true" else "false"
 
 digestValue :: (Show value) => value -> Text
 digestValue = sha256Text . Text.pack . show

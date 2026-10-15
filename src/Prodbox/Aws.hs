@@ -73,6 +73,9 @@ module Prodbox.Aws
   , renderPulumiResidueLongLivedRefusal
   , runAwsCommand
   , runAwsIamHarnessInspect
+  , OperationalIdentityProbe (..)
+  , inspectOperationalIdentity
+  , operationalIdentityFromArn
   , runAwsIamHarnessSetup
   , runAwsIamHarnessTeardown
   , runInteractiveConfigSetup
@@ -125,6 +128,12 @@ import Prodbox.Aws.AdminCredentials
   , promptAdminCredentials
   , sessionTokenPromptShape
   , validateAdminCredentialsInput
+  )
+import Prodbox.Aws.StsIdentity
+  ( StsPrincipal (..)
+  , parseStsIdentityArn
+  , stsIdentityEvidenceArn
+  , stsIdentityPrincipal
   )
 import Prodbox.AwsEnvironment
   ( awsCliSubprocessEnvironment
@@ -183,6 +192,10 @@ import Prodbox.Cluster.Topology
 import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator)
+  )
+import Prodbox.ControlPlane.ProviderAssumedRoleSession
+  ( lifecycleProviderRoleName
+  , lifecycleProviderSessionName
   )
 import Prodbox.ControlPlane.ProviderCaller
   ( dispatchHostProviderIntentFresh
@@ -439,6 +452,10 @@ data OperationalIdentityProbe
   | OperationalIdentityNonUserArn Text
   | OperationalIdentityIamUser Text
   | OperationalIdentityFederatedUser Text
+  | -- | Role name, then session name. The Provider Worker's identity since the
+    -- assumed-role binding: it runs as @prodbox-lifecycle-provider@, not as the
+    -- base IAM user that assumes the role.
+    OperationalIdentityAssumedRole Text Text
   deriving (Eq, Show)
 
 data ConfigSetupResult = ConfigSetupResult
@@ -1434,36 +1451,67 @@ runAwsIamHarnessSetup repoRoot policyTier = do
 runAwsIamHarnessInspect :: FilePath -> IO String
 runAwsIamHarnessInspect repoRoot = do
   identity <- probeConfiguredOperationalIdentity repoRoot
-  case identity of
-    OperationalCredentialsMissing ->
-      throwAws "AWS IAM harness inspection did not find a ready Provider Worker identity."
-    OperationalIdentityProbeFailed err ->
-      throwAws
-        ( "AWS IAM harness inspection failed through Lifecycle Authority Provider dispatch: "
-            ++ err
-        )
-    OperationalIdentityNonUserArn arn ->
-      throwAws
-        ( "AWS IAM harness inspection expected an IAM user identity for the Provider Worker but received ARN `"
-            ++ Text.unpack arn
-            ++ "`."
-        )
-    OperationalIdentityIamUser userName ->
-      pure
-        ( unlines
-            [ "IAM_USER=" ++ Text.unpack userName
-            , "IAM_PRINCIPAL=iam-user"
-            , "CONFIG_PATH=" ++ canonicalTier0ConfigDisplayPath repoRoot
-            ]
-        )
-    OperationalIdentityFederatedUser userName ->
-      pure
-        ( unlines
-            [ "IAM_USER=" ++ Text.unpack userName
-            , "IAM_PRINCIPAL=federated-user"
-            , "CONFIG_PATH=" ++ canonicalTier0ConfigDisplayPath repoRoot
-            ]
-        )
+  either
+    throwAws
+    pure
+    (inspectOperationalIdentity (canonicalTier0ConfigDisplayPath repoRoot) identity)
+
+-- | What the harness inspection reports for the Provider Worker's STS identity.
+--
+-- The Provider runs as the assumed role @prodbox-lifecycle-provider@ in the
+-- session @prodbox-provider-worker@. The inspection used to require an IAM user,
+-- which the Provider has not been since the assume-role binding, so it refused
+-- every healthy Provider. It now accepts exactly that role and session, and
+-- refuses the base IAM user: seeing the user means the assume-role binding is
+-- not in effect, which is the defect the binding exists to prevent.
+inspectOperationalIdentity :: String -> OperationalIdentityProbe -> Either String String
+inspectOperationalIdentity configPath identity = case identity of
+  OperationalCredentialsMissing ->
+    Left "AWS IAM harness inspection did not find a ready Provider Worker identity."
+  OperationalIdentityProbeFailed err ->
+    Left
+      ( "AWS IAM harness inspection failed through Lifecycle Authority Provider dispatch: "
+          ++ err
+      )
+  OperationalIdentityNonUserArn arn ->
+    Left
+      ( "AWS IAM harness inspection expected the Provider role identity but received ARN `"
+          ++ Text.unpack arn
+          ++ "`."
+      )
+  OperationalIdentityIamUser userName ->
+    Left (unassumedProviderIdentity ("IAM user `" ++ Text.unpack userName ++ "`"))
+  OperationalIdentityFederatedUser userName ->
+    Left (unassumedProviderIdentity ("federated user `" ++ Text.unpack userName ++ "`"))
+  OperationalIdentityAssumedRole role session
+    | role == lifecycleProviderRoleName && session == lifecycleProviderSessionName ->
+        Right
+          ( unlines
+              [ "PROVIDER_ROLE=" ++ Text.unpack role
+              , "PROVIDER_SESSION=" ++ Text.unpack session
+              , "IAM_PRINCIPAL=assumed-role"
+              , "CONFIG_PATH=" ++ configPath
+              ]
+          )
+    | otherwise ->
+        Left
+          ( "AWS IAM harness inspection expected the Provider role `"
+              ++ Text.unpack lifecycleProviderRoleName
+              ++ "` in session `"
+              ++ Text.unpack lifecycleProviderSessionName
+              ++ "` but received role `"
+              ++ Text.unpack role
+              ++ "` in session `"
+              ++ Text.unpack session
+              ++ "`."
+          )
+ where
+  unassumedProviderIdentity observed =
+    "AWS IAM harness inspection expected the Provider to run as the assumed role `"
+      ++ Text.unpack lifecycleProviderRoleName
+      ++ "` but observed the "
+      ++ observed
+      ++ ", so the assume-role binding is not in effect."
 
 runAwsIamHarnessTeardown :: FilePath -> IO String
 runAwsIamHarnessTeardown repoRoot = do
@@ -1925,6 +1973,7 @@ applyAwsTeardown repoRoot input = do
                       ++ show code
                       ++ " while destroying the operational IAM user / clearing "
                       ++ "aws.* config."
+                      ++ operationalReconcileUnfinished reconcileOutcome
                   )
               )
           ExitSuccess ->
@@ -1937,6 +1986,18 @@ applyAwsTeardown repoRoot input = do
                     , iamTeardownDhallPath = canonicalTier0ConfigDisplayPath repoRoot
                     }
               )
+
+-- | Name what the operational reconcile could not finish, so the operator is
+-- told which resources are still present rather than only an exit code.
+operationalReconcileUnfinished :: ResourceRegistry.AbsentReconcileOutcome -> String
+operationalReconcileUnfinished outcome =
+  listed " Failed: " (ResourceRegistry.absentReconcileFailed outcome)
+    ++ listed
+      " Not attempted because a resource they require did not complete: "
+      (ResourceRegistry.absentReconcileBlocked outcome)
+ where
+  listed _ [] = ""
+  listed label names = label ++ intercalate ", " names ++ "."
 
 -- | Sprint 7.8: pure mapping from the 'operationalIamUserExists' probe
 -- result to a typed 'ResidueStatus' for the @operational-iam-user@
@@ -3501,12 +3562,9 @@ probeConfiguredOperationalIdentity repoRoot = do
   pure $ case result of
     Left err -> OperationalIdentityProbeFailed (renderProviderCallerError err)
     Right evidence ->
-      case Text.stripPrefix "sts-identity:" evidence of
+      case stsIdentityEvidenceArn evidence of
         Nothing -> OperationalIdentityProbeFailed "Provider identity evidence has an invalid shape"
-        Just arn ->
-          case operationalIdentityFromArn arn of
-            Just identity -> identity
-            Nothing -> OperationalIdentityNonUserArn arn
+        Just arn -> operationalIdentityFromArn arn
 
 operationalCredentialsConfigured :: Credentials -> Bool
 operationalCredentialsConfigured credentials =
@@ -3644,25 +3702,13 @@ readLifecycleProviderTargetCredentials _repoRoot =
         "Lifecycle-provider credentials are consumer-owned; host plaintext Target-material reads are disabled"
     )
 
-operationalIdentityFromArn :: Text -> Maybe OperationalIdentityProbe
-operationalIdentityFromArn arn = do
-  resource <- case reverse (Text.splitOn ":" arn) of
-    resourceValue : _ -> Just resourceValue
-    [] -> Nothing
-  case Text.stripPrefix "user/" resource of
-    Just userResource ->
-      OperationalIdentityIamUser <$> finalPathSegment userResource
-    Nothing ->
-      case Text.stripPrefix "federated-user/" resource of
-        Just federatedResource ->
-          OperationalIdentityFederatedUser <$> finalPathSegment federatedResource
-        Nothing -> Nothing
-
-finalPathSegment :: Text -> Maybe Text
-finalPathSegment value =
-  case reverse (filter (/= "") (Text.splitOn "/" value)) of
-    segment : _ -> Just segment
-    [] -> Nothing
+operationalIdentityFromArn :: Text -> OperationalIdentityProbe
+operationalIdentityFromArn arn =
+  case stsIdentityPrincipal <$> parseStsIdentityArn arn of
+    Just (StsIamUser userName) -> OperationalIdentityIamUser userName
+    Just (StsFederatedUser userName) -> OperationalIdentityFederatedUser userName
+    Just (StsAssumedRole role session) -> OperationalIdentityAssumedRole role session
+    _ -> OperationalIdentityNonUserArn arn
 
 quotaSpecsForTier :: PolicyTier -> [QuotaSpec]
 quotaSpecsForTier policyTier =
@@ -3745,6 +3791,13 @@ renderOperationalIdentityProbe probe =
       unlines
         [ "PREEXISTING_OPERATIONAL_USER=" ++ Text.unpack userName
         , "PREEXISTING_OPERATIONAL_PROBE=federated-user"
+        ]
+    OperationalIdentityAssumedRole role session ->
+      unlines
+        [ "PREEXISTING_OPERATIONAL_USER="
+        , "PREEXISTING_OPERATIONAL_PROBE=assumed-role"
+        , "PREEXISTING_OPERATIONAL_ROLE=" ++ Text.unpack role
+        , "PREEXISTING_OPERATIONAL_SESSION=" ++ Text.unpack session
         ]
 
 renderConfigSetupResult :: ConfigSetupResult -> String

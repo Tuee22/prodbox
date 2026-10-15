@@ -17,6 +17,7 @@ module Prodbox.Lifecycle.Teardown.CascadeCandidate
   , cascadeCandidateFreshPrimarySurvivesDeclaredLeaseClaim
   , CascadeCandidatePlanSummary (..)
   , fixedCascadeCandidatePlanSummary
+  , cascadeCandidateShapeSummary
   )
 where
 

@@ -12,6 +12,7 @@ module Prodbox.Lifecycle.EbsVolume
   , EbsRequiredVolume (..)
   , EbsDiscoverInput (..)
   , EbsEnsureInput (..)
+  , EbsEnsureEffects (..)
   , EbsDestroyInput (..)
   , TestEbsReaperInput (..)
   , TestEbsReaperPlan (..)
@@ -46,6 +47,12 @@ module Prodbox.Lifecycle.EbsVolume
   , parseDescribeVolumesPayload
   , parseCreateVolumePayload
   , retainedEbsVolumeBindingsFromDiscovered
+  , retainedVolumeSizeProblems
+  , missingRequiredVolumes
+  , awaitRequiredVolumesVisible
+  , retainedEbsVisibilityAttempts
+  , retainedEbsVisibilityStableReads
+  , retryWaiterOnLag
   , ebsVolumesResidueStatus
   , ebsDiscoverResultToResidue
   , testScopedEbsVolumeIdsFromTagRows
@@ -54,23 +61,35 @@ module Prodbox.Lifecycle.EbsVolume
   , ebsVolumeResourceCoordinate
   , ebsVolumeIdFromArn
   , renderTestScopedEbsReaperReport
+  , AwsCliRun
   , discoverEbsVolumes
+  , discoverEbsVolumesVia
   , ensureRetainedEbsVolumes
+  , ensureRetainedEbsVolumesVia
+  , ensureRetainedEbsVolumesWith
+  , createRetainedVolumeVia
+  , waitForCreatedVolumesVia
   , destroyEbsVolume
+  , destroyEbsVolumeVia
   , runTestScopedEbsReaper
+  , runTestScopedEbsReaperVia
+  , runRetainedEbsReaperVia
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Monad (foldM)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
   )
+import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Bifunctor (first)
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (isDigit, isHexDigit)
-import Data.List (intercalate, nub, sort)
+import Data.List (intercalate, isInfixOf, nub, sort)
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Prodbox.Lib.Storage
@@ -91,6 +110,7 @@ import Prodbox.Settings.AwsSubstrateProfile
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
+  , boundedSubprocessTimeoutDetail
   , captureSubprocessResult
   )
 import System.Exit (ExitCode (..))
@@ -103,6 +123,11 @@ data EbsVolume = EbsVolume
   , ebsVolumeState :: String
   , ebsVolumeAvailabilityZone :: Maybe String
   , ebsVolumeTags :: [(String, String)]
+  , ebsVolumeSizeGiB :: Maybe Int
+  -- ^ The size EC2 reports, in GiB (Sprint 5.53). Optional in the payload: the
+  -- per-run reaper and the residue reports never read it. The retained-volume
+  -- binding requires it, because a volume bound under a larger claim is a
+  -- silent data-loss waiting for the claim to fill.
   }
   deriving (Eq, Show)
 
@@ -131,6 +156,21 @@ data EbsEnsureInput = EbsEnsureInput
   , ebsEnsureVolumeType :: AwsEbsVolumeType
   }
   deriving (Eq, Show)
+
+-- | What the retained-volume ensure does to the outside world, as a record, so
+-- its order, its waits and what it says when it fails are exercised without an
+-- AWS account. 'ensureRetainedEbsVolumes' builds the production record from an
+-- 'EbsEnsureInput'.
+data EbsEnsureEffects m = EbsEnsureEffects
+  { ebsEffectDiscover :: m (Either String [EbsVolume])
+  -- ^ One listing of the retained volumes.
+  , ebsEffectCreate :: EbsRequiredVolume -> m (Either String EbsVolumeId)
+  -- ^ Create one volume; the id EC2 answered with.
+  , ebsEffectWaitAvailable :: [EbsVolumeId] -> m (Either String ())
+  -- ^ Wait until the volumes this call created are available.
+  , ebsEffectPause :: m ()
+  -- ^ The pause between two listings.
+  }
 
 data EbsDestroyInput = EbsDestroyInput
   { ebsDestroyEnvironment :: [(String, String)]
@@ -474,6 +514,7 @@ parseVolumeValue volumeValue = case volumeValue of
         , ebsVolumeState = state
         , ebsVolumeAvailabilityZone = optionalStringField "AvailabilityZone" obj
         , ebsVolumeTags = tagsField obj
+        , ebsVolumeSizeGiB = optionalIntField "Size" obj
         }
   _ -> Left "ec2 describe-volumes entry is not a JSON object"
 
@@ -488,6 +529,18 @@ optionalStringField :: String -> KeyMap.KeyMap Value -> Maybe String
 optionalStringField fieldName obj =
   case KeyMap.lookup (Key.fromString fieldName) obj of
     Just (String textValue) -> Just (Text.unpack textValue)
+    _ -> Nothing
+
+-- | A whole number, or nothing: a field that is absent, not a number, or not an
+-- integer in range reads as unreported rather than as a parse failure, because
+-- only the retained-volume binding needs it and it refuses by name when it is
+-- missing.
+optionalIntField :: String -> KeyMap.KeyMap Value -> Maybe Int
+optionalIntField fieldName obj =
+  case KeyMap.lookup (Key.fromString fieldName) obj of
+    Just numeric@(Number _) -> case Aeson.fromJSON numeric of
+      Aeson.Success whole -> Just whole
+      Aeson.Error _ -> Nothing
     _ -> Nothing
 
 tagsField :: KeyMap.KeyMap Value -> [(String, String)]
@@ -536,17 +589,73 @@ retainedEbsVolumeBindingsFromDiscovered required volumes =
               ++ " but expected "
               ++ ebsRequiredAvailabilityZone requiredVolume
           )
-      else
-        if ebsVolumeState volume `elem` ["available", "in-use"]
-          then
-            Right
-              StaticEbsVolumeBinding
-                { staticEbsVolumeBindingPersistentVolumeName = pvName
-                , staticEbsVolumeBindingVolumeHandle = unEbsVolumeId (ebsVolumeId volume)
-                , staticEbsVolumeBindingAvailabilityZone = availabilityZone
-                }
-          else
-            Left ("retained EBS volume for " ++ pvName ++ " is not attachable: state=" ++ ebsVolumeState volume)
+      else case retainedVolumeSizeProblem requiredVolume volume of
+        Just problem -> Left problem
+        Nothing ->
+          if ebsVolumeState volume `elem` ["available", "in-use"]
+            then
+              Right
+                StaticEbsVolumeBinding
+                  { staticEbsVolumeBindingPersistentVolumeName = pvName
+                  , staticEbsVolumeBindingVolumeHandle = unEbsVolumeId (ebsVolumeId volume)
+                  , staticEbsVolumeBindingAvailabilityZone = availabilityZone
+                  }
+            else
+              Left ("retained EBS volume for " ++ pvName ++ " is not attachable: state=" ++ ebsVolumeState volume)
+
+-- | Sprint 5.53: why a listed retained volume cannot back its claim at the size
+-- the plan requires, or nothing when it can. A volume found by its tag is bound
+-- under a claim of the plan's size; a smaller one would be written past its end
+-- by the claim that believes it larger, and one that reports no size cannot be
+-- shown to be large enough. Growing it in place and replacing the retained
+-- family are both decisions about data the volume holds, so neither happens
+-- here: the refusal names both sizes and stops.
+retainedVolumeSizeProblem :: EbsRequiredVolume -> EbsVolume -> Maybe String
+retainedVolumeSizeProblem requiredVolume volume = case ebsVolumeSizeGiB volume of
+  Nothing ->
+    Just
+      ( "retained EBS volume "
+          ++ unEbsVolumeId (ebsVolumeId volume)
+          ++ " for "
+          ++ ebsRequiredPersistentVolumeName requiredVolume
+          ++ " did not report a size, so it cannot be shown to hold the "
+          ++ show (ebsRequiredSizeGiB requiredVolume)
+          ++ " GiB the plan requires"
+      )
+  Just sizeGiB
+    | sizeGiB < ebsRequiredSizeGiB requiredVolume ->
+        Just
+          ( "retained EBS volume "
+              ++ unEbsVolumeId (ebsVolumeId volume)
+              ++ " for "
+              ++ ebsRequiredPersistentVolumeName requiredVolume
+              ++ " is "
+              ++ show sizeGiB
+              ++ " GiB but the plan requires "
+              ++ show (ebsRequiredSizeGiB requiredVolume)
+              ++ " GiB; it is not bound under a larger claim. A retained volume holds data and cannot be"
+              ++ " shrunk, and growing it in place or replacing the retained family is an operator"
+              ++ " decision"
+          )
+    | otherwise -> Nothing
+
+-- | Every required volume that is listed exactly once and cannot back its claim
+-- at the planned size. A volume listed twice is the duplicate-tag refusal's, not
+-- this one's.
+retainedVolumeSizeProblems :: [EbsRequiredVolume] -> [EbsVolume] -> [String]
+retainedVolumeSizeProblems required volumes =
+  [ problem
+  | requiredVolume <- required
+  , [volume] <- [taggedFor requiredVolume]
+  , Just problem <- [retainedVolumeSizeProblem requiredVolume volume]
+  ]
+ where
+  taggedFor requiredVolume =
+    [ volume
+    | volume <- volumes
+    , lookup ebsPersistentVolumeTagKey (ebsVolumeTags volume)
+        == Just (ebsRequiredPersistentVolumeName requiredVolume)
+    ]
 
 -- | Sprint 4.84: residue is reported under the identity the observing scope
 -- selected, not under one name shared by both EBS families.
@@ -667,16 +776,33 @@ ebsVolumeIdFromArn arn =
  where
   arnResource = reverse . takeWhile (/= ':') . reverse
 
+-- | How the module starts the AWS CLI: the arguments in, the finished output or
+-- the reason the process could not start out. Host-side callers start it
+-- directly ('directAwsCliRun'); the Provider Worker passes its bounded,
+-- permit-serialised runner, so its EBS interpreters are held to the same
+-- physical limits as every other AWS child it starts (Sprint 5.53).
+type AwsCliRun = [String] -> IO (Result ProcessOutput)
+
+-- | Start the CLI directly, in the given environment and working directory.
+directAwsCliRun :: [(String, String)] -> Maybe FilePath -> AwsCliRun
+directAwsCliRun environment workingDirectory arguments =
+  captureSubprocessResult
+    Subprocess
+      { subprocessPath = "aws"
+      , subprocessArguments = arguments
+      , subprocessEnvironment = Just environment
+      , subprocessWorkingDirectory = workingDirectory
+      }
+
 discoverEbsVolumes :: EbsDiscoverInput -> IO (Either String [EbsVolume])
-discoverEbsVolumes input = do
-  result <-
-    captureSubprocessResult
-      Subprocess
-        { subprocessPath = "aws"
-        , subprocessArguments = ebsDescribeVolumesArgs (ebsDiscoverScope input)
-        , subprocessEnvironment = Just (ebsDiscoverEnvironment input)
-        , subprocessWorkingDirectory = ebsDiscoverWorkingDirectory input
-        }
+discoverEbsVolumes input =
+  discoverEbsVolumesVia
+    (directAwsCliRun (ebsDiscoverEnvironment input) (ebsDiscoverWorkingDirectory input))
+    (ebsDiscoverScope input)
+
+discoverEbsVolumesVia :: AwsCliRun -> EbsVolumeScope -> IO (Either String [EbsVolume])
+discoverEbsVolumesVia run scope = do
+  result <- run (ebsDescribeVolumesArgs scope)
   pure $ case result of
     Failure err -> Left ("failed to start `aws ec2 describe-volumes`: " ++ err)
     Success output ->
@@ -691,59 +817,114 @@ discoverEbsVolumes input = do
 
 ensureRetainedEbsVolumes
   :: EbsEnsureInput -> [EbsRequiredVolume] -> IO (Either String [StaticEbsVolumeBinding])
-ensureRetainedEbsVolumes input required = do
-  firstDiscover <-
-    discoverEbsVolumes
-      EbsDiscoverInput
-        { ebsDiscoverEnvironment = ebsEnsureEnvironment input
-        , ebsDiscoverWorkingDirectory = ebsEnsureWorkingDirectory input
-        , ebsDiscoverScope = EbsRetainedProduction
-        }
+ensureRetainedEbsVolumes input =
+  ensureRetainedEbsVolumesVia
+    (directAwsCliRun (ebsEnsureEnvironment input) (ebsEnsureWorkingDirectory input))
+    (ebsEnsureVolumeType input)
+
+ensureRetainedEbsVolumesVia
+  :: AwsCliRun
+  -> AwsEbsVolumeType
+  -> [EbsRequiredVolume]
+  -> IO (Either String [StaticEbsVolumeBinding])
+ensureRetainedEbsVolumesVia run volumeType =
+  ensureRetainedEbsVolumesWith
+    EbsEnsureEffects
+      { ebsEffectDiscover = discoverEbsVolumesVia run EbsRetainedProduction
+      , ebsEffectCreate = createRetainedVolumeVia run volumeType
+      , ebsEffectWaitAvailable = waitForCreatedVolumesVia run
+      , ebsEffectPause = threadDelay retainedEbsVisibilityDelayMicroseconds
+      }
+
+-- | The ensure, over its effects: list, create what is missing, wait for what
+-- this call created, then read back until every required volume is listed.
+--
+-- EC2 describe calls are eventually consistent: a volume created moments ago may
+-- not be listed yet, and an apply that failed there would leave a billable
+-- volume behind its own refusal. When this call created anything, the read-back
+-- waits (bounded) for every required volume to be listed on consecutive reads;
+-- when it created nothing, one read is the whole answer.
+--
+-- A create is not idempotent, and the tag listing a rerun decides from lags the
+-- create. So every failure after the first create names the volumes this call
+-- created: a message that read as "never created" would invite the rerun that
+-- creates them a second time.
+ensureRetainedEbsVolumesWith
+  :: (Monad m)
+  => EbsEnsureEffects m
+  -> [EbsRequiredVolume]
+  -> m (Either String [StaticEbsVolumeBinding])
+ensureRetainedEbsVolumesWith effects required = do
+  firstDiscover <- ebsEffectDiscover effects
   case firstDiscover of
     Left err -> pure (Left err)
+    -- A listed volume that cannot back its claim is refused before anything is
+    -- created for the others, so the refusal leaves the account as it found it.
+    Right existing | problem : _ <- retainedVolumeSizeProblems required existing -> pure (Left problem)
     Right existing -> do
       let missing = missingRequiredVolumes required existing
       createResult <- foldM createVolumeStep (Right []) missing
       case createResult of
         Left err -> pure (Left err)
         Right createdIds -> do
-          waitResult <- waitForCreatedVolumes input createdIds
+          waitResult <- waitForCreated createdIds
           case waitResult of
-            Left err -> pure (Left err)
+            Left err -> pure (Left (noteCreatedVolumes createdIds err))
             Right () -> do
-              secondDiscover <-
-                discoverEbsVolumes
-                  EbsDiscoverInput
-                    { ebsDiscoverEnvironment = ebsEnsureEnvironment input
-                    , ebsDiscoverWorkingDirectory = ebsEnsureWorkingDirectory input
-                    , ebsDiscoverScope = EbsRetainedProduction
-                    }
-              pure (secondDiscover >>= retainedEbsVolumeBindingsFromDiscovered required)
+              discovered <-
+                awaitRequiredVolumesVisible
+                  (ebsEffectDiscover effects)
+                  (ebsEffectPause effects)
+                  required
+                  (if null missing then 1 else retainedEbsVisibilityAttempts)
+                  retainedEbsVisibilityStableReads
+              pure
+                ( first
+                    (noteCreatedVolumes createdIds)
+                    (discovered >>= retainedEbsVolumeBindingsFromDiscovered required)
+                )
  where
   createVolumeStep (Left err) _ = pure (Left err)
   createVolumeStep (Right createdIds) requiredVolume = do
-    result <-
-      captureSubprocessResult
-        Subprocess
-          { subprocessPath = "aws"
-          , subprocessArguments = ebsCreateVolumeArgs (ebsEnsureVolumeType input) requiredVolume
-          , subprocessEnvironment = Just (ebsEnsureEnvironment input)
-          , subprocessWorkingDirectory = ebsEnsureWorkingDirectory input
-          }
-    pure $ case result of
-      Failure err -> Left ("failed to start `aws ec2 create-volume`: " ++ err)
-      Success output ->
-        case processExitCode output of
-          ExitFailure _ ->
-            Left
-              ( "aws ec2 create-volume failed for "
-                  ++ ebsRequiredPersistentVolumeName requiredVolume
-                  ++ ": "
-                  ++ processStderr output
-                  ++ processStdout output
-              )
-          ExitSuccess ->
-            (: createdIds) . ebsVolumeId <$> parseCreateVolumePayload (processStdout output)
+    created <- ebsEffectCreate effects requiredVolume
+    pure $ case created of
+      Left err -> Left (noteCreatedVolumes createdIds err)
+      Right volumeId -> Right (volumeId : createdIds)
+  waitForCreated createdIds
+    | null createdIds = pure (Right ())
+    | otherwise = ebsEffectWaitAvailable effects createdIds
+
+-- | Say which volumes the failing call had already created. The ids arrive
+-- newest first; they are named in creation order. The fact is unconditional; the
+-- advice is conditional, because the failure it is appended to can be one where
+-- the listing did show the volumes (a duplicate tag, a wrong zone) and waiting
+-- cannot help.
+noteCreatedVolumes :: [EbsVolumeId] -> String -> String
+noteCreatedVolumes createdIds detail = case createdIds of
+  [] -> detail
+  _ ->
+    detail
+      ++ "; this call had already created "
+      ++ intercalate ", " (map unEbsVolumeId (reverse createdIds))
+      ++ " (a tag listing can lag a create: confirm whether they exist before creating them again)"
+
+createRetainedVolumeVia
+  :: AwsCliRun -> AwsEbsVolumeType -> EbsRequiredVolume -> IO (Either String EbsVolumeId)
+createRetainedVolumeVia run volumeType requiredVolume = do
+  result <- run (ebsCreateVolumeArgs volumeType requiredVolume)
+  pure $ case result of
+    Failure err -> Left ("failed to start `aws ec2 create-volume`: " ++ err)
+    Success output ->
+      case processExitCode output of
+        ExitFailure _ ->
+          Left
+            ( "aws ec2 create-volume failed for "
+                ++ ebsRequiredPersistentVolumeName requiredVolume
+                ++ ": "
+                ++ processStderr output
+                ++ processStdout output
+            )
+        ExitSuccess -> ebsVolumeId <$> parseCreateVolumePayload (processStdout output)
 
 missingRequiredVolumes :: [EbsRequiredVolume] -> [EbsVolume] -> [EbsRequiredVolume]
 missingRequiredVolumes required volumes =
@@ -760,39 +941,121 @@ missingRequiredVolumes required volumes =
       )
       volumes
 
-waitForCreatedVolumes :: EbsEnsureInput -> [EbsVolumeId] -> IO (Either String ())
-waitForCreatedVolumes _ [] = pure (Right ())
-waitForCreatedVolumes input createdIds = do
-  result <-
-    captureSubprocessResult
-      Subprocess
-        { subprocessPath = "aws"
-        , subprocessArguments = ebsWaitVolumeAvailableArgs createdIds
-        , subprocessEnvironment = Just (ebsEnsureEnvironment input)
-        , subprocessWorkingDirectory = ebsEnsureWorkingDirectory input
-        }
-  pure $ case result of
-    Failure err -> Left ("failed to start `aws ec2 wait volume-available`: " ++ err)
-    Success output ->
-      case processExitCode output of
-        ExitFailure _ ->
-          Left
-            ( "aws ec2 wait volume-available failed: "
-                ++ processStderr output
-                ++ processStdout output
-            )
-        ExitSuccess -> Right ()
+-- | Re-read until every required volume is listed on enough consecutive reads, or
+-- the attempts are spent.
+--
+-- The read is injected, with the pause between reads, so the loop is exercised
+-- without an AWS account. It stops at the first read that fails (a failed read is
+-- not evidence about visibility) and after the last attempt, returning what that
+-- read listed so the caller names what is still missing. With one attempt there
+-- is nothing to wait for and one read is the answer. With more, a single
+-- complete listing is not taken for the answer: EC2 gives no monotonic-read
+-- guarantee, so a listing that answers "complete" can be followed by one served
+-- from a replica that has not caught up, and the Provider's own confirming read
+-- would then call a successful apply unconfirmed. The lease policy's
+-- stable-observation count rests on the same reasoning. A complete read that is
+-- followed by an incomplete one starts the count over.
+awaitRequiredVolumesVisible
+  :: (Monad m)
+  => m (Either String [EbsVolume])
+  -> m ()
+  -> [EbsRequiredVolume]
+  -> Int
+  -> Int
+  -> m (Either String [EbsVolume])
+awaitRequiredVolumesVisible discover pause required attempts stableReads = go attempts 0
+ where
+  go attemptsRemaining completeReads = do
+    discovered <- discover
+    case discovered of
+      Right volumes
+        | null (missingRequiredVolumes required volumes) ->
+            if attempts <= 1 || completeReads + 1 >= stableReads || attemptsRemaining <= 1
+              then pure discovered
+              else pause >> go (attemptsRemaining - 1) (completeReads + 1)
+        | attemptsRemaining > 1 -> pause >> go (attemptsRemaining - 1) 0
+      _ -> pure discovered
+
+-- | How long an apply that created volumes waits for them to be listed: twelve
+-- reads, five seconds apart.
+retainedEbsVisibilityAttempts :: Int
+retainedEbsVisibilityAttempts = 12
+
+-- | How many consecutive complete listings end that wait.
+retainedEbsVisibilityStableReads :: Int
+retainedEbsVisibilityStableReads = 2
+
+retainedEbsVisibilityDelayMicroseconds :: Int
+retainedEbsVisibilityDelayMicroseconds = 5000000
+
+waitForCreatedVolumesVia :: AwsCliRun -> [EbsVolumeId] -> IO (Either String ())
+waitForCreatedVolumesVia _ [] = pure (Right ())
+waitForCreatedVolumesVia run createdIds =
+  retryWaiterOnLag
+    runWaiter
+    (threadDelay retainedEbsVisibilityDelayMicroseconds)
+    retainedEbsVisibilityAttempts
+ where
+  runWaiter = do
+    result <- run (ebsWaitVolumeAvailableArgs createdIds)
+    pure $ case result of
+      Failure err -> Left err
+      Success output -> Right output
+
+-- | Run the available-waiter, retrying while the API still answers "not found"
+-- for a volume created a moment ago.
+--
+-- The waiter polls describe-volumes by id, and a volume created a moment ago can
+-- be answered "not found" before the API has caught up; that error is not one of
+-- the waiter's own acceptors, so it ends the waiter. It is the one error worth
+-- waiting out: a volume that is gone (the deleted state), a refusal of the call,
+-- and a process that cannot start are reported at once, and what is reported
+-- after the last attempt is the waiter's own text, not a relabelled lag. The run
+-- and the pause are injected so the retry is exercised without an AWS account.
+retryWaiterOnLag
+  :: (Monad m)
+  => m (Either String ProcessOutput)
+  -> m ()
+  -> Int
+  -> m (Either String ())
+retryWaiterOnLag runWaiter pause = attempt
+ where
+  attempt attemptsRemaining = do
+    result <- runWaiter
+    case result of
+      Left err -> pure (Left ("failed to start `aws ec2 wait volume-available`: " ++ err))
+      Right output ->
+        case processExitCode output of
+          ExitSuccess -> pure (Right ())
+          ExitFailure _
+            | waiterWorthRerunning output && attemptsRemaining > 1 ->
+                pause >> attempt (attemptsRemaining - 1)
+            | otherwise ->
+                pure
+                  ( Left
+                      ( "aws ec2 wait volume-available failed: "
+                          ++ processStderr output
+                          ++ processStdout output
+                      )
+                  )
+
+-- | Whether a failed waiter says only that it is not done yet: the API has not
+-- caught up with a volume created a moment ago, or the Provider's per-child bound
+-- ended the waiter before the volume became available (the CLI's own waiter polls
+-- for minutes, the bound is thirty seconds; every rerun is another bounded child
+-- that releases the one-child permit between attempts).
+waiterWorthRerunning :: ProcessOutput -> Bool
+waiterWorthRerunning output =
+  any (`isInfixOf` processStderr output) ["InvalidVolume.NotFound", boundedSubprocessTimeoutDetail]
 
 destroyEbsVolume :: EbsDestroyInput -> EbsVolumeId -> IO (Either String ())
-destroyEbsVolume input volumeId = do
-  result <-
-    captureSubprocessResult
-      Subprocess
-        { subprocessPath = "aws"
-        , subprocessArguments = ebsDeleteVolumeArgs volumeId
-        , subprocessEnvironment = Just (ebsDestroyEnvironment input)
-        , subprocessWorkingDirectory = ebsDestroyWorkingDirectory input
-        }
+destroyEbsVolume input =
+  destroyEbsVolumeVia
+    (directAwsCliRun (ebsDestroyEnvironment input) (ebsDestroyWorkingDirectory input))
+
+destroyEbsVolumeVia :: AwsCliRun -> EbsVolumeId -> IO (Either String ())
+destroyEbsVolumeVia run volumeId = do
+  result <- run (ebsDeleteVolumeArgs volumeId)
   pure $ case result of
     Failure err -> Left ("failed to start `aws ec2 delete-volume`: " ++ err)
     Success output ->
@@ -808,24 +1071,23 @@ destroyEbsVolume input volumeId = do
         ExitSuccess -> Right ()
 
 runTestScopedEbsReaper :: TestEbsReaperInput -> IO (Either String TestEbsReaperReport)
-runTestScopedEbsReaper input = do
-  discoverResult <-
-    discoverEbsVolumes
-      EbsDiscoverInput
-        { ebsDiscoverEnvironment = testEbsReaperEnvironment input
-        , ebsDiscoverWorkingDirectory = testEbsReaperWorkingDirectory input
-        , ebsDiscoverScope = EbsPerRunTest (testEbsReaperClusterName input)
-        }
+runTestScopedEbsReaper input =
+  runTestScopedEbsReaperVia
+    ( directAwsCliRun
+        (testEbsReaperEnvironment input)
+        (testEbsReaperWorkingDirectory input)
+    )
+    (testEbsReaperClusterName input)
+
+runTestScopedEbsReaperVia
+  :: AwsCliRun -> String -> IO (Either String TestEbsReaperReport)
+runTestScopedEbsReaperVia run clusterName = do
+  discoverResult <- discoverEbsVolumesVia run (EbsPerRunTest clusterName)
   case discoverResult of
     Left err -> pure (Left err)
     Right volumes -> do
-      let plan = testScopedEbsReaperPlan (testEbsReaperClusterName input) volumes
-          destroyInput =
-            EbsDestroyInput
-              { ebsDestroyEnvironment = testEbsReaperEnvironment input
-              , ebsDestroyWorkingDirectory = testEbsReaperWorkingDirectory input
-              }
-      deleteResults <- mapM (destroyEbsVolume destroyInput) (testEbsReaperVolumeIds plan)
+      let plan = testScopedEbsReaperPlan clusterName volumes
+      deleteResults <- mapM (destroyEbsVolumeVia run) (testEbsReaperVolumeIds plan)
       pure $
         case [err | Left err <- deleteResults] of
           [] ->
@@ -846,24 +1108,21 @@ runTestScopedEbsReaper input = do
 -- explicitly.
 runRetainedEbsReaper
   :: RetainedEbsReaperInput -> IO (Either String RetainedEbsReaperReport)
-runRetainedEbsReaper input = do
-  discoverResult <-
-    discoverEbsVolumes
-      EbsDiscoverInput
-        { ebsDiscoverEnvironment = retainedEbsReaperEnvironment input
-        , ebsDiscoverWorkingDirectory = retainedEbsReaperWorkingDirectory input
-        , ebsDiscoverScope = EbsRetainedProduction
-        }
+runRetainedEbsReaper input =
+  runRetainedEbsReaperVia
+    ( directAwsCliRun
+        (retainedEbsReaperEnvironment input)
+        (retainedEbsReaperWorkingDirectory input)
+    )
+
+runRetainedEbsReaperVia :: AwsCliRun -> IO (Either String RetainedEbsReaperReport)
+runRetainedEbsReaperVia run = do
+  discoverResult <- discoverEbsVolumesVia run EbsRetainedProduction
   case discoverResult of
     Left err -> pure (Left err)
     Right volumes -> do
       let plan = retainedEbsReaperPlan volumes
-          destroyInput =
-            EbsDestroyInput
-              { ebsDestroyEnvironment = retainedEbsReaperEnvironment input
-              , ebsDestroyWorkingDirectory = retainedEbsReaperWorkingDirectory input
-              }
-      deleteResults <- mapM (destroyEbsVolume destroyInput) (retainedEbsReaperVolumeIds plan)
+      deleteResults <- mapM (destroyEbsVolumeVia run) (retainedEbsReaperVolumeIds plan)
       pure $
         case [err | Left err <- deleteResults] of
           [] ->

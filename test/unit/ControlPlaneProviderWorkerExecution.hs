@@ -832,6 +832,31 @@ controlPlaneProviderWorkerExecutionSuite =
           (ProviderIntentExecutionMutationNotConfirmed "still missing")
       applyCount fixture intent `shouldReturn` 1
 
+    it "reports an apply that failed as a failure and a lost response as a lost response" $ do
+      -- Red on 0268f5d: both read "provider apply response unavailable", so an
+      -- apply that ran and failed was described as an answer that never came.
+      let intent = BoundedScratchCheckpoint (checkpointRef "scratch")
+          coordinate = providerIntentCoordinate intent
+      failedFixture <- freshFixture
+      writeIORef (fixtureNeverConfirm failedFixture) [coordinate]
+      writeIORef (fixtureFailApply failedFixture) [coordinate]
+      failedVerified <- mustAdmitDefault failedFixture intent
+      executeVerifiedProviderIntent (fixtureBoundary failedFixture) failedVerified
+        `shouldReturn` Left
+          ( ProviderIntentExecutionMutationNotConfirmed
+              "provider apply failed: injected apply failure; still missing"
+          )
+
+      lostFixture <- freshFixture
+      writeIORef (fixtureNeverConfirm lostFixture) [coordinate]
+      writeIORef (fixtureLoseApplyResponse lostFixture) [coordinate]
+      lostVerified <- mustAdmitDefault lostFixture intent
+      executeVerifiedProviderIntent (fixtureBoundary lostFixture) lostVerified
+        `shouldReturn` Left
+          ( ProviderIntentExecutionMutationNotConfirmed
+              "provider apply response unavailable: injected response loss after apply; still missing"
+          )
+
     it "fails closed on session acquisition, read-only failure, or invalid evidence" $ do
       sessionFixture <- freshFixture
       writeIORef (fixtureSessionFailure sessionFixture) (Just "session unavailable")
@@ -1003,6 +1028,7 @@ data Fixture = Fixture
   , fixtureCalls :: !(IORef [(Text, ProviderIntentCoordinate)])
   , fixtureApplied :: !(IORef [ProviderIntentCoordinate])
   , fixtureLoseApplyResponse :: !(IORef [ProviderIntentCoordinate])
+  , fixtureFailApply :: !(IORef [ProviderIntentCoordinate])
   , fixtureUnobservable :: !(IORef [ProviderIntentCoordinate])
   , fixturePostApplyUnobservable :: !(IORef [ProviderIntentCoordinate])
   , fixtureNeverConfirm :: !(IORef [ProviderIntentCoordinate])
@@ -1020,6 +1046,7 @@ freshFixture =
     <*> newIORef 0
     <*> newIORef 0
     <*> newIORef Nothing
+    <*> newIORef []
     <*> newIORef []
     <*> newIORef []
     <*> newIORef []
@@ -1095,6 +1122,14 @@ fixtureCapabilities fixture =
         readOnly fixture ("validation-zone-observe:" <> namePrefix)
     , reapValidationHostedZonesCapability = \namePrefix ->
         mutation fixture ("validation-zone-reap:" <> namePrefix)
+    , ensureValidationHostedZoneCapability = \nonce baseZone ->
+        mutation fixture ("validation-zone-ensure:" <> nonce <> ":" <> baseZone)
+    , observeSesInviteMailCapability = \bucket recipient ->
+        readOnly fixture ("ses-invite-observe:" <> bucket <> ":" <> recipient)
+    , reapSesInviteMailCapability = \bucket recipient ->
+        mutation fixture ("ses-invite-reap:" <> bucket <> ":" <> recipient)
+    , ensureRetainedEbsVolumesCapability = \volumeType specs ->
+        mutation fixture ("retained-ebs-ensure:" <> volumeType <> ":" <> specs)
     , observeRetainedEbsVolumesCapability = \lifecycleValue ->
         readOnly fixture ("retained-ebs-observe:" <> lifecycleValue)
     , observeEksIamRoleFamilyCapability = \roleNames policyNames ->
@@ -1166,9 +1201,14 @@ mutation fixture label =
         modifyIORef' (fixtureCalls fixture) (("apply:" <> label, coordinate) :)
         modifyIORef' (fixtureApplied fixture) (insertUnique coordinate)
         loseResponse <- elem coordinate <$> readIORef (fixtureLoseApplyResponse fixture)
-        if loseResponse
-          then pure (Left "injected response loss after apply")
-          else pure (Right ())
+        failApply <- elem coordinate <$> readIORef (fixtureFailApply fixture)
+        pure $
+          if loseResponse
+            then Left (ApplyResponseLost "injected response loss after apply")
+            else
+              if failApply
+                then Left (ApplyFailed "injected apply failure")
+                else Right ()
     }
 
 readOnly :: Fixture -> Text -> ProviderReadOnly IO Text
@@ -1198,6 +1238,7 @@ expectedExecutionResult intent = case intent of
   ObservePublicARecord _ -> ProviderIntentExecutionObserved coordinate evidence
   IssueEksClientAuth _ -> ProviderIntentExecutionObserved coordinate evidence
   ObserveTestEbsVolumes _ -> ProviderIntentExecutionObserved coordinate evidence
+  ObserveSesInviteMail _ _ -> ProviderIntentExecutionObserved coordinate evidence
   ObserveEksClusterIdentity _ -> ProviderIntentExecutionObserved coordinate evidence
   ObserveNativeStackFamily _ _ -> ProviderIntentExecutionObserved coordinate evidence
   _ -> ProviderIntentExecutionApplied coordinate evidence
@@ -1231,6 +1272,8 @@ expectedCalls intent =
         ObserveEksClusterIdentity _ ->
           [call "session-open", call ("read:" <> labelFor intent), call "session-close"]
         ObserveNativeStackFamily _ _ ->
+          [call "session-open", call ("read:" <> labelFor intent), call "session-close"]
+        ObserveSesInviteMail _ _ ->
           [call "session-open", call ("read:" <> labelFor intent), call "session-close"]
         _ ->
           [ call "session-open"
@@ -1400,6 +1443,10 @@ allIntents =
       )
   , ObserveNativeStackFamily nativeTestRef awsTestConfig
   , ReapNativeStackFamily nativeTestRef awsTestConfig ["vpc/vpc-fixture"]
+  , EnsureValidationHostedZone "1759900000" "example.test"
+  , ObserveSesInviteMail "capture-bucket" "test-1759900000@receive.example.test"
+  , ReapSesInviteMail "capture-bucket" "test-1759900000@receive.example.test"
+  , EnsureRetainedEbsVolumes "gp3" "pv-minio-0:30:ca-central-1a,pv-vault-0:10:ca-central-1a"
   ]
 
 -- The v2 action vocabulary in wire-ordinal order. New actions append to the
@@ -1533,6 +1580,14 @@ labelFor intent = case intent of
     "dns01-challenge-observe:" <> zoneId <> ":" <> recordNamePrefix
   ObserveNativeStackFamily _ _ -> "native-stack-family-observe"
   ReapNativeStackFamily {} -> "native-stack-family-reap"
+  EnsureValidationHostedZone nonce baseZone ->
+    "validation-zone-ensure:" <> nonce <> ":" <> baseZone
+  ObserveSesInviteMail bucket recipient ->
+    "ses-invite-observe:" <> bucket <> ":" <> recipient
+  ReapSesInviteMail bucket recipient ->
+    "ses-invite-reap:" <> bucket <> ":" <> recipient
+  EnsureRetainedEbsVolumes volumeType specs ->
+    "retained-ebs-ensure:" <> volumeType <> ":" <> specs
 
 readinessLabel :: ProviderReadinessProbe -> Text
 readinessLabel probe = case probe of

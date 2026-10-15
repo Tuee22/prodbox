@@ -97,6 +97,7 @@ import Prodbox.ControlPlane.TlsRetentionWorkflowAuthorityEndpoint
 import Prodbox.ControlPlane.TlsTargetAgentClient
   ( TlsTargetAgentClient (..)
   , TlsTargetAgentClientError (..)
+  , TlsTargetAgentHttpResponseObservation (..)
   , classifyTlsTargetAgentHttpStatus
   , renderTlsTargetAgentClientCause
   )
@@ -1236,6 +1237,39 @@ controlPlaneTlsRetentionEndpointSuite =
                        , "prepare-selected"
                        , "rewrap-auth-failed"
                        ]
+    -- The 2026-10-11 live state: the Authority's reference is v4, and the next
+    -- two slots hold envelopes from an earlier epoch that nothing this control
+    -- plane holds can open. One bounded successor is admitted past the first and
+    -- a second refuses, so every retain refused, and with it the chart delete
+    -- that runs one, to preserve a certificate the reference already preserves.
+    it
+      "TLS-RETENTION-STACKED-STALE-SLOTS-2026-10-11 retains nothing new when the live certificate is the committed one"
+      $ do
+        (workflow, events) <- staleSlotsWorkflow sameCertificate
+        retainPublicEdgeTlsWorkflow workflow KeyRotationNotApproved
+          `shouldReturn` Right (TlsWorkflowRetainedUnchanged staleSlotsCurrent)
+        eventLog <- readIORef events
+        -- Nothing was staged, stored or promoted: the refusal was reconsidered, not worked around.
+        filter (`elem` ["stage", "store", "promote"]) eventLog `shouldBe` []
+        eventLog `shouldContain` ["observe-slot-5", "observe-slot-6", "recheck-live-certificate"]
+
+    it
+      "TLS-RETENTION-STACKED-STALE-SLOTS-2026-10-11 still refuses by name when the certificate has changed"
+      $ do
+        (workflow, events) <- staleSlotsWorkflow renewedCertificate
+        retainPublicEdgeTlsWorkflow workflow KeyRotationNotApproved
+          `shouldReturn` Left (TlsWorkflowRetentionVersionOccupied (RetentionVersion 6))
+        eventLog <- readIORef events
+        eventLog `shouldContain` ["recheck-live-certificate"]
+        filter (`elem` ["stage", "store", "promote"]) eventLog `shouldBe` []
+
+    it
+      "TLS-RETENTION-STACKED-STALE-SLOTS-2026-10-11 keeps the refusal when the certificate cannot be read again"
+      $ do
+        (workflow, _events) <- staleSlotsWorkflow unreadableCertificate
+        retainPublicEdgeTlsWorkflow workflow KeyRotationNotApproved
+          `shouldReturn` Left (TlsWorkflowRetentionVersionOccupied (RetentionVersion 6))
+
     it "adopts a pre-outbox version only after exact Agent apply/read-back proof" $ do
       events <- newIORef ([] :: [String])
       authorityState <- newIORef TlsRetentionEmpty
@@ -3116,6 +3150,122 @@ targetIntentAuthorityIngressArm =
     , "        - protocol: TCP"
     , "          port: lifecycle"
     ]
+
+-- | What the selected Agent reports for the live certificate on the second read
+-- the unchanged-certificate check makes.
+data LiveCertificate
+  = LiveCertificateIdentical
+  | LiveCertificateRenewed
+  | LiveCertificateUnreadable
+
+sameCertificate, renewedCertificate, unreadableCertificate :: LiveCertificate
+sameCertificate = LiveCertificateIdentical
+renewedCertificate = LiveCertificateRenewed
+unreadableCertificate = LiveCertificateUnreadable
+
+-- | The committed reference of the stacked-stale-slots scenario.
+staleSlotsCurrent :: RetainedTlsRef
+staleSlotsCurrent = referenceFor 4 (sampleEnvelope "current-v4" "vault:v1:current-v4")
+
+-- | A workflow over a store whose slots 5 and 6 hold envelopes no key here
+-- opens. The first read of the live certificate (while attempting slot 5) always
+-- sees the committed certificate; the second (the unchanged-certificate check)
+-- sees what the argument says. Anything that would stage, store or promote
+-- records its event and then fails the test by erroring.
+staleSlotsWorkflow
+  :: LiveCertificate -> IO (TlsRetentionWorkflow IO, IORef [String])
+staleSlotsWorkflow secondRead = do
+  events <- newIORef ([] :: [String])
+  selectedReads <- newIORef (0 :: Int)
+  protectedPrivate <- newIORef ByteString.empty
+  let transit =
+        TlsDekTransitBoundary
+          { tlsDekTransitEncrypt = \bytes -> do
+              writeIORef protectedPrivate bytes
+              pure (Right "vault:v1:prepared-stale-slots")
+          , tlsDekTransitDecrypt = \_ -> Right <$> readIORef protectedPrivate
+          }
+  prepared <- mustRight <$> prepareTlsDekExchange transit
+  dekEnvelope <-
+    mustRight
+      <$> sealTlsDekForDestination
+        (tlsDekPreparedPublicKey prepared)
+        (ByteString.replicate 32 5)
+  let committedCertificate = retainedCert staleSlotsCurrent
+      renewed = CertIdentity "renewed-serial" "renewed-spki" 2100000000
+      receiptFor certificate =
+        TlsTargetRetainReceipt
+          { tlsTargetRetainedVersion = RetentionVersion 5
+          , tlsTargetRetainedCertificate = certificate
+          , tlsTargetRetainedSource = SourceSecretRef "recreated-uid" "recreated-rv"
+          , tlsTargetRetainedCertificateCiphertext = "discarded-fresh-ciphertext"
+          , tlsTargetRetainedDekEnvelope = dekEnvelope
+          }
+      staleOccupant slot =
+        sampleEnvelope
+          ("stale-v" <> ByteString8.pack (show (slot :: Int)))
+          ("vault:v1:stale-v" <> ByteString8.pack (show slot))
+      authorityClient =
+        TlsRetentionAuthorityClient
+          { observeTlsRetentionCurrent = do
+              recordEvent events "observe-authority"
+              pure (Right (TlsRetentionCurrent staleSlotsCurrent))
+          , stageTlsRetentionCurrent = \_ _ _ -> recordEvent events "stage" >> error "must not stage"
+          , stageTlsRetentionAfterUnrecoverableLegacy = \_ _ _ _ _ -> error "must not stage recovery"
+          , stageTlsRetentionAfterPendingCollision = \_ _ _ _ -> error "must not recover a collision"
+          , stageTlsRetentionAfterUnopenableVersion = \_ _ _ _ -> error "must not skip a second time"
+          , stageTlsRetentionTerminalReplacement = \_ _ _ _ _ -> error "must not replace"
+          , promoteTlsRetentionCurrent = \_ _ _ -> recordEvent events "promote" >> error "must not promote"
+          }
+      adapterClient =
+        TlsRetentionClient
+          { observeTlsRetentionVersion = \_ -> error "must not observe the legacy lane"
+          , observeTlsRetentionAuthorityVersion = \(RetentionVersion slot) -> do
+              recordEvent events ("observe-slot-" <> show slot)
+              pure (Right (TlsVersionEnvelopePresent (staleOccupant (fromIntegral slot)) "stale-etag"))
+          , storeTlsRetention = \_ _ -> recordEvent events "store" >> error "must not store"
+          , replaceTlsRetentionTerminal = \_ _ _ -> error "must not replace"
+          , restoreTlsRetention = \_ -> error "must not read back a stale occupant"
+          }
+      homeAgent =
+        TlsTargetAgentClient
+          { prepareTlsDekDestination = pure (Right prepared)
+          , retainSelectedPublicEdgeTls = \_ _ -> error "the home Agent holds no source"
+          , wrapRetainedHomeTlsDek = \_ _ -> error "must not wrap"
+          , rewrapRetainedHomeTlsDek = \_ _ ->
+              pure (Left TlsTargetAgentClientHomeRewrapCiphertextAuthenticationFailed)
+          , restoreSelectedPublicEdgeTls = \_ _ _ _ -> error "must not restore"
+          , verifySelectedPublicEdgeTlsSource = \_ -> error "must not verify"
+          }
+      selectedAgent =
+        TlsTargetAgentClient
+          { prepareTlsDekDestination = pure (Right prepared)
+          , retainSelectedPublicEdgeTls = \_ _ -> do
+              reads' <- atomicModifyIORef' selectedReads (\n -> (n + 1, n + 1))
+              -- The first read is the attempt on slot 5; every later read is the recheck.
+              if reads' <= 1
+                then pure (Right (receiptFor committedCertificate))
+                else do
+                  recordEvent events "recheck-live-certificate"
+                  pure $ case secondRead of
+                    LiveCertificateIdentical -> Right (receiptFor committedCertificate)
+                    LiveCertificateRenewed -> Right (receiptFor renewed)
+                    LiveCertificateUnreadable ->
+                      Left (TlsTargetAgentClientHttpStatus 503 TlsTargetAgentHttpResponseOther)
+          , wrapRetainedHomeTlsDek = \_ _ -> error "must not wrap"
+          , rewrapRetainedHomeTlsDek = \_ _ -> error "must not rewrap"
+          , restoreSelectedPublicEdgeTls = \_ _ _ _ -> error "must not apply"
+          , verifySelectedPublicEdgeTlsSource = \_ -> error "must not verify"
+          }
+  pure
+    ( TlsRetentionWorkflow
+        { tlsWorkflowAuthority = authorityClient
+        , tlsWorkflowAdapter = adapterClient
+        , tlsWorkflowRetainedHomeAgent = homeAgent
+        , tlsWorkflowSelectedAgent = selectedAgent
+        }
+    , events
+    )
 
 sampleEnvelope :: ByteString -> ByteString -> TlsSealedEnvelope
 sampleEnvelope certificate wrapped = mustRight (mkTlsSealedEnvelope certificate wrapped)

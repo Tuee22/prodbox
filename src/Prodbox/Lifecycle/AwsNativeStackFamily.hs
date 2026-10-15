@@ -742,7 +742,7 @@ reapSubzoneFamily runner ref config = case (providerNativeStackFamilyHostedZoneI
     delegation <- exactParentDelegationValue runner parentZoneId subzoneName
     case delegation of
       Left detail -> pure (Left detail)
-      Right Nothing -> deleteZone zoneId
+      Right Nothing -> pruneThenDeleteZone zoneId
       Right (Just recordSet) -> do
         let changeBatch =
               object
@@ -766,9 +766,74 @@ reapSubzoneFamily runner ref config = case (providerNativeStackFamilyHostedZoneI
             ]
         case deleted of
           Left detail -> pure (Left detail)
-          Right () -> deleteZone zoneId
+          Right () -> pruneThenDeleteZone zoneId
   _ -> pure (Left "native subzone reaper omitted its exact typed configuration")
  where
+  pruneThenDeleteZone zoneId = do
+    pruned <- pruneZoneRecordSets zoneId
+    case pruned of
+      Left detail -> pure (Left detail)
+      Right () -> deleteZone zoneId
+
+  -- Route 53 refuses to delete a hosted zone that still holds any record other
+  -- than its SOA and NS (HostedZoneNotEmpty). The per-run subzone collects the
+  -- public-edge A record and the DNS01 challenge records, none of which the stack
+  -- declares, so the zone is emptied before it is deleted. What is deleted is every
+  -- record set the listing returns other than a SOA or NS, whoever wrote it: this
+  -- runs only for the zone the ownership manifest admitted and whose name matched
+  -- the observation, which is what bounds it. Measured with the installed AWS CLI
+  -- against a mock endpoint: it pages the listing itself and applies @--query@ to
+  -- the merged result, so the output is one array. A non-apex NS record (a child
+  -- delegation, which nothing here writes) is kept by the filter and would make the
+  -- zone delete fail closed with HostedZoneNotEmpty.
+  pruneZoneRecordSets zoneId = do
+    listed <-
+      runAwsNativeStackFamilyCommand
+        runner
+        [ "route53"
+        , "list-resource-record-sets"
+        , "--hosted-zone-id"
+        , Text.unpack zoneId
+        , "--query"
+        , "ResourceRecordSets[?Type != 'SOA' && Type != 'NS']"
+        , "--output"
+        , "json"
+        ]
+    case processExitCode listed of
+      ExitFailure _
+        | knownMissing listed -> pure (Right ())
+        | otherwise -> pure (Left (renderFailure "list Route 53 hosted zone records" listed))
+      ExitSuccess ->
+        case eitherDecodeStrict' (TextEncoding.encodeUtf8 (Text.pack (processStdout listed))) of
+          Right (Array records)
+            | Vector.null records -> pure (Right ())
+            | otherwise ->
+                runExactLayer
+                  runner
+                  "delete Route 53 hosted zone records"
+                  [
+                    [ "route53"
+                    , "change-resource-record-sets"
+                    , "--hosted-zone-id"
+                    , Text.unpack zoneId
+                    , "--change-batch"
+                    , LazyByteStringChar8.unpack
+                        ( encode
+                            ( object
+                                [ "Comment" .= ("prodbox exact native stack-family cleanup" :: Text)
+                                , "Changes"
+                                    .= [ object ["Action" .= ("DELETE" :: Text), "ResourceRecordSet" .= record]
+                                       | record <- Vector.toList records
+                                       ]
+                                ]
+                            )
+                        )
+                    ]
+                  ]
+          Right _ -> pure (Left "native subzone reaper read a record listing that was not an array")
+          Left detail ->
+            pure (Left ("native subzone reaper could not read the zone's records: " <> Text.pack detail))
+
   deleteZone zoneId =
     runExactLayer
       runner

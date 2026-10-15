@@ -829,8 +829,6 @@ classifyPrecleanAuditError auditError = case auditError of
     AwsAdminWorkerSessionClosurePrecleanObservationFailed
   VaultAccessorObservationFailed ->
     AwsAdminWorkerSessionClosurePrecleanObservationFailed
-  VaultAccessorClassificationAbsent ->
-    AwsAdminWorkerSessionClosurePrecleanClassificationFailed
   VaultAccessorClassificationUnavailable ->
     AwsAdminWorkerSessionClosurePrecleanClassificationFailed
   VaultAccessorClassificationFailed ->
@@ -856,8 +854,6 @@ classifyCleanupAuditError auditError = case auditError of
     AwsAdminWorkerSessionClosureCleanupObservationFailed
   VaultAccessorObservationFailed ->
     AwsAdminWorkerSessionClosureCleanupObservationFailed
-  VaultAccessorClassificationAbsent ->
-    AwsAdminWorkerSessionClosureCleanupClassificationFailed
   VaultAccessorClassificationUnavailable ->
     AwsAdminWorkerSessionClosureCleanupClassificationFailed
   VaultAccessorClassificationFailed ->

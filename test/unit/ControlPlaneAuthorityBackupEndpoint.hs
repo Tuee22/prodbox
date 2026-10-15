@@ -696,6 +696,22 @@ freshMemoryTransport loseFirstResponse = do
                   writeIORef objectsRef (Map.insert key (version, bytes) objects)
                   lose <- atomicModifyIORef' loseResponseRef (False,)
                   pure $ if lose then Left "PUT response lost" else Right AdapterPutApplied
+          , replaceAdapterObjectIfVersion = \objectName expectedVersion bytes -> do
+              modifyIORef' putCount (+ 1)
+              let key = adapterObjectNameText objectName
+              objects <- readIORef objectsRef
+              case Map.lookup key objects of
+                Just (currentVersion, _)
+                  | currentVersion == expectedVersion -> do
+                      let version =
+                            mustRight
+                              ( mkAdapterObjectVersion
+                                  ("etag-replaced-" <> Text.pack (show (ByteString.length bytes)))
+                              )
+                      writeIORef objectsRef (Map.insert key (version, bytes) objects)
+                      lose <- atomicModifyIORef' loseResponseRef (False,)
+                      pure $ if lose then Left "PUT response lost" else Right AdapterPutApplied
+                _ -> pure (Right AdapterPutConflict)
           , adapterObjectStoreReadiness = pure DedicatedAdapterReady
           }
   pure (transport, objectsRef, putCount)

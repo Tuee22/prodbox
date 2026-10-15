@@ -419,6 +419,12 @@ supported path.
 
 None.
 
+4. **The observer is complete code-locally (2026-10-07, four landings).** It counts nothing until a live
+   campaign runs: two qualifying cycles on one frozen identity are recorded in the ledger, read back by
+   the receipt, and only then does the activation (the `runNativeDeleteCascade` conversion, the legacy
+   deletion, program-tag convergence and `JournalLeaseEmitter` selection) become admissible, in that order.
+   The count of qualifying cycles remains zero.
+
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
@@ -692,6 +698,81 @@ and remove the legacy generic/home path. Sprint `7.36` supplies the exact AWS ad
   Provider round trips inside a destructive path and make the *owed* question depend on the Provider
   Worker still serving. It changes no exit — the declared substrate already decides — so it is
   narration, and narration is not worth that dependency without a live cycle to measure it on.
+
+- **Make "two consecutive qualifying cycles on one frozen identity" a mechanical check (judged design
+  2026-10-07; all four landings done 2026-10-07).** The requirement had no consumer. The runner wrote a
+  per-label artifact only when the candidate returned success, no module read one back, and a failed or
+  interrupted attempt left no trace, so a failure between two successes was invisible. Worse, the artifact
+  could never satisfy an equality check: its topology and wiring digests derive from the cleanup run id,
+  owner and terminal permit, which derive from the cycle label, so no two cycles of one deployment had
+  equal identities. Four landings:
+  1. **Identity foundations (landed).** A cycle's identity is built from what does not name a run: the
+     executable source (documentation left out, so recording a cycle in the plan does not reset the
+     count), the generated config, the component images, the *shape* of the compiled program computed with
+     the run id, owner and permit held constant (`cascadeCandidateShapeSummary`), the resource envelope, the
+     load and fault digest, and the digests derived from the source. Git head, the dirty bit, the whole-tree
+     digest and the binary digest are recorded beside each cycle and never keyed. One codec
+     (`Prodbox.Test.Qualification.CascadeCycleArtifact`, format version 2; every version-1 artifact is
+     stale) writes and reads the artifact, a bootstrap-seed loader recomputes the local parts in the runner
+     and the observer alike, and the executable scope shares the full scope's allowlist with its own policy
+     identifier (the full scope's policy bytes are unchanged and pinned). Focused groups **30/30**;
+     canonical `prodbox dev check` exits 0 (primary unit **5,361/5,361**).
+  2. **Evidence ledger and observer (landed).** A hash-chained, append-only ledger
+     (`.test-data/qualification/cascade-cycles.ledger`, git-ignored, so appending never changes the source it
+     records) holds a `Begun` record appended and made durable immediately before the candidate runs and a
+     `Closed` record after the artifact is written and the executable source captured again. An attempt with
+     no close is interrupted; one whose source moved is `source-drifted`; and the judge walks from the newest
+     attempt, so a failure, an interruption or a drift anywhere after a pair resets the count to zero. A
+     label that passed is never run again, and a label that failed resumes as attempt `n+1`. The runner
+     refuses before anything is recorded when the bootstrap seed config is not the in-force config (the
+     identity could not be recomputed after the cascade), and its result block now prints `ATTEMPT`,
+     `IDENTITY_KEY`, `CYCLE_OUTCOME`, `LEDGER_ENTRIES` and `LEDGER_TIP` and exits zero only for a passed
+     cycle. The order of effects (begin, candidate, artifact, recapture, close) is proved by a driver that is
+     generic in its monad. The read-only `prodbox test integration cascade-qualification-receipt` leaf
+     reports the verdict, what it recomputed and what it could only compare, and sits outside `test all`
+     because its natural answer is non-zero while the campaign is pending. Focused groups **60/60**;
+     canonical `prodbox dev check` exits 0 (primary unit **5,393/5,393**).
+  3. **Witness (landed).** `qualifyReplacement` takes the sealed `ConsecutiveCycleProof` that the ledger's
+     judge alone mints, instead of an evidence value anyone could construct, and is the only producer of
+     `QualificationPassed`. The receipt runs the typed cutover machine in memory against the witness
+     (`SIMULATED_PHASE` and one `STAGE=... ADMISSION=` line per stage), so a report cannot say `QUALIFIED`
+     while the machine would refuse. These are the first production callers of `initialCutoverState`,
+     `activateReplacement` and `admitCutoverStage`.
+  4. **Cutover marks (landed).** Activation, legacy deletion and post-activation qualification are recorded
+     in the same ledger by key and replayed. The typed state is indexed by an identity that cannot be
+     recomputed once the activating edit lands, so a mark carries the full key of the pair that licensed
+     it and the *local* key of the tree it was recorded on (the executable source and what derives from
+     it, without the images and the program shape, which are unknowable until a cycle observes them and
+     are rebuilt by the very edits a cutover makes). After an activation no cycle counts until the
+     deletion is recorded; after the deletion only cycles on that tree count; every mark is a boundary a
+     walk does not cross. `PRODBOX_TEST_CUTOVER_RECORD=activated|legacy-route-deleted|post-activation-qualified`
+     records one step through the receipt leaf, re-running the whole observation first, requiring
+     `PRODBOX_TEST_CASCADE_QUALIFICATION_ANCHOR` to name a ledger entry the plan recorded, and driving the
+     typed machine wherever it can be driven with real identities (the deletion cannot, and is checked by
+     its keys, an empty post-activation scan and a moved local key). A lock-step test runs every order
+     of the three transitions through the typed machine and the ledger and requires the same decision at
+     every step. The clean-room validation now selects its scan from the ledger's phase (the exact
+     pre-activation inventory while the legacy source is in the tree, none of it afterwards), prints an
+     informational ledger summary, and fails on a ledger it cannot read; with no ledger it scans exactly
+     what it always has. Landings 3 and 4 were gated together: focused groups **510/510** across the
+     handoff, ledger, observer and CLI-surface suites; canonical `prodbox dev check` exits 0 (primary unit
+     **5,406/5,406**).
+
+  **Built defaults that the operator may change before the first counted cycle** (changing D1 or D2
+  resets the count): D3, a strict streak, so any attempt of any label that did not pass breaks it,
+  including a resumed label; D4, the witness is minted from the cycle proof only and the frozen
+  counterexample record stays its own gate (`test integration control-plane-counterexample`), which
+  Standard P's "complete validator" wording would have to say; D5, a cutover mark requires an anchor;
+  D6, a process that cannot recompute the current tree refuses and never reports an unchecked verdict;
+  D7, no version-1 artifact is migrated.
+
+  **Pending operator ratification before the first counted cycle** (changing either resets the count):
+  the key covers the executable surface and records git provenance. Standard P's "Required evidence" today
+  says each identity binds Git HEAD, the clean/dirty flag and a whole-tree manifest digest. The proposed
+  amendment keys the executable-surface manifest and records those three beside it, because agents never
+  commit and recording a cycle in the plan edits a governed document that a whole-tree key would count as
+  a different deployment. The canonical key policy is one constant (`canonicalKeyPolicy`), so either
+  decision is a one-line change.
 
 ### Validation
 
@@ -7648,6 +7729,14 @@ and remove the legacy generic/home path. Sprint `7.36` supplies the exact AWS ad
    v4 is also authenticated-unopenable. The exact-v4 conditional replacement repair is now landed
    and locally validated without a v5/search. Re-cross it live, then restart the two-cycle count at
    zero; no activation step is licensed before both qualifying cycles exist.
+4. Two gateway findings of Sprint `5.52`'s third audit are handed to this sprint, because both belong to the
+   cutover. (a) The stability gate has zero restart tolerance and latches "unobservable" on a single failed
+   `kubectl` read, so a retained gateway pod with a restart count of one is refused at the baseline sample and the
+   `LegacyModelBEmitter` heap leak (a restart about every 2.4 hours) fails any run longer than that. A tolerance or
+   a baseline rule is the operator's decision; the leak's repair is the `JournalLeaseEmitter` cutover this sprint
+   owns. (b) The gateway's Lifecycle Authority endpoint names the gateway's own namespace, and the Authority's
+   NetworkPolicy would refuse it from there; it is reached only on the `JournalLeaseEmitter` path, so the
+   cutover must set the endpoint and add the ingress rule together.
 
 ## Documentation Requirements
 
@@ -7671,9 +7760,9 @@ and remove the legacy generic/home path. Sprint `7.36` supplies the exact AWS ad
 - Move legacy rows to Completed only after removal and current-revision qualification satisfy the
   new governance rule.
 
-## Sprint 6.6: A Cascade With No Cluster Can Still Ask AWS [📋 Planned]
+## Sprint 6.6: A Cascade With No Cluster Can Still Ask AWS [✅ Done]
 
-**Status**: Planned. New work on Phase `6`'s already-open surface — the phase is reopened and active
+**Status**: Done (2026-10-07). New work on Phase `6`'s already-open surface — the phase is reopened and active
 on Sprint `6.5`, so this row opens no reopen of its own. Sprint `6.5` authored every symbol this
 sprint changes, on 2026-09-14, and its own deliverable bullet already records the owed half.
 **Doctrine**: [Lifecycle Reconciliation Doctrine §5, "Mandatory Entry Contracts for Destructive
@@ -7682,7 +7771,9 @@ Commands"](../documents/engineering/lifecycle_reconciliation_doctrine.md#5-manda
 short-circuit"](../documents/engineering/lifecycle_reconciliation_doctrine.md#5a-local-only-no-install-short-circuit),
 and [Retained Storage Lifecycle Doctrine
 §7](../documents/engineering/storage_lifecycle_doctrine.md#7-the-single-retained-operator-host-root).
-**Implementation**: `src/Prodbox/CLI/Rke2.hs` and `src/Prodbox/Lifecycle/TagSweep.hs`.
+**Implementation**: `src/Prodbox/CLI/Rke2.hs` and `src/Prodbox/Lifecycle/TagSweep.hs`, with the pure
+decision in the new `src/Prodbox/Lifecycle/CascadeNoInstall.hs`, the read-only survey in the new
+`src/Prodbox/Lifecycle/RetainedRootSurvey.hs`, and the page runner in `TaggedResourceQuery.hs`.
 **Blocked by**: none.
 **Docs**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
 `documents/engineering/cli_command_surface.md`,
@@ -7729,9 +7820,71 @@ from silence, and stop the uninstall gate admitting on a sweep that was never ow
 5. The confirmed narration names the retained carve-out rather than implying an empty account.
 6. **Canonical gate.** Focused group, primary unit suite, and `prodbox dev check` at 0.
 
+### Landed (2026-10-07)
+
+The decision is pure and the effects are thin. `Prodbox.Lifecycle.CascadeNoInstall` owns the types
+and the sole producer; `Prodbox.Lifecycle.RetainedRootSurvey` is the one read-only effect;
+`Prodbox.CLI.Rke2` gathers the evidence and renders the exits. Seven readings were decided rather
+than left implicit:
+
+- **A sweep that was never owed never confirms on the no-install path.** Validation 1 and the
+  conjunction in Deliverable 2 agree once `CascadeSweepNotOwed` stops being an admitting case there:
+  it issues no query, so a confirmation built from it is minted from silence. The full cascade's
+  `decideCascadeUninstallGate` keeps admitting it, because that path has already run its destroy
+  phases against exact checkpoints. The two admitting sets differ on purpose and a unit test pins the
+  divergence.
+- **"Authored AWS coordinate" is a closed list of ten Tier-0 fields** (`route53.zone_id`,
+  `aws_substrate.{hosted_zone_id,subzone_name,profile}`, `aws.region`,
+  `pulumi_state_backend.{region,bucket_name}`, `ses.{sender_domain,receive_subdomain,capture_bucket}`),
+  each present after its shape check. A blank field is not authored; a malformed one is an unreadable
+  scope, which is owed and never confirmable. The state backend key prefix is excluded because its
+  shipped default is non-empty. This widens the full cascade as well: a host that authors a Route 53
+  zone id and no profile now owes the sweep, and without an admin credential its uninstall is
+  withheld where it used to be admitted offline.
+- **The no-install arm reads the Tier-0 configuration, never the in-force config.** The in-force
+  reader asks the Lifecycle Authority, which does not exist on this path, so it would always answer
+  unreadable and the arm could never confirm.
+- **Region coverage is satisfiable and non-tautological.** The sweep issues one query set per
+  distinct authored region plus the run region and the global-service region, and coverage is
+  computed from the inputs the runner actually issued.
+- **Account coverage is the credential's account, checked against authored hosted zones.** No
+  coordinate names an account id. Where a zone is authored the run reads it once with the credential,
+  and a zone that is not visible refuses; with no zone authored the narration says the account was
+  not verified. The full cascade does not run this probe.
+- **Every refusal that needs no network answer precedes the first credential prompt**, a one-line
+  announcement precedes the prompt, credential acquisition that throws becomes the typed "not run"
+  refusal, and every AWS call on the path runs under a wall-clock bound, so a path that used to be
+  offline cannot hang. The fan-out asks each region-and-filter question once and stops at the first
+  failure.
+- **"Every retained root examined" is a derived, read-only set.** The producer derives the candidates
+  (configured root, `.data/`, `.test-data/`) itself, a non-recursive look at the repository root's
+  children finds a root left behind by an earlier configuration, an absent root is named, and an
+  unexaminable one blocks. "Unexaminable" includes a root whose path cannot be searched: the
+  directory package reports permission denied as absent, so the survey tells a definite "does not
+  exist" from every other failure. Nothing is written and no verdict is persisted.
+- **An unreadable declaration never stands behind a clean full-cascade sweep.** A sweep run without
+  knowing the authored regions has asked only the run region and the global-service region, so its
+  clean answer is reported as unconfirmed and the uninstall is withheld.
+
+Focused group **32/32**; primary unit **5,301/5,301** with the known-flaky SSH case excluded; and
+the sprint's host-only trace runs through the installed binary with no RKE2 install and a fake `aws`
+that answers only the two read-only calls this arm makes: four integration cases (refuse offline
+with nothing authored, confirm after a clean read-only query, refuse when the credential cannot see
+the authored zone, refuse and list a resource the sweep finds) plus the updated Sprint `4.88` case,
+all in `prodbox test integration cli`, which passes **74/74**. Canonical `prodbox dev check` exits 0. An adversarial review
+of the first implementation found fifteen real defects, none a wrong zero exit: the survey read a
+root it could not search as absent, the help text and six documents still said a no-install cascade
+always exits non-zero, credential acquisition could throw after the announcement, and the fan-out
+re-asked the global region for every input. All are fixed.
+`AGENTS.md`, the root `README.md`, `cli_command_surface.md`, `lifecycle_reconciliation_doctrine.md`
+§5a/§5a.0, `test_topology_doctrine.md` §4 and `storage_lifecycle_doctrine.md` §7 rule 13 now state the
+shipped two-exit contract. **Live-proof: pending** (unchanged): a repeat cascade against a real
+account. **Deployment qualification: pending — invalidated** on destructive cleanup and lifecycle
+orchestration.
+
 ### Remaining Work
 
-1. Everything above; nothing is started.
+None. The live demonstration is a `Live-proof: pending` note and is non-blocking under Standard O.
 
 ## Documentation Requirements
 

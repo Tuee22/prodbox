@@ -21,6 +21,7 @@ module Prodbox.Lifecycle.Teardown.Model
   , RegisteredResourceKey (..)
   , registeredResourceKeyText
   , registeredResourceKeyFromText
+  , registeredResourceKeyRequiresDnsZone
   , LifecycleAuthority (..)
   , ObservationAuthority (..)
   , ManagedResourceCoordinate (..)
@@ -230,6 +231,29 @@ registeredResourceKeyText key = case key of
   AwsEksIamRoleFamilyKey -> "aws-eks-iam-role-family"
   AwsEksLoadBalancerControllerFamilyKey ->
     "aws-eks-load-balancer-controller-family"
+
+-- | Whether a registered family cannot be observed or removed without the
+-- hosted zone the run names.
+--
+-- The two families that need one refuse a zoneless scope when their request is
+-- built rather than defaulting, because a sweep in the wrong zone is either a
+-- no-op that reads as absence or a deletion in an operator's parent zone. A
+-- harness whose generated configuration names no zone therefore cannot compile
+-- one program over every selected key; it partitions on this predicate. The
+-- case is exhaustive on purpose, so registering a new family forces the
+-- decision here, and a unit case holds it equal to the adapters' refusals.
+registeredResourceKeyRequiresDnsZone :: RegisteredResourceKey -> Bool
+registeredResourceKeyRequiresDnsZone key = case key of
+  LocalLinuxRke2Key -> False
+  AwsEksKey -> False
+  AwsEksSubzoneKey -> True
+  AwsTestKey -> False
+  AwsEbsPerRunTestKey -> False
+  AwsEbsProductionRetainedKey -> False
+  AwsDnsValidationZoneKey -> False
+  AwsDns01ChallengeRecordKey -> True
+  AwsEksIamRoleFamilyKey -> False
+  AwsEksLoadBalancerControllerFamilyKey -> False
 
 -- | The inverse of 'registeredResourceKeyText', over the closed enumeration.
 --

@@ -32,6 +32,7 @@ import Prodbox.ControlPlane.AuthorityProviderEndpoint
   , dispatchAuthorityProviderIntentExecutedOwnedBy
   , dispatchAuthorityProviderIntentOwnedBy
   , dispatchAuthorityProviderIntentWithOperation
+  , renderAuthorityProviderClientError
   )
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   ( ExternalLifecycleAuthorityCaller
@@ -65,7 +66,8 @@ renderProviderCallerError err = case err of
   ProviderCallerAuthenticationFailed detail ->
     renderLifecycleAuthorityAuthenticationError detail
   ProviderCallerDispatchFailed detail ->
-    "Lifecycle Authority Provider dispatch failed: " ++ show detail
+    "Lifecycle Authority Provider dispatch failed: "
+      ++ Text.unpack (renderAuthorityProviderClientError detail)
 
 dispatchHostProviderIntent
   :: ExternalLifecycleAuthorityCaller
@@ -161,11 +163,15 @@ dispatchAuthenticatedProviderIntent authentication rawSubmissionKey intent =
         Right (Left err) -> Left (ProviderCallerDispatchFailed err)
         Right (Right evidence) -> Right evidence
 
--- | Allocate one bounded invocation key for an intrinsically idempotent
--- provider effect.  Public commands currently have no operation-id flag; the
--- microsecond suffix prevents an old completed observation/reconcile from
--- suppressing a later invocation while the Provider read-back still makes a
--- lost-response retry safe at the external resource boundary.
+-- | Allocate one bounded invocation key for a provider effect whose retry is
+-- safe.  Public commands currently have no operation-id flag; the microsecond
+-- suffix prevents an old completed observation/reconcile from suppressing a
+-- later invocation, so the safety of a lost-response retry is the Provider
+-- read-back's, and it is only as good as that read-back's consistency.  The
+-- retained-EBS ensure is the caller to read that carefully: its read-back is a
+-- tag listing that lags a create by seconds, so a retry inside that window can
+-- create a second volume (the ensure names the volumes it created in its failures
+-- for that reason, and Sprint `5.53` owns closing the window).
 dispatchHostProviderIntentFresh
   :: ExternalLifecycleAuthorityCaller
   -> FilePath

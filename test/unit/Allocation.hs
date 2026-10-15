@@ -16,6 +16,8 @@ module Allocation
   )
 where
 
+import Data.List (isInfixOf)
+import Data.Text qualified as Text
 import Numeric.Natural (Natural)
 import Prodbox.Capacity.Allocation
 import Prodbox.Capacity.Config qualified as C
@@ -25,7 +27,8 @@ import Prodbox.Capacity.ObservedHost qualified as Observed
 import Prodbox.Capacity.OneShotWorkerSchedulerBudget qualified as Scheduler
 import Prodbox.Capacity.Placement qualified as Placement
 import Prodbox.Capacity.Render qualified as Render
-import Prodbox.Substrate (Substrate (..))
+import Prodbox.Gateway.Emitter.Persistence qualified as Persistence
+import Prodbox.Substrate (Substrate (..), gatewayEmitterJournalMiB, gatewayNodeIdsForSubstrate)
 import TestSupport
 
 -- | A fixed epoch far enough in the future that the fixture profiles are recent.
@@ -411,6 +414,114 @@ allocationSuite =
                 (C.ResourceVector 2525 5472 11456 112640)
             )
 
+      it "Sprint 7.46 sizes the AWS gateway quota for the three emitters and their journal claims" $ do
+        -- Independent anchors, not read back from the projection. The gateway
+        -- profile is 750m / 256Mi / 512Mi request and 750m / 512Mi / 512Mi limit
+        -- per emitter, Pulsar is 250m / 1024Mi / 1024Mi request and
+        -- 500m / 2048Mi / 4096Mi limit with a 20480Mi claim, and an AWS emitter
+        -- claims a 1024Mi retained-EBS journal where a home emitter claims none.
+        --   home: 2 emitters   cpu 2*750+250 / 2*750+500, memory 2*256+1024 / 2*512+2048,
+        --         ephemeral 2*512+1024 / 2*512+4096, durable 20480
+        --   AWS:  3 emitters   cpu 3*750+250 / 3*750+500, memory 3*256+1024 / 3*512+2048,
+        --         ephemeral 3*512+1024 / 3*512+4096, durable 3*1024+20480
+        let gatewayQuota substrate =
+              Placement.planNamespaceAdmission substrate "gateway" C.defaultResourcePlan
+        gatewayQuota SubstrateHomeLocal
+          `shouldBe` Right
+            ( C.ResourceEnvelope
+                (C.ResourceVector 1750 1536 2048 20480)
+                (C.ResourceVector 2000 3072 5120 20480)
+            )
+        gatewayQuota SubstrateAws
+          `shouldBe` Right
+            ( C.ResourceEnvelope
+                (C.ResourceVector 2500 1792 2560 23552)
+                (C.ResourceVector 2750 3584 5632 23552)
+            )
+
+      it "Sprint 7.46 admits every journal claim the AWS gateway chart renders" $ do
+        -- Negative control for the durable axis: the chart's own claims, summed,
+        -- against the quota. A quota that counted only Pulsar's claim refused the
+        -- first emitter journal and left the emitter pods Pending.
+        let journalMiB node =
+              case Persistence.mkEmitterPersistenceBinding SubstrateAws (Text.pack node) of
+                Right binding ->
+                  case Persistence.persistenceJournalAccess binding of
+                    Persistence.AwsRetainedEbsClaim {Persistence.journalRequestedStorage = quantity} ->
+                      quantityMiB quantity
+                    Persistence.HomeNodePinnedHostPath _ -> 0
+                Left err -> error err
+            claims = sum (map journalMiB (gatewayNodeIdsForSubstrate SubstrateAws))
+            quotaDurable =
+              fmap
+                (C.durable_storage_mib . C.request)
+                (Placement.planNamespaceAdmission SubstrateAws "gateway" C.defaultResourcePlan)
+        claims `shouldBe` 3072
+        quotaDurable `shouldBe` Right (20480 + claims)
+        -- The home journals are host paths and claim nothing from the cluster.
+        gatewayEmitterJournalMiB SubstrateHomeLocal `shouldBe` 0
+
+      it "Sprint 7.46 refuses a plan whose gateway profile states what the substrate overrides" $ do
+        let withGateway change =
+              C.defaultResourcePlan
+                { C.workload_profiles =
+                    [ if C.profile_id profile == "gateway" then change profile else profile
+                    | profile <- C.workload_profiles C.defaultResourcePlan
+                    ]
+                }
+            withDurable mebibytes profile =
+              profile
+                { C.workload_demand = (C.workload_demand profile) {C.demanded_durable_storage_mib = mebibytes}
+                }
+        C.validateGatewayEmitterCapacity C.defaultResourcePlan `shouldBe` Right ()
+        -- Another replica count would pass the proof for pods the chart does not render.
+        mapM_
+          ( \count ->
+              C.validateGatewayEmitterCapacity (withGateway (\profile -> profile {C.replicas = count}))
+                `shouldSatisfy` isLeftOutcome
+          )
+          [1, 3]
+        -- The home journals are host paths and claim nothing from the cluster.
+        C.validateGatewayEmitterCapacity (withGateway (withDurable 1024)) `shouldSatisfy` isLeftOutcome
+        -- The refusal names the field the operator has to edit and the value it must have.
+        either
+          (isInfixOf "workload_demand.demanded_durable_storage_mib must be 0")
+          (const False)
+          (C.validateGatewayEmitterCapacity (withGateway (withDurable 1024)))
+          `shouldBe` True
+        -- A plan the validator accepts is one placement leaves exactly as authored on
+        -- the home, so the home arithmetic is the plan's whatever it says.
+        Placement.planForSubstrate SubstrateHomeLocal C.defaultResourcePlan
+          `shouldBe` C.defaultResourcePlan
+        -- On AWS the substrate's own count and journal size are applied to it.
+        fmap
+          (\profile -> (C.replicas profile, C.demanded_durable_storage_mib (C.workload_demand profile)))
+          [ profile
+          | profile <- C.workload_profiles (Placement.planForSubstrate SubstrateAws C.defaultResourcePlan)
+          , C.profile_id profile == "gateway"
+          ]
+          `shouldBe` [(3, 1024)]
+
+      it "Sprint 7.46 places the Keycloak workloads with vscode on every substrate" $ do
+        -- A dependency chart is installed into its root chart's namespace on
+        -- both substrates, so the vscode quota must carry its workloads on both.
+        let vscode substrate =
+              Placement.planNamespaceAdmission substrate "vscode" C.defaultResourcePlan
+            keycloakAlone substrate =
+              Placement.planNamespaceAdmission substrate "keycloak" C.defaultResourcePlan
+            merged =
+              Right
+                ( C.ResourceEnvelope
+                    (C.ResourceVector 1880 3888 5728 112640)
+                    (C.ResourceVector 2525 5472 11456 112640)
+                )
+        vscode SubstrateAws `shouldBe` merged
+        vscode SubstrateHomeLocal `shouldBe` merged
+        -- The standalone namespace is not a rendered one anywhere: placement
+        -- falls back to the profiles declared in it.
+        fmap (C.milli_cpu . C.request) (keycloakAlone SubstrateAws) `shouldBe` Right 1330
+        keycloakAlone SubstrateAws `shouldBe` keycloakAlone SubstrateHomeLocal
+
       it "renders the canonical seven-field quota spec from one function" $
         show (Render.resourceQuotaSpec (C.ResourceVector 1000 2048 4096 8192))
           `shouldContain` "requests.storage"
@@ -529,3 +640,12 @@ isClusterOverReserved _ = False
 isClusterOverCommitted :: Either CompileError b -> Bool
 isClusterOverCommitted (Left (ClusterOverCommitted _ _)) = True
 isClusterOverCommitted _ = False
+
+-- | A claim's storage request in MiB, from the Gi/Mi quantity the chart renders.
+quantityMiB :: Text.Text -> Natural
+quantityMiB quantity
+  | Just digits <- Text.stripSuffix "Gi" quantity = readNatural digits * 1024
+  | Just digits <- Text.stripSuffix "Mi" quantity = readNatural digits
+  | otherwise = error ("unexpected storage quantity: " ++ Text.unpack quantity)
+ where
+  readNatural = read . Text.unpack

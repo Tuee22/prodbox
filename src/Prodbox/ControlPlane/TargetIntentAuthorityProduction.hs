@@ -11,6 +11,7 @@
 -- configuration.
 module Prodbox.ControlPlane.TargetIntentAuthorityProduction
   ( productionTargetIntentIssuerBoundary
+  , retainedSesSmtpPermitOperationFromObservation
   , selectRetainedAcmeEabDeliveryIntent
   )
 where
@@ -64,8 +65,8 @@ import Prodbox.Lifecycle.Authority.RetainedMaterial
   ( RetainedDeliveryIntent
   , RetainedMaterialAggregate
   , RetainedMaterialRef
-  , RetainedMaterialSchema (RetainedAcmeEabMaterial)
-  , SRetainedMaterialSchema (SRetainedAcmeEabMaterial)
+  , RetainedMaterialSchema (RetainedAcmeEabMaterial, RetainedSesSmtpMaterial)
+  , SRetainedMaterialSchema (SRetainedAcmeEabMaterial, SRetainedSesSmtpMaterial)
   , mkRetainedMaterialRef
   , retainedDeliveryAttestationRef
   , retainedDeliveryDeadline
@@ -73,10 +74,13 @@ import Prodbox.Lifecycle.Authority.RetainedMaterial
   , retainedDeliverySourceReceipt
   , retainedDeliveryTarget
   , retainedDeliveryTargetGeneration
+  , retainedMaterialCurrent
   , retainedMaterialPendingDeliveries
   , retainedMaterialRefText
   , retainedMaterialSchemaToken
   , retainedMaterialTargetText
+  , retainedSourceOperationId
+  , retainedSourceReceiptRef
   )
 import Prodbox.Lifecycle.CheckpointAuthority
   ( LongLivedCheckpointAuthority
@@ -178,12 +182,42 @@ productionTargetIntentIssuerBoundary store authority registeredAgentIdentity rea
     }
  where
   readPreparedIntent request = case targetIntentIssueTarget request of
-    TargetSesSmtp -> observeAwsAdminPrepared request
+    TargetSesSmtp -> observeRetainedSesSmtpPrepared request
     TargetAcmeEab -> observeExternalAcmeEab request
     TargetAwsCredential _ -> observeAwsAdminPrepared request
     TargetPublicEdgeTls -> observeOrCommitOperationAuthorization request
     TargetFederationCustody -> observeOrCommitOperationAuthorization request
     _ -> pure (Left "selected Target has no registered retained-material outbox")
+
+  -- A retained SES SMTP delivery runs under its own operation id, not the
+  -- AWS-admin operation that sealed the material, and the prepared-target outbox
+  -- is keyed by the second. The delivery outbox, which holds the pending delivery
+  -- beside the source it delivers, names it. A request that no pending delivery
+  -- carries is answered by the prepared-target outbox as it always was.
+  observeRetainedSesSmtpPrepared request =
+    case mkCrossClusterDurableCoordinate
+      authority
+      ( "retained-material/delivery/"
+          <> retainedMaterialSchemaToken SRetainedSesSmtpMaterial
+          <> "/"
+          <> targetAgentClusterIdentity registeredAgentIdentity
+      ) of
+      Left err ->
+        pure (Left ("retained SES SMTP delivery coordinate invalid: " <> Text.pack (show err)))
+      Right deliveryCoordinate -> do
+        deliveryObserved <-
+          modelBObserve
+            ( inClusterAuthorityModelBCasAdapter
+                store
+                authority
+                (retainedMaterialModelBCodec SRetainedSesSmtpMaterial)
+            )
+            deliveryCoordinate
+        case retainedSesSmtpPermitOperationFromObservation request deliveryObserved of
+          Left detail -> pure (Left detail)
+          Right Nothing -> observeAwsAdminPrepared request
+          Right (Just permitOperation) ->
+            observeAwsAdminPrepared request {targetIntentIssueOperationId = permitOperation}
 
   observeAwsAdminPrepared request =
     case awsAdminPreparedCoordinate authority request of
@@ -390,6 +424,55 @@ selectRetainedAcmeEabDeliveryIntent registeredAgentIdentity request sourceReceip
     )
     (Left "retained EAB Target-intent request differs from delivery outbox")
   pure delivery
+ where
+  operationMatches delivery =
+    retainedMaterialRefText (retainedDeliveryOperationId delivery)
+      == targetIntentIssueOperationId request
+
+-- | The AWS-admin operation that one observation of the retained SES SMTP
+-- delivery outbox says a request serves. 'Right Nothing' leaves the request to
+-- the prepared-target outbox directly: no delivery outbox exists yet, or no
+-- pending delivery in it carries the request's operation id. An outbox that
+-- cannot be read refuses, because the request might belong to a delivery in it.
+retainedSesSmtpPermitOperationFromObservation
+  :: TargetIntentIssueRequest
+  -> ModelBObservation (RetainedMaterialAggregate 'RetainedSesSmtpMaterial)
+  -> Either Text (Maybe Text)
+retainedSesSmtpPermitOperationFromObservation request observation = case observation of
+  ModelBMissing -> Right Nothing
+  ModelBCorrupt detail ->
+    Left ("retained SES SMTP delivery outbox is corrupt: " <> detail)
+  ModelBEndpointUnready detail ->
+    Left ("retained SES SMTP delivery outbox endpoint is not ready: " <> detail)
+  ModelBUnobservable detail ->
+    Left ("retained SES SMTP delivery outbox is unobservable: " <> detail)
+  ModelBObserved _ aggregate ->
+    maybe (Right Nothing) (fmap Just) (resolveRetainedSesSmtpPermitOperation request aggregate)
+
+-- | The AWS-admin operation a pending retained SES SMTP delivery serves, or
+-- 'Nothing' when no pending delivery carries the request's operation id (the
+-- request then belongs to the AWS-admin outbox directly). The delivery is bound
+-- to the current source, and the source was sealed under the AWS-admin
+-- operation's own identity, which is the key of the prepared-target outbox.
+resolveRetainedSesSmtpPermitOperation
+  :: TargetIntentIssueRequest
+  -> RetainedMaterialAggregate 'RetainedSesSmtpMaterial
+  -> Maybe (Either Text Text)
+resolveRetainedSesSmtpPermitOperation request aggregate =
+  case filter operationMatches (retainedMaterialPendingDeliveries aggregate) of
+    [] -> Nothing
+    [delivery] ->
+      Just $ do
+        source <-
+          maybe
+            (Left "retained SES SMTP Target-intent delivery has no current source")
+            Right
+            (retainedMaterialCurrent aggregate)
+        unless
+          (retainedDeliverySourceReceipt delivery == retainedSourceReceiptRef source)
+          (Left "retained SES SMTP Target-intent delivery is bound to another source")
+        pure (retainedMaterialRefText (retainedSourceOperationId source))
+    _ -> Just (Left "retained SES SMTP Target-intent delivery operation is ambiguous")
  where
   operationMatches delivery =
     retainedMaterialRefText (retainedDeliveryOperationId delivery)

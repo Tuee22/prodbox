@@ -11,6 +11,7 @@ module Prodbox.CLI.Rke2
   , ensureAdminPublicEdgeRoutes
   , ensureGatewayChartReady
   , ensureGatewayChartReadyPostVaultAt
+  , ensureGatewayDaemonFullModeAt
   , adminPublicEdgeManifestItems
   , ensureHarborRegistryRuntime
   , ensureHarborRegistryStorageBackend
@@ -18,6 +19,7 @@ module Prodbox.CLI.Rke2
   , harborRegistryStorageWaitArguments
   , harborRegistryStorageDeleteArguments
   , ensureMinioRuntime
+  , ensureBootstrapImagesSeeded
   , ensurePostgresOperatorRuntime
   , ensureVaultRuntime
   , ensureRootVaultLifecycle
@@ -42,6 +44,7 @@ module Prodbox.CLI.Rke2
   , cascadePostflightSweepExit
   , cascadeSweepCredentialAbsentExit
   , decideCascadeUninstallGate
+  , settleUnreadableScope
   , retainedStateNoticePerRunLine
   , isMinioSecretKeyArgumentSafe
   , OperationalAwsCredentialGate (..)
@@ -73,6 +76,7 @@ module Prodbox.CLI.Rke2
   , classifyGatewayFullModeProbe
   , gatewayDaemonWorkloadRefs
   , gatewayNamespace
+  , metallbRuntimeManifest
   , minioNamespace
   , minioReleaseName
   , vaultNamespace
@@ -81,9 +85,15 @@ module Prodbox.CLI.Rke2
   , observeGatewayBackendRoundTripOnceAt
   , observeGatewayReadyzOnceAt
   , observeKubernetesReadinessOnce
+  , observeHomeKubernetesReadinessOnce
+  , homeClusterObservationEnvironment
+  , observeHomeKubernetesReadinessWith
   , observeRegistryBackendRoundTripOnce
   , RegistryStorageEdgeObservation (..)
   , parseRegistryStorageEdgeResponse
+  , RegistryProbeRunner
+  , observeRegistryBackendRoundTripOnceWith
+  , probeRegistryStorageBackendEdgeWith
   , observeVaultUnsealedOnce
   , classifyBrokerVaultUnsealedStatus
   , renderInotifySysctlDropIn
@@ -97,6 +107,7 @@ module Prodbox.CLI.Rke2
   , selectManagedDanglingRuntimeImageIds
   , renderMinioChartArgs
   , retainedStorageInventoryEntries
+  , resolveRetainedManualPvRoot
   , harborRegistryStorageBackend
   , registryConfigYaml
   , RegistryGarbageCollectionMode (..)
@@ -118,6 +129,11 @@ module Prodbox.CLI.Rke2
   , runNativeHarnessBootstrapFloor
   , harnessLifecycleProviderCredentialCaller
   , reconcileHarnessLifecycleProviderCredential
+  , reconcileHarnessSesSmtpCredential
+  , HarnessCredentialRequest (..)
+  , sesSmtpCredentialRequest
+  , resolveHarnessCredentialIntent
+  , harnessRetainedIntentIsLive
   , runNativeDeleteCascade
   , runCascadeDrainResult
   , runRke2Command
@@ -134,7 +150,7 @@ import Control.Exception
   , onException
   , try
   )
-import Control.Monad (foldM)
+import Control.Monad (foldM, void)
 import Data.Aeson
   ( Value
   , encode
@@ -162,6 +178,8 @@ import Data.List
   , isPrefixOf
   , nub
   )
+import Data.List.NonEmpty (NonEmpty)
+import Data.List.NonEmpty qualified as NonEmpty
 import Data.Map qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text qualified as Text
@@ -271,7 +289,8 @@ import Prodbox.ControlPlane.AwsAdminProvisionerClient
   )
 import Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
   ( AwsAdminProvisionerChallenge (awsAdminChallengeCanonicalIntent)
-  , AwsAdminProvisionerObservation (awsAdminObservedChallenge)
+  , AwsAdminProvisionerObservation (awsAdminObservedChallenge, awsAdminObservedPhase)
+  , AwsAdminProvisionerPhase (AwsAdminProvisionerCompleted)
   )
 import Prodbox.ControlPlane.CapabilityRequirement (requirementCoordinate')
 import Prodbox.ControlPlane.Coordinate (coordGeneration)
@@ -318,11 +337,12 @@ import Prodbox.ControlPlane.TargetMaterialEndpoint
   ( TargetMaterialObservation (targetMaterialObservedGeneration)
   )
 import Prodbox.ControlPlane.TargetMaterialFixture
-  ( seedAcmeEabFromTestSecrets
+  ( acmeEabFixtureOperationId
+  , seedAcmeEabFromTestSecrets
   )
 import Prodbox.ControlPlane.TargetMaterialRegistry
   ( AwsCredentialIdentity (AwsLifecycleProvider)
-  , TargetSecretId (TargetAwsCredential)
+  , TargetSecretId (TargetAwsCredential, TargetSesSmtp)
   )
 import Prodbox.DockerConfig (withEphemeralDockerConfig)
 import Prodbox.Error (errorMsg, fatalError)
@@ -340,7 +360,9 @@ import Prodbox.Http.Client
   , renderHttpError
   )
 import Prodbox.Infra.AwsEksTestStack (awsEksCanonicalClusterName, withEksKubeconfig)
+import Prodbox.Infra.BootstrapImageSeed qualified as BootstrapImageSeed
 import Prodbox.Infra.LongLivedPulumiBackend (loadAdminAwsCredentials)
+import Prodbox.Infra.MinioBackend (resolveHomeClusterKubeconfig)
 import Prodbox.Lib.ChartPlatform
   ( ChartDeploymentPlan (..)
   , ChartReleasePlan (..)
@@ -360,7 +382,20 @@ import Prodbox.Lib.EksCustomImagePush
   ( EksCustomImagePushConfig (..)
   , defaultEksCustomImagePushConfig
   , eksCustomImagePushPodManifest
+  , eksRegistryDigestCommandArguments
+  , eksRuntimeImageDigestRecordManifest
+  , parseRegistryManifestDigest
   , rewriteChartRefForInClusterPush
+  )
+import Prodbox.Lib.RegistryProbe
+  ( RegistryProbeRequest (..)
+  , RegistryProbeTarget (..)
+  , RegistryProbeVantage (..)
+  , RegistryStorageEdgeObservation (..)
+  , interpretRegistryProbe
+  , parseRegistryStorageEdgeResponse
+  , registryProbeCommand
+  , registryProbeVantageFor
   )
 import Prodbox.Lib.Storage
   ( retainedStatefulSetPersistentVolumeClaimName
@@ -384,6 +419,16 @@ import Prodbox.Lifecycle.CapabilityReadinessBarrier
   ( newReadinessObservationClient
   , observeReadinessThroughCapability
   )
+import Prodbox.Lifecycle.CascadeNoInstall
+  ( CascadeAwsScope (..)
+  , CascadePostflightSweep (..)
+  , ConfirmedNoInstallCascade
+  , cascadeAwsScopeOwesSweep
+  , confirmCascadeNoInstall
+  , confirmedNoInstallCascadeExit
+  )
+import Prodbox.Lifecycle.CascadeNoInstall qualified as NoInstall
+import Prodbox.Lifecycle.ControllerFamilyAttribution (renderEscapedAttributionNarration)
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminCoordinator
   ( AwsAdminKubernetesBoundary
   , coordinateAwsAdminProvisioning
@@ -397,12 +442,14 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   , CredentialIamParameters
   , awsAdminPermitIntentAction
   , awsAdminPermitIntentCredentialClass
+  , awsAdminPermitIntentDeadline
   , awsAdminPermitIntentGeneration
   , decodeAwsAdminPermitIntent
   , mkAuthorityBackupIamParameters
   , mkGatewayDnsIamParameters
   , mkHomeDns01IamParameters
   , mkLifecycleProviderIamParameters
+  , mkSesSmtpIamParameters
   , mkTlsRetentionIamParameters
   )
 import Prodbox.Lifecycle.CredentialProvisioner.ExternalIngress
@@ -444,7 +491,7 @@ import Prodbox.Lifecycle.FederatedVault
   , vaultLifecycleHelmSealArgs
   )
 import Prodbox.Lifecycle.K8sDrain qualified as K8sDrain
-import Prodbox.Lifecycle.Lease (AuthorityTime, authorityTimeFromMicros)
+import Prodbox.Lifecycle.Lease (AuthorityTime, authorityTimeFromMicros, authorityTimeMicros)
 import Prodbox.Lifecycle.LiveResidue
   ( PerRunResidueStatuses (..)
   , queryPerRunResidueStatuses
@@ -466,6 +513,7 @@ import Prodbox.Lifecycle.ReadinessObservation
 import Prodbox.Lifecycle.RegistryBackendWitness (registryBackendWitness)
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Lifecycle.ResourceRegistry qualified as ResourceRegistry
+import Prodbox.Lifecycle.RetainedRootSurvey (surveyRetainedRoots)
 import Prodbox.Lifecycle.TagSweep qualified as TagSweep
 import Prodbox.Lifecycle.TargetCommitIntent (credentialGenerationValue)
 import Prodbox.Lifecycle.Teardown.RecoveryPlane
@@ -537,7 +585,6 @@ import Prodbox.Settings
   , renderPublicEdgeAdvertisementMode
   , renderSeedInForceOutcome
   , requireAcmeAccount
-  , requireAwsSubstrateProfile
   , requireOperationalAwsRegion
   , storage
   , validateAndLoadBootstrapSettings
@@ -550,6 +597,7 @@ import Prodbox.Settings
   )
 import Prodbox.Settings.Coordinate
   ( AwsRegion
+  , Route53ZoneId
   , acmeDirectoryUrlText
   , awsRegionText
   , emailAddressText
@@ -561,13 +609,17 @@ import Prodbox.Settings.SecretRef
   )
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
+  , KillableSubprocessLimits (..)
+  , KillableSubprocessOutcome (..)
   , ProcessOutput (..)
   , Subprocess (..)
   , captureSubprocessBounded
+  , captureSubprocessKillable
   , captureSubprocessResult
   , runSubprocessStreaming
   )
 import Prodbox.Substrate (Substrate (..), replicasForSubstrate, substrateId)
+import Prodbox.Tls.CertScope (fqdnText)
 import Prodbox.Vault.Client
   ( KvV2Cas (KvV2Cas)
   , VaultAddress (..)
@@ -602,7 +654,9 @@ import System.Exit
   ( ExitCode (ExitFailure, ExitSuccess)
   )
 import System.FilePath
-  ( takeDirectory
+  ( dropTrailingPathSeparator
+  , normalise
+  , takeDirectory
   , (</>)
   )
 import System.IO
@@ -2256,12 +2310,16 @@ applyNativeInstallPlanWithMode mode repoRoot bootstrapSettings payload = do
     StepMinioRuntimeBootstrap ->
       ensureMinioRuntime repoRoot bootstrapSettings SubstrateHomeLocal MinioBootstrapPublic
     StepVaultRuntime -> ensureVaultRuntime repoRoot bootstrapSettings
-    StepHarborRegistryStorageBackend -> ensureHarborRegistryStorageBackend repoRoot
+    StepHarborRegistryStorageBackend ->
+      runSequentially
+        [ ensureBootstrapImagesSeeded SubstrateHomeLocal repoRoot
+        , ensureHarborRegistryStorageBackend repoRoot
+        ]
     StepHarborRegistryRuntime -> ensureHarborRegistryRuntime repoRoot SubstrateHomeLocal
     -- Sprint 4.43: the deep registry->MinIO S3 edge gate (M3) runs before the
     -- mirror push and every downstream registry write, replacing reliance on the
     -- shallow `GET /v2/` front-door gate.
-    StepVerifyRegistryMinioEdge -> ensureRegistryStorageBackendEdgeReady repoRoot
+    StepVerifyRegistryMinioEdge -> ensureRegistryStorageBackendEdgeReady repoRoot SubstrateHomeLocal
     StepMirrorClusterImagesOnce -> mirrorClusterImagesOnce repoRoot
     StepEnsureRuntimeImage -> ensureRuntimeImage repoRoot prodboxId
     StepRke2RegistriesConfig -> ensureRke2RegistriesConfig repoRoot
@@ -2381,7 +2439,11 @@ applyNativeInstallPlanWithMode mode repoRoot bootstrapSettings payload = do
     StepMetalLbRuntime -> wrongPhaseStep PhaseTransition step
     StepEnvoyGatewayRuntime -> wrongPhaseStep PhaseTransition step
     StepPostgresOperatorRuntime -> wrongPhaseStep PhaseTransition step
-    StepGatewayMinioBootstrap -> ensureGatewayMinioBootstrap repoRoot
+    StepGatewayMinioBootstrap ->
+      runSequentially
+        [ ensureBootstrapImagesSeeded SubstrateHomeLocal repoRoot
+        , ensureGatewayMinioBootstrap repoRoot
+        ]
     StepGatewayChartReady -> wrongPhaseStep PhaseTransition step
     StepRootChartNamespaceGuardrails -> wrongPhaseStep PhaseTransition step
     StepAdminPublicEdgeRoutes -> wrongPhaseStep PhaseTransition step
@@ -2600,11 +2662,17 @@ requireNativeComponentReadiness repoRoot settings dag component =
 -- their capability-backed readiness. Their exact requested-revision
 -- observations therefore own a longer finite controller-convergence window;
 -- all other component barriers retain the small shared jitter budget.
+--
+-- The Provider Worker takes the longer window too. An AWS run observes it on
+-- the retained home cluster, where it may be part-way through a rollout the
+-- operator started (an image roll restarts it), and a two-second budget would
+-- fail every chart command of the run for a pod that is seconds from Available.
 componentReadinessRetryPolicyFor :: ComponentId -> RetryPolicy
 componentReadinessRetryPolicyFor component =
   case component of
     ComponentChartBootstrapBroker -> deploymentRevisionObservationRetryPolicy
     ComponentChartAuthorityBackup -> deploymentRevisionObservationRetryPolicy
+    ComponentChartProviderWorker -> deploymentRevisionObservationRetryPolicy
     _ -> componentReadinessRetryPolicy
 
 -- | Production one-shot target registry for every component the native home
@@ -2641,7 +2709,7 @@ nativeComponentReadinessTarget repoRoot settings component =
         ( BackendRoundTripTarget
             component
             ComponentMinio
-            (observeRegistryBackendRoundTripOnce repoRoot)
+            (observeRegistryBackendRoundTripOnce repoRoot SubstrateHomeLocal)
         )
     ComponentMetalLB ->
       Right
@@ -2862,23 +2930,88 @@ observeKubernetesReadinessOnce
   :: FilePath
   -> [KubernetesReadinessCheck]
   -> IO (Either Text.Text ReadinessProbeResult)
-observeKubernetesReadinessOnce repoRoot = go
+observeKubernetesReadinessOnce = observeKubernetesReadinessOnceIn Nothing
+
+-- | Observe checks against the retained HOME cluster whatever @KUBECONFIG@ the
+-- process holds.
+--
+-- An AWS-substrate run holds the EKS kubeconfig in its environment, and the
+-- control-plane roles the retained home cluster runs for every substrate are not
+-- on that cluster. The AWS platform driver observes the two its EKS installs
+-- depend on (the Authority Backup Adapter and the Provider Worker) here, so the
+-- admission its dependents require is minted from the cluster the roles run on.
+-- The home kubeconfig comes from the two files the home cluster owns; the
+-- process's own @KUBECONFIG@ is deliberately not a candidate, so a host whose
+-- home files are unreadable refuses the observation instead of reading the
+-- wrong cluster and reporting that its roles are absent.
+observeHomeKubernetesReadinessOnce
+  :: FilePath
+  -> [KubernetesReadinessCheck]
+  -> IO (Either Text.Text ReadinessProbeResult)
+observeHomeKubernetesReadinessOnce =
+  observeHomeKubernetesReadinessWith
+    resolveHomeClusterKubeconfig
+    getEnvironment
+    observeKubernetesReadinessOnceIn
+
+-- | 'observeHomeKubernetesReadinessOnce' with the kubeconfig resolver, the
+-- process environment and the observation supplied, so a case can show what the
+-- observation is handed and that no observation is made when no home kubeconfig
+-- resolves.
+observeHomeKubernetesReadinessWith
+  :: IO (Either String FilePath)
+  -> IO [(String, String)]
+  -> ( Maybe [(String, String)]
+       -> FilePath
+       -> [KubernetesReadinessCheck]
+       -> IO (Either Text.Text ReadinessProbeResult)
+     )
+  -> FilePath
+  -> [KubernetesReadinessCheck]
+  -> IO (Either Text.Text ReadinessProbeResult)
+observeHomeKubernetesReadinessWith resolveKubeconfig readEnvironment observe repoRoot checks = do
+  kubeconfigResult <- resolveKubeconfig
+  case kubeconfigResult of
+    Left err -> pure (Left (Text.pack err))
+    Right kubeconfig -> do
+      baseEnvironment <- readEnvironment
+      observe
+        (Just (homeClusterObservationEnvironment kubeconfig baseEnvironment))
+        repoRoot
+        checks
+
+-- | The environment a @kubectl@ observation of the retained home cluster runs
+-- with: the home kubeconfig replaces whatever @KUBECONFIG@ the process holds,
+-- and nothing else changes.
+homeClusterObservationEnvironment
+  :: FilePath -> [(String, String)] -> [(String, String)]
+homeClusterObservationEnvironment kubeconfig baseEnvironment =
+  ("KUBECONFIG", kubeconfig) : filter ((/= "KUBECONFIG") . fst) baseEnvironment
+
+observeKubernetesReadinessOnceIn
+  :: Maybe [(String, String)]
+  -> FilePath
+  -> [KubernetesReadinessCheck]
+  -> IO (Either Text.Text ReadinessProbeResult)
+observeKubernetesReadinessOnceIn environment repoRoot = go
  where
   go checks = case checks of
     [] -> pure (Right ReadinessProbeReady)
     check : remaining -> do
-      result <- observeKubernetesCheckOnce repoRoot check
+      result <- observeKubernetesCheckOnceIn environment repoRoot check
       case result of
         Right ReadinessProbeReady -> go remaining
         Right pending@(ReadinessProbePending _) -> pure (Right pending)
         Left reason -> pure (Left reason)
 
-observeKubernetesCheckOnce
-  :: FilePath
+observeKubernetesCheckOnceIn
+  :: Maybe [(String, String)]
+  -> FilePath
   -> KubernetesReadinessCheck
   -> IO (Either Text.Text ReadinessProbeResult)
-observeKubernetesCheckOnce repoRoot check = do
-  outputResult <- captureToolOutput repoRoot "kubectl" (kubernetesReadinessArguments check)
+observeKubernetesCheckOnceIn environment repoRoot check = do
+  outputResult <-
+    captureToolOutputIn environment repoRoot "kubectl" (kubernetesReadinessArguments check)
   pure $
     case outputResult of
       Left err -> Left (Text.pack err)
@@ -3001,11 +3134,31 @@ classifyBrokerVaultUnsealedStatus observed = case observed of
 -- returns is the receipt of that write. A 2xx that names no session is NOT a
 -- round trip and fails closed, where before any 201/202 was accepted and the
 -- receipt discarded.
+--
+-- Sprint 7.46: the registry probed is the one the substrate runs. The home
+-- registry is reached through its NodePort from the host; the EKS registry is
+-- not reachable from the host, so it is asked from inside its own pod. An AWS
+-- barrier that took the host's loopback answered for the home registry.
 observeRegistryBackendRoundTripOnce
-  :: FilePath -> IO (Either Text.Text BackendRoundTripResult)
-observeRegistryBackendRoundTripOnce repoRoot = do
-  probed <- probeRegistryStorageBackendEdge repoRoot
-  landedAt <- readinessWallClockNow
+  :: FilePath -> Substrate -> IO (Either Text.Text BackendRoundTripResult)
+observeRegistryBackendRoundTripOnce repoRoot substrate =
+  observeRegistryBackendRoundTripOnceWith
+    (registryProbeRunnerFor repoRoot vantage)
+    readinessWallClockNow
+    vantage
+ where
+  vantage = registryProbeVantageFor substrate
+
+-- | 'observeRegistryBackendRoundTripOnce' with the process runner and the clock
+-- supplied, so a case can drive either vantage without a cluster.
+observeRegistryBackendRoundTripOnceWith
+  :: RegistryProbeRunner
+  -> IO AuthorityTime
+  -> RegistryProbeVantage
+  -> IO (Either Text.Text BackendRoundTripResult)
+observeRegistryBackendRoundTripOnceWith runner clock vantage = do
+  probed <- probeRegistryStorageBackendEdgeWith runner vantage
+  landedAt <- clock
   pure $
     case classifyRegistryStorageEdgeProbe (fmap registryProbeStatus probed) of
       RegistryEdgeNotReady detail -> Right (BackendRoundTripPending (Text.pack detail))
@@ -3248,7 +3401,114 @@ reconcileHarnessLifecycleProviderCredential
   :: FilePath
   -> Text.Text
   -> IO ExitCode
-reconcileHarnessLifecycleProviderCredential repoRoot operationScope = do
+reconcileHarnessLifecycleProviderCredential repoRoot operationScope =
+  reconcileHarnessCredential repoRoot request describe
+ where
+  request basics settings adminCredentials = do
+    iamResult <-
+      firstReconcileIamParameters
+        basics
+        settings
+        adminCredentials
+        LifecycleProviderCredential
+    pure
+      ( HarnessCredentialRequest
+          LifecycleProviderCredential
+          (TargetAwsCredential AwsLifecycleProvider)
+          (providerRolePolicyOperationScope operationScope)
+          <$> iamResult
+      )
+  describe generation =
+    "Lifecycle-provider credential is current through the authenticated Credential Provisioner at generation "
+      ++ show generation
+      ++ "."
+
+-- | Install, or confirm, the retained SES SMTP key family for the home cluster
+-- through the same authenticated, attested Credential Provisioner.
+--
+-- Nothing else submits this permit: the retained SES preparation dispatches only
+-- the five non-credential Provider intents, so on a cluster whose Vault holds no
+-- @secret/keycloak/smtp@ the Keycloak realm is left with no SMTP server and every
+-- invite fails when Keycloak tries to send it. The Job this starts creates the
+-- deterministic SMTP IAM identity, policy and key, derives the region-bound SMTP
+-- source in bounded memory, seals it into retained-home custody and delivers it
+-- to the home sink; a rerun with a current generation finds the completed
+-- operation and only recovers its receipt. The operation scope is stable across
+-- suites on purpose, because the family is long-lived and a per-suite scope would
+-- mint a new generation, and delete the previous key, on every run.
+reconcileHarnessSesSmtpCredential
+  :: FilePath
+  -> Text.Text
+  -> IO ExitCode
+reconcileHarnessSesSmtpCredential repoRoot operationScope =
+  reconcileHarnessCredential repoRoot request describe
+ where
+  request _basics settings adminCredentials = do
+    accountResult <- adminCredentialAccountId adminCredentials
+    pure $ do
+      accountId <- accountResult
+      region <- Bifunctor.first Text.pack (requireOperationalAwsRegion settings)
+      senderDomain <-
+        maybe
+          (Left "ses.sender_domain must be configured for the retained SES SMTP key family.")
+          (Right . fqdnText)
+          (coordinateSesSenderDomain (validatedCoordinates settings))
+      sesSmtpCredentialRequest
+        operationScope
+        (awsRegionText region)
+        accountId
+        senderDomain
+  describe generation =
+    "Retained SES SMTP key family is current through the authenticated Credential Provisioner at generation "
+      ++ show generation
+      ++ "."
+
+-- | The retained SES SMTP request for one operational region, account and
+-- sending identity. Pure, so the class, the Target Secret and the refusal of an
+-- identity the IAM program does not accept are exercised without an AWS account.
+sesSmtpCredentialRequest
+  :: Text.Text
+  -> Text.Text
+  -> Text.Text
+  -> Text.Text
+  -> Either Text.Text HarnessCredentialRequest
+sesSmtpCredentialRequest operationScope regionText accountId rawIdentity = do
+  iamParameters <-
+    Bifunctor.first
+      (Text.pack . show)
+      (mkSesSmtpIamParameters regionText accountId (Text.strip rawIdentity))
+  pure
+    ( HarnessCredentialRequest
+        SesSmtpRetainedCustodyCredential
+        TargetSesSmtp
+        operationScope
+        iamParameters
+    )
+
+-- | One credential the harness owns, as the Credential Provisioner is asked for
+-- it: its class, the Target Secret it lands in, the already-revisioned operation
+-- scope, and the exact non-secret IAM parameters.
+data HarnessCredentialRequest = HarnessCredentialRequest
+  { harnessCredentialClass :: !AwsCredentialClass
+  , harnessCredentialTarget :: !TargetSecretId
+  , harnessCredentialScope :: !Text.Text
+  , harnessCredentialIamParameters :: !CredentialIamParameters
+  }
+
+-- | Submit one harness credential request to the Credential Provisioner and
+-- wait for its receipt. If a response is lost after Target material advances,
+-- the matching retained Authority operation is recovered byte-for-byte instead
+-- of allocating another generation.
+reconcileHarnessCredential
+  :: FilePath
+  -> ( UnencryptedBasics
+       -> ValidatedSettings
+       -> Credentials
+       -> IO (Either Text.Text HarnessCredentialRequest)
+     )
+  -> (Natural -> String)
+  -> IO ExitCode
+reconcileHarnessCredential repoRoot buildRequest describeCurrent = do
   settingsResult <- validateAndLoadSettings repoRoot
   basicsResult <- loadUnencryptedBasics repoRoot
   imageResult <- resolveRuntimeChartImageForSubstrate SubstrateHomeLocal
@@ -3265,17 +3525,10 @@ reconcileHarnessLifecycleProviderCredential repoRoot operationScope = do
       case authorityBackupRuntimeInputs repoRoot basics settings image now of
         Left detail -> failWith detail
         Right (_, parameters, kubernetes) -> do
-          iamResult <-
-            firstReconcileIamParameters
-              basics
-              settings
-              adminCredentials
-              LifecycleProviderCredential
-          case iamResult of
+          requestResult <- buildRequest basics settings adminCredentials
+          case requestResult of
             Left detail -> failWith (Text.unpack detail)
-            Right iamParameters -> do
-              let revisionedOperationScope =
-                    providerRolePolicyOperationScope operationScope
+            Right request -> do
               reconciled <-
                 withHostLifecycleAuthorityAuthentication
                   harnessLifecycleProviderCredentialCaller
@@ -3285,23 +3538,30 @@ reconcileHarnessLifecycleProviderCredential repoRoot operationScope = do
                         withTargetSecretAgentAuthenticatedTransport authentication $ \transport ->
                           observeRegisteredTargetMaterial
                             (targetMaterialClient transport)
-                            (TargetAwsCredential AwsLifecycleProvider)
+                            (harnessCredentialTarget request)
                       case targetResult of
                         Left err ->
                           pure (Left (renderLifecycleAuthorityAuthenticationError err))
                         Right (Left err) ->
-                          pure (Left ("observe Lifecycle-provider Target generation: " ++ show err))
+                          pure
+                            ( Left
+                                ( "observe "
+                                    ++ show (harnessCredentialClass request)
+                                    ++ " Target generation: "
+                                    ++ show err
+                                )
+                            )
                         Right (Right observedTarget) -> do
                           authorityResult <-
                             withLifecycleAuthorityAuthenticatedTransport authentication $ \transport -> do
                               let client = awsAdminProvisionerClient transport
                               intentResult <-
-                                resolveHarnessLifecycleProviderIntent
+                                resolveHarnessCredentialIntent
                                   client
                                   parameters
-                                  revisionedOperationScope
-                                  iamParameters
+                                  request
                                   observedTarget
+                                  now
                               case intentResult of
                                 Left detail -> pure (Left detail)
                                 Right intent -> do
@@ -3312,7 +3572,13 @@ reconcileHarnessLifecycleProviderCredential repoRoot operationScope = do
                                       adminCredentials
                                       intent
                                   pure $ case coordinated of
-                                    Left err -> Left ("coordinate Lifecycle-provider credential: " ++ show err)
+                                    Left err ->
+                                      Left
+                                        ( "coordinate "
+                                            ++ show (harnessCredentialClass request)
+                                            ++ " credential: "
+                                            ++ show err
+                                        )
                                     Right _ ->
                                       Right
                                         ( credentialGenerationValue
@@ -3326,36 +3592,66 @@ reconcileHarnessLifecycleProviderCredential repoRoot operationScope = do
                 Left err -> failWith (renderLifecycleAuthorityAuthenticationError err)
                 Right (Left detail) -> failWith detail
                 Right (Right generation) -> do
-                  writeOutputLine
-                    ( "Lifecycle-provider credential is current through the authenticated Credential Provisioner at generation "
-                        ++ show generation
-                        ++ "."
-                    )
+                  writeOutputLine (describeCurrent generation)
                   pure ExitSuccess
 
-resolveHarnessLifecycleProviderIntent
+-- | The intent to submit for one harness credential: the one the Authority
+-- already holds when that operation can still be resumed or has completed, and
+-- otherwise a fresh draft.
+--
+-- The Authority admits an unfinished operation only for byte-identical intent
+-- until its deadline, and after the deadline only for a replacement draft that
+-- keeps every immutable binding and carries a later deadline (a prepared
+-- renewal, or the recovery of an authorized attempt it can prove made no
+-- change). A completed operation is answered with its receipt only for the
+-- intent it completed. So the retained intent is resubmitted exactly when it
+-- is completed or its deadline is still ahead of the host clock. An unfinished
+-- operation whose deadline has passed (a worker refusal, or any pause longer
+-- than the thirty-minute window) is replaced by a draft with the same class,
+-- action, generation, scope and IAM parameters and this call's deadline, image
+-- and Agent. Resubmitting the expired intent instead was refused with
+-- @prepared-target/deadline-expired@ for as long as the operation existed.
+resolveHarnessCredentialIntent
   :: AwsAdminProvisionerClient IO
   -> GenesisAwsAdminIntentParameters
-  -> Text.Text
-  -> CredentialIamParameters
+  -> HarnessCredentialRequest
   -> Maybe TargetMaterialObservation
+  -> Natural
   -> IO (Either String AwsAdminPermitIntent)
-resolveHarnessLifecycleProviderIntent client parameters operationScope iamParameters observedTarget = do
+resolveHarnessCredentialIntent client parameters request observedTarget nowMicros = do
   let observedGeneration = maybe 1 targetMaterialObservedGeneration observedTarget
+      credentialClass = harnessCredentialClass request
+      operationScope = harnessCredentialScope request
   case normalAwsAdminOperationIdForScope
     operationScope
-    LifecycleProviderCredential
+    credentialClass
     observedGeneration of
     Left detail -> pure (Left (Text.unpack detail))
     Right operationId -> do
       existing <- observeAwsAdminProvisioning client operationId
       case existing of
         Right observation ->
-          pure
-            ( decodeAndValidateHarnessLifecycleProviderIntent
+          pure $ do
+            retained <-
+              decodeAndValidateHarnessCredentialIntent
+                credentialClass
                 observedGeneration
                 observation
-            )
+            if harnessRetainedIntentIsLive
+              nowMicros
+              (awsAdminObservedPhase observation)
+              retained
+              then Right retained
+              else
+                firstText
+                  ( compileNormalAwsAdminIntentForScope
+                      parameters
+                      operationScope
+                      credentialClass
+                      (awsAdminPermitIntentAction retained)
+                      observedGeneration
+                      (harnessCredentialIamParameters request)
+                  )
         Left (AwsAdminProvisionerClientRefused "operation-not-found") ->
           pure $ do
             let (action, generation) = case observedTarget of
@@ -3368,28 +3664,44 @@ resolveHarnessLifecycleProviderIntent client parameters operationScope iamParame
               ( compileNormalAwsAdminIntentForScope
                   parameters
                   operationScope
-                  LifecycleProviderCredential
+                  credentialClass
                   action
                   generation
-                  iamParameters
+                  (harnessCredentialIamParameters request)
               )
         Left err ->
-          pure (Left ("observe retained Lifecycle-provider credential operation: " ++ show err))
+          pure
+            ( Left
+                ( "observe retained "
+                    ++ show credentialClass
+                    ++ " credential operation: "
+                    ++ show err
+                )
+            )
  where
   firstText = Bifunctor.first Text.unpack
 
-decodeAndValidateHarnessLifecycleProviderIntent
-  :: Natural
+-- | Whether the Authority's retained intent may be resubmitted as it is: its
+-- operation completed, or its deadline is still ahead of the host clock.
+harnessRetainedIntentIsLive
+  :: Natural -> AwsAdminProvisionerPhase -> AwsAdminPermitIntent -> Bool
+harnessRetainedIntentIsLive nowMicros phase retained =
+  phase == AwsAdminProvisionerCompleted
+    || authorityTimeMicros (awsAdminPermitIntentDeadline retained) > nowMicros
+
+decodeAndValidateHarnessCredentialIntent
+  :: AwsCredentialClass
+  -> Natural
   -> AwsAdminProvisionerObservation
   -> Either String AwsAdminPermitIntent
-decodeAndValidateHarnessLifecycleProviderIntent expectedGeneration observation = do
+decodeAndValidateHarnessCredentialIntent expectedClass expectedGeneration observation = do
   intent <-
     Bifunctor.first
       show
       ( decodeAwsAdminPermitIntent
           (awsAdminChallengeCanonicalIntent (awsAdminObservedChallenge observation))
       )
-  if awsAdminPermitIntentCredentialClass intent == LifecycleProviderCredential
+  if awsAdminPermitIntentCredentialClass intent == expectedClass
     then Right ()
     else Left "retained harness credential operation names a different credential class"
   if credentialGenerationValue (awsAdminPermitIntentGeneration intent) == expectedGeneration
@@ -3637,39 +3949,12 @@ retainedStateNarrationFor arm = case arm of
   -- retiring the store. Sprint `6.5` activates the replacement that does.
   DeleteArmCascadeReachedPhases -> RetainedStateUnproven
 
--- | Sprint 4.100: a no-install cascade whose postflight sweep confirmed it left
--- nothing behind.
---
--- __Why this is a type and not a fifth arm.__ The entry table's whole job is to
--- decide from delete mode and install presence, and neither of those observes
--- AWS. A confirmed result is a fact about a sweep, so a constructor the table
--- could return would be a constructor the table could mint from silence — which
--- is the defect Sprint `4.88` closed once and which a fifth row would reopen.
--- Here the constructor is unexported and 'confirmCascadeNoInstall' is its only
--- producer, so \"never mint success from silence\" is a fact about what can be
--- built rather than a property of a table somebody must keep reading correctly.
-data ConfirmedNoInstallCascade = ConfirmedNoInstallCascade
-  deriving (Eq, Show)
-
--- | The only producer. Its admitting cases mirror 'decideCascadeUninstallGate'
--- exactly, because they answer the same question about the same evidence: a
--- sweep that is not owed has no residue to find, a confirmed-clean sweep found
--- none, and every other answer — owed and not run, escaped, unconfirmed — is a
--- silence or a finding rather than a confirmation.
-confirmCascadeNoInstall :: CascadePostflightSweep -> Maybe ConfirmedNoInstallCascade
-confirmCascadeNoInstall sweep = case sweep of
-  CascadeSweepNotOwed -> Just ConfirmedNoInstallCascade
-  CascadeSweepNotRun _ -> Nothing
-  CascadeSweepRan verdict -> case verdict of
-    TagSweep.TagSweepConfirmedClean _ -> Just ConfirmedNoInstallCascade
-    TagSweep.TagSweepEscaped _ _ -> Nothing
-    TagSweep.TagSweepUnconfirmed _ -> Nothing
-
--- | The exit a confirmed no-install cascade may carry. Holding the value is the
--- whole authorization: there is no arm, flag, or table row that reaches this.
-confirmedNoInstallCascadeExit :: ConfirmedNoInstallCascade -> ExitCode
-confirmedNoInstallCascadeExit ConfirmedNoInstallCascade = ExitSuccess
-
+-- | A no-install cascade whose read-only AWS query confirmed it left nothing
+-- behind is a sealed type in "Prodbox.Lifecycle.CascadeNoInstall", re-exported
+-- here. The entry table above decides from delete mode and install presence,
+-- and neither observes AWS, so a confirmed result cannot be a fifth arm: it is a
+-- fact about a sweep, and a constructor the table could return would be a
+-- constructor the table could mint from silence.
 applyNativeDelete :: FilePath -> Rke2DeleteFlags -> IO ExitCode
 applyNativeDelete repoRoot flags = do
   -- The residue gate's fail-closed case (an unreachable in-cluster MinIO
@@ -3687,7 +3972,7 @@ applyNativeDelete repoRoot flags = do
       writeOutputLine noRke2ClusterMessage
       retainedManualPvRoot <- resolveRetainedManualPvRoot repoRoot
       renderRetainedStateNotice DeleteArmLocalOnlyNoInstall retainedManualPvRoot
-    DeleteArmCascadeNoInstall -> runCascadeNoInstallRefusal repoRoot
+    DeleteArmCascadeNoInstall -> runCascadeNoInstall repoRoot
     arm ->
       -- Raise the host inotify limits BEFORE systemd unwinds the
       -- RKE2 units during teardown, so PID 1 does not log
@@ -3701,14 +3986,67 @@ applyNativeDelete repoRoot flags = do
             _ -> runNativeLocalUninstall repoRoot
         ]
 
--- | Sprint 4.88: the cascade's no-install terminal arm.
+-- | The cascade's no-install terminal arm.
 --
--- It names the durable cleanup namespace it could not reach and the
--- recovery-plane disposition it reports, and deliberately makes no statement
--- about AWS: this run observed no stack, so it has no absence to report and no
--- presence either.
-runCascadeNoInstallRefusal :: FilePath -> IO ExitCode
-runCascadeNoInstallRefusal repoRoot = do
+-- With no install there is no Lifecycle Authority, so this arm observes nothing
+-- by itself. It may not report success from silence, and it need not refuse
+-- from silence either when AWS can be asked directly. It reads the Tier-0
+-- configuration (never the in-force config, which needs the Authority), looks
+-- at every retained root, and only then — with every refusal that needs no
+-- network answer already decided — asks for an admin credential and queries AWS
+-- read-only. The exit is zero only for a 'ConfirmedNoInstallCascade'; every
+-- other path is @ExitFailure 1@, and the retained-state notice's own
+-- @ExitSuccess@ is ignored.
+--
+-- Nothing is written: not a marker, a receipt, or a cache. A repeat cascade
+-- asks again.
+runCascadeNoInstall :: FilePath -> IO ExitCode
+runCascadeNoInstall repoRoot = do
+  scope <- observeTier0AwsScope repoRoot
+  absoluteRoot <- normaliseRetainedRoot <$> makeAbsolute repoRoot
+  configuredRoot <- resolveRetainedManualPvRoot repoRoot
+  findings <- surveyRetainedRoots absoluteRoot configuredRoot
+  case NoInstall.planNoInstallCascade scope absoluteRoot configuredRoot findings of
+    NoInstall.NoInstallRefuseOffline reasons ->
+      refuseNoInstallCascade configuredRoot reasons
+    NoInstall.NoInstallQueryAws coordinates -> do
+      writeOutputLine noInstallAnnounceLine
+      (sweep, queriedRegions, account) <-
+        runOwedSweep ProbeAccountOnClean repoRoot (NonEmpty.toList coordinates)
+      let observation =
+            NoInstall.NoInstallObservation
+              { NoInstall.observedScope = scope
+              , NoInstall.observedSweep = sweep
+              , NoInstall.observedQueriedRegions = queriedRegions
+              , NoInstall.observedAccount = account
+              , NoInstall.observedRepoRoot = absoluteRoot
+              , NoInstall.observedConfiguredRoot = configuredRoot
+              , NoInstall.observedRoots = findings
+              }
+      case confirmCascadeNoInstall observation of
+        Right confirmed -> do
+          mapM_
+            writeOutputLine
+            (retainedRootInventoryLines DeleteArmCascadeNoInstall configuredRoot)
+          mapM_ writeOutputLine (NoInstall.renderConfirmedNoInstallCascade confirmed)
+          pure (confirmedNoInstallCascadeExit confirmed)
+        Left reasons -> refuseNoInstallCascade configuredRoot reasons
+ where
+  normaliseRetainedRoot = dropTrailingPathSeparator . normalise
+
+-- | Printed before any credential prompt, so an operator knows why a delete
+-- that used to be offline is about to talk to AWS.
+noInstallAnnounceLine :: String
+noInstallAnnounceLine =
+  "cluster delete --cascade: no local RKE2 install is present, and this deployment authors AWS coordinates, so this run will now query AWS read-only (the Resource Groups Tagging API in each authored region, and Route 53 zone visibility). It may ask for a temporary admin AWS credential, may take several minutes, and changes nothing."
+
+-- | Render a refusal. It names the durable cleanup namespace it could not reach
+-- and the recovery-plane disposition it reports; whether it also says nothing
+-- was observed depends on whether AWS was asked before the refusal.
+refuseNoInstallCascade
+  :: FilePath -> NonEmpty NoInstall.NoInstallRefusal -> IO ExitCode
+refuseNoInstallCascade configuredRoot reasons = do
+  let observationClass = NoInstall.noInstallObservationClass reasons
   writeDiagnosticLine
     ( "cluster delete --cascade reached no phase: no local RKE2 install is "
         ++ "present, so the retained local Lifecycle Authority that owns the "
@@ -3718,16 +4056,30 @@ runCascadeNoInstallRefusal repoRoot = do
         ++ "."
     )
   writeDiagnosticLine
-    ( "This exit makes no claim about per-run AWS stacks: nothing was "
-        ++ "observed. Restore the retained local control plane and retry, or "
-        ++ "destroy a named stack directly with `prodbox aws stack <name> "
-        ++ "destroy --yes`."
+    ( case observationClass of
+        NoInstall.NoInstallUnobserved ->
+          "This exit makes no claim about per-run AWS stacks: nothing was "
+            ++ "observed. Restore the retained local control plane and retry, or "
+            ++ "destroy a named stack directly with `prodbox aws stack <name> "
+            ++ "destroy --yes`."
+        NoInstall.NoInstallObservedNotConfirmed ->
+          "This exit makes no claim about per-run AWS stacks: the read-only AWS "
+            ++ "query did not confirm their absence. Restore the retained local "
+            ++ "control plane and retry, or destroy a named stack directly with "
+            ++ "`prodbox aws stack <name> destroy --yes`."
     )
-  -- Sprint 4.100: the arm that explains least used to say nothing about the
-  -- one store an operator might delete next. It names it now, and names the
-  -- licence this exit does not carry.
-  retainedManualPvRoot <- resolveRetainedManualPvRoot repoRoot
-  _ <- renderRetainedStateNotice DeleteArmCascadeNoInstall retainedManualPvRoot
+  mapM_ writeDiagnosticLine (NoInstall.renderNoInstallRefusals reasons)
+  -- The arm that explains least used to say nothing about the one store an
+  -- operator might delete next. It names it, and names the licence this exit
+  -- does not carry.
+  case observationClass of
+    NoInstall.NoInstallUnobserved ->
+      void (renderRetainedStateNotice DeleteArmCascadeNoInstall configuredRoot)
+    NoInstall.NoInstallObservedNotConfirmed -> do
+      mapM_
+        writeOutputLine
+        (retainedRootInventoryLines DeleteArmCascadeNoInstall configuredRoot)
+      writeOutputLine NoInstall.retainedStateObservedNotConfirmedLine
   pure (ExitFailure 1)
 
 -- | Default @prodbox cluster delete@: a PURE LOCAL UNINSTALL. It does NOT
@@ -3972,8 +4324,8 @@ runAuthorizedDeleteCascade repoRoot cascadeSubstrate exactAnswers = do
   -- and only then asked whether anything was left to mutate. Detection without
   -- remediation was the best outcome that ordering allowed, and the
   -- 2026-09-07 residue is what it produced. Whether the sweep is owed is now
-  -- decided from the declared substrate rather than from three per-run
-  -- checkpoints reading absent.
+  -- decided from the authored AWS coordinates (any of ten Tier-0 fields)
+  -- rather than from three per-run checkpoints reading absent.
   sweep <- runCascadePostflightTagSweep repoRoot
   let sweepExit = cascadePostflightSweepExit sweep
       uninstallGate = decideCascadeUninstallGate sweep
@@ -4158,7 +4510,7 @@ runCascadeDrainResult repoRoot substrate = do
           pure
             ( K8sDrain.DrainUnobservable
                 ( "AWS kubeconfig materialization failed: "
-                    ++ show exc
+                    ++ displayException exc
                 )
             )
         Right result -> pure result
@@ -4215,88 +4567,11 @@ runCascadeTestEbsReaper repoRoot = do
           writeOutputLine (EbsVolume.renderTestScopedEbsReaperReport report)
           pure ExitSuccess
 
--- | Sprint 4.17 helper, made fail-closed by Sprint 4.76: the postflight
--- cluster-tag sweep of the canonical cascade. Per
--- @documents/engineering/lifecycle_reconciliation_doctrine.md § 6@ the
--- sweep is the backstop for K8s-operator-created AWS resources that
--- escape the drain, and **a required tag sweep is fail-closed**: a
--- non-empty escapee list or a Tagging API that cannot be read is a hard
--- failure, never a silent pass. Before Sprint 4.76 this function
--- returned @IO ()@, so neither outcome could reach the exit code, and
--- its own Haddock cited § 6 as licensing that.
---
--- The one remaining skip is a missing ephemeral admin credential: there
--- is no AWS session to query with, so no query is attempted. That arm is
--- narrated as a skip — it does **not** claim the sweep was clean — and
--- whether it should refuse outright is registered in
--- @DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md@ rather than decided
--- here, because refusing would make @--cascade@ fail on every host that
--- has never provisioned an AWS substrate.
--- | Sprint 4.80: the credential-absent arm's verdict, decided rather than
--- fixed.
---
--- Sprint 4.76 left this arm a skip and registered the reason as a __policy__
--- question rather than an honesty one: the arm no longer claimed absence, but
--- refusing outright would have failed @prodbox cluster delete --cascade@ on
--- every host that has never provisioned an AWS substrate — the recommended
--- wipe-and-rebuild path in @CLAUDE.md@.
---
--- The cascade already computes the fact that decides it.
--- 'inferCascadeSubstrate' refuses before reaching this function when an exact
--- stack observation is unobservable; for fully-observed inputs it yields
--- 'SubstrateAws' when a stack is present and 'SubstrateHomeLocal' when all are
--- absent. So:
---
---   * 'SubstrateHomeLocal' — every per-run AWS stack was observed absent, so
---     this cluster lifecycle created no AWS resources for the sweep to
---     backstop. A skip confirms nothing and needs to confirm nothing.
---   * 'SubstrateAws' — AWS state was observed present, the sweep is exactly
---     the § 6 backstop for it, and "I have no credential to query with" is a
---     case of cannot-confirm. That is a hard failure.
---
--- The AWS-free host keeps exiting 0, and the host that actually had AWS state
--- can no longer pass a cascade whose backstop never ran.
--- | Sprint 6.5: whether this cluster lifecycle ever had AWS in scope.
---
--- Decided from the declared substrate, which is a fact this repository
--- authored, and never from three per-stack checkpoints reading absent. A
--- checkpoint is Pulumi state: its absence says the state is gone, which is
--- precisely the condition under which an AWS resource is most likely to be
--- stranded and least likely to be nameable. Reading that as "this lifecycle
--- had no AWS in scope" is how the 2026-09-07 residue passed a cascade that
--- reported every phase successful.
-data CascadeAwsScope
-  = -- | The deployment declares no AWS substrate, so there is no account for
-    -- residue to be in.
-    CascadeAwsUndeclared
-  | -- | The deployment declares an AWS substrate. The sweep is owed whether or
-    -- not this particular run created anything, because a run that created
-    -- nothing cannot prove that an earlier one did not.
-    CascadeAwsDeclared
-  | -- | The declaration itself could not be read. Fail-closed: an unreadable
-    -- configuration is not a configuration that declares nothing.
-    CascadeAwsScopeUnreadable !String
-  deriving (Eq, Show)
-
--- | Pure: the sweep is owed unless the deployment provably declares no AWS
--- substrate.
-cascadeAwsScopeOwesSweep :: CascadeAwsScope -> Bool
-cascadeAwsScopeOwesSweep scope = case scope of
-  CascadeAwsUndeclared -> False
-  CascadeAwsDeclared -> True
-  CascadeAwsScopeUnreadable _ -> True
-
--- | What the postflight sweep produced, as three distinct facts.
---
--- "Not owed", "owed and not run", and "owed and answered" are three
--- different things to know before destroying the only surface that could act on
--- an answer, and only the third can admit the uninstall.
-data CascadePostflightSweep
-  = CascadeSweepNotOwed
-  | CascadeSweepNotRun !String
-  | CascadeSweepRan !TagSweep.TagSweepVerdict
-  deriving (Eq, Show)
-
+-- | The cascade's AWS scope ('CascadeAwsScope'), the postflight sweep verdict
+-- ('CascadePostflightSweep') and the decision that licenses a no-install
+-- cascade's zero exit live in "Prodbox.Lifecycle.CascadeNoInstall". They are
+-- pure, so the decision can be unit-tested without this module's effects, and
+-- this module re-exports them.
 cascadePostflightSweepExit :: CascadePostflightSweep -> ExitCode
 cascadePostflightSweepExit sweep = case sweep of
   CascadeSweepNotOwed -> ExitSuccess
@@ -4339,6 +4614,11 @@ decideCascadeUninstallGate sweep = case sweep of
       CascadeUninstallWithheld
         ("the postflight tag sweep could not be confirmed: " ++ detail)
 
+-- | The exit when the sweep is owed and no admin credential can be loaded.
+--
+-- A deployment that authors no AWS coordinate owes no sweep and keeps exiting
+-- zero here. One that authors any coordinate (a Route 53 zone id is enough) owes
+-- it, so a missing credential is a refusal and the uninstall is withheld.
 cascadeSweepCredentialAbsentExit :: CascadeAwsScope -> ExitCode
 cascadeSweepCredentialAbsentExit scope =
   if cascadeAwsScopeOwesSweep scope then ExitFailure 1 else ExitSuccess
@@ -4383,16 +4663,23 @@ perRunNeedsAwsLayer :: [ResidueStatus.ResidueObservation] -> Bool
 perRunNeedsAwsLayer =
   any (ResidueStatus.isResidueUnreachable . ResidueStatus.residueObservationStatus)
 
--- | Sprint 6.5: read the declared AWS substrate, which is the program-owned
--- fact that decides whether a sweep is owed at all.
+-- | Read which AWS coordinates the in-force configuration authors; that fact,
+-- and not the presence of one profile, decides whether a sweep is owed at all.
+-- The full cascade still has its Lifecycle Authority, so it reads the in-force
+-- config.
 observeCascadeAwsScope :: FilePath -> IO CascadeAwsScope
 observeCascadeAwsScope repoRoot = do
   settingsResult <- validateAndLoadSettings repoRoot
   pure $ case settingsResult of
     Left detail -> CascadeAwsScopeUnreadable detail
-    Right settings -> case requireAwsSubstrateProfile settings of
-      Left _ -> CascadeAwsUndeclared
-      Right _ -> CascadeAwsDeclared
+    Right settings -> NoInstall.cascadeAwsScopeFromValidated settings
+
+-- | The same fact for the no-install arm, read from the Tier-0 configuration.
+-- It must not ask the Authority: with no install there is none, so that reader
+-- would always answer unreadable and the arm could never confirm.
+observeTier0AwsScope :: FilePath -> IO CascadeAwsScope
+observeTier0AwsScope repoRoot =
+  NoInstall.cascadeAwsScopeFromConfig <$> loadConfigFile repoRoot
 
 runCascadePostflightTagSweep :: FilePath -> IO CascadePostflightSweep
 runCascadePostflightTagSweep repoRoot = do
@@ -4400,44 +4687,163 @@ runCascadePostflightTagSweep repoRoot = do
   if not (cascadeAwsScopeOwesSweep scope)
     then do
       writeOutputLine
-        "Postflight tag sweep: NOT OWED. This deployment declares no AWS \
-        \substrate, so there is no account for residue to be in."
+        "Postflight tag sweep: NOT OWED. No AWS coordinate is authored in this \
+        \deployment, so there is no account for residue to be in."
       pure CascadeSweepNotOwed
     else do
-      adminResult <- loadAdminAwsCredentials repoRoot
-      case adminResult of
-        Left detail -> do
-          writeDiagnosticLine
-            ( "Postflight tag sweep: NOT RUN (no ephemeral admin AWS credential \
-              \available — no test-secrets.dhall and no TTY — so no Tagging API \
-              \query was attempted). This is not a confirmation that no AWS \
-              \residue exists, and this deployment declares an AWS substrate, so \
-              \the sweep is the backstop for it. Re-run with an admin AWS \
-              \credential available. Detail: "
-                ++ detail
-            )
-          pure (CascadeSweepNotRun detail)
-        Right adminCredentials -> do
-          environment <- adminAwsEnvironment adminCredentials
-          let input =
-                TagSweep.TagSweepInput
-                  { TagSweep.tagSweepEnvironment = environment
-                  , TagSweep.tagSweepClusterName = Just awsEksCanonicalClusterName
-                  , TagSweep.tagSweepWorkingDirectory = Just repoRoot
-                  , TagSweep.tagSweepRunRegion = region adminCredentials
-                  }
-          -- Sprint 7.26: `TagSweepCascade` carves out intentionally-RETAINED
-          -- long-lived shared infrastructure (the `pulumi_state_backend`
-          -- bucket + `aws-ses`) — `cluster delete --cascade` keeps these by
-          -- design, so they are NOT escaped residue.
-          verdict <-
-            TagSweep.decideTagSweep TagSweep.TagSweepCascade
-              <$> TagSweep.discoverClusterTaggedAwsResources input
-          let rendered = TagSweep.renderTagSweepVerdict TagSweep.TagSweepCascade verdict
-          case TagSweep.tagSweepVerdictExit verdict of
-            ExitSuccess -> writeOutputLine rendered
-            ExitFailure _ -> writeDiagnosticLine rendered
-          pure (CascadeSweepRan verdict)
+      (sweep, _, _) <- runOwedSweep SkipAccountProbe repoRoot (authoredCoordinatesOf scope)
+      pure (settleUnreadableScope scope sweep)
+ where
+  authoredCoordinatesOf scope = case scope of
+    CascadeAwsDeclared coordinates -> NonEmpty.toList coordinates
+    CascadeAwsUndeclared -> []
+    CascadeAwsScopeUnreadable _ -> []
+
+-- | A sweep run without knowing which regions the deployment authored has
+-- asked only the run region and the global-service region, so a clean answer
+-- there cannot stand for the regions it never saw. It is reported as
+-- unconfirmed and the uninstall is withheld; an unreadable declaration is not a
+-- declaration of nothing.
+settleUnreadableScope :: CascadeAwsScope -> CascadePostflightSweep -> CascadePostflightSweep
+settleUnreadableScope scope sweep = case (scope, sweep) of
+  (CascadeAwsScopeUnreadable detail, CascadeSweepRan (TagSweep.TagSweepConfirmedClean _)) ->
+    CascadeSweepRan
+      ( TagSweep.TagSweepUnconfirmed
+          ( "the configuration could not be read ("
+              ++ detail
+              ++ "), so the authored regions are unknown and a clean answer from the run region alone does not cover them"
+          )
+      )
+  _ -> sweep
+
+-- | Whether an owed sweep also asks which account its credential belongs to.
+-- The full cascade has already run its destroy phases against exact
+-- checkpoints and skips it; the no-install arm has nothing else to tie the
+-- credential to the deployment, so it asks on a clean verdict.
+data SweepAccountProbe
+  = ProbeAccountOnClean
+  | SkipAccountProbe
+  deriving (Eq, Show)
+
+-- | Run the owed sweep: one Tagging API query set per distinct authored region
+-- (plus the run region and the global-service region), through the bounded
+-- page runner so a call that never answers becomes an unconfirmed verdict and
+-- not a hang. It returns the regions it actually queried, computed from the
+-- same inputs it issued, so region coverage is a fact about what was asked.
+runOwedSweep
+  :: SweepAccountProbe
+  -> FilePath
+  -> [NoInstall.AuthoredAwsCoordinate]
+  -> IO (CascadePostflightSweep, [Text.Text], NoInstall.AccountEvidence)
+runOwedSweep accountProbe repoRoot coordinates = do
+  -- Credential acquisition can throw (an end-of-input on a closed stdin, an
+  -- unreadable fixture). After the announcement that must become the typed
+  -- \"not run\" refusal, not an uncaught exception that skips the retained-state
+  -- narration.
+  adminResult <-
+    either (Left . displayException) id
+      <$> (try (loadAdminAwsCredentials repoRoot) :: IO (Either IOException (Either String Credentials)))
+  case adminResult of
+    Left detail -> do
+      writeDiagnosticLine
+        ( "Postflight tag sweep: NOT RUN (no ephemeral admin AWS credential \
+          \available — no test-secrets.dhall and no TTY — so no Tagging API \
+          \query was attempted). This is not a confirmation that no AWS \
+          \residue exists, and this deployment authors an AWS coordinate, so \
+          \the sweep is the backstop for it. Re-run with an admin AWS \
+          \credential available. Detail: "
+            ++ detail
+        )
+      pure (CascadeSweepNotRun detail, [], NoInstall.AccountNotProbed)
+    Right adminCredentials -> do
+      environment <- adminAwsEnvironment adminCredentials
+      let baseInput =
+            TagSweep.TagSweepInput
+              { TagSweep.tagSweepEnvironment = environment
+              , TagSweep.tagSweepClusterName = Just awsEksCanonicalClusterName
+              , TagSweep.tagSweepWorkingDirectory = Just repoRoot
+              , TagSweep.tagSweepRunRegion = region adminCredentials
+              }
+          inputs = NoInstall.cascadeSweepInputs baseInput coordinates
+          queriedRegions = NoInstall.cascadeSweepQueriedRegions inputs
+      -- `TagSweepCascade` carves out intentionally-RETAINED long-lived shared
+      -- infrastructure (the `pulumi_state_backend` bucket and `aws-ses`):
+      -- `cluster delete --cascade` keeps these by design, so they are not
+      -- escaped residue.
+      discovered <-
+        TagSweep.discoverClusterTaggedAwsResourcesForAll TagSweep.boundedTagPageRunner inputs
+      let verdict = TagSweep.decideTagSweep TagSweep.TagSweepCascade discovered
+          -- The attribution narration only adds lines to what the sweep already
+          -- says; the exit below is still decided by the verdict alone.
+          rendered =
+            TagSweep.renderTagSweepVerdict TagSweep.TagSweepCascade verdict
+              ++ renderEscapedAttributionNarration verdict
+      case TagSweep.tagSweepVerdictExit verdict of
+        ExitSuccess -> writeOutputLine rendered
+        ExitFailure _ -> writeDiagnosticLine rendered
+      account <- case (accountProbe, verdict) of
+        (ProbeAccountOnClean, TagSweep.TagSweepConfirmedClean _) ->
+          probeAuthoredZones environment repoRoot coordinates
+        (ProbeAccountOnClean, TagSweep.TagSweepEscaped _ _) ->
+          pure NoInstall.AccountNotProbed
+        (ProbeAccountOnClean, TagSweep.TagSweepUnconfirmed _) ->
+          pure NoInstall.AccountNotProbed
+        (SkipAccountProbe, _) -> pure NoInstall.AccountNotProbed
+      pure (CascadeSweepRan verdict, queriedRegions, account)
+
+-- | Ask, for each authored hosted zone, whether the credential's account can
+-- see it. A zone is only visible from an account that can read it, so a zone
+-- that is not visible means the credential probably belongs elsewhere.
+probeAuthoredZones
+  :: [(String, String)]
+  -> FilePath
+  -> [NoInstall.AuthoredAwsCoordinate]
+  -> IO NoInstall.AccountEvidence
+probeAuthoredZones environment repoRoot coordinates =
+  NoInstall.AccountProbed
+    <$> traverse
+      probeOne
+      [ (coordinate, zoneId)
+      | coordinate <- coordinates
+      , Just zoneId <- [NoInstall.pinningZoneId coordinate]
+      ]
+ where
+  probeOne (coordinate, zoneId) = do
+    visibility <- probeHostedZoneVisibility environment repoRoot zoneId
+    pure (coordinate, visibility)
+
+-- | One read-only Route 53 call under a wall-clock bound. Visible only on exit
+-- zero; a timeout, an access failure or an unrecognised failure is a gap and
+-- never visible.
+probeHostedZoneVisibility
+  :: [(String, String)] -> FilePath -> Route53ZoneId -> IO NoInstall.HostedZoneVisibility
+probeHostedZoneVisibility environment repoRoot zoneId = do
+  outcome <-
+    captureSubprocessKillable
+      KillableSubprocessLimits
+        { killableSubprocessTimeoutMicros = 60 * 1000000
+        , killableSubprocessKillGraceMicros = 5 * 1000000
+        }
+      Subprocess
+        { subprocessPath = "aws"
+        , subprocessArguments =
+            [ "route53"
+            , "get-hosted-zone"
+            , "--id"
+            , Text.unpack (route53ZoneIdText zoneId)
+            , "--output"
+            , "json"
+            ]
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  pure $ case outcome of
+    Left err -> NoInstall.HostedZoneUnanswered (Text.unpack (errorMsg err))
+    Right (KillableSubprocessCompleted output) ->
+      NoInstall.classifyHostedZoneProbe (processExitCode output) (processStderr output)
+    Right (KillableSubprocessTimedOut _) ->
+      NoInstall.HostedZoneUnanswered
+        "the probe exceeded its wall-clock bound and was stopped"
 
 -- Sprint 1.89: the binding is named for its provenance. This reads a config
 -- 'validateConfig' has not seen and cannot see — the retained manual-PV root
@@ -5090,7 +5496,8 @@ ensureMinioRuntime repoRoot settings substrate imageSource =
     Left err -> failWith err
     Right storageSize ->
       runSequentially
-        [ runHelmCommandWithRetries
+        [ ensureBootstrapImagesSeeded substrate repoRoot
+        , runHelmCommandWithRetries
             repoRoot
             ( [ "upgrade"
               , "--install"
@@ -5791,7 +6198,7 @@ harborStorageBackendManifestItems accessKey secretKey =
 -- serves both substrates; @registry:2@ ships one multi-arch manifest, so the
 -- node pulls the native platform with no per-component override.
 ensureHarborRegistryRuntime :: FilePath -> Substrate -> IO ExitCode
-ensureHarborRegistryRuntime repoRoot _substrate = do
+ensureHarborRegistryRuntime repoRoot substrate = do
   -- Remove any prior Harbor helm release so its multi-pod stack (core, nginx,
   -- portal, jobservice, bundled db/redis) does not linger beside the
   -- single-binary registry:2 Deployment on a rebuilt-in-place cluster. The
@@ -5813,8 +6220,8 @@ ensureHarborRegistryRuntime repoRoot _substrate = do
           -- while registry retention had the previous Pod in read-only mode.
           runSequentially
             [ rolloutStatus repoRoot harborNamespace ("deployment/" ++ registryDeploymentName)
-            , waitForHarborRegistryEndpoint repoRoot
-            , waitForHarborStableEndpoints repoRoot
+            , waitForHarborRegistryEndpoint (registryProbeVantageFor substrate) repoRoot
+            , waitForHarborStableEndpoints (registryProbeVantageFor substrate) repoRoot
             ]
 
 -- | The superseded Harbor release is a registered desired-absence resource.
@@ -6066,15 +6473,15 @@ waitForDeployment repoRoot namespace deploymentName =
       , subprocessWorkingDirectory = Just repoRoot
       }
 
-waitForHarborRegistryEndpoint :: FilePath -> IO ExitCode
-waitForHarborRegistryEndpoint repoRoot =
-  waitForHarborHttpStatus repoRoot "/v2/" ["200", "401"] "registry endpoint"
+waitForHarborRegistryEndpoint :: RegistryProbeVantage -> FilePath -> IO ExitCode
+waitForHarborRegistryEndpoint vantage repoRoot =
+  waitForHarborHttpStatus vantage repoRoot "/v2/" ["200", "401"] "registry endpoint"
 
 -- | Require several consecutive successful @GET /v2/@ rounds on the registry
--- NodePort before any image write continues on a fresh cluster, so the mirror
--- loop never races a scheduled-but-not-yet-serving registry.
-waitForHarborStableEndpoints :: FilePath -> IO ExitCode
-waitForHarborStableEndpoints repoRoot =
+-- before any image write continues on a fresh cluster, so the mirror loop never
+-- races a scheduled-but-not-yet-serving registry.
+waitForHarborStableEndpoints :: RegistryProbeVantage -> FilePath -> IO ExitCode
+waitForHarborStableEndpoints vantage repoRoot =
   go harborEndpointStabilityAttempts 0 "registry endpoint not yet checked"
  where
   go :: Int -> Int -> String -> IO ExitCode
@@ -6086,7 +6493,7 @@ waitForHarborStableEndpoints repoRoot =
               ++ lastDetail
           )
     | otherwise = do
-        registryStatusResult <- probeHarborHttpStatus repoRoot "/v2/"
+        registryStatusResult <- probeHarborHttpStatus vantage repoRoot "/v2/"
         case registryStatusResult of
           Right registryStatus
             | registryStatus `elem` ["200", "401"] ->
@@ -6106,8 +6513,9 @@ waitForHarborStableEndpoints repoRoot =
     threadDelay harborEndpointStabilityDelayMicroseconds
     go (attemptsRemaining - 1) consecutiveSuccesses detail
 
-waitForHarborHttpStatus :: FilePath -> String -> [String] -> String -> IO ExitCode
-waitForHarborHttpStatus repoRoot path expectedStatuses description =
+waitForHarborHttpStatus
+  :: RegistryProbeVantage -> FilePath -> String -> [String] -> String -> IO ExitCode
+waitForHarborHttpStatus vantage repoRoot path expectedStatuses description =
   go harborEndpointReadinessAttempts "HTTP endpoint not yet checked"
  where
   go :: Int -> String -> IO ExitCode
@@ -6115,7 +6523,7 @@ waitForHarborHttpStatus repoRoot path expectedStatuses description =
     | attemptsRemaining <= 0 =
         failWith ("Failed to observe " ++ description ++ " before continuing: " ++ lastDetail)
     | otherwise = do
-        statusResult <- probeHarborHttpStatus repoRoot path
+        statusResult <- probeHarborHttpStatus vantage repoRoot path
         case statusResult of
           Left err -> retry attemptsRemaining err
           Right statusCode ->
@@ -6128,28 +6536,90 @@ waitForHarborHttpStatus repoRoot path expectedStatuses description =
     threadDelay harborEndpointReadinessDelayMicroseconds
     go (attemptsRemaining - 1) detail
 
-probeHarborHttpStatus :: FilePath -> String -> IO (Either String String)
-probeHarborHttpStatus repoRoot path = do
+probeHarborHttpStatus
+  :: RegistryProbeVantage -> FilePath -> String -> IO (Either String String)
+probeHarborHttpStatus vantage repoRoot path =
+  fmap registryProbeStatus
+    <$> runRegistryProbeWith
+      (registryProbeRunnerFor repoRoot vantage)
+      vantage
+      (RegistryProbeStatus path)
+
+-- | How one tool invocation is run and captured. Production runs it from the
+-- repository root; a case supplies its own and records what was asked.
+type RegistryProbeRunner = FilePath -> [String] -> IO (Either String ProcessOutput)
+
+-- | The runner a vantage's probe uses in production.
+--
+-- The host probe is bounded by its own tool (@curl --max-time@). An exec has no
+-- bound of its own that covers the stream, so the pod probe runs under a
+-- wall-clock limit: a stalled exec becomes a refused observation that the retry
+-- loops count, where an unbounded one hung the step before any loop could.
+registryProbeRunnerFor :: FilePath -> RegistryProbeVantage -> RegistryProbeRunner
+registryProbeRunnerFor repoRoot vantage = case vantage of
+  RegistryProbeFromHost -> captureToolOutput repoRoot
+  RegistryProbeFromRegistryPod -> boundedRegistryPodProbe repoRoot
+
+boundedRegistryPodProbe :: FilePath -> RegistryProbeRunner
+boundedRegistryPodProbe repoRoot tool arguments = do
   outputResult <-
-    captureToolOutput
-      repoRoot
-      "curl"
-      [ "-sS"
-      , "--max-time"
-      , "5"
-      , "-o"
-      , "/dev/null"
-      , "-w"
-      , "%{http_code}"
-      , "http://" ++ harborRegistryEndpoint ++ path
-      ]
+    captureSubprocessBounded
+      registryPodProbeLimits
+      Subprocess
+        { subprocessPath = tool
+        , subprocessArguments = arguments
+        , subprocessEnvironment = Nothing
+        , subprocessWorkingDirectory = Just repoRoot
+        }
+  pure $
+    case outputResult of
+      Left err -> Left ("registry pod probe did not complete: " ++ Text.unpack (errorMsg err))
+      Right output -> Right output
+
+-- | A probe writes a status line and a handful of headers. The lifetime covers
+-- the exec round trip and the longest in-container wait (ten seconds) with room
+-- for a slow API server, and is short enough that the loops' own attempt budgets
+-- still apply.
+registryPodProbeLimits :: BoundedSubprocessLimits
+registryPodProbeLimits =
+  BoundedSubprocessLimits
+    { boundedSubprocessMaximumInputBytes = 1
+    , boundedSubprocessMaximumStdoutBytes = 64 * 1024
+    , boundedSubprocessMaximumStderrBytes = 64 * 1024
+    , boundedSubprocessTimeoutMicros = 25 * 1000 * 1000
+    }
+
+-- | Run one request from one vantage and read what it wrote.
+runRegistryProbeWith
+  :: RegistryProbeRunner
+  -> RegistryProbeVantage
+  -> RegistryProbeRequest
+  -> IO (Either String RegistryStorageEdgeObservation)
+runRegistryProbeWith runner vantage request = do
+  let (tool, arguments) = registryProbeCommand harborRegistryProbeTarget vantage request
+  outputResult <- runner tool arguments
   pure $
     case outputResult of
       Left err -> Left err
       Right output ->
-        case processExitCode output of
-          ExitSuccess -> Right (trimWhitespace (processStdout output))
-          ExitFailure _ -> Left (outputDetail output)
+        interpretRegistryProbe
+          vantage
+          request
+          (processExitCode output)
+          (processStdout output)
+          (processStderr output)
+
+-- | The registry the probes address: its NodePort for the host vantage, and its
+-- Deployment and container for the pod vantage.
+harborRegistryProbeTarget :: RegistryProbeTarget
+harborRegistryProbeTarget =
+  RegistryProbeTarget
+    { registryProbeHostEndpoint = harborRegistryEndpoint
+    , registryProbeNamespace = harborNamespace
+    , registryProbeDeployment = registryDeploymentName
+    , registryProbeContainer = registryDeploymentName
+    , registryProbeContainerPort = registryContainerPort
+    }
 
 -- | The complete current repository/tag projection that Distribution's
 -- stop-the-world collector must preserve. A page that reaches the explicit
@@ -6280,8 +6750,8 @@ setRegistryAccessMode repoRoot accessMode = do
     ExitSuccess ->
       runSequentially
         [ rolloutStatus repoRoot harborNamespace ("deployment/" ++ registryDeploymentName)
-        , waitForHarborRegistryEndpoint repoRoot
-        , waitForHarborStableEndpoints repoRoot
+        , waitForHarborRegistryEndpoint RegistryProbeFromHost repoRoot
+        , waitForHarborStableEndpoints RegistryProbeFromHost repoRoot
         ]
 
 data RegistryGarbageCollectionMode
@@ -6424,7 +6894,7 @@ reconcileRegistryManifestRetention repoRoot = do
                     Right () -> do
                       writeOutputLine
                         "Registry manifest retention: untagged collection completed and every current tag/digest read back unchanged."
-                      ensureRegistryStorageBackendEdgeReady repoRoot
+                      ensureRegistryStorageBackendEdgeReady repoRoot SubstrateHomeLocal
 
 restoreRegistryReadWriteAfterException :: FilePath -> IO ()
 restoreRegistryReadWriteAfterException repoRoot = do
@@ -6474,20 +6944,6 @@ classifyRegistryStorageEdgeProbe result =
       | otherwise ->
           RegistryEdgeNotReady ("registry storage-backend probe returned HTTP " ++ status)
 
--- | Open a blob-upload session against the registry NodePort — the real
--- registry→MinIO S3 write round-trip the deep gate needs (see
--- 'RegistryStorageEdgeReadiness').
--- | Sprint 1.76: what one registry storage-backend probe observed — the HTTP
--- status the registry answered with, and the upload session it named. The
--- session is the receipt of the write-through to MinIO; before this sprint the
--- probe requested only the status and discarded the receipt, which is why the
--- deep gate had nothing to carry as evidence.
-data RegistryStorageEdgeObservation = RegistryStorageEdgeObservation
-  { registryProbeStatus :: String
-  , registryProbeUploadSession :: String
-  }
-  deriving (Eq, Show)
-
 -- | Sprint 1.76: the instant a deep probe observed its round trip land. Read
 -- immediately after the probe returns, so the witness carries the write's
 -- instant rather than the instant somebody later folded the evidence.
@@ -6496,77 +6952,32 @@ readinessWallClockNow = do
   posix <- getPOSIXTime
   pure (authorityTimeFromMicros (fromInteger (max 0 (floor (toRational posix * 1000000) :: Integer))))
 
+-- | Open a blob-upload session against the registry — the real registry→MinIO
+-- S3 write round-trip the deep gate needs (see 'RegistryStorageEdgeReadiness') —
+-- from the vantage the substrate's registry is reached from.
 probeRegistryStorageBackendEdge
-  :: FilePath -> IO (Either String RegistryStorageEdgeObservation)
-probeRegistryStorageBackendEdge repoRoot = do
-  outputResult <-
-    captureToolOutput
-      repoRoot
-      "curl"
-      [ "-sS"
-      , "--max-time"
-      , "10"
-      , "-X"
-      , "POST"
-      , "-o"
-      , "/dev/null"
-      , "-D"
-      , "-"
-      , "-w"
-      , "\n%{http_code}"
-      , "http://"
-          ++ harborRegistryEndpoint
-          ++ "/v2/"
-          ++ registryStorageEdgeProbeRepository
-          ++ "/blobs/uploads/"
-      ]
-  pure $
-    case outputResult of
-      Left err -> Left err
-      Right output ->
-        case processExitCode output of
-          ExitSuccess -> Right (parseRegistryStorageEdgeResponse (processStdout output))
-          ExitFailure _ -> Left (outputDetail output)
+  :: RegistryProbeVantage
+  -> FilePath
+  -> IO (Either String RegistryStorageEdgeObservation)
+probeRegistryStorageBackendEdge vantage repoRoot =
+  probeRegistryStorageBackendEdgeWith (registryProbeRunnerFor repoRoot vantage) vantage
 
--- | Split a @curl -D - -w "\n%{http_code}"@ response into the status the probe
--- asked for and the upload session the registry named. Pure, so the parse is
--- exercised without a live registry.
-parseRegistryStorageEdgeResponse :: String -> RegistryStorageEdgeObservation
-parseRegistryStorageEdgeResponse raw =
-  RegistryStorageEdgeObservation
-    { registryProbeStatus = status
-    , registryProbeUploadSession = session
-    }
- where
-  responseLines = map trimWhitespace (lines raw)
-  nonEmpty = [entry | entry <- responseLines, not (null entry)]
-  status = case reverse nonEmpty of
-    (final : _) -> final
-    [] -> ""
-  session =
-    case headerValues "docker-upload-uuid" ++ headerValues "location" of
-      (value : _) -> value
-      [] -> ""
-
-  -- The registry names the session it created in `Docker-Upload-UUID`, and
-  -- names where to continue it in `Location`. Either identifies the write the
-  -- registry performed; the UUID is preferred deterministically because it is
-  -- the identifier the registry itself allocated rather than a URL it composed.
-  headerValues wanted =
-    [ value
-    | entry <- responseLines
-    , (name, ':' : rest) <- [break (== ':') entry]
-    , map toLower (trimWhitespace name) == wanted
-    , let value = trimWhitespace rest
-    , not (null value)
-    ]
+probeRegistryStorageBackendEdgeWith
+  :: RegistryProbeRunner
+  -> RegistryProbeVantage
+  -> IO (Either String RegistryStorageEdgeObservation)
+probeRegistryStorageBackendEdgeWith runner vantage =
+  runRegistryProbeWith
+    runner
+    vantage
+    (RegistryProbeUploadSession registryStorageEdgeProbeRepository)
 
 -- | Sprint 4.43: poll the deep registry→MinIO edge gate until it proves the S3
 -- write path, refusing (gating closed) on exhaustion. This is the registry
 -- component's real readiness barrier (graph @ProbeBackendRoundTrip minio@),
 -- gating the mirror push and every downstream registry write.
-ensureRegistryStorageBackendEdgeReady :: FilePath -> IO ExitCode
-ensureRegistryStorageBackendEdgeReady repoRoot =
+ensureRegistryStorageBackendEdgeReady :: FilePath -> Substrate -> IO ExitCode
+ensureRegistryStorageBackendEdgeReady repoRoot substrate =
   go harborEndpointReadinessAttempts "registry storage-backend edge not yet checked"
  where
   go :: Int -> String -> IO ExitCode
@@ -6579,7 +6990,7 @@ ensureRegistryStorageBackendEdgeReady repoRoot =
               ++ lastDetail
           )
     | otherwise = do
-        probeResult <- probeRegistryStorageBackendEdge repoRoot
+        probeResult <- probeRegistryStorageBackendEdge (registryProbeVantageFor substrate) repoRoot
         case classifyRegistryStorageEdgeProbe (fmap registryProbeStatus probeResult) of
           RegistryEdgeReady -> pure ExitSuccess
           RegistryEdgeNotReady detail -> retry attemptsRemaining detail
@@ -6730,7 +7141,7 @@ ensureGatewayChartReadyPostVaultAt repoRoot settings substrate endpoint = do
   deployExit <- ensureGatewayChartReady repoRoot settings substrate
   case deployExit of
     ExitFailure _ -> pure deployExit
-    ExitSuccess -> ensureGatewayDaemonFullModeAt repoRoot endpoint
+    ExitSuccess -> ensureGatewayDaemonFullModeAt substrate repoRoot endpoint
 
 -- | The Gateway readiness projection is the deep proof for its retained
 -- continuity store: it cannot report ready before the continuity worker has
@@ -6739,8 +7150,8 @@ ensureGatewayChartReadyPostVaultAt repoRoot settings substrate endpoint = do
 -- initial definite not-ready result triggers one deterministic rollout restart;
 -- the post-restart proof then polls the same compiled readiness route. No generic
 -- Pulumi/object-store RPC is used as a health probe.
-ensureGatewayDaemonFullModeAt :: FilePath -> PeerEndpoint -> IO ExitCode
-ensureGatewayDaemonFullModeAt repoRoot endpoint = do
+ensureGatewayDaemonFullModeAt :: Substrate -> FilePath -> PeerEndpoint -> IO ExitCode
+ensureGatewayDaemonFullModeAt substrate repoRoot endpoint = do
   initialProbe <- pollGatewayFullModeAt endpoint False gatewayFullModeInitialProbeAttempts
   case initialProbe of
     GatewayFullModeHealthy -> do
@@ -6758,8 +7169,8 @@ ensureGatewayDaemonFullModeAt repoRoot endpoint = do
         )
       restartExit <-
         runSequentially
-          ( [rolloutRestart repoRoot gatewayNamespace ref | ref <- gatewayDaemonWorkloadRefs]
-              ++ [rolloutStatus repoRoot gatewayNamespace ref | ref <- gatewayDaemonWorkloadRefs]
+          ( [rolloutRestart repoRoot gatewayNamespace ref | ref <- workloadRefs]
+              ++ [rolloutStatus repoRoot gatewayNamespace ref | ref <- workloadRefs]
           )
       case restartExit of
         ExitFailure _ -> pure restartExit
@@ -6777,15 +7188,19 @@ ensureGatewayDaemonFullModeAt repoRoot endpoint = do
             GatewayFullModeTransient detail ->
               failWith
                 ("gateway daemon readiness was unreachable after restart: " ++ detail)
+ where
+  workloadRefs = gatewayDaemonWorkloadRefs substrate
 
--- | The gateway daemon workloads to restart, derived from the canonical
--- 'gatewayNodeIds' SSoT (one @gateway-\<nodeId>@ StatefulSet per node). Sprint
--- 3.26 renders the gateway emitters as stable per-node StatefulSet identities
--- (each with a registered retained journal), so rollout restart/status target
--- @statefulset/@ refs.
-gatewayDaemonWorkloadRefs :: [String]
-gatewayDaemonWorkloadRefs =
-  ["statefulset/gateway-" ++ nodeId | nodeId <- gatewayNodeIdsForSubstrate SubstrateHomeLocal]
+-- | The gateway daemon workloads to restart on a substrate, derived from the
+-- canonical 'gatewayNodeIdsForSubstrate' SSoT (one @gateway-\<nodeId>@
+-- StatefulSet per node). Sprint 3.26 renders the gateway emitters as stable
+-- per-node StatefulSet identities (each with a registered retained journal),
+-- so rollout restart/status target @statefulset/@ refs. The list is the
+-- substrate's own: the restart once named only the two home StatefulSets, so on
+-- AWS it left the third on the old continuity state.
+gatewayDaemonWorkloadRefs :: Substrate -> [String]
+gatewayDaemonWorkloadRefs substrate =
+  ["statefulset/gateway-" ++ nodeId | nodeId <- gatewayNodeIdsForSubstrate substrate]
 
 gatewayFullModeInitialProbeAttempts :: Int
 gatewayFullModeInitialProbeAttempts = 10
@@ -7876,7 +8291,8 @@ ensureAcmeRuntimeForSubstrate substrate repoRoot settings prodboxId labelValue =
                 case applyExit of
                   ExitFailure _ -> pure applyExit
                   ExitSuccess -> do
-                    dnsMaterialized <- awaitDns01Materialization repoRoot dnsMaterializerName
+                    dnsMaterialized <-
+                      awaitDns01Materialization repoRoot dnsCredentialLabel dnsMaterializerName
                     case dnsMaterialized of
                       ExitFailure _ -> pure dnsMaterialized
                       ExitSuccess -> do
@@ -7901,6 +8317,9 @@ ensureAcmeRuntimeForSubstrate substrate repoRoot settings prodboxId labelValue =
   dnsMaterializerName = case substrate of
     SubstrateHomeLocal -> homeDns01MaterializerName
     SubstrateAws -> awsDns01MaterializerName
+  dnsCredentialLabel = case substrate of
+    SubstrateHomeLocal -> "home DNS01 credential"
+    SubstrateAws -> "AWS DNS01 credential"
 
 reconcileAcmeEabFixture :: ExternalLifecycleAuthorityCaller -> FilePath -> IO ()
 reconcileAcmeEabFixture caller repoRoot =
@@ -7924,7 +8343,7 @@ submitAcmeEabFixture caller repoRoot ingressFrame = do
         Nothing ->
           pure (Left "The runtime image has no immutable repository manifest digest for ACME EAB ingress.")
         Just digest -> do
-          let operationId = "acme-eab-fixture-" <> basicsClusterId basics
+          let operationId = acmeEabFixtureOperationId (basicsClusterId basics) ingressFrame
               repository =
                 Text.pack
                   (resolvedCustomImageRepository image ++ ":" ++ resolvedCustomImageTag image)
@@ -7983,54 +8402,32 @@ externalMaterialRequestForObservation
 externalMaterialRequestForObservation operationId repository imageDigest heartbeat observed =
   case observed of
     Left _ -> Left "Lifecycle Authority current external-material observation is unavailable."
-    Right Nothing -> Right (freshRequest ExternalMaterialInstall 1 imageDigest heartbeat)
+    Right Nothing -> Right (requestFor operationId ExternalMaterialInstall 1 imageDigest heartbeat)
     Right (Just current)
       | externalMaterialObservedOperationId current == operationId ->
-          let challenge = externalMaterialObservedChallenge current
-              deadline = externalMaterialChallengeDeadlineMicros challenge
-              retainedHeartbeat = deadline - min deadline externalMaterialLeaseMicros
-              action =
-                if externalMaterialChallengeGeneration challenge == 1
-                  then ExternalMaterialInstall
-                  else ExternalMaterialRotate
-              retainedReplay =
-                ( freshRequest
-                    action
-                    (externalMaterialChallengeGeneration challenge)
-                    (externalMaterialChallengeImageDigest challenge)
-                    retainedHeartbeat
-                )
-                  { externalMaterialWorkflowDeadline = authorityTimeFromMicros deadline
-                  }
-           in Right
-                ( if externalMaterialObservedPhase current
-                    `elem` [ ExternalMaterialIngressIntentCommitted
-                           , ExternalMaterialIngressPermitCommitted
-                           ]
-                    && deadline <= heartbeat
-                    then
-                      freshRequest
-                        action
-                        (externalMaterialChallengeGeneration challenge)
-                        imageDigest
-                        heartbeat
-                    else retainedReplay
-                )
+          Right (continueRetained operationId current)
       | externalMaterialObservedPhase current == ExternalMaterialIngressReceiptCommitted ->
           Right
-            ( freshRequest
+            ( requestFor
+                operationId
                 ExternalMaterialRotate
                 (externalMaterialChallengeGeneration (externalMaterialObservedChallenge current) + 1)
                 imageDigest
                 heartbeat
             )
+      -- An operation still in flight under another id (the id this fixture
+      -- carried before it was derived from the credential, or the credential of
+      -- an attempt the operator then edited) can be finished only by a request
+      -- equal to its own: the Authority admits a different intent only from an
+      -- idle or completed state. So it is finished first, under its own id, and
+      -- the next invocation rotates when the credential's id differs.
       | otherwise ->
-          Left "A different external-material ingress operation is still in progress."
+          Right (continueRetained (externalMaterialObservedOperationId current) current)
  where
-  freshRequest action generation selectedImage selectedHeartbeat =
+  requestFor selectedOperationId action generation selectedImage selectedHeartbeat =
     ExternalMaterialIngressWorkflowRequest
       { externalMaterialWorkflowAction = action
-      , externalMaterialWorkflowOperationId = operationId
+      , externalMaterialWorkflowOperationId = selectedOperationId
       , externalMaterialWorkflowGeneration = generation
       , externalMaterialWorkflowImageRepository = repository
       , externalMaterialWorkflowImageDigest = selectedImage
@@ -8039,11 +8436,36 @@ externalMaterialRequestForObservation operationId repository imageDigest heartbe
       , externalMaterialWorkflowHeartbeatMicros = selectedHeartbeat
       }
 
+  -- The retained operation, resumed byte for byte; renewed under a fresh lease
+  -- only when it is still committing and its lease has lapsed.
+  continueRetained retainedOperationId current
+    | stillCommitting && deadline <= heartbeat =
+        requestFor retainedOperationId action generation imageDigest heartbeat
+    | otherwise =
+        (requestFor retainedOperationId action generation retainedImage retainedHeartbeat)
+          { externalMaterialWorkflowDeadline = authorityTimeFromMicros deadline
+          }
+   where
+    challenge = externalMaterialObservedChallenge current
+    deadline = externalMaterialChallengeDeadlineMicros challenge
+    retainedHeartbeat = deadline - min deadline externalMaterialLeaseMicros
+    generation = externalMaterialChallengeGeneration challenge
+    retainedImage = externalMaterialChallengeImageDigest challenge
+    action =
+      if generation == 1
+        then ExternalMaterialInstall
+        else ExternalMaterialRotate
+    stillCommitting =
+      externalMaterialObservedPhase current
+        `elem` [ ExternalMaterialIngressIntentCommitted
+               , ExternalMaterialIngressPermitCommitted
+               ]
+
 externalMaterialLeaseMicros :: Natural
 externalMaterialLeaseMicros = 30 * 60 * 1000000
 
-awaitDns01Materialization :: FilePath -> String -> IO ExitCode
-awaitDns01Materialization repoRoot materializerName = do
+awaitDns01Materialization :: FilePath -> String -> String -> IO ExitCode
+awaitDns01Materialization repoRoot credentialLabel materializerName = do
   waited <-
     captureKubectl
       repoRoot
@@ -8058,13 +8480,13 @@ awaitDns01Materialization repoRoot materializerName = do
     Left err -> failWith err
     Right output
       | processExitCode output /= ExitSuccess ->
-          failWith "Home DNS01 credential materializer did not complete."
+          failWith ("The " ++ credentialLabel ++ " materializer did not complete.")
       | otherwise ->
           observeMaterializedSecretMetadata
             repoRoot
             certManagerNamespace
             route53CredentialsSecretName
-            "home DNS01 credential"
+            credentialLabel
   cleanup <-
     deleteMaterializerAndObservePodAbsence
       repoRoot
@@ -8939,8 +9361,12 @@ dormantRootChartNamespaces =
 
 rootChartNamespaceGuardrailItemsFor :: Capacity.ResourcePlan -> String -> Either String [Value]
 rootChartNamespaceGuardrailItemsFor plan namespace = do
-  namespaceAdmission <- Placement.planNamespaceAdmission SubstrateAws (Text.pack namespace) plan
-  limitEnvelope <- Placement.planNamespaceLimits SubstrateAws (Text.pack namespace) plan
+  -- The standalone namespace is not a rendered namespace on any substrate (the
+  -- Keycloak workloads are placed with @vscode@), so placement falls back to
+  -- the profiles declared in it; the substrate does not change that answer.
+  namespaceAdmission <-
+    Placement.planNamespaceAdmission SubstrateHomeLocal (Text.pack namespace) plan
+  limitEnvelope <- Placement.planNamespaceLimits SubstrateHomeLocal (Text.pack namespace) plan
   pure
     [ rootChartResourceQuotaManifest namespace namespaceAdmission
     , rootChartLimitRangeManifest namespace limitEnvelope
@@ -9264,8 +9690,67 @@ pushCustomImageVariantsViaInClusterCrane repoRoot primaryRef taggedRefs = do
                       mapM
                         (pushOneRefViaCranePod cfg podNs podNm podPath repoRoot)
                         taggedRefs
+                    -- Every tag was pushed from the one tarball, so the first
+                    -- tag's digest is the repository's. The record is written
+                    -- only after every push succeeded, from what the registry
+                    -- reports, before the pod that can ask it is deleted.
+                    digestExit <-
+                      case firstNonSuccess pushExits of
+                        ExitSuccess ->
+                          recordEksRegistryManifestDigest cfg repoRoot primaryRef
+                        failure -> pure failure
                     _ <- deleteCranePushPod podNs podNm repoRoot
-                    pure $ firstNonSuccess pushExits
+                    pure $ firstNonSuccess (pushExits ++ [digestExit])
+
+-- | Ask the EKS registry for the manifest digest it holds for the pushed image
+-- and record it in the cluster, where the chart planner reads it.
+--
+-- The host cannot supply it: the AWS publication never pushes or pulls from the
+-- host, so the host's @.RepoDigests@ is empty or belongs to an earlier push to the
+-- home registry, and the control-plane charts pin the image by the digest the
+-- worker pods' image identifiers will report, which is the registry's.
+recordEksRegistryManifestDigest
+  :: EksCustomImagePushConfig -> FilePath -> String -> IO ExitCode
+recordEksRegistryManifestDigest cfg repoRoot primaryRef = do
+  let inClusterRef = rewriteChartRefForInClusterPush cfg primaryRef
+  asked <-
+    captureToolOutput
+      repoRoot
+      "kubectl"
+      (eksRegistryDigestCommandArguments cfg primaryRef)
+  case asked of
+    Left err -> failWith err
+    Right output
+      | processExitCode output /= ExitSuccess ->
+          failWith
+            ( "crane could not read the manifest digest of "
+                ++ inClusterRef
+                ++ ": "
+                ++ outputDetail output
+            )
+      | otherwise ->
+          case parseRegistryManifestDigest (processStdout output) of
+            Nothing ->
+              failWith
+                ( "crane printed no single manifest digest for "
+                    ++ inClusterRef
+                    ++ ": "
+                    ++ show (processStdout output)
+                )
+            Just digest -> do
+              writeOutputLine ("EKS_RUNTIME_IMAGE_MANIFEST_DIGEST=" ++ digest)
+              withTemporaryJsonManifest
+                "eks-runtime-image-digest"
+                [eksRuntimeImageDigestRecordManifest cfg digest]
+                ( \manifestPath ->
+                    runCommand
+                      Subprocess
+                        { subprocessPath = "kubectl"
+                        , subprocessArguments = ["apply", "-f", manifestPath]
+                        , subprocessEnvironment = Nothing
+                        , subprocessWorkingDirectory = Just repoRoot
+                        }
+                )
 
 deleteCranePushPod :: String -> String -> FilePath -> IO ExitCode
 deleteCranePushPod podNs podNm repoRoot =
@@ -9736,6 +10221,77 @@ importImageIntoRke2Containerd repoRoot imageRef = do
                     , subprocessWorkingDirectory = Just repoRoot
                     }
               ]
+
+-- | Sprint 4.106: put the pre-registry public images (the MinIO server and the
+-- @mc@ client its bootstrap Jobs run) into RKE2 containerd before a consumer
+-- starts, so the kubelet never has to pull them. Their upstream no longer
+-- serves an anonymous pull and the kubelet's image garbage collection removes
+-- one nothing is using, so a cluster that is rebuilt, or whose disk crosses the
+-- collection threshold between two uses, cannot start MinIO or either Job from
+-- the public name alone. The policy and its failure text are
+-- "Prodbox.Infra.BootstrapImageSeed"; this is its Docker and containerd client.
+--
+-- The AWS substrate has no operator-host containerd to seed: its nodes pull
+-- these images themselves, which is a separate, open problem (Sprint @7.47@).
+ensureBootstrapImagesSeeded :: Substrate -> FilePath -> IO ExitCode
+ensureBootstrapImagesSeeded substrate repoRoot =
+  case substrate of
+    SubstrateAws -> pure ExitSuccess
+    SubstrateHomeLocal -> do
+      socketResult <- resolveContainerdSocket
+      either failWith (seedHomeBootstrapImages repoRoot) socketResult
+
+seedHomeBootstrapImages :: FilePath -> String -> IO ExitCode
+seedHomeBootstrapImages repoRoot socketPath = do
+  seeded <-
+    BootstrapImageSeed.seedBootstrapImages
+      (homeBootstrapImageSeedEffects repoRoot socketPath)
+      BootstrapImageSeed.bootstrapSeedImages
+  either failWith reportSeeded seeded
+ where
+  reportSeeded outcomes = do
+    mapM_ (writeOutputLine . BootstrapImageSeed.renderBootstrapImageSeedOutcome) outcomes
+    pure ExitSuccess
+
+homeBootstrapImageSeedEffects :: FilePath -> String -> BootstrapImageSeed.BootstrapImageSeedEffects
+homeBootstrapImageSeedEffects repoRoot socketPath =
+  BootstrapImageSeed.BootstrapImageSeedEffects
+    { BootstrapImageSeed.seedEffectContainerdHolds = \reference ->
+        succeeded
+          <$> captureToolOutput
+            repoRoot
+            "sudo"
+            ["ctr", "--address", socketPath, "-n", "k8s.io", "images", "inspect", reference]
+    , BootstrapImageSeed.seedEffectHostDockerHolds = \reference ->
+        succeeded <$> captureDockerToolOutput repoRoot ["image", "inspect", reference]
+    , BootstrapImageSeed.seedEffectPullIntoHostDocker = pullBootstrapImageIntoHostDocker repoRoot
+    , BootstrapImageSeed.seedEffectImportIntoContainerd = importBootstrapImageIntoContainerd repoRoot
+    }
+ where
+  succeeded = either (const False) ((== ExitSuccess) . processExitCode)
+
+-- | The only step of the seeding that needs the network: a public pull into the
+-- host Docker cache, inside the ephemeral Docker configuration every other
+-- public pull of this module uses.
+pullBootstrapImageIntoHostDocker :: FilePath -> String -> IO (Either String ())
+pullBootstrapImageIntoHostDocker repoRoot reference =
+  withEphemeralDockerConfig $ do
+    pulled <- captureDockerToolOutput repoRoot ["pull", reference]
+    pure (pulled >>= requireSuccess)
+ where
+  requireSuccess output =
+    case processExitCode output of
+      ExitSuccess -> Right ()
+      ExitFailure _ -> Left (outputDetail output)
+
+importBootstrapImageIntoContainerd :: FilePath -> String -> IO (Either String ())
+importBootstrapImageIntoContainerd repoRoot reference = do
+  imported <- importImageIntoRke2Containerd repoRoot reference
+  pure $
+    case imported of
+      ExitSuccess -> Right ()
+      ExitFailure code ->
+        Left ("docker save or ctr import exited with status " ++ show code ++ " (its output is above)")
 
 -- | Persisted content of 'inotifyDropInPath'. Kept deterministic (stable
 -- comment block + trailing newline) so 'ensureHostInotifyLimits' can compare
@@ -10664,13 +11220,21 @@ captureKubectl repoRoot arguments = do
       Success output -> Right output
 
 captureToolOutput :: FilePath -> FilePath -> [String] -> IO (Either String ProcessOutput)
-captureToolOutput repoRoot toolName arguments = do
+captureToolOutput = captureToolOutputIn Nothing
+
+captureToolOutputIn
+  :: Maybe [(String, String)]
+  -> FilePath
+  -> FilePath
+  -> [String]
+  -> IO (Either String ProcessOutput)
+captureToolOutputIn environment repoRoot toolName arguments = do
   result <-
     captureSubprocessResult
       Subprocess
         { subprocessPath = toolName
         , subprocessArguments = arguments
-        , subprocessEnvironment = Nothing
+        , subprocessEnvironment = environment
         , subprocessWorkingDirectory = Just repoRoot
         }
   pure $

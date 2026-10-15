@@ -36,7 +36,11 @@ provenance, not a parallel status ledger.
   single-node affinity. On the AWS/EKS substrate the source is a **pre-created EBS volume
   lifted in as a static PV** via the EBS CSI `volumeHandle`, `Retain`, `claimRef`-bound, and
   pinned to the volume's availability zone (`topology.ebs.csi.aws.com/zone`) exactly as the
-  home PV is pinned to its node. There is **no dynamic provisioning on either substrate**,
+  home PV is pinned to its node. A volume found by its tag is bound only if it reports a size at
+  least the plan's: a smaller one (or one that reports none) is refused naming both sizes before
+  anything else is created, because it would be bound under a larger claim, and growing it in
+  place or replacing the retained family is an operator decision about data the volume holds, not
+  a side effect of the ensure. There is **no dynamic provisioning on either substrate**,
   satisfying [cluster_topology_doctrine.md § 4](./cluster_topology_doctrine.md); the legacy
   dynamic `gp2` EKS path (Sprint `7.5.c.i`) is superseded by Sprint `7.28` and tracked for
   removal in
@@ -426,21 +430,27 @@ Rules:
     production `.data/`; see
     [test_topology_doctrine.md § 4](./test_topology_doctrine.md#4-fail-fast-preconditions-and-test-data-isolation).
 
-    > **Target.** The isolation rule has a converse that the current surface does not honor. A
-    > delete arm that speaks about *the* retained root has spoken about one of two, and an
-    > operator's real question — whether removing this repository's untracked state is safe — is
-    > about whichever root this checkout actually wrote. An arm that makes a retained-root claim
-    > therefore enumerates both roots that exist, answers for each one it found, and says which it
-    > did not find; an arm that cannot enumerate says that instead of answering for `.data/` alone.
-    > The isolation direction is unchanged and still mechanically enforced: enumerating `.test-data/`
-    > to report on it is not licence for a production path to write it, nor for a test path to reach
-    > `.data/`. Status lives only in
-    > [Development Plan → Resume Here](../../DEVELOPMENT_PLAN/README.md#resume-here).
+    The isolation rule has a converse. A delete arm that speaks about *the* retained root has
+    spoken about one of two, and an operator's real question — whether removing this repository's
+    untracked state is safe — is about whichever root this checkout actually wrote. An arm that makes
+    a retained-root claim therefore enumerates the roots that exist, answers for each one it found,
+    and says which it did not find; an arm that cannot enumerate says that instead of answering for
+    `.data/` alone. The no-install cascade honors this: it looks (read-only, one directory level) at
+    the configured root, `.data/`, `.test-data/` and any immediate child of the repository root
+    carrying a retained-root signature, and refuses to confirm while any of them cannot be
+    examined. The other terminal arms still narrate the one configured root and make no claim that
+    they examined the set. The isolation direction is unchanged and still mechanically enforced:
+    enumerating `.test-data/` to report on it is not licence for a production path to write it, nor
+    for a test path to reach `.data/`.
 14. Chart storage sizes are not chart-local literals. Each StatefulSet workload's PVC `size:` is
     single-sourced from that workload's `durable_storage_mib` in the capacity plan and **injected**
     into the rendered chart (Sprint `3.29`), so the PVC size, the namespace `requests.storage`
-    quota, and the over-commit fit proof are one value that cannot drift; the former hardcoded hints
-    (e.g. the 20Gi MinIO PV hint) are retired. This doctrine still owns *where* those durable bytes
+    quota, and the over-commit fit proof are one value that cannot drift (the AWS gateway's
+    emitter-journal claims are the one workload sized from `gatewayEmitterJournalMiB` instead, applied
+    to the plan through `planForSubstrate`; see
+    [resource_scaling_doctrine.md § 2B](./resource_scaling_doctrine.md#2b-host-rke2-cluster-namespace-and-pod-lemmas)); the former hardcoded hints
+    (e.g. the 20Gi MinIO PV hint) are retired for chart workloads, and the retained inventory's
+    `20Gi` MinIO entry remains a second literal that agrees with the plan's value today. This doctrine still owns *where* those durable bytes
     live. *How much* is owned by two sibling SSoTs: the finite durable-byte ceiling per store —
     where a sizeless claim or an over-quota topology is a Dhall typecheck failure — by
     [tiered_storage_capacity_doctrine.md](./tiered_storage_capacity_doctrine.md), and the
@@ -520,7 +530,21 @@ Rules:
       so no ownership manifest can name them by construction and only the provider-side tag, where
       one is stamped, makes them enumerable. Rule 15's retained EBS volumes are deliberately outside
       this: they are `Retain` by design and their absence from a teardown record is the intent, not
-      a gap. Extending the record to the creators that should carry one is scheduled work.
+      a gap.
+    - **Decided and mechanically held, 2026-10-07 (Sprint `7.43`).** "Extending the record to the
+      creators that should carry one" resolved to *declaring*, not extending. `createRecordCoverage`
+      (`src/Prodbox/Lifecycle/Teardown/CreateRecordCoverage.hs`) classifies every creator. The retained
+      SES program is excluded from the lane on purpose — it has no registered key, its reconcile is a
+      series of idempotent provider intents rather than one create, and no cascade targets it — and
+      that is a separate decision from its withheld run-scope tag. Retained production volumes are a
+      volume family, so the per-run manifest intent refuses them by construction, and their create is
+      tagged by the creating call itself, so there is no create-then-tag window for a record to
+      close. The production IAM principals have no registered key and are invisible to the regional
+      Tagging API; the validation hosted zone, a third creator the earlier text did not name, is a
+      zone family tagged by a second call straight after the create, so it is bounded by its name
+      prefix until the tag lands. Each names the destroy path that covers it, and a check in
+      `prodbox dev check` fails if a program joins or leaves the lane, a creator is unclassified, or a
+      module outside the manifest's own modules names an identifier that commits or appends a manifest.
     Status lives only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 

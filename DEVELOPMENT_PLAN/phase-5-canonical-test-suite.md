@@ -11,6 +11,28 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-10-08 on Sprints `5.49`–`5.53` (Standards A/N).** Own-surface reopen on the
+canonical suite's validation bodies and on the harness that runs them. A static audit on 2026-10-07
+traced every canonical validation and aggregate step against the current source — 29 targets, one
+read-only tracer each and an independent confirmer per finding — and found that `prodbox test all`
+cannot pass on either substrate and has not since host plaintext AWS access was disabled on
+2026-08-02: 17 targets fail deterministically and 12 can pass if the live system is healthy. The
+assertions had been written against output, workload kinds, identities and routes the control plane
+had since stopped producing, and no gate compiles a validation's expectation against the thing that
+produces it, so `dev check` stayed green throughout. Sprint `5.49` repaired the validation bodies and
+is `Done`. Sprint `5.50` owned the rest and is `Done` (2026-10-08): every harness-tier suite provisions
+through the Credential Provisioner; the cleanup client authenticates as the operator, holds no session
+across the body and covers the zone-scoped families from evidence; the validations that reached AWS from the
+host ask the Provider; and the Phase `5` half of a second audit of the AWS arm (the stability policy, the
+guardrails, the cluster each validation addresses, the continuity restart, the kubeconfig error) is
+repaired. The platform findings of that audit are Phase `7`'s, Sprints `7.46` and `7.47`. Sprint `5.51` is
+`Planned`: no production path can revoke the harness credential, so a completed run retains it, and the
+revocation lane is a new trust edge that waits on operator decisions. A third audit of the home and shared arms
+(2026-10-08) found four more deterministic failures a healthy system would have hit, which Sprint `5.52`
+repairs (`Done`, 2026-10-08); the weaknesses the review of that landing found and no row owned are Sprint
+`5.53`'s. The phase recloses when `5.51` and `5.53` reach `Done`; until then this entry records an open reopen,
+not a closure.
+
 ✅ **Reclosed 2026-09-15 on Sprints `5.47`–`5.48` (Standards A/N).** Both reached `Done` on
 2026-09-14 with `prodbox dev check` at 0; the reclose is written here on 2026-09-15 because the
 phase-document header is the only place a reclose must be written by hand in a second location, and
@@ -4835,6 +4857,779 @@ clock; and it takes a fresh cycle where a real create may be re-dispatched under
 Model check **1,750 distinct states, depth 18, zero left on queue, six invariants**, the superseded
 ordering refused in **5** states, all four registered configurations satisfied, registration cases
 **6/6**, primary unit **5,052/5,052**, canonical `prodbox dev check` exits 0.
+
+## Sprint 5.49: Validations Asserted Output Nobody Printed Any More [✅ Done]
+
+**Status**: Done (2026-10-08). Phase `5` own-surface reopen (Standards A/N) on the canonical suite's
+validation bodies.
+**Doctrine**: [Unit Testing Policy](../documents/engineering/unit_testing_policy.md) and
+[Integration Fixture Doctrine](../documents/engineering/integration_fixture_doctrine.md).
+**Implementation**: `src/Prodbox/TestValidation.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`,
+`src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Infra/AwsSesStack.hs`, `src/Prodbox/Aws.hs`,
+`src/Prodbox/Settings.hs`, `src/Prodbox/Settings/AwsSubstrateProfile.hs`, `src/Prodbox/UsersAdmin.hs`,
+`src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/CLI/Vault.hs`, `src/Prodbox/CheckCode.hs`,
+`test/unit/Main.hs`, and `test/unit/AwsSubstrateProfile.hs`.
+**Blocked by**: none.
+**Live-proof**: observed (2026-10-12 and 13). The validations it repaired pass against the live home system and
+the live account: `pulumi`, `sealed-vault`, `daemon-bootstrap`, `public-dns`, `gateway-daemon`, `gateway-pods`,
+`keycloak-invite` and `ha-rke2-aws` (the last on a clean account: the three-node stack provisioned, its snapshot and
+SSH reachability verified, then destroyed with `aws stack test destroy --yes`, whose receipt is
+`prodbox-registered-stack/v1:absent:aws-test`). The cases below are pure or run a real `sh`, and each names the shape
+the live system produces.
+**Deployment qualification**: pending — not invalidated. The production changes are a seal-state read
+from the Tier-0 floor in the Pulumi gate and a node-count rule where `aws stack eks` previously refused;
+neither touches destroy ordering, process topology or a persistence protocol.
+**Independent Validation**: pure and real-`sh` unit cases over each repaired expectation, each with the
+old shape kept as a negative control; no AWS, no cluster, no Vault.
+**Docs to update**: `documents/engineering/cluster_topology_doctrine.md`,
+`documents/engineering/config_doctrine.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`DEVELOPMENT_PLAN/system-components.md`, `DEVELOPMENT_PLAN/README.md`, and
+`DEVELOPMENT_PLAN/00-overview.md`.
+
+### Objective
+
+Make the canonical validations assert what the control plane now produces. A validation body is a
+client of the command it drives, and nothing compiles that client against the producer, so when host
+plaintext AWS access was disabled on 2026-08-02 and the Provider receipt replaced the printed stack
+report, every expectation written against the older output kept compiling and `dev check` stayed green
+while `prodbox test all` could no longer pass. A static audit on 2026-10-07 traced all 29 canonical
+validations and aggregate steps against the source, one read-only tracer each and an independent
+confirmer per finding. Seventeen fail deterministically on a healthy system and twelve can pass; the
+defects below are the ones whose repair needs no new Provider capability and no change to how the
+harness provisions its credential. An adversarial review of this landing against the code that produces
+what each validation asserts then found two more that the unit cases had mirrored rather than caught.
+
+### Deliverables
+
+- `aws-eks`, `pulumi` and `ha-rke2-aws` assert the Provider receipt the command prints. The label is one
+  constant (`awsEksProviderReceiptLabel`, `awsTestProviderReceiptLabel`) read by the producer and by the
+  validation, so the two cannot drift apart the way the superseded `STACK=`/`NODE_COUNT=` report did.
+- `gateway-daemon` and `gateway-pods` wait on the StatefulSets the gateway namespace holds, not on
+  Deployments it does not (`gatewayEmitterStatefulSets`, `waitForGatewayEmitters`).
+- `sealed-vault` reads the Broker's JSON seal state (`sealStateFromVaultStatusOutput`,
+  `assertVaultReportsSealed`) instead of a `sealed=True` line nobody prints, and the Pulumi Vault gate
+  reads its address from the Tier-0 floor, so it can name a sealed Vault: the settings loader resolves
+  the in-force config through the Authority, which needs an unsealed Vault, and the gate was failing to
+  load the context it needed to ask. The Sprint `4.90` witness table accepts the floor read, which three
+  other modules already use.
+- `daemon-bootstrap` probes through the Broker host connection rather than an unbound loopback port, and
+  records an observed route without the forward's ephemeral port: the audit refuses any corpus containing
+  the legacy MinIO forward's literal port, which the kernel hands out as a loopback port on about one run
+  in 28,000 (`observedBrokerRouteLine`).
+- `keycloak-invite` addresses its invite at the dotted receive domain the SES receipt rule names
+  (`keycloakInviteRecipient`); the bare label it used is not a mail domain, so no captured message's `To:`
+  header could carry it and the capture poll could never match.
+- `public-dns` composes the SES receive domain (`sesReceiveDomain`): `ses.receive_subdomain` is a label,
+  and the Provider's SES references need the dotted name (`awsSesProviderIntents`).
+- `aws-iam` accepts exactly the assumed role `prodbox-lifecycle-provider` under session
+  `prodbox-provider-worker` and refuses the base IAM user (`inspectOperationalIdentity`), where it had
+  required an IAM user the Provider path no longer has.
+- `charts-vscode`, `charts-api` and `charts-websocket` mint their Keycloak access token with
+  `keycloakEmitAccessTokenFunction`: kcadm stores `token`, not `access_token`, and the image has no
+  `awk`.
+- The home substrate provisions `aws-eks` at the authored profile's minimum node count when the topology
+  is not EKS (`awsEksDesiredNodeCount`), which also unblocks the supported destroy under a home
+  configuration, and the `aws-eks` validation owns its kubeconfig scope because it creates the checkpoint
+  a suite-scoped kubeconfig is projected from.
+
+### Validation
+
+1. Each repaired expectation is held by a case that fails against the old shape: the old `STACK=` report,
+   a Deployment wait in a StatefulSet-only namespace, `sealed=True` text, a user-shaped identity, a
+   label where the dotted domain belongs (in both `public-dns` and `keycloak-invite`), an `access_token`
+   key, a topology with no node-group size, and an observed route line carrying the forward's port.
+2. The token extractor runs under a real `sh` against kcadm-shaped files, with and without the key.
+3. `awsEksDesiredNodeCount` takes the topology's size when it is EKS and the profile minimum otherwise,
+   and a profile whose maximum is below its minimum is still refused by name.
+4. `aws-eks` owns its kubeconfig scope and a chart validation still uses the selected substrate's.
+5. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
+
+### Remaining Work
+
+None on the code-owned surface of the validation bodies repaired here. The audit's other findings are
+owned by Sprint `5.50`, and `Live-proof` stays pending and non-blocking (Standard O).
+
+### Outcome
+
+**The nine repairs landed with the harness half of Sprint `5.50` in one gated change.** The primary unit
+suite passes **5,458/5,458** and canonical `prodbox dev check` exits 0.
+
+**A green gate did not prove any of it.** The unit cases for the first landing had been written against
+the same assumptions as the repairs, so an adversarial review of the landing against the code that
+produces what each validation asserts was run before the sprint was called done. It found two defects the
+cases had mirrored: the invite validation still addressed its recipient at the bare label, and the
+observed-route audit line embedded the forward's ephemeral port, which the audit's own forbidden-pattern
+list would refuse on the run in which the kernel handed out that number. Neither is a thing a unit case
+written beside the repair could have caught; both are now held by cases that fail against the old shape.
+
+**One latent gate failure surfaced for the same reason.** The Pulumi Vault gate now reads its address from
+the Tier-0 floor, and the Sprint `4.90` witness table still demanded the context-bound projection; the
+repository-policy lint, not the unit suite, refused it, and the table now names the floor read three other
+modules already use.
+
+## Sprint 5.50: The Harness And Three Validations Never Moved To The Authority [✅ Done]
+
+**Status**: Done (2026-10-08). Phase `5` own-surface reopen (Standards A/N) on the harness that
+provisions and retires the suite's AWS credential and on the validations that still reached AWS from the
+host.
+**Doctrine**: [Integration Fixture Doctrine](../documents/engineering/integration_fixture_doctrine.md),
+[AWS Admin Credentials](../documents/engineering/aws_admin_credentials.md), and
+[Test Topology Doctrine](../documents/engineering/test_topology_doctrine.md).
+**Implementation**: `src/Prodbox/TestRunner.hs`, `src/Prodbox/Test/LifecycleCleanupClient.hs`,
+`src/Prodbox/Lifecycle/Teardown/Model.hs`, `src/Prodbox/TestValidation.hs`, and the Provider intents the
+validations call.
+**Blocked by**: none.
+**Live-proof**: observed (2026-10-12 and 13), with the operator's `test-secrets.dhall`: every harness-tier suite
+provisions its credential through the Credential Provisioner (`aws-iam`, `dns-aws`, the chart suites and
+`keycloak-invite` each submitted and read back their operation) and the harness's cleanup client settled the
+per-run families it owned. No production path revokes the credential, as the sprint records.
+**Deployment qualification**: pending — invalidated. The harness's credential teardown and the
+validations' AWS access are lifecycle orchestration and capability wiring under Standard P.
+**Independent Validation**: unit cases over the suite plan, the harness composition and the new intents'
+codec, dispatch and role mapping; fake-Authority and fake-Provider interpreters; no live AWS.
+**Docs to update**: `documents/engineering/integration_fixture_doctrine.md`,
+`documents/engineering/aws_admin_credentials.md`, `DEVELOPMENT_PLAN/system-components.md`,
+`DEVELOPMENT_PLAN/README.md`, and `DEVELOPMENT_PLAN/00-overview.md`.
+
+### Objective
+
+Finish what the 2026-10-07 audit found after Sprint `5.49`. Three groups remain, and each is a place
+where the suite still depends on something that stopped existing on 2026-08-02.
+
+**The harness.** A named AWS suite on `--substrate aws` takes the legacy managed IAM setup,
+`runAwsIamHarnessSetup`, whose last step is a constant refusal, because `harnessNeedsVaultBeforeSetup`
+is the suite's bootstrap flag and a named suite has none. Every harness-tier suite then runs the legacy
+teardown, which asks `operationalCredentialsCleared` and receives a stub, and refuses. The audit also
+found three defects in the lifecycle-owned cleanup client: route 57 (the recovery-plane host
+observation) admits only the operator CLI caller, one Authority tunnel is held across a body that
+`cluster delete` kills, and the cleanup program is compiled with an empty hosted-zone id.
+
+**Validations that reach AWS from the host.** `dns-aws` and `keycloak-invite` obtain credentials through
+`settingsAwsEnvironment`, which has returned a refusal unconditionally since host plaintext
+materialization was disabled, and the AWS substrate platform ensures its retained EBS volume through the
+ambient host `aws ec2`. These need Provider intents, not a credential.
+
+**EKS bring-up.** The audit found that the Provider-issued EKS bearer lasts at most 900 seconds and is
+held across brackets of 19 minutes or more, that the gateway chart deploy slice needs a live gateway
+port-forward before the chart exists, that EKS has no metrics server for the stability sample, and that
+the `eks-volume-rebind` AWS leg and the retained SES step check the home agent. These are static
+readings; each is confirmed or refuted by a measurement before it is repaired.
+
+### Design
+
+A design panel (three independent designs and a judge, read-only against the tree) examined the harness
+group on 2026-10-08. Its findings change the sprint's shape, so they are recorded here rather than in a
+session note.
+
+- **The harness cannot revoke its credential today, and no design here can make it.** The Credential
+  Provisioner's revoke is a constant refusal at its production delivery boundary
+  (`TargetMaterializationProduction.hs`), no Target-side route lets a Provisioner destroy a Target
+  generation, and the worker destroys the Vault generation before the IAM identity, the opposite of Exit
+  Definition item 6. The cascade candidate's "typed revocation" has no production caller either: its
+  program has no credential node, and the Provider admission epoch it would revoke is a one-way chain.
+  A harness run therefore **retains** the Lifecycle-provider credential once its cleanup completes. The
+  revocation lane is a separate sprint (`5.51`) because it is a new trust edge that waits on operator
+  decisions, not because it was left out.
+- **The setup selector was the wrong flag.** `harnessNeedsVaultBeforeSetup` was the suite's own
+  runtime-bootstrap flag, which a named suite does not set, so it took the legacy host IAM setup whose
+  last step is a constant refusal. It is now whether the suite has a harness tier at all.
+- **The cleanup client authenticates as the operator, in two sessions.** The host-observation route the
+  first node posts trusts only the operator, the operator's ServiceAccount survives the cluster deletion
+  the body may perform, and every route that trusts the harness also trusts the operator, so nothing is
+  widened. No session spans the body: the body may delete and recreate the cluster the session's
+  port-forward reaches the Authority through.
+- **Terminal runs were being adopted as work.** The scan returned finished runs, the matcher compared a
+  bare prefix, and a run that finished within its 30-minute lease was adopted by the next invocation,
+  which then skipped its body and returned the old outcome as its own. The same prefix match also
+  confused a suite with the suite whose id extends it. A run id is now the prefix followed by digits, and
+  a terminal run is ignored.
+- **The zone-scoped families run second to register and first to drive.** The subzone and the DNS01
+  challenge records need the hosted zone the run created, which no descriptor registered before the body
+  can name, so they are registered after the body from the subzone stack's own checkpoint (absent means
+  nothing to clean; unobservable fails closed and withholds the credential) and driven before the main
+  run, because the DNS01 owner delete needs the live cluster and the subzone destroy needs the records
+  gone. This is a stated relaxation of register-before-mutate for those two families on the first
+  AWS-substrate run, owned for removal by keying the subzone family from the authored subzone name.
+
+- **The validations that reached AWS from the host now ask the Provider.** Four closed intents were
+  appended at wire tags 33–36: `EnsureValidationHostedZone` (the `dns-aws` zone, created beneath the
+  home zone's name from a nonce, with the zone name and caller reference derived by the registered
+  validation-zone owner rather than supplied), `ObserveSesInviteMail` and `ReapSesInviteMail` (the
+  captured invite message, with the capture-bucket tag guard because the role's object grants are not
+  scoped to a bucket), and `EnsureRetainedEbsVolumes` (the retained volumes, returned as one line of
+  bindings). `dns-aws` also needed no other new capability: the home zone's name comes from the
+  existing readiness observation and the record from the existing public-A-record intents. The invite
+  link in the evidence is a one-time action token for a throwaway user the validation deletes in the
+  same run. Two families, `ses:invite-mail` and `ebs-ensure:retained`, join the production resource
+  allowlist, which is compiled into the control-plane runtime image, so an Authority or Provider image
+  built with the older list refuses them until it is rebuilt and rolled.
+
+- **The AWS bring-up no longer waits for what cannot exist yet.** The platform's gateway step was one
+  step that deployed the chart and proved full mode, and the proof reaches the daemon through a Service
+  port-forward that cannot be opened until the chart defining the Service exists, so on a fresh cluster
+  the step could not start. It is now two: the chart is deployed in the opening slice, which needs no
+  endpoint, and the full-mode proof is the second slice's first step, inside the forward. The EKS
+  program gains the managed `metrics-server` add-on, because the runtime-stability sample reads the
+  metrics API that RKE2 ships and EKS does not. And a kubeconfig's bearer, which lasts only the Provider's
+  short lifetime, is now renewed in place while its bracket runs: the credential is a file the client
+  reads on every invocation, so a refresher re-issues the projection at half the remaining lifetime
+  and replaces the file atomically, where a bracket longer than the bearer used to be rejected as
+  unauthorized from its first expired call to its last.
+
+### Deliverables
+
+- Every harness-tier suite provisions its credential through the Credential Provisioner, and the legacy
+  host IAM setup and teardown are off the runner's path.
+- The cleanup client authenticates as the operator, holds no session across the body, ignores terminal
+  runs, matches run ids exactly, and covers the zone-scoped families from evidence.
+- A completed cleanup says the credential is retained, and an incomplete one or an unestablished zone
+  preserves it and fails the suite.
+- `dns-aws`, `keycloak-invite` and the retained-EBS ensure reach AWS through Provider intents with
+  codec, dispatch, role mapping and capability-fake coverage.
+- The EKS bring-up findings above are each repaired or recorded with the measurement that refutes them.
+
+### Validation
+
+1. Every harness-tier suite, on both substrates, selects the Credential Provisioner path and the
+   post-credential reconcile, and a suite with no harness tier takes none of it.
+2. The session trace shows no session open while the body runs, the drive receives the primary outcome,
+   a leftover run is adopted without running the body again, a body that throws or is cancelled is still
+   followed by cleanup, and a registration failure runs neither (a bracket that leaks a session is detected).
+3. The run-id matcher refuses a longer suite's runs and the other prefix's runs, and the zone decision
+   table never reads an unobservable stack as an absent one.
+4. The runner no longer names the legacy setup or teardown or claims a typed revocation it does not run.
+5. Each new Provider intent round-trips its wire form, is mapped to the Provider role, is admitted by the
+   production resource allowlist, and is refused in the wrong capability class; the evidence parsers and
+   argument validators refuse malformed input.
+6. The gateway chart deploys before the full-mode proof in the platform order; a replaced bearer is
+   byte-exact, owner-only and leaves nothing behind, a path that is not an ephemeral kubeconfig is refused,
+   and the refresh schedule is half the remaining lifetime bounded on both sides.
+7. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
+
+### Validation Result
+
+The harness composition, the Provider-intent group and the EKS bring-up group are unit-covered. The
+Provider-intent group's cases cover the wire round trip, role mapping, inventory, resource allowlist,
+evidence parsers, the argument validators, and a scripted-runner model of the capture bucket reads; the
+bring-up group's cover the platform order, the replaced bearer, the refresh schedule and the refresher's
+retry and prompt stop. An adversarial review of the harness and Provider groups found defects the mirrored
+unit cases had not, and each is repaired. Canonical `prodbox dev check` exits 0 at every landing: **5,458**
+with the harness half (Sprint `5.49`'s gate), **5,471** for the combined landing, **5,483/5,483** with
+the second AWS-arm audit's Phase `5` repairs, **5,486/5,486** after the review of those repairs,
+**5,504/5,504** after the review of that, **5,510/5,510** after a third review (Sprint `7.46`'s
+landings), **5,517/5,517** with the third audit's first repairs (Sprints `5.52` and `7.48`), and
+**5,522/5,522** after the review of that landing, **5,532/5,532** with Sprint `5.53`'s SES capture reader and the
+second review's fixes, and **5,534/5,534** with Sprint `7.46`'s sixth landing.
+
+A second static audit of the AWS arm (2026-10-08; five tracers, each serious finding checked by a
+skeptic) answered the two readings this sprint had left open. The `eks-volume-rebind` AWS leg's remaining
+blockers are the AWS platform plan's, and the retained SES step does check the home Target Agent and
+delivers nothing to EKS; both moved to Sprints `7.46` and `7.47` with the rest of the platform findings.
+The part of that audit on the Phase `5` surface is repaired and unit-covered:
+
+- **The stability policy** expects the pods the substrate renders (the node ids the chart renders from,
+  two on the home and three on EKS) where it read the plan's two and could never complete on AWS.
+- **The resource-guardrails validation** takes the substrate it ran on, expecting the AWS quotas and no
+  standalone `keycloak` namespace there.
+- **Each validation declares the cluster it addresses.** Three of them (`charts-platform`,
+  `charts-storage` and `gateway-daemon`) are chains of `prodbox` children and probes with no substrate
+  argument, spawned with the environment captured before the run, so the EKS kubeconfig the scope wrapper
+  sets never reached them; they now declare the retained home cluster as their target and say so on an AWS
+  run, and a table over every canonical validation pins the classification. The gateway-pods
+  validation's rollout wait and log read now receive the scoped kubeconfig.
+- **The gateway continuity-restart arm** names the substrate's own StatefulSets, so on AWS it restarts all
+  three where it restarted the two home ones.
+- **`withEksKubeconfig` raises a typed `EksKubeconfigError`** that names the boundary that refused (settings,
+  region, the checkpoint read, the projection, the ephemeral file), and the scope wrapper and the
+  suite-long monitor handle the typed result: the monitor records the refusal in the stability fold and
+  keeps its handshakes alive where it used to raise into the suite and abort it. A review of the repair
+  (Sprint `7.46`'s third and fourth landings) added that the monitor also services a refresh requested
+  while it cannot build a kubeconfig, records its refusal only while enabled and under the observation
+  lock (a planned pause means "do not judge the gateway now"), and backs its retry off from one second to
+  thirty because each attempt mints credentials; and the validation classification is an exhaustive match,
+  so a new validation cannot take a default cluster unasked.
+
+Live proof of all three groups follows the operator's restoration of `test-secrets.dhall`; it is
+non-blocking (Standard O).
+
+### Remaining Work
+
+None.
+
+## Sprint 5.51: A Harness Credential No Production Path Can Revoke [📋 Planned]
+
+**Status**: Planned (2026-10-08). Phase `5` own-surface reopen (Standards A/N) on the harness's credential
+teardown, registered before any behavior change. It is parked behind Sprint `5.50` and starts only after
+the operator has decided the points under Remaining Work, because it adds a trust edge to the control plane.
+**Doctrine**: [AWS Admin Credentials](../documents/engineering/aws_admin_credentials.md),
+[Lifecycle Reconciliation Doctrine](../documents/engineering/lifecycle_reconciliation_doctrine.md), and
+[Vault Doctrine](../documents/engineering/vault_doctrine.md).
+**Implementation**: `src/Prodbox/Lifecycle/CredentialProvisioner/AwsAdminExecution.hs`,
+`src/Prodbox/ControlPlane/TargetMaterializationProduction.hs`, a Target Agent revocation route and its
+caller topology, a new non-Test harness-credential module, `src/Prodbox/CLI/Rke2.hs`, and
+`src/Prodbox/TestRunner.hs`.
+**Blocked by**: none.
+**Live-proof**: pending. Nothing here can be proven without the operator's `test-secrets.dhall`.
+**Deployment qualification**: pending — invalidated: the change is destructive cleanup and a new
+capability edge under Standard P.
+**Independent Validation**: fake-boundary cases over the worker's revoke order, the Agent's permit
+verification and refusals, the harness resolvers and the composition trace; no live AWS or Vault.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/vault_doctrine.md`, `documents/engineering/aws_admin_credentials.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`, `AGENTS.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Make the harness retire the credential it provisions, through the Credential Provisioner, with a typed
+read-back, so that Exit Definition item 6 ("destroys Operational resources") is true of a harness run.
+Sprint `5.50` leaves the credential retained and says so; this sprint removes the reason it has to.
+
+### Deliverables
+
+- The worker revokes the IAM identity first and the Vault generation second, bounded by a visibility
+  grace and read back absent before the second step, superseding the Sprint `4.85` ordering paragraph.
+- A Target Agent route, permit-verified by the Agent itself, scoped to the Operational-lifetime
+  Lifecycle-provider target and to metadata only, replaces the constant refusal at the production
+  delivery boundary. One caller principal, one route, no new Vault capability.
+- Revoke is refused at the request for any credential class that is not operational or run-scoped.
+- The harness installs under a per-run lineage scope and revokes under a constant slot of its own, so a
+  retry after the tombstone finds the same operation and a later run never replays an earlier install.
+- The cleanup client re-establishes the credential on resume, because a revoked credential is absent
+  between runs.
+
+### Validation
+
+1. The worker's call order is destroy, wait, observe absent, revoke target, observe target, and a failed
+   or unobservable IAM step leaves the Target boundary with zero calls.
+2. The Agent refuses a wrong signer generation, an expired permit, a non-revoke action, a long-lived
+   class, an unregistered target, a generation mismatch and a pod-binding mismatch before any Vault call,
+   and refuses every caller other than the Credential Provisioner.
+3. The resolver table covers an absent Target, a reused retained revoke, a foreign operation, a receipt of
+   the wrong kind and a Target still observable after the receipt.
+4. The composition revokes only after every cleanup result succeeded and never on an incomplete one.
+5. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
+
+### Remaining Work
+
+Operator decisions first, because each changes what is built:
+
+- Whether the end state of a clean harness run may be **no Lifecycle-provider credential**. Provider
+  readiness is then false and every later full cluster reconcile blocks at the Provider chart until a
+  credential is provisioned again, and the public `aws setup` is still a stub. The alternative is to keep
+  the retained end state until `aws setup` exists over the Provisioner.
+- Whether to reverse the Sprint `4.85` "Target first" revoke order to IAM first, which Exit Definition
+  item 6, the lifecycle reconciliation doctrine, the AWS integration doctrine and the Vault doctrine all
+  already say.
+- Whether to approve the one new trust edge exactly as scoped above.
+- Whether an interrupted revoke after cleanup is terminal is healed by the next lineage rather than
+  resumed in place.
+
+Then the worker order, the Agent lane, the lineage scope and the resume path, in that order, each as its
+own gated landing.
+## Sprint 5.52: Validations Asserted States The Cluster Never Held [✅ Done]
+
+**Status**: Done (2026-10-08). Phase `5` own-surface reopen (Standards A/N) on the validation bodies and
+the shared harness path, registered before any behavior change. A third static audit, of the home and shared
+arms of `prodbox test all` after Sprints `5.49` and `5.50` (five tracers, each serious finding checked by a
+skeptic), walked the code with concrete values instead of reading it against fakes, and found four
+deterministic failures a healthy system would have hit and a set of weaknesses. The four are repaired; the
+weaknesses are handed to the sprints named under Handed To Other Sprints.
+**Doctrine**: [Test Topology Doctrine](../documents/engineering/test_topology_doctrine.md),
+[Resource Scaling Doctrine](../documents/engineering/resource_scaling_doctrine.md), and
+[Vault Doctrine](../documents/engineering/vault_doctrine.md).
+**Implementation**: `src/Prodbox/TestValidation.hs`, `src/Prodbox/CLI/Rke2.hs`, and
+`src/Prodbox/Lifecycle/EbsVolume.hs`.
+**Blocked by**: none.
+**Live-proof**: pending. Nothing here can be proven without the operator's `test-secrets.dhall` and a live
+cluster.
+**Deployment qualification**: pending — invalidated for the home and AWS rows: the sprint changes what the
+validations assert and how the retained-EBS ensure reads back.
+**Independent Validation**: pure cases over the quantity comparison (a table of equal and unequal pairs), the
+audit root resolution, the Job manifest against the Vault role it logs in to, and the retained-EBS ensure over
+scripted effects; no cluster, no AWS.
+**Docs to update**: this file, `DEVELOPMENT_PLAN/README.md`, and `DEVELOPMENT_PLAN/00-overview.md`.
+
+### Objective
+
+Make three validations and one Provider step something a healthy system can pass. Each finding below was
+reproduced from the code by a second reader before it was accepted.
+
+- **`sealed-vault` audited a directory MinIO does not write to.** The audit root came from an environment
+  variable only the topology runner sets, and otherwise from the production `.data`; the harness config roots
+  the retained MinIO volume at `.test-data/legacy-aggregate`. On this host `.data` does not exist, so the
+  validation refused ("root missing"); on a host that kept an unused `.data/prodbox/minio/0` it would have
+  scanned that and passed without examining the real data.
+- **`charts-websocket` logged in to Vault with a token its role cannot accept.** The OIDC session-validation
+  Job mounted a projected service-account token for the audience `vault` and logged in to a chart-secret role
+  that has none. Vault reviews a token for a role with no audience against the API server's own audience, so the
+  login was refused, the init container failed and the Job (`backoffLimit` 0) timed out. The path copied the
+  admin-action token shape against a chart-consumer role, and has never run since the host-side login was
+  removed.
+- **`resource-guardrails` compared `0Mi` with `0`.** The API server prints a zero quantity as a bare `0`, and
+  the chart applies `requests.storage` for the `api` and `websocket` namespaces (no durable storage) as `0Mi`.
+  The comparison knew only the suffixed forms, so it refused both namespaces on a healthy cluster. The unit
+  fixture already canonicalized `60Gi` and `110Gi` and left `0Mi` as rendered.
+- **The retained-EBS ensure failed an apply that had created its volume.** It read the volume back
+  immediately after creating it. EC2 describe calls are eventually consistent, and a by-id waiter can be
+  answered "not found" for a volume created moments before, so a first create could return a failure behind a
+  billable volume (a rerun converges, but through a refusal).
+
+### Deliverables
+
+- The sealed-Vault audit root is the configured `storage.manual_pv_host_root` (the root the retained storage
+  is bound at), with the topology runner's override first and the production default only when no config is
+  readable.
+- The OIDC session-validation Job presents the token its Vault role accepts (no audience), asserted against
+  the compiled role rather than a literal.
+- The quantity comparison is closed over the forms the API server prints for the values it compares:
+  binary-SI (`Ki` to `Ti`) and bare integers compare in bytes, milli-cores and bare integers in CPU, so zero is
+  zero in any unit and `60Gi` is `61440Mi`; the canonical fixture carries the API server's `0`. A form it cannot
+  read (`Pi`, `k`, decimal-SI, a fraction, text) is refused as a mismatch naming both strings and is never
+  equated.
+- The retained-EBS ensure waits, bounded, for the volumes it created to be listed on two consecutive complete
+  reads (twelve reads at most, five seconds apart: a listing served from a replica that has not caught up cannot
+  end the wait alone) and retries the by-id waiter on `InvalidVolume.NotFound`. An apply that created nothing
+  reads once, and a failed read ends the wait. Every failure after the first create names the volumes the call
+  created, because a create is not idempotent and a message that reads as "never created" invites the rerun
+  that creates them again. The ensure's effects are a record, so its order, its waits and that text are
+  exercised over scripted effects.
+
+### Validation
+
+1. The audit root follows the sibling config (a harness-shaped config roots it under `.test-data`), the
+   override still wins, and the production default holds when the config says so.
+2. The Job manifest carries a projected token with an audience exactly when the compiled role carries one; today
+   neither does.
+3. `0`, `0Mi` and `0Gi` all satisfy an expected `0Mi`; a one-gibibyte quota does not. A table of equal pairs
+   (every unit it reads) and unequal ones (half a quota, a truncated `Ki`, `1000Mi` against `1Gi`) holds, and
+   `Pi`, `1G`, `1.5Gi`, text and the empty string are never judged equivalent.
+4. The visibility loop makes four reads and three pauses when the volume appears on the third and again on the
+   fourth, starts over when a complete read is followed by an incomplete one, returns a complete listing on the
+   last attempt as it stands, spends its attempts when it never does, stops at a failed read, and reads once
+   when nothing was created. The ensure over scripted effects creates only what is missing, waits only for what
+   it created, binds every volume, and names the created volumes when a create, the waiter or the read-back
+   fails afterwards and never when it created none; the waiter is retried only while the API says the volume is
+   not found yet.
+5. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
+
+### Current Validation State
+
+The four repairs above are landed code-locally and unit-covered. Canonical `prodbox dev check` exits 0 (primary
+unit **5,517/5,517** after the landing, and **5,522/5,522** after an adversarial review of it, which closed the
+test gaps it found: the quantity comparison now has a table of equal and unequal pairs, the retained-EBS ensure is
+exercised over scripted effects, the read-back needs two consecutive complete listings, and every failure after a
+create names the volumes it created). The CLI integration suite (`prodbox test integration cli`, 74 cases, which
+`dev check` does not run) is green too: two of its cases had drifted since Sprint `5.49` and are repaired, the
+`gateway-pods` case because its fake `kubectl` did not list the gateway namespace's StatefulSets, and the
+`daemon-bootstrap` unset-fixture arm because on a host that runs the real cluster that cluster answered it and the
+arm exited 0 instead of refusing (it now runs with an empty home and no exported kubeconfig). Nothing has run
+against a live system.
+
+### Handed To Other Sprints
+
+The audit found more than this sprint repairs. Each remaining finding has one owner, and none of them blocks a
+healthy run:
+
+- **Gateway stability policy and the gateway's Lifecycle Authority endpoint** are Sprint `6.5`'s (its Remaining
+  Work item 4): the first is a policy decision about a fail-closed gate that waits on the operator, and its repair
+  is the gateway cutover; the second is reached only on the `JournalLeaseEmitter` path.
+- **A changed `acme_eab`, the `test-secrets.dhall` owner and mode check, the Provider interpreters' weaknesses,
+  the test run's missing cleanup families, and the two retained-volume gaps the review of this landing found**
+  (a volume of the wrong size is bound, and a create interrupted inside the tag listing's lag can be repeated)
+  are Sprint `5.53`'s.
+- **Examined and not carried.** The Authority-side text validator's 200-character cap that the audit first read as
+  a cliff at five retained volumes lives in `ProviderWorkerAdapter`, a compatibility module no production code
+  imports. The live path caps the retained-EBS specs at 2,048 characters and the evidence at 4,096, and the
+  largest specs string an AWS run builds is well inside both.
+
+### Remaining Work
+
+None. Live proof of the four repairs is a `Live-proof: pending` note and is non-blocking under Standard O.
+
+## Sprint 5.53: Weaknesses The Third Audit Found And No Row Owned [🔄 Active]
+
+**Status**: Active (2026-10-08). Phase `5` own-surface reopen (Standards A/N) on the harness's secret handling and
+cleanup families and on the Provider's interpreters and retained-volume ensure, registered before any behavior
+change. The third audit of the home and shared arms, and the review of Sprint `5.52`'s landing, found weaknesses
+that are real, that stop no healthy run, and that no sprint owned: Sprint `5.52` carried them as Remaining Work
+until its review handed them here, and the review found most had no tracked owner. This sprint is where they are
+tracked. It is the runnable code-owned row; its queue row is `Parked` only because the queue's first row is the
+lowest-numbered open sprint (`5.51`, which waits on the operator).
+**Doctrine**: [Integration Fixture Doctrine](../documents/engineering/integration_fixture_doctrine.md),
+[Vault Doctrine](../documents/engineering/vault_doctrine.md), and
+[Storage Lifecycle Doctrine](../documents/engineering/storage_lifecycle_doctrine.md).
+**Implementation**: `src/Prodbox/ControlPlane/ProviderProduction.hs`, `src/Prodbox/Lifecycle/EbsVolume.hs`,
+`src/Prodbox/Vault/Host.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/Ses/Capture.hs`, and
+`src/Prodbox/Lifecycle/Teardown/Registry.hs`.
+**Blocked by**: none.
+**Live-proof**: pending. Nothing here can be proven without the operator's `test-secrets.dhall` and a live account.
+**Deployment qualification**: pending — invalidated by any landing that changes destructive cleanup.
+**Independent Validation**: pure and fake-boundary cases per item; no live AWS.
+**Docs to update**: this file, `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Give each weakness below an owner and close it, as its own gated landing.
+
+### Deliverables
+
+- **Retained volumes.** A volume that carries the right persistent-volume tag at the wrong size is not bound
+  silently: the ensure reads the size back and either refuses with both sizes or grows the volume (an
+  operator decision, below). **Landed (2026-10-15): the refusing arm.** The ensure refuses a listed volume smaller
+  than the plan, or one that reports no size, naming the volume and both sizes, before it creates anything for the
+  other volumes; growing in place is not built. A create that was interrupted inside the tag listing's lag is not
+  repeated: the ensure already names the ids it created in every failure it reports after a create (Sprint `5.52`);
+  what is left is that a rerun reconciles against them instead of against the tag listing alone.
+- **Harness secrets.** `test-secrets.dhall` is refused unless it is a regular file the effective user owns with
+  no group or other permission bit, and the refusal names the `chmod`; its region is compared with the Pulumi
+  backend's before the credential Job runs and not only inside it; a changed `acme_eab` selects the rotate arm of
+  the request builder instead of replaying the retained generation (**landed 2026-10-15**: the fixture's operation
+  id was the cluster alone, so the rotate arm was unreachable from its one caller; it now carries a digest of the
+  credential frame, so a changed credential names a different operation, which a completed retained operation
+  answers with a rotation at the next generation, and an unchanged one replays). The same owner-only check is item `B7` of the operator's
+  approved incident-response plan (tranche `1B`, whose sprints are not registered yet); whichever lands first
+  closes it for both.
+- **Provider interpreters.** The Route 53 and EBS interpreters run through the bounded, permit-serialised AWS
+  runner (**landed 2026-10-15**, and the owned-tag listing with them: each took its own unbounded process, so a
+  hung `aws` call held a Provider request open with no limit and no permit; the modules now take the runner as an
+  argument, and the Provider passes its own); the SES capture reader no longer refuses once `inbound/` holds more than 100 objects (landed: it
+  walks the listing page by page and reads only the objects modified within the last six hours, because the invite
+  recipient carries a per-run nonce no older message can have, and it refuses only past 10,000 objects listed or
+  20 read), and the capture bucket expires what it holds (not started: it needs
+  `s3:PutLifecycleConfiguration` in the Provider role policy, which is a policy revision); the Provider role's S3
+  object grants name the capture bucket instead of `Resource "*"` behind a tag guard the same role can forge; the
+  invite link, a one-time action token, is not retained in Authority operation evidence.
+- **Cleanup families.** A test run ends with a terminal escape audit; the SES invite mail objects have a
+  registered cleanup; home-zone DNS01 challenge records have a cleanup family; and the two substrates no longer
+  share one suite id, so a leftover live run of one cannot be adopted by the other (**landed 2026-10-15**: the
+  cleanup client's suite id is `aws-substrate-` followed by the suite id on the AWS substrate and unchanged on the
+  home substrate, so the runs already on record keep their identity and a run id of one is not read as a run of
+  the other).
+
+### Validation
+
+1. A volume at a smaller size than the plan is refused (or grown) with both sizes named; one at the same or a
+   larger size binds.
+2. A failure after a create names the ids that call created; a scripted rerun that lists them creates nothing.
+3. A `test-secrets.dhall` that is group- or world-readable, not owned by the effective user, or a symbolic
+   link is refused with the `chmod`; the mode is unchanged by the refusal.
+4. A changed EAB frame reaches the rotate arm; an unchanged one replays the retained generation.
+5. Each Provider interpreter's commands run through the bounded runner (asserted on the recorded argv and the
+   permit). The capture reader follows every page by the token the previous one returned, reads none of the old
+   objects and all of the recent ones (the window's edge is inside it, an object whose time cannot be read is
+   recent), and refuses a bucket past its bounds, a page it cannot list or decode, a continuation token that is
+   not a string, a listing that never ends, and a recent object it cannot read.
+6. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
+
+### Current Validation State
+
+The SES capture reader's pagination and recency window are landed code-locally and unit-covered (canonical
+`prodbox dev check` exits 0, primary unit **5,532/5,532**), with the time formats, the continuation-token shape and
+the empty-listing shape measured against the installed AWS CLI through a loopback mock
+(`2026-10-08T14:03:11+00:00`, six fractional digits when present, a base64 `NextToken`, `--starting-token` to
+continue, no `Contents` key for an empty prefix). An adversarial review of it found and this landing fixed a
+double-encoding of non-ASCII keys, a read bound that was too generous for the Provider pod's CPU (twenty reads, six
+hours), and a set of unpinned cases. The reader has since run live (2026-10-13, `keycloak-invite`): it walked the
+capture bucket within the six-hour window, found the invite message, and the reaper removed it.
+
+Three more deliverables are landed code-locally (2026-10-15), each with a case that is red on the old behavior and
+green on the new (a mutation exercise: with the check removed, the volume cases fail and the suite-id case fails on
+`all` equal to `all`): the retained-volume ensure's refusing arm (a table over the planned size: one under refuses,
+equal and larger bind, an unreported size refuses, a volume listed twice is the duplicate-tag refusal's, and the
+Provider's confirming read reports a refused volume as one it cannot bind rather than asking for another create),
+the substrate-scoped cleanup suite id, and the EAB fixture's content-derived operation id; and a fourth, the
+Provider's EBS, Route 53 validation-zone and owned-tag interpreters, which now start the AWS CLI through the
+Provider's bounded runner (five cases over a scripted runner assert the exact argument vectors and that a refused or
+unstartable invocation is named, and a source pin keeps the Provider off the direct entrances). Nothing else in
+this sprint has started.
+
+### Remaining Work
+
+Everything above except what is marked landed: the capture reader's pagination and recency window and the ensure's
+created-volume notes (Sprint `5.52`), and the refusing arm, the EAB rotation and the substrate-scoped suite id
+(2026-10-15). The operator decision on a retained volume smaller than the plan is taken here by its conservative
+arm: the ensure refuses (the volume holds MinIO or Vault data, and the only supported way to replace it deletes the
+whole retained family); growing it in place (EBS can grow a volume and cannot shrink one, and the file system must
+then be grown too) stays the operator's to ask for. Then each remaining deliverable as its own gated landing.
+
+
+## Sprint 5.54: A Harness Credential Whose Retained Operation Expired Is Replaced, Not Resubmitted [✅ Done]
+
+**Status**: Done (2026-10-12), live-proven. Phase `5` own-surface reopen (Standards A/N) on the harness's Credential Provisioner
+requests, registered before any behavior change. The harness asks the Authority for a credential by resubmitting
+the intent the Authority already retains for that operation, byte for byte, so that a response lost after Target
+material advances recovers the same operation instead of allocating another generation. That is right for an
+operation that completed and for one still inside its window, and wrong for the third case, which the live
+campaign reached on 2026-10-12: the Authority admits an unfinished operation only for byte-identical intent until
+its thirty-minute deadline, and after the deadline only for a replacement draft that keeps every immutable
+binding (class, action, operation, permit and generation, request digest, plan binding, IAM parameters, scope and
+endpoint) and carries a later deadline, as a prepared renewal or as the recovery of an authorized attempt it can
+prove made no change. The first `keycloak-invite` run after Sprint `8.13` was refused by the IAM tag read-back
+(Sprint `2.138`) and left the SMTP operation Authorized with a deadline thirty minutes after its request. The
+retry, two hours later, resubmitted that intent and the Authority answered `prepared-target/deadline-expired`; it
+would have answered so for as long as the operation existed, because the harness never produced a draft. The same
+resolver serves the Lifecycle-provider credential, so any attempt of it left unfinished past its window would have
+wedged the same way.
+**Doctrine**: [AWS Admin Credentials](../documents/engineering/aws_admin_credentials.md) and [Integration Fixture
+Doctrine](../documents/engineering/integration_fixture_doctrine.md); no rule changes.
+**Implementation**: `src/Prodbox/CLI/Rke2.hs` and `test/unit/HarnessSesSmtp.hs`.
+**Blocked by**: none.
+**Live-proof**: observed (2026-10-12). The host half is the harness's; the other half is the Authority's renewal and
+authorized-recovery path, which had never run live. The `keycloak-invite` run that followed found the expired SMTP
+operation, submitted the fresh draft, and the Authority recovered the authorized attempt
+(`aws-admin/recovery journal-observation=present/intent-committed/initial-attempt`) and ran the worker, where the
+unchanged resolver had been answered `prepared-target/deadline-expired`.
+**Deployment qualification**: pending — **invalidated**: the harness's credential request changes.
+**Independent Validation**: the resolver over a scripted Authority holding an operation in each phase, expired and
+live; no cluster, no AWS.
+**Docs to update**: this file, `DEVELOPMENT_PLAN/README.md`, and `DEVELOPMENT_PLAN/00-overview.md`.
+
+### Objective
+
+Make an unfinished harness credential operation retryable after its window, instead of permanently stuck.
+
+### Deliverables
+
+- `harnessRetainedIntentIsLive`: the retained intent is resubmitted as it is when its operation completed or its
+  deadline is still ahead of the host clock (a deadline equal to the clock counts as passed, as the Authority
+  reads it).
+- `resolveHarnessCredentialIntent` otherwise compiles the draft a first request would send, with the retained
+  intent's own action and generation, so every binding the Authority compares is the retained one and only the
+  deadline, image and Agent advance. A retained intent that names another class, another generation or a
+  revocation is still refused before any of this, expired or not.
+
+### Validation
+
+1. The predicate over a completed operation (always live) and each unfinished phase (live strictly before the
+   deadline), including the equal-to-the-clock edge.
+2. A completed operation, and an unfinished one inside its window, resolve to the retained intent unchanged.
+3. An unfinished operation past its deadline, in each unfinished phase, resolves to exactly the draft a first
+   request compiles with the new deadline, with the operation, permit, generation and action of the retained one
+   (red on the commit before this sprint, which returns the expired intent).
+4. A missing operation compiles the first draft, as before; a retained operation for another generation is
+   refused whether or not it expired.
+5. **Canonical gate.** Focused group, primary unit suite, and `prodbox dev check` at 0.
+6. **Live.** After the roll, `keycloak-invite` finds the expired SMTP operation and completes it.
+
+### Remaining Work
+
+No sprint-owned work remains. One gap is known and left: the Authority's transition table has an
+arm for a prepared operation (renewal) and for an authorized one (recovery) and none for an attested one, which
+falls to the standard prepare and conflicts with the retained intent. An operation left Attested past its deadline,
+which needs the Job's Pod attested and the permit never authorized, is replaceable by no draft; the resolver sends
+the fresh draft for it as for the others and the Authority refuses it. A live occurrence would be its own sprint.
+
+
+## Sprint 5.55: The OIDC Session Validation Job Declares What It Uses And Its Script Parses [✅ Done]
+
+**Status**: Done (2026-10-12), live-proven. Phase `5` own-surface reopen (Standards A/N) on a validation this phase owns,
+registered before any behavior change. `charts-websocket` failed on 2026-10-12, after Sprint `3.47` had made
+`charts-api` pass, with the bare `OIDC session validation Agent command failed`. The cause was in the namespace's
+events and nowhere in the suite's output: the Job the validation applies (`oidc-session-validation-agent` in
+`vscode`, one init container that reads the demo password from Vault and one `curl` container) never got a Pod,
+because every creation was refused with `exceeded quota: vscode-resource-quota, requested:
+limits.ephemeral-storage=2Gi,requests.ephemeral-storage=1Gi, used: limits.ephemeral-storage=10432Mi,
+requests.ephemeral-storage=5216Mi, limited: limits.ephemeral-storage=11456Mi,requests.ephemeral-storage=5728Mi`, and
+`kubectl wait` then ran out its 180 seconds. The Job declares CPU and memory for both containers and no ephemeral
+storage, so the namespace `LimitRange` charged it its default, a 1Gi request and a 2Gi limit, and the quota the
+chart computes for the workloads it hosts leaves about 1Gi of limit headroom. The Job writes only into
+memory-backed volumes, so its real use is a few kilobytes.
+The repair exposed the Job's second defect, the one behind the first, which no run had ever got far enough to show:
+with the Pod admitted and both containers started, the run still ended `BackoffLimitExceeded`. The Job was deleted
+with its logs, so it was applied by hand from the same manifest and read: the `curl` container died at
+`sed: unmatched '/'`. The script unescapes the login form's action with `sed 's/&amp;/\&/g'`, and the Haskell
+literal spelled that `\\\&`, which the language reads as one backslash and the empty-string escape `\&`, so the
+shell saw `s/&amp;/\/g` and an escaped delimiter. With one backslash fewer in the source (`\\&`) the same Job
+succeeded and printed `{"authenticated":true,"carrier":"cookie-session","issuer":"https://test.resolvefintech.com/auth/realms/prodbox","preferred_username":"demo-user",...}`,
+the projection the validation compares, so the rest of the script holds.
+**Doctrine**: [Resource Scaling Doctrine](../documents/engineering/resource_scaling_doctrine.md); no rule changes.
+**Implementation**: `src/Prodbox/TestValidation.hs` and `test/unit/Main.hs`.
+**Blocked by**: none.
+**Live-proof**: observed (2026-10-12). `charts-websocket` passed its direct OIDC login and its WebSocket upgrade checks
+with both repairs in place, where it had failed twice before at the two defects above.
+**Deployment qualification**: pending — **invalidated**: a validation's workload changes.
+**Independent Validation**: the rendered Job manifest; no cluster.
+**Docs to update**: this file, `DEVELOPMENT_PLAN/README.md`, and `DEVELOPMENT_PLAN/00-overview.md`.
+
+### Objective
+
+Make the validation Job's resource declaration its own, so that it does not depend on a quota's headroom it was never
+counted in.
+
+### Deliverables
+
+- The init container and the container each declare `ephemeral-storage` as a 32Mi request and a 64Mi limit.
+- The script's `sed` replacement is `\&`, an escaped ampersand, not an escaped delimiter.
+
+### Validation
+
+1. The rendered manifest carries four `ephemeral-storage` entries (a request and a limit for each of the two
+   containers), at 32Mi and 64Mi (red on the commit before this sprint, which carries none).
+2. The rendered script carries `sed 's/&amp;/\&/g'` and not the form with an escaped delimiter (red on the commit
+   before this sprint).
+3. **Canonical gate.** Focused case, primary unit suite, and `prodbox dev check` at 0.
+4. **Live.** After the change, `charts-websocket` passes its direct OIDC login and upgrade checks.
+
+### Remaining Work
+
+No sprint-owned work remains. The suite's failure text names a `kubectl wait` timeout and not the cause (the refused Pod
+creation, then the script's exit status); both were found by reading the namespace's events and the Job's logs
+by hand. Surfacing the Job's last event or its log tail in that failure is a diagnosability change this sprint does
+not make.
+
+
+## Sprint 5.57: The DNS Validation Waits For The Gateway-DNS Write Authority [✅ Done]
+
+**Status**: Done (2026-10-15), live-proven. Phase `5` own-surface reopen (Standards A/N) on the canonical suite's DNS
+validation, registered before any behavior change. The final regression sweep ran `public-dns` immediately after
+`aws-iam` and `dns-aws` and it failed in two minutes with `Gateway-DNS observation is bound to the requested record
+but its write authority is not ready`; `prodbox dns check` answered the same thing for a few minutes and then
+`STATUS=in-sync`, and the suite that had passed on 2026-10-12 passed again on its next run. The gateway state is
+served by whichever node the loopback endpoint reaches and only the node that holds the ownership claim reports
+`can_write_dns`, so a run that follows a credential-lifecycle suite or a gateway restart (each gateway Pod has
+restarted about every ninety minutes) sees the refusal until the claim settles. The public-edge wait classifies
+exactly this refusal as retryable (`PublicEdgeReadinessGatewayDnsPending`); the validation that reads the same
+observation, `verifyConfiguredPublicDnsRecords`, read it once.
+**Doctrine**: [Integration Fixture Doctrine](../documents/engineering/integration_fixture_doctrine.md); no rule
+changes.
+**Implementation**: `src/Prodbox/TestValidation.hs` and `test/unit/PublicDnsWriteAuthority.hs`.
+**Blocked by**: none.
+**Live-proof**: observed (2026-10-15). `public-dns` ran twice on the binary that carries the wait. Right after
+`dns-aws` (the order that produced the refusal) it passed the Route 53 observation of every configured record and the
+resolver check, and stopped only at the HTTP redirect (`curl: (7) Failed to connect to test.resolvefintech.com port 80`)
+because the `lifecycle` suite's rebuild had left no Gateway; after `prodbox charts reconcile vscode` restored the edge
+(`edge status`: Gateway, both listeners, the redirect and `/auth` routes and the certificate ready) it passed in full,
+`body exit=ExitSuccess`. The validation prints nothing when the wait absorbs a refusal, so those runs show the
+validation passing where it failed before, not that a refusal was absorbed; the absorbing path is proved by the three
+scripted cases.
+**Deployment qualification**: pending - not invalidated: the sprint changes a validation's wait, not a protocol.
+**Independent Validation**: the retry over a scripted observation; no cluster.
+**Docs to update**: this file, `DEVELOPMENT_PLAN/README.md`, and `DEVELOPMENT_PLAN/00-overview.md`.
+
+### Objective
+
+Make the DNS validation wait out the refusal the public-edge wait already waits out.
+
+### Deliverables
+
+- `retryWhileGatewayDnsPending`: repeats an observation while it answers the Gateway-DNS write-authority refusal,
+  up to thirty attempts ten seconds apart, ends the wait at once on any other answer, and returns the last answer
+  unchanged when the attempts run out. `verifyConfiguredPublicDnsRecords` observes every configured record through it.
+
+### Validation
+
+1. An observation that answers the refusal twice and then a record returns the record after three calls.
+2. Any other failure, and a success, are returned after one call.
+3. A refusal that never clears is returned unchanged after exactly the attempts.
+4. **Canonical gate.** Focused group, primary unit suite, and `prodbox dev check` at 0.
+
+### Remaining Work
+
+None. Not a validation's to repair: the refusal itself comes from a gateway that restarts about every ninety
+minutes, which is the heap-growth loop of Sprint `6.5`'s item 4.
 
 ## Documentation Requirements
 

@@ -27,6 +27,12 @@ module Prodbox.Lib.EksCustomImagePush
   , defaultEksCustomImagePushConfig
   , eksCustomImagePushPodManifest
   , rewriteChartRefForInClusterPush
+  , eksRuntimeImageDigestRecordName
+  , eksRuntimeImageDigestRecordKey
+  , eksRuntimeImageDigestRecordManifest
+  , eksRegistryDigestCommandArguments
+  , parseRegistryManifestDigest
+  , classifyEksRegistryDigestRecordRead
   )
 where
 
@@ -36,6 +42,8 @@ import Data.Aeson
   , (.=)
   )
 import Data.Aeson.Key qualified as Key
+import Data.Char (isSpace)
+import System.Exit (ExitCode (ExitSuccess))
 
 -- | Configuration for the in-cluster crane push pod.
 data EksCustomImagePushConfig = EksCustomImagePushConfig
@@ -167,3 +175,105 @@ eksCustomImagePushPodManifest config =
                  ]
           ]
     ]
+
+-- | The cluster-resident record of the manifest digest the EKS registry holds
+-- for the runtime image the crane pod pushed.
+--
+-- The control-plane charts pin the image by manifest digest, and the digest has
+-- to be the one the EKS registry assigned: the Target Secret Worker compares it
+-- with the image identifier of each worker pod, which is the digest of the
+-- manifest the node pulled. The AWS publication never pushes or pulls from the
+-- host, so the host's @.RepoDigests@ is empty or is the digest of an earlier push
+-- to the home registry, and a manifest the in-cluster loader writes need not
+-- have the digest a host push of the same image produces. The record is written
+-- once, after a successful push, from what the registry itself reports, and read
+-- when the charts are planned.
+eksRuntimeImageDigestRecordName :: String
+eksRuntimeImageDigestRecordName = "prodbox-runtime-image-digest"
+
+-- | The key inside the record that holds the digest.
+eksRuntimeImageDigestRecordKey :: String
+eksRuntimeImageDigestRecordKey = "manifest-digest"
+
+-- | The @ConfigMap@ that records the digest, in the namespace the push pod and
+-- the registry share.
+eksRuntimeImageDigestRecordManifest :: EksCustomImagePushConfig -> String -> Value
+eksRuntimeImageDigestRecordManifest config digest =
+  object
+    [ "apiVersion" .= ("v1" :: String)
+    , "kind" .= ("ConfigMap" :: String)
+    , "metadata"
+        .= object
+          [ "name" .= eksRuntimeImageDigestRecordName
+          , "namespace" .= customPushPodNamespace config
+          , "labels"
+              .= object
+                [ Key.fromString "app.kubernetes.io/managed-by" .= ("prodbox" :: String)
+                ]
+          ]
+    , "data" .= object [Key.fromString eksRuntimeImageDigestRecordKey .= digest]
+    ]
+
+-- | The @kubectl@ arguments that ask the push pod's @crane@ for the manifest
+-- digest the registry holds for a pushed reference.
+--
+-- A value rather than an inline list so the one fact the record depends on, that
+-- the digest comes from the registry the pod just pushed to and not from the
+-- host, has a case that can fail if the call is reshaped.
+eksRegistryDigestCommandArguments :: EksCustomImagePushConfig -> String -> [String]
+eksRegistryDigestCommandArguments config chartRef =
+  [ "exec"
+  , "-n"
+  , customPushPodNamespace config
+  , customPushPodName config
+  , "--"
+  , "/ko-app/crane"
+  , "digest"
+  , rewriteChartRefForInClusterPush config chartRef
+  , "--insecure"
+  ]
+
+-- | Read the digest @crane digest@ prints, or nothing when the text is not
+-- exactly one manifest digest. Surrounding whitespace is the trailing newline
+-- the tool writes; anything else, a second line included, is not a digest.
+parseRegistryManifestDigest :: String -> Maybe String
+parseRegistryManifestDigest raw
+  | isManifestDigest trimmed = Just trimmed
+  | otherwise = Nothing
+ where
+  trimmed = trimEnds raw
+  trimEnds = dropWhileEnd' isSpace . dropWhile isSpace
+  dropWhileEnd' predicate = reverse . dropWhile predicate . reverse
+  isManifestDigest candidate =
+    length candidate == 71
+      && take 7 candidate == "sha256:"
+      && all isLowerHex (drop 7 candidate)
+  isLowerHex character = character `elem` ['0' .. '9'] || character `elem` ['a' .. 'f']
+
+-- | What reading the digest record said. @Right (Just _)@ is a recorded
+-- digest, @Right Nothing@ is a cluster that answered and holds no record (the
+-- publication has not run), and @Left@ is everything else: the cluster could not
+-- be asked, or the record holds something that is not a manifest digest. The
+-- last two used to read as an absent record, so the plan refused with "no
+-- immutable repository manifest digest" and named the wrong cause.
+classifyEksRegistryDigestRecordRead :: ExitCode -> String -> String -> Either String (Maybe String)
+classifyEksRegistryDigestRecordRead exitCode standardOutput standardError
+  | exitCode /= ExitSuccess =
+      Left
+        ( "kubectl could not read the record: "
+            ++ firstNonEmpty [trimmed standardError, trimmed standardOutput, "no output"]
+        )
+  | null (trimmed standardOutput) = Right Nothing
+  | otherwise =
+      case parseRegistryManifestDigest standardOutput of
+        Just digest -> Right (Just digest)
+        Nothing ->
+          Left
+            ( "the record holds a value that is not a sha256 manifest digest: "
+                ++ show (take 80 (trimmed standardOutput))
+            )
+ where
+  trimmed = reverse . dropWhile isSpace . reverse . dropWhile isSpace
+  firstNonEmpty candidates = case filter (not . null) candidates of
+    candidate : _ -> candidate
+    [] -> ""

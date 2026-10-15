@@ -160,7 +160,10 @@ identity, authority, DNS-owner, or cleanup boundaries above.
   exact sequence. **Corrected 2026-08-20 (Sprint `4.88`).** The terminal arm is selected by the
   delete mode over the (mode, presence) product rather than by install presence alone: the
   no-install success arm belongs to local-only delete, and a cascade with no install present reaches
-  no phase and exits non-zero naming the disposition it reports. The general rule that no exit code
+  no phase and exits non-zero naming the disposition it reports, unless it queried AWS read-only on
+  that invocation and the conjunction in [Lifecycle Reconciliation Doctrine
+  §5a.0](./lifecycle_reconciliation_doctrine.md#5a0-a-cascade-that-reaches-no-phase-may-still-query-aws)
+  held (Sprint `6.6`). The general rule that no exit code
   licenses retiring the retained root is owned by
   [Retained Storage Lifecycle Doctrine §7](./storage_lifecycle_doctrine.md#7-the-single-retained-operator-host-root),
   and the supported surface now states it in its own narration.
@@ -266,6 +269,28 @@ identity, authority, DNS-owner, or cleanup boundaries above.
   outside cluster teardown. Its current checkpoint uses the encrypted Model-B/MinIO path and
   persists with preserved `.data/`. The `--allow-pulumi-residue` flag belongs only to
   `prodbox aws teardown`; it is not a cluster-delete option.
+- **What reaches the write-ahead ownership lane is a declaration, not an inference (Sprint `7.43`).**
+  The three per-run stacks submit through the lane; `aws-ses` is deliberately outside it (no
+  registered key, a reconcile that is a series of idempotent provider intents, no cascade that
+  targets it) and, separately, carries no run-scope tag. Retained production volumes, the production
+  IAM principals, the validation hosted zone and the DNS01 challenge records are off the lane for
+  structural reasons and each names its destroy path; the per-run volumes, the cluster's IAM role
+  family and the load balancer controller's children are declared inside the EKS stack's manifest by
+  the edge the registry already derives. `createRecordCoverage` states all of it, and `prodbox dev
+  check` keeps it true. A DNS01 challenge record cannot carry a tag and is invisible to the Tagging
+  API, so a challenge record leaked into a per-run subzone is a stated residual, not a recorded
+  resource: the per-run subzone's destroy empties the zone (the Pulumi zone is `forceDestroy`, and the
+  native subzone reaper deletes every record set other than the zone's SOA and NS before it deletes the
+  zone; Sprint `7.48`), so such a leak is removed with the zone rather than failing the delete. The reaper
+  runs only on the arm taken when no usable checkpoint remains; a destroy from a verified checkpoint is a
+  plain `pulumi destroy`, so a zone created before that change, whose state recorded `forceDestroy=false`,
+  still refuses while it holds a record until a reconcile has updated the recorded value. A
+  controller-created child that
+  does carry the family's tags is named, after the cluster is gone, as a member of the family the
+  registry declares in the EKS stack's manifest (and of that stack), from the registry alone: no
+  manifest is read, and the narration says so. The cascade postflight appends that to the sweep's
+  rendering and can change neither the verdict nor the exit code. It names no run, because those tags
+  are the same for every run of a cluster name.
 - **Historical Sprint `4.12` shape**: K8s drain and a postflight tag sweep were added for
   controller-created resources. Those effects are not by themselves a leak-safety proof: the
   target requires exact registered-family observation, desired-absence read-back, and a distinct
@@ -446,8 +471,9 @@ the operator `/32`, EKS instance type and disk size, positive minimum and maximu
 two EKS subnet CIDRs, and three `aws-test` subnet CIDRs. Empty tokens, zero sizes/counts, malformed
 or non-canonical CIDRs, wrong list cardinalities, and unsupported EBS types refuse before a
 provider intent or AWS request exists. The positive desired EKS count remains
-`cluster_topology.Eks.node_group_size`; configuration compilation checks it against the profile's
-minimum and maximum. Each of these is a value whose namespace
+`cluster_topology.Eks.node_group_size` when the deployment's cluster is EKS, and is the profile's
+minimum when it is not (the home substrate provisions `aws-eks` as a per-run test and recovery
+stack); configuration compilation checks it against the profile's minimum and maximum. Each of these is a value whose namespace
 AWS owns and on which two correct deployments could legitimately differ — one operator's account
 has different instance quota, a different address plan, a different tolerance for node cost — so
 none of them may be compiled, and none may carry a default envelope that a deployment silently
@@ -619,8 +645,10 @@ Minimum rule:
    CIDRs. `aws-test` declares `operatorCidr`, three node instance/root-volume type/size triples,
    VPC CIDR, and three subnet CIDRs; it still declares its own `tls:PrivateKey` and consumes
    `publicKeyOpenssh` internally
-8. both retained AWS destroy paths refresh Pulumi state and retry destroy once before surfacing a
-   cleanup failure
+8. the registered Pulumi destroy refreshes state before it destroys and continues past an individual
+   resource error (`--refresh --continue-on-error`); it does not retry the whole destroy, and a
+   failed destroy names the first AWS error as its cause and the last differing one as its
+   consequence, so a credential-expiry error cannot hide the dependency error that preceded it
 9. the HA-RKE2 validation destroys and recreates the retained AWS test stack once when stack
    reconcile succeeds but SSH validation still fails, so stale EC2 instances left by an
    interrupted run or operator network move do not survive as terminal validation state

@@ -18,6 +18,7 @@ module Prodbox.ControlPlane.TargetRetainedMaterialRewrapEndpoint
   , targetRetainedMaterialRewrapMaximumBytes
   , targetRetainedMaterialRewrapResponseMaximumBytes
   , targetRetainedMaterialRewrapAuthenticatedHandler
+  , withTargetRetainedRewrapRefusalLog
   )
 where
 
@@ -30,6 +31,7 @@ import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
   ( AuthenticatedRoleHandler (..)
   )
+import Prodbox.ControlPlane.ClosedRefusalToken (closedRefusalToken)
 import Prodbox.ControlPlane.Codec
   ( decodeControlPlaneRequest
   , encodeControlPlaneResponse
@@ -106,6 +108,30 @@ newtype TargetRetainedMaterialRewrapBoundary m
 
 targetRetainedMaterialRewrapMaximumBytes :: Int
 targetRetainedMaterialRewrapMaximumBytes = 32 * 1024
+
+-- | Say, through the given recorder, which stage refused or could not serve a
+-- rewrap or a source observation. The response is unchanged. The recorder
+-- receives the request kind, whether the answer was a refusal or an unavailable
+-- one, and a 'closedRefusalToken', never the text.
+withTargetRetainedRewrapRefusalLog
+  :: (Monad m)
+  => (Text -> m ())
+  -> TargetRetainedMaterialRewrapBoundary m
+  -> TargetRetainedMaterialRewrapBoundary m
+withTargetRetainedRewrapRefusalLog record boundary =
+  TargetRetainedMaterialRewrapBoundary $ \now request -> do
+    response <- runTargetRetainedMaterialRewrap boundary now request
+    case response of
+      TargetRetainedMaterialRewrapRefused detail ->
+        record (kind request <> " refused " <> closedRefusalToken detail)
+      TargetRetainedMaterialRewrapUnavailable detail ->
+        record (kind request <> " unavailable " <> closedRefusalToken detail)
+      _ -> pure ()
+    pure response
+ where
+  kind request = case request of
+    TargetRetainedMaterialRewrapRequest {} -> "rewrap"
+    ObserveTargetRetainedMaterialSource {} -> "observe-source"
 
 targetRetainedMaterialRewrapResponseMaximumBytes :: Int
 targetRetainedMaterialRewrapResponseMaximumBytes = 96 * 1024

@@ -16,11 +16,16 @@ module Prodbox.Test.Qualification.SourceIdentity
   , SourceIdentityError (..)
   , SourcePathDisposition (..)
   , SourceManifestPolicyIdentity (..)
+  , SourceScope (..)
   , canonicalSourceManifestPolicyId
   , canonicalSourceManifestPolicyVersion
+  , executableSourceManifestPolicyId
+  , gitHeadText
+  , isDocumentationPath
   , mkGitHead
   , classifySourcePath
   , mkSourceIdentity
+  , mkScopedSourceIdentity
   , sourceGitHead
   , sourceManifestDigest
   , sourceManifestEntryCount
@@ -107,6 +112,27 @@ canonicalSourceManifestPolicyId = "prodbox-source-manifest"
 canonicalSourceManifestPolicyVersion :: Word32
 canonicalSourceManifestPolicyVersion = 1
 
+-- | The policy identifier of a manifest that leaves documentation out. It is a
+-- different identifier from the full policy's so a scoped digest can never be
+-- mistaken for a full one.
+executableSourceManifestPolicyId :: Text
+executableSourceManifestPolicyId = "prodbox-source-manifest-executable"
+
+-- | Which part of the worktree an identity covers.
+--
+-- Documentation is not an executable input: it is read for existence at
+-- runtime and never for content, so an edit to it cannot change what a
+-- deployment does. A qualification that must survive recording its own result in
+-- the plan keys the executable surface and records the full one beside it.
+data SourceScope
+  = FullSurface
+  | ExecutableSurface
+  deriving stock (Eq, Ord, Show)
+
+-- | The head as lowercase hexadecimal.
+gitHeadText :: GitHead -> Text
+gitHeadText (GitHead value) = value
+
 mkGitHead :: Text -> Either SourceIdentityError GitHead
 mkGitHead value
   | validLength && Text.all isLowerHex value = Right (GitHead value)
@@ -124,7 +150,21 @@ mkSourceIdentity
   -> [Text]
   -> [SourceCandidate]
   -> Either SourceIdentityError SourceIdentity
-mkSourceIdentity gitHead worktreeState configuredSecretRoots candidates = do
+mkSourceIdentity = mkScopedSourceIdentity FullSurface
+
+-- | 'mkSourceIdentity' over a chosen scope. Under 'ExecutableSurface' the
+-- documentation candidates are admitted and then left out of the manifest, so
+-- an excluded or unallowlisted path is refused exactly as under the full scope;
+-- only what is hashed differs. Under 'FullSurface' the policy bytes, the policy
+-- digest and the manifest are what they have always been.
+mkScopedSourceIdentity
+  :: SourceScope
+  -> GitHead
+  -> WorktreeState
+  -> [Text]
+  -> [SourceCandidate]
+  -> Either SourceIdentityError SourceIdentity
+mkScopedSourceIdentity scope gitHead worktreeState configuredSecretRoots candidates = do
   normalizedSecretRoots <- traverse normalizeSecretRoot configuredSecretRoots
   let secretRoots = sort (Set.toList (Set.fromList normalizedSecretRoots))
   admitted <- traverse (admitCandidate secretRoots) candidates
@@ -132,21 +172,44 @@ mkSourceIdentity gitHead worktreeState configuredSecretRoots candidates = do
     [] -> Left SourceManifestEmpty
     _ -> do
       rejectDuplicatePaths admitted
-      let policyBytes = canonicalPolicyBytes secretRoots
-          manifestBytes = BS.concat (map encodeManifestEntry (sortOn admittedPath admitted))
-      pure
-        SourceIdentity
-          { sourceGitHead = gitHead
-          , sourceWorktreeState = worktreeState
-          , sourceManifestPolicyIdentity =
-              SourceManifestPolicyIdentity
-                { sourcePolicyIdentifier = canonicalSourceManifestPolicyId
-                , sourcePolicyVersion = canonicalSourceManifestPolicyVersion
-                , sourcePolicyDigest = sha256Hex policyBytes
-                }
-          , sourceManifestDigest = sha256Hex manifestBytes
-          , sourceManifestEntryCount = length admitted
-          }
+      case filter (inScope scope . admittedPath) admitted of
+        [] -> Left SourceManifestEmpty
+        kept -> do
+          let policyBytes = canonicalPolicyBytes scope secretRoots
+              manifestBytes = BS.concat (map encodeManifestEntry (sortOn admittedPath kept))
+          pure
+            SourceIdentity
+              { sourceGitHead = gitHead
+              , sourceWorktreeState = worktreeState
+              , sourceManifestPolicyIdentity =
+                  SourceManifestPolicyIdentity
+                    { sourcePolicyIdentifier = policyIdentifierFor scope
+                    , sourcePolicyVersion = canonicalSourceManifestPolicyVersion
+                    , sourcePolicyDigest = sha256Hex policyBytes
+                    }
+              , sourceManifestDigest = sha256Hex manifestBytes
+              , sourceManifestEntryCount = length kept
+              }
+
+inScope :: SourceScope -> Text -> Bool
+inScope scope path = case scope of
+  FullSurface -> True
+  ExecutableSurface -> not (isDocumentationPath path)
+
+policyIdentifierFor :: SourceScope -> Text
+policyIdentifierFor scope = case scope of
+  FullSurface -> canonicalSourceManifestPolicyId
+  ExecutableSurface -> executableSourceManifestPolicyId
+
+-- | Whether a normalized path is governed documentation: a Markdown file under a
+-- documentation root, or one of the root documentation files. A chart's readme
+-- ships with the chart and is not documentation here.
+isDocumentationPath :: Text -> Bool
+isDocumentationPath path =
+  (any (`pathWithin` path) documentationRoots && extension `Set.member` documentationExtensions)
+    || path `Set.member` documentationRootFiles
+ where
+  extension = Text.toLower (Text.pack (takeExtension (Text.unpack path)))
 
 data AdmittedEntry = AdmittedEntry
   { admittedPath :: Text
@@ -291,6 +354,9 @@ documentationRoots = ["DEVELOPMENT_PLAN", "documents"]
 documentationExtensions :: Set.Set Text
 documentationExtensions = Set.fromList [".md"]
 
+documentationRootFiles :: Set.Set Text
+documentationRootFiles = Set.fromList ["AGENTS.md", "CLAUDE.md", "README.md"]
+
 dhallSchemaExtensions :: Set.Set Text
 dhallSchemaExtensions = Set.fromList [".dhall"]
 
@@ -334,10 +400,20 @@ explicitRootFiles =
 rootSchemaExtensions :: Set.Set Text
 rootSchemaExtensions = Set.fromList [".dhall"]
 
-canonicalPolicyBytes :: [Text] -> ByteString
-canonicalPolicyBytes configuredSecretRoots =
-  BS.concat
-    [ encodePolicyClause "policy-id" [canonicalSourceManifestPolicyId]
+canonicalPolicyBytes :: SourceScope -> [Text] -> ByteString
+canonicalPolicyBytes scope configuredSecretRoots =
+  BS.concat (fullPolicyClauses ++ scopeClauses)
+ where
+  scopeClauses = case scope of
+    FullSurface -> []
+    ExecutableSurface ->
+      [ encodePolicyClause "source-scope" ["executable"]
+      , encodePolicyClause "documentation-excluded-roots" documentationRoots
+      , encodePolicyClause "documentation-excluded-extensions" (Set.toList documentationExtensions)
+      , encodePolicyClause "documentation-excluded-root-files" (Set.toList documentationRootFiles)
+      ]
+  fullPolicyClauses =
+    [ encodePolicyClause "policy-id" [policyIdentifierFor scope]
     , encodePolicyClause "policy-version" [Text.pack (show canonicalSourceManifestPolicyVersion)]
     , encodePolicyClause "haskell-roots" haskellCodeRoots
     , encodePolicyClause "haskell-extensions" (Set.toList haskellCodeExtensions)

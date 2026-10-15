@@ -420,6 +420,10 @@ providerIntents =
       "prodbox.io/cluster=prodbox-aws-eks-test|prodbox.io/managed-by=prodbox|prodbox.io/resource=public-edge"
   , ObserveNativeStackFamily nativeStackFamilyRef stackConfig
   , ReapNativeStackFamily nativeStackFamilyRef stackConfig ["vpc/vpc-fixture"]
+  , EnsureValidationHostedZone "1759900000" "example.test"
+  , ObserveSesInviteMail "capture-bucket" "test-1759900000@receive.example.test"
+  , ReapSesInviteMail "capture-bucket" "test-1759900000@receive.example.test"
+  , EnsureRetainedEbsVolumes "gp3" "pv-minio-0:30:ca-central-1a"
   ]
 
 stackRef :: ProviderStackRef

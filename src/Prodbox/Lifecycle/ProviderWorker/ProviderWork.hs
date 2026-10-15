@@ -821,6 +821,8 @@ productionRegisteredProviderResources =
   , "ebs-reaper:test-scoped"
   , "ebs-reaper:retained"
   , "route53:validation-zone"
+  , "ses:invite-mail"
+  , "ebs-ensure:retained"
   , "route53:dns01-challenge"
   , "iam:eks-role-family"
   , "elbv2:eks-controller-family"
@@ -911,6 +913,31 @@ data ProviderIntent
       !ProviderNativeStackFamilyRef
       !ProviderStackConfig
       ![Text]
+  | -- | Sprint 5.50: create the throwaway @dns-aws@ validation hosted zone, or
+    -- finish tagging one an interrupted create left, and name its id.  The
+    -- first 'Text' is the run nonce and the second the base zone name it is
+    -- created beneath.  The zone name and the caller reference are both
+    -- derived from the nonce by the registered validation-zone owner, so a
+    -- caller never supplies a name the Provider then creates.
+    EnsureValidationHostedZone !Text !Text
+  | -- | Sprint 5.50: read-only observation of the captured invite message
+    -- addressed to one recipient.  The first 'Text' is the SES capture bucket
+    -- and the second the recipient; the evidence is the object key and the
+    -- invite link, or a statement that nothing has arrived.
+    ObserveSesInviteMail !Text !Text
+  | -- | Sprint 5.50: delete every captured message addressed to that
+    -- recipient from that bucket, and prove none remains. Both the deletion and
+    -- the proof cover the objects the capture reader scans, which are those
+    -- modified within its recency window ('Prodbox.Ses.Capture.captureRecencyWindow'):
+    -- the recipient carries a per-run nonce, so an older object cannot be this
+    -- run's. A consumer that has to clear mail older than that window cannot use
+    -- this intent as it stands.
+    ReapSesInviteMail !Text !Text
+  | -- | Sprint 5.50: create the retained EBS volumes the AWS substrate's
+    -- retained PersistentVolumes bind to, and name each volume.  The first
+    -- 'Text' is the volume type and the second the required volumes as
+    -- @name:size-gib:zone@ entries joined by commas.
+    EnsureRetainedEbsVolumes !Text !Text
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -982,6 +1009,10 @@ providerIntentEvidenceMaximumCharacters intent = case intent of
   ObserveOwnedResourceTags {} -> shared
   ObserveNativeStackFamily {} -> shared
   ReapNativeStackFamily {} -> shared
+  EnsureValidationHostedZone {} -> shared
+  ObserveSesInviteMail {} -> shared
+  ReapSesInviteMail {} -> shared
+  EnsureRetainedEbsVolumes {} -> shared
  where
   shared = maximumProviderIntentEvidenceCharacters
 
@@ -1148,6 +1179,10 @@ providerIntentResourceKey intent = case intent of
     "stack:" <> providerStackRefText (providerNativeStackFamilyStackRef ref)
   ReapNativeStackFamily ref _ _ ->
     "stack:" <> providerStackRefText (providerNativeStackFamilyStackRef ref)
+  EnsureValidationHostedZone nonce _ -> "route53:validation-zone:ensure:" <> nonce
+  ObserveSesInviteMail bucket recipient -> "ses:invite-mail:" <> bucket <> ":" <> recipient
+  ReapSesInviteMail bucket recipient -> "ses:invite-mail:" <> bucket <> ":" <> recipient
+  EnsureRetainedEbsVolumes _ _ -> "ebs-ensure:retained"
 
 publicARecordResourceKey :: PublicARecordRef -> Text
 publicARecordResourceKey ref =
@@ -1286,6 +1321,14 @@ providerIntentCoordinate intent = ProviderIntentCoordinate $ case intent of
       <> providerStackConfigCoordinate config
       <> ":admitted="
       <> Text.intercalate "|" admittedIdentities
+  EnsureValidationHostedZone nonce baseZone ->
+    "ensure-validation-hosted-zone:" <> nonce <> ":" <> baseZone
+  ObserveSesInviteMail bucket recipient ->
+    "observe-ses-invite-mail:" <> bucket <> ":" <> recipient
+  ReapSesInviteMail bucket recipient ->
+    "reap-ses-invite-mail:" <> bucket <> ":" <> recipient
+  EnsureRetainedEbsVolumes volumeType specs ->
+    "ensure-retained-ebs:" <> volumeType <> ":" <> specs
 
 nativeStackFamilyCoordinate :: ProviderNativeStackFamilyRef -> Text
 nativeStackFamilyCoordinate ref =

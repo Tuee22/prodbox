@@ -56,7 +56,8 @@ import Prodbox.ControlPlane.ProviderAwsScopeReceipt
   ( ProviderAwsScopeReceiptError (ProviderAwsScopeRetainedOperationMissing)
   )
 import Prodbox.ControlPlane.ProviderNarrowSession
-  ( ProviderEffectObservation (ProviderEffectUnobservable)
+  ( ApplyFailure (ApplyFailed)
+  , ProviderEffectObservation (ProviderEffectUnobservable)
   , ProviderIntentCapabilities (..)
   , ProviderMutation (..)
   , ProviderNarrowSessionRunner (..)
@@ -1348,6 +1349,10 @@ scopeCapabilities =
     , observeTestEbsVolumesCapability = const unavailableReadOnly
     , observeValidationHostedZonesCapability = const unavailableReadOnly
     , reapValidationHostedZonesCapability = const unavailableMutation
+    , ensureValidationHostedZoneCapability = \_ _ -> unavailableMutation
+    , observeSesInviteMailCapability = \_ _ -> unavailableReadOnly
+    , reapSesInviteMailCapability = \_ _ -> unavailableMutation
+    , ensureRetainedEbsVolumesCapability = \_ _ -> unavailableMutation
     , observeRetainedEbsVolumesCapability = const unavailableReadOnly
     , observeEksIamRoleFamilyCapability = \_ _ -> unavailableReadOnly
     , reapEksIamRoleFamilyCapability = \_ _ -> unavailableMutation
@@ -1378,7 +1383,7 @@ unavailableMutation :: ProviderMutation IO ()
 unavailableMutation =
   ProviderMutation
     { observeProviderMutation = \_ _ -> pure (ProviderEffectUnobservable "unexpected mutation")
-    , applyProviderMutation = \_ _ -> pure (Left "unexpected mutation")
+    , applyProviderMutation = \_ _ -> pure (Left (ApplyFailed "unexpected mutation"))
     }
 
 signedScopeIntent :: SignedProviderCommittedIntent

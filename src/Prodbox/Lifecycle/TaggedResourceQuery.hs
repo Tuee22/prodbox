@@ -36,7 +36,9 @@ module Prodbox.Lifecycle.TaggedResourceQuery
   , maximumTaggedResourcePages
   , taggedResourceQueryArgs
   , parseTaggedResourcePage
+  , TaggedPageRunner
   , discoverTaggedResources
+  , discoverTaggedResourcesVia
   )
 where
 
@@ -187,10 +189,22 @@ parseTaggedResourcePage payload = do
       _ -> Left "aws resourcegroupstaggingapi tag has no readable `Key`"
     _ -> Left "aws resourcegroupstaggingapi tag is not a JSON object"
 
+-- | How one page request is executed. The default is the unbounded capture;
+-- a caller on a path that used to be offline passes a runner with a wall-clock
+-- bound so an AWS call that never answers becomes a failure, not a hang.
+type TaggedPageRunner = Subprocess -> IO (Result ProcessOutput)
+
 -- | Follow the cursor to exhaustion, or fail.
 discoverTaggedResources
   :: TaggedResourceQueryInput -> IO (Either String TaggedResourceListing)
-discoverTaggedResources input = collect Nothing [] [] 0
+discoverTaggedResources = discoverTaggedResourcesVia captureSubprocessResult
+
+-- | 'discoverTaggedResources' over an explicit page runner.
+discoverTaggedResourcesVia
+  :: TaggedPageRunner
+  -> TaggedResourceQueryInput
+  -> IO (Either String TaggedResourceListing)
+discoverTaggedResourcesVia runner input = collect Nothing [] [] 0
  where
   collect cursor seen accumulated pages
     | pages >= maximumTaggedResourcePages =
@@ -228,7 +242,7 @@ discoverTaggedResources input = collect Nothing [] [] 0
 
   runPage cursor = do
     result <-
-      captureSubprocessResult
+      runner
         Subprocess
           { subprocessPath = "aws"
           , subprocessArguments =
@@ -240,7 +254,7 @@ discoverTaggedResources input = collect Nothing [] [] 0
           , subprocessWorkingDirectory = taggedResourceQueryWorkingDirectory input
           }
     pure $ case result of
-      Failure err -> Left ("failed to start `aws resourcegroupstaggingapi`: " ++ err)
+      Failure err -> Left ("`aws resourcegroupstaggingapi` did not run to completion: " ++ err)
       Success output -> case processExitCode output of
         ExitFailure _ ->
           Left

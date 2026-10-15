@@ -17,6 +17,7 @@ module Prodbox.ControlPlane.RetainedMaterialDeliveryEndpoint
   , retainedMaterialDeliveryWireRequest
   , retainedMaterialDeliveryMaximumBytes
   , retainedMaterialDeliveryAuthenticatedHandler
+  , withRetainedDeliveryRefusalLog
   )
 where
 
@@ -31,6 +32,7 @@ import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
   ( AuthenticatedRoleHandler (..)
   )
+import Prodbox.ControlPlane.ClosedRefusalToken (closedRefusalToken)
 import Prodbox.ControlPlane.Codec
   ( decodeControlPlaneRequest
   , encodeControlPlaneResponse
@@ -125,6 +127,36 @@ data RetainedMaterialDeliveryBoundary m = RetainedMaterialDeliveryBoundary
 
 retainedMaterialDeliveryMaximumBytes :: Int
 retainedMaterialDeliveryMaximumBytes = 32 * 1024
+
+-- | Say, through the given recorder, which stage refused a delivery. The wire
+-- answer is unchanged: the worker still receives the refusal and erases it to its
+-- closed @retained/delivery-failed@ class, so the only place the stage was visible
+-- was a text the Authority built and dropped. The recorder receives the schema
+-- and a 'closedRefusalToken', never the refusal text.
+withRetainedDeliveryRefusalLog
+  :: (Monad m)
+  => (Text -> m ())
+  -> RetainedMaterialDeliveryBoundary m
+  -> RetainedMaterialDeliveryBoundary m
+withRetainedDeliveryRefusalLog record boundary =
+  RetainedMaterialDeliveryBoundary
+    { deliverRetainedSesSmtp = \now source request ->
+        observeRefusal record "ses-smtp" =<< deliverRetainedSesSmtp boundary now source request
+    , deliverRetainedAcmeEab = \now source request ->
+        observeRefusal record "acme-eab" =<< deliverRetainedAcmeEab boundary now source request
+    }
+
+observeRefusal
+  :: (Monad m)
+  => (Text -> m ())
+  -> Text
+  -> Either Text receipt
+  -> m (Either Text receipt)
+observeRefusal record schemaToken result = do
+  case result of
+    Left detail -> record (schemaToken <> " " <> closedRefusalToken detail)
+    Right _ -> pure ()
+  pure result
 
 retainedMaterialDeliveryWireRequest
   :: SRetainedMaterialSchema schema

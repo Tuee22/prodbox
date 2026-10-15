@@ -166,12 +166,16 @@ validation environments.
   Until the plan-tracked cutover lands, the current binary still uses the legacy handwritten
   cascade. A cascade with no local RKE2 installation reaches no phase and exits non-zero with a
   `RecoveryPlaneNotEstablished` disposition; local-only delete alone owns the no-install success
-  arm. The accepted target gives that pairing a second exit, taken only when the run queries the
-  provider on this invocation and finds nothing, under the conjunction owned by
-  [Lifecycle Reconciliation Doctrine §5a.0](./documents/engineering/lifecycle_reconciliation_doctrine.md#5a0-a-cascade-that-reaches-no-phase-may-still-query-aws);
-  the current binary reaches neither half of it. **Neither shipped cascade exit code is exact
-  AWS-absence evidence.** A non-zero cascade is unresolved,
-  while zero still carries no exact completion receipt. Preserve `.data/` and the complete output
+  arm. That pairing has a second exit, taken only when the run queries AWS read-only on this
+  invocation and finds nothing, under the conjunction owned by
+  [Lifecycle Reconciliation Doctrine §5a.0](./documents/engineering/lifecycle_reconciliation_doctrine.md#5a0-a-cascade-that-reaches-no-phase-may-still-query-aws):
+  an authored AWS coordinate, a sweep that ran clean, every authored region queried, the credential
+  tied to the deployment's account where a hosted zone can say so, and every retained root examined.
+  That zero means no per-run tagged residue in the queried regions. It is **not an empty account**:
+  the retained `pulumi_state_backend` bucket, `aws-ses` stack and retained EBS volumes survive by
+  design, and untagged IAM principals, access keys and DNS records are invisible to a tag query.
+  **Neither shipped cascade exit code is exact AWS-absence evidence.** A non-zero cascade is
+  unresolved, while zero still carries no exact completion receipt. Preserve `.data/` and the complete output
   for recovery in both cases, and treat deleting `.data/` as an action that needs a positive
   disposition of the capabilities it holds rather than a clean-looking exit. Rollout status lives only in
   [Development Plan → Resume Here](./DEVELOPMENT_PLAN/README.md#resume-here).
@@ -783,14 +787,14 @@ no-op success (`No RKE2 cluster to delete.`, exit 0). `cluster delete --cascade 
 that shortcut, because local absence says nothing about durable cleanup or AWS: with no install
 present it reaches no phase, names the durable cleanup run namespace it could not reach and the
 `RecoveryPlaneNotEstablished` disposition it reports, makes no statement about per-run AWS stacks,
-and exits non-zero. **No cascade exit authorizes deleting the retained root.** The narration is three-valued: only a
-`cluster delete` terminal arm carrying a completion receipt, or an explicit local-only uninstall,
-says the retained root is preserved by what it did; an arm that reached a delete route without a
-receipt names the root and states that the run established nothing about retiring it; and an arm
-that reached no delete route is silent about the root, because it observed nothing. **Corrected
-2026-09-16** — this passage previously claimed every non-receipt arm names the root, which the
-shipped narration does not do for either no-install arm. Raising the no-install cascade arm out of
-silence is scheduled work; status lives only in
+and exits non-zero — unless it asked AWS read-only and the conjunction above held. **No cascade exit
+authorizes deleting the retained root.** The narration is total over the terminal arms and no arm is
+silent: only a `cluster delete` terminal arm carrying a completion receipt, or an explicit local-only
+uninstall, says the retained root is preserved by what it did; every other arm names the root and
+states that the run established nothing about retiring it. The no-install cascade additionally
+surveys, read-only, every retained root it can find in the worktree (the configured root, `.data/`,
+`.test-data/`, and any left behind by an earlier configuration) and will not confirm while one cannot
+be examined. Status lives only in
 [Development Plan → Resume Here](./DEVELOPMENT_PLAN/README.md#resume-here).
 
 Consequences of that preservation are tracked in the development plan rather than described here.

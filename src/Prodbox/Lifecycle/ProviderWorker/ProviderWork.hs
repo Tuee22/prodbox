@@ -125,6 +125,17 @@ module Prodbox.Lifecycle.ProviderWorker.ProviderWork
 
     -- * Intents and coordinates
   , ProviderIntent (..)
+  , ProviderAuditControl
+  , mkProviderAuditControl
+  , providerAuditControlRegion
+  , providerAuditControlText
+  , parseProviderAuditControl
+  , validRegionText
+  , providerAuditControlBucket
+  , ProviderAuditTarget
+  , mkProviderAuditTarget
+  , providerAuditTargetStack
+  , providerAuditTargetHostedZoneId
   , ProviderOwnedTagQuery (..)
   , providerOwnedTagQueryKey
   , providerIntentResourceKey
@@ -134,6 +145,7 @@ module Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , eksIamRoleFamilyEvidenceFamily
   , eksLoadBalancerControllerFamilyEvidenceFamily
   , nativeStackFamilyEvidenceFamily
+  , awsAuditEvidenceFamily
   , validationHostedZoneEvidenceFamily
   , dns01ChallengeRecordEvidenceFamily
   , ownedResourceTagEvidenceFamily
@@ -488,7 +500,7 @@ mkProviderNativeStackFamilyRef stackRef rawAccount rawRegion rawZone = do
   if Text.length account == 12 && Text.all isDigit account
     then Right ()
     else Left (ProviderRefMalformed "native stack-family AWS account")
-  if validRegion region
+  if validRegionText region
     then Right ()
     else Left (ProviderRefMalformed "native stack-family AWS region")
   zone <- traverse validateProviderRef rawZone
@@ -510,17 +522,19 @@ mkProviderNativeStackFamilyRef stackRef rawAccount rawRegion rawZone = do
       , providerNativeStackFamilyRegion = region
       , providerNativeStackFamilyHostedZoneId = zone
       }
- where
-  validRegion value =
-    Text.length value >= 6
-      && Text.length value <= 64
-      && Text.head value /= '-'
-      && Text.last value /= '-'
-      && all (not . Text.null) (Text.splitOn "-" value)
-      && length (Text.splitOn "-" value) >= 3
-      && Text.all
-        (\character -> isAsciiLower character || isDigit character || character == '-')
-        value
+
+-- | A region as AWS spells one: lowercase words and an ordinal, dash-separated.
+validRegionText :: Text -> Bool
+validRegionText value =
+  Text.length value >= 6
+    && Text.length value <= 64
+    && Text.head value /= '-'
+    && Text.last value /= '-'
+    && all (not . Text.null) (Text.splitOn "-" value)
+    && length (Text.splitOn "-" value) >= 3
+    && Text.all
+      (\character -> isAsciiLower character || isDigit character || character == '-')
+      value
 
 mkAwsEksProviderStackConfig :: Text -> Either ProviderStackConfigError ProviderStackConfig
 mkAwsEksProviderStackConfig operatorCidr = do
@@ -835,6 +849,82 @@ productionRegisteredProviderResources =
   , "eks-client-auth"
   ]
 
+-- | The retained state bucket an audit expects to find in the tagging catalog:
+-- its positive control, and the region of the catalog that lists it. The
+-- catalog answers per region and the bucket lives in the state backend's region,
+-- which need not be the region the Provider's session holds, so the control
+-- names it. A bucket name is validated as S3 validates one, and a region as a
+-- region is spelled, so the control cannot carry a path, a command, or a
+-- wildcard.
+data ProviderAuditControl = ProviderAuditControl
+  { providerAuditControlBucket :: !Text
+  , providerAuditControlRegion :: !(Maybe Text)
+  }
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving anyclass (Serialise)
+
+mkProviderAuditControl :: Text -> Maybe Text -> Either ProviderRefError ProviderAuditControl
+mkProviderAuditControl rawBucket rawRegion = do
+  bucket <- validateProviderRef rawBucket
+  if validBucketName bucket
+    then Right ()
+    else Left (ProviderRefMalformed "audit control bucket")
+  region <- traverse validateProviderRef rawRegion
+  case region of
+    Just value
+      | not (validRegionText value) -> Left (ProviderRefMalformed "audit control region")
+    _ -> Right ()
+  Right (ProviderAuditControl bucket region)
+ where
+  validBucketName name =
+    Text.length name >= 3
+      && Text.length name <= 63
+      && Text.all bucketCharacter name
+      && edge (Text.head name)
+      && edge (Text.last name)
+  bucketCharacter character =
+    isAsciiLower character || isDigit character || character == '.' || character == '-'
+  edge character = isAsciiLower character || isDigit character
+
+-- | The control as one wire field: the bucket, then @\@@ and its region when it
+-- names one. A bucket name cannot contain @\@@, so the split is unambiguous.
+providerAuditControlText :: ProviderAuditControl -> Text
+providerAuditControlText control =
+  providerAuditControlBucket control
+    <> maybe "" ("@" <>) (providerAuditControlRegion control)
+
+parseProviderAuditControl :: Text -> Either ProviderRefError ProviderAuditControl
+parseProviderAuditControl raw = case Text.splitOn "@" raw of
+  [bucket] -> mkProviderAuditControl bucket Nothing
+  [bucket, region] -> mkProviderAuditControl bucket (Just region)
+  _ -> Left (ProviderRefMalformed "audit control")
+
+-- | The stack an audit is about: the registered stack, and for the per-run
+-- subzone its hosted zone. The account and the region are not here, because the
+-- Provider audits the account and region its own session holds and reports
+-- them; a request that named them could only be wrong, and the positive control
+-- is what notices an audit that looked somewhere the operator did not mean.
+data ProviderAuditTarget = ProviderAuditTarget
+  { providerAuditTargetStack :: !ProviderStackRef
+  , providerAuditTargetHostedZoneId :: !(Maybe Text)
+  }
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving anyclass (Serialise)
+
+mkProviderAuditTarget
+  :: ProviderStackRef -> Maybe Text -> Either ProviderRefError ProviderAuditTarget
+mkProviderAuditTarget stackRef rawZone = do
+  zone <- traverse validateProviderRef rawZone
+  case (providerStackRefText stackRef, zone) of
+    ("aws-eks-subzone", Just _) -> Right ()
+    ("aws-eks-subzone", Nothing) -> Left (ProviderRefMalformed "audit subzone hosted zone")
+    ("aws-eks", Nothing) -> Right ()
+    ("aws-test", Nothing) -> Right ()
+    ("aws-eks", Just _) -> Left (ProviderRefMalformed "audit EKS hosted zone")
+    ("aws-test", Just _) -> Left (ProviderRefMalformed "audit test hosted zone")
+    _ -> Left (ProviderRefMalformed "audit stack")
+  Right (ProviderAuditTarget stackRef zone)
+
 -- | The closed set of normal provider intents. Forbidden capabilities are
 -- unrepresentable: there is no constructor for a credential IAM identity/key, an
 -- Authority state write, a backup/TLS identity, a target secret, a Gateway/DNS
@@ -938,6 +1028,17 @@ data ProviderIntent
     -- 'Text' is the volume type and the second the required volumes as
     -- @name:size-gib:zone@ entries joined by commas.
     EnsureRetainedEbsVolumes !Text !Text
+  | -- | Sprint 4.110: read-only audit of one registered stack's declared field
+    -- in the provider: the stack's own resources by name, everything inside
+    -- its VPC, the registered IAM names and the per-run volumes the cluster
+    -- owns, with the retained state bucket as the positive control. One
+    -- request answers the whole field, because the Provider keeps every
+    -- request in a replay store for the length of the intent and a field
+    -- assembled from a dozen intents would spend a dozen of its slots.
+    ObserveAwsAudit
+      !ProviderAuditTarget
+      !ProviderStackConfig
+      !ProviderAuditControl
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -1013,6 +1114,7 @@ providerIntentEvidenceMaximumCharacters intent = case intent of
   ObserveSesInviteMail {} -> shared
   ReapSesInviteMail {} -> shared
   EnsureRetainedEbsVolumes {} -> shared
+  ObserveAwsAudit {} -> shared
  where
   shared = maximumProviderIntentEvidenceCharacters
 
@@ -1062,6 +1164,15 @@ nativeStackFamilyEvidenceFamily :: ProviderEvidenceFamily
 nativeStackFamilyEvidenceFamily =
   providerEvidenceFamily "prodbox-native-stack-family" 24 150
 
+-- | The audit of one stack's declared field: a stack row, a control row, a
+-- count row per class that holds anything, a gap row per class that did not
+-- answer, and as many residue rows as the rest of the bound admits. Forty rows
+-- of a hundred characters and their separators fit the shared bound, and the
+-- encoder keeps inside that figure, so what it renders is what the host reads.
+awsAuditEvidenceFamily :: ProviderEvidenceFamily
+awsAuditEvidenceFamily =
+  providerEvidenceFamily "prodbox-aws-audit" 40 100
+
 validationHostedZoneEvidenceFamily :: ProviderEvidenceFamily
 validationHostedZoneEvidenceFamily =
   providerEvidenceFamily "prodbox-validation-hosted-zones" 12 140
@@ -1092,6 +1203,7 @@ registeredEvidenceFamilies =
   [ eksIamRoleFamilyEvidenceFamily
   , eksLoadBalancerControllerFamilyEvidenceFamily
   , nativeStackFamilyEvidenceFamily
+  , awsAuditEvidenceFamily
   , validationHostedZoneEvidenceFamily
   , dns01ChallengeRecordEvidenceFamily
   , ownedResourceTagEvidenceFamily
@@ -1183,6 +1295,8 @@ providerIntentResourceKey intent = case intent of
   ObserveSesInviteMail bucket recipient -> "ses:invite-mail:" <> bucket <> ":" <> recipient
   ReapSesInviteMail bucket recipient -> "ses:invite-mail:" <> bucket <> ":" <> recipient
   EnsureRetainedEbsVolumes _ _ -> "ebs-ensure:retained"
+  ObserveAwsAudit target _ _ ->
+    "stack:" <> providerStackRefText (providerAuditTargetStack target)
 
 publicARecordResourceKey :: PublicARecordRef -> Text
 publicARecordResourceKey ref =
@@ -1329,6 +1443,15 @@ providerIntentCoordinate intent = ProviderIntentCoordinate $ case intent of
     "reap-ses-invite-mail:" <> bucket <> ":" <> recipient
   EnsureRetainedEbsVolumes volumeType specs ->
     "ensure-retained-ebs:" <> volumeType <> ":" <> specs
+  ObserveAwsAudit target config control ->
+    "observe-aws-audit:"
+      <> providerStackRefText (providerAuditTargetStack target)
+      <> ":"
+      <> maybe "none" id (providerAuditTargetHostedZoneId target)
+      <> ":"
+      <> providerStackConfigCoordinate config
+      <> ":control="
+      <> providerAuditControlText control
 
 nativeStackFamilyCoordinate :: ProviderNativeStackFamilyRef -> Text
 nativeStackFamilyCoordinate ref =

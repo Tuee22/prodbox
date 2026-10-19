@@ -25,13 +25,83 @@ dependency licenses the deviation ([Standard N.2](development_plan_standards.md#
 
 | Order | Sprint | Phase | State | Dependency |
 |-------|--------|-------|-------|------------|
-| 1 | `5.51` | 5 | Next | — |
-| 2 | `5.53` | 5 | Parked | — |
-| 3 | `6.5` | 6 | Parked | — |
-| 4 | `7.47` | 7 | Parked | — |
+| 1 | `1.94` | 1 | Next | — |
+| 2 | `4.111` | 4 | Parked | — |
+| 3 | `4.112` | 4 | Blocked | `4.111` |
+| 4 | `5.51` | 5 | Parked | — |
+| 5 | `5.53` | 5 | Parked | — |
+| 6 | `5.58` | 5 | Parked | — |
+| 7 | `5.59` | 5 | Blocked | `4.111` |
+| 8 | `6.5` | 6 | Parked | `4.111` |
+| 9 | `6.7` | 6 | Blocked | `5.59` |
+| 10 | `7.47` | 7 | Parked | — |
 
-**Resume at Sprint `5.51`. Four rows remain: Sprints `5.51`, `5.53` and `7.47`, opened on 2026-10-08, and Sprint
-`6.5`, opened on 2026-09-16 by Sprint `0.35`.** On 2026-10-12 and 13 the
+**Wrap-up, 2026-10-19: development stopped at the operator's instruction.** The lifecycle work of Sprints `4.109` to
+`4.111` (budgeted waits, the provider-enumerated audit, and the converging destroy) is implemented offline and gated
+(`prodbox dev check` 0, with 5,861 unit tests passing), but it has never run against a live account and no Provider
+image carries it. The claim that a create and destroy cycle on AWS is leak-free therefore has no live evidence, and
+the defect classes stay open under Standard Q. The home platform has been down since 2026-10-17 (the disk paragraph
+below). At the operator's direction the prodbox footprint in the AWS account was removed **by hand** on 2026-10-19,
+which is a hand action and counts toward no claim: the six Route 53 records prodbox created (the public `test` A
+record and the SES verification, DKIM and MX records), the SES receipt rule set and domain identity, the two prodbox
+S3 buckets (the long-lived state and Authority-backup store, which held the retained TLS certificate, and the SES
+capture bucket), six IAM users with their keys and policies, the Provider role, and the harness fixture user's access
+key (the inert user remains, for the operator to delete). A before and after inventory of all 17 enabled regions and
+the global services found no prodbox-attributed resource left; what remains in the account was not provably prodbox's
+and was left alone (the operator's parent zone with its Google and website records, five `A` records for `api`,
+`auth`, `demo`, `vscode` and `ws`, another project's bucket, default-VPC security groups, and service-linked roles).
+The record (manifest, both inventories and their diff, the commands with read-backs, and the Route 53 batch that
+recreates the deleted records) is outside the repository, in `~/prodbox-manual-recovery/20261019T195637Z-wrapup/`.
+Decisions D8 to D11 stay open. The working tree is uncommitted and its new modules are untracked, so commit before any
+`git clean`; a copy is in `~/prodbox-wrapup-20261019T195637Z/`. Anyone resuming should treat the `aws stack` destroys
+as unproven, start from Sprint `4.111`'s Remaining Work, and run the first live audit before anything that spends.
+
+**Resume at Sprint `1.94`. Ten rows remain: the four that stood on 2026-10-15 (Sprints `5.51`, `5.53`, `6.5`
+and `7.47`) and six of the eight that Sprint `0.36` opened on 2026-10-18 (`1.94`, `4.111`, `4.112`, `5.58`,
+`5.59` and `6.7`).** The other two have left the queue, `Done` on their code-owned surfaces with no Provider
+image yet carrying either: Sprint `4.109` (the budgeted polls that replace the waits a thirty-second child
+cannot finish) landed on 2026-10-18, and Sprint `4.110` (the provider-enumerated verdict behind `prodbox aws
+audit`, the destroy verbs' closing inventory, and receipts that carry content) on 2026-10-19. Sprint `4.111`
+is `Active` and stays in the queue as a `Parked` row: its first increment (the closed rule for what a controller
+leaves in a VPC, the converging destroy in the Provider, and the manifest route's clearing) landed on 2026-10-19 on
+its code-owned surface, also with no Provider image carrying it, and the registry's declaration of the families is
+the row's remaining work. The operator asked on 2026-10-15 why, after many attempts, the project still cannot cleanly create and
+destroy on AWS. Sprint `0.36` records the answer — no supported route clears a child an in-cluster controller made
+after the plan was confirmed, clean is never measured on AWS, discovery is welded to the home restore graph,
+refusals ship without remedies, and the structural remedy was staged behind a queue that grew — and schedules the
+remedy as one AWS stack lifecycle track: converge in the Provider (`4.109`, `4.110`, `4.111`), measure on AWS
+(`4.110`, `5.58`), rehearse cheaply (`5.59`, with `1.94` shortening the image roll it needs), give every refusal a
+remedy (`4.112`), and qualify under its own identity (`6.7`). Phases `1` and `4` reopened on their own surfaces;
+Phases `5` and `6` were already open and are extended; Sprint `6.5` gained a closure dependency on `4.111`, because
+every cycle it qualifies destroys a real EKS stack. `1.94` heads the queue only because the queue orders by sprint
+number: `4.111` does not wait for it (`4.109` and `4.110` did not, and landed first), and only the first Provider
+image roll does, by choice. That roll is also gated on the host's disk, not on any row: the runtime-image build adds
+about 16 GiB while it runs, the node's kubelet evicts pods below 20 GiB free and stops only near 43 GiB, and a host
+under about 45 GiB free needs the operator to free space first (a scoped Docker prune, as on 2026-10-14, or stale
+scratch outside this repository; the host is shared). On 2026-10-19 the
+host has 31.6 GiB free, the node has carried `DiskPressure` and its `NoSchedule` taint since 2026-10-17 02:46 EDT, and
+every prodbox role (Vault, MinIO, the Authority, the Provider, the registry) is `Pending` or `Error` with only
+`kube-system` running, so no live AWS command has run against this code and none can until the platform is
+restored. **Rows `5.51`, `5.53`, `6.5` and `7.47` stay `Parked` behind the track (decision D6,
+accepted with the plan on 2026-10-15): no work on them is admitted ahead of rows 1–3.** The queue orders by sprint
+number, so after row 3 its own order reaches `5.51` (which waits on operator decisions, as it did before this
+landing) and `5.53` before `5.58`, `5.59` and `6.7`. D6 asks that `5.53` not be worked ahead of the AWS rows, and the
+table cannot express that priority, so this paragraph is its record: after row 3, work `5.58`, then `5.59`, then
+`6.7`, as each is unblocked, and take `5.53` only while those wait on live time. `6.5` additionally closes only after
+`4.111`. Live
+runs are rationed by
+[Standard Q](development_plan_standards.md#q-live-campaign-protocol-and-class-closure): three attempts that spend
+on AWS per session unless a new offline reproducer fails on the last run's behavior. The session-level goal that
+asked for live proof of every phase is not a repository artifact; replacing it with Exit Definition items `53`–`56`
+is the operator's. Decision D8, the live spend ceiling, decision D9, raised by Sprint `4.110` (whether
+resource identifiers may ride the audit's retained evidence), and decision D10, raised by Sprint `4.111` (whether the
+Provider Worker's `100m` CPU envelope, under which a measured `aws` call takes five to seven seconds, stays), and
+decision D11, raised by the first Provider image roll (whether `prodbox` checks the node's `DiskPressure` and the
+host's free space before a build or a live run), are open. Status of each decision: Sprint `0.36`.
+
+**As of 2026-10-15, before Sprint `0.36` landed on 2026-10-18, the queue stood on Sprint `5.51`. Four rows remained:
+Sprints `5.51`, `5.53` and `7.47`, opened on 2026-10-08, and Sprint `6.5`, opened on 2026-09-16 by Sprint `0.35`.**
+The paragraph that follows is that day's record, and its present-tense sentences describe that day. On 2026-10-12 and 13 the
 first live `keycloak-invite` and chart-suite runs of the restored runtime opened, and closed with a live observation
 each, Sprints `2.136`-`2.141`, `3.47`, `4.107`, `5.54`, `5.55`, `8.13` and `8.14`, in the order the campaign reached
 them: the retained TLS lane refused every retain (`2.136`), the Vault accessor audit stopped on a token that expired
@@ -14635,6 +14705,14 @@ A sprint can move to `Done` only when all of the following are true:
    [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 5. No sprint-owned blocker or remaining work survives.
 
+`Done` closes a sprint's deliverables, not the defect class that opened it.
+[Standard Q](development_plan_standards.md#q-live-campaign-protocol-and-class-closure) closes a class
+only with an offline law that cites a recording, a canary step that exercises it, and two
+audit-clean cycles under the owning claim
+([Unit Testing Policy § 5.1](../documents/engineering/unit_testing_policy.md#51-recorded-laws-for-aws-dependency-behaviour)).
+Those are conditions on closing the class, not on a sprint's `Done`: a sprint that lands before the
+canary exists names the canary step it owes, and the class stays open until the step has run.
+
 Per [Standard O](development_plan_standards.md#o-code-local-completion-vs-live-infra-proof), a
 proof that requires live infrastructure (live AWS spend, a deployed cluster, an unsealed Vault, an
 operator-supplied credential) does **not** prevent `Done`; it is tracked as a distinct, non-blocking
@@ -14724,9 +14802,10 @@ long-lived cross-substrate shared infrastructure retained by design) live in
 [Standard P](development_plan_standards.md#p-deployment-qualification-and-counterexample-closure)
 requires work opened by a live counterexample to carry a stable name and a repository-owned
 reproducer. It does not require a disposition, and without one a closed counterexample and an open
-one read alike. Re-measured 2026-09-24 by recounting the directory rather than incrementing the
-previous figure: `DEVELOPMENT_PLAN/` names **235** distinct counterexample identifiers, and **four**
-frozen fixture families exist on disk — `LCPC-2026-07-11`, `TEARDOWN-2026-08-15`,
+one read alike. Re-measured 2026-10-18 by recounting the directory rather than incrementing the
+previous figure (it was 235 on 2026-09-24; Sprint `0.36` registered two Open identifiers whose
+reproducers are owed to named sprints): `DEVELOPMENT_PLAN/` names **237** distinct counterexample
+identifiers, and **four** frozen fixture families exist on disk — `LCPC-2026-07-11`, `TEARDOWN-2026-08-15`,
 `PROVIDER-EVIDENCE-CONTROL-CHARACTER-UNSETTLEABLE-2026-09-13`, and
 `CREATE-INTERRUPTED-2026-09-08` — under `test/qualification/`. The gap between those numbers is the
 finding, not an omission: a stable name is cheap and a frozen reproducer is not, so all but four of
@@ -14738,10 +14817,15 @@ and the same rule applies to the lane it replaced.
 A disposition is one of three. **Open** — the defect it names is reachable in the current revision
 and no repair is landed. **Closed by repair** — a named sprint landed the fix and the reproducer
 distinguishes the superseded implementation from the replacement. **Closed by succession** — a later
-cycle in the same campaign superseded it, and no separate repair was owed.
+cycle in the same campaign superseded it, and no separate repair was owed. An identifier owned by the
+AWS stack lifecycle track stays **Open** after its repair lands, as *repaired, class not closed*,
+until [Standard Q](development_plan_standards.md#q-live-campaign-protocol-and-class-closure)'s closure
+rule is met: a landed repair alone closes no class on that surface.
 
 | Counterexample | Disposition | Owner |
 |---|---|---|
+| `EMPTY-INPUT-RECEIPT-ACCEPTED-AS-PROVIDER-EVIDENCE-2026-10-15` | Open — repaired on the producer side, class not closed. The 2026-10-13 to 2026-10-15 regression sweeps passed `ha-rke2-aws`, `aws-eks` and `pulumi` printing `Provider receipt: sha256:e3b0c442…b855`, the digest of zero bytes. On an already-converged stack the satisfied observation's evidence was `stackEvidence` over the stdout of `pulumi stack select`, which is empty, and the validations assert a label and the prefix `sha256:`, so the receipt carried no information about AWS. Sprint `4.110` (2026-10-19) made a converged stack's receipt the digest of the outputs the stack recorded, made `stackEvidence` refuse empty input, and kept the old derivation as a test-only negative control (`test/unit/ProviderStackReceipt.hs`, red on the prior behavior): the producer half of the reproducer. The consumer half is owed by Sprint `5.58` (the real renderer fed to the real assertion for all three validations), and the validations still assert only a label and the prefix until it lands; no frozen fixture family exists yet | Sprint `5.58` |
+| `EKS-CONTROLLER-DEPENDENT-DESTROY-BLOCKED-2026-09-30` | Open — a leaked VPC CNI interface and an orphaned EKS cluster security group ended `aws stack eks destroy --yes` in `DependencyViolation` on the subnet in the 2026-09-29/30 incident, and the residue it left stayed until a hand clearing on 2026-10-14. Neither destroy route could clear or correctly wait for a child an in-cluster controller created after the plan was confirmed. Repaired on the code surface for both routes by Sprint `4.111`'s first increment (2026-10-19, no Provider image carries it yet): the Provider's destroy of a stack with a VPC converges under a closed predicate, and the manifest route clears the same dependents; the repository-owned reproducer is `test/unit/AwsDestroyConverge.hs`, red on the single-pass destroy and green under the loop, from shapes transcribed by hand from the 2026-10-14 inventory with reserved example identifiers. The class is not closed: the registry does not yet declare the families (second increment), no scrubbed fixture family exists (Sprint `5.59`), and nothing has run live (Sprint `6.7`) | Sprint `4.111` |
 | `CASCADE-QUALIFICATION-TLS-RETAIN-PROVISIONAL-FAILURE-CAUSE-DISCARDED-2026-09-24` | Closed by repair — live cycle `recovery-terminal-v4-fresh-source-20260924` crosses the repaired terminal-v4 source resourceVersion relation, then VS Code retain selects exact `coordinator/attach-failed/provisional-read-unavailable`. The bounded early-close path now carries only bounded stderr and exit status to an exact allowlist: exit 1 with the sole fixed worker refusal becomes `provisional-read-unavailable/worker-vault-session-cleanup-unavailable`, while every other output remains generic and raw detail is erased. The named exact-output regression passes 1/1 and canonical `prodbox dev check` passes; live re-crossing is pending | — |
 | `CASCADE-QUALIFICATION-TLS-TERMINAL-REPLACEMENT-SOURCE-LINEAGE-INVALID-2026-09-24` | Closed by repair and live-closed — live cycle `recovery-tls-terminal-evidence-cause-20260924` first selected broad `source-lineage`; the behavior-neutral split then separated source UID from source resource-version lineage. Cycle `recovery-target-accessor-lookup-cause-20260924` selected exact `source-resource-version-lineage`. The retained v2/v3 proof still requires one exact source coordinate; terminal v4 retains that UID but admits its freshly observed resourceVersion only while the existing authenticated-encryption binding, retained reference/outbox, immutable read-back, and exact selected-Agent source re-observation remain satisfied. The production-shaped superseded-versus-replacement reproducer and complete diagnostic-family table pass 1/1 each; canonical `prodbox dev check` passes. Live cycle `recovery-terminal-v4-fresh-source-20260924` crosses the repair into Phase 1.6 | — |
 | `CASCADE-QUALIFICATION-TLS-TERMINAL-REPLACEMENT-EVIDENCE-INVALID-2026-09-24` | Closed by repair and live-closed — live cycle `recovery-tls-authority-remote-refusal-20260924` selected the generic terminal-replacement evidence refusal. The behavior-neutral split distinguishes malformed evidence, version, digest, approval, certificate, source, and recovery-disposition families; its named table-shaped reproducer passes 1/1. Live cycle `recovery-tls-terminal-evidence-cause-20260924` selects the exact successor as `source-lineage` | — |
@@ -15023,15 +15107,36 @@ allowlist of code, governed documentation, and non-secret schemas/templates. Its
 policy omits `test-secrets.dhall`, local/generated secret material, secret roots, and runtime/build
 roots. Generated-config evidence covers only a canonical non-secret projection. Secret-dependent
 runs bind through opaque Authority receipt/generation IDs or Vault-keyed HMAC commitments, never a
-public raw hash of plaintext secrets; the evidence digest covers only those public/redacted fields.
+public raw hash of plaintext secrets; the evidence digest covers only those public/redacted fields. The scoped
+AWS stack lifecycle row is the exception to the identity sentence: it carries its own source-manifest policy
+([Standard P, scoped claims](development_plan_standards.md#p-deployment-qualification-and-counterexample-closure)).
 
-| Substrate | Frozen superseded identity (secret-safe source/config/images/topology/wiring/envelope/load identities) | Replacement identity (secret-safe source/config/images/topology/wiring/envelope/load identities) | Canonical commands | Normalized mapping and production profile | Counterexample/fault matrix | Aggregate result | Cleanup/residue result | Start/completion timestamps | Evidence artifact/digest | Status/final owner |
+| Substrate or scoped claim | Frozen superseded identity (secret-safe source/config/images/topology/wiring/envelope/load identities) | Replacement identity (secret-safe source/config/images/topology/wiring/envelope/load identities) | Canonical commands | Normalized mapping and production profile | Counterexample/fault matrix | Aggregate result | Cleanup/residue result | Start/completion timestamps | Evidence artifact/digest | Status/final owner |
 |-----------|------------------------------------------|------------------------------------------|--------------------|---------------------------|-----------------------------|------------------|------------------------|-----------------------------|--------------------------|--------------------|
 | Home local | pending complete old-cascade identity bound to `TEARDOWN-2026-08-15` | pending exact recover-to-clean identity | Run `prodbox test all --substrate home-local` twice, then `prodbox cluster delete --cascade --yes` twice under the same qualified replacement identity | Hold background load, ordered fault schedule, and topology-normalized total CPU/memory/ephemeral-storage/persistence constant; record every exact old→new envelope mapping and a separate rendered production profile | `LCPC-2026-07-11`; `TEARDOWN-2026-08-15`; API absent/stopped; caller/RBAC/Vault/MinIO/Authority/backup faults; cancellation/response loss before and after every durable transition | pending | pending exact per-run/family absence, exact intended-retained set with zero unexpected resources, same-run resume, private `ReadyToUninstallEvidence` from the backed-up/read-back pre-uninstall report/permit, distinct `CascadeCompleteEvidence` from exact `LocalUninstallEvidence` plus matching read-back receipt, and exact `RecoveryPlaneDisposition` for every incomplete arm | pending | pending `test/qualification/TEARDOWN-2026-08-15.*` inputs plus complete secret-safe qualification evidence/digest | **pending** (`8.12` final composition; `6.5` teardown prerequisite) |
 | AWS | pending complete old global-fallback/checkpoint-kubeconfig identity bound to `TEARDOWN-2026-08-15` | pending exact per-stack/manifest/provider-drain-session identity | Run `prodbox test all --substrate aws` twice; exercise `prodbox aws stack eks destroy --yes`, `prodbox aws stack aws-subzone destroy --yes`, and `prodbox aws stack test destroy --yes`; then run `prodbox cluster delete --cascade --yes` twice | Hold the same four topology-normalized totals, load, and fault schedule; record exact observer/write-ahead-or-confirmed-legacy-manifest/session and old→new envelope mappings plus a separate rendered EKS production profile | Home matrix plus independent stack observation, all checkpoint/write-ahead-manifest arms, every bounded pre-manifest adoption confirm/read-back/refusal arm, EKS session binding, controller-family backstop, AWS unobservability, and duplicate/paginated tag rows | pending | pending exact stack/EBS/DNS/IAM/family absence; exact intended-retained set once and never per-run; same-scope backed-up report and local completion evidence | pending | pending `TEARDOWN-2026-08-15` inputs plus complete secret-safe AWS evidence/digest | **pending** (`8.12` final composition; `7.36` teardown prerequisite) |
+| AWS stack lifecycle (scoped claim) | pending complete old single-pass-destroy identity bound to `EKS-CONTROLLER-DEPENDENT-DESTROY-BLOCKED-2026-09-30` | pending exact scoped identity: the scoped source-manifest policy (identifier, version, digest) over the named AWS lifecycle module list and `pulumi/**` (Sprint `6.7`), with the Provider component-image digest recorded per drill | Run the `aws-lifecycle` suite scope (Sprint `5.59`) for the canary twice, a leak-injected `prodbox aws stack eks destroy --yes`, a destroy killed mid-run and rerun, two consecutive EKS create-and-destroy cycles from audit-clean starts, and a soak of ten runs over at least five calendar days with two after merges that leave the scoped list unchanged; `prodbox aws audit` brackets every drill | Hold the topology-normalized totals, load, and fault schedule constant; record the old→new mapping from the single-pass destroy to the converge loop, and each wait budget with the recording it came from | A leaked VPC CNI interface, an orphaned cluster security group, a late requester-managed interface release, a destroy killed mid-run, a stale checkpoint after SIGTERM, a lost apply response, and an unobservable audit | pending | pending a `Clean` verdict for the declared field after every drill and an empty scoped diff (prodbox tags and recorded VPC ids); any hand action disqualifies the drill; retained families are reported and never touched | pending | pending scoped evidence and digest from the Sprint `6.7` receipt | **pending** (`6.7` receipt; `4.111` and `5.59` prerequisites). *Not covered:* the retained TLS lane, the credential and EAB chain, SES, Keycloak, every chart, and the home cascade cutover. *Depended on and not qualified:* the retained Authority, Vault, the Authority Backup Adapter, and the credential reconcile that provisions the Provider |
 
 Any change to process topology, capability wiring, deadline algebra, resource envelopes,
-persistence, lifecycle orchestration, or cleanup invalidates a prior `proven` row.
+persistence, lifecycle orchestration, or cleanup invalidates a prior `proven` row. The scoped row is
+invalidated only by a change inside its own surface
+([Standard P, scoped claims](development_plan_standards.md#p-deployment-qualification-and-counterexample-closure)).
+
+**Registered 2026-10-18 — Sprints `1.94`, `4.109`–`4.112`, and `5.59` move Standard-P surfaces, and a
+scoped row is added.** All three rows are `pending`, so nothing is retracted. What is recorded is that
+no identity captured before these sprints land can satisfy the Home local or AWS row afterwards,
+surface by surface as each sprint block states: `1.94` moves a component-image surface; `4.109` moves
+destructive cleanup and deadline composition; `4.110` moves completion evidence and lifecycle
+orchestration, and adds a Provider request branch (it adds no dispatch purpose); `4.111` moves destructive cleanup, lifecycle
+orchestration, and possibly the Provider request vocabulary; `4.112` adds operator verbs that mutate
+through the Authority; and `5.59` adds a test-scoped Provider request branch. `5.58` and `6.7` change
+suite content and qualification machinery and invalidate nothing. The new row is a different kind of claim: it is scoped to the AWS
+stack lifecycle, has its own source-manifest policy, lists what it does not cover, neither satisfies
+nor shortens either aggregate row, and counts no run that needed a hand action. The 2026-10-14
+cycle, which followed the hand deletion of a leaked interface and a cluster security group, is
+therefore not a drill of this row. A run of the aggregate rows must also say which layer confirmed
+absence: after Sprint `4.110` the answer is the provider-enumerated verdict, and a bare "clean"
+recorded from an exit code is the collapse this row exists to prevent.
 
 **Registered 2026-09-17 — Sprint `2.135` moves a Standard-P persistence-protocol surface.** Both
 rows are already `pending`, so nothing is retracted. What is recorded is that a new durable
@@ -16074,7 +16179,8 @@ This plan is complete only when all of the following are true:
     `SourceIdentity` and generated-config identity on both substrates, including the recorded and
     hashed source-manifest exclusion-policy/version and the required load/fault/cancellation/
     response-loss and cleanup campaign. Historical runs or pending live evidence cannot satisfy
-    this exit condition.
+    this exit condition. The scoped AWS stack lifecycle claim of item 56 is a separate row of that
+    table and neither satisfies nor shortens this one.
 48. `LCPC-2026-07-11` retains the frozen expected superseded-composition failure and replacement
     pass under identical topology-normalized total budget/load, plus the replacement's separate
     production-envelope profile, with separate complete source/config/image/wiring identities and
@@ -16118,3 +16224,45 @@ This plan is complete only when all of the following are true:
     accessor, revoked after read-back, and observed absent. No usable initial token or plaintext
     recovery share appears in unlock-bundle token fields, parent custody, config, authority state,
     logs, or fixtures.
+53. `prodbox aws stack eks destroy --yes` and `prodbox aws stack test destroy --yes` each end in
+    exactly one of two states: the stack absent with a `Clean` verdict from a provider enumeration
+    over its declared field, or a typed `Blocked` result that names the class counts, the first
+    identifiers, a digest, and the next safe command, from which a rerun makes progress. A child an
+    in-cluster controller created after the plan was confirmed — a VPC CNI interface, the
+    EKS-created cluster security group, a controller-made load balancer — is cleared by a
+    registry-declared controller family under a closed predicate and never by discovery alone; an
+    interface an AWS service holds on the account's behalf is waited for and never forced. Every wait
+    is a Haskell-side poll under a named budget that fits the intent's lifetime, and none runs as an
+    `aws … wait` inside a bounded child
+    ([Lifecycle Reconciliation Doctrine § 3.2b](../documents/engineering/lifecycle_reconciliation_doctrine.md#32b-controller-created-network-dependents-are-declared-families);
+    Sprints `4.109` and `4.111`).
+54. Clean on AWS is a verdict the provider gives, not a Pulumi exit. `prodbox aws audit` returns
+    `Clean`, `Residue`, or `Unobservable` from a provider enumeration over a declared field in which
+    every query was answered and a positive control appeared; an unanswered query is never an empty
+    class; diffs are scoped to prodbox tags and recorded VPC ids; and evidence that outlives a run
+    holds counts, class labels, and keyed commitments, never raw identifiers. Every AWS create and
+    destroy validation asserts that verdict or typed rows, and none accepts a receipt whose digest is
+    that of empty input or a bare label prefix
+    ([Lifecycle Reconciliation Doctrine § 3.0](../documents/engineering/lifecycle_reconciliation_doctrine.md#30-positive-absence);
+    Sprints `4.110` and `5.58`). Sprint `4.110` (2026-10-19) landed the verdict, the exit statuses, the
+    positive control, and the producer-side receipt guard. It did not meet the clause on keyed
+    commitments, which waits on decision D9, and its field is narrower than "a declared field" reads,
+    which the ledger names and Sprint `5.59` owns.
+55. Every durable fail-closed cause of the AWS lifecycle has one row in a total cause-to-remedy table
+    — a bounded self-heal, a registered repair verb, or `NukeOnly` with its reason — and
+    `prodbox dev check` is to fail on an unmapped cause, an unresolved verb path, or a `NukeOnly`
+    count above the value recorded at git HEAD (Sprint `4.112`). When the control plane is down, the
+    product's answer is the read-only enumeration printed as AWS CLI commands
+    (`aws audit --emit-readonly-script`, Sprint `4.110`); it prints no mutating command, and anything
+    the operator then deletes by hand is a recorded hand action that never counts toward a claim.
+56. The AWS stack lifecycle is qualified as its own scoped claim
+    ([Standard P, scoped claims](development_plan_standards.md#p-deployment-qualification-and-counterexample-closure);
+    Sprints `5.59` and `6.7`), every drill run with no hand action on one frozen scoped identity: the
+    canary passes twice; a leak-injected EKS destroy ends `Clean`; a destroy killed mid-run converges
+    on rerun; two consecutive EKS create-and-destroy cycles from audit-clean starts end with an empty
+    scoped diff (prodbox tags and recorded VPC ids) and a destroy that finishes in at most
+    twenty-five minutes; and a soak of ten runs over at least five calendar days, two of them after
+    merges that leave the scoped module list unchanged. The claim is described as
+    exactly that scope, lists the components it does not cover, and states the failure-rate bound its
+    count supports ([Standard Q](development_plan_standards.md#q-live-campaign-protocol-and-class-closure)).
+    It does not satisfy item 32 or item 47.

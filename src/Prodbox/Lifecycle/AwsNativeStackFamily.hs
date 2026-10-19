@@ -8,6 +8,7 @@
 module Prodbox.Lifecycle.AwsNativeStackFamily
   ( AwsNativeStackFamilyRunner (..)
   , observeAwsNativeStackFamily
+  , observeEksOwners
   , reapAwsNativeStackFamily
   , reapAwsNativeStackFamilyWithin
   )
@@ -23,13 +24,29 @@ import Data.Aeson
   )
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Bifunctor (first)
 import Data.ByteString.Lazy.Char8 qualified as LazyByteStringChar8
-import Data.List (nub, sort)
+import Data.List (intercalate, nub, sort)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Vector qualified as Vector
 import Prodbox.Aws.Region (awsGlobalServiceRegion)
+import Prodbox.ControlPlane.OperationBudget (WaitFact (..))
+import Prodbox.Lifecycle.AwsNetworkDependents
+  ( Dependent (..)
+  , DependentsRepair (..)
+  , clearNetworkDependents
+  , mkDependentsTarget
+  , renderDependents
+  )
+import Prodbox.Lifecycle.AwsWait
+  ( AwsWaitEnvironment
+  , WaitStep (..)
+  , awaitFact
+  , renderWaitFailure
+  , transientPollFailure
+  )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
 import Prodbox.Lifecycle.TaggedResourceQuery
   ( TaggedResourceEntry (..)
@@ -65,14 +82,15 @@ observeAwsNativeStackFamily runner ref config =
 reapAwsNativeStackFamily
   :: (Monad m)
   => AwsNativeStackFamilyRunner m
+  -> AwsWaitEnvironment m
   -> ProviderNativeStackFamilyRef
   -> ProviderStackConfig
   -> m (Either Text ())
-reapAwsNativeStackFamily runner ref config = do
+reapAwsNativeStackFamily runner waits ref config = do
   observed <- observeAwsNativeStackFamily runner ref config
   case observed of
     Left detail -> pure (Left detail)
-    Right identities -> reapObservedNativeStackFamily runner ref config identities
+    Right identities -> reapObservedNativeStackFamily runner waits ref config identities
 
 -- | Re-observe and reap only when every currently present identity was named
 -- by the independently read-back ownership manifest. Resources already absent
@@ -81,17 +99,18 @@ reapAwsNativeStackFamily runner ref config = do
 reapAwsNativeStackFamilyWithin
   :: (Monad m)
   => AwsNativeStackFamilyRunner m
+  -> AwsWaitEnvironment m
   -> ProviderNativeStackFamilyRef
   -> ProviderStackConfig
   -> [Text]
   -> m (Either Text ())
-reapAwsNativeStackFamilyWithin runner ref config admitted = do
+reapAwsNativeStackFamilyWithin runner waits ref config admitted = do
   observed <- observeAwsNativeStackFamily runner ref config
   case observed of
     Left detail -> pure (Left detail)
     Right identities
       | all (`elem` admitted) identities ->
-          reapObservedNativeStackFamily runner ref config identities
+          reapObservedNativeStackFamily runner waits ref config identities
       | otherwise ->
           pure
             ( Left
@@ -101,14 +120,15 @@ reapAwsNativeStackFamilyWithin runner ref config admitted = do
 reapObservedNativeStackFamily
   :: (Monad m)
   => AwsNativeStackFamilyRunner m
+  -> AwsWaitEnvironment m
   -> ProviderNativeStackFamilyRef
   -> ProviderStackConfig
   -> [Text]
   -> m (Either Text ())
-reapObservedNativeStackFamily runner ref config identities =
+reapObservedNativeStackFamily runner waits ref config identities =
   case providerStackRefText (providerNativeStackFamilyStackRef ref) of
-    "aws-test" -> reapEc2Family runner identities
-    "aws-eks" -> reapEksFamily runner ref identities
+    "aws-test" -> reapEc2Family runner waits Nothing identities
+    "aws-eks" -> reapEksFamily runner waits ref identities
     "aws-eks-subzone" -> reapSubzoneFamily runner ref config
     _ -> pure (Left "native stack-family reaper received an unsupported stack")
 
@@ -119,49 +139,9 @@ observeEksFamily
   -> m (Either Text [Text])
 observeEksFamily runner ref = do
   network <- observeEc2Family runner awsEksPulumiStackName 2 True
-  cluster <-
-    exactTextAllowMissing
-      runner
-      "EKS cluster"
-      [ "eks"
-      , "describe-cluster"
-      , "--name"
-      , Text.unpack awsEksProvisionedClusterName
-      , "--query"
-      , "[cluster.arn,cluster.identity.oidc.issuer]"
-      , "--output"
-      , "text"
-      ]
-  nodeGroup <-
-    exactTextAllowMissing
-      runner
-      "EKS node group"
-      [ "eks"
-      , "describe-nodegroup"
-      , "--cluster-name"
-      , Text.unpack awsEksProvisionedClusterName
-      , "--nodegroup-name"
-      , Text.unpack awsEksNodeGroupName
-      , "--query"
-      , "nodegroup.nodegroupArn"
-      , "--output"
-      , "text"
-      ]
-  addon <-
-    exactTextAllowMissing
-      runner
-      "EKS addon"
-      [ "eks"
-      , "describe-addon"
-      , "--cluster-name"
-      , Text.unpack awsEksProvisionedClusterName
-      , "--addon-name"
-      , "aws-ebs-csi-driver"
-      , "--query"
-      , "addon.addonArn"
-      , "--output"
-      , "text"
-      ]
+  cluster <- observeEksCluster runner
+  nodeGroup <- observeEksNodeGroup runner
+  addon <- observeEksAddon runner
   legacyIamRoles <- observeLegacyAutoNamedEksRoles runner ref
   pure $ do
     networkRows <- network
@@ -179,6 +159,77 @@ observeEksFamily runner ref = do
     legacyIamRoleRows <- legacyIamRoles
     boundedIdentities
       (networkRows <> clusterRows <> nodeRows <> addonRows <> legacyIamRoleRows)
+
+-- | What of the EKS stack's own children still exists: the cluster, its node
+-- group, and its add-on. Three reads that belong to the family's observation and
+-- are made apart from the rest of it, so that a refusal in the rest (the legacy
+-- roles, the network) does not decide whether the cluster is gone. A read that
+-- fails is 'Left', never an absent child.
+observeEksOwners
+  :: (Monad m)
+  => AwsNativeStackFamilyRunner m
+  -> m (Either Text [Text])
+observeEksOwners runner = do
+  cluster <- observeEksCluster runner
+  nodeGroup <- observeEksNodeGroup runner
+  addon <- observeEksAddon runner
+  pure $ do
+    clusterFields <- cluster
+    nodeRows <- prefixSingleton "eks-nodegroup" =<< nodeGroup
+    addonRows <- prefixSingleton "eks-addon" =<< addon
+    pure (["eks-cluster" | not (null clusterFields)] <> nodeRows <> addonRows)
+
+observeEksCluster
+  :: (Monad m) => AwsNativeStackFamilyRunner m -> m (Either Text [Text])
+observeEksCluster runner =
+  exactTextAllowMissing
+    runner
+    "EKS cluster"
+    [ "eks"
+    , "describe-cluster"
+    , "--name"
+    , Text.unpack awsEksProvisionedClusterName
+    , "--query"
+    , "[cluster.arn,cluster.identity.oidc.issuer]"
+    , "--output"
+    , "text"
+    ]
+
+observeEksNodeGroup
+  :: (Monad m) => AwsNativeStackFamilyRunner m -> m (Either Text [Text])
+observeEksNodeGroup runner =
+  exactTextAllowMissing
+    runner
+    "EKS node group"
+    [ "eks"
+    , "describe-nodegroup"
+    , "--cluster-name"
+    , Text.unpack awsEksProvisionedClusterName
+    , "--nodegroup-name"
+    , Text.unpack awsEksNodeGroupName
+    , "--query"
+    , "nodegroup.nodegroupArn"
+    , "--output"
+    , "text"
+    ]
+
+observeEksAddon
+  :: (Monad m) => AwsNativeStackFamilyRunner m -> m (Either Text [Text])
+observeEksAddon runner =
+  exactTextAllowMissing
+    runner
+    "EKS addon"
+    [ "eks"
+    , "describe-addon"
+    , "--cluster-name"
+    , Text.unpack awsEksProvisionedClusterName
+    , "--addon-name"
+    , "aws-ebs-csi-driver"
+    , "--query"
+    , "addon.addonArn"
+    , "--output"
+    , "text"
+    ]
 
 -- | The two IAM roles Pulumi auto-named before Sprint 7.33 are discoverable
 -- only by their exact historical @Name@ tag. The Tagging API query is bounded,
@@ -495,111 +546,181 @@ observeParentDelegation runner parentZoneId subzoneName = do
 reapEksFamily
   :: (Monad m)
   => AwsNativeStackFamilyRunner m
+  -> AwsWaitEnvironment m
   -> ProviderNativeStackFamilyRef
   -> [Text]
   -> m (Either Text ())
-reapEksFamily runner ref identities = do
-  addon <-
-    runExactLayer
-      runner
-      "delete EKS addon"
-      [ [ "eks"
+reapEksFamily runner waits ref identities =
+  inSequence
+    [ reapEksChild
+        runner
+        waits
+        AddonAbsent
+        "EKS add-on"
+        (not (null (members "eks-addon" identities)))
+        eksAddonStatusArguments
+        [ "eks"
         , "delete-addon"
         , "--cluster-name"
         , Text.unpack awsEksProvisionedClusterName
         , "--addon-name"
-        , "aws-ebs-csi-driver"
+        , awsEksStorageAddonName
         ]
-      | not (null (members "eks-addon" identities))
-      ]
-  case addon of
-    Left detail -> pure (Left detail)
-    Right () -> do
-      addonWait <-
-        runExactLayer
-          runner
-          "wait for EKS addon deletion"
-          [ [ "eks"
-            , "wait"
-            , "addon-deleted"
-            , "--cluster-name"
-            , Text.unpack awsEksProvisionedClusterName
-            , "--addon-name"
-            , "aws-ebs-csi-driver"
-            ]
-          | not (null (members "eks-addon" identities))
-          ]
-      case addonWait of
+    , reapEksChild
+        runner
+        waits
+        NodeGroupAbsent
+        "EKS node group"
+        (not (null (members "eks-nodegroup" identities)))
+        eksNodeGroupStatusArguments
+        [ "eks"
+        , "delete-nodegroup"
+        , "--cluster-name"
+        , Text.unpack awsEksProvisionedClusterName
+        , "--nodegroup-name"
+        , Text.unpack awsEksNodeGroupName
+        ]
+    , runExactLayer
+        runner
+        "delete IAM OIDC provider"
+        [ ["iam", "delete-open-id-connect-provider", "--open-id-connect-provider-arn", Text.unpack arn]
+        | arn <- members "iam-oidc-provider" identities
+        ]
+    , reapEksChild
+        runner
+        waits
+        ClusterAbsent
+        "EKS cluster"
+        (not (null (members "eks-cluster" identities)))
+        eksClusterStatusArguments
+        ["eks", "delete-cluster", "--name", Text.unpack awsEksProvisionedClusterName]
+    , reapLegacyAutoNamedEksRoles runner ref identities
+    , reapEc2Family runner waits (Just awsEksProvisionedClusterName) identities
+    ]
+
+-- | Run the steps in order, stopping at the first failure.
+inSequence :: (Monad m) => [m (Either Text ())] -> m (Either Text ())
+inSequence =
+  foldr
+    (\step rest -> step >>= either (pure . Left) (const rest))
+    (pure (Right ()))
+
+-- | The add-on the cluster's storage depends on.
+awsEksStorageAddonName :: String
+awsEksStorageAddonName = "aws-ebs-csi-driver"
+
+-- | The status of the cluster's storage add-on, or its absence.
+eksAddonStatusArguments :: [String]
+eksAddonStatusArguments =
+  [ "eks"
+  , "describe-addon"
+  , "--cluster-name"
+  , Text.unpack awsEksProvisionedClusterName
+  , "--addon-name"
+  , awsEksStorageAddonName
+  , "--query"
+  , "addon.status"
+  , "--output"
+  , "text"
+  ]
+
+-- | The status of the cluster's node group, or its absence.
+eksNodeGroupStatusArguments :: [String]
+eksNodeGroupStatusArguments =
+  [ "eks"
+  , "describe-nodegroup"
+  , "--cluster-name"
+  , Text.unpack awsEksProvisionedClusterName
+  , "--nodegroup-name"
+  , Text.unpack awsEksNodeGroupName
+  , "--query"
+  , "nodegroup.status"
+  , "--output"
+  , "text"
+  ]
+
+-- | The status of the cluster, or its absence.
+eksClusterStatusArguments :: [String]
+eksClusterStatusArguments =
+  [ "eks"
+  , "describe-cluster"
+  , "--name"
+  , Text.unpack awsEksProvisionedClusterName
+  , "--query"
+  , "cluster.status"
+  , "--output"
+  , "text"
+  ]
+
+-- | Delete one EKS child, then wait for it to be gone.
+--
+-- The describe comes first. A child already in @DELETING@ is waited for and not
+-- deleted again, so the rerun after a wait that ran out of budget reaches the
+-- same wait instead of a second delete the service may refuse. The wait is a
+-- loop of describe calls under the fact's budget, not an @aws eks wait@ child,
+-- which the Provider's thirty-second bound would stop long before an EKS child
+-- finishes deleting.
+reapEksChild
+  :: (Monad m)
+  => AwsNativeStackFamilyRunner m
+  -> AwsWaitEnvironment m
+  -> WaitFact
+  -> Text
+  -> Bool
+  -> [String]
+  -> [String]
+  -> m (Either Text ())
+reapEksChild runner waits fact label present describe delete
+  | not present = pure (Right ())
+  | otherwise = do
+      status <- eksChildStatus runner label describe
+      case status of
         Left detail -> pure (Left detail)
-        Right () -> do
-          node <-
-            runExactLayer
-              runner
-              "delete EKS node group"
-              [ [ "eks"
-                , "delete-nodegroup"
-                , "--cluster-name"
-                , Text.unpack awsEksProvisionedClusterName
-                , "--nodegroup-name"
-                , Text.unpack awsEksNodeGroupName
-                ]
-              | not (null (members "eks-nodegroup" identities))
-              ]
-          case node of
-            Left detail -> pure (Left detail)
-            Right () -> do
-              nodeWait <-
-                runExactLayer
-                  runner
-                  "wait for EKS node-group deletion"
-                  [ [ "eks"
-                    , "wait"
-                    , "nodegroup-deleted"
-                    , "--cluster-name"
-                    , Text.unpack awsEksProvisionedClusterName
-                    , "--nodegroup-name"
-                    , Text.unpack awsEksNodeGroupName
-                    ]
-                  | not (null (members "eks-nodegroup" identities))
-                  ]
-              case nodeWait of
+        Right Nothing -> pure (Right ())
+        Right (Just current)
+          | current == "DELETING" -> await
+          | otherwise -> do
+              deleted <- runExactLayer runner ("delete " <> label) [delete]
+              case deleted of
                 Left detail -> pure (Left detail)
-                Right () -> do
-                  oidc <-
-                    runExactLayer
-                      runner
-                      "delete IAM OIDC provider"
-                      [ ["iam", "delete-open-id-connect-provider", "--open-id-connect-provider-arn", Text.unpack arn]
-                      | arn <- members "iam-oidc-provider" identities
-                      ]
-                  case oidc of
-                    Left detail -> pure (Left detail)
-                    Right () -> do
-                      cluster <-
-                        runExactLayer
-                          runner
-                          "delete EKS cluster"
-                          [ ["eks", "delete-cluster", "--name", Text.unpack awsEksProvisionedClusterName]
-                          | not (null (members "eks-cluster" identities))
-                          ]
-                      case cluster of
-                        Left detail -> pure (Left detail)
-                        Right () -> do
-                          clusterWait <-
-                            runExactLayer
-                              runner
-                              "wait for EKS cluster deletion"
-                              [ ["eks", "wait", "cluster-deleted", "--name", Text.unpack awsEksProvisionedClusterName]
-                              | not (null (members "eks-cluster" identities))
-                              ]
-                          case clusterWait of
-                            Left detail -> pure (Left detail)
-                            Right () -> do
-                              legacyRoles <-
-                                reapLegacyAutoNamedEksRoles runner ref identities
-                              case legacyRoles of
-                                Left detail -> pure (Left detail)
-                                Right () -> reapEc2Family runner identities
+                Right () -> await
+ where
+  await = first renderWaitFailure <$> awaitFact waits fact (pollEksChild runner label describe)
+
+-- | The child's status, or 'Nothing' once the service answers that it is gone.
+eksChildStatus
+  :: (Monad m)
+  => AwsNativeStackFamilyRunner m
+  -> Text
+  -> [String]
+  -> m (Either Text (Maybe Text))
+eksChildStatus runner label describe = do
+  output <- runAwsNativeStackFamilyCommand runner describe
+  pure $ case processExitCode output of
+    ExitSuccess -> Right (Just (Text.toUpper (Text.strip (Text.pack (processStdout output)))))
+    ExitFailure _
+      | knownMissing output -> Right Nothing
+      | otherwise -> Left (renderFailure ("describe " <> label) output)
+
+pollEksChild
+  :: (Monad m)
+  => AwsNativeStackFamilyRunner m
+  -> Text
+  -> [String]
+  -> m (WaitStep ())
+pollEksChild runner label describe = do
+  output <- runAwsNativeStackFamilyCommand runner describe
+  pure $ case processExitCode output of
+    ExitSuccess ->
+      let current = Text.toUpper (Text.strip (Text.pack (processStdout output)))
+       in if "FAILED" `Text.isInfixOf` current
+            then WaitAbort (label <> " reported status " <> current)
+            else WaitMore () (label <> " status " <> current)
+    ExitFailure _
+      | knownMissing output -> WaitDone
+      | transientPollFailure output ->
+          WaitMore () (renderFailure ("describe " <> label) output)
+      | otherwise -> WaitAbort (renderFailure ("describe " <> label) output)
 
 reapLegacyAutoNamedEksRoles
   :: (Monad m)
@@ -656,12 +777,23 @@ reapLegacyAutoNamedEksRoles runner ref identities =
           "delete legacy EKS IAM role"
           [["iam", "delete-role", "--role-name", Text.unpack roleName]]
 
+-- | Reap the EC2 chain. Sprint 4.111: between the instances and the layers they
+-- held, the children a cluster's controllers left in the VPC are cleared by the
+-- family's closed rule ("Prodbox.Lifecycle.AwsNetworkDependents"), because a
+-- subnet or group deleted first ends in @DependencyViolation@. This does widen
+-- what the chain removes, by class and not by name: an interface or a cluster
+-- group that no manifest names is removed when the closed predicate admits it.
+-- The doctrine admits that only for a registry-declared family, and the registry
+-- declares none yet; the second increment of Sprint @4.111@ closes that gap. The
+-- allowlist rule for every other identity is unchanged.
 reapEc2Family
   :: (Monad m)
   => AwsNativeStackFamilyRunner m
+  -> AwsWaitEnvironment m
+  -> Maybe Text
   -> [Text]
   -> m (Either Text ())
-reapEc2Family runner identities = do
+reapEc2Family runner waits cluster identities = do
   let instances = members "instance" identities
       associations = members "route-table-association" identities
       routeTables = members "route-table" identities
@@ -671,65 +803,131 @@ reapEc2Family runner identities = do
       vpcs = members "vpc" identities
   terminated <- withMembers ["ec2", "terminate-instances", "--instance-ids"] instances
   continue terminated $ do
-    waited <- withMembers ["ec2", "wait", "instance-terminated", "--instance-ids"] instances
+    waited <- awaitInstancesTerminated
     continue waited $ do
-      disassociated <-
-        runExactLayer
-          runner
-          "disassociate route tables"
-          [["ec2", "disassociate-route-table", "--association-id", Text.unpack value] | value <- associations]
-      continue disassociated $ do
-        deletedRoutes <-
+      cleared <- clearDependents vpcs securityGroups
+      continue cleared $ do
+        disassociated <-
           runExactLayer
             runner
-            "delete route tables"
-            [["ec2", "delete-route-table", "--route-table-id", Text.unpack value] | value <- routeTables]
-        continue deletedRoutes $ do
-          deletedSubnets <-
+            "disassociate route tables"
+            [["ec2", "disassociate-route-table", "--association-id", Text.unpack value] | value <- associations]
+        continue disassociated $ do
+          deletedRoutes <-
             runExactLayer
               runner
-              "delete subnets"
-              [["ec2", "delete-subnet", "--subnet-id", Text.unpack value] | value <- subnets]
-          continue deletedSubnets $ do
-            deletedGroups <-
+              "delete route tables"
+              [["ec2", "delete-route-table", "--route-table-id", Text.unpack value] | value <- routeTables]
+          continue deletedRoutes $ do
+            deletedSubnets <-
               runExactLayer
                 runner
-                "delete security groups"
-                [["ec2", "delete-security-group", "--group-id", Text.unpack value] | value <- securityGroups]
-            continue deletedGroups $ do
-              detached <-
+                "delete subnets"
+                [["ec2", "delete-subnet", "--subnet-id", Text.unpack value] | value <- subnets]
+            continue deletedSubnets $ do
+              deletedGroups <-
                 runExactLayer
                   runner
-                  "detach internet gateways"
-                  [ [ "ec2"
-                    , "detach-internet-gateway"
-                    , "--internet-gateway-id"
-                    , Text.unpack gateway
-                    , "--vpc-id"
-                    , Text.unpack vpc
+                  "delete security groups"
+                  [["ec2", "delete-security-group", "--group-id", Text.unpack value] | value <- securityGroups]
+              continue deletedGroups $ do
+                detached <-
+                  runExactLayer
+                    runner
+                    "detach internet gateways"
+                    [ [ "ec2"
+                      , "detach-internet-gateway"
+                      , "--internet-gateway-id"
+                      , Text.unpack gateway
+                      , "--vpc-id"
+                      , Text.unpack vpc
+                      ]
+                    | gateway <- gateways
+                    , vpc <- vpcs
                     ]
-                  | gateway <- gateways
-                  , vpc <- vpcs
-                  ]
-              continue detached $ do
-                deletedGateways <-
-                  runExactLayer
-                    runner
-                    "delete internet gateways"
-                    [["ec2", "delete-internet-gateway", "--internet-gateway-id", Text.unpack value] | value <- gateways]
-                continue deletedGateways $
-                  runExactLayer
-                    runner
-                    "delete VPCs"
-                    [["ec2", "delete-vpc", "--vpc-id", Text.unpack value] | value <- vpcs]
+                continue detached $ do
+                  deletedGateways <-
+                    runExactLayer
+                      runner
+                      "delete internet gateways"
+                      [["ec2", "delete-internet-gateway", "--internet-gateway-id", Text.unpack value] | value <- gateways]
+                  continue deletedGateways $
+                    runExactLayer
+                      runner
+                      "delete VPCs"
+                      [["ec2", "delete-vpc", "--vpc-id", Text.unpack value] | value <- vpcs]
  where
   continue result next = case result of
     Left detail -> pure (Left detail)
     Right () -> next
+  -- Sprint 4.111: clear what the family's closed rule admits and wait for what a
+  -- service holds, in the one VPC the manifest names. A remainder is a refusal
+  -- that names it, taken here and not left to a subnet delete that cannot say
+  -- what holds it. The groups this chain deletes itself are not a remainder.
+  clearDependents vpcs ownedGroups = case vpcs of
+    [vpc] -> case mkDependentsTarget vpc cluster of
+      Left reason -> pure (Left ("network dependents: " <> reason))
+      Right target -> do
+        repaired <- clearNetworkDependents (runAwsNativeStackFamilyCommand runner) waits target
+        pure (judgeRepair ownedGroups repaired)
+    _ -> pure (Right ())
+  judgeRepair ownedGroups repaired = case repaired of
+    Left detail -> Left ("network dependents could not be listed: " <> detail)
+    Right done
+      | null (blockingOf ownedGroups done) -> Right ()
+      | otherwise ->
+          Left
+            ( "blocked by network dependents the family cannot clear: "
+                <> renderDependents (blockingOf ownedGroups done)
+                <> " | "
+                <> Text.intercalate "; " (map (Text.take 200) (repairNotes done))
+            )
+  blockingOf ownedGroups done =
+    [d | d <- repairRemaining done, dependentIdentity d `notElem` ownedGroups]
   withMembers action values =
     if null values
       then runExactLayer runner "empty EC2 layer" []
       else runExactLayer runner "EC2 batch mutation" [action <> map Text.unpack values]
+  awaitInstancesTerminated
+    | null instanceIds = pure (Right ())
+    | otherwise =
+        first renderWaitFailure
+          <$> awaitFact waits InstancesTerminated (pollInstancesTerminated runner instanceIds)
+   where
+    instanceIds = members "instance" identities
+
+-- | The instances' states, by id filter so that an instance the service no
+-- longer lists is simply absent from the answer and not an error that hides the
+-- states of the others.
+ec2InstanceStatesArguments :: [Text] -> [String]
+ec2InstanceStatesArguments instanceIds =
+  [ "ec2"
+  , "describe-instances"
+  , "--filters"
+  , "Name=instance-id,Values=" <> intercalate "," (map Text.unpack instanceIds)
+  , "--query"
+  , "Reservations[].Instances[].State.Name"
+  , "--output"
+  , "text"
+  ]
+
+pollInstancesTerminated
+  :: (Monad m)
+  => AwsNativeStackFamilyRunner m
+  -> [Text]
+  -> m (WaitStep ())
+pollInstancesTerminated runner instanceIds = do
+  output <- runAwsNativeStackFamilyCommand runner (ec2InstanceStatesArguments instanceIds)
+  pure $ case processExitCode output of
+    ExitSuccess ->
+      case filter (/= "terminated") (textValues (processStdout output)) of
+        [] -> WaitDone
+        outstanding ->
+          WaitMore () ("EC2 instances still " <> Text.intercalate ", " (nub (sort outstanding)))
+    ExitFailure _
+      | transientPollFailure output ->
+          WaitMore () (renderFailure "describe EC2 instances" output)
+      | otherwise -> WaitAbort (renderFailure "describe EC2 instances" output)
 
 reapSubzoneFamily
   :: (Monad m)

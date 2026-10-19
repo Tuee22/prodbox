@@ -40,6 +40,8 @@ import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( EksClientAuthRequest
   , EksClusterIdentityRequest
+  , ProviderAuditControl
+  , ProviderAuditTarget
   , ProviderCheckpointRef
   , ProviderIntent (..)
   , ProviderNativeStackFamilyRef
@@ -58,6 +60,8 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkAwsEksProviderStackConfig
   , mkEksClientAuthRequest
   , mkEksClusterIdentityRequest
+  , mkProviderAuditControl
+  , mkProviderAuditTarget
   , mkProviderCheckpointRef
   , mkProviderNativeStackFamilyRef
   , mkProviderRevision
@@ -424,6 +428,7 @@ providerIntents =
   , ObserveSesInviteMail "capture-bucket" "test-1759900000@receive.example.test"
   , ReapSesInviteMail "capture-bucket" "test-1759900000@receive.example.test"
   , EnsureRetainedEbsVolumes "gp3" "pv-minio-0:30:ca-central-1a"
+  , ObserveAwsAudit auditTarget stackConfig auditControl
   ]
 
 stackRef :: ProviderStackRef
@@ -437,6 +442,13 @@ revision = mustRight (mkProviderRevision 1)
 
 stackConfig :: ProviderStackConfig
 stackConfig = mustRight (mkAwsEksProviderStackConfig "127.0.0.1/32")
+
+auditControl :: ProviderAuditControl
+auditControl = mustRight (mkProviderAuditControl "prodbox-state-fixture" Nothing)
+
+auditTarget :: ProviderAuditTarget
+auditTarget =
+  mustRight (mkProviderAuditTarget (mustRight (mkProviderStackRef "aws-eks")) Nothing)
 
 nativeStackFamilyRef :: ProviderNativeStackFamilyRef
 nativeStackFamilyRef =

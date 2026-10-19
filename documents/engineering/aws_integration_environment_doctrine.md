@@ -646,9 +646,13 @@ Minimum rule:
    VPC CIDR, and three subnet CIDRs; it still declares its own `tls:PrivateKey` and consumes
    `publicKeyOpenssh` internally
 8. the registered Pulumi destroy refreshes state before it destroys and continues past an individual
-   resource error (`--refresh --continue-on-error`); it does not retry the whole destroy, and a
-   failed destroy names the first AWS error as its cause and the last differing one as its
-   consequence, so a credential-expiry error cannot hide the dependency error that preceded it
+   resource error (`--refresh --continue-on-error`), and a failed pass names the first AWS error as
+   its cause and the last differing one as its consequence, so a credential-expiry error cannot hide
+   the dependency error that preceded it. For a stack that has a VPC (`aws-eks` and `aws-test`) the
+   destroy converges instead of ending on its first error: a first pass bounded to a share of the
+   intent, the repair of the network dependents a controller left in the VPC, one final pass, and a
+   reading of the field; the stack record is removed only from an empty, fully answered field, and
+   the result is otherwise a `Blocked` report that keeps it
 9. the HA-RKE2 validation destroys and recreates the retained AWS test stack once when stack
    reconcile succeeds but SSH validation still fails, so stale EC2 instances left by an
    interrupted run or operator network move do not survive as terminal validation state
@@ -656,6 +660,13 @@ Minimum rule:
    typed-output contract around those stack flows, while end-to-end AWS provisioning is exercised
    by the named `prodbox aws stack ...` and `prodbox test integration ...` surfaces plus the aggregate
    test suite
+
+> **Current revision.** Rule 8's converging destroy is built in the Provider (Sprint `4.111`, first
+> increment) and no Provider image carries it yet; until one is rolled the supported destroy is a
+> single bounded pass that ends in `DependencyViolation` on a leaked interface. The registry does not
+> yet declare the network-dependent families. See
+> [Lifecycle Reconciliation Doctrine § 3.2b](./lifecycle_reconciliation_doctrine.md#32b-controller-created-network-dependents-are-declared-families).
+> Status lives only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 ### 4.4 Temporary-Admin Credential Harness
 

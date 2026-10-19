@@ -28,6 +28,7 @@ module Prodbox.Aws
   , applyAwsCheckQuotas
   , applyAwsRegionQuotaPreflight
   , applyAwsTeardown
+  , stacksForSelection
   , awsRegionQuotaPreflightFromStatuses
   , awsHarnessAdminScope
   , assertOperationalTeardownComplete
@@ -140,7 +141,8 @@ import Prodbox.AwsEnvironment
   )
 import Prodbox.BuildSupport (canonicalOperatorBinaryPath)
 import Prodbox.CLI.Command
-  ( AwsCommand (..)
+  ( AwsAuditStack (..)
+  , AwsCommand (..)
   , AwsTeardownFlags (..)
   , Plan (..)
   , PlanOptions (..)
@@ -205,6 +207,7 @@ import Prodbox.Error (fatalError)
 import Prodbox.Infra.AwsEksTestStack
   ( awsEksCanonicalClusterName
   )
+import Prodbox.Infra.AwsFieldAudit (runAwsFieldAudit)
 import Prodbox.Infra.AwsSesLeaseRole qualified as AwsSesLeaseRole
 import Prodbox.Infra.DedicatedAdapterIam
   ( DedicatedAdapterIamSpec (..)
@@ -219,6 +222,7 @@ import Prodbox.Infra.DedicatedAdapterIam
 import Prodbox.Infra.StackDescriptor
   ( perRunStackDescriptorNames
   )
+import Prodbox.Lifecycle.AwsAudit (AuditStack (..))
 import Prodbox.Lifecycle.LiveResidue
   ( PerRunResidueStatuses (..)
   , queryAwsSesResidueStatus
@@ -860,6 +864,15 @@ executeAwsCommand repoRoot longLivedPreflight command =
         else do
           writeError (fatalError "Refusing to delete test-scoped EBS volumes without --yes.")
           pure (ExitFailure 1)
+    AwsAudit selection emitScript ->
+      runAwsFieldAudit repoRoot (stacksForSelection selection) emitScript
+
+-- | The stacks a @--stack@ selection names; both when it names none.
+stacksForSelection :: Maybe AwsAuditStack -> [AuditStack]
+stacksForSelection selection = case selection of
+  Just AwsAuditEks -> [AuditAwsEks]
+  Just AwsAuditTest -> [AuditAwsTest]
+  Nothing -> [AuditAwsEks, AuditAwsTest]
 
 runAwsReapTestEbs :: FilePath -> IO ExitCode
 runAwsReapTestEbs repoRoot = do

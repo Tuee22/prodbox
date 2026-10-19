@@ -5,14 +5,21 @@
 --
 -- EC2 describe calls are eventually consistent, so an apply that created a
 -- volume can fail to find it a moment later. The ensure therefore waits for what
--- it created, reads back until the listing is stable, retries the waiter only
--- while the API still says the volume is not found, and names the volumes it
--- created in every failure after the first create, because a create is not
--- idempotent and a rerun that reads "never created" creates them again. None of
--- that needs an AWS account: the effects are a record, and the cases below
--- script it.
+-- it created, reads back until the listing is stable, polls the volumes' state
+-- (Sprint 4.109: a loop of short describes under a budget, no longer an
+-- @aws ec2 wait@ child the Provider stops at thirty seconds) while the API says
+-- only that they are not available yet, and names the volumes it created in
+-- every failure after the first create, because a create is not idempotent and a
+-- rerun that reads "never created" creates them again. None of that needs an AWS
+-- account: the effects are a record, and the cases below script it.
 module EbsEnsure (ebsEnsureSuite) where
 
+import AwsWaitPolling
+  ( newVirtualWorld
+  , roomyWaitEnvironment
+  , virtualNowMicros
+  , virtualStartMicros
+  )
 import Data.Either (fromLeft)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
@@ -21,6 +28,7 @@ import Prodbox.ControlPlane.ProviderNarrowSession (ProviderEffectObservation (..
 import Prodbox.ControlPlane.ProviderProduction qualified as ProviderProduction
 import Prodbox.Lib.Storage (StaticEbsVolumeBinding (..))
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
+import Prodbox.Result (Result (..))
 import Prodbox.Subprocess (ProcessOutput (..), boundedSubprocessTimeoutDetail)
 import System.Exit (ExitCode (..))
 import TestSupport
@@ -285,77 +293,81 @@ ebsEnsureSuite =
       failureText failedAfterComplete `shouldSatisfy` isInfixOf "throttled"
       failureText failedAfterComplete `shouldSatisfy` isInfixOf "vol-pv-a"
 
-    it "retries the available-waiter only while the API says the volume is not found yet" $ do
-      let notFound =
-            Right
+    it "polls the created volumes until they are available, and waits only while the answer is not yet" $ do
+      let describing state =
+            Success
               ( ProcessOutput
-                  (ExitFailure 255)
+                  ExitSuccess
+                  ("{\"Volumes\":[{\"VolumeId\":\"vol-0new\",\"State\":\"" <> state <> "\"}]}")
                   ""
-                  "An error occurred (InvalidVolume.NotFound) when calling the DescribeVolumes operation"
               )
-          deleted =
-            Right
-              ( ProcessOutput
-                  (ExitFailure 255)
-                  ""
-                  "Waiter VolumeAvailable failed: Waiter encountered a terminal failure state: matched expected path: deleted"
-              )
+          failing code stderr = Success (ProcessOutput (ExitFailure code) "" stderr)
+          notFound =
+            failing 255 "An error occurred (InvalidVolume.NotFound) when calling the DescribeVolumes operation"
           refused =
-            Right
-              ( ProcessOutput
-                  (ExitFailure 254)
-                  ""
-                  "An error occurred (UnauthorizedOperation) when calling the DescribeVolumes operation"
-              )
-          available = Right (ProcessOutput ExitSuccess "" "")
+            failing 254 "An error occurred (UnauthorizedOperation) when calling the DescribeVolumes operation"
+          throttled =
+            failing
+              255
+              "An error occurred (Throttling) when calling the DescribeVolumes operation: Rate exceeded"
+          boundEnded = failing 1 boundedSubprocessTimeoutDetail
+          available = describing "available"
           scripted answers = do
+            world <- newVirtualWorld
             remaining <- newIORef answers
-            runs <- newIORef (0 :: Int)
-            pauses <- newIORef (0 :: Int)
-            let run = modifyIORef' runs (+ 1) >> poppingThenExhausted remaining (Left "script exhausted")
-            pure (run, modifyIORef' pauses (+ 1), runs, pauses)
-      -- Not found twice, then available: two pauses, three runs.
-      (run, pause, runs, pauses) <- scripted [notFound, notFound, available]
-      EbsVolume.retryWaiterOnLag run pause 12 `shouldReturn` Right ()
-      ((,) <$> readIORef runs <*> readIORef pauses) `shouldReturn` (3, 2)
-      -- Always not found: the attempts are spent and the waiter's own text is reported,
-      -- not a relabelled lag.
-      (runSpent, pauseSpent, runsSpent, pausesSpent) <- scripted (replicate 10 notFound)
-      spent <- EbsVolume.retryWaiterOnLag runSpent pauseSpent 4
+            calls <- newIORef []
+            let run arguments = do
+                  modifyIORef' calls (++ [arguments])
+                  poppingThenExhausted remaining (Failure "script exhausted")
+            pure (world, run, calls)
+          waitFor world run =
+            EbsVolume.waitForCreatedVolumesVia
+              (roomyWaitEnvironment world)
+              run
+              [EbsVolume.EbsVolumeId "vol-0new"]
+          elapsed world = subtract virtualStartMicros <$> virtualNowMicros world
+      -- Not listed twice, then creating, then available: four polls, three five-second pauses.
+      (world, run, calls) <- scripted [notFound, notFound, describing "creating", available]
+      waitFor world run `shouldReturn` Right ()
+      readIORef calls
+        >>= (`shouldBe` replicate 4 (EbsVolume.ebsDescribeVolumesByIdArgs [EbsVolume.EbsVolumeId "vol-0new"]))
+      elapsed world `shouldReturn` 15000000
+      -- Throttling and a child the bound stopped are not yet: they are polled again.
+      (worldBusy, runBusy, callsBusy) <- scripted [throttled, boundEnded, available]
+      waitFor worldBusy runBusy `shouldReturn` Right ()
+      (length <$> readIORef callsBusy) `shouldReturn` 3
+      -- Never listed: the budget is spent and the failure names the fact and the last answer.
+      (worldSpent, runSpent, callsSpent) <- scripted (replicate 100 notFound)
+      spent <- waitFor worldSpent runSpent
+      failureText spent `shouldSatisfy` isInfixOf "WaitTimedOut"
+      failureText spent `shouldSatisfy` isInfixOf "EBS volumes available"
       failureText spent `shouldSatisfy` isInfixOf "InvalidVolume.NotFound"
-      ((,) <$> readIORef runsSpent <*> readIORef pausesSpent) `shouldReturn` (4, 3)
-      -- A volume that is gone, a refused call and a process that cannot start are
-      -- reported at once.
-      (runGone, pauseGone, runsGone, pausesGone) <- scripted [deleted, available]
-      gone <- EbsVolume.retryWaiterOnLag runGone pauseGone 12
+      -- A three minute ceiling of five second polls: the first at zero and the last at the deadline.
+      (length <$> readIORef callsSpent) `shouldReturn` 37
+      elapsed worldSpent `shouldReturn` 180000000
+      -- A volume that is gone or in error, a refused call and a process that cannot
+      -- start end the wait at once, in their own words.
+      (worldGone, runGone, callsGone) <- scripted [describing "deleted", available]
+      gone <- waitFor worldGone runGone
+      failureText gone `shouldSatisfy` isInfixOf "WaitAborted"
       failureText gone `shouldSatisfy` isInfixOf "deleted"
-      ((,) <$> readIORef runsGone <*> readIORef pausesGone) `shouldReturn` (1, 0)
-      (runRefused, pauseRefused, runsRefused, _) <- scripted [refused, available]
-      denied <- EbsVolume.retryWaiterOnLag runRefused pauseRefused 12
+      (length <$> readIORef callsGone) `shouldReturn` 1
+      (worldDenied, runDenied, callsDenied) <- scripted [refused, available]
+      denied <- waitFor worldDenied runDenied
       failureText denied `shouldSatisfy` isInfixOf "UnauthorizedOperation"
-      readIORef runsRefused `shouldReturn` 1
-      (runMissing, pauseMissing, runsMissing, _) <- scripted [Left "no such file or directory"]
-      EbsVolume.retryWaiterOnLag runMissing pauseMissing 12
-        `shouldReturn` Left "failed to start `aws ec2 wait volume-available`: no such file or directory"
-      readIORef runsMissing `shouldReturn` 1
-      -- Sprint 5.53: the Provider ends every AWS child at its per-child bound, and the
-      -- CLI's waiter polls for minutes. A waiter the bound ended says only that the
-      -- volume is not available yet, so it is run again like a lagging listing is; a
-      -- bound that keeps ending it is reported after the attempts, in its own words.
-      let boundEnded =
-            Right
-              ( ProcessOutput
-                  (ExitFailure 1)
-                  ""
-                  boundedSubprocessTimeoutDetail
-              )
-      (runBound, pauseBound, runsBound, pausesBound) <- scripted [boundEnded, boundEnded, available]
-      EbsVolume.retryWaiterOnLag runBound pauseBound 12 `shouldReturn` Right ()
-      ((,) <$> readIORef runsBound <*> readIORef pausesBound) `shouldReturn` (3, 2)
-      (runBoundSpent, pauseBoundSpent, runsBoundSpent, _) <- scripted (replicate 10 boundEnded)
-      boundSpent <- EbsVolume.retryWaiterOnLag runBoundSpent pauseBoundSpent 3
-      failureText boundSpent `shouldSatisfy` isInfixOf "wall-clock timeout"
-      readIORef runsBoundSpent `shouldReturn` 3
+      (length <$> readIORef callsDenied) `shouldReturn` 1
+      (worldMissing, runMissing, callsMissing) <- scripted [Failure "no such file or directory"]
+      missing <- waitFor worldMissing runMissing
+      failureText missing
+        `shouldSatisfy` isInfixOf "failed to start `aws ec2 describe-volumes`: no such file or directory"
+      (length <$> readIORef callsMissing) `shouldReturn` 1
+
+    it "issues no wait subcommand for the volumes it created" $
+      mapM_
+        (`shouldNotContain` ["wait"])
+        [ EbsVolume.ebsDescribeVolumesByIdArgs [EbsVolume.EbsVolumeId "vol-0new"]
+        , EbsVolume.ebsDescribeVolumesArgs EbsVolume.EbsRetainedProduction
+        ]
 
     it "decides the Provider's observation of the retained-EBS ensure from what is listed" $ do
       let required = [requiredVolume "pv-a", requiredVolume "pv-b"]

@@ -252,6 +252,36 @@ transient execution to a safe durable disposition, but it must not turn retained
 destroy target. A later run observes and resumes the recorded operation or submits a new operation
 only after lifecycle recovery proves the prior one terminal and quiescent.
 
+## 2B. Planted Residue And Recorded Provider Behaviour
+
+> **Target.** Nothing in this section is built. Status lives only in the
+> [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
+A fixture that proves a cleanup path converges has to hand that path something to clear which the
+path did not create. Two rules govern it.
+
+**Planted residue is a fixture-owned resource planted through a closed intent.** The canary plants,
+inside the VPC of a per-run test stack, the shapes an in-cluster controller leaves behind and an
+account can own: an unattached network interface held by a security group, and a pair of security
+groups that reference each other. The plant is a closed, tag-checked, test-scoped Provider intent in
+the family of the test-scoped volume reaper. It names the exact run scope, refuses any VPC whose
+tags do not match, registers each resource it plants as a cleanup obligation before it creates it
+(rule 1 above), and plants nothing else. It does not use the admin-credential fixture, which exists
+only to simulate the operator's prompt for the attested boundaries
+([AWS Admin Credentials](./aws_admin_credentials.md)), and it adds no Pulumi program. The supported
+destroy then runs unmodified and must end `Clean`; a planted shape the destroy leaves behind is the
+failure the canary exists to produce. Interfaces that an AWS service holds on the account's behalf
+cannot be planted and are observed only in real cycles.
+
+**A recording is a fixture with provenance.** The canary's raw provider errors are scrubbed to the
+reserved example identifiers of
+[Vault Doctrine § 20](./vault_doctrine.md#20-repository-value-hygiene) and committed as the recorded
+behaviour that a model's laws cite
+([Unit Testing Policy § 5.1](./unit_testing_policy.md#51-recorded-laws-for-aws-dependency-behaviour)).
+A raw capture is never committed: the scrubber is the only way a transcript enters the repository,
+and it keeps the error text, the order of calls, and the delays while dropping every
+account-bearing value.
+
 ## 3. Isolation Modes
 
 Supported isolation patterns include:

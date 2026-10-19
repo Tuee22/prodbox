@@ -267,11 +267,19 @@ captureSubprocessWithInputBounded limits input spec
       || boundedSubprocessTimeoutMicros limits <= 0
 
 -- | Run a long-lived child, such as a Pulumi destroy, under a wall-clock
--- bound.  The child leads its own process group, so stopping it also stops the
--- plugin processes it started.  It is stopped by SIGTERM and then, after the
--- kill grace, by SIGKILL: waiting for a child that ignores SIGTERM would
--- strand the caller past its deadline.  The same stop runs if the caller is
--- cancelled, so no exit path leaves the child running.
+-- bound.  The child leads its own process group.  That group does NOT hold
+-- the plugin processes the child starts: Pulumi puts each plugin in a process
+-- group of its own, so a signal to the child's group never reaches them, and a
+-- SIGKILL of the child strands them (and leaves the backend lock the update
+-- held).  What does stop them is the child's own shutdown, and Pulumi stops
+-- at once on a second SIGTERM after the first has told it to cancel (measured
+-- on Pulumi 3.228.0: the CLI exits within a second of the second signal, with
+-- no plugin left running and no lock left behind, where the first signal alone
+-- waits for the operation in flight).  The child is therefore stopped by
+-- SIGTERM, a second SIGTERM shortly after, and, after the kill grace, SIGKILL:
+-- waiting for a child that ignores SIGTERM would strand the caller past its
+-- deadline.  The same stop runs if the caller is cancelled, so no exit path
+-- leaves the child running.
 captureSubprocessKillable
   :: KillableSubprocessLimits
   -> Subprocess
@@ -338,21 +346,32 @@ runKillable limits process = do
     )
     `onException` stopWithEscalation limits process
 
--- | SIGTERM the child's group, give it the grace to leave, then SIGKILL the
--- group.  Polling rather than waiting on a timer keeps the stop uninterruptible
--- yet bounded, so a cancelled caller cannot skip the kill.
+-- | SIGTERM the child's group, repeat the SIGTERM once shortly after, give the
+-- child the rest of the grace to leave, then SIGKILL the group.  The repeat is
+-- harmless to a child that left on the first signal (it is never sent) and to
+-- one that ignores both; it is what stops a Pulumi that took the first as a
+-- request to cancel and is still waiting on the operation in flight.  Polling
+-- rather than waiting on a timer keeps the stop uninterruptible yet bounded, so
+-- a cancelled caller cannot skip the kill.
 stopWithEscalation
   :: KillableSubprocessLimits -> Typed.Process stdin stdout stderr -> IO ExitCode
 stopWithEscalation limits process = uninterruptibleMask_ $ do
   signalGroup sigTERM
-  terminated <- pollExit (killableSubprocessKillGraceMicros limits)
-  case terminated of
+  early <- pollExit repeatGap
+  case early of
     Just exitCode -> pure exitCode
     Nothing -> do
-      signalGroup sigKILL
-      killed <- pollExit killConfirmationMicros
-      pure (fromMaybe (ExitFailure 137) killed)
+      signalGroup sigTERM
+      terminated <- pollExit (grace - repeatGap)
+      case terminated of
+        Just exitCode -> pure exitCode
+        Nothing -> do
+          signalGroup sigKILL
+          killed <- pollExit killConfirmationMicros
+          pure (fromMaybe (ExitFailure 137) killed)
  where
+  grace = killableSubprocessKillGraceMicros limits
+  repeatGap = min repeatTermAfterMicros (grace `div` 2)
   signalGroup signal = do
     maybePid <- Typed.getPid process
     case maybePid of
@@ -396,6 +415,12 @@ chunksText = ByteStringChar8.unpack . ByteString.concat . reverse
 
 killPollMicros :: Int
 killPollMicros = 50 * 1000
+
+-- | How long after the first SIGTERM the second is sent. Measured: Pulumi stops
+-- within a second of the second signal whether it follows the first by a fifth
+-- of a second or by two.
+repeatTermAfterMicros :: Int
+repeatTermAfterMicros = 2 * 1000 * 1000
 
 killConfirmationMicros :: Int
 killConfirmationMicros = 5 * 1000 * 1000

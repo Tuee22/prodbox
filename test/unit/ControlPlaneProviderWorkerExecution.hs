@@ -769,25 +769,29 @@ controlPlaneProviderWorkerExecutionSuite =
           )
       applyCount fixture intent `shouldReturn` 0
 
-    it "confirms applied-but-response-lost work and replays without a second mutation" $ do
-      fixture <- freshFixture
-      let intent = ReconcileSesSendingIdentity (identityRef "mail")
-          coordinate = providerIntentCoordinate intent
-      writeIORef (fixtureLoseApplyResponse fixture) [coordinate]
-      verified <- mustAdmitDefault fixture intent
-      executeVerifiedProviderIntent (fixtureBoundary fixture) verified
-        `shouldReturn` Right
-          (ProviderIntentExecutionApplied coordinate (evidenceFor intent))
-      applyCount fixture intent `shouldReturn` 1
+    it
+      "confirms an apply that reported a failure after its effect landed, and replays without a second mutation"
+      $ do
+        -- The read-back, not the apply's report, settles whether the effect landed;
+        -- that is why the boundary observes again after every apply.
+        fixture <- freshFixture
+        let intent = ReconcileSesSendingIdentity (identityRef "mail")
+            coordinate = providerIntentCoordinate intent
+        writeIORef (fixtureFailApply fixture) [coordinate]
+        verified <- mustAdmitDefault fixture intent
+        executeVerifiedProviderIntent (fixtureBoundary fixture) verified
+          `shouldReturn` Right
+            (ProviderIntentExecutionApplied coordinate (evidenceFor intent))
+        applyCount fixture intent `shouldReturn` 1
 
-      replay <- mustAdmitDefault fixture intent
-      executeVerifiedProviderIntent (fixtureBoundary fixture) replay
-        `shouldReturn` Right
-          ( ProviderIntentExecutionAlreadySatisfied
-              coordinate
-              (evidenceFor intent)
-          )
-      applyCount fixture intent `shouldReturn` 1
+        replay <- mustAdmitDefault fixture intent
+        executeVerifiedProviderIntent (fixtureBoundary fixture) replay
+          `shouldReturn` Right
+            ( ProviderIntentExecutionAlreadySatisfied
+                coordinate
+                (evidenceFor intent)
+            )
+        applyCount fixture intent `shouldReturn` 1
 
     it "never mutates an initially unobservable provider effect" $ do
       fixture <- freshFixture
@@ -832,9 +836,11 @@ controlPlaneProviderWorkerExecutionSuite =
           (ProviderIntentExecutionMutationNotConfirmed "still missing")
       applyCount fixture intent `shouldReturn` 1
 
-    it "reports an apply that failed as a failure and a lost response as a lost response" $ do
-      -- Red on 0268f5d: both read "provider apply response unavailable", so an
+    it "reports an apply that failed as a failure, never as a response that did not arrive" $ do
+      -- Red on 0268f5d: it read "provider apply response unavailable", so an
       -- apply that ran and failed was described as an answer that never came.
+      -- Sprint 4.109 deleted the second arm: nothing constructed it, and a child
+      -- stopped at its bound is named by the failure summary's own finding.
       let intent = BoundedScratchCheckpoint (checkpointRef "scratch")
           coordinate = providerIntentCoordinate intent
       failedFixture <- freshFixture
@@ -845,16 +851,6 @@ controlPlaneProviderWorkerExecutionSuite =
         `shouldReturn` Left
           ( ProviderIntentExecutionMutationNotConfirmed
               "provider apply failed: injected apply failure; still missing"
-          )
-
-      lostFixture <- freshFixture
-      writeIORef (fixtureNeverConfirm lostFixture) [coordinate]
-      writeIORef (fixtureLoseApplyResponse lostFixture) [coordinate]
-      lostVerified <- mustAdmitDefault lostFixture intent
-      executeVerifiedProviderIntent (fixtureBoundary lostFixture) lostVerified
-        `shouldReturn` Left
-          ( ProviderIntentExecutionMutationNotConfirmed
-              "provider apply response unavailable: injected response loss after apply; still missing"
           )
 
     it "fails closed on session acquisition, read-only failure, or invalid evidence" $ do
@@ -1027,7 +1023,6 @@ data Fixture = Fixture
   , fixtureSessionFailure :: !(IORef (Maybe Text))
   , fixtureCalls :: !(IORef [(Text, ProviderIntentCoordinate)])
   , fixtureApplied :: !(IORef [ProviderIntentCoordinate])
-  , fixtureLoseApplyResponse :: !(IORef [ProviderIntentCoordinate])
   , fixtureFailApply :: !(IORef [ProviderIntentCoordinate])
   , fixtureUnobservable :: !(IORef [ProviderIntentCoordinate])
   , fixturePostApplyUnobservable :: !(IORef [ProviderIntentCoordinate])
@@ -1046,7 +1041,6 @@ freshFixture =
     <*> newIORef 0
     <*> newIORef 0
     <*> newIORef Nothing
-    <*> newIORef []
     <*> newIORef []
     <*> newIORef []
     <*> newIORef []
@@ -1170,6 +1164,8 @@ fixtureCapabilities fixture =
         readOnly fixture "native-stack-family-observe"
     , reapNativeStackFamilyCapability = \_ _ _ ->
         mutation fixture "native-stack-family-reap"
+    , observeAwsAuditCapability = \_ _ _ ->
+        readOnly fixture "aws-audit-observe"
     }
 
 mutation :: Fixture -> Text -> ProviderMutation IO Text
@@ -1200,15 +1196,11 @@ mutation fixture label =
     , applyProviderMutation = \_session coordinate -> do
         modifyIORef' (fixtureCalls fixture) (("apply:" <> label, coordinate) :)
         modifyIORef' (fixtureApplied fixture) (insertUnique coordinate)
-        loseResponse <- elem coordinate <$> readIORef (fixtureLoseApplyResponse fixture)
         failApply <- elem coordinate <$> readIORef (fixtureFailApply fixture)
         pure $
-          if loseResponse
-            then Left (ApplyResponseLost "injected response loss after apply")
-            else
-              if failApply
-                then Left (ApplyFailed "injected apply failure")
-                else Right ()
+          if failApply
+            then Left (ApplyFailed "injected apply failure")
+            else Right ()
     }
 
 readOnly :: Fixture -> Text -> ProviderReadOnly IO Text
@@ -1241,6 +1233,7 @@ expectedExecutionResult intent = case intent of
   ObserveSesInviteMail _ _ -> ProviderIntentExecutionObserved coordinate evidence
   ObserveEksClusterIdentity _ -> ProviderIntentExecutionObserved coordinate evidence
   ObserveNativeStackFamily _ _ -> ProviderIntentExecutionObserved coordinate evidence
+  ObserveAwsAudit {} -> ProviderIntentExecutionObserved coordinate evidence
   _ -> ProviderIntentExecutionApplied coordinate evidence
  where
   coordinate = providerIntentCoordinate intent
@@ -1272,6 +1265,8 @@ expectedCalls intent =
         ObserveEksClusterIdentity _ ->
           [call "session-open", call ("read:" <> labelFor intent), call "session-close"]
         ObserveNativeStackFamily _ _ ->
+          [call "session-open", call ("read:" <> labelFor intent), call "session-close"]
+        ObserveAwsAudit {} ->
           [call "session-open", call ("read:" <> labelFor intent), call "session-close"]
         ObserveSesInviteMail _ _ ->
           [call "session-open", call ("read:" <> labelFor intent), call "session-close"]
@@ -1443,6 +1438,7 @@ allIntents =
       )
   , ObserveNativeStackFamily nativeTestRef awsTestConfig
   , ReapNativeStackFamily nativeTestRef awsTestConfig ["vpc/vpc-fixture"]
+  , ObserveAwsAudit auditTarget awsTestConfig auditControl
   , EnsureValidationHostedZone "1759900000" "example.test"
   , ObserveSesInviteMail "capture-bucket" "test-1759900000@receive.example.test"
   , ReapSesInviteMail "capture-bucket" "test-1759900000@receive.example.test"
@@ -1580,6 +1576,7 @@ labelFor intent = case intent of
     "dns01-challenge-observe:" <> zoneId <> ":" <> recordNamePrefix
   ObserveNativeStackFamily _ _ -> "native-stack-family-observe"
   ReapNativeStackFamily {} -> "native-stack-family-reap"
+  ObserveAwsAudit {} -> "aws-audit-observe"
   EnsureValidationHostedZone nonce baseZone ->
     "validation-zone-ensure:" <> nonce <> ":" <> baseZone
   ObserveSesInviteMail bucket recipient ->
@@ -1671,6 +1668,13 @@ awsEksConfig = mustRight (mkAwsEksProviderStackConfig "127.0.0.1/32")
 
 awsTestConfig :: ProviderStackConfig
 awsTestConfig = mustRight (mkAwsTestProviderStackConfig "127.0.0.1/32")
+
+auditControl :: ProviderAuditControl
+auditControl = mustRight (mkProviderAuditControl "prodbox-state-fixture" Nothing)
+
+auditTarget :: ProviderAuditTarget
+auditTarget =
+  mustRight (mkProviderAuditTarget (mustRight (mkProviderStackRef "aws-test")) Nothing)
 
 nativeTestRef :: ProviderNativeStackFamilyRef
 nativeTestRef =

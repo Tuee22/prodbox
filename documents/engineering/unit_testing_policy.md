@@ -412,6 +412,45 @@ Vault/EBS without remint or re-prompt.
 A fake `aws`, `kubectl`, or HTTP trace proves only frontend mapping. It cannot be cited as evidence
 that the production native client, port binding, Vault policy, or cgroup service capacity works.
 
+### 5.1 Recorded laws for AWS dependency behaviour
+
+> **Target.** The recordings directory with its scrubber, and the canary below, are not built. The
+> stateful model exists in one place: the scripted account of the converging destroy, over shapes
+> transcribed by hand from the operator's 2026-10-14 inventory with reserved example identifiers, which
+> is the rule's assumption case and not its recorded one. The rule is stated now because the failure it
+> prevents has already shipped: a destroy path whose ordering knowledge was exercised only by live runs,
+> and whose unit tests re-encoded the author's belief about it. Status lives only in the
+> [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
+A model of how AWS orders its own dependencies — which resources block which deletions, how long an
+asynchronous release takes, what a throttled call returns — encodes a belief about a system the
+author does not control, and a test over such a model passes whatever the belief is. The model is
+admissible evidence under these rules and under no others.
+
+- **Every law cites a recording.** A law (a deletion that fails while a dependent exists, a release
+  that completes after a delay, an error text) is admitted only with a scrubbed recording of the real
+  provider behaviour it encodes, kept under the repository's synthetic-value rules
+  ([Vault Doctrine § 20](./vault_doctrine.md#20-repository-value-hygiene)). A parameter with no
+  recording is an assumption: it may drive an exploratory test but cannot discharge a gate, and a
+  wait derived from it starts generous and is tightened only from recordings.
+- **The model is small and grows from divergence.** It covers the verbs the destroy path runs and
+  grows when a recording disagrees with it, never ahead of one.
+- **A fix is red first.** The test that distinguishes the new behaviour from the old is written
+  against the prior behaviour and shown to fail on it. A model result never counts toward a
+  qualification claim; only a live cycle does.
+- **A canary step exercises the law against the real provider.** A defect class in a path that
+  creates, waits on, or deletes AWS resources is closed
+  ([Development Plan Standard Q](../../DEVELOPMENT_PLAN/development_plan_standards.md#q-live-campaign-protocol-and-class-closure))
+  only with a canary step that plants the shape the law is about and shows the supported surface
+  converging it. A sprint that lands before the canary exists names the step it owes and is not
+  blocked by it; the class stays open until the step has run. Shapes the account does not own — the
+  interfaces a load balancer or the EKS control plane holds — cannot be planted; those laws are
+  observed only in real cycles and stay conservative until recorded.
+- **Source text is not behaviour.** An assertion that a source file contains a string, a verb, or a
+  flag proves the text is there. It is never cited as evidence that the behaviour holds.
+
+These are review obligations; no gate checks them.
+
 ## 6. Load and Runtime-Stability Qualification
 
 ### 6.1 Authored load

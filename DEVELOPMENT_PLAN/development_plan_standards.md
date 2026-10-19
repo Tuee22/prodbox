@@ -474,8 +474,59 @@ into an unexercised claim about the aggregate deployment.
 - **Aggregate rule.** A successful point probe or one successful aggregate run is insufficient for
   a temporal or cleanup claim. The owning plan names the consecutive-run, saturation, restart,
   cancellation, applied-but-response-lost, and residue checks appropriate to that surface.
+- **Scoped claims.** A qualification claim may be scoped to one named surface whose lifecycle can be
+  exercised without the rest of the composed system. A scoped claim has its own row in the
+  [README.md](README.md#deployment-qualification) ledger and its own source-manifest policy: the
+  allowlist names exactly the code and programs of that surface, so a change inside the surface
+  resets the claim and a change outside it does not. The digest of each component image a drill ran
+  against is recorded and reported with the drill; because one image carries code from outside the
+  surface, a digest change with an unchanged allowlist is reported and does not reset the count. The
+  row lists the components the claim does not cover and the components it depends on without
+  qualifying, is described as exactly its scope — never as deployment-ready, seamless, or
+  operationally cut over for the aggregate — and neither satisfies nor shortens any aggregate row. A
+  run that needed a hand action, a manual cleanup, or any repair outside the supported `prodbox`
+  surface does not count toward any claim, scoped or aggregate.
 - **Status ownership.** `DEVELOPMENT_PLAN/README.md` is the sole deployment-qualification ledger.
   Engineering docs describe invariants and proof boundaries but do not carry a competing status.
+
+### Q. Live-Campaign Protocol and Class Closure
+
+A live run spends wall-clock and, on the AWS substrate, money, and it is the most expensive way to
+learn that a mechanism is wrong. The authorization to run live infrastructure
+([AGENTS.md](../AGENTS.md#live-infrastructure-deployment-is-authorized)) is not an instruction to
+rerun until green. This standard rations live runs, banks what each one teaches offline, and states
+when a defect class is closed.
+
+- **Rationing.** A working session makes at most three live attempts that spend on AWS unless a new
+  offline reproducer exists that fails on the behaviour the last live run exposed. Repeating a live
+  run to see whether a fix worked is the case this rule exists to stop.
+- **Review stop.** After three consecutive live runs that each end on a boundary no earlier run
+  reached, live runs stop until a review is filed in the owning sprint block that names the class,
+  says why the failure was not found offline, and lists the sibling states checked.
+- **Batching.** Fixes between live runs are batched per component-image roll. A fix that changes a
+  component image is not rolled alone while another fix for a known class is pending.
+- **Closure.** A defect class is closed only by (1) an offline law that cites a recording of the
+  provider's or tool's real behaviour, (2) a canary step that exercises that law against the real
+  provider, and (3) two consecutive audit-clean cycles under the owning claim. A landed fix, a green
+  `prodbox dev check`, and one passing live run each close nothing: a landing is evidence that code
+  changed, not that the class is gone.
+- **Hand actions.** A resource removed, or a state repaired, outside the supported `prodbox` surface
+  is recorded in the run's record
+  ([aws_test_environment.md → Out-Of-Band Diagnostic And The Manual Recovery Order](../documents/engineering/aws_test_environment.md#75-out-of-band-diagnostic-and-the-manual-recovery-order))
+  and the run never counts toward a claim. A recorded hand action is also a missing offline case: it
+  becomes a planted shape in the canary or a row in the remedy table before its class can close.
+- **Refusals carry remedies.** A durable fail-closed cause ships with one row in the
+  cause-to-remedy table: a bounded self-heal, a registered repair verb, or an explicit `NukeOnly`
+  entry with its reason. A refusal that names its cause and offers no row is a defect in the sprint
+  that added it.
+- **Honest statistics.** A claim built on `n` consecutive clean runs states the failure-rate bound it
+  supports. With no failure observed, the 95% upper bound on the failure rate is `1 - 0.05^(1/n)`:
+  about 78% for two runs, 63% for three, and 26% for ten. Two consecutive cycles are an entry ticket
+  to a soak, not a proof.
+
+These are review obligations. Only the remedy-row obligation has a mechanical check, and that check
+is scheduled rather than built; its owner and status live only in
+[README.md → Resume Here](README.md#resume-here).
 
 ## Related Documents
 

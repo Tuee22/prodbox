@@ -556,6 +556,7 @@ capabilities evidence =
     , observeEksClusterIdentityCapability = const unavailableReadOnly
     , observeNativeStackFamilyCapability = \_ _ -> unavailableReadOnly
     , reapNativeStackFamilyCapability = \_ _ _ -> unavailableMutation
+    , observeAwsAuditCapability = \_ _ _ -> unavailableReadOnly
     }
 
 unavailableReadOnly :: ProviderReadOnly IO ()

@@ -11,6 +11,7 @@
 -- script, and the Provider passes its own.
 module ProviderAwsRunner (providerAwsRunnerSuite) where
 
+import AwsWaitPolling (newVirtualWorld, roomyWaitEnvironment)
 import Control.Monad (forM_)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.List (intercalate, isInfixOf)
@@ -69,23 +70,25 @@ providerAwsRunnerSuite =
               , (TagSweep.ebsLifecycleTagKey, TagSweep.ebsRetainedLifecycleValue)
               ]
             runAnswer arguments = case arguments of
+              "ec2" : "describe-volumes" : "--volume-ids" : _ -> succeeded (listing [volumeJson "vol-0new" []])
               "ec2" : "describe-volumes" : _ -> succeeded (listing [volumeJson "vol-0listed" retainedTags])
               "ec2" : "create-volume" : _ -> succeeded (volumeJson "vol-0new" [])
-              "ec2" : "wait" : _ -> succeeded ""
               "ec2" : "delete-volume" : _ -> succeeded ""
               _ -> Failure ("unscripted invocation: " <> unwords arguments)
             run = recordingRun calls runAnswer
+        world <- newVirtualWorld
         listed <- EbsVolume.discoverEbsVolumesVia run EbsVolume.EbsRetainedProduction
         fmap (map EbsVolume.ebsVolumeId) listed `shouldBe` Right [EbsVolume.EbsVolumeId "vol-0listed"]
         fmap (map EbsVolume.ebsVolumeSizeGiB) listed `shouldBe` Right [Just 5]
         EbsVolume.createRetainedVolumeVia run volumeType required `shouldReturn` Right volumeId
-        EbsVolume.waitForCreatedVolumesVia run [volumeId] `shouldReturn` Right ()
+        EbsVolume.waitForCreatedVolumesVia (roomyWaitEnvironment world) run [volumeId]
+          `shouldReturn` Right ()
         EbsVolume.destroyEbsVolumeVia run volumeId `shouldReturn` Right ()
         readIORef calls
           >>= ( `shouldBe`
                   [ EbsVolume.ebsDescribeVolumesArgs EbsVolume.EbsRetainedProduction
                   , EbsVolume.ebsCreateVolumeArgs volumeType required
-                  , EbsVolume.ebsWaitVolumeAvailableArgs [volumeId]
+                  , EbsVolume.ebsDescribeVolumesByIdArgs [volumeId]
                   , EbsVolume.ebsDeleteVolumeArgs volumeId
                   ]
               )

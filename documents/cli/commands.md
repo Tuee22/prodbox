@@ -21,6 +21,7 @@ owning implementation change updates `CommandSpec` and regenerates this section.
 | `prodbox aws teardown` | Delete operational IAM user |
 | `prodbox aws quotas check` | Inspect supported AWS quotas |
 | `prodbox aws quotas request` | Request supported AWS quotas |
+| `prodbox aws audit` | Inventory a stack's field in the provider |
 | `prodbox aws ebs reap-test` | Delete test-scoped EBS volumes |
 | `prodbox aws stack eks reconcile` | Provision or inspect the eks stack |
 | `prodbox aws stack eks destroy` | Destroy the eks stack |

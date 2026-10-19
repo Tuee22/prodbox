@@ -9,6 +9,15 @@
 
 ## Phase Status
 
+✅ **Sprint `0.36` (2026-10-18) schedules the AWS create/destroy convergence work and records its
+decisions, doctrine, validation criteria, and ledger rows on the same already-reclosed Phase 0
+documentation/governance surface** — it neither re-closes nor reopens the phase. It opens eight code
+sprints in Phases `1`, `4`, `5`, and `6`, amends Standard P, adds Standard Q, adds four Exit
+Definition items and a scoped qualification row, and states in one place why the cycle of fixes did
+not converge: no supported route clears a controller-created dependent, clean is never measured on
+AWS, discovery is welded to the home restore graph, refusals ship without remedies, and the
+structural remedy was staged behind a queue that grew.
+
 ✅ **Sprint `0.33` (2026-09-11) schedules the ephemeral-Kubernetes-client remediation and corrects
 the governed record on the same already-reclosed Phase 0 documentation/governance surface** — it
 neither re-closes nor reopens the phase. It opens nine code sprints in Phases `2`, `4`, `5`, and
@@ -3639,6 +3648,263 @@ This is the second time a naive split has mismeasured this file; the first was a
 ### Remaining Work
 
 None.
+
+## Sprint 0.36: A Lifecycle Fix Is Not Closed Until The Account Says So [✅ Done]
+
+**Status**: Done (2026-10-18). It schedules the AWS create/destroy convergence work and records the
+decisions, doctrine, validation criteria, and ledger rows that work needs, on the same
+already-reclosed Phase 0 documentation and governance surface — it neither re-closes nor reopens the
+phase. It opens eight code sprints in Phases `1`, `4`, `5`, and `6`, records the own-surface reopens
+of Phases `1` and `4` and the extensions of Phases `5` and `6`, adds a closure dependency to Sprint
+`6.5` and a work item to Sprint `5.53`, amends Standard P and adds Standard Q, adds four Exit
+Definition items and a scoped Deployment Qualification row, and registers two counterexamples and
+seven ledger rows.
+**Doctrine**: [Documentation Standards](../documents/documentation_standards.md) and
+[Development Plan Standards](development_plan_standards.md).
+**Implementation**: `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/development_plan_standards.md`, `DEVELOPMENT_PLAN/system-components.md`,
+`DEVELOPMENT_PLAN/substrates.md`, `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`,
+`DEVELOPMENT_PLAN/phase-1-runtime-cli-aws-foundations.md`,
+`DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md`,
+`DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md`,
+`DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/aws_test_environment.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/unit_testing_policy.md`,
+`documents/engineering/integration_fixture_doctrine.md`,
+`documents/engineering/dependency_management.md`, and `AGENTS.md`.
+**Blocked by**: none.
+**Live-proof**: pending — not applicable to a documentation and governance surface. The evidence
+this sprint rests on was produced by Sprint `6.5`'s campaign, the 2026-10-13 to 2026-10-15 regression sweeps, and
+the 2026-10-14 hand clearing, not by this row.
+**Deployment qualification**: pending — not invalidated by this sprint, which changes no production
+composition.
+**Independent Validation**: `prodbox dev lint docs`, `prodbox dev docs check`, and `prodbox dev
+check` over the edited governed record, including the derived Resume Here execution order, the
+dependency-direction and backward-dependency bijection, the Pending Removal owner and prerequisite
+direction, every cited source path and bound section citation, and the generated-section reconciler.
+**Docs**: the governed documents listed under Implementation.
+
+### Objective
+
+On 2026-10-15 the operator asked why, after many attempts, the project still cannot cleanly create
+and destroy on AWS. The answer recorded here is structural. Each part below was checked against the
+source, not inferred from the incident record.
+
+1. **No supported route can clear, or correctly wait for, a child that an in-cluster controller
+   created after the plan was confirmed.** On 2026-10-18 `src/` contained no reference to a network
+   interface (Sprint `4.111` added the rule on 2026-10-19). The supported
+   `aws stack <stack> destroy --yes` was one bounded `pulumi destroy` followed by `stack rm`. The
+   manifest-bound native-family reaper walked a fixed chain with no interface step and, by doctrine,
+   refuses any identity outside its plan-time allowlist. Its `aws … wait` calls ran
+   in `aws` children killed at thirty seconds, and the load-balancer controller family's
+   security-group delete made ten attempts, one second apart (Sprint `4.109` replaced both with
+   budgeted polls on 2026-10-18). The per-run hardening that handled
+   this class left with commit `f59ccfc` — the destroy module went from 1,730 lines to 376 — and its
+   purges were rooted in the checkpoint's snapshot or in a description of the cluster, so neither
+   survived an absent cluster or an empty checkpoint.
+2. **Clean is never measured on AWS.** Completion is the Pulumi exit and a read of the checkpoint.
+   The three AWS stack validations passed in the 2026-10-13 to 2026-10-15 sweeps printing the
+   digest of zero bytes, because the receipt hashes the stdout of `pulumi stack select` and the
+   assertion checks a label and a prefix. The first clean EKS create and destroy, on 2026-10-14,
+   followed the hand deletion of a leaked interface and a cluster security group.
+3. **Discovery is slow and welded to the home stack.** A defect of the AWS lifecycle is found in a
+   live run that first has to bring up the whole home restore graph, and Sprint `2.135` records a
+   campaign stopped for five consecutive cycles at one home restore-graph node. Every fix then
+   costs a gate, an image build of about nineteen minutes, a roll, and a rerun; each landing on a
+   Standard-P surface invalidates the pending qualification.
+4. **Refusals ship without levers.** The analysis counted twelve fail-closed states that name their
+   cause and offer no repair verb, and Sprints `4.108` and `5.53` each added one. That is an analyst
+   count the plan has not recomputed.
+5. **The structural remedy was written down and staged behind a queue that grew.** The 2026-10-01
+   incident-response plan named an independent audit, a containment step, leak drills, and a process
+   change. Only its first tranche landed (Sprints `7.44` and `4.102`–`4.105`), and nothing in this
+   directory named a provider-enumerated `aws audit` verb, a VPC-scoped verdict, a leak drill, or a
+   residue repair verb until this sprint. The cascade's terminal audit is a tag query and a
+   different instrument.
+
+In the analysis's review of the twenty most recent landings — an analyst count, not recomputed —
+three changed the behavior of an AWS destroy (`4.102`, `4.104`, `4.105`), and none of those reaches a
+controller-created dependent. The rest repair protocol layers around the destroy: the SMTP and EAB
+custody chain, the retained TLS lane, the harness, and home bring-up, or add refusals. They were real
+defects. They were not the cause of the cycle.
+
+The cycle has a gain above one. Each live run finds about one new defect (an analyst count: most
+live runs ended on a boundary no earlier run reached), each fix costs a gate, an image build, a
+roll, and a rerun, and each landing on a Standard-P surface resets the pending qualification, so the
+stream of first-live fixes and the count that would qualify them cannot overlap. One correction to
+an earlier reading of the same analysis: the Provider's Pulumi destroy does not lack lock handling.
+Its backend is a per-operation RAM scratch hydrated from the Authority's checkpoint, so no lock
+persists across operations; the hazard of a killed destroy is a stale checkpoint, which the
+`--refresh` of Sprint `4.104` reconciles.
+
+The shape of the remedy follows from the five parts: converge in the Provider, measure on AWS,
+rehearse cheaply, and cap the loop. Keep every AWS mutation inside the Authority-fenced Provider; a
+host-run second route, an automatic break-glass fallback, and a scoreboard program built before the
+destroy fix exists were weighed and rejected.
+
+### Deliverables
+
+- Schedule eight code sprints: `1.94` (the builder-stage image), `4.109`–`4.112` (the waits, the
+  provider-enumerated verdict, the controller-created network dependents and the converging
+  destroy, the cause-to-remedy table with its first verbs), `5.58`–`5.59` (content-bearing
+  validations, the `aws-lifecycle` scope, the canary, the recordings, and the stub), and `6.7` (the
+  scoped qualification identity). Record the Phase `1` and Phase `4` reopens and the extensions of
+  Phases `5` and `6`; add Sprint `6.5`'s closure dependency on `4.111` and Sprint `5.53`'s
+  client-token work item.
+- Amend [Standard P](development_plan_standards.md#p-deployment-qualification-and-counterexample-closure)
+  with scoped claims and add
+  [Standard Q](development_plan_standards.md#q-live-campaign-protocol-and-class-closure).
+- Write the doctrine once, in its owning documents, and link from the rest: Lifecycle Reconciliation
+  Doctrine § 3.0 (the inventory clause), § 3.2b (controller-created network dependents are declared
+  families), and a pointer in § 5c; AWS Test Environment § 7.4 (the 2026-10-01 operator decisions
+  and the expiry-tag gap) and § 7.5 (in-surface enumeration as a completion input);
+  Unit Testing Policy § 5.1 (recorded laws); Integration Fixture Doctrine § 2B (planted residue and
+  recordings); the Dependency Management target note on the two-stage image; and the converge target
+  in AWS Integration Environment Doctrine. Every unbuilt statement sits inside a `> **Target.**`
+  region or is qualified in its own sentence, and the "Current revision" paragraphs state what the
+  source does today.
+- State the live-run rationing rule where agents read their rules, in `AGENTS.md`, and link it to
+  Standard Q.
+- Update the validation criteria: Exit Definition items `53`–`56` and the amendment to item `47`; a
+  scoped row and an invalidation record in Deployment Qualification; two new counterexamples
+  in Counterexample Dispositions; and each new sprint's own Validation.
+- Register the ledger rows and the sixty-first `Ledger Status` entry with recounted figures.
+
+### Decision Register
+
+Operator decisions D1–D8 from the 2026-10-15 plan; D9 and D10 were raised later by Sprints `4.110` and
+`4.111`, and D11 on 2026-10-19 by the first Provider image roll of Sprints `4.109` to `4.111`. The operator approved the plan on 2026-10-15 with its defaults and flipped none; D8 asks for a
+number the plan could not choose.
+
+| Decision | State |
+|---|---|
+| D1 Replace the standing goal with measurable exit criteria and a three-attempt cap | The cap is Standard Q and an `AGENTS.md` rule; the criteria are Exit Definition items `53`–`56`. The session-level standing goal is the operator's to clear and is not a repository artifact, so this sprint cannot clear it. |
+| D2 Doctrine batch: the inventory clause and the declared network-dependent families | Landed as target text. |
+| D3 Break-glass host reaper | None. `aws audit --emit-readonly-script` prints the read-only enumeration for when the Authority is unreachable and prints no mutating command; anything the operator then deletes by hand is a recorded hand action. |
+| D4 Builder-stage Dockerfile | Scheduled as Sprint `1.94`. |
+| D5 A scoped "AWS stack lifecycle" qualification; hand-assisted runs never count | Standard P amended; Sprint `6.7`; the scoped row is in the Deployment Qualification ledger. |
+| D6 Park Sprints `6.5`, `5.51`, `5.53`, and `7.47` behind the AWS track | `6.5` gains a closure dependency on `4.111`; the four rows stay `Parked`: no work on them is admitted ahead of rows 1–5 of the queue, and `5.53` waits behind `5.58` and `5.59`. The queue orders by sprint number, so that priority is stated in the Resume Here narrative, not in the table. |
+| D7 The canary is a closed, tag-checked, test-scoped Provider intent | Scheduled in Sprint `5.59`. |
+| D8 A live spend ceiling | **Open.** The operator names it. Until then Standard Q's rationing applies and drills run one at a time. |
+| D9 Resource identifiers in the audit's retained evidence (raised 2026-10-19 by Sprint `4.110`) | **Open.** The Provider's evidence is the only channel by which an identifier reaches the operator, and the Authority retains a settled Provider operation's evidence text with the operation, as it does for every observation. Sprint `4.110` took the default that matches the native-family and EBS observations: the evidence carries resource identifiers and short descriptions, bounded at 4,096 characters, and the command writes no record of its own. Accepting it means amending the Target clause in Lifecycle Reconciliation Doctrine § 3.0 and Exit Definition item `54` to name the retained evidence. Refusing it means either retaining a digest instead of the text for this one intent family, which changes the Authority's settlement and is a persistence-protocol surface, or printing commitments only and sending the operator to `--emit-readonly-script` for the identifiers. |
+| D10 The Provider Worker's CPU envelope (raised 2026-10-19 by Sprint `4.111`) | **Open.** The capacity plan gives the Provider Worker `100m` of CPU, request equal to limit, and every `aws` and `pulumi` child it starts shares that envelope and crosses one process-wide permit. **Measured 2026-10-19**, inside the runtime image the Provider runs (`aws-cli/2.37.10`, Pulumi `3.228.0`), with the container's CPU quota set to `0.1` and no network: a bare `aws --version` took `4.9` seconds of wall clock for `0.5` seconds of CPU; `ec2 describe-network-interfaces`, `eks describe-cluster` and `elbv2 describe-load-balancers` with `--generate-cli-skeleton` took `5.6` to `6.6` seconds for `0.56` to `0.67` seconds of CPU; `pulumi version` took `1.6` seconds. The same commands took `0.45` to `0.67` seconds with one CPU. A call under the envelope therefore costs five to seven seconds before it touches the network (a real describe adds its TLS handshake and its response parse), not the one or two that the wait budgets of Sprints `4.109` to `4.111` were authored against. The audit's thirty-odd serial reads take about four minutes, which fits the thirty-minute intent. A converging destroy's closing reading fits its reserve when the final pass is quick, and does not when the final pass spends its whole limit: the reserve is `120` seconds less a `40`-second tail, about ten reads. The loop fails soft under it (reads stop when the session has little left, and the report comes back as `Blocked`, to be rerun). Raising the envelope is not a free setting: the frozen scheduler record in `Capacity/OneShotWorkerSchedulerBudget.hs` has the plan's heaviest window at `7,745` millicores required against `7,750` allocatable, a headroom of `5` millicores, so a larger Provider request is paid for by lowering another request or a reservation, and the Pod's Guaranteed-QoS request moves with it. The default taken: leave `100m`; the elapsed time of the first live `aws audit` is the number that decides whether a budget is tightened. |
+| D11 A host-headroom check before a build or a live run (raised 2026-10-19 by the first Provider image roll of Sprints `4.109` to `4.111`) | **Open.** Nothing in `src/` reads the node's `DiskPressure` condition or the host's free space before the runtime-image build or a live run. On 2026-10-19 the node had carried the condition since 2026-10-17 (31.6 GiB free against the kubelet's clear point near 43 GiB), every prodbox role was `Pending` behind the `NoSchedule` taint, and the only symptom `prodbox` would have shown is a rollout that never becomes ready. This is the class Standard Q names for refusals: a failure with a cause and no remedy. The proposal is that `prodbox cluster reconcile`, the image build inside it, and the live test entrypoints read the condition and the free space first and refuse with the numbers, the kubelet's thresholds, and the operator-owned remedy (free space on the shared host; `prodbox` does not prune another project's data), with a scripted-world case for each refusal. It was left out of Sprint `1.94` as not in the approved plan, and the host is shared (the space that was reclaimable on 2026-10-19 belongs to other projects), so the check can name the remedy but cannot perform it. Refusing the proposal keeps the check a manual step (`df -h /` and `kubectl describe node` before a build). The default taken: raise it, build nothing. |
+
+### Not Scheduled
+
+These are named so their absence is a decision and not an omission. The first four wait for a
+separate go-ahead after the AWS track is green; the last three record a deviation and two notes.
+
+- Repair verbs for the causes that are not the AWS lifecycle's: the retained TLS lane, a stuck
+  credential or EAB operation, the Authority operation ledger, the cleanup-run index, and the
+  retained harness credential (the last is Sprint `5.51`).
+- The real-tool container test tier, producer-to-consumer composition tests for the non-AWS
+  defects, and a crash-point sweep over the Authority, Provider, and Vault.
+- The `expires_at` tag on the four Pulumi programs with an operator-run reap, and a single-object
+  compare-and-set for the retained TLS lane.
+- A scoreboard and gate program. Standard Q is a review protocol; its one mechanical piece is the
+  remedy-table lint in Sprint `4.112`.
+- A recount of the analyst figures this record quotes. The approved plan listed it as a first
+  action and it was not performed. The figures carry their label, and no exit criterion depends on
+  them.
+- A free-disk preflight before image builds and rolls. The node's kubelet evicts under disk pressure
+  (`LOCAL-RUNTIME-REIMPORT-DISK-PRESSURE-2026-08-29`), and a build is what pushes it there; until a
+  preflight exists, check free space before a build or roll.
+- A split of Sprints `4.110`, `4.112`, `5.59`, and `6.7`. Each bundles several deliverables and may
+  span more than one session; each may be split at its first listed seam when work starts, and a
+  split registers a new sprint id here.
+
+### Validation
+
+1. The derived Resume Here execution order matches the authored table, exactly one row is `Next`,
+   and every non-`Done` sprint appears.
+2. Every Pending Removal row names an existing sprint or is explicitly unowned, and no prerequisite
+   is later than its owner.
+3. Every cited source path resolves, and every bound section citation resolves to a real heading.
+4. The ledger census and the counterexample figure are recounted mechanically before and after, not
+   incremented.
+5. `prodbox dev lint docs`, `prodbox dev docs check`, and canonical `prodbox dev check` exit 0.
+
+### Closure Record
+
+The sprint block, the eight code-sprint blocks, the two counterexample rows, the seven ledger rows,
+and the sixty-first `Ledger Status` entry landed together. An independent four-lens review —
+standards compliance, factual accuracy against the source, cross-document consistency, and fidelity
+to the approved plan — read the landing before the gate and returned about eighty findings, two of
+them blockers, none of which `prodbox dev lint docs` can see. All are fixed in this landing, and they
+are the record of what a documentation landing of this kind gets wrong.
+
+**A Done rule that deadlocked the track.** The first draft made the canary a `Done` condition for
+every sprint that changes how the AWS lifecycle creates, waits on, or deletes resources. The canary is
+a Phase `5` sprint that waits on the Phase `4` sprints the rule was gating. The rule now conditions
+the closing of a defect class ([Standard Q](development_plan_standards.md#q-live-campaign-protocol-and-class-closure)),
+not a sprint's `Done`, and a sprint that lands before the canary exists names the step it owes.
+
+**Done gates that depended on live output.** Sprints `4.111` and `5.59` required replays of laws that
+cite recordings which exist only after live runs. Their `Done` gates now use the shapes of the
+operator's 2026-10-14 hand inventory, which Sprint `4.111` transcribed by hand, with reserved example
+identifiers, into its own test (Sprint `5.59` moves them into the recordings directory through the
+scrubber); a shape with no recording, such as a late interface release, is labelled an assumption and
+gates nothing.
+
+**Claims about the source that were wrong or incomplete.** The reaper has four `aws … wait` calls and
+the retained-volume create a fifth, not two; the pre-`f59ccfc` purges were rooted in the checkpoint
+snapshot or the cluster description, not only the cluster; the empty digest was printed in sweeps from
+2026-10-13 to 2026-10-15, not on one day; one test double constructs `ApplyResponseLost`; the image
+also carries `kubectl` and the generated configuration, and its AWS CLI is unpinned; only the
+`aws` CLI children, not the Pulumi children, are killed at thirty seconds; and a second
+`DependencyViolation` before the 2026-10-14 clearing is not in the repository record.
+
+**Plan fidelity.** The audit needs its own dispatch purpose, not a new request branch. The
+security-group predicate applies to the EKS stack only, so the test-stack canary is admitted by its
+own closed predicate. A disk preflight that the approved plan did not contain was removed from
+Sprint `1.94`. The scoped claim records the Provider image digest and does not bind it, because one
+image carries code outside the claim, and its uncovered list now names the Authority, Vault, Backup
+Adapter, and credential reconcile it depends on. Gating clauses that no sprint builds were removed
+from the doctrine, and the free-standing "plan-only script" became the read-only enumeration. Exit
+Definition item `9` was reverted to the current single-stage wording, because Sprint `1.94` moves
+every single-stage statement together when it lands.
+
+**Stale queue narration** in four sprint Status paragraphs, in the Resume Here lead, and in Sprint
+`6.5`'s closure paragraph described a queue that no longer exists; each now points at Resume Here.
+
+Counts, recounted mechanically after the last edit: ledger **pending 62 -> 69, unowned 15 -> 15,
+completed 398 -> 398**; counterexample identifiers **235 -> 237** with 237 table rows; Exit
+Definition **52 -> 56** items. `prodbox dev lint docs`, `prodbox dev docs check`, and canonical
+`prodbox dev check` exit 0 (primary unit suite 5,609/5,609). Not done, and recorded as such: the
+analyst figures this record quotes were not recounted (Not Scheduled).
+
+### Remaining Work
+
+None.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — §3.0 inventory clause, §3.2b
+  controller-created network dependents as declared families, and the §5c pointer.
+- `documents/engineering/aws_test_environment.md` — §7.4 operator decisions and the expiry-tag gap;
+  §7.5 in-surface enumeration.
+- `documents/engineering/unit_testing_policy.md` — §5.1 recorded laws.
+- `documents/engineering/integration_fixture_doctrine.md` — §2B planted residue and recordings.
+- `documents/engineering/dependency_management.md` — the two-stage image target note.
+- `documents/engineering/aws_integration_environment_doctrine.md` — the destroy rule's converge
+  target.
+
+**Product docs to create/update:**
+
+- `AGENTS.md` — the live-run rationing rule.
+
+**Cross-references to add:**
+
+- Record the Phase `1` and Phase `4` own-surface reopens and the Phase `5` and Phase `6`
+  extensions in [README.md](README.md) and [00-overview.md](00-overview.md); add the inventory rows
+  to [system-components.md](system-components.md) and the coverage-note row to
+  [substrates.md](substrates.md); register the ledger rows in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Documentation Requirements
 

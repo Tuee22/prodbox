@@ -48,7 +48,9 @@ import Prodbox.ControlPlane.RegisteredStackCreationSubmitter
   , submitRegisteredStackCreation
   )
 import Prodbox.Error (fatalError)
+import Prodbox.Infra.AwsFieldAudit (printFieldAfterCreate, withFieldDiff)
 import Prodbox.Infra.StackOutputs qualified as StackOutputs
+import Prodbox.Lifecycle.AwsAudit (AuditStack (AuditAwsTest))
 import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (DestroyRegisteredStack, ReconcileRegisteredStack)
@@ -116,16 +118,20 @@ ensureAwsTestStackResourcesWithAuthentication
 ensureAwsTestStackResourcesWithAuthentication authentication repoRoot = do
   configResult <- loadAwsTestProviderConfig repoRoot
   case (mkProviderStackRef "aws-test", mkProviderRevision 1, configResult) of
-    (Right ref, Right revision, Right config) ->
+    (Right ref, Right revision, Right config) -> do
       -- Sprint 4.84: creation commits this cycle's run-invariant lifecycle
       -- generation, so a later cleanup run can name the stack it created.
-      submitStackCreation
-        authentication
-        repoRoot
-        "operator-reconcile-aws-test"
-        awsTestProviderReceiptLabel
-        revision
-        (ReconcileRegisteredStack ref revision config)
+      created <-
+        submitStackCreation
+          authentication
+          repoRoot
+          "operator-reconcile-aws-test"
+          awsTestProviderReceiptLabel
+          revision
+          (ReconcileRegisteredStack ref revision config)
+      -- Sprint 4.110: the field is printed and gates nothing.
+      when (created == ExitSuccess) (printFieldAfterCreate authentication repoRoot AuditAwsTest)
+      pure created
     (refResult, revisionResult, providerConfigResult) ->
       failWith
         ( "build typed AWS test Provider intent: "
@@ -146,11 +152,13 @@ destroyAwsTestStackWithAuthentication authentication repoRoot _quietOutput = do
   configResult <- loadAwsTestProviderConfig repoRoot
   case (mkProviderStackRef "aws-test", mkProviderRevision 1, configResult) of
     (Right ref, Right revision, Right config) ->
-      dispatchStack
-        authentication
-        "operator-destroy-aws-test"
-        "AWS test Provider destroy receipt: "
-        (DestroyRegisteredStack ref revision config)
+      -- Sprint 4.110: bracketed by an inventory; exits non-zero unless clean.
+      withFieldDiff authentication repoRoot AuditAwsTest $
+        dispatchStack
+          authentication
+          "operator-destroy-aws-test"
+          "AWS test Provider destroy receipt: "
+          (DestroyRegisteredStack ref revision config)
     (refResult, revisionResult, providerConfigResult) ->
       failWith
         ( "build typed AWS test destroy intent: "

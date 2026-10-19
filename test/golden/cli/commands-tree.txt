@@ -8,6 +8,7 @@ prodbox
     quotas
       check
       request
+    audit
     ebs
       reap-test
     stack

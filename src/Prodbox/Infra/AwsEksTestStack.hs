@@ -42,6 +42,7 @@ import Control.Exception
   , throwIO
   , tryJust
   )
+import Control.Monad (when)
 import Data.Aeson (Value (Array, String), eitherDecode)
 import Data.Bifunctor qualified as Bifunctor
 import Data.ByteString.Lazy.Char8 qualified as BL8
@@ -71,7 +72,9 @@ import Prodbox.ControlPlane.RegisteredStackCreationSubmitter
   , submitRegisteredStackCreation
   )
 import Prodbox.Error (fatalError)
+import Prodbox.Infra.AwsFieldAudit (printFieldAfterCreate, withFieldDiff)
 import Prodbox.Infra.StackOutputs qualified as StackOutputs
+import Prodbox.Lifecycle.AwsAudit (AuditStack (AuditAwsEks))
 import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (DestroyRegisteredStack, ReconcileRegisteredStack)
@@ -163,17 +166,22 @@ ensureAwsEksTestStackResourcesWithAuthentication
 ensureAwsEksTestStackResourcesWithAuthentication authentication repoRoot = do
   configResult <- loadAwsEksProviderConfig repoRoot
   case (mkProviderStackRef "aws-eks", mkProviderRevision 1, configResult) of
-    (Right ref, Right revision, Right config) ->
+    (Right ref, Right revision, Right config) -> do
       -- Sprint 4.84: creation goes through the submitting lane, which commits
       -- the run-invariant lifecycle generation for this cycle. Without it the
       -- stack exists and no later cleanup run can name the cycle it belongs to.
-      submitStackCreation
-        authentication
-        repoRoot
-        "operator-reconcile-aws-eks"
-        awsEksProviderReceiptLabel
-        revision
-        (ReconcileRegisteredStack ref revision config)
+      created <-
+        submitStackCreation
+          authentication
+          repoRoot
+          "operator-reconcile-aws-eks"
+          awsEksProviderReceiptLabel
+          revision
+          (ReconcileRegisteredStack ref revision config)
+      -- Sprint 4.110: the field is printed and gates nothing, because after a
+      -- create it legitimately holds the new stack.
+      when (created == ExitSuccess) (printFieldAfterCreate authentication repoRoot AuditAwsEks)
+      pure created
     (refResult, revisionResult, providerConfig) ->
       failWith
         ( "build typed AWS EKS Provider intent: "
@@ -194,11 +202,14 @@ destroyAwsEksTestStackWithAuthentication authentication repoRoot _quietOutput = 
   configResult <- loadAwsEksProviderConfig repoRoot
   case (mkProviderStackRef "aws-eks", mkProviderRevision 1, configResult) of
     (Right ref, Right revision, Right config) ->
-      dispatchStack
-        authentication
-        "operator-destroy-aws-eks"
-        "AWS EKS Provider destroy receipt: "
-        (DestroyRegisteredStack ref revision config)
+      -- Sprint 4.110: the destroy is bracketed by an inventory of the field it
+      -- is meant to empty, and exits non-zero unless the closing one is clean.
+      withFieldDiff authentication repoRoot AuditAwsEks $
+        dispatchStack
+          authentication
+          "operator-destroy-aws-eks"
+          "AWS EKS Provider destroy receipt: "
+          (DestroyRegisteredStack ref revision config)
     (refResult, revisionResult, providerConfigResult) ->
       failWith
         ( "build typed AWS EKS destroy intent: "

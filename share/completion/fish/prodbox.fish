@@ -28,6 +28,7 @@ complete -c prodbox -f -n '__fish_seen_subcommand_from aws' -a 'policy' -d 'Rend
 complete -c prodbox -f -n '__fish_seen_subcommand_from aws' -a 'setup' -d 'Create or refresh operational IAM user'
 complete -c prodbox -f -n '__fish_seen_subcommand_from aws' -a 'teardown' -d 'Delete operational IAM user'
 complete -c prodbox -f -n '__fish_seen_subcommand_from aws' -a 'quotas' -d 'Inspect or request AWS quotas'
+complete -c prodbox -f -n '__fish_seen_subcommand_from aws' -a 'audit' -d 'Inventory a stack's field in the provider'
 complete -c prodbox -f -n '__fish_seen_subcommand_from aws' -a 'ebs' -d 'AWS EBS maintenance'
 complete -c prodbox -f -n '__fish_seen_subcommand_from aws' -a 'stack' -d 'AWS substrate stack lifecycle'
 complete -c prodbox -f -n '__fish_seen_subcommand_from bootstrap-broker' -a 'start' -d 'Start the Bootstrap Broker'

@@ -214,6 +214,7 @@ commandPrerequisites command =
         AwsCheckQuotas -> [AwsCredentialsValid]
         AwsRequestQuotas _ -> [AwsCredentialsValid]
         AwsReapTestEbs _ -> [AwsCredentialsValid]
+        AwsAudit _ _ -> []
     NativeBootstrapBroker brokerCommand ->
       case brokerCommand of
         BootstrapBrokerStart _ -> []

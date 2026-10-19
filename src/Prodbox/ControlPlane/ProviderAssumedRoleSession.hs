@@ -139,6 +139,7 @@ providerRoleForIntent intent = case intent of
   ObserveSesInviteMail {} -> LifecycleProviderRole
   ReapSesInviteMail {} -> LifecycleProviderRole
   EnsureRetainedEbsVolumes {} -> LifecycleProviderRole
+  ObserveAwsAudit {} -> LifecycleProviderRole
 
 -- | The request at the STS floor.  Production derives the duration per
 -- operation with 'providerAssumeRoleRequestFor'.

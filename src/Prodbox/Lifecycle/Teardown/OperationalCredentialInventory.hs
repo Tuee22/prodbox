@@ -173,6 +173,7 @@ data OperationalCredentialConsumer
   | SesInviteMailObserveConsumer
   | SesInviteMailReapConsumer
   | RetainedEbsEnsureConsumer
+  | AwsAuditObserveConsumer
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 operationalCredentialConsumerForIntent
@@ -216,6 +217,7 @@ operationalCredentialConsumerForIntent intent = case intent of
   ObserveSesInviteMail {} -> SesInviteMailObserveConsumer
   ReapSesInviteMail {} -> SesInviteMailReapConsumer
   EnsureRetainedEbsVolumes {} -> RetainedEbsEnsureConsumer
+  ObserveAwsAudit {} -> AwsAuditObserveConsumer
 
 operationalCredentialInventoryConsumers
   :: OperationalCredentialInventory -> [OperationalCredentialConsumer]

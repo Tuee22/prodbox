@@ -186,6 +186,7 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox aws teardown` | none | `--dry-run`, `--plan-file`, `--destroy-pulumi-residue`, `--allow-pulumi-residue` |
 | `prodbox aws quotas check` | none | none |
 | `prodbox aws quotas request` | none | `--tier` |
+| `prodbox aws audit` | none | `--stack`, `--emit-readonly-script` |
 | `prodbox aws ebs reap-test` | none | `--yes` |
 | `prodbox aws stack eks reconcile` | none | `--dry-run`, `--plan-file` |
 | `prodbox aws stack eks destroy` | none | `--yes`, `--dry-run`, `--plan-file` |
@@ -796,6 +797,75 @@ appending each result to the external receipt. An escaped resource or unobservab
 non-zero, but the audit never selects an earlier deletion or substitutes for its exact evidence. See
 [Lifecycle Reconciliation Doctrine §6b](lifecycle_reconciliation_doctrine.md#6b-nuke-transfers-authority-to-an-external-decommission-receipt)
 for the canonical order and receipt boundary.
+
+### `prodbox aws audit` notes
+
+`prodbox aws audit [--stack eks|test] [--emit-readonly-script]` asks the Provider, through the
+Lifecycle Authority, for a read-only inventory of one stack's declared field in AWS and prints the
+verdict. It mutates nothing, selects nothing to destroy, and never widens to the account. The field
+is the stack's own resources by exact name; the VPCs located by reads of their own — the stack's
+`Name` and managed-by tags and, for the EKS stack, the marks its cluster puts on the security group
+and the interfaces it owns, so a VPC whose tags were edited away is still read — and everything
+inside each of them, whoever made it, which is how a child an in-cluster controller attached after
+the plan was confirmed is seen; the registered IAM names; the OIDC providers by IAM's own tag
+listing, because the exact-name read can name a provider only while its cluster exists; and the
+per-run volumes by tag. The retained state bucket is the positive control and must appear in the
+tagging catalog of the region the bucket lives in: the request carries that region when the
+repository authors the state backend's, and the session's region is used otherwise.
+
+The verdict is `Clean`, `Residue`, or `Unobservable`, and the exit status is 0, 4, or 5. An unanswered
+query, a class nobody queried, and a control that did not appear are each `Unobservable` and are
+named, and a row is `Residue` whatever else went unanswered. A `null`, a row that names no resource,
+and a volume listing with no `Volumes` array are queries the audit did not understand, and are gaps
+and not empty classes. Standard output carries stable `AWS_FIELD <stack> ...` lines: the account and
+region the Provider audited, the verdict, a `class=… count=…` line for each non-empty class, each row
+with its identity, an `unanswered=` line for each gap (its reason begins with the command and the code
+AWS answered with), and the control. Raw identifiers appear there and in the bounded evidence the
+Provider returns, which the Authority retains for the operation as it does for every Provider
+observation; the command writes no record of its own. Both stacks are audited when `--stack` is omitted; residue on either exits 4 even when the other
+could not be inventoried, and an inventory that could not be taken otherwise exits 5. The per-run
+subzone's field exists in the audit but is not reachable from the command, because only that stack's
+own record holds the hosted-zone id it needs.
+
+`prodbox aws stack eks destroy --yes` and `prodbox aws stack test destroy --yes` bracket the destroy
+with the same inventory. They print the field, run the destroy, take a closing inventory, print
+`AWS_FIELD_DIFF` (what left, what remains, what appeared, and the verdict; with no baseline it says so
+and compares nothing), and exit zero only from a closing inventory that is `Clean`. `Residue` exits 4,
+also when the closing inventory is the only thing that could be taken; an inventory that could not be
+taken exits 5, because completion is a claim the command may only make from an inventory; a destroy
+that failed keeps its own status; and a baseline that could not be taken is narrated and never stops
+the destroy. The `reconcile` verbs of the same two stacks print the field after a successful create and
+gate nothing, since the field then legitimately holds the new stack. `--emit-readonly-script` prints
+the same reads as `aws` describe, get, and list commands for use when the Authority is unreachable; it
+is a reading aid and not the same enumeration (it does not repeat the exact-name reads), it asserts
+nothing, and anything an operator deletes after reading it is a recorded hand action
+([aws_test_environment.md §7.5](aws_test_environment.md)).
+
+The destroy of a stack that has a VPC converges (Sprint `4.111`). It runs a first Pulumi pass bounded to
+a share of the operation, repairs what a controller left in the VPC (an `available` network interface of
+the VPC CNI, the security group EKS made for the cluster, and for the EKS stack the load balancers its
+controller made), runs a final pass, and reads the field with the audit's enumeration; it removes the
+stack record only from an empty, fully answered field. Otherwise the verb fails with a `blocked:` report
+that names what remains, what each step did, and the next safe command, and the record is kept, so
+running the same command again continues from where the passes stopped. An interface an AWS service
+holds is waited for and never forced, and nothing outside the closed predicate is touched. While the
+stack's cluster, node group, add-on, or instances still exist, or cannot be read, the repair clears and
+waits for nothing, because what they hold is released when the final pass deletes them, and the report
+says so; running the command again then clears what is left. A leaked per-run volume does not hold the
+stack record: the volume reaper owns it. A pass that has to be cut is stopped with SIGTERM, a second
+SIGTERM, and only then SIGKILL, so that Pulumi releases its lock and stops its plugins; if it was killed
+anyway, the loop clears the lock with `pulumi cancel` before the final pass. The cascade's per-run
+destroys run the same loop.
+
+Three limits are worth knowing before relying on the exit statuses. Until a Provider image that carries
+the audit (request tag `37`) is rolled, the worker refuses the request as an unsupported action, so
+`aws audit` exits 5 and the two destroy verbs exit 5 after a destroy that succeeded; likewise the
+converging destroy runs only from an image that carries it. A per-run volume that a destroy leaked is
+residue the destroy verb does not clear: the closing inventory exits 4 until `prodbox aws ebs reap-test
+--yes` has run. And the closing inventory has no settle or retry, so right after a destroy it can list a
+VPC, role, or tagged entry that the provider has deleted but still returns; a rerun reports `Clean`.
+See [Lifecycle Reconciliation Doctrine §3.0](lifecycle_reconciliation_doctrine.md#30-positive-absence)
+for the contract.
 
 ### `prodbox aws stack` notes
 

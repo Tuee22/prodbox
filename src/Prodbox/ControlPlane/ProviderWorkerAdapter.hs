@@ -73,6 +73,8 @@ import Prodbox.Lifecycle.Lease (AuthorityTime, authorityTimeMicros)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( EksClientAuthRequest
   , EksClusterIdentityRequest
+  , ProviderAuditControl
+  , ProviderAuditTarget
   , ProviderCheckpointRef
   , ProviderIntent (..)
   , ProviderIntentCoordinate
@@ -102,6 +104,8 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , initialProviderWorkState
   , mkEksClientAuthRequest
   , mkEksClusterIdentityRequest
+  , mkProviderAuditControl
+  , mkProviderAuditTarget
   , mkProviderCheckpointRef
   , mkProviderNativeStackFamilyRef
   , mkProviderRevision
@@ -113,6 +117,10 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkSesDnsRef
   , mkSesIdentityRef
   , mkSesRuleSetRef
+  , providerAuditControlBucket
+  , providerAuditControlRegion
+  , providerAuditTargetHostedZoneId
+  , providerAuditTargetStack
   , providerCheckpointRefText
   , providerIntentCoordinate
   , providerNativeStackFamilyAccountId
@@ -286,6 +294,11 @@ data ProviderIntentCapabilities m session = ProviderIntentCapabilities
       -> ProviderStackConfig
       -> [Text]
       -> ProviderMutation m session
+  , observeAwsAuditCapability
+      :: ProviderAuditTarget
+      -> ProviderStackConfig
+      -> ProviderAuditControl
+      -> ProviderReadOnly m session
   , ensureValidationHostedZoneCapability
       :: Text
       -> Text
@@ -566,6 +579,19 @@ validateProviderIntent intent = case intent of
   ObserveNativeStackFamily ref config -> do
     validateNativeStackFamilyRef ref
     validateStackConfig (providerNativeStackFamilyStackRef ref) config
+  ObserveAwsAudit target config control -> do
+    validateRef
+      "aws-audit-target"
+      (mkProviderAuditTarget (providerAuditTargetStack target) (providerAuditTargetHostedZoneId target))
+      target
+    validateStackConfig (providerAuditTargetStack target) config
+    validateRef
+      "aws-audit-control"
+      ( mkProviderAuditControl
+          (providerAuditControlBucket control)
+          (providerAuditControlRegion control)
+      )
+      control
   ReapNativeStackFamily ref config admittedIdentities -> do
     validateNativeStackFamilyRef ref
     validateStackConfig (providerNativeStackFamilyStackRef ref) config
@@ -1021,6 +1047,8 @@ operationForIntent capabilities intent = case intent of
     IntentReadOnly (observeEksClusterIdentityCapability capabilities request)
   ObserveNativeStackFamily ref config ->
     IntentReadOnly (observeNativeStackFamilyCapability capabilities ref config)
+  ObserveAwsAudit target config control ->
+    IntentReadOnly (observeAwsAuditCapability capabilities target config control)
   ReapNativeStackFamily ref config admittedIdentities ->
     IntentMutation
       (reapNativeStackFamilyCapability capabilities ref config admittedIdentities)

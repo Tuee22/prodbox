@@ -374,6 +374,7 @@ commandPathOfRequest request =
               AwsCheckQuotas -> ["quotas", "check"]
               AwsRequestQuotas _ -> ["quotas", "request"]
               AwsReapTestEbs _ -> ["ebs", "reap-test"]
+              AwsAudit _ _ -> ["audit"]
         NativeBootstrapBroker brokerCommand ->
           "bootstrap-broker"
             : case brokerCommand of

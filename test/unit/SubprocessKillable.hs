@@ -114,6 +114,55 @@ subprocessKillableSuite =
         elapsed `shouldSatisfy` (< 6000)
         recordedPid pidFile >>= eventuallyGone >>= (`shouldBe` True)
 
+    it "repeats SIGTERM before it escalates, for a child that stops only on the second" $
+      withSystemTempDirectory "killable" $ \directory -> do
+        let pidFile = directory <> "/pid"
+        (result, elapsed) <-
+          elapsedMillis
+            ( captureSubprocessKillable
+                (KillableSubprocessLimits 300000 4000000)
+                ( script
+                    ( "echo $$ > "
+                        <> pidFile
+                        <> "; n=0; trap 'n=$((n+1)); echo term-$n; if [ $n -ge 2 ]; then exit 7; fi' TERM; "
+                        <> "echo started; while true; do sleep 0.1; done"
+                    )
+                )
+            )
+        case result of
+          Right (KillableSubprocessTimedOut output) -> do
+            -- It saw both signals and left on its own accord, which is the way a
+            -- Pulumi stops its plugins and releases its backend lock; the kill
+            -- would have ended it with a signal status instead.
+            processStdout output `shouldSatisfy` isInfixOf "term-2"
+            processExitCode output `shouldBe` ExitFailure 7
+          other -> expectationFailure ("expected a timed-out child, got " <> show other)
+        -- ...and well inside the grace, so nothing waited for the kill.
+        elapsed `shouldSatisfy` (< 3500)
+        recordedPid pidFile >>= eventuallyGone >>= (`shouldBe` True)
+
+    it "does not repeat SIGTERM to a child that left on the first" $
+      withSystemTempDirectory "killable" $ \directory -> do
+        let pidFile = directory <> "/pid"
+        (result, _) <-
+          elapsedMillis
+            ( captureSubprocessKillable
+                (KillableSubprocessLimits 300000 4000000)
+                ( script
+                    ( "echo $$ > "
+                        <> pidFile
+                        <> "; n=0; trap 'n=$((n+1)); echo term-$n; exit 5' TERM; "
+                        <> "echo started; while true; do sleep 0.1; done"
+                    )
+                )
+            )
+        case result of
+          Right (KillableSubprocessTimedOut output) -> do
+            processStdout output `shouldSatisfy` isInfixOf "term-1"
+            processStdout output `shouldSatisfy` (not . isInfixOf "term-2")
+            processExitCode output `shouldBe` ExitFailure 5
+          other -> expectationFailure ("expected a timed-out child, got " <> show other)
+
     it "stops a process the child started along with the child" $
       withSystemTempDirectory "killable" $ \directory -> do
         let pidFile = directory <> "/grandchild"

@@ -59,6 +59,13 @@ bounded workers/adapters remain available for every AWS-targeted operation.
   lifecycle command (a multi-hour `test all` or clean-room deployment-qualification run) is
   in-scope work; launch it (background it if needed) and drive it to completion rather than
   stopping short.
+- **Authorization is not an instruction to rerun until green.** Live runs are rationed by
+  [Development Plan Standard Q](DEVELOPMENT_PLAN/development_plan_standards.md#q-live-campaign-protocol-and-class-closure),
+  which owns the attempt limit, the review that follows consecutive new-boundary runs, and the
+  closure rule; read it before launching a second live attempt that spends on AWS. A resource
+  removed, or a state repaired, outside the `prodbox` surface is recorded as a hand action, and the
+  run never counts toward a qualification claim. This limits how often a lifecycle command is
+  launched; it does not relax the duty to drive the one in hand to completion.
 
 This authorization is scoped to the `prodbox` command surface only. It does **not** relax
 the standing guardrails: ad-hoc `aws` / `pulumi` / `eksctl` / `terraform` / `kubectl` mutations
@@ -161,7 +168,10 @@ development.
 - Supported entrypoints: `prodbox aws stack <cli-verb> reconcile` /
   `prodbox aws stack <cli-verb> destroy --yes` for every Pulumi-managed substrate stack:
   `eks` for registry stack `aws-eks`, `aws-subzone` for `aws-eks-subzone`, `test` for
-  `aws-test`, and `aws-ses` for `aws-ses`; `prodbox aws setup` /
+  `aws-test`, and `aws-ses` for `aws-ses`; `prodbox aws audit [--stack eks|test]` for a read-only
+  provider inventory of a stack's declared field (exit 0 `Clean`, 4 `Residue`, 5 `Unobservable`;
+  `--emit-readonly-script` prints the same reads as `aws` describe, get, and list commands for
+  when the Authority is unreachable, and prints nothing that mutates); `prodbox aws setup` /
   `prodbox aws teardown` for the IAM user provisioning loop; `prodbox test integration
   ... --substrate aws` and `prodbox test all` for end-to-end substrate-aware runs.
 - Do not run `pulumi up`, `pulumi destroy`, `aws` CLI mutations, `eksctl`, or any other
@@ -172,7 +182,15 @@ development.
 - Do not manually provision before, or clean up after, a harness run. Use the returned
   `CleanupRunId`/recovery disposition where available, re-run the canonical harness operation, or
   use `prodbox aws stack <stack> destroy --yes`. Invocation or provider exit alone is not a clean
-  result; only the command's exact terminal absence evidence proves cleanup.
+  result; only the command's exact terminal absence evidence proves cleanup. For the per-run `eks`
+  and `test` stacks that evidence is the destroy verb's closing provider inventory
+  (`AWS_FIELD_DIFF`): the verb exits zero only when it is `Clean`, and exits 4 or 5 for `Residue` or
+  an inventory it could not take. An audit that found nothing is evidence for its declared field and
+  no other, and the `Unobservable` exit is never rounded up to success. The destroy of a stack with
+  a VPC converges: when it cannot, it ends in a `blocked:` report that names what remains and keeps
+  the stack record, and the next safe command is the same destroy again (or `prodbox aws audit` to
+  read the field), never a hand deletion; a candidate outside the destroy's closed predicate stays
+  in the report until the operator decides what to do with it.
 - Read-only AWS diagnostics (`aws sts get-caller-identity`, `aws route53 list-hosted-zones`,
   console inspection) are acceptable when investigating a harness-reported failure.
 

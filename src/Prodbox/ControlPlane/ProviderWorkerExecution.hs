@@ -179,6 +179,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , isProviderResourceRegistered
   , mkEksClientAuthRequest
   , mkEksClusterIdentityRequest
+  , mkProviderAuditTarget
   , mkProviderCheckpointRef
   , mkProviderNativeStackFamilyRef
   , mkProviderRevision
@@ -191,6 +192,10 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkSesDnsRef
   , mkSesIdentityRef
   , mkSesRuleSetRef
+  , parseProviderAuditControl
+  , providerAuditControlText
+  , providerAuditTargetHostedZoneId
+  , providerAuditTargetStack
   , providerCheckpointRefText
   , providerIntentCoordinate
   , providerIntentEvidenceBound
@@ -685,6 +690,18 @@ wireProviderIntent intent = case intent of
     WireProviderIntent 35 recipient Nothing Nothing (Just bucket) Nothing
   EnsureRetainedEbsVolumes volumeType specs ->
     WireProviderIntent 36 volumeType Nothing Nothing (Just specs) Nothing
+  -- Sprint 4.110: the stack travels as the resource, the hosted zone (or
+  -- @none@) as the secondary and the positive control as the tertiary, so an
+  -- envelope that lost the control decodes as a refusal rather than as an audit
+  -- with nothing to prove it saw the catalog.
+  ObserveAwsAudit target config control ->
+    WireProviderIntent
+      37
+      (providerStackRefText (providerAuditTargetStack target))
+      Nothing
+      (Just config)
+      (Just (maybe "none" id (providerAuditTargetHostedZoneId target)))
+      (Just (providerAuditControlText control))
  where
   simple tag resource = WireProviderIntent tag resource Nothing Nothing Nothing Nothing
   publicARecordWire tag ref =
@@ -1376,6 +1393,18 @@ providerIntentFromWire wire = case wireProviderIntentTag wire of
   36 -> do
     (volumeType, specs) <- selectorAndSecondary "retained EBS volume type" "retained EBS volume specs"
     pure (EnsureRetainedEbsVolumes volumeType specs)
+  37 -> do
+    noRevision wire
+    stackRef <- mapIntentValue (mkProviderStackRef resource)
+    zoneText <- requireSecondary "missing audit hosted zone" wire
+    target <-
+      mapIntentValue
+        (mkProviderAuditTarget stackRef (if zoneText == "none" then Nothing else Just zoneText))
+    config <- requireStackConfig wire
+    mapIntentValue (validateProviderStackConfig stackRef config)
+    controlText <- requireTertiary "missing audit control" wire
+    control <- mapIntentValue (parseProviderAuditControl controlText)
+    pure (ObserveAwsAudit target config control)
   tag -> Left (ProviderCommittedIntentUnsupportedAction tag)
  where
   resource = wireProviderIntentResource wire
@@ -2126,13 +2155,10 @@ validateExecutionEvidence intent evidence =
     (validateProviderIntentEvidence intent evidence)
 
 -- | What the apply attempt contributes to a mutation that was not confirmed.
--- The two failures read differently on purpose: an apply that ran and failed
--- must not be described as a response that never arrived.
 attemptDetail :: Either ApplyFailure () -> Text
 attemptDetail result = case result of
   Right () -> ""
   Left (ApplyFailed detail) -> "provider apply failed: " <> detail <> "; "
-  Left (ApplyResponseLost detail) -> "provider apply response unavailable: " <> detail <> "; "
 
 parseProviderIntentPublicKey
   :: ProviderIntentPublicKey

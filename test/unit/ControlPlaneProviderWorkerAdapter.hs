@@ -270,6 +270,7 @@ fixtureCapabilities calls applied loseResponse unobservable =
     , observeEksClusterIdentityCapability = const (readOnly "eks-cluster-identity")
     , observeNativeStackFamilyCapability = \_ _ -> readOnly "native-stack-family-observe"
     , reapNativeStackFamilyCapability = \_ _ _ -> mutation "native-stack-family-reap"
+    , observeAwsAuditCapability = \_ _ _ -> readOnly "aws-audit-observe"
     }
  where
   mutation label =
@@ -430,6 +431,7 @@ allIntents =
       )
   , ObserveNativeStackFamily nativeTestRef awsTestConfig
   , ReapNativeStackFamily nativeTestRef awsTestConfig ["vpc/vpc-fixture"]
+  , ObserveAwsAudit auditTarget awsTestConfig auditControl
   , EnsureValidationHostedZone "1759900000" "example.test"
   , ObserveSesInviteMail "capture-bucket" "test-1759900000@receive.example.test"
   , ReapSesInviteMail "capture-bucket" "test-1759900000@receive.example.test"
@@ -459,6 +461,8 @@ expectedCalls intent =
         ObserveEksClusterIdentity _ ->
           [call "session-open", call ("read:" <> intentLabel), call "session-close"]
         ObserveNativeStackFamily _ _ ->
+          [call "session-open", call ("read:" <> intentLabel), call "session-close"]
+        ObserveAwsAudit {} ->
           [call "session-open", call ("read:" <> intentLabel), call "session-close"]
         ObserveSesInviteMail _ _ ->
           [call "session-open", call ("read:" <> intentLabel), call "session-close"]
@@ -520,6 +524,7 @@ labelFor intent = case intent of
     "dns01-challenge-observe:" <> zoneId <> ":" <> recordNamePrefix
   ObserveNativeStackFamily _ _ -> "native-stack-family-observe"
   ReapNativeStackFamily {} -> "native-stack-family-reap"
+  ObserveAwsAudit {} -> "aws-audit-observe"
   EnsureValidationHostedZone nonce baseZone ->
     "validation-zone-ensure:" <> nonce <> ":" <> baseZone
   ObserveSesInviteMail bucket recipient ->
@@ -571,6 +576,13 @@ awsEksConfig = mustRight (mkAwsEksProviderStackConfig "127.0.0.1/32")
 
 awsTestConfig :: ProviderStackConfig
 awsTestConfig = mustRight (mkAwsTestProviderStackConfig "127.0.0.1/32")
+
+auditControl :: ProviderAuditControl
+auditControl = mustRight (mkProviderAuditControl "prodbox-state-fixture" Nothing)
+
+auditTarget :: ProviderAuditTarget
+auditTarget =
+  mustRight (mkProviderAuditTarget (mustRight (mkProviderStackRef "aws-test")) Nothing)
 
 nativeTestRef :: ProviderNativeStackFamilyRef
 nativeTestRef =

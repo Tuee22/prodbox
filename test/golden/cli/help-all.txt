@@ -68,6 +68,18 @@ Options:
 Examples:
 - prodbox aws quotas request --tier core  # Request core-tier quota increases.
 
+## prodbox aws audit
+prodbox aws audit - Inventory a stack's field in the provider
+
+Ask the Provider, through the Lifecycle Authority, to take a read-only inventory of one stack's declared field in AWS: the stack's own resources, everything inside its VPC, the registered IAM names and the per-run volumes the cluster owns, with the retained state bucket as the positive control. The verdict is Clean, Residue or Unobservable and exits 0, 4 or 5; an unanswered query and a positive control that does not appear both exit 5. Raw identifiers go to standard output and nowhere durable. `--emit-readonly-script` prints the same reads as read-only AWS CLI commands for use when the Authority is unreachable and mutates nothing.
+Options:
+- --stack <STACK> - Stack to inventory: eks or test (both when omitted)
+- --emit-readonly-script - Print the reads as a read-only AWS CLI script instead of taking the inventory
+
+Examples:
+- prodbox aws audit --stack eks  # Inventory the EKS stack's field in the provider.
+- prodbox aws audit --emit-readonly-script  # Print the read-only reads for each stack.
+
 ## prodbox aws ebs reap-test
 prodbox aws ebs reap-test - Delete test-scoped EBS volumes
 

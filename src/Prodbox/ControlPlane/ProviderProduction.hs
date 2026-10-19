@@ -18,6 +18,16 @@ module Prodbox.ControlPlane.ProviderProduction
   , providerProductionCapabilities
   , providerProductionReady
   , providerAwsCliLimits
+  , deleteSecurityGroupsWithin
+  , stackHasVpc
+  , destroyPassBounds
+  , pulumiChildLimitsFor
+  , eksLoadBalancerControllerFamilyTags
+  , validateEksLoadBalancerControllerFamilyProjection
+  , DesiredState (..)
+  , observePulumiStackVia
+  , pulumiDestroySelected
+  , stackEvidence
   , withProviderChildProcessPermit
   , validationZoneNames
   , validDnsName
@@ -85,11 +95,16 @@ import Prodbox.ControlPlane.EksClientAuthProjection.Internal
   , sealEksClientAuthProjection
   )
 import Prodbox.ControlPlane.OperationBudget
-  ( childLimitMicros
+  ( awsCliChildBoundMicros
   , declaredRoleMaximumSeconds
+  , finalPassReserveMicros
+  , firstPassCeilingMicros
+  , passLimitMicros
   , planSessionDuration
   , renderSessionWindowRefusal
   , sessionWindowMicros
+  , shortCommandCeilingMicros
+  , verdictReserveMicros
   )
 import Prodbox.ControlPlane.ProviderAssumedRoleSession
   ( expectedLifecycleProviderAssumedRoleArn
@@ -127,11 +142,28 @@ import Prodbox.Infra.AwsEksTestStack (pulumiAwsProviderEnv)
 import Prodbox.Keycloak.Email (parseKeycloakInviteLink)
 import Prodbox.Lib.Storage (StaticEbsVolumeBinding (..))
 import Prodbox.Lifecycle.Authority.Genesis (AuthorityEpoch)
+import Prodbox.Lifecycle.AwsAudit (mkAuditObservation)
+import Prodbox.Lifecycle.AwsAuditEvidence (encodeAwsAuditEvidence)
+import Prodbox.Lifecycle.AwsAuditField (auditPositiveControl, auditStackField)
+import Prodbox.Lifecycle.AwsDestroyConverge
+  ( ConvergeOutcome (..)
+  , DestroyPass (..)
+  , PassResult (..)
+  )
 import Prodbox.Lifecycle.AwsNativeStackFamily
   ( AwsNativeStackFamilyRunner (..)
   , observeAwsNativeStackFamily
   , reapAwsNativeStackFamilyWithin
   )
+import Prodbox.Lifecycle.AwsNetworkDependents (deleteSecurityGroupsWithin)
+import Prodbox.Lifecycle.AwsStackDestroy
+  ( PulumiRun
+  , StackDestroyWorld (..)
+  , pulumiDestroyPass
+  , pulumiRemoveStack
+  , stackDestroy
+  )
+import Prodbox.Lifecycle.AwsWait (AwsWaitEnvironment (..))
 import Prodbox.Lifecycle.DnsRecord
   ( AwsAccountId
   , DnsCoordinateError
@@ -186,6 +218,8 @@ import Prodbox.Lifecycle.ProviderWorker.Evidence
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( EksClientAuthRequest
   , EksClusterIdentityRequest
+  , ProviderAuditControl
+  , ProviderAuditTarget
   , ProviderCheckpointRef
   , ProviderIntentCoordinate
   , ProviderNativeStackFamilyRef
@@ -211,6 +245,11 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , eksClusterIdentityRequestRegion
   , eksIamRoleFamilyEvidenceFamily
   , eksLoadBalancerControllerFamilyEvidenceFamily
+  , mkProviderNativeStackFamilyRef
+  , providerAuditControlBucket
+  , providerAuditControlRegion
+  , providerAuditTargetHostedZoneId
+  , providerAuditTargetStack
   , providerCheckpointRefText
   , providerNativeStackFamilyAccountId
   , providerNativeStackFamilyRegion
@@ -306,6 +345,19 @@ data ProviderProductionSession = ProviderProductionSession
   , productionSessionNowMicros :: !(IO (Either Text Natural))
   -- ^ The Authority clock the session window is judged against.
   }
+
+-- | The world a wait runs in for this session: the session's own clock and
+-- expiry, a real pause, and the intent lifetime the budgets' shares are shares
+-- of. A wait therefore ends at its ceiling or when the session's usable window
+-- does, whichever is nearer.
+sessionWaitEnvironment :: ProviderProductionSession -> AwsWaitEnvironment IO
+sessionWaitEnvironment session =
+  AwsWaitEnvironment
+    { awsWaitNowMicros = productionSessionNowMicros session
+    , awsWaitPauseMicros = threadDelay . fromIntegral
+    , awsWaitSessionExpiresAtMicros = productionSessionExpiresAtMicros session
+    , awsWaitIntentLifetimeMicros = providerWorkerIntentLifetimeMicros
+    }
 
 providerProductionNarrowSession
   :: VaultSession
@@ -411,6 +463,7 @@ providerProductionCapabilities =
     , observeEksClusterIdentityCapability = eksClusterIdentityObservation
     , observeNativeStackFamilyCapability = nativeStackFamilyObservation
     , reapNativeStackFamilyCapability = nativeStackFamilyReaperMutation
+    , observeAwsAuditCapability = awsAuditObservation
     , ensureValidationHostedZoneCapability = validationHostedZoneEnsureMutation
     , observeSesInviteMailCapability = sesInviteMailObservation
     , reapSesInviteMailCapability = sesInviteMailReaperMutation
@@ -584,8 +637,9 @@ pulumiMutation desired ref config marker =
         failedApply (applyDesiredStack session desired ref config marker)
     }
 
--- | Every production apply reports a failure the effect itself produced; a
--- lost response is only ever injected by a test that models one.
+-- | Every production apply reports a failure the effect itself produced. The
+-- worker boundary observes again after every apply, so whether the effect
+-- landed is settled by that read-back and not by what the apply reported.
 failedApply :: IO (Either Text ()) -> IO (Either ApplyFailure ())
 failedApply = fmap (first ApplyFailed)
 
@@ -635,8 +689,102 @@ applyDesiredStack session desired ref config marker =
           (productionSessionAuthorityTransport session)
           (compiledStackPulumiRef compiled)
           environment
-          (runPulumiMutation desired compiled)
+          (applyWithinBackend session ref config desired compiled)
       pure (either (Left . renderBackendError) (const (Right ())) result)
+
+-- | Sprint 4.111: what runs once the stack's backend is open. A destroy of a
+-- stack that has a VPC converges; every other mutation is the single Pulumi
+-- command it has always been.
+applyWithinBackend
+  :: ProviderProductionSession
+  -> ProviderStackRef
+  -> ProviderStackConfig
+  -> DesiredState
+  -> CompiledStack
+  -> [(String, String)]
+  -> IO (Either String ())
+applyWithinBackend session ref config desired compiled environment
+  | desired == DesiredAbsent && stackHasVpc ref =
+      convergeStackDestroy session ref config compiled environment
+  | otherwise = runPulumiMutation desired compiled environment
+
+-- | The registered stacks whose resources sit in a VPC of their own, and so can
+-- be blocked by a child a controller left in it.
+stackHasVpc :: ProviderStackRef -> Bool
+stackHasVpc ref = providerStackRefText ref `elem` ["aws-eks", "aws-test"]
+
+-- | Sprint 4.111: destroy a stack with a VPC as a converging loop -- a bounded
+-- first pass, the repair of what a controller left, a final pass, and a reading
+-- of the field that alone removes the stack record -- or say what stopped it.
+convergeStackDestroy
+  :: ProviderProductionSession
+  -> ProviderStackRef
+  -> ProviderStackConfig
+  -> CompiledStack
+  -> [(String, String)]
+  -> IO (Either String ())
+convergeStackDestroy session ref config compiled environment = do
+  login <- runPulumi compiled environment ["login", backendUrl environment]
+  case commandSuccess login of
+    Left detail -> pure (Left detail)
+    Right _ -> do
+      awsEnvironment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+      account <- providerSessionAccountId awsEnvironment
+      case (,) <$> account <*> providerSessionRegion awsEnvironment of
+        Left detail -> pure (Left (Text.unpack detail))
+        Right (accountId, regionText) ->
+          case mkProviderNativeStackFamilyRef ref accountId regionText Nothing of
+            Left err -> pure (Left (show err))
+            Right nativeRef -> do
+              outcome <- stackDestroy (world nativeRef awsEnvironment)
+              pure $ case outcome of
+                Converged -> Right ()
+                Blocked detail -> Left (Text.unpack detail)
+ where
+  lifetime = fromIntegral providerWorkerIntentLifetimeMicros
+  reserve = finalPassReserveMicros lifetime
+  world nativeRef awsEnvironment =
+    StackDestroyWorld
+      { worldStackName = stackName compiled
+      , worldPulumi = \pass -> runPulumi (compiledFor pass) environment
+      , worldPulumiShort = runPulumi shortCompiled environment
+      , worldAws = AwsNativeStackFamilyRunner (runAws awsEnvironment)
+      , worldWaits = sessionWaitEnvironment session
+      , worldFinalPassReserveMicros = reserve
+      , worldRef = nativeRef
+      , worldConfig = config
+      , worldCluster = clusterOf
+      , worldLoadBalancers = loadBalancersOf
+      }
+  -- The commands around the passes are quick: bounded by the session and by a
+  -- ceiling of their own, and reserving nothing.
+  shortCompiled =
+    compiled
+      { compiledStackChildLimits = pulumiChildLimitsWithin 0 shortCommandCeilingMicros session
+      }
+  -- The first pass is cut at its share and leaves the final pass its reserve;
+  -- the final pass has whatever window the session has left less what the
+  -- reading and the commit after it need. Both leave the kill grace as well, so
+  -- a pass that has to be killed still ends inside what it was given.
+  compiledFor pass =
+    let (reserveMicros, ceilingMicros) = destroyPassBounds lifetime pass
+     in compiled
+          { compiledStackChildLimits = pulumiChildLimitsWithin reserveMicros ceilingMicros session
+          }
+  clusterOf
+    | providerStackRefText ref == "aws-eks" = Just TeardownRegistry.awsEksProvisionedClusterName
+    | otherwise = Nothing
+  loadBalancersOf
+    | providerStackRefText ref == "aws-eks" =
+        Just
+          ( \waits ->
+              reapEksLoadBalancerControllerFamilyWithin
+                session
+                waits
+                TeardownRegistry.awsEksLoadBalancerControllerName
+                eksLoadBalancerControllerFamilyTags
+          )
+    | otherwise = Nothing
 
 observePulumiStack
   :: DesiredState
@@ -644,16 +792,38 @@ observePulumiStack
   -> CompiledStack
   -> [(String, String)]
   -> IO (Either String ProviderEffectObservation)
-observePulumiStack desired ref compiled environment = do
-  login <- runPulumi compiled environment ["login", backendUrl environment]
+observePulumiStack desired ref compiled environment =
+  observePulumiStackVia
+    (runPulumi compiled environment)
+    (backendUrl environment)
+    (stackName compiled)
+    (compiledStackConfiguration compiled)
+    desired
+    ref
+
+-- | The observation, over the Pulumi child runner it is given.
+--
+-- A stack whose preview proposes nothing is satisfied, and its evidence is the
+-- digest of what the stack recorded: its outputs. Before Sprint @4.110@ the
+-- evidence was the digest of what @pulumi stack select@ printed, which is
+-- nothing, so every converged stack's receipt was the SHA-256 of zero bytes and
+-- said nothing about AWS. A stack that recorded no outputs is unobservable, not
+-- satisfied with a receipt that carries no content.
+observePulumiStackVia
+  :: (Monad m)
+  => PulumiRun m
+  -> String
+  -> String
+  -> [(String, String)]
+  -> DesiredState
+  -> ProviderStackRef
+  -> m (Either String ProviderEffectObservation)
+observePulumiStackVia run backend stack configuration desired ref = do
+  login <- run ["login", backend]
   case commandSuccess login of
     Left detail -> pure (Right (ProviderEffectUnobservable (Text.pack detail)))
     Right _ -> do
-      selected <-
-        runPulumi
-          compiled
-          environment
-          ["stack", "select", "--stack", stackName compiled, "--non-interactive"]
+      selected <- run ["stack", "select", "--stack", stack, "--non-interactive"]
       case processExitCode selected of
         ExitFailure _
           | missingStack selected ->
@@ -668,20 +838,32 @@ observePulumiStack desired ref compiled environment = do
         ExitSuccess -> case desired of
           DesiredAbsent -> pure (Right (ProviderEffectNeedsApply "registered stack is present"))
           DesiredPresent -> do
-            preview <-
-              runPulumi
-                compiled
-                environment
-                ( providerPulumiPreviewArguments
-                    (stackName compiled)
-                    (compiledStackConfiguration compiled)
-                )
-            pure $ case processExitCode preview of
-              ExitSuccess -> Right (ProviderEffectSatisfied (stackEvidence selected))
+            preview <- run (providerPulumiPreviewArguments stack configuration)
+            case processExitCode preview of
+              ExitSuccess -> do
+                recorded <- run ["stack", "output", "--stack", stack, "--json"]
+                pure (Right (convergedStackObservation recorded))
               ExitFailure _
                 | previewReportsChanges preview ->
-                    Right (ProviderEffectNeedsApply "Pulumi preview reports changes")
-                | otherwise -> Right (ProviderEffectUnobservable (Text.pack (commandFailureDetail preview)))
+                    pure (Right (ProviderEffectNeedsApply "Pulumi preview reports changes"))
+                | otherwise ->
+                    pure (Right (ProviderEffectUnobservable (Text.pack (commandFailureDetail preview))))
+
+-- | What a stack whose preview proposes nothing reports, from the outputs it
+-- recorded.
+convergedStackObservation :: ProcessOutput -> ProviderEffectObservation
+convergedStackObservation recorded =
+  case commandSuccess recorded of
+    Left detail -> ProviderEffectUnobservable (Text.pack detail)
+    Right output
+      | recordsNoOutputs output ->
+          ProviderEffectUnobservable
+            "the converged stack recorded no outputs, so its receipt would carry no content"
+      | otherwise -> either ProviderEffectUnobservable ProviderEffectSatisfied (stackEvidence output)
+
+-- | Whether the recorded outputs are empty or an empty object.
+recordsNoOutputs :: ProcessOutput -> Bool
+recordsNoOutputs output = Text.strip (Text.pack (processStdout output)) `elem` ["", "{}", "null"]
 
 runPulumiMutation
   :: DesiredState
@@ -719,39 +901,26 @@ runPulumiMutation desired compiled environment = do
                         environment
                         ["up", "--stack", stackName compiled, "--yes", "--skip-preview", "--non-interactive"]
                     pure (Control.Monad.void (commandSuccess updated))
-        DesiredAbsent -> do
-          selected <-
-            runPulumi
-              compiled
-              environment
-              ["stack", "select", "--stack", stackName compiled, "--non-interactive"]
-          if missingStack selected
-            then pure (Right ())
-            else case commandSuccess selected of
-              Left detail -> pure (Left detail)
-              Right _ -> do
-                destroyed <-
-                  runPulumi
-                    compiled
-                    environment
-                    [ "destroy"
-                    , "--stack"
-                    , stackName compiled
-                    , "--yes"
-                    , "--skip-preview"
-                    , "--non-interactive"
-                    , "--refresh"
-                    , "--continue-on-error"
-                    ]
-                case commandSuccess destroyed of
-                  Left detail -> pure (Left detail)
-                  Right _ -> do
-                    removed <-
-                      runPulumi
-                        compiled
-                        environment
-                        ["stack", "rm", "--stack", stackName compiled, "--yes", "--non-interactive"]
-                    pure (Control.Monad.void (commandSuccess removed))
+        DesiredAbsent -> pulumiDestroySelected (runPulumi compiled environment) (stackName compiled)
+
+-- | Destroy a stack after the backend login with a single pass: a stack that is
+-- not there is already destroyed; otherwise destroy it, and remove it only when
+-- the destroy succeeded, so a stack that still holds resources keeps its record.
+--
+-- Sprint 4.111: this is the destroy of a stack with no VPC of its own (the
+-- per-run subzone). A stack with a VPC converges instead
+-- ('Prodbox.Lifecycle.AwsStackDestroy.stackDestroy'); both share the pass.
+pulumiDestroySelected
+  :: (Monad m)
+  => PulumiRun m
+  -> String
+  -> m (Either String ())
+pulumiDestroySelected run stack = do
+  pass <- pulumiDestroyPass run stack
+  case pass of
+    PassStackAbsent -> pure (Right ())
+    PassFailed detail -> pure (Left (Text.unpack detail))
+    PassSucceeded -> first Text.unpack <$> pulumiRemoveStack run stack
 
 setPulumiConfiguration
   :: CompiledStack
@@ -851,7 +1020,7 @@ readPulumiStack compiled environment = do
           Right _ -> do
             output <-
               runPulumi compiled environment ["stack", "output", "--stack", stackName compiled, "--json"]
-            pure (PulumiStackObservedPresent . stackEvidence <$> commandSuccess output)
+            pure (commandSuccess output >>= first Text.unpack . fmap PulumiStackObservedPresent . stackEvidence)
 
 pulumiEnvironment :: Credentials -> IO [(String, String)]
 pulumiEnvironment credentials = do
@@ -926,7 +1095,19 @@ boundToSession session compiled =
 -- session with no usable window left starts no child.
 pulumiChildLimitsForSession
   :: ProviderProductionSession -> IO (Either Text KillableSubprocessLimits)
-pulumiChildLimitsForSession session = do
+pulumiChildLimitsForSession session =
+  pulumiChildLimitsWithin 0 (fromIntegral (killableSubprocessTimeoutMicros pulumiChildLimits)) session
+
+-- | The bound for the next Pulumi child when part of the session is spoken for:
+-- the window the session has left less what is reserved for the work after it,
+-- the child maximum, and a ceiling the caller names (the first destroy pass's
+-- share). A window the reserve leaves nothing of starts no child.
+pulumiChildLimitsWithin
+  :: Natural
+  -> Natural
+  -> ProviderProductionSession
+  -> IO (Either Text KillableSubprocessLimits)
+pulumiChildLimitsWithin reserveMicros ceilingMicros session = do
   nowResult <- productionSessionNowMicros session
   pure $ do
     now <- nowResult
@@ -934,15 +1115,35 @@ pulumiChildLimitsForSession session = do
       first
         renderSessionWindowRefusal
         (sessionWindowMicros (productionSessionExpiresAtMicros session) now)
-    Right
-      pulumiChildLimits
-        { killableSubprocessTimeoutMicros =
-            fromIntegral
-              ( childLimitMicros
-                  (fromIntegral (killableSubprocessTimeoutMicros pulumiChildLimits))
-                  window
-              )
-        }
+    pulumiChildLimitsFor reserveMicros ceilingMicros window
+
+-- | The limits for a Pulumi child given the window the session has left, apart
+-- from the clock that measured it.
+pulumiChildLimitsFor :: Natural -> Natural -> Natural -> Either Text KillableSubprocessLimits
+pulumiChildLimitsFor reserveMicros ceilingMicros window =
+  case passLimitMicros
+    ceilingMicros
+    reserveMicros
+    (fromIntegral (killableSubprocessTimeoutMicros pulumiChildLimits))
+    window of
+    Nothing -> Left "no session window is left for a Pulumi pass once the work after it is reserved for"
+    Just limit -> Right pulumiChildLimits {killableSubprocessTimeoutMicros = fromIntegral limit}
+
+-- | What each destroy pass reserves for the work after it, and the longest it
+-- may run, for an intent of the given lifetime. The first pass leaves the final
+-- pass its reserve and is cut at its share; the final pass leaves the reading of
+-- the field and the commit that follow it, and the child maximum bounds it. Both
+-- leave the kill grace, because a pass that is stopped by the kill spends it.
+destroyPassBounds :: Natural -> DestroyPass -> (Natural, Natural)
+destroyPassBounds lifetime pass = case pass of
+  FirstPass -> (finalPassReserveMicros lifetime + killGrace, firstPassCeilingMicros lifetime)
+  FinalPass ->
+    (verdictReserveMicros + killGrace, fromIntegral (killableSubprocessTimeoutMicros pulumiChildLimits))
+ where
+  -- A pass that has to be stopped spends the grace, the five seconds the runner
+  -- waits to confirm a kill, and up to ten settling the readers of its output.
+  killGrace =
+    fromIntegral (killableSubprocessKillGraceMicros pulumiChildLimits) + 15 * 1000 * 1000
 
 -- | A child stopped at its bound is a failure whose transcript ends in the
 -- timeout marker, which the failure summary names as the consequence.
@@ -1001,9 +1202,16 @@ stackName = Text.unpack . pulumiStackName . compiledStackPulumiRef
 backendUrl :: [(String, String)] -> String
 backendUrl environment = maybe "" id (lookup "PULUMI_BACKEND_URL" environment)
 
-stackEvidence :: ProcessOutput -> Text
-stackEvidence output =
-  "sha256:" <> sha256Text (TextEncoding.encodeUtf8 (Text.pack (processStdout output)))
+-- | The digest of what a command printed, as evidence. Input that is empty is
+-- refused: the digest of zero bytes is one constant, so a receipt made from it
+-- identifies nothing, and a producer that accepted it let three suites pass
+-- on it for three days.
+stackEvidence :: ProcessOutput -> Either Text Text
+stackEvidence output
+  | Text.null (Text.strip (Text.pack (processStdout output))) =
+      Left "the command printed nothing, so a receipt made from it would be the digest of empty input"
+  | otherwise =
+      Right ("sha256:" <> sha256Text (TextEncoding.encodeUtf8 (Text.pack (processStdout output))))
 
 renderBackendError :: EncryptedBackendError -> Text
 renderBackendError = Text.pack . renderEncryptedBackendError
@@ -1090,6 +1298,46 @@ testEbsObservation clusterName = ProviderReadOnly $ \session _ providerBound ->
               )
           )
 
+-- | Sprint 4.110: the provider-enumerated audit of one stack's declared field.
+--
+-- The same session checks as the native-family observation come first: the
+-- credential must belong to the account and region the intent names. Every read
+-- is a describe, get or list call through the bounded runner, so the audit
+-- cannot change what it audits. A class a query did not answer is carried as a
+-- gap in the evidence and never as an empty class.
+awsAuditObservation
+  :: ProviderAuditTarget
+  -> ProviderStackConfig
+  -> ProviderAuditControl
+  -> ProviderReadOnly IO ProviderProductionSession
+awsAuditObservation target config control = ProviderReadOnly $ \session _ providerBound -> do
+  environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+  account <- providerSessionAccountId environment
+  case (,) <$> account <*> providerSessionRegion environment of
+    Left detail -> pure (Left detail)
+    Right (accountId, regionText) ->
+      case mkProviderNativeStackFamilyRef
+        (providerAuditTargetStack target)
+        accountId
+        regionText
+        (providerAuditTargetHostedZoneId target) of
+        Left err -> pure (Left (Text.pack (show err)))
+        Right ref -> do
+          let runner = AwsNativeStackFamilyRunner (runAws environment)
+          field <- auditStackField runner ref config
+          case field of
+            Left detail -> pure (Left detail)
+            Right (stack, answers) -> do
+              positive <-
+                auditPositiveControl
+                  runner
+                  ref
+                  (providerAuditControlBucket control)
+                  (providerAuditControlRegion control)
+              pure $ do
+                observation <- first (Text.pack . show) (mkAuditObservation stack answers positive)
+                encodeAwsAuditEvidence providerBound ref observation
+
 -- | Checkpoint-independent observation of one closed registered stack family.
 -- The Provider credential is independently checked against the account and
 -- region signed into the intent before any family query runs.
@@ -1131,6 +1379,7 @@ nativeStackFamilyReaperMutation ref config admittedIdentities =
           Right () ->
             reapAwsNativeStackFamilyWithin
               (AwsNativeStackFamilyRunner (runAws environment))
+              (sessionWaitEnvironment session)
               ref
               config
               admittedIdentities
@@ -1529,7 +1778,18 @@ reapEksLoadBalancerControllerFamily
   -> Text
   -> Text
   -> IO (Either Text ())
-reapEksLoadBalancerControllerFamily session loadBalancerName tags = do
+reapEksLoadBalancerControllerFamily session =
+  reapEksLoadBalancerControllerFamilyWithin session (sessionWaitEnvironment session)
+
+-- | The same reaper, waiting under the environment it is given: a caller that
+-- keeps part of the session for work after it hands one that ends sooner.
+reapEksLoadBalancerControllerFamilyWithin
+  :: ProviderProductionSession
+  -> AwsWaitEnvironment IO
+  -> Text
+  -> Text
+  -> IO (Either Text ())
+reapEksLoadBalancerControllerFamilyWithin session waits loadBalancerName tags = do
   observed <-
     observeEksLoadBalancerControllerFamily session loadBalancerName tags
   case observed of
@@ -1562,8 +1822,9 @@ reapEksLoadBalancerControllerFamily session loadBalancerName tags = do
                   case sequence targetGroups of
                     Left detail -> pure (Left detail)
                     Right _ ->
-                      deleteSecurityGroupsWithRetry
-                        environment
+                      deleteSecurityGroupsWithin
+                        (runAws environment)
+                        waits
                         (map securityGroupIdFromArn (membersOfKind "security-group" rows))
  where
   deleteListenerArguments arn =
@@ -1572,6 +1833,14 @@ reapEksLoadBalancerControllerFamily session loadBalancerName tags = do
     ["elbv2", "delete-load-balancer", "--load-balancer-arn", Text.unpack arn]
   deleteTargetGroupArguments arn =
     ["elbv2", "delete-target-group", "--target-group-arn", Text.unpack arn]
+
+-- | The registered load balancer family's tags as the family's request spells
+-- them, which is the form its validation accepts and nothing else.
+eksLoadBalancerControllerFamilyTags :: Text
+eksLoadBalancerControllerFamilyTags =
+  Text.intercalate
+    "|"
+    [key <> "=" <> value | (key, value) <- TeardownRegistry.awsEksLoadBalancerControllerTags]
 
 validateEksLoadBalancerControllerFamilyProjection
   :: Text -> Text -> Either Text [(Text, Text)]
@@ -1743,41 +2012,10 @@ runElbv2VoidAllowMissing environment arguments = do
       | awsOutputIsElbv2NotFound output -> Right ()
       | otherwise -> Left (awsOutputFailure "ELBv2 mutation" output)
 
-deleteSecurityGroupsWithRetry
-  :: [(String, String)] -> [Text] -> IO (Either Text ())
-deleteSecurityGroupsWithRetry environment = go (10 :: Int)
- where
-  go _ [] = pure (Right ())
-  go remaining groupIds = do
-    results <- traverse deleteOne groupIds
-    let failures = [detail | Left detail <- results]
-    if null failures
-      then pure (Right ())
-      else
-        if remaining <= 1
-          then pure (Left (Text.intercalate "; " failures))
-          else threadDelay 1000000 >> go (remaining - 1) groupIds
-  deleteOne groupId = do
-    output <-
-      runAws
-        environment
-        ["ec2", "delete-security-group", "--group-id", Text.unpack groupId]
-    pure $ case processExitCode output of
-      ExitSuccess -> Right ()
-      ExitFailure _
-        | awsOutputIsEc2SecurityGroupNotFound output -> Right ()
-        | otherwise -> Left (awsOutputFailure "EC2 delete-security-group" output)
-
 awsOutputIsElbv2NotFound :: ProcessOutput -> Bool
 awsOutputIsElbv2NotFound output =
   containsAny
     ["loadbalancernotfound", "listenernotfound", "targetgroupnotfound"]
-    (processStderr output <> processStdout output)
-
-awsOutputIsEc2SecurityGroupNotFound :: ProcessOutput -> Bool
-awsOutputIsEc2SecurityGroupNotFound output =
-  containsAny
-    ["invalidgroup.notfound", "does not exist"]
     (processStderr output <> processStdout output)
 
 providerSessionAccountId :: [(String, String)] -> IO (Either Text Text)
@@ -2284,6 +2522,7 @@ retainedEbsEnsureMutation volumeType specs =
             ensured <-
               EbsVolume.ensureRetainedEbsVolumesVia
                 (boundedAwsCliRun environment)
+                (sessionWaitEnvironment session)
                 typed
                 required
             pure (first Text.pack (Control.Monad.void ensured))
@@ -2449,7 +2688,9 @@ readinessObservation probe = ProviderReadOnly $ \session _ providerBound ->
     case probe of
       ProviderReadinessStsIdentity -> do
         output <- runAws environment ["sts", "get-caller-identity", "--output", "json"]
-        pure ("provider-readiness:" <> stackEvidence output <$ firstText (commandSuccess output))
+        pure $ do
+          _ <- firstText (commandSuccess output)
+          ("provider-readiness:" <>) <$> stackEvidence output
       ProviderReadinessRoute53Zone zoneId -> do
         output <-
           runAws environment ["route53", "get-hosted-zone", "--id", Text.unpack zoneId, "--output", "json"]
@@ -2635,16 +2876,17 @@ firstShow = either (Left . Text.pack . show) Right
 -- | Physical bounds for every AWS CLI child started by the Provider Worker.
 --
 -- The 30-second lifetime is the same deadline compiled into the Provider
--- runtime-memory child schedule. Output ceilings are deliberately wider than
--- any accepted Provider evidence while still preventing a child from growing
--- the parent heap without bound.
+-- runtime-memory child schedule, and the one every wait's per-poll child
+-- maximum is checked against ('awsCliChildBoundMicros'). Output ceilings are
+-- deliberately wider than any accepted Provider evidence while still
+-- preventing a child from growing the parent heap without bound.
 providerAwsCliLimits :: BoundedSubprocessLimits
 providerAwsCliLimits =
   BoundedSubprocessLimits
     { boundedSubprocessMaximumInputBytes = 1
     , boundedSubprocessMaximumStdoutBytes = 4 * 1024 * 1024
     , boundedSubprocessMaximumStderrBytes = 1024 * 1024
-    , boundedSubprocessTimeoutMicros = 30 * 1000 * 1000
+    , boundedSubprocessTimeoutMicros = fromIntegral awsCliChildBoundMicros
     }
 
 -- | The Provider process owns one physical subprocess lane shared by its four

@@ -30,6 +30,8 @@ import Prodbox.Lifecycle.ProviderWorker.Evidence
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( EksClientAuthRequest
   , EksClusterIdentityRequest
+  , ProviderAuditControl
+  , ProviderAuditTarget
   , ProviderCheckpointRef
   , ProviderIntent (..)
   , ProviderIntentCoordinate
@@ -55,16 +57,17 @@ data ProviderEffectObservation
   | ProviderEffectUnobservable !Text
   deriving stock (Eq, Show)
 
--- | Why one mutation's apply callback did not succeed.  The two arms are not
--- interchangeable: a failed apply says the effect ran and reported a failure,
--- while a lost response says the effect may have happened and no answer came
--- back, so the read-back that follows is the only thing that can settle it.
-data ApplyFailure
-  = -- | The effect ran and reported a failure; the text is the rendered cause
-    -- and consequence.
-    ApplyFailed !Text
-  | -- | The effect may have run: no response was received.
-    ApplyResponseLost !Text
+-- | Why one mutation's apply callback did not succeed: the effect ran and
+-- reported a failure, and the text is the rendered cause and consequence.
+--
+-- Whether the effect nevertheless landed is not this type's to say. The worker
+-- boundary observes again after every apply, whatever the apply reported, so
+-- the read-back is the only thing that settles it. Sprint @4.109@ deleted the
+-- second arm, which was declared by Sprint @4.103@ for a response that never
+-- arrived and constructed by no production path: the one production source of
+-- a missing response is a child stopped at its bound, and the failure summary
+-- already names that as a typed @ChildTimedOut@ finding in this text.
+newtype ApplyFailure = ApplyFailed Text
   deriving stock (Eq, Show)
 
 -- | One mutation arm.  Both callbacks receive the stable signed intent
@@ -214,6 +217,13 @@ data ProviderIntentCapabilities m session = ProviderIntentCapabilities
       -> ProviderStackConfig
       -> [Text]
       -> ProviderMutation m session
+  , observeAwsAuditCapability
+      :: ProviderAuditTarget
+      -> ProviderStackConfig
+      -> ProviderAuditControl
+      -> ProviderReadOnly m session
+  -- ^ Sprint 4.110: the provider-enumerated audit of one stack's declared
+  -- field. Read-only by construction.
   , ensureValidationHostedZoneCapability
       :: Text
       -> Text
@@ -345,6 +355,8 @@ operationForProviderIntent capabilities intent = case intent of
   ReapNativeStackFamily ref config admittedIdentities ->
     ProviderIntentMutation
       (reapNativeStackFamilyCapability capabilities ref config admittedIdentities)
+  ObserveAwsAudit target config control ->
+    ProviderIntentReadOnly (observeAwsAuditCapability capabilities target config control)
   EnsureValidationHostedZone nonce baseZone ->
     ProviderIntentMutation
       (ensureValidationHostedZoneCapability capabilities nonce baseZone)

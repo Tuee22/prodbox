@@ -40,7 +40,7 @@ module Prodbox.Lifecycle.EbsVolume
   , ebsPersistentVolumeTagKey
   , ebsDescribeVolumesArgs
   , ebsCreateVolumeArgs
-  , ebsWaitVolumeAvailableArgs
+  , ebsDescribeVolumesByIdArgs
   , ebsDeleteVolumeArgs
   , ebsRequiredVolumeFromChartStorageBinding
   , parseStorageSizeGiB
@@ -52,7 +52,6 @@ module Prodbox.Lifecycle.EbsVolume
   , awaitRequiredVolumesVisible
   , retainedEbsVisibilityAttempts
   , retainedEbsVisibilityStableReads
-  , retryWaiterOnLag
   , ebsVolumesResidueStatus
   , ebsDiscoverResultToResidue
   , testScopedEbsVolumeIdsFromTagRows
@@ -92,9 +91,19 @@ import Data.Char (isDigit, isHexDigit)
 import Data.List (intercalate, isInfixOf, nub, sort)
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
+import Prodbox.Capacity.ProviderWorkerBudget (providerWorkerIntentLifetimeMicros)
+import Prodbox.ControlPlane.OperationBudget (WaitFact (VolumesAvailable))
 import Prodbox.Lib.Storage
   ( ChartStorageBinding (..)
   , StaticEbsVolumeBinding (..)
+  )
+import Prodbox.Lifecycle.AwsWait
+  ( AwsWaitEnvironment
+  , WaitStep (..)
+  , awaitFact
+  , renderWaitFailure
+  , transientPollFailure
+  , wallClockWaitEnvironment
   )
 import Prodbox.Lifecycle.ResidueStatus
   ( ResidueDetails (..)
@@ -110,7 +119,6 @@ import Prodbox.Settings.AwsSubstrateProfile
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
-  , boundedSubprocessTimeoutDetail
   , captureSubprocessResult
   )
 import System.Exit (ExitCode (..))
@@ -444,9 +452,12 @@ ebsCreateVolumeArgs volumeType required =
   , "json"
   ]
 
-ebsWaitVolumeAvailableArgs :: [EbsVolumeId] -> [String]
-ebsWaitVolumeAvailableArgs volumeIds =
-  ["ec2", "wait", "volume-available", "--volume-ids"] ++ map unEbsVolumeId volumeIds
+-- | The exact volumes, by id. Sprint 4.109: the answer a volume wait polls
+-- for; the @aws ec2 wait volume-available@ child it replaces polls for minutes
+-- inside a child the Provider stops at thirty seconds.
+ebsDescribeVolumesByIdArgs :: [EbsVolumeId] -> [String]
+ebsDescribeVolumesByIdArgs volumeIds =
+  ["ec2", "describe-volumes", "--volume-ids"] ++ map unEbsVolumeId volumeIds ++ ["--output", "json"]
 
 retainedVolumeTagSpecification :: EbsRequiredVolume -> String
 retainedVolumeTagSpecification required =
@@ -820,19 +831,21 @@ ensureRetainedEbsVolumes
 ensureRetainedEbsVolumes input =
   ensureRetainedEbsVolumesVia
     (directAwsCliRun (ebsEnsureEnvironment input) (ebsEnsureWorkingDirectory input))
+    (wallClockWaitEnvironment providerWorkerIntentLifetimeMicros)
     (ebsEnsureVolumeType input)
 
 ensureRetainedEbsVolumesVia
   :: AwsCliRun
+  -> AwsWaitEnvironment IO
   -> AwsEbsVolumeType
   -> [EbsRequiredVolume]
   -> IO (Either String [StaticEbsVolumeBinding])
-ensureRetainedEbsVolumesVia run volumeType =
+ensureRetainedEbsVolumesVia run waits volumeType =
   ensureRetainedEbsVolumesWith
     EbsEnsureEffects
       { ebsEffectDiscover = discoverEbsVolumesVia run EbsRetainedProduction
       , ebsEffectCreate = createRetainedVolumeVia run volumeType
-      , ebsEffectWaitAvailable = waitForCreatedVolumesVia run
+      , ebsEffectWaitAvailable = waitForCreatedVolumesVia waits run
       , ebsEffectPause = threadDelay retainedEbsVisibilityDelayMicroseconds
       }
 
@@ -988,65 +1001,64 @@ retainedEbsVisibilityStableReads = 2
 retainedEbsVisibilityDelayMicroseconds :: Int
 retainedEbsVisibilityDelayMicroseconds = 5000000
 
-waitForCreatedVolumesVia :: AwsCliRun -> [EbsVolumeId] -> IO (Either String ())
-waitForCreatedVolumesVia _ [] = pure (Right ())
-waitForCreatedVolumesVia run createdIds =
-  retryWaiterOnLag
-    runWaiter
-    (threadDelay retainedEbsVisibilityDelayMicroseconds)
-    retainedEbsVisibilityAttempts
- where
-  runWaiter = do
-    result <- run (ebsWaitVolumeAvailableArgs createdIds)
-    pure $ case result of
-      Failure err -> Left err
-      Success output -> Right output
-
--- | Run the available-waiter, retrying while the API still answers "not found"
--- for a volume created a moment ago.
+-- | Wait for the volumes this call created to be available.
 --
--- The waiter polls describe-volumes by id, and a volume created a moment ago can
--- be answered "not found" before the API has caught up; that error is not one of
--- the waiter's own acceptors, so it ends the waiter. It is the one error worth
--- waiting out: a volume that is gone (the deleted state), a refusal of the call,
--- and a process that cannot start are reported at once, and what is reported
--- after the last attempt is the waiter's own text, not a relabelled lag. The run
--- and the pause are injected so the retry is exercised without an AWS account.
-retryWaiterOnLag
-  :: (Monad m)
-  => m (Either String ProcessOutput)
-  -> m ()
-  -> Int
-  -> m (Either String ())
-retryWaiterOnLag runWaiter pause = attempt
+-- Sprint 4.109: a loop of @describe-volumes@ polls under the
+-- 'VolumesAvailable' budget, not an @aws ec2 wait volume-available@ child. That
+-- child polls for minutes and the Provider stops every AWS child at thirty
+-- seconds, so the old shape was rerun up to twelve times to make up the
+-- difference and still reported only the waiter's own text. A volume created a
+-- moment ago can be answered "not found" before the API has caught up; that
+-- is the one refusal worth polling through. A volume that is deleted or in
+-- error, a refused call, and a process that cannot start end the wait at once.
+waitForCreatedVolumesVia
+  :: AwsWaitEnvironment IO -> AwsCliRun -> [EbsVolumeId] -> IO (Either String ())
+waitForCreatedVolumesVia _ _ [] = pure (Right ())
+waitForCreatedVolumesVia waits run createdIds =
+  first (Text.unpack . renderWaitFailure) <$> awaitFact waits VolumesAvailable poll
  where
-  attempt attemptsRemaining = do
-    result <- runWaiter
-    case result of
-      Left err -> pure (Left ("failed to start `aws ec2 wait volume-available`: " ++ err))
-      Right output ->
-        case processExitCode output of
-          ExitSuccess -> pure (Right ())
-          ExitFailure _
-            | waiterWorthRerunning output && attemptsRemaining > 1 ->
-                pause >> attempt (attemptsRemaining - 1)
-            | otherwise ->
-                pure
-                  ( Left
-                      ( "aws ec2 wait volume-available failed: "
-                          ++ processStderr output
-                          ++ processStdout output
-                      )
-                  )
+  poll = do
+    result <- run (ebsDescribeVolumesByIdArgs createdIds)
+    pure $ case result of
+      Failure err ->
+        WaitAbort (Text.pack ("failed to start `aws ec2 describe-volumes`: " ++ err))
+      Success output -> classify output
+  classify output = case processExitCode output of
+    ExitFailure _
+      | volumeNotYetListed output || transientPollFailure output ->
+          WaitMore () (Text.pack (describeFailure output))
+      | otherwise -> WaitAbort (Text.pack (describeFailure output))
+    ExitSuccess -> case parseDescribeVolumesPayload (processStdout output) of
+      Left err -> WaitAbort (Text.pack err)
+      Right volumes -> volumeStates volumes
+  volumeStates volumes
+    | any ((`elem` ["deleted", "deleting", "error"]) . ebsVolumeState) volumes =
+        WaitAbort
+          ( Text.pack
+              ( "a created volume is "
+                  ++ intercalate ", " (nub (sort (map ebsVolumeState volumes)))
+              )
+          )
+    | length volumes == length createdIds
+    , all ((== "available") . ebsVolumeState) volumes =
+        WaitDone
+    | otherwise =
+        WaitMore
+          ()
+          ( Text.pack
+              ( "volumes are "
+                  ++ intercalate ", " (nub (sort (map ebsVolumeState volumes)))
+                  ++ " of "
+                  ++ show (length createdIds)
+                  ++ " expected"
+              )
+          )
+  describeFailure output =
+    "aws ec2 describe-volumes failed: " ++ processStderr output ++ processStdout output
 
--- | Whether a failed waiter says only that it is not done yet: the API has not
--- caught up with a volume created a moment ago, or the Provider's per-child bound
--- ended the waiter before the volume became available (the CLI's own waiter polls
--- for minutes, the bound is thirty seconds; every rerun is another bounded child
--- that releases the one-child permit between attempts).
-waiterWorthRerunning :: ProcessOutput -> Bool
-waiterWorthRerunning output =
-  any (`isInfixOf` processStderr output) ["InvalidVolume.NotFound", boundedSubprocessTimeoutDetail]
+-- | Whether the API answers that it does not know a volume created a moment ago.
+volumeNotYetListed :: ProcessOutput -> Bool
+volumeNotYetListed output = "InvalidVolume.NotFound" `isInfixOf` processStderr output
 
 destroyEbsVolume :: EbsDestroyInput -> EbsVolumeId -> IO (Either String ())
 destroyEbsVolume input =

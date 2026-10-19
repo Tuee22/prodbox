@@ -60,6 +60,20 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
   `pulumi/aws-test/`, and `pulumi/aws-ses/` only and do not introduce a Python runtime
   dependency.
 
+> **Target.** The single-stage image doctrine above is to become a two-stage one. Today a source
+> change rebuilds every dependency, because the Dockerfile copies `src/` before its one
+> `cabal build`, and splitting those layers inside a single stage would put the dependency store
+> into the shipped image: layers are additive, and cache mounts are forbidden. A **builder stage**
+> keeps both properties. It installs `ghcup`, pins GHC `9.12.4`, resolves dependencies from the
+> Cabal manifests alone so that layer is reused until they change, and compiles the executable. The
+> **runtime stage** starts from `ubuntu:24.04` and receives the executable, the checked-in YAML
+> programs, the generated binary-sibling configuration, and the runtime tools the image carries
+> today (the pinned Pulumi and provider plugin, the checksum-verified `kubectl`, the AWS CLI, and
+> `tini`); it carries no GHC, Cabal store, or source. Both stages use only basic `docker build`
+> features, so the rule against BuildKit-only features is unchanged. The change moves a
+> component-image surface, which invalidates deployment qualification under Standard P. Status lives
+> only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
 ## 2. Lock File Policy
 
 The repository does not rely on Poetry or a Python lockfile on the supported path.

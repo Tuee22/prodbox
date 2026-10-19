@@ -366,6 +366,7 @@ library
         Prodbox.Infra.DedicatedAdapterIam
         Prodbox.Infra.AwsEksSubzoneStack
         Prodbox.Infra.AwsEksTestStack
+        Prodbox.Infra.AwsFieldAudit
         Prodbox.Infra.AwsSesStack
         Prodbox.Infra.AwsTestStack
         Prodbox.Infra.LongLivedPulumiBackend
@@ -429,6 +430,13 @@ library
         Prodbox.Lifecycle.ProviderWorker.Evidence.Internal
         Prodbox.Lifecycle.ProviderWorker.ProviderWork
         Prodbox.Lifecycle.AwsNativeStackFamily
+        Prodbox.Lifecycle.AwsAudit
+        Prodbox.Lifecycle.AwsAuditEvidence
+        Prodbox.Lifecycle.AwsAuditField
+        Prodbox.Lifecycle.AwsDestroyConverge
+        Prodbox.Lifecycle.AwsNetworkDependents
+        Prodbox.Lifecycle.AwsStackDestroy
+        Prodbox.Lifecycle.AwsWait
         Prodbox.Lifecycle.CascadeNoInstall
         Prodbox.Lifecycle.CredentialProvisioner.Execution
         Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
@@ -1076,6 +1084,14 @@ test-suite prodbox-unit
         ProviderEvidenceCodec
         ProviderEvidenceQualification
         OperationBudget
+        AwsWaitPolling
+        ProviderDestroyInterpreter
+        ProviderStackReceipt
+        AwsAuditVerdict
+        AwsAuditEnumeration
+        AwsAuditWire
+        AwsFieldAuditExit
+        AwsDestroyConverge
         ProviderFailureSummary
         SubprocessKillable
         StoreLifetimeWitness

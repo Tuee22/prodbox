@@ -53,6 +53,7 @@ data ProviderCliEntry = ProviderCliEntry
 providerCliRunModules :: [FilePath]
 providerCliRunModules =
   [ "src/Prodbox/ControlPlane/ProviderProduction.hs"
+  , "src/Prodbox/Lifecycle/AwsAuditField.hs"
   , "src/Prodbox/Lifecycle/AwsNativeStackFamily.hs"
   , "src/Prodbox/Lifecycle/EbsVolume.hs"
   , "src/Prodbox/Lifecycle/TaggedResourceQuery.hs"
@@ -105,6 +106,8 @@ providerCliActionTable =
     ProviderCliEntry "ec2" "*" ["ec2:*"]
   , ProviderCliEntry "eks" "*" ["eks:*"]
   , ProviderCliEntry "elbv2" "*" ["elasticloadbalancing:*"]
+  , -- The classic load balancer API shares the service-wide grant; the audit reads it.
+    ProviderCliEntry "elb" "*" ["elasticloadbalancing:*"]
   , ProviderCliEntry "autoscaling" "*" ["autoscaling:*"]
   , -- IAM role and policy lifecycle for the registered EKS families.
     ProviderCliEntry "iam" "delete-open-id-connect-provider" ["iam:DeleteOpenIDConnectProvider"]

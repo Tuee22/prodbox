@@ -5,16 +5,29 @@ module LifecycleAwsNativeStackFamily
   )
 where
 
+import AwsWaitPolling
+  ( VirtualWorld
+  , newVirtualWorld
+  , roomyWaitEnvironment
+  , virtualNowMicros
+  , virtualStartMicros
+  )
+import Control.Monad ((>=>))
 import Data.Aeson (Value, eitherDecodeStrict, object, (.=))
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
-import Data.List (find, findIndex, isInfixOf, isPrefixOf)
+import Data.List (find, findIndex, isInfixOf, isPrefixOf, isSuffixOf)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
   )
 import Prodbox.Lifecycle.AwsNativeStackFamily
+  ( AwsNativeStackFamilyRunner (..)
+  , observeAwsNativeStackFamily
+  )
+import Prodbox.Lifecycle.AwsNativeStackFamily qualified as Native
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
 import Prodbox.Lifecycle.Teardown.AwsNativeStackFamilyAdapter
 import Prodbox.Lifecycle.Teardown.Model
@@ -121,7 +134,7 @@ lifecycleAwsNativeStackFamilySuite =
     it "refuses a newly observed native identity outside the admitted manifest" $ do
       calls <- newIORef []
       reaped <-
-        reapAwsNativeStackFamilyWithin
+        reapWithin
           (recordingRunner calls historicalEksRoleResponse)
           eksRef
           eksConfig
@@ -134,7 +147,7 @@ lifecycleAwsNativeStackFamilySuite =
       calls <- newIORef []
       let roleArn = "arn:aws:iam::123456789012:role/clusterRole-fixture"
       reaped <-
-        reapAwsNativeStackFamilyWithin
+        reapWithin
           (recordingRunner calls historicalEksRoleResponse)
           eksRef
           eksConfig
@@ -169,7 +182,7 @@ lifecycleAwsNativeStackFamilySuite =
     it "reaps EC2 resources in dependency order" $ do
       calls <- newIORef []
       reaped <-
-        reapAwsNativeStackFamily
+        reapNative
           (recordingRunner calls awsTestResponse)
           testRef
           testConfig
@@ -185,10 +198,140 @@ lifecycleAwsNativeStackFamilySuite =
         `shouldSatisfy` (< indexOf "delete-vpc" commands)
       length (filter (elem "delete-internet-gateway") commands) `shouldBe` 1
 
+    it
+      "waits for each EKS child to leave by polling its status, in dependency order, with no wait subcommand"
+      $ do
+        world <- newVirtualWorld
+        calls <- newIORef []
+        runner <- eksAccount world calls defaultEksScripts
+        reaped <- Native.reapAwsNativeStackFamily runner (roomyWaitEnvironment world) eksRef eksConfig
+        reaped `shouldBe` Right ()
+        commands <- readIORef calls
+        -- The mutations, in dependency order. The account refuses to delete the
+        -- cluster while its node group exists, so the order is also enforced there.
+        mutationsOf commands
+          `shouldBe` [ "delete-addon"
+                     , "delete-nodegroup"
+                     , "delete-open-id-connect-provider"
+                     , "delete-cluster"
+                     ]
+        any ("wait" `elem`) commands `shouldBe` False
+        -- Two minutes of ten second polls, five of fifteen, four of fifteen.
+        elapsedSince world `shouldReturn` ((120 + 300 + 240) * second)
+        -- Each child is read once before its delete, then polled every interval from zero.
+        statusPolls "addon.status" commands `shouldBe` (1 + 13)
+        statusPolls "nodegroup.status" commands `shouldBe` (1 + 21)
+        statusPolls "cluster.status" commands `shouldBe` (1 + 17)
+
+    it "waits for a child that is already deleting, without deleting it a second time" $ do
+      -- The rerun after a wait that ran out of budget: the service may refuse a
+      -- second delete of a child it is already deleting, so it is not issued.
+      -- The node group is still leaving when the add-on is done, so the case
+      -- reaches the branch it is about (a child that has already left is a
+      -- different branch).
+      world <- newVirtualWorld
+      calls <- newIORef []
+      runner <-
+        eksAccount
+          world
+          calls
+          defaultEksScripts
+            { nodeGroupScript = (leavesAfter 420) {childStartsDeleting = True}
+            }
+      reaped <- Native.reapAwsNativeStackFamily runner (roomyWaitEnvironment world) eksRef eksConfig
+      reaped `shouldBe` Right ()
+      commands <- readIORef calls
+      mutationsOf commands
+        `shouldBe` ["delete-addon", "delete-open-id-connect-provider", "delete-cluster"]
+      -- It is waited for: read once, then polled from where the add-on left it
+      -- (second 120) until the node group leaves (second 420).
+      statusPolls "nodegroup.status" commands `shouldBe` (1 + 21)
+      elapsedSince world `shouldReturn` ((120 + 300 + 240) * second)
+
+    it
+      "ends in a typed timeout naming the fact when a child never leaves, and deletes nothing behind it"
+      $ do
+        world <- newVirtualWorld
+        calls <- newIORef []
+        runner <- eksAccount world calls defaultEksScripts {nodeGroupScript = neverLeaves}
+        reaped <- Native.reapAwsNativeStackFamily runner (roomyWaitEnvironment world) eksRef eksConfig
+        reaped `shouldSatisfy` either (Text.isPrefixOf "WaitTimedOut:") (const False)
+        reaped `shouldSatisfy` either (Text.isInfixOf "EKS node group absent") (const False)
+        reaped `shouldSatisfy` either (Text.isInfixOf "EKS node group status DELETING") (const False)
+        commands <- readIORef calls
+        mutationsOf commands `shouldBe` ["delete-addon", "delete-nodegroup"]
+        -- The add-on's two minutes and the node group's whole budget: a quarter of
+        -- the thirty minute intent.
+        elapsedSince world `shouldReturn` ((120 + 450) * second)
+
+    it "stops at once when a child reports a terminal failure status" $ do
+      world <- newVirtualWorld
+      calls <- newIORef []
+      runner <-
+        eksAccount
+          world
+          calls
+          defaultEksScripts {nodeGroupScript = (leavesAfter 5) {childTerminalStatus = Just "DELETE_FAILED"}}
+      reaped <- Native.reapAwsNativeStackFamily runner (roomyWaitEnvironment world) eksRef eksConfig
+      reaped `shouldSatisfy` either (Text.isPrefixOf "WaitAborted:") (const False)
+      reaped `shouldSatisfy` either (Text.isInfixOf "DELETE_FAILED") (const False)
+      commands <- readIORef calls
+      mutationsOf commands `shouldBe` ["delete-addon", "delete-nodegroup"]
+      statusPolls "nodegroup.status" commands `shouldBe` 2
+
+    it "keeps polling through a throttled status read" $ do
+      world <- newVirtualWorld
+      calls <- newIORef []
+      runner <-
+        eksAccount world calls defaultEksScripts {throttledNodeGroupPolls = 3}
+      reaped <- Native.reapAwsNativeStackFamily runner (roomyWaitEnvironment world) eksRef eksConfig
+      reaped `shouldBe` Right ()
+
+    it "waits for terminated instances by polling their states, then removes the network behind them" $ do
+      world <- newVirtualWorld
+      calls <- newIORef []
+      runner <- instanceAccount world calls (Just 60)
+      reaped <- Native.reapAwsNativeStackFamily runner (roomyWaitEnvironment world) testRef testConfig
+      reaped `shouldBe` Right ()
+      commands <- readIORef calls
+      any ("wait" `elem`) commands `shouldBe` False
+      -- The states are read only after the terminate request ...
+      findIndex (elem "terminate-instances") commands
+        `shouldSatisfy` isBefore (findIndex isInstanceStatePoll commands)
+      -- ... and the network is removed only after the last state poll.
+      Just (lastIndexOfStatePoll commands)
+        `shouldSatisfy` isBefore (findIndex (elem "disassociate-route-table") commands)
+      -- Ten second polls from zero to a minute.
+      elapsedSince world `shouldReturn` (60 * second)
+      length (filter isInstanceStatePoll commands) `shouldBe` 7
+
+    it "ends in a typed timeout when an instance never terminates, and removes none of the network" $ do
+      world <- newVirtualWorld
+      calls <- newIORef []
+      runner <- instanceAccount world calls Nothing
+      reaped <- Native.reapAwsNativeStackFamily runner (roomyWaitEnvironment world) testRef testConfig
+      reaped `shouldSatisfy` either (Text.isInfixOf "EC2 instances terminated") (const False)
+      reaped `shouldSatisfy` either (Text.isInfixOf "shutting-down") (const False)
+      commands <- readIORef calls
+      indexOf "disassociate-route-table" commands `shouldBe` maxBound
+      indexOf "delete-vpc" commands `shouldBe` maxBound
+      -- Fifteen percent of the thirty minute intent.
+      elapsedSince world `shouldReturn` (270 * second)
+
+    -- A guard, not evidence of behaviour: the cases above show the behaviour,
+    -- this keeps a later edit from reintroducing the shape they replace.
+    it "keeps every aws wait subcommand out of the Provider's AWS code" $
+      mapM_
+        (readFile >=> (`shouldNotContain` "\"wait\""))
+        [ "src/Prodbox/Lifecycle/AwsNativeStackFamily.hs"
+        , "src/Prodbox/Lifecycle/EbsVolume.hs"
+        , "src/Prodbox/ControlPlane/ProviderProduction.hs"
+        ]
+
     it "deletes the exact parent delegation, then the zone's records, then the zone itself" $ do
       calls <- newIORef []
       reaped <-
-        reapAwsNativeStackFamily
+        reapNative
           (recordingRunner calls (subzoneResponseHolding leftoverRecordsJson))
           subzoneRef
           subzoneConfig
@@ -213,7 +356,7 @@ lifecycleAwsNativeStackFamilySuite =
         -- target), so each record travels whole.
         calls <- newIORef []
         reaped <-
-          reapAwsNativeStackFamily
+          reapNative
             (recordingRunner calls (subzoneResponseHolding leftoverRecordsJson))
             subzoneRef
             subzoneConfig
@@ -238,7 +381,7 @@ lifecycleAwsNativeStackFamilySuite =
     it "leaves an already-empty subzone to a plain delete" $ do
       calls <- newIORef []
       reaped <-
-        reapAwsNativeStackFamily
+        reapNative
           (recordingRunner calls subzoneResponse)
           subzoneRef
           subzoneConfig
@@ -257,7 +400,7 @@ lifecycleAwsNativeStackFamilySuite =
     it "refuses to delete a subzone whose records it could not read" $ do
       calls <- newIORef []
       reaped <-
-        reapAwsNativeStackFamily
+        reapNative
           (recordingRunner calls (subzoneResponseHolding "not json"))
           subzoneRef
           subzoneConfig
@@ -276,7 +419,7 @@ lifecycleAwsNativeStackFamilySuite =
       -- is not deleted behind it (the delete would only fail later under another name).
       deniedCalls <- newIORef []
       denied <-
-        reapAwsNativeStackFamily
+        reapNative
           ( recordingRunner
               deniedCalls
               ( answeringTheListing
@@ -291,7 +434,7 @@ lifecycleAwsNativeStackFamilySuite =
       -- An object where the filter should have produced an array is not read as an empty zone.
       objectCalls <- newIORef []
       notAnArray <-
-        reapAwsNativeStackFamily
+        reapNative
           (recordingRunner objectCalls (answeringTheListing (success "{\"ResourceRecordSets\": []}")))
           subzoneRef
           subzoneConfig
@@ -302,7 +445,7 @@ lifecycleAwsNativeStackFamilySuite =
       -- is still attempted, because it is tolerant of the same answer.
       goneCalls <- newIORef []
       gone <-
-        reapAwsNativeStackFamily
+        reapNative
           ( recordingRunner
               goneCalls
               (answeringTheListing (failure "NoSuchHostedZone: No hosted zone found with ID: ZSUBZONE123"))
@@ -394,6 +537,223 @@ nativeFamilyEvidenceValidationCase =
     let absent = mustRight (encodeAwsNativeStackFamilyEvidence ref [])
     validateProviderIntentEvidence intent absent `shouldBe` Right absent
 
+-- | The reaper over a world in which nothing waits: a case that never polls
+-- does not read the clock, and a case that does builds its own world.
+reapNative
+  :: AwsNativeStackFamilyRunner IO
+  -> ProviderNativeStackFamilyRef
+  -> ProviderStackConfig
+  -> IO (Either Text ())
+reapNative runner ref config = do
+  world <- newVirtualWorld
+  Native.reapAwsNativeStackFamily runner (roomyWaitEnvironment world) ref config
+
+reapWithin
+  :: AwsNativeStackFamilyRunner IO
+  -> ProviderNativeStackFamilyRef
+  -> ProviderStackConfig
+  -> [Text]
+  -> IO (Either Text ())
+reapWithin runner ref config admitted = do
+  world <- newVirtualWorld
+  Native.reapAwsNativeStackFamilyWithin runner (roomyWaitEnvironment world) ref config admitted
+
+second :: Natural
+second = 1000000
+
+elapsedSince :: VirtualWorld -> IO Natural
+elapsedSince world = subtract virtualStartMicros <$> virtualNowMicros world
+
+-- | How one EKS child leaves the account once it is deleted.
+data EksChildScript = EksChildScript
+  { childLeavesAfter :: Maybe Natural
+  -- ^ Seconds after the delete is requested; 'Nothing' never leaves.
+  , childStartsDeleting :: Bool
+  -- ^ Already deleting when the reap begins, as after a wait that timed out.
+  , childTerminalStatus :: Maybe String
+  -- ^ A terminal status the child reports once deletion is requested.
+  }
+
+leavesAfter :: Natural -> EksChildScript
+leavesAfter seconds = EksChildScript (Just seconds) False Nothing
+
+neverLeaves :: EksChildScript
+neverLeaves = EksChildScript Nothing False Nothing
+
+data EksScripts = EksScripts
+  { addonScript :: EksChildScript
+  , nodeGroupScript :: EksChildScript
+  , clusterScript :: EksChildScript
+  , throttledNodeGroupPolls :: Int
+  }
+
+defaultEksScripts :: EksScripts
+defaultEksScripts =
+  EksScripts
+    { addonScript = leavesAfter 120
+    , nodeGroupScript = leavesAfter 300
+    , clusterScript = leavesAfter 240
+    , throttledNodeGroupPolls = 0
+    }
+
+-- | The cluster's OIDC issuer URL in the fixture region.
+oidcIssuer :: String
+oidcIssuer = "https://oidc.eks." <> Text.unpack region <> ".amazonaws.com/id/ABC"
+
+-- | An EKS ARN in the fixture region and account.
+eksArn :: String -> String
+eksArn resource = "arn:aws:eks:" <> Text.unpack region <> ":123456789012:" <> resource
+
+-- | A scripted EKS account. Each child is present until its deletion has been
+-- requested and its script says it has left; the cluster cannot be deleted
+-- while its node group is still there, as in the service.
+--
+-- The durations are exercised assumptions that drive the mechanism (the order,
+-- the polls, the timeout), not recorded AWS behaviour, and they discharge no
+-- gate about how long AWS takes; the budgets are tightened from recordings
+-- (Unit Testing Policy § 5.1).
+eksAccount
+  :: VirtualWorld
+  -> IORef [[String]]
+  -> EksScripts
+  -> IO (AwsNativeStackFamilyRunner IO)
+eksAccount world calls scripts = do
+  requests <- newIORef ([] :: [(String, Natural)])
+  throttles <- newIORef (throttledNodeGroupPolls scripts)
+  let stateOf kind script = do
+        now <- virtualNowMicros world
+        asked <- readIORef requests
+        pure $ case (lookup kind asked, childStartsDeleting script) of
+          (Nothing, False) -> Just "ACTIVE"
+          (since, _) ->
+            let began = maybe virtualStartMicros id since
+             in case (childTerminalStatus script, childLeavesAfter script) of
+                  (Just terminal, _) -> Just terminal
+                  (Nothing, Just duration)
+                    | now - began >= duration * second -> Nothing
+                  _ -> Just "DELETING"
+      describeChild kind script arn query = do
+        state <- stateOf kind script
+        pure $ case state of
+          Nothing -> failure "An error occurred (ResourceNotFoundException) when calling the Describe operation"
+          Just status
+            | ".status" `isSuffixOf` query -> success (status <> "\n")
+            | otherwise -> success arn
+      request kind = do
+        now <- virtualNowMicros world
+        modifyIORef' requests ((kind, now) :)
+        pure (success "{}")
+  pure $
+    AwsNativeStackFamilyRunner $ \arguments -> do
+      modifyIORef' calls (<> [arguments])
+      case arguments of
+        "eks" : "describe-addon" : _ ->
+          describeChild
+            "addon"
+            (addonScript scripts)
+            (eksArn "addon/aws-ebs-csi-driver" <> "\n")
+            (queryOf arguments)
+        "eks" : "describe-nodegroup" : _ -> do
+          throttling <- readIORef throttles
+          asked <- readIORef requests
+          let statusPoll = ".status" `isSuffixOf` queryOf arguments && lookup "nodegroup" asked /= Nothing
+          if statusPoll && throttling > 0
+            then do
+              modifyIORef' throttles (subtract 1)
+              pure
+                (failure "An error occurred (Throttling) when calling the DescribeNodegroup operation: Rate exceeded")
+            else
+              describeChild
+                "nodegroup"
+                (nodeGroupScript scripts)
+                (eksArn "nodegroup/aws-eks-test-node-group" <> "\n")
+                (queryOf arguments)
+        "eks" : "describe-cluster" : _ ->
+          describeChild
+            "cluster"
+            (clusterScript scripts)
+            (eksArn "cluster/aws-eks-test-cluster" <> " " <> oidcIssuer <> "\n")
+            (queryOf arguments)
+        "eks" : "delete-addon" : _ -> request "addon"
+        "eks" : "delete-nodegroup" : _ -> request "nodegroup"
+        "eks" : "delete-cluster" : _ -> do
+          remaining <- stateOf "nodegroup" (nodeGroupScript scripts)
+          case remaining of
+            Nothing -> request "cluster"
+            Just _ ->
+              pure
+                ( failure
+                    "An error occurred (ResourceInUseException) when calling the DeleteCluster operation: cluster has nodegroups attached"
+                )
+        "resourcegroupstaggingapi" : _ -> pure (success emptyTaggedResourcePage)
+        _
+          | isNetworkListing arguments -> pure (success "[]")
+          | otherwise -> pure (success "")
+
+-- | A scripted aws-test account: its instances report shutting-down from the
+-- terminate request until the given number of seconds later, then terminated;
+-- 'Nothing' never terminates. Everything else is the usual aws-test answers.
+instanceAccount
+  :: VirtualWorld
+  -> IORef [[String]]
+  -> Maybe Natural
+  -> IO (AwsNativeStackFamilyRunner IO)
+instanceAccount world calls terminatesAfter = do
+  terminatedAt <- newIORef Nothing
+  pure $
+    AwsNativeStackFamilyRunner $ \arguments -> do
+      modifyIORef' calls (<> [arguments])
+      now <- virtualNowMicros world
+      case arguments of
+        "ec2" : "terminate-instances" : _ -> do
+          modifyIORef' terminatedAt (const (Just now))
+          pure (success "{}")
+        _
+          | isInstanceStatePoll arguments -> do
+              requested <- readIORef terminatedAt
+              pure . success $ case (requested, terminatesAfter) of
+                (Nothing, _) -> "running\trunning\trunning\n"
+                (Just began, Just duration)
+                  | now - began >= duration * second -> "terminated\tterminated\tterminated\n"
+                _ -> "shutting-down\tshutting-down\tshutting-down\n"
+          | otherwise -> pure (awsTestResponse arguments)
+
+-- | Whether a command reads the instances' states.
+isInstanceStatePoll :: [String] -> Bool
+isInstanceStatePoll arguments =
+  "describe-instances" `elem` arguments
+    && queryOf arguments == "Reservations[].Instances[].State.Name"
+
+-- | The commands that change the account, by AWS operation name.
+mutationsOf :: [[String]] -> [String]
+mutationsOf commands =
+  [ operation
+  | command <- commands
+  , operation <- take 1 (filter (`elem` mutationOperations) command)
+  ]
+ where
+  mutationOperations =
+    [ "delete-addon"
+    , "delete-nodegroup"
+    , "delete-open-id-connect-provider"
+    , "delete-cluster"
+    ]
+
+-- | How many times a command asked for the given status query.
+statusPolls :: String -> [[String]] -> Int
+statusPolls query commands = length [() | command <- commands, queryOf command == query]
+
+-- | Whether the first position is known and strictly before the second.
+isBefore :: Maybe Int -> Maybe Int -> Bool
+isBefore later earlier = case (earlier, later) of
+  (Just before, Just after) -> before < after
+  _ -> False
+
+-- | The index of the last command that read the instances' states.
+lastIndexOfStatePoll :: [[String]] -> Int
+lastIndexOfStatePoll commands =
+  maximum (-1 : [index | (index, command) <- zip [0 ..] commands, isInstanceStatePoll command])
+
 recordingRunner
   :: IORef [[String]]
   -> ([String] -> ProcessOutput)
@@ -408,7 +768,7 @@ awsTestResponse arguments
   | "--output" `elem` arguments
   , "text" `elem` arguments =
       success $ case queryOf arguments of
-        "Vpcs[].VpcId" -> "vpc-1\n"
+        "Vpcs[].VpcId" -> "vpc-0a1b2c3d4e5f60718\n"
         "InternetGateways[].InternetGatewayId" -> "igw-1\n"
         "RouteTables[].RouteTableId" -> "rtb-1\n"
         "RouteTables[].Associations[].RouteTableAssociationId" ->
@@ -417,7 +777,15 @@ awsTestResponse arguments
         "SecurityGroups[].GroupId" -> "sg-1\n"
         "Reservations[].Instances[].InstanceId" -> namedId "instance" arguments
         _ -> ""
+  | isNetworkListing arguments = success "[]"
   | otherwise = success "{}"
+
+-- | The listings of the interfaces and groups in the stack's VPC, which the
+-- reaper reads before it deletes a subnet. Nothing is there.
+isNetworkListing :: [String] -> Bool
+isNetworkListing arguments =
+  "json" `elem` arguments
+    && any (`elem` arguments) ["describe-network-interfaces", "describe-security-groups"]
 
 subzoneResponse :: [String] -> ProcessOutput
 subzoneResponse = subzoneResponseHolding "[]"
@@ -592,7 +960,7 @@ containsArguments expected arguments = expected `isInfixOf` arguments
 hasTestFamily :: Either Text [Text] -> Bool
 hasTestFamily value = case value of
   Right identities ->
-    "vpc/vpc-1" `elem` identities
+    "vpc/vpc-0a1b2c3d4e5f60718" `elem` identities
       && length (filter (Text.isPrefixOf "instance/") identities) == 3
       && length (filter (Text.isPrefixOf "route-table-association/") identities) == 3
   Left _ -> False

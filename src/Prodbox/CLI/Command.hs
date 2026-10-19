@@ -1,5 +1,6 @@
 module Prodbox.CLI.Command
   ( AdminActionCommand (..)
+  , AwsAuditStack (..)
   , AwsCommand (..)
   , AwsTeardownFlags (..)
   , BootstrapBrokerCommand (..)
@@ -335,7 +336,18 @@ data AwsCommand
   | AwsCheckQuotas
   | AwsRequestQuotas PolicyTier
   | AwsReapTestEbs Bool
+  | -- | Sprint 4.110: the provider-enumerated inventory of one stack's declared
+    -- field (both stacks when none is named), or the same reads as a read-only
+    -- script.
+    AwsAudit (Maybe AwsAuditStack) Bool
   deriving (Eq, Show)
+
+-- | The stacks @prodbox aws audit@ reads. The per-run subzone is audited by its
+-- hosted-zone id, which only the stack records, so it has no selector here.
+data AwsAuditStack
+  = AwsAuditEks
+  | AwsAuditTest
+  deriving (Eq, Show, Enum, Bounded)
 
 -- | Operator-facing flags on @prodbox aws teardown@. Sprint 7.7
 -- replaced the single @--allow-pulumi-residue@ Bool with a tri-state

@@ -47,6 +47,7 @@ import Prodbox.Bootstrap.Broker.KubernetesAttestation
 import Prodbox.CLI.Command
   ( AdminActionCommand (..)
   , AdoptableLegacyStack (..)
+  , AwsAuditStack (..)
   , AwsCommand (..)
   , AwsTeardownFlags (..)
   , BootstrapBrokerCommand (..)
@@ -318,6 +319,24 @@ parserForPath path =
         fmap
           (RunNative . NativeAws . AwsReapTestEbs)
           (yesSwitchParser "Confirm deletion of test-scoped EBS volumes")
+    ["aws", "audit"] ->
+      Just $
+        fmap
+          (\(stack, emitScript) -> RunNative (NativeAws (AwsAudit stack emitScript)))
+          ( (,)
+              <$> optional
+                ( option
+                    (eitherReader parseAuditStack)
+                    ( long "stack"
+                        <> metavar "STACK"
+                        <> help "Stack to inventory: eks or test (both when omitted)"
+                    )
+                )
+              <*> switch
+                ( long "emit-readonly-script"
+                    <> help "Print the reads as a read-only AWS CLI script instead of taking the inventory"
+                )
+          )
     ["bootstrap-broker", "start"] ->
       Just $
         fmap
@@ -1396,6 +1415,12 @@ tierOptionParser defaultTier helpText =
         <> help helpText
     )
 
+parseAuditStack :: String -> Either String AwsAuditStack
+parseAuditStack raw = case raw of
+  "eks" -> Right AwsAuditEks
+  "test" -> Right AwsAuditTest
+  _ -> Left "--stack must be one of: eks, test"
+
 parseTier :: String -> Either String PolicyTier
 parseTier rawTier =
   case rawTier of
@@ -1652,6 +1677,20 @@ awsGroup =
         ]
         []
         [example ["aws", "quotas", "check"] "Inspect AWS quotas."]
+    , leaf
+        "audit"
+        "Inventory a stack's field in the provider"
+        "Ask the Provider, through the Lifecycle Authority, to take a read-only inventory of one stack's declared field in AWS: the stack's own resources, everything inside its VPC, the registered IAM names and the per-run volumes the cluster owns, with the retained state bucket as the positive control. The verdict is Clean, Residue or Unobservable and exits 0, 4 or 5; an unanswered query and a positive control that does not appear both exit 5. Raw identifiers go to standard output and nowhere durable. `--emit-readonly-script` prints the same reads as read-only AWS CLI commands for use when the Authority is unreachable and mutates nothing."
+        [ optionalOption "stack" Nothing "STACK" "Stack to inventory: eks or test (both when omitted)"
+        , flagOption
+            "emit-readonly-script"
+            Nothing
+            Nothing
+            "Print the reads as a read-only AWS CLI script instead of taking the inventory"
+        ]
+        [ example ["aws", "audit", "--stack", "eks"] "Inventory the EKS stack's field in the provider."
+        , example ["aws", "audit", "--emit-readonly-script"] "Print the read-only reads for each stack."
+        ]
     , group
         "ebs"
         "AWS EBS maintenance"

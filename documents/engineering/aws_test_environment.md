@@ -606,6 +606,29 @@ resolving any suite-owned mutation to a safe durable disposition. This
 is not permission to reuse arbitrary existing AWS state; only registry entries in the project SSoT
 receive the exception.
 
+**Operator decisions recorded for `prodbox` (2026-10-01).** Two decisions bound every audit, reaper,
+and cleanup mechanism this project adds. The shared-account strategy above and this section's
+preference for project-owned cleanup already point the same way; this entry makes both explicit for
+`prodbox`.
+
+1. `prodbox` stays in this one shared account. No second account and no member-account split is
+   created for it. The long-lived resources it depends on — the SES sending identity, the parent
+   hosted zone, the state and backup buckets, and the retained EBS volumes — belong to the operator
+   side of the account and to the registered retained families, so every audit and every reaper this
+   project adds must act only on resources `prodbox` created (recorded identities and run-scope tags,
+   or the closed predicate that a registry-declared controller family carries) and must report
+   anything else without touching it.
+2. There is no AWS-resident janitor: no scheduled rule, function, or account-side reaper. The
+   baseline's optional janitor automation (§ 3.3) is the account owner's; `prodbox` neither installs
+   nor relies on it. A command the operator runs from the `prodbox` CLI is not AWS-resident, so an
+   operator-run residue report or repair verb is compatible with this decision; an always-on process
+   inside the account is not.
+
+**Current revision.** The `expires_at` tag this section requires on every run-owned resource is not
+stamped by any of the four Pulumi programs under `pulumi/`; the run-scope tags the programs stamp are
+what make a resource enumerable. Whether and when the expiry tag is added is a Development Plan
+matter, not a property of this baseline.
+
 ### 7.5 Out-Of-Band Diagnostic And The Manual Recovery Order
 
 An enumeration run from account credentials alone — listing what is live in the account and alerting
@@ -614,6 +637,31 @@ classifier `prodbox` may consult, and nothing in the product reads its verdict: 
 outside the supported surface cannot become an input to a decision that destroys, because the whole
 point of the bounded protocol is that what authorizes a destroy is a record this repository
 committed and read back.
+
+> **Target.** The prohibition above concerns where an answer comes from, not whether enumeration may
+> inform the product. An enumeration run **inside the supported surface** — a read-only Provider
+> observation submitted to the Authority, over a declared field, with every query answered and a
+> positive control that must appear
+> ([Lifecycle Reconciliation Doctrine § 3.0](./lifecycle_reconciliation_doctrine.md#30-positive-absence))
+> — is a product input to **completion**: it licenses a `Clean` verdict for that field. It is never
+> an input to destroy *selection*: what authorizes a destroy stays a committed record or a
+> registry-declared family
+> ([§ 3.2b](./lifecycle_reconciliation_doctrine.md#32b-controller-created-network-dependents-are-declared-families)),
+> and the out-of-band diagnostic above stays a non-input. When the control plane is down and the
+> in-surface enumeration cannot run, the product's answer is the same enumeration printed as
+> read-only AWS CLI commands the operator can run. It prints no mutating command and is not a second
+> route that mutates; anything the operator then deletes by hand is a hand action recorded as one
+> (step 3 below). Status lives only in the
+> [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
+**Current revision.** The in-surface enumeration exists for the per-run `eks` and `test` stacks.
+`prodbox aws audit` is a read-only Provider observation submitted to the Authority, and
+`aws audit --emit-readonly-script` prints the same reads as describe, get, and list commands; it prints
+no mutating command and asserts nothing. The `eks` and `test` destroy verbs consult the enumeration for
+completion and exit non-zero unless it is `Clean`; nothing consults it to select what to destroy. Its
+declared field is narrower than the target's (see
+[Lifecycle Reconciliation Doctrine § 3.0](./lifecycle_reconciliation_doctrine.md#30-positive-absence)),
+and no audit has yet read a real account.
 
 The recovery order when the diagnostic finds something the product cannot name:
 

@@ -11,6 +11,17 @@
 
 ## Phase Status
 
+🔄 **Reopen extended 2026-10-18 to Sprints `5.58`–`5.59` (Standards A/N).** Same own surface, the
+canonical suite's validation bodies and the harness that runs them. The AWS stack validations
+(`aws-eks`, `pulumi`, `ha-rke2-aws`) assert a label and the prefix `sha256:`, and all three printed
+the digest of zero bytes in the 2026-10-13 to 2026-10-15 sweeps while passing; Sprint `5.58` makes
+them assert the provider's verdict and typed rows. The AWS stack lifecycle is reachable only through a run that first brings up
+the home restore graph, whose own defects stop it first; Sprint `5.59` adds a suite scope that
+exercises only the stack lifecycle and a canary that plants the failure shapes on demand. `5.58`
+was unblocked on 2026-10-19, when Phase `4`'s Sprint `4.110` landed the report and verdict it reads;
+`5.59` waits on Sprint `4.111`. The phase now recloses when `5.51`, `5.53`, `5.58` and
+`5.59` reach `Done`. Rationale and decisions: Sprint `0.36`.
+
 🔄 **Reopened 2026-10-08 on Sprints `5.49`–`5.53` (Standards A/N).** Own-surface reopen on the
 canonical suite's validation bodies and on the harness that runs them. A static audit on 2026-10-07
 traced every canonical validation and aggregate step against the current source — 29 targets, one
@@ -5355,8 +5366,9 @@ cleanup families and on the Provider's interpreters and retained-volume ensure, 
 change. The third audit of the home and shared arms, and the review of Sprint `5.52`'s landing, found weaknesses
 that are real, that stop no healthy run, and that no sprint owned: Sprint `5.52` carried them as Remaining Work
 until its review handed them here, and the review found most had no tracked owner. This sprint is where they are
-tracked. It is the runnable code-owned row; its queue row is `Parked` only because the queue's first row is the
-lowest-numbered open sprint (`5.51`, which waits on the operator).
+tracked. It is a code-owned row that waits on no sprint; its queue state is owned by
+[README.md → Resume Here](README.md#resume-here) (decision D6 of Sprint `0.36` keeps it `Parked` behind
+the AWS stack lifecycle track).
 **Doctrine**: [Integration Fixture Doctrine](../documents/engineering/integration_fixture_doctrine.md),
 [Vault Doctrine](../documents/engineering/vault_doctrine.md), and
 [Storage Lifecycle Doctrine](../documents/engineering/storage_lifecycle_doctrine.md).
@@ -5454,6 +5466,16 @@ created-volume notes (Sprint `5.52`), and the refusing arm, the EAB rotation and
 arm: the ensure refuses (the volume holds MinIO or Vault data, and the only supported way to replace it deletes the
 whole retained family); growing it in place (EBS can grow a volume and cannot shrink one, and the file system must
 then be grown too) stays the operator's to ask for. Then each remaining deliverable as its own gated landing.
+
+**Added 2026-10-18 (Sprint `0.36`).** The retained-volume create carries no client token
+(`ebsCreateVolumeArgs` in `src/Prodbox/Lifecycle/EbsVolume.hs` passes none), and the bounded runner
+now kills it at thirty seconds. A kill after the effect landed loses the volume id, and a rerun
+creates a second volume with the same tags. EC2's `CreateVolume` accepts a client token, and the
+AWS CLI's `create-volume` takes `--client-token`, so the create is made idempotent by the call
+itself, with a token derived from the plan's volume identity. That is this sprint's, as an item of
+the retained-volume deliverable. The growth remedy for the size refusal stays the operator's
+decision above; Sprint `4.112`'s cause-to-remedy table registers the refusal as `NukeOnly` with that
+reason until a growth verb exists.
 
 
 ## Sprint 5.54: A Harness Credential Whose Retained Operation Expired Is Replaced, Not Resubmitted [✅ Done]
@@ -5630,6 +5652,197 @@ Make the DNS validation wait out the refusal the public-edge wait already waits 
 
 None. Not a validation's to repair: the refusal itself comes from a gateway that restarts about every ninety
 minutes, which is the heap-growth loop of Sprint `6.5`'s item 4.
+
+## Sprint 5.58: A Validation That Asserts A Prefix Proves Nothing About AWS [📋 Planned]
+
+**Status**: Planned (2026-10-18; unblocked 2026-10-19, when Sprint `4.110` landed). Phase `5` own-surface reopen (Standards A/N) on the AWS stack
+validations' assertions, registered before any behavior change. Sprint `5.49` repaired three
+validations for output nobody printed any more; what they assert now is a label and a prefix.
+**Doctrine**: [Unit Testing Policy § 5](../documents/engineering/unit_testing_policy.md#5-production-adapter-composition)
+and [Lifecycle Reconciliation Doctrine § 3.0](../documents/engineering/lifecycle_reconciliation_doctrine.md#30-positive-absence).
+**Implementation**: `src/Prodbox/TestValidation.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`,
+`src/Prodbox/Infra/AwsTestStack.hs`, and `test/unit/Main.hs`.
+**Blocked by**: none. The assertions consume the report and the verdict that Sprint `4.110` produces
+(`Done`, 2026-10-19).
+**Live-proof**: pending. The three validations are run against real stacks on the home substrate.
+**Deployment qualification**: pending — not invalidated: the sprint changes suite content and no
+production composition.
+**Independent Validation**: producer-to-consumer composition cases over the real renderers, with the
+prior assertion kept as a test-only negative control; no live AWS.
+**Docs to update**: `DEVELOPMENT_PLAN/substrates.md` (Per-Validation Substrate Coverage Notes),
+`DEVELOPMENT_PLAN/system-components.md`, and `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+`ValidationAwsEks` runs `aws stack eks reconcile` and asserts that the output contains
+`AWS EKS Provider receipt: sha256:`; `ValidationPulumi` does the same for the test stack; each then
+compares the stack's recorded outputs with a snapshot. That checks that the verb printed a line and
+that Pulumi's outputs match Pulumi's own state. Nothing in it reads AWS, and the digest it accepts is
+the digest of zero bytes, which is what all three AWS stack validations printed in the 2026-10-13 to 2026-10-15 sweeps. The
+lesson of Sprint `5.49` stands: nothing compiles a validation's expectation against its producer, so
+a green suite says nothing about whether the producer produces anything.
+
+### Deliverables
+
+- The assertions of `aws-eks`, `pulumi`, and `ha-rke2-aws` check the typed rows and the verdict
+  Sprint `4.110` defines: the stack's recorded identities are present in the provider (the cluster
+  and node group active, the subnets, and the security group for `aws-eks`; the instances running
+  for the test stack), not that a label was printed.
+- A receipt whose digest is that of empty input fails the validation by name. This and the
+  composition cases below are the consumer half of the reproducer for the counterexample
+  `EMPTY-INPUT-RECEIPT-ACCEPTED-AS-PROVIDER-EVIDENCE-2026-10-15`; Sprint `4.110` owns the producer
+  half.
+- One composition case per validation feeds the producer's real renderer to the real assertion, so a
+  change to either side that desynchronises them fails a unit case and not a live run.
+- The prefix-only assertions leave the validation bodies, and their ledger row moves to `Completed`.
+
+### Validation
+
+1. For each of the three validations, a producer that prints the digest of zero bytes fails with the
+   empty-input cause, and typed rows that match the provider pass.
+2. A recorded identity that is absent from the provider fails the validation, naming it.
+3. The composition cases pair the real renderer with the real assertion for all three; the prior
+   prefix assertion is kept as a test-only negative control that accepts the empty-input receipt.
+4. The validations still branch on no substrate identity
+   ([Standard M](development_plan_standards.md#m-test-suite-substrates)) and run on the home
+   substrate as today.
+5. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
+
+### Remaining Work
+
+Everything above. Sprint `4.110` is `Done` and fixes what the assertions read. The audit prints its
+report on standard output as stable lines: `AWS_FIELD <stack> account=… region=…`, then `verdict=`,
+`class=… count=…` for each non-empty class, `<class> <identity> <detail>` for each row (at most twenty
+per class, then `omitted=`), `unanswered=` for each gap, and `control=`. The create verbs print the
+same report after a successful create and gate nothing, so after a create the verdict is `Residue` by
+construction: the field holds the new stack, and the assertion is that the rows match the identities
+the stack recorded and that no query went unanswered, not that the verdict is `Clean`. A converged
+stack's receipt is now the digest of its recorded outputs and cannot be the digest of empty input, so
+the empty-input check lands as a test-only negative control beside the content assertion. The destroy
+verbs exit 4 or 5 from `Residue` or `Unobservable`, which a validation that drives them sees as a
+failed command and no longer as a pass.
+
+## Sprint 5.59: The AWS Stack Lifecycle Is Rehearsed In Minutes, Not Discovered In A Home-Wide Run [⏸️ Blocked]
+
+**Status**: Blocked (2026-10-18). Phase `5` own-surface reopen (Standards A/N) on canonical-suite
+content and the harness that runs it: a suite scope that exercises the AWS stack lifecycle by
+itself, and a canary that plants the shapes a destroy must clear.
+**Doctrine**: [Integration Fixture Doctrine § 2B](../documents/engineering/integration_fixture_doctrine.md#2b-planted-residue-and-recorded-provider-behaviour),
+[Unit Testing Policy § 5.1](../documents/engineering/unit_testing_policy.md#51-recorded-laws-for-aws-dependency-behaviour),
+and [Development Plan Standard Q](development_plan_standards.md#q-live-campaign-protocol-and-class-closure).
+**Implementation**: `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`,
+`src/Prodbox/TestValidation.hs`, `src/Prodbox/Lifecycle/ProviderWorker/ProviderWork.hs`,
+`src/Prodbox/ControlPlane/ProviderProduction.hs`, `src/Prodbox/Test/LifecycleCleanupClient.hs`, the
+`test/support/` directory, and a recordings directory under `test/golden/`.
+**Blocked by**: Sprint `4.111`. The canary's expected outcome is the converge loop's.
+**Live-proof**: pending. The canary runs live twice, and the recordings from those runs extend the
+stub's laws.
+**Deployment qualification**: pending — invalidated: the plant intent adds a Provider request
+branch.
+**Independent Validation**: scripted-runner and stub cases, the scrubber's tests, and the suite
+plan's prerequisite table; no live AWS. The canary itself is the live proof.
+**Docs to update**: `documents/engineering/integration_fixture_doctrine.md`,
+`documents/engineering/unit_testing_policy.md`, `DEVELOPMENT_PLAN/substrates.md`,
+`DEVELOPMENT_PLAN/system-components.md`, and `DEVELOPMENT_PLAN/README.md` (Deployment
+Qualification).
+
+### Objective
+
+The defects of the AWS stack lifecycle that live runs found were found minutes into a run that first
+had to bring up the whole home restore graph: the retained TLS lane, the credential and EAB chain,
+SES, and Keycloak. Sprint `2.135` records a campaign stopped for five consecutive cycles at one
+home restore-graph node, so the AWS qualification is welded to a graph whose own defects can stop it
+first. Two things are missing: a suite scope that exercises only the AWS stack lifecycle, and a
+cheap way to produce the failure shapes on demand instead of waiting for a run to produce them by
+accident.
+
+### Deliverables
+
+- **Read the field first.** Sprint `4.110`'s audit is narrower than the doctrine's target in the ways
+  the ledger row names: the retained-EBS and validation-zone families, the run-scope tag join, the
+  per-run subzone's reach from the command, and the destroy bracket on the `aws-subzone` verb. Before
+  the scope asserts `Clean`, this sprint either widens the field or records each omission in the
+  scoped claim's *not covered* list (Sprint `6.7`'s receipt prints it), so that the claim never reads
+  wider than the field.
+- An **`aws-lifecycle` suite scope** that reconciles and destroys the per-run stacks and asserts
+  only the Sprint `4.110` verdict. It keeps the bootstrap floor and the credential reconcile, since
+  the stack lifecycle still needs the retained Authority, Vault, and Provider, and skips the ACME EAB
+  ingress and the SES SMTP install that the harness sequence runs ahead of the suite body today. It
+  deploys no chart and reconciles no public edge, so no retained-certificate retain or restore runs.
+  The post-credential local reconcile that makes the Provider ready stays, and it still brings up
+  the TLS Retention role itself; the sprint records which TLS-lane nodes that reconcile enters, so
+  the claim that a wedged retained certificate cannot stop this scope is checked and not assumed.
+- The **canary**: a closed, tag-checked, test-scoped Provider intent — one request branch, in the
+  family of the test-scoped volume reaper — that plants, inside the VPC of the per-run test stack,
+  an unattached interface in the VPC CNI's shape, an interface-held security group, and a pair of
+  security groups that reference each other. It registers each as a cleanup obligation before
+  creating it and refuses any VPC whose tags do not match the run. The test stack has no EKS
+  cluster, so the planted interface is admitted by the interface family's predicate (Sprint `4.111`)
+  and the planted security groups by the plant intent's own closed predicate, its run-scope tag. The
+  canary suite plants, runs the supported destroy, and asserts `Clean`; the budget is twelve minutes
+  and a quarter of a dollar per run, twice. These are targets, not measurements. The intent's
+  Provider-side dispatch rows are in files Phase `4` owns and are touched here as a test-scoped
+  client, as the test-scoped volume reaper's were; the sprint re-derives the replay-envelope
+  arithmetic for the added branch.
+- **Recordings**: the canary's raw provider errors from its live runs, and the shapes of the
+  operator's 2026-10-14 hand inventory, which Sprint `4.111` transcribed by hand, with reserved
+  example identifiers, into its own test and which this sprint moves into the recordings directory
+  through the scrubber. They are scrubbed to reserved example identifiers under
+  [Vault Doctrine § 20](../documents/engineering/vault_doctrine.md#20-repository-value-hygiene) and
+  kept as the recorded behaviour the stub's laws cite. The scrubber is the only way a transcript
+  enters the repository.
+- A small **stateful stub** of the destroy-path verbs (VPC, subnet, security group, interface, load
+  balancer lag, cluster, virtual clock), at most about nine hundred lines at first, plugged into the
+  runner and clock seams that Sprint `4.109` added and Sprint `4.111` extends and the native-family
+  runner that already exists, so no endpoint injection is needed. Every law cites a recording; it grows only when
+  a recording diverges. A leaked VPC CNI interface and an orphaned cluster security group replay red
+  on the prior behaviour and green after, from the shapes `4.111` transcribed; a late interface
+  release is an assumption-labelled case until a real cycle records it. The stub never counts toward
+  qualification.
+
+### Validation
+
+1. The suite scope's plan contains no ACME EAB, SES SMTP, chart, or public-edge step and keeps the
+   bootstrap floor and the credential reconcile; a prerequisite-table test pins both.
+2. The plant intent refuses a VPC whose tags do not match the run, plants only its closed list of
+   shapes, and registers cleanup before creating; negative controls cover a wrong run scope, a wrong
+   VPC, and a shape outside the list.
+3. A test that reads the recordings directory flags any stub law with no recording; the recorded
+   shapes replay red-then-green from the recordings this sprint commits (the shapes Sprint `4.111`
+   transcribed by hand among them), and laws from
+   the live canary runs are added when they are recorded; the stub's size bound is held by a check.
+4. The scrubber keeps the error text, the order of calls, and the delays and drops every
+   account-bearing value; a test feeds it a transcript with real-shaped identifiers and asserts none
+   survives.
+5. The replay-envelope arithmetic is re-derived and pinned for the added plant branch.
+6. **Live (non-blocking, Standard O).** The canary passes twice, each within its budget and ending
+   `Clean`, and its recordings replay in the stub with no divergence.
+7. Every class the doctrine's field names is either enumerated by the audit or listed in the scoped
+   claim's *not covered* list; a test holds the two lists against each other.
+8. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
+
+### Remaining Work
+
+Everything above, after `4.111`. Requester-managed interface release lag cannot be planted and is
+recorded only from real EKS cycles; the budgets that depend on it stay generous until then.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/integration_fixture_doctrine.md` § 2B and
+  `documents/engineering/unit_testing_policy.md` § 5.1 landed as target text with Sprint `0.36`;
+  Sprint `5.59` moves them to current when the canary and the stub exist.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the extension of the Phase `5` reopen in [README.md](README.md) and
+  [00-overview.md](00-overview.md); add the `aws-lifecycle` scope and the canary to
+  [system-components.md](system-components.md).
 
 ## Documentation Requirements
 

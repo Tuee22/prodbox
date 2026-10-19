@@ -11,7 +11,12 @@ import AdminActionQuotaJournal (adminActionQuotaJournalSuite)
 import Allocation (allocationSuite)
 import AuthorityLogicalObjectTaxonomy (authorityLogicalObjectTaxonomySuite)
 import AuthorityObjectCoreCas (authorityObjectCoreCasSuite)
+import AwsAuditEnumeration (awsAuditEnumerationSuite)
+import AwsAuditVerdict (awsAuditVerdictSuite)
+import AwsAuditWire (awsAuditWireSuite)
 import AwsControlPlaneIsolation (awsControlPlaneIsolationSuite)
+import AwsDestroyConverge (awsDestroyConvergeSuite)
+import AwsFieldAuditExit (awsFieldAuditExitSuite)
 import AwsNativeClients (awsNativeClientsSuite)
 import AwsSesDecommission (awsSesDecommissionSuite)
 import AwsSesLeaseRole (awsSesLeaseRoleSuite)
@@ -19,6 +24,7 @@ import AwsSesLifecycle (awsSesLifecycleSuite)
 import AwsSesReadiness (awsSesReadinessSuite)
 import AwsSesSmtpKey (awsSesSmtpKeySuite)
 import AwsSubstrateProfile (awsSubstrateProfileSuite)
+import AwsWaitPolling (awsWaitPollingSuite)
 import BootstrapBrokerClient (bootstrapBrokerClientSuite)
 import BootstrapBrokerCustody (bootstrapBrokerCustodySuite)
 import BootstrapBrokerEngine (bootstrapBrokerEngineSuite)
@@ -557,7 +563,8 @@ import Prodbox.CLI.Charts
   , renderChartDeploymentPlan
   )
 import Prodbox.CLI.Command
-  ( AwsCommand (..)
+  ( AwsAuditStack (..)
+  , AwsCommand (..)
   , AwsTeardownFlags (..)
   , ChartsCommand (..)
   , CommandRequest (..)
@@ -1767,9 +1774,11 @@ import Prodbox.Workload
   )
 import Prodbox.Workload.Settings qualified as WorkloadSettings
 import ProviderAwsRunner (providerAwsRunnerSuite)
+import ProviderDestroyInterpreter (providerDestroyInterpreterSuite)
 import ProviderEvidenceCodec (providerEvidenceCodecSuite)
 import ProviderEvidenceQualification (providerEvidenceQualificationSuite)
 import ProviderFailureSummary (providerFailureSummarySuite)
+import ProviderStackReceipt (providerStackReceiptSuite)
 import PublicDnsWriteAuthority (publicDnsWriteAuthoritySuite)
 import QualificationCreateInterruptedCounterexample
   ( qualificationCreateInterruptedCounterexampleSuite
@@ -3207,6 +3216,14 @@ unitSuite = do
   absenceStratumWitnessSuite
   providerEvidenceCodecSuite
   operationBudgetSuite
+  awsWaitPollingSuite
+  providerDestroyInterpreterSuite
+  providerStackReceiptSuite
+  awsAuditVerdictSuite
+  awsAuditEnumerationSuite
+  awsAuditWireSuite
+  awsFieldAuditExitSuite
+  awsDestroyConvergeSuite
   providerFailureSummarySuite
   providerEvidenceQualificationSuite
   storeLifetimeWitnessSuite
@@ -6851,6 +6868,17 @@ unitSuite = do
       parseArgs ["aws", "ebs", "reap-test", "--yes"]
         `shouldBe` Right (Options False (RunNative (NativeAws (AwsReapTestEbs True))))
 
+    it "routes aws audit to the native Haskell runtime, over both stacks unless one is named" $ do
+      parseArgs ["aws", "audit"]
+        `shouldBe` Right (Options False (RunNative (NativeAws (AwsAudit Nothing False))))
+      parseArgs ["aws", "audit", "--stack", "eks"]
+        `shouldBe` Right (Options False (RunNative (NativeAws (AwsAudit (Just AwsAuditEks) False))))
+      parseArgs ["aws", "audit", "--stack", "test", "--emit-readonly-script"]
+        `shouldBe` Right (Options False (RunNative (NativeAws (AwsAudit (Just AwsAuditTest) True))))
+
+    it "refuses an audit of a stack it has no inventory for" $
+      parseArgs ["aws", "audit", "--stack", "aws-ses"] `shouldSatisfy` isLeft
+
     it "routes tla-check through the native Haskell runtime" $ do
       parseArgs ["dev", "tla-check"]
         `shouldBe` Right (Options False (RunNative NativeTlaCheck))
@@ -8943,11 +8971,16 @@ unitSuite = do
         readFile
           (repoRoot </> "src" </> "Prodbox" </> "ControlPlane" </> "ProviderProduction.hs")
 
+      stackDestroy <-
+        readFile (repoRoot </> "src" </> "Prodbox" </> "Lifecycle" </> "AwsStackDestroy.hs")
+
       awsTestInfra `shouldContain` "DestroyRegisteredStack"
       awsTestInfra `shouldNotContain` "describe-instances"
       providerProduction `shouldContain` "DesiredAbsent"
-      providerProduction `shouldContain` "\"destroy\""
-      providerProduction `shouldContain` "\"--stack\""
+      -- Sprint 4.111: the destroy pass itself is built where the converging loop
+      -- and the single pass share it.
+      stackDestroy `shouldContain` "\"destroy\""
+      stackDestroy `shouldContain` "\"--stack\""
 
     it "runs Pulumi destroy with a refresh, without stopping at the first resource error" $ do
       -- Red on 0268f5d: neither flag was passed, so a destroy worked from stale
@@ -8957,18 +8990,27 @@ unitSuite = do
         readFile
           (repoRoot </> "src" </> "Prodbox" </> "ControlPlane" </> "ProviderProduction.hs")
 
-      providerProduction `shouldContain` "\"--refresh\""
-      providerProduction `shouldContain` "\"--continue-on-error\""
+      stackDestroy <-
+        readFile (repoRoot </> "src" </> "Prodbox" </> "Lifecycle" </> "AwsStackDestroy.hs")
+
+      -- Sprint 4.111: both destroy routes build their pass in one place.
+      stackDestroy `shouldContain` "\"--refresh\""
+      stackDestroy `shouldContain` "\"--continue-on-error\""
       -- That flag belongs to `pulumi refresh`: it forgets pending creates, which
       -- manufactures the leaks this path exists to remove.
       providerProduction `shouldNotContain` "clear-pending-creates"
+      stackDestroy `shouldNotContain` "clear-pending-creates"
       -- `--continue-on-error` makes the exit status the only partial-failure
-      -- signal, so the stack is removed only from a destroy that exited cleanly.
-      providerProduction `shouldContain` "case commandSuccess destroyed of"
+      -- signal, so a pass succeeded only on a zero exit, and the stack is removed
+      -- only after a pass that did.
+      stackDestroy `shouldContain` "case processExitCode destroyed of"
+      stackDestroy `shouldContain` "ExitSuccess -> PassSucceeded"
+      providerProduction `shouldContain` "PassSucceeded"
       -- Every Pulumi child runs under the killable runner, so none can outlive
       -- its bound or its caller.
       providerProduction `shouldContain` "captureSubprocessKillable"
       providerProduction `shouldNotContain` "captureSubprocessResult"
+      stackDestroy `shouldNotContain` "captureSubprocessResult"
 
     it "runs Pulumi destroy only inside the Provider production interpreter" $ do
       repoRoot <- getCurrentDirectory
@@ -8977,10 +9019,13 @@ unitSuite = do
         readFile
           (repoRoot </> "src" </> "Prodbox" </> "ControlPlane" </> "ProviderProduction.hs")
 
+      stackDestroy <-
+        readFile (repoRoot </> "src" </> "Prodbox" </> "Lifecycle" </> "AwsStackDestroy.hs")
+
       awsTestInfra `shouldNotContain` "pulumiRefreshEither"
       awsTestInfra `shouldNotContain` "subprocessPath = \"pulumi\""
       providerProduction `shouldContain` "runPulumiMutation"
-      providerProduction `shouldContain` "\"destroy\""
+      stackDestroy `shouldContain` "\"destroy\""
 
   describe "test planning" $ do
     let completeLifecyclePerRunTargets =

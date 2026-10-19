@@ -10,6 +10,17 @@
 
 ## Phase Status
 
+🔄 **Extended 2026-10-18 by Sprint `6.7`, and Sprint `6.5` gains a closure dependency on Sprint
+`4.111` (Standards A/N/P).** Phase `6` owns qualification and the clean-room handoff, and is already
+open on Sprint `6.5`, so no reopen entry is added. Sprint `6.5`'s cycles create and destroy a real
+EKS stack, and no supported destroy yet clears the children an in-cluster controller leaves behind;
+the sprint's closure therefore waits on the Phase `4` sprint that does. Sprint `6.7` gives the AWS
+stack lifecycle its own scoped qualification identity, drill ledger, and receipt, so the stream of
+first-live fixes on that surface no longer resets a count it cannot overlap
+([Standard P, scoped claims](development_plan_standards.md#p-deployment-qualification-and-counterexample-closure)).
+It qualifies nothing about the cascade cutover, and `6.5` is parked behind the AWS track, not
+removed. Rationale and decisions: Sprint `0.36`.
+
 🔄 **Reopened and active on Sprint `6.5` (Standards A/L/P).** Sprints `4.86`, `4.89`, `5.36`,
 `7.36`, and `7.38` have completed the replacement program, custody disposition, validation client,
 exact AWS adapters, and compiled DNS-zone binding this cutover consumes. Phase 6 owns the
@@ -557,8 +568,14 @@ Fixtures”](../documents/engineering/integration_fixture_doctrine.md#7-clean-ro
 `src/Prodbox/Test/Qualification/Evidence.hs`,
 `src/Prodbox/Capacity/ProviderWorkerBudget.hs`, `docker/prodbox.Dockerfile`, the four
 `pulumi/*/Pulumi.yaml` projects, and the registered retired-symbol scanner.
-**Closure dependency**: none outstanding. Sprint `7.41` discharged 2026-09-14 and Sprint `7.40`
-discharged 2026-09-11; both are named here because their admissions below must stay legible.
+**Closure dependency**: Sprint `4.111` (added 2026-10-18; a cycle that reaches an EKS destroy qualifies nothing until it lands), plus Sprint `7.41` discharged 2026-09-14 and Sprint `7.40` discharged 2026-09-11, both named here because their admissions below must stay legible.
+Sprint `4.111` is a closure dependency, not a start dependency: every home and AWS cycle this sprint
+qualifies creates and destroys a real EKS stack, and no supported destroy yet clears the children an
+in-cluster controller leaves behind, so a cycle that reaches that step can end in
+`DependencyViolation` and qualify nothing. Decision D6 of Sprint `0.36` parks the campaign behind the
+AWS stack lifecycle track: no cycle that reaches an EKS destroy is started until `4.111` is `Done`,
+and [Standard Q](development_plan_standards.md#q-live-campaign-protocol-and-class-closure) rations
+any live attempt after that.
 **Backward dependency**: Sprint `7.41` and Sprint `7.40`, both discharged, the first on 2026-09-14 and the second on 2026-09-11. Activating the
 typed writer as the sole public route before a create records what it made would delete the legacy
 route while the replacement still cannot name a resource it created — precisely the state that
@@ -7885,6 +7902,106 @@ orchestration.
 ### Remaining Work
 
 None. The live demonstration is a `Live-proof: pending` note and is non-blocking under Standard O.
+
+## Sprint 6.7: The AWS Stack Lifecycle Qualifies Under Its Own Identity [⏸️ Blocked]
+
+**Status**: Blocked (2026-10-18). Phase `6` is already reopened and Active on Sprint `6.5` (Standards
+A/N), so this sprint takes no reopen entry of its own. It is the qualification half of the AWS stack
+lifecycle track: the code that converges (Phase `4`) and the suite that rehearses it (Sprint `5.59`)
+are proven by a claim whose identity binds only the surface it covers, so an edit elsewhere in the
+repository does not reset it
+([Standard P, scoped claims](development_plan_standards.md#p-deployment-qualification-and-counterexample-closure)).
+**Doctrine**: [Development Plan Standard P](development_plan_standards.md#p-deployment-qualification-and-counterexample-closure)
+and [Standard Q](development_plan_standards.md#q-live-campaign-protocol-and-class-closure).
+**Implementation**: `src/Prodbox/Test/Qualification/SourceIdentity.hs`,
+`src/Prodbox/Test/Qualification/SourceManifest.hs`,
+`src/Prodbox/Test/Qualification/CascadeCycleLedger.hs`, `src/Prodbox/TestRunner.hs`, and
+`src/Prodbox/CLI/Spec.hs`.
+**Blocked by**: Sprint `5.59`. The drills it counts are that sprint's canary and suite scope.
+**Live-proof**: pending. The soak is calendar time, not an engineering task.
+**Deployment qualification**: pending — not invalidated: the sprint adds qualification machinery and
+changes no production composition.
+**Independent Validation**: table tests over the manifest policy, the ledger fold, and the receipt's
+checks, including every negative control; no live AWS.
+**Docs to update**: `DEVELOPMENT_PLAN/README.md` (Deployment Qualification and Exit Definition) and
+`DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Standard P binds a qualification claim to one source identity of the whole repository, and every
+landing on a Standard-P surface invalidates the pending claim. Sprint `6.5` needs two consecutive
+cycles on one frozen identity, so the stream of first-live fixes and the count that would qualify
+them cannot overlap on this tree. The AWS stack lifecycle can be exercised without the rest of the
+system. It depends on the retained Authority, Vault, the Authority Backup Adapter, and the Provider,
+which the claim names and does not qualify, so it can be qualified on its own identity, provided the
+identity says exactly that and the claim is honest about its size: with no failure observed, two clean cycles bound the failure rate no tighter than 78% at
+95% confidence.
+
+### Deliverables
+
+- A **scoped source-manifest policy** for the AWS stack lifecycle, recorded with its identifier,
+  version, and digest as Standard P requires. It names a module list that this sprint fixes — the
+  Provider's destroy and observation modules, the native-family reaper, the registry families, the
+  audit, the `aws-lifecycle` scope and the canary, and the validations that assert the verdict (the
+  drill harness and the oracle are inside it) — plus the four Pulumi programs. The list is part of the
+  policy digest, so adding a module changes the identity. Documents, unlisted modules, and tests
+  outside the harness and the oracle are outside it, so an edit there does not reset the claim; the
+  drills are what is counted. Each drill records the digest of the Provider component image it ran
+  against. Because one image carries code from outside the list, a digest change with an unchanged
+  list is reported and does not reset the count.
+- A **drill ledger and receipt**, reusing Sprint `6.5`'s observer machinery: hash-chained `Begun` and
+  `Closed` records written before and after each drill, and a read-only receipt that says what it
+  recomputed and what it could only compare. A drill that needed a hand action is recorded and breaks
+  the count.
+- The receipt's checks are the exit criteria of the claim, all with zero hand actions on one frozen
+  identity: the canary passes twice; a leak-injected EKS destroy (a planted available interface and
+  an orphan cluster security group) ends `Clean`; a destroy killed mid-run converges on rerun; two
+  consecutive EKS create-and-destroy cycles from audit-clean starts end with an empty scoped diff
+  (prodbox tags and recorded VPC ids) and a destroy that finishes inside twenty-five minutes; and a
+  soak of ten runs over at least five calendar days, two of them after merges that leave the scoped
+  list unchanged and change the rest of the repository.
+- The receipt prints the failure-rate bound its count supports
+  ([Standard Q](development_plan_standards.md#q-live-campaign-protocol-and-class-closure)) and the
+  claim's uncovered list, which is the same sentence as the README's scoped row: *not covered* — the
+  retained TLS lane, the credential and EAB chain, SES, Keycloak, every chart, and the home cascade
+  cutover; *depended on and not qualified* — the retained Authority, Vault, the Authority Backup
+  Adapter, and the credential reconcile that provisions the Provider.
+
+### Validation
+
+1. The manifest policy: a change to a listed module or Pulumi program changes the identity; a change
+   to a document, to an unlisted module, or to a test outside the harness and the oracle does not;
+   the policy identifier, version, and digest are recorded in the identity; a Provider image digest
+   change with an unchanged list is reported and does not reset the count.
+2. The ledger fold: a drill with a hand action, an interrupted drill, and a source change inside the
+   scope each break the consecutive count; a clean drill extends it.
+3. The receipt refuses `QUALIFIED` when any criterion has no drill, prints the bound, and refuses to
+   count the 2026-10-14 cycle, which followed a hand deletion.
+4. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
+
+### Remaining Work
+
+Everything above, after `5.59`. The live drills are `Live-proof: pending` and non-blocking under
+Standard O; the scoped row in
+[README.md → Deployment Qualification](README.md#deployment-qualification) stays `pending` until the
+receipt reports every criterion.
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- None beyond the Standards P and Q text landed with Sprint `0.36`; the qualification ledger lives
+  only in [README.md](README.md#deployment-qualification).
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Record the scoped row and its uncovered-components list in
+  [README.md](README.md#deployment-qualification) and add the drill ledger to
+  [system-components.md](system-components.md).
 
 ## Documentation Requirements
 

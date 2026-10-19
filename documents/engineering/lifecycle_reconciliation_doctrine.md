@@ -1090,6 +1090,48 @@ names is therefore outside the vocabulary entirely — which is the state a leak
 detecting one depends on enumeration from the provider rather than on any value this repository
 holds.
 
+> **Target.** The third bullet describes what a tag query can license. A provider-enumerated
+> inventory is a different instrument and licenses a narrower claim: an inventory in which **every
+> query was answered**, taken over a **field declared before the query runs** and containing a
+> **positive control that must appear**, licenses absence for that field and for no other. The field
+> is one stack's recorded VPC and subnets, its cluster and node group, the interfaces, security
+> groups, load balancers, NAT gateways, endpoints, and instances inside that VPC, the retained-EBS and
+> validation-zone families by their lifecycle tags, the per-run subzone, and the registered IAM names,
+> joined to the run-scope tags. It never widens to the account, which other projects share. An
+> unanswered query makes the verdict `Unobservable`; so does a positive control that fails to
+> appear, because a blind catalog and an empty one return the same rows. The verdict is one of
+> `Clean`, `Residue`, or `Unobservable`, and it licenses a completion claim. It never selects what to
+> destroy: destroy authority stays a committed record or a registry-declared family
+> ([§ 3.2b](#32b-controller-created-network-dependents-are-declared-families)). It is also not the
+> scoped terminal escape audit of § 6, which refutes by tag query at the end of a cascade; the verdict
+> does not stand in for that audit, and the audit does not stand in for the verdict. Evidence that
+> outlives the run holds counts, class labels, and keyed commitments, never raw identifiers.
+> Status lives only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
+**Current revision — the per-run destroy verbs bracket themselves with a provider inventory (Sprint
+`4.110`).** `aws stack eks destroy --yes` and `aws stack test destroy --yes` take an inventory of the
+stack's declared field before the destroy and again after it, print the difference
+(`AWS_FIELD_DIFF`), and exit zero only from a closing inventory whose verdict is `Clean`: `Residue`
+exits 4, an inventory that could not be taken exits 5, a destroy that failed keeps its own status,
+and a baseline that could not be taken never stops the destroy. `prodbox aws audit` takes the same
+inventory on its own. The inventory is a read-only Provider observation submitted to the Authority
+under the Provider's existing role, and its field is the stack's own resources by exact name,
+everything inside the VPC those names located (whoever made it, which is what lets it see a child an
+in-cluster controller attached after the plan was confirmed), the registered IAM names, and the
+per-run volumes the cluster owns, with the retained state bucket as the positive control.
+
+That field is narrower than the target above in four ways, stated here so the verdict is not read
+as wider than it is. The VPC is located by its exact `Name` and managed-by tags, not by the identifier
+the stack recorded. The retained-EBS and validation-zone families are not enumerated and the join to the
+run-scope tags is not built. The per-run subzone's field exists in the audit and is not reachable from
+the command. And the evidence the Provider returns carries resource identifiers and short descriptions,
+not keyed commitments: the Authority retains a settled Provider operation's evidence with the
+operation, as it does for every Provider observation, so the target's last sentence is not yet met
+(bounded at 4,096 characters, never a credential). The `aws-subzone` and `aws-ses` destroy verbs and the
+cascade's per-run destroys take no such bracket, so for them completion is still the Pulumi exit and
+the checkpoint, and a resource the checkpoint never held is outside it. A converged stack's receipt is
+now the digest of the outputs it recorded and is refused when it would be the digest of empty input.
+
 **Current revision — an existing checkpoint that parses to nothing is unobservable, not absent.**
 `residueStatusFromCheckpointObservability` in `src/Prodbox/Lifecycle/LiveResidue.hs` maps
 `CheckpointEmpty` to `ResidueUnreachable`, naming the stack and the empty object. A genuinely absent
@@ -1906,6 +1948,112 @@ completion slot, a persistence-protocol change, to write data nothing reads; the
 records are not attributable at all, since a record set carries no tag and its family has no owning
 stack, and a challenge record leaked into the per-run subzone makes that zone's reaper fail rather than
 hide it.
+
+
+### 3.2b Controller-created network dependents are declared families
+
+> **Target.** The families this section declares are not yet declared in the registry. The closed
+> rule, the converging destroy, and the manifest route's clearing they rely on are built, and so are
+> the budgeted waits (see **Current revision**). It extends the controller-family rule above to the children an EKS
+> cluster's networking controllers create, and states the one place where a reaper may remove a
+> resource that no manifest could list in advance. Status lives only in the
+> [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
+A cluster's controllers create children that no create in this repository can record, because they
+do not exist until a controller acts: the VPC CNI attaches network interfaces to nodes to hold pod
+addresses, and EKS creates the security group the nodes and the control plane share. The load
+balancer controller's children are already a declared family (§ 3.2a, "A controller's child is named
+from the declaration"). These are the same kind of thing and are handled the same way — as
+**declared families of the EKS stack**, neither members of a manifest list nor the result of a
+search.
+
+A family is declared in the registry by key and coordinate. The coordinate carries the owning
+cluster, the stack's VPC identified by the exact `Name` and managed-by tags the stack stamps, and a
+**closed predicate** that the observation evaluates at the mutation boundary. For the interface
+family the predicate is: status `available`, not requester-managed, inside that VPC, and carrying
+the VPC CNI's tag or description. For the security-group family it is: the group EKS created for that
+cluster, inside that VPC, referenced by nothing once the interfaces are gone. A candidate the
+predicate does not admit is never touched, however it came to be there; it is reported, and the
+result is `Blocked`. This is not containment — a resource's presence in the VPC does not admit it —
+and it is not discovery: the registry declares the family and the predicate, and the observation only
+evaluates them. Discovery by tag or name prefix alone stays forbidden.
+
+Interfaces that an AWS service holds on the account's behalf — a load balancer's, the EKS control
+plane's — are *requester-managed*. This repository never detaches or deletes them. A family waits
+for their release inside a named budget, polling in short children under a deadline that fits the
+intent's lifetime, never with an `aws … wait` inside a bounded child, and an expired budget is
+`Blocked`, not a force.
+
+A family applies to the stacks the registry declares it for. The interface family's predicate does
+not depend on a cluster being present, so a stack that has none, such as `aws-test`, can carry it;
+the security-group family's predicate names the group EKS created for the cluster and applies to
+`aws-eks` only. A shape that a test-scoped intent plants is admitted by that intent's own closed
+predicate (its run-scope tag), never by a production predicate widening to take it.
+
+Order is part of the declaration. The families are reaped after the workloads that own them have
+gone and before the stack's native family, because a subnet or VPC delete that runs first fails with
+`DependencyViolation`. The same families serve both destroy routes: the supported
+`aws stack <stack> destroy --yes`, which converges (a bounded destroy pass, the families, a second
+pass, then an inventory under § 3.0), and the manifest-authorized native-family reaper, whose
+allowlist rule (§ 3.2) is unchanged because the families are declared rather than discovered. The
+outcome is `Clean` or a typed `Blocked` naming the class counts, the first identifiers, a digest, and
+the next safe command; every step is idempotent and observes before it mutates, so a rerun makes
+progress.
+
+**Current revision.** The closed rule, the converging destroy, and the manifest route's clearing exist
+(Sprint `4.111`, first increment); the registry's declaration of the families does not.
+`Prodbox.Lifecycle.AwsNetworkDependents` evaluates the two predicates — an interface in the stack's VPC that
+is `available`, not requester-managed, an ordinary interface, carrying the VPC CNI's tag or description and
+tagged for no other cluster; the group in that VPC named `eks-cluster-sg-<cluster>-…` that carries the tag
+`aws:eks:cluster-name=<cluster>`, never the VPC's default group — waits for the interfaces a service holds
+under the `InterfacesReleased` budget, deletes what the predicate admits, and reports everything else. The
+VPC is read from every row and compared with the stack's, as well as asked for in the listing's filter. The
+Provider's destroy of a stack that has a VPC (`aws-eks` and `aws-test`; `convergeStackDestroy` in
+`src/Prodbox/ControlPlane/ProviderProduction.hs`) runs the loop of `Prodbox.Lifecycle.AwsDestroyConverge`: a
+first Pulumi pass bounded to 450 thousandths of the intent's lifetime; after a failed pass, `pulumi cancel`
+(a Pulumi stopped by SIGKILL leaves the backend lock its update held, and the final pass would stop on it);
+the repair after any failed first pass or non-empty field, a superset of the `DependencyViolation` case, which
+does nothing while the stack's EKS cluster, node group, add-on, or instances still exist or cannot be read
+(what they hold is released when the final pass deletes them), and otherwise, for `aws-eks`, first calls the
+load-balancer controller family's reaper; a final pass; and a reading of the field with the audit's
+enumeration (§ 3.0), which judges every class but the per-run volumes, whose reaper is a step of its own. The
+stack record is removed only from an empty, fully answered field, and the result is otherwise a `Blocked`
+text of at most 3,500 characters that keeps the record and, when its history is cut, keeps its instruction.
+The repair acts in a VPC that both the stack's recorded `vpc_id` output and its exact `Name` and managed-by
+tags name, the tags read apart from every other source (the cluster's marks widen what the audit reads and
+never where the repair deletes), and refuses when they disagree or the record cannot be read; a stack that
+recorded none acts only in the one VPC its tags name. Whether the owners are gone is a handful of reads of
+their own, each retried once. Every read outside a mutation is held to the session, so that when little
+window is left the unread classes are gaps and the report is returned inside the intent. A pass is
+stopped by SIGTERM, a second SIGTERM two seconds later, and SIGKILL only after the grace: measured on Pulumi
+3.228.0, the second signal makes it exit at once with no lock and no plugin left, where the first alone waits
+for the operation in flight and a SIGKILL strands the plugins, which run in process groups of their own. The
+cascade's per-run destroys submit the same Provider intent, so they run the same loop. The native-family
+reaper (`reapEc2Family`) clears the same dependents after the instances terminate and before the route-table
+and subnet deletes, and refuses with a named remainder when a service still holds an interface or a candidate
+is outside the predicate; its allowlist rule is unchanged. No Provider request branch was added.
+
+What is not built is the declaration. The registry has no row for either family, the create-record coverage
+table has no row, the typed teardown's graph has no position for them, and the dispatch rows do not name them,
+so the admission by class is a property of the code of two Provider operations and not of the registry; until
+Sprint `4.111`'s second increment lands, the rule above is not met as written. The waits are loops of short
+describe or delete calls, each a child well inside the Provider's thirty-second bound, and no `aws … wait`
+child remains in the Provider's AWS code: `Prodbox.Lifecycle.AwsWait` polls under a named budget from
+`Prodbox.ControlPlane.OperationBudget`, ending at the nearer of the fact's ceiling and the session's usable
+window with a typed timeout that names the fact. The budgets are authored, not measured, and they are
+ceilings and not allotments: an operation whose ceilings cannot all be spent inside one intent (the EKS
+reaper, and the destroy, which spends 450 thousandths before its first wait) is registered as windowed, and
+what it promises is its reserve. No recording of an interface release exists: the scripted account that gates
+the loop is a model, built from shapes transcribed by hand from the operator's 2026-10-14 hand inventory.
+Classes the executor does not clear — NAT gateways, endpoints, an unknown owner, an unmarked group, an
+interface a service never releases — are reported and make the result `Blocked`. Two risks are known and
+unbuilt: a Pulumi that ignores both signals for the grace is killed and strands its plugin processes, and the
+loop's reading of emptiness sets the positive control aside. The Provider runs its children one at a time
+under a small CPU envelope, so a call is seconds and not an instant; the budgets were authored for less and
+the live recordings will measure it. The clearing recorded on 2026-10-14 was a hand deletion, which is the
+last resort that
+[aws_test_environment.md § 7.5](./aws_test_environment.md#75-out-of-band-diagnostic-and-the-manual-recovery-order)
+defines and requires to be recorded as one.
 
 
 ### 3.3 Result-indexed programs and the durable cleanup graph
@@ -3120,6 +3268,10 @@ requires the typed expiring session in §5b. API or authentication failure recor
 failure and opens only the `RequiresAttempt` backstop edges. The graph cannot downgrade that failure
 because provider destroy succeeded, and it cannot issue two drain attempts under separately
 materialized kubeconfigs.
+
+> **Target.** The controller-family obligations are to include the network dependents declared in
+> § 3.2b, cleared after the drain and before the stack's native family. Status lives only in the
+> [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 
 ### 5d. Historical Shared-Credential Postflight Record (Sprint 7.10)

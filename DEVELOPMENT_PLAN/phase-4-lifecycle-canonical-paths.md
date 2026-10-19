@@ -10,6 +10,29 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-10-18 on Sprints `4.109`–`4.112` (Standards A/N).** Own-surface reopen on the
+Provider's AWS destroy path, which this phase authored (Sprints `4.99` and `4.102`–`4.105`). At the
+reopen neither destroy route could clear or correctly wait for a child that an in-cluster controller
+created after the plan was confirmed. The supported `aws stack <stack> destroy --yes` was one bounded
+`pulumi destroy`; the manifest-bound native-family reaper was a fixed chain with no network-interface
+step and an allowlist that can never admit such a child; and the per-run hardening that handled them
+left with commit `f59ccfc`. A leaked VPC CNI interface and an orphaned cluster security group therefore ended a
+destroy in `DependencyViolation` in the 2026-09-29/30 incident, and the residue it left stayed until
+a hand clearing on 2026-10-14. Nothing measures clean in the provider either: the supported
+destroy's completion is a
+statement about the checkpoint, and the create verbs' receipts on a converged stack are the digest
+of empty input (Sprint `4.110` closed both on its code-owned surface on 2026-10-19). Sprint
+`4.109` (`Done`, 2026-10-18, on its code-owned surface; no Provider image carrying it has run) replaced
+waits that cannot finish inside a thirty-second child with budgeted polls; `4.110` (`Done`,
+2026-10-19, on its code-owned surface; no Provider image carrying it has run) added the
+provider-enumerated verdict and content-bearing receipts; `4.111` (`Active`, 2026-10-19: its first
+increment — the closed rule for the controller-created network dependents, the converging destroy in
+the Provider, and the manifest route's clearing — is done on its code-owned surface, with no Provider
+image carrying it, and the registry's declaration of the families is its remaining work) makes the
+destroy converge or name what blocks it; `4.112` gives each AWS-lifecycle refusal a remedy. The phase recloses when all four reach `Done`;
+until then this entry records an open reopen, not a closure. The 2026-10-15 reclosure on Sprint
+`4.108` stands for the surface it covered. Rationale and decisions: Sprint `0.36`.
+
 ✅ **Reclosed 2026-10-15 on Sprint `4.108` (Standards A/N).** Own-surface reopen on the AWS-admin recovery
 protocol, which this phase authored. CloudTrail showed six harness runs each deleting the SMTP key family's key and
 minting another while the custody sealed at the first stayed, so the last run committed the receipt of a key whose
@@ -15046,6 +15069,9 @@ differs, and stop three `show` layers from escaping it past reading.
   predicates over AWS CLI output keep their existing first-4,096-character text.
 - The apply callback returns `ApplyFailure`: an apply that ran and failed is reported as "provider
   apply failed", and only a lost response is reported as "provider apply response unavailable".
+  (Sprint `4.109` later deleted the lost-response arm: no production code constructed it, the worker
+  observes again after every apply whatever it reported, and a child stopped at its bound is named by
+  the `ChildTimedOut` finding below. Only the failed-apply wording remains.)
 - The execution, Worker-client and Authority-client errors each own a renderer that carries a
   failure detail unchanged; `show` no longer re-escapes it across the three layers.
 
@@ -15057,7 +15083,9 @@ differs, and stop three `show` layers from escaping it past reading.
 2. A preview's "changes were proposed" error after a long resource listing, and a missing-stack
    message after a long preamble, are recognised; the same predicates over the truncated text are
    not.
-3. A failed apply and a lost response render differently through the execution boundary.
+3. A failed apply and a lost response render differently through the execution boundary. (Held until
+   Sprint `4.109` deleted the second arm; the case now holds that a failed apply is never rendered as a
+   response that did not arrive.)
 4. A detail containing quotes and newlines survives the three renderers verbatim; `show` of the same
    error escapes it.
 5. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
@@ -15461,6 +15489,1041 @@ of the material in hand, which the retained custody already computes (`commitmen
 difference where the Target's generation rules allow it. (d) Bind the access-key identifier into the custody's
 non-secret metadata so a later attempt can compare it with the inventory; this changes a closed codec shape that
 the Target Agent also reads. The recommendation is (a) now and (b) as the repair; (c) and (d) widen two codecs.
+
+## Sprint 4.109: A Wait Inside A Thirty-Second Child Cannot Finish [✅ Done]
+
+**Status**: Done (2026-10-18). Phase `4` own-surface reopen (Standards A/N) on the Provider's AWS
+waits, retries, and failure vocabulary, registered before any behavior change and landed on its
+code-owned surface. It is a row of the AWS stack lifecycle track that Sprint `0.36` schedules and it
+has no dependency: the polls it adds are correct whether or not a controller-created dependent ever
+blocks a destroy.
+**Doctrine**: [Lifecycle Reconciliation Doctrine § 3.2b](../documents/engineering/lifecycle_reconciliation_doctrine.md#32b-controller-created-network-dependents-are-declared-families)
+(the waits it prescribes) and
+[Unit Testing Policy § 5.1](../documents/engineering/unit_testing_policy.md#51-recorded-laws-for-aws-dependency-behaviour).
+**Implementation**: `src/Prodbox/ControlPlane/OperationBudget.hs` (the wait budgets),
+`src/Prodbox/Lifecycle/AwsWait.hs` (the poll), `src/Prodbox/Lifecycle/AwsNativeStackFamily.hs`,
+`src/Prodbox/Lifecycle/EbsVolume.hs`, `src/Prodbox/ControlPlane/ProviderProduction.hs`,
+`src/Prodbox/ControlPlane/ProviderNarrowSession.hs`, and
+`src/Prodbox/ControlPlane/ProviderWorkerExecution.hs`; the cases are
+`test/unit/OperationBudget.hs`, `test/unit/AwsWaitPolling.hs`,
+`test/unit/ProviderDestroyInterpreter.hs`, `test/unit/LifecycleAwsNativeStackFamily.hs`,
+`test/unit/EbsEnsure.hs`, and `test/unit/ControlPlaneProviderWorkerExecution.hs`.
+**Blocked by**: none.
+**Live-proof**: pending. The first observation is a destroy that waits on a real release, after the
+Provider image rolls. No Provider image carrying this change has been built or rolled, and every
+duration in its scripted worlds is an exercised assumption rather than a recording.
+**Deployment qualification**: pending — invalidated: the change moves destructive cleanup and
+deadline composition under Standard P.
+**Independent Validation**: scripted-runner cases over a virtual clock for each poll, the budget
+algebra's property tests, and the old shape kept as a test-only negative control; no live AWS.
+**Docs to update**: `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` and
+`documents/engineering/lifecycle_reconciliation_doctrine.md`.
+
+### Objective
+
+Every `aws` CLI child the Provider starts is killed at thirty seconds (`providerAwsCliLimits`); a
+Pulumi child runs under its own, longer bound. Three places asked an `aws` child for work that takes
+longer. The native-family reaper ran four waiters that poll for minutes — `aws eks wait` for an
+add-on, a node group, and the cluster to be deleted, and `aws ec2 wait instance-terminated` — so
+none could finish. The retained-volume create waited with `aws ec2 wait volume-available`. And the
+load-balancer controller family's security-group delete made ten attempts, one second apart,
+against interfaces its load balancer held, which are reported to release over minutes (no
+recording of that lag exists yet). A wait that cannot finish inside its child is a failure that has
+not happened yet. Sprint `4.105` gave an operation one window; this sprint gives each wait its own
+named budget inside that window, gives the destroy interpreter the seam its tests need, and retires
+the one typed failure the Provider declared and never produced.
+
+### Deliverables
+
+- A typed wait budget in the operation-budget algebra. `WaitFact` names the six facts the Provider
+  waits for: add-on absent, node group absent, cluster absent, instances terminated, volumes
+  available, and security group deletable. `WaitBudget` gives each a poll interval, the longest
+  child one poll may issue (checked against `awsCliChildBoundMicros`, the one constant
+  `providerAwsCliLimits` is built from), and a share, in thousandths, of the intent's lifetime.
+  `waitDeadlineMicros` makes a wait end at the nearer of that ceiling and the session's usable
+  window, so the session can never expire under a wait. Four registered operations name the waits
+  they may run in order; their serial shares total at most 800 thousandths, and the remaining 200 are
+  held for the operation's own mutations and its response. A test over the registered operations
+  holds both, and a second holds that no budget is unused. The shares are **authored, not
+  measured**: they are generous first values and the first live recordings tighten them. A fact for
+  interfaces released is not registered, because nothing waits on it until Sprint `4.111`, which
+  adds it with its first consumer.
+- Every `aws … wait` the Provider ran — the four in the native-family reaper and `volume-available`
+  in the retained-volume create — and the security-group retry are Haskell-side polls
+  (`Prodbox.Lifecycle.AwsWait.awaitFact`). Each poll is a short describe or delete call inside the
+  child bound; the loop pauses for the budget's interval, makes its last poll at the deadline, and
+  never starts one after it. An exhausted budget is a `WaitTimedOut` that names the awaited fact, the
+  polls made, the time spent and what the last poll saw; a poll that cannot succeed by waiting (a
+  refused call, a `DELETE_FAILED` status, a deleted volume) ends the wait at once as `WaitAborted`;
+  and throttling, an unavailable service or a child stopped at its bound is polled again.
+  An EKS child is read before it is deleted: one already `DELETING` is waited for and not deleted a
+  second time, so the rerun after a timed-out wait reaches the same wait. No `wait` subcommand
+  remains in the Provider's AWS code, and `ebsWaitVolumeAvailableArgs` and `retryWaiterOnLag` are
+  deleted.
+- The destroy interpreter takes its runner and its clock as arguments. The native-family reaper takes
+  its runner and an `AwsWaitEnvironment`; `deleteSecurityGroupsWithin` takes the AWS runner and the
+  environment, and `runAws` remains the concrete runner the Provider passes it; `pulumiDestroySelected`
+  takes the Pulumi child runner, so the order of its children (select, destroy with `--refresh
+  --continue-on-error`, `stack rm` only after a clean destroy) runs over a scripted world. The
+  Provider builds the environment from its session's clock and expiry. The reconcile branch of
+  `runPulumiMutation` stays concrete, because nothing in this sprint changes it.
+- `ApplyResponseLost` is **deleted**, with its renderer (the choice this deliverable left open, recorded
+  here). The worker boundary observes again after every apply, whatever the apply reported, so a lost
+  response never needed a separate arm to be settled; the arm changed only a sentence, and its only
+  producer was a test double. The one production source of a missing response, a child stopped at
+  its bound, is already named by the failure summary's typed `ChildTimedOut` finding in the text
+  Sprint `4.103` added. The test that drove it now drives an apply that reported a failure after its
+  effect landed, which is the same boundary behavior.
+
+### Validation
+
+1. A scripted runner over a virtual clock shows each poll returning when the awaited fact becomes
+   true, ending in a typed timeout at its budget, and never issuing a child call longer than the
+   child bound.
+2. A property over the registered operations holds that the serial sum of their wait budgets fits
+   the intent's lifetime.
+3. The old shape — an `aws … wait` and a ten-attempt, one-second retry inside a bounded child — is
+   kept as a test-only negative control and fails the same assertions. No `wait` subcommand remains
+   in any argument vector the Provider's builders produce, asserted over those builders.
+4. Either a lost apply response is classified as such by a production path and a case drives it, or
+   no production code or match arm mentions the constructor.
+5. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
+
+### Current Validation State
+
+Held on 2026-10-18, on the code-owned surface:
+
+1. The polls are driven over a virtual clock by `test/unit/AwsWaitPolling.hs` (the primitive: first-poll
+   return, the interval, the typed timeout at exactly the ceiling, no poll after the deadline, the
+   session window as the nearer bound, a session with nothing usable left, an unreadable clock, an
+   abort, state threaded through the polls), by `test/unit/LifecycleAwsNativeStackFamily.hs` (the
+   three EKS children in dependency order against an account that refuses to delete the cluster
+   while its node group exists, a child already `DELETING`, a child that never leaves, a terminal
+   status, a throttled read, and instances that terminate or do not), by `test/unit/EbsEnsure.hs`
+   (volumes created a moment ago), and by `test/unit/ProviderDestroyInterpreter.hs` (security groups
+   released one at a time, never released, refused, throttled).
+2. `test/unit/OperationBudget.hs` holds the algebra: every fact has a budget naming itself, polls at
+   least twice inside its ceiling, and asks no child longer than `providerAwsCliLimits` allows; the
+   worst registered operation totals 800 thousandths; and the deadline never exceeds the ceiling or
+   the session window.
+3. The old shape is a negative control in two modules: a child stopped at the bound and ten
+   one-second attempts both fail to reach a fact five minutes away, agree with the new poll for one five
+   seconds away (so the control is not vacuous), and the Provider's three AWS source files contain no
+   `"wait"` literal (a guard, not evidence of behavior; the cases above are the evidence).
+4. `ApplyResponseLost` appears nowhere in `src/` or `test/`.
+5. **Mutation exercise.** Six temporary mutations were each caught: the deadline comparison off by one
+   (every timeout case failed, through a guard that makes a zero-microsecond pause a failure, after
+   the first run showed it spinning instead of failing), a child deleted though it was already
+   deleting (the first version of that case passed because the node group had already left by the
+   time the reaper reached it, so the case was rewritten to reach the branch it is about), the
+   add-on wait taken from the wrong budget, `stack rm` after a failed destroy, a dependency violation
+   taken as a refusal, and a creating volume counted as available. All were reverted; no mutation
+   text remains.
+6. Focused groups pass, the primary unit suite passes at 5,650/5,650 with the one known real-`ssh`
+   test excluded by pattern, and `prodbox dev check` is at 0.
+
+### Remaining Work
+
+None on the code-owned surface. Not done, and not claimed:
+
+- **No live proof.** The Provider image has not been rebuilt, so no destroy has waited on a real
+  release. The first observation, with the other two sprints of the Provider roll, is the evidence
+  that tightens the shares ([Standard Q](development_plan_standards.md#q-live-campaign-protocol-and-class-closure)).
+  Every duration in the scripted worlds is an exercised assumption, not a recorded behavior, and
+  discharges no gate about how long AWS takes.
+- The read-back that follows a volume create (`awaitRequiredVolumesVisible`, twelve describe calls five
+  seconds apart) is unchanged. It is not an `aws wait`, it is already a loop of short describes, it has
+  no registered budget, and its worst case, about seven minutes, fits the intent beside the volume
+  budget.
+- `create-volume` still carries no `--client-token`, which stays with Sprint `5.53`.
+- The converge loop, and the interface wait it needs, are Sprint `4.111`'s.
+
+## Sprint 4.110: Clean Is A Verdict The Provider Gives, Not A Pulumi Exit [✅ Done]
+
+**Status**: Done (2026-10-19). Phase `4` own-surface reopen (Standards A/N) on the completion
+evidence of the AWS create and destroy verbs, registered before any behavior change and landed on its
+code-owned surface. It is a row of the AWS stack lifecycle track that Sprint `0.36` schedules and it
+had no dependency. Where a deliverable left a seam open, or the source showed the plan's mechanism
+could not be built as written, the choice is recorded in Deliverables and in Current Validation State
+rather than left to be inferred.
+**Doctrine**: [Lifecycle Reconciliation Doctrine § 3.0](../documents/engineering/lifecycle_reconciliation_doctrine.md#30-positive-absence)
+(the inventory clause) and
+[AWS Test Environment § 7.5](../documents/engineering/aws_test_environment.md#75-out-of-band-diagnostic-and-the-manual-recovery-order).
+**Implementation**: `src/Prodbox/Lifecycle/AwsAudit.hs` (the verdict algebra, the declared classes,
+the report and the diff), `src/Prodbox/Lifecycle/AwsAuditField.hs` (the enumeration, the positive
+control and the read-only script), `src/Prodbox/Lifecycle/AwsAuditEvidence.hs` (the evidence codec),
+`src/Prodbox/Infra/AwsFieldAudit.hs` (the host side: the dispatch, the destroy bracket and
+`aws audit`), `src/Prodbox/Lifecycle/ProviderWorker/ProviderWork.hs` (the request branch and the
+evidence family), `src/Prodbox/ControlPlane/ProviderProduction.hs` (the read-only capability and the
+truthful receipt), `src/Prodbox/ControlPlane/ProviderWorkerExecution.hs`,
+`src/Prodbox/ControlPlane/ProviderWorkerAdapter.hs`, `src/Prodbox/ControlPlane/ProviderNarrowSession.hs`,
+`src/Prodbox/ControlPlane/ProviderAssumedRoleSession.hs`,
+`src/Prodbox/Lifecycle/Teardown/OperationalCredentialInventory.hs`,
+`src/Prodbox/Lifecycle/CredentialProvisioner/ProviderCliActions.hs`, `src/Prodbox/CheckCode.hs`,
+`src/Prodbox/Infra/AwsEksTestStack.hs`, `src/Prodbox/Infra/AwsTestStack.hs`,
+`src/Prodbox/CLI/Spec.hs`, `src/Prodbox/CLI/Command.hs`, `src/Prodbox/Native.hs`, and
+`src/Prodbox/Aws.hs`; the cases are `test/unit/AwsAuditVerdict.hs`, `test/unit/AwsAuditEnumeration.hs`,
+`test/unit/AwsAuditWire.hs`, `test/unit/AwsFieldAuditExit.hs`, and `test/unit/ProviderStackReceipt.hs`.
+**Blocked by**: none.
+**Live-proof**: pending. No Provider image carrying the audit has been built or rolled, so no audit has
+read a real account. The first observation is a read-only baseline on the real account, expected to
+equal the operator's 2026-10-14 hand inventory, after the image roll the track shares. Every account
+the cases enumerate is a scripted model of how the CLI answers and not a recording of AWS.
+**Deployment qualification**: pending — invalidated: the change moves completion evidence and
+lifecycle orchestration under Standard P, and adds one Provider request branch.
+**Independent Validation**: a scripted-runner planted-leak table, the unanswered-query and
+missing-positive-control negative controls, the receipt guard, a scripted destroy bracket, and a
+mutation exercise over the verdict, the enumeration, the bracket, the receipt, and the wire codec; no
+live AWS.
+**Docs to update**: `documents/engineering/cli_command_surface.md`, `AGENTS.md`,
+`documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/aws_test_environment.md`, `DEVELOPMENT_PLAN/system-components.md`, and
+`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+On AWS, completion is a statement about bookkeeping. `aws stack <stack> destroy --yes` reports
+completion when the Pulumi child exits zero and the stack no longer selects, and neither step
+enumerates the provider. The create verbs print `Provider receipt: sha256:…`, but the evidence of a
+converged stack is `stackEvidence` over the stdout of `pulumi stack select`, which is empty, so the
+`aws-eks`, `pulumi`, and `ha-rke2-aws` validations passed, in the 2026-10-13 to 2026-10-15 sweeps,
+printing the digest of zero bytes (`e3b0c442…b855`) while asserting nothing past the label and the
+`sha256:` prefix. The first clean EKS create and destroy, on 2026-10-14, followed the hand deletion
+of a leaked interface and a cluster security group, and no supported command could have enumerated,
+before or after, what the stack's VPC held. The cascade's terminal audit is a different instrument:
+a tag query that refutes at the end of a cascade, and it does not enumerate a VPC. This sprint adds
+the instrument that was missing: a provider-enumerated verdict over a declared field, and receipts
+that carry content.
+
+### Deliverables
+
+- `prodbox aws audit [--stack eks|test] [--emit-readonly-script]`: a read-only Provider observation
+  submitted to the Authority through the fresh host dispatch every other host Provider call uses. The
+  verdict is `Clean`, `Residue`, or `Unobservable` and the exit statuses are 0, 4, and 5. `Clean`
+  needs every declared class answered, the positive control seen, and no row; a row is a refutation
+  and stands whatever else went unanswered; an unanswered query, a class nobody queried, and a
+  control that did not appear are each `Unobservable`, and the report names which. Both stacks are
+  audited when `--stack` is omitted; residue on one and an inventory that could not be taken on the
+  other exits 4, because a row stands whatever else went unanswered.
+- The **declared field**, fixed before any query runs, is one list of classes per stack. `aws-test`:
+  the VPC, subnets, route tables, internet gateway, security groups, interfaces, NAT gateways,
+  endpoints, instances, and load balancers. `aws-eks`: those, plus the EKS cluster, node group,
+  add-on, the OIDC provider, the registered IAM roles and policies, and the per-run volumes the
+  cluster owns. `aws-eks-subzone`: the hosted zone and its delegation record. Four sources answer
+  them and a class is answered only when every source covering it did. The stack's **exact names**,
+  read through the observer the destroy decision uses. The **VPCs, located by reads of their own**
+  and not through that observation: every VPC that carries the stack's exact `Name` and managed-by
+  tags and, for an EKS stack, every VPC the cluster's own marks name (the security group EKS tags with
+  the cluster and the interfaces the CNI tags with it). A VPC whose tags were edited away is therefore
+  still read, two VPCs are both read, and an unrelated refusal in the exact-name observation does not
+  switch off the reading of **everything inside each VPC, whoever made it**, which is the source that
+  sees a child an in-cluster controller made after the plan was confirmed. And the registered IAM
+  names, the per-run volumes by tag, and the **OIDC providers by IAM's own tag listing**: the
+  exact-name source can name the provider only while the cluster is there to name it, so a provider
+  that outlived its cluster was invisible to it. A VPC that does not exist answers every class
+  inside it as empty, while one that could not be located answers none of them.
+- The **positive control** is the retained state bucket's ARN, which must appear in the tagging
+  catalog of the region the bucket lives in. It travels in the request as a validated bucket name and,
+  when the repository authors the state backend's region, that region, because the catalog answers per
+  region and the bucket need not be where the session is (a path, a command, or a wildcard cannot be
+  carried). A catalog that is refused, paginates without end, or does not show the bucket makes the
+  verdict `Unobservable` with its own message.
+- **One Provider request branch, not none; no dispatch purpose.** The deliverable text expected the
+  existing native-family observation to be extended with no new branch and an added dispatch purpose.
+  The source did not allow either. That observation carries no control input and returns identity
+  strings that feed the reaper's decision, which an audit's rows must not; so `ObserveAwsAudit` is a
+  branch of its own (stack, a configuration the audit does not read, and the control), wire tag
+  `37`, appended after the existing tags so no earlier encoding moves, run under the Provider's
+  existing role. And the dispatch-purpose matrix governs the cleanup operation's own observations;
+  a standalone host read uses the fresh dispatch and has no purpose to add. The audit is
+  **account-free**: the request names neither an account nor a region, the Provider audits the account
+  and region its own session holds, and the evidence reports them so the operator can see which were
+  audited.
+- **Evidence** is the `prodbox-aws-audit` family, at most forty rows: a binding row (stack, account,
+  region, and a digest of the classes the stack's field declares), a control row, a `count` row for
+  every class that holds anything, the residue rows shared round-robin across classes so one chatty
+  class cannot hide another, and one `gap` row per class a query did not answer. The thirty-six fixed
+  rows of the widest field cannot crowd the room out. The count is always carried, so an encoder that
+  cannot fit every row carries fewer, found by halving, and never refuses for size; it fits inside the
+  intent's bound and inside the family's own, which is the bound the reader enforces. The digest turns a
+  Provider and a CLI rolled apart into a refusal instead of a class one of them never asked about
+  reading as empty. The decoder derives the rows counted and not carried, and refuses what the encoder
+  cannot have produced: another stack or field, a row it does not know, a class counted or gapped
+  twice, a count that is not a plain natural number or counts nothing or is less than the rows listed,
+  rows with no count, and a binding that is not an account and a region. A reason keeps the command
+  and the code AWS answered with, ahead of the rest, in sixty-four characters.
+- The **destroy** verbs `aws stack eks destroy --yes` and `aws stack test destroy --yes` take an
+  inventory before and after, print `AWS_FIELD_DIFF` (what left, what remains, what appeared, and the
+  verdict), and exit zero only from a closing inventory whose verdict is `Clean`: `Residue` exits 4,
+  an inventory that could not be taken exits 5, a destroy that failed keeps its own status, and a
+  baseline that could not be taken is narrated and never stops the destroy. The **create** verbs print
+  the inventory after a successful create and gate nothing, since the field then legitimately holds
+  the new stack.
+- **Truthful receipts, narrower than written.** A converged stack's evidence is the digest of the
+  outputs the stack recorded (`pulumi stack output --json`) and no longer of what `pulumi stack
+  select` printed. `stackEvidence` returns `Left` for empty input, and a stack that recorded no
+  outputs is `Unobservable`, never satisfied with a receipt that carries no content. The deliverable
+  text spoke of typed rows; the receipt is a digest of the recorded outputs, and the typed rows are
+  the audit's. This is the producer half of the reproducer for the counterexample
+  `EMPTY-INPUT-RECEIPT-ACCEPTED-AS-PROVIDER-EVIDENCE-2026-10-15`
+  ([Standard P](development_plan_standards.md#p-deployment-qualification-and-counterexample-closure));
+  Sprint `5.58` owns the consumer half.
+- `prodbox aws audit --emit-readonly-script` prints `aws` describe, get, and list commands for use
+  when the Authority is unreachable. It is a reading aid and not a second audit: it reads each VPC
+  the stack's tags name with the reads the Provider issues inside it (the load balancer rows filtered
+  by that VPC), the cluster's own resources, the OIDC listing, and the control, and it does not repeat
+  the exact-name reads or the cluster-anchored VPC location. It prints no mutating command and asserts
+  nothing; the verdict is the reader's. When the host cannot read the configured bucket, which is the
+  case when the Authority is down, the script asks for `STATE_BUCKET` instead of reporting the control
+  missing.
+- The audit's reads are in the IAM-coverage scan: `AwsAuditField.hs` is a Provider-run module and the
+  scan's action table names the classic load balancer service beside the others, so the claim that
+  the design needs no role-policy revision is checked against the policy and not assumed.
+
+### Validation
+
+1. A planted-leak table over a scripted runner: each class of the declared field planted alone
+   yields `Residue`; none planted yields `Clean`.
+2. A query that does not answer makes the whole verdict `Unobservable`; a catalog missing its
+   positive control does the same with its own message; neither is ever rendered as an empty class.
+3. A receipt whose digest is that of empty input is refused at the producer. The test is red on the
+   prior behaviour.
+4. The persisted audit record cannot carry a raw identifier: a property over its encoding.
+5. The audit registers no checkpoint operation, adds one request branch and no dispatch purpose, and
+   its evidence stays inside the shared bound, so the Provider Worker's replay response maximum does
+   not move.
+6. A destroy that ends in `Residue` or `Unobservable` exits non-zero; a create prints rows and gates
+   nothing.
+7. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
+
+### Current Validation State
+
+Held on 2026-10-19, on the code-owned surface, as revised the same day after two independent
+read-only reviews of the landing (item 9 lists what they found):
+
+1. **The planted-leak table** (`test/unit/AwsAuditEnumeration.hs`) plants each class of the declared
+   field alone in a scripted account and finds residue in that class: nineteen plantings cover all
+   nineteen classes, the OIDC provider now planted alone and the VPC counted in every planting inside
+   one. An account that holds nothing is `Clean` for all three stacks. A security group a
+   controller attached after the plan, carrying neither the stack's name nor its tag, is found through
+   the VPC; a group the stack names and the VPC holds is counted once; every read inside the VPC carries
+   the VPC the enumeration located and none is issued for a VPC that does not exist; and every command
+   the enumeration issues, over every planting, is a describe, get, or list call. What the provider
+   lists and the stack does not own is not counted: a load balancer in another VPC (application,
+   network, or classic), an endpoint reported deleted or failed, an instance that has terminated, and a
+   NAT gateway that has been deleted. The scripted account applies the state filters the audit sends as
+   AWS does, so a query that drops its filter shows. A VPC whose tags were edited away is still read
+   through the marks the cluster carries, two tagged VPCs are both read, and an unrelated refusal in the
+   exact-name observation leaves the reading inside the VPC on.
+2. **An unanswered query is never an empty class.** A refused exact-name read, a class nobody queried,
+   a VPC that cannot be located (and with it every class inside it), a refused read inside the VPC
+   (which keeps the rows already found), an answer in a shape the audit does not read, a refused read
+   of any one registered IAM name or of the volume listing, and a positive control that does not appear
+   or whose catalog is refused are each `Unobservable`, with the cause in the report, the code AWS
+   answered with ahead of the rest. A `null`, a row that is not an object or names no resource, and a
+   volume listing with no `Volumes` array are each a query the audit did not understand and not an
+   empty class. A name that does not exist is an answered, empty class, a volume already reported
+   deleted is not counted, and a found leak with a missing control stays `Residue`. The control is
+   looked for in the region the request names, and in the session's otherwise.
+3. **The verdict algebra, the report, the diff, and the exit statuses**
+   (`test/unit/AwsAuditVerdict.hs`): clean only when every class answered, the control
+   appeared, and no class holds a row; residue stands over gaps and a missing control; the statuses
+   are 0, 4, and 5; an observation about another stack is refused; the report lists at most twenty
+   rows of a class and says how many it left out; a provider's description cannot break a line or a
+   field; the record a run could leave holds counts, class labels, and the control, and no identifier
+   or description; the diff separates what went away, what remains, and what is new; an ARN is kept
+   by its resource part, so two load balancers of one account differ; the row that says more survives a
+   merge of two queries that saw one resource; and a name cannot steer the terminal with a control
+   or format character.
+4. **The wire** (`test/unit/AwsAuditWire.hs`): a clean field is the binding and the
+   control and names no resource; the decoder reads back exactly what the encoder wrote, including a
+   partly answered class; a field of three hundred interfaces carries every count and as many rows as
+   fit and never refuses for size, even with every class holding rows and every class a gap; the room
+   is shared across classes, with the lone row in a class that sorts after the chatty one so only the
+   sharing can keep it; evidence about another stack, or that counts fewer rows than it lists, is
+   refused; the account and region the Provider audited are read back; the control a request carries
+   is a bucket name and a region and nothing else. The decoder refuses evidence over another field
+   (the digest), a row it does not know, a class counted twice, a count that is padded, signed, or
+   counts nothing, rows with no count, and a binding that is no account and region. The widest
+   field's fixed rows fit inside the forty, and evidence of long identities and details is rendered
+   inside the family's own bound, which is the one the reader enforces, so a heavy field exits 4 and
+   not 5.
+5. **The destroy bracket** (`test/unit/AwsFieldAuditExit.hs`): exit zero from a clean
+   closing inventory with what left narrated; 4 from residue, naming the resource; 5 from a closing
+   inventory that could not be taken and from one with an unanswered class even when it found nothing;
+   a baseline that could not be taken never stops the destroy; a failed destroy keeps its own status and
+   still reports the field, also when the closing inventory cannot be taken; what appeared during the
+   destroy fails the command; a closing inventory with no baseline says so and claims nothing about what
+   left or appeared; the baseline is taken before the destroy and the closing inventory after; and
+   several inventories earn one status in which residue outranks an inventory that could not be taken.
+6. **The receipt** (`test/unit/ProviderStackReceipt.hs`): a converged stack's evidence is
+   the digest of the outputs it recorded, differs from the digest of nothing, changes when the outputs
+   change and not otherwise; a stack that recorded no outputs, or whose outputs cannot be read, is
+   unobservable; a preview that proposes changes needs an apply and reads no outputs; an absent stack is
+   absent for a destroy and needs an apply for a create. The old derivation is a negative control that
+   reads as the digest of empty input.
+7. **The request vocabulary.** `ObserveAwsAudit` is in the existing exhaustive suites that run every
+   intent through the Provider worker's execution and adapter boundaries, in the operational-credential
+   inventory's consumer table (last, so the earlier entries' order is unchanged), and in the role
+   routing. The audit capability is a `ProviderReadOnly`: it opens no scratch, takes no checkpoint
+   permit, and so registers no checkpoint operation. No constant in the replay machinery changed: the
+   evidence stays inside the shared 4,096-character bound, far below the replay response maximum, and no
+   cascade attempt issues the intent, so the attempt-request maximum that sets the replay capacity does
+   not move.
+8. **IAM coverage, and a defect found by reading.** The scan that compares the Provider-run modules'
+   `aws` verbs with the role policy did not list the audit's module, so the sprint's claim that the
+   design needs no role-policy revision had not been checked by anything. `AwsAuditField.hs` is now in
+   `providerCliRunModules`, and the classic load balancer service has its row beside the other
+   service-wide grants (`elasticloadbalancing:*`, which the policy already allows).
+9. **The two reviews, and what they found.** Two independent read-only reviewers read the landing
+   after the gate was green, one against real `aws` CLI behavior and one against the protocol, the
+   codec, the exit algebra, the tests and the documents. Their defects are fixed and each has a case:
+   the OIDC provider class was derived from the cluster, so a provider that outlived its cluster read
+   `Clean`; the VPC was located through the all-or-nothing exact-name observation, so one refused
+   sub-read blanked every VPC-rooted class and a VPC whose tags were edited away was not read at all;
+   the control was looked for in the session's region and not the bucket's, which would have made
+   every audit exit 5 in a deployment whose state bucket is elsewhere; a gap reason began with the
+   whole transcript and the wire cut it at forty characters, so the code AWS answered with never
+   arrived; a `null` was read as an empty class; the encoder fitted the intent's 4,096 characters
+   while the reader enforces the family's own, so a heavy residue field would have been refused and
+   exited 5; the decoder read silence as an answered, empty class, so a Provider and a CLI rolled apart
+   could read a class one of them never asked about as clean, and it accepted padded counts,
+   duplicated rows and rows it did not know; residue on one stack and an uninspectable other exited 5,
+   against the algebra's own rule that a row stands; the read-only script claimed the control missing
+   whenever the host could not read the bucket, its commands covered one VPC, and its load balancer
+   rows were not filtered; the diff of an inventory with no baseline called every row remaining; a
+   volume already deleted was counted; and a provider's name could carry a control character to the
+   operator's terminal. Mutation exercise below.
+10. **Mutation exercise.** Twenty-eight temporary mutations over the verdict, the enumeration, the
+    bracket, the receipt, and the wire codec were each applied, built, run against the sprint's groups,
+    and reverted; the restored files were compared byte-for-byte with their backups and carry no
+    mutation text. Nineteen were caught on the first run by the case the mutation is about. Five showed
+    a missing or weak case, now added: a load balancer in another VPC was counted, a deleted endpoint
+    was counted, and the evidence's round-robin sharing could be removed, because no case planted the
+    first two and the lone row of the third sorted before the chatty class; and terminated instances
+    and deleted NAT gateways could go unfiltered, because the scripted account ignored the state
+    filters the audit sends. Four were masked by other mutations in their batch and were caught when
+    rerun in isolation. A second round, over the fixes the reviews prompted, is recorded under item 11.
+11. **A second mutation round, over the fixes the reviews prompted.** Twenty temporary mutations of the
+    enumeration, the wire codec, the sanitizer, and the host were each run against the six focused
+    groups: the OIDC listing read as empty, the cluster's marks not locating a VPC, the control looked
+    for in the session's region, a `null` read as empty, a reason that is the whole transcript, a
+    deleted volume counted, a volume listing without a `Volumes` array read, the located VPC missing
+    from the field, evidence over another field read, a row this build does not know ignored, a class
+    counted twice, a padded count, a count of nothing, rows with no count, a binding that is no account
+    and region, the encoder ignoring the family's own bound, a name that may steer the terminal,
+    residue outranked by an inventory that could not be taken, a baseline-less diff that does not say
+    so, and `--stack eks` auditing the test stack. Nineteen were killed by a case about them on the
+    first run; five of those (the two volume cases, the located VPC, and the padded count and the count
+    of nothing) shared a case with another mutation of their batch and were proven killed alone. The
+    twentieth, the encoder ignoring the family's own bound, survived: the width sweep over ten classes
+    always ended its packing at the forty-row cap and never at the byte bound. It now puts the rows in
+    one class, and the mutation is killed. Every file was compared with its backup byte for byte after
+    each run.
+12. Focused groups pass (121 cases under `Sprint 4.110`), the primary unit suite passes at
+    5,861/5,861 (the gate's own run, nothing excluded), and `prodbox dev check` is at 0.
+
+### Remaining Work
+
+None on the code-owned surface. Not done, and not claimed:
+
+- **A Provider image must be rolled before the destroy verbs can exit zero.** Until an image that
+  carries request tag `37` is rolled, the worker refuses the audit as an unsupported action, so
+  `prodbox aws audit` exits 5 and `aws stack eks|test destroy --yes` exits 5 after a destroy that
+  succeeded. That is the fail-closed answer, and it is also a rollout dependency the verb docs now
+  state: roll the image before relying on those exit statuses.
+- **No live proof.** No Provider image carries the audit, so no audit has read a real account, and
+  every account the cases enumerate is a model of how the CLI answers. The first observation is a
+  read-only baseline expected to equal the operator's 2026-10-14 hand inventory; its scrubbed
+  transcript is also a recording the stub's laws can cite (Sprint `5.59`). Output shapes the parsers read (for example the classic load
+  balancer listing and the endpoint state field) are assumptions until that baseline reads them.
+- **The field is narrower than the doctrine's target**, and the bracket covers the `eks` and `test`
+  verbs only: the retained-EBS and validation-zone families are not enumerated, no join to the run-scope
+  tags is built, the VPC is located by tags and cluster marks and not by the recorded identifier, the
+  per-run subzone's field exists but the command cannot reach it, and the `aws-subzone` destroy verb is
+  not bracketed. A ledger row owned by Sprint `5.59` carries it; a `Clean` verdict is
+  evidence for the field it enumerated and no other.
+- **Identifiers ride the Provider's evidence, and the Authority retains it.** The target says evidence
+  that outlives a run holds counts, class labels, and keyed commitments. The Provider's evidence is the
+  only channel by which an identifier reaches the operator, and the Authority retains a settled
+  operation's evidence text, as it does for every observation. Nothing this sprint persists on its own
+  holds an identifier (the command writes no record), but the retained evidence does: this is operator
+  decision D9, recorded in Sprint `0.36`'s register and in a `Unowned` ledger row, with the default
+  taken and what each answer costs.
+- **A leaked per-run volume is residue the destroy does not clear.** The EKS stack's per-run volumes
+  are created by the cluster's storage driver and are in no Pulumi state, and the audit counts them,
+  so the closing inventory exits 4 until `prodbox aws ebs reap-test --yes` has run. The typed teardown
+  reaps them in a node of its own; the verb alone does not.
+- **Limits the reviews named and this sprint did not remove.** A VPC of an `aws-test` stack whose tags
+  were edited away is not located, because that stack has no cluster to anchor on; the closing
+  inventory has no settle or retry, so right after a destroy it can list a VPC, role, or tagged entry
+  the provider has deleted but still returns, and a rerun reports `Clean`; a converged stack's receipt
+  is guarded against `{}` and `null` on the reconcile path only, so the read-back path of a stack that
+  recorded no outputs still returns the digest of `{}`; the persisted audit record has no producer, so
+  its test pins a type nothing yet writes; and the read-only script does not repeat the exact-name
+  reads.
+- **The create verbs print the field and assert nothing**, and the validations that follow them still
+  assert a label and a prefix. Sprint `5.58` is the consumer half, now unblocked.
+- **Nothing selects what to destroy from an audit.** A `Residue` verdict names what remains and stops
+  there; the families that clear a controller-created child and the converge loop that judges itself
+  with this verdict are Sprint `4.111`'s.
+- **Replay accounting for repeated audits is not re-derived.** Each audit is one request in the
+  Provider Worker's replay store for its horizon, and the store's capacity is pinned to the cascade's
+  two-attempt envelope; a destroy verb now makes two audits beside its own request. A run that issues
+  requests faster than the store drains them is refused with a visible capacity refusal, not silently.
+- **Fail-closed on a settling field.** A closing inventory taken immediately after a destroy can still
+  see an instance shutting down or an interface not yet released and report `Residue`; a rerun after the
+  provider releases it reports `Clean`. Waiting for that release inside the verb, under a named budget,
+  is Sprint `4.111`'s, because it needs the interface-release budget this sprint left unregistered.
+
+## Sprint 4.111: A Destroy Blocked By What A Controller Made Clears It Or Names It [🔄 Active]
+
+**Status**: Active (2026-10-19). Phase `4` own-surface reopen (Standards A/N) on the Provider's
+destroy interpreter and the registry's controller families, registered before any behavior change.
+It is the sprint that removes the cause of the recorded `DependencyViolation` blockages. Its first
+increment landed on 2026-10-19 on the code-owned surface: the closed rule for what may be cleared,
+the converging destroy in the Provider, the budgets it runs under, the way a cut Pulumi pass is
+stopped, and the manifest route's clearing. Its second increment, the registry's declaration of the
+families with their create-record row, their position in the cleanup graph, and their dispatch rows,
+is the sprint's Remaining Work, and the sprint stays `Active` until it lands. Where the source showed
+that a deliverable could not be built as the first text of this block wrote it, or six independent
+reviews and a probe of the real tools showed a mechanism wrong, the choice is recorded in
+Deliverables and in Current Validation State rather than left to be inferred.
+**Doctrine**: [Lifecycle Reconciliation Doctrine § 3.2b](../documents/engineering/lifecycle_reconciliation_doctrine.md#32b-controller-created-network-dependents-are-declared-families),
+[§ 3.2a](../documents/engineering/lifecycle_reconciliation_doctrine.md#32a-record-before-effect-for-every-resource-kind),
+and [§ 5c](../documents/engineering/lifecycle_reconciliation_doctrine.md#5c-per-run-eks-desired-absence-drains-owners-first).
+**Implementation**: `src/Prodbox/Lifecycle/AwsNetworkDependents.hs` (the closed rule and its bounded
+executor), `src/Prodbox/Lifecycle/AwsDestroyConverge.hs` (the order of the loop),
+`src/Prodbox/Lifecycle/AwsStackDestroy.hs` (the loop over the Pulumi and AWS runners),
+`src/Prodbox/Lifecycle/AwsAuditField.hs` (the tags-only VPC location and the owners probe),
+`src/Prodbox/Lifecycle/AwsWait.hs`, `src/Prodbox/ControlPlane/OperationBudget.hs`,
+`src/Prodbox/ControlPlane/ProviderProduction.hs`, `src/Prodbox/Subprocess.hs` (how a cut pass is
+stopped), and `src/Prodbox/Lifecycle/AwsNativeStackFamily.hs` for the first increment; and, for the
+second, `src/Prodbox/Lifecycle/Teardown/Registry.hs`,
+`src/Prodbox/Lifecycle/Teardown/CreateRecordCoverage.hs`,
+`src/Prodbox/Lifecycle/Teardown/AwsLoadBalancerControllerFamilyAdapter.hs`,
+`src/Prodbox/Lifecycle/Teardown/AwsEksDestroyAdapter.hs`, and
+`src/Prodbox/Lifecycle/ProviderWorker/ProviderWork.hs`; the cases are
+`test/unit/AwsDestroyConverge.hs`, `test/unit/OperationBudget.hs`,
+`test/unit/LifecycleAwsNativeStackFamily.hs`, `test/unit/ProviderDestroyInterpreter.hs`,
+`test/unit/AwsWaitPolling.hs`, and `test/unit/SubprocessKillable.hs`.
+**Blocked by**: none. The converge loop judges its own result with the enumeration Sprint `4.110`
+produces (`Done`, 2026-10-19) and waits with the budgets and the poll that Sprint `4.109` landed
+(`Done`, 2026-10-18).
+**Live-proof**: pending. No Provider image carries the loop, so until one is rolled the supported
+destroy is still the single pass. The first observation is an `aws stack eks destroy --yes` under the
+loop on a real stack; the leak-injected destroy that closes the class belongs to Sprint `6.7`. The
+scripted account that gates the landing is a model of how the `aws` CLI answers, built from shapes
+transcribed by hand from the operator's 2026-10-14 notes with reserved example identifiers; it is not
+a recording of AWS, and every duration in it is an authored assumption. The one behavior of a real
+tool that the landing depends on and no scripted account can show, how Pulumi stops, was measured on
+the host (Remaining Work).
+**Deployment qualification**: pending — invalidated: the change moves destructive cleanup, lifecycle
+orchestration, and the Provider's destroy handler under Standard P.
+**Independent Validation**: stateful scripted-account replays of the recorded failure shapes, a
+mutation exercise over the closed predicates and each phase of the loop, the over-deletion negative
+controls, a probe of Pulumi's real stop behavior, and six independent read-only reviews (two of
+this increment as first written and two of it after the fixes those prompted, after the earlier two of
+Sprint `4.110`); no live AWS.
+**Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`,
+`documents/engineering/cli_command_surface.md`, `AGENTS.md`,
+`DEVELOPMENT_PLAN/README.md` (Counterexample Dispositions),
+`DEVELOPMENT_PLAN/system-components.md`, and `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Until this sprint neither destroy route could clear, or correctly wait for, a child that an
+in-cluster controller created after the plan was confirmed. The supported
+`aws stack <stack> destroy --yes` was one bounded `pulumi destroy --refresh --continue-on-error`
+followed by `stack rm`. The manifest-bound native-family reaper walks a fixed chain — instances,
+route tables, subnets, security groups, internet gateway, VPC — and refuses any identity outside its
+plan-time allowlist, which the doctrine makes deliberate; it had no interface step. `src/` contained
+no reference to a network interface; the per-run EKS hardening that handled them (drain, an interface
+wait, an available-interface purge, a cluster-security-group purge, a state refresh with one retry, a
+post-destroy residue assert) was in the 1,730-line `AwsEksTestStack.hs` that commit `f59ccfc` reduced
+to 376 lines, and nothing replaced it. Its purges were rooted in the checkpoint's snapshot or in a
+description of the cluster, so neither survived an absent cluster or an empty checkpoint; the
+replacement is therefore written VPC-rooted, from the order and the timings the old code recorded, not
+ported. A leaked VPC CNI interface or an orphaned cluster security group ended both routes in
+`DependencyViolation` on the subnet.
+
+### Deliverables
+
+**First increment (landed 2026-10-19).**
+
+- The **closed rule** (`Prodbox.Lifecycle.AwsNetworkDependents`). A candidate is read, classified by a
+  predicate closed over the stack's VPC and, for an EKS stack, its cluster, and is then `Admitted`,
+  `HeldByService`, or `NotAdmitted`. An interface is admitted only when it is in the stack's VPC,
+  `available`, not requester-managed, of type `interface`, carrying the VPC CNI's tag
+  (`eks:eni:owner=amazon-vpc-cni`) or its description prefix (`aws-K8S-`), and tagged for no other
+  cluster. A security group is admitted only when it is in the stack's VPC, its name is
+  `eks-cluster-sg-<cluster>-…`, and it carries the tag `aws:eks:cluster-name=<cluster>`; the VPC's
+  default group is never listed. The VPC is read from every row and compared with the stack's, as well
+  as asked for in the listing's filter, so a listing that dropped its filter reaches nothing outside
+  the VPC and says so. An interface an AWS service holds — requester-managed, or `in-use`,
+  `attaching`, `detaching` — is waited for under the `InterfacesReleased` budget and never detached,
+  deleted, or forced; an interface that became `available` while the repair waited is deleted late,
+  and one whose delete was refused is deleted again in every round of the group wait that follows.
+  Everything else is reported, never touched, and makes the result `Blocked`. A listing that answers
+  `null`, or a row with no VPC, is a listing the executor did not understand and not an empty one. The
+  VPC identifier must be spelled as AWS spells one before it reaches an argument vector, and AWS itself
+  refuses to delete an interface in use or a group that is referenced, which is the second guard.
+- The **converge loop**, in the Provider's destroy handler for the stacks that have a VPC (`aws-eks`
+  and `aws-test`; `stackHasVpc`): a first Pulumi pass bounded to 450 thousandths of the intent's
+  lifetime; then, after any failed first pass or any first pass that left the field non-empty, the
+  repair, preceded after a failed pass by `pulumi cancel` for the reason under the next bullet; then a
+  final pass bounded by the window the session has left less what the reading and the commit after it
+  need and the kill grace; then a reading of the field with the audit's own enumeration, the positive
+  control set aside because the destroy's request carries no bucket and the operator's closing
+  inventory, which does, follows the verb. The stack record is removed only from an empty, fully
+  answered field. Otherwise the result is a typed `Blocked` of at most 3,500 characters that names
+  what remains, what each step did, and the next safe command, and the record is kept, so a rerun
+  continues from the state the passes left; when the history is long it is the middle of the history
+  that is cut, and never the heading, what remains, the instruction, or the first and last steps (the
+  last is the final pass's cause). The cascade's per-run destroys submit the same
+  `DestroyRegisteredStack` intent, so they run the same loop. Every read the destroy makes outside a
+  mutation is held to the session: when the window has less than forty seconds left, no further read
+  is begun and the classes not yet read are gaps, so the report is returned before the intent's hard
+  stop and not lost to it. The Provider runs its children one at a time under a small CPU envelope,
+  so how many reads fit is a measurement (decision D10): five to seven seconds a call, and about ten reads
+  in the closing reserve.
+- **How a cut pass is stopped** (`Prodbox.Subprocess.captureSubprocessKillable`). The first draft of
+  the loop reused the scratch backend for the final pass and assumed a stopped Pulumi leaves nothing
+  behind. A probe of the real tool (Pulumi 3.228.0, a file backend, a plugin that sleeps) showed
+  otherwise. The first SIGTERM only asks Pulumi to cancel, and it waits for the operation in flight, so
+  a pass always rode to the SIGKILL after the grace; a SIGKILL of the child's process group leaves the
+  backend lock behind and leaves every plugin running, because each plugin has a process group of its
+  own; the next operation on the backend then stops in half a second on the lock. A **second SIGTERM**
+  (measured at two tenths of a second and at two seconds after the first) makes Pulumi exit within a
+  fraction of a second with no lock and no plugin left. The runner therefore sends SIGTERM, a second
+  SIGTERM after two seconds, and SIGKILL only after the grace; and the loop runs `pulumi cancel` (which
+  removes a stale lock and exits zero when there is nothing to cancel) after a failed first pass,
+  because the SIGKILL fallback can still fire.
+- The **repair acts only where it is told to, and only when there is something for it to do.** It acts
+  in a VPC that both the stack's recorded `vpc_id` output, read before any pass because the first
+  pass can remove it, and its exact `Name` and managed-by tags name, the tags read apart from every
+  other source the field is read from. A VPC the stack recorded and its tags name is the stack's
+  whatever else carries the same tags, such as a leftover of an earlier run of the same stack, and
+  the repair acts there and nowhere else; a recorded VPC that no tagged VPC matches, a location that
+  could not be read, and recorded outputs that could not be read each make the repair refuse and say
+  so; a stack that recorded none (its outputs hold no `vpc_id`) uses the one tagged VPC if there is
+  exactly one. The cluster's own marks name VPCs for the audit to read and never one for the repair
+  to delete in. While an EKS cluster, node group, add-on, or instance of the stack still exists, or
+  cannot be read, the repair clears nothing and waits for nothing: what they hold is released when the
+  final pass deletes them, and waiting for it spends the window the final pass needs. Whether they
+  are gone is a handful of reads of their own (the cluster, the node group, the add-on, and the
+  instances in each VPC), made apart from the rest of the family's observation so that an unrelated
+  refusal there does not decide it, and a read that failed is read once more before it decides.
+- **Load balancers** are cleared by calling the existing load-balancer controller family reaper
+  (`reapEksLoadBalancerControllerFamily`) with the family's tags, for `aws-eks` only and only when the
+  owners are gone; no second load-balancer deletion was added. It waits under the same reserved window
+  as the rest of the repair.
+- The loop **answers for every class of the field except the per-run volumes.** A leaked per-run volume
+  is the volume reaper's to clear, in a step of its own that follows the destroy, so a destroy that
+  waited on it would hold the stack record in front of the step that clears it; the destroy verb's
+  closing inventory still reports it.
+- The **budgets**: a wait fact `InterfacesReleased` (a fifteen-second poll, 200 thousandths of the
+  intent), a waiting operation `DestroyAwsStack` whose waits are the load balancer's group, the
+  released interfaces, and the cluster's group, the first-pass share (450), the final-pass reserve
+  (300, nine minutes: the repair's own serial calls, then the final pass, then the reading), the
+  destroy overhead (100), the reading's reserve (two minutes) and the stop allowance (forty-five
+  seconds: the grace, the confirmation of a kill, and the settling of the readers) that each pass
+  leaves, and `passLimitMicros`, which bounds a pass
+  by what the reserve leaves of the session window and by its ceiling and the child maximum, and starts
+  no pass when nothing is left. `reserveWaitWindow` ends the repair's waits that much before the session
+  ends, which leaves the repair's remaining calls, the final pass, and the reading their window; when it
+  leaves a group wait no window at all, that wait still makes one attempt. The quick commands around the
+  passes (reading the outputs, cancelling, removing the record) run under a ceiling of a minute and
+  reserve nothing, so a destroy that finishes late can still have its record removed and a hung one
+  cannot spend the intent. Every share is authored, not measured: the first live recordings tighten
+  them, and an expired wait is a typed timeout that names its fact. **The registry no longer claims what
+  it cannot keep:** the manifest route's reaper also waits for interfaces and groups, so its operations
+  list those facts, and an operation whose ceilings cannot all be spent inside one intent (the EKS
+  reaper, whose six waits sum past it, and the destroy, which spends 450 thousandths before its first
+  wait) is classified `windowed`: its later waits end at the window the session has left, in a typed
+  timeout that names the fact. Only the destroy's repair keeps a reserve out of its waits; the manifest
+  route's reaper takes none, because only the chain's own mutations follow its waits.
+- The **manifest route** (`reapEc2Family`) clears the same dependents after the instances terminate
+  and before the route-table and subnet deletes, and refuses with a named remainder when a service
+  still holds an interface or a candidate is outside the predicate. The chain's own security groups
+  are not a remainder, because the chain deletes them, and neither is what the repair has just deleted
+  when its closing listing could not be taken. This widens what the chain removes, by class and not by
+  name, which the doctrine admits only for a registry-declared family; the declaration is the second
+  increment. The allowlist rule is unchanged for every other identity, which is still refused.
+- **No Provider request branch.** The loop runs inside the existing `DestroyRegisteredStack` handler
+  and reads the field in-process, and the reaper change runs inside the existing native-family reap,
+  so the request vocabulary, the replay store's capacity, and every pin derived from them are
+  unchanged. The registry's per-family Observe/Reap pair, which the load-balancer family's precedent
+  would add as two branches, belongs to the second increment, which chooses and re-derives the
+  arithmetic if it adds any.
+- **Amended from the first text of this block.** The retained catalog is not a separate deny list in
+  code: the executor mutates only two kinds of resource, network interfaces and security groups,
+  inside one VPC, so no member of the catalog (the buckets, the SES identity, the parent zone, the
+  retained volumes) is reachable from it, and a deny list would be a second check on a path that has
+  no way to reach them. "Any state-free use is a plan with a digest" has no use in this increment,
+  because the loop acts only inside a stack's destroy and the manifest route only on a confirmed
+  manifest; the state-free use is Sprint `4.112`'s `purge-dependents`. The repair runs after any
+  failed first pass and not only after a recognised `DependencyViolation`, a superset that costs a
+  read when the failure was something else and does not depend on getting a failure text right.
+- The counterexample `EKS-CONTROLLER-DEPENDENT-DESTROY-BLOCKED-2026-09-30` has its repository-owned
+  reproducer in `test/unit/AwsDestroyConverge.hs`: the shapes of the operator's 2026-10-14 hand
+  inventory (the leaked interface's description, tags and subnet, the orphaned group's name and tag,
+  the `DependencyViolation` text, and the end state in which the subnets nothing held had gone and the
+  interface's own remained) are transcribed by hand with reserved example identifiers under
+  [Vault Doctrine § 20](../documents/engineering/vault_doctrine.md#20-repository-value-hygiene), and
+  the single-pass interpreter ends in `DependencyViolation` on them while the loop converges. They are
+  not yet a committed, scrubbed fixture family; Sprint `5.59` supplies recordings. A shape with no
+  recording, such as a late interface release, is an assumption under
+  [Unit Testing Policy § 5.1](../documents/engineering/unit_testing_policy.md#51-recorded-laws-for-aws-dependency-behaviour)
+  and cannot discharge a gate.
+
+**Second increment (remaining).**
+
+- The registry declares the **EKS network-dependent families** beside the load-balancer controller
+  family (doctrine § 3.2b): the VPC CNI interface family and the EKS cluster security-group family,
+  each by key and coordinate — owning cluster, the VPC joined by its exact `Name` and managed-by
+  tags, and the closed predicate — with one Observe and one Reap, a row in `createRecordCoverage`,
+  and dispatch rows. The approved plan's default is to carry them on the existing native-family
+  observe and reap intents, which adds no Provider request branch; the load-balancer family's
+  precedent is a per-family pair, which adds two. The increment chooses between them, records the
+  choice and why, and re-derives and pins the replay-envelope arithmetic in the same landing.
+- The families sit in the typed teardown's graph after the drain and before the stack's native
+  family, so the manifest route and the verb share one implementation of the rule and one
+  declaration of it.
+- The families apply to the stacks the registry declares them for: the interface family to a stack
+  with a VPC, the security-group family to a stack with an EKS cluster (doctrine § 3.2b). The test
+  stack has no cluster, so only the interface family and the shapes a canary plants (admitted by the
+  plant intent's own closed predicate, Sprint `5.59`) apply to it.
+
+### Validation
+
+1. Scripted-runner replays of a leaked VPC CNI interface and an orphaned cluster security group are
+   each red on the prior behaviour (the destroy ends in `DependencyViolation`) and end `Clean`
+   after. An interface that releases late is added as a case labelled an assumption; it does not
+   gate `Done`.
+2. A mutation test per phase of the executor — remove the wait, the interface step, the
+   security-group step, the second pass, the verdict — turns the replay red, and so does loosening
+   each clause of a closed predicate.
+3. Over-deletion controls: an interface in a foreign VPC, a requester-managed interface, an in-use
+   interface, and a group in a foreign VPC are never touched, including when a listing ignores its
+   filter; an unadmitted candidate yields `Blocked` naming it.
+4. A rerun after a `Blocked` result, after a refused delete, and after a partial delete makes
+   progress and ends in the same state, and the `Blocked` detail fits the bound and keeps its
+   instruction.
+5. The manifest route admits the dependents by class and still refuses an identity outside its
+   allowlist; the registry declares them (second increment).
+6. The request vocabulary's replay-envelope pins are re-derived for any branch the second increment
+   adds, zero or two as it chooses; the first increment adds none.
+7. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
+
+### Current Validation State
+
+Held on 2026-10-19, on the code-owned surface, for the first increment:
+
+1. **The recorded leak, replayed.** In a stateful scripted account — a subnet that refuses to delete
+   while an interface sits in it, a group that refuses while an interface uses it, a VPC that
+   refuses while anything but its default group remains, a backend lock that a killed pass leaves —
+   the single-pass interpreter (`pulumiDestroySelected`) ends in `DependencyViolation` on the leaked
+   shapes with the subnet nothing held gone and the interface's own remaining, which is the prior
+   behaviour and the recorded end state, and the loop converges: it clears the interface, then the
+   group, finishes the destroy, reads an empty field, and only then removes the stack record. The first
+   pass is cut at its bound and the rest of the window is spent on the repair and the final pass. A
+   stack whose destroy was clean is left untouched, and a stack with nothing to destroy is reported
+   converged without a reading.
+2. **A cut pass that was killed.** The lock its Pulumi left stops a final pass that does not clear it
+   (a negative control), and the loop clears it between the passes and converges; a pass that finished
+   by itself is not cancelled.
+3. **A service-held interface** is waited for and the loop converges when it releases; one that
+   became available while the repair waited is deleted late, and a refused late delete is retried
+   inside the group wait; one that never releases ends `Blocked` naming it; the final pass still has
+   its reserve when the waits spend their whole budget, including the load balancer family's, and the
+   interface and its group still get their one attempt when the window is gone; and a rerun after the
+   release converges from where the first run stopped.
+4. **Owners.** While an EKS cluster, a node group, an add-on, or an instance still exists, each alone,
+   or an instance cannot be read, nothing is deleted and nothing is waited for, and the report says why;
+   one failed read of the owners, or of the stack's outputs, is read again before it decides; and the
+   load balancer reaper is neither called while the cluster exists nor called after an interface is
+   touched, and a reaper that failed is narrated while the dependents are still cleared.
+5. **Over-deletion controls.** An interface in another VPC is never touched and does not block, also
+   when the listing ignores its filter; an interface that is not plainly the CNI's, is another
+   cluster's, is of another type, or is pending is never touched and is named; this cluster's leaked
+   interface in another VPC is reported and left alone, and does not stop the repair in the stack's
+   own VPC; the VPC's default group and a group in another VPC are never touched; a recorded VPC that
+   the tags do not name, and recorded outputs that cannot be read, stop the repair, a recorded VPC that
+   the tags name is acted in whatever else carries them, and a stack that recorded none acts in the one
+   VPC its tags name; an identifier that is not spelled as AWS
+   spells a VPC is refused before it reaches an argument vector; and a stack with no cluster clears a
+   leaked interface and leaves every group to its owner.
+6. **What the loop answers for.** A field that still holds a role the destroy did not own, or whose
+   read of the roles was refused, keeps the stack record and says so; a leaked per-run volume does not.
+7. **A refused delete** keeps the record and reports the refusal, and a rerun converges once it is not
+   refused.
+8. **The manifest route.** The reaper clears a leaked interface before it deletes a subnet and then
+   finishes the chain, does not stop the chain for a group the manifest already names, does not count
+   what it has just deleted as a remainder when its closing listing cannot be taken, refuses before
+   the first subnet delete when a service still holds an interface and names it, and refuses and
+   touches nothing when an interface is outside the predicate.
+9. **The requests, the wire of the budget, and the stop.** The executor asks for the stack's VPC,
+   projects the VPC of every row, and reads nothing else; a missing interface of either spelling is
+   gone and `InvalidGroup.InUse` is a group still held, and a closed connection is not final; the
+   budgets are pinned, by their authored values and not only against each other (the pass limit never
+   passes its ceiling, the child maximum, or what the reserve leaves; the first pass holds to 450
+   thousandths and the final-pass reserve to 540 seconds; the stop allowance and the reading's reserve
+   stay out of the final pass; the quick commands have a ceiling; the registry lists the reaper's waits
+   and names exactly the two windowed operations); the production wiring's pure parts are the
+   functions the scripted account calls, and the scripted Pulumi refuses a command whose bound is
+   spent and a command without the flags a non-interactive run needs; and the runner repeats SIGTERM for
+   a child that stops only on the second and does not for one that left on the first.
+10. **Time.** With every call costing twelve virtual seconds, the typed report is still returned inside
+    the intent, because the reads stop when the session has no time left; a record is removed after a
+    pass that took all of its limit; the final pass keeps its reserve when a held interface also holds
+    the cluster's group; and a record that cannot be removed is reported.
+11. **Mutation exercise.** Seventy-eight temporary mutations were applied to the final code and the six
+    focused groups run: the stop and its repeat (2), the loop's recovery, order, and report (7), the
+    composition's VPC choice, field verdict, owners gate, reads, and retries (12), the closed
+    predicates and the executor (19), the waits and budgets (15), the manifest route (2), the tags-only
+    VPC location (1), and the enumeration, wire codec, sanitizer, and host of Sprint `4.110`'s review
+    fixes (20). Forty-seven were run alone and thirty-one in four regression batches, over clauses that
+    earlier rounds had killed alone on the same cases; every file was compared with its backup byte
+    for byte after each run. Forty-four of the forty-seven were killed on the first run by a case about
+    the mutated clause. Three survived, and each drove a case. A `null` interface listing read as empty
+    survived because one case gave the odd answer to both listings, and the group parser's refusal hid
+    the interface parser's; the encoder ignoring the family's own bound survived because its width sweep
+    never reached the byte bound; and the repair acting in any VPC a mark names survived, after a first
+    definition that made two functions call each other and ran the test binary out of memory proved
+    nothing, because a recorded VPC that the tags name is acted in whatever else is located, so the
+    marks matter only for a stack that recorded none, and no case said so. Each was rerun and killed.
+    The earlier round on the first increment as it was first written (forty-two mutations in five
+    batches, eleven rerun alone) had found three survivors, a first pass that succeeds with the field
+    still holding something, a field that could not be read counted empty, and the encoder bound, and
+    nine mutations masked by another in their batch and killed when run alone.
+12. **Reviews.** Two independent read-only reviewers read the first increment as first written, one
+    against the real `aws` CLI and over-deletion (replaying the executor's two JMESPath projections
+    against the operator's recorded raw documents) and one against the loop, the budget arithmetic,
+    state persistence, and the tests, after the two that read Sprint `4.110`. Their findings, all fixed
+    with a case unless Remaining Work says otherwise: a final pass that would stop on a stale Pulumi
+    lock after a cut first pass (measured, see Deliverables); a load balancer reaper whose wait ran past
+    the final pass's reserve, with a reserve test that passed without it; a repair that waited on holds
+    only the final pass releases; a report that cut its own instruction first; a wait registry that
+    omitted the reaper's waits, with a test that passed vacuously; the VPC pinned by one filter string
+    that no case would have noticed losing; a refused late interface delete that stalled the group wait
+    for its whole budget; a stale remainder; error-text markers; `null` read as an empty listing; and a
+    repair that located its VPC through the whole-family observer. Two more reviewers then read the
+    fixes, one against the real tools, who measured Pulumi (eighteen double-SIGTERM trials at random
+    moments of a forty-resource destroy left a valid checkpoint and a final pass that exited zero every
+    time; twelve SIGKILL trials stranded a plugin every time and `pulumi cancel` cleared the lock every
+    time), and one against the budget arithmetic and the power of the tests. They found the Provider's CPU
+    envelope (decision D10), the cost of a teardown that straddles the first pass's cut, the stop time
+    left undeducted, a leftover VPC carrying the same tags, three transient-error gaps, a report whose
+    last step was cut first, and a dozen mutations of the source that no focused group noticed; each is
+    fixed or recorded in Remaining Work.
+13. Focused groups pass (78 cases under `Sprint 4.111`), the primary unit suite passes at
+    5,861/5,861 (the gate's own run, nothing excluded), and `prodbox dev check` is at 0.
+
+### Remaining Work
+
+- **Stopped on 2026-10-19, with the account emptied by hand.** The operator stopped development
+  before any live run. The sprint's code is gated offline only, so no defect class it targets is
+  closed (Standard Q needs a recording, a canary step, and two audit-clean cycles; none exists). At
+  the operator's direction the prodbox footprint in the AWS account was deleted by hand that day;
+  the hand action is recorded in the README's wrap-up paragraph and in the operator's record
+  directory, and it counts toward no claim. A resumption therefore starts from an account with no
+  prodbox resources: the retained families (state and backup store, SES, the IAM identities) must be
+  created again before a per-run cycle, and the first `aws audit` verdict over an empty account
+  proves nothing about destroy. The first live evidence is a create followed by a destroy.
+- **The second increment**, above: the registry's declaration of the two families, their
+  create-record row, their position in the typed teardown's graph, and their dispatch rows, with the
+  choice between the existing intents and a per-family pair recorded. Until it lands the admission by
+  class is a property of two Provider operations' code and not of the registry, which is the
+  doctrine's rule for where a resource that no manifest could list in advance may be admitted. That
+  is why the sprint stays `Active` and the counterexample stays open. Its size is measured, not
+  guessed: the load balancer controller family it would be declared beside is named in fifteen
+  source modules (the registry and model, the dispatch and interpreters, the adapter, the narrow
+  and assumed-role sessions, the worker adapter and execution, the credential inventory) and
+  fifteen test modules, so two more families of the same kind is a landing of that size, with the
+  replay-envelope arithmetic re-derived if a request branch is added. It wants a pass of its own
+  and is not folded into a roll that is waiting on live proof of the first increment.
+- **The SIGKILL fallback still strands plugin processes.** The second SIGTERM makes the normal stop
+  clean (measured), but a Pulumi that ignores both signals for the grace is killed, and the plugins it
+  started, each in a process group of its own, survive it. An orphaned `pulumi-resource-aws` holds
+  memory the Provider's Pod (1,120 MiB; one provider schema load peaks near 966 MB) needs for the final
+  pass's own provider. The loop narrates the lock it clears and cannot narrate a process it does not
+  look for; sweeping the descendants of a killed child is not built.
+- **A call is five to seven seconds under the Provider's CPU envelope, and the budgets were authored for
+  one or two.** The capacity plan gives the Provider Worker `100m` of CPU, request equal to limit,
+  shared by every child it starts. Measured 2026-10-19 in the runtime image with a `0.1` CPU quota and
+  no network: `aws --version` took `4.9` seconds (`0.5` of CPU), three service-model calls `5.6` to
+  `6.6` seconds (`0.56` to `0.67` of CPU), `pulumi version` `1.6`; uncapped, the same calls took `0.45`
+  to `0.67`. The audit's thirty-odd serial reads therefore take about four minutes, and the repair's
+  preliminary reads (about five calls, by design) and its dependents step add minutes more. The closing
+  reading holds inside its reserve only when the final pass is quick: a final pass that spends its
+  whole limit leaves `120` seconds less the `40`-second tail, about ten reads, and the exact-name
+  observation is read first, so those ten go to classes a destroy has mostly emptied while the
+  interfaces and load balancers that block one are read last. The loop fails soft under it: reads
+  stop when the session has little left, the classes not yet read are gaps, and the report comes
+  back as `Blocked` for a rerun, which converges because a destroy of an empty stack is quick. Two
+  levers are not built: reading the VPC-rooted classes before the exact-name observation, and sizing
+  the reserve from the first live audit's elapsed time; decision D10 owns the envelope itself.
+- **A destroy whose cluster is still being deleted at the first pass's cut takes two runs.** The
+  recorded clean destroy took 750 seconds against an 810-second cut; a slower teardown is stopped
+  while the node group or cluster is `DELETING`, the owners gate then neither waits nor clears, and
+  the final pass re-issues the delete (measured with a plugin that records its deletes: the pass
+  re-runs the delete, cleans up, and exits zero; what AWS and the AWS provider answer to a repeated
+  delete of a child already `DELETING` is not measured). If the leak is also there, the final pass
+  stops on the subnet and the rerun clears it. The lever, to wait on transitional owners under the
+  existing budgets before the final pass, is not built, because it needs the status of each owner.
+- **The load balancer reaper runs first and shares the repair's window**, so a long wait for the
+  load balancer's own group can leave the cluster's group one attempt, right after its interface is
+  deleted; an `EC2` `DependencyViolation` at that moment leaves a group that nothing else removes
+  and the result is `Blocked`.
+- **False `Blocked` results.** A stranded pre-`7.33` auto-named role is a declared-class row that
+  nothing in the loop can clear (Sprint `4.112` is the remedy); the OIDC provider is read through the
+  tagging catalog, which can lag a delete; a leftover VPC of an earlier run that carries the same
+  tags makes the exact-name observation exceed its cardinality limit, so every class it covers reads
+  as a gap, which blocks the closing reading even though the repair acted in the recorded VPC; and a
+  final pass cut just as it finished is `Blocked` with an empty field, because a pass that failed is
+  not trusted whatever the field says.
+- **The loop's emptiness reading sets the positive control aside**, because the destroy's request
+  carries none. The verb's closing inventory has it and decides the verb's exit status, but the
+  cascade's per-run destroys have no such inventory, and a blind tagging catalog could read the OIDC
+  provider and the legacy roles as empty there. The cascade's completion proof is its own read-back and
+  not this loop's `Converged`.
+- **The reading after the final pass is about thirty serial calls with no deadline of its own**, held
+  inside a two-minute reserve; a slow API can run past it, and the intent's hard stop then ends the
+  operation with a timeout in place of the typed report, with the state already committed.
+- **The production assembly** — the backend login, the account and region lookup, the `StackDestroyWorld`
+  record in `convergeStackDestroy` — is covered by no test past its pure parts (the bounds it uses are
+  the ones the scripted account calls). Its first exercise is live. A miswiring there would show as a
+  refusal or as the old behaviour and not as an over-deletion, because every mutation the executor makes
+  passes the closed predicate.
+- **The shapes are hand-transcribed and the account is a model.** The JSON projections the executor
+  asks the CLI for (replayed by a reviewer against the operator's recorded raw documents), the release
+  times, and the `DependencyViolation` text are the author's reading of the operator's notes and of the
+  CLI, with reserved example identifiers; Sprint `5.59` records the real answers and Sprint `6.7` is
+  the live proof. One part of that reading was checked against the tool on 2026-10-19: all twenty-nine
+  `--query` sites in the executor, the audit and the native-family reader were run against the service
+  models inside the runtime image (`aws-cli/2.37.10`). Every flag is a parameter of its operation,
+  every filter name is documented for it, `--query` compiles in the CLI itself, and every projection
+  resolves with no null key against a response generated from the operation's output shape, tag
+  filters included; the two delete commands name the right parameters. The VPC the repair acts in is
+  chosen by the tags `Name: <stack>-vpc` and `prodbox.io/managed-by: prodbox`, and the Pulumi programs
+  stamp exactly those on their VPC (`Name: ${stackName}-vpc`, stack ids `aws-eks-test` and
+  `aws-test`, the ids the Provider compiles), so a repair cannot fail to find its own VPC for want of
+  a matching tag. The models say which fields exist and not what AWS returns, so the values, the
+  release times and the error text stay with the recordings.
+- **A Provider image must be rolled** before any of this runs; until then the destroy verbs are the
+  single pass, with the exit statuses Sprint `4.110` documents. The roll waits on host disk
+  headroom (see the README's account of the track), which the operator freeing space would
+  restore.
+- **Classes the executor does not clear.** NAT gateways, endpoints, an unknown owner, an unmarked
+  group, and an interface a service never releases are reported and make the result `Blocked`; each
+  needs its own family and law before it can be cleared.
+- **The reading after the final pass has no settle.** Eventual consistency can show an interface or
+  group AWS is about to release; the result is then `Blocked`, and the rerun continues.
+- **The state-free use** — a plan with a digest, applied through the Authority — belongs to Sprint
+  `4.112`'s `purge-dependents`.
+
+## Sprint 4.112: A Refusal Without A Remedy Is A Defect [⏸️ Blocked]
+
+**Status**: Blocked (2026-10-18). Phase `4` own-surface reopen (Standards A/N) on the fail-closed
+causes of the AWS lifecycle, registered before any behavior change.
+**Doctrine**: [Development Plan Standard Q](development_plan_standards.md#q-live-campaign-protocol-and-class-closure)
+and [AWS Test Environment § 7.5](../documents/engineering/aws_test_environment.md#75-out-of-band-diagnostic-and-the-manual-recovery-order).
+**Implementation**: `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/CLI/Command.hs`,
+`src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`,
+`src/Prodbox/Lifecycle/Teardown/Registry.hs`, `src/Prodbox/CheckCode.hs`, and a new
+cause-to-remedy module under `src/Prodbox/Lifecycle/`.
+**Blocked by**: Sprint `4.111`. The first verb applies the executor `4.111` defines.
+**Live-proof**: pending. Each verb is exercised once against a planted shape or a real refusal.
+**Deployment qualification**: pending — invalidated: the change adds operator verbs that mutate
+through the Authority.
+**Independent Validation**: table tests over the cause enumeration, the lint's negative controls, and
+fake-boundary cases for each verb's plan, digest, apply, and read-back; no live AWS.
+**Docs to update**: `documents/engineering/cli_command_surface.md`, `documents/cli/commands.md` (by
+regeneration), `AGENTS.md`, `documents/engineering/aws_test_environment.md`,
+`DEVELOPMENT_PLAN/system-components.md`, and `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
+
+### Objective
+
+Sprints `4.108` and `5.53` each added a terminal refusal with no lever: the Target-holds-predecessor
+refusal and the retained volume smaller than the plan. A refusal that names its cause and offers no
+remedy turns every occurrence into a code roll or a hand action; the 2026-10-14 clearing of a leaked
+interface and a cluster security group was one. This sprint states the rule once, for the causes the
+AWS lifecycle owns, and builds the first verbs.
+
+### Deliverables
+
+- One exhaustive cause-to-remedy table over the AWS-lifecycle fail-closed causes: a leaked interface
+  or security group, a destroy that ends `Blocked`, a preview that reports changes, a verdict that
+  is `Unobservable`, a retained volume smaller than the plan, an operation the Authority will not
+  admit. Each row is `SelfHeal` with its bound, `RepairVerb` with its path, or `NukeOnly` with its
+  reason. The compiler holds exhaustiveness over the cause enumeration.
+- A `prodbox dev check` lint that every `RepairVerb` path resolves in the command specification and
+  that the count of `NukeOnly` rows does not exceed the value recorded at git HEAD, so the table can
+  shrink but not silently grow. The lint is the only mechanical piece of Standard Q's remedy
+  obligation.
+- `prodbox aws stack eks purge-dependents`: a plan by default (class counts, first identifiers,
+  digest); `--yes --plan-digest D` applies it through the Authority as the same executor `4.111`
+  uses, and refuses unless the cluster is positively absent and exactly one VPC carries the stack's
+  `Name` and managed-by tags. The template is the existing plan, digest, apply shape of
+  `adopt-legacy` and `aws ebs reap-test`. It runs the executor and the families `4.111` declares and
+  adds no Provider request branch.
+- `prodbox aws stack <stack> diff`: a Provider-run preview that prints the resource and property
+  delta (redacted) when "preview reports changes" blocks a reconcile; today the refusal names no
+  resource. The sprint states whether the preview needs a new Provider request branch and, if it
+  does, re-derives the replay-envelope arithmetic.
+- The retained-volume-smaller-than-the-plan refusal is registered as `NukeOnly`, with the reason that
+  the only supported replacement deletes the retained family and growing in place is the operator's
+  decision (Sprint `5.53`). It counts under the ceiling until a growth verb exists, and the table
+  names that row so the debt is visible.
+- The manual recovery order in AWS Test Environment § 7.5 names these verbs before the hand-deletion
+  last resort.
+
+### Validation
+
+1. The table is total over the cause enumeration: a new cause with no row fails the build; the lint's
+   negative controls (an unresolved verb path, a grown `NukeOnly` count) each fail.
+2. `purge-dependents` plans without mutating, applies only a matching digest, refuses a cluster that
+   is not positively absent or a VPC that is not unique, and ends in the verdict `4.110` defines.
+3. `diff` names at least one resource and property for a planted non-converging preview, and its
+   output carries no secret value.
+4. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
+
+### Remaining Work
+
+Everything above, after `4.111`. Repair verbs for the non-AWS causes — the retained TLS lane, a stuck
+credential or EAB operation, the Authority operation ledger, the cleanup-run index, and the retained
+harness credential — are not scheduled here; they wait for a separate go-ahead after the AWS track
+is green (Sprint `0.36`, Not Scheduled).
+
+## Documentation Requirements
+
+**Engineering docs to create/update:**
+
+- `documents/engineering/lifecycle_reconciliation_doctrine.md` — §3.0 gains the provider-enumerated
+  inventory clause and §3.2b declares the controller-created network dependents as families (landed
+  with Sprint `0.36` as target text); Sprints `4.110` and `4.111` move the matching "Current
+  revision" paragraphs when they land.
+- `documents/engineering/aws_test_environment.md` — §7.4 records the 2026-10-01 operator decisions
+  and §7.5 admits in-surface enumeration as a completion and gating input (target text, landed with
+  Sprint `0.36`); Sprint `4.112` updates the manual recovery order.
+- `documents/engineering/unit_testing_policy.md` — §5.1 recorded laws (target text, landed with
+  Sprint `0.36`).
+- `documents/engineering/aws_integration_environment_doctrine.md` — the destroy rule's converge
+  target; Sprint `4.111` replaces it with the built behaviour.
+- `documents/engineering/cli_command_surface.md` — `aws audit`, `aws stack <stack> diff`, and
+  `aws stack eks purge-dependents`, when Sprints `4.110` and `4.112` land.
+
+**Product docs to create/update:**
+
+- None.
+
+**Cross-references to add:**
+
+- Ledger rows for the receipt digest, the single-attempt destroy, the in-child waits, the dead
+  failure constructor, and the hand-deletion procedure, in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
 
 ## Documentation Requirements
 

@@ -24,15 +24,30 @@ module Prodbox.Vault.Host
   , defaultTestSecrets
   , testSecretsPath
   , loadTestSecrets
+  , TestSecretsFileRefusal (..)
+  , testSecretsFileRefusal
   )
 where
 
-import Control.Exception (SomeException, bracket_, try)
+import Control.Exception
+  ( IOException
+  , SomeAsyncException
+  , SomeException
+  , bracket
+  , bracketOnError
+  , bracket_
+  , fromException
+  , throwIO
+  , try
+  )
+import Data.Bits ((.&.))
 import Data.ByteString qualified as BS
 import Data.Char qualified as Char
+import Data.Functor.Identity (Identity (..))
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Dhall (FromDhall, ToDhall, auto, inputFile)
+import Data.Text.IO qualified as TextIO
+import Dhall (FromDhall, ToDhall, auto)
 import Dhall qualified
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
@@ -67,11 +82,28 @@ import System.Directory (doesFileExist)
 import System.Environment (lookupEnv)
 import System.FilePath ((</>))
 import System.IO
-  ( hGetEcho
+  ( Handle
+  , hClose
+  , hGetEcho
   , hIsTerminalDevice
   , hSetEcho
+  , hSetEncoding
   , stdin
+  , utf8
   )
+
+import System.IO.Error (isDoesNotExistError)
+import System.Posix.Files (FileStatus, fileMode, fileOwner, getFdStatus, isRegularFile)
+import System.Posix.IO
+  ( OpenFileFlags (..)
+  , OpenMode (ReadOnly)
+  , closeFd
+  , defaultFileFlags
+  , fdToHandle
+  , openFd
+  )
+import System.Posix.Types (UserID)
+import System.Posix.User (getEffectiveUserID)
 
 -- | Project the host Vault capability from the same validated deployment
 -- context that lifecycle reconciliation seals. There is deliberately no
@@ -492,22 +524,63 @@ defaultTestSecrets =
     , acme_eab = Nothing
     }
 
--- | Load and decode @test-secrets.dhall@ if present. @Nothing@ means the file
--- is absent (so the caller falls back to a TTY prompt or fails loud);
--- @Just (Left err)@ means it exists but failed to decode; @Just (Right cfg)@
--- is the decoded fixture.
+-- | Load the fixture through the descriptor whose type, owner and mode were
+-- checked. Nofollow refuses symlinks; nonBlock lets a FIFO fail its type check
+-- without waiting for a writer. Relative Dhall imports retain the repository
+-- root even though decoding uses the bytes from the verified descriptor.
 loadTestSecrets :: FilePath -> IO (Maybe (Either String TestSecrets))
 loadTestSecrets repoRoot = do
   let path = testSecretsPath repoRoot
-  present <- doesFileExist path
-  if not present
-    then pure Nothing
-    else do
-      decoded <- try (inputFile auto path) :: IO (Either SomeException TestSecrets)
-      pure $
-        Just $ case decoded of
-          Left ex -> Left ("failed to decode test-secrets.dhall: " ++ show ex)
-          Right testSecrets -> Right testSecrets
+  readResult <- try (bracket (openPrivateTestSecrets path) hClose readFixtureContents)
+  case readResult :: Either IOException Text of
+    Left err
+      | isDoesNotExistError err -> pure Nothing
+      | otherwise -> pure (Just (Left (testSecretsFileGuidance <> ": " <> show err)))
+    Right contents -> do
+      let directorySettings = runIdentity (Dhall.rootDirectory (const (Identity repoRoot)) Dhall.defaultInputSettings)
+          fixtureSettings = runIdentity (Dhall.sourceName (const (Identity path)) directorySettings)
+      decoded <- try (Dhall.inputWithSettings fixtureSettings auto contents)
+      case decoded :: Either SomeException TestSecrets of
+        Left err -> case fromException err :: Maybe SomeAsyncException of
+          Just _ -> throwIO err
+          Nothing -> pure (Just (Left ("failed to decode test-secrets.dhall: " <> show err)))
+        Right testSecrets -> pure (Just (Right testSecrets))
+
+readFixtureContents :: Handle -> IO Text
+readFixtureContents handle = do
+  hSetEncoding handle utf8
+  TextIO.hGetContents handle
+
+data TestSecretsFileRefusal
+  = TestSecretsNotRegular
+  | TestSecretsWrongOwner
+  | TestSecretsGroupOrOtherPermissions
+  deriving (Eq, Show)
+
+testSecretsFileRefusal :: UserID -> FileStatus -> Maybe TestSecretsFileRefusal
+testSecretsFileRefusal effectiveUser status
+  | not (isRegularFile status) = Just TestSecretsNotRegular
+  | fileOwner status /= effectiveUser = Just TestSecretsWrongOwner
+  | fileMode status .&. 0o077 /= 0 = Just TestSecretsGroupOrOtherPermissions
+  | otherwise = Nothing
+
+openPrivateTestSecrets :: FilePath -> IO Handle
+openPrivateTestSecrets path =
+  bracketOnError
+    (openFd path ReadOnly defaultFileFlags {nofollow = True, nonBlock = True, cloexec = True})
+    closeFd
+    checkedHandle
+ where
+  checkedHandle descriptor = do
+    status <- getFdStatus descriptor
+    effectiveUser <- getEffectiveUserID
+    case testSecretsFileRefusal effectiveUser status of
+      Just refusal -> ioError (userError (testSecretsFileGuidance <> ": " <> show refusal))
+      Nothing -> fdToHandle descriptor
+
+testSecretsFileGuidance :: String
+testSecretsFileGuidance =
+  "test-secrets.dhall must be a regular non-symlink file owned by the effective user with no group or other permissions; correct its ownership and use chmod 600 test-secrets.dhall"
 
 promptOperatorPassword :: IO Text
 promptOperatorPassword =

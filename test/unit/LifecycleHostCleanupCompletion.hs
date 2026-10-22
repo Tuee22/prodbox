@@ -17,6 +17,18 @@ import TestSupport
 lifecycleHostCleanupCompletionSuite :: SuiteBuilder ()
 lifecycleHostCleanupCompletionSuite =
   describe "Sprint 4.86 local completion journal and read-back" $ do
+    it "reads exact historical completion after reinstall without borrowing current absence" $ do
+      result <- fixedHistoricalHostCleanupRegression
+      case result of
+        Left detail -> expectationFailure (show detail)
+        Right r -> do
+          historicalRegressionIncompleteRefused r `shouldBe` True
+          historicalRegressionReinstallKeepsHistory r `shouldBe` True
+          historicalRegressionNativeAbsenceNotBorrowed r `shouldBe` True
+          historicalRegressionExactReport r `shouldBe` True
+          historicalRegressionForeignReceiptRefused r `shouldBe` True
+          historicalRegressionMissingReceiptRefused r `shouldBe` True
+
     it "turns an appended entry into the completion read-back" $ do
       regression <- requireRegression
       localCompletionRegressionAppendedBecomesReceipt regression `shouldBe` True

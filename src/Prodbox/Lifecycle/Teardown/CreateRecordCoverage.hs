@@ -208,6 +208,22 @@ createRecordCoverage =
       \window: the sweep sees a leaked zone only once the tag has landed, and until then (or if the tag call \
       \fails) the zone is bounded by its name prefix and caller reference. Destroy is the exact zone reap."
   , keyRow
+      HomeDns01ChallengeRecordKey
+      (OffWriteAheadLane BarKeyIsNotStack)
+      [ DestroyCite
+          "src/Prodbox/Lifecycle/Teardown/Dns01ChallengeRecordAdapter.hs"
+          "authorizeExactDns01ChallengeOwnerDelete"
+      ]
+      "Home cert-manager writes untaggable records into the retained parent zone. The durable run binds exact challenge names before validation; owner deletion and exact record read-back cover that family without deleting the parent zone."
+  , keyRow
+      SesInviteMailObjectsKey
+      (OffWriteAheadLane BarKeyIsNotStack)
+      [ DestroyCite
+          "src/Prodbox/Lifecycle/Teardown/SesInviteMailAdapter.hs"
+          "authorizeInviteMailCleanup"
+      ]
+      "SES writes untaggable data versions into the retained capture bucket. The durable run binds its exact validation recipient before delivery; complete version inventory and version-specific deletion preserve foreign mail and the bucket."
+  , keyRow
       AwsDns01ChallengeRecordKey
       (OffWriteAheadLane BarKeyIsNotStack)
       [ DestroyCite
@@ -242,6 +258,52 @@ createRecordCoverage =
       "The load balancer controller's children are declared in the EKS stack's write-ahead manifest by family \
       \key and coordinate digest. The reap takes its name and tags from the registry coordinate, not from any \
       \member list, so an empty identity list loses nothing."
+  , keyRow
+      AwsEksVpcCniInterfacesKey
+      (DeclaredInStackManifest AwsEksKey)
+      [ DestroyCite
+          "src/Prodbox/Lifecycle/Teardown/AwsNativeStackFamilyAdapter.hs"
+          "authorizeExactAwsNetworkFamilyReap"
+      ]
+      "The stack declares this closed network family before any effect; member identities are not a manifest allowlist."
+  , keyRow
+      AwsTestVpcCniInterfacesKey
+      (DeclaredInStackManifest AwsTestKey)
+      [ DestroyCite
+          "src/Prodbox/Lifecycle/Teardown/AwsNativeStackFamilyAdapter.hs"
+          "authorizeExactAwsNetworkFamilyReap"
+      ]
+      "The stack declares this closed network family before any effect; member identities are not a manifest allowlist."
+  , keyRow
+      AwsEksClusterSecurityGroupsKey
+      (DeclaredInStackManifest AwsEksKey)
+      [ DestroyCite
+          "src/Prodbox/Lifecycle/Teardown/AwsNativeStackFamilyAdapter.hs"
+          "authorizeExactAwsNetworkFamilyReap"
+      ]
+      "The stack declares this closed network family before any effect; member identities are not a manifest allowlist."
+  , keyRow
+      AwsTestCanarySecurityGroupsKey
+      (DeclaredInStackManifest AwsTestKey)
+      [ DestroyCite
+          "src/Prodbox/Lifecycle/Teardown/AwsNativeStackFamilyAdapter.hs"
+          "authorizeExactAwsNetworkFamilyReap"
+      ]
+      "The test stack declares the canary's three exact security-group shapes before creation; \
+      \its dedicated run markers and closed predicate authorize cleanup independently of the EKS group rule."
+  , CreateRecordRow
+      { rowSubject =
+          NativeClientCreator "src/Prodbox/ControlPlane/ProviderProduction.hs" "testVpcCanaryMutation"
+      , rowRelation = DeclaredInStackManifest AwsTestKey
+      , rowRunScopeTag = Nothing
+      , rowDestroy =
+          [ DestroyCite
+              "src/Prodbox/Lifecycle/Teardown/AwsNativeStackFamilyAdapter.hs"
+              "authorizeExactAwsNetworkFamilyReap"
+          ]
+      , rowReason =
+          "The fenced Provider's test-only interpreter plants one CNI-shaped interface and three exact groups. The test stack manifest declares both native families before creation; the harness requires the same targets in its registered body scope."
+      }
   , CreateRecordRow
       { rowSubject =
           NativeClientCreator

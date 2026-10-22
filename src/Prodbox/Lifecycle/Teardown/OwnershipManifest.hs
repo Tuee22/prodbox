@@ -1148,6 +1148,7 @@ sameDurableManifestScope left right =
         leftFoundation
         leftAwsScope
         leftDnsZone
+        leftBindings
         _leftOperation
       )
     ( ObservationEvidenceScopeFields
@@ -1157,6 +1158,7 @@ sameDurableManifestScope left right =
         rightFoundation
         rightAwsScope
         rightDnsZone
+        rightBindings
         _rightOperation
       ) =
       leftSurface == rightSurface
@@ -1165,6 +1167,7 @@ sameDurableManifestScope left right =
         && leftFoundation == rightFoundation
         && leftAwsScope == rightAwsScope
         && leftDnsZone == rightDnsZone
+        && leftBindings == rightBindings
 
 canonicalManifestEntries :: [OwnershipManifestEntry] -> [OwnershipManifestEntry]
 canonicalManifestEntries =

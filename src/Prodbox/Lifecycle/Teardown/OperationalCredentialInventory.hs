@@ -174,6 +174,7 @@ data OperationalCredentialConsumer
   | SesInviteMailReapConsumer
   | RetainedEbsEnsureConsumer
   | AwsAuditObserveConsumer
+  | TestVpcCanaryPlantConsumer
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 operationalCredentialConsumerForIntent
@@ -204,6 +205,8 @@ operationalCredentialConsumerForIntent intent = case intent of
   ObserveEksClusterIdentity {} -> EksClusterIdentityObserveConsumer
   ObserveProviderAwsScope -> ProviderAwsScopeObserveConsumer
   ObserveOwnedResourceTags {} -> OwnedResourceTagObserveConsumer
+  ObserveGlobalOwnedResourceTags {} -> OwnedResourceTagObserveConsumer
+  PlantTestVpcCanary {} -> TestVpcCanaryPlantConsumer
   ObserveDns01ChallengeRecords {} -> Dns01ChallengeRecordObserveConsumer
   ObserveEksIamRoleFamily {} -> EksIamRoleFamilyObserveConsumer
   ReapEksIamRoleFamily {} -> EksIamRoleFamilyReapConsumer
@@ -214,10 +217,15 @@ operationalCredentialConsumerForIntent intent = case intent of
   ObserveNativeStackFamily {} -> NativeStackFamilyObserveConsumer
   ReapNativeStackFamily {} -> NativeStackFamilyReapConsumer
   EnsureValidationHostedZone {} -> ValidationHostedZoneEnsureConsumer
-  ObserveSesInviteMail {} -> SesInviteMailObserveConsumer
-  ReapSesInviteMail {} -> SesInviteMailReapConsumer
+  RetiredSesInviteMailObservation {} -> SesInviteMailObserveConsumer
+  ObserveSealedSesInviteMail {} -> SesInviteMailObserveConsumer
+  ObserveHomeDns01Records {} -> Dns01ChallengeRecordObserveConsumer
+  ObserveSesInviteMailResidue {} -> SesInviteMailObserveConsumer
+  ReapSesInviteMailResidue {} -> SesInviteMailReapConsumer
+  RetiredSesInviteMailCleanup {} -> SesInviteMailReapConsumer
   EnsureRetainedEbsVolumes {} -> RetainedEbsEnsureConsumer
   ObserveAwsAudit {} -> AwsAuditObserveConsumer
+  PreviewRegisteredStack {} -> RegisteredStackObserveConsumer
 
 operationalCredentialInventoryConsumers
   :: OperationalCredentialInventory -> [OperationalCredentialConsumer]

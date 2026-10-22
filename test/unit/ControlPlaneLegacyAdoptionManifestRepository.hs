@@ -258,12 +258,13 @@ plan =
         AwsTestKey
         perRunScope
         [ exactResourceObservationFor
-            (mustIdentity AwsTestKey)
+            (mustIdentity familyKey)
             (ObservationRevision 74)
             perRunScope
             ( ExactResourceAbsent
                 (providerWorkerAbsence "fixture observed registered stack absence")
             )
+        | familyKey <- [AwsTestKey, AwsTestVpcCniInterfacesKey, AwsTestCanarySecurityGroupsKey]
         ]
     )
 

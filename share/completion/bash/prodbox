@@ -25,25 +25,25 @@ _prodbox()
         words="eks test aws-subzone aws-ses"
         ;;
       "aws stack eks")
-        words="reconcile destroy prune-corrupt-checkpoint adopt-legacy"
+        words="diff reconcile destroy prune-corrupt-checkpoint adopt-legacy purge-dependents"
         ;;
       "aws stack eks adopt-legacy")
         words="plan apply"
         ;;
       "aws stack test")
-        words="reconcile destroy prune-corrupt-checkpoint adopt-legacy"
+        words="diff reconcile destroy prune-corrupt-checkpoint adopt-legacy"
         ;;
       "aws stack test adopt-legacy")
         words="plan apply"
         ;;
       "aws stack aws-subzone")
-        words="reconcile destroy prune-corrupt-checkpoint adopt-legacy"
+        words="diff reconcile destroy prune-corrupt-checkpoint adopt-legacy"
         ;;
       "aws stack aws-subzone adopt-legacy")
         words="plan apply"
         ;;
       "aws stack aws-ses")
-        words="reconcile destroy migrate-backend"
+        words="diff reconcile destroy migrate-backend"
         ;;
       "bootstrap-broker")
         words="start secret-worker"
@@ -106,7 +106,7 @@ _prodbox()
         words="init run all lint unit integration"
         ;;
       "test integration")
-        words="all cli aws-iam dns-aws aws-eks env gateway-daemon gateway-pods control-plane-counterexample teardown-recovery create-interrupted certificate-scope clean-room-handoff cascade-qualification cascade-qualification-receipt ha-rke2-aws lifecycle pulumi eks-volume-rebind charts-storage charts-platform resource-guardrails daemon-bootstrap pulsar-broker charts-vscode charts-api charts-websocket admin-routes public-dns keycloak-invite sealed-vault"
+        words="all cli aws-iam dns-aws aws-eks env gateway-daemon gateway-pods control-plane-counterexample teardown-recovery create-interrupted certificate-scope clean-room-handoff cascade-qualification cascade-qualification-receipt aws-lifecycle aws-lifecycle-canary ha-rke2-aws lifecycle pulumi eks-volume-rebind charts-storage charts-platform resource-guardrails daemon-bootstrap pulsar-broker charts-vscode charts-api charts-websocket admin-routes public-dns keycloak-invite sealed-vault"
         ;;
       "users")
         words="invite list revoke"

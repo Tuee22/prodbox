@@ -222,6 +222,8 @@ data ControlPlaneRouteFor (r :: RuntimeRole) where
     :: ControlPlaneRouteFor 'TlsRetentionRuntime
   TargetMaterialObserveRoute
     :: ControlPlaneRouteFor 'TargetSecretAgentRuntime
+  TargetAwsAdminCredentialRevokeRoute
+    :: ControlPlaneRouteFor 'TargetSecretAgentRuntime
   TargetSecretDecommissionInventoryRoute
     :: ControlPlaneRouteFor 'TargetSecretAgentRuntime
   TargetSecretDecommissionTombstoneRoute
@@ -309,6 +311,7 @@ controlPlaneRouteForValue route = case route of
   TlsRetentionRestoreRoute -> TlsRetentionRestore
   TlsRetentionObserveVersionRoute -> TlsRetentionObserveVersion
   TargetMaterialObserveRoute -> TargetMaterialObserve
+  TargetAwsAdminCredentialRevokeRoute -> TargetAwsAdminCredentialRevoke
   TargetSecretDecommissionInventoryRoute -> TargetSecretDecommissionInventory
   TargetSecretDecommissionTombstoneRoute -> TargetSecretDecommissionTombstone
   TargetSecretDecommissionCustodyTombstoneRoute ->

@@ -190,6 +190,53 @@ allocationSuite =
         compileResourcePlan [] (const "") 0 C.defaultResourcePlan
           `shouldSatisfy` isRightOutcome
 
+      it "refuses an authored Authority Backup profile below the replay memory floor" $ do
+        let withBackupMemory amount =
+              C.defaultCapacitySection
+                { C.resource_plan =
+                    C.defaultResourcePlan
+                      { C.workload_profiles =
+                          map (resizeBackup amount) (C.workload_profiles C.defaultResourcePlan)
+                      }
+                }
+            resizeBackup amount profile
+              | C.profile_id profile == "authority-backup" =
+                  let demand = C.workload_demand profile
+                      memory = C.memory_demand demand
+                   in profile
+                        { C.workload_demand =
+                            demand {C.memory_demand = memory {C.steady_memory_terms_mib = [amount]}}
+                        }
+              | otherwise = profile
+        mapM_
+          ((`shouldSatisfy` isLeftOutcome) . C.validateCapacitySection . withBackupMemory)
+          [144, 192, 239]
+        mapM_
+          ((`shouldBe` Right ()) . C.validateCapacitySection . withBackupMemory)
+          [240, 256]
+
+      it "refuses stale memory for each retained replay owner" $ do
+        let resize name amount profile
+              | C.profile_id profile == name =
+                  let demand = C.workload_demand profile
+                      memory = C.memory_demand demand
+                   in profile
+                        { C.workload_demand =
+                            demand {C.memory_demand = memory {C.steady_memory_terms_mib = [amount]}}
+                        }
+              | otherwise = profile
+            configured name amount =
+              C.defaultCapacitySection
+                { C.resource_plan =
+                    C.defaultResourcePlan
+                      { C.workload_profiles = map (resize name amount) (C.workload_profiles C.defaultResourcePlan)
+                      }
+                }
+        mapM_
+          (\(name, amount) -> C.validateCapacitySection (configured name amount) `shouldSatisfy` isLeftOutcome)
+          [("lifecycle-authority", 128), ("target-secret-agent", 80), ("tls-retention", 80)]
+        C.validateCapacitySection C.defaultCapacitySection `shouldBe` Right ()
+
       it "rejects an over-reserved host" $
         compileResourcePlan
           []
@@ -356,6 +403,14 @@ allocationSuite =
           `shouldBe` Scheduler.OneShotWorkerSchedulerAdmitted 7745 7750 5
         Scheduler.oneShotWorkerSchedulerOldToNewSystemdCpuBudget closure
           `shouldBe` (1000, 1000)
+        let backupMemory plan =
+              [ C.memory_mib (C.request (C.resources profile))
+              | profile <- C.workload_profiles plan
+              , C.profile_id profile == "authority-backup"
+              ]
+        backupMemory (Scheduler.oneShotWorkerSchedulerReplacementPlan counterexample)
+          `shouldBe` [144]
+        backupMemory C.defaultResourcePlan `shouldBe` [240]
         C.rke2_reserved C.defaultResourcePlan `shouldBe` C.ResourceVector 250 1536 9728 1024
         C.eviction_floor C.defaultResourcePlan `shouldBe` C.ResourceVector 750 1024 10240 1024
 

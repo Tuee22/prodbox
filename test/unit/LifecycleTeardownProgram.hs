@@ -50,6 +50,24 @@ lifecycleTeardownProgramSuite = do
       -- this ordering without editing either side.
       forM_ nonLocalSurfaceCases assertRetirementWaitsOnDependants
 
+  describe "Sprint 4.111 network-family graph liveness" $ do
+    it "releases owners before network cleanup, then keeps their checkpoint until exact absence" $ do
+      program <- expectProgram ExplicitPerRunSurface
+      let nodes = desiredAbsenceProgramNodes program
+      forM_
+        [ ("aws-eks", "aws-eks-vpc-cni-interfaces")
+        , ("aws-test", "aws-test-vpc-cni-interfaces")
+        , ("aws-eks", "aws-eks-cluster-security-groups")
+        , ("aws-test", "aws-test-canary-security-groups")
+        ]
+        (assertNetworkOwnerOrder nodes)
+      assertTopologicallyOrdered nodes
+      forM_
+        [ ("aws-eks-cluster-security-groups", "aws-eks-vpc-cni-interfaces")
+        , ("aws-test-canary-security-groups", "aws-test-vpc-cni-interfaces")
+        ]
+        (assertNetworkInterfaceOrder nodes)
+
   describe "Sprint 4.84 closed lifecycle teardown program" $ do
     it "compiles selected keys in canonical registry order and refuses invalid selections" $ do
       let selected = [AwsDnsValidationZoneKey, AwsEksKey]
@@ -242,6 +260,8 @@ lifecycleTeardownProgramSuite = do
         , ("target/aws-ebs-volumes-per-run-test/read-back-absent", CleanupRequiresSuccess)
         , ("target/aws-eks-iam-role-family/read-back-absent", CleanupRequiresSuccess)
         , ("target/aws-eks-load-balancer-controller-family/read-back-absent", CleanupRequiresSuccess)
+        , ("target/aws-eks-vpc-cni-interfaces/read-back-absent", CleanupRequiresSuccess)
+        , ("target/aws-eks-cluster-security-groups/read-back-absent", CleanupRequiresSuccess)
         ]
       assertProgramDependencies
         cascade
@@ -259,6 +279,12 @@ lifecycleTeardownProgramSuite = do
         , ("target/dns-aws-dns01-challenge-records/read-back-absent", CleanupRequiresTerminal)
         , ("target/aws-eks-iam-role-family/read-back-absent", CleanupRequiresTerminal)
         , ("target/aws-eks-load-balancer-controller-family/read-back-absent", CleanupRequiresTerminal)
+        , ("target/aws-eks-vpc-cni-interfaces/read-back-absent", CleanupRequiresTerminal)
+        , ("target/aws-test-vpc-cni-interfaces/read-back-absent", CleanupRequiresTerminal)
+        , ("target/aws-eks-cluster-security-groups/read-back-absent", CleanupRequiresTerminal)
+        , ("target/dns-home-dns01-challenge-records/read-back-absent", CleanupRequiresTerminal)
+        , ("target/ses-invite-mail-data-versions/read-back-absent", CleanupRequiresTerminal)
+        , ("target/aws-test-canary-security-groups/read-back-absent", CleanupRequiresTerminal)
         ]
       assertProgramDependencies
         cascade
@@ -275,6 +301,12 @@ lifecycleTeardownProgramSuite = do
         , ("target/dns-aws-dns01-challenge-records/read-back-absent", CleanupRequiresSuccess)
         , ("target/aws-eks-iam-role-family/read-back-absent", CleanupRequiresSuccess)
         , ("target/aws-eks-load-balancer-controller-family/read-back-absent", CleanupRequiresSuccess)
+        , ("target/aws-eks-vpc-cni-interfaces/read-back-absent", CleanupRequiresSuccess)
+        , ("target/aws-test-vpc-cni-interfaces/read-back-absent", CleanupRequiresSuccess)
+        , ("target/aws-eks-cluster-security-groups/read-back-absent", CleanupRequiresSuccess)
+        , ("target/dns-home-dns01-challenge-records/read-back-absent", CleanupRequiresSuccess)
+        , ("target/ses-invite-mail-data-versions/read-back-absent", CleanupRequiresSuccess)
+        , ("target/aws-test-canary-security-groups/read-back-absent", CleanupRequiresSuccess)
         ]
       assertProgramDependencies
         cascade
@@ -359,6 +391,40 @@ lifecycleTeardownProgramSuite = do
       forM_ surfaceCases checkSurface
       cascade <- expectGraph fixtureRunId CascadeSurface
       cleanupDigestText (cleanupGraphDigest (compiledDesiredAbsenceGraph cascade))
+        `shouldBe` "2e4a12378afa743db67b987b4d294a2f7d811b184a7cb1cf6495fcc7ce739f5c"
+      preBinding <-
+        expectCompiledGraph
+          ( compileDesiredAbsenceGraphForRegisteredKeys
+              fixtureRunId
+              fixtureFoundation
+              (Just fixtureAwsScope)
+              Nothing
+              CascadeSurface
+              (LocalLinuxRke2Key : filter (< HomeDns01ChallengeRecordKey) perRunTargetKeys)
+          )
+      cleanupDigestText (cleanupGraphDigest (compiledDesiredAbsenceGraph preBinding))
+        `shouldBe` "67b2b0c9ecd4f72016ce22d0ef68cf10d1676b446ffde8d46beeca83dee90f66"
+      -- The pre-network selected set keeps its exact durable graph identity.
+      legacy <-
+        expectCompiledGraph
+          ( compileDesiredAbsenceGraphForRegisteredKeys
+              fixtureRunId
+              fixtureFoundation
+              (Just fixtureAwsScope)
+              Nothing
+              CascadeSurface
+              [ LocalLinuxRke2Key
+              , AwsEksKey
+              , AwsEksSubzoneKey
+              , AwsTestKey
+              , AwsEbsPerRunTestKey
+              , AwsDnsValidationZoneKey
+              , AwsDns01ChallengeRecordKey
+              , AwsEksIamRoleFamilyKey
+              , AwsEksLoadBalancerControllerFamilyKey
+              ]
+          )
+      cleanupDigestText (cleanupGraphDigest (compiledDesiredAbsenceGraph legacy))
         `shouldBe` "7e8c56d01e35e21d5bc56903e38ca5e64a63ba92474b56d585c38eac837d4b88"
 
     it "requires and retains the exact local foundation and AWS evidence scope" $ do
@@ -777,8 +843,8 @@ surfaceCases =
   [ SurfaceCase LocalOnlySurface 4 []
   , -- Sprint 7.36: DNS01 and the two exact controller-owned families each add
     -- an observe, reconcile, and mandatory read-back triple.
-    SurfaceCase CascadeSurface 59 perRunTargetKeys
-  , SurfaceCase ExplicitPerRunSurface 54 perRunTargetKeys
+    SurfaceCase CascadeSurface 77 perRunTargetKeys
+  , SurfaceCase ExplicitPerRunSurface 72 perRunTargetKeys
   , -- Sprint 4.85 (2026-08-18): the operational surface gained its credential
     -- revocation and that revocation's own read-back, which is what
     -- OrdinaryLifecycleProviderRevocationUnavailable named as missing.
@@ -788,7 +854,7 @@ surfaceCases =
     -- and its read-back are ordered strictly between the terminal audit and the
     -- home uninstall, which is the audit-then-dispose order the disposition
     -- blockers said no surface could express.
-    SurfaceCase TotalDecommissionSurface 62 allManagedTargetKeys
+    SurfaceCase TotalDecommissionSurface 80 allManagedTargetKeys
   ]
 
 nonLocalSurfaceCases :: [SurfaceCase]
@@ -804,10 +870,22 @@ perRunTargetKeys =
   , AwsDns01ChallengeRecordKey
   , AwsEksIamRoleFamilyKey
   , AwsEksLoadBalancerControllerFamilyKey
+  , AwsEksVpcCniInterfacesKey
+  , AwsTestVpcCniInterfacesKey
+  , AwsEksClusterSecurityGroupsKey
+  , HomeDns01ChallengeRecordKey
+  , SesInviteMailObjectsKey
+  , AwsTestCanarySecurityGroupsKey
   ]
 
 allManagedTargetKeys :: [RegisteredResourceKey]
-allManagedTargetKeys = perRunTargetKeys ++ [AwsEbsProductionRetainedKey]
+allManagedTargetKeys =
+  filter (< HomeDns01ChallengeRecordKey) perRunTargetKeys
+    ++ [ AwsEbsProductionRetainedKey
+       , HomeDns01ChallengeRecordKey
+       , SesInviteMailObjectsKey
+       , AwsTestCanarySecurityGroupsKey
+       ]
 
 expectedOperationTags
   :: CleanupSurfaceWitness surface
@@ -868,7 +946,35 @@ expectedOperationTags surface targetKeys = case surface of
 
 orderedTargetTags :: [RegisteredResourceKey] -> [Text]
 orderedTargetTags keys =
-  concatMap targetInitialTags keys ++ concatMap targetFinalTags keys
+  concatMap initial keys
+    ++ ["reconcile-absent/aws-eks" | AwsEksKey `elem` keys]
+    ++ concatMap networkTail networkKeys
+    ++ concatMap final keys
+ where
+  networkKeys =
+    filter
+      ( `elem`
+          [ AwsEksVpcCniInterfacesKey
+          , AwsTestVpcCniInterfacesKey
+          , AwsEksClusterSecurityGroupsKey
+          , AwsTestCanarySecurityGroupsKey
+          ]
+      )
+      keys
+  initial key
+    | key `elem` networkKeys = ["observe/" <> registeredResourceKeyText key]
+    | key == AwsTestKey && AwsTestVpcCniInterfacesKey `elem` networkKeys =
+        take 7 (targetInitialTags key)
+    | otherwise = targetInitialTags key
+  networkTail key =
+    [ "reconcile-absent/" <> registeredResourceKeyText key
+    , "read-back-absent/" <> registeredResourceKeyText key
+    ]
+  final key
+    | key == AwsEksKey = drop 1 (targetFinalTags key)
+    | key == AwsTestKey && AwsTestVpcCniInterfacesKey `elem` networkKeys =
+        drop 7 (targetInitialTags key)
+    | otherwise = targetFinalTags key
 
 targetInitialTags :: RegisteredResourceKey -> [Text]
 targetInitialTags key =
@@ -1116,6 +1222,36 @@ eksTargetKeysFor = filter (== AwsEksKey)
 nodesWithTag :: Text -> [ProgramNode surface] -> [ProgramNode surface]
 nodesWithTag tag =
   filter ((== tag) . someTeardownOperationTag . programNodeOperation)
+
+assertNetworkOwnerOrder :: [ProgramNode surface] -> (Text, Text) -> Expectation
+assertNetworkOwnerOrder nodes (owner, family) = do
+  case nodesWithTag ("reconcile-absent/" <> family) nodes of
+    [node] ->
+      programNodeDependencies node
+        `shouldContain` [ ProgramDependency
+                            (ProgramNodeName ("target/" <> owner <> "/reconcile-absent"))
+                            CleanupRequiresAttempt
+                        ]
+    matches -> expectationFailure (show (length matches))
+  case nodesWithTag ("retire-checkpoint-pair/" <> owner) nodes of
+    [node] ->
+      programNodeDependencies node
+        `shouldContain` [ ProgramDependency
+                            (ProgramNodeName ("target/" <> family <> "/read-back-absent"))
+                            CleanupRequiresSuccess
+                        ]
+    matches -> expectationFailure (show (length matches))
+
+assertNetworkInterfaceOrder :: [ProgramNode surface] -> (Text, Text) -> Expectation
+assertNetworkInterfaceOrder nodes (groups, interfaces) =
+  case nodesWithTag ("reconcile-absent/" <> groups) nodes of
+    [node] ->
+      programNodeDependencies node
+        `shouldContain` [ ProgramDependency
+                            (ProgramNodeName ("target/" <> interfaces <> "/read-back-absent"))
+                            CleanupRequiresSuccess
+                        ]
+    matches -> expectationFailure (show (length matches))
 
 assertProgramDependencies
   :: DesiredAbsenceProgram surface

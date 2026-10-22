@@ -12,12 +12,20 @@ module LifecycleTeardownCascadeCandidate
   )
 where
 
+import Data.Text qualified as Text
 import Prodbox.Lifecycle.Teardown.CascadeCandidate
 import TestSupport
 
 lifecycleTeardownCascadeCandidateSuite :: SuiteBuilder ()
 lifecycleTeardownCascadeCandidateSuite =
   describe "Sprint 4.86 cascade candidate entrypoint" $ do
+    it "freezes and records through independent reads before audit completion" $ do
+      checks <- fixedCascadeCandidateEpochChecks
+      case checks of
+        Left detail -> expectationFailure (Text.unpack detail)
+        Right rows ->
+          mapM_ (\(label, passed) -> if passed then pure () else expectationFailure (Text.unpack label)) rows
+
     it "derives one program identity from one declared cascade identity" $
       cascadeCandidatePlanIsDeterministic fixedCascadeCandidateRegression
         `shouldBe` True

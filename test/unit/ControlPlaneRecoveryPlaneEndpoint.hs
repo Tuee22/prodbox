@@ -227,7 +227,13 @@ controlPlaneRecoveryPlaneEndpointSuite =
         handleImporters
         [ "src/Prodbox/ControlPlane/CleanupRunClient.hs"
         , "src/Prodbox/ControlPlane/RecoveryPlaneEndpoint/Internal.hs"
+        , "src/Prodbox/Lifecycle/HostCleanupIntent/Internal.hs"
         ]
+      -- The journal captures the read-only observed prefix, never a way to
+      -- construct a committed Authority handle from its decoded local bytes.
+      hostJournal <- readFile "src/Prodbox/Lifecycle/HostCleanupIntent/Internal.hs"
+      shouldContain hostJournal "DescriptorBoundCleanupRun (internalDescriptorBoundCleanupRunValue)"
+      shouldNotContain hostJournal "DescriptorBoundCleanupRun (..)"
 
       cabal <- readFile "prodbox.cabal"
       let exposedLibrary =

@@ -133,6 +133,16 @@ The contract applies to every one of these surfaces:
 - For runbook references, link to operator-meaningful entries under
   `documents/` or operator-facing manpages — never `DEVELOPMENT_PLAN/`.
 
+The AWS repair surface includes `prodbox aws stack <stack> diff` for each of `eks`, `test`,
+`aws-subzone` and `aws-ses`. An authenticated Provider preview reports only resource, operation and
+property names; it applies no changes. `prodbox aws stack eks purge-dependents` plans the two
+registered EKS network families and prints their counts, first identifiers and full SHA-256 digest.
+Apply requires both `--yes` and `--plan-digest <digest>`. The Provider re-observes the entire plan,
+proves the cluster absent and locates a unique VPC carrying both registered tags before mutation.
+A stale digest refuses; requester-managed interfaces are waited for and never forced. Independent
+read-back reports `Clean` (0), `Residue` (4) or an unobservable repair (5) over those families.
+The VPC and whole-stack absence remain the destroy/audit surfaces' responsibility.
+
 ### Enforcement
 
 `prodbox dev check` enforces this contract with a regex scan over
@@ -188,21 +198,26 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox aws quotas request` | none | `--tier` |
 | `prodbox aws audit` | none | `--stack`, `--emit-readonly-script` |
 | `prodbox aws ebs reap-test` | none | `--yes` |
+| `prodbox aws stack eks diff` | none | none |
 | `prodbox aws stack eks reconcile` | none | `--dry-run`, `--plan-file` |
 | `prodbox aws stack eks destroy` | none | `--yes`, `--dry-run`, `--plan-file` |
 | `prodbox aws stack eks prune-corrupt-checkpoint` | none | `--yes` |
 | `prodbox aws stack eks adopt-legacy plan` | none | none |
 | `prodbox aws stack eks adopt-legacy apply` | none | `--plan-digest`, `--yes` |
+| `prodbox aws stack eks purge-dependents` | none | `--yes`, `--plan-digest` |
+| `prodbox aws stack test diff` | none | none |
 | `prodbox aws stack test reconcile` | none | `--dry-run`, `--plan-file` |
 | `prodbox aws stack test destroy` | none | `--yes`, `--dry-run`, `--plan-file` |
 | `prodbox aws stack test prune-corrupt-checkpoint` | none | `--yes` |
 | `prodbox aws stack test adopt-legacy plan` | none | none |
 | `prodbox aws stack test adopt-legacy apply` | none | `--plan-digest`, `--yes` |
+| `prodbox aws stack aws-subzone diff` | none | none |
 | `prodbox aws stack aws-subzone reconcile` | none | `--dry-run`, `--plan-file` |
 | `prodbox aws stack aws-subzone destroy` | none | `--yes`, `--dry-run`, `--plan-file` |
 | `prodbox aws stack aws-subzone prune-corrupt-checkpoint` | none | `--yes` |
 | `prodbox aws stack aws-subzone adopt-legacy plan` | none | none |
 | `prodbox aws stack aws-subzone adopt-legacy apply` | none | `--plan-digest`, `--yes` |
+| `prodbox aws stack aws-ses diff` | none | none |
 | `prodbox aws stack aws-ses reconcile` | none | `--dry-run`, `--plan-file` |
 | `prodbox aws stack aws-ses destroy` | none | `--yes`, `--dry-run`, `--plan-file` |
 | `prodbox aws stack aws-ses migrate-backend` | none | `--dry-run`, `--plan-file` |
@@ -374,6 +389,8 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox test integration clean-room-handoff` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration cascade-qualification` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration cascade-qualification-receipt` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration aws-lifecycle` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration aws-lifecycle-canary` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration ha-rke2-aws` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration lifecycle` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration pulumi` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
@@ -841,6 +858,12 @@ is a reading aid and not the same enumeration (it does not repeat the exact-name
 nothing, and anything an operator deletes after reading it is a recorded hand action
 ([aws_test_environment.md §7.5](aws_test_environment.md)).
 
+The interface families for EKS and the test VPC and the EKS cluster security-group family are declared
+in the lifecycle registry. Their coordinates bind the owning stack, optional cluster, exact VPC tags
+and closed predicate. The destroy and manifest-native reaper consume those declarations and share
+the bounded executor. Independent family reconciliation follows the owning stack's destroy attempt,
+then exact family absence gates checkpoint retirement and program completion.
+
 The destroy of a stack that has a VPC converges (Sprint `4.111`). It runs a first Pulumi pass bounded to
 a share of the operation, repairs what a controller left in the VPC (an `available` network interface of
 the VPC CNI, the security group EKS made for the cluster, and for the EKS stack the load balancers its
@@ -854,7 +877,9 @@ waits for nothing, because what they hold is released when the final pass delete
 says so; running the command again then clears what is left. A leaked per-run volume does not hold the
 stack record: the volume reaper owns it. A pass that has to be cut is stopped with SIGTERM, a second
 SIGTERM, and only then SIGKILL, so that Pulumi releases its lock and stops its plugins; if it was killed
-anyway, the loop clears the lock with `pulumi cancel` before the final pass. The cascade's per-run
+anyway, the loop clears the lock with `pulumi cancel` before the final pass. The runner records the
+child session and descendants before stopping the parent, checks PID/start-time identities, and
+stops owned plugins across process groups within the existing stop deadline. The cascade's per-run
 destroys run the same loop.
 
 Three limits are worth knowing before relying on the exit statuses. Until a Provider image that carries

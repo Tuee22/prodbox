@@ -59,6 +59,7 @@ providerCliRunModules =
   , "src/Prodbox/Lifecycle/TaggedResourceQuery.hs"
   , "src/Prodbox/Lifecycle/ValidationHostedZone.hs"
   , "src/Prodbox/Ses/Capture.hs"
+  , "src/Prodbox/Ses/CaptureLifecycle.hs"
   ]
 
 -- | A place where a Provider-run module names a service and chooses the verb at
@@ -136,12 +137,14 @@ providerCliActionTable =
     -- the list and get actions, not by actions of their own names.
     ProviderCliEntry "s3api" "create-bucket" ["s3:CreateBucket"]
   , ProviderCliEntry "s3api" "delete-object" ["s3:DeleteObject"]
+  , ProviderCliEntry "s3api" "get-bucket-lifecycle-configuration" ["s3:GetLifecycleConfiguration"]
   , ProviderCliEntry "s3api" "get-bucket-policy" ["s3:GetBucketPolicy"]
   , ProviderCliEntry "s3api" "get-bucket-tagging" ["s3:GetBucketTagging"]
   , ProviderCliEntry "s3api" "get-object" ["s3:GetObject"]
   , ProviderCliEntry "s3api" "head-bucket" ["s3:ListBucket"]
   , ProviderCliEntry "s3api" "head-object" ["s3:GetObject"]
   , ProviderCliEntry "s3api" "list-objects-v2" ["s3:ListBucket"]
+  , ProviderCliEntry "s3api" "put-bucket-lifecycle-configuration" ["s3:PutLifecycleConfiguration"]
   , ProviderCliEntry "s3api" "put-bucket-policy" ["s3:PutBucketPolicy"]
   , ProviderCliEntry "s3api" "put-bucket-tagging" ["s3:PutBucketTagging"]
   , ProviderCliEntry "s3api" "put-object" ["s3:PutObject"]

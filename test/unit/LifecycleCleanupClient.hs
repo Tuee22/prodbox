@@ -57,6 +57,7 @@ import Prodbox.ControlPlane.CleanupRunClient
   ( DescriptorBoundCleanupRunClient
   , descriptorBoundCleanupRunClient
   , descriptorBoundCleanupRunId
+  , descriptorBoundCleanupRunNodeStates
   , descriptorBoundCleanupRunPrimaryOutcome
   )
 import Prodbox.ControlPlane.CleanupRunEndpoint
@@ -102,6 +103,11 @@ import Prodbox.Http.ReplyStatus (replyStatusCode)
 import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
 import Prodbox.Lifecycle.CleanupRun
 import Prodbox.Lifecycle.CleanupRunEntry
+import Prodbox.Lifecycle.CleanupRunRunner
+  ( DescriptorBoundCleanupProgress (..)
+  , descriptorBoundCleanupNodeAction
+  , resumeDescriptorBoundCleanupBeforeLocalUninstall
+  )
 import Prodbox.Lifecycle.DnsRecord (HostedZoneId, mkHostedZoneId)
 import Prodbox.Lifecycle.HostCleanupIntent
   ( HostCleanupIntentStore
@@ -114,6 +120,7 @@ import Prodbox.Lifecycle.HostCleanupIntent
   , mkHostCleanupIntentStore
   , mkHostTerminalPermitId
   , observeHostCleanupIntent
+  , observeHostCleanupTerminalHandoff
   )
 import Prodbox.Lifecycle.HostCleanupRunner (prepareHostCleanupRunner)
 import Prodbox.Lifecycle.Lease
@@ -134,15 +141,20 @@ import Prodbox.Lifecycle.Teardown.Program
   , TeardownOperation (..)
   , someTeardownOperationTag
   )
+import Prodbox.Lifecycle.Teardown.ResourceScopeBindings
+import Prodbox.Lifecycle.Teardown.RetainedInventory (mkRetainedNameBinding)
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 import Prodbox.Substrate (Substrate (..))
 import Prodbox.Test.LifecycleCleanupClient
   ( HarnessCleanupBracket (..)
+  , HarnessCredentialDisposition (..)
+  , HarnessRunRegistration (..)
   , LifecycleTestHarnessCleanupError (LifecycleTestHarnessMainRunMissing)
   , PrimaryDecision (..)
   , ZoneDisposition (..)
   , ZoneEvidence (..)
   , ZoneTailPlan (..)
+  , finishHarnessCredentialCleanup
   , harnessMainRunPrefix
   , harnessZoneRunPrefix
   , lifecycleTestHarnessCleanupCaller
@@ -269,6 +281,57 @@ entryProtocolSuite =
         refusedRegistration `shouldSatisfy` isLeft
         readIORef (fakeCommandTrace fake)
           `shouldReturn` [CleanupRunDescriptorObserve fixtureRawRunId]
+
+    it "pauses at the sealed uninstall boundary without beginning or executing its local tail" $
+      withSystemTempDirectory "prodbox-cascade-remote-prefix" $ \retainedRoot -> do
+        fake <- newFakeAuthority fixtureCompiled [] False (const CleanupNodeSucceeded)
+        let client = fakeCleanupRunClient fake
+        registered <-
+          expectIoRight
+            ( registerLifecycleCleanupRun
+                (PrepareHostUninstallRecord (fixtureStore retainedRoot))
+                client
+                fixtureDescriptor
+            )
+        primary <-
+          expectIoRight (attachLifecycleCleanupPrimaryOutcome client CleanupPrimarySucceeded registered)
+        effects <- newIORef []
+        let action = descriptorBoundCleanupNodeAction $ \_ _ _ _ plan -> do
+              modifyIORef' effects (++ [cleanupNodeId plan])
+              pure CleanupNodeSucceeded
+        result <-
+          expectIoRight
+            ( resumeDescriptorBoundCleanupBeforeLocalUninstall
+                client
+                fixtureOwner
+                action
+                (registeredLifecycleCleanupBoundRun primary)
+            )
+        case result of
+          DescriptorBoundCleanupTerminal _ -> expectationFailure "the remote prefix claimed terminal completion"
+          DescriptorBoundCleanupPaused bound -> do
+            -- Pausing the Authority runner creates no local uninstall permit
+            -- or credential-retired handoff. The host intent owner exercises
+            -- unarmed, incomplete and corrupt capsules through its real codec.
+            descriptorBoundCleanupRunId bound `shouldBe` fixtureRunId
+            absentHandoff <- observeHostCleanupTerminalHandoff (fixtureStore retainedRoot) fixtureRunId
+            case absentHandoff of
+              Right Nothing -> pure ()
+              _ -> expectationFailure "unarmed refusal wrote a terminal handoff"
+            let states = descriptorBoundCleanupRunNodeStates bound
+                plans = cleanupGraphNodes (compiledDesiredAbsenceGraph fixtureCompiled)
+                (remote, local) = break ((== fixtureTerminalNodeId) . cleanupNodeId) plans
+            mapM_ (\plan -> Map.lookup (cleanupNodeId plan) states `shouldSatisfy` isSuccessfulNode) remote
+            mapM_ (\plan -> Map.lookup (cleanupNodeId plan) states `shouldBe` Just CleanupNodePending) local
+            readIORef effects `shouldReturn` map cleanupNodeId remote
+            beforeReplay <- readIORef (fakeCommandTrace fake)
+            replay <-
+              expectIoRight (resumeDescriptorBoundCleanupBeforeLocalUninstall client fixtureOwner action bound)
+            case replay of
+              DescriptorBoundCleanupPaused _ -> pure ()
+              DescriptorBoundCleanupTerminal _ -> expectationFailure "pause replay claimed terminal completion"
+            readIORef (fakeCommandTrace fake) `shouldReturn` beforeReplay
+            readIORef effects `shouldReturn` map cleanupNodeId remote
 
     it "creates a fresh run after the production descriptor-missing observation" $
       withSystemTempDirectory "prodbox-lifecycle-cleanup-client-descriptor-missing" $ \retainedRoot -> do
@@ -697,6 +760,7 @@ entryProtocolSuite =
 harnessCleanupCompositionSuite :: SuiteBuilder ()
 harnessCleanupCompositionSuite =
   describe "Sprint 5.50 harness cleanup composition" $ do
+    harnessCredentialRetirementCases
     it "authenticates as the operator, which is trusted wherever the harness identity is" $ do
       -- The first node of every ordinary program posts the host observation,
       -- a route only the operator may call. The switch widens nothing: every
@@ -713,6 +777,25 @@ harnessCleanupCompositionSuite =
       client `shouldContain` "LifecycleAuthorityOperator"
       client `shouldNotContain` "LifecycleAuthorityTestHarness"
 
+    it "passes the exact fresh registration metadata to the body before cleanup" $ do
+      observed <- newIORef (Nothing :: Maybe Text.Text)
+      events <- newIORef ([] :: [String])
+      let record event = modifyIORef' events (++ [event])
+          bracket =
+            HarnessCleanupBracket
+              { bracketRegister = record "register" >> pure (Right (FreshHarnessRun "retained-run-scope"))
+              , bracketPrepareCredential = record "credential" >> pure ExitSuccess
+              , bracketDrive = \_ -> record "cleanup" >> pure (Right ())
+              , bracketFinalizeCredential = \_ outcome -> record "finalize" >> pure (Right outcome)
+              }
+      result <- orchestrateHarnessCleanup bracket $ \scope -> do
+        record "body"
+        writeIORef observed (Just scope)
+        pure ExitSuccess
+      result `shouldBe` Right ()
+      readIORef observed `shouldReturn` Just "retained-run-scope"
+      readIORef events `shouldReturn` ["register", "credential", "body", "cleanup", "finalize"]
+
     it "keeps no session open while the body runs, and drives afterwards with the primary outcome" $ do
       trace <- newIORef ([] :: [String])
       sessionOpen <- newIORef False
@@ -726,7 +809,9 @@ harnessCleanupCompositionSuite =
             pure result
           bracket =
             HarnessCleanupBracket
-              { bracketRegister = withSession "register" (pure (Right True))
+              { bracketPrepareCredential = pure ExitSuccess
+              , bracketFinalizeCredential = \_ outcome -> pure (Right outcome)
+              , bracketRegister = withSession "register" (pure (Right (FreshHarnessRun ())))
               , bracketDrive = \primary ->
                   withSession "drive" $ do
                     record ("primary:" ++ primaryTag primary)
@@ -736,7 +821,7 @@ harnessCleanupCompositionSuite =
             open <- readIORef sessionOpen
             record ("body:sessionOpen=" ++ show open)
             pure (ExitFailure 3)
-      result <- orchestrateHarnessCleanup bracket body
+      result <- orchestrateHarnessCleanup bracket (const body)
       leftOf result `shouldBe` Just LifecycleTestHarnessMainRunMissing
       readIORef trace
         `shouldReturn` [ "open:register"
@@ -752,11 +837,13 @@ harnessCleanupCompositionSuite =
       observed <- newIORef Nothing
       let leaking =
             HarnessCleanupBracket
-              { bracketRegister = writeIORef sessionOpen True >> pure (Right True)
+              { bracketPrepareCredential = pure ExitSuccess
+              , bracketFinalizeCredential = \_ outcome -> pure (Right outcome)
+              , bracketRegister = writeIORef sessionOpen True >> pure (Right (FreshHarnessRun ()))
               , bracketDrive = \_ -> pure (Left LifecycleTestHarnessMainRunMissing)
               }
       _ <-
-        orchestrateHarnessCleanup leaking $ do
+        orchestrateHarnessCleanup leaking $ \() -> do
           readIORef sessionOpen >>= writeIORef observed . Just
           pure ExitSuccess
       readIORef observed `shouldReturn` Just True
@@ -766,12 +853,14 @@ harnessCleanupCompositionSuite =
       primaries <- newIORef ([] :: [String])
       let bracket =
             HarnessCleanupBracket
-              { bracketRegister = pure (Right False)
+              { bracketPrepareCredential = pure ExitSuccess
+              , bracketFinalizeCredential = \_ outcome -> pure (Right outcome)
+              , bracketRegister = pure (Right AdoptedHarnessRun)
               , bracketDrive = \primary -> do
                   modifyIORef' primaries (++ [primaryTag primary])
                   pure (Left LifecycleTestHarnessMainRunMissing)
               }
-      _ <- orchestrateHarnessCleanup bracket (modifyIORef' bodyRuns (+ 1) >> pure ExitSuccess)
+      _ <- orchestrateHarnessCleanup bracket (const $ modifyIORef' bodyRuns (+ 1) >> pure ExitSuccess)
       readIORef bodyRuns `shouldReturn` 0
       readIORef primaries `shouldReturn` ["none"]
 
@@ -779,12 +868,14 @@ harnessCleanupCompositionSuite =
       primaries <- newIORef ([] :: [String])
       let bracket =
             HarnessCleanupBracket
-              { bracketRegister = pure (Right True)
+              { bracketPrepareCredential = pure ExitSuccess
+              , bracketFinalizeCredential = \_ outcome -> pure (Right outcome)
+              , bracketRegister = pure (Right (FreshHarnessRun ()))
               , bracketDrive = \primary -> do
                   modifyIORef' primaries (++ [primaryTag primary])
                   pure (Left LifecycleTestHarnessMainRunMissing)
               }
-      result <- orchestrateHarnessCleanup bracket (throwIO (ErrorCall "validation exploded"))
+      result <- orchestrateHarnessCleanup bracket (const $ throwIO (ErrorCall "validation exploded"))
       leftOf result `shouldBe` Just LifecycleTestHarnessMainRunMissing
       readIORef primaries `shouldReturn` ["thrown"]
 
@@ -792,13 +883,15 @@ harnessCleanupCompositionSuite =
       primaries <- newIORef ([] :: [String])
       let bracket =
             HarnessCleanupBracket
-              { bracketRegister = pure (Right True)
+              { bracketPrepareCredential = pure ExitSuccess
+              , bracketFinalizeCredential = \_ outcome -> pure (Right outcome)
+              , bracketRegister = pure (Right (FreshHarnessRun ()))
               , bracketDrive = \primary -> do
                   modifyIORef' primaries (++ [primaryTag primary])
                   pure (Left LifecycleTestHarnessMainRunMissing)
               }
       outcome <-
-        try (void (orchestrateHarnessCleanup bracket (throwIO ThreadKilled)))
+        try (void (orchestrateHarnessCleanup bracket (const $ throwIO ThreadKilled)))
           :: IO (Either SomeException ())
       outcome `shouldSatisfy` isThreadKilled
       readIORef primaries `shouldReturn` ["cancelled"]
@@ -807,11 +900,13 @@ harnessCleanupCompositionSuite =
       events <- newIORef ([] :: [String])
       let bracket =
             HarnessCleanupBracket
-              { bracketRegister = pure (Left LifecycleTestHarnessMainRunMissing)
+              { bracketPrepareCredential = pure ExitSuccess
+              , bracketFinalizeCredential = \_ outcome -> pure (Right outcome)
+              , bracketRegister = pure (Left LifecycleTestHarnessMainRunMissing)
               , bracketDrive = \_ -> modifyIORef' events (++ ["drive"]) >> pure (Left LifecycleTestHarnessMainRunMissing)
               }
       result <-
-        orchestrateHarnessCleanup bracket (modifyIORef' events (++ ["body"]) >> pure ExitSuccess)
+        orchestrateHarnessCleanup bracket (const $ modifyIORef' events (++ ["body"]) >> pure ExitSuccess)
       leftOf result `shouldBe` Just LifecycleTestHarnessMainRunMissing
       readIORef events `shouldReturn` []
 
@@ -912,14 +1007,16 @@ harnessCleanupCompositionSuite =
         unless (key `elem` [AwsDns01ChallengeRecordKey, AwsEksSubzoneKey]) $
           registeredResourceKeyRequiresDnsZone key `shouldBe` False
 
-    it "keeps the legacy host IAM setup and teardown out of the runner and says what is retained" $ do
+    it "keeps legacy IAM out and delegates credential retirement to the cleanup client" $ do
       runner <- readFile "src/Prodbox/TestRunner.hs"
+      client <- readFile "src/Prodbox/Test/LifecycleCleanupClient.hs"
       runner `shouldNotContain` "runManagedAwsHarnessSetup"
       runner `shouldNotContain` "runManagedAwsHarnessTeardown"
       runner `shouldNotContain` "runAwsIamHarnessSetup"
       runner `shouldNotContain` "runAwsIamHarnessTeardown"
       runner `shouldNotContain` "proved the typed credential-revocation node"
-      runner `shouldContain` "OPERATIONAL_CREDENTIAL_DISPOSITION=retained"
+      runner `shouldContain` "OPERATIONAL_CREDENTIAL_DISPOSITION="
+      client `shouldContain` "revokeHarnessLifecycleProviderCredential"
       -- The harness path is entered from the tier alone and has no second
       -- selector or standalone config sync behind it.
       runner `shouldNotContain` "harnessNeedsVaultBeforeSetup"
@@ -927,6 +1024,182 @@ harnessCleanupCompositionSuite =
       runner `shouldNotContain` "runReconcileInForceConfig"
       runner `shouldContain` "runNativeHarnessBootstrapFloor repoRoot"
       runner `shouldContain` "reconcileHarnessLifecycleProviderCredential"
+
+harnessCredentialRetirementCases :: SuiteBuilder ()
+harnessCredentialRetirementCases = describe "Sprint 5.51 credential cleanup composition" $ do
+  it "revokes after all cleanup results succeed even when the validation failed" $ do
+    calls <- newIORef (0 :: Int)
+    result <-
+      finishHarnessCredentialCleanup
+        (modifyIORef' calls (+ 1) >> pure ExitSuccess)
+        [ credentialCleanupReport credentialSucceeded CleanupPrimarySucceeded
+        , credentialCleanupReport credentialSucceeded (CleanupPrimaryExitFailure 7)
+        ]
+        ZoneAuthored
+    result `shouldBe` HarnessCredentialRevoked
+    readIORef calls `shouldReturn` 1
+  mapM_
+    preservesCase
+    [ ("pending", CleanupNodePending)
+    , ("running", CleanupNodeRunning credentialAttempt)
+    , ("blocked", CleanupNodeBlocked [])
+    , ("failed", CleanupNodeCompleted credentialAttempt (CleanupNodeFailed "failure"))
+    , ("unconfirmed", CleanupNodeCompleted credentialAttempt (CleanupNodeEffectUnconfirmed "unknown"))
+    ]
+  it "does not revoke on an incomplete lifecycle observation" $ do
+    calls <- newIORef (0 :: Int)
+    let incomplete =
+          LifecycleCleanupIncompleteResult
+            ( LifecycleCleanupIncomplete
+                fixtureRunId
+                Nothing
+                (NonEmpty.singleton LifecycleCleanupHostIntentMissing)
+            )
+    result <-
+      finishHarnessCredentialCleanup
+        (modifyIORef' calls (+ 1) >> pure ExitSuccess)
+        [incomplete]
+        ZoneAuthored
+    result `shouldBe` HarnessCredentialPreservedForRecovery
+    readIORef calls `shouldReturn` 0
+  it "does not revoke when zone evidence is incomplete" $ do
+    calls <- newIORef (0 :: Int)
+    result <-
+      finishHarnessCredentialCleanup
+        (modifyIORef' calls (+ 1) >> pure ExitSuccess)
+        [credentialCleanupReport credentialSucceeded CleanupPrimarySucceeded]
+        (ZoneIncomplete "unknown")
+    result `shouldBe` HarnessCredentialPreservedForRecovery
+    readIORef calls `shouldReturn` 0
+  it "does not treat an empty result list as evidence for credential destruction" $ do
+    calls <- newIORef (0 :: Int)
+    result <-
+      finishHarnessCredentialCleanup (modifyIORef' calls (+ 1) >> pure ExitSuccess) [] ZoneNotSelected
+    result `shouldBe` HarnessCredentialPreservedForRecovery
+    readIORef calls `shouldReturn` 0
+  it "keeps an unsuccessful credential revoke unresolved" $ do
+    result <-
+      finishHarnessCredentialCleanup
+        (pure (ExitFailure 1))
+        [credentialCleanupReport credentialSucceeded CleanupPrimarySucceeded]
+        ZoneAuthored
+    result `shouldBe` HarnessCredentialRevocationUnresolved
+  it "reestablishes on resume, skips the body, then cleans and revokes" $ do
+    events <- newIORef ([] :: [String])
+    let record value = modifyIORef' events (<> [value])
+        bracket = credentialTraceBracket record False ExitSuccess
+    result <- orchestrateHarnessCleanup bracket (const $ record "body" >> pure ExitSuccess)
+    result `shouldSatisfy` either (const False) (const True)
+    readIORef events `shouldReturn` ["register", "credential", "cleanup:none", "revoke"]
+  it "cleans and revokes before rethrowing cancellation" $ do
+    events <- newIORef ([] :: [String])
+    let record value = modifyIORef' events (<> [value])
+        bracket = credentialTraceBracket record True ExitSuccess
+    result <-
+      try (void (orchestrateHarnessCleanup bracket (const $ record "body" >> throwIO ThreadKilled)))
+        :: IO (Either SomeException ())
+    result `shouldSatisfy` isThreadKilled
+    readIORef events `shouldReturn` ["register", "credential", "body", "cleanup:cancelled", "revoke"]
+  it "withholds the body after failed credential preparation and still attempts cleanup" $ do
+    events <- newIORef ([] :: [String])
+    let record value = modifyIORef' events (<> [value])
+        bracket = credentialTraceBracket record True (ExitFailure 3)
+    _ <- orchestrateHarnessCleanup bracket (const $ record "body" >> pure ExitSuccess)
+    readIORef events `shouldReturn` ["register", "credential", "cleanup:exit3", "revoke"]
+  it "cleans and revokes before rethrowing cancellation during credential preparation" $ do
+    events <- newIORef ([] :: [String])
+    let record value = modifyIORef' events (<> [value])
+        bracket =
+          (credentialTraceBracket record True ExitSuccess)
+            { bracketPrepareCredential = record "credential" >> throwIO ThreadKilled
+            }
+    result <-
+      try (void (orchestrateHarnessCleanup bracket (const $ record "body" >> pure ExitSuccess)))
+        :: IO (Either SomeException ())
+    result `shouldSatisfy` isThreadKilled
+    readIORef events `shouldReturn` ["register", "credential", "cleanup:cancelled", "revoke"]
+  it "preserves an adopted run's primary outcome after failed credential preparation" $ do
+    events <- newIORef ([] :: [String])
+    let record value = modifyIORef' events (<> [value])
+        bracket = credentialTraceBracket record False (ExitFailure 3)
+    _ <- orchestrateHarnessCleanup bracket (const $ record "body" >> pure ExitSuccess)
+    readIORef events `shouldReturn` ["register", "credential", "cleanup:none", "revoke"]
+  it "does not enter credential finalization when the cleanup drive cannot return a result" $ do
+    events <- newIORef ([] :: [String])
+    let record value = modifyIORef' events (<> [value])
+        bracket =
+          (credentialTraceBracket record True ExitSuccess)
+            { bracketDrive = \_ -> record "cleanup:unobservable" >> pure (Left LifecycleTestHarnessMainRunMissing)
+            }
+    result <- orchestrateHarnessCleanup bracket (const $ record "body" >> pure ExitSuccess)
+    result `shouldBe` Left LifecycleTestHarnessMainRunMissing
+    readIORef events `shouldReturn` ["register", "credential", "body", "cleanup:unobservable"]
+ where
+  preservesCase (label, state) = it ("makes zero revoke calls with a " ++ label ++ " cleanup node") $ do
+    calls <- newIORef (0 :: Int)
+    result <-
+      finishHarnessCredentialCleanup
+        (modifyIORef' calls (+ 1) >> pure ExitSuccess)
+        [ credentialCleanupReport credentialSucceeded CleanupPrimarySucceeded
+        , credentialCleanupReport state CleanupPrimarySucceeded
+        ]
+        ZoneAuthored
+    result `shouldBe` HarnessCredentialPreservedForRecovery
+    readIORef calls `shouldReturn` 0
+
+credentialAttempt :: CleanupAttemptId
+credentialAttempt = mustRight (mkCleanupAttemptId "credential-cleanup-attempt")
+
+credentialSucceeded :: CleanupNodeState
+credentialSucceeded = CleanupNodeCompleted credentialAttempt CleanupNodeSucceeded
+
+credentialCleanupReport :: CleanupNodeState -> CleanupPrimaryOutcome -> LifecycleCleanupResult
+credentialCleanupReport state primary =
+  LifecycleCleanupReportObserved
+    CleanupRunReport
+      { cleanupReportRunId = fixtureRunId
+      , cleanupReportGraphDigest =
+          cleanupGraphDigest (compiledDesiredAbsenceGraph credentialAuditedCompiled)
+      , cleanupReportPrimaryOutcome = primary
+      , cleanupReportNodeStates =
+          Map.fromList
+            [ (cleanupNodeId node, state)
+            | node <- cleanupGraphNodes (compiledDesiredAbsenceGraph credentialAuditedCompiled)
+            ]
+      }
+
+credentialAuditedCompiled :: CompiledDesiredAbsenceProgram 'ExplicitPerRun
+credentialAuditedCompiled =
+  mustRight
+    ( compileAuditedExplicitPerRunGraph
+        fixtureRunId
+        fixtureFoundation
+        fixtureAwsScope
+        Nothing
+        ( mkResourceScopeBindingsWithAudit
+            Nothing
+            Nothing
+            ( mustRight
+                (mkRetainedNameBinding "fixture-state" "fixture-capture-mail" "example.test" "fixture-cluster")
+            )
+        )
+        []
+    )
+
+credentialTraceBracket
+  :: (String -> IO ()) -> Bool -> ExitCode -> HarnessCleanupBracket () [LifecycleCleanupResult]
+credentialTraceBracket record runBody preparation =
+  HarnessCleanupBracket
+    { bracketRegister =
+        record "register" >> pure (Right (if runBody then FreshHarnessRun () else AdoptedHarnessRun))
+    , bracketPrepareCredential = record "credential" >> pure preparation
+    , bracketDrive = \primary -> do
+        record ("cleanup:" ++ primaryTag primary)
+        pure (Right [credentialCleanupReport credentialSucceeded CleanupPrimarySucceeded])
+    , bracketFinalizeCredential = \_ results -> do
+        _ <- finishHarnessCredentialCleanup (record "revoke" >> pure ExitSuccess) results ZoneAuthored
+        pure (Right results)
+    }
 
 leftOf :: Either left right -> Maybe left
 leftOf result = case result of
@@ -1188,7 +1461,7 @@ executeFakeDescriptorCommand compiled finishAutomatically outcomeFor storedRun c
               storedRun
               nodeEffects
               (claimCleanupRun owner now expires)
-          pure (either transitionRefusal presentRun transitioned, False)
+          pure (either transitionRefusal acknowledgedRun transitioned, False)
     CleanupRunDescriptorRecordPrimary rawRunId rawDescriptorDigest rawOwner fence outcome ->
       withDescriptorIdentity rawRunId rawDescriptorDigest $ case mkCleanupOwnerId rawOwner of
         Left detail -> pure (bindingRefusal detail, False)
@@ -1202,7 +1475,23 @@ executeFakeDescriptorCommand compiled finishAutomatically outcomeFor storedRun c
               nodeEffects
               (recordPrimaryOutcome owner fence outcome)
           lose <- consumeFault faults LosePrimaryResponse
-          pure (either transitionRefusal presentRun transitioned, lose && isRight transitioned)
+          pure (either transitionRefusal acknowledgedRun transitioned, lose && isRight transitioned)
+    CleanupRunDescriptorObserveCompletion rawRunId rawDescriptorDigest ->
+      withDescriptorIdentity rawRunId rawDescriptorDigest $ do
+        stored <- readIORef storedRun
+        pure
+          ( case stored of
+              FakeRunMissing -> CleanupRunDescriptorNotFound
+              FakeRunTombstoned _ -> bindingRefusal "fixture does not retain archived report bytes"
+              FakeRunLive run
+                | not (cleanupRunTerminal run) -> presentRun run
+                | otherwise -> case compactCleanupRun run of
+                    Left detail -> transitionRefusal detail
+                    Right report -> case encodeCleanupRunReport cleanupRunMaximumBytes report of
+                      Left detail -> bindingRefusal (Text.pack (show detail))
+                      Right bytes -> CleanupRunDescriptorCompacted fixtureRawDescriptorDigest bytes
+          , False
+          )
     CleanupRunDescriptorCompact rawRunId rawDescriptorDigest _ _ ->
       withDescriptorIdentity rawRunId rawDescriptorDigest $ do
         stored <- readIORef storedRun
@@ -1229,19 +1518,47 @@ executeFakeDescriptorCommand compiled finishAutomatically outcomeFor storedRun c
                       reportBytes
                   , lose
                   )
-    CleanupRunDescriptorBeginNode {} ->
-      pure (bindingRefusal "validation client attempted local node execution", False)
-    CleanupRunDescriptorCompleteNode {} ->
-      pure (bindingRefusal "validation client attempted local node completion", False)
+    CleanupRunDescriptorBeginNode rawRunId rawDescriptorDigest rawOwner fence rawNode rawAttempt ->
+      withDescriptorIdentity rawRunId rawDescriptorDigest $
+        withNodeIdentity rawOwner rawNode rawAttempt $ \owner node attempt ->
+          beginCleanupNode owner fence node attempt
+    CleanupRunDescriptorCompleteNode
+      rawRunId
+      rawDescriptorDigest
+      rawOwner
+      fence
+      rawNode
+      rawAttempt
+      outcome ->
+        withDescriptorIdentity rawRunId rawDescriptorDigest $
+          withNodeIdentity rawOwner rawNode rawAttempt $ \owner node attempt ->
+            completeCleanupNode owner fence node attempt outcome
     CleanupRunDescriptorScan ->
       pure (bindingRefusal "unexpected descriptor-bound scan", False)
  where
+  withNodeIdentity rawOwner rawNode rawAttempt transition =
+    case (mkCleanupOwnerId rawOwner, mkCleanupNodeId rawNode, mkCleanupAttemptId rawAttempt) of
+      (Right owner, Right node, Right attempt) -> do
+        changed <-
+          applyFakeTransition compiled False outcomeFor storedRun nodeEffects (transition owner node attempt)
+        pure (either transitionRefusal acknowledgedRun changed, False)
+      _ -> pure (bindingRefusal "invalid cleanup node identity", False)
+
   withDescriptorIdentity rawRunId rawDescriptorDigest action
     | rawRunId /= fixtureRawRunId =
         pure (bindingRefusal "transition run id mismatch", False)
     | rawDescriptorDigest /= fixtureRawDescriptorDigest =
         pure (bindingRefusal "transition descriptor digest mismatch", False)
     | otherwise = action
+
+acknowledgedRun :: CleanupRun -> CleanupRunDescriptorResponse
+acknowledgedRun run = case encodeCleanupRun cleanupRunMaximumBytes run of
+  Left err -> bindingRefusal (Text.pack (show err))
+  Right bytes ->
+    CleanupRunDescriptorMutationCommitted
+      fixtureRawRunId
+      fixtureRawDescriptorDigest
+      (cleanupDigestText (cleanupDigestOfBytes bytes))
 
 presentRun :: CleanupRun -> CleanupRunDescriptorResponse
 presentRun run = case encodeCleanupRun cleanupRunMaximumBytes run of
@@ -1607,6 +1924,7 @@ commandRunId command = case command of
   CleanupRunDescriptorScan -> Nothing
   CleanupRunDescriptorCompact runId _ _ _ -> Just runId
   CleanupRunDescriptorReadBackProgram runId -> Just runId
+  CleanupRunDescriptorObserveCompletion runId _ -> Just runId
 
 countCommands
   :: (CleanupRunDescriptorCommand -> Bool)
@@ -1728,3 +2046,7 @@ ordinaryDescriptor :: LifecycleCleanupDescriptor 'ExplicitPerRun
 ordinaryDescriptor =
   mustRight
     (mkOrdinaryCleanupDescriptor fixtureRunId ordinaryCompiled ordinaryInitialRun)
+
+isSuccessfulNode :: Maybe CleanupNodeState -> Bool
+isSuccessfulNode (Just (CleanupNodeCompleted _ CleanupNodeSucceeded)) = True
+isSuccessfulNode _ = False

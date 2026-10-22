@@ -17,6 +17,7 @@ module Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
   , AwsAdminFirstReconcileProjection (..)
   , AwsAdminProvisionerResponse (..)
   , AwsAdminAuthorityRepositoryResolver
+  , AwsAdminProviderCredentialBoundary (..)
   , awsAdminProvisionerAuthenticatedHandler
   , awsAdminProvisionerMaximumBytes
   , awsAdminProvisionerResponseMaximumBytes
@@ -58,8 +59,10 @@ import Prodbox.ControlPlane.Route
   )
 import Prodbox.ControlPlane.TargetMaterialRegistry (TargetSecretId)
 import Prodbox.Http.ReplyStatus (ReplyStatus (..))
+import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch (ProviderCredentialRecoveryView)
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAuthority
-  ( AwsAdminAuthorityRepository
+  ( AwsAdminAttestedRecoveryProof
+  , AwsAdminAuthorityRepository
   , AwsAdminAuthorityRepositoryError (..)
   , AwsAdminAuthorityState (..)
   , AwsAdminAuthorityStateError (AwsAdminAuthorityTransitionRefused)
@@ -74,6 +77,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAuthority
   , completeAwsAdminAuthority
   , observeAwsAdminAuthority
   , prepareAwsAdminAuthority
+  , prepareAwsAdminAuthorityAttestedRecovery
   , prepareAwsAdminAuthorityAuthorizedRecovery
   , prepareAwsAdminAuthorityRenewal
   )
@@ -84,6 +88,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   ( AwsAdminJobBinding
   , AwsAdminPermitIntent
+  , SignedAwsAdminPermit
   , awsAdminJobNameForPermit
   , awsAdminPermitIntentAuthorityEndpoint
   , awsAdminPermitIntentAuthorityScope
@@ -130,6 +135,11 @@ data AwsAdminProvisionerRequest
   | CompleteAwsAdminProvisioning !Text !ByteString !ByteString
   | ObserveAwsAdminProvisioning !Text
   | ObserveAwsAdminFirstReconcile
+  | ObserveAwsAdminProviderCredentialOperation
+  | ObserveAwsAdminProvisioningMetadata !Text
+  | ObserveAwsAdminProviderCredentialRecovery
+  | ObserveAwsAdminFirstReconcileRecovery
+  | SettleAwsAdminFirstReconcileRecovery
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -138,6 +148,10 @@ data AwsAdminPreparationTransition
   | AwsAdminPreparationPreparedRenewal !AuthorityTime !AwsAdminPermitIntent
   | AwsAdminPreparationAuthorizedRecovery
       !AwsAdminAuthorizedRecoveryProof
+      !AuthorityTime
+      !AwsAdminPermitIntent
+  | AwsAdminPreparationAttestedRecovery
+      !AwsAdminAttestedRecoveryProof
       !AuthorityTime
       !AwsAdminPermitIntent
 
@@ -208,11 +222,26 @@ data AwsAdminProvisionerResponse
   | AwsAdminFirstReconcileObserved !(Maybe AwsAdminFirstReconcileProjection)
   | AwsAdminProvisioningRefused !Text
   | AwsAdminProvisioningUnavailable !Text
+  | AwsAdminProviderCredentialOperationObserved !(Maybe Text)
+  | AwsAdminProviderCredentialRecoveryObserved !ProviderCredentialRecoveryView
+  | AwsAdminFirstReconcileRecoveryObserved !Bool
+  | AwsAdminFirstReconcileRecoverySettled
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
 type AwsAdminAuthorityRepositoryResolver m revision =
   Text -> Either Text (AwsAdminAuthorityRepository m revision)
+
+-- | Authority-owned lifecycle effects. These consume metadata only; the
+-- production interpreter captures its own retained repositories and Agent.
+data AwsAdminProviderCredentialBoundary m = AwsAdminProviderCredentialBoundary
+  { reserveAwsAdminProviderCredential :: AwsAdminPermitIntent -> m (Either Text ())
+  , admitAwsAdminProviderPermit :: SignedAwsAdminPermit -> m (Either Text ())
+  , settleAwsAdminProviderCredential :: AwsAdminPermitIntent -> m (Either Text ())
+  , observePendingAwsAdminProviderCredential :: m (Either Text (Maybe Text))
+  , observeAwsAdminProviderCredentialRecovery :: m (Either Text ProviderCredentialRecoveryView)
+  , confirmAwsAdminProviderCredentialServing :: m (Either Text ())
+  }
 
 awsAdminProvisionerMaximumBytes :: Int
 awsAdminProvisionerMaximumBytes = 256 * 1024
@@ -227,6 +256,7 @@ awsAdminProvisionerAuthenticatedHandler
   -> m (Either Text AuthorityTime)
   -> AwsAdminAuthorityRepositoryResolver m revision
   -> AwsAdminPreparedTargetLifecycle m
+  -> AwsAdminProviderCredentialBoundary m
   -> AuthorityManifestSigner m
   -> AuthenticatedRoleHandler m
   -> AuthenticatedRoleHandler m
@@ -236,6 +266,7 @@ awsAdminProvisionerAuthenticatedHandler
   observeNow
   resolveRepository
   targetLifecycle
+  providerCredential
   signer
   fallback =
     AuthenticatedRoleHandler
@@ -286,19 +317,17 @@ awsAdminProvisionerAuthenticatedHandler
           current <- observeAwsAdminAuthority repository
           case current >>= intentForOperation operationId of
             Left err -> pure (responseForError err)
-            Right _ -> do
+            Right intent -> do
               -- Read immediately before Transit signing. The value is never
               -- captured across Job polling and cannot extend the deadline.
               nowResult <- observeNow
               case nowResult of
                 Left _ -> pure (unavailable "authority-time-unavailable")
                 Right now -> do
-                  result <- authorizeAwsAdminAuthority repository signer now
-                  pure $ case result of
-                    Left err -> responseForError err
-                    Right (_, permit) ->
-                      AwsAdminProvisioningAuthorized
-                        (encodeSignedAwsAdminPermit permit)
+                  reserved <- reserveAwsAdminProviderCredential providerCredential intent
+                  case reserved of
+                    Left detail -> pure (unavailable ("provider-credential/reserve/" <> detail))
+                    Right () -> authorizeAndAdmit repository now
       CompleteAwsAdminProvisioning operationId permitBytes receiptBytes ->
         withOperationRepository
           operationId
@@ -306,17 +335,55 @@ awsAdminProvisionerAuthenticatedHandler
       ObserveAwsAdminProvisioning operationId ->
         withOperationRepository operationId $ \repository -> do
           result <- observeAwsAdminAuthority repository
-          pure $ case result of
-            Left err -> responseForError err
+          case result of
+            Left err -> pure (responseForError err)
+            Right state -> do
+              recovered <- recoverCompletedJournal repository state
+              case recovered of
+                Left response -> pure response
+                Right current -> observeSettled operationId current
+      ObserveAwsAdminProvisioningMetadata operationId ->
+        withOperationRepository operationId $ \repository -> do
+          observed <- observeAwsAdminAuthority repository
+          pure $ case observed of
+            Left cause -> responseForError cause
             Right state -> case observationFor operationId state of
               Left detail -> refused detail
-              Right observed -> AwsAdminProvisioningObserved observed
+              Right metadata -> AwsAdminProvisioningObserved metadata
       ObserveAwsAdminFirstReconcile -> do
         observed <- observeAwsAdminFirstReconcileContinuation targetLifecycle
         pure $ case observed of
           Left _ -> unavailable "first-reconcile-journal-unavailable"
           Right continuation ->
             AwsAdminFirstReconcileObserved (continuationProjection <$> continuation)
+      ObserveAwsAdminFirstReconcileRecovery -> do
+        observed <- observeAwsAdminFirstReconcileRecoveryPending targetLifecycle
+        pure $
+          either
+            (const (unavailable "first-reconcile-recovery-unavailable"))
+            AwsAdminFirstReconcileRecoveryObserved
+            observed
+      SettleAwsAdminFirstReconcileRecovery -> do
+        confirmed <- confirmAwsAdminProviderCredentialServing providerCredential
+        case confirmed of
+          Left detail -> pure (unavailable ("first-reconcile-provider/" <> detail))
+          Right () -> do
+            settled <- settleAwsAdminFirstReconcileRecovery targetLifecycle
+            pure $
+              either
+                (const (unavailable "first-reconcile-settlement-unavailable"))
+                (const AwsAdminFirstReconcileRecoverySettled)
+                settled
+      ObserveAwsAdminProviderCredentialOperation -> do
+        pending <- observePendingAwsAdminProviderCredential providerCredential
+        pure $ case pending of
+          Left detail -> unavailable ("provider-credential/pending/" <> detail)
+          Right operation -> AwsAdminProviderCredentialOperationObserved operation
+      ObserveAwsAdminProviderCredentialRecovery -> do
+        observed <- observeAwsAdminProviderCredentialRecovery providerCredential
+        pure $ case observed of
+          Left detail -> unavailable ("provider-credential/recovery/" <> detail)
+          Right view -> AwsAdminProviderCredentialRecoveryObserved view
 
     withIntentRepository intent action =
       withOperationRepository (operationIdForIntent intent) action
@@ -328,20 +395,36 @@ awsAdminProvisionerAuthenticatedHandler
         Right state -> do
           recordAwsAdminPrepareAuthorityPhase targetLifecycle (prepareAuthorityPhase state)
           case state of
-            AwsAdminAuthorityCompleted permit _
-              | signedAwsAdminPermitIntent permit == draft ->
-                  pure
-                    ( AwsAdminProvisioningPrepared
-                        (challengeFor (signedAwsAdminPermitIntent permit))
-                    )
-              | otherwise -> pure (refused "completed-operation-mismatch")
+            AwsAdminAuthorityCompleted permit receipt -> completedPreparation draft permit receipt
+            AwsAdminAuthorityCompletedWithLineage permit receipt _ -> completedPreparation draft permit receipt
             _ -> do
               transitionResult <- transitionForState state
               case transitionResult of
                 Left response -> pure response
                 Right transition -> prepareTargetAndState repository transition draft
 
+    completedPreparation draft permit receipt
+      | signedAwsAdminPermitIntent permit == draft =
+          do
+            settled <- ensureCompletedReceipt permit receipt
+            pure $ case settled of
+              Left detail -> unavailable ("provider-credential/settle/" <> detail)
+              Right () -> AwsAdminProvisioningPrepared (challengeFor (signedAwsAdminPermitIntent permit))
+      | otherwise = pure (refused "completed-operation-mismatch")
+
     transitionForState state = case state of
+      AwsAdminAuthorityAttested retained binding -> do
+        nowResult <- observeNow
+        case nowResult of
+          Left _ -> pure (Left (unavailable "authority-time-unavailable"))
+          Right now
+            | authorityTimeMicros now < authorityTimeMicros (awsAdminPermitIntentDeadline retained) ->
+                pure (Right AwsAdminPreparationStandard)
+            | otherwise -> do
+                proof <- proveAwsAdminAttestedAttemptRecovery targetLifecycle now retained binding
+                pure $ case proof of
+                  Left cause -> Left (unavailable ("attempt-recovery/" <> renderAwsAdminAuthorizedRecoveryError cause))
+                  Right evidence -> Right (AwsAdminPreparationAttestedRecovery evidence now retained)
       AwsAdminAuthorityPrepared retained -> do
         nowResult <- observeNow
         pure $ case nowResult of
@@ -389,6 +472,7 @@ awsAdminProvisionerAuthenticatedHandler
       AwsAdminAuthorityAttested _ _ -> AwsAdminPrepareAuthorityAttested
       AwsAdminAuthorityAuthorized _ -> AwsAdminPrepareAuthorityAuthorized
       AwsAdminAuthorityCompleted _ _ -> AwsAdminPrepareAuthorityCompleted
+      AwsAdminAuthorityCompletedWithLineage {} -> AwsAdminPrepareAuthorityCompleted
 
     prepareTargetAndState repository transition draft = do
       case intentForTransition transition draft of
@@ -408,26 +492,36 @@ awsAdminProvisionerAuthenticatedHandler
                           (awsAdminPreparedTargetPrepareErrorCause err)
                     )
                 )
-            Right intent -> do
-              result <- case transition of
-                AwsAdminPreparationStandard ->
-                  prepareAwsAdminAuthority repository targetBoundary intent
-                AwsAdminPreparationPreparedRenewal now retained ->
-                  prepareAwsAdminAuthorityRenewal
-                    repository
-                    targetBoundary
-                    now
-                    retained
-                    intent
-                AwsAdminPreparationAuthorizedRecovery proof _ _ ->
-                  prepareAwsAdminAuthorityAuthorizedRecovery
-                    repository
-                    targetBoundary
-                    proof
-                    intent
-              pure $ case result of
-                Left err -> responseForError err
-                Right _ -> AwsAdminProvisioningPrepared (challengeFor intent)
+            Right intent -> prepareOperationAndReserve repository transition intent
+
+    prepareOperationAndReserve repository transition intent = do
+      result <- case transition of
+        AwsAdminPreparationStandard ->
+          prepareAwsAdminAuthority repository targetBoundary intent
+        AwsAdminPreparationPreparedRenewal now retained ->
+          prepareAwsAdminAuthorityRenewal
+            repository
+            targetBoundary
+            now
+            retained
+            intent
+        AwsAdminPreparationAuthorizedRecovery proof _ _ ->
+          prepareAwsAdminAuthorityAuthorizedRecovery
+            repository
+            targetBoundary
+            proof
+            intent
+        AwsAdminPreparationAttestedRecovery proof _ _ ->
+          prepareAwsAdminAuthorityAttestedRecovery repository targetBoundary proof intent
+      case result of
+        Left err -> pure (responseForError err)
+        Right _ -> do
+          -- Persist the canonical operation before the global fence. A crash
+          -- after reservation can then discover and resume its exact intent.
+          reserved <- reserveAwsAdminProviderCredential providerCredential intent
+          pure $ case reserved of
+            Left detail -> unavailable ("provider-credential/reserve/" <> detail)
+            Right () -> AwsAdminProvisioningPrepared (challengeFor intent)
 
     intentForTransition transition draft = case transition of
       AwsAdminPreparationStandard -> Right draft
@@ -435,6 +529,8 @@ awsAdminProvisionerAuthenticatedHandler
         bindAwsAdminPreparedRenewalIntent retained draft
       AwsAdminPreparationAuthorizedRecovery proof _ _ ->
         bindAwsAdminAuthorizedRecoveryIntent proof draft
+      AwsAdminPreparationAttestedRecovery _ _ retained ->
+        bindAwsAdminPreparedRenewalIntent retained draft
 
     completeProvisioning operationId permitBytes receiptBytes repository =
       case (decodeSignedAwsAdminPermit permitBytes, decodeAwsAdminWorkerReceipt receiptBytes) of
@@ -443,20 +539,14 @@ awsAdminProvisionerAuthenticatedHandler
             if operationIdForIntent (signedAwsAdminPermitIntent permit) /= operationId
               then pure (refused "operation-mismatch")
               else do
-                result <- completeAwsAdminAuthority repository permit receipt
-                case result of
-                  Left err -> pure (responseForError err)
+                recorded <- commitCompletionRecord repository permit receipt
+                case recorded of
+                  Left response -> pure response
                   Right _ -> do
-                    journaled <-
-                      commitAwsAdminFirstReconcileReceipt
-                        targetLifecycle
-                        permit
-                        receipt
-                    pure $ case journaled of
-                      Left _ -> unavailable "first-reconcile-journal-unavailable"
-                      Right () ->
-                        AwsAdminProvisioningCompleted
-                          (encodeAwsAdminWorkerReceipt receipt)
+                    settled <- settleAwsAdminProviderCredential providerCredential (signedAwsAdminPermitIntent permit)
+                    pure $ case settled of
+                      Left detail -> unavailable ("provider-credential/settle/" <> detail)
+                      Right () -> AwsAdminProvisioningCompleted (encodeAwsAdminWorkerReceipt receipt)
         _ -> pure (refused "completion-codec-rejected")
 
     withOperationRepository operationId action = case resolveRepository operationId of
@@ -467,6 +557,56 @@ awsAdminProvisionerAuthenticatedHandler
       AwsAdminPreparedTargetBoundary
         (reobserveRetainedAwsAdminPreparedTarget targetLifecycle)
 
+    authorizeAndAdmit repository now = do
+      result <- authorizeAwsAdminAuthority repository signer now
+      case result of
+        Left err -> pure (responseForError err)
+        Right (_, permit) -> do
+          admitted <- admitAwsAdminProviderPermit providerCredential permit
+          pure $ case admitted of
+            Left detail -> unavailable ("provider-credential/permit/" <> detail)
+            Right () -> AwsAdminProvisioningAuthorized (encodeSignedAwsAdminPermit permit)
+
+    settleCompletedState state = case state of
+      AwsAdminAuthorityCompleted permit receipt -> ensureCompletedReceipt permit receipt
+      AwsAdminAuthorityCompletedWithLineage permit receipt _ -> ensureCompletedReceipt permit receipt
+      _ -> pure (Right ())
+
+    ensureCompletedReceipt permit receipt = do
+      journaled <- commitAwsAdminFirstReconcileReceipt targetLifecycle permit receipt
+      case journaled of
+        Left _ -> pure (Left "first-reconcile-journal-unavailable")
+        Right () -> settleAwsAdminProviderCredential providerCredential (signedAwsAdminPermitIntent permit)
+
+    observeSettled operationId state = do
+      settled <- settleCompletedState state
+      pure $ case settled of
+        Left detail -> unavailable ("provider-credential/settle/" <> detail)
+        Right () -> case observationFor operationId state of
+          Left detail -> refused detail
+          Right observed -> AwsAdminProvisioningObserved observed
+
+    recoverCompletedJournal repository state = case state of
+      AwsAdminAuthorityAuthorized permit -> do
+        observed <- observeAwsAdminCompletedWorkerReceipt targetLifecycle permit
+        case observed of
+          Left detail -> pure (Left (unavailable ("worker-completion/" <> detail)))
+          Right Nothing -> pure (Right state)
+          Right (Just receipt) -> do
+            recorded <- completeAwsAdminAuthority repository permit receipt
+            pure (first responseForError recorded)
+      _ -> pure (Right state)
+
+    commitCompletionRecord repository permit receipt = do
+      result <- completeAwsAdminAuthority repository permit receipt
+      case result of
+        Left cause -> pure (Left (responseForError cause))
+        Right state -> do
+          journaled <- commitAwsAdminFirstReconcileReceipt targetLifecycle permit receipt
+          pure $ case journaled of
+            Left _ -> Left (unavailable "first-reconcile-journal-unavailable")
+            Right () -> Right state
+
 outboxRenewal
   :: AwsAdminPreparationTransition
   -> Maybe (AuthorityTime, AwsAdminPermitIntent)
@@ -474,11 +614,13 @@ outboxRenewal transition = case transition of
   AwsAdminPreparationStandard -> Nothing
   AwsAdminPreparationPreparedRenewal now retained -> Just (now, retained)
   AwsAdminPreparationAuthorizedRecovery _ now retained -> Just (now, retained)
+  AwsAdminPreparationAttestedRecovery _ now retained -> Just (now, retained)
 
 renderAwsAdminAuthorizedRecoveryError
   :: AwsAdminAuthorizedRecoveryError -> Text
 renderAwsAdminAuthorizedRecoveryError err = case err of
   AwsAdminAuthorizedRecoveryNotAuthorized -> "state-not-authorized"
+  AwsAdminAuthorizedRecoveryNotAttested -> "state-not-attested"
   AwsAdminAuthorizedRecoveryDeadlineActive -> "deadline-active"
   AwsAdminAuthorizedRecoveryJobPresent -> "job-present"
   AwsAdminAuthorizedRecoveryJobUnobservable -> "job-unobservable"
@@ -545,6 +687,12 @@ observationFor operationId state = case state of
       (Just (encodeSignedAwsAdminPermit permit))
       Nothing
   AwsAdminAuthorityCompleted permit receipt ->
+    observed
+      (signedAwsAdminPermitIntent permit)
+      AwsAdminProvisionerCompleted
+      (Just (encodeSignedAwsAdminPermit permit))
+      (Just (encodeAwsAdminWorkerReceipt receipt))
+  AwsAdminAuthorityCompletedWithLineage permit receipt _ ->
     observed
       (signedAwsAdminPermitIntent permit)
       AwsAdminProvisionerCompleted
@@ -636,6 +784,10 @@ responseStatus response = case response of
   AwsAdminFirstReconcileObserved _ -> ReplyOk
   AwsAdminProvisioningRefused _ -> ReplyConflict
   AwsAdminProvisioningUnavailable _ -> ReplyServiceUnavailable
+  AwsAdminProviderCredentialOperationObserved _ -> ReplyOk
+  AwsAdminProviderCredentialRecoveryObserved _ -> ReplyOk
+  AwsAdminFirstReconcileRecoveryObserved _ -> ReplyOk
+  AwsAdminFirstReconcileRecoverySettled -> ReplyOk
 
 responseBody :: AwsAdminProvisionerResponse -> ByteString
 responseBody = LazyByteString.toStrict . encodeControlPlaneResponse

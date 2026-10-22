@@ -56,6 +56,7 @@ module Prodbox.Lifecycle.Teardown.EphemeralKubectl
   , runEphemeralKubectl
   , EphemeralKubectlUnavailable (..)
   , withEphemeralKubectlForProjection
+  , withHomeCleanupKubectl
   , withEphemeralKubeconfigPath
   , replaceEphemeralBearer
   , ephemeralKubectlLimits
@@ -88,6 +89,7 @@ import Prodbox.Infra.EphemeralKubeconfigPath
   ( ephemeralKubeconfigFileName
   , ephemeralKubectlDirectoryPrefix
   )
+import Prodbox.Infra.MinioBackend (resolveLocalKubeconfig)
 import Prodbox.Lifecycle.Teardown.Model (ObservationFailure (..))
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
@@ -451,3 +453,20 @@ writeAll fd remaining
       if written <= 0
         then ioError (userError "short write while creating an ephemeral EKS private file")
         else writeAll fd (ByteString.drop (fromIntegral written) remaining)
+
+-- | The home DNS01 owner uses the explicitly resolved retained local RKE2
+-- kubeconfig. Ambient contexts and AWS credentials are scrubbed just as for the
+-- EKS projection; this constructor never falls back to a remote target.
+withHomeCleanupKubectl
+  :: FilePath
+  -> [(String, String)]
+  -> Maybe FilePath
+  -> (Either EphemeralKubectlUnavailable EphemeralKubectl -> IO result)
+  -> IO result
+withHomeCleanupKubectl kubectl environment workingDirectory consume = do
+  resolved <- resolveLocalKubeconfig
+  consume $ case resolved of
+    Left detail -> Left (EphemeralKubectlUnavailable (ObservationFailure (Text.pack detail)))
+    Right path -> Right (EphemeralKubectl (runBoundedKubectl kubectl safeEnvironment workingDirectory path))
+ where
+  safeEnvironment = filter (not . forbiddenKubectlEnvironmentKey . fst) environment

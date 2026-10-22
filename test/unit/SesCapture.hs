@@ -184,10 +184,6 @@ sesCaptureSuite =
       keysRead commands `shouldBe` ["inbound/recent1", "inbound/target"]
       -- The second page is asked for by the token the first one returned.
       map (flagValue "--starting-token") (listingsIssued commands) `shouldBe` [Nothing, Just "t1"]
-      -- The reap path selects by the same rule.
-      (reaper, reaperCalls) <- scriptedBucket pages bodies
-      capturedEmailKeysFor reaper "bucket" recipient `shouldReturn` Success ["inbound/target"]
-      fmap keysRead (readIORef reaperCalls) `shouldReturn` ["inbound/recent1", "inbound/target"]
 
     it "asks for the bucket's inbound prefix a thousand objects at a time, as JSON" $ do
       (runner, calls) <- scriptedBucket [(Nothing, Page [] Nothing)] []
@@ -235,12 +231,10 @@ sesCaptureSuite =
       $ do
         (emptyRunner, _) <- scriptedBucket [(Nothing, Page [] Nothing)] []
         findCapturedEmail emptyRunner "bucket" recipient `shouldReturn` Success Nothing
-        capturedEmailKeysFor emptyRunner "bucket" recipient `shouldReturn` Success []
         -- Measured against the installed CLI: an empty prefix prints a document with no
         -- Contents key at all.
         let noContents = fixedAnswer (ok "{\"RequestCharged\": null, \"Prefix\": \"inbound/\"}")
         findCapturedEmail noContents "bucket" recipient `shouldReturn` Success Nothing
-        capturedEmailKeysFor noContents "bucket" recipient `shouldReturn` Success []
         (oldRunner, oldCalls) <-
           scriptedBucket [(Nothing, pageOfKeys oldTime ["inbound/a", "inbound/b"])] []
         findCapturedEmail oldRunner "bucket" recipient `shouldReturn` Success Nothing
@@ -277,7 +271,7 @@ sesCaptureSuite =
       fmap (length . listingsIssued) (readIORef atWalkCalls) `shouldReturn` 10
       -- One more is refused.
       (vast, _) <- scriptedBucket (oldPages (maximumInboundObjects + 1)) []
-      vastFailure <- capturedEmailKeysFor vast "bucket" recipient
+      vastFailure <- findCapturedEmail vast "bucket" recipient
       failureOf vastFailure `shouldSatisfy` isInfixOf ("more than " ++ show maximumInboundObjects)
       -- A listing that never ends is stopped, and does not hang.
       (endless, endlessCalls) <-
@@ -302,7 +296,7 @@ sesCaptureSuite =
         failureOf garbageFailure `shouldSatisfy` isInfixOf "could not decode"
         -- A continuation token that is not a string is not the end of the listing.
         tokenFailure <-
-          capturedEmailKeysFor (fixedAnswer (ok "{\"Contents\": [], \"NextToken\": 5}")) "bucket" recipient
+          findCapturedEmail (fixedAnswer (ok "{\"Contents\": [], \"NextToken\": 5}")) "bucket" recipient
         failureOf tokenFailure `shouldSatisfy` isInfixOf "not a string"
         -- A later page that cannot be listed ends nothing: the answer is a failure, never
         -- an absence read off the part that was listed.
@@ -310,8 +304,6 @@ sesCaptureSuite =
         (secondMissing, _) <- scriptedBucket firstOnly []
         secondFailure <- findCapturedEmail secondMissing "bucket" recipient
         failureOf secondFailure `shouldSatisfy` isInfixOf "list-objects-v2 exit"
-        reapSecondFailure <- capturedEmailKeysFor secondMissing "bucket" recipient
-        failureOf reapSecondFailure `shouldSatisfy` isInfixOf "list-objects-v2 exit"
         -- Nor does a later page that is not JSON.
         let pagedThenGarbled =
               CaptureRunner
@@ -326,14 +318,12 @@ sesCaptureSuite =
                       )
                 , captureNow = pure fixedNow
                 }
-        laterGarbage <- capturedEmailKeysFor pagedThenGarbled "bucket" recipient
+        laterGarbage <- findCapturedEmail pagedThenGarbled "bucket" recipient
         failureOf laterGarbage `shouldSatisfy` isInfixOf "could not decode"
         -- A recent object that cannot be read fails the answer rather than being skipped.
         (unreadable, _) <- scriptedBucket single []
         unreadableFailure <- findCapturedEmail unreadable "bucket" recipient
         failureOf unreadableFailure `shouldSatisfy` isInfixOf "get-object exit"
-        reapFailure <- capturedEmailKeysFor unreadable "bucket" recipient
-        failureOf reapFailure `shouldSatisfy` isInfixOf "get-object exit"
         -- An old object that would be unreadable is never touched, so it fails nothing.
         (unreadableOld, _) <- scriptedBucket [(Nothing, pageOfKeys oldTime ["inbound/a"])] []
         findCapturedEmail unreadableOld "bucket" recipient `shouldReturn` Success Nothing

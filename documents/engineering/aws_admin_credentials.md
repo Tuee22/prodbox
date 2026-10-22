@@ -297,11 +297,16 @@ ordered lifecycle.
    externally supplied linear ingress—not the AWS admin prompt and not `config setup`. `prodbox.dhall` carries
    only non-secret coordinates. In a cluster-backed automated recovery, the pre-Gateway
    Lifecycle-provider repair is triggered through the retained bootstrap-core operator caller while
-   preserving the harness's stable cycle scope and simulated prompt. The canonical, secret-free
-   Lifecycle-provider role-policy digest revisions that scope before durable operation lookup. An
-   unchanged policy replays the same receipt; a changed policy selects a successor operation and
-   ordinary next Target generation, which must put and exactly read back the new role policy before
-   key creation. A completed operation is never reinterpreted or mutated under new policy code. The
+   using the simulated prompt and a fresh invocation lineage. The command boundary obtains 256 bits
+   of entropy and binds the substrate/suite and optional qualification cycle; it fails if it cannot
+   obtain that lineage. Install and revoke use distinct fixed slots within it. Their lookup index
+   stays constant when the Target disappears, while each intent carries its actual generation. The
+   canonical, secret-free Lifecycle-provider role-policy digest revisions the scope before lookup.
+   A retry reuses an exact retained intent and validates a completed receipt against the current
+   Target; a new invocation selects a fresh operation even after the previous Target was removed.
+   A changed policy selects a different operation and, when a Target exists, its next generation,
+   which must put and exactly read back the role policy before key creation. A completed operation
+   is never reinterpreted or mutated under new policy code. The
    Gateway-owned harness caller remains removable with Gateway and is not a prerequisite for
    restoring the credential needed by the ordinary reconcile graph.
 4. **Validate.** The harness binds one operation-indexed Lifecycle Authority `CapabilityRef` and
@@ -324,10 +329,12 @@ ordered lifecycle.
    finding rather than a denial found by a live run. Pulumi programs the Provider runs are outside
    that rule. The validations and the AWS substrate platform reach AWS through closed intents rather
    than a host credential: `EnsureValidationHostedZone` creates the `dns-aws` validation zone,
-   `ObserveSesInviteMail` and `ReapSesInviteMail` read and remove the captured invite message (and
-   refuse any bucket that does not carry the SES capture-bucket owned tags, because the role's object
-   grants are not scoped to a bucket), and `EnsureRetainedEbsVolumes` creates the retained volumes the
-   AWS substrate's PersistentVolumes bind to. Their families (`ses:invite-mail`, `ebs-ensure:retained`)
+   `ObserveSealedSesInviteMail` and `ReapSesInviteMail` read and remove the captured invite message (and
+   require the SES capture-bucket owned tags as well as the role's exact configured-bucket scope), and `EnsureRetainedEbsVolumes` creates the retained volumes the
+   AWS substrate's PersistentVolumes bind to. Invite observations bind an invocation-only receiver
+   public key and return only authenticated ciphertext; no invite action token enters new Authority
+   evidence or Provider replay records. The historical plaintext observation slot returns a retired
+   marker and has no executable mail-reading capability. Their families (`ses:invite-mail`, `ebs-ensure:retained`)
    join the production resource allowlist, which is compiled into the control-plane runtime image, so
    an Authority or Provider image built with the older list refuses them until it is rebuilt and rolled.
 5. **Run explicit admin actions separately.** When a selected validation owns SES destroy, legacy
@@ -356,6 +363,30 @@ ordered lifecycle.
    identity/policy/key family, and its retained-home source custody remain LongLived; `aws-ses`
    likewise remains retained. Independent cleanup continues after sibling failure, and
    the final result aggregates the original validation failure with every cleanup failure.
+   The ordinary cleanup client registers/adopts before credential preparation, including a fresh
+   install lineage on resume. It withholds the fixed Lifecycle-provider revoke slot unless every
+   nonempty resource result succeeds and zone evidence is complete. After the worker receipt, an
+   independent Agent metadata read must confirm absence before it reports `revoked`; failure stays
+   unresolved and fails the suite. Cancellation attempts this eligible tail before being rethrown.
+   The separate cascade-qualification runner retains its credential until Sprint `6.5` composes
+   retirement before local control-plane uninstall; it cannot call the Agent after that uninstall.
+
+Lifecycle-provider IAM parameters explicitly bind the optional configured SES capture bucket.
+Bucket and object S3 grants name only that bucket's ARN and its object ARN; no configured capture
+bucket means no S3 grant. The Credential Provisioner validates and signs the scope, installs the
+literal policy and reads it back before key creation. Historical no-capture parameter encoding
+remains readable and grants no S3 access. A symbolic policy template is used only for the durable
+operation revision and action-coverage checks; it is never an applied IAM program. The capture
+lifecycle APIs add exact `s3:GetLifecycleConfiguration` and `s3:PutLifecycleConfiguration` actions
+within the same bucket scope, and change the policy revision rather than reusing an old completion.
+
+Within an ordinary AWS-admin revoke, request construction and permit decoding admit only
+Operational or RunScoped classes. The worker destroys the complete IAM family, waits its bounded
+visibility grace and independently reads absence before invoking Target revocation. IAM failure,
+continued presence or an unobservable read leaves the Target boundary untouched. The Target's
+own independent absence read-back is still required; its revoke response alone cannot complete
+the joint revocation proof. The dedicated decommission and retained-destruction protocols own
+LongLived and retained-custody families.
 
 Long-lived retention in step 6 is independent of preparation in step 4. Invite-capable suites must
 ensure the registered `aws-ses` desired state idempotently; they must not require an operator to
@@ -403,6 +434,90 @@ property of the operation:
 
 Every command fails fast when its exact generation is absent, stale, revoked, or unobservable.
 There is no fallback to another role, host AWS state, profiles, instance metadata, or a shared key.
+The completed worker receipt's kind matches its signed action: install/rotate require an installed
+receipt, and revoke requires a revoked receipt. Matching operation, Target and generation alone
+cannot substitute for this action check.
+
+Credential succession preserves the predecessor in a canonical metadata archive bounded to
+64 KiB. The completed Provisioner operation retains those bytes before admission advances; a
+separate final read checks the entire permit/receipt/archive state. A transient server-owned proof
+then performs its own fresh authenticated Agent read. It has no wire decoder or serialization
+instance. The aggregate completion fold accepts this proof rather than caller-supplied observations.
+Both positive IO producers remain package-private: exporting a constructor-free builder that accepts
+a caller's repository or observer would still let that caller manufacture evidence. Public facades
+expose the proof types and read-only projections; fixed diagnostics return assertions only.
+Ordinary credential retirement remains distinct from cascade revocation: the former permits a later
+generation-1 install after exact absence, while the latter retains its clean audit and frozen
+reservation. Immutable operation/archive links preserve earlier evidence across subsequent cycles.
+The Authority reserves the Provider credential epoch before issuing the worker challenge, rechecks
+the reservation before signing, and admits the exact maximum-width terminal outbox before returning
+the permit. It settles completion only after publication, an independent full outbox read and a
+fresh Agent observation. A lost aggregate CAS reply is settled by an independent read and an
+idempotent replay of the same fold.
+Before the first reservation in a legacy/untracked epoch, bounded namespace Job and Pod lists
+must independently show complete emptiness. A failed, partial or continued observation cannot
+establish this worker quiescence. Existing signed permits bind exact Job/Pod UIDs, so a newly
+created workload cannot consume an old attestation after those objects are absent.
+When a completed worker journal outlives a lost Authority completion reply, the Authority reads
+the exact permit-derived journal twice and validates the unchanged receipt before settling its
+outbox. Completed observation and preparation also re-confirm the exact first-reconcile journal
+receipt. An outbox completion cannot bypass a failed first-reconcile update. Recovery then uses
+the ordinary publication, fresh Agent observation and aggregate-settlement path; it issues no new
+worker permit merely because a journal claims completion.
+
+An expired interrupted install or rotation has one deterministic revoke-only cleanup child.
+Admission binds the actual parent reservation and signed permit, requires exact Job and Pod
+absence plus an observable execution journal, and reads the current Agent generation.
+The child revokes that exact generation, bounded above by its parent; an absent Target uses the
+parent generation. A second parent-outbox read must agree before the aggregate CAS. The child
+archive retains the parent reservation, permit digest and a closed nonrecursive predecessor
+snapshot. It cannot admit another child, and the superseded parent cannot complete over it.
+First-reconcile metadata preparation permits this cleanup without advancing the unfinished
+provisioning journal. Successful cleanup still requires the ordinary IAM-first revoke, independent
+publication readback and fresh Agent absence proof before ordinary retirement permits a new install.
+For a completed parent or completed worker journal, the exact receipt must validate against the
+signed permit and agree with the retained outbox receipt when both exist. A current Agent that
+matches that installed receipt refuses cleanup and resumes normal completion. Missing or changed
+Target material may select cleanup only after the same expiry, workload, generation and unchanged
+parent checks. The explicit metadata lookup carries retained intent/phase bytes without invoking
+journal confirmation or Agent settlement; those bytes cannot establish completion or admission.
+The read-only retained-state query distinguishes idle, pending, serving, ordinarily retired,
+revoked predecessor and closed cascade admission. Serving and retirement include their retained generation and carry
+a deterministic scope digest over the canonical epoch metadata. Neither is a Target observation.
+A generation-one install after ordinary retirement may be prepared while another first-reconcile
+member is pending. It advances that journal only when it is the matching Provider member; otherwise
+it carries no plan binding. Exact pending-reservation replay preserves this rule. Legacy, serving
+and different pending reservations cannot assert ordinary retirement to use this preparation lane.
+
+The retained first-reconcile journal separates its receipt cursor from recovery settlement.
+Version 2 keeps recovery pending after the final receipt, through an interrupted cleanup or
+replacement install. Its settlement endpoint independently confirms the current completed Provider
+outbox, immutable lineage publication, fresh Agent metadata and unchanged serving operation before
+committing and independently reading the settled journal. A subsequent ordinary postflight revoke
+does not reopen this marker. Version-1 objects retain canonical byte identity; incomplete objects
+upgrade on the next receipt, while already complete legacy objects remain settled.
+The bootstrap consumer resumes at most one reserved credential operation and performs at most two
+additional repairs: an exact-generation serving revoke and a retirement-scoped generation-one
+install. It then resumes the remaining journal members and requests settlement. A repair revoke
+may be prepared alongside a later member only while recovery is pending and the serving generation,
+or the exact retained revoke reservation, agrees. Neither repair advances an unrelated member.
+For an absent serving Target, the harness first proposes a distinct revoke at the retained
+generation, scoped to that serving epoch. The ordinary invocation slot is resolved only after the
+coordinator returns its exact revoke receipt and a fresh Agent read confirms absence. One repair
+is permitted; another repair request refuses. Postflight revoke also uses the retained serving or
+retired generation when Target material is absent. A revoked cascade permits an install proposal
+whose admission still requires the Authority's exact completed-predecessor proof. A recorded audit
+exposes its retained generation only for the final revoke proposal; the Authority still requires
+the exact clean audit. Frozen admission refuses both operations.
+
+A cascade successor additionally requires server-owned observations of the exact run, descriptor,
+graph and terminal-audit scope. Both independent observations require the complete expected node
+set with every node successfully completed. A failed primary outcome does not invalidate separately
+successful cleanup. Compacted history requires the actual canonical report from authenticated
+Backup, its matching receipt and a byte-level digest check; a tombstone digest alone proves nothing.
+The successor archive retains that completed-report digest together with the original audit,
+revocation and lineage evidence. The transient proof remains positional, package-private and
+non-serializable. Sprint `6.5` owns validation and interrupted-operation recovery for this lane.
 Named AWS validations are the automation exception only to interactivity: the harness simulates the
 same prompt, reconciles run-scoped identities, and observes retained identities without deleting
 them through ordinary cleanup.
@@ -520,6 +635,12 @@ the same ordering; neither operation admits a generic export.
 TLS deletion means exact TLS prefix
 objects/versions plus its identity/policy; the shared bucket is deleted only by the final
 Authority-backup decommission tail after every registered prefix is absent.
+
+Before a harness credential Job starts, its admin credential region must match the validated
+`pulumi_state_backend.region`. An absent backend region, invalid fixture region or mismatch is a
+host-side refusal; it exposes only region metadata, never key material. This check also guards
+the lazy credential loader used by Authority-backup admission and first-reconcile continuation,
+so an initial backup Job receives the same preflight as Lifecycle-provider and SES Job preparation.
 
 The `aws_admin_for_test_simulation.*` fixture is **not** part of the Vault model. It is a
 `TestPlaintext`-class fixture that lives only in `test-secrets.dhall` — never imported by

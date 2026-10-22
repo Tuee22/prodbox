@@ -65,6 +65,7 @@ import Prodbox.Lifecycle.AwsInventory (AwsInventory, AwsResource)
 import Prodbox.Lifecycle.DnsRecord (HostedZoneId, hostedZoneIdText)
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Registry
+import Prodbox.Lifecycle.Teardown.ResourceScopeBindings (ResourceScopeBindings)
 import Prodbox.Lifecycle.Teardown.ScopeCodec
   ( ObservationEvidenceScopeFields (..)
   , observationEvidenceScopeFields
@@ -221,6 +222,10 @@ data CompleteObservationSetError
       !RegisteredResourceKey
       !(Maybe HostedZoneId)
       !(Maybe HostedZoneId)
+  | ObservationResourceBindingsMismatch
+      !RegisteredResourceKey
+      !(Maybe ResourceScopeBindings)
+      !(Maybe ResourceScopeBindings)
   | ObservationOperationMismatch
       !RegisteredResourceKey
       !LifecycleOperation
@@ -677,6 +682,7 @@ validateScopeBinding key expected actual =
         expectedFoundation
         expectedAwsScope
         expectedDnsZone
+        expectedBindings
         expectedOperation
       )
     ( ObservationEvidenceScopeFields
@@ -686,6 +692,7 @@ validateScopeBinding key expected actual =
         actualFoundation
         actualAwsScope
         actualDnsZone
+        actualBindings
         actualOperation
       )
       | actualSurface /= expectedSurface =
@@ -715,6 +722,8 @@ validateScopeBinding key expected actual =
           Left (ObservationAwsScopeMismatch key expectedAwsScope actualAwsScope)
       | actualDnsZone /= expectedDnsZone =
           Left (ObservationAwsDnsZoneMismatch key expectedDnsZone actualDnsZone)
+      | actualBindings /= expectedBindings =
+          Left (ObservationResourceBindingsMismatch key expectedBindings actualBindings)
       | actualOperation /= expectedOperation =
           Left
             ( ObservationOperationMismatch

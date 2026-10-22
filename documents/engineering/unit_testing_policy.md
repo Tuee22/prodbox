@@ -414,13 +414,20 @@ that the production native client, port binding, Vault policy, or cgroup service
 
 ### 5.1 Recorded laws for AWS dependency behaviour
 
-> **Target.** The recordings directory with its scrubber, and the canary below, are not built. The
-> stateful model exists in one place: the scripted account of the converging destroy, over shapes
-> transcribed by hand from the operator's 2026-10-14 inventory with reserved example identifiers, which
-> is the rule's assumption case and not its recorded one. The rule is stated now because the failure it
-> prevents has already shipped: a destroy path whose ordering knowledge was exercised only by live runs,
-> and whose unit tests re-encoded the author's belief about it. Status lives only in the
-> [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+The scrubber emits `test/golden/aws-lifecycle/*.json` with a canonical payload digest and an
+explicit origin: live provider capture, installed CLI loopback, hand transcription, or authored
+assumption. The hand-inventory fixture preserves normalized fields from Sprint 4.111; it does not
+invent original raw tag keys. The installed CLI fixtures measure tool framing and query projection,
+not AWS dependency semantics. Raw inputs remain outside the repository.
+
+`test/support/AwsLifecycleStub.hs` owns the compact mutable account/clock model. It reuses the
+existing pure audit projection and drives the production plant, native-family repair and stack
+destroy seams. The recorded CNI/group cases distinguish the prior single pass from the converging
+destroy. Requester-managed release and load-balancer delays remain authored assumptions until a
+real cycle records them. A test bounds the model at 900 lines and holds each declared law to its
+recording and origin. Historical broader destroy regressions remain separate test cases; they do
+not become provider recordings. Current validation status belongs only to the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 A model of how AWS orders its own dependencies — which resources block which deletions, how long an
 asynchronous release takes, what a throttled call returns — encodes a belief about a system the
@@ -449,7 +456,8 @@ admissible evidence under these rules and under no others.
 - **Source text is not behaviour.** An assertion that a source file contains a string, a verb, or a
   flag proves the text is there. It is never cited as evidence that the behaviour holds.
 
-These are review obligations; no gate checks them.
+Provenance, missing-law recordings and the model size are checked locally. Real-provider law
+coverage and class closure remain review obligations; a green local model cannot discharge them.
 
 ## 6. Load and Runtime-Stability Qualification
 
@@ -659,7 +667,32 @@ The same `CleanupRunId` and stable node operation IDs resume. `ReadyToUninstallE
 positive recovery-plane witness, complete exact absence and credential disposition, normalized
 terminal audit, and a backed-up pre-uninstall report plus one-shot permit. Exact local host absence
 and a scoped read-back local-completion receipt are additionally required for cascade success. The
-pre-uninstall commit alone proves only readiness to uninstall. **Corrected 2026-09-13 (Standard
+pre-uninstall commit alone proves only readiness to uninstall. The host fixture couples recovery
+and installation to the same RKE2 foundation: restoring recovery makes the host present. A successful
+remote-prefix pause leaves all four local nodes Pending and issues no uninstall Begin/effect. The
+retained handoff refuses incomplete or changed prefixes and malformed bytes. Its version-2
+credential-retirement confirmation additionally binds the successful historical audit attempt to
+the exact run, descriptor, graph, scope, node and operation. The real Authority-fold boundary
+matrix covers freeze/record/revoke reply loss, acknowledgements without durable writes, revoked
+Target absence, wrong receipts and unavailable global queries before uninstall. Its local runner proves
+completion and replay without a second uninstall, and refuses completed-record replay when native
+markers are present again. The candidate closes authenticated sessions before entering that local tail.
+Qualification resume capture keeps the actual named pre-uninstall image inventory with the full
+Begin identity. Its real-filesystem checks cover immutable replay/conflict, canonical/bounded
+input, owner-only permissions, symlink refusal and nonblocking FIFO refusal. A historical image
+digest set never invents component names or observes a rebuilt cluster on behalf of the old run.
+The gateway stability oracle captures existing restart counters only in its first snapshot. Its
+fixed initial UID map remains bounded and survives healthy-window resets, planned rollouts and
+Pod deletion. New UIDs compare with zero; increases, regressions, OOM and unreadable Ready-Pod
+counters absorb failure. Pending startup and metrics warm-up remain not-ready observations.
+The Target Agent replay counterexample retains the old 98-slot implementation and requires the
+actual 56-request schedule plus one immediate retry. The real retained codec round-trips all
+112 entries at their producer maxima: 98 general replies at 2 MiB and fourteen metadata replies
+at 64 KiB. An all-wide schedule still exceeds the unchanged 198 MiB ceiling. Metadata handlers
+enforce the small reply bound before replay; an oversized repository observation must refuse at
+the producer rather than rely on a later client decoder.
+
+**Corrected 2026-09-13 (Standard
 C):** the normalized terminal audit named above was unobtainable on any AWS path until Sprint `4.99`
 closed it on 2026-09-14, because the audit's evidence carries tabs and newlines that
 `validateProviderIntentEvidence` refuses and cannot fit its listing inside the wire bound at any
@@ -812,3 +845,12 @@ substrate row, duplicate a fault, drift a canonical command, fail backup restore
 and inject prompt/rotation/EAB-reset/generic-export/Authority-plaintext evidence; every variant must
 refuse. Installed-binary fixtures additionally prove that complete simulated evidence remains
 `QualificationPendingLiveEvidence`.
+
+The source-built MinIO/mc boundary uses real private files, leases and atomic archive publication
+with only subprocesses simulated. Its cases reject changed inputs, corrupt archives, mismatched
+loaded image IDs, FIFOs, symlink cache/lock/parent paths and independent size violations. The
+seeding suite rejects wrong Docker/containerd config digests and false-success imports. Installed
+frontend fixtures contain synthetic public build bytes and matching recipe metadata; they never
+fetch a compiler or synthesize Authority capabilities. The fixed-workspace regression cites the
+recorded Go `/tmp` exhaustion; isolated bounded compiler and object round-trip proofs remain
+separate from cluster/deployment qualification.

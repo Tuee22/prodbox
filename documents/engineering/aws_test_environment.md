@@ -2,7 +2,7 @@
 
 **Status**: Authoritative source
 **Supersedes**: N/A
-**Generated sections**: none
+**Generated sections**: `aws-lifecycle-remedies`
 
 > **Purpose**: Define the canonical shared AWS account, DNS, isolation, lifecycle, and
 > authentication model for ephemeral multi-project testing and narrowly registered retained
@@ -672,7 +672,17 @@ The recovery order when the diagnostic finds something the product cannot name:
    family and its digest; `adopt-legacy apply --plan-digest <digest> --yes` commits and independently
    reads back the ownership record. Normal desired-absence reconciliation then has a durable record
    naming the coordinates it may destroy.
-3. **Console or CLI deletion is a last resort and is recorded as one.** It leaves no receipt the
+3. **Inspect a blocked preview.** `prodbox aws stack <stack> diff` previews the selected stack
+   through the Provider and reports resource, operation and property names. Values and diagnostic
+   text are omitted. It does not apply the delta.
+4. **Repair EKS network dependents.** With the cluster positively absent,
+   `prodbox aws stack eks purge-dependents` locates exactly one VPC carrying both registered tags,
+   plans the registered interface and cluster-security-group families and prints a SHA-256 digest.
+   `purge-dependents --yes --plan-digest <digest>` re-observes that plan and runs the same scoped
+   executors as normal teardown. A changed plan refuses before deletion. The closing independent
+   verdict covers those two network families; it does not claim the VPC or whole stack is absent.
+   A missing or ambiguous VPC, a present cluster or an unreadable query refuses this repair.
+5. **Console or CLI deletion is a last resort and is recorded as one.** It leaves no receipt the
    product can read, so the next supported run cannot distinguish what a human removed from what was
    never there. Where it is unavoidable, the resources removed by hand belong in the run's record
    for the same reason a cleanup report does.
@@ -681,6 +691,44 @@ The bounded adoption protocol covers the registered `aws-eks`, `aws-eks-subzone`
 families. It makes no claim about arbitrary unregistered resources, and a missing, extra, ambiguous,
 partial, or unobservable candidate refuses the whole family rather than adopting a shorter one —
 because a shorter record would prove absence over the wrong set and report completion.
+
+### 7.6 AWS Lifecycle Remedies
+
+The compiled cause table is published below. A stack repair names the stack that reported the
+refusal. Network purge is limited to EKS; test-VPC dependents use the test stack's converging
+destroy. A network report against either non-network stack selects a read-only diff. A retained
+volume smaller than the plan remains an operator-owned retained-family replacement decision.
+`prodbox dev check` verifies each repair path and prevents the distinct `NukeOnly` cause count
+from increasing beyond the published table at Git HEAD.
+
+<!-- prodbox:aws-lifecycle-remedies:start -->
+| Stack | Cause | Remedy | Action or reason |
+|-------|-------|--------|------------------|
+| eks | LeakedNetworkDependents | RepairVerb | `prodbox aws stack eks purge-dependents` |
+| eks | BlockedDestroy | RepairVerb | `prodbox aws stack eks destroy --yes` |
+| eks | PreviewChanges | RepairVerb | `prodbox aws stack eks diff` |
+| eks | UnobservableAudit | RepairVerb | `prodbox aws audit --stack eks` |
+| eks | RetainedVolumeTooSmall | NukeOnly | Replacement deletes the retained family; in-place growth requires the operator's decision (Sprint 5.53). |
+| eks | AuthorityAdmissionRefused | RepairVerb | `prodbox cluster reconcile` |
+| test | LeakedNetworkDependents | RepairVerb | `prodbox aws stack test destroy --yes` |
+| test | BlockedDestroy | RepairVerb | `prodbox aws stack test destroy --yes` |
+| test | PreviewChanges | RepairVerb | `prodbox aws stack test diff` |
+| test | UnobservableAudit | RepairVerb | `prodbox aws audit --stack test` |
+| test | RetainedVolumeTooSmall | NukeOnly | Replacement deletes the retained family; in-place growth requires the operator's decision (Sprint 5.53). |
+| test | AuthorityAdmissionRefused | RepairVerb | `prodbox cluster reconcile` |
+| aws-subzone | LeakedNetworkDependents | RepairVerb | `prodbox aws stack aws-subzone diff` |
+| aws-subzone | BlockedDestroy | RepairVerb | `prodbox aws stack aws-subzone destroy --yes` |
+| aws-subzone | PreviewChanges | RepairVerb | `prodbox aws stack aws-subzone diff` |
+| aws-subzone | UnobservableAudit | RepairVerb | `prodbox aws stack aws-subzone diff` |
+| aws-subzone | RetainedVolumeTooSmall | NukeOnly | Replacement deletes the retained family; in-place growth requires the operator's decision (Sprint 5.53). |
+| aws-subzone | AuthorityAdmissionRefused | RepairVerb | `prodbox cluster reconcile` |
+| aws-ses | LeakedNetworkDependents | RepairVerb | `prodbox aws stack aws-ses diff` |
+| aws-ses | BlockedDestroy | RepairVerb | `prodbox aws stack aws-ses destroy --yes` |
+| aws-ses | PreviewChanges | RepairVerb | `prodbox aws stack aws-ses diff` |
+| aws-ses | UnobservableAudit | RepairVerb | `prodbox aws stack aws-ses diff` |
+| aws-ses | RetainedVolumeTooSmall | NukeOnly | Replacement deletes the retained family; in-place growth requires the operator's decision (Sprint 5.53). |
+| aws-ses | AuthorityAdmissionRefused | RepairVerb | `prodbox cluster reconcile` |
+<!-- prodbox:aws-lifecycle-remedies:end -->
 
 ---
 

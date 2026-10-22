@@ -97,6 +97,7 @@ import Prodbox.Lifecycle.CleanupRun
   )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderStackConfig
+  , ProviderStackConfigError (..)
   , ProviderStackConfigView (..)
   , mkAwsEksProfileProviderStackConfig
   , mkAwsEksProviderStackConfig
@@ -756,6 +757,9 @@ data ProviderConfigWire
   | AwsEksSubzoneProviderConfigWire !Text !Text
   | AwsEksProfileProviderConfigWire !AwsSubstrateProfile !Natural
   | AwsTestProfileProviderConfigWire !AwsSubstrateProfile
+  | -- | The decoder rejects preview-only config rather than reconstructing a
+    -- mutation binding from a configuration with a different capability.
+    PreviewOnlyProviderConfigWire
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -1070,11 +1074,14 @@ providerConfigToWire config = case providerStackConfigView config of
   AwsEksProfileConfig profile desiredSize ->
     AwsEksProfileProviderConfigWire profile desiredSize
   AwsTestProfileConfig profile -> AwsTestProfileProviderConfigWire profile
+  AwsSesPreviewConfig {} -> PreviewOnlyProviderConfigWire
 
 providerConfigFromWire
   :: ProviderConfigWire -> Either AwsStackReaderError ProviderStackConfig
 providerConfigFromWire wire =
   first (AwsStackReaderFieldInvalid . Text.pack . show) $ case wire of
+    PreviewOnlyProviderConfigWire ->
+      Left (ProviderStackConfigFieldInvalid "preview-only configuration cannot authorize stack mutation")
     AwsEksProviderConfigWire operatorCidr -> mkAwsEksProviderStackConfig operatorCidr
     AwsTestProviderConfigWire operatorCidr -> mkAwsTestProviderStackConfig operatorCidr
     AwsEksSubzoneProviderConfigWire parentZone subzone ->

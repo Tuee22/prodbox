@@ -43,17 +43,19 @@ module Prodbox.Aws.AdminCredentials
   , sessionTokenPromptShape
   , showAdminCredentialsGuidance
   , validateAdminCredentials
+  , validateAdminAwsRegion
   , validateAdminCredentialsInput
   )
 where
 
 import Control.Exception (IOException, bracket_, try)
+import Data.Bifunctor (first)
 import Data.Char (isSpace)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.CLI.Output (writeOutput, writeOutputLine)
 import Prodbox.Settings (Credentials (..))
-import Prodbox.Settings.Coordinate (AwsRegion, awsRegionText)
+import Prodbox.Settings.Coordinate (AwsRegion, awsRegionText, mkAwsRegion)
 import Prodbox.Vault.Host
   ( TestSecrets (..)
   , TestSecretsAdminCredentials
@@ -236,6 +238,30 @@ validateAdminCredentials credentials = do
     then Left "Admin AWS region is required"
     else pure ()
   pure normalized
+
+-- | A fixture or prompt region must agree with the configured backend before
+-- a credential Job starts, rather than failing inside that Job after admission.
+validateAdminAwsRegion :: Maybe AwsRegion -> Credentials -> Either String Credentials
+validateAdminAwsRegion expectedRegion credentials = do
+  expected <-
+    maybe
+      (Left "pulumi_state_backend.region must be configured before a credential Job")
+      Right
+      expectedRegion
+  actual <-
+    first
+      (const "admin AWS region is invalid before credential Job preparation")
+      (mkAwsRegion (region credentials))
+  if actual == expected
+    then Right credentials
+    else
+      Left
+        ( "admin AWS region "
+            <> Text.unpack (awsRegionText actual)
+            <> " differs from pulumi_state_backend.region "
+            <> Text.unpack (awsRegionText expected)
+            <> "; correct test-secrets.dhall or the configured backend before a credential Job"
+        )
 
 validateAdminCredentialsInput :: Credentials -> IO Credentials
 validateAdminCredentialsInput credentials =

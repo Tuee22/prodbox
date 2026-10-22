@@ -23,6 +23,7 @@
 module Prodbox.Lifecycle.Teardown.Dns01ChallengeRecordAdapter
   ( ExactDns01ChallengeObservationRequest
   , mkExactDns01ChallengeObservationRequest
+  , mkExactDns01ChallengeObservationRequestForKey
   , dns01ChallengeObservationRequestScope
   , dns01ChallengeObservationRequestRevision
   , dns01ChallengeObservationRequestProviderIntent
@@ -30,6 +31,7 @@ module Prodbox.Lifecycle.Teardown.Dns01ChallengeRecordAdapter
   , ExactDns01ChallengeOwnerDeleteAuthorization
   , authorizeExactDns01ChallengeOwnerDelete
   , dns01ChallengeOwnerDeleteScope
+  , dns01ChallengeOwnerDeleteResourceKey
   , dns01ChallengeOwnerDeleteHostedZone
   , dns01ChallengeOwnerDeleteRecordNamePrefix
   , dns01ChallengeOwnerDeleteObservedRecords
@@ -52,10 +54,12 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , ProviderIntentCoordinate
   , dns01ChallengeRecordEvidenceFamily
   , providerIntentCoordinate
+  , providerIntentResourceKey
   )
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
 import Prodbox.Lifecycle.Teardown.Registry
+import Prodbox.Lifecycle.Teardown.ResourceScopeBindings
 
 data ExactDns01ChallengeObservationRequest
   = ExactDns01ChallengeObservationRequest
@@ -64,6 +68,7 @@ data ExactDns01ChallengeObservationRequest
   , internalDns01ChallengeRequestRevision :: !ObservationRevision
   , internalDns01ChallengeRequestHostedZone :: !HostedZoneId
   , internalDns01ChallengeRequestRecordNamePrefix :: !Text
+  , internalDns01ChallengeRequestEvidenceSelector :: !Text
   , internalDns01ChallengeRequestProviderIntent :: !ProviderIntent
   , internalDns01ChallengeRequestProviderCoordinate :: !ProviderIntentCoordinate
   }
@@ -95,6 +100,7 @@ data Dns01ChallengeAdapterError
     -- Refusing is the whole point: the alternative is scanning or deleting in
     -- a zone nobody named.
     Dns01ChallengeHostedZoneMissing
+  | Dns01ChallengeHomeBindingMissing
   | Dns01ChallengeProviderCoordinateMismatch
       !ProviderIntentCoordinate
       !ProviderIntentCoordinate
@@ -109,7 +115,16 @@ mkExactDns01ChallengeObservationRequest
   -> ObservationRevision
   -> ObservationEvidenceScope
   -> Either Dns01ChallengeAdapterError ExactDns01ChallengeObservationRequest
-mkExactDns01ChallengeObservationRequest surface revision scope = do
+mkExactDns01ChallengeObservationRequest surface =
+  mkExactDns01ChallengeObservationRequestForKey surface AwsDns01ChallengeRecordKey
+
+mkExactDns01ChallengeObservationRequestForKey
+  :: CleanupSurfaceWitness surface
+  -> RegisteredResourceKey
+  -> ObservationRevision
+  -> ObservationEvidenceScope
+  -> Either Dns01ChallengeAdapterError ExactDns01ChallengeObservationRequest
+mkExactDns01ChallengeObservationRequestForKey surface key revision scope = do
   identity <-
     maybe (Left Dns01ChallengeRegistryIdentityMissing) Right identityMaybe
   if registeredIdentityKind identity == DnsRecordFamily
@@ -141,15 +156,20 @@ mkExactDns01ChallengeObservationRequest surface revision scope = do
   case evidenceAwsScope scope of
     Nothing -> Left Dns01ChallengeAwsScopeMissing
     Just _ -> Right ()
-  hostedZone <- case evidenceAwsDnsZone scope of
-    Nothing -> Left Dns01ChallengeHostedZoneMissing
-    Just zone -> Right zone
-  recordNamePrefix <-
-    recordNamePrefixFromCoordinate (registeredIdentityCoordinate identity)
-  let intent =
-        ObserveDns01ChallengeRecords
-          (hostedZoneIdText hostedZone)
-          recordNamePrefix
+  (hostedZone, recordNamePrefix, intent, selector) <- case key of
+    HomeDns01ChallengeRecordKey -> do
+      home <-
+        maybe
+          (Left Dns01ChallengeHomeBindingMissing)
+          Right
+          (evidenceResourceScopeBindings scope >>= resourceScopeHomeDns01)
+      let selected = ObserveHomeDns01Records home
+      Right (homeDns01HostedZone home, "_acme-challenge.", selected, providerIntentResourceKey selected)
+    AwsDns01ChallengeRecordKey -> do
+      zone <- maybe (Left Dns01ChallengeHostedZoneMissing) Right (evidenceAwsDnsZone scope)
+      prefix <- recordNamePrefixFromCoordinate (registeredIdentityCoordinate identity)
+      Right (zone, prefix, ObserveDns01ChallengeRecords (hostedZoneIdText zone) prefix, prefix)
+    _ -> Left (Dns01ChallengeRegistryCoordinateInvalid (registeredIdentityCoordinate identity))
   Right
     ExactDns01ChallengeObservationRequest
       { internalDns01ChallengeRequestIdentity = identity
@@ -157,12 +177,13 @@ mkExactDns01ChallengeObservationRequest surface revision scope = do
       , internalDns01ChallengeRequestRevision = revision
       , internalDns01ChallengeRequestHostedZone = hostedZone
       , internalDns01ChallengeRequestRecordNamePrefix = recordNamePrefix
+      , internalDns01ChallengeRequestEvidenceSelector = selector
       , internalDns01ChallengeRequestProviderIntent = intent
       , internalDns01ChallengeRequestProviderCoordinate =
           providerIntentCoordinate intent
       }
  where
-  identityMaybe = lookupRegisteredIdentity AwsDns01ChallengeRecordKey
+  identityMaybe = lookupRegisteredIdentity key
 
 recordNamePrefixFromCoordinate
   :: ManagedResourceCoordinate -> Either Dns01ChallengeAdapterError Text
@@ -221,14 +242,19 @@ decodeExactDns01ChallengeObservation request providerResult =
                           <> expectedFamily
                       )
                   )
-          Right (_, records) -> Right (exactObservation records)
+          Right (_, records)
+            | all selectedRecord records -> Right (exactObservation records)
+            | otherwise -> Right (unobservable "DNS01 response escaped its exact selected record names")
     Right _ -> Left Dns01ChallengeProviderResultKindMismatch
  where
   expectedCoordinate = internalDns01ChallengeRequestProviderCoordinate request
   expectedFamily =
     hostedZoneIdText (internalDns01ChallengeRequestHostedZone request)
       <> " "
-      <> internalDns01ChallengeRequestRecordNamePrefix request
+      <> internalDns01ChallengeRequestEvidenceSelector request
+  selectedRecord record = case internalDns01ChallengeRequestProviderIntent request of
+    ObserveHomeDns01Records home -> record `elem` homeDns01RecordNames home
+    _ -> internalDns01ChallengeRequestRecordNamePrefix request `Text.isPrefixOf` record
   identity = internalDns01ChallengeRequestIdentity request
   observation result =
     exactResourceObservationFor
@@ -264,12 +290,17 @@ decodeExactDns01ChallengeObservation request providerResult =
 -- from would let a delete outrun the evidence that justified it.
 data ExactDns01ChallengeOwnerDeleteAuthorization
   = ExactDns01ChallengeOwnerDeleteAuthorization
-  { internalDns01ChallengeOwnerDeleteScope :: !ObservationEvidenceScope
+  { internalDns01ChallengeOwnerDeleteResourceKey :: !RegisteredResourceKey
+  , internalDns01ChallengeOwnerDeleteScope :: !ObservationEvidenceScope
   , internalDns01ChallengeOwnerDeleteHostedZone :: !HostedZoneId
   , internalDns01ChallengeOwnerDeleteRecordNamePrefix :: !Text
   , internalDns01ChallengeOwnerDeleteObservedRecords :: !(NonEmpty Text)
   }
   deriving (Eq, Show)
+
+dns01ChallengeOwnerDeleteResourceKey
+  :: ExactDns01ChallengeOwnerDeleteAuthorization -> RegisteredResourceKey
+dns01ChallengeOwnerDeleteResourceKey = internalDns01ChallengeOwnerDeleteResourceKey
 
 dns01ChallengeOwnerDeleteScope
   :: ExactDns01ChallengeOwnerDeleteAuthorization -> ObservationEvidenceScope
@@ -305,7 +336,7 @@ authorizeExactDns01ChallengeOwnerDelete request exact = do
       Right
       ( mkCompleteObservationSet
           (internalDns01ChallengeRequestScope request)
-          [AwsDns01ChallengeRecordKey]
+          [registeredIdentityKey (internalDns01ChallengeRequestIdentity request)]
           [exact]
       )
   case decideCompleteObservationSet complete of
@@ -315,7 +346,9 @@ authorizeExactDns01ChallengeOwnerDelete request exact = do
         Right
           ( Just
               ExactDns01ChallengeOwnerDeleteAuthorization
-                { internalDns01ChallengeOwnerDeleteScope =
+                { internalDns01ChallengeOwnerDeleteResourceKey =
+                    registeredIdentityKey (internalDns01ChallengeRequestIdentity request)
+                , internalDns01ChallengeOwnerDeleteScope =
                     internalDns01ChallengeRequestScope request
                 , internalDns01ChallengeOwnerDeleteHostedZone =
                     internalDns01ChallengeRequestHostedZone request
@@ -330,7 +363,11 @@ authorizeExactDns01ChallengeOwnerDelete request exact = do
       -- The decision said cleanup is required, so the observation is present.
       -- Anything else here would be the two disagreeing, which is a refusal
       -- rather than a delete over evidence nobody produced.
-      _ -> Left (Dns01ChallengeStillPresent (AwsDns01ChallengeRecordKey :| []))
+      _ ->
+        Left
+          ( Dns01ChallengeStillPresent
+              (registeredIdentityKey (internalDns01ChallengeRequestIdentity request) :| [])
+          )
     CompleteObservationsRefused failures ->
       Left (Dns01ChallengeObservationRefused failures)
 
@@ -350,13 +387,17 @@ confirmExactDns01ChallengeAbsence request result = do
       Right
       ( mkCompleteObservationSet
           (internalDns01ChallengeRequestScope request)
-          [AwsDns01ChallengeRecordKey]
+          [registeredIdentityKey (internalDns01ChallengeRequestIdentity request)]
           [exact]
       )
   case decideCompleteObservationSet complete of
     AllSelectedResourcesAbsent -> case exactObservationResult exact of
       ExactResourceAbsent evidence -> Right evidence
-      _ -> Left (Dns01ChallengeStillPresent (AwsDns01ChallengeRecordKey :| []))
+      _ ->
+        Left
+          ( Dns01ChallengeStillPresent
+              (registeredIdentityKey (internalDns01ChallengeRequestIdentity request) :| [])
+          )
     SelectedResourcesRequireCleanup keys ->
       Left (Dns01ChallengeStillPresent keys)
     CompleteObservationsRefused failures ->

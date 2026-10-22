@@ -10,28 +10,18 @@
 
 ## Phase Status
 
-🔄 **Reopened 2026-10-18 on Sprints `4.109`–`4.112` (Standards A/N).** Own-surface reopen on the
-Provider's AWS destroy path, which this phase authored (Sprints `4.99` and `4.102`–`4.105`). At the
-reopen neither destroy route could clear or correctly wait for a child that an in-cluster controller
-created after the plan was confirmed. The supported `aws stack <stack> destroy --yes` was one bounded
-`pulumi destroy`; the manifest-bound native-family reaper was a fixed chain with no network-interface
-step and an allowlist that can never admit such a child; and the per-run hardening that handled them
-left with commit `f59ccfc`. A leaked VPC CNI interface and an orphaned cluster security group therefore ended a
-destroy in `DependencyViolation` in the 2026-09-29/30 incident, and the residue it left stayed until
-a hand clearing on 2026-10-14. Nothing measures clean in the provider either: the supported
-destroy's completion is a
-statement about the checkpoint, and the create verbs' receipts on a converged stack are the digest
-of empty input (Sprint `4.110` closed both on its code-owned surface on 2026-10-19). Sprint
-`4.109` (`Done`, 2026-10-18, on its code-owned surface; no Provider image carrying it has run) replaced
-waits that cannot finish inside a thirty-second child with budgeted polls; `4.110` (`Done`,
-2026-10-19, on its code-owned surface; no Provider image carrying it has run) added the
-provider-enumerated verdict and content-bearing receipts; `4.111` (`Active`, 2026-10-19: its first
-increment — the closed rule for the controller-created network dependents, the converging destroy in
-the Provider, and the manifest route's clearing — is done on its code-owned surface, with no Provider
-image carrying it, and the registry's declaration of the families is its remaining work) makes the
-destroy converge or name what blocks it; `4.112` gives each AWS-lifecycle refusal a remedy. The phase recloses when all four reach `Done`;
-until then this entry records an open reopen, not a closure. The 2026-10-15 reclosure on Sprint
-`4.108` stands for the surface it covered. Rationale and decisions: Sprint `0.36`.
+
+✅ **Reclosed 2026-10-20 on Sprints `4.109`–`4.112` (Standards A/N/O).** The AWS destroy
+surface has budgeted waits, provider-enumerated absence verdicts and content-bearing receipts,
+three registered network-dependent families with converging executors, owned plugin-tree stopping,
+and an exhaustive refusal/remedy policy. Authenticated stack diff covers all four stacks without
+values; EKS network purge plans by default and applies only a fresh digest-confirmed plan, with an
+independent read-back tied to the same VPC. Every owned sprint is code-owned `Done`.
+The canonical gate passes **5,920** primary plus **27/35/40** auxiliary tests, without exclusions;
+the built-frontend CLI/config suite passes **74/74**. Current-revision live proof,
+class closure and deployment qualification remain pending: no Provider image was deployed and no
+live AWS attempt was made during this execution. The 2026-10-18 own-surface reopen and the earlier
+reclosures remain documented in the sprint blocks and Sprint `0.36`.
 
 ✅ **Reclosed 2026-10-15 on Sprint `4.108` (Standards A/N).** Own-surface reopen on the AWS-admin recovery
 protocol, which this phase authored. CloudTrail showed six harness runs each deleting the SMTP key family's key and
@@ -15976,19 +15966,18 @@ None on the code-owned surface. Not done, and not claimed:
   provider releases it reports `Clean`. Waiting for that release inside the verb, under a named budget,
   is Sprint `4.111`'s, because it needs the interface-release budget this sprint left unregistered.
 
-## Sprint 4.111: A Destroy Blocked By What A Controller Made Clears It Or Names It [🔄 Active]
+## Sprint 4.111: A Destroy Blocked By What A Controller Made Clears It Or Names It [✅ Done]
 
-**Status**: Active (2026-10-19). Phase `4` own-surface reopen (Standards A/N) on the Provider's
+**Status**: Done (2026-10-19), code-owned surface. Phase `4` own-surface reopen (Standards A/N) on the Provider's
 destroy interpreter and the registry's controller families, registered before any behavior change.
 It is the sprint that removes the cause of the recorded `DependencyViolation` blockages. Its first
 increment landed on 2026-10-19 on the code-owned surface: the closed rule for what may be cleared,
 the converging destroy in the Provider, the budgets it runs under, the way a cut Pulumi pass is
-stopped, and the manifest route's clearing. Its second increment, the registry's declaration of the
-families with their create-record row, their position in the cleanup graph, and their dispatch rows,
-is the sprint's Remaining Work, and the sprint stays `Active` until it lands. Where the source showed
-that a deliverable could not be built as the first text of this block wrote it, or six independent
-reviews and a probe of the real tools showed a mechanism wrong, the choice is recorded in
-Deliverables and in Current Validation State rather than left to be inferred.
+stopped, and the manifest route's clearing. Its second increment implements the registry declarations, create-record coverage, ownership,
+graph and dispatch, plus the ledger-owned plugin stop across process groups. Both increments,
+including replay capacity, its v16 migration and the authored memory floor, pass the canonical gate.
+Live proof and deployment qualification remain pending. Implementation corrections and first-increment
+review evidence are recorded below with their scope.
 **Doctrine**: [Lifecycle Reconciliation Doctrine § 3.2b](../documents/engineering/lifecycle_reconciliation_doctrine.md#32b-controller-created-network-dependents-are-declared-families),
 [§ 3.2a](../documents/engineering/lifecycle_reconciliation_doctrine.md#32a-record-before-effect-for-every-resource-kind),
 and [§ 5c](../documents/engineering/lifecycle_reconciliation_doctrine.md#5c-per-run-eks-desired-absence-drains-owners-first).
@@ -15999,33 +15988,36 @@ executor), `src/Prodbox/Lifecycle/AwsDestroyConverge.hs` (the order of the loop)
 `src/Prodbox/Lifecycle/AwsWait.hs`, `src/Prodbox/ControlPlane/OperationBudget.hs`,
 `src/Prodbox/ControlPlane/ProviderProduction.hs`, `src/Prodbox/Subprocess.hs` (how a cut pass is
 stopped), and `src/Prodbox/Lifecycle/AwsNativeStackFamily.hs` for the first increment; and, for the
-second, `src/Prodbox/Lifecycle/Teardown/Registry.hs`,
-`src/Prodbox/Lifecycle/Teardown/CreateRecordCoverage.hs`,
-`src/Prodbox/Lifecycle/Teardown/AwsLoadBalancerControllerFamilyAdapter.hs`,
-`src/Prodbox/Lifecycle/Teardown/AwsEksDestroyAdapter.hs`, and
-`src/Prodbox/Lifecycle/ProviderWorker/ProviderWork.hs`; the cases are
+second, `src/Prodbox/Lifecycle/AwsNetworkFamily.hs`,
+`src/Prodbox/Lifecycle/Teardown/{Model,Registry,Program,OwnershipManifest/Internal,CreateRecordCoverage}.hs`,
+`src/Prodbox/Lifecycle/Teardown/{AwsNativeStackFamilyAdapter,AwsRegisteredTargetInterpreter,RegisteredTargetExecutor,RegisteredTargetResult}.hs`,
+`src/Prodbox/Lifecycle/ProviderWorker/ProviderWork.hs`, the Provider codecs and execution adapters,
+`src/Prodbox/Subprocess/OwnedProcessTree.hs`, `src/Prodbox/Capacity/AuthorityBackupBudget.hs`,
+and `src/Prodbox/ControlPlane/RequestReplay.hs`; the cases are
 `test/unit/AwsDestroyConverge.hs`, `test/unit/OperationBudget.hs`,
 `test/unit/LifecycleAwsNativeStackFamily.hs`, `test/unit/ProviderDestroyInterpreter.hs`,
 `test/unit/AwsWaitPolling.hs`, and `test/unit/SubprocessKillable.hs`.
 **Blocked by**: none. The converge loop judges its own result with the enumeration Sprint `4.110`
 produces (`Done`, 2026-10-19) and waits with the budgets and the poll that Sprint `4.109` landed
 (`Done`, 2026-10-18).
-**Live-proof**: pending. No Provider image carries the loop, so until one is rolled the supported
+**Live-proof**: pending. No deployed Provider image carries the loop, so until one is rolled the supported
 destroy is still the single pass. The first observation is an `aws stack eks destroy --yes` under the
 loop on a real stack; the leak-injected destroy that closes the class belongs to Sprint `6.7`. The
 scripted account that gates the landing is a model of how the `aws` CLI answers, built from shapes
 transcribed by hand from the operator's 2026-10-14 notes with reserved example identifiers; it is not
 a recording of AWS, and every duration in it is an authored assumption. The one behavior of a real
 tool that the landing depends on and no scripted account can show, how Pulumi stops, was measured on
-the host (Remaining Work).
+the host (Current Validation State).
 **Deployment qualification**: pending — invalidated: the change moves destructive cleanup, lifecycle
-orchestration, and the Provider's destroy handler under Standard P.
+orchestration, the Provider's destroy handler, retained replay migration and Backup memory under Standard P.
 **Independent Validation**: stateful scripted-account replays of the recorded failure shapes, a
 mutation exercise over the closed predicates and each phase of the loop, the over-deletion negative
-controls, a probe of Pulumi's real stop behavior, and six independent read-only reviews (two of
-this increment as first written and two of it after the fixes those prompted, after the earlier two of
-Sprint `4.110`); no live AWS.
+controls, a probe of Pulumi's real stop behavior, and the historical first-increment read-only reviews. The resumed increment adds exact-selector,
+same-account evidence separation, ownership/graph, replay-envelope and real-process negative-control
+cases; no live AWS. The earlier reviews do not review the resumed increment.
 **Docs to update**: `documents/engineering/lifecycle_reconciliation_doctrine.md`,
+`documents/engineering/lifecycle_control_plane_architecture.md`,
+`documents/engineering/resource_scaling_doctrine.md`,
 `documents/engineering/aws_integration_environment_doctrine.md`,
 `documents/engineering/cli_command_surface.md`, `AGENTS.md`,
 `DEVELOPMENT_PLAN/README.md` (Counterexample Dispositions),
@@ -16151,12 +16143,10 @@ ported. A leaked VPC CNI interface or an orphaned cluster security group ended b
   when its closing listing could not be taken. This widens what the chain removes, by class and not by
   name, which the doctrine admits only for a registry-declared family; the declaration is the second
   increment. The allowlist rule is unchanged for every other identity, which is still refused.
-- **No Provider request branch.** The loop runs inside the existing `DestroyRegisteredStack` handler
-  and reads the field in-process, and the reaper change runs inside the existing native-family reap,
-  so the request vocabulary, the replay store's capacity, and every pin derived from them are
-  unchanged. The registry's per-family Observe/Reap pair, which the load-balancer family's precedent
-  would add as two branches, belongs to the second increment, which chooses and re-derives the
-  arithmetic if it adds any.
+- **No Provider request branch.** The loop runs inside `DestroyRegisteredStack`, and native
+  recovery keeps the existing Observe/Reap intents. The first increment changes no replay count.
+  The second declares three more targets on those intents and re-derives the Provider and Backup
+  request counts and retained encoding bounds below; constructor count alone does not size replay.
 - **Amended from the first text of this block.** The retained catalog is not a separate deny list in
   code: the executor mutates only two kinds of resource, network interfaces and security groups,
   inside one VPC, so no member of the catalog (the buckets, the SES identity, the parent zone, the
@@ -16178,23 +16168,121 @@ ported. A leaked VPC CNI interface or an orphaned cluster security group ended b
   [Unit Testing Policy § 5.1](../documents/engineering/unit_testing_policy.md#51-recorded-laws-for-aws-dependency-behaviour)
   and cannot discharge a gate.
 
-**Second increment (remaining).**
+**Second increment (implemented; closure is gated by the validation below).**
 
-- The registry declares the **EKS network-dependent families** beside the load-balancer controller
-  family (doctrine § 3.2b): the VPC CNI interface family and the EKS cluster security-group family,
-  each by key and coordinate — owning cluster, the VPC joined by its exact `Name` and managed-by
-  tags, and the closed predicate — with one Observe and one Reap, a row in `createRecordCoverage`,
-  and dispatch rows. The approved plan's default is to carry them on the existing native-family
-  observe and reap intents, which adds no Provider request branch; the load-balancer family's
-  precedent is a per-family pair, which adds two. The increment chooses between them, records the
-  choice and why, and re-derives and pins the replay-envelope arithmetic in the same landing.
-- The families sit in the typed teardown's graph after the drain and before the stack's native
-  family, so the manifest route and the verb share one implementation of the rule and one
-  declaration of it.
-- The families apply to the stacks the registry declares them for: the interface family to a stack
-  with a VPC, the security-group family to a stack with an EKS cluster (doctrine § 3.2b). The test
-  stack has no cluster, so only the interface family and the shapes a canary plants (admitted by the
-  plant intent's own closed predicate, Sprint `5.59`) apply to it.
+- Three registry declarations cover EKS VPC CNI interfaces, test-VPC CNI interfaces and EKS cluster
+  security groups. Their coordinates bind owning stack, optional cluster, exact VPC tags and
+  predicate version, with ownership/create-record coverage and exact dispatch. Closed selectors on
+  native-family Observe/Reap tags `31`/`32` distinguish resource keys, wire coordinates and evidence;
+  they add no Provider request branch and do not relax whole-stack member allowlists.
+- The independent network reapers follow the owning stack destroy attempt that releases nodes and
+  control plane. The EKS group reaper waits for interface absence. Every own read-back is still
+  attempt-gated, and exact family absence gates checkpoint retirement and program completion.
+  The shared executor still clears network dependents before internal subnet/VPC deletion.
+- The test stack has no cluster, so its declared interface family joins its Pulumi owner directly;
+  it gains no EKS group family. Canary-only shapes remain Sprint `5.59`'s closed plant predicate.
+- A cut child leads a fresh POSIX session. The runner records descendants before signalling and
+  checks PID/start-time identities while stopping separately grouped plugins under the shared
+  confirmation deadline. Real timeout/cancellation cases retain transcripts and spare an unrelated
+  process; an unconfirmed stop is a structured refusal.
+- Replay follows the expanded graph: Provider needs 52 requests per attempt and 104 entries for a
+  retry under its unchanged 12 MiB ceiling; Backup derives 590 requests per attempt and 1,180 entries
+  from the 68-node topology. Its 32 KiB aggregate-response proof needs a 48 MiB encoded ceiling and
+  coupled 192 MiB production memory floor. The host budget and frozen scheduler causal profile stay
+  unchanged. Codec v16 preserves old v15 entries through the existing monotone migration policy.
+
+### Second-Increment Implementation Decision — 2026-10-19
+
+The resumed increment uses the existing native-family Observe/Reap intents (zero new request
+branches), with an opaque closed selector for exactly three registry declarations: EKS VPC CNI
+interfaces, test-VPC CNI interfaces, and EKS cluster security groups. Account, region, selector,
+stack configuration and evidence remain bound together. Whole-stack allowlists retain their
+existing meaning; only a declared network selector permits re-observed members of its closed class.
+The wire resource, evidence binding and intent coordinate distinguish each selector from the stack
+and from the other families. The native stack inventory no longer claims the EKS-created
+cluster security groups now owned by their declared controller family. Scoped family observations
+also exclude unrelated stack-native groups, preserve partial/foreign candidates as refusals, and
+never turn an unadmitted candidate into an adopted member. Replay-envelope bounds are pinned at 52 requests per attempt and 104 retained entries for two attempts; the 12 MiB ceiling is unchanged.
+
+Source inspection found an ordering contradiction in the original second-increment graph: workload
+drain does not terminate nodes or the control plane, so their held interfaces and cluster security
+group cannot be absent before stack destruction starts. Requiring that absence would prevent the
+operation that releases them. The corrected graph places the independent network-family obligations
+after the owning stack's destroy **attempt**, and before checkpoint retirement and final program
+completion. Each mandatory read-back keeps its attempt-only edge to its own mutation. The destroy and native reaper themselves retain interface/group clearing before subnet
+and VPC deletion. These family obligations run even after an unsuccessful destroy attempt, and an
+unsuccessful family read-back prevents completion. Existing load-balancer, IAM and EBS ordering is
+unchanged. This is an implementation correction to the original pre-native graph wording, not a
+claim that workload drain releases network owners.
+
+Implementation is complete; the canonical validation below establishes code-owned closure.
+
+The cleanup ledger also assigns the surviving-plugin row to `4.111`. The killable runner now
+isolates its child in a fresh POSIX session, snapshots owned descendants before signalling the parent,
+checks PID/start-time identities, and stops separately grouped descendants under the same confirmation
+deadline. The two-SIGTERM protocol and partial transcript remain. Real-process tests cover a
+separate-session/group plugin, cancellation and an unrelated process that survives. No host-wide
+process kill sweep or foreign process-group kill is admitted.
+
+### Resumption Validation — 2026-10-19
+
+The registry, ownership declarations, native-family selectors, dispatch and graph increment is
+implemented. The owned-process stop also spans separate process groups, with a shared deadline
+and a structured refusal for unobservable or unconfirmed stops. Both increments are validated:
+
+- Selector and Provider execution focus: **46/46 pass**; the AWS CLI offline service-model probe
+  accepts the VPC filter/projection and returns the expected `id` and `tags` fields. No AWS call.
+- Provider replay focus: **2/2 pass**; one attempt needs 52 requests, two need 104 entries, the old
+  80-entry store rejects the final 24, and maximum-size responses fit 12 MiB.
+- Process and graph focus: **17/17 pass**. A real separately grouped/session plugin stops on timeout
+  and cancellation, an unrelated process survives, and the graph preserves the owner-attempt and mandatory read-back edges. The expanded selection
+  has its own pinned digest; the old selected-set digest assertion is separately checked below.
+- Durable graph identity focus: **5/5 pass** after restoring the required local key in the
+  explicitly selected Cascade fixture. Both the old selected-set digest and the expanded-set
+  digest pass; the optional DNS zone still changes identity and evidence scope.
+- The first canonical run compiled warning-clean and ran all **5,886** primary tests, finding
+  six stale registry/digest expectations and an omitted local key in the new old-graph identity
+  fixture. The six expectation corrections pass in the next full run (**5,885/5,886**); the
+  fixture's required local key is now restored. The focused identity check passes. The next canonical run passes all 5,886 primary tests and
+  the 27/35 auxiliary suites, then the transport suite catches the Backup budget described below. No sprint closure, Provider roll, live attempt, defect-class closure or
+  deployment qualification is claimed yet.
+
+Artifacts: `.build/sprint-4.111-registry/{selectors-focused,transport-focused,process-and-graph-focused,dev-check}.{log,time}`
+`graph-identity-focused.{log,time}`, and `vpc-cli-projection.json`. Preliminary registry runs also found incomplete adoption fixtures
+and stale graph expectations; those were corrected without relaxing admission or graph obligations.
+
+
+The last auxiliary suite found that Authority Backup's replay calculation still authored a 59-node
+cascade although the expanded graph has 68. That affected production capacity, so it is repaired here:
+`cascadeProgramNodeCount` derives from the same pure topology as compilation, the Backup candidate
+requires 577 requests, its prelude-inclusive attempt 590, and one retry 1,180 entries. The measured aggregate is 27,627 bytes, so the response proof grows from 24 to 32 KiB and the
+encoded ceiling from 32 to 48 MiB. The coupled production memory envelope grows from 144 to
+192 MiB for three encoded/decoded copies plus the unchanged native allowance; the 10,096 MiB
+workload draw remains within the unchanged 13,312 MiB host budget. The September scheduler witness
+keeps its original 144 MiB background, so its causal totals remain frozen. The wider capacity also requires a retained-codec migration: current v15 bytes require exact limits,
+so keeping v15 would refuse the stored 80-entry Provider and 1,036-entry Backup coordinates. Codec
+v16 admits v15 through the existing monotone migration rule, preserves completed responses and
+entries, and retains the shrink, response-width and clock-skew refusals. Explicit v15 Provider and
+Backup fixtures are added. Authored Backup profiles below 192 MiB fail configuration validation; a boundary table tests the old 144, 191, 192 and 256 MiB values. The revised focused and canonical gates pass; the code-owned surface is Done.
+
+Final focused validation after the replay correction passes: the complete authenticated transport
+suite **40/40** (including v15 preservation, the old 1,036-entry capacity refusal, and the old
+32 MiB encoded-ceiling refusal), capacity/replay/graph focus **43/43**, and runtime-memory focus
+**27/27**. Targeted HLint reports no hints and the warning-clean all-target build exits 0.
+Artifacts: `transport-complete`, `capacity-replay-focused`, and `runtime-memory-focused` log/time
+pairs, `hlint-replay-migration.log`, and `build-replay-migration.log` under the same evidence root.
+The canonical rerun passes on the final source with 5,887 primary tests, including the new
+authored-memory-floor boundary case. No Provider roll or live AWS attempt has been made.
+
+
+### Resumption Closure — 2026-10-19
+
+The canonical `prodbox dev check` exits **0**: all **5,887** primary tests and the three
+auxiliary suites (**27**, **35**, **40**) pass, with no exclusions, after native policy,
+formatting, HLint and the warning-clean all-target build. Evidence: `.build/sprint-4.111-registry/`
+`dev-check.log` and `dev-check.time` (exit=0 elapsed=967.68). The two Sprint-`4.111`
+cleanup rows move to Completed. No Provider roll or live AWS attempt was made. The live
+counterexample class and deployment qualification remain pending under Standards O/P/Q.
 
 ### Validation
 
@@ -16213,8 +16301,9 @@ ported. A leaked VPC CNI interface or an orphaned cluster security group ended b
    instruction.
 5. The manifest route admits the dependents by class and still refuses an identity outside its
    allowlist; the registry declares them (second increment).
-6. The request vocabulary's replay-envelope pins are re-derived for any branch the second increment
-   adds, zero or two as it chooses; the first increment adds none.
+6. The request vocabulary adds no branch; the expanded graph's Provider/Backup request counts,
+   retained byte bounds, memory floor and v15-to-v16 preservation are pinned with old-limit
+   negative controls.
 7. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
 
 ### Current Validation State
@@ -16323,33 +16412,25 @@ Held on 2026-10-19, on the code-owned surface, for the first increment:
 
 ### Remaining Work
 
+None on the code-owned surface. The live follow-ons below retain their recording, qualification
+and decision owners; no live defect-class closure is claimed.
+
+### Live Follow-ons and Known Limits
+
+Sprint `5.59` owns the real-response recording and replay; Sprint `6.7` owns the deployed
+counterexample canary and two audit-clean cycles. Decision D10 owns the Provider resource envelope.
+The limits below are preserved for those evaluations, not waived by offline validation.
+
+
 - **Stopped on 2026-10-19, with the account emptied by hand.** The operator stopped development
   before any live run. The sprint's code is gated offline only, so no defect class it targets is
   closed (Standard Q needs a recording, a canary step, and two audit-clean cycles; none exists). At
   the operator's direction the prodbox footprint in the AWS account was deleted by hand that day;
   the hand action is recorded in the README's wrap-up paragraph and in the operator's record
-  directory, and it counts toward no claim. A resumption therefore starts from an account with no
-  prodbox resources: the retained families (state and backup store, SES, the IAM identities) must be
+  directory, and it counts toward no claim. The dated wrap-up reported no prodbox resources;
+  current inventory must be re-observed. The retained families (state and backup store, SES, the IAM identities) must be
   created again before a per-run cycle, and the first `aws audit` verdict over an empty account
   proves nothing about destroy. The first live evidence is a create followed by a destroy.
-- **The second increment**, above: the registry's declaration of the two families, their
-  create-record row, their position in the typed teardown's graph, and their dispatch rows, with the
-  choice between the existing intents and a per-family pair recorded. Until it lands the admission by
-  class is a property of two Provider operations' code and not of the registry, which is the
-  doctrine's rule for where a resource that no manifest could list in advance may be admitted. That
-  is why the sprint stays `Active` and the counterexample stays open. Its size is measured, not
-  guessed: the load balancer controller family it would be declared beside is named in fifteen
-  source modules (the registry and model, the dispatch and interpreters, the adapter, the narrow
-  and assumed-role sessions, the worker adapter and execution, the credential inventory) and
-  fifteen test modules, so two more families of the same kind is a landing of that size, with the
-  replay-envelope arithmetic re-derived if a request branch is added. It wants a pass of its own
-  and is not folded into a roll that is waiting on live proof of the first increment.
-- **The SIGKILL fallback still strands plugin processes.** The second SIGTERM makes the normal stop
-  clean (measured), but a Pulumi that ignores both signals for the grace is killed, and the plugins it
-  started, each in a process group of its own, survive it. An orphaned `pulumi-resource-aws` holds
-  memory the Provider's Pod (1,120 MiB; one provider schema load peaks near 966 MB) needs for the final
-  pass's own provider. The loop narrates the lock it clears and cannot narrate a process it does not
-  look for; sweeping the descendants of a killed child is not built.
 - **A call is five to seven seconds under the Provider's CPU envelope, and the budgets were authored for
   one or two.** The capacity plan gives the Provider Worker `100m` of CPU, request equal to limit,
   shared by every child it starts. Measured 2026-10-19 in the runtime image with a `0.1` CPU quota and
@@ -16413,9 +16494,9 @@ Held on 2026-10-19, on the code-owned surface, for the first increment:
   a matching tag. The models say which fields exist and not what AWS returns, so the values, the
   release times and the error text stay with the recordings.
 - **A Provider image must be rolled** before any of this runs; until then the destroy verbs are the
-  single pass, with the exit statuses Sprint `4.110` documents. The roll waits on host disk
-  headroom (see the README's account of the track), which the operator freeing space would
-  restore.
+  single pass, with the exit statuses Sprint `4.110` documents. Sprint `1.94` has since validated a 1.76 GB runtime image and the source-only dependency cache;
+  disk admission and platform readiness are re-observed before the first roll. The earlier disk
+  blockage is a dated observation, not a current blocker.
 - **Classes the executor does not clear.** NAT gateways, endpoints, an unknown owner, an unmarked
   group, and an interface a service never releases are reported and make the result `Blocked`; each
   needs its own family and law before it can be cleared.
@@ -16424,18 +16505,19 @@ Held on 2026-10-19, on the code-owned surface, for the first increment:
 - **The state-free use** — a plan with a digest, applied through the Authority — belongs to Sprint
   `4.112`'s `purge-dependents`.
 
-## Sprint 4.112: A Refusal Without A Remedy Is A Defect [⏸️ Blocked]
+## Sprint 4.112: A Refusal Without A Remedy Is A Defect [✅ Done]
 
-**Status**: Blocked (2026-10-18). Phase `4` own-surface reopen (Standards A/N) on the fail-closed
+**Status**: Done (2026-10-20, code-owned; Standards O/P). Phase `4` own-surface reopen (Standards A/N) on the fail-closed
 causes of the AWS lifecycle, registered before any behavior change.
 **Doctrine**: [Development Plan Standard Q](development_plan_standards.md#q-live-campaign-protocol-and-class-closure)
 and [AWS Test Environment § 7.5](../documents/engineering/aws_test_environment.md#75-out-of-band-diagnostic-and-the-manual-recovery-order).
 **Implementation**: `src/Prodbox/CLI/Spec.hs`, `src/Prodbox/CLI/Command.hs`,
-`src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`,
-`src/Prodbox/Lifecycle/Teardown/Registry.hs`, `src/Prodbox/CheckCode.hs`, and a new
-cause-to-remedy module under `src/Prodbox/Lifecycle/`.
-**Blocked by**: Sprint `4.111`. The first verb applies the executor `4.111` defines.
-**Live-proof**: pending. Each verb is exercised once against a planted shape or a real refusal.
+`src/Prodbox/CLI/Pulumi.hs`, `src/Prodbox/Infra/AwsStackRepair.hs`,
+`src/Prodbox/Lifecycle/{AwsRemedy,AwsStackDiff,AwsNetworkPurge}.hs`,
+`src/Prodbox/ControlPlane/{ProviderProduction,ProviderWorkerExecution,ProviderWorkerAdapter}.hs`,
+`src/Prodbox/Lifecycle/Teardown/Registry.hs`, and `src/Prodbox/CheckCode.hs`.
+**Blocked by**: none. Sprint `4.111` is code-owned Done; this sprint applies its executor.
+**Live-proof**: pending. Requires each verb against a planted shape or a real refusal.
 **Deployment qualification**: pending — invalidated: the change adds operator verbs that mutate
 through the Authority.
 **Independent Validation**: table tests over the cause enumeration, the lint's negative controls, and
@@ -16480,6 +16562,37 @@ AWS lifecycle owns, and builds the first verbs.
 - The manual recovery order in AWS Test Environment § 7.5 names these verbs before the hand-deletion
   last resort.
 
+### Implementation Decision — 2026-10-19
+
+The remedy table is total over six causes and uses a closed stack selection for stack-specific
+repair paths. A generated section of AWS Test Environment publishes the same rows. The lint reads
+that section at Git HEAD and compares the distinct `NukeOnly` causes; missing or malformed baseline
+observations fail closed. On this first landing HEAD has no remedy module/table, but its Sprint
+`4.112` deliverable explicitly reserves the retained-volume `NukeOnly` row: that HEAD declaration
+admits exactly one initial cause. This bootstrap applies only while the module is absent at HEAD;
+subsequent baselines come from the generated table, including a zero count after it shrinks.
+
+`purge-dependents` uses a closed EKS repair selector on the existing native-family intents, with a
+plan selector and a digest-authorized apply selector. The Provider checks cluster absence, unique
+exact-tagged VPC, complete candidate classifications and the full plan digest immediately before
+mutation. It uses the registered scoped interface/group executors and an independent read-back;
+its terminal `Clean`/`Residue`/`Unobservable` verdict covers those two families, not the whole stack.
+No ad-hoc AWS or host-direct Provider route is added.
+
+`diff` gets one appended read-only Provider intent and exact preview resource keys for all four
+stack CLI groups. SES gets non-secret preview configuration and a preview-only compiler arm; its
+mutation compiler and mutation allowlist do not expand. Pulumi JSON is decoded into resource,
+operation and property names only; values and subprocess diagnostics never become the report.
+The installed pinned tool is probed offline to establish its JSON shape before the decoder lands.
+
+The current cascade remains 52 Provider requests per attempt (104 with a retry). The dedicated
+purge plan/apply/read-back trace needs at most six requests and diff one; neither is emitted by
+the current qualification graph, so those smaller standalone traces do not enlarge its maximum.
+Apply includes a preflight observation and compares its VPC with the independent closing report;
+an otherwise empty replacement VPC cannot stand in for the confirmed root. This extra read is
+included in the six-request trace (plan two, apply four, including each invocation's scope proof).
+Tests pin each trace and the unchanged Backup graph/bounds. Live proof and qualification stay pending.
+
 ### Validation
 
 1. The table is total over the cause enumeration: a new cause with no row fails the build; the lint's
@@ -16490,9 +16603,34 @@ AWS lifecycle owns, and builds the first verbs.
    output carries no secret value.
 4. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
 
+### Completion Evidence — 2026-10-20
+
+- **Canonical gate 0:** `.build/sprint-4.112/dev-check-complete.log` and `.time` record policy,
+  formatter, full HLint (no hints), all-target warning-clean build, binary sync, and **5,920**
+  primary plus **27/35/40** auxiliary cases. No exclusions or lint exemptions were added.
+- **Frontend 0:** `.build/sprint-4.112/cli-env.log` and `.time` record **74/74**
+  built-frontend CLI/config integration cases. Generated command/remedy docs and CLI goldens align.
+- **Focused 0:** `focused-final.log` passes **22/22** policy/preview/repair cases;
+  `boundary-focused-second.log` passes **332/332** signed-request/parser cases, including historical
+  wire compatibility and mode/member/config substitution refusal.
+- **Counterexample retained:** the first planted-family case exposed a logical/Pulumi-name lookup
+  mismatch that could produce an empty registered set. The lookup now derives the Pulumi name,
+  and both planning and report decoding reject an empty set. `focused-initial.log` records the
+  failure before the passing reruns. The gates also caught style findings, all fixed.
+- **Tool and envelope observations:** the offline pinned-Pulumi probe records real PreviewDigest
+  JSON without AWS access. `preview-wire-size-complete.log` measures a 32,768-byte payload with
+  long coordinates at 33,388 Provider-response bytes and 33,735 Authority-response bytes, below
+  both 65,536-byte ceilings. Separate processes agree on the purge digest (`purge-digest-*.log`).
+  The standalone plan/apply trace is six Provider requests; diff one. The cascade remains 52 per
+  attempt / 104 with a retry, and Backup's graph and budgets are unchanged.
+- **Scope:** one cleanup row moves to Completed (pending **66 → 65**, unowned **16 → 16**,
+  completed **405 → 406**). No live mutation, image roll, qualification claim or class-closure
+  claim follows from these offline results.
+
 ### Remaining Work
 
-Everything above, after `4.111`. Repair verbs for the non-AWS causes — the retained TLS lane, a stuck
+None on this sprint's code-owned surface. Live proof, class closure and deployment qualification
+remain on their declared axes. Repair verbs for the non-AWS causes — the retained TLS lane, a stuck
 credential or EAB operation, the Authority operation ledger, the cleanup-run index, and the retained
 harness credential — are not scheduled here; they wait for a separate go-ahead after the AWS track
 is green (Sprint `0.36`, Not Scheduled).
@@ -16513,7 +16651,7 @@ is green (Sprint `0.36`, Not Scheduled).
 - `documents/engineering/aws_integration_environment_doctrine.md` — the destroy rule's converge
   target; Sprint `4.111` replaces it with the built behaviour.
 - `documents/engineering/cli_command_surface.md` — `aws audit`, `aws stack <stack> diff`, and
-  `aws stack eks purge-dependents`, when Sprints `4.110` and `4.112` land.
+  `aws stack eks purge-dependents` (landed code-owned in Sprints `4.110` and `4.112`).
 
 **Product docs to create/update:**
 

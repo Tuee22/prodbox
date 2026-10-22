@@ -208,6 +208,7 @@ controlPlaneRouteCallerTopology =
   , row TlsRetentionRestore [authority, targetAgent]
   , (TlsRetentionObserveVersion, [authority])
   , row TargetMaterialObserve [authority, CallerCredentialProvisioner]
+  , (TargetAwsAdminCredentialRevoke, [CallerCredentialProvisioner])
   , row TargetSecretDecommissionInventory [authority]
   , row TargetSecretDecommissionTombstone [authority]
   , row TargetSecretDecommissionCustodyTombstone [authority]

@@ -100,7 +100,11 @@ taggingApiReachTable =
   , ("aws:eks:NodeGroup", ReachableWhenTagged)
   , ("aws:eks:Addon", ReachableWhenTagged)
   , ("aws:s3:Bucket", ReachableWhenTagged)
-  , ("aws:iam:Role", ReachableWhenTaggedFromGlobalRegion "iam")
+  ,
+    ( "aws:iam:Role"
+    , UntaggableByTaggingApi
+        "GetResources does not return IAM roles; registered IAM-family reads prove their absence"
+    )
   , ("aws:iam:Policy", ReachableWhenTaggedFromGlobalRegion "iam")
   , ("aws:iam:OpenIdConnectProvider", ReachableWhenTaggedFromGlobalRegion "iam")
   , ("aws:route53:Zone", ReachableWhenTaggedFromGlobalRegion "route53")

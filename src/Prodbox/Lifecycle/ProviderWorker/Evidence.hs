@@ -46,6 +46,7 @@ module Prodbox.Lifecycle.ProviderWorker.Evidence
   , ProviderEvidenceBound
   , ProviderEvidenceFamily
   , ProviderEvidenceRefusal (..)
+  , maximumStackPreviewEvidenceBytes
   , providerEvidenceFamily
   , providerEvidenceFamilyBound
   , providerEvidenceFamilyOwnBound
@@ -66,6 +67,11 @@ import Data.List (sort)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.Lifecycle.ProviderWorker.Evidence.Internal
+
+-- Names-only previews may exceed the short observation bound. This byte
+-- ceiling also bounds character count and leaves room in the 64 KiB reply.
+maximumStackPreviewEvidenceBytes :: Int
+maximumStackPreviewEvidenceBytes = 32 * 1024
 
 -- | The version every family carries.  Families move together when the grammar
 -- changes, including families whose existing bytes were already legal: a reader

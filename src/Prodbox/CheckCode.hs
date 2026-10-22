@@ -61,6 +61,7 @@ module Prodbox.CheckCode
   , untypedLifecycleInventoryViolations
   , legacyOperationalResourceParityViolations
   , registeredTargetExecutorViolations
+  , checkAwsRemedyPolicy
   , capabilityDependantDerivationViolations
   , ownershipEdgeDerivationViolations
   , codeCreatedResourceFieldOfViewViolations
@@ -237,7 +238,7 @@ import Prodbox.CLI.Output
   ( writeError
   , writeOutputLine
   )
-import Prodbox.CLI.Spec (CommandSpec (..), commandRegistry)
+import Prodbox.CLI.Spec (CommandSpec (..), commandRegistry, leafCommandPaths)
 import Prodbox.Capacity.Allocation qualified as Allocation
 import Prodbox.Capacity.Config (defaultResourcePlan)
 import Prodbox.Capacity.MeasuredProfile (certifyMeasuredProfiles)
@@ -261,6 +262,7 @@ import Prodbox.Legacy.EscapeRegistry
 import Prodbox.Lib.ChartPlatform qualified as ChartPlatform
 import Prodbox.Lifecycle.Authority.ChartStatics qualified as AuthorityStatics
 import Prodbox.Lifecycle.AuthorityBackup.ChartStatics qualified as AuthorityBackupStatics
+import Prodbox.Lifecycle.AwsRemedy qualified as AwsRemedy
 import Prodbox.Lifecycle.CredentialProvisioner.ProductionIam (lifecycleProviderRolePolicyActions)
 import Prodbox.Lifecycle.CredentialProvisioner.ProviderCliActions
   ( ProviderCliDynamicSite (..)
@@ -420,6 +422,14 @@ generatedSectionRules =
       , generatedSectionEndMarker = "<!-- prodbox:command-registry.markdown:end -->"
       , generatedSectionRender = const (renderMarkdownCommandReference commandRegistry)
       , generatedSectionRendererSources = ["src/Prodbox/CLI/Docs.hs"]
+      }
+  , GeneratedSectionRule
+      { generatedSectionKey = "aws-lifecycle-remedies"
+      , generatedSectionPath = "documents/engineering/aws_test_environment.md"
+      , generatedSectionStartMarker = AwsRemedy.awsRemedySectionStart
+      , generatedSectionEndMarker = AwsRemedy.awsRemedySectionEnd
+      , generatedSectionRender = const AwsRemedy.renderAwsRemedyTable
+      , generatedSectionRendererSources = ["src/Prodbox/Lifecycle/AwsRemedy.hs"]
       }
   , GeneratedSectionRule
       { generatedSectionKey = "route-registry.api"
@@ -1900,6 +1910,51 @@ checkMeasuredCapacityProfiles repoRoot = do
   let now = fromIntegral (floor posixNow :: Integer) :: Natural
   certifyMeasuredProfiles repoRoot now defaultResourcePlan
 
+-- | The ceiling comes from committed policy, never the dirty table being
+-- checked. The initial declaration is admitted only before the module exists
+-- at HEAD; an existing module with a missing published table refuses.
+checkAwsRemedyPolicy :: FilePath -> IO [String]
+checkAwsRemedyPolicy repoRoot = do
+  tree <- readHead ["ls-tree", "--name-only", "HEAD", "--", remedyModule]
+  baseline <- case tree of
+    Left detail -> pure (Left detail)
+    Right names -> case lines names of
+      [] ->
+        fmap (AwsRemedy.resolveAwsRemedyBaseline . AwsRemedy.RegisteredInitialRemedyBaseline)
+          <$> readHead ["show", "HEAD:DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md"]
+      [name]
+        | name == remedyModule ->
+            fmap (AwsRemedy.resolveAwsRemedyBaseline . AwsRemedy.PublishedRemedyBaseline)
+              <$> readHead ["show", "HEAD:documents/engineering/aws_test_environment.md"]
+      _ -> pure (Left "Git HEAD remedy-module inventory is malformed")
+  pure $ case baseline of
+    Left detail -> [detail]
+    Right (Left detail) -> [detail]
+    Right (Right maximumNukeOnly) ->
+      AwsRemedy.awsRemedyViolations leafCommandPaths maximumNukeOnly AwsRemedy.awsRemedyRows
+ where
+  remedyModule = "src/Prodbox/Lifecycle/AwsRemedy.hs"
+  readHead arguments = do
+    result <-
+      Subprocess.captureSubprocessBounded
+        Subprocess.BoundedSubprocessLimits
+          { Subprocess.boundedSubprocessMaximumInputBytes = 1
+          , Subprocess.boundedSubprocessMaximumStdoutBytes = 2 * 1024 * 1024
+          , Subprocess.boundedSubprocessMaximumStderrBytes = 4096
+          , Subprocess.boundedSubprocessTimeoutMicros = 10 * 1000 * 1000
+          }
+        Subprocess.Subprocess
+          { Subprocess.subprocessPath = "git"
+          , Subprocess.subprocessArguments = arguments
+          , Subprocess.subprocessEnvironment = Nothing
+          , Subprocess.subprocessWorkingDirectory = Just repoRoot
+          }
+    pure $ case result of
+      Right output
+        | Subprocess.processExitCode output == ExitSuccess ->
+            Right (Subprocess.processStdout output)
+      _ -> Left "AWS remedy policy cannot observe its Git HEAD baseline"
+
 -- | Effectful half of the legacy-escape bijection check: read every scanned
 -- source file and delegate to the pure 'escapeRegistryViolations'. Exposed for
 -- the conformance-tier unit suite.
@@ -1997,6 +2052,7 @@ runDoctrineAlignmentCheck repoRoot = do
   -- half of the same question: not whether a create site is registered, but
   -- whether it is recorded before it acts.
   createRecordCoverageFindings <- checkCreateRecordCoverage repoRoot
+  awsRemedyFindings <- checkAwsRemedyPolicy repoRoot
   -- Sprint 0.28: the production `PRODBOX_*` read registry. Wired beside the
   -- create-site coverage gate because it is the same shape — a registry the
   -- worktree must agree with, rather than a claim about it.
@@ -2042,6 +2098,7 @@ runDoctrineAlignmentCheck repoRoot = do
     ++ map ("- " ++) planOptionsHonoredViolations'
     ++ map ("- " ++) createCallSiteViolations
     ++ map ("- " ++) createRecordCoverageFindings
+    ++ map ("- " ++) awsRemedyFindings
     ++ map ("- " ++) managedResourceRegistryParityViolations
     ++ map ("- " ++) untypedLifecycleInventoryViolations
     ++ map ("- " ++) legacyOperationalResourceParityViolations
@@ -3420,6 +3477,7 @@ absenceMinterOwners =
   , "src/Prodbox/Lifecycle/Teardown/AwsStackAdapter.hs"
   , "src/Prodbox/Lifecycle/Teardown/CascadeEvidence/Internal.hs"
   , "src/Prodbox/Lifecycle/Teardown/Dns01ChallengeRecordAdapter.hs"
+  , "src/Prodbox/Lifecycle/Teardown/SesInviteMailAdapter.hs"
   , "src/Prodbox/Lifecycle/Teardown/EksDrainIntent.hs"
   , "src/Prodbox/Lifecycle/Teardown/EksDrainInterpreter.hs"
   , "src/Prodbox/ControlPlane/EksDrainReadBackReceiptRepository.hs"
@@ -4229,15 +4287,31 @@ checkTypedGuardConsumption repoRoot = do
 -- credited with catching neither.__
 wireFidelityExemptions :: [(FilePath, String, String)]
 wireFidelityExemptions =
-  map
-    brokerBoundaryClassifier
-    [ "provisionerAccessorAbsenceBoundaryName"
-    , "provisionerAccessorCleanupBoundaryName"
-    , "provisionerAccessorRevocationBoundaryName"
-    , "rootAccessorAbsenceBoundaryName"
-    , "rootAccessorInventoryBoundaryName"
-    , "rootAccessorRevocationBoundaryName"
-    ]
+  [
+    ( "src/Prodbox/Lifecycle/AwsNetworkFamily.hs"
+    , "networkFamilyStack"
+    , "The codomain is the owning stack, shared by two different network families. "
+        ++ "ProviderNetworkFamilyRef retains the family constructor; the wire resource, "
+        ++ "intent coordinate and evidence binding use the injective networkFamilyName. "
+        ++ "The same-account/region selector tests prove those families remain distinct."
+    )
+  ,
+    ( "src/Prodbox/Lifecycle/AwsNetworkFamily.hs"
+    , "networkFamilyPulumiStack"
+    , "The codomain is the owning Pulumi stack, shared by EKS interfaces and cluster groups. "
+        ++ "The coordinate digest also carries networkFamilyName and the predicate version, "
+        ++ "and Provider wire/evidence identity carries networkFamilyName rather than this projection."
+    )
+  ]
+    ++ map
+      brokerBoundaryClassifier
+      [ "provisionerAccessorAbsenceBoundaryName"
+      , "provisionerAccessorCleanupBoundaryName"
+      , "provisionerAccessorRevocationBoundaryName"
+      , "rootAccessorAbsenceBoundaryName"
+      , "rootAccessorInventoryBoundaryName"
+      , "rootAccessorRevocationBoundaryName"
+      ]
     ++ [
          ( "src/Prodbox/Bootstrap/Broker/PgpBoundary.hs"
          , "generatedRootActionFailureStageName"
@@ -4701,7 +4775,9 @@ data SealedConstructorType = SealedConstructorType
 -- outlive the declaration it is sealing.
 data SealedConstructorOrigin
   = SealedDeclaredHere
+  | SealedPositionalHere
   | SealedReExportedFrom !FilePath
+  | SealedPositionalReExportedFrom !FilePath
 
 -- | The registry.  Deliberately small: a row belongs here only when a written
 -- claim somewhere else depends on the constructor staying sealed, so the list
@@ -4723,6 +4799,42 @@ data SealedConstructorOrigin
 sealedConstructorRegistry :: [SealedConstructorType]
 sealedConstructorRegistry =
   [ SealedConstructorType
+      "src/Prodbox/Lifecycle/Authority/ProviderCredentialCleanupEvidence.hs"
+      "ObservedProviderCredentialCleanup"
+      ( SealedPositionalReExportedFrom
+          "src/Prodbox/Lifecycle/Authority/ProviderCredentialCleanupEvidence/Internal.hs"
+      )
+      "Sprint 6.5: a cleanup child requires the owned runtime's expired parent, exact workload absence and fresh Agent observation."
+  , SealedConstructorType
+      "src/Prodbox/Lifecycle/CredentialProvisioner/AwsAdminAuthority.hs"
+      "AwsAdminAttestedRecoveryProof"
+      ( SealedPositionalReExportedFrom
+          "src/Prodbox/Lifecycle/CredentialProvisioner/AwsAdminAttestedRecovery/Internal.hs"
+      )
+      "Sprint 6.5: expired attestation renewal consumes an actual observer's exact workload-absence evidence."
+  , SealedConstructorType
+      "src/Prodbox/Lifecycle/Authority/CompletedProviderPredecessor.hs"
+      "ObservedCompletedProviderPredecessor"
+      ( SealedPositionalReExportedFrom
+          "src/Prodbox/Lifecycle/Authority/CompletedProviderPredecessor/Internal.hs"
+      )
+      "Sprint 6.5: successor admission requires two independent observations of \
+      \the exact descriptor-bound successful cleanup report, including Backup after compaction."
+  , SealedConstructorType
+      "src/Prodbox/ControlPlane/ProviderCredentialPublication.hs"
+      "ObservedAwsAdminProviderLineage"
+      (SealedPositionalReExportedFrom "src/Prodbox/ControlPlane/ProviderCredentialPublication/Internal.hs")
+      "Sprint 6.5: publication evidence requires the actual completed operation's \
+      \independent final read, including its exact permit, receipt and archive."
+  , SealedConstructorType
+      "src/Prodbox/Lifecycle/Authority/ProviderCredentialAdmissionEvidence.hs"
+      "ObservedProviderCredentialAdmission"
+      ( SealedPositionalReExportedFrom
+          "src/Prodbox/Lifecycle/Authority/ProviderCredentialAdmissionEvidence/Internal.hs"
+      )
+      "Sprint 6.5: credential admission requires independently observed publication \
+      \and a subsequent fresh Agent read; wire metadata cannot mint this proof."
+  , SealedConstructorType
       "src/Prodbox/Lifecycle/CascadeNoInstall.hs"
       "ConfirmedNoInstallCascade"
       SealedDeclaredHere
@@ -4979,19 +5091,41 @@ sealedConstructorViolations corpus row =
                 ++ " Export the type abstractly, or delete the registry row "
                 ++ "together with the claim that depends on it."
             ]
+        | positionalSealHasRecordFields ->
+            [ sealedConstructorModulePath row
+                ++ " gives `"
+                ++ sealedConstructorTypeName row
+                ++ "` record fields or an alias under its positional proof seal. "
+                ++ "Use positional constructors and ordinary read-only getters. "
+                ++ sealedConstructorReason row
+            ]
         | otherwise -> []
  where
+  positionalSealHasRecordFields = case sealedConstructorOrigin row of
+    SealedPositionalHere -> hasRecordFields
+    SealedPositionalReExportedFrom _ -> hasRecordFields
+    SealedDeclaredHere -> False
+    SealedReExportedFrom _ -> False
+  hasRecordFields = case lookup originPath corpus of
+    Nothing -> True
+    Just contents -> case dropWhile (not . declaresNamedType) (lines contents) of
+      [] -> True
+      opening : remaining ->
+        "type " `isPrefixOf` opening
+          || any ('{' `elem`) (opening : takeWhile isContinuation remaining)
+  isContinuation line = case line of [] -> True; firstChar : _ -> isSpace firstChar
+  declaresNamedType line =
+    any
+      (\keyword -> (keyword ++ " " ++ sealedConstructorTypeName row) `isPrefixOf` line)
+      ["data", "newtype", "type"]
   originPath = case sealedConstructorOrigin row of
     SealedDeclaredHere -> sealedConstructorModulePath row
+    SealedPositionalHere -> sealedConstructorModulePath row
     SealedReExportedFrom declaringPath -> declaringPath
+    SealedPositionalReExportedFrom declaringPath -> declaringPath
   originDeclaresType =
     maybe False declaresTypeIn (lookup originPath corpus)
-  declaresTypeIn contents = any declaresOn (lines contents)
-   where
-    declaresOn line =
-      any
-        (\keyword -> (keyword ++ " " ++ sealedConstructorTypeName row) `isPrefixOf` line)
-        ["data", "newtype", "type"]
+  declaresTypeIn contents = any declaresNamedType (lines contents)
 
 -- | Sprint 6.5: a name a public facade deliberately withholds.
 --
@@ -5015,6 +5149,21 @@ data FacadeWithholding = FacadeWithholding
 facadeWithholdingRegistry :: [FacadeWithholding]
 facadeWithholdingRegistry =
   [ FacadeWithholding
+      "src/Prodbox/Lifecycle/Authority/CompletedProviderPredecessor.hs"
+      "src/Prodbox/ControlPlane/CompletedProviderPredecessor.hs"
+      ["observeCompletedProviderPredecessor"]
+      "Predecessor proof requires the Authority-owned descriptor, run and Backup observations; public callers cannot supply proof origins."
+  , FacadeWithholding
+      "src/Prodbox/ControlPlane/ProviderCredentialPublication.hs"
+      "src/Prodbox/ControlPlane/ProviderCredentialPublication/Internal.hs"
+      ["publishAwsAdminProviderLineage"]
+      "Credential publication proof requires the owned repository; a public caller cannot supply its own callback to mint evidence."
+  , FacadeWithholding
+      "src/Prodbox/Lifecycle/Authority/ProviderCredentialAdmissionEvidence.hs"
+      "src/Prodbox/ControlPlane/ProviderCredentialAdmissionEvidence.hs"
+      ["observeProviderCredentialAdmission"]
+      "Credential admission proof requires the owned Agent observer; public wire metadata and caller-provided observers cannot mint it."
+  , FacadeWithholding
       "src/Prodbox/Lifecycle/Teardown/CascadeCandidate.hs"
       "src/Prodbox/Lifecycle/Teardown/CascadeCandidate/Internal.hs"
       [ "CascadeCandidateInputs"
@@ -8151,6 +8300,9 @@ retiredCitedSourcePaths =
        , "src/Prodbox/Secret/Inventory.hs" -- retired by Sprint 3.19
        , "src/Prodbox/Secret/MasterSeed.hs" -- retired by Sprint 3.19
        , "src/Prodbox/Secret/Wire.hs" -- retired by Sprint 3.19
+       , "src/Prodbox/Lifecycle/Teardown/CascadeCredentialRevocation.hs" -- retired by Sprint 6.5 (unused direct mutation choreography)
+       , "src/Prodbox/Lifecycle/Teardown/CascadeTerminalAuditLane.hs" -- retired by Sprint 6.5 (test-only composer)
+       , "test/unit/LifecycleTeardownCascadeTerminalAuditLane.hs" -- retired by Sprint 6.5 (actual boundary suites retained)
        , -- Deleted by Sprint 4.50 with the host-direct store it was named for.
          -- Its coverage did not disappear: Sprint 4.53 moved the differential
          -- suite to test/unit/ModelBCasTransportAdapter.hs, whose own header
@@ -10423,9 +10575,10 @@ createRecordCoverageViolations rows corpus =
       DerivedStandalone -> "a standalone family that is not a stack"
 
   nativeRows = [(modulePath, entry) | row <- rows, NativeClientCreator modulePath entry <- [rowSubject row]]
-  nativeImportMarkers = ["Prodbox.Aws.Native.Iam", "Prodbox.Aws.Native.S3"]
+  nativeImportMarkers = ["Prodbox.Aws.Native.Iam", "Prodbox.Aws.Native.S3", "Prodbox.Lifecycle.AwsTestCanaryExecution"]
   nativeCreateIdentifiers =
-    [ "createUser"
+    [ "plantTestVpcCanary"
+    , "createUser"
     , "createAccessKey"
     , "createRole"
     , "putUserInlinePolicy"
@@ -10444,7 +10597,7 @@ createRecordCoverageViolations rows corpus =
     ]
   nativeCreatorViolations =
     [ path
-        ++ " creates through the native IAM or S3 client but has no NativeClientCreator row in createRecordCoverage; "
+        ++ " creates through the registered native client but has no NativeClientCreator row in createRecordCoverage; "
         ++ "state why it is off the write-ahead lane and which destroy path covers it."
     | path <- detectedNativeCreators
     , path `notElem` map fst nativeRows
@@ -10452,7 +10605,7 @@ createRecordCoverageViolations rows corpus =
       ++ [ "createRecordCoverage declares "
              ++ path
              ++ " a native-client creator, but it no longer creates through the "
-             ++ "native IAM or S3 client; remove the stale row."
+             ++ "registered native client; remove the stale row."
          | (path, _) <- nativeRows
          , path `notElem` detectedNativeCreators
          ]

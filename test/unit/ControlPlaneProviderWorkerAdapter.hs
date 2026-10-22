@@ -3,12 +3,18 @@
 
 module ControlPlaneProviderWorkerAdapter (controlPlaneProviderWorkerAdapterSuite) where
 
+import Prodbox.Ses.InviteEvidence (pendingInviteMailEvidence, retiredInviteMailEvidence)
+import SesInviteEvidence (fixtureInvitePublicKey)
+
+import AwsCanaryFixtures
+import CleanupScopeFixtures
 import Data.Either (isLeft)
 import Data.IORef
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.ProviderWorkerAdapter
+import Prodbox.Lifecycle.AwsNetworkFamily
 import Prodbox.Lifecycle.CheckpointAuthority
   ( LongLivedCheckpointAuthority
   , ModelBCasAdapter (..)
@@ -25,6 +31,7 @@ import Prodbox.Lifecycle.CheckpointAuthority
   )
 import Prodbox.Lifecycle.Lease (authorityTimeFromMicros)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
+import Prodbox.Lifecycle.Teardown.ResourceScopeBindings
 import TestSupport
 
 controlPlaneProviderWorkerAdapterSuite :: SuiteBuilder ()
@@ -211,6 +218,7 @@ fixtureCapabilities calls applied loseResponse unobservable =
           ("stack-destroy:" <> providerStackRefText ref <> "@" <> revisionText requestedRevision)
     , observeRegisteredStackCapability = \ref -> readOnly ("stack-observe:" <> providerStackRefText ref)
     , readBackRegisteredStackCapability = \ref -> readOnly ("stack-readback:" <> providerStackRefText ref)
+    , previewRegisteredStackCapability = \ref _ -> readOnly ("stack-preview:" <> providerStackRefText ref)
     , boundedScratchCheckpointCapability = \ref ->
         mutation ("checkpoint:" <> providerCheckpointRefText ref)
     , reconcileSesSendingIdentityCapability = \ref ->
@@ -234,10 +242,11 @@ fixtureCapabilities calls applied loseResponse unobservable =
         mutation ("validation-zone-reap:" <> namePrefix)
     , ensureValidationHostedZoneCapability = \nonce baseZone ->
         mutation ("validation-zone-ensure:" <> nonce <> ":" <> baseZone)
-    , observeSesInviteMailCapability = \bucket recipient ->
-        readOnly ("ses-invite-observe:" <> bucket <> ":" <> recipient)
-    , reapSesInviteMailCapability = \bucket recipient ->
-        mutation ("ses-invite-reap:" <> bucket <> ":" <> recipient)
+    , observeHomeDns01RecordsCapability = \scope -> readOnly ("home-dns01-observe:" <> homeDns01ScopeWireText scope)
+    , observeSesInviteMailResidueCapability = \scope -> readOnly ("invite-residue-observe:" <> inviteMailScopeWireText scope)
+    , reapSesInviteMailResidueCapability = \scope -> mutation ("invite-residue-reap:" <> inviteMailScopeWireText scope)
+    , observeSealedSesInviteMailCapability = \bucket recipient _destination ->
+        readOnly ("ses-invite-sealed-observe:" <> bucket <> ":" <> recipient)
     , ensureRetainedEbsVolumesCapability = \volumeType specs ->
         mutation ("retained-ebs-ensure:" <> volumeType <> ":" <> specs)
     , observeRetainedEbsVolumesCapability = \lifecycleValue ->
@@ -252,6 +261,7 @@ fixtureCapabilities calls applied loseResponse unobservable =
         mutation ("eks-lbc-family-reap:" <> name <> ":" <> tags)
     , observeDns01ChallengeRecordsCapability = \zoneId recordNamePrefix ->
         readOnly ("dns01-challenge-observe:" <> zoneId <> ":" <> recordNamePrefix)
+    , observeGlobalOwnedResourceTagsCapability = \query -> readOnly ("global-owned-resource-tags:" <> providerOwnedTagQueryKey query)
     , observeOwnedResourceTagsCapability = \query ->
         readOnly ("owned-resource-tags:" <> providerOwnedTagQueryKey query)
     , reapRetainedEbsVolumesCapability = \lifecycleValue ->
@@ -268,6 +278,7 @@ fixtureCapabilities calls applied loseResponse unobservable =
     , observeProviderReadinessCapability = readOnly . readinessLabel
     , issueEksClientAuthCapability = const (readOnly "eks-client-auth")
     , observeEksClusterIdentityCapability = const (readOnly "eks-cluster-identity")
+    , plantTestVpcCanaryCapability = \_ _ -> mutation "test-vpc-canary"
     , observeNativeStackFamilyCapability = \_ _ -> readOnly "native-stack-family-observe"
     , reapNativeStackFamilyCapability = \_ _ _ -> mutation "native-stack-family-reap"
     , observeAwsAuditCapability = \_ _ _ -> readOnly "aws-audit-observe"
@@ -284,7 +295,7 @@ fixtureCapabilities calls applied loseResponse unobservable =
               then ProviderEffectUnobservable "injected observation outage"
               else
                 if alreadyApplied
-                  then ProviderEffectSatisfied ("evidence:" <> label)
+                  then ProviderEffectSatisfied (mutationEvidence label)
                   else ProviderEffectNeedsApply ("missing:" <> label)
       , applyProviderMutation = \_session coordinate -> do
           modifyIORef' calls (("apply:" <> label, coordinate) :)
@@ -299,7 +310,7 @@ fixtureCapabilities calls applied loseResponse unobservable =
   readOnly label =
     ProviderReadOnly $ \_session coordinate -> do
       modifyIORef' calls (("read:" <> label, coordinate) :)
-      pure (Right ("evidence:" <> label))
+      pure (Right (readOnlyEvidence label))
 
 runFresh :: Fixture -> ProviderIntent -> IO ()
 runFresh fixture intent = do
@@ -400,7 +411,8 @@ version number = mustRight (mkModelBObjectVersion ("provider-v" <> Text.pack (sh
 
 allIntents :: [ProviderIntent]
 allIntents =
-  [ ReconcileRegisteredStack
+  [ PlantTestVpcCanary fixtureCanaryReference fixtureCanaryRequest
+  , ReconcileRegisteredStack
       (stackRef "aws-eks")
       (revision 3)
       awsEksConfig
@@ -432,11 +444,49 @@ allIntents =
   , ObserveNativeStackFamily nativeTestRef awsTestConfig
   , ReapNativeStackFamily nativeTestRef awsTestConfig ["vpc/vpc-fixture"]
   , ObserveAwsAudit auditTarget awsTestConfig auditControl
+  , PreviewRegisteredStack (stackRef "aws-eks") awsEksConfig
+  , PreviewRegisteredStack (stackRef "aws-test") awsTestConfig
+  , PreviewRegisteredStack
+      (stackRef "aws-eks-subzone")
+      (mustRight (mkAwsEksSubzoneProviderStackConfig "ZEXAMPLE" "eks.example.test"))
+  , PreviewRegisteredStack
+      (stackRef "aws-ses")
+      (mustRight (mkAwsSesPreviewStackConfig "example.test" "receive.example.test" "capture-bucket"))
+  , ObserveNativeStackFamily
+      ( mustRight
+          (mkProviderNetworkPurgeRef "123456789012" (fixtureAwsRegion FixtureCaCentral1) NetworkPurgePlan)
+      )
+      awsEksConfig
+  , ReapNativeStackFamily
+      ( mustRight
+          ( mkProviderNetworkPurgeRef
+              "123456789012"
+              (fixtureAwsRegion FixtureCaCentral1)
+              (NetworkPurgeApply (Text.replicate 64 "a"))
+          )
+      )
+      awsEksConfig
+      []
   , EnsureValidationHostedZone "1759900000" "example.test"
-  , ObserveSesInviteMail "capture-bucket" "test-1759900000@receive.example.test"
-  , ReapSesInviteMail "capture-bucket" "test-1759900000@receive.example.test"
+  , ObserveGlobalOwnedResourceTags (ProviderOwnedTagKeyQuery "prodbox.io/managed-by")
+  , ObserveGlobalOwnedResourceTags (ProviderOwnedTagPairQuery "prodbox.io/managed-by" "prodbox")
+  , ObserveHomeDns01Records fixtureHomeDns01Scope
+  , ObserveSesInviteMailResidue fixtureInviteMailScope
+  , ReapSesInviteMailResidue fixtureInviteMailScope
+  , RetiredSesInviteMailObservation "capture-bucket" "test-1759900000@receive.example.test"
+  , ObserveSealedSesInviteMail
+      "capture-bucket"
+      "test-1759900000@receive.example.test"
+      fixtureInvitePublicKey
+  , RetiredSesInviteMailCleanup "capture-bucket" "test-1759900000@receive.example.test"
   , EnsureRetainedEbsVolumes "gp3" "pv-minio-0:30:ca-central-1a,pv-vault-0:10:ca-central-1a"
   ]
+    ++ concat
+      [ [ObserveNativeStackFamily ref config, ReapNativeStackFamily ref config []]
+      | family <- [minBound .. maxBound]
+      , let ref = mustRight (mkProviderNetworkFamilyRef family "123456789012" (fixtureAwsRegion FixtureCaCentral1))
+            config = if networkFamilyStack family == "aws-test" then awsTestConfig else awsEksConfig
+      ]
 
 expectedCalls :: ProviderIntent -> [(Text, ProviderIntentCoordinate)]
 expectedCalls intent =
@@ -462,9 +512,16 @@ expectedCalls intent =
           [call "session-open", call ("read:" <> intentLabel), call "session-close"]
         ObserveNativeStackFamily _ _ ->
           [call "session-open", call ("read:" <> intentLabel), call "session-close"]
+        PreviewRegisteredStack {} ->
+          [call "session-open", call ("read:" <> intentLabel), call "session-close"]
         ObserveAwsAudit {} ->
           [call "session-open", call ("read:" <> intentLabel), call "session-close"]
-        ObserveSesInviteMail _ _ ->
+        ObserveGlobalOwnedResourceTags {} -> [call "session-open", call ("read:" <> intentLabel), call "session-close"]
+        ObserveHomeDns01Records {} -> [call "session-open", call ("read:" <> intentLabel), call "session-close"]
+        ObserveSesInviteMailResidue {} -> [call "session-open", call ("read:" <> intentLabel), call "session-close"]
+        RetiredSesInviteMailObservation {} -> [call "session-open", call "session-close"]
+        RetiredSesInviteMailCleanup {} -> [call "session-open", call "session-close"]
+        ObserveSealedSesInviteMail {} ->
           [call "session-open", call ("read:" <> intentLabel), call "session-close"]
         _ ->
           [ call "session-open"
@@ -518,6 +575,8 @@ labelFor intent = case intent of
   ReapEksLoadBalancerControllerFamily name tags ->
     "eks-lbc-family-reap:" <> name <> ":" <> tags
   ObserveEksClusterIdentity _ -> "eks-cluster-identity"
+  PlantTestVpcCanary {} -> "test-vpc-canary"
+  ObserveGlobalOwnedResourceTags query -> "global-owned-resource-tags:" <> providerOwnedTagQueryKey query
   ObserveOwnedResourceTags query ->
     "owned-resource-tags:" <> providerOwnedTagQueryKey query
   ObserveDns01ChallengeRecords zoneId recordNamePrefix ->
@@ -525,11 +584,17 @@ labelFor intent = case intent of
   ObserveNativeStackFamily _ _ -> "native-stack-family-observe"
   ReapNativeStackFamily {} -> "native-stack-family-reap"
   ObserveAwsAudit {} -> "aws-audit-observe"
+  PreviewRegisteredStack ref _ -> "stack-preview:" <> providerStackRefText ref
   EnsureValidationHostedZone nonce baseZone ->
     "validation-zone-ensure:" <> nonce <> ":" <> baseZone
-  ObserveSesInviteMail bucket recipient ->
+  ObserveHomeDns01Records scope -> "home-dns01-observe:" <> homeDns01ScopeWireText scope
+  ObserveSesInviteMailResidue scope -> "invite-residue-observe:" <> inviteMailScopeWireText scope
+  ReapSesInviteMailResidue scope -> "invite-residue-reap:" <> inviteMailScopeWireText scope
+  RetiredSesInviteMailObservation bucket recipient ->
     "ses-invite-observe:" <> bucket <> ":" <> recipient
-  ReapSesInviteMail bucket recipient ->
+  ObserveSealedSesInviteMail bucket recipient _ ->
+    "ses-invite-sealed-observe:" <> bucket <> ":" <> recipient
+  RetiredSesInviteMailCleanup bucket recipient ->
     "ses-invite-reap:" <> bucket <> ":" <> recipient
   EnsureRetainedEbsVolumes volumeType specs ->
     "retained-ebs-ensure:" <> volumeType <> ":" <> specs
@@ -540,7 +605,22 @@ readinessLabel probe = case probe of
   ProviderReadinessRoute53Zone zoneId -> "readiness:route53:" <> zoneId
 
 evidenceFor :: ProviderIntent -> Text
-evidenceFor = ("evidence:" <>) . labelFor
+evidenceFor intent = case intent of
+  PlantTestVpcCanary {} -> fixtureCanaryEvidence
+  RetiredSesInviteMailObservation {} -> retiredInviteMailEvidence
+  RetiredSesInviteMailCleanup {} -> retiredInviteMailEvidence
+  ObserveSealedSesInviteMail {} -> pendingInviteMailEvidence
+  ObserveSesInviteMailResidue scope -> mustRight (renderInviteMailCleanupEvidence scope [])
+  ReapSesInviteMailResidue {} -> inviteMailCleanupAbsentEvidence
+  _ -> "evidence:" <> labelFor intent
+
+readOnlyEvidence :: Text -> Text
+readOnlyEvidence label
+  | Just encoded <- Text.stripPrefix "invite-residue-observe:" label
+  , Right scope <- inviteMailScopeFromWireText encoded =
+      mustRight (renderInviteMailCleanupEvidence scope [])
+  | "ses-invite-sealed-observe:" `Text.isPrefixOf` label = pendingInviteMailEvidence
+  | otherwise = "evidence:" <> label
 
 revisionText :: ProviderRevision -> Text
 revisionText = Text.pack . show . providerRevisionNatural
@@ -604,3 +684,9 @@ shouldSatisfyReturn :: (Show value) => IO value -> (value -> Bool) -> Expectatio
 shouldSatisfyReturn action predicate = do
   value <- action
   value `shouldSatisfy` predicate
+
+mutationEvidence :: Text -> Text
+mutationEvidence label
+  | label == "test-vpc-canary" = fixtureCanaryEvidence
+  | "invite-residue-reap:" `Text.isPrefixOf` label = inviteMailCleanupAbsentEvidence
+  | otherwise = "evidence:" <> label

@@ -9,9 +9,9 @@
 -- (Sprint 4.109: a loop of short describes under a budget, no longer an
 -- @aws ec2 wait@ child the Provider stops at thirty seconds) while the API says
 -- only that they are not available yet, and names the volumes it created in
--- every failure after the first create, because a create is not idempotent and a
--- rerun that reads "never created" creates them again. None of that needs an AWS
--- account: the effects are a record, and the cases below script it.
+-- every failure after the first create. Sprint 5.53 adds a stable PV client
+-- token so an interrupted response can be recovered despite lagged discovery.
+-- The effects are a record; these cases need no AWS account.
 module EbsEnsure (ebsEnsureSuite) where
 
 import AwsWaitPolling
@@ -20,7 +20,8 @@ import AwsWaitPolling
   , virtualNowMicros
   , virtualStartMicros
   )
-import Data.Either (fromLeft)
+import Data.Char (isAscii, isHexDigit)
+import Data.Either (fromLeft, isLeft)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf)
 import Data.Text qualified as Text
@@ -29,6 +30,7 @@ import Prodbox.ControlPlane.ProviderProduction qualified as ProviderProduction
 import Prodbox.Lib.Storage (StaticEbsVolumeBinding (..))
 import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Result (Result (..))
+import Prodbox.Settings.AwsSubstrateProfile (AwsEbsVolumeType, mkAwsEbsVolumeType)
 import Prodbox.Subprocess (ProcessOutput (..), boundedSubprocessTimeoutDetail)
 import System.Exit (ExitCode (..))
 import TestSupport
@@ -127,6 +129,53 @@ failureText = fromLeft ""
 ebsEnsureSuite :: SuiteBuilder ()
 ebsEnsureSuite =
   describe "Sprint 5.52 retained-EBS ensure waits for what it created and says what it created" $ do
+    it "Sprint 5.53 gives each retained PV a stable EC2 client token within the ASCII bound" $ do
+      let required = requiredVolume "pv-a"
+          token = createClientToken fixtureVolumeType required
+      token `shouldSatisfy` maybe False validToken
+      createClientToken fixtureVolumeType required `shouldBe` token
+      createClientToken fixtureVolumeType (requiredVolume "pv-b") `shouldSatisfy` (/= token)
+      createClientToken fixtureVolumeType (requiredVolume "pv-a:pv-b")
+        `shouldSatisfy` (/= createClientToken fixtureVolumeType (requiredVolume "pv-a:pv-c"))
+    it "keeps the same PV's token when create parameters change so EC2 refuses a conflicting retry" $ do
+      let required = requiredVolume "pv-a"
+          token = createClientToken fixtureVolumeType required
+          changed =
+            [ required {EbsVolume.ebsRequiredSizeGiB = 2}
+            , required {EbsVolume.ebsRequiredAvailabilityZone = fixtureZone <> "different"}
+            ]
+      token `shouldSatisfy` maybe False validToken
+      mapM_ (\volume -> createClientToken fixtureVolumeType volume `shouldBe` token) changed
+      createClientToken (mustVolumeType "gp2") required `shouldBe` token
+    it "recovers a lost create response on a lagging-listing rerun with only one physical volume" $ do
+      calls <- newIORef ([] :: [[String]])
+      created <- newIORef ([] :: [(Maybe String, EbsVolume.EbsVolumeId)])
+      loseResponse <- newIORef True
+      remaining <- newIORef [Right [], Right [], Right [listedVolume "vol-01" "pv-a"]]
+      let run = tokenCreateRunner calls created loseResponse
+          effects =
+            EbsVolume.EbsEnsureEffects
+              { EbsVolume.ebsEffectDiscover = popping remaining (Right [listedVolume "vol-01" "pv-a"])
+              , EbsVolume.ebsEffectCreate = EbsVolume.createRetainedVolumeVia run fixtureVolumeType
+              , EbsVolume.ebsEffectWaitAvailable = const (pure (Right ()))
+              , EbsVolume.ebsEffectPause = pure ()
+              }
+      interrupted <- EbsVolume.ensureRetainedEbsVolumesWith effects [requiredVolume "pv-a"]
+      interrupted `shouldSatisfy` isLeft
+      EbsVolume.ensureRetainedEbsVolumesWith effects [requiredVolume "pv-a"]
+        `shouldReturn` Right [StaticEbsVolumeBinding "pv-a" "vol-01" fixtureZone]
+      (length <$> readIORef calls) `shouldReturn` 2
+      (length <$> readIORef created) `shouldReturn` 1
+    it "retains the former tokenless create as a duplicate-allocation negative control" $ do
+      calls <- newIORef ([] :: [[String]])
+      created <- newIORef ([] :: [(Maybe String, EbsVolume.EbsVolumeId)])
+      loseResponse <- newIORef True
+      let run = tokenCreateRunner calls created loseResponse . withoutClientToken
+      interrupted <- EbsVolume.createRetainedVolumeVia run fixtureVolumeType (requiredVolume "pv-a")
+      interrupted `shouldSatisfy` isLeft
+      EbsVolume.createRetainedVolumeVia run fixtureVolumeType (requiredVolume "pv-a")
+        `shouldReturn` Right (EbsVolume.EbsVolumeId "vol-02")
+      (length <$> readIORef created) `shouldReturn` 2
     it "waits, bounded, for a volume it just created to be listed on consecutive reads" $ do
       let required = [requiredVolume "pv-a"]
           tagged = listedVolume "vol-0aaa" "pv-a"
@@ -459,3 +508,60 @@ isLeftNamingBothSizes actual planned result = case result of
   Left detail ->
     ("is " <> show actual <> " GiB but the plan requires " <> show planned <> " GiB") `isInfixOf` detail
   Right _ -> False
+
+fixtureVolumeType :: AwsEbsVolumeType
+fixtureVolumeType = mustVolumeType "gp3"
+
+mustVolumeType :: Text.Text -> AwsEbsVolumeType
+mustVolumeType = either (error . show) id . mkAwsEbsVolumeType
+
+createClientToken :: AwsEbsVolumeType -> EbsVolume.EbsRequiredVolume -> Maybe String
+createClientToken volumeType = optionValue "--client-token" . EbsVolume.ebsCreateVolumeArgs volumeType
+
+optionValue :: String -> [String] -> Maybe String
+optionValue flag arguments = case arguments of
+  key : value : rest
+    | key == flag -> Just value
+    | otherwise -> optionValue flag (value : rest)
+  _ -> Nothing
+
+validToken :: String -> Bool
+validToken value = length value == 64 && all (\char -> isAscii char && isHexDigit char) value
+
+-- EC2's documented token law, at the subprocess boundary: a repeated token
+-- returns its original volume even when the first response was lost. Without
+-- a token each call creates a volume. The listing remains independently lagged.
+tokenCreateRunner
+  :: IORef [[String]]
+  -> IORef [(Maybe String, EbsVolume.EbsVolumeId)]
+  -> IORef Bool
+  -> EbsVolume.AwsCliRun
+tokenCreateRunner calls created loseResponse arguments = do
+  modifyIORef' calls (<> [arguments])
+  existing <- readIORef created
+  let token = optionValue "--client-token" arguments
+      matched = token >>= (\value -> lookup (Just value) existing)
+  identifier <- case matched of
+    Just identifier -> pure identifier
+    Nothing -> do
+      let identifier = EbsVolume.EbsVolumeId ("vol-0" <> show (length existing + 1))
+      modifyIORef' created (<> [(token, identifier)])
+      pure identifier
+  lost <- readIORef loseResponse
+  writeIORef loseResponse False
+  pure $
+    if lost
+      then Failure "response lost after EC2 created the volume"
+      else
+        Success
+          ( ProcessOutput
+              ExitSuccess
+              ("{\"State\":\"available\",\"VolumeId\":\"" <> EbsVolume.unEbsVolumeId identifier <> "\"}")
+              ""
+          )
+
+withoutClientToken :: [String] -> [String]
+withoutClientToken arguments = case arguments of
+  "--client-token" : _ : rest -> withoutClientToken rest
+  argument : rest -> argument : withoutClientToken rest
+  [] -> []

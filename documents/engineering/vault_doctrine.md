@@ -193,6 +193,15 @@ Two files, one rule each:
 | `prodbox.dhall` | Production-safe topology, the unencrypted basics, and `SecretRef` values only — a binary-sibling Tier-0 bootstrap floor plus seed/propose payload, not the in-force SSoT (§16). NO plaintext secrets; NO `aws_admin_for_test_simulation` block | Host CLI and generated/mounted Dhall config paths |
 | `test-secrets.dhall` (Sprint `1.43`; formerly `test-config.dhall`) | All test-only plaintext that simulates operator prompts and seeds fixtures — the Vault unlock-bundle password (simulates the unseal prompt) and the `aws_admin_for_test_simulation.*` elevated-AWS credentials (simulates the elevated-credential prompt) among them | The test harness only |
 
+The fixture reader opens `test-secrets.dhall` without following a symlink and checks that the
+opened descriptor is a regular file owned by the effective user with no group or other permission
+bit. It rejects a directory, FIFO, symlink, foreign owner or exposed mode before decoding, names
+`chmod 600 test-secrets.dhall` in the refusal, and changes no permissions. Missing is distinct from
+refused. Decoding reads that verified descriptor and preserves repository-relative Dhall imports;
+no second path open can redirect the validated read. The EAB fixture consumer propagates a reader
+refusal with zero material deliveries; only an absent fixture or absent EAB block is a no-op.
+Automated fixtures use the same private modes.
+
 `test-secrets.dhall` may carry the Vault unlock-bundle password used by tests (which simulates the
 operator entering the password at the unseal prompt; §6), the `aws_admin_for_test_simulation.*`
 elevated AWS credentials that simulate the operator typing the elevated/admin credential at the
@@ -238,7 +247,9 @@ Requirements:
 - The TCP listener carries an explicit finite 288 MiB request ceiling. This admits the Target
   Agent's 198 MiB replay projection after its at-most 264 MiB Base64 expansion and bounded KV JSON
   envelope; it is not an unbounded listener override. The replay projection itself remains limited
-  independently by its 98-entry, 2 MiB-per-response, and 198 MiB encoded bounds. The StatefulSet Pod
+  independently by its 112-entry and 198 MiB encoded bounds: the supported two-attempt schedule
+  contains 98 general replies at 2 MiB and fourteen producer-capped metadata replies at 64 KiB.
+  An all-wide schedule still refuses at the encoded ceiling. The StatefulSet Pod
   template binds a deterministic digest of the rendered Vault ConfigMap: an unchanged effective
   configuration keeps the template stable, while any listener, storage, or transit-seal change
   rolls the Vault process before the reconcile's StatefulSet rollout wait can succeed.
@@ -1422,16 +1433,27 @@ source and rewrap it to selected Agents so a new target/Vault can be populated w
 Lifecycle Authority persists only ciphertext digest, generation, that opaque commitment reference,
 and outbox intent—never an unkeyed secret hash. Separate
 material classes cover Operational Lifecycle-provider, LongLived TLS-retention/home Gateway-DNS/
-home DNS01, Operational AWS DNS01, ACME EAB, and SMTP; Authority-backup installation remains on its
+home DNS01, RunScoped AWS DNS01, ACME EAB, and SMTP; Authority-backup installation remains on its
 dedicated genesis/repair protocol. Install, rotate, and revoke are explicit, response loss is
 resolved by operation ID/version, and IAM/key deletion precedes the Vault tombstone. The
 pre-cutover generic operator-write policy, two-entry Gateway route, shared AWS Vault coordinate,
 and host-root fallback are removed.
 
+Ordinary AWS-admin revoke is limited to Operational and RunScoped classes at both request and
+permit boundaries. Its worker destroys IAM first, waits the bounded provider-visibility grace and
+proves the complete family absent before touching Target material. A failed or unknown IAM result
+preserves that material; an applied Target revoke still needs its independent absence read-back.
+LongLived and retained-custody destruction remains on the separate decommission/retained protocols.
+
 Here a Vault tombstone is an Authority lifecycle state, not KV-v2 soft deletion. Revoke,
 supersession GC, `DestroyAwsSes`, and nuke enumerate the exact secret-bearing generation versions,
 use KV-v2 destroy (or delete the exact per-generation immutable path), delete metadata only after
-version destruction, and then prove metadata/version absence. Rotation may destroy only a
+version destruction, and then prove metadata/version absence. The scoped Operational
+Lifecycle-provider revoke may instead use KV-v2 metadata DELETE: this one operation permanently
+removes the key metadata and every version's data, as defined by the
+[Vault KV-v2 API](https://developer.hashicorp.com/vault/api-docs/secret/kv/kv-v2#delete-metadata-and-all-versions).
+Its Agent verifies the signed generation before that operation and reads metadata absent afterwards;
+a soft-delete response is never evidence of this absence. Rotation may destroy only a
 superseded generation after the bounded no-dependants proof and retention grace; current or
 referenced target/custody generations fail closed.
 

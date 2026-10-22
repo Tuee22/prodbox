@@ -11,6 +11,7 @@ module Prodbox.ControlPlane.ProviderPulumiConfigProjection
   , ProviderPulumiConfigCounterexampleError (..)
   , providerPulumiConfigCounterexampleId
   , providerPulumiPreviewArguments
+  , providerPulumiDiffArguments
   , providerRunMarkerProgramBindings
   , providerRunMarkerConfiguration
   , frozenProviderPulumiConfigCounterexample
@@ -88,6 +89,22 @@ providerPulumiPreviewArguments selectedStack configuration =
     <> concatMap configArgument configuration
  where
   configArgument (key, value) = ["--config", key <> "=" <> value]
+
+-- A diagnostic preview permits changes and requests structured output. Secret
+-- display is never enabled; the consumer also discards every property value.
+providerPulumiDiffArguments :: String -> [(String, String)] -> [String]
+providerPulumiDiffArguments selectedStack configuration =
+  [ "preview"
+  , "--stack"
+  , selectedStack
+  , "--json"
+  , "--diff"
+  , "--suppress-outputs"
+  , "--non-interactive"
+  , "--color"
+  , "never"
+  ]
+    <> concatMap (\(key, value) -> ["--config", key <> "=" <> value]) configuration
 
 -- | Sprint 7.41: how a run marker reaches the resources a create makes.
 --

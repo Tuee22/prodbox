@@ -12,6 +12,7 @@
 module Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   ( CredentialIamParameters
   , mkLifecycleProviderIamParameters
+  , mkScopedLifecycleProviderIamParameters
   , mkAuthorityBackupIamParameters
   , mkTlsRetentionIamParameters
   , mkGatewayDnsIamParameters
@@ -56,6 +57,7 @@ module Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   , awsAdminGenesisKindMatches
   , bindAwsAdminPermitIntentPreparedTarget
   , rebindAwsAdminPermitIntentPreparedTarget
+  , renewAwsAdminProviderPermitIntent
   , awsAdminPreparedTargetReceiptDigest
   , encodeAwsAdminPermitIntent
   , decodeAwsAdminPermitIntent
@@ -132,6 +134,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   , OperatorMaterialOperationId
   , OperatorMaterialPermit
   , OperatorMaterialPermitId
+  , awsCredentialCanRevoke
   , awsCredentialDescriptor
   , awsOperatorMaterialRequestDigest
   , firstReconcilePermitMemberDigest
@@ -178,6 +181,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.ProductionIam
   , mkGatewayDnsIamProgram
   , mkHomeDns01IamProgram
   , mkLifecycleProviderIamProgram
+  , mkScopedLifecycleProviderIamProgram
   , mkSesSmtpIamProgram
   , mkTlsRetentionIamProgram
   )
@@ -207,6 +211,7 @@ data CredentialIamParameters
   | HomeDns01IamParameters !Text !Text
   | AwsRunDns01IamParameters !Text !Text
   | SesSmtpIamParameters !Text !Text !Text
+  | ScopedLifecycleProviderIamParameters !Text !Text !Text !(Maybe Text)
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -219,6 +224,21 @@ mkLifecycleProviderIamParameters region accountId roleName = do
         (Text.strip region)
         (Text.strip accountId)
         (Text.strip roleName)
+    )
+
+-- Appended constructor preserves historical CBOR constructor indices. Legacy
+-- parameters now describe the valid no-S3 program; only this constructor can
+-- authorize capture-bucket access, bound into the signed immutable parameters.
+mkScopedLifecycleProviderIamParameters
+  :: Text -> Text -> Text -> Maybe Text -> Either ProductionIamError CredentialIamParameters
+mkScopedLifecycleProviderIamParameters region accountId roleName captureBucket = do
+  _ <- mkScopedLifecycleProviderIamProgram region accountId roleName captureBucket
+  pure
+    ( ScopedLifecycleProviderIamParameters
+        (Text.strip region)
+        (Text.strip accountId)
+        (Text.strip roleName)
+        (Text.strip <$> captureBucket)
     )
 
 mkAuthorityBackupIamParameters
@@ -275,6 +295,7 @@ mkSesSmtpIamParameters region accountId identity = do
 credentialIamParametersClass :: CredentialIamParameters -> AwsCredentialClass
 credentialIamParametersClass parameters = case parameters of
   LifecycleProviderIamParameters {} -> LifecycleProviderCredential
+  ScopedLifecycleProviderIamParameters {} -> LifecycleProviderCredential
   AuthorityBackupIamParameters {} -> AuthorityBackupStoreCredential
   TlsRetentionIamParameters {} -> TlsRetentionStoreCredential
   GatewayDnsIamParameters {} -> GatewayDnsCredential
@@ -285,6 +306,7 @@ credentialIamParametersClass parameters = case parameters of
 credentialIamParametersRegion :: CredentialIamParameters -> Text
 credentialIamParametersRegion parameters = case parameters of
   LifecycleProviderIamParameters region _ _ -> region
+  ScopedLifecycleProviderIamParameters region _ _ _ -> region
   AuthorityBackupIamParameters region _ _ -> region
   TlsRetentionIamParameters region _ _ -> region
   GatewayDnsIamParameters region _ -> region
@@ -302,6 +324,8 @@ credentialIamParametersProgram
 credentialIamParametersProgram parameters = case parameters of
   LifecycleProviderIamParameters region accountId roleName ->
     mkLifecycleProviderIamProgram region accountId roleName
+  ScopedLifecycleProviderIamParameters region accountId roleName captureBucket ->
+    mkScopedLifecycleProviderIamProgram region accountId roleName captureBucket
   AuthorityBackupIamParameters region bucket prefixes ->
     mkAuthorityBackupIamProgram region bucket prefixes
   TlsRetentionIamParameters region bucket prefixes ->
@@ -519,21 +543,25 @@ validateKindRequest
   -> AwsCredentialClass
   -> OperatorMaterialAction
   -> Either AwsAdminPermitError ()
-validateKindRequest kind credentialClass action = case kind of
-  NormalOperatorMaterialKind ->
-    when
-      (credentialClass == AuthorityBackupStoreCredential && action == InstallOperatorMaterial)
-      (Left AwsAdminPermitKindMismatch)
-  GenesisBackupKind _ ->
-    unless
-      (credentialClass == AuthorityBackupStoreCredential && action == InstallOperatorMaterial)
-      (Left AwsAdminPermitKindMismatch)
-  BackupRepairFrozenKind _ ->
-    unless
-      (credentialClass == AuthorityBackupStoreCredential && action == RotateOperatorMaterial)
-      (Left AwsAdminPermitKindMismatch)
-  CleanupRecoveryKind program _ ->
-    validateCleanupRecoveryProgramRequest program credentialClass action
+validateKindRequest kind credentialClass action = do
+  when
+    (action == RevokeOperatorMaterial && not (awsCredentialCanRevoke credentialClass))
+    (Left AwsAdminPermitKindMismatch)
+  case kind of
+    NormalOperatorMaterialKind ->
+      when
+        (credentialClass == AuthorityBackupStoreCredential && action == InstallOperatorMaterial)
+        (Left AwsAdminPermitKindMismatch)
+    GenesisBackupKind _ ->
+      unless
+        (credentialClass == AuthorityBackupStoreCredential && action == InstallOperatorMaterial)
+        (Left AwsAdminPermitKindMismatch)
+    BackupRepairFrozenKind _ ->
+      unless
+        (credentialClass == AuthorityBackupStoreCredential && action == RotateOperatorMaterial)
+        (Left AwsAdminPermitKindMismatch)
+    CleanupRecoveryKind program _ ->
+      validateCleanupRecoveryProgramRequest program credentialClass action
 
 validateCleanupRecoveryProgramRequest
   :: AwsAdminCleanupRecoveryProgram
@@ -804,6 +832,36 @@ data AwsAdminPreparedTargetReceiptEnvelope = AwsAdminPreparedTargetReceiptEnvelo
 -- deliberately excludes the caller-carried prepared-target draft and binds
 -- every other canonical intent field plus the Authority-selected owner,
 -- fence, Agent, and closed target.
+-- | Renewal metadata for an exact interrupted Lifecycle-provider operation.
+-- It cannot change the request, IAM scope or operation identity. Only the
+-- server's expired-attempt proof can admit the renewed draft.
+renewAwsAdminProviderPermitIntent
+  :: AuthorityTime
+  -> Text
+  -> TargetAgentIdentity
+  -> AwsAdminPermitIntent
+  -> Either AwsAdminPermitError AwsAdminPermitIntent
+renewAwsAdminProviderPermitIntent deadline image selectedAgent retained = do
+  unless
+    ( awsAdminPermitIntentCredentialClass retained == LifecycleProviderCredential
+        && authorityTimeMicros deadline > authorityTimeMicros (awsAdminPermitIntentDeadline retained)
+    )
+    (Left AwsAdminPermitRequestInvalid)
+  case awsAdminPermitIntentKind retained of
+    NormalOperatorMaterialKind -> Right ()
+    CleanupRecoveryKind NormalOperatorMaterialCleanupProgram _ -> Right ()
+    _ -> Left AwsAdminPermitKindMismatch
+  let prepared = awsAdminPermitIntentPreparedTarget retained
+      draft = retained {internalAwsAdminIntentDeadline = deadline, internalAwsAdminIntentImageDigest = image}
+  bindAwsAdminPermitIntentPreparedTarget
+    Nothing
+    (awsAdminPermitIntentPlanBinding retained)
+    deadline
+    (preparedCredentialTargetOwnerNonce prepared)
+    (preparedCredentialTargetFence prepared)
+    selectedAgent
+    draft
+
 awsAdminPreparedTargetReceiptDigest
   :: Text
   -> Natural

@@ -12,6 +12,8 @@ module Prodbox.Lifecycle.Teardown.ProviderDispatch
   , providerDispatchSubmissionKey
   , observationRevisionForProviderDispatchKey
   , mkProviderDispatchKey
+  , mkTerminalAuditProviderDispatchKey
+  , mkFencedTerminalAuditProviderDispatchKey
   , TeardownProviderBoundaryResult (..)
   , TeardownProviderBoundary (..)
   , productionTeardownProviderBoundary
@@ -23,8 +25,11 @@ module Prodbox.Lifecycle.Teardown.ProviderDispatch
   )
 where
 
+import Codec.Serialise (serialise)
 import Crypto.Hash.SHA256 qualified as SHA256
+import Data.ByteArray.Encoding (Base (Base16), convertToBase)
 import Data.ByteString qualified as ByteString
+import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
@@ -62,6 +67,8 @@ import Prodbox.Lifecycle.CleanupRun
   )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
+  , providerIntentCoordinate
+  , providerIntentCoordinateText
   )
 import Prodbox.Lifecycle.Teardown.Model (ObservationRevision (..))
 import Prodbox.Lifecycle.Teardown.RegisteredTargetResult
@@ -390,6 +397,8 @@ validateObservationIntent purpose intent =
     (ProviderDecisionObservation, ObserveValidationHostedZones {}) -> True
     (ProviderDecisionObservation, ObserveRetainedEbsVolumes {}) -> True
     (ProviderDecisionObservation, ObserveDns01ChallengeRecords {}) -> True
+    (ProviderDecisionObservation, ObserveHomeDns01Records {}) -> True
+    (ProviderDecisionObservation, ObserveSesInviteMailResidue {}) -> True
     (ProviderDecisionObservation, ObserveEksIamRoleFamily {}) -> True
     (ProviderDecisionObservation, ObserveEksLoadBalancerControllerFamily {}) -> True
     (ProviderDecisionObservation, ObserveNativeStackFamily {}) -> True
@@ -400,9 +409,13 @@ validateObservationIntent purpose intent =
     (ProviderAbsenceReadBack, ObserveValidationHostedZones {}) -> True
     (ProviderAbsenceReadBack, ObserveRetainedEbsVolumes {}) -> True
     (ProviderAbsenceReadBack, ObserveDns01ChallengeRecords {}) -> True
+    (ProviderAbsenceReadBack, ObserveHomeDns01Records {}) -> True
+    (ProviderAbsenceReadBack, ObserveSesInviteMailResidue {}) -> True
     (ProviderAbsenceReadBack, ObserveEksIamRoleFamily {}) -> True
     (ProviderAbsenceReadBack, ObserveEksLoadBalancerControllerFamily {}) -> True
+    (ProviderTerminalAudit, ObserveProviderAwsScope) -> True
     (ProviderTerminalAudit, ObserveOwnedResourceTags {}) -> True
+    (ProviderTerminalAudit, ObserveGlobalOwnedResourceTags {}) -> True
     -- The adoption lane's closed family.  Exactly the four read-only intents
     -- its observer issues, and no tag or name-prefix query: a broad result may
     -- not enter the candidate set the operator is asked to confirm.
@@ -430,4 +443,53 @@ validateMutationIntent purpose intent =
     (ProviderRegisteredMutation, ReapEksIamRoleFamily {}) -> True
     (ProviderRegisteredMutation, ReapEksLoadBalancerControllerFamily {}) -> True
     (ProviderRegisteredMutation, ReapNativeStackFamily {}) -> True
+    (ProviderRegisteredMutation, ReapSesInviteMailResidue {}) -> True
     _ -> False
+
+-- | Each audit filter/endpoint has its own retained read, while the cleanup
+-- owner remains the exact registered graph operation. Reusing a purpose-only
+-- key would replay the first filter or reject the next as a divergent replay.
+mkTerminalAuditProviderDispatchKey
+  :: CleanupOperationId -> ProviderIntent -> Either ProviderDispatchError ProviderDispatchKey
+mkTerminalAuditProviderDispatchKey = terminalAuditProviderDispatchKey UnfencedAuditV1
+
+-- | A fenced audit must execute its own observations. Reusing a v1 key would
+-- replay an earlier unfenced completion before the fresh-submission gate ran.
+mkFencedTerminalAuditProviderDispatchKey
+  :: CleanupOperationId -> ProviderIntent -> Either ProviderDispatchError ProviderDispatchKey
+mkFencedTerminalAuditProviderDispatchKey = terminalAuditProviderDispatchKey FencedAuditV2
+
+data TerminalAuditKeyDomain = UnfencedAuditV1 | FencedAuditV2
+
+terminalAuditProviderDispatchKey
+  :: TerminalAuditKeyDomain
+  -> CleanupOperationId
+  -> ProviderIntent
+  -> Either ProviderDispatchError ProviderDispatchKey
+terminalAuditProviderDispatchKey domain operation intent = do
+  validateObservationIntent ProviderTerminalAudit intent
+  key <-
+    either
+      (Left . ProviderDispatchKeyInvalid)
+      Right
+      (mkClientSubmissionKey (prefix <> digest))
+  Right (ProviderDispatchKey operation ProviderTerminalAudit key)
+ where
+  (prefix, schema) = case domain of
+    UnfencedAuditV1 -> ("terminal-audit:", "terminal-audit-key/v1" :: Text)
+    FencedAuditV2 -> ("fenced-terminal-audit:", "terminal-audit-key/fenced-v2")
+  digest =
+    TextEncoding.decodeUtf8
+      ( convertToBase
+          Base16
+          ( SHA256.hash
+              ( LazyByteString.toStrict
+                  ( serialise
+                      ( schema
+                      , cleanupOperationIdText operation
+                      , providerIntentCoordinateText (providerIntentCoordinate intent)
+                      )
+                  )
+              )
+          )
+      )

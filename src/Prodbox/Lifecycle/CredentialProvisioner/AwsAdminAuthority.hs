@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -29,12 +30,18 @@ module Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAuthority
   , AwsAdminAuthorizedRecoveryError (..)
   , AwsAdminAuthorizedRecoveryProof
   , proveAwsAdminAuthorizedRecovery
+  , AwsAdminAttestedRecoveryProof
+  , validateAwsAdminAttestedRecovery
+  , validateAwsAdminExpiredAttemptAbsence
+  , commitAwsAdminPreparedAttestedRecovery
   , bindAwsAdminPreparedRenewalIntent
   , bindAwsAdminAuthorizedRecoveryIntent
   , commitAwsAdminPreparedAuthorizedRecovery
   , commitAwsAdminAttested
   , commitAwsAdminAuthorized
   , commitAwsAdminCompleted
+  , commitAwsAdminProviderLineage
+  , validateAwsAdminProviderLineageCapacity
   , AwsAdminAuthorityStateError (..)
   , encodeAwsAdminAuthorityState
   , decodeAwsAdminAuthorityState
@@ -47,6 +54,7 @@ module Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAuthority
   , prepareAwsAdminAuthority
   , prepareAwsAdminAuthorityRenewal
   , prepareAwsAdminAuthorityAuthorizedRecovery
+  , prepareAwsAdminAuthorityAttestedRecovery
   , attestAwsAdminAuthority
   , authorizeAwsAdminAuthority
   , completeAwsAdminAuthority
@@ -56,7 +64,9 @@ module Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAuthority
   )
 where
 
-import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
+import Codec.CBOR.Decoding qualified as Cbor
+import Codec.CBOR.Encoding qualified as Cbor
+import Codec.Serialise (Serialise (..), deserialiseOrFail, serialise)
 import Control.Monad (unless, when)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
@@ -67,6 +77,16 @@ import Data.Text (Text)
 import Data.Word (Word16, Word8)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch
+  ( ProviderCredentialLineageArchive
+  , decodeProviderCredentialLineageArchive
+  , encodeProviderCredentialLineageArchive
+  , providerCredentialLineageArchiveAction
+  , providerCredentialLineageArchiveCanonicalBytes
+  , providerCredentialLineageArchiveGeneration
+  , providerCredentialLineageArchiveOperationId
+  , providerCredentialLineageArchiveRequestDigest
+  )
 import Prodbox.Lifecycle.CheckpointAuthority
   ( ModelBCasAdapter (..)
   , ModelBCasRequest (..)
@@ -77,9 +97,13 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , ModelBObservation (..)
   , StoreLifetime (ClusterRetained)
   )
+import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAttestedRecovery.Internal
+  ( AwsAdminAttestedRecoveryProof (..)
+  )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   ( AwsAdminExecutionError
   , AwsAdminWorkerReceipt
+  , awsAdminWorkerReceiptMaximumBytes
   , decodeAwsAdminWorkerReceipt
   , encodeAwsAdminWorkerReceipt
   , validateAwsAdminWorkerReceiptForPermit
@@ -120,6 +144,10 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   , verifySignedAwsAdminPermit
   , withSomeSignedAwsAdminPermit
   )
+import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
+  ( AwsCredentialClass (LifecycleProviderCredential)
+  , operatorMaterialOperationIdText
+  )
 import Prodbox.Lifecycle.CredentialProvisioner.PreparedTarget
   ( PreparedCredentialTargetObservation
   , preparedCredentialTargetDeadline
@@ -135,7 +163,11 @@ import Prodbox.Lifecycle.Decommission.AuthorityExport
   )
 import Prodbox.Lifecycle.Decommission.Manifest (manifestPublicKeyBytes)
 import Prodbox.Lifecycle.Lease (AuthorityTime, authorityTimeMicros)
-import Prodbox.Lifecycle.TargetCommitIntent (sha256TargetValueDigest)
+import Prodbox.Lifecycle.TargetCommitIntent
+  ( credentialGenerationValue
+  , sha256TargetValueDigest
+  , targetValueDigestText
+  )
 
 data AwsAdminAuthorityState
   = AwsAdminAuthorityVacant
@@ -143,6 +175,10 @@ data AwsAdminAuthorityState
   | AwsAdminAuthorityAttested !AwsAdminPermitIntent !AwsAdminJobBinding
   | AwsAdminAuthorityAuthorized !SignedAwsAdminPermit
   | AwsAdminAuthorityCompleted !SignedAwsAdminPermit !AwsAdminWorkerReceipt
+  | AwsAdminAuthorityCompletedWithLineage
+      !SignedAwsAdminPermit
+      !AwsAdminWorkerReceipt
+      !ProviderCredentialLineageArchive
   deriving stock (Eq, Show)
 
 initialAwsAdminAuthorityState :: AwsAdminAuthorityState
@@ -156,12 +192,14 @@ awsAdminAuthorityCurrentIntent state = case state of
   AwsAdminAuthorityAttested intent _ -> Just intent
   AwsAdminAuthorityAuthorized permit -> Just (signedAwsAdminPermitIntent permit)
   AwsAdminAuthorityCompleted permit _ -> Just (signedAwsAdminPermitIntent permit)
+  AwsAdminAuthorityCompletedWithLineage permit _ _ -> Just (signedAwsAdminPermitIntent permit)
 
 awsAdminAuthorityCurrentPermit
   :: AwsAdminAuthorityState -> Maybe SignedAwsAdminPermit
 awsAdminAuthorityCurrentPermit state = case state of
   AwsAdminAuthorityAuthorized permit -> Just permit
   AwsAdminAuthorityCompleted permit _ -> Just permit
+  AwsAdminAuthorityCompletedWithLineage permit _ _ -> Just permit
   _ -> Nothing
 
 data AwsAdminAuthorityStateError
@@ -176,11 +214,13 @@ data AwsAdminAuthorityStateError
   | AwsAdminAuthorityRenewalBindingMismatch
   | AwsAdminAuthorityRecoveryNotAuthorized
   | AwsAdminAuthorityRecoveryProofMismatch
+  | AwsAdminAuthorityAttestedRecoveryNotAttested
   | AwsAdminAuthorityStateTooLarge !Int !Int
   | AwsAdminAuthorityStateDecodeFailed
   | AwsAdminAuthorityStateUnsupportedVersion !Word16
   | AwsAdminAuthorityStateInvalid
   | AwsAdminAuthorityStateNonCanonical
+  | AwsAdminAuthorityLineageInvalid !Text
   deriving stock (Eq, Show)
 
 -- | Independent observations admitted by the expired-attempt recovery proof.
@@ -227,6 +267,7 @@ data AwsAdminAuthorizedRecoveryError
   | AwsAdminAuthorizedRecoveryPodUnobservable
   | AwsAdminAuthorizedRecoveryJournalPresent
   | AwsAdminAuthorizedRecoveryJournalUnobservable
+  | AwsAdminAuthorizedRecoveryNotAttested
   deriving stock (Bounded, Enum, Eq, Show)
 
 -- The constructor is deliberately private. The endpoint can receive this
@@ -239,6 +280,73 @@ data AwsAdminAuthorizedRecoveryProof = AwsAdminAuthorizedRecoveryProof
   , recoveryProofRequiresCleanup :: !Bool
   }
   deriving stock (Eq, Show)
+
+-- An attested attempt has issued no worker permit. Once its deadline has
+-- expired, independently observed exact workload absence licenses renewal;
+-- no journal or IAM no-effect assertion can replace those two observations.
+validateAwsAdminAttestedRecovery
+  :: AuthorityTime
+  -> AwsAdminAuthorityState
+  -> AwsAdminAttemptResourceObservation
+  -> AwsAdminAttemptResourceObservation
+  -> Either AwsAdminAuthorizedRecoveryError ()
+validateAwsAdminAttestedRecovery now state jobObservation podObservation = do
+  (intent, binding) <- case state of
+    AwsAdminAuthorityAttested retained observed -> Right (retained, observed)
+    _ -> Left AwsAdminAuthorizedRecoveryNotAttested
+  case validateCanonicalBinding intent binding of
+    Left _ -> Left AwsAdminAuthorizedRecoveryNotAttested
+    Right _ -> Right ()
+  when
+    (authorityTimeMicros now < authorityTimeMicros (awsAdminPermitIntentDeadline intent))
+    (Left AwsAdminAuthorizedRecoveryDeadlineActive)
+  requireResourceAbsence
+    AwsAdminAuthorizedRecoveryJobPresent
+    AwsAdminAuthorizedRecoveryJobUnobservable
+    jobObservation
+  requireResourceAbsence
+    AwsAdminAuthorizedRecoveryPodPresent
+    AwsAdminAuthorizedRecoveryPodUnobservable
+    podObservation
+  Right ()
+
+commitAwsAdminPreparedAttestedRecovery
+  :: AwsAdminAttestedRecoveryProof
+  -> AwsAdminPermitIntent
+  -> AwsAdminAuthorityState
+  -> Either AwsAdminAuthorityStateError AwsAdminAuthorityState
+commitAwsAdminPreparedAttestedRecovery (AwsAdminAttestedRecoveryProof now retained observedBinding) replacement state = do
+  validated <- validateCanonicalIntent replacement
+  case state of
+    AwsAdminAuthorityPrepared current
+      | current == validated -> Right state
+    AwsAdminAuthorityAttested current binding
+      | current /= retained || binding /= observedBinding -> Left AwsAdminAuthorityRecoveryProofMismatch
+      | not (renewalDeadlineValid now retained validated) -> Left AwsAdminAuthorityRenewalDeadlineInvalid
+      | not (renewalBindingsMatch retained validated) -> Left AwsAdminAuthorityRenewalBindingMismatch
+      | otherwise -> Right (AwsAdminAuthorityPrepared validated)
+    _ -> Left AwsAdminAuthorityAttestedRecoveryNotAttested
+
+validateAwsAdminExpiredAttemptAbsence
+  :: AuthorityTime
+  -> SignedAwsAdminPermit
+  -> AwsAdminAttemptResourceObservation
+  -> AwsAdminAttemptResourceObservation
+  -> Either AwsAdminAuthorizedRecoveryError ()
+validateAwsAdminExpiredAttemptAbsence now permit job pod = do
+  when
+    ( authorityTimeMicros now
+        < authorityTimeMicros (awsAdminPermitIntentDeadline (signedAwsAdminPermitIntent permit))
+    )
+    (Left AwsAdminAuthorizedRecoveryDeadlineActive)
+  requireResourceAbsence
+    AwsAdminAuthorizedRecoveryJobPresent
+    AwsAdminAuthorizedRecoveryJobUnobservable
+    job
+  requireResourceAbsence
+    AwsAdminAuthorizedRecoveryPodPresent
+    AwsAdminAuthorizedRecoveryPodUnobservable
+    pod
 
 proveAwsAdminAuthorizedRecovery
   :: AuthorityTime
@@ -513,6 +621,7 @@ commitAwsAdminAttested binding state = case state of
     replayForPermit permit
   AwsAdminAuthorityCompleted permit _ ->
     replayForPermit permit
+  AwsAdminAuthorityCompletedWithLineage permit _ _ -> replayForPermit permit
   AwsAdminAuthorityVacant -> Left AwsAdminAuthorityTransitionRefused
  where
   replayForPermit permit = do
@@ -540,6 +649,9 @@ commitAwsAdminAuthorized permit state = do
     AwsAdminAuthorityCompleted existing _
       | existing == validatedPermit -> Right state
       | otherwise -> Left AwsAdminAuthorityTransitionConflict
+    AwsAdminAuthorityCompletedWithLineage existing _ _
+      | existing == validatedPermit -> Right state
+      | otherwise -> Left AwsAdminAuthorityTransitionConflict
     _ -> Left AwsAdminAuthorityTransitionRefused
 
 commitAwsAdminCompleted
@@ -550,12 +662,13 @@ commitAwsAdminCompleted receipt state = case state of
   AwsAdminAuthorityAuthorized permit -> do
     validated <- validateCanonicalReceipt permit receipt
     Right (AwsAdminAuthorityCompleted permit validated)
-  AwsAdminAuthorityCompleted permit existing -> do
-    validated <- validateCanonicalReceipt permit receipt
-    if existing == validated
-      then Right state
-      else Left AwsAdminAuthorityTransitionConflict
+  AwsAdminAuthorityCompleted permit existing -> replay permit existing
+  AwsAdminAuthorityCompletedWithLineage permit existing _ -> replay permit existing
   _ -> Left AwsAdminAuthorityTransitionRefused
+ where
+  replay permit existing = do
+    validated <- validateCanonicalReceipt permit receipt
+    if existing == validated then Right state else Left AwsAdminAuthorityTransitionConflict
 
 validateCanonicalIntent
   :: AwsAdminPermitIntent
@@ -608,9 +721,33 @@ data WireAwsAdminAuthorityState = WireAwsAdminAuthorityState
   , wireAuthorityBinding :: !(Maybe ByteString)
   , wireAuthorityPermit :: !(Maybe ByteString)
   , wireAuthorityReceipt :: !(Maybe ByteString)
+  , wireAuthorityLineage :: !(Maybe ByteString)
   }
   deriving stock (Eq, Show, Generic)
-  deriving anyclass (Serialise)
+
+instance Serialise WireAwsAdminAuthorityState where
+  encode wire =
+    Cbor.encodeListLen (if wireAuthorityVersion wire == 1 then 7 else 8)
+      <> Cbor.encodeWord 0
+      <> encode (wireAuthorityVersion wire)
+      <> encode (wireAuthorityPhase wire)
+      <> encode (wireAuthorityIntent wire)
+      <> encode (wireAuthorityBinding wire)
+      <> encode (wireAuthorityPermit wire)
+      <> encode (wireAuthorityReceipt wire)
+      <> if wireAuthorityVersion wire == 1 then mempty else encode (wireAuthorityLineage wire)
+  decode = do
+    fields <- Cbor.decodeListLen
+    tag <- Cbor.decodeWord
+    unless (tag == 0 && fields `elem` [7, 8]) (fail "AWS-admin Authority wire shape invalid")
+    WireAwsAdminAuthorityState
+      <$> decode
+      <*> decode
+      <*> decode
+      <*> decode
+      <*> decode
+      <*> decode
+      <*> if fields == 8 then decode else pure Nothing
 
 awsAdminAuthorityStateVersion :: Word16
 awsAdminAuthorityStateVersion = 1
@@ -637,7 +774,7 @@ decodeAwsAdminAuthorityState bytes = do
     Left _ -> Left AwsAdminAuthorityStateDecodeFailed
     Right value -> Right value
   unless
-    (wireAuthorityVersion wire == awsAdminAuthorityStateVersion)
+    (wireAuthorityVersion wire `elem` [awsAdminAuthorityStateVersion, 2])
     ( Left
         ( AwsAdminAuthorityStateUnsupportedVersion
             (wireAuthorityVersion wire)
@@ -743,18 +880,8 @@ prepareAwsAdminAuthority
   -> AwsAdminPreparedTargetBoundary m
   -> AwsAdminPermitIntent
   -> m (Either AwsAdminAuthorityRepositoryError AwsAdminAuthorityState)
-prepareAwsAdminAuthority repository targetBoundary intent = do
-  observed <- reobserveAwsAdminPreparedTarget targetBoundary intent
-  case observed of
-    Left detail ->
-      pure (Left (AwsAdminAuthorityPreparedTargetUnavailable detail))
-    Right prepared
-      | prepared /= expectedPrepared ->
-          pure (Left AwsAdminAuthorityPreparedTargetMismatch)
-      | otherwise ->
-          transitionAndCommit repository (commitAwsAdminPrepared intent)
- where
-  expectedPrepared = awsAdminPermitIntentPreparedTarget intent
+prepareAwsAdminAuthority repository targetBoundary intent =
+  prepareWithTargetReadback repository targetBoundary intent (commitAwsAdminPrepared intent)
 
 prepareAwsAdminAuthorityRenewal
   :: (Monad m)
@@ -764,18 +891,12 @@ prepareAwsAdminAuthorityRenewal
   -> AwsAdminPermitIntent
   -> AwsAdminPermitIntent
   -> m (Either AwsAdminAuthorityRepositoryError AwsAdminAuthorityState)
-prepareAwsAdminAuthorityRenewal repository targetBoundary now retained replacement = do
-  observed <- reobserveAwsAdminPreparedTarget targetBoundary replacement
-  case observed of
-    Left detail ->
-      pure (Left (AwsAdminAuthorityPreparedTargetUnavailable detail))
-    Right prepared
-      | prepared /= awsAdminPermitIntentPreparedTarget replacement ->
-          pure (Left AwsAdminAuthorityPreparedTargetMismatch)
-      | otherwise ->
-          transitionAndCommit
-            repository
-            (commitAwsAdminPreparedRenewal now retained replacement)
+prepareAwsAdminAuthorityRenewal repository targetBoundary now retained replacement =
+  prepareWithTargetReadback
+    repository
+    targetBoundary
+    replacement
+    (commitAwsAdminPreparedRenewal now retained replacement)
 
 prepareAwsAdminAuthorityAuthorizedRecovery
   :: (Monad m)
@@ -784,18 +905,42 @@ prepareAwsAdminAuthorityAuthorizedRecovery
   -> AwsAdminAuthorizedRecoveryProof
   -> AwsAdminPermitIntent
   -> m (Either AwsAdminAuthorityRepositoryError AwsAdminAuthorityState)
-prepareAwsAdminAuthorityAuthorizedRecovery repository targetBoundary proof replacement = do
-  observed <- reobserveAwsAdminPreparedTarget targetBoundary replacement
+prepareAwsAdminAuthorityAuthorizedRecovery repository targetBoundary proof replacement =
+  prepareWithTargetReadback
+    repository
+    targetBoundary
+    replacement
+    (commitAwsAdminPreparedAuthorizedRecovery proof replacement)
+
+prepareAwsAdminAuthorityAttestedRecovery
+  :: (Monad m)
+  => AwsAdminAuthorityRepository m revision
+  -> AwsAdminPreparedTargetBoundary m
+  -> AwsAdminAttestedRecoveryProof
+  -> AwsAdminPermitIntent
+  -> m (Either AwsAdminAuthorityRepositoryError AwsAdminAuthorityState)
+prepareAwsAdminAuthorityAttestedRecovery repository targetBoundary proof replacement =
+  prepareWithTargetReadback
+    repository
+    targetBoundary
+    replacement
+    (commitAwsAdminPreparedAttestedRecovery proof replacement)
+
+prepareWithTargetReadback
+  :: (Monad m)
+  => AwsAdminAuthorityRepository m revision
+  -> AwsAdminPreparedTargetBoundary m
+  -> AwsAdminPermitIntent
+  -> (AwsAdminAuthorityState -> Either AwsAdminAuthorityStateError AwsAdminAuthorityState)
+  -> m (Either AwsAdminAuthorityRepositoryError AwsAdminAuthorityState)
+prepareWithTargetReadback repository targetBoundary intent transition = do
+  observed <- reobserveAwsAdminPreparedTarget targetBoundary intent
   case observed of
-    Left detail ->
-      pure (Left (AwsAdminAuthorityPreparedTargetUnavailable detail))
+    Left detail -> pure (Left (AwsAdminAuthorityPreparedTargetUnavailable detail))
     Right prepared
-      | prepared /= awsAdminPermitIntentPreparedTarget replacement ->
+      | prepared /= awsAdminPermitIntentPreparedTarget intent ->
           pure (Left AwsAdminAuthorityPreparedTargetMismatch)
-      | otherwise ->
-          transitionAndCommit
-            repository
-            (commitAwsAdminPreparedAuthorizedRecovery proof replacement)
+      | otherwise -> transitionAndCommit repository transition
 
 attestAwsAdminAuthority
   :: (Monad m)
@@ -871,6 +1016,17 @@ completeAwsAdminAuthority repository suppliedPermit receipt = do
                   )
               )
         | otherwise -> pure (Right (awsAdminAuthoritySnapshotState snapshot))
+      AwsAdminAuthorityCompletedWithLineage retainedPermit existing _
+        | retainedPermit /= suppliedPermit ->
+            pure (Left AwsAdminAuthorityRepositoryPermitMismatch)
+        | existing /= receipt ->
+            pure
+              ( Left
+                  ( AwsAdminAuthorityRepositoryStateRejected
+                      AwsAdminAuthorityTransitionConflict
+                  )
+              )
+        | otherwise -> pure (Right (awsAdminAuthoritySnapshotState snapshot))
       _ ->
         pure
           ( Left
@@ -936,6 +1092,10 @@ retainsCompletion suppliedPermit receipt observed = case observed of
     | retainedPermit == suppliedPermit
         && retainedReceipt == receipt ->
         Just observed
+  AwsAdminAuthorityCompletedWithLineage retainedPermit retainedReceipt _
+    | retainedPermit == suppliedPermit
+        && retainedReceipt == receipt ->
+        Just observed
   _ -> Nothing
 
 isIdempotentTransition
@@ -998,6 +1158,13 @@ authorityStateToWire state = case state of
       { wireAuthorityPermit = Just (encodeSignedAwsAdminPermit permit)
       , wireAuthorityReceipt = Just (encodeAwsAdminWorkerReceipt receipt)
       }
+  AwsAdminAuthorityCompletedWithLineage permit receipt archive ->
+    (emptyWire 5)
+      { wireAuthorityVersion = 2
+      , wireAuthorityPermit = Just (encodeSignedAwsAdminPermit permit)
+      , wireAuthorityReceipt = Just (encodeAwsAdminWorkerReceipt receipt)
+      , wireAuthorityLineage = Just (providerCredentialLineageArchiveCanonicalBytes archive)
+      }
 
 emptyWire :: Word8 -> WireAwsAdminAuthorityState
 emptyWire phase =
@@ -1008,6 +1175,7 @@ emptyWire phase =
     , wireAuthorityBinding = Nothing
     , wireAuthorityPermit = Nothing
     , wireAuthorityReceipt = Nothing
+    , wireAuthorityLineage = Nothing
     }
 
 authorityStateFromWire
@@ -1049,6 +1217,18 @@ authorityStateFromWire wire = case wireAuthorityPhase wire of
       attested <- commitAwsAdminAttested (signedAwsAdminPermitBinding permit) prepared
       authorized <- commitAwsAdminAuthorized permit attested
       commitAwsAdminCompleted receipt authorized
+    _ -> Left AwsAdminAuthorityStateInvalid
+  5 | wireAuthorityVersion wire == 2 -> case (payloads, wireAuthorityLineage wire) of
+    ((Nothing, Nothing, Just permitBytes, Just receiptBytes), Just archiveBytes) -> do
+      permit <- permitFromBytes permitBytes
+      receipt <- first AwsAdminAuthorityReceiptInvalid (decodeAwsAdminWorkerReceipt receiptBytes)
+      archive <-
+        first AwsAdminAuthorityLineageInvalid (decodeProviderCredentialLineageArchive archiveBytes)
+      prepared <- commitAwsAdminPrepared (signedAwsAdminPermitIntent permit) AwsAdminAuthorityVacant
+      attested <- commitAwsAdminAttested (signedAwsAdminPermitBinding permit) prepared
+      authorized <- commitAwsAdminAuthorized permit attested
+      completed <- commitAwsAdminCompleted receipt authorized
+      commitAwsAdminProviderLineage archive completed
     _ -> Left AwsAdminAuthorityStateInvalid
   _ -> Left AwsAdminAuthorityStateInvalid
  where
@@ -1142,3 +1322,77 @@ authorizeAwsAdminAttestation signer now state = case state of
 
 maximumHeartbeatAgeMicros :: Natural
 maximumHeartbeatAgeMicros = 30 * 1000000
+
+commitAwsAdminProviderLineage
+  :: ProviderCredentialLineageArchive
+  -> AwsAdminAuthorityState
+  -> Either AwsAdminAuthorityStateError AwsAdminAuthorityState
+commitAwsAdminProviderLineage archive state = do
+  canonical <- first AwsAdminAuthorityLineageInvalid (encodeProviderCredentialLineageArchive archive)
+  decoded <- first AwsAdminAuthorityLineageInvalid (decodeProviderCredentialLineageArchive canonical)
+  unless (decoded == archive) (Left AwsAdminAuthorityStateNonCanonical)
+  next <- case state of
+    AwsAdminAuthorityCompleted permit receipt -> checked permit receipt
+    AwsAdminAuthorityCompletedWithLineage permit receipt existing
+      | existing == archive -> checked permit receipt
+      | otherwise -> Left AwsAdminAuthorityTransitionConflict
+    _ -> Left AwsAdminAuthorityTransitionRefused
+  unless
+    (ByteString.length (encodeAwsAdminAuthorityState next) <= awsAdminAuthorityStateMaximumBytes)
+    ( Left
+        ( AwsAdminAuthorityStateTooLarge
+            (ByteString.length (encodeAwsAdminAuthorityState next))
+            awsAdminAuthorityStateMaximumBytes
+        )
+    )
+  Right next
+ where
+  checked permit receipt = do
+    _ <- validateCanonicalPermit permit
+    _ <- validateCanonicalReceipt permit receipt
+    validateProviderLineageBinding archive permit
+    Right (AwsAdminAuthorityCompletedWithLineage permit receipt archive)
+
+-- | Admit the exact maximum-width terminal wire shape before returning a
+-- signed permit to the worker. The placeholder is size-only ordinary bytes;
+-- it never passes a receipt decoder or becomes a completed operation.
+validateAwsAdminProviderLineageCapacity
+  :: ProviderCredentialLineageArchive
+  -> SignedAwsAdminPermit
+  -> Either AwsAdminAuthorityStateError ()
+validateAwsAdminProviderLineageCapacity archive permit = do
+  _ <- validateCanonicalPermit permit
+  validateProviderLineageBinding archive permit
+  canonical <- first AwsAdminAuthorityLineageInvalid (encodeProviderCredentialLineageArchive archive)
+  let maximumWire =
+        WireAwsAdminAuthorityState
+          2
+          5
+          Nothing
+          Nothing
+          (Just (encodeSignedAwsAdminPermit permit))
+          (Just (ByteString.replicate awsAdminWorkerReceiptMaximumBytes 0))
+          (Just canonical)
+      size = fromIntegral (LazyByteString.length (serialise maximumWire))
+  unless
+    (size <= awsAdminAuthorityStateMaximumBytes)
+    (Left (AwsAdminAuthorityStateTooLarge size awsAdminAuthorityStateMaximumBytes))
+
+validateProviderLineageBinding
+  :: ProviderCredentialLineageArchive
+  -> SignedAwsAdminPermit
+  -> Either AwsAdminAuthorityStateError ()
+validateProviderLineageBinding archive permit =
+  unless
+    ( awsAdminPermitIntentCredentialClass intent == LifecycleProviderCredential
+        && providerCredentialLineageArchiveAction archive == awsAdminPermitIntentAction intent
+        && providerCredentialLineageArchiveOperationId archive
+          == operatorMaterialOperationIdText (awsAdminPermitIntentOperationId intent)
+        && providerCredentialLineageArchiveGeneration archive
+          == credentialGenerationValue (awsAdminPermitIntentGeneration intent)
+        && providerCredentialLineageArchiveRequestDigest archive
+          == targetValueDigestText (awsAdminPermitIntentRequestDigest intent)
+    )
+    (Left (AwsAdminAuthorityLineageInvalid "lineage does not bind the LCP operation"))
+ where
+  intent = signedAwsAdminPermitIntent permit

@@ -6,8 +6,8 @@ in-cluster MinIO object store (Model-B CAS objects), its independently isolated
 Authority Backup and TLS Retention Adapters, the fenced Provider Worker, the Target
 Secret Agent's closed operation endpoints, its own authenticated Service route, and
 external HTTPS to AWS. The authority has NO mesh egress. Ingress admits the
-registered Provider Worker, Bootstrap Broker, exact one-shot Credential Provisioner, and Target
-Secret Agent callers; kubelet liveness/readiness probes are node-local and unaffected.
+registered Provider Worker, Bootstrap Broker, exact one-shot Credential Provisioner, Target
+Secret Agent and gateway epoch-observer callers; kubelet liveness/readiness probes are node-local and unaffected.
 */ -}}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -25,6 +25,19 @@ spec:
     - Ingress
     - Egress
   ingress:
+    # Gateway emitters observe the retained Authority epoch before DNS mutation.
+    # Both selectors belong to one peer, restricting the lane to these Pods in
+    # this namespace. Application authorization still owns every mutating route.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gateway
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prodbox-gateway
+      ports:
+        - protocol: TCP
+          port: lifecycle
     - from:
         - namespaceSelector:
             matchLabels:

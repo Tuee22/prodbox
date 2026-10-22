@@ -11,6 +11,7 @@
 -- observe the order the production composition will use.
 module Prodbox.Test.CascadeQualificationCycle
   ( CycleEffects (..)
+  , CyclePurpose (..)
   , CycleReport (..)
   , driveQualificationCycle
   )
@@ -35,6 +36,9 @@ import Prodbox.Test.Qualification.CascadeCycleLedger
   )
 
 -- | Everything a cycle needs from outside itself, as the driver asks for it.
+data CyclePurpose = QualifyNewRun | RecoverExistingRun
+  deriving (Eq, Show)
+
 data CycleEffects m candidate = CycleEffects
   { effectAttemptNumber :: m (Either String Int)
   -- ^ Read the ledger and say which attempt of the label this would be, or
@@ -48,6 +52,7 @@ data CycleEffects m candidate = CycleEffects
   , effectRecaptureKey :: m (Either String IdentityKey)
   -- ^ The key the executable source has now.
   , effectCandidateSucceeded :: candidate -> Bool
+  , effectCyclePurpose :: !CyclePurpose
   , effectCleanupRunId :: Text
   }
 
@@ -107,7 +112,7 @@ driveQualificationCycle effects label parts annotations = do
     recaptured <- effectRecaptureKey effects
     let artifactDigest = either (const Nothing) Just written
         endKey = either (const beginKey) id recaptured
-        outcome = classify (effectCandidateSucceeded effects candidate) written recaptured
+        outcome = classify attempt (effectCandidateSucceeded effects candidate) written recaptured
     closed <- closeWith attempt outcome (Just endKey) artifactDigest
     pure $ case closed of
       Left err ->
@@ -123,11 +128,13 @@ driveQualificationCycle effects label parts annotations = do
             , reportLastEntry = closedEntry
             }
 
-  classify succeeded written recaptured
+  classify attempt succeeded written recaptured
     | not succeeded = CycleFailed FailedLifecycleNotSucceeded
     | Left _ <- written = CycleFailed FailedEvidenceWrite
     | Left _ <- recaptured = CycleFailed FailedSourceRecapture
     | Right endKey <- recaptured, endKey /= beginKey = CycleSourceDrifted
+    | effectCyclePurpose effects == RecoverExistingRun || attempt /= 1 =
+        CycleFailed FailedHistoricalRecovery
     | otherwise = CyclePassed
 
   closeWith attempt outcome endKey artifactDigest = do

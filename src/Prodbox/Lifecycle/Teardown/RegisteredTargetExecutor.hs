@@ -84,10 +84,14 @@ data RegisteredTargetExecutor
   | -- | The exact NLB/listener/target-group/security-group family produced by
     -- the AWS Load Balancer Controller for the public-edge Service.
     EksLoadBalancerControllerFamilyExecutor
+  | NetworkDependentFamilyExecutor
+  | SesInviteMailObjectsExecutor
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 registeredTargetExecutorTag :: RegisteredTargetExecutor -> Text
 registeredTargetExecutorTag executor = case executor of
+  SesInviteMailObjectsExecutor -> "ses-invite-mail-data-versions"
+  NetworkDependentFamilyExecutor -> "network-dependent-family"
   EksStackExecutor -> "eks-stack"
   GenericStackExecutor -> "generic-stack"
   PerRunTestEbsFamilyExecutor -> "per-run-test-ebs-family"
@@ -157,3 +161,9 @@ registeredTargetExecutorFor key = case key of
   AwsEksIamRoleFamilyKey -> Right EksIamRoleFamilyExecutor
   AwsEksLoadBalancerControllerFamilyKey ->
     Right EksLoadBalancerControllerFamilyExecutor
+  AwsEksVpcCniInterfacesKey -> Right NetworkDependentFamilyExecutor
+  AwsTestVpcCniInterfacesKey -> Right NetworkDependentFamilyExecutor
+  AwsEksClusterSecurityGroupsKey -> Right NetworkDependentFamilyExecutor
+  HomeDns01ChallengeRecordKey -> Right Dns01ChallengeRecordFamilyExecutor
+  SesInviteMailObjectsKey -> Right SesInviteMailObjectsExecutor
+  AwsTestCanarySecurityGroupsKey -> Right NetworkDependentFamilyExecutor

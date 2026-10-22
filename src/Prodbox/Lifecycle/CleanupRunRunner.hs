@@ -1,4 +1,5 @@
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
 
@@ -49,9 +50,12 @@ module Prodbox.Lifecycle.CleanupRunRunner
   , resumeDurableCleanupWithContext
   , runWithDescriptorBoundDurableCleanupOutcomeWithContext
   , resumeDescriptorBoundDurableCleanupWithContext
+  , DescriptorBoundCleanupProgress (..)
+  , resumeDescriptorBoundCleanupBeforeLocalUninstall
   , recoverDescriptorBoundCleanupRunsWithContext
   , compactDescriptorBoundCleanupRuns
   , deterministicCleanupNodeAttemptId
+  , descriptorCleanupNodeAttemptId
   )
 where
 
@@ -126,8 +130,15 @@ import Prodbox.Lifecycle.CleanupRun
 import Prodbox.Lifecycle.Teardown.CleanupProgramDescriptor
   ( CleanupProgramDescriptor
   )
-import Prodbox.Lifecycle.Teardown.Graph (CompiledDesiredAbsenceProgram)
+import Prodbox.Lifecycle.Teardown.Graph
+  ( CompiledDesiredAbsenceProgram
+  , compiledDesiredAbsenceOperations
+  )
 import Prodbox.Lifecycle.Teardown.Model (CleanupSurfaceWitness)
+import Prodbox.Lifecycle.Teardown.Program
+  ( SomeTeardownOperation (..)
+  , TeardownOperation (UninstallCascadeLocalFoundation)
+  )
 import System.Timeout (timeout)
 
 data CleanupRunDriverError
@@ -136,6 +147,7 @@ data CleanupRunDriverError
   | CleanupRunDriverMissing
   | CleanupRunDriverAttemptInvalid !Text
   | CleanupRunDriverNoProgress
+  | CleanupRunDriverLocalHandoffUnavailable
   | CleanupRunDriverCompactionFailed !Text
   | CleanupRunDriverShieldExpired
   deriving stock (Eq, Show)
@@ -834,53 +846,105 @@ resumeDescriptorBoundDurableCleanupWithContext
   -> DescriptorBoundCleanupNodeExecutionAction
   -> DescriptorBoundCleanupRun
   -> IO (Either CleanupRunDriverError CleanupRunReport)
-resumeDescriptorBoundDurableCleanupWithContext client owner runAction = go
+resumeDescriptorBoundDurableCleanupWithContext client owner runAction bound = do
+  result <- driveDescriptorBoundCleanup client owner runAction Nothing bound
+  pure $ case result of
+    Left err -> Left err
+    Right (DescriptorBoundCleanupTerminal report) -> Right report
+    Right DescriptorBoundCleanupPaused {} -> Left CleanupRunDriverNoProgress
+
+-- | A pause is an independently observed Authority run, not a terminal report.
+-- The caller must durably hand it to the local tail before closing sessions.
+data DescriptorBoundCleanupProgress
+  = DescriptorBoundCleanupPaused !DescriptorBoundCleanupRun
+  | DescriptorBoundCleanupTerminal !CleanupRunReport
+
+-- | Drive exactly the remote prefix.  The stopping node is obtained from the
+-- sealed program's operation, never from caller text or a fabricated success.
+-- An already-issued local uninstall cannot be adopted as a fresh handoff.
+resumeDescriptorBoundCleanupBeforeLocalUninstall
+  :: DescriptorBoundCleanupRunClient IO
+  -> CleanupOwnerId
+  -> DescriptorBoundCleanupNodeExecutionAction
+  -> DescriptorBoundCleanupRun
+  -> IO (Either CleanupRunDriverError DescriptorBoundCleanupProgress)
+resumeDescriptorBoundCleanupBeforeLocalUninstall client owner runAction bound =
+  case withDescriptorBoundCleanupProgram bound uninstallNodes of
+    Left _ -> pure (Left CleanupRunDriverLocalHandoffUnavailable)
+    Right [node]
+      | Map.lookup node (descriptorBoundCleanupRunNodeStates bound)
+          == Just CleanupNodePending ->
+          driveDescriptorBoundCleanup client owner runAction (Just node) bound
+    Right _ -> pure (Left CleanupRunDriverLocalHandoffUnavailable)
+ where
+  uninstallNodes
+    :: CleanupSurfaceWitness surface
+    -> CompiledDesiredAbsenceProgram surface
+    -> DescriptorBoundCleanupRun
+    -> [CleanupNodeId]
+  uninstallNodes _ compiled _ =
+    [ node
+    | (node, SomeTeardownOperation UninstallCascadeLocalFoundation) <-
+        compiledDesiredAbsenceOperations compiled
+    ]
+
+driveDescriptorBoundCleanup
+  :: DescriptorBoundCleanupRunClient IO
+  -> CleanupOwnerId
+  -> DescriptorBoundCleanupNodeExecutionAction
+  -> Maybe CleanupNodeId
+  -> DescriptorBoundCleanupRun
+  -> IO (Either CleanupRunDriverError DescriptorBoundCleanupProgress)
+driveDescriptorBoundCleanup client owner runAction stopBefore = go
  where
   go bound = case descriptorBoundCleanupRunReport bound of
-    Right report -> pure (Right report)
+    Right report -> pure (Right (DescriptorBoundCleanupTerminal report))
     Left _ -> case nextPending bound of
       Nothing -> pure (Left CleanupRunDriverNoProgress)
-      Just plan -> do
-        let node = cleanupNodeId plan
-        case descriptorAttemptFor bound plan of
-          Left err -> pure (Left err)
-          Right attempt -> do
-            begun <-
-              beginDescriptorBoundCleanupNode
-                client
-                bound
-                owner
-                (cleanupLeaseFence (descriptorBoundCleanupRunLease bound))
-                node
-                attempt
-            case begun of
-              Left err -> pure (Left (CleanupRunDriverClientFailed err))
-              Right running -> do
-                outcome <- case descriptorExecutionContextFor running plan attempt of
-                  Left detail -> pure (CleanupNodeFailed detail)
-                  Right executionContext -> do
-                    attempted <-
-                      try (runAction running executionContext plan)
-                        :: IO (Either SomeException CleanupNodeOutcome)
-                    case attempted of
-                      Left exception
-                        | isAsync exception -> throwIO exception
-                        | otherwise ->
-                            pure
-                              (CleanupNodeFailed (Text.pack (displayException exception)))
-                      Right value -> pure value
-                completed <-
-                  completeDescriptorBoundCleanupNode
+      Just plan
+        | Just (cleanupNodeId plan) == stopBefore ->
+            pure (Right (DescriptorBoundCleanupPaused bound))
+        | otherwise -> do
+            let node = cleanupNodeId plan
+            case descriptorAttemptFor bound plan of
+              Left err -> pure (Left err)
+              Right attempt -> do
+                begun <-
+                  beginDescriptorBoundCleanupNode
                     client
-                    running
+                    bound
                     owner
-                    (cleanupLeaseFence (descriptorBoundCleanupRunLease running))
+                    (cleanupLeaseFence (descriptorBoundCleanupRunLease bound))
                     node
                     attempt
-                    outcome
-                case completed of
+                case begun of
                   Left err -> pure (Left (CleanupRunDriverClientFailed err))
-                  Right next -> go next
+                  Right running -> do
+                    outcome <- case descriptorExecutionContextFor running plan attempt of
+                      Left detail -> pure (CleanupNodeFailed detail)
+                      Right executionContext -> do
+                        attempted <-
+                          try (runAction running executionContext plan)
+                            :: IO (Either SomeException CleanupNodeOutcome)
+                        case attempted of
+                          Left exception
+                            | isAsync exception -> throwIO exception
+                            | otherwise ->
+                                pure
+                                  (CleanupNodeFailed (Text.pack (displayException exception)))
+                          Right value -> pure value
+                    completed <-
+                      completeDescriptorBoundCleanupNode
+                        client
+                        running
+                        owner
+                        (cleanupLeaseFence (descriptorBoundCleanupRunLease running))
+                        node
+                        attempt
+                        outcome
+                    case completed of
+                      Left err -> pure (Left (CleanupRunDriverClientFailed err))
+                      Right next -> go next
 
   nextPending bound =
     find
@@ -1017,7 +1081,23 @@ descriptorAttemptFor
   :: DescriptorBoundCleanupRun
   -> CleanupNodePlan
   -> Either CleanupRunDriverError CleanupAttemptId
-descriptorAttemptFor bound plan =
+descriptorAttemptFor bound =
+  descriptorCleanupNodeAttemptId
+    (descriptorBoundCleanupRunId bound)
+    (descriptorBoundCleanupRunGraphDigest bound)
+    (descriptorBoundCleanupRunDescriptorDigest bound)
+    (cleanupLeaseFence (descriptorBoundCleanupRunLease bound))
+
+-- | Shared stable identity for remote execution and the persisted local tail.
+-- These metadata inputs confer no authority to execute or complete a node.
+descriptorCleanupNodeAttemptId
+  :: CleanupRunId
+  -> CleanupDigest
+  -> CleanupDigest
+  -> Natural
+  -> CleanupNodePlan
+  -> Either CleanupRunDriverError CleanupAttemptId
+descriptorCleanupNodeAttemptId runId graphDigest descriptorDigest fence plan =
   case mkCleanupAttemptId ("cleanup-attempt/" <> attemptDigest) of
     Left detail -> Left (CleanupRunDriverAttemptInvalid detail)
     Right attempt -> Right attempt
@@ -1030,14 +1110,14 @@ descriptorAttemptFor bound plan =
       ( map
           frame
           [ "cleanup-node-attempt/v3"
-          , cleanupRunIdText (descriptorBoundCleanupRunId bound)
-          , cleanupDigestText (descriptorBoundCleanupRunGraphDigest bound)
-          , cleanupDigestText (descriptorBoundCleanupRunDescriptorDigest bound)
+          , cleanupRunIdText runId
+          , cleanupDigestText graphDigest
+          , cleanupDigestText descriptorDigest
           , cleanupNodeIdText (cleanupNodeId plan)
           , cleanupOperationIdText (cleanupNodeOperationId plan)
           , Text.pack
               ( show
-                  (cleanupLeaseFence (descriptorBoundCleanupRunLease bound))
+                  fence
               )
           ]
       )

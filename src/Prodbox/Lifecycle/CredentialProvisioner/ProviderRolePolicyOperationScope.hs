@@ -156,16 +156,16 @@ validateProviderRolePolicyOperationCounterexample counterexample
 frozenSupersededScope :: Text
 frozenSupersededScope = "cascade-qualification:pre-1"
 
--- | The revision of the current policy document. Re-frozen when the policy was
--- completed against the CLI verbs its interpreters run (the SES receipt-rule and
--- DKIM observers, the capture-bucket tagging calls, and the owned-resource tag
--- listing); the value before that was
--- @bacc2854e31887da758e66bf3d8574e8399086511289ea57d59f75bd8e55394a@. The
--- revision is a function of the document, so it moves with every deliberate
--- policy change, and the next run selects a successor operation by it.
+-- | Revision of the canonical policy template. Sprint 5.53 re-freezes its
+-- replacement for capture-bucket scope and lifecycle permissions, preserving
+-- the causal profile and resource envelope. The prior revision was
+-- @209a4b7eef1842483983e994116c816ccd872070bdc210aa1f31f697fa7d34d7@
+-- (and before the CLI-action completion,
+-- @bacc2854e31887da758e66bf3d8574e8399086511289ea57d59f75bd8e55394a@).
+-- Every deliberate policy change selects a successor operation by its digest.
 frozenReplacementRevision :: Text
 frozenReplacementRevision =
-  "209a4b7eef1842483983e994116c816ccd872070bdc210aa1f31f697fa7d34d7"
+  "77fe1c831cd0d0535146ece2d6e5e73015d9a296b6b520bf841da8b4273bfd5d"
 
 frozenReplacementScope :: Text
 frozenReplacementScope =

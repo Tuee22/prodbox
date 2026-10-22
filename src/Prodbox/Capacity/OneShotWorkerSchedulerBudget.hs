@@ -18,10 +18,12 @@ where
 import Data.Text (Text)
 import Numeric.Natural (Natural)
 import Prodbox.Capacity.Config
-  ( ResourceEnvelope (..)
+  ( MemoryDemandSpec (..)
+  , ResourceEnvelope (..)
   , ResourcePlan (..)
   , ResourceVector (..)
   , WorkloadConcurrency (ExclusiveWindow)
+  , WorkloadDemandSpec (..)
   , WorkloadResourceProfile (..)
   , defaultResourcePlan
   , oneShotSecretWorkerEnvelope
@@ -102,12 +104,36 @@ frozenOneShotWorkerSchedulerCounterexample =
     , oneShotWorkerSchedulerOverlappingWorkers = 2
     , oneShotWorkerSchedulerWorkerEnvelope = oneShotSecretWorkerEnvelope
     , oneShotWorkerSchedulerSupersededPlan =
-        defaultResourcePlan
+        frozenSchedulerResourcePlan
           { rke2_reserved = supersededRke2Reservation
           , eviction_floor = supersededEvictionFloor
           }
-    , oneShotWorkerSchedulerReplacementPlan = defaultResourcePlan
+    , oneShotWorkerSchedulerReplacementPlan = frozenSchedulerResourcePlan
     }
+
+-- The September scheduler witness retains its original background memory.
+-- Later replay sizing changes the production profile, not this causal profile.
+frozenSchedulerResourcePlan :: ResourcePlan
+frozenSchedulerResourcePlan =
+  defaultResourcePlan
+    { workload_profiles = map freezeReplayMemory (workload_profiles defaultResourcePlan)
+    }
+ where
+  freezeReplayMemory profile = case originalMemory (profile_id profile) of
+    Nothing -> profile
+    Just amount ->
+      let demand = workload_demand profile
+          memory = memory_demand demand
+       in profile
+            { workload_demand =
+                demand {memory_demand = memory {steady_memory_terms_mib = [amount]}}
+            }
+  originalMemory name = case name of
+    "authority-backup" -> Just 144
+    "lifecycle-authority" -> Just 128
+    "target-secret-agent" -> Just 80
+    "tls-retention" -> Just 80
+    _ -> Nothing
 
 validateOneShotWorkerSchedulerCounterexample
   :: OneShotWorkerSchedulerCounterexample
@@ -173,7 +199,7 @@ plansHaveExpectedShape superseded replacement =
   host_capacity superseded == expectedHost
     && host_capacity replacement == expectedHost
     && workload_profiles superseded == workload_profiles replacement
-    && workload_profiles replacement == workload_profiles defaultResourcePlan
+    && workload_profiles replacement == workload_profiles frozenSchedulerResourcePlan
     && rke2_reserved superseded == supersededRke2Reservation
     && eviction_floor superseded == supersededEvictionFloor
     && rke2_reserved replacement == replacementRke2Reservation

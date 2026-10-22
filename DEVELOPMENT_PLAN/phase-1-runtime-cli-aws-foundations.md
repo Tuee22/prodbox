@@ -11,14 +11,12 @@
 
 ## Phase Status
 
-🔄 **Reopened 2026-10-18 on Sprint `1.94` (Standards A/N).** Own-surface reopen on the runtime
-image's build, which this phase owns (Sprints `1.1` and `1.45`). Every Provider image roll rebuilds
-the whole dependency store because the Dockerfile copies `src/` before its single `cabal build` —
-about nineteen minutes of every live cycle, measured in the 2026-09-15 audit pass — and the layer
-split that would fix it puts that store into the shipped image, because layers are additive and cache
-mounts are forbidden. Sprint `1.94` takes the builder stage that audit recorded and declined. The
-phase recloses when `1.94` reaches `Done`; until then this entry records an open reopen, not a
-closure. Rationale and decisions: Sprint `0.36`.
+✅ **Reclosed 2026-10-19 on Sprint `1.94` (Standards A/N).** The runtime image separates
+manifest preparation, dependency/project compilation, and shipped runtime. Source and module-list
+changes preserve the dependency cache, and the runtime carries the executable, tools, programs, and
+portable config without GHC, Cabal stores, or project source. The sprint records measured image and
+rebuild evidence, runtime smoke, canonical gates, and built-frontend CLI/config proof. Live Provider
+roll and deployment qualification remain pending under Standards O/P.
 
 ✅ **Reclosed 2026-10-08 on Sprint `1.93` (Standards A/N).** The own-surface reopen on the native AWS
 clients' shared XML helper is complete. The helper could write XML-escaped text and could not read it back, so
@@ -7034,16 +7032,14 @@ extractors from ever doing so.
 
 None. Live proof is a `Live-proof: pending` note and is non-blocking under Standard O.
 
-## Sprint 1.94: A Provider Fix Should Rebuild The Source, Not The Dependency Store [📋 Planned]
+## Sprint 1.94: A Provider Fix Should Rebuild The Source, Not The Dependency Store [✅ Done]
 
-**Status**: Planned (2026-10-18). Phase `1` own-surface reopen (Standards A/N) on the runtime image's
-build, registered before any behavior change. It is operator decision D4, accepted with the plan on
-2026-10-15. The AWS track's offline code rows do not wait for it (Sprints `4.109` and `4.110` landed
-first, and `4.111` does not wait either); only the first Provider image roll does, by choice. The builder stage that the 2026-09-15 audit pass
-recorded and declined to take is taken here, because every Provider fix pays the whole dependency
-rebuild and the AWS lifecycle track lands as a series of Provider fixes.
+**Status**: Done (2026-10-19). The Phase `1` own-surface image-build reopen is complete.
+Operator decision D4, accepted with the plan on 2026-10-15, is implemented and locally validated.
+The AWS lifecycle rows remain independently owned; the Provider image roll is a separate live-proof
+axis under Standards O/P.
 **Doctrine**: [Dependency Management § 1](../documents/engineering/dependency_management.md#1-current-toolchain-split)
-(the target note on the two-stage image).
+(the builder/runtime image and dependency-cache boundary).
 **Implementation**: `docker/prodbox.Dockerfile` and the Dockerfile invariants in `test/unit/Main.hs`.
 **Blocked by**: none.
 **Live-proof**: pending. A Provider image built this way, rolled and running in the cluster.
@@ -7054,7 +7050,9 @@ BuildKit-only features), a render of the stage graph, and a recorded host rebuil
 live cluster.
 **Docs to update**: `documents/engineering/dependency_management.md`,
 `documents/engineering/local_registry_pipeline.md`,
-`documents/engineering/distributed_gateway_architecture.md`, `DEVELOPMENT_PLAN/00-overview.md`
+`documents/engineering/distributed_gateway_architecture.md`,
+`documents/engineering/code_quality.md` (correct the stale claim that the gate runs no tests),
+`DEVELOPMENT_PLAN/00-overview.md`
 (Vision item 8, Supported Haskell Surface, Hard Constraints), `DEVELOPMENT_PLAN/README.md` (Exit
 Definition item 9), `DEVELOPMENT_PLAN/system-components.md`, and
 `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
@@ -7072,13 +7070,13 @@ This sprint takes it.
 
 ### Deliverables
 
-- The builder stage and the runtime stage described in the Dependency Management target note. The
+- The builder and runtime stages governed by Dependency Management § 1, plus manifest preparation. The
   dependency layer is keyed on the Cabal manifests alone, so a source change rebuilds only the
   project's modules, and the shipped image carries no Haskell toolchain, store, or source. Adding a
   module to `prodbox.cabal` changes a manifest; the sprint measures whether that busts the
   dependency layer and, if it does, reads the dependency step from a manifest stripped of module
   lists.
-- The Dockerfile invariants updated to the two-stage shape. The toolchain pins (GHC `9.12.4`, Pulumi
+- The Dockerfile invariants updated to the builder/runtime shape with manifest preparation. The toolchain pins (GHC `9.12.4`, Pulumi
   `3.228.0`, the exact provider with its release-asset checksums, `kubectl` with its checksum) are
   unchanged, and the rule against BuildKit-only features holds exactly as today. The AWS CLI bundle
   is installed from an unversioned archive today; whether to pin it is decided here and recorded.
@@ -7098,18 +7096,63 @@ This sprint takes it.
    recorded in this block.
 3. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
 
+### Validation Evidence
+
+- The implementation uses a builder and a runtime plus one manifest-preparation stage. The extra
+  stage is necessary because stripping module lists in the builder's own `RUN` would still inherit
+  the raw manifest's changed parent layer. Only normalized manifest bytes cross the dependency
+  boundary. The complete manifest remains the input to project compilation.
+- A basic `docker build` cache probe on this host confirms the distinction: a module-list edit
+  reruns the raw-manifest proof but caches both the normalized copy and its consumer; changing a
+  dependency bound reruns both. Probe durations are 8.583 s initially, 2.491 s for the module-list
+  edit, and 4.331 s for the dependency edit. The normalized and full manifests resolve the same
+  219 third-party package identities on the host. Building the normalized dependency target with
+  absent project source succeeds. These checks validate the dependency boundary; the full-image
+  measurement below remains outstanding.
+- The stage graph was rendered and visually inspected at `.build/sprint-1.94/stage-graph.png`.
+  Probe logs and plan comparison are under `.build/sprint-1.94/`.
+- **AWS CLI decision:** retain the existing official unversioned, architecture-selected archive
+  in this packaging sprint. Archive selection is unchanged; an uncached build can still resolve a
+  different version.
+  The existing GHC, Cabal, Pulumi, provider checksum, and kubectl pins are retained.
+- Host bootstrap `cabal build --builddir=.build exe:prodbox` passes and the canonical operator
+  binary is installed at `.build/prodbox`; the canonical gate passes with the pinned repository
+  formatter and linter. The complete baseline and staged builds both exit 0,
+  including portable config generation by the executable in the runtime image. On native `amd64`,
+  their initial image sizes are 5,867,829,627 and 1,760,130,065 bytes respectively. The cold builds
+  took 36:00.67 and 34:32.04 on this shared host while running concurrently; those cold times are
+  recorded observations, not the source-edit measurement.
+- A separate 32.635 s warm build of the final Dockerfile exits 0 before the timed source edit. The
+  final runtime image is `sha256:f43a04d389c58b7286944eb58fa3d3f00fe9f5609a524ce986676044e3c705c5`,
+  still 1,760,130,065 bytes, and satisfies the baseline size bound. Its runtime smoke exits 0:
+  the CLI and portable generator run, AWS CLI reports 2.38.2, Pulumi reports 3.228.0 with the exact
+  AWS provider 7.44.0 installed, kubectl reports v1.35.5, shared libraries resolve, the YAML programs
+  exist, and GHC, Cabal, their stores, project sources, and compilation output are absent.
+- The first source-edit probe was cancelled after 175.021 s and is excluded from the timing: its
+  copied context changed `cabal.project` mode from `0664` to `0644`, which changed the dependency
+  copy's input. The corrected context preserves every file's mode and differs in content only by
+  one appended comment line in `src/Prodbox/Aws/Native/Xml.hs`, with an identical Dockerfile. The
+  corrected rebuild exits 0 in **12:03.78**, its dependency step is `CACHED`, and its image remains
+  1,760,130,065 bytes. Logs retain the excluded attempt separately.
+- Canonical `prodbox dev check` exits 0: warning-clean all-target compilation, primary unit
+  **5,861/5,861**, and the three auxiliary unit suites **27/27**, **35/35**, and **40/40**. The
+  primary suite's frontend-scaffold group passes the union-image/tool-pin and Sprint-1.94 stage
+  isolation checks. Built-frontend `prodbox test integration cli` exits 0 with **74/74** tests;
+  its one Haskell suite executes both `CliSuite` and `EnvSuite`. No Provider roll or live AWS
+  attempt has occurred.
+
 ### Remaining Work
 
-Everything above. A free-disk preflight before image builds and rolls is not part of this sprint (it
-was not in the approved plan); until one exists, check free space before a build or roll, because the
-node's kubelet evicts under disk pressure (Sprint `0.36`, Not Scheduled).
+None on the sprint-owned code surface. Live Provider roll remains pending under Standard O;
+deployment qualification remains pending under Standard P. The automatic disk preflight belongs to
+operator decision D11 recorded in Sprint `0.36`; free space is checked manually before builds/rolls.
 
 ## Documentation Requirements
 
 **Engineering docs to create/update:**
 
-- `documents/engineering/dependency_management.md` — the two-stage image replaces the single-stage
-  paragraphs when Sprint `1.94` lands; the target note landed with Sprint `0.36`.
+- `documents/engineering/dependency_management.md` — builder/runtime packaging and the normalized
+  dependency-manifest boundary, with the toolchain pins and basic-builder contract retained.
 
 **Product docs to create/update:**
 
@@ -7117,9 +7160,9 @@ node's kubelet evicts under disk pressure (Sprint `0.36`, Not Scheduled).
 
 **Cross-references to add:**
 
-- Update Vision item 8 in [00-overview.md](00-overview.md) and Exit Definition item 9 in
-  [README.md](README.md) when the sprint lands; move the single-stage Dockerfile ledger row to
-  `Completed` in [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+- Vision item 8 in [00-overview.md](00-overview.md), Exit Definition item 9 in
+  [README.md](README.md), the component inventory, and the `Completed` row in
+  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) describe the same image contract.
 
 ## Documentation Requirements
 

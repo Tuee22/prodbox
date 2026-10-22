@@ -938,6 +938,7 @@ routeCode route = case route of
   TlsRetentionStore -> 10
   TlsRetentionRestore -> 11
   TargetMaterialObserve -> 12
+  TargetAwsAdminCredentialRevoke -> 65
 
 routeFromCode :: Word -> Maybe ControlPlaneRoute
 routeFromCode code = case code of
@@ -1005,4 +1006,5 @@ routeFromCode code = case code of
   62 -> Just TlsRetentionObserveVersion
   63 -> Just LifecycleTlsRetentionLegacyRecoveryStage
   64 -> Just LifecycleTlsRetentionUnopenableSuccessorStage
+  65 -> Just TargetAwsAdminCredentialRevoke
   _ -> Nothing

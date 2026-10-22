@@ -20,6 +20,7 @@ module Prodbox.Lifecycle.CredentialProvisioner.ProductionIam
   , lifecycleProviderRolePolicyDocument
   , lifecycleProviderRolePolicyActions
   , mkLifecycleProviderIamProgram
+  , mkScopedLifecycleProviderIamProgram
   , mkAuthorityBackupIamProgram
   , mkTlsRetentionIamProgram
   , mkGatewayDnsIamProgram
@@ -195,10 +196,11 @@ credentialIamProgramRoleTrustPolicy = fmap programRoleTrustPolicy . internalCred
 credentialIamProgramRolePolicyDocument :: CredentialIamProgram -> Maybe Text
 credentialIamProgramRolePolicyDocument = fmap programRolePermissionsPolicy . internalCredentialIamRole
 
--- | Canonical, secret-free desired policy for the sole Provider role. Its
--- digest is part of the qualification harness's durable operation namespace,
--- so a policy change schedules a new reconcile rather than replaying an older
--- completed credential receipt.
+-- | Canonical symbolic policy template used only for operation revision and
+-- action coverage. Opaque IAM programs render the validated capture bucket's
+-- literal ARN, or omit S3 entirely when no bucket is configured. The symbolic
+-- bucket cannot pass the program validator or become an applied IAM resource.
+-- A policy change therefore revises the durable operation namespace.
 lifecycleProviderRolePolicyDocument :: Text
 lifecycleProviderRolePolicyDocument = renderPolicy lifecycleProviderRolePolicy
 
@@ -225,7 +227,13 @@ lifecycleProviderRolePolicyActions =
 
 mkLifecycleProviderIamProgram
   :: Text -> Text -> Text -> Either ProductionIamError CredentialIamProgram
-mkLifecycleProviderIamProgram rawRegion rawAccountId rawRoleName = do
+mkLifecycleProviderIamProgram rawRegion rawAccountId rawRoleName =
+  mkScopedLifecycleProviderIamProgram rawRegion rawAccountId rawRoleName Nothing
+
+mkScopedLifecycleProviderIamProgram
+  :: Text -> Text -> Text -> Maybe Text -> Either ProductionIamError CredentialIamProgram
+mkScopedLifecycleProviderIamProgram rawRegion rawAccountId rawRoleName rawCaptureBucket = do
+  captureBucket <- traverse validateBucket rawCaptureBucket
   regionValue <- validateRegion rawRegion
   accountId <- validateAccountId rawAccountId
   roleName <- validateIamName "provider role" rawRoleName
@@ -264,7 +272,7 @@ mkLifecycleProviderIamProgram rawRegion rawAccountId rawRoleName = do
               , programRoleArn = "arn:aws:iam::" <> accountId <> ":role/" <> roleName
               , programRolePolicyName = "prodbox-lifecycle-provider-runtime"
               , programRoleTrustPolicy = renderPolicy trustPolicy
-              , programRolePermissionsPolicy = lifecycleProviderRolePolicyDocument
+              , programRolePermissionsPolicy = renderPolicy (lifecycleProviderRolePolicyFor captureBucket)
               }
       }
 
@@ -1307,32 +1315,18 @@ route53Policy sid zoneId =
 -- limited to role, policy, instance-profile, and OIDC-provider lifecycle; no
 -- user or access-key action is present.
 lifecycleProviderRolePolicy :: Value
-lifecycleProviderRolePolicy =
-  statementPolicy
+lifecycleProviderRolePolicy = lifecycleProviderRolePolicyFor (Just "${prodbox:bound-ses-capture-bucket}")
+
+lifecycleProviderRolePolicyFor :: Maybe Text -> Value
+lifecycleProviderRolePolicyFor captureBucket =
+  statementPolicy $
     [ statement
         "RegisteredComputeAndClusterEffects"
         ["ec2:*", "eks:*", "autoscaling:*", "elasticloadbalancing:*"]
         ["*"]
     , statement
-        "RegisteredDnsSesAndObjectStoreEffects"
+        "RegisteredDnsAndSesEffects"
         ( providerRoute53Actions
-            <> [ "s3:CreateBucket"
-               , "s3:DeleteBucket"
-               , "s3:GetBucketLocation"
-               , "s3:GetBucketPolicy"
-               , "s3:GetBucketTagging"
-               , "s3:GetBucketVersioning"
-               , "s3:ListBucket"
-               , "s3:ListBucketVersions"
-               , "s3:PutBucketPolicy"
-               , "s3:PutBucketTagging"
-               , "s3:PutBucketVersioning"
-               , "s3:GetObject"
-               , "s3:GetObjectVersion"
-               , "s3:PutObject"
-               , "s3:DeleteObject"
-               , "s3:DeleteObjectVersion"
-               ]
             <> fmap
               ("ses:" <>)
               [ "GetIdentityVerificationAttributes"
@@ -1400,6 +1394,37 @@ lifecycleProviderRolePolicy =
         )
         ["*"]
     ]
+      <> maybe [] captureStatements captureBucket
+ where
+  captureStatements bucket =
+    let bucketArn = "arn:aws:s3:::" <> bucket
+     in [ statement
+            "RegisteredSesCaptureBucketEffects"
+            [ "s3:CreateBucket"
+            , "s3:DeleteBucket"
+            , "s3:GetBucketLocation"
+            , "s3:GetBucketPolicy"
+            , "s3:GetBucketTagging"
+            , "s3:GetBucketVersioning"
+            , "s3:GetLifecycleConfiguration"
+            , "s3:ListBucket"
+            , "s3:ListBucketVersions"
+            , "s3:PutBucketPolicy"
+            , "s3:PutBucketTagging"
+            , "s3:PutBucketVersioning"
+            , "s3:PutLifecycleConfiguration"
+            ]
+            [bucketArn]
+        , statement
+            "RegisteredSesCaptureObjects"
+            [ "s3:GetObject"
+            , "s3:GetObjectVersion"
+            , "s3:PutObject"
+            , "s3:DeleteObject"
+            , "s3:DeleteObjectVersion"
+            ]
+            [bucketArn <> "/*"]
+        ]
 
 validateRegion :: Text -> Either ProductionIamError Text
 validateRegion = validateField "AWS region" 64 valid

@@ -166,6 +166,10 @@ development.
   authenticate, durably register, or observe the operation, the command fails closed. It never
   falls back to host-direct `pulumi`, `aws`, `eksctl`, or `terraform` mutation.
 - Supported entrypoints: `prodbox aws stack <cli-verb> reconcile` /
+  `prodbox aws stack <cli-verb> diff` (read-only resource and property names), and
+  `prodbox aws stack eks purge-dependents` (plan by default; apply with both `--yes` and
+  `--plan-digest <digest>` after positive cluster absence and unique exact-tagged VPC observation;
+  closing verdict covers the registered network families), alongside
   `prodbox aws stack <cli-verb> destroy --yes` for every Pulumi-managed substrate stack:
   `eks` for registry stack `aws-eks`, `aws-subzone` for `aws-eks-subzone`, `test` for
   `aws-test`, and `aws-ses` for `aws-ses`; `prodbox aws audit [--stack eks|test]` for a read-only
@@ -203,6 +207,11 @@ SES sending-identity creation are *expected* outcomes of asking `prodbox` to
 provision the AWS substrate, not separate gates. The "confirm before mutating
 shared infrastructure" rule applies only to ad-hoc tooling that bypasses the
 `prodbox` surface — not to invoking a documented `prodbox` command.
+
+The VPC CNI interface families for EKS and the test VPC, and the EKS cluster security-group family,
+are registry-declared per-run controller families. Their independent reapers follow the owning
+stack's destroy attempt; exact family absence gates checkpoint retirement and completion. Both
+destroy routes share their closed predicates and clear admitted dependents before subnet/VPC deletion.
 
 Lifecycle classes and their exact cleanup owners are not restated here. See
 [DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)
@@ -260,6 +269,10 @@ failure, or Ctrl-C does not turn a partial or unobservable result into proven ab
 - Elevated/admin AWS auth enters `prodbox` only through the interactive `SecretRef.Prompt`.
   Automation may simulate that prompt only through the `aws_admin_for_test_simulation.*`
   fixture in `test-secrets.dhall`; production config never contains that credential.
+- `test-secrets.dhall` must be a regular, non-symlink file owned by the effective user with no
+  group or other permission bits (`chmod 600 test-secrets.dhall`). The loader checks and reads
+  the same opened descriptor and never changes permissions on refusal. Its admin region must
+  match the configured Pulumi backend before a credential Job starts.
 - Generated operational `aws.*` credentials are written to Vault KV and referenced by typed
   `SecretRef.Vault` values. Ambient AWS auth env vars, shared-profile discovery, and system
   `aws` CLI host auth state are not valid auth sources for supported `prodbox` flows.
@@ -291,15 +304,19 @@ prompts, you have picked the wrong command, not hit a blocker.
 The automation path simulates the operator admin-credential prompt from
 `aws_admin_for_test_simulation.*` in `test-secrets.dhall` through the Credential Provisioner
 (every harness-tier suite takes that one path), provisions the Lifecycle-provider credential into
-Vault KV, runs validations, and then uses its cleanup wrapper. A completed cleanup **retains** that
-credential and prints `OPERATIONAL_CREDENTIAL_DISPOSITION=retained`: no production path revokes it
-yet (Sprint `5.51` owns the revocation lane), and an incomplete cleanup preserves it for recovery
-and fails the suite. Once `runWithAwsHarnessCleanup` is entered, the current
-Lifecycle-Authority-backed durable wrapper schedules per-run cleanup on success, failure, or
-Ctrl-C. Some preparation mutations still precede that wrapper, so the current harness does not
-promise every-exit durable registration.
-Scheduling alone never proves resource absence; the target completion contract requires exact
-terminal evidence.
+Vault KV, runs validations, and then uses its cleanup wrapper. The ordinary harness registers or
+adopts resource cleanup before credential preparation and re-establishes the credential on resume.
+After every resource result proves success, it destroys/read-backs the IAM family before the
+Provisioner-only Agent route removes/read-backs the exact Vault generation, then reports
+`OPERATIONAL_CREDENTIAL_DISPOSITION=revoked`. An incomplete cleanup preserves it for recovery;
+an unsuccessful revoke is unresolved, and either fails the suite. Cancellation attempts cleanup
+and the eligible credential tail before it is rethrown. Some preparation mutations still precede
+the wrapper, so this is not an every-exit durable-registration claim. The separate qualification
+runner now confirms credential retirement through the Credential Provisioner and a separately
+read-back revoked Authority epoch before removing the local control plane. Its retained handoff
+carries that metadata-only confirmation. Sprint `6.5` still owns next-bootstrap report import,
+intent retirement, attested successor admission and deployment qualification. Scheduling alone never proves resource absence; exact terminal evidence
+is required.
 The retained `aws-ses` long-lived stack remains intentionally present as cross-substrate shared
 infrastructure. Live AWS spend is
 expected; no separate approval needed beyond the user's original request.

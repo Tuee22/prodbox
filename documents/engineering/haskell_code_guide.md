@@ -224,6 +224,12 @@ MyTool.App            -- application runtime
 
 ## Subprocesses as Typed Values
 
+Long-running killable children start in a fresh POSIX session. Their timeout and cancellation stop
+records descendants before signalling the parent, verifies PID/start-time identities before
+signalling descendants across process groups, and confirms them within the shared stop deadline.
+An unobservable identity or unconfirmed stop returns a structured error. Process ownership comes
+from the child created by the interpreter; callers do not supply host process IDs.
+
 Subprocess invocations are pure values, not IO calls scattered through command
 runners. Build them in pure code, render them in pure code, and hand them to an
 interpreter only at the boundary.

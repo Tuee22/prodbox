@@ -142,7 +142,7 @@ familyCases = do
     all (not . null . membershipFamilyTags) membershipFamilies `shouldBe` True
 
   it
-    "leaves the ownership relation and the declared entries that the destroy families assume untouched"
+    "preserves declared ownership and empty member lists for every controller family"
     $ do
       -- This sprint adds no writer and changes no durable shape, so the edges the
       -- manifest is seeded from, and the empty identity lists on the declared
@@ -152,10 +152,20 @@ familyCases = do
         `shouldBe` [ (AwsEksKey, AwsEbsPerRunTestKey)
                    , (AwsEksKey, AwsEksIamRoleFamilyKey)
                    , (AwsEksKey, AwsEksLoadBalancerControllerFamilyKey)
+                   , (AwsEksKey, AwsEksVpcCniInterfacesKey)
+                   , (AwsEksKey, AwsEksClusterSecurityGroupsKey)
+                   , (AwsTestKey, AwsTestVpcCniInterfacesKey)
+                   , (AwsTestKey, AwsTestCanarySecurityGroupsKey)
                    ]
       let entries = manifestFactsEntries (manifestFactsFor AwsEksKey)
       sort (map ownershipManifestEntryKey entries)
-        `shouldBe` [AwsEksKey, AwsEbsPerRunTestKey, AwsEksIamRoleFamilyKey, AwsEksLoadBalancerControllerFamilyKey]
+        `shouldBe` [ AwsEksKey
+                   , AwsEbsPerRunTestKey
+                   , AwsEksIamRoleFamilyKey
+                   , AwsEksLoadBalancerControllerFamilyKey
+                   , AwsEksVpcCniInterfacesKey
+                   , AwsEksClusterSecurityGroupsKey
+                   ]
       all (null . ownershipManifestEntryObservedIdentities) entries `shouldBe` True
 
 -- Attribution ------------------------------------------------------------------
@@ -218,7 +228,7 @@ attributionCases = do
     map familyOf (outcomes facts (rowsFor loadBalancerArn loadBalancerTags))
       `shouldBe` [Just AwsEksLoadBalancerControllerFamilyKey]
 
-  it "refuses a family the manifest does not declare, such as a stack that owns none" $ do
+  it "refuses a family the manifest does not declare, even when it owns another family" $ do
     let rows = rowsFor loadBalancerArn (familyTags AwsEksLoadBalancerControllerFamilyKey)
     map reasonOf (outcomes (manifestFactsFor AwsTestKey) rows)
       `shouldBe` [Just (FamilyMatchedButNotDeclared AwsEksLoadBalancerControllerFamilyKey)]

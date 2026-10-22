@@ -74,6 +74,7 @@ import Prodbox.Lifecycle.AdminAction.Runner
 import Prodbox.Lifecycle.Authority.AdminAction
   ( AdminAction (..)
   )
+import Prodbox.Lifecycle.AwsRemedy (awsStackCliName)
 import Prodbox.Native
   ( commandPrerequisites
   , nativeRuntimeCommand
@@ -451,6 +452,8 @@ commandPathOfRequest request =
         NativePulumi pulumiCommand ->
           ["aws", "stack"]
             ++ case pulumiCommand of
+              PulumiStackDiff target -> [awsStackCliName target, "diff"]
+              PulumiEksPurgeDependents _ -> ["eks", "purge-dependents"]
               PulumiEksResources _ -> ["eks", "reconcile"]
               PulumiEksDestroy _ _ -> ["eks", "destroy"]
               PulumiTestResources _ -> ["test", "reconcile"]
@@ -496,6 +499,8 @@ commandPathOfRequest request =
                     IntegrationAwsIam -> ["aws-iam"]
                     IntegrationDnsAws -> ["dns-aws"]
                     IntegrationAwsEks -> ["aws-eks"]
+                    IntegrationAwsLifecycle -> ["aws-lifecycle"]
+                    IntegrationAwsLifecycleCanary -> ["aws-lifecycle-canary"]
                     IntegrationEnv -> ["env"]
                     IntegrationGatewayDaemon -> ["gateway-daemon"]
                     IntegrationGatewayPods -> ["gateway-pods"]

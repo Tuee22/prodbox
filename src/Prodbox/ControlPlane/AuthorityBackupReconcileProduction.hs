@@ -714,6 +714,12 @@ controlPayload command = case command of
     Left "backup reconciler cannot bind the Provider admission generation"
   FreezeProviderAdmissionForCascadeAudit _ ->
     Left "backup reconciler cannot freeze Provider admission for the Cascade audit"
+  FreezeProviderAdmissionAtGeneration _ _ ->
+    Left "backup reconciler cannot bind and freeze Provider admission for the Cascade audit"
+  ObserveProviderAdmissionRecovery _ ->
+    Left "backup reconciler cannot observe a cascade Provider admission reservation"
+  ObserveProviderBootstrapPredecessor ->
+    Left "backup reconciler cannot discover a bootstrap predecessor"
   RecordCascadeTerminalAuditReceipt _ _ ->
     Left "backup reconciler cannot record the Cascade terminal-audit receipt"
   RevokeCascadeProviderCredential _ _ ->

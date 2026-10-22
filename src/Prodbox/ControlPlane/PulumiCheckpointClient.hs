@@ -19,6 +19,11 @@ import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Set qualified as Set
 import Data.Text (Text)
+import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
+  ( AuthenticatedRolePlainResponseCause (AuthenticatedRoleReadReplayRequiresFreshNonce)
+  , AuthenticatedRolePlainResponseObservation (AuthenticatedRolePlainResponseKnown)
+  , classifyAuthenticatedRolePlainResponse
+  )
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientError
   , AuthenticatedClientProviders
@@ -318,6 +323,13 @@ pulumiCheckpointClientWith callAuthenticated registered =
     pure $ do
       ControlPlaneResponse status body <-
         mapLeft PulumiCheckpointTransportFailed attempted
+      case classifyAuthenticatedRolePlainResponse status body of
+        AuthenticatedRolePlainResponseKnown AuthenticatedRoleReadReplayRequiresFreshNonce ->
+          Left
+            ( PulumiCheckpointRemoteRefused
+                "checkpoint observation replay requires a fresh nonce; retry the observation"
+            )
+        _ -> Right ()
       decoded <-
         mapLeft
           PulumiCheckpointResponseDecodeFailed

@@ -56,6 +56,7 @@ module Prodbox.Lifecycle.CleanupRunEntry
   , LifecycleCleanupClientError (..)
   , observeLifecycleCleanupResult
   , lifecycleCleanupNodesSucceeded
+  , lifecycleCleanupTerminalAuditSucceeded
   , lifecycleCleanupResultSucceeded
   )
 where
@@ -145,6 +146,7 @@ import Prodbox.Lifecycle.Teardown.Graph
   , compiledDesiredAbsenceObservationScope
   , compiledDesiredAbsenceOperations
   , compiledDesiredAbsenceRunId
+  , perRunTerminalAuditNodeId
   )
 import Prodbox.Lifecycle.Teardown.Model
   ( CleanupSurface (Cascade, ExplicitPerRun)
@@ -1235,3 +1237,13 @@ validateCompactionReadBack binding expectedReportDigest observed =
         )
  where
   expectedDescriptorDigest = registeredBindingDescriptorDigest binding
+
+-- | Only the registered terminal audit node's committed successful state is
+-- evidence for credential retirement. An older resource-only report cannot
+-- acquire an audit merely by having no failed resource nodes.
+lifecycleCleanupTerminalAuditSucceeded :: LifecycleCleanupResult -> Bool
+lifecycleCleanupTerminalAuditSucceeded result = case (result, perRunTerminalAuditNodeId) of
+  (LifecycleCleanupReportObserved report, Right nodeId) -> case Map.lookup nodeId (cleanupReportNodeStates report) of
+    Just (CleanupNodeCompleted _ CleanupNodeSucceeded) -> True
+    _ -> False
+  _ -> False

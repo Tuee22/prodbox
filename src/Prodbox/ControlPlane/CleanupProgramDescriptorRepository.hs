@@ -10,6 +10,8 @@ module Prodbox.ControlPlane.CleanupProgramDescriptorRepository
   , committedCleanupProgramDescriptorRunId
   , committedCleanupProgramDescriptorSurface
   , committedCleanupProgramDescriptorFoundation
+  , committedCleanupProgramDescriptorObservationScope
+  , committedCleanupProgramDescriptorNodeIds
   , committedCleanupProgramDescriptorAwsScope
   , committedCleanupProgramDescriptorAwsDnsZone
   , committedCleanupProgramDescriptorRegistryRevision

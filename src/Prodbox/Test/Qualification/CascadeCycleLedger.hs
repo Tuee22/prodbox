@@ -125,6 +125,8 @@ data CycleFailureClass
   | -- | The executable source could not be captured again, so the cycle cannot
     -- say it ended on the source it began with.
     FailedSourceRecapture
+  | -- | Cleanup recovered a registered run or reused a previous attempt's id.
+    FailedHistoricalRecovery
   deriving stock (Bounded, Enum, Eq, Ord, Show)
 
 data CycleOutcome
@@ -578,6 +580,7 @@ renderCycleOutcome outcome = case outcome of
   CycleFailed FailedLifecycleNotSucceeded -> "failed-lifecycle-not-succeeded"
   CycleFailed FailedEvidenceWrite -> "failed-evidence-write"
   CycleFailed FailedSourceRecapture -> "failed-source-recapture"
+  CycleFailed FailedHistoricalRecovery -> "failed-historical-recovery"
   CycleSourceDrifted -> "source-drifted"
 
 parseOutcome :: Text -> Maybe CycleOutcome

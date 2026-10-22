@@ -79,10 +79,15 @@ module Prodbox.Lifecycle.Teardown.CascadeCandidate.Internal
     -- * The drive
   , CascadeCandidateOutcome (..)
   , runCascadeCandidate
+  , CascadeCandidateHostResume
+  , observeCascadeCandidateHostResume
+  , cascadeCandidateHostResumeInputs
+  , runCascadeCandidateHostResume
 
     -- * Non-authorizing diagnostics
   , CascadeCandidateRegression
   , fixedCascadeCandidateRegression
+  , fixedCascadeCandidateEpochChecks
   , cascadeCandidatePlanIsDeterministic
   , cascadeCandidateTerminalOperationIsCompiled
   , cascadeCandidateDeclaredLeaseIsRequired
@@ -96,7 +101,9 @@ module Prodbox.Lifecycle.Teardown.CascadeCandidate.Internal
 where
 
 import Data.Bifunctor (first)
+import Data.List.NonEmpty (NonEmpty ((:|)))
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Numeric.Natural (Natural)
 import Prodbox.Aws.Region (canonicalRegressionAwsRegion)
@@ -108,7 +115,9 @@ import Prodbox.ControlPlane.CascadeHostRuntime.Internal
   ( mkCascadeHostRuntime
   )
 import Prodbox.ControlPlane.CascadePreUninstallRuntime.Internal
-  ( mkCascadePreUninstallRuntime
+  ( fixedCascadePreUninstallEpochChecks
+  , mkCascadePreUninstallRuntime
+  , retireCascadePreUninstallCredentialInternal
   )
 import Prodbox.ControlPlane.CleanupRunClient
   ( descriptorBoundCleanupRunClient
@@ -158,7 +167,7 @@ import Prodbox.Lifecycle.CleanupRunEntry
   , LifecycleCleanupClientError
   , LifecycleCleanupDescriptor
   , LifecycleCleanupDescriptorError
-  , LifecycleCleanupResult
+  , LifecycleCleanupResult (LifecycleCleanupReportObserved)
   , RegisteredLifecycleCleanup
   , attachLifecycleCleanupPrimaryOutcome
   , claimLifecycleCleanupRun
@@ -173,21 +182,56 @@ import Prodbox.Lifecycle.CleanupRunEntry
   )
 import Prodbox.Lifecycle.CleanupRunRunner
   ( CleanupRunDriverError
-  , resumeDescriptorBoundDurableCleanupWithContext
+  , DescriptorBoundCleanupProgress (..)
+  , resumeDescriptorBoundCleanupBeforeLocalUninstall
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.HarnessCredential
+  ( HarnessCredentialRevocationEvidence
   )
 import Prodbox.Lifecycle.DnsRecord (HostedZoneId, mkHostedZoneId)
 import Prodbox.Lifecycle.HostCleanupCompositionRoot
   ( HostCleanupCompositionError
   , HostCleanupCompositionInputs (..)
+  , HostCleanupLocalComposition
   , HostCleanupProductionRuntime (..)
+  , HostCleanupTerminalComposition
+  , hostCleanupLocalIntentStore
+  , hostCleanupLocalTerminalComposition
+  , hostCleanupTerminalIntentStore
+  , hostCleanupTerminalRunnerEffects
   , renderHostCleanupCompositionError
+  , resolveHostCleanupLocalComposition
+  , resolveHostCleanupTerminalComposition
   , withHostCleanupProductionSources
   )
 import Prodbox.Lifecycle.HostCleanupIntent
-  ( HostTerminalPermitId
+  ( HostCleanupIntent
+  , HostCleanupIntentError
+  , HostCleanupIntentPhase (..)
+  , HostCleanupTerminalHandoff
+  , HostTerminalPermitId
+  , hostCleanupFoundationId
+  , hostCleanupGraphDigest
+  , hostCleanupIntentPhase
+  , hostCleanupObservationEvidenceScope
+  , hostCleanupRun
+  , hostCleanupRunId
+  , hostCleanupScope
+  , hostCleanupTerminalHandoffDescriptorDigest
+  , hostCleanupTerminalHandoffIntent
   , hostCleanupTerminalIdentity
   , hostCleanupTerminalOperationId
+  , hostCleanupTerminalPermitId
+  , mkHostCleanupIntent
   , mkHostTerminalPermitId
+  , observeHostCleanupIntent
+  , observeHostCleanupTerminalHandoff
+  , persistHostCleanupTerminalHandoff
+  )
+import Prodbox.Lifecycle.HostCleanupRunner
+  ( HostCleanupRunnerError
+  , runHostCleanupTerminalHandoff
+  , stepHostCleanupRunner
   )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (ObserveProviderAwsScope)
@@ -205,8 +249,9 @@ import Prodbox.Lifecycle.Teardown.CloudRuntimeProduction
 import Prodbox.Lifecycle.Teardown.Graph
   ( CompiledDesiredAbsenceProgram
   , DesiredAbsenceGraphError
-  , compileDesiredAbsenceGraph
+  , compileDesiredAbsenceGraphWithBindings
   , compiledDesiredAbsenceGraph
+  , compiledDesiredAbsenceObservationScope
   , compiledDesiredAbsenceOperations
   )
 import Prodbox.Lifecycle.Teardown.Model
@@ -216,6 +261,9 @@ import Prodbox.Lifecycle.Teardown.Model
   , CleanupSurface (Cascade)
   , CleanupSurfaceWitness (CascadeSurface)
   , LinuxRke2FoundationId (..)
+  , evidenceAwsDnsZone
+  , evidenceAwsScope
+  , evidenceResourceScopeBindings
   )
 import Prodbox.Lifecycle.Teardown.Program
   ( SomeTeardownOperation (SomeTeardownOperation)
@@ -224,9 +272,19 @@ import Prodbox.Lifecycle.Teardown.Program
 import Prodbox.Lifecycle.Teardown.ProviderDispatch
   ( productionTeardownProviderBoundary
   )
-import Prodbox.Lifecycle.Teardown.RetainedInventory
-  ( RetainedNameBinding
+import Prodbox.Lifecycle.Teardown.ResourceScopeBindings
+  ( InviteMailSelector (ValidationInviteDomain)
+  , ResourceScopeBindings
+  , emptyResourceScopeBindings
+  , mkHomeDns01Scope
+  , mkInviteMailScope
+  , mkResourceScopeBindingsWithAudit
+  , resourceScopeAuditRetainedNames
+  , resourceScopeHomeDns01
+  , resourceScopeInviteMail
   )
+import Prodbox.Lifecycle.Teardown.RetainedInventory (mkRetainedNameBinding)
+import Prodbox.Settings.Coordinate (mkS3BucketName)
 
 -- ---------------------------------------------------------------------------
 -- What the caller supplies
@@ -239,6 +297,7 @@ data CascadeCandidateInputs = CascadeCandidateInputs
   , cascadeCandidateOwner :: !CleanupOwnerId
   , cascadeCandidateFoundation :: !LinuxRke2FoundationId
   , cascadeCandidateAwsDnsZone :: !(Maybe HostedZoneId)
+  , cascadeCandidateResourceScopeBindings :: !ResourceScopeBindings
   , cascadeCandidateTerminalPermitId :: !HostTerminalPermitId
   , cascadeCandidateDeclaredLeaseMicros :: !Natural
   -- ^ The initial run's declared lease window.  It is digested into the
@@ -253,7 +312,7 @@ data CascadeCandidateInputs = CascadeCandidateInputs
 -- cannot name different identities.
 data CascadeCandidateEnvironment = CascadeCandidateEnvironment
   { cascadeCandidateComposition :: !HostCleanupCompositionInputs
-  , cascadeCandidateRetainedNameBinding :: !RetainedNameBinding
+  , cascadeCandidateRevokeProviderCredential :: !(IO (Either Text HarnessCredentialRevocationEvidence))
   , cascadeCandidateKubectlPath :: !FilePath
   , cascadeCandidateKubectlEnvironment :: ![(String, String)]
   , cascadeCandidateKubectlWorkingDirectory :: !(Maybe FilePath)
@@ -318,14 +377,26 @@ resolveCascadeCandidatePlan
   -> CascadeCandidateInputs
   -> Either CascadeCandidateError CascadeCandidatePlan
 resolveCascadeCandidatePlan awsScope inputs = do
+  let bindings = cascadeCandidateResourceScopeBindings inputs
+  case ( resourceScopeHomeDns01 bindings
+       , resourceScopeInviteMail bindings
+       , resourceScopeAuditRetainedNames bindings
+       ) of
+    (Just _, Just _, Just _) -> Right ()
+    _ ->
+      Left
+        ( CascadeCandidateResourceScopeInvalid
+            "home DNS01, validation mail and retained audit names must all be sealed before registration"
+        )
   compiled <-
     first
       CascadeCandidateProgramUncompilable
-      ( compileDesiredAbsenceGraph
+      ( compileDesiredAbsenceGraphWithBindings
           runId
           (cascadeCandidateFoundation inputs)
           (Just awsScope)
           (cascadeCandidateAwsDnsZone inputs)
+          (Just bindings)
           CascadeSurface
       )
   let graph = compiledDesiredAbsenceGraph compiled
@@ -377,10 +448,17 @@ data CascadeCandidateError
   | CascadeCandidateDriveFailed !CleanupRunDriverError
   | CascadeCandidateHostIntentRetirementFailed
       !LifecycleCleanupClientError
+  | CascadeCandidateHostHandoffFailed !HostCleanupIntentError
+  | CascadeCandidateHostHandoffBindingMismatch !Text
+  | CascadeCandidateHostTerminalFailed !HostCleanupRunnerError
+  | CascadeCandidateCredentialRetirementFailed !Text
+  | CascadeCandidateResourceScopeInvalid !Text
   deriving stock (Eq, Show)
 
 renderCascadeCandidateError :: CascadeCandidateError -> String
 renderCascadeCandidateError = \case
+  CascadeCandidateResourceScopeInvalid detail ->
+    "the cascade resource scope cannot be sealed: " ++ Text.unpack detail
   CascadeCandidateProgramUncompilable err ->
     "the cascade program could not be compiled: " ++ show err
   CascadeCandidateInitialRunInvalid err ->
@@ -410,14 +488,56 @@ renderCascadeCandidateError = \case
     "the cascade could not be driven to a terminal run: " ++ show err
   CascadeCandidateHostIntentRetirementFailed err ->
     "the cascade terminal host intent could not be retired: " ++ show err
+  CascadeCandidateHostHandoffFailed err ->
+    "the cascade terminal handoff could not be observed or persisted: " ++ show err
+  CascadeCandidateHostHandoffBindingMismatch detail ->
+    "the cascade terminal handoff does not match this invocation: " ++ Text.unpack detail
+  CascadeCandidateCredentialRetirementFailed detail ->
+    "the cascade Provider credential retirement remains unresolved: " ++ Text.unpack detail
+  CascadeCandidateHostTerminalFailed err ->
+    "the cascade local completion remains unresolved: " ++ show err
 
 -- ---------------------------------------------------------------------------
 -- The drive
 -- ---------------------------------------------------------------------------
 
+-- | A retained host binding already records the scope observed before its
+-- registration.  Its exact descriptor is checked again by registration before
+-- any Provider work; probing a new scope after the terminal fence is invalid.
+data CascadeCandidateScopeResolution
+  = CascadeCandidateObserveAwsScope
+  | CascadeCandidateResumeObservedScope !AwsScope !CascadeCandidatePlan
+
+resolveCascadeCandidateScope
+  :: CascadeCandidateInputs
+  -> Maybe HostCleanupIntent
+  -> Either CascadeCandidateError CascadeCandidateScopeResolution
+resolveCascadeCandidateScope _ Nothing = Right CascadeCandidateObserveAwsScope
+resolveCascadeCandidateScope inputs (Just intent) =
+  case evidenceAwsScope (hostCleanupObservationEvidenceScope (hostCleanupScope intent)) of
+    Nothing -> Left (CascadeCandidateHostHandoffBindingMismatch "the retained host scope has no AWS identity")
+    Just awsScope -> do
+      plan <- resolveCascadeCandidatePlan awsScope inputs
+      if candidateHostIntentMatchesPlan plan intent
+        then Right (CascadeCandidateResumeObservedScope awsScope plan)
+        else
+          Left
+            (CascadeCandidateHostHandoffBindingMismatch "the retained host run, scope or terminal permit differs")
+
+candidateHostIntentMatchesPlan :: CascadeCandidatePlan -> HostCleanupIntent -> Bool
+candidateHostIntentMatchesPlan plan intent =
+  let expected = lifecycleCleanupDescriptorHostIntent (internalCandidateDescriptor plan)
+   in hostCleanupRun expected == hostCleanupRun intent
+        && hostCleanupScope expected == hostCleanupScope intent
+        && hostCleanupTerminalIdentity expected == hostCleanupTerminalIdentity intent
+
+data CascadeCandidateRemoteOutcome
+  = CascadeCandidateRemoteTerminal !CascadeCandidateOutcome
+  | CascadeCandidateRemoteHandoff !HostCleanupTerminalHandoff !HostCleanupLocalComposition
+
 -- | Drive one cascade to a terminal durable run and observe its report.
 --
--- Nothing in this repository calls this function.  Activating it as the public
+-- Qualification is the current caller.  Activating it as the public
 -- @cluster delete --cascade@ writer, and deleting the legacy route it would
 -- replace, is Sprint @6.5@'s qualified single-writer cutover.
 runCascadeCandidate
@@ -431,15 +551,66 @@ runCascadeCandidate inputs environment =
   case resolveCascadeCandidatePlan regressionAwsScope inputs of
     Left err -> pure (Left err)
     Right _ -> do
-      composed <-
-        withHostCleanupProductionSources
-          (cascadeCandidateComposition environment)
-          driveAfterScopeObservation
-      pure $ case composed of
-        Left err -> Left (CascadeCandidateCompositionFailed err)
-        Right result -> result
+      resolved <- resolveHostCleanupLocalComposition (cascadeCandidateComposition environment)
+      case resolved of
+        Left err -> pure (Left (CascadeCandidateCompositionFailed err))
+        Right local -> do
+          observed <-
+            observeHostCleanupTerminalHandoff (hostCleanupLocalIntentStore local) (cascadeCandidateRunId inputs)
+          case observed of
+            Left err -> pure (Left (CascadeCandidateHostHandoffFailed err))
+            Right (Just handoff) -> finishLocal local handoff
+            Right Nothing -> do
+              composed <-
+                withHostCleanupProductionSources
+                  (cascadeCandidateComposition environment)
+                  driveAfterScopeObservation
+              case composed of
+                Left err -> pure (Left (CascadeCandidateCompositionFailed err))
+                Right (Left err) -> pure (Left err)
+                Right (Right (CascadeCandidateRemoteTerminal outcome)) -> pure (Right outcome)
+                Right (Right (CascadeCandidateRemoteHandoff handoff resolvedLocal)) ->
+                  -- All authentication/session finalizers have completed here.
+                  finishLocal resolvedLocal handoff
  where
+  finishLocal local handoff =
+    finishCascadeCandidateHostHandoff
+      (hostCleanupRepositoryRoot (cascadeCandidateComposition environment))
+      inputs
+      (hostCleanupLocalTerminalComposition local)
+      handoff
+
+  armTerminalHost runtime = go (2 :: Int)
+   where
+    store = hostCleanupProductionIntentStore runtime
+    go remaining = do
+      observed <- observeHostCleanupIntent store
+      case observed of
+        Left err -> pure (Left (CascadeCandidateHostHandoffFailed err))
+        Right (Just intent) -> case hostCleanupIntentPhase intent of
+          HostCleanupTerminalArmed -> pure (Right ())
+          phase | phase `elem` [HostCleanupPrepared, HostCleanupAuthorityAccepted] && remaining > 0 -> do
+            stepped <- stepHostCleanupRunner store (hostCleanupProductionEffects runtime) Nothing
+            case stepped of
+              Left err -> pure (Left (CascadeCandidateHostTerminalFailed err))
+              Right _ -> go (remaining - 1)
+          _ ->
+            pure
+              ( Left
+                  (CascadeCandidateHostHandoffBindingMismatch "the host is outside its pre-uninstall arming phases")
+              )
+        Right Nothing -> pure (Left (CascadeCandidateHostHandoffBindingMismatch "the host intent is missing"))
+
   driveAfterScopeObservation runtime = do
+    observed <- observeHostCleanupIntent (hostCleanupProductionIntentStore runtime)
+    case observed of
+      Left err -> pure (Left (CascadeCandidateHostHandoffFailed err))
+      Right intent -> case resolveCascadeCandidateScope inputs intent of
+        Left err -> pure (Left err)
+        Right (CascadeCandidateResumeObservedScope awsScope plan) -> drive awsScope plan runtime
+        Right CascadeCandidateObserveAwsScope -> observeFreshScope runtime
+
+  observeFreshScope runtime = do
     let transport = hostCleanupProductionAuthorityTransport runtime
     case cascadeScopeSubmissionKey inputs of
       Left err -> pure (Left (CascadeCandidateScopeSubmissionKeyInvalid err))
@@ -470,7 +641,6 @@ runCascadeCandidate inputs environment =
           mkCascadeHostRuntime store (hostCleanupProductionEffects runtime)
         cascadePreUninstall =
           mkCascadePreUninstallRuntime
-            (cascadeCandidateRetainedNameBinding environment)
             (hostCleanupProductionCascadeReportAuthority runtime)
             (hostCleanupProductionCleanupReportBackup runtime)
             ( productionTeardownProviderBoundary
@@ -478,6 +648,8 @@ runCascadeCandidate inputs environment =
                 (hostCleanupRepositoryRoot composition)
             )
             store
+            transport
+            (hostCleanupProductionProviderCredentialGeneration runtime)
         client = descriptorBoundCleanupRunClient transport
         descriptor = internalCandidateDescriptor plan
         composition = cascadeCandidateComposition environment
@@ -525,7 +697,7 @@ runCascadeCandidate inputs environment =
                   Left err -> pure (Left (CascadeCandidateClaimFailed err))
                   Right ready -> do
                     driven <-
-                      resumeDescriptorBoundDurableCleanupWithContext
+                      resumeDescriptorBoundCleanupBeforeLocalUninstall
                         client
                         owner
                         ( descriptorBoundLifecycleNodeActionInternal
@@ -537,7 +709,24 @@ runCascadeCandidate inputs environment =
                         (registeredLifecycleCleanupBoundRun ready)
                     case driven of
                       Left err -> pure (Left (CascadeCandidateDriveFailed err))
-                      Right _ -> do
+                      Right (DescriptorBoundCleanupPaused bound) -> do
+                        retired <-
+                          retireCascadePreUninstallCredentialInternal
+                            cascadePreUninstall
+                            bound
+                            (cascadeCandidateRevokeProviderCredential environment)
+                        case retired of
+                          Left detail -> pure (Left (CascadeCandidateCredentialRetirementFailed detail))
+                          Right confirmation -> do
+                            armed <- armTerminalHost runtime
+                            case armed of
+                              Left err -> pure (Left err)
+                              Right () -> do
+                                persisted <- persistHostCleanupTerminalHandoff store bound confirmation
+                                pure $ case persisted of
+                                  Left err -> Left (CascadeCandidateHostHandoffFailed err)
+                                  Right handoff -> Right (CascadeCandidateRemoteHandoff handoff (hostCleanupProductionLocalComposition runtime))
+                      Right (DescriptorBoundCleanupTerminal _) -> do
                         retired <-
                           retireTerminalLifecycleCleanupHostIntent
                             (PrepareHostUninstallRecord store)
@@ -561,14 +750,16 @@ runCascadeCandidate inputs environment =
                                 ready
                             pure
                               ( Right
-                                  CascadeCandidateOutcome
-                                    { cascadeCandidateOutcomeAwsScope = awsScope
-                                    , cascadeCandidateOutcomeGraphDigest =
-                                        internalCandidateGraphDigest plan
-                                    , cascadeCandidateOutcomeDescriptorDigest =
-                                        cascadeCandidatePlanDescriptorDigest plan
-                                    , cascadeCandidateOutcomeLifecycleResult = result
-                                    }
+                                  ( CascadeCandidateRemoteTerminal
+                                      CascadeCandidateOutcome
+                                        { cascadeCandidateOutcomeAwsScope = awsScope
+                                        , cascadeCandidateOutcomeGraphDigest =
+                                            internalCandidateGraphDigest plan
+                                        , cascadeCandidateOutcomeDescriptorDigest =
+                                            cascadeCandidatePlanDescriptorDigest plan
+                                        , cascadeCandidateOutcomeLifecycleResult = result
+                                        }
+                                  )
                               )
 
   owner = cascadeCandidateOwner inputs
@@ -589,6 +780,115 @@ runCascadeCandidate inputs environment =
       }
    where
     composition = cascadeCandidateComposition candidateEnvironment
+
+finishCascadeCandidateHostHandoff
+  :: FilePath
+  -> CascadeCandidateInputs
+  -> HostCleanupTerminalComposition
+  -> HostCleanupTerminalHandoff
+  -> IO (Either CascadeCandidateError CascadeCandidateOutcome)
+finishCascadeCandidateHostHandoff repositoryRoot inputs local handoff = do
+  let snapshot = hostCleanupTerminalHandoffIntent handoff
+  case evidenceAwsScope (hostCleanupObservationEvidenceScope (hostCleanupScope snapshot)) of
+    Nothing -> pure (Left (CascadeCandidateHostHandoffBindingMismatch "the stored scope has no AWS identity"))
+    Just awsScope -> case resolveCascadeCandidatePlan awsScope inputs of
+      Left err -> pure (Left err)
+      Right plan
+        | cascadeCandidatePlanDescriptorDigest plan /= hostCleanupTerminalHandoffDescriptorDigest handoff
+            || not (candidateHostIntentMatchesPlan plan snapshot) ->
+            pure
+              ( Left
+                  (CascadeCandidateHostHandoffBindingMismatch "run, graph, descriptor or terminal permit differs")
+              )
+        | otherwise -> do
+            completed <-
+              runHostCleanupTerminalHandoff
+                (hostCleanupTerminalIntentStore local)
+                ( hostCleanupTerminalRunnerEffects
+                    repositoryRoot
+                    local
+                )
+                handoff
+            pure $ case completed of
+              Left err -> Left (CascadeCandidateHostTerminalFailed err)
+              Right (_, report) ->
+                Right
+                  CascadeCandidateOutcome
+                    { cascadeCandidateOutcomeAwsScope = awsScope
+                    , cascadeCandidateOutcomeGraphDigest = internalCandidateGraphDigest plan
+                    , cascadeCandidateOutcomeDescriptorDigest = cascadeCandidatePlanDescriptorDigest plan
+                    , cascadeCandidateOutcomeLifecycleResult = LifecycleCleanupReportObserved report
+                    }
+
+-- | An observed, credential-retired handoff and its native-only interpreter.
+-- Neither a constructor nor an arbitrary action escapes this private owner.
+data CascadeCandidateHostResume
+  = CascadeCandidateHostResume
+      !FilePath
+      !CascadeCandidateInputs
+      !HostCleanupTerminalComposition
+      !HostCleanupTerminalHandoff
+
+cascadeCandidateHostResumeInputs :: CascadeCandidateHostResume -> CascadeCandidateInputs
+cascadeCandidateHostResumeInputs (CascadeCandidateHostResume _ inputs _ _) = inputs
+
+restoreCascadeCandidateInputs
+  :: HostCleanupIntent -> Either CascadeCandidateError CascadeCandidateInputs
+restoreCascadeCandidateInputs intent = do
+  let initial = hostCleanupRun intent
+      scope = hostCleanupObservationEvidenceScope (hostCleanupScope intent)
+  bindings <-
+    maybe
+      ( Left
+          (CascadeCandidateResourceScopeInvalid "the historical handoff has no sealed resource coordinates")
+      )
+      Right
+      (evidenceResourceScopeBindings scope)
+  Right
+    CascadeCandidateInputs
+      { cascadeCandidateRunId = hostCleanupRunId intent
+      , cascadeCandidateOwner = cleanupLeaseOwner (cleanupRunLease initial)
+      , cascadeCandidateFoundation = hostCleanupFoundationId (hostCleanupScope intent)
+      , cascadeCandidateAwsDnsZone = evidenceAwsDnsZone scope
+      , cascadeCandidateResourceScopeBindings = bindings
+      , cascadeCandidateTerminalPermitId = hostCleanupTerminalPermitId (hostCleanupTerminalIdentity intent)
+      , cascadeCandidateDeclaredLeaseMicros = cleanupLeaseExpiresAtMicros (cleanupRunLease initial)
+      }
+
+observeCascadeCandidateHostResume
+  :: FilePath -> CleanupRunId -> IO (Either CascadeCandidateError (Maybe CascadeCandidateHostResume))
+observeCascadeCandidateHostResume repositoryRoot runId = do
+  resolved <- resolveHostCleanupTerminalComposition repositoryRoot
+  case resolved of
+    Left err -> pure (Left (CascadeCandidateCompositionFailed err))
+    Right local -> do
+      observed <- observeHostCleanupTerminalHandoff (hostCleanupTerminalIntentStore local) runId
+      pure $ case observed of
+        Left err -> Left (CascadeCandidateHostHandoffFailed err)
+        Right Nothing -> Right Nothing
+        Right (Just handoff) -> do
+          let intent = hostCleanupTerminalHandoffIntent handoff
+              scope = hostCleanupObservationEvidenceScope (hostCleanupScope intent)
+          inputs <- restoreCascadeCandidateInputs intent
+          aws <-
+            maybe
+              (Left (CascadeCandidateHostHandoffBindingMismatch "the historical handoff has no AWS identity"))
+              Right
+              (evidenceAwsScope scope)
+          plan <- resolveCascadeCandidatePlan aws inputs
+          if candidateHostIntentMatchesPlan plan intent
+            && cascadeCandidatePlanDescriptorDigest plan == hostCleanupTerminalHandoffDescriptorDigest handoff
+            then Right (Just (CascadeCandidateHostResume repositoryRoot inputs local handoff))
+            else
+              Left
+                ( CascadeCandidateHostHandoffBindingMismatch
+                    "the native resume differs from the exact historical program"
+                )
+
+runCascadeCandidateHostResume
+  :: CascadeCandidateHostResume -> IO (Either CascadeCandidateError CascadeCandidateOutcome)
+runCascadeCandidateHostResume (CascadeCandidateHostResume repositoryRoot inputs local handoff) =
+  finishCascadeCandidateHostHandoff repositoryRoot inputs local handoff
 
 currentEpochMicros :: IO Natural
 currentEpochMicros = do
@@ -611,6 +911,9 @@ cascadeScopeSubmissionKey inputs =
 -- | Fixed, non-authorizing diagnostics.  No plan, descriptor, transport, or
 -- runtime escapes the public facade; holding one of these booleans authorizes
 -- nothing.
+fixedCascadeCandidateEpochChecks :: IO (Either Text [(Text, Bool)])
+fixedCascadeCandidateEpochChecks = fixedCascadePreUninstallEpochChecks
+
 data CascadeCandidateRegression
   = CascadeCandidateRegression !Bool !Bool !Bool !Bool !Bool !Bool
 
@@ -671,7 +974,88 @@ fixedCascadeCandidateRegression =
       (Right left, Right other) ->
         cascadeCandidatePlanDescriptorDigest left
           /= cascadeCandidatePlanDescriptorDigest other
+          && retainedScopeBinding left
+          && resourceBindingIsSealed left
+          && case restoreCascadeCandidateInputs
+            (lifecycleCleanupDescriptorHostIntent (internalCandidateDescriptor left)) of
+            Left _ -> False
+            Right restored -> case resolveCascadeCandidatePlan regressionAwsScope restored of
+              Left _ -> False
+              Right replay -> cascadeCandidatePlanDescriptorDigest replay == cascadeCandidatePlanDescriptorDigest left
       _ -> False
+
+  retainedScopeBinding plan =
+    let intent = lifecycleCleanupDescriptorHostIntent (internalCandidateDescriptor plan)
+        neighborInputs = regressionInputs {cascadeCandidateFoundation = LinuxRke2FoundationId "neighbor-foundation"}
+        permitInputs = do
+          permit <-
+            first
+              (const ("neighbor permit invalid" :: Text))
+              (mkHostTerminalPermitId "neighbor-terminal-permit")
+          Right regressionInputs {cascadeCandidateTerminalPermitId = permit}
+        refused result = case result of Left _ -> True; Right _ -> False
+        resumes result = case result of
+          Right (CascadeCandidateResumeObservedScope scope restored) ->
+            scope == regressionAwsScope
+              && cascadeCandidatePlanDescriptorDigest restored == cascadeCandidatePlanDescriptorDigest plan
+          _ -> False
+     in case ( resolveCascadeCandidatePlan regressionAwsScope neighborInputs
+             , permitInputs
+                 >>= first (const "neighbor plan invalid") . resolveCascadeCandidatePlan regressionAwsScope
+             ) of
+          (Right neighbor, Right permitPlan) ->
+            let swappedScope =
+                  mkHostCleanupIntent
+                    (hostCleanupRunId intent)
+                    (hostCleanupGraphDigest intent)
+                    (hostCleanupRun intent)
+                    (hostCleanupScope (lifecycleCleanupDescriptorHostIntent (internalCandidateDescriptor neighbor)))
+                    (hostCleanupTerminalIdentity intent)
+                unbound = case resolveCascadeCandidateScope regressionInputs Nothing of
+                  Right CascadeCandidateObserveAwsScope -> True
+                  _ -> False
+             in unbound
+                  && resumes (resolveCascadeCandidateScope regressionInputs (Just intent))
+                  && refused
+                    ( resolveCascadeCandidateScope
+                        regressionInputs
+                        (Just (lifecycleCleanupDescriptorHostIntent (internalCandidateDescriptor permitPlan)))
+                    )
+                  && case swappedScope of
+                    Left _ -> False
+                    Right changed -> refused (resolveCascadeCandidateScope regressionInputs (Just changed))
+          _ -> False
+
+  resourceBindingIsSealed plan =
+    let original = cascadeCandidateResourceScopeBindings regressionInputs
+        intent = lifecycleCleanupDescriptorHostIntent (internalCandidateDescriptor plan)
+        names =
+          unsafeFixed
+            ( mkRetainedNameBinding
+                "changed-state"
+                "prodbox-fixed-ses-capture"
+                "fixed.example.test"
+                "aws-eks-test-cluster"
+            )
+        changed =
+          mkResourceScopeBindingsWithAudit
+            (resourceScopeHomeDns01 original)
+            (resourceScopeInviteMail original)
+            names
+        changedInputs = regressionInputs {cascadeCandidateResourceScopeBindings = changed}
+        emptyInputs = regressionInputs {cascadeCandidateResourceScopeBindings = emptyResourceScopeBindings}
+     in evidenceResourceScopeBindings
+          (compiledDesiredAbsenceObservationScope (internalCandidateProgram plan))
+          == Just original
+          && case resolveCascadeCandidatePlan regressionAwsScope emptyInputs of
+            Left (CascadeCandidateResourceScopeInvalid _) -> case resolveCascadeCandidatePlan regressionAwsScope changedInputs of
+              Right neighbor ->
+                cascadeCandidatePlanDescriptorDigest neighbor /= cascadeCandidatePlanDescriptorDigest plan
+                  && case resolveCascadeCandidateScope changedInputs (Just intent) of
+                    Left (CascadeCandidateHostHandoffBindingMismatch _) -> True
+                    _ -> False
+              _ -> False
+            _ -> False
 
   primaryResumePreserves =
     cascadePrimaryPreparationFromOutcome Nothing == CascadePrimaryAttachSucceeded
@@ -847,9 +1231,31 @@ regressionInputs =
     , cascadeCandidateFoundation = LinuxRke2FoundationId "foundation/home"
     , cascadeCandidateAwsDnsZone =
         Just (unsafeFixed (mkHostedZoneId "Z0123456789ABCDEFGHIJ"))
+    , cascadeCandidateResourceScopeBindings = regressionResourceBindings
     , cascadeCandidateTerminalPermitId = regressionPermitId
     , cascadeCandidateDeclaredLeaseMicros = 1_000_000
     }
+
+regressionResourceBindings :: ResourceScopeBindings
+regressionResourceBindings = mkResourceScopeBindingsWithAudit (Just home) (Just mail) names
+ where
+  home =
+    unsafeFixed
+      (mkHomeDns01Scope (unsafeFixed (mkHostedZoneId "ZPARENTEXAMPLE")) ("home.example.test" :| []))
+  mail =
+    unsafeFixed
+      ( mkInviteMailScope
+          (unsafeFixed (mkS3BucketName "prodbox-fixed-ses-capture"))
+          (ValidationInviteDomain "receive.example.test")
+      )
+  names =
+    unsafeFixed
+      ( mkRetainedNameBinding
+          "prodbox-fixed-state"
+          "prodbox-fixed-ses-capture"
+          "fixed.example.test"
+          "aws-eks-test-cluster"
+      )
 
 regressionAwsScope :: AwsScope
 regressionAwsScope =

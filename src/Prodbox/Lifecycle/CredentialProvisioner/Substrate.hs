@@ -302,9 +302,9 @@ controllerRoleBindingObject =
           ]
     ]
 
--- Lifecycle Authority may only perform named GET requests for the two bound
--- workload kinds used by expired-attempt recovery. This role deliberately
--- omits create, update, patch, delete, list, watch, attach, and log access.
+-- Named GETs prove expired-attempt absence. Bounded namespace lists prove
+-- legacy quiescence before the first global credential fence. No mutation,
+-- watch, attach or log permission belongs to the Authority.
 authorityObserverRoleObject :: Value
 authorityObserverRoleObject =
   object
@@ -312,8 +312,8 @@ authorityObserverRoleObject =
     , "kind" .= ("Role" :: Text)
     , "metadata" .= namespacedMetadata authorityObserverRoleName
     , "rules"
-        .= [ rule ["batch"] ["jobs"] ["get"]
-           , rule [""] ["pods"] ["get"]
+        .= [ rule ["batch"] ["jobs"] ["get", "list"]
+           , rule [""] ["pods"] ["get", "list"]
            ]
     ]
 

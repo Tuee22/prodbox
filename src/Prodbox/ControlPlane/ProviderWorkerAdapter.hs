@@ -59,6 +59,18 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Word (Word16)
 import GHC.Generics (Generic)
+import Prodbox.Ses.InviteEvidence
+  ( InviteMailPublicKey
+  , inviteMailPublicKeyText
+  , mkInviteMailPublicKey
+  , retiredInviteMailEvidence
+  )
+
+import Prodbox.Lifecycle.AwsTestCanary
+  ( TestVpcCanaryRequest
+  , testVpcCanaryRequestFromWireText
+  , testVpcCanaryRequestWireText
+  )
 import Prodbox.Lifecycle.CheckpointAuthority
   ( ModelBCasAdapter (..)
   , ModelBCasRequest (..)
@@ -79,6 +91,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , ProviderIntent (..)
   , ProviderIntentCoordinate
   , ProviderNativeStackFamilyRef
+  , ProviderNetworkPurgeMode (..)
   , ProviderOwnedTagQuery (..)
   , ProviderReadinessProbe (..)
   , ProviderRevision
@@ -107,7 +120,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkProviderAuditControl
   , mkProviderAuditTarget
   , mkProviderCheckpointRef
-  , mkProviderNativeStackFamilyRef
+  , mkProviderNativeStackFamilyWireRef
   , mkProviderRevision
   , mkProviderRunMarker
   , mkProviderSpotPriceQuery
@@ -124,9 +137,12 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , providerCheckpointRefText
   , providerIntentCoordinate
   , providerNativeStackFamilyAccountId
-  , providerNativeStackFamilyHostedZoneId
+  , providerNativeStackFamilyNetworkFamily
+  , providerNativeStackFamilyPurgeMode
   , providerNativeStackFamilyRegion
   , providerNativeStackFamilyStackRef
+  , providerNativeStackFamilyWireResource
+  , providerNativeStackFamilyWireSelector
   , providerRevisionNatural
   , providerRunMarkerRunScope
   , providerRunMarkerSubmission
@@ -147,7 +163,9 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , sesRuleSetRefText
   , validateProviderIntentEvidence
   , validateProviderStackConfig
+  , validateTestVpcCanaryRef
   )
+import Prodbox.Lifecycle.Teardown.ResourceScopeBindings
 
 -- | Authoritative observation of one mutation's exact postcondition.
 data ProviderEffectObservation
@@ -197,6 +215,10 @@ data ProviderIntentCapabilities m session = ProviderIntentCapabilities
       -> ProviderReadOnly m session
   , readBackRegisteredStackCapability
       :: ProviderStackRef
+      -> ProviderReadOnly m session
+  , previewRegisteredStackCapability
+      :: ProviderStackRef
+      -> ProviderStackConfig
       -> ProviderReadOnly m session
   , boundedScratchCheckpointCapability
       :: ProviderCheckpointRef
@@ -263,6 +285,7 @@ data ProviderIntentCapabilities m session = ProviderIntentCapabilities
   -- ^ Sprint 7.36: the DNS01 challenge record family, read-only.  There is no
   -- reap capability beside it: cert-manager's solver owns the record, so the
   -- removal is a Kubernetes owner delete outside the Provider's capability set.
+  , observeGlobalOwnedResourceTagsCapability :: ProviderOwnedTagQuery -> ProviderReadOnly m session
   , observeOwnedResourceTagsCapability
       :: ProviderOwnedTagQuery
       -> ProviderReadOnly m session
@@ -303,14 +326,16 @@ data ProviderIntentCapabilities m session = ProviderIntentCapabilities
       :: Text
       -> Text
       -> ProviderMutation m session
-  , observeSesInviteMailCapability
+  , observeHomeDns01RecordsCapability :: HomeDns01Scope -> ProviderReadOnly m session
+  , observeSesInviteMailResidueCapability :: InviteMailScope -> ProviderReadOnly m session
+  , reapSesInviteMailResidueCapability :: InviteMailScope -> ProviderMutation m session
+  , observeSealedSesInviteMailCapability
       :: Text
       -> Text
+      -> InviteMailPublicKey
       -> ProviderReadOnly m session
-  , reapSesInviteMailCapability
-      :: Text
-      -> Text
-      -> ProviderMutation m session
+  , plantTestVpcCanaryCapability
+      :: ProviderNativeStackFamilyRef -> TestVpcCanaryRequest -> ProviderMutation m session
   , ensureRetainedEbsVolumesCapability
       :: Text
       -> Text
@@ -483,6 +508,9 @@ validateProviderIntent intent = case intent of
     validateRef "stack" (mkProviderStackRef (providerStackRefText ref)) ref
   ReadBackRegisteredStack ref ->
     validateRef "stack" (mkProviderStackRef (providerStackRefText ref)) ref
+  PreviewRegisteredStack ref config -> do
+    validateRef "stack" (mkProviderStackRef (providerStackRefText ref)) ref
+    validateStackConfig ref config
   BoundedScratchCheckpoint ref ->
     validateRef "checkpoint" (mkProviderCheckpointRef (providerCheckpointRefText ref)) ref
   ReconcileSesSendingIdentity ref ->
@@ -561,6 +589,11 @@ validateProviderIntent intent = case intent of
   ReapEksLoadBalancerControllerFamily loadBalancerName tags -> do
     validateTextRef "eks-load-balancer-controller-name" loadBalancerName
     validateTextRef "eks-load-balancer-controller-tags" tags
+  ObserveGlobalOwnedResourceTags query -> case query of
+    ProviderOwnedTagKeyQuery key -> validateTextRef "owned-resource-tag-key" key
+    ProviderOwnedTagPairQuery key value -> do
+      validateTextRef "owned-resource-tag-key" key
+      validateTextRef "owned-resource-tag-value" value
   ObserveOwnedResourceTags query -> case query of
     ProviderOwnedTagKeyQuery key -> validateTextRef "owned-resource-tag-key" key
     ProviderOwnedTagPairQuery key value -> do
@@ -576,9 +609,18 @@ validateProviderIntent intent = case intent of
       Right actual
         | actual == request -> Right ()
         | otherwise -> Left (ProviderWorkStateIntentInvalid "eks-cluster-identity")
+  PlantTestVpcCanary ref request -> do
+    validateNativeStackFamilyRef ref
+    validateRef "test-vpc-canary-ref" (ref <$ validateTestVpcCanaryRef ref) ref
+    case testVpcCanaryRequestFromWireText (testVpcCanaryRequestWireText request) of
+      Right rebuilt | rebuilt == request -> Right ()
+      _ -> Left (ProviderWorkStateIntentInvalid "test-vpc-canary-request")
   ObserveNativeStackFamily ref config -> do
     validateNativeStackFamilyRef ref
     validateStackConfig (providerNativeStackFamilyStackRef ref) config
+    case providerNativeStackFamilyPurgeMode ref of
+      Just (NetworkPurgeApply _) -> Left (ProviderWorkStateIntentInvalid "purge apply selector on an observation")
+      _ -> Right ()
   ObserveAwsAudit target config control -> do
     validateRef
       "aws-audit-target"
@@ -595,14 +637,30 @@ validateProviderIntent intent = case intent of
   ReapNativeStackFamily ref config admittedIdentities -> do
     validateNativeStackFamilyRef ref
     validateStackConfig (providerNativeStackFamilyStackRef ref) config
-    validateNativeStackFamilyIdentities admittedIdentities
+    case (providerNativeStackFamilyPurgeMode ref, providerNativeStackFamilyNetworkFamily ref) of
+      (Just NetworkPurgePlan, _) -> Left (ProviderWorkStateIntentInvalid "purge plan selector on a mutation")
+      (Nothing, Nothing) -> validateNativeStackFamilyIdentities admittedIdentities
+      _ | null admittedIdentities -> Right ()
+      _ -> Left (ProviderWorkStateIntentInvalid "network-dependent repair member allowlist")
   EnsureValidationHostedZone nonce baseZone -> do
     validateTextRef "validation-zone-nonce" nonce
     validateTextRef "validation-zone-base" baseZone
-  ObserveSesInviteMail bucket recipient -> do
+  ObserveHomeDns01Records scope -> validateRef "home-dns01-scope" (homeDns01ScopeFromWireText (homeDns01ScopeWireText scope)) scope
+  ObserveSesInviteMailResidue scope ->
+    validateRef "invite-mail-scope" (inviteMailScopeFromWireText (inviteMailScopeWireText scope)) scope
+  ReapSesInviteMailResidue scope ->
+    validateRef "invite-mail-scope" (inviteMailScopeFromWireText (inviteMailScopeWireText scope)) scope
+  RetiredSesInviteMailObservation bucket recipient -> do
     validateTextRef "ses-invite-bucket" bucket
     validateTextRef "ses-invite-recipient" recipient
-  ReapSesInviteMail bucket recipient -> do
+  ObserveSealedSesInviteMail bucket recipient destination -> do
+    validateTextRef "ses-invite-bucket" bucket
+    validateTextRef "ses-invite-recipient" recipient
+    validateRef
+      "ses-invite-public-key"
+      (mkInviteMailPublicKey (inviteMailPublicKeyText destination))
+      destination
+  RetiredSesInviteMailCleanup bucket recipient -> do
     validateTextRef "ses-invite-bucket" bucket
     validateTextRef "ses-invite-recipient" recipient
   EnsureRetainedEbsVolumes volumeType specs -> do
@@ -641,11 +699,11 @@ validateProviderIntent intent = case intent of
   validateNativeStackFamilyRef ref =
     validateRef
       "native-stack-family"
-      ( mkProviderNativeStackFamilyRef
-          (providerNativeStackFamilyStackRef ref)
+      ( mkProviderNativeStackFamilyWireRef
+          (providerNativeStackFamilyWireResource ref)
           (providerNativeStackFamilyAccountId ref)
           (providerNativeStackFamilyRegion ref)
-          (providerNativeStackFamilyHostedZoneId ref)
+          (providerNativeStackFamilyWireSelector ref)
       )
       ref
   validateNativeStackFamilyIdentities identities
@@ -935,6 +993,7 @@ runIntentUnderSession
   -> m (Either Text Text)
 runIntentUnderSession adapter mode intent session =
   case operationForIntent (providerWorkerIntentCapabilities adapter) intent of
+    IntentRetired -> pure (Right retiredInviteMailEvidence)
     IntentReadOnly operation -> runProviderReadOnly operation session coordinate
     IntentMutation operation -> do
       before <- observeProviderMutation operation session coordinate
@@ -963,7 +1022,8 @@ runIntentUnderSession adapter mode intent session =
       Right () -> Right evidence
 
 data ProviderIntentOperation m session
-  = IntentMutation !(ProviderMutation m session)
+  = IntentRetired
+  | IntentMutation !(ProviderMutation m session)
   | IntentReadOnly !(ProviderReadOnly m session)
 
 operationForIntent
@@ -998,6 +1058,8 @@ operationForIntent capabilities intent = case intent of
     IntentMutation (reconcilePublicARecordCapability capabilities ref)
   ReapTestEbsVolumes clusterName ->
     IntentMutation (reapTestEbsVolumesCapability capabilities clusterName)
+  PlantTestVpcCanary ref request -> IntentMutation (plantTestVpcCanaryCapability capabilities ref request)
+  ObserveGlobalOwnedResourceTags query -> IntentReadOnly (observeGlobalOwnedResourceTagsCapability capabilities query)
   ObserveOwnedResourceTags query ->
     IntentReadOnly (observeOwnedResourceTagsCapability capabilities query)
   ObserveSpotPrice query ->
@@ -1049,15 +1111,20 @@ operationForIntent capabilities intent = case intent of
     IntentReadOnly (observeNativeStackFamilyCapability capabilities ref config)
   ObserveAwsAudit target config control ->
     IntentReadOnly (observeAwsAuditCapability capabilities target config control)
+  PreviewRegisteredStack ref config ->
+    IntentReadOnly (previewRegisteredStackCapability capabilities ref config)
   ReapNativeStackFamily ref config admittedIdentities ->
     IntentMutation
       (reapNativeStackFamilyCapability capabilities ref config admittedIdentities)
   EnsureValidationHostedZone nonce baseZone ->
     IntentMutation (ensureValidationHostedZoneCapability capabilities nonce baseZone)
-  ObserveSesInviteMail bucket recipient ->
-    IntentReadOnly (observeSesInviteMailCapability capabilities bucket recipient)
-  ReapSesInviteMail bucket recipient ->
-    IntentMutation (reapSesInviteMailCapability capabilities bucket recipient)
+  ObserveHomeDns01Records scope -> IntentReadOnly (observeHomeDns01RecordsCapability capabilities scope)
+  ObserveSesInviteMailResidue scope -> IntentReadOnly (observeSesInviteMailResidueCapability capabilities scope)
+  ReapSesInviteMailResidue scope -> IntentMutation (reapSesInviteMailResidueCapability capabilities scope)
+  RetiredSesInviteMailObservation {} -> IntentRetired
+  ObserveSealedSesInviteMail bucket recipient destination ->
+    IntentReadOnly (observeSealedSesInviteMailCapability capabilities bucket recipient destination)
+  RetiredSesInviteMailCleanup {} -> IntentRetired
   EnsureRetainedEbsVolumes volumeType specs ->
     IntentMutation (ensureRetainedEbsVolumesCapability capabilities volumeType specs)
 

@@ -32,7 +32,9 @@ module Prodbox.Lifecycle.Teardown.CascadeTerminalAuditAdapter
   ( terminalAuditQueryProviderIntent
   , terminalAuditQueryEcho
   , decodeTerminalAuditQueryObservation
+  , decodeTerminalAuditQueryObservationForIntent
   , providerCascadeTerminalAuditBoundary
+  , providerFullCascadeTerminalAuditBoundary
   , awsTagRowsFromOwnedResourceTagEntry
   , awsResourceIdentityFromArn
   , cascadeTerminalAuditReceiptFor
@@ -45,6 +47,7 @@ import Data.Bifunctor (first)
 import Data.List.NonEmpty qualified as NonEmpty
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.ControlPlane.AuthorityProviderEndpoint (providerExecutionOutcome)
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
   )
@@ -71,13 +74,14 @@ import Prodbox.Lifecycle.OwnedResourceTagEvidence
   , renderOwnedResourceTagEvidenceError
   )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
-  ( ProviderIntent (ObserveOwnedResourceTags)
+  ( ProviderIntent (ObserveGlobalOwnedResourceTags, ObserveOwnedResourceTags, ObserveProviderAwsScope)
   , ProviderIntentCoordinate
   , ProviderOwnedTagQuery (..)
   , providerIntentCoordinate
   )
 import Prodbox.Lifecycle.Teardown.CascadeTerminalAudit
   ( CascadeTerminalAuditBoundary (..)
+  , CascadeTerminalAuditFullBoundary (..)
   )
 import Prodbox.Lifecycle.Teardown.Model
   ( AwsAccountId (AwsAccountId)
@@ -96,6 +100,12 @@ import Prodbox.Lifecycle.Teardown.Observation
   , terminalAuditQueryDigest
   , terminalAuditRetainedSetDigest
   )
+import Prodbox.Lifecycle.Teardown.PerRunTerminalAuditPlan
+  ( PerRunAuditQuery (..)
+  , perRunAuditQueryAwsScope
+  , perRunAuditQueryProviderIntent
+  )
+import Prodbox.Lifecycle.Teardown.ProviderAwsScopeAdapter (decodeProviderAwsScopeResponse)
 import Prodbox.Lifecycle.Teardown.RetainedInventory (TerminalAuditQuery (..))
 
 -- | Why one returned row could not be admitted into the audit at all.
@@ -169,8 +179,23 @@ decodeTerminalAuditQueryObservation
   -> TerminalAuditQuery
   -> Either Text ProviderIntentExecutionResult
   -> Either ObservationFailure [AwsTagRow]
-decodeTerminalAuditQueryObservation scope query providerResult =
+decodeTerminalAuditQueryObservation scope query =
+  decodeTerminalAuditQueryObservationForIntent scope query (terminalAuditQueryProviderIntent query)
+
+decodeTerminalAuditQueryObservationForIntent
+  :: AwsScope
+  -> TerminalAuditQuery
+  -> ProviderIntent
+  -> Either Text ProviderIntentExecutionResult
+  -> Either ObservationFailure [AwsTagRow]
+decodeTerminalAuditQueryObservationForIntent scope query expectedIntent providerResult =
   first (ObservationFailure . renderTerminalAuditAdapterError) $ do
+    let selected = case query of
+          AuditQueryTagKey key -> ProviderOwnedTagKeyQuery key
+          AuditQueryTagPair key value -> ProviderOwnedTagPairQuery key value
+    if expectedIntent `elem` [ObserveOwnedResourceTags selected, ObserveGlobalOwnedResourceTags selected]
+      then Right ()
+      else Left (TerminalAuditEvidenceUnreadable "unsupported terminal-audit query intent")
     evidence <- case providerResult of
       Left detail -> Left (TerminalAuditEvidenceUnreadable detail)
       Right (ProviderIntentExecutionObserved actualCoordinate evidence)
@@ -202,7 +227,7 @@ decodeTerminalAuditQueryObservation scope query providerResult =
  where
   expectedEcho = terminalAuditQueryEcho query
   expectedCoordinate =
-    providerIntentCoordinate (terminalAuditQueryProviderIntent query)
+    providerIntentCoordinate expectedIntent
 
 -- | The production boundary the kernel takes.
 --
@@ -218,6 +243,37 @@ providerCascadeTerminalAuditBoundary scope dispatch =
   CascadeTerminalAuditBoundary $ \query -> do
     dispatched <- dispatch (terminalAuditQueryProviderIntent query)
     pure (decodeTerminalAuditQueryObservation scope query dispatched)
+
+-- | The full field uses the same typed endpoint plan as ordinary cleanup.
+-- Raw endpoint results are validated in their real region, then normalized to
+-- the one owning audit scope before the classifier unions duplicate ARNs.
+providerFullCascadeTerminalAuditBoundary
+  :: (Monad m)
+  => AwsScope
+  -> (ProviderIntent -> m (Either Text ProviderIntentExecutionResult))
+  -> CascadeTerminalAuditFullBoundary m
+providerFullCascadeTerminalAuditBoundary scope dispatch =
+  CascadeTerminalAuditFullBoundary
+    { fullAuditObserveProviderScope = do
+        observed <- dispatch ObserveProviderAwsScope
+        pure $ first ObservationFailure $ do
+          result <- observed
+          (account, region) <- decodeProviderAwsScopeResponse (providerExecutionOutcome result)
+          Right (AwsScope (AwsAccountId account) (AwsRegion region))
+    , fullAuditIssueQuery = \query@(PerRunAuditQuery _ selector) -> do
+        let intent = perRunAuditQueryProviderIntent query
+        result <- dispatch intent
+        pure
+          ( fmap
+              (map (\row -> row {awsTagRowScope = scope}))
+              ( decodeTerminalAuditQueryObservationForIntent
+                  (perRunAuditQueryAwsScope scope query)
+                  selector
+                  intent
+                  result
+              )
+          )
+    }
 
 -- | One returned resource becomes one row per tag, and a resource returned
 -- carrying no tags becomes one tagless row: \"returned with no tags\" is a fact

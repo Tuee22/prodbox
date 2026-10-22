@@ -158,7 +158,8 @@ lifecycleTeardownAuditFieldOfViewSuite =
     describe "Tagging API reach" $ do
       it "separates regional, global-service, untaggable, and non-AWS types" $ do
         classifyTaggingApiReach "aws:ec2:Instance" `shouldBe` Just ReachableWhenTagged
-        classifyTaggingApiReach "aws:iam:Role"
+        classifyTaggingApiReach "aws:iam:Role" `shouldSatisfy` isUntaggable
+        classifyTaggingApiReach "aws:iam:Policy"
           `shouldBe` Just (ReachableWhenTaggedFromGlobalRegion "iam")
         classifyTaggingApiReach "aws:ses:DomainIdentity" `shouldSatisfy` isUntaggable
         classifyTaggingApiReach "pulumi:providers:aws" `shouldSatisfy` isNotAws
@@ -239,9 +240,11 @@ lifecycleTeardownAuditFieldOfViewSuite =
         classifyAuditFieldOfView queries (declared "aws:route53:Record" [])
           `shouldSatisfy` isOutsideByType
 
-      it "still demands a tag from a global-service type, whose reach is a region" $
-        classifyAuditFieldOfView queries (declared "aws:iam:Role" [("Name", "n")])
+      it "requires tags on supported global types and excludes IAM roles even when tagged" $ do
+        classifyAuditFieldOfView queries (declared "aws:iam:Policy" [("Name", "n")])
           `shouldBe` OutsideFieldOfViewUntagged
+        classifyAuditFieldOfView queries (declared "aws:iam:Role" [("prodbox.io/managed-by", "prodbox")])
+          `shouldSatisfy` isOutsideByType
 
       it "fails an unclassified type as a violation, not as coverage" $
         auditFieldOfViewViolations queries [declared "aws:rds:Instance" []]

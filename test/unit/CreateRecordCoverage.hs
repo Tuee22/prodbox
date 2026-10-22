@@ -61,6 +61,12 @@ tableCases = do
                  , (AwsDns01ChallengeRecordKey, DerivedStandalone)
                  , (AwsEksIamRoleFamilyKey, DerivedControllerFamily AwsEksKey)
                  , (AwsEksLoadBalancerControllerFamilyKey, DerivedControllerFamily AwsEksKey)
+                 , (AwsEksVpcCniInterfacesKey, DerivedControllerFamily AwsEksKey)
+                 , (AwsTestVpcCniInterfacesKey, DerivedControllerFamily AwsTestKey)
+                 , (AwsEksClusterSecurityGroupsKey, DerivedControllerFamily AwsEksKey)
+                 , (HomeDns01ChallengeRecordKey, DerivedStandalone)
+                 , (SesInviteMailObjectsKey, DerivedStandalone)
+                 , (AwsTestCanarySecurityGroupsKey, DerivedControllerFamily AwsTestKey)
                  ]
 
   it "projects the per-run programs from the table and keeps the retained one off the lane" $ do
@@ -73,9 +79,11 @@ tableCases = do
     -- The lane decision and the tag decision are two fields with two reasons.
     sesDecisions `shouldBe` [(OffWriteAheadLane BarNoRegisteredKey, Just RunScopeTagWithheld)]
 
-  it "names the one module that creates through the native clients" $
+  it "names the registered native IAM and test-canary creation boundaries" $
     nativeCreatorModules
-      `shouldBe` ["src/Prodbox/Lifecycle/CredentialProvisioner/ProductionIam.hs"]
+      `shouldBe` [ "src/Prodbox/ControlPlane/ProviderProduction.hs"
+                 , "src/Prodbox/Lifecycle/CredentialProvisioner/ProductionIam.hs"
+                 ]
 
 programRuleCases :: SuiteBuilder ()
 programRuleCases = do
@@ -192,12 +200,18 @@ nativeAndDestroyRuleCases = do
               ++ " client\n"
           )
         noRow =
-          "src/Prodbox/Fake/Creator.hs creates through the native IAM or S3 client but has no NativeClientCreator row"
+          "src/Prodbox/Fake/Creator.hs creates through the registered native client but has no NativeClientCreator row"
     violations
       corpus {corpusSources = freshCreator "Prodbox.Aws.Native.Iam" "createRole" : corpusSources corpus}
       `shouldSatisfy` onlyFinding noRow
     violations
       corpus {corpusSources = freshCreator "Prodbox.Aws.Native.S3" "createBucket" : corpusSources corpus}
+      `shouldSatisfy` onlyFinding noRow
+    violations
+      corpus
+        { corpusSources =
+            freshCreator "Prodbox.Lifecycle.AwsTestCanaryExecution" "plantTestVpcCanary" : corpusSources corpus
+        }
       `shouldSatisfy` onlyFinding noRow
     -- The row's module stopped creating.
     violations
@@ -208,7 +222,7 @@ nativeAndDestroyRuleCases = do
           )
           corpus
       )
-      `shouldSatisfy` onlyFinding "no longer creates through the native IAM or S3 client"
+      `shouldSatisfy` onlyFinding "no longer creates through the registered native client"
     -- Still a native creator, but the cited entry point is gone.
     violations
       ( editSource

@@ -13,13 +13,16 @@ prodbox
       reap-test
     stack
       eks
+        diff
         reconcile
         destroy
         prune-corrupt-checkpoint
         adopt-legacy
           plan
           apply
+        purge-dependents
       test
+        diff
         reconcile
         destroy
         prune-corrupt-checkpoint
@@ -27,6 +30,7 @@ prodbox
           plan
           apply
       aws-subzone
+        diff
         reconcile
         destroy
         prune-corrupt-checkpoint
@@ -34,6 +38,7 @@ prodbox
           plan
           apply
       aws-ses
+        diff
         reconcile
         destroy
         migrate-backend
@@ -131,6 +136,8 @@ prodbox
       clean-room-handoff
       cascade-qualification
       cascade-qualification-receipt
+      aws-lifecycle
+      aws-lifecycle-canary
       ha-rke2-aws
       lifecycle
       pulumi

@@ -132,6 +132,8 @@ data UnattributedReason
 -- coordinate shape is an exhaustiveness error until it is classified here.
 coordinateMembershipTags :: ManagedResourceCoordinate -> Maybe [(Text, Text)]
 coordinateMembershipTags coordinate = case coordinate of
+  HomeRoute53Dns01ChallengeRecordFamilyCoordinate -> Nothing
+  SesInviteMailDataVersionFamilyCoordinate -> Nothing
   AwsLoadBalancerControllerFamilyCoordinate {awsLoadBalancerControllerTags = tags} -> Just tags
   AwsEbsPerRunFamilyCoordinate
     { awsEbsOwnershipTagKey = ownershipKey
@@ -139,6 +141,7 @@ coordinateMembershipTags coordinate = case coordinate of
     , awsEbsClusterOwnershipTagKey = clusterKey
     , awsEbsClusterOwnershipTagValue = clusterValue
     } -> Just [(ownershipKey, ownershipValue), (clusterKey, clusterValue)]
+  AwsNetworkDependentFamilyCoordinate {} -> Nothing
   LocalRke2Coordinate {} -> Nothing
   AwsPulumiStackCoordinate {} -> Nothing
   AwsEbsRetainedFamilyCoordinate {} -> Nothing

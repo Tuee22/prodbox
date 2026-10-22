@@ -3,53 +3,14 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Sprint 4.86: the composition root for the host cleanup runner's production
--- sources.
---
--- "Prodbox.Lifecycle.HostCleanupProductionEffects" assembles twelve production
--- arms out of eleven sources, and by the time this module was written every one
--- of those sources had a production constructor and nothing built them
--- together: the record could be described but not constructed, so the closed
--- cascade host runtime the descriptor-bound dispatcher requires had no way to
--- exist.  This module builds them.
---
--- Five properties carry the design.
---
---   * __Everything decidable without a session is decided first.__  The Tier-0
---     declaration, the retained root, the inventory, the source catalog, the
---     recovery closure, and the Authority coordinate are all resolved before
---     any authenticated transport is opened.  A composition that opened a
---     session and then found a malformed digest would have taken a session it
---     cannot use, and would report an operator's typo as an Authority failure.
---
---   * __One retained root, both roots.__  The artifact store and the completion
---     journal are derived from a single located bootstrap root, so a run cannot
---     read its artifacts under one root and append its completion beside
---     another.
---
---   * __The repair inherits the declaration's architecture.__  It is taken from
---     the projected inventory rather than supplied again, so the architecture
---     the store was measured for and the architecture the installer stages for
---     are the same value.
---
---   * __Two transports, one authentication.__  The Lifecycle Authority session
---     and the Authority Backup Adapter session are opened from one
---     authenticated caller.  The second is not a convenience: it is what makes
---     re-establishment's confirmation independent of the Authority that is
---     being re-established.
---
---   * __The Tier-0 floor is the source, not the in-force projection.__  A
---     cascade repairs a control plane that may be absent, so a declaration
---     readable only through the Lifecycle Authority would be unreadable
---     precisely when the repair exists to run.  The consequence is stated
---     rather than hidden: an operator's retained-artifact change reaches a
---     recovery when it reaches @prodbox.dhall@, which is what Tier 0 is for.
---
--- What this module does not own: the content of any arm, which belongs to the
--- production surface it delegates to; the chart reconcile, which is chart
--- delivery and is supplied from above; and the decision to /run/ a cascade,
--- which is the non-public candidate entrypoint Sprint @4.86@ still owns.
--- Building these sources issues no host mutation and no wire call.
+-- | Resolve the retained host root and the pre-uninstall Authority/Backup
+-- sources.  The local composition contains no authenticated transport and
+-- separately constructs the native terminal effects used after sessions close.
+-- The inventory, source catalog, recovery declaration and Authority coordinate
+-- are validated from the Tier-0 floor before authentication.  Every host record,
+-- artifact and completion journal is derived from the same located root.
+-- Recovery and chart reconciliation belong before the terminal handoff; this
+-- composition never rebuilds RKE2 after its local absence was observed.
 module Prodbox.Lifecycle.HostCleanupCompositionRoot
   ( -- * What the caller supplies
     HostCleanupCompositionInputs (..)
@@ -62,7 +23,15 @@ module Prodbox.Lifecycle.HostCleanupCompositionRoot
   , HostCleanupLocalComposition
   , hostCleanupLocalArchitecture
   , hostCleanupLocalIntentStore
+  , hostCleanupLocalRunnerEffects
   , resolveHostCleanupLocalComposition
+  , HostCleanupTerminalComposition
+  , hostCleanupLocalTerminalComposition
+  , hostCleanupTerminalIntentStore
+  , hostCleanupTerminalRunnerEffects
+  , resolveHostCleanupTerminalComposition
+  , resolveHostCleanupBootstrapPredecessor
+  , reconcileHostCleanupBootstrapPredecessor
 
     -- * The whole record
   , HostCleanupProductionRuntime (..)
@@ -70,16 +39,17 @@ module Prodbox.Lifecycle.HostCleanupCompositionRoot
   )
 where
 
-import Control.Concurrent (threadDelay)
-import Control.Monad (join)
+import Control.Monad (join, void)
+import Data.Bifunctor qualified as Bifunctor
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Prodbox.Config.Basics (UnencryptedBasics (..))
+import Numeric.Natural (Natural)
 import Prodbox.Config.FloorDhall (loadUnencryptedBasics)
 import Prodbox.Config.LocalRetainedRoot
   ( BootstrapRetainedRootLocator
   , LocalRetainedRootError
   , locateBootstrapRetainedRoot
+  , locateBootstrapRetainedRootForHostCleanup
   , renderLocalRetainedRootError
   )
 import Prodbox.Config.OrdinaryTeardownRecovery
@@ -103,8 +73,9 @@ import Prodbox.Config.RetainedArtifacts
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientTransport
   )
-import Prodbox.ControlPlane.AuthorityBackupClient
-  ( authorityAggregateBackupClientWithTransport
+import Prodbox.ControlPlane.AuthorityControlClient
+  ( AuthorityControlClientError
+  , observeProviderBootstrapPredecessorWithTransport
   )
 import Prodbox.ControlPlane.CascadeReportRepository
   ( CascadeReportAuthorityClient
@@ -117,7 +88,14 @@ import Prodbox.ControlPlane.CleanupReportBackupClient
   ( CleanupReportBackupClient
   , cleanupReportBackupClientWithTransport
   )
-import Prodbox.ControlPlane.CleanupRunClient (cleanupRunClient)
+import Prodbox.ControlPlane.CleanupRunClient
+  ( CleanupRunClientError (CleanupRunClientDescriptorTombstoned)
+  , descriptorBoundCleanupRunClient
+  , descriptorBoundCleanupRunGraphDigest
+  , descriptorBoundCleanupRunTerminal
+  , observeDescriptorBoundCleanupRun
+  , observeDescriptorBoundCleanupRunCompletion
+  )
 import Prodbox.ControlPlane.HostCleanupReadinessRepository
   ( modelBHostCleanupReadinessRepository
   )
@@ -128,42 +106,76 @@ import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   , withAuthorityBackupAuthenticatedTransport
   , withHostLifecycleAuthorityAuthentication
   , withLifecycleAuthorityAuthenticatedTransport
+  , withTargetSecretAgentAuthenticatedTransport
   )
 import Prodbox.ControlPlane.LifecycleAuthorityRestoreProduction
   ( LifecycleAuthorityAdmissionWait
-  , productionRetainedAuthorityAggregateSources
+  )
+import Prodbox.ControlPlane.TargetMaterialClient
+  ( observeRegisteredTargetMaterial
+  , targetMaterialClient
+  )
+import Prodbox.ControlPlane.TargetMaterialEndpoint
+  ( TargetMaterialObservation (targetMaterialObservedGeneration)
+  )
+import Prodbox.ControlPlane.TargetMaterialRegistry
+  ( AwsCredentialIdentity (AwsLifecycleProvider)
+  , TargetSecretId (TargetAwsCredential)
+  )
+import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch
+  ( ProviderBootstrapPredecessor
+  , ProviderBootstrapPredecessorPhase (..)
+  , providerBootstrapPredecessorGraphDigest
+  , providerBootstrapPredecessorPhase
+  , providerBootstrapPredecessorRunId
+  , providerBootstrapPredecessorScopeDigest
   )
 import Prodbox.Lifecycle.AuthorityConfig
   ( longLivedCheckpointAuthorityFromBasics
   )
 import Prodbox.Lifecycle.CheckpointAuthority (LongLivedCheckpointAuthority)
+import Prodbox.Lifecycle.CleanupRun (cleanupReportGraphDigest)
 import Prodbox.Lifecycle.HostCleanupCompletion
-  ( HostCleanupCompletionJournal
+  ( HistoricalHostCleanupCompletion
+  , HistoricalHostCleanupCompletionError (..)
+  , HostCleanupCompletionJournal
   , bootstrapLocatedHostCleanupCompletionJournal
+  , historicalHostCleanupIntent
+  , observeHistoricalHostCleanupCompletion
+  , observeHistoricalHostCleanupCompletionForRun
+  )
+import Prodbox.Lifecycle.HostCleanupHistoryReconcile
+  ( HistoricalCleanupImportError (HistoricalCleanupAuthorityReadFailed)
+  , reconcileHistoricalHostCleanup
   )
 import Prodbox.Lifecycle.HostCleanupIntent
   ( HostCleanupIntentError
   , HostCleanupIntentStore
   , bootstrapLocatedHostCleanupIntentStore
+  , hostCleanupGraphDigest
+  , hostCleanupObservationEvidenceScope
+  , hostCleanupRunId
+  , hostCleanupScope
   )
 import Prodbox.Lifecycle.HostCleanupProductionEffects
   ( HostCleanupProductionSources (..)
+  , productionHostCleanupLocalRunnerEffects
   , productionHostCleanupRunnerEffects
-  , productionHostRecoveryPlaneRepair
   )
 import Prodbox.Lifecycle.HostCleanupRke2 (productionLocalRke2TerminalAdapter)
 import Prodbox.Lifecycle.HostCleanupRunner (HostCleanupRunnerEffects)
+import Prodbox.Lifecycle.Teardown.Observation (terminalAuditEvidenceScopeDigest)
 import Prodbox.Lifecycle.Teardown.RecoveryRepairProduction
   ( RecoveryRepairChartReconciler
   , RecoveryRepairPlatformReconciler
   , SubstrateApiWait
-  , productionRecoveryRepairBoundary
   )
 import Prodbox.Lifecycle.Teardown.RetainedArtifactCustody
   ( RetainedArtifactStore
   , RetainedArtifactStoreAuthority (BootstrapLocatedStore)
   , bootstrapLocatedRetainedArtifactStore
   )
+import Prodbox.Lifecycle.Teardown.ScopeCodec (scopeForCascadeTerminalAudit)
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 import Prodbox.Settings
   ( ConfigFile (retained_artifacts)
@@ -206,6 +218,11 @@ data HostCleanupCompositionError
   | HostCleanupCompositionAuthorityCoordinateInvalid !String
   | HostCleanupCompositionJournalUnusable !Text
   | HostCleanupCompositionIntentStoreUnusable !HostCleanupIntentError
+  | HostCleanupCompositionPredecessorUnresolved !HistoricalHostCleanupCompletionError
+  | HostCleanupCompositionPredecessorImportFailed !HistoricalCleanupImportError
+  | HostCleanupCompositionAuthorityPredecessorUnobservable !AuthorityControlClientError
+  | HostCleanupCompositionAuthorityPredecessorMismatch
+  | HostCleanupCompositionPredecessorNeedsRecovery !ProviderBootstrapPredecessor
   | HostCleanupCompositionAuthenticationFailed
       !LifecycleAuthorityAuthenticationError
   deriving stock (Eq, Show)
@@ -229,8 +246,53 @@ renderHostCleanupCompositionError = \case
     "the local-completion journal could not be located: " ++ Text.unpack detail
   HostCleanupCompositionIntentStoreUnusable err ->
     "the durable host-cleanup record could not be located: " ++ show err
+  HostCleanupCompositionPredecessorUnresolved err ->
+    "the previous host cleanup must finish before bootstrap: "
+      ++ show err
+      ++ ". "
+      ++ predecessorRemedy err
+  HostCleanupCompositionPredecessorImportFailed err ->
+    "the restored Authority could not confirm the previous host cleanup: "
+      ++ show err
+      ++ ". Retry prodbox cluster reconcile; the exact journals and completed nodes are preserved."
+  HostCleanupCompositionAuthorityPredecessorUnobservable err ->
+    "the restored Authority predecessor could not be observed: "
+      ++ show err
+      ++ ". Restore Authority availability, then retry prodbox cluster reconcile."
+  HostCleanupCompositionAuthorityPredecessorMismatch ->
+    "NukeOnly: the retained Authority reservation and host completion history disagree; "
+      ++ "operator-only prodbox nuke is the total-decommission remedy. This run cannot qualify."
+  HostCleanupCompositionPredecessorNeedsRecovery predecessor ->
+    "the previous cascade remains "
+      ++ show (providerBootstrapPredecessorPhase predecessor)
+      ++ " for run "
+      ++ show (providerBootstrapPredecessorRunId predecessor)
+      ++ ". Resume prodbox test integration cascade-qualification with its original "
+      ++ "PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE before fresh credentials or bootstrap continuation."
   HostCleanupCompositionAuthenticationFailed err ->
     renderLifecycleAuthorityAuthenticationError err
+
+predecessorRemedy :: HistoricalHostCleanupCompletionError -> String
+predecessorRemedy cause = case cause of
+  HistoricalHostCleanupNotComplete _ ->
+    "Resume prodbox test integration cascade-qualification with its original "
+      ++ "PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE; it uses the preserved terminal journals."
+  HistoricalHostCleanupIntentUnobservable _ -> retryObservation
+  HistoricalHostCleanupJournalUnobservable _ -> retryObservation
+  HistoricalHostCleanupIntentChanged -> retryObservation
+  HistoricalHostCleanupHandoffMissing -> lostProof
+  HistoricalHostCleanupBindingMismatch -> lostProof
+  HistoricalHostCleanupReadinessInvalid _ -> lostProof
+  HistoricalHostCleanupJournalMissing -> lostProof
+  HistoricalHostCleanupReceiptMismatch -> lostProof
+  HistoricalHostCleanupReportInvalid _ -> lostProof
+  HistoricalHostCleanupRetirementMissing -> lostProof
+ where
+  retryObservation =
+    "Restore read access to the preserved journals, then retry prodbox cluster reconcile."
+  lostProof =
+    "NukeOnly: independent completion evidence is missing or inconsistent; "
+      ++ "operator-only prodbox nuke is the total-decommission remedy. This run cannot qualify."
 
 -- ---------------------------------------------------------------------------
 -- The local half, resolved without a transport
@@ -244,7 +306,6 @@ renderHostCleanupCompositionError = \case
 -- one.
 data HostCleanupLocalComposition = HostCleanupLocalComposition
   { localAuthority :: !LongLivedCheckpointAuthority
-  , localAuthorityScope :: !Text
   , localRetainedRoot :: !BootstrapRetainedRootLocator
   , localArtifactStore :: !(RetainedArtifactStore 'BootstrapLocatedStore)
   , localInventory :: !RetainedArtifactInventory
@@ -261,6 +322,176 @@ data HostCleanupLocalComposition = HostCleanupLocalComposition
 -- reached it with.
 hostCleanupLocalIntentStore :: HostCleanupLocalComposition -> HostCleanupIntentStore
 hostCleanupLocalIntentStore = localIntentStore
+
+-- | Build only host-native effects from the retained local composition.
+-- No authenticated transport can be captured by this constructor.
+hostCleanupLocalRunnerEffects
+  :: FilePath
+  -> HostCleanupLocalComposition
+  -> HostCleanupRunnerEffects IO
+hostCleanupLocalRunnerEffects repositoryRoot local =
+  productionHostCleanupLocalRunnerEffects
+    (productionLocalRke2TerminalAdapter repositoryRoot)
+    (localJournal local)
+
+-- | Only the two preserved local journals. Resolving a terminal resume needs
+-- no service settings, artifact inventory, recovery declaration or transport.
+data HostCleanupTerminalComposition
+  = HostCleanupTerminalComposition
+      !HostCleanupIntentStore
+      !HostCleanupCompletionJournal
+
+hostCleanupLocalTerminalComposition :: HostCleanupLocalComposition -> HostCleanupTerminalComposition
+hostCleanupLocalTerminalComposition local = HostCleanupTerminalComposition (localIntentStore local) (localJournal local)
+
+hostCleanupTerminalIntentStore :: HostCleanupTerminalComposition -> HostCleanupIntentStore
+hostCleanupTerminalIntentStore (HostCleanupTerminalComposition store _) = store
+
+hostCleanupTerminalRunnerEffects
+  :: FilePath -> HostCleanupTerminalComposition -> HostCleanupRunnerEffects IO
+hostCleanupTerminalRunnerEffects repositoryRoot (HostCleanupTerminalComposition _ journal) =
+  productionHostCleanupLocalRunnerEffects (productionLocalRke2TerminalAdapter repositoryRoot) journal
+
+resolveHostCleanupTerminalComposition
+  :: FilePath -> IO (Either HostCleanupCompositionError HostCleanupTerminalComposition)
+resolveHostCleanupTerminalComposition repositoryRoot = do
+  located <- locateBootstrapRetainedRoot repositoryRoot
+  pure $ do
+    locator <- Bifunctor.first HostCleanupCompositionRetainedRootUnusable located
+    store <-
+      Bifunctor.first
+        HostCleanupCompositionIntentStoreUnusable
+        (bootstrapLocatedHostCleanupIntentStore locator)
+    journal <-
+      Bifunctor.first
+        HostCleanupCompositionJournalUnusable
+        (bootstrapLocatedHostCleanupCompletionJournal locator)
+    Right (HostCleanupTerminalComposition store journal)
+
+-- | Observe the predecessor before any installer effect. A missing exact
+-- active path permits a fresh bootstrap; a present record must have its sealed
+-- handoff and independent completion journal. This is historical evidence,
+-- never a claim that the host is absent now.
+resolveHostCleanupBootstrapPredecessor
+  :: FilePath
+  -> IO
+       ( Either
+           HostCleanupCompositionError
+           (Maybe (HostCleanupTerminalComposition, HistoricalHostCleanupCompletion))
+       )
+resolveHostCleanupBootstrapPredecessor repositoryRoot = do
+  located <- locateBootstrapRetainedRootForHostCleanup repositoryRoot
+  case Bifunctor.first HostCleanupCompositionRetainedRootUnusable located of
+    Left cause -> pure (Left cause)
+    Right Nothing -> pure (Right Nothing)
+    Right (Just locator) ->
+      case terminalComposition locator of
+        Left cause -> pure (Left cause)
+        Right terminal@(HostCleanupTerminalComposition store journal) -> do
+          history <- observeHistoricalHostCleanupCompletion store journal
+          pure $
+            Bifunctor.first
+              HostCleanupCompositionPredecessorUnresolved
+              (fmap (fmap (terminal,)) history)
+ where
+  terminalComposition locator = do
+    store <-
+      Bifunctor.first
+        HostCleanupCompositionIntentStoreUnusable
+        (bootstrapLocatedHostCleanupIntentStore locator)
+    journal <-
+      Bifunctor.first
+        HostCleanupCompositionJournalUnusable
+        (bootstrapLocatedHostCleanupCompletionJournal locator)
+    Right (HostCleanupTerminalComposition store journal)
+
+-- | Called only after Authority/Backup admission has been restored, before
+-- fresh operational credentials. The original local attempts are imported;
+-- no uninstall or provider effect belongs to this bootstrap continuation.
+reconcileHostCleanupBootstrapPredecessor
+  :: FilePath
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> Natural
+  -> IO (Either HostCleanupCompositionError ())
+reconcileHostCleanupBootstrapPredecessor repositoryRoot transport now = do
+  observed <- observeProviderBootstrapPredecessorWithTransport transport
+  predecessor <- case observed of
+    Left cause -> pure (Left (HostCleanupCompositionAuthorityPredecessorUnobservable cause))
+    Right Nothing -> resolveHostCleanupBootstrapPredecessor repositoryRoot
+    Right (Just binding)
+      | providerBootstrapPredecessorPhase binding /= ProviderBootstrapRevoked ->
+          pure (Left (HostCleanupCompositionPredecessorNeedsRecovery binding))
+      | otherwise -> do
+          located <- resolveRevoked binding
+          pure (located >>= validateLocated binding)
+
+  case predecessor of
+    Left cause -> pure (Left cause)
+    Right Nothing -> pure (Right ())
+    Right (Just (HostCleanupTerminalComposition store _, history)) -> do
+      imported <-
+        reconcileHistoricalHostCleanup
+          (descriptorBoundCleanupRunClient transport)
+          store
+          now
+          history
+      pure (Bifunctor.first HostCleanupCompositionPredecessorImportFailed (void imported))
+ where
+  client = descriptorBoundCleanupRunClient transport
+  resolveRevoked binding = do
+    remote <- observeDescriptorBoundCleanupRun client (providerBootstrapPredecessorRunId binding)
+    case remote of
+      Left (CleanupRunClientDescriptorTombstoned digest _) -> do
+        observed <-
+          observeDescriptorBoundCleanupRunCompletion client (providerBootstrapPredecessorRunId binding) digest
+        case observed of
+          Left cause ->
+            pure
+              (Left (HostCleanupCompositionPredecessorImportFailed (HistoricalCleanupAuthorityReadFailed cause)))
+          Right (Just report)
+            | cleanupReportGraphDigest report == providerBootstrapPredecessorGraphDigest binding ->
+                resolveActiveOrRetired binding True
+          Right _ -> pure (Left HostCleanupCompositionAuthorityPredecessorMismatch)
+      Left cause ->
+        pure
+          (Left (HostCleanupCompositionPredecessorImportFailed (HistoricalCleanupAuthorityReadFailed cause)))
+      Right bound
+        | descriptorBoundCleanupRunGraphDigest bound /= providerBootstrapPredecessorGraphDigest binding ->
+            pure (Left HostCleanupCompositionAuthorityPredecessorMismatch)
+        | otherwise -> resolveActiveOrRetired binding (descriptorBoundCleanupRunTerminal bound)
+  resolveActiveOrRetired binding terminal = do
+    active <- resolveHostCleanupBootstrapPredecessor repositoryRoot
+    case active of
+      Left cause -> pure (Left cause)
+      Right (Just located) -> pure (Right (Just located))
+      Right Nothing
+        | not terminal -> pure (Left (HostCleanupCompositionPredecessorNeedsRecovery binding))
+        | otherwise -> resolveRetired binding
+  resolveRetired binding = do
+    resolved <- resolveHostCleanupTerminalComposition repositoryRoot
+    case resolved of
+      Left cause -> pure (Left cause)
+      Right terminal@(HostCleanupTerminalComposition store journal) -> do
+        historical <-
+          observeHistoricalHostCleanupCompletionForRun
+            store
+            journal
+            (providerBootstrapPredecessorRunId binding)
+        pure
+          ( Bifunctor.first
+              HostCleanupCompositionPredecessorUnresolved
+              (fmap (\history -> Just (terminal, history)) historical)
+          )
+  validateLocated _ Nothing = Right Nothing
+  validateLocated binding (Just located@(_, history)) =
+    let intent = historicalHostCleanupIntent history
+     in if hostCleanupRunId intent == providerBootstrapPredecessorRunId binding
+          && hostCleanupGraphDigest intent == providerBootstrapPredecessorGraphDigest binding
+          && terminalAuditEvidenceScopeDigest
+            (scopeForCascadeTerminalAudit (hostCleanupObservationEvidenceScope (hostCleanupScope intent)))
+            == providerBootstrapPredecessorScopeDigest binding
+          then Right (Just located)
+          else Left HostCleanupCompositionAuthorityPredecessorMismatch
 
 -- | The one architecture the declaration, the store, and the installer share.
 hostCleanupLocalArchitecture
@@ -302,10 +533,6 @@ resolveHostCleanupLocalComposition inputs = do
     pure
       HostCleanupLocalComposition
         { localAuthority = authority
-        , -- The observation scope and the retained coordinate are derived from
-          -- one cluster id, so the Authority a run observes and the namespace
-          -- it reads its readiness out of cannot name different clusters.
-          localAuthorityScope = basicsClusterId basics
         , localRetainedRoot = locator
         , localArtifactStore = bootstrapLocatedRetainedArtifactStore locator
         , localInventory = declaredRetainedArtifactInventory declared
@@ -329,10 +556,12 @@ resolveHostCleanupLocalComposition inputs = do
 -- record says which phase a run reached, the effects perform the next one, and
 -- both are scoped to the session the third field names.
 data HostCleanupProductionRuntime = HostCleanupProductionRuntime
-  { hostCleanupProductionIntentStore :: !HostCleanupIntentStore
+  { hostCleanupProductionLocalComposition :: !HostCleanupLocalComposition
+  , hostCleanupProductionIntentStore :: !HostCleanupIntentStore
   , hostCleanupProductionEffects :: !(HostCleanupRunnerEffects IO)
   , hostCleanupProductionAuthorityTransport
       :: !(AuthenticatedClientTransport 'LifecycleAuthorityRuntime)
+  , hostCleanupProductionProviderCredentialGeneration :: !(IO (Either Text (Maybe Natural)))
   , hostCleanupProductionCascadeReportAuthority
       :: !(CascadeReportAuthorityClient IO)
   , hostCleanupProductionCleanupReportBackup
@@ -365,11 +594,13 @@ withHostCleanupProductionSources inputs action = do
                     \backupTransport ->
                       action
                         HostCleanupProductionRuntime
-                          { hostCleanupProductionIntentStore = localIntentStore local
+                          { hostCleanupProductionLocalComposition = local
+                          , hostCleanupProductionIntentStore = localIntentStore local
                           , hostCleanupProductionEffects =
                               productionHostCleanupRunnerEffects
-                                (sourcesFor local authorityTransport backupTransport)
+                                (sourcesFor local authorityTransport)
                           , hostCleanupProductionAuthorityTransport = authorityTransport
+                          , hostCleanupProductionProviderCredentialGeneration = observeProviderGeneration authentication
                           , hostCleanupProductionCascadeReportAuthority =
                               modelBCascadeReportRepository
                                 (localAuthority local)
@@ -390,34 +621,23 @@ withHostCleanupProductionSources inputs action = do
       Left err -> Left (HostCleanupCompositionAuthenticationFailed err)
       Right value -> Right value
 
-  sourcesFor local authorityTransport backupTransport =
+  observeProviderGeneration authentication = do
+    observed <- withTargetSecretAgentAuthenticatedTransport authentication $ \transport ->
+      observeRegisteredTargetMaterial
+        (targetMaterialClient transport)
+        (TargetAwsCredential AwsLifecycleProvider)
+    pure $ case observed of
+      Left err -> Left (Text.pack (renderLifecycleAuthorityAuthenticationError err))
+      Right (Left err) -> Left ("observe Lifecycle-provider generation: " <> Text.pack (show err))
+      Right (Right metadata) -> Right (targetMaterialObservedGeneration <$> metadata)
+
+  sourcesFor local authorityTransport =
     HostCleanupProductionSources
       { hostCleanupReadinessClient =
           modelBHostCleanupReadinessRepository
             (localAuthority local)
             (cascadeRetainedSlotModelBAdapter authorityTransport)
-      , hostCleanupRunClient = cleanupRunClient authorityTransport
       , hostCleanupTerminalAdapter =
           productionLocalRke2TerminalAdapter (hostCleanupRepositoryRoot inputs)
       , hostCleanupCompletionJournal = localJournal local
-      , hostCleanupRecoveryInventory = localInventory local
-      , hostCleanupRecoveryCatalog = localCatalog local
-      , hostCleanupRecoveryClosure = localRecoveryClosure local
-      , hostCleanupRecoveryRepair =
-          productionHostRecoveryPlaneRepair
-            (localArtifactStore local)
-            ( productionRecoveryRepairBoundary
-                (hostCleanupLocalArchitecture local)
-                (localArtifactStore local)
-                (hostCleanupSubstrateApiWait inputs)
-                (hostCleanupPlatformReconciler inputs)
-                (hostCleanupChartReconciler inputs)
-            )
-      , hostCleanupAuthorityPause = threadDelay . fromIntegral
-      , hostCleanupAuthorityWait = hostCleanupAdmissionWait inputs
-      , hostCleanupAuthorityAggregate =
-          productionRetainedAuthorityAggregateSources
-            (localAuthorityScope local)
-            authorityTransport
-            (authorityAggregateBackupClientWithTransport backupTransport)
       }

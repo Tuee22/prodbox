@@ -173,6 +173,7 @@ teardownOperationCredentialConsumer operation = case operation of
   -- what makes the liveness-through-audit ordering claim about a node that
   -- actually needs the credential. The executing adapter is Sprint @7.36@'s;
   -- what is fixed here is the requirement it has to satisfy.
+  AuditPerRunEscapes -> Just TerminalEscapeAuditCredentialConsumer
   AuditCascadeEscapes -> Just TerminalEscapeAuditCredentialConsumer
   CommitCascadePreUninstallReport -> Nothing
   ReadBackCascadePreUninstallReport -> Nothing

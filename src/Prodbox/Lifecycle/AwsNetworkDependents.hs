@@ -23,7 +23,8 @@
 --   @available@, not requester-managed, an ordinary interface, inside the VPC,
 --   carrying the VPC CNI's tag or its description, and tagged for no other
 --   cluster. For a security group it is: the group EKS created for this
---   cluster, inside the VPC. These are deleted. The VPC is read from each row
+--   cluster, inside the VPC, or one exact shape of the separately registered
+--   test canary family. These are deleted. The VPC is read from each row
 --   and compared, as well as asked for in the listing's filter: a listing that
 --   dropped its filter would otherwise reach the whole region.
 -- * 'HeldByService' -- an AWS service holds it (a load balancer's interface, the
@@ -55,10 +56,13 @@ module Prodbox.Lifecycle.AwsNetworkDependents
   , SecurityGroupRow (..)
   , classifySecurityGroup
   , observeNetworkDependents
+  , observeNetworkFamily
 
     -- * What is cleared
   , DependentsRepair (..)
   , clearNetworkDependents
+  , clearNetworkFamily
+  , clearNetworkFamilies
   , deleteSecurityGroupsWithin
   , deleteSecurityGroupsWith
 
@@ -76,7 +80,8 @@ import Data.Aeson.KeyMap (KeyMap)
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.ByteString qualified as ByteString
 import Data.Char (isDigit)
-import Data.List (sort)
+import Data.List (nub, sort)
+import Data.Map.Strict qualified as Map
 import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -84,6 +89,9 @@ import Data.Text.Encoding qualified as TextEncoding
 import Data.Vector qualified as Vector
 import Numeric (showHex)
 import Prodbox.ControlPlane.OperationBudget (WaitFact (InterfacesReleased, SecurityGroupDeletable))
+import Prodbox.Lifecycle.AwsNetworkFamily
+import Prodbox.Lifecycle.AwsTestCanary qualified as Canary
+import Prodbox.Lifecycle.AwsTestCanaryExecution qualified as CanaryExecution
 import Prodbox.Lifecycle.AwsWait
   ( AwsWaitEnvironment
   , WaitFailure (..)
@@ -217,8 +225,27 @@ classifySecurityGroup target row
   createdByEksForThisCluster = case targetCluster target of
     Just cluster ->
       groupClusterTag row == Just cluster
-        && ("eks-cluster-sg-" <> cluster <> "-") `Text.isPrefixOf` groupName row
+        && clusterGroupPrefix cluster `Text.isPrefixOf` groupName row
     Nothing -> False
+
+clusterGroupPrefix :: Text -> Text
+clusterGroupPrefix cluster = "eks-cluster-sg-" <> cluster <> "-"
+
+-- An independent controller family must not claim a stack-native group that
+-- the stack observer already records. Partial marks and foreign-VPC rows stay
+-- candidates and fail the full predicate; the combined VPC repair reads all.
+isScopedGroupCandidate :: Maybe AwsNetworkFamily -> DependentsTarget -> SecurityGroupRow -> Bool
+isScopedGroupCandidate scope target row = case scope of
+  Just EksClusterSecurityGroups -> case targetCluster target of
+    Nothing -> True
+    Just cluster ->
+      groupVpc row /= targetVpc target
+        || groupClusterTag row == Just cluster
+        || clusterGroupPrefix cluster `Text.isPrefixOf` groupName row
+  Just EksVpcCniInterfaces -> True
+  Just TestVpcCniInterfaces -> True
+  Just TestCanarySecurityGroups -> False
+  Nothing -> True
 
 -- | Read the interfaces and groups in the stack's VPC and classify each. A read
 -- that fails or answers in a shape this does not read is a refusal to classify,
@@ -228,15 +255,191 @@ observeNetworkDependents
   => AwsRun m
   -> DependentsTarget
   -> m (Either Text [Dependent])
-observeNetworkDependents runner target = do
-  interfaces <- readListing runner interfaceListing parseInterfaces
-  groups <- readListing runner groupListing parseSecurityGroups
+observeNetworkDependents runner target =
+  observeSelectedNetworkFamilies families runner target
+ where
+  families = case targetCluster target of
+    Nothing -> [TestVpcCniInterfaces, TestCanarySecurityGroups]
+    Just _ -> [EksVpcCniInterfaces, EksClusterSecurityGroups]
+
+observeNetworkFamily
+  :: (Monad m) => AwsNetworkFamily -> AwsRun m -> DependentsTarget -> m (Either Text [Dependent])
+observeNetworkFamily family = case family of
+  TestCanarySecurityGroups -> observeCanarySecurityGroups
+  EksVpcCniInterfaces -> observeNetworkKinds [DependentInterface] (Just family)
+  TestVpcCniInterfaces -> observeNetworkKinds [DependentInterface] (Just family)
+  EksClusterSecurityGroups -> observeNetworkKinds [DependentSecurityGroup] (Just family)
+
+networkFamilyKind :: AwsNetworkFamily -> DependentKind
+networkFamilyKind family = case family of
+  EksVpcCniInterfaces -> DependentInterface
+  TestVpcCniInterfaces -> DependentInterface
+  EksClusterSecurityGroups -> DependentSecurityGroup
+  TestCanarySecurityGroups -> DependentSecurityGroup
+
+observeSelectedNetworkFamilies
+  :: (Monad m) => [AwsNetworkFamily] -> AwsRun m -> DependentsTarget -> m (Either Text [Dependent])
+observeSelectedNetworkFamilies families runner target = do
+  ordinary <- observeNetworkKinds (nub (map networkFamilyKind families)) Nothing runner target
+  canary <-
+    if TestCanarySecurityGroups `elem` families
+      then observeCanarySecurityGroups runner target
+      else pure (Right [])
+  pure (mergeCanaryClassifications <$> ordinary <*> canary)
+
+-- The dedicated family supplies the decision for its candidates. This leaves
+-- the EKS group predicate unchanged, retains unrelated refusals, and admits no
+-- group merely because another group had the same name prefix.
+mergeCanaryClassifications :: [Dependent] -> [Dependent] -> [Dependent]
+mergeCanaryClassifications ordinary canary =
+  [Map.findWithDefault row (key row) canaryByKey | row <- ordinary]
+    <> [row | row <- canary, not (Map.member (key row) ordinaryKeys)]
+ where
+  key row = (dependentKind row, dependentIdentity row)
+  canaryByKey = Map.fromList [(key row, row) | row <- canary]
+  ordinaryKeys = Map.fromList [(key row, ()) | row <- ordinary]
+
+data CanaryGroupRow = CanaryGroupRow !Text !Text !Text ![(Text, Text)]
+
+observeCanarySecurityGroups
+  :: (Monad m) => AwsRun m -> DependentsTarget -> m (Either Text [Dependent])
+observeCanarySecurityGroups runner target = do
+  vpcs <-
+    readListingBounded (Just Canary.canaryInventoryMaximumBytes) runner vpcArguments parseCanaryVpcs
+  groups <-
+    readListingBounded (Just Canary.canaryInventoryMaximumBytes) runner groupArguments parseCanaryGroups
+  pure $ do
+    vpcRows <- vpcs
+    groupRows <- groups
+    let candidates = filter candidate groupRows
+    case vpcRows of
+      []
+        | null candidates -> Right []
+        | otherwise -> Left "canary VPC is absent while its group candidates remain visible"
+      [(vpc, tags)]
+        | vpc /= targetVpc target -> Left "canary VPC read returned a different VPC"
+        | not (all (owns tags) (networkFamilyVpcTags TestCanarySecurityGroups)) ->
+            Left "canary VPC does not carry the registered test-stack ownership tags"
+        -- A complete empty candidate superset proves the family absent even
+        -- when stale VPC marker metadata cannot authorize any group mutation.
+        | null candidates -> Right []
+        | otherwise -> traverse (classify (Canary.canaryBindingFromVpcTags tags)) candidates
+      _ -> Left "canary VPC read is ambiguous"
+ where
+  owns tags (key, value) = lookup key tags == Just value
+  candidate (CanaryGroupRow _ vpc name tags) =
+    vpc /= targetVpc target || Canary.isCanaryGroupCandidate name tags
+  classify binding (CanaryGroupRow identity vpc name tags) = do
+    _ <- firstCanary (Canary.validateCanaryEc2Identifier Canary.CanarySecurityGroup identity)
+    let checked = do
+          found <- binding
+          exact <- maybe (Left Canary.CanaryVpcMarkerIncomplete) Right found
+          shape <-
+            case [shape | shape <- [minBound .. maxBound], Canary.canaryGroupName exact shape == name] of
+              [shape] -> Right shape
+              _ -> Left Canary.CanaryGroupNameMismatch
+          Canary.checkCanaryGroup exact (targetVpc target) shape vpc name tags
+    Right
+      ( Dependent DependentSecurityGroup identity $
+          either (NotAdmitted . Canary.renderTestCanaryError) (const Admitted) checked
+      )
+  firstCanary = either (Left . Canary.renderTestCanaryError) Right
+  vpcArguments =
+    [ "ec2"
+    , "describe-vpcs"
+    , "--vpc-ids"
+    , Text.unpack (targetVpc target)
+    , "--query"
+    , "Vpcs[].{id:VpcId,tags:Tags}"
+    , "--output"
+    , "json"
+    ]
+  groupArguments =
+    [ "ec2"
+    , "describe-security-groups"
+    , "--filters"
+    , "Name=vpc-id,Values=" <> Text.unpack (targetVpc target)
+    , "--query"
+    , "SecurityGroups[].{id:GroupId,vpc:VpcId,name:GroupName,tags:Tags}"
+    , "--output"
+    , "json"
+    ]
+
+parseCanaryVpcs :: Value -> Either Text [(Text, [(Text, Text)])]
+parseCanaryVpcs value = case value of
+  Array rows -> traverse parseRow (Vector.toList rows)
+  _ -> Left "canary VPC listing is not an array"
+ where
+  parseRow row = case row of
+    Object fields -> do
+      identity <- requiredText "id" fields
+      tags <- canaryRowTags fields
+      Right (identity, tags)
+    _ -> Left "canary VPC row is not an object"
+
+parseCanaryGroups :: Value -> Either Text [CanaryGroupRow]
+parseCanaryGroups value = case value of
+  Array values
+    | Vector.length values > Canary.canaryInventoryMaximumRows ->
+        Left "canary group listing exceeds its row bound"
+    | otherwise -> do
+        rows <- traverse parseRow (Vector.toList values)
+        if Map.size (Map.fromList [(identity, ()) | CanaryGroupRow identity _ _ _ <- rows]) == length rows
+          then Right rows
+          else Left "canary group listing repeats an identity"
+  _ -> Left "canary group listing is not an array"
+ where
+  parseRow row = case row of
+    Object fields ->
+      CanaryGroupRow
+        <$> requiredText "id" fields
+        <*> requiredText "vpc" fields
+        <*> requiredText "name" fields
+        <*> canaryRowTags fields
+    _ -> Left "canary group row is not an object"
+
+canaryRowTags :: KeyMap Value -> Either Text [(Text, Text)]
+canaryRowTags fields = case KeyMap.lookup "tags" fields of
+  Just Null -> Right []
+  Just (Array values)
+    | Vector.length values > Canary.canaryInventoryMaximumTags ->
+        Left "canary tag set exceeds its row bound"
+    | otherwise -> do
+        tags <- traverse parseTag (Vector.toList values)
+        if Map.size (Map.fromList tags) == length tags
+          then Right tags
+          else Left "canary tag set repeats a key"
+  _ -> Left "canary row has no projected tag set"
+ where
+  parseTag row = case row of
+    Object fields' -> do
+      key <- requiredText "Key" fields'
+      value <- maybe (Left "canary tag has no value") Right (text "Value" fields')
+      Right (key, value)
+    _ -> Left "canary tag is not an object"
+
+observeNetworkKinds
+  :: (Monad m)
+  => [DependentKind]
+  -> Maybe AwsNetworkFamily
+  -> AwsRun m
+  -> DependentsTarget
+  -> m (Either Text [Dependent])
+observeNetworkKinds kinds scope runner target = do
+  interfaces <-
+    if DependentInterface `elem` kinds
+      then readListing runner interfaceListing parseInterfaces
+      else pure (Right [])
+  groups <-
+    if DependentSecurityGroup `elem` kinds
+      then readListing runner groupListing parseSecurityGroups
+      else pure (Right [])
   pure $ do
     interfaceRows <- interfaces
     groupRows <- groups
     Right
       ( map (classifyInterface target) interfaceRows
-          <> mapMaybe (classifySecurityGroup target) groupRows
+          <> mapMaybe (classifySecurityGroup target) (filter (isScopedGroupCandidate scope target) groupRows)
       )
  where
   vpcFilter = "Name=vpc-id,Values=" <> Text.unpack (targetVpc target)
@@ -267,16 +470,28 @@ readListing
   -> [String]
   -> (Value -> Either Text [row])
   -> m (Either Text [row])
-readListing runner arguments parse = do
+readListing = readListingBounded Nothing
+
+readListingBounded
+  :: (Monad m)
+  => Maybe Int
+  -> AwsRun m
+  -> [String]
+  -> (Value -> Either Text [row])
+  -> m (Either Text [row])
+readListingBounded maximumBytes runner arguments parse = do
   output <- runner arguments
   pure $ case processExitCode output of
     ExitFailure _ -> Left (failureText arguments output)
     ExitSuccess -> do
-      decoded <-
-        either
-          (const (Left (unreadable arguments)))
-          Right
-          (eitherDecodeStrict' (TextEncoding.encodeUtf8 (Text.pack (processStdout output))))
+      let bytes = TextEncoding.encodeUtf8 (Text.pack (processStdout output))
+      case maximumBytes of
+        Nothing -> Right ()
+        Just limit ->
+          if ByteString.length bytes <= limit
+            then Right ()
+            else Left "canary inventory exceeds its 1 MiB read bound"
+      decoded <- either (const (Left (unreadable arguments))) Right (eitherDecodeStrict' bytes)
       parse decoded
 
 parseInterfaces :: Value -> Either Text [InterfaceRow]
@@ -356,15 +571,65 @@ clearNetworkDependents
   -> AwsWaitEnvironment m
   -> DependentsTarget
   -> m (Either Text DependentsRepair)
-clearNetworkDependents runner waits target = do
-  first' <- observeNetworkDependents runner target
+clearNetworkDependents runner waits target =
+  clearObservedNetworkDependents
+    (observeNetworkDependents runner target)
+    (prepareCanaryGroups (targetCluster target == Nothing) runner target)
+    runner
+    waits
+
+clearNetworkFamily
+  :: (Monad m)
+  => AwsNetworkFamily
+  -> AwsRun m
+  -> AwsWaitEnvironment m
+  -> DependentsTarget
+  -> m (Either Text DependentsRepair)
+clearNetworkFamily family runner waits target =
+  clearObservedNetworkDependents
+    (observeNetworkFamily family runner target)
+    (prepareCanaryGroups (family == TestCanarySecurityGroups) runner target)
+    runner
+    waits
+
+clearNetworkFamilies
+  :: (Monad m)
+  => [AwsNetworkFamily]
+  -> AwsRun m
+  -> AwsWaitEnvironment m
+  -> DependentsTarget
+  -> m (Either Text DependentsRepair)
+clearNetworkFamilies families runner waits target =
+  clearObservedNetworkDependents
+    (observeSelectedNetworkFamilies families runner target)
+    (prepareCanaryGroups (TestCanarySecurityGroups `elem` families) runner target)
+    runner
+    waits
+
+-- Only the new canary family can revoke peer rules. EKS's predicate and
+-- deletion program retain their existing behavior.
+prepareCanaryGroups
+  :: (Monad m) => Bool -> AwsRun m -> DependentsTarget -> [Text] -> m (Either Text ())
+prepareCanaryGroups enabled runner target identities
+  | enabled = CanaryExecution.clearTestCanaryReferences runner (targetVpc target) identities
+  | otherwise = pure (Right ())
+
+clearObservedNetworkDependents
+  :: (Monad m)
+  => m (Either Text [Dependent])
+  -> ([Text] -> m (Either Text ()))
+  -> AwsRun m
+  -> AwsWaitEnvironment m
+  -> m (Either Text DependentsRepair)
+clearObservedNetworkDependents observe prepareGroups runner waits = do
+  first' <- observe
   case first' of
     Left detail -> pure (Left detail)
     Right initial -> do
       (deletedFirst, notesFirst) <- deleteInterfaces (admittedOf DependentInterface initial)
       released <- awaitFact waits InterfacesReleased pollReleased
       let releaseNotes = either (\failure -> [renderWaitFailure failure]) (const []) released
-      second' <- observeNetworkDependents runner target
+      second' <- observe
       let settled = either (const initial) id second'
           secondNotes = either (\detail -> ["the second listing could not be taken: " <> detail]) (const []) second'
       (deletedLate, notesLate) <- deleteInterfaces (admittedOf DependentInterface settled)
@@ -372,8 +637,11 @@ clearNetworkDependents runner waits target = do
       -- A group is held by an interface, so each round of the group wait first
       -- deletes again any admitted interface that a refused or throttled delete
       -- left, instead of waiting out the budget on a group nothing will free.
-      groupResult <- deleteSecurityGroupsWith retryInterfaces runner waits groupIds
-      final <- observeNetworkDependents runner target
+      prepared <- prepareGroups groupIds
+      groupResult <- case prepared of
+        Left detail -> pure (Left detail)
+        Right () -> deleteSecurityGroupsWith retryInterfaces runner waits groupIds
+      final <- observe
       let groupNotes = either (\detail -> ["security groups: " <> detail]) (const []) groupResult
           finalNotes = either (\detail -> ["the closing listing could not be taken: " <> detail]) (const []) final
           deletedGroups = either (const []) (const groupIds) groupResult
@@ -392,7 +660,7 @@ clearNetworkDependents runner waits target = do
         )
  where
   retryInterfaces = do
-    listing <- observeNetworkDependents runner target
+    listing <- observe
     case listing of
       Left _ -> pure ()
       Right rows -> void (deleteInterfaces (admittedOf DependentInterface rows))
@@ -401,7 +669,7 @@ clearNetworkDependents runner waits target = do
   -- Done when no interface is held by a service. Admitted interfaces that remain
   -- are the deletions' own refusals, narrated, and waiting does not change them.
   pollReleased = do
-    listing <- observeNetworkDependents runner target
+    listing <- observe
     pure $ case listing of
       Left detail -> WaitMore () ("the listing could not be taken: " <> detail)
       Right rows ->

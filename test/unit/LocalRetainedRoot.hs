@@ -5,17 +5,37 @@ module LocalRetainedRoot
   )
 where
 
-import Control.Monad (filterM, forM_)
+import Control.Monad (filterM, forM_, unless)
 import Data.List (isInfixOf, isPrefixOf, sort)
 import Data.Text qualified as Text
 import Prodbox.Config.LocalRetainedRoot
 import System.Directory (doesDirectoryExist, listDirectory)
 import System.FilePath (takeExtension, (</>))
+import System.IO.Temp (withSystemTempDirectory)
+import System.Posix.Files (createNamedPipe)
 import TestSupport
 
 localRetainedRootSuite :: SuiteBuilder ()
 localRetainedRootSuite =
   describe "local retained-root recovery boundary" $ do
+    it "proves the exact active record absent before treating an unestablished root as fresh" $ do
+      r <- withSystemTempDirectory "prodbox-root-fifo" $ \fixtureRoot -> do
+        let fifo = fixtureRoot </> "intent-fifo"
+        createNamedPipe fifo 0o600
+        fixedHostCleanupBootstrapRootRegression fifo
+      mapM_
+        (\(label, passed) -> unless passed (expectationFailure label))
+        [ ("missing root", hostCleanupBootstrapRootMissingIsFresh r)
+        , ("partial root without record", hostCleanupBootstrapPartialRootIsFresh r)
+        , ("record needs canonical marker", hostCleanupBootstrapRecordNeedsMarker r)
+        , ("canonical record located", hostCleanupBootstrapCanonicalRecordLocated r)
+        , ("corrupt marker refused", hostCleanupBootstrapCorruptMarkerRefused r)
+        , ("symlink record refused", hostCleanupBootstrapSymlinkRecordRefused r)
+        , ("FIFO record refused", hostCleanupBootstrapFifoRecordRefused r)
+        , ("symlink root refused", hostCleanupBootstrapSymlinkRootRefused r)
+        , ("escape refused", hostCleanupBootstrapEscapeRefused r)
+        ]
+
     it "uses a canonical length-framed v1 marker and refuses ambiguous bindings" $ do
       let regression = fixedLocalRetainedRootFixtureRegression
       localRetainedRootFixtureMarkerRoundTrips regression `shouldBe` True

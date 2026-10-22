@@ -129,6 +129,7 @@ import Prodbox.Lifecycle.AdminAction.Runner
 import Prodbox.Lifecycle.Authority.AdminAction
   ( AdminAction (..)
   )
+import Prodbox.Lifecycle.AwsRemedy (AwsStackTarget (..))
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminWorker
   ( AwsAdminWorkerMode (..)
   , AwsAdminWorkerOptions (..)
@@ -141,6 +142,10 @@ import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   , mkOperatorMaterialPermitId
   )
 import Prodbox.Lifecycle.Lease (authorityTimeFromMicros)
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork
+  ( ProviderNetworkPurgeMode (..)
+  , mkProviderNetworkPurgeApplyMode
+  )
 import Prodbox.Lifecycle.TargetCommitIntent (TargetValueDigest, mkTargetValueDigest)
 import Prodbox.Runtime.Role
   ( RuntimeRole (..)
@@ -499,6 +504,11 @@ parserForPath path =
     ["dev", "lint", "chart"] -> Just (pure (RunNative (NativeLint LintChart)))
     ["aws", "stack", "eks", "reconcile"] ->
       Just (fmap (RunNative . NativePulumi . PulumiEksResources) planOptionsParser)
+    ["aws", "stack", "eks", "diff"] -> Just (pure (RunNative (NativePulumi (PulumiStackDiff AwsEksTarget))))
+    ["aws", "stack", "eks", "purge-dependents"] -> Just networkPurgeParser
+    ["aws", "stack", "test", "diff"] -> Just (pure (RunNative (NativePulumi (PulumiStackDiff AwsTestTarget))))
+    ["aws", "stack", "aws-subzone", "diff"] -> Just (pure (RunNative (NativePulumi (PulumiStackDiff AwsSubzoneTarget))))
+    ["aws", "stack", "aws-ses", "diff"] -> Just (pure (RunNative (NativePulumi (PulumiStackDiff AwsSesTarget))))
     ["aws", "stack", "eks", "destroy"] ->
       Just $
         fmap
@@ -632,6 +642,8 @@ parserForPath path =
     ["test", "integration", "aws-iam"] -> Just (withCoverage (TestIntegration IntegrationAwsIam))
     ["test", "integration", "dns-aws"] -> Just (withCoverage (TestIntegration IntegrationDnsAws))
     ["test", "integration", "aws-eks"] -> Just (withCoverage (TestIntegration IntegrationAwsEks))
+    ["test", "integration", "aws-lifecycle"] -> Just (withCoverage (TestIntegration IntegrationAwsLifecycle))
+    ["test", "integration", "aws-lifecycle-canary"] -> Just (withCoverage (TestIntegration IntegrationAwsLifecycleCanary))
     ["test", "integration", "env"] -> Just (withCoverage (TestIntegration IntegrationEnv))
     ["test", "integration", "gateway-daemon"] -> Just (withCoverage (TestIntegration IntegrationGatewayDaemon))
     ["test", "integration", "gateway-pods"] -> Just gatewayPodsTestParser
@@ -2246,7 +2258,7 @@ awsStackGroup =
         "EKS validation stack"
         "Reconcile the EKS validation stack."
         "Destroy the EKS validation stack."
-        [pruneCorruptCheckpointLeaf "eks", adoptLegacyGroup "eks"]
+        [pruneCorruptCheckpointLeaf "eks", adoptLegacyGroup "eks", networkPurgeLeaf]
     , stackVerbGroup
         "test"
         "HA RKE2 validation stack"
@@ -2279,6 +2291,41 @@ awsStackGroup =
     ]
     []
     [example ["aws", "stack", "eks", "reconcile"] "Reconcile the EKS validation stack."]
+
+-- | The digest-confirmed repair leaf for the registered EKS network families.
+networkPurgeLeaf :: CommandSpec
+networkPurgeLeaf =
+  leaf
+    "purge-dependents"
+    "Plan or repair the registered EKS network dependents"
+    "Plan by default. Prove the cluster absent and locate exactly one VPC by both registered tags. Apply only with --yes and a matching --plan-digest, then independently report the two network families' absence verdict."
+    [ flagOption "yes" (Just 'y') Nothing "Apply the confirmed plan"
+    , optionalOption
+        "plan-digest"
+        Nothing
+        "DIGEST"
+        "The exact digest from the current purge plan; requires --yes"
+    ]
+    [ example ["aws", "stack", "eks", "purge-dependents"] "Inspect the network repair plan."
+    , example
+        ["aws", "stack", "eks", "purge-dependents", "--yes", "--plan-digest", replicate 64 'a']
+        "Apply the confirmed network repair."
+    ]
+
+networkPurgeParser :: Parser CommandRequest
+networkPurgeParser =
+  ( (\mode _ -> request mode)
+      <$> option
+        (eitherReader readMode)
+        (long "plan-digest" <> metavar "DIGEST" <> help "Exact lowercase SHA-256 plan digest; requires --yes")
+      <*> flag' () (long "yes" <> short 'y' <> help "Apply the confirmed network repair")
+  )
+    <|> pure (request NetworkPurgePlan)
+ where
+  request = RunNative . NativePulumi . PulumiEksPurgeDependents
+  readMode raw = case mkProviderNetworkPurgeApplyMode (Text.pack raw) of
+    Right mode -> Right mode
+    Left _ -> Left "--plan-digest must be a lowercase SHA-256 digest"
 
 -- | Sprint 7.22: the @prune-corrupt-checkpoint@ recovery leaf for a per-run
 -- stack group. Per-run stacks only — a corrupt long-lived @aws-ses@
@@ -2359,6 +2406,12 @@ stackVerbGroup stackName summaryText reconcileDescription destroyDescription ext
     summaryText
     ("Lifecycle for the " ++ stackName ++ " AWS substrate stack.")
     ( [ leaf
+          "diff"
+          ("Show the " ++ stackName ++ " stack resource and property delta")
+          "Run an authenticated Provider preview and report resource, operation and property names. Values and diagnostic text are omitted. Changes are observed without applying them."
+          []
+          [example ["aws", "stack", stackName, "diff"] "Inspect the authored stack delta."]
+      , leaf
           "reconcile"
           ("Provision or inspect the " ++ stackName ++ " stack")
           reconcileDescription
@@ -2741,6 +2794,10 @@ testGroupSpec =
         , integrationLeaf
             "cascade-qualification-receipt"
             "Report whether the cycle ledger holds consecutive qualifying cascade cycles"
+        , integrationLeaf "aws-lifecycle" "Exercise audit-bracketed AWS stack create and destroy cycles"
+        , integrationLeaf
+            "aws-lifecycle-canary"
+            "Exercise planted test-VPC network dependencies and exact cleanup"
         , integrationLeaf "ha-rke2-aws" "Run HA RKE2 AWS integration tests"
         , integrationLeaf "lifecycle" "Run lifecycle integration tests"
         , integrationLeaf "pulumi" "Run Pulumi integration tests"

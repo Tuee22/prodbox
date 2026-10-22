@@ -192,6 +192,18 @@ awsAccountRunner account = AwsNativeStackFamilyRunner $ \arguments -> do
   settle account
   world <- readIORef (accountWorld account)
   case arguments of
+    "ec2" : "describe-vpcs" : _
+      | afterFlag "--query" arguments == "Vpcs[].{id:VpcId,tags:Tags}" ->
+          pure . success . LazyByteStringChar8.unpack . encode $
+            [ object
+                [ "id" .= identity
+                , "tags"
+                    .= [ object ["Key" .= ("Name" :: Text), "Value" .= ("aws-test-vpc" :: Text)]
+                       , object ["Key" .= ("prodbox.io/managed-by" :: Text), "Value" .= ("prodbox" :: Text)]
+                       ]
+                ]
+            | Just identity <- [worldVpc world]
+            ]
     "ec2" : "delete-network-interface" : _ -> deleteInterface account arguments
     "ec2" : "delete-security-group" : _ -> deleteGroup account arguments
     "ec2" : "describe-network-interfaces" : _
@@ -315,6 +327,7 @@ groupListing world arguments = case vpcFilterOf arguments of
           [ "id" .= plantedId p
           , "vpc" .= fieldOr "vpc" vpcId p
           , "name" .= fieldOr "name" "" p
+          , "tags" .= Null
           , "cluster" .= maybe Null String (lookup "cluster" (plantedFields p))
           ]
       | p <- ofClassIn AuditSecurityGroup world

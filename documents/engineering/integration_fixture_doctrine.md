@@ -119,10 +119,11 @@ For a cluster-backed managed-AWS suite, setup has two graph-derived local-runtim
 around Lifecycle-provider credential repair. The pre-credential projection establishes only the
 retained Authority/config transition and deliberately stops before Provider Worker deep readiness,
 because that readiness consumes the credential being repaired. After the Credential Provisioner
-reports the exact current generation, the harness re-enters ordinary local-only `cluster
-reconcile` before ACME EAB ingress or any AWS-backed prerequisite. That reconcile must establish
-the Provider Service and pass its normal deep STS readiness gate; it has no edge/AWS target
-mutation enabled. Pure IAM-harness suites create no local runtime and use neither projection. This
+reports the exact current generation, the harness executes its selected graph-derived local
+readiness profile before any AWS-backed prerequisite. Ordinary suites retain local-only
+`cluster reconcile` before EAB ingress; the two standalone lifecycle drills select only the
+bootstrap/config floor and Provider/TLS role readiness. Both profiles establish the Provider
+Service and require its normal deep STS readiness gate; they enable no edge/AWS target mutation. Pure IAM-harness suites create no local runtime and use neither projection. This
 ordering is not permission to install a Provider chart directly or to weaken normal Provider
 readiness.
 
@@ -254,8 +255,13 @@ only after lifecycle recovery proves the prior one terminal and quiescent.
 
 ## 2B. Planted Residue And Recorded Provider Behaviour
 
-> **Target.** Nothing in this section is built. Status lives only in the
-> [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+`test integration aws-lifecycle-canary` submits the registered test-VPC plant and supported
+destroy; `test integration aws-lifecycle` cycles the test and EKS stacks. Both select the retained
+bootstrap/config floor, credential reconciliation, Provider and TLS Retention role readiness.
+They select no EAB, SMTP, application-chart, public-edge or certificate retain/restore action.
+Their coverage projection names each omitted field before any clean assertion. Validation and
+live class-closure status live only in the
+[Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 A fixture that proves a cleanup path converges has to hand that path something to clear which the
 path did not create. Two rules govern it.

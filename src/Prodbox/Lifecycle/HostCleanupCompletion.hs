@@ -90,6 +90,16 @@ module Prodbox.Lifecycle.HostCleanupCompletion
   , ObservedLocalCompletion (..)
   , LocalCompletionObservation (..)
   , observeLocalCompletion
+  , HistoricalHostCleanupCompletion
+  , HistoricalHostCleanupCompletionError (..)
+  , historicalHostCleanupIntent
+  , historicalHostCleanupHandoff
+  , historicalHostCleanupReport
+  , observeHistoricalHostCleanupCompletion
+  , observeHistoricalHostCleanupCompletionForRun
+  , historicalHostCleanupIntentRetired
+  , HistoricalHostCleanupRegression (..)
+  , fixedHistoricalHostCleanupRegression
   , localCompletionReadBack
 
     -- * Production effect arms
@@ -113,9 +123,11 @@ where
 
 import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
 import Control.Exception (IOException, bracket, mask_, throwIO, try)
+import Control.Monad (foldM)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
@@ -132,6 +144,7 @@ import Prodbox.Lifecycle.CleanupRun
   , CleanupOperationId
   , CleanupRun (cleanupRunGraphDigest, cleanupRunId)
   , CleanupRunId
+  , CleanupRunReport
   , cleanupDigestOfBytes
   , cleanupDigestText
   , cleanupOperationIdText
@@ -142,21 +155,47 @@ import Prodbox.Lifecycle.CleanupRun
   )
 import Prodbox.Lifecycle.HostCleanupIntent
   ( HostCleanupIntent
+  , HostCleanupIntentPhase (..)
+  , HostCleanupIntentStore
+  , HostCleanupTerminalHandoff
+  , ObservedHostCleanupIntent
+  , advanceHostCleanupIntent
+  , hostCleanupCompletionReceiptDigest
+  , hostCleanupGraphDigest
+  , hostCleanupIntentPhase
+  , hostCleanupObservationEvidenceScope
+  , hostCleanupReadyBinding
+  , hostCleanupReadyCompletionOperationId
+  , hostCleanupRun
+  , hostCleanupRunId
+  , hostCleanupScope
+  , hostCleanupTerminalHandoffIntent
+  , hostCleanupTerminalIdentity
   , mkHostCleanupIntent
   , mkHostCleanupScope
   , mkHostCleanupTerminalIdentity
   , mkHostTerminalPermitId
+  , observeHostCleanupIntentForResume
+  , observeHostCleanupTerminalHandoff
+  , observeRetiredHostCleanupIntentForResume
+  , observedHostCleanupIntent
+  , restoreObservedHostCleanupReady
   )
+import Prodbox.Lifecycle.HostCleanupIntent.Internal (withFixedHostCleanupTerminalHandoffInternal)
 import Prodbox.Lifecycle.HostCleanupRunner
   ( HostCleanupCompletionReadBack (..)
   , HostCleanupEffectOutcome (..)
   , HostCleanupRunnerContext
+  , HostCleanupRunnerEffects (..)
+  , HostCleanupRunnerResult (..)
+  , compileHostCleanupTerminalReport
   , hostCleanupRunnerCompletionOperationId
   , hostCleanupRunnerGraphDigest
   , hostCleanupRunnerObservationScope
   , hostCleanupRunnerReadyPermitId
   , hostCleanupRunnerReadyReportDigest
   , hostCleanupRunnerRunId
+  , runHostCleanupTerminalHandoff
   , validateHostCleanupReady
   )
 import Prodbox.Lifecycle.Teardown.CascadeEvidence.Internal
@@ -383,14 +422,7 @@ prepareLocalCompletion context local =
     , internalPreparedBytes = encodeLocalCompletionEntry reference permit report absence
     }
  where
-  reference =
-    LocalCompletionReference
-      { localCompletionReferenceRunId = hostCleanupRunnerRunId context
-      , localCompletionReferenceGraphDigest = hostCleanupRunnerGraphDigest context
-      , localCompletionReferenceScope = hostCleanupRunnerObservationScope context
-      , localCompletionReferenceOperationId =
-          hostCleanupRunnerCompletionOperationId context
-      }
+  reference = contextCompletionReference context
   permit = localCompletionPermitIdText (hostCleanupRunnerReadyPermitId context)
   report = cascadeReportDigestText (hostCleanupRunnerReadyReportDigest context)
   absence = absenceEvidenceText (localUninstallAbsenceEvidence local)
@@ -662,6 +694,208 @@ observeLocalCompletion journal reference = do
     Right (Just bytes) -> case decodeLocalCompletionEntry bytes of
       Left detail -> LocalCompletionUnobservable detail
       Right observed -> LocalCompletionObserved observed
+
+-- | A historical join of the two preserved journals and sealed handoff.
+-- It cannot authorize uninstall or assert current host absence. The constructor
+-- is private, and no CascadeCompleteEvidence is minted when RKE2 was reinstalled.
+data HistoricalHostCleanupCompletion = HistoricalHostCleanupCompletion
+  { historicalHostCleanupIntent :: !HostCleanupIntent
+  , historicalHostCleanupHandoff :: !HostCleanupTerminalHandoff
+  , historicalHostCleanupReport :: !CleanupRunReport
+  , historicalHostCleanupIntentRetired :: !Bool
+  }
+
+data HistoricalHostCleanupCompletionError
+  = HistoricalHostCleanupIntentUnobservable Text
+  | HistoricalHostCleanupNotComplete HostCleanupIntentPhase
+  | HistoricalHostCleanupHandoffMissing
+  | HistoricalHostCleanupBindingMismatch
+  | HistoricalHostCleanupReadinessInvalid Text
+  | HistoricalHostCleanupJournalMissing
+  | HistoricalHostCleanupJournalUnobservable Text
+  | HistoricalHostCleanupReceiptMismatch
+  | HistoricalHostCleanupIntentChanged
+  | HistoricalHostCleanupReportInvalid Text
+  | HistoricalHostCleanupRetirementMissing
+  deriving (Eq, Show)
+
+observeHistoricalHostCleanupCompletion
+  :: HostCleanupIntentStore
+  -> HostCleanupCompletionJournal
+  -> IO (Either HistoricalHostCleanupCompletionError (Maybe HistoricalHostCleanupCompletion))
+observeHistoricalHostCleanupCompletion store journal = do
+  observed <- observeHostCleanupIntentForResume store
+  case observed of
+    Left cause -> pure (Left (historicalIntentError cause))
+    Right Nothing -> pure (Right Nothing)
+    Right (Just exact) -> fmap (fmap Just) (observeHistoricalExact store journal False exact)
+
+-- | An authenticated predecessor run can be recovered after retirement moved
+-- its active record. The handoff and journal determine the only candidate
+-- complete DTO; the content-addressed archive must then independently match.
+-- No active intent is recreated and no live absence is asserted.
+observeHistoricalHostCleanupCompletionForRun
+  :: HostCleanupIntentStore
+  -> HostCleanupCompletionJournal
+  -> CleanupRunId
+  -> IO (Either HistoricalHostCleanupCompletionError HistoricalHostCleanupCompletion)
+observeHistoricalHostCleanupCompletionForRun store journal runId = do
+  active <- observeHostCleanupIntentForResume store
+  case active of
+    Left cause -> pure (Left (historicalIntentError cause))
+    Right (Just exact)
+      | hostCleanupRunId (observedHostCleanupIntent exact) == runId ->
+          observeHistoricalExact store journal False exact
+    Right _ -> do
+      handoff <- observeHostCleanupTerminalHandoff store runId
+      case handoff of
+        Left cause -> pure (Left (historicalIntentError cause))
+        Right Nothing -> pure (Left HistoricalHostCleanupHandoffMissing)
+        Right (Just sealed) -> do
+          let snapshot = hostCleanupTerminalHandoffIntent sealed
+          case historicalSnapshotReference snapshot of
+            Left cause -> pure (Left cause)
+            Right reference -> do
+              observed <- observeLocalCompletion journal reference
+              case observed of
+                LocalCompletionMissing -> pure (Left HistoricalHostCleanupJournalMissing)
+                LocalCompletionUnobservable detail -> pure (Left (HistoricalHostCleanupJournalUnobservable detail))
+                LocalCompletionObserved receipt -> case historicalCompleteCandidate snapshot (observedLocalCompletionDigest receipt) of
+                  Left cause -> pure (Left cause)
+                  Right expected -> do
+                    archive <- observeRetiredHostCleanupIntentForResume store expected
+                    case archive of
+                      Left cause -> pure (Left (historicalIntentError cause))
+                      Right Nothing -> pure (Left HistoricalHostCleanupRetirementMissing)
+                      Right (Just exact) -> observeHistoricalExact store journal True exact
+
+historicalIntentError :: (Show cause) => cause -> HistoricalHostCleanupCompletionError
+historicalIntentError = HistoricalHostCleanupIntentUnobservable . Text.pack . show
+
+historicalSnapshotReference
+  :: HostCleanupIntent
+  -> Either HistoricalHostCleanupCompletionError LocalCompletionReference
+historicalSnapshotReference snapshot = case hostCleanupReadyBinding snapshot of
+  Nothing -> Left (HistoricalHostCleanupReadinessInvalid "handoff has no readiness binding")
+  Just binding ->
+    Right
+      LocalCompletionReference
+        { localCompletionReferenceRunId = hostCleanupRunId snapshot
+        , localCompletionReferenceGraphDigest = hostCleanupGraphDigest snapshot
+        , localCompletionReferenceScope = hostCleanupObservationEvidenceScope (hostCleanupScope snapshot)
+        , localCompletionReferenceOperationId = hostCleanupReadyCompletionOperationId binding
+        }
+
+historicalCompleteCandidate
+  :: HostCleanupIntent
+  -> CleanupDigest
+  -> Either HistoricalHostCleanupCompletionError HostCleanupIntent
+historicalCompleteCandidate snapshot receipt =
+  foldM
+    advance
+    snapshot
+    [ HostCleanupLocalUninstallIssued
+    , HostCleanupLocalAbsenceRecorded
+    , HostCleanupAuthorityReconciled
+    , HostCleanupCompletionCommitted
+    , HostCleanupComplete
+    ]
+ where
+  advance intent phase =
+    either
+      (Left . historicalIntentError)
+      Right
+      ( advanceHostCleanupIntent
+          phase
+          (if phase == HostCleanupComplete then Just receipt else Nothing)
+          intent
+      )
+
+observeHistoricalExact
+  :: HostCleanupIntentStore
+  -> HostCleanupCompletionJournal
+  -> Bool
+  -> ObservedHostCleanupIntent
+  -> IO (Either HistoricalHostCleanupCompletionError HistoricalHostCleanupCompletion)
+observeHistoricalExact store journal retired exact = do
+  let active = observedHostCleanupIntent exact
+  if hostCleanupIntentPhase active /= HostCleanupComplete
+    then pure (Left (HistoricalHostCleanupNotComplete (hostCleanupIntentPhase active)))
+    else do
+      handoff <- observeHostCleanupTerminalHandoff store (hostCleanupRunId active)
+      case handoff of
+        Left cause -> pure (Left (historicalIntentError cause))
+        Right Nothing -> pure (Left HistoricalHostCleanupHandoffMissing)
+        Right (Just sealed) -> case historicalContext active sealed exact of
+          Left cause -> pure (Left cause)
+          Right context -> do
+            receipt <- observeLocalCompletion journal (contextCompletionReference context)
+            case validateHistoricalReceipt active context receipt of
+              Left cause -> pure (Left cause)
+              Right () -> do
+                final <-
+                  if retired
+                    then observeRetiredHostCleanupIntentForResume store active
+                    else observeHostCleanupIntentForResume store
+                pure $ do
+                  case final of
+                    Right (Just same) | observedHostCleanupIntent same == active -> Right ()
+                    _ -> Left HistoricalHostCleanupIntentChanged
+                  report <-
+                    either
+                      (Left . HistoricalHostCleanupReportInvalid . Text.pack . show)
+                      Right
+                      (compileHostCleanupTerminalReport sealed)
+                  Right (HistoricalHostCleanupCompletion active sealed report retired)
+ where
+  historicalContext active sealed observed = do
+    let original = hostCleanupTerminalHandoffIntent sealed
+    if and
+      [ hostCleanupRunId original == hostCleanupRunId active
+      , hostCleanupGraphDigest original == hostCleanupGraphDigest active
+      , hostCleanupRun original == hostCleanupRun active
+      , hostCleanupScope original == hostCleanupScope active
+      , hostCleanupTerminalIdentity original == hostCleanupTerminalIdentity active
+      , hostCleanupReadyBinding original == hostCleanupReadyBinding active
+      ]
+      then Right ()
+      else Left HistoricalHostCleanupBindingMismatch
+    ready <-
+      either
+        (Left . HistoricalHostCleanupReadinessInvalid . Text.pack . show)
+        Right
+        (restoreObservedHostCleanupReady observed)
+    either
+      (Left . HistoricalHostCleanupReadinessInvalid . Text.pack . show)
+      Right
+      (validateHostCleanupReady active ready)
+
+validateHistoricalReceipt
+  :: HostCleanupIntent
+  -> HostCleanupRunnerContext
+  -> LocalCompletionObservation
+  -> Either HistoricalHostCleanupCompletionError ()
+validateHistoricalReceipt active context observation = case observation of
+  LocalCompletionMissing -> Left HistoricalHostCleanupJournalMissing
+  LocalCompletionUnobservable detail -> Left (HistoricalHostCleanupJournalUnobservable detail)
+  LocalCompletionObserved receipt
+    | observedLocalCompletionReference receipt == contextCompletionReference context
+        && observedLocalCompletionPermitId receipt
+          == localCompletionPermitIdText (hostCleanupRunnerReadyPermitId context)
+        && observedLocalCompletionReportDigest receipt
+          == cascadeReportDigestText (hostCleanupRunnerReadyReportDigest context)
+        && hostCleanupCompletionReceiptDigest active == Just (observedLocalCompletionDigest receipt) ->
+        Right ()
+    | otherwise -> Left HistoricalHostCleanupReceiptMismatch
+
+contextCompletionReference :: HostCleanupRunnerContext -> LocalCompletionReference
+contextCompletionReference context =
+  LocalCompletionReference
+    { localCompletionReferenceRunId = hostCleanupRunnerRunId context
+    , localCompletionReferenceGraphDigest = hostCleanupRunnerGraphDigest context
+    , localCompletionReferenceScope = hostCleanupRunnerObservationScope context
+    , localCompletionReferenceOperationId = hostCleanupRunnerCompletionOperationId context
+    }
 
 -- | Join one observation with the readiness and absence proofs to mint the
 -- completion read-back.
@@ -1062,3 +1296,83 @@ isRight = either (const False) (const True)
 
 isLeft :: Either left right -> Bool
 isLeft = either (const True) (const False)
+
+-- | Fixed evidence stays inside this existing completion-evidence owner. Only
+-- closed regression results escape; callers cannot obtain any fixture handle.
+data HistoricalHostCleanupRegression = HistoricalHostCleanupRegression
+  { historicalRegressionIncompleteRefused :: Bool
+  , historicalRegressionReinstallKeepsHistory :: Bool
+  , historicalRegressionNativeAbsenceNotBorrowed :: Bool
+  , historicalRegressionExactReport :: Bool
+  , historicalRegressionForeignReceiptRefused :: Bool
+  , historicalRegressionMissingReceiptRefused :: Bool
+  }
+  deriving (Eq, Show)
+
+fixedHistoricalHostCleanupRegression :: IO (Either Text HistoricalHostCleanupRegression)
+fixedHistoricalHostCleanupRegression = case fixedLocalCompletionScenario of
+  Left detail -> pure (Left detail)
+  Right scenario -> withFixedHostCleanupTerminalHandoffInternal (runHistorical scenario)
+ where
+  runHistorical scenario store handoff _ ready =
+    withSystemTempDirectory "prodbox-historical-completion" (runAtRoot scenario store handoff ready)
+  runAtRoot scenario store handoff ready root =
+    case mkHostCleanupCompletionJournal root of
+      Left detail -> ioError (userError (Text.unpack detail))
+      Right journal -> do
+        absent <- newIORef False
+        let local = fixedCompletionLocal scenario
+            effects =
+              HostCleanupRunnerEffects
+                { hostRunnerAcceptAuthority = \_ _ -> ioError (userError "unexpected Authority call")
+                , hostRunnerReadBackAuthorityAcceptance = \_ -> ioError (userError "unexpected Authority read")
+                , hostRunnerRunLocalUninstall = \_ -> writeIORef absent True >> pure HostCleanupEffectApplied
+                , hostRunnerReadBackLocalAbsence = \_ _ -> do
+                    state <- readIORef absent
+                    pure (Right (if state then Just local else Nothing))
+                , hostRunnerCommitCompletionReceipt = productionHostCleanupCompletionCommit journal
+                , hostRunnerReadBackCompletionReceipt = \context observedReady ->
+                    productionHostCleanupCompletionReadBack journal observedReady local context
+                }
+        incomplete <- observeHistoricalHostCleanupCompletion store journal
+        first <- runHostCleanupTerminalHandoff store effects handoff
+        -- Intentional next bootstrap invalidates current absence; historical
+        -- completion must remain readable without calling that verifier.
+        writeIORef absent False
+        historical <- observeHistoricalHostCleanupCompletion store journal
+        native <- runHostCleanupTerminalHandoff store effects handoff
+        let exactReport = case (first, historical) of
+              (Right (_, report), Right (Just history)) -> report == historicalHostCleanupReport history
+              _ -> False
+        foreignRefused <- case first of
+          Right (completed, _) -> case validateHostCleanupReady (completedHostCleanupIntent completed) ready of
+            Left _ -> pure (False, False)
+            Right context -> do
+              let reference = contextCompletionReference context
+                  other =
+                    prepareLocalCompletion (fixedCompletionOtherContext scenario) (fixedCompletionOtherLocal scenario)
+              placeEntryBytes journal reference (preparedLocalCompletionBytes other)
+              foreignResult <- observeHistoricalHostCleanupCompletion store journal
+              removeEntry journal reference
+              missing <- observeHistoricalHostCleanupCompletion store journal
+              pure (isReceiptMismatch foreignResult, isMissingReceipt missing)
+          Left _ -> pure (False, False)
+        pure
+          HistoricalHostCleanupRegression
+            { historicalRegressionIncompleteRefused = case incomplete of
+                Left (HistoricalHostCleanupNotComplete HostCleanupTerminalArmed) -> True
+                _ -> False
+            , historicalRegressionReinstallKeepsHistory = case historical of
+                Right (Just _) -> True
+                _ -> False
+            , historicalRegressionNativeAbsenceNotBorrowed = isLeft native
+            , historicalRegressionExactReport = exactReport
+            , historicalRegressionForeignReceiptRefused = fst foreignRefused
+            , historicalRegressionMissingReceiptRefused = snd foreignRefused
+            }
+  isReceiptMismatch result = case result of
+    Left HistoricalHostCleanupReceiptMismatch -> True
+    _ -> False
+  isMissingReceipt result = case result of
+    Left HistoricalHostCleanupJournalMissing -> True
+    _ -> False

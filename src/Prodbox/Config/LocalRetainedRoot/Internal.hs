@@ -1,6 +1,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -22,6 +23,19 @@ module Prodbox.Config.LocalRetainedRoot.Internal
   , renderLocalRetainedRootError
   , renderRetainedRootMarkerReconcileOutcome
   , locateBootstrapRetainedRoot
+  , locateBootstrapRetainedRootForHostCleanup
+  , hostCleanupActiveIntentRelativePath
+  , HostCleanupBootstrapRootRegression
+  , fixedHostCleanupBootstrapRootRegression
+  , hostCleanupBootstrapRootMissingIsFresh
+  , hostCleanupBootstrapPartialRootIsFresh
+  , hostCleanupBootstrapRecordNeedsMarker
+  , hostCleanupBootstrapCanonicalRecordLocated
+  , hostCleanupBootstrapCorruptMarkerRefused
+  , hostCleanupBootstrapSymlinkRecordRefused
+  , hostCleanupBootstrapFifoRecordRefused
+  , hostCleanupBootstrapSymlinkRootRefused
+  , hostCleanupBootstrapEscapeRefused
   , reconcileAuthorityBoundRetainedRootMarker
   , reobserveAuthorityBoundRetainedRoot
   , LocalRetainedRootFixtureRegression
@@ -99,6 +113,7 @@ import Prodbox.Settings.Coordinate
   )
 import System.Directory
   ( canonicalizePath
+  , createDirectoryIfMissing
   , makeAbsolute
   , removeFile
   , renameFile
@@ -113,10 +128,13 @@ import System.FilePath
   )
 import System.IO (SeekMode (AbsoluteSeek))
 import System.IO.Error (isDoesNotExistError, isEOFError)
+import System.IO.Temp (withSystemTempDirectory)
 import System.IO.Unsafe (unsafePerformIO)
 import System.Posix.Files
   ( FileStatus
   , accessModes
+  , createLink
+  , createSymbolicLink
   , fileMode
   , fileSize
   , getFdStatus
@@ -382,24 +400,63 @@ locateBootstrapRetainedRoot suppliedRepository = do
       coordinateResult <- loadTier0StorageCoordinate repository
       case coordinateResult of
         Left err -> pure (Left err)
-        Right coordinate -> do
-          rootResult <- validateRetainedRootLayout repository coordinate
-          case rootResult of
-            Left err -> pure (Left err)
-            Right root -> do
-              stored <- readMarkerFile (markerPath root)
-              pure $ do
-                bytes <- stored
-                marker <- decodeMarker bytes
-                let expected = expectedMarker repository coordinate root
-                unless (marker == expected) (Left LocalRetainedRootMarkerConflict)
-                Right
-                  BootstrapRetainedRootLocator
-                    { bootstrapLocatorRepository = repository
-                    , bootstrapLocatorCoordinate = coordinate
-                    , bootstrapLocatorRoot = root
-                    , bootstrapLocatorMarker = marker
-                    }
+        Right coordinate -> locateBootstrapRetainedRootAtCoordinate repository coordinate
+
+locateBootstrapRetainedRootAtCoordinate
+  :: FilePath -> Text -> IO (Either LocalRetainedRootError BootstrapRetainedRootLocator)
+locateBootstrapRetainedRootAtCoordinate repository coordinate = do
+  rootResult <- validateRetainedRootLayout repository coordinate
+  case rootResult of
+    Left err -> pure (Left err)
+    Right root -> do
+      stored <- readMarkerFile (markerPath root)
+      pure $ do
+        bytes <- stored
+        marker <- decodeMarker bytes
+        let expected = expectedMarker repository coordinate root
+        unless (marker == expected) (Left LocalRetainedRootMarkerConflict)
+        Right
+          BootstrapRetainedRootLocator
+            { bootstrapLocatorRepository = repository
+            , bootstrapLocatorCoordinate = coordinate
+            , bootstrapLocatorRoot = root
+            , bootstrapLocatorMarker = marker
+            }
+
+-- | The shared non-authorizing coordinate of the active host record.
+-- HostCleanupIntent derives its writer path from this same relative value.
+hostCleanupActiveIntentRelativePath :: FilePath
+hostCleanupActiveIntentRelativePath = "host-cleanup-intent" </> "active-v1.cbor"
+
+-- | Before a fresh install, missing parents or the exact missing intent prove
+-- there is no predecessor record. A positive record requires the complete
+-- canonical bootstrap marker/layout. No locator is minted from a negative
+-- observation, and unsafe or unobservable components never become absence.
+locateBootstrapRetainedRootForHostCleanup
+  :: FilePath -> IO (Either LocalRetainedRootError (Maybe BootstrapRetainedRootLocator))
+locateBootstrapRetainedRootForHostCleanup suppliedRepository = do
+  repositoryResult <- validateRepository suppliedRepository
+  case repositoryResult of
+    Left cause -> pure (Left cause)
+    Right repository -> do
+      coordinateResult <- loadTier0StorageCoordinate repository
+      case coordinateResult of
+        Left cause -> pure (Left cause)
+        Right coordinate -> observeHostCleanupRootAtCoordinate repository coordinate
+
+observeHostCleanupRootAtCoordinate
+  :: FilePath -> Text -> IO (Either LocalRetainedRootError (Maybe BootstrapRetainedRootLocator))
+observeHostCleanupRootAtCoordinate repository coordinate =
+  case configuredRetainedRootPath repository coordinate of
+    Left cause -> pure (Left cause)
+    Right root -> do
+      let record = controlDirectory root </> hostCleanupActiveIntentRelativePath
+      observed <- validatePathComponents ExpectedRegularFile record
+      case observed of
+        Left PathComponentMissing -> pure (Right Nothing)
+        Left (PathComponentUnsafe detail) ->
+          pure (Left (LocalRetainedRootEntryUnsafe LocalRetainedRootControlDirectory detail))
+        Right () -> fmap (fmap Just) (locateBootstrapRetainedRootAtCoordinate repository coordinate)
 
 -- | Normal-reconcile migration hook.  It performs a fresh authenticated
 -- Operator observation before touching the marker, then create-or-replays and
@@ -678,19 +735,10 @@ firstRepositoryError = either (Left . repositoryError) Right
 
 validateRetainedRootLayout
   :: FilePath -> Text -> IO (Either LocalRetainedRootError FilePath)
-validateRetainedRootLayout repository coordinate = do
-  let lexicalRoot = normalise (repository </> Text.unpack coordinate)
-      relative = makeRelative repository lexicalRoot
-  if isAbsolute relative || relative == ".." || ".." `elem` splitDirectories relative
-    then
-      pure
-        ( Left
-            ( LocalRetainedRootEntryUnsafe
-                LocalRetainedRootDirectory
-                "configured root escapes the canonical repository"
-            )
-        )
-    else do
+validateRetainedRootLayout repository coordinate =
+  case configuredRetainedRootPath repository coordinate of
+    Left cause -> pure (Left cause)
+    Right lexicalRoot -> do
       rootResult <- validateDirectoryPath LocalRetainedRootDirectory lexicalRoot
       case rootResult of
         Left err -> pure (Left err)
@@ -710,6 +758,19 @@ validateRetainedRootLayout repository coordinate = do
             _ <- minio
             _ <- vault
             Right root
+
+configuredRetainedRootPath :: FilePath -> Text -> Either LocalRetainedRootError FilePath
+configuredRetainedRootPath repository coordinate =
+  let lexicalRoot = normalise (repository </> Text.unpack coordinate)
+      relative = makeRelative repository lexicalRoot
+   in if isAbsolute relative || relative == ".." || ".." `elem` splitDirectories relative
+        then
+          Left
+            ( LocalRetainedRootEntryUnsafe
+                LocalRetainedRootDirectory
+                "configured root escapes the canonical repository"
+            )
+        else Right lexicalRoot
 
 validateDirectoryPath
   :: LocalRetainedRootEntry
@@ -1141,3 +1202,68 @@ localRetainedRootFixtureLegacyRequiresAuthority = fixtureLegacyRequiresAuthority
 localRetainedRootFixtureLayoutClosed
   :: LocalRetainedRootFixtureRegression -> Bool
 localRetainedRootFixtureLayoutClosed = fixtureLayoutClosed
+
+-- Fixed filesystem cases return observations only; no locator escapes this
+-- private owner and no Authority-bound root is constructed by the fixture.
+data HostCleanupBootstrapRootRegression = HostCleanupBootstrapRootRegression
+  { hostCleanupBootstrapRootMissingIsFresh :: Bool
+  , hostCleanupBootstrapPartialRootIsFresh :: Bool
+  , hostCleanupBootstrapRecordNeedsMarker :: Bool
+  , hostCleanupBootstrapCanonicalRecordLocated :: Bool
+  , hostCleanupBootstrapCorruptMarkerRefused :: Bool
+  , hostCleanupBootstrapSymlinkRecordRefused :: Bool
+  , hostCleanupBootstrapFifoRecordRefused :: Bool
+  , hostCleanupBootstrapSymlinkRootRefused :: Bool
+  , hostCleanupBootstrapEscapeRefused :: Bool
+  }
+  deriving (Eq, Show)
+
+fixedHostCleanupBootstrapRootRegression :: FilePath -> IO HostCleanupBootstrapRootRegression
+fixedHostCleanupBootstrapRootRegression fifoFixture = withSystemTempDirectory "prodbox-bootstrap-root" $ \repository -> do
+  let coordinate = ".data"
+      root = repository </> ".data"
+      record = controlDirectory root </> hostCleanupActiveIntentRelativePath
+      observe = observeHostCleanupRootAtCoordinate repository coordinate
+      canonicalMarker = encodeMarker (expectedMarker repository coordinate root)
+  missing <- observe
+  createDirectoryIfMissing True (takeDirectory record)
+  partial <- observe
+  createDirectoryIfMissing True (controlDirectory root </> "minio" </> "0")
+  createDirectoryIfMissing True (root </> "vault" </> "vault" </> "0")
+  ByteString.writeFile record "record-presence-only"
+  withoutMarker <- observe
+  ByteString.writeFile (markerPath root) canonicalMarker
+  positive <- observe
+  ByteString.writeFile (markerPath root) "invalid marker"
+  corrupt <- observe
+  ByteString.writeFile (markerPath root) canonicalMarker
+  removeFile record
+  createSymbolicLink (markerPath root) record
+  linked <- observe
+  removeFile record
+  createLink fifoFixture record
+  fifo <- observe
+  createSymbolicLink root (repository </> ".linked")
+  linkedRoot <- observeHostCleanupRootAtCoordinate repository ".linked"
+  escaped <- observeHostCleanupRootAtCoordinate repository "../outside"
+  pure
+    HostCleanupBootstrapRootRegression
+      { hostCleanupBootstrapRootMissingIsFresh = absent missing
+      , hostCleanupBootstrapPartialRootIsFresh = absent partial
+      , hostCleanupBootstrapRecordNeedsMarker = refused withoutMarker
+      , hostCleanupBootstrapCanonicalRecordLocated = case positive of
+          Right (Just locator) -> bootstrapRetainedRootLocatorPath locator == root
+          _ -> False
+      , hostCleanupBootstrapCorruptMarkerRefused = refused corrupt
+      , hostCleanupBootstrapSymlinkRecordRefused = refused linked
+      , hostCleanupBootstrapFifoRecordRefused = refused fifo
+      , hostCleanupBootstrapSymlinkRootRefused = refused linkedRoot
+      , hostCleanupBootstrapEscapeRefused = refused escaped
+      }
+ where
+  absent result = case result of
+    Right Nothing -> True
+    _ -> False
+  refused result = case result of
+    Left _ -> True
+    Right _ -> False

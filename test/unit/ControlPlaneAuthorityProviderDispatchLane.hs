@@ -20,12 +20,16 @@ module ControlPlaneAuthorityProviderDispatchLane
   )
 where
 
+import Codec.Serialise (deserialiseOrFail, serialise)
+import Prodbox.Ses.InviteEvidence
+
 import Data.ByteString (ByteString)
 import Data.ByteString.Char8 qualified as ByteString8
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.List qualified as List
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Data.Word (Word16)
 import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
   ( AuthenticatedRoleHandler (..)
@@ -116,7 +120,11 @@ import Prodbox.Lifecycle.Lease
   , authorityTimeFromMicros
   )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
-  ( ProviderIntent (ObserveProviderAwsScope)
+  ( ProviderIntent
+      ( ObserveProviderAwsScope
+      , ObserveSealedSesInviteMail
+      , RetiredSesInviteMailObservation
+      )
   , ProviderRevision
   , mkProviderRevision
   , providerIntentCoordinate
@@ -180,6 +188,68 @@ controlPlaneAuthorityProviderDispatchLaneSuite =
       response `shouldSatisfy` isRefused
       executions <- readIORef (fixtureWorkerCalls fixture)
       executions `shouldBe` 0
+
+    it "retains only sealed invite evidence through authenticated execution and replay" $ do
+      receiver <- newInviteMailReceiver
+      let intent = ObserveSealedSesInviteMail inviteBucket inviteRecipient (inviteMailReceiverPublicKey receiver)
+      evidence <-
+        mustRight
+          <$> sealInviteMailEvidence
+            (inviteMailReceiverPublicKey receiver)
+            inviteBucket
+            inviteRecipient
+            "inbound/fixture-key"
+            inviteLink
+      fixture <- newDispatchFixtureFor intent evidence
+      completed <- expectCompleted =<< dispatch fixture ProviderAdmitAndExecute
+      snd completed `shouldBe` evidence
+      openInviteMailEvidence receiver inviteBucket inviteRecipient evidence
+        `shouldBe` Right (Just ("inbound/fixture-key", inviteLink))
+      replay <- expectCompleted =<< dispatch fixture ProviderAdmitOnly
+      replay `shouldBe` completed
+      readIORef (fixtureWorkerCalls fixture) `shouldReturn` 1
+      (_, aggregate) <- readIORef (fixtureAggregate fixture)
+      let stored = LazyByteString.toStrict (serialise aggregate)
+      stored `shouldSatisfy` ByteString8.isInfixOf (ByteString8.pack (Text.unpack evidence))
+      stored `shouldSatisfy` (not . ByteString8.isInfixOf "fixture-one-time-secret")
+
+    it "refuses a plaintext Provider result before the Authority can persist its token" $ do
+      receiver <- newInviteMailReceiver
+      let intent = ObserveSealedSesInviteMail inviteBucket inviteRecipient (inviteMailReceiverPublicKey receiver)
+      fixture <- newDispatchFixtureFor intent ("ses-invite:inbound/fixture-key " <> inviteLink)
+      response <- dispatch fixture ProviderAdmitAndExecute
+      response `shouldSatisfy` isRefused
+      show response `shouldNotContain` "fixture-one-time-secret"
+      (_, aggregate) <- readIORef (fixtureAggregate fixture)
+      LazyByteString.toStrict (serialise aggregate)
+        `shouldSatisfy` (not . ByteString8.isInfixOf "fixture-one-time-secret")
+
+    it "redacts an immutable historical plaintext completion on replay without rewriting its record" $ do
+      fixture <-
+        newDispatchFixtureFor
+          (RetiredSesInviteMailObservation inviteBucket inviteRecipient)
+          retiredInviteMailEvidence
+      _ <- expectCompleted =<< dispatch fixture ProviderAdmitAndExecute
+      (revision, aggregate) <- readIORef (fixtureAggregate fixture)
+      -- Model the historical completed row, whose evidence the frozen old
+      -- validator admitted. Its envelope and intent bindings stay unchanged.
+      let encoded = LazyByteString.toStrict (serialise aggregate)
+          oldMarker = LazyByteString.toStrict (serialise retiredInviteMailEvidence)
+          historicalEvidence = "ses-invite:inbound/fixture-key " <> inviteLink
+          (prefix, suffix) = ByteString8.breakSubstring oldMarker encoded
+      suffix `shouldSatisfy` (not . ByteString8.null)
+      let tailBytes = ByteString8.drop (ByteString8.length oldMarker) suffix
+      tailBytes `shouldSatisfy` (not . ByteString8.isInfixOf oldMarker)
+      let historicalBytes =
+            LazyByteString.fromStrict
+              (prefix <> LazyByteString.toStrict (serialise historicalEvidence) <> tailBytes)
+          historical = mustRight (deserialiseOrFail historicalBytes)
+      writeIORef (fixtureAggregate fixture) (revision + 1, historical)
+      replay <- expectCompleted =<< dispatch fixture ProviderAdmitOnly
+      snd replay `shouldBe` retiredInviteMailEvidence
+      readIORef (fixtureWorkerCalls fixture) `shouldReturn` 1
+      (_, retained) <- readIORef (fixtureAggregate fixture)
+      serialise retained `shouldBe` historicalBytes
 
     it
       "AUTHORITY-PROVIDER-DISPATCH-RESPONSE-INVALID-2026-09-06 classifies response shape without retaining values"
@@ -265,16 +335,23 @@ controlPlaneAuthorityProviderDispatchLaneSuite =
 data DispatchFixture = DispatchFixture
   { fixtureAggregate :: !(IORef (Word, AuthorityAdmissionAggregate))
   , fixtureWorkerCalls :: !(IORef Word)
+  , fixtureIntent :: !ProviderIntent
+  , fixtureEvidence :: !Text
   }
 
 newDispatchFixture :: IO DispatchFixture
-newDispatchFixture = do
+newDispatchFixture = newDispatchFixtureFor dispatchIntent "scope-evidence"
+
+newDispatchFixtureFor :: ProviderIntent -> Text -> IO DispatchFixture
+newDispatchFixtureFor intent evidence = do
   aggregate <- newIORef (0, openedAuthority)
   calls <- newIORef 0
   pure
     DispatchFixture
       { fixtureAggregate = aggregate
       , fixtureWorkerCalls = calls
+      , fixtureIntent = intent
+      , fixtureEvidence = evidence
       }
 
 dispatch :: DispatchFixture -> ProviderDispatchLane -> IO ProviderDispatchResponse
@@ -291,7 +368,7 @@ dispatchAtVersion fixture version lane = do
       (dispatchHandler fixture)
       dispatchCallerSlot
       LifecycleProviderDispatch
-      (payloadBytes version lane)
+      (payloadBytes fixture version lane)
   case handled of
     Nothing -> failWith "the dispatch route was not owned by its own handler"
     Just (_status, body) ->
@@ -324,8 +401,8 @@ dispatchBoundary fixture =
         pure
           ( Right
               ( ProviderIntentExecutionObserved
-                  (providerIntentCoordinate dispatchIntent)
-                  "scope-evidence"
+                  (providerIntentCoordinate (fixtureIntent fixture))
+                  (fixtureEvidence fixture)
               )
           )
     }
@@ -358,14 +435,14 @@ unownedFallbackHandler =
     , authenticatedHandlerHandle = \_ _ _ -> pure Nothing
     }
 
-payloadBytes :: Word16Version -> ProviderDispatchLane -> ByteString
-payloadBytes version lane =
+payloadBytes :: DispatchFixture -> Word16Version -> ProviderDispatchLane -> ByteString
+payloadBytes fixture version lane =
   LazyByteString.toStrict
     ( encodeControlPlaneRequest
         ProviderDispatchPayload
           { providerDispatchVersion = version
           , providerDispatchSubmissionKey = "dispatch-lane-key"
-          , providerDispatchIntent = dispatchIntent
+          , providerDispatchIntent = fixtureIntent fixture
           , providerDispatchCleanupOwner = ProviderOperationUnownedByCleanupRun
           , providerDispatchLane = lane
           }
@@ -519,3 +596,8 @@ mustRight :: (Show err) => Either err value -> value
 mustRight result = case result of
   Left err -> error (show err)
   Right value -> value
+
+inviteBucket, inviteRecipient, inviteLink :: Text
+inviteBucket = "fixture-capture-mail"
+inviteRecipient = "test-1759900000@receive.example.test"
+inviteLink = "https://auth.example.test/realms/prodbox/login-actions/action-token?key=fixture-one-time-secret"

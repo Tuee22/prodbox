@@ -57,6 +57,8 @@ import Dhall
   )
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.Capacity.AuthorityBackupBudget qualified as AuthorityBackupBudget
+import Prodbox.Capacity.ControlPlaneReplayBudget qualified as ReplayBudget
 import Prodbox.Capacity.Derivation
   ( deriveResourceEnvelope
   , derivedResourceEnvelope
@@ -330,8 +332,8 @@ defaultResourcePlan =
             "lifecycle-authority"
             "lifecycle-authority"
             1
-            (ResourceVector 150 128 256 1024)
-            (ResourceVector 150 128 256 1024)
+            (ResourceVector 150 ReplayBudget.lifecycleAuthorityProductionMemoryMebibytes 256 1024)
+            (ResourceVector 150 ReplayBudget.lifecycleAuthorityProductionMemoryMebibytes 256 1024)
         , workload
             "provider-worker"
             "provider-worker"
@@ -342,15 +344,20 @@ defaultResourcePlan =
             "authority-backup"
             "authority-backup"
             1
-            (ResourceVector 60 144 256 1)
-            (ResourceVector 60 144 256 1)
-        , workload "tls-retention" "tls-retention" 1 (ResourceVector 60 80 256 1) (ResourceVector 60 80 256 1)
+            (ResourceVector 60 AuthorityBackupBudget.authorityBackupProductionMemoryMebibytes 256 1)
+            (ResourceVector 60 AuthorityBackupBudget.authorityBackupProductionMemoryMebibytes 256 1)
+        , workload
+            "tls-retention"
+            "tls-retention"
+            1
+            (ResourceVector 60 ReplayBudget.tlsRetentionAdapterProductionMemoryMebibytes 256 1)
+            (ResourceVector 60 ReplayBudget.tlsRetentionAdapterProductionMemoryMebibytes 256 1)
         , workload
             "target-secret-agent"
             "target-secret-agent"
             1
-            (ResourceVector 60 80 256 1)
-            (ResourceVector 60 80 256 1)
+            (ResourceVector 60 ReplayBudget.targetSecretAgentProductionMemoryMebibytes 256 1)
+            (ResourceVector 60 ReplayBudget.targetSecretAgentProductionMemoryMebibytes 256 1)
         ]
     }
  where
@@ -547,9 +554,38 @@ validateCapacitySection section = do
     (node_budget section)
     (region_quota section)
   validateRawResourcePlanShape (resource_plan section)
+  validateRetainedReplayMemory (resource_plan section)
   _ <- validateRuntimeMemoryProfiles section
   validateProviderWorkerTransportBudget section
   Right ()
+
+-- An authored plan survives binary upgrades; the larger replay codec must not
+-- run inside a stale, smaller container just because its default has changed.
+validateRetainedReplayMemory :: ResourcePlan -> Either String ()
+validateRetainedReplayMemory plan =
+  forM_ requiredProfiles validateProfile
+ where
+  validateProfile (name, minimumMemory) =
+    case filter ((== name) . profile_id) (workload_profiles plan) of
+      [profile] -> do
+        derived <-
+          either (Left . show) Right (deriveResourceEnvelope (workload_demand profile))
+        unless
+          (memory_mib (request (derivedResourceEnvelope derived)) >= minimumMemory)
+          (Left (requiredMemoryMessage name minimumMemory))
+      _ -> Left (requiredMemoryMessage name minimumMemory)
+  requiredProfiles =
+    [ ("lifecycle-authority", ReplayBudget.lifecycleAuthorityProductionMemoryMebibytes)
+    , ("authority-backup", AuthorityBackupBudget.authorityBackupProductionMemoryMebibytes)
+    , ("target-secret-agent", ReplayBudget.targetSecretAgentProductionMemoryMebibytes)
+    , ("tls-retention", ReplayBudget.tlsRetentionAdapterProductionMemoryMebibytes)
+    ]
+  requiredMemoryMessage name minimumMemory =
+    "capacity.resource_plan.workload_profiles["
+      ++ Text.unpack name
+      ++ "] requires at least "
+      ++ show minimumMemory
+      ++ " MiB for retained replay"
 
 validateProviderWorkerTransportBudget :: CapacitySection -> Either String ()
 validateProviderWorkerTransportBudget section =

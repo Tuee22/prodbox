@@ -15,6 +15,7 @@ import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
+import Prodbox.Capacity.AuthorityBackupBudget (authorityBackupRetainedCopyResponseMaximumBytes)
 import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
   ( AuthenticatedRolePlainResponseObservation (..)
   , allAuthenticatedRolePlainResponseCauses
@@ -226,6 +227,27 @@ controlPlaneAuthorityBackupEndpointSuite =
             (LazyByteString.fromStrict (authorityBackupCopyResponseBody result))
             `shouldBe` Right receipt
         other -> expectationFailure ("expected copy receipt, got " <> show other)
+    it "refuses an oversized copy receipt before producing HTTP 200 or a retained response" $ do
+      let ciphertext = mustRight (mkAuthorityBackupCiphertext "receipt-bound-ciphertext")
+          receipt =
+            AuthorityBackupReceipt
+              AuthorityCheckpointBlob
+              (authorityBackupCiphertextDigest ciphertext)
+              (Text.replicate 5000 "v")
+          repository =
+            AuthorityBackupRepository
+              { copyAuthorityBackupBlob = \_ _ -> pure (Right receipt)
+              , observeAuthorityBackupBlob = \_ _ -> pure (Right AuthorityBackupBlobMissing)
+              }
+      result <-
+        serveBackupCopyRequest
+          4096
+          repository
+          (encodeControlPlaneRequest (AuthorityBackupCopyRequest AuthorityCheckpointBlob ciphertext))
+      authorityBackupHttpStatus result `shouldBe` ReplyServiceUnavailable
+      ByteString.length (authorityBackupCopyResponseBody result)
+        `shouldSatisfy` (<= authorityBackupRetainedCopyResponseMaximumBytes)
+      authorityBackupSummary result `shouldBe` "backup-copy:failed"
     it "recovers an applied immutable PUT after its response is lost" $ do
       (transport, _, putCount) <- freshMemoryTransport True
       let repository = authorityBackupRepositoryWithTransport transport

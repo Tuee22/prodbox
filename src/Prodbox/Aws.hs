@@ -18,12 +18,9 @@ module Prodbox.Aws
   , harnessReceiveSubdomainLabel
   , existingHarnessConfigDisposition
   , regenerateConfigFromTestSecrets
-  , IamProbe (..)
   , PulumiResiduePolicy (..)
-  , ResidueError (..)
   , SessionTokenPromptShape (..)
   , SpotPriceRequest (..)
-  , VaultProbe (..)
   , adminAwsEnvironment
   , applyAwsCheckQuotas
   , applyAwsRegionQuotaPreflight
@@ -31,7 +28,6 @@ module Prodbox.Aws
   , stacksForSelection
   , awsRegionQuotaPreflightFromStatuses
   , awsHarnessAdminScope
-  , assertOperationalTeardownComplete
   , awsErrorCodeIsTransient
   , awsSpotPriceHistoryArgs
   , buildIamPolicyDocument
@@ -40,12 +36,10 @@ module Prodbox.Aws
   , buildDedicatedAdapterIamPolicyDocument
   , buildIamPolicyJson
   , checkPulumiResidueBeforeTeardown
-  , harnessPostflightResiduePolicy
   , inlineUserPolicyDeleteArguments
   , attachedUserPolicyDetachArguments
   , longLivedResourceNames
   , operationalAwsConfigResidueFromKey
-  , operationalCredentialsClearedDecision
   , operationalIamUserExists
   , operationalIamUserResidueFromExists
   , operationalManagedResources
@@ -55,8 +49,6 @@ module Prodbox.Aws
   , perRunStackNames
   , spotObservationFromAwsSpotPriceHistory
   , spotObservationFromAwsSpotPriceOutput
-  , renderResidueError
-  , residueFromProbe
   , promptAdminCredentialsWithRegionChoice
   , prodboxIamUserName
   , authorityBackupIamUserName
@@ -77,8 +69,6 @@ module Prodbox.Aws
   , OperationalIdentityProbe (..)
   , inspectOperationalIdentity
   , operationalIdentityFromArn
-  , runAwsIamHarnessSetup
-  , runAwsIamHarnessTeardown
   , runInteractiveConfigSetup
   , runInteractiveConfigSetupWithPlan
   , sessionTokenPromptShape
@@ -400,56 +390,6 @@ data IamTeardownResult = IamTeardownResult
   }
   deriving (Eq, Show)
 
-data IamUserCleanupResult = IamUserCleanupResult
-  { iamUserCleanupUserName :: Text
-  , iamUserCleanupDeletedAccessKeys :: [Text]
-  , iamUserCleanupUserDeleted :: Bool
-  }
-  deriving (Eq, Show)
-
--- | Sprint 7.20: the observed AWS-side state of the operational @prodbox@
--- IAM user AFTER teardown, fed to the pure teardown-completeness
--- classifier 'residueFromProbe'. Both facts are carried independently so
--- the classifier can name precisely what leaked: a present user, leftover
--- access keys, or both. Populated by the effectful wrapper
--- 'assertOperationalTeardownComplete' from the existing
--- 'operationalIamUserExists' (user) and 'listOperationalAccessKeyIds'
--- (keys) probes. No IO; pure value.
-data IamProbe = IamProbe
-  { iamProbeUserPresent :: Bool
-  -- ^ Whether @iam:get-user prodbox@ still resolves.
-  , iamProbeAccessKeyIds :: [Text]
-  -- ^ Access-key IDs still attached to the operational user (empty when
-  -- the user is gone or has no remaining keys).
-  }
-  deriving (Eq, Show)
-
--- | Observed Target-Agent state of the lifecycle-provider credential after
--- teardown. "Cleared" means the exact generation was tombstoned, metadata was
--- deleted, and the Agent read back physical absence; empty-field surrogates are
--- not accepted. Populated by the effectful wrapper from
--- 'operationalCredentialsCleared'. No IO; pure value.
-data VaultProbe
-  = VaultCredsCleared
-  | VaultCredsPopulated
-  deriving (Eq, Show)
-
--- | Sprint 7.20: structured teardown-completeness verdict. An empty
--- residue (all three flags clear / no leaked keys) is the PASS state;
--- 'residueFromProbe' returns @Right ()@ for it and 'Left' a populated
--- 'ResidueError' otherwise. The fields name exactly what the harness left
--- behind so the loud abort message points the operator at the specific
--- leak (user / keys / Vault cred). Pure value, unit-testable.
-data ResidueError = ResidueError
-  { residueUserLeaked :: Bool
-  -- ^ The operational IAM user still exists in AWS.
-  , residueLeakedKeys :: [Text]
-  -- ^ Access-key IDs still attached to the operational IAM user.
-  , residueVaultPopulated :: Bool
-  -- ^ The distinct lifecycle-provider Target-Agent credential still exists.
-  }
-  deriving (Eq, Show)
-
 data OperationalIdentityProbe
   = OperationalCredentialsMissing
   | OperationalIdentityProbeFailed String
@@ -519,26 +459,6 @@ longLivedResourceNames = ResourceClass.resourceNamesOfClass ResourceClass.LongLi
 partitionResidueByLifecycle
   :: [(String, String)] -> ([(String, String)], [(String, String)])
 partitionResidueByLifecycle = partition (\(name, _) -> name `elem` perRunStackNames)
-
--- | Sprint 7.9 — the residue policy used by the end-of-run harness
--- postflight teardown ('runAwsIamHarnessTeardown'). Named as a pure
--- single source of truth so the postflight's policy choice is testable
--- without exercising IO.
---
--- Sprint 7.34: it is 'BypassPerRunResidueForHarnessRefresh' (narrowed from the
--- Sprint 7.9 'BypassAllResidueForHarnessRefresh'). The Sprint 7.9 stranding fix
--- is retained — clearing operational @aws.*@ still cannot strand @aws-ses@
--- (which is admin-credentialed post-Sprint-4.10) and proceeds unconditionally
--- (per-run residue is reconciled first by the descriptor-bound lifecycle client).
--- But the all-residue bypass conflated destroyability with should-destroy: the
--- @LCPC-2026-07-11@ forensics show the all-residue scope structurally bypasses
--- the long-lived protection that the lifecycle preconditions otherwise enforce.
--- The narrowed per-run scope restores that protection
--- by construction, so the postflight is
--- structurally unable to authorize destroying the retained @aws-ses@ /
--- @public-edge-tls@ stacks while still clearing @aws.*@ + per-run residue.
-harnessPostflightResiduePolicy :: PulumiResiduePolicy
-harnessPostflightResiduePolicy = BypassPerRunResidueForHarnessRefresh
 
 -- | Sprint 7.7 — canonical destroy order for
 -- 'DestroyPulumiResidueFirst'. This is the operator-driven residue policy's
@@ -760,10 +680,9 @@ buildDedicatedAdapterIamPolicyDocument rawBucket rawPrefixes = do
 -- precondition module imports 'Prodbox.Aws', so the check is
 -- dependency-injected here as @FilePath -> IO (Either String ())@ (the
 -- caller in 'Prodbox.Native' supplies it). @Right ()@ proceeds; @Left
--- narrative@ is rendered as the refusal. The HARNESS teardown paths
--- ('runAwsIamHarnessSetup' / 'runAwsIamHarnessTeardown') never inject it —
--- Sprint 7.9's deliberate aws-ses relaxation for the harness postflight is
--- preserved.
+-- narrative@ is rendered as the refusal. The ordinary harness instead uses
+-- descriptor-bound resource cleanup and the Credential Provisioner's
+-- permit-indexed revocation lane; it never calls this operator teardown.
 type AwsTeardownLongLivedPreflight = FilePath -> IO (Either String ())
 
 runAwsCommand :: FilePath -> AwsTeardownLongLivedPreflight -> AwsCommand -> IO ExitCode
@@ -1406,61 +1325,6 @@ promptAdminCredentialsWithRegionChoice repoRoot = do
   selectedRegion <- promptRegionChoice repoRoot initialCredentials
   pure initialCredentials {region = selectedRegion}
 
-runAwsIamHarnessSetup :: FilePath -> PolicyTier -> IO String
-runAwsIamHarnessSetup repoRoot policyTier = do
-  credentials <- loadHarnessAdminCredentials repoRoot
-  existingIdentity <- probeConfiguredOperationalIdentity repoRoot
-  preflightTeardownResult <-
-    applyAwsTeardown
-      repoRoot
-      AwsTeardownInput
-        { awsTeardownAdminCredentials = credentials
-        , -- Sprint 7.5.c.v.c: harness preflight uses
-          -- BypassAllResidueForHarnessRefresh because it is paired with
-          -- an immediate re-materialization of aws.* from
-          -- aws_admin_for_test_simulation.* in the same function call
-          -- (applyAwsSetupWithFederatedFallback below). Neither per-run
-          -- nor long-lived residue strands anything across that gap.
-          -- Refusing on aws-ses live here would block every harness run
-          -- because aws-ses is the intended long-lived steady state.
-          awsTeardownResiduePolicy = BypassAllResidueForHarnessRefresh
-        }
-  preflightTeardown <- case preflightTeardownResult of
-    Left err ->
-      throwAws
-        ( "AWS IAM harness preflight teardown unexpectedly refused with "
-            ++ "BypassAllResidueForHarnessRefresh: "
-            ++ err
-        )
-    Right value -> pure value
-  preflightAssociatedCleanup <-
-    case existingIdentity of
-      OperationalIdentityIamUser userName
-        | userName /= prodboxIamUserName ->
-            Just <$> cleanupIamUserResidue repoRoot credentials userName
-      _ -> pure Nothing
-  preflightConfigCleared <- operationalCredentialsClearedAtPreflight repoRoot credentials
-  unless
-    preflightConfigCleared
-    ( throwAws
-        "AWS IAM harness preflight cleanup did not clear operational aws.* credentials from prodbox.dhall."
-    )
-  result <-
-    applyAwsSetupWithFederatedFallback
-      repoRoot
-      AwsSetupInput
-        { awsSetupAdminCredentials = credentials
-        , awsSetupPolicyTierInput = policyTier
-        }
-  pure
-    ( renderAwsIamHarnessSetupReport
-        existingIdentity
-        preflightTeardown
-        preflightAssociatedCleanup
-        preflightConfigCleared
-        result
-    )
-
 runAwsIamHarnessInspect :: FilePath -> IO String
 runAwsIamHarnessInspect repoRoot = do
   identity <- probeConfiguredOperationalIdentity repoRoot
@@ -1525,73 +1389,6 @@ inspectOperationalIdentity configPath identity = case identity of
       ++ "` but observed the "
       ++ observed
       ++ ", so the assume-role binding is not in effect."
-
-runAwsIamHarnessTeardown :: FilePath -> IO String
-runAwsIamHarnessTeardown repoRoot = do
-  credentials <- loadHarnessAdminCredentials repoRoot
-  teardownResult <-
-    applyAwsTeardown
-      repoRoot
-      AwsTeardownInput
-        { awsTeardownAdminCredentials = credentials
-        , -- Sprint 7.34: BypassPerRunResidueForHarnessRefresh (narrowed from
-          -- Sprint 7.9's BypassAllResidueForHarnessRefresh). Clearing
-          -- operational aws.* still cannot strand aws-ses (admin-credentialed
-          -- against the long-lived S3 backend post-Sprint-4.10) and proceeds
-          -- unconditionally; exact per-run nodes are reconciled first by the
-          -- descriptor-bound lifecycle client (which retains aws-ses). The 7.9 fix is
-          -- retained, but the all-residue scope structurally bypassed the
-          -- long-lived protection; the per-run scope restores it, so the
-          -- postflight is structurally unable to authorize destroying aws-ses /
-          -- public-edge-tls. The choice is the pure
-          -- 'harnessPostflightResiduePolicy' SSoT so it is unit-testable
-          -- without IO.
-          awsTeardownResiduePolicy = harnessPostflightResiduePolicy
-        }
-  result <- case teardownResult of
-    Left err ->
-      -- Sprint 7.9: with BypassAllResidueForHarnessRefresh the teardown no
-      -- longer refuses on long-lived Pulumi residue (aws-ses is
-      -- admin-managed; see the policy comment above). The only remaining
-      -- refusal sources are the Sprint 7.8 operational fail-closed gate
-      -- (AWS IAM unreachable, so the operational user's live state cannot
-      -- be observed and "cannot observe" is never treated as "destroyed")
-      -- or a failed managed-resource reconcile. Surface the underlying
-      -- message rather than a stale "destroy aws-ses first" instruction.
-      throwAws
-        ( "AWS IAM harness postflight teardown refused. The operational "
-            ++ "aws.* credentials and the operational `prodbox` IAM user "
-            ++ "were NOT torn down. This is the Sprint 7.8 fail-closed gate "
-            ++ "(AWS IAM unreachable, or a managed-resource reconcile "
-            ++ "failure) — not a long-lived Pulumi residue refusal, which "
-            ++ "Sprint 7.9 removed from the postflight. Resolve AWS "
-            ++ "connectivity / admin credentials and re-run `prodbox aws "
-            ++ "teardown`. Underlying refusal message:\n"
-            ++ err
-        )
-    Right value -> pure value
-  configCleared <- operationalCredentialsCleared repoRoot
-  unless
-    configCleared
-    ( throwAws
-        "AWS IAM harness teardown did not clear operational aws.* credentials from prodbox.dhall."
-    )
-  -- Sprint 7.20: teardown-completeness guard. After 'applyAwsTeardown'
-  -- destroys the operational IAM user + keys (and clears the Vault
-  -- credential, re-checked just above), this asserts the harness left NO
-  -- residue behind: the operational `prodbox` IAM user + its access keys
-  -- are GONE from AWS (queried via the admin credentials through the same
-  -- 'operationalIamUserExists' / 'listOperationalAccessKeyIds' probes the
-  -- destroy used), AND the lifecycle-provider Target-Agent credential reads
-  -- back absent (via 'operationalCredentialsCleared'). The decision
-  -- core is the pure 'residueFromProbe' classifier; a residual user, a
-  -- residual key, or a still-populated Vault cred aborts LOUD with
-  -- 'renderResidueError' naming exactly what leaked. This EXTENDS (does not
-  -- weaken) the Vault-clear refusal above. The live exercise of this guard
-  -- is the 🧪 Live-proof axis (Standard O) — unit tests cover the pure
-  -- classifier without live AWS.
-  assertOperationalTeardownComplete repoRoot credentials
-  pure (renderAwsTeardownResult result ++ "POST_RUN_OPERATIONAL_CONFIG_CLEARED=true\n")
 
 -- | Sprint 7.16: acquire the EPHEMERAL admin AWS credential for the IAM
 -- harness setup/teardown flows. The Route 53 / ACME bootstrap fields are still
@@ -1876,13 +1673,7 @@ validateConfigSetupInput adminCredentials zoneId zoneName demoFqdnRaw demoTtl ac
       }
 
 applyAwsSetup :: FilePath -> AwsSetupInput -> IO IamSetupResult
-applyAwsSetup = applyAwsSetupWithFallbackMode False
-
-applyAwsSetupWithFederatedFallback :: FilePath -> AwsSetupInput -> IO IamSetupResult
-applyAwsSetupWithFederatedFallback = applyAwsSetupWithFallbackMode True
-
-applyAwsSetupWithFallbackMode :: Bool -> FilePath -> AwsSetupInput -> IO IamSetupResult
-applyAwsSetupWithFallbackMode _allowFederatedFallback _repoRoot _input =
+applyAwsSetup _repoRoot _input =
   throwAws
     "AWS setup requires the executable authenticated Credential Provisioner; refusing IAM mutation while its Authority coordinator is unavailable"
 
@@ -2237,157 +2028,6 @@ listOperationalAccessKeyIds repoRoot adminCredentials = do
     else case awsErrorCode (errorDetail listKeysOutput) of
       Just "NoSuchEntity" -> pure []
       _ -> throwAws ("aws iam list-access-keys failed: " ++ errorDetail listKeysOutput)
-
--- | Sprint 7.20: the PURE teardown-completeness classifier. Given the
--- post-teardown AWS-side ('IamProbe') and Vault-side ('VaultProbe')
--- observations, decide whether the harness teardown was complete.
---
--- A run is COMPLETE (@Right ()@) only when ALL of:
---
--- * the operational IAM user is gone from AWS,
--- * no access keys remain attached to it, AND
--- * the Vault operational credential reads back CLEARED.
---
--- Any residue — user present OR keys present OR Vault cred populated —
--- yields a 'Left' 'ResidueError' naming exactly what leaked, so the
--- effectful wrapper can abort LOUD. This is the unit-testable decision
--- core of the guard; the live AWS/Vault queries live in
--- 'assertOperationalTeardownComplete' around it (the 🧪 Live-proof axis).
-residueFromProbe :: IamProbe -> VaultProbe -> Either ResidueError ()
-residueFromProbe iamProbe vaultProbe =
-  let residue =
-        ResidueError
-          { residueUserLeaked = iamProbeUserPresent iamProbe
-          , residueLeakedKeys = iamProbeAccessKeyIds iamProbe
-          , residueVaultPopulated = vaultProbe == VaultCredsPopulated
-          }
-   in if residueErrorIsEmpty residue
-        then Right ()
-        else Left residue
-
--- | Sprint 7.20: pure PASS predicate for a 'ResidueError' — no user, no
--- leaked keys, Vault cleared. Factored so 'residueFromProbe' and any
--- future caller share one definition of "complete".
-residueErrorIsEmpty :: ResidueError -> Bool
-residueErrorIsEmpty residue =
-  not (residueUserLeaked residue)
-    && null (residueLeakedKeys residue)
-    && not (residueVaultPopulated residue)
-
--- | Sprint 7.20: render a 'ResidueError' into the loud, operator-actionable
--- abort narrative. Names each leaked surface explicitly (IAM user, access
--- keys with their IDs, Vault credential) so the operator knows precisely
--- what the harness teardown failed to remove. Pure; unit-testable.
-renderResidueError :: ResidueError -> String
-renderResidueError residue =
-  intercalate
-    "\n"
-    ( "AWS IAM harness teardown-completeness guard FAILED: the postflight teardown left residue behind."
-        : map ("  - " ++) leaks
-        ++ [ "Re-run `prodbox aws teardown` (its destroy paths are idempotent) to clear the leaked"
-           , "operational state, then confirm the guard passes."
-           ]
-    )
- where
-  leaks =
-    concat
-      [ [ "the operational `"
-            ++ Text.unpack prodboxIamUserName
-            ++ "` IAM user still EXISTS in AWS (expected: deleted)"
-        | residueUserLeaked residue
-        ]
-      , [ "the operational `"
-            ++ Text.unpack prodboxIamUserName
-            ++ "` IAM user still has "
-            ++ show (length (residueLeakedKeys residue))
-            ++ " access key(s) attached: "
-            ++ intercalate ", " (map Text.unpack (residueLeakedKeys residue))
-            ++ " (expected: all deleted)"
-        | not (null (residueLeakedKeys residue))
-        ]
-      , [ "the lifecycle-provider credential at `secret/aws/lifecycle-provider` "
-            ++ "still reads back POPULATED (expected: physically absent)"
-        | residueVaultPopulated residue
-        ]
-      ]
-
--- | Sprint 7.20: the EFFECTFUL wrapper of the teardown-completeness guard.
--- Runs AFTER 'applyAwsTeardown' destroys the SES lease role, operational IAM
--- user + keys, and clears the Vault credential, then asserts the harness left NO
--- residue:
---
---   (a) the fixed SES lease role is gone from AWS;
---   (b) the operational @prodbox@ IAM user + its access keys are gone
---       from AWS — queried with the admin credentials through the same
---       'operationalIamUserExists' / 'listOperationalAccessKeyIds' probes
---       the destroy path used; and
---   (c) the lifecycle-provider Target-Agent credential is physically absent,
---       reusing 'operationalCredentialsCleared'.
---
--- The two observations are unified into one 'IamProbe' / 'VaultProbe'
--- pair and handed to the pure 'residueFromProbe' classifier; a 'Left'
--- aborts LOUD via 'throwAws' with 'renderResidueError'. The IAM existence
--- probe is fail-closed — if AWS IAM cannot be observed, the underlying
--- 'throwAws' surfaces the error rather than presuming the user is gone.
---
--- Target-Agent deletion is generation-bound: it CAS-writes and reads back the
--- tombstone marker, metadata-deletes the object, then requires exact 404.
-assertOperationalTeardownComplete :: FilePath -> Credentials -> IO ()
-assertOperationalTeardownComplete repoRoot adminCreds = do
-  assertAwsSesLeaseRoleAbsent repoRoot adminCreds
-  iamProbe <- probeOperationalIamResidue repoRoot adminCreds
-  configCleared <- operationalCredentialsCleared repoRoot
-  let vaultProbe = if configCleared then VaultCredsCleared else VaultCredsPopulated
-  case residueFromProbe iamProbe vaultProbe of
-    Right () -> pure ()
-    Left residue -> throwAws (renderResidueError residue)
-
-assertAwsSesLeaseRoleAbsent :: FilePath -> Credentials -> IO ()
-assertAwsSesLeaseRoleAbsent repoRoot adminCreds = do
-  scope <- loadAwsSesLeaseRoleObservationScope repoRoot adminCreds
-  observation <-
-    AwsSesLeaseRole.observeAwsSesLeaseRole repoRoot adminCreds scope
-  case observation of
-    AwsSesLeaseRole.AwsSesLeaseRoleAbsent -> pure ()
-    AwsSesLeaseRole.AwsSesLeaseRolePresent -> leaked "present"
-    AwsSesLeaseRole.AwsSesLeaseRoleDrifted drift ->
-      leaked ("present and drifted: " ++ show drift)
-    AwsSesLeaseRole.AwsSesLeaseRoleUnobservable err ->
-      throwAws
-        ( "AWS IAM harness teardown-completeness guard FAILED: cannot re-observe "
-            ++ "the operational AWS SES lease role after teardown: "
-            ++ show err
-        )
- where
-  leaked detail =
-    throwAws
-      ( "AWS IAM harness teardown-completeness guard FAILED: the operational "
-          ++ "AWS SES lease role still exists after teardown ("
-          ++ detail
-          ++ "). Re-run `prodbox aws teardown`; its destroy path is idempotent."
-      )
-
--- | Sprint 7.20: effectful adapter that turns the existing live IAM
--- probes into a pure 'IamProbe'. Reuses 'operationalIamUserExists' for
--- the user fact (failing loud — fail-closed — on any non-@NoSuchEntity@
--- error so "cannot observe" is never silently read as "gone") and
--- 'listOperationalAccessKeyIds' for the remaining-keys fact. When the user
--- is absent, no key listing is attempted (the probe returns @[]@ for a
--- @NoSuchEntity@ user anyway, but skipping the call avoids a redundant
--- AWS round trip).
-probeOperationalIamResidue :: FilePath -> Credentials -> IO IamProbe
-probeOperationalIamResidue repoRoot adminCreds = do
-  userExistsResult <- operationalIamUserExists repoRoot adminCreds
-  userPresent <- either throwAws pure userExistsResult
-  remainingKeys <-
-    if userPresent
-      then listOperationalAccessKeyIds repoRoot adminCreds
-      else pure []
-  pure
-    IamProbe
-      { iamProbeUserPresent = userPresent
-      , iamProbeAccessKeyIds = remainingKeys
-      }
 
 -- | Sprint 7.7 — destroy-first dispatch helper. Invokes
 -- @prodbox aws stack \<stack> destroy --yes@ for each stack in the plan,
@@ -3552,18 +3192,6 @@ deleteUserIfPresent repoRoot adminCredentials userName = do
         Just "NoSuchEntity" -> pure False
         _ -> throwAws ("aws iam delete-user failed: " ++ errorDetail deleteUserOutput)
 
-cleanupIamUserResidue :: FilePath -> Credentials -> Text -> IO IamUserCleanupResult
-cleanupIamUserResidue repoRoot adminCredentials userName = do
-  deletedAccessKeys <- deleteExistingUserKeys repoRoot adminCredentials userName
-  deleteAllUserPolicies repoRoot adminCredentials userName
-  userDeleted <- deleteUserIfPresent repoRoot adminCredentials userName
-  pure
-    IamUserCleanupResult
-      { iamUserCleanupUserName = userName
-      , iamUserCleanupDeletedAccessKeys = deletedAccessKeys
-      , iamUserCleanupUserDeleted = userDeleted
-      }
-
 probeConfiguredOperationalIdentity :: FilePath -> IO OperationalIdentityProbe
 probeConfiguredOperationalIdentity repoRoot = do
   result <-
@@ -3585,75 +3213,13 @@ operationalCredentialsConfigured credentials =
     && not (Text.null (Text.strip (secret_access_key credentials)))
     && not (Text.null (Text.strip (region credentials)))
 
-operationalCredentialsCleared :: FilePath -> IO Bool
-operationalCredentialsCleared repoRoot = do
-  credentialsResult <- readLifecycleProviderTargetCredentials repoRoot
-  pure $
-    case credentialsResult of
-      -- Sprint 4.78: see 'operationalCredentialsClearedDecision'. This caller
-      -- has no IAM-user probe, so an unresolvable credential is not cleared.
-      Left _ -> False
-      Right credentials -> not (operationalCredentialsConfigured credentials)
-
--- | Sprint 7.24: the preflight-resilient counterpart of
--- 'operationalCredentialsCleared'. The harness setup runs its
--- clear-before-mint cleanup at *preflight*, which on a clean machine is
--- BEFORE the cluster (hence host Vault) is up — so resolving the operational
--- @aws.*@ @SecretRef.Vault@ can fail with a Vault-connection error (not the
--- "missing/empty" that means "configured-but-cleared"). That ONE case is
--- deferred to the Vault-independent operational-IAM-user observation (admin
--- credential): if the user is confirmed ABSENT, the operational credentials
--- reference a user that no longer exists and are moot, so they are treated as
--- cleared. Every Vault-reachable case is identical to
--- 'operationalCredentialsCleared'; the postflight teardown guards keep the
--- strict check, since they run after the cluster lifecycle (Vault up).
-operationalCredentialsClearedAtPreflight :: FilePath -> Credentials -> IO Bool
-operationalCredentialsClearedAtPreflight repoRoot adminCreds = do
-  credentialsResult <- readLifecycleProviderTargetCredentials repoRoot
-  iamUserExists <- operationalIamUserExists repoRoot adminCreds
-  pure (operationalCredentialsClearedDecision credentialsResult iamUserExists)
-
--- | Sprint 7.24: the pure decision core of
--- 'operationalCredentialsClearedAtPreflight'. Given the Vault-resolved
--- operational @aws.*@ result and the operational-IAM-user existence probe,
--- decide whether the operational credentials are cleared. @Right@ → cleared iff
--- not configured. @Left "missing/empty"@ → cleared. @Left@ (any other error,
--- e.g. host Vault unreachable) → cleared ONLY when the IAM user is confirmed
--- absent (@Right False@); otherwise NOT cleared, preserving fail-closed.
--- Unit-testable, no IO.
--- Sprint 4.78: the @Left \"missing\"\/\"empty\"@ arm is __deleted__, and the
--- measurement that justifies it is worth more than the deletion. That arm
--- matched the words @missing@ or @empty@ anywhere in a lowercased error, so a
--- Vault refusal reading @token is missing the required policy@ would have
--- answered "the operational credentials are cleared" — the fail-open direction
--- on a teardown gate whose own comment says that would strand the operational
--- IAM user.
---
--- Measured, it was also __unreachable__: the sole producer of this @Either@,
--- 'readLifecycleProviderTargetCredentials', is a total constant @Left@ whose
--- message contains neither word, so the arm evaluated 'False' on every
--- production input and control always fell through to the IAM-user probe below.
--- Deleting it is therefore behaviour-preserving today and closes the road by
--- which a future error message could take it.
---
--- What remains is the fail-closed rule the doc comment above already describes:
--- an unresolvable credential means cleared __only__ when the IAM user is
--- confirmed absent.
-operationalCredentialsClearedDecision :: Either String Credentials -> Either String Bool -> Bool
-operationalCredentialsClearedDecision credentialsResult iamUserExistsResult =
-  case credentialsResult of
-    Right credentials -> not (operationalCredentialsConfigured credentials)
-    Left _ -> iamUserExistsResult == Right False
-
 operationalCredentialsConfiguredFromVault :: FilePath -> ConfigFile -> IO (Either String Bool)
 operationalCredentialsConfiguredFromVault repoRoot _config = do
   credentialsResult <- readLifecycleProviderTargetCredentials repoRoot
   pure $ operationalCredentialsConfiguredResult credentialsResult
 
--- Sprint 4.78: the prose-matching @Left@ arm is deleted here for the same
--- measured reason as in 'operationalCredentialsClearedDecision'. An
--- unresolvable credential is now @Left@ — "I could not observe this" — rather
--- than @Right False@, which said "I observed that it is not configured".
+-- An unresolvable credential remains unobservable; an error message cannot
+-- establish whether the credential is configured.
 operationalCredentialsConfiguredResult :: Either String Credentials -> Either String Bool
 operationalCredentialsConfiguredResult credentialsResult =
   case credentialsResult of
@@ -3748,70 +3314,6 @@ renderAwsTeardownResult result =
     , "DELETED_ACCESS_KEYS=" ++ show (length (iamTeardownDeletedAccessKeys result))
     , "CONFIG_PATH=" ++ iamTeardownDhallPath result
     ]
-
-renderAwsIamHarnessSetupReport
-  :: OperationalIdentityProbe
-  -> IamTeardownResult
-  -> Maybe IamUserCleanupResult
-  -> Bool
-  -> IamSetupResult
-  -> String
-renderAwsIamHarnessSetupReport identityProbe preflightTeardown preflightAssociatedCleanup preflightConfigCleared setupResult =
-  concat
-    [ renderOperationalIdentityProbe identityProbe
-    , renderAwsTeardownResult preflightTeardown
-    , renderAssociatedCleanup preflightAssociatedCleanup
-    , "PREFLIGHT_OPERATIONAL_CONFIG_CLEARED="
-        ++ map toLower (show preflightConfigCleared)
-        ++ "\n"
-    , renderAwsSetupResult setupResult
-    ]
- where
-  renderAssociatedCleanup :: Maybe IamUserCleanupResult -> String
-  renderAssociatedCleanup Nothing = "PREEXISTING_ASSOCIATED_USER_DELETED=false\n"
-  renderAssociatedCleanup (Just cleanupResult) =
-    unlines
-      [ "PREEXISTING_ASSOCIATED_USER=" ++ Text.unpack (iamUserCleanupUserName cleanupResult)
-      , "PREEXISTING_ASSOCIATED_USER_DELETED="
-          ++ map toLower (show (iamUserCleanupUserDeleted cleanupResult))
-      , "PREEXISTING_ASSOCIATED_USER_DELETED_ACCESS_KEYS="
-          ++ show (length (iamUserCleanupDeletedAccessKeys cleanupResult))
-      ]
-
-renderOperationalIdentityProbe :: OperationalIdentityProbe -> String
-renderOperationalIdentityProbe probe =
-  case probe of
-    OperationalCredentialsMissing ->
-      "PREEXISTING_OPERATIONAL_USER=\nPREEXISTING_OPERATIONAL_PROBE=missing\n"
-    OperationalIdentityProbeFailed err ->
-      unlines
-        [ "PREEXISTING_OPERATIONAL_USER="
-        , "PREEXISTING_OPERATIONAL_PROBE=error"
-        , "PREEXISTING_OPERATIONAL_PROBE_DETAIL=" ++ err
-        ]
-    OperationalIdentityNonUserArn arn ->
-      unlines
-        [ "PREEXISTING_OPERATIONAL_USER="
-        , "PREEXISTING_OPERATIONAL_PROBE=non-user"
-        , "PREEXISTING_OPERATIONAL_ARN=" ++ Text.unpack arn
-        ]
-    OperationalIdentityIamUser userName ->
-      unlines
-        [ "PREEXISTING_OPERATIONAL_USER=" ++ Text.unpack userName
-        , "PREEXISTING_OPERATIONAL_PROBE=iam-user"
-        ]
-    OperationalIdentityFederatedUser userName ->
-      unlines
-        [ "PREEXISTING_OPERATIONAL_USER=" ++ Text.unpack userName
-        , "PREEXISTING_OPERATIONAL_PROBE=federated-user"
-        ]
-    OperationalIdentityAssumedRole role session ->
-      unlines
-        [ "PREEXISTING_OPERATIONAL_USER="
-        , "PREEXISTING_OPERATIONAL_PROBE=assumed-role"
-        , "PREEXISTING_OPERATIONAL_ROLE=" ++ Text.unpack role
-        , "PREEXISTING_OPERATIONAL_SESSION=" ++ Text.unpack session
-        ]
 
 renderConfigSetupResult :: ConfigSetupResult -> String
 renderConfigSetupResult result =

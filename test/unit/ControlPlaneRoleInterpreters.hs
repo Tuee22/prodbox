@@ -24,6 +24,8 @@ import Prodbox.ControlPlane.AuthorityBackupEndpoint
   , authorityBackupCiphertextDigest
   , mkAuthorityBackupCiphertext
   )
+import Prodbox.ControlPlane.AuthorityControlClient (decodeAuthorityControlTextResponse)
+import Prodbox.ControlPlane.Client (ControlPlaneResponse (..))
 import Prodbox.ControlPlane.Codec
   ( ControlPlaneRequestCodecError
   , decodeControlPlaneResponse
@@ -216,13 +218,16 @@ controlPlaneRoleInterpretersSuite =
               (encoded (AuthorityOperationSubmitPayload "request-a" "digest-a"))
           )
           `shouldReturn` (ReplyServiceUnavailable, "interpreter-unavailable\n")
-        serveLA
-          interpreter
-          ( post
-              "/v1/authority/control"
-              (encoded AuthorityControlBeginMigration)
-          )
-          `shouldReturn` (ReplyOk, "authority-migration-started")
+        migration <-
+          serveLA
+            interpreter
+            ( post
+                "/v1/authority/control"
+                (encoded AuthorityControlBeginMigration)
+            )
+        migration `shouldBe` (ReplyOk, "authority-migration-started")
+        decodeAuthorityControlTextResponse (ControlPlaneResponse 200 (snd migration))
+          `shouldBe` Right "authority-migration-started"
         serveLA
           interpreter
           ( post

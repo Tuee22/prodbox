@@ -90,6 +90,13 @@ Options:
 Examples:
 - prodbox aws ebs reap-test --yes  # Delete leaked test-scoped EBS volumes.
 
+## prodbox aws stack eks diff
+prodbox aws stack eks diff - Show the eks stack resource and property delta
+
+Run an authenticated Provider preview and report resource, operation and property names. Values and diagnostic text are omitted. Changes are observed without applying them.
+Examples:
+- prodbox aws stack eks diff  # Inspect the authored stack delta.
+
 ## prodbox aws stack eks reconcile
 prodbox aws stack eks reconcile - Provision or inspect the eks stack
 
@@ -140,6 +147,25 @@ Options:
 
 Examples:
 - prodbox aws stack eks adopt-legacy apply --plan-digest DIGEST --yes  # Adopt the eks family under a confirmed digest.
+
+## prodbox aws stack eks purge-dependents
+prodbox aws stack eks purge-dependents - Plan or repair the registered EKS network dependents
+
+Plan by default. Prove the cluster absent and locate exactly one VPC by both registered tags. Apply only with --yes and a matching --plan-digest, then independently report the two network families' absence verdict.
+Options:
+- --yes, -y - Apply the confirmed plan
+- --plan-digest <DIGEST> - The exact digest from the current purge plan; requires --yes
+
+Examples:
+- prodbox aws stack eks purge-dependents  # Inspect the network repair plan.
+- prodbox aws stack eks purge-dependents --yes --plan-digest aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  # Apply the confirmed network repair.
+
+## prodbox aws stack test diff
+prodbox aws stack test diff - Show the test stack resource and property delta
+
+Run an authenticated Provider preview and report resource, operation and property names. Values and diagnostic text are omitted. Changes are observed without applying them.
+Examples:
+- prodbox aws stack test diff  # Inspect the authored stack delta.
 
 ## prodbox aws stack test reconcile
 prodbox aws stack test reconcile - Provision or inspect the test stack
@@ -192,6 +218,13 @@ Options:
 Examples:
 - prodbox aws stack test adopt-legacy apply --plan-digest DIGEST --yes  # Adopt the test family under a confirmed digest.
 
+## prodbox aws stack aws-subzone diff
+prodbox aws stack aws-subzone diff - Show the aws-subzone stack resource and property delta
+
+Run an authenticated Provider preview and report resource, operation and property names. Values and diagnostic text are omitted. Changes are observed without applying them.
+Examples:
+- prodbox aws stack aws-subzone diff  # Inspect the authored stack delta.
+
 ## prodbox aws stack aws-subzone reconcile
 prodbox aws stack aws-subzone reconcile - Provision or inspect the aws-subzone stack
 
@@ -242,6 +275,13 @@ Options:
 
 Examples:
 - prodbox aws stack aws-subzone adopt-legacy apply --plan-digest DIGEST --yes  # Adopt the aws-subzone family under a confirmed digest.
+
+## prodbox aws stack aws-ses diff
+prodbox aws stack aws-ses diff - Show the aws-ses stack resource and property delta
+
+Run an authenticated Provider preview and report resource, operation and property names. Values and diagnostic text are omitted. Changes are observed without applying them.
+Examples:
+- prodbox aws stack aws-ses diff  # Inspect the authored stack delta.
 
 ## prodbox aws stack aws-ses reconcile
 prodbox aws stack aws-ses reconcile - Provision or inspect the aws-ses stack
@@ -1050,6 +1090,30 @@ Options:
 
 Examples:
 - prodbox test integration cascade-qualification-receipt  # Run the `cascade-qualification-receipt` integration suite.
+
+## prodbox test integration aws-lifecycle
+prodbox test integration aws-lifecycle - Exercise audit-bracketed AWS stack create and destroy cycles
+
+Exercise audit-bracketed AWS stack create and destroy cycles
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
+
+Examples:
+- prodbox test integration aws-lifecycle  # Run the `aws-lifecycle` integration suite.
+
+## prodbox test integration aws-lifecycle-canary
+prodbox test integration aws-lifecycle-canary - Exercise planted test-VPC network dependencies and exact cleanup
+
+Exercise planted test-VPC network dependencies and exact cleanup
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
+
+Examples:
+- prodbox test integration aws-lifecycle-canary  # Run the `aws-lifecycle-canary` integration suite.
 
 ## prodbox test integration ha-rke2-aws
 prodbox test integration ha-rke2-aws - Run HA RKE2 AWS integration tests

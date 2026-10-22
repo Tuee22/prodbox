@@ -21,7 +21,7 @@ prodbox dev check
 ```
 
 `src/Prodbox/CheckCode.hs` owns that command. The current Haskell implementation runs the four
-fail-fast lint stages and then the warning-clean build:
+fail-fast lint stages, the warning-clean build, and the registered unit suites:
 
 1. file/doctrine checks, including workflow/hook policy, thin `Main.hs`, tracked generated paths,
    and the conformance tier;
@@ -29,7 +29,9 @@ fail-fast lint stages and then the warning-clean build:
 3. sandboxed Fourmolu, HLint, and Cabal-format checks;
 4. Helm chart structural checks;
 5. `cabal build --builddir=.build all --enable-tests --ghc-options=-Werror`;
-6. operator-binary sync to `.build/prodbox`.
+6. operator-binary sync to `.build/prodbox`;
+7. execution of the suites declared by `Prodbox.TestPlan.gatedCheckHaskellSuites`, with the first
+   failed suite failing the gate.
 
 The fail-fast lint stages are also resource-lifetime boundaries. The aggregate gate invokes the
 current executable's four exact leaf arms — `dev lint files`, `dev lint docs`,
@@ -56,10 +58,14 @@ this gate but **not compiled** by it, so a type error there was caught only by `
 or `prodbox test integration cli` / `env` — which nothing routine runs. Turning the flag on
 immediately produced 33 `-Werror` findings that the narrower region had never seen.
 
-The flag closes the compile gap, not the behaviour gap. This gate still runs no test, so a fixture
-that compiles against a changed type and asserts the wrong thing is caught by the suites and by
-nothing else. The general rule and the outage that established it are recorded in
-[resource_scaling_doctrine.md § 2C](./resource_scaling_doctrine.md) under "The region of Ring 2".
+The build and execution regions differ. Every declared test target compiles warning-clean; the
+unit suites selected by `gatedCheckHaskellSuites` then execute against the synchronized binary.
+`Prodbox.TestPlan` owns that set and the manifest checks enforce its coverage. Filesystem-harness,
+frontend, daemon, and live validation keep their separate test scopes. A passing gate therefore
+includes the registered unit assertions and does not imply deployment qualification; the current
+qualification ledger remains in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#deployment-qualification).
+The compile-region rule and the outage that established it are recorded in
+[Resource Scaling Doctrine § 2C](./resource_scaling_doctrine.md) under "The region of Ring 2".
 
 ## 2A. Development Tooling Policy
 
@@ -409,11 +415,20 @@ Four further check families join the canonical quality gate under the Foundation
 - the **sealed-constructor rule** (Sprint `6.5`): `checkSealedConstructors` refuses a module whose
   export list names the constructors of a registered type. The registry is deliberately small and is
   an inventory of *claims*, not of opaque types: a row belongs there only when something written
-  elsewhere depends on the constructor staying inside its module. Nine rows today — the
+  elsewhere depends on the constructor staying inside its module. The registry includes the
   phase-indexed cutover state, its qualification witness, its admitted stage, the write-ahead
   ownership proof, the three cascade-evidence values Sprint `6.5`'s validation calls private, and
   the recovery-plane final evidence and readiness proof, whose `Lost` constructor retains the very
-  Ready value its sole eliminator withholds.
+  Ready value its sole eliminator withholds. Credential succession also seals the independently
+  observed Provisioner publication and the subsequent fresh-Agent admission proof; ordinary wire
+  metadata cannot construct either value.
+  Those two rows require positional declarations as well: exported record selectors permit record
+  updates even when the constructor is abstract. Their accessors are ordinary read-only functions.
+  A positional seal rejects both record declarations and a replacement type alias.
+  The public facades also withhold the raw publication and Agent-observation producers. A sealed
+  constructor does not protect a proof whose public IO builder accepts caller-supplied callbacks.
+  Package visibility and exact production importer checks protect those builders; their fixed
+  diagnostics expose assertions rather than actors or evidence.
 
   **It exists because the claims it guards are the ones no test can make.** "A dual-writer state is
   unrepresentable", "an execute that skips the read-back does not compile", and "an incomplete

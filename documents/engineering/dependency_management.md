@@ -30,9 +30,12 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
   (`prodbox/prodbox-runtime`) under `/opt/build`. It is the same compiled `prodbox` binary for
   every in-cluster role — the gateway daemon and the `api`/`websocket` workloads — and each chart
   selects its role through the pod `args:` (`gateway start` vs `workload start`); the image's
-  `ENTRYPOINT` is bare `tini -- prodbox`. The image follows the single-stage `ubuntu:24.04`
-  doctrine with in-image `ghcup`, pinned GHC `9.12.4`, no symlinked Haskell tool shims, `tini` as
-  PID 1. The image includes the official AWS CLI bundle and pins Pulumi CLI `3.228.0` together
+  `ENTRYPOINT` is bare `tini -- prodbox`. The image uses separate `ubuntu:24.04` builder and
+  runtime stages, with a small
+  manifest-preparation stage that removes Cabal module lists before the dependency boundary. The
+  builder installs in-image `ghcup`, pinned GHC `9.12.4`, and Cabal `3.16.1.0`, with no symlinked
+  Haskell tool shims; the runtime uses `tini` as PID 1. The image includes the official AWS CLI
+  bundle and pins Pulumi CLI `3.228.0` together
   with that same release archive's `pulumi-language-yaml` host. It also installs the exact Pulumi
   AWS provider `7.44.0` into the immutable image layer with release-asset SHA-256 verification for
   both supported architectures; every checked-in Pulumi project declares `aws@7.44.0`. Runtime
@@ -45,11 +48,14 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
   native home DNS and IAM/S3/STS/Route53/ServiceQuotas adapters do not depend on the CLI. The
   supported custom-image publish path
   uses ordinary host-native `docker build` plus `docker push` to the canonical in-cluster registry endpoint (`127.0.0.1:30080`).
-- The Cabal build step installs the resolved executable and removes `.build`, Cabal's downloaded
-  package cache, and Cabal's build state before that same Dockerfile `RUN` commits. The pinned
-  in-image GHC/Cabal toolchain, repository source, YAML Provider programs, and installed executable
-  remain present; only per-generation compilation output is excluded from the runtime layer. This
-  bounds unique generation growth without a global Docker build-cache prune.
+- The dependency layer runs `cabal build --builddir=.build --only-dependencies exe:prodbox`
+  against the normalized manifests before project sources enter the builder. A source or module-list
+  change preserves that layer; a dependency or solver-policy change invalidates it. The complete
+  manifest and sources then compile the executable. Only the executable, runtime tools, and exact
+  provider plugin cross into the runtime stage; the checked-in YAML programs are copied separately
+  and the binary generates its portable sibling configuration there. No GHC, Cabal store, project
+  source, or compilation output enters the shipped image. Builder caches remain available without
+  global Docker build-cache deletion.
 - The build uses **basic `docker` commands only** with the daemon's default builder. There is no
   supported `docker buildx`, no `docker-container`-driver builder, and no multi-arch publication
   (native-host-architecture only). The Dockerfiles carry **no BuildKit-only features**: no
@@ -59,20 +65,6 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
 - Pulumi programs are YAML-based under `pulumi/aws-eks/`, `pulumi/aws-eks-subzone/`,
   `pulumi/aws-test/`, and `pulumi/aws-ses/` only and do not introduce a Python runtime
   dependency.
-
-> **Target.** The single-stage image doctrine above is to become a two-stage one. Today a source
-> change rebuilds every dependency, because the Dockerfile copies `src/` before its one
-> `cabal build`, and splitting those layers inside a single stage would put the dependency store
-> into the shipped image: layers are additive, and cache mounts are forbidden. A **builder stage**
-> keeps both properties. It installs `ghcup`, pins GHC `9.12.4`, resolves dependencies from the
-> Cabal manifests alone so that layer is reused until they change, and compiles the executable. The
-> **runtime stage** starts from `ubuntu:24.04` and receives the executable, the checked-in YAML
-> programs, the generated binary-sibling configuration, and the runtime tools the image carries
-> today (the pinned Pulumi and provider plugin, the checksum-verified `kubectl`, the AWS CLI, and
-> `tini`); it carries no GHC, Cabal store, or source. Both stages use only basic `docker build`
-> features, so the rule against BuildKit-only features is unchanged. The change moves a
-> component-image surface, which invalidates deployment qualification under Standard P. Status lives
-> only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 ## 2. Lock File Policy
 

@@ -52,6 +52,11 @@ import Prodbox.ControlPlane.Codec
   , decodeControlPlaneRequest
   , encodeControlPlaneResponse
   )
+import Prodbox.ControlPlane.PulumiCheckpointProtocol
+  ( PulumiCheckpointMutationTicket (..)
+  , PulumiCheckpointRequest (..)
+  , pulumiCheckpointRequestMaximumBytes
+  )
 import Prodbox.ControlPlane.RequestAuthentication (VerifiedCallerSlot)
 import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
@@ -74,51 +79,6 @@ import Prodbox.Lifecycle.PulumiCheckpoint
 import Prodbox.Lifecycle.Teardown.CapabilityCustody.Universe
   ( CustodyDispositionRecord
   )
-
-data PulumiCheckpointRequest
-  = ObservePulumiCheckpoint !Text
-  | ObservePulumiCheckpointPair !Text
-  | PublishPulumiCheckpoint
-      !Text
-      !PulumiCheckpointMutationTicket
-      !ByteString
-  | -- | Sprint 4.89: a retirement carries the disposition its caller consumed.
-    --
-    -- The Lifecycle Authority cannot observe AWS and so cannot check the proof;
-    -- what it refuses is a retirement for which no disposition was ever stated,
-    -- which is the failure that stranded two AWS resources.
-    RetirePulumiCheckpoint
-      !Text
-      !PulumiCheckpointMutationTicket
-      !CustodyDispositionRecord
-  | RestorePulumiCheckpointPrimary
-      !Text
-      !PulumiCheckpointMutationTicket
-      !VerifiedPulumiCheckpointRef
-  | ReadBackPulumiCheckpointRestore
-      !Text
-      !OperationId
-  | AttemptPulumiCheckpointRetirement
-      !Text
-      !PulumiCheckpointMutationTicket
-      !CustodyDispositionRecord
-      !(Maybe VerifiedPulumiCheckpointRef)
-  | ReadBackPulumiCheckpointRetirement
-      !Text
-      !OperationId
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (Serialise)
-
--- | The exact admitted operation plus the predecessor observed before the
--- caller submitted its mutation.  Keeping these fields together prevents an
--- endpoint or repository adapter from accidentally dropping the predecessor
--- fence while preserving a single closed mutation argument.
-data PulumiCheckpointMutationTicket = PulumiCheckpointMutationTicket
-  { pulumiCheckpointTicketOperation :: !OperationId
-  , pulumiCheckpointTicketExpectedDigest :: !(Maybe PulumiCheckpointDigest)
-  }
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (Serialise)
 
 data PulumiCheckpointWireObservation
   = PulumiCheckpointWireMissing
@@ -304,9 +264,6 @@ newtype PulumiCheckpointHandler m = PulumiCheckpointHandler
       -> LazyByteString.ByteString
       -> m PulumiCheckpointResponse
   }
-
-pulumiCheckpointRequestMaximumBytes :: Int
-pulumiCheckpointRequestMaximumBytes = pulumiCheckpointMaximumBytes + 64 * 1024
 
 pulumiCheckpointResponseMaximumBytes :: Int
 pulumiCheckpointResponseMaximumBytes = pulumiCheckpointMaximumBytes + 64 * 1024

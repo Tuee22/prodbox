@@ -16,6 +16,8 @@ module Prodbox.ControlPlane.CleanupProgramDescriptorRepository.Internal
   , committedCleanupProgramDescriptorRunId
   , committedCleanupProgramDescriptorSurface
   , committedCleanupProgramDescriptorFoundation
+  , committedCleanupProgramDescriptorObservationScope
+  , committedCleanupProgramDescriptorNodeIds
   , committedCleanupProgramDescriptorAwsScope
   , committedCleanupProgramDescriptorAwsDnsZone
   , committedCleanupProgramDescriptorRegistryRevision
@@ -121,6 +123,7 @@ import Prodbox.Lifecycle.Teardown.CleanupProgramDescriptor.Internal
   )
 import Prodbox.Lifecycle.Teardown.Graph
   ( compileDesiredAbsenceGraph
+  , compileDesiredAbsenceGraphForRegisteredKeys
   , compiledDesiredAbsenceGraph
   )
 import Prodbox.Lifecycle.Teardown.Graph qualified as TeardownGraph
@@ -132,10 +135,13 @@ import Prodbox.Lifecycle.Teardown.Model
   , CleanupSurfaceWitness (..)
   , LifecycleOperation
   , LinuxRke2FoundationId (..)
+  , ObservationEvidenceScope
   , ObservationFailure (..)
+  , RegisteredResourceKey (HomeDns01ChallengeRecordKey)
   , RegistryRevision
   , cleanupSurfaceFromWitness
   )
+import Prodbox.Lifecycle.Teardown.Registry (cleanupTargetKey, cleanupTargetsForSurface)
 
 data CleanupProgramDescriptorAuthorityClient m
   = CleanupProgramDescriptorAuthorityClient
@@ -534,7 +540,7 @@ fixedCleanupProgramDescriptorRepositoryRegression =
                     isLeft <$> readBackFromObservation (observedBytes tampered)
           _ -> pure False
       legacyV1RestartReadable <-
-        case legacyV1CleanupProgramDescriptorBytesForRegression candidate of
+        case regressionLegacyV1Bytes inputs of
           Left _ -> pure False
           Right legacyBytes ->
             isRight <$> readBackFromObservation (observedBytes legacyBytes)
@@ -613,6 +619,34 @@ fixedCleanupProgramDescriptorRepositoryRegression =
   isResponseLost result = case result of
     CleanupProgramDescriptorCommitResponseLost _ -> True
     _ -> False
+
+-- A superseded compiler must not be fabricated from the current full target
+-- set. Use the pre-binding catalog for the historical wire-shape regression.
+regressionLegacyV1Bytes :: RegressionInputs -> Either Text ByteString.ByteString
+regressionLegacyV1Bytes inputs = do
+  let runId = regressionInputsRunId inputs
+      keys =
+        [ cleanupTargetKey target
+        | target <- cleanupTargetsForSurface CascadeSurface
+        , cleanupTargetKey target < HomeDns01ChallengeRecordKey
+        ]
+  compiled <-
+    first
+      (Text.pack . show)
+      ( compileDesiredAbsenceGraphForRegisteredKeys
+          runId
+          regressionFoundation
+          (Just regressionAwsScope)
+          Nothing
+          CascadeSurface
+          keys
+      )
+  initial <-
+    first
+      (Text.pack . show)
+      (newCleanupRun runId (compiledDesiredAbsenceGraph compiled) (regressionInputsOwner inputs) 1 1000)
+  descriptor <- first (Text.pack . show) (captureCleanupProgramDescriptor compiled initial)
+  first (Text.pack . show) (legacyV1CleanupProgramDescriptorBytesForRegression descriptor)
 
 regressionInputsAndFixture
   :: Either
@@ -945,3 +979,23 @@ regressionAwsScope =
   AwsScope
     (AwsAccountId "111122223333")
     (AwsRegion canonicalRegressionAwsRegion)
+
+committedCleanupProgramDescriptorObservationScope
+  :: CommittedCleanupProgramDescriptor
+  -> Either CleanupProgramDescriptorRepositoryError ObservationEvidenceScope
+committedCleanupProgramDescriptorObservationScope committed =
+  withCommittedCleanupProgramDescriptor
+    committed
+    (\_ program _ -> TeardownGraph.compiledDesiredAbsenceObservationScope program)
+
+committedCleanupProgramDescriptorNodeIds
+  :: CommittedCleanupProgramDescriptor
+  -> Either CleanupProgramDescriptorRepositoryError [CleanupRun.CleanupNodeId]
+committedCleanupProgramDescriptorNodeIds committed =
+  withCommittedCleanupProgramDescriptor
+    committed
+    ( \_ program _ ->
+        map
+          CleanupRun.cleanupNodeId
+          (CleanupRun.cleanupGraphNodes (TeardownGraph.compiledDesiredAbsenceGraph program))
+    )

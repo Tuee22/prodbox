@@ -22,8 +22,10 @@ module Prodbox.Lifecycle.Teardown.RegisteredTargetResult
   , mkAwsValidationZoneRegisteredTargetReconcile
   , mkAwsRetainedEbsRegisteredTargetReconcile
   , mkAwsIamRoleFamilyRegisteredTargetReconcile
+  , mkAwsNetworkFamilyRegisteredTargetReconcile
   , mkAwsLoadBalancerControllerFamilyRegisteredTargetReconcile
   , mkDns01ChallengeRegisteredTargetReconcile
+  , mkInviteMailRegisteredTargetReconcile
   , mkRefusedRegisteredTargetReconcile
   , RegisteredTargetReconcileError (..)
   )
@@ -50,6 +52,11 @@ import Prodbox.Lifecycle.Teardown.AwsLoadBalancerControllerFamilyAdapter
   ( ExactAwsLoadBalancerControllerFamilyReapAuthorization
   , awsLoadBalancerControllerFamilyReapScope
   )
+import Prodbox.Lifecycle.Teardown.AwsNativeStackFamilyAdapter
+  ( ExactAwsNetworkFamilyReapAuthorization
+  , awsNetworkFamilyReapKey
+  , awsNetworkFamilyReapScope
+  )
 import Prodbox.Lifecycle.Teardown.AwsRetainedEbsAdapter
   ( ExactAwsRetainedEbsReapAuthorization
   , awsRetainedEbsReapScope
@@ -65,6 +72,7 @@ import Prodbox.Lifecycle.Teardown.AwsStackAdapter
   )
 import Prodbox.Lifecycle.Teardown.Dns01ChallengeRecordAdapter
   ( ExactDns01ChallengeOwnerDeleteAuthorization
+  , dns01ChallengeOwnerDeleteResourceKey
   , dns01ChallengeOwnerDeleteScope
   )
 import Prodbox.Lifecycle.Teardown.Model
@@ -82,6 +90,7 @@ import Prodbox.Lifecycle.Teardown.Registry
   , registeredIdentityKind
   , registeredIdentityLifecycleClass
   )
+import Prodbox.Lifecycle.Teardown.SesInviteMailAdapter
 
 -- | The result of invoking one already-authorized provider mutation.  A lost
 -- response is distinct from both refusal and confirmed application so the
@@ -118,12 +127,14 @@ data RegisteredTargetReconcileDisposition
     -- distinct audit disposition so a report cannot mislabel identity cleanup
     -- as stack or volume cleanup.
     RegisteredTargetAwsIamRoleFamilyMutation !RegisteredTargetMutationAttempt
+  | RegisteredTargetAwsNetworkFamilyMutation !RegisteredTargetMutationAttempt
   | RegisteredTargetAwsLoadBalancerControllerFamilyMutation
       !RegisteredTargetMutationAttempt
   | -- | Sprint 7.36.  The DNS01 challenge family's mutation is a Kubernetes
     -- owner delete, not an AWS one, so its audit disposition says so rather
     -- than borrowing a provider-mutation name.
     RegisteredTargetDns01ChallengeOwnerDelete !RegisteredTargetMutationAttempt
+  | RegisteredTargetInviteMailMutation !RegisteredTargetMutationAttempt
   | RegisteredTargetReconcileRefused !Text
   deriving (Eq, Show)
 
@@ -160,7 +171,8 @@ registeredTargetReconcileDisposition
 registeredTargetReconcileDisposition = internalRegisteredTargetReconcileDisposition
 
 data RegisteredTargetReconcileError
-  = RegisteredTargetNotInRegistry !RegisteredResourceKey
+  = RegisteredTargetNetworkFamilyAuthorizationMismatch
+  | RegisteredTargetNotInRegistry !RegisteredResourceKey
   | RegisteredTargetRegistryCoordinateMismatch
       !RegisteredResourceKey
       !ManagedResourceCoordinateDigest
@@ -492,7 +504,7 @@ mkDns01ChallengeRegisteredTargetReconcile
   authorization
   attempt = do
     validateStaticTarget target
-    if registeredTargetKey target == AwsDns01ChallengeRecordKey
+    if registeredTargetKey target == dns01ChallengeOwnerDeleteResourceKey authorization
       then Right ()
       else
         Left
@@ -656,6 +668,21 @@ mkAwsLoadBalancerControllerFamilyRegisteredTargetReconcile
           (RegisteredTargetAwsLoadBalancerControllerFamilyMutation attempt)
       )
 
+mkAwsNetworkFamilyRegisteredTargetReconcile
+  :: CleanupOperationId
+  -> RegisteredTargetBinding
+  -> ObservationEvidenceScope
+  -> ExactAwsNetworkFamilyReapAuthorization
+  -> RegisteredTargetMutationAttempt
+  -> Either RegisteredTargetReconcileError RegisteredTargetReconcileResult
+mkAwsNetworkFamilyRegisteredTargetReconcile operationId target scope authorization attempt = do
+  validateStaticTarget target
+  if registeredTargetKey target == awsNetworkFamilyReapKey authorization
+    && registeredTargetKind target == ControllerFamily
+    && scope == awsNetworkFamilyReapScope authorization
+    then Right (mkResult operationId target scope (RegisteredTargetAwsNetworkFamilyMutation attempt))
+    else Left RegisteredTargetNetworkFamilyAuthorizationMismatch
+
 -- | Preserve an exact interpreter refusal without opening the reconcile node
 -- to the generic mutation result.  This constructor validates the immutable
 -- registry binding but grants no mutation or absence authority; Execution
@@ -731,3 +758,20 @@ validateStaticTarget target = do
         )
  where
   key = registeredTargetKey target
+
+mkInviteMailRegisteredTargetReconcile
+  :: CleanupOperationId
+  -> RegisteredTargetBinding
+  -> ObservationEvidenceScope
+  -> InviteMailCleanupAuthorization
+  -> RegisteredTargetMutationAttempt
+  -> Either RegisteredTargetReconcileError RegisteredTargetReconcileResult
+mkInviteMailRegisteredTargetReconcile operationId target scope authorization attempt = do
+  validateStaticTarget target
+  if registeredTargetKey target == SesInviteMailObjectsKey
+    && registeredTargetKind target == MailObjectFamily
+    && inviteMailCleanupAuthorizationScope authorization == scope
+    then Right (mkResult operationId target scope (RegisteredTargetInviteMailMutation attempt))
+    else
+      Left
+        (RegisteredTargetObservationScopeMismatch scope (inviteMailCleanupAuthorizationScope authorization))

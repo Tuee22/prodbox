@@ -1534,19 +1534,75 @@ attempt budget and final closed liveness cause remain. Within each bracket, an e
 probe; EOF, timeout, or any other line remains pending liveness and retires that child. The
 successful child stays bracketed through the authenticated establishment action.
 
-The Lifecycle Authority's retained authenticated-replay projection is sized for one complete
-bounded reconcile attempt plus one immediate unchanged retry, not for four isolated requests or
-only the first attempt. Each attempt contains the hard eight-member first-reconcile envelope of 56
-requests followed by the exact config observe, propose/read-back, retained-root-marker observation,
-and in-force-load requests, for a compiled capacity of `2 * (56 + 4) = 120` inside the five-minute request lifetime plus one-minute
-skew horizon. The Authority Backup Adapter has its own qualification envelope: the nine-request
-ordinary reconcile plus four recovery-boundary observations precede the cascade; its 59-node
-candidate then uses eight registration, six claim, six primary-outcome, eight-per-node
-begin/complete-custody, and thirteen terminal custody/tombstone/read-back requests. It therefore
-retains `2 * (13 + 8 + 6 + 6 + 59 * 8 + 13) = 1036`, preserving an interrupted first prefix while
-admitting one immediate unchanged retry. The exact compiled cascade aggregate remains below 24 KiB
-at every transition, and a separate 32 MiB encoded ceiling covers two complete envelopes plus replay
-metadata. The Target Secret Agent's complete qualification envelope is 34 requests: one provider-
+The Lifecycle Authority retains one complete qualification schedule and its immediate unchanged
+retry within the authentication deadline-plus-skew horizon. Its response profile derives **2,055
+requests per attempt / 4,110 slots**: 93 first-reconcile requests, 52 pre/postflight credential
+requests, 20 config requests, 40 historical-import requests, 320 descriptor-journal requests, 1,383
+checkpoint requests, 87 Provider dispatches, 46 graph-metadata requests and 14 retained-material
+requests. The eight-member first-reconcile base is 56; recovery adds marker observe/settle, three
+pending-operation observations, three recovery views and at most three seven-RPC coordinations and one lost-completion read per ordinary member.
+The config portion includes the four reconcile transitions and sixteen conservative subsequent
+loads. Historical import charges all four local-tail nodes at eight RPCs each plus initial,
+claim and closing observations. The journal charges both ACK/read transitions for every compiled
+node, including nodes that actually finish locally after uninstall. Nested checkpoint traffic is
+`87 * (3 * 3 + 2 * 3) + 15 * 4 + 2 * (3 + 2 * 3) = 1383`: three loads and one
+submit/publication pair per Provider RPC under the three-attempt bound, direct graph operations,
+and two host output reads. No minimum AWS duration is assumed.
+
+The shared authenticated producer enforces 64 KiB AWS-admin and control replies, 4 KiB operation
+and checkpoint-metadata replies, and 256 KiB graph-metadata replies. Pure checkpoint observations
+retain the fixed read-replay refusal instead. Oversized producers leave their exact reservation
+unresolved and return the existing invalid-response refusal; they cannot produce a truncated
+success or absence witness. Other response classes keep the existing 2 MiB retained limit. The
+complete two-attempt mixed profile fits **212 MiB**; the Authority's coupled memory floor is
+`3 * 212 + 92 = 728 MiB`, covering encoded input, decoded state, replacement encoding and the
+separate runtime reserve. Configuration admission refuses older, smaller authored profiles.
+
+The Authority Backup Adapter has a separate caller envelope. Its existing prelude, journal and
+checkpoint schedules contribute `13 + 649 + 1650 = 2312` calls. Historical local-tail import adds
+58 calls: four nodes at twelve backup calls each, plus claim and initial/final reads. Bounded
+credential recovery and settlement add twenty-two predecessor-pair reads. Its complete schedule is
+therefore **2,392 requests / 4,784 slots**. The old-journal response proof uses actual generated
+attempt identifiers and a 40 KiB bound, alongside compact 4 KiB replies and conservative 224 KiB
+prelude replies. Its encoded ceiling is **64 MiB**, with `3 * 64 + 48 = 240 MiB` production memory.
+Replay codec **v19** reads canonical v2–v18 entries without clearing or reinterpreting them; stored
+capacity may widen, response limits may narrow only when every retained response still validates,
+and skew remains exact. Current-version limits must match exactly.
+
+Descriptor-bound cleanup claim, primary, begin and complete transitions return a bounded metadata
+acknowledgement: run identity, committed descriptor digest and canonical run-state digest. The
+acknowledgement is retained exactly for nonce replay and proves neither authorization nor absence.
+The client independently reads the actual run, verifies the exact state digest and immutable plan,
+and joins it to its already independently read-back committed descriptor. Initial creation still
+reads the actual program. A legacy full transition reply requires the same fresh run confirmation.
+The appended response constructor uses the existing v2 envelope; earlier wire constructors remain
+unchanged. Canonical descriptor run, completion and program observations retain only a fixed
+fresh-nonce refusal, so their large state and program bytes do not accumulate in replay.
+
+The authenticated Backup `observe` route and the Lifecycle Authority's two canonical checkpoint
+observations (`ObservePulumiCheckpoint` and `ObservePulumiCheckpointPair`) use compact read replay.
+The checkpoint methods only read the aggregate and immutable blob pair. The shared interpreter
+decodes the pure request DTO before choosing this policy; malformed wire bodies, restores, retirement
+and every other command retain exact replay. Compact read replay confirms nonce ownership,
+runs the bounded observation, durably records a fixed fresh-nonce refusal and independently confirms
+that completion before delivering the original response. Reusing the same signed nonce returns
+`authenticated-read-replay-requires-fresh-nonce`; issuing a freshly signed read through the same
+client is the bounded remedy. This also refuses a stale observation from a legacy completed entry;
+its retained bytes are preserved until ordinary expiry. The checkpoint client names the fresh-nonce
+remedy before attempting its endpoint decoder; its bounded observation retry signs a new nonce on
+every call. Digest conflicts, in-flight owners, expiry
+and unconfirmed completion remain refusals. Every mutation, including Backup `copy`, retains its
+exact response. Copy receipts are bounded at 4 KiB by the producer; an oversized receipt fails
+before HTTP 200, and the caller may only repeat the same immutable copy/read-back operation.
+
+Old-journal producer-size proofs use the production descriptor-bound attempt-ID helper and the
+compiled program; shorter fixture attempt names do not establish that bound. The transport proof
+must retain the complete measured old-journal prefix alongside compact replies, conservative
+224 KiB prelude responses and replay metadata within the selected encoded ceiling. The shared capacity leaf
+couples the production Backup memory envelope to its encoded ceiling. These local bounds are separate from live
+qualification; its current status belongs to the development-plan ledger.
+
+The Target Secret Agent's general qualification envelope starts with: one provider-
 credential observation, one committed-source recovery observation, three retained-delivery
 requests, the complete retain/restore/retain-on-ready TLS envelope, the two-request legacy-adoption
 plus three-request immutable-version recovery maxima, two net requests when an unopenable exact
@@ -1557,23 +1613,34 @@ aggregate and each Authority-lane branch a committed reference, but that exclusi
 retain and not across one attempt, since a first retain that enters empty and promotes leaves the
 aggregate current for the retain-on-ready in the same attempt. Terminal legacy recovery and its
 same-version race add eight requests, and the bounded Authority successor's same-version race adds
-three. It therefore retains `2 * 49 = 98`, with a distinct 198 MiB encoded ceiling for 98 accepted
-2 MiB responses plus replay metadata. The Vault listener's finite 288 MiB request ceiling covers the
-projection's at-most 264 MiB Base64 expansion plus its bounded
-KV JSON envelope. Provider Worker derives `2 * (1 + 6 * 4 + 3 + 7 + 5) = 80`: one AWS-scope
-proof; observe/reconcile-observe/mutate/read-back for six Provider-mutated non-EKS registered
-families; three Provider observations around the Kubernetes-owned DNS01 deletion; seven requests
-across EKS observation, drain, destroy, and read-back; five terminal-audit queries; and one
-immediate unchanged retry. Its replay response limit is the same 64 KiB limit already enforced by
-the Provider client, and 80 maximum responses plus metadata fit under the unchanged 12 MiB encoded
-ceiling. TLS Retention derives one complete attempt as ten requests on the deepest terminal
+three. The cascade adds three audit-generation reads, two CLI retirement reads, the Provisioner's
+fixed-slot Agent revoke and its independent read-back: seven metadata requests. The full candidate
+also charges sixteen first-reconcile worker install/read-back calls, nineteen bounded
+first-reconcile recovery/settlement calls and thirty harness recovery calls. It retains
+`2 * (49 + 7 + 16 + 19 + 30) = 242` slots. The **208 MiB** encoded ceiling holds 98 general
+replies at 2 MiB and 144 producer-capped replies at 64 KiB plus replay metadata. Its coupled
+production memory floor is `3 * 208 + 48 = 672 MiB`. The TLS Adapter retains its 78 MiB ceiling
+and 38 slots, with `3 * 78 + 48 = 282 MiB` production memory. These floors are enforced for
+authored profiles as well as defaults. The finite 288 MiB Vault listener covers the largest
+212 MiB projection's Base64 expansion plus a bounded JSON envelope. Provider Worker derives
+`2 * (1 + 11 * 4 + 2 * 3 + 7 + 11 + 18) = 174`: one AWS-scope proof; four requests for each
+Provider-mutated non-EKS family; three observations for each Kubernetes-owned DNS01 family; the
+seven-request EKS drain/destroy path; eleven terminal regional/global audit queries; and the larger
+standalone lifecycle body. The two-stack body uses eighteen requests (three independent inventories,
+a three-request public create, and a three-request public destroy per stack); the one-stack canary
+body uses ten including its plant. Its response maximum remains 64 KiB, and 174 maximum responses
+plus metadata fit the unchanged 12 MiB encoded ceiling. The standalone EKS network-repair plan and apply/read-back sequence uses at most six
+Provider requests (twelve with one retry), and a stack diff uses one (two with a retry). They are
+operator traces outside the qualification graph and fit that same maximum. Diff adds wire intent
+38 with a 32 KiB names-only evidence bound; purge reuses intents 31/32 with a closed selector and
+4,096-character report. Neither changes the 64 KiB response ceiling. TLS Retention derives one complete attempt as ten requests on the deepest terminal
 pre-outbox collision path, one restore, and eight bounded Authority-lane collision requests later
 in the same attempt. It therefore retains `2 * (10 + 1 + 8) = 38` for that attempt plus one
 immediate retry, with a 78 MiB encoded ceiling for 38 maximum 2 MiB responses plus metadata. A
-limit change is a retained codec migration: canonical v2 through v14 bytes are admitted only when stored
+limit change is a retained codec migration: canonical v2 through v17 bytes are admitted only when stored
 capacity is no greater than the role's compiled target, stored response maximum is no smaller than
 the new maximum, clock skew is identical, and every retained response validates under the new
-maximum. All entries survive and the next successful CAS writes v15 with the current limits. The
+maximum. All entries survive and the next successful CAS writes v16 with the current limits. The
 encoded and Vault-request ceilings may widen only to the new compiled finite bounds. Capacity
 shrink, response-limit widening, clock-skew drift, an oversized retained response, corruption, or
 deleting replay evidence to make room fails closed. An
@@ -1616,6 +1683,28 @@ continuation. Its mode-indexed Genesis-or-normal permit kind contains the digest
 predecessor signed permit, and its distinct journal begins at `cleanup-required/initial-attempt`.
 Backup repair is admitted only from `BackupRepairFrozen` and is therefore outside this
 expired-`Authorized` renewal program.
+
+The first globally fenced Provider credential mutation in a legacy/untracked epoch also requires
+worker quiescence. The Authority observes bounded `limit=1` Job and Pod lists under one shared five-second deadline, including manager setup and token reads, in the fixed
+credential-provisioner namespace and requires complete empty responses with the expected API,
+kind and resource revision. A continued empty page, missing namespace, failed read, partial JSON
+or oversized body is unobservable. Any existing Job or Pod remains present until its owning
+coordinator retires it. The namespace Role grants only `get` and `list` on those two resource
+kinds; it grants no mutation, watch, attach, logs, Secret or ConfigMap access. Existing signed
+workers bind exact Job/Pod UIDs, and a recreated workload cannot reuse that attestation. Tracked
+lineage and an already pending globally fenced reservation preserve the original admission.
+
+First-reconcile progress and recovery settlement share one retained journal coordinate. The
+version-2 envelope leaves recovery pending after its last receipt until the Authority confirms a
+completed serving Provider outbox, publishes and reads its immutable lineage, reobserves the actual
+Agent and confirms the serving operation is unchanged. Journal settlement is then separately read
+back. Bootstrap resumes one reserved operation and allows at most two additional credential repairs
+before continuing the member loop. A retired install uses a deterministic scope over the retained
+retirement; a serving repair revoke uses its exact generation and does not advance another member.
+Completed version-1 journals remain settled; incomplete version-1 journals upgrade with their next
+receipt. Reading an older object preserves its original canonical bytes. Ordinary postflight
+retirement never reopens first-reconcile recovery.
+
 Execution can only
 delete the deterministic bounded IAM key inventory and commit stable absence before advancing to
 `intent-committed/remint-used` and the one fresh create. It never copies a key-created phase, raw
@@ -2226,6 +2315,30 @@ schema-bound Job and fresh prompt. The selected Agent
 generation-CAS/read-backs each materialized secret, and revocation completes only after the
 corresponding external identity/key and Vault generation are authoritatively observed. The
 pre-cutover host/gateway operator-write routes and shared AWS KV path are deleted.
+
+The AWS-admin worker's ordinary revoke accepts only Operational or RunScoped credential classes;
+request construction and permit decoding reject LongLived and retained-custody classes. It destroys
+the IAM family, waits the bounded visibility grace, and independently observes absence before any
+Target revoke or observation. Failed, still-present or unobservable IAM leaves the Target boundary
+untouched. The Target revoke response remains provisional until an independent Target absence
+read-back closes the canonical joint proof.
+
+The scoped `POST /v1/target-secret/aws-admin/revoke` route accepts only the Credential Provisioner
+principal. The Agent verifies the complete AWS-admin permit against its startup Authority signer
+key/generation and clock, then checks Revoke, Lifecycle-provider class, the fixed registered target,
+selected Agent rollout, exact generation, operation and Pod name/UID. Refused bindings reach no
+Vault operation. The metadata-only boundary reads the generation, permanently deletes that fixed
+KV-v2 key and all its versions, and requires absent metadata on read-back. A missing key converges
+without another mutation; a different generation is preserved. A signer rollover requires Agent
+restart to refresh this pinned trust. No new Vault capability or network port is introduced.
+
+The ordinary harness registers/adopts its resource run before credential preparation and installs
+under a fresh invocation lineage on resume. Separate fixed install/revoke slots retain their
+operation IDs when Target material disappears. Only nonempty, wholly successful resource results
+and complete zone evidence admit the revoke slot, and a fresh Agent observation closes both new
+and retained worker receipts. An incomplete cleanup preserves recovery credentials; failed revoke
+remains unresolved. The separate qualification candidate's pre-uninstall credential composition is
+owned by Sprint `6.5` in [the development plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 Explicit admin-prompted operations use a different one-shot Admin Action Runner. Authority first
 commits and backup-read-backs one `AdminActionPermit` for exactly one of: registered `aws-ses`

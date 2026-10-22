@@ -15,7 +15,11 @@ import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
 import Prodbox.ControlPlane.LifecycleAuthorityRestoreProduction
   ( mkLifecycleAuthorityAdmissionWait
   )
+import Prodbox.Lifecycle.HostCleanupCompletion
+  ( HistoricalHostCleanupCompletionError (..)
+  )
 import Prodbox.Lifecycle.HostCleanupCompositionRoot
+import Prodbox.Lifecycle.HostCleanupIntent (HostCleanupIntentPhase (HostCleanupPrepared))
 import Prodbox.Lifecycle.Teardown.RecoveryRepairProduction (mkSubstrateApiWait)
 import System.IO.Temp (withSystemTempDirectory)
 import TestSupport
@@ -46,12 +50,29 @@ hostCleanupCompositionRootSuite =
       root `shouldContain` "bootstrapLocatedHostCleanupCompletionJournal locator"
       root `shouldContain` "bootstrapLocatedHostCleanupIntentStore locator"
 
+    it "resolves the native terminal boundary without a service environment" $
+      withSystemTempDirectory "prodbox-native-terminal-composition" $ \dir -> do
+        resolved <- resolveHostCleanupTerminalComposition dir
+        case resolved of
+          Right _ -> expectationFailure "an empty directory has no preserved native journals"
+          Left (HostCleanupCompositionRetainedRootUnusable _) -> pure ()
+          Left other -> expectationFailure ("the native boundary selected a non-root prerequisite: " <> show other)
+
     it "renders every refusal distinctly" $ do
       -- Each arm names the layer that refused, so an operator is told which
       -- surface to fix rather than that "the cascade could not start".
       let rendered = map renderHostCleanupCompositionError refusals
       length (nub rendered) `shouldBe` length refusals
       all (not . null) rendered `shouldBe` True
+
+    it "distinguishes resumable terminal work, unavailable reads and lost completion proof" $ do
+      let remedy = renderHostCleanupCompositionError . HostCleanupCompositionPredecessorUnresolved
+      remedy (HistoricalHostCleanupNotComplete HostCleanupPrepared)
+        `shouldContain` "PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE"
+      remedy (HistoricalHostCleanupJournalUnobservable "unavailable")
+        `shouldContain` "retry prodbox cluster reconcile"
+      remedy HistoricalHostCleanupJournalMissing `shouldContain` "NukeOnly"
+      remedy HistoricalHostCleanupReceiptMismatch `shouldContain` "This run cannot qualify"
  where
   inputsFor dir =
     HostCleanupCompositionInputs

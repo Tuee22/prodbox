@@ -5,6 +5,7 @@
 module Prodbox.Infra.AwsEksSubzoneStack
   ( AwsEksSubzoneStackSnapshot (..)
   , awsEksSubzoneStackName
+  , loadAwsEksSubzoneProviderConfig
   , ensureAwsEksSubzoneStackResources
   , ensureAwsEksSubzoneStackResourcesWithAuthentication
   , destroyAwsEksSubzoneStack
@@ -41,6 +42,8 @@ import Prodbox.Error (fatalError)
 import Prodbox.Lifecycle.LiveResidue qualified as LiveResidue
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (DestroyRegisteredStack, ReconcileRegisteredStack)
+  , ProviderStackConfig
+  , ProviderStackConfigError
   , mkAwsEksSubzoneProviderStackConfig
   , mkProviderRevision
   , mkProviderStackRef
@@ -124,9 +127,7 @@ dispatchConfigured authentication repoRoot prefix desiredPresent configResult =
     Right stackConfig ->
       case ( mkProviderStackRef "aws-eks-subzone"
            , mkProviderRevision 1
-           , mkAwsEksSubzoneProviderStackConfig
-               (subzoneStackParentZoneId stackConfig)
-               (subzoneStackSubzoneName stackConfig)
+           , subzoneProviderConfig stackConfig
            ) of
         (Right ref, Right revision, Right config)
           -- Sprint 4.84: only the create half commits a lifecycle generation.
@@ -185,6 +186,20 @@ resolveAwsEksSubzoneStackConfig repoRoot = do
       (Just parentZoneId, Just subzoneName) ->
         Right (AwsEksSubzoneStackConfig parentZoneId subzoneName)
       _ -> Left "route53.zone_id and aws_substrate.subzone_name must be configured"
+
+subzoneProviderConfig
+  :: AwsEksSubzoneStackConfig -> Either ProviderStackConfigError ProviderStackConfig
+subzoneProviderConfig stackConfig =
+  mkAwsEksSubzoneProviderStackConfig
+    (subzoneStackParentZoneId stackConfig)
+    (subzoneStackSubzoneName stackConfig)
+
+loadAwsEksSubzoneProviderConfig :: FilePath -> IO (Either String ProviderStackConfig)
+loadAwsEksSubzoneProviderConfig repoRoot = do
+  resolved <- resolveAwsEksSubzoneStackConfig repoRoot
+  pure $ do
+    config <- resolved
+    either (Left . show) Right (subzoneProviderConfig config)
 
 withOperatorLifecycleAuthority
   :: FilePath

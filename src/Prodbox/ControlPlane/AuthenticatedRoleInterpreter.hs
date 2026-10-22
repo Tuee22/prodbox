@@ -27,9 +27,11 @@ where
 
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.List (find)
 import Data.Text (Text)
+import Prodbox.Capacity.ControlPlaneReplayBudget qualified as ReplayBudget
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedServerError (..)
   , AuthenticatedServerProviders
@@ -40,6 +42,8 @@ import Prodbox.ControlPlane.AuthenticatedTransport
   , authenticatedServerInnerBody
   , authenticatedServerVerifiedRequest
   )
+import Prodbox.ControlPlane.CleanupRunProtocol (isCleanupRunObservationRequest)
+import Prodbox.ControlPlane.PulumiCheckpointProtocol (isPulumiCheckpointObservationRequest)
 import Prodbox.ControlPlane.RequestAuthentication
   ( VerifiedCallerSlot
   )
@@ -48,12 +52,13 @@ import Prodbox.ControlPlane.RequestReplay
   , ReplayCasAttempts
   , ReplayProtectedResult (..)
   , ReplayResponse
-  , ReplayResponseError
+  , ReplayResponseError (ReplayResponseBodyTooLarge)
   , RequestReplayLimits
   , RequestReplayRepository
   , mkReplayResponse
   , replayResponseBody
   , replayResponseStatus
+  , runReplayProtectedReadRequest
   , runReplayProtectedRequest
   )
 import Prodbox.ControlPlane.RoleReadiness (RoleReadinessSource)
@@ -65,7 +70,9 @@ import Prodbox.ControlPlane.Server
   )
 import Prodbox.Http.ReplyStatus (ReplyStatus (..), replyStatusCode)
 import Prodbox.Lifecycle.Lease (AuthorityDuration)
-import Prodbox.Runtime.Role (RuntimeRole)
+import Prodbox.Runtime.Role
+  ( RuntimeRole (AuthorityBackupRuntime, LifecycleAuthorityRuntime, TargetSecretAgentRuntime)
+  )
 
 data AuthenticatedRoleHandler m = AuthenticatedRoleHandler
   { authenticatedHandlerReadiness :: !RoleReadinessSource
@@ -123,6 +130,7 @@ data AuthenticatedRolePlainResponseCause
   | AuthenticatedRoleReplayCompletionUnconfirmed
   | AuthenticatedRoleInterpreterUnavailable
   | AuthenticatedRoleHandlerInvalidResponse
+  | AuthenticatedRoleReadReplayRequiresFreshNonce
   deriving stock (Bounded, Enum, Eq, Show)
 
 data AuthenticatedRolePlainResponseObservation
@@ -184,6 +192,8 @@ authenticatedRolePlainResponse cause = case cause of
     (ReplyServiceUnavailable, "interpreter-unavailable\n")
   AuthenticatedRoleHandlerInvalidResponse ->
     (ReplyInternalError, "authenticated-handler-response-invalid\n")
+  AuthenticatedRoleReadReplayRequiresFreshNonce ->
+    (ReplyConflict, "authenticated-read-replay-requires-fresh-nonce\n")
 
 classifyAuthenticatedRolePlainResponse
   :: Int -> ByteString -> AuthenticatedRolePlainResponseObservation
@@ -222,6 +232,7 @@ renderAuthenticatedRolePlainResponseObservation observation = case observation o
     AuthenticatedRoleReplayCompletionUnconfirmed -> "replay-completion-unconfirmed"
     AuthenticatedRoleInterpreterUnavailable -> "interpreter-unavailable"
     AuthenticatedRoleHandlerInvalidResponse -> "handler-response-invalid"
+    AuthenticatedRoleReadReplayRequiresFreshNonce -> "read-replay-requires-fresh-nonce"
   AuthenticatedRolePlainResponseOther -> "other"
 
 -- | Authenticate and replay-protect a context-aware role handler.  Readiness
@@ -276,7 +287,9 @@ authenticatedRoleInterpreter
                 )
             Right attempt -> do
               replayed <-
-                runReplayProtectedRequest
+                runProtected
+                  route
+                  (authenticatedServerInnerBody request)
                   casAttempts
                   replayRepository
                   (authenticatedServerAuthorityTime request)
@@ -288,14 +301,72 @@ authenticatedRoleInterpreter
                       (authenticatedServerInnerBody request)
                   )
               pure (Just (replayProtectedResponse replayed))
+    -- Only canonical immutable observations discard their delivered bytes.
+    -- All mutations and unclassified requests retain exact response replay.
+    runProtected route body attempts repository now attempt verified effect =
+      case (localRole, route) of
+        (AuthorityBackupRuntime, AuthorityBackupObserve) -> readFresh
+        (LifecycleAuthorityRuntime, LifecyclePulumiCheckpoint)
+          | isPulumiCheckpointObservationRequest body -> readFresh
+        (LifecycleAuthorityRuntime, LifecycleCleanupRun)
+          | isCleanupRunObservationRequest body -> readFresh
+        _ -> runReplayProtectedRequest attempts repository now attempt verified effect
+     where
+      readFresh =
+        let (status, refusalBody) = authenticatedRolePlainResponse AuthenticatedRoleReadReplayRequiresFreshNonce
+         in case mkReplayResponse replayLimits status refusalBody of
+              Left err -> pure (ReplayProtectedEffectFailed (AuthenticatedRoleHandlerResponseInvalid err))
+              Right refusal -> runReplayProtectedReadRequest refusal attempts repository now attempt verified effect
     runInner callerSlot route body = do
       handled <- authenticatedHandlerHandle inner callerSlot route body
       pure $ case handled of
         Nothing -> Left AuthenticatedRoleHandlerUnavailable
-        Just (status, responseBody) ->
-          first
-            AuthenticatedRoleHandlerResponseInvalid
-            (mkReplayResponse replayLimits status responseBody)
+        Just (status, responseBody)
+          | Just maximumBytes <- routeResponseMaximum route body
+          , ByteString.length responseBody > maximumBytes ->
+              Left
+                ( AuthenticatedRoleHandlerResponseInvalid
+                    (ReplayResponseBodyTooLarge (ByteString.length responseBody) maximumBytes)
+                )
+          | otherwise ->
+              first
+                AuthenticatedRoleHandlerResponseInvalid
+                (mkReplayResponse replayLimits status responseBody)
+    -- Retained metadata bounds apply to the actual producer, before delivery
+    -- and replay completion. Oversized replies leave the reservation unresolved;
+    -- they never become a smaller successful observation or absence proof.
+    routeResponseMaximum route body = case (localRole, route) of
+      (LifecycleAuthorityRuntime, LifecycleAwsAdminProvisioner) ->
+        Just ReplayBudget.awsAdminResponseMaximumBytes
+      (LifecycleAuthorityRuntime, LifecycleAuthorityControl) ->
+        Just ReplayBudget.authorityMetadataResponseMaximumBytes
+      (LifecycleAuthorityRuntime, LifecycleTargetIntentIssue) ->
+        Just ReplayBudget.authorityMetadataResponseMaximumBytes
+      (LifecycleAuthorityRuntime, LifecycleOperationSubmit) ->
+        Just ReplayBudget.checkpointMetadataResponseMaximumBytes
+      (LifecycleAuthorityRuntime, LifecycleOperationObserve) ->
+        Just ReplayBudget.checkpointMetadataResponseMaximumBytes
+      (LifecycleAuthorityRuntime, LifecyclePulumiCheckpoint)
+        | not (isPulumiCheckpointObservationRequest body) ->
+            Just ReplayBudget.checkpointMetadataResponseMaximumBytes
+      (LifecycleAuthorityRuntime, metadataRoute)
+        | metadataRoute
+            `elem` [ LifecycleRecoveryPlane
+                   , LifecycleAwsStackReader
+                   , LifecycleAwsStackCreationBinding
+                   , LifecycleOwnershipManifest
+                   , LifecycleEksDrainIntent
+                   , LifecycleEksDrainReadBackReceipt
+                   , LifecycleLocalRke2HostObservation
+                   , LifecycleCascadeRetainedSlot
+                   , LifecycleControllerOwner
+                   ] ->
+            Just (256 * 1024)
+      (TargetSecretAgentRuntime, metadataRoute)
+        | metadataRoute
+            `elem` [TargetMaterialObserve, TargetSecretTrustInstall, TargetAwsAdminCredentialRevoke] ->
+            Just ReplayBudget.authorityMetadataResponseMaximumBytes
+      _ -> Nothing
 
 authenticatedServerErrorResponse :: AuthenticatedServerError -> (ReplyStatus, ByteString)
 authenticatedServerErrorResponse = authenticatedRolePlainResponse . serverErrorCause

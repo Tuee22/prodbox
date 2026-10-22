@@ -7,9 +7,11 @@ module LifecycleTeardownCascadeTerminalAuditAdapter
 where
 
 import Data.Functor.Identity (Identity (Identity), runIdentity)
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List.NonEmpty (NonEmpty ((:|)))
 import Data.Text (Text)
 import Data.Text qualified as Text
+import LifecycleTeardownProviderAwsScopeAdapter (fixtureProviderAwsScopeEvidence)
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
   )
@@ -28,6 +30,7 @@ import Prodbox.Lifecycle.AwsInventory
   , AwsTagRow (..)
   , normalizeAwsTagRows
   )
+import Prodbox.Lifecycle.CleanupRun (mkCleanupRunId)
 import Prodbox.Lifecycle.OwnedResourceTagEvidence
 import Prodbox.Lifecycle.ProviderWorker.Evidence
   ( encodeProviderEvidence
@@ -51,9 +54,12 @@ import Prodbox.Lifecycle.TaggedResourceQuery
   )
 import Prodbox.Lifecycle.Teardown.CascadeTerminalAudit
   ( CascadeTerminalAuditBoundary (..)
+  , CascadeTerminalAuditFullBoundary (..)
   , lowerCascadeTerminalAuditRows
+  , observeFullCascadeTerminalAudit
   )
 import Prodbox.Lifecycle.Teardown.CascadeTerminalAuditAdapter
+import Prodbox.Lifecycle.Teardown.Graph (compileDesiredAbsenceGraph)
 import Prodbox.Lifecycle.Teardown.Model
   ( AwsAccountId (AwsAccountId)
   , AwsRegion (AwsRegion)
@@ -77,6 +83,10 @@ import Prodbox.Lifecycle.Teardown.Observation
   , mkTerminalAuditScope
   , terminalAuditEvidenceScopeDigest
   )
+import Prodbox.Lifecycle.Teardown.PerRunTerminalAuditPlan
+  ( perRunAuditQueryProviderIntent
+  , terminalAuditEndpointQueriesFor
+  )
 import Prodbox.Lifecycle.Teardown.Registry (lifecycleRegistryRevision)
 import Prodbox.Lifecycle.Teardown.RetainedInventory
   ( RetainedCatalog
@@ -94,6 +104,74 @@ import TestSupport
 lifecycleTeardownCascadeTerminalAuditAdapterSuite :: SuiteBuilder ()
 lifecycleTeardownCascadeTerminalAuditAdapterSuite =
   describe "Sprint 7.36 terminal cascade audit execution half" $ do
+    it "takes the declared regional/global union only after a matching Provider identity" $ do
+      let regional = auditedScope {awsScopeRegion = AwsRegion (fixtureAwsRegion FixtureCaCentral1)}
+          compiled =
+            mustRight
+              ( compileDesiredAbsenceGraph
+                  (mustRight (mkCleanupRunId "full-cascade-audit"))
+                  (LinuxRke2FoundationId "home-rke2")
+                  (Just regional)
+                  Nothing
+                  CascadeSurface
+              )
+      calls <- newIORef []
+      let dispatch intent = do
+            modifyIORef' calls (<> [intent])
+            pure $ case intent of
+              ObserveProviderAwsScope ->
+                Right
+                  ( ProviderIntentExecutionObserved
+                      (providerIntentCoordinate intent)
+                      (fixtureProviderAwsScopeEvidence "111122223333" (fixtureAwsRegion FixtureCaCentral1))
+                  )
+              ObserveOwnedResourceTags query -> answer intent query
+              ObserveGlobalOwnedResourceTags query -> answer intent query
+              _ -> Left "unexpected mutation"
+          answer intent query =
+            Right
+              ( ProviderIntentExecutionObserved
+                  (providerIntentCoordinate intent)
+                  (mustRight (render (OwnedResourceTagObservation (echo query) [] 1)))
+              )
+          echo query = case query of
+            ProviderOwnedTagKeyQuery key -> OwnedResourceTagKeyEcho key
+            ProviderOwnedTagPairQuery key value -> OwnedResourceTagPairEcho key value
+      result <-
+        observeFullCascadeTerminalAudit
+          (providerFullCascadeTerminalAuditBoundary regional dispatch)
+          binding
+          compiled
+          (ObservationRevision 1)
+      fmap (isClean . terminalAuditResult) result `shouldBe` Right True
+      observedCalls <- readIORef calls
+      observedCalls
+        `shouldBe` ( ObserveProviderAwsScope
+                       : map perRunAuditQueryProviderIntent (terminalAuditEndpointQueriesFor regional binding)
+                   )
+      let missingGlobal intent = case intent of
+            ObserveGlobalOwnedResourceTags _ -> pure (Left "global endpoint unavailable")
+            _ -> dispatch intent
+      incomplete <-
+        observeFullCascadeTerminalAudit
+          (providerFullCascadeTerminalAuditBoundary regional missingGlobal)
+          binding
+          compiled
+          (ObservationRevision 2)
+      fmap terminalAuditResult incomplete `shouldSatisfy` isUnobservableResult
+      refusedCalls <- newIORef (0 :: Int)
+      foreignActor <-
+        observeFullCascadeTerminalAudit
+          ( CascadeTerminalAuditFullBoundary
+              (pure (Right auditedScope))
+              (\_ -> modifyIORef' refusedCalls (+ 1) >> pure (Right []))
+          )
+          binding
+          compiled
+          (ObservationRevision 3)
+      fmap terminalAuditResult foreignActor `shouldSatisfy` isUnobservableResult
+      readIORef refusedCalls >>= (`shouldBe` 0)
+
     it "executes each catalog query as its own registered Provider intent" $ do
       -- The Tagging API intersects filters inside one call, so the audit's
       -- field of view is a union of separately issued single-filter queries.
@@ -547,6 +625,11 @@ verdictFor entries = do
           (observed managedByQuery evidence)
       )
   either (Left . Text.pack . show) Right (lowerCascadeTerminalAuditRows catalog rows [])
+
+isUnobservableResult :: Either failure TerminalAuditResult -> Bool
+isUnobservableResult result = case result of
+  Right (TerminalAuditUnobservable _ _) -> True
+  _ -> False
 
 isClean :: TerminalAuditResult -> Bool
 isClean result = case result of

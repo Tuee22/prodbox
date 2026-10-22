@@ -4,7 +4,7 @@
 
 module CredentialProvisioner (credentialProvisionerSuite) where
 
-import Control.Monad (forM_)
+import Control.Monad (foldM, forM_)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as ByteString8
 import Data.ByteString.Lazy.Char8 qualified as BL8
@@ -444,7 +444,7 @@ credentialProvisionerSuite =
       providerRolePolicyOperationIdentity counterexample
         `shouldBe` "LIFECYCLE-PROVIDER-ASSUMED-ROLE-ROUTE53-CREATE-DENIED-2026-09-06"
       providerRolePolicyOperationRevision
-        `shouldBe` "209a4b7eef1842483983e994116c816ccd872070bdc210aa1f31f697fa7d34d7"
+        `shouldBe` "77fe1c831cd0d0535146ece2d6e5e73015d9a296b6b520bf841da8b4273bfd5d"
       providerRolePolicyOperationReplacementRevision counterexample
         `shouldBe` providerRolePolicyOperationRevision
       providerRolePolicyOperationReplacementScope counterexample
@@ -456,12 +456,15 @@ credentialProvisionerSuite =
         (providerRolePolicyOperationMutatedDocument counterexample)
         `shouldNotBe` providerRolePolicyOperationRevision
       rke2Source <- readFile "src/Prodbox/CLI/Rke2.hs"
+      lineageSource <- readFile "src/Prodbox/Lifecycle/CredentialProvisioner/HarnessCredential.hs"
+      lineageSource
+        `shouldContain` "providerRolePolicyOperationScope"
       rke2Source
-        `shouldContain` "providerRolePolicyOperationScope operationScope"
+        `shouldContain` "reconcileHarnessLifecycleProviderSlot repoRoot lineage HarnessCredentialInstall"
       -- The Lifecycle-provider request is built with the revisioned scope, and the
       -- shared resolver keys the durable operation on the scope its request carries.
       rke2Source
-        `shouldContain` "(TargetAwsCredential AwsLifecycleProvider)\n          (providerRolePolicyOperationScope operationScope)"
+        `shouldContain` "(TargetAwsCredential AwsLifecycleProvider)\n          (harnessCredentialSlotScope lineage slot)"
       rke2Source
         `shouldContain` "operationScope = harnessCredentialScope request"
       validateProviderRolePolicyOperationCounterexample counterexample
@@ -829,6 +832,50 @@ credentialProvisionerSuite =
         `shouldBe` Left (FirstReconcileJournalReceiptConflict 0)
       appendFirstReconcileReceipt secondReceipt initial
         `shouldBe` Left (FirstReconcileJournalReceiptRejected FirstReconcileReceiptWrongMember)
+
+    it "keeps recovery pending past the final member until an explicit settlement" $ do
+      let complete = must (foldM appendMember (initialFirstReconcileJournal plan) (firstReconcilePlanMembers plan))
+          appendMember journal member =
+            appendFirstReconcileReceipt (must (mkFirstReconcileReceipt member "vault-v1" "target-ref")) journal
+          recovered = must (decodeFirstReconcileJournal (encodeFirstReconcileJournal complete))
+          settled = must (settleFirstReconcileJournal recovered)
+      firstReconcileJournalComplete recovered `shouldBe` True
+      firstReconcileJournalRecoveryPending recovered `shouldBe` True
+      firstReconcileJournalRecoveryPending settled `shouldBe` False
+      decodeFirstReconcileJournal (encodeFirstReconcileJournal settled) `shouldBe` Right settled
+      settleFirstReconcileJournal settled `shouldBe` Right settled
+      settleFirstReconcileJournal (initialFirstReconcileJournal plan)
+        `shouldBe` Left FirstReconcileJournalRecoveryIncomplete
+
+    it "preserves canonical v1 bytes and upgrades an unfinished legacy journal on its next receipt" $ do
+      let initial = initialFirstReconcileJournal plan
+          legacyBytes = ByteString.init (ByteString.drop 2 (encodeFirstReconcileJournal initial))
+          legacy = must (decodeFirstReconcileJournal legacyBytes)
+          receipt = must (mkFirstReconcileReceipt (headMember plan) "vault-v1" "target-ref")
+          advanced = must (appendFirstReconcileReceipt receipt legacy)
+      ByteString.take 2 (encodeFirstReconcileJournal initial) `shouldBe` ByteString.pack [131, 2]
+      encodeFirstReconcileJournal legacy `shouldBe` legacyBytes
+      firstReconcileJournalRecoveryPending legacy `shouldBe` True
+      ByteString.take 2 (encodeFirstReconcileJournal advanced) `shouldBe` ByteString.pack [131, 2]
+      firstReconcileJournalRecoveryPending
+        (must (decodeFirstReconcileJournal (encodeFirstReconcileJournal advanced)))
+        `shouldBe` True
+
+    it "treats a completed v1 journal as settled without reminting retired credentials" $ do
+      let complete = must (foldM appendMember (initialFirstReconcileJournal plan) (firstReconcilePlanMembers plan))
+          appendMember journal member =
+            appendFirstReconcileReceipt (must (mkFirstReconcileReceipt member "vault-v1" "target-ref")) journal
+          legacyBytes = ByteString.init (ByteString.drop 2 (encodeFirstReconcileJournal complete))
+          legacy = must (decodeFirstReconcileJournal legacyBytes)
+      firstReconcileJournalComplete legacy `shouldBe` True
+      firstReconcileJournalRecoveryPending legacy `shouldBe` False
+      encodeFirstReconcileJournal legacy `shouldBe` legacyBytes
+      settleFirstReconcileJournal legacy `shouldBe` Right legacy
+
+    it "rejects a settled v2 envelope whose receipt cursor is incomplete" $ do
+      let encoded = encodeFirstReconcileJournal (initialFirstReconcileJournal plan)
+      decodeFirstReconcileJournal (ByteString.snoc (ByteString.init encoded) 245)
+        `shouldBe` Left FirstReconcileJournalRecoveryIncomplete
 
     it "rejects corrupt, trailing, and over-bound journal bytes" $ do
       let encoded = encodeFirstReconcileJournal (initialFirstReconcileJournal plan)

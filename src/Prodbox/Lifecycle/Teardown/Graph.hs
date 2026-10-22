@@ -20,7 +20,11 @@ module Prodbox.Lifecycle.Teardown.Graph
   , compiledOperationForNode
   , DesiredAbsenceGraphError (..)
   , compileDesiredAbsenceGraph
+  , compileDesiredAbsenceGraphWithBindings
   , compileDesiredAbsenceGraphForRegisteredKeys
+  , compileDesiredAbsenceGraphForRegisteredKeysWithBindings
+  , compileAuditedExplicitPerRunGraph
+  , perRunTerminalAuditNodeId
   , cleanupSurfaceRequiresAwsScope
   )
 where
@@ -70,6 +74,11 @@ import Prodbox.Lifecycle.Teardown.RecoveryCapability.Internal
   , sealRecoveryCapabilityCatalog
   )
 import Prodbox.Lifecycle.Teardown.Registry (lifecycleRegistryRevision)
+import Prodbox.Lifecycle.Teardown.ResourceScopeBindings
+  ( ResourceScopeBindings
+  , resourceScopeAuditRetainedNames
+  )
+import Prodbox.Lifecycle.Teardown.ScopeCodec (resourceBindingsIdentityFields)
 
 data CompiledDesiredAbsenceProgram surface = CompiledDesiredAbsenceProgram
   { internalCompiledDesiredAbsenceProgram :: !(DesiredAbsenceProgram surface)
@@ -129,7 +138,8 @@ compiledDesiredAbsenceRecoveryCapabilityCatalogDigest =
     . internalCompiledDesiredAbsenceRecoveryCapabilityCatalog
 
 data DesiredAbsenceGraphError
-  = DesiredAbsenceProgramInvalid !DesiredAbsenceProgramError
+  = DesiredAbsenceAuditBindingRequired
+  | DesiredAbsenceProgramInvalid !DesiredAbsenceProgramError
   | DesiredAbsenceNodeIdInvalid !Text !Text
   | DesiredAbsenceOperationIdInvalid !Text !Text
   | DesiredAbsenceCoordinateInvalid !Text
@@ -150,7 +160,20 @@ compileDesiredAbsenceGraph
   -> Either
        DesiredAbsenceGraphError
        (CompiledDesiredAbsenceProgram surface)
-compileDesiredAbsenceGraph runId foundation awsScope awsDnsZone surface = do
+compileDesiredAbsenceGraph runId foundation awsScope awsDnsZone =
+  compileDesiredAbsenceGraphWithBindings runId foundation awsScope awsDnsZone Nothing
+
+-- | The full registered program with immutable public resource coordinates.
+-- The original entrypoint remains byte-identical through its Nothing binding.
+compileDesiredAbsenceGraphWithBindings
+  :: CleanupRunId
+  -> LinuxRke2FoundationId
+  -> Maybe AwsScope
+  -> Maybe HostedZoneId
+  -> Maybe ResourceScopeBindings
+  -> CleanupSurfaceWitness surface
+  -> Either DesiredAbsenceGraphError (CompiledDesiredAbsenceProgram surface)
+compileDesiredAbsenceGraphWithBindings runId foundation awsScope awsDnsZone bindings surface = do
   program <-
     first DesiredAbsenceProgramInvalid (compileDesiredAbsenceProgram surface)
   compileDesiredAbsenceGraphWithProgram
@@ -158,6 +181,7 @@ compileDesiredAbsenceGraph runId foundation awsScope awsDnsZone surface = do
     foundation
     awsScope
     awsDnsZone
+    bindings
     surface
     program
 
@@ -171,11 +195,27 @@ compileDesiredAbsenceGraphForRegisteredKeys
   -> Either
        DesiredAbsenceGraphError
        (CompiledDesiredAbsenceProgram surface)
-compileDesiredAbsenceGraphForRegisteredKeys
+compileDesiredAbsenceGraphForRegisteredKeys runId foundation awsScope awsDnsZone =
+  compileDesiredAbsenceGraphForRegisteredKeysWithBindings runId foundation awsScope awsDnsZone Nothing
+
+-- | Public resource coordinates are captured before effects and participate in
+-- every operation identity. A retained descriptor supplies these same values
+-- on restart; current configuration cannot replace them.
+compileDesiredAbsenceGraphForRegisteredKeysWithBindings
+  :: CleanupRunId
+  -> LinuxRke2FoundationId
+  -> Maybe AwsScope
+  -> Maybe HostedZoneId
+  -> Maybe ResourceScopeBindings
+  -> CleanupSurfaceWitness surface
+  -> [RegisteredResourceKey]
+  -> Either DesiredAbsenceGraphError (CompiledDesiredAbsenceProgram surface)
+compileDesiredAbsenceGraphForRegisteredKeysWithBindings
   runId
   foundation
   awsScope
   awsDnsZone
+  bindings
   surface
   selectedKeys = do
     program <-
@@ -187,14 +227,45 @@ compileDesiredAbsenceGraphForRegisteredKeys
       foundation
       awsScope
       awsDnsZone
+      bindings
       surface
       program
+
+compileAuditedExplicitPerRunGraph
+  :: CleanupRunId
+  -> LinuxRke2FoundationId
+  -> AwsScope
+  -> Maybe HostedZoneId
+  -> ResourceScopeBindings
+  -> [RegisteredResourceKey]
+  -> Either DesiredAbsenceGraphError (CompiledDesiredAbsenceProgram 'ExplicitPerRun)
+compileAuditedExplicitPerRunGraph runId foundation awsScope zone bindings keys = do
+  case resourceScopeAuditRetainedNames bindings of
+    Nothing -> Left DesiredAbsenceAuditBindingRequired
+    Just _ -> Right ()
+  program <- first DesiredAbsenceProgramInvalid (compileAuditedExplicitPerRunProgram keys)
+  compileDesiredAbsenceGraphWithProgram
+    runId
+    foundation
+    (Just awsScope)
+    zone
+    (Just bindings)
+    ExplicitPerRunSurface
+    program
+
+perRunTerminalAuditNodeId :: Either DesiredAbsenceGraphError CleanupNodeId
+perRunTerminalAuditNodeId = lowerProgramNodeName perRunTerminalAuditNodeName
+
+lowerProgramNodeName :: ProgramNodeName -> Either DesiredAbsenceGraphError CleanupNodeId
+lowerProgramNodeName (ProgramNodeName name) =
+  first (DesiredAbsenceNodeIdInvalid name) (mkCleanupNodeId ("lifecycle/" <> name))
 
 compileDesiredAbsenceGraphWithProgram
   :: CleanupRunId
   -> LinuxRke2FoundationId
   -> Maybe AwsScope
   -> Maybe HostedZoneId
+  -> Maybe ResourceScopeBindings
   -> CleanupSurfaceWitness surface
   -> DesiredAbsenceProgram surface
   -> Either
@@ -205,6 +276,7 @@ compileDesiredAbsenceGraphWithProgram
   foundation
   awsScope
   awsDnsZone
+  bindings
   surface
   program = do
     case (cleanupSurfaceRequiresAwsScope surface, awsScope) of
@@ -264,24 +336,15 @@ compileDesiredAbsenceGraphWithProgram
         , internalCompiledDesiredAbsenceRunScope =
             DurableObservationRunScope (cleanupRunIdText runId)
         , internalCompiledDesiredAbsenceObservationScope =
-            case awsDnsZone of
-              Nothing ->
-                mkObservationEvidenceScope
-                  (cleanupSurfaceFromWitness surface)
-                  lifecycleRegistryRevision
-                  (DurableObservationRunScope (cleanupRunIdText runId))
-                  foundation
-                  awsScope
-                  ReconcileDesiredAbsent
-              Just dnsZone ->
-                mkObservationEvidenceScopeWithDnsZone
-                  (cleanupSurfaceFromWitness surface)
-                  lifecycleRegistryRevision
-                  (DurableObservationRunScope (cleanupRunIdText runId))
-                  foundation
-                  awsScope
-                  dnsZone
-                  ReconcileDesiredAbsent
+            mkObservationEvidenceScopeWithResourceBindings
+              (cleanupSurfaceFromWitness surface)
+              lifecycleRegistryRevision
+              (DurableObservationRunScope (cleanupRunIdText runId))
+              foundation
+              awsScope
+              awsDnsZone
+              bindings
+              ReconcileDesiredAbsent
         , internalCompiledDesiredAbsenceOperations =
             Map.fromList
               [ (nodeId, programNodeOperation sourceNode)
@@ -292,11 +355,7 @@ compileDesiredAbsenceGraphWithProgram
         }
    where
     compileNodeIdentity sourceNode = do
-      let ProgramNodeName sourceName = programNodeName sourceNode
-      nodeId <-
-        first
-          (DesiredAbsenceNodeIdInvalid sourceName)
-          (mkCleanupNodeId ("lifecycle/" <> sourceName))
+      nodeId <- lowerProgramNodeName (programNodeName sourceNode)
       pure (sourceNode, nodeId)
 
     compileOperationIdentity recoveryCapabilityCatalog (sourceNode, nodeId) = do
@@ -311,6 +370,7 @@ compileDesiredAbsenceGraphWithProgram
                     foundation
                     awsScope
                     awsDnsZone
+                    bindings
                     surface
                     recoveryCapabilityCatalog
                     (programNodeRecoveryCapabilities sourceNode)
@@ -363,6 +423,8 @@ compileDesiredAbsenceGraphWithProgram
               mkCleanupNodePlan (mkCapabilityRef @'ManagedDestroy coordinate) nodeId operationId dependencies
             ReadBackStackCheckpointRetirement _ ->
               mkCleanupNodePlan (mkCapabilityRef @'ManagedReadBack coordinate) nodeId operationId dependencies
+            AuditPerRunEscapes ->
+              mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
             AuditCascadeEscapes ->
               mkCleanupNodePlan (mkCapabilityRef @'ManagedObserve coordinate) nodeId operationId dependencies
             CommitCascadePreUninstallReport ->
@@ -459,6 +521,7 @@ stableOperationDigest
   -> LinuxRke2FoundationId
   -> Maybe AwsScope
   -> Maybe HostedZoneId
+  -> Maybe ResourceScopeBindings
   -> CleanupSurfaceWitness surface
   -> RecoveryCapabilityCatalogDraft
   -> RecoveryCapabilitySet
@@ -469,6 +532,7 @@ stableOperationDigest
   foundation
   awsScope
   awsDnsZone
+  bindings
   surface
   recoveryCapabilityCatalogDraft
   recoveryCapabilities
@@ -491,6 +555,7 @@ stableOperationDigest
                       ]
                         ++ awsScopeFields awsScope
                         ++ awsDnsZoneFields awsDnsZone
+                        ++ maybe [] resourceBindingsIdentityFields bindings
                         ++ [ teardownOperationTag operation
                            , operationLogicalName operation
                            ]
@@ -542,6 +607,7 @@ operationTargetBinding operation = case operation of
   EstablishRecoveryPlane _ -> Nothing
   ReadBackRecoveryPlane _ -> Nothing
   ObserveRecoveryPlaneDisposition _ -> Nothing
+  AuditPerRunEscapes -> Nothing
   AuditCascadeEscapes -> Nothing
   CommitCascadePreUninstallReport -> Nothing
   ReadBackCascadePreUninstallReport -> Nothing

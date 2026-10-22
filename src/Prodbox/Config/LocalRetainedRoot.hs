@@ -16,6 +16,19 @@ module Prodbox.Config.LocalRetainedRoot
   , renderLocalRetainedRootError
   , renderRetainedRootMarkerReconcileOutcome
   , locateBootstrapRetainedRoot
+  , locateBootstrapRetainedRootForHostCleanup
+  , hostCleanupActiveIntentRelativePath
+  , HostCleanupBootstrapRootRegression
+  , fixedHostCleanupBootstrapRootRegression
+  , hostCleanupBootstrapRootMissingIsFresh
+  , hostCleanupBootstrapPartialRootIsFresh
+  , hostCleanupBootstrapRecordNeedsMarker
+  , hostCleanupBootstrapCanonicalRecordLocated
+  , hostCleanupBootstrapCorruptMarkerRefused
+  , hostCleanupBootstrapSymlinkRecordRefused
+  , hostCleanupBootstrapFifoRecordRefused
+  , hostCleanupBootstrapSymlinkRootRefused
+  , hostCleanupBootstrapEscapeRefused
   , reconcileAuthorityBoundRetainedRootMarker
   , reobserveAuthorityBoundRetainedRoot
   , LocalRetainedRootFixtureRegression

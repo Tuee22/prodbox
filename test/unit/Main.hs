@@ -5,6 +5,14 @@
 
 module Main (main) where
 
+import KeycloakInviteHttp (keycloakInviteHttpSuite)
+import PerRunTerminalAudit (perRunTerminalAuditSuite)
+import RegisteredHarnessCleanupFamilies (registeredHarnessCleanupFamiliesSuite)
+import ResourceScopeBindings (resourceScopeBindingsSuite)
+import ResourceScopeCodec (resourceScopeCodecSuite)
+import SesInviteDelivery (sesInviteDeliverySuite)
+import SesInviteEvidence (sesInviteEvidenceSuite)
+
 import AbsenceStratumWitness (absenceStratumWitnessSuite)
 import AdminActionLifecycle (adminActionLifecycleSuite)
 import AdminActionQuotaJournal (adminActionQuotaJournalSuite)
@@ -17,13 +25,22 @@ import AwsAuditWire (awsAuditWireSuite)
 import AwsControlPlaneIsolation (awsControlPlaneIsolationSuite)
 import AwsDestroyConverge (awsDestroyConvergeSuite)
 import AwsFieldAuditExit (awsFieldAuditExitSuite)
+import AwsLifecycleCanary (awsLifecycleCanarySuite)
+import AwsLifecycleScope (awsLifecycleScopeSuite)
 import AwsNativeClients (awsNativeClientsSuite)
+import AwsNetworkPurge (awsNetworkPurgeSuite)
+import AwsProviderRecording (awsProviderRecordingSuite)
+import AwsRemedy (awsRemedySuite)
 import AwsSesDecommission (awsSesDecommissionSuite)
 import AwsSesLeaseRole (awsSesLeaseRoleSuite)
 import AwsSesLifecycle (awsSesLifecycleSuite)
 import AwsSesReadiness (awsSesReadinessSuite)
 import AwsSesSmtpKey (awsSesSmtpKeySuite)
+import AwsStackDiff (awsStackDiffSuite)
+import AwsStackEvidence (awsStackEvidenceSuite)
 import AwsSubstrateProfile (awsSubstrateProfileSuite)
+import AwsTestCanary (awsTestCanarySuite)
+import AwsTestCanaryExecution (awsTestCanaryExecutionSuite)
 import AwsWaitPolling (awsWaitPollingSuite)
 import BootstrapBrokerClient (bootstrapBrokerClientSuite)
 import BootstrapBrokerCustody (bootstrapBrokerCustodySuite)
@@ -40,7 +57,10 @@ import BootstrapBrokerRuntime (bootstrapBrokerRuntimeSuite)
 import BootstrapBrokerSafety (bootstrapBrokerSafetySuite)
 import BootstrapBrokerServerSafety (bootstrapBrokerServerSafetySuite)
 import BootstrapBrokerShutdownModel (bootstrapBrokerShutdownModelSuite)
+import BootstrapImageArchive (bootstrapImageArchiveSuite)
 import BootstrapImageSeed (bootstrapImageSeedSuite)
+import BootstrapImageSource (bootstrapImageSourceSuite)
+import BootstrapImageSourceNative (bootstrapImageSourceNativeSuite)
 import BrokerChartStatics (brokerChartStaticsSuite)
 import CapabilityReadinessBarrierSuite (capabilityReadinessBarrierSuite)
 import CascadeCycleArtifactTests (cascadeCycleArtifactSuite)
@@ -163,6 +183,7 @@ import CredentialProvisionerAwsAdminAuthority
 import CredentialProvisionerJointIamDisposition
   ( credentialProvisionerJointIamDispositionSuite
   )
+import CredentialSuccessor (credentialSuccessorSuite)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
@@ -253,6 +274,7 @@ import GatewayRuntimeStability (gatewayRuntimeStabilitySuite)
 import HarnessSesSmtp (harnessSesSmtpSuite)
 import HelmRelease (helmReleaseSuite)
 import HostCleanupCompositionRoot (hostCleanupCompositionRootSuite)
+import HostCleanupHistoryReconcile (hostCleanupHistoryReconcileSuite)
 import HostCleanupIntent (hostCleanupIntentSuite)
 import HostCleanupRke2 (hostCleanupRke2Suite)
 import HostCleanupRunner (hostCleanupRunnerSuite)
@@ -358,9 +380,6 @@ import LifecycleTeardownCascadeTerminalAudit
   )
 import LifecycleTeardownCascadeTerminalAuditAdapter
   ( lifecycleTeardownCascadeTerminalAuditAdapterSuite
-  )
-import LifecycleTeardownCascadeTerminalAuditLane
-  ( lifecycleTeardownCascadeTerminalAuditLaneSuite
   )
 import LifecycleTeardownCheckpoint (lifecycleTeardownCheckpointSuite)
 import LifecycleTeardownCheckpointAuthority
@@ -487,13 +506,10 @@ import Prodbox.Aws
   , AwsTeardownInput (..)
   , ConfigSetupInput (..)
   , HarnessDeploymentInput (..)
-  , IamProbe (..)
   , OperationalIdentityProbe (..)
   , QuotaStatus (..)
-  , ResidueError (..)
   , SessionTokenPromptShape (..)
   , SpotPriceRequest (..)
-  , VaultProbe (..)
   , attachedUserPolicyDetachArguments
   , authorityBackupIamUserName
   , awsErrorCodeIsTransient
@@ -508,13 +524,11 @@ import Prodbox.Aws
   , harnessConfigSetupInputFrom
   , harnessDeploymentInputForSubstrate
   , harnessGeneratedConfig
-  , harnessPostflightResiduePolicy
   , harnessReceiveSubdomainLabel
   , inlineUserPolicyDeleteArguments
   , inspectOperationalIdentity
   , longLivedResourceNames
   , operationalAwsConfigResidueFromKey
-  , operationalCredentialsClearedDecision
   , operationalIamUserResidueFromExists
   , operationalIdentityFromArn
   , operationalManagedResources
@@ -528,8 +542,6 @@ import Prodbox.Aws
   , renderConfigSetupPlan
   , renderPulumiResidueLongLivedRefusal
   , renderPulumiResidueRefusal
-  , renderResidueError
-  , residueFromProbe
   , sessionTokenPromptShape
   , spotObservationFromAwsSpotPriceHistory
   , spotObservationFromAwsSpotPriceOutput
@@ -1232,6 +1244,7 @@ import Prodbox.Lib.Storage
   , testManualPvHostRootEnv
   , workloadStorageSize
   )
+import Prodbox.Lifecycle.AwsRemedy qualified as AwsRemedyPolicy
 import Prodbox.Lifecycle.CapabilityReadinessBarrier (evidenceFor)
 import Prodbox.Lifecycle.CascadeNoInstall (AuthoredAwsCoordinate (..))
 import Prodbox.Lifecycle.CheckpointAuthority
@@ -1286,6 +1299,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , sesDnsReceiveSubdomain
   , sesRuleSetRecipient
   )
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork qualified as RepairProvider
 import Prodbox.Lifecycle.ReadinessObservation
   ( BackendRoundTripResult (..)
   , ComponentReadinessTarget (..)
@@ -1603,7 +1617,6 @@ import Prodbox.TestValidation
   ( DaemonBootstrapAuditInput (..)
   , DaemonBootstrapAuditProvenance (..)
   , GatewayRuntimeSampleOutcome (..)
-  , InviteMailObservation (..)
   , NativeValidationKubeconfigMode (..)
   , SealedVaultAuditInput (..)
   , VolumeRebindSnapshot (..)
@@ -1630,7 +1643,6 @@ import Prodbox.TestValidation
   , nativeValidationKubeconfigMode
   , observedBrokerRouteLine
   , overlayKubeconfig
-  , parseInviteMailEvidence
   , parseValidationZoneEvidence
   , parseVolumeRebindSnapshot
   , quantitiesEquivalent
@@ -1801,6 +1813,8 @@ import ScopeCodecProperties (scopeCodecPropertiesSuite)
 import ScopeCodecWitness (scopeCodecWitnessSuite)
 import SealedConstructors (sealedConstructorsSuite)
 import SesCapture (sesCaptureSuite)
+import SesCaptureCleanup (sesCaptureCleanupSuite)
+import SesCapturePolicy (sesCapturePolicySuite)
 import SesWorkflow (sesWorkflowSuite)
 import SigV4 (sigV4Suite)
 import SmtpKeyRepairInterpreter (smtpKeyRepairInterpreterSuite)
@@ -1833,8 +1847,10 @@ import System.FilePath (takeDirectory, (</>))
 import System.IO (readFile')
 import System.IO.Temp (withSystemTempDirectory)
 import System.IO.Unsafe (unsafePerformIO)
+import System.Posix.Files (setFileMode)
 import TargetCommitSmtp (targetCommitSmtpSuite)
 import TemporalQualification (temporalQualificationSuite)
+import TestSecretsSecurity (testSecretsSecuritySuite)
 import TestSupport
 import Tier0Fixture
   ( RawTier0Reason (ExercisesGeneratedSchemaImport, ExistenceIsWhatIsUnderTest)
@@ -3036,8 +3052,12 @@ unitSuite = do
   gatewayEmitterLeaseSuite
   gatewayEmitterPersistenceSuite
   registryProbeSuite
+  bootstrapImageArchiveSuite
+  bootstrapImageSourceSuite
+  bootstrapImageSourceNativeSuite
   bootstrapImageSeedSuite
   ebsEnsureSuite
+  testSecretsSecuritySuite
   harnessSesSmtpSuite
   keycloakConsumerScriptSuite
   providerAwsRunnerSuite
@@ -3045,6 +3065,15 @@ unitSuite = do
   keycloakPublicIssuerSuite
   retainedDeliveryRefusalLogSuite
   sesCaptureSuite
+  sesCaptureCleanupSuite
+  sesCapturePolicySuite
+  resourceScopeBindingsSuite
+  resourceScopeCodecSuite
+  registeredHarnessCleanupFamiliesSuite
+  perRunTerminalAuditSuite
+  sesInviteEvidenceSuite
+  keycloakInviteHttpSuite
+  sesInviteDeliverySuite
   lifecycleAuthorityAdminActionSuite
   lifecycleAuthorityBackupRepairSuite
   lifecycleAuthorityBootstrapReconcileSuite
@@ -3099,6 +3128,7 @@ unitSuite = do
   controlPlaneVaultSessionSuite
   credentialProvisionerSuite
   credentialProvisionerAwsAdminAuthoritySuite
+  credentialSuccessorSuite
   credentialProvisionerJointIamDispositionSuite
   externalMaterialIngressLifecycleSuite
   eksClientAuthProjectionSuite
@@ -3132,6 +3162,7 @@ unitSuite = do
   hostCleanupRke2Suite
   lifecycleHostCleanupLocalAbsenceSuite
   lifecycleHostCleanupCompletionSuite
+  hostCleanupHistoryReconcileSuite
   lifecycleHostCleanupProductionEffectsSuite
   lifecycleHostCleanupRecoveryPlaneSuite
   lifecycleHostCleanupAuthorityArmsSuite
@@ -3153,6 +3184,9 @@ unitSuite = do
   lifecycleTeardownLegacyAdoptionObserverSuite
   lifecycleTeardownLegacyAdoptionLaneSuite
   lifecycleAwsNativeStackFamilySuite
+  awsRemedySuite
+  awsNetworkPurgeSuite
+  awsStackDiffSuite
   lifecycleTeardownAwsStackAdapterSuite
   lifecycleTeardownAwsStackReaderInterpreterSuite
   clusterDeleteEntryArmSuite
@@ -3193,7 +3227,6 @@ unitSuite = do
   lifecycleTeardownStackGenerationSuite
   lifecycleTeardownRegisteredTargetResultSuite
   lifecycleTeardownDecisionSuite
-  lifecycleTeardownCascadeTerminalAuditLaneSuite
   lifecycleTeardownCascadeEvidenceSuite
   lifecycleTeardownCheckpointSuite
   lifecycleTeardownCheckpointAuthoritySuite
@@ -3221,6 +3254,12 @@ unitSuite = do
   providerStackReceiptSuite
   awsAuditVerdictSuite
   awsAuditEnumerationSuite
+  awsLifecycleScopeSuite
+  awsLifecycleCanarySuite
+  awsTestCanarySuite
+  awsTestCanaryExecutionSuite
+  awsProviderRecordingSuite
+  awsStackEvidenceSuite
   awsAuditWireSuite
   awsFieldAuditExitSuite
   awsDestroyConvergeSuite
@@ -6175,16 +6214,16 @@ unitSuite = do
     it "round-trips: test-secrets against the GENERATED test schema decodes to defaultTestSecrets" $
       withSystemTempDirectory "prodbox-schema-roundtrip" $ \tmpDir -> do
         writeFile (tmpDir </> "test-secrets-types.dhall") (Text.unpack renderTestSecretsTypesDhall)
-        writeFile
-          (tmpDir </> "test-secrets.dhall")
+        writePrivateTestSecrets
+          tmpDir
           (unlines ["let TestSecrets = ./test-secrets-types.dhall", "in  TestSecrets.default"])
         decoded <- Dhall.inputFile Dhall.auto (tmpDir </> "test-secrets.dhall") :: IO TestSecrets
         decoded `shouldBe` defaultTestSecrets
     it "Sprint 5.37 round-trips populated harness deployment fields through the GENERATED test schema" $
       withSystemTempDirectory "prodbox-schema-roundtrip-harness" $ \tmpDir -> do
         writeFile (tmpDir </> "test-secrets-types.dhall") (Text.unpack renderTestSecretsTypesDhall)
-        writeFile
-          (tmpDir </> "test-secrets.dhall")
+        writePrivateTestSecrets
+          tmpDir
           ( unlines
               [ "let TestSecrets = ./test-secrets-types.dhall"
               , "in  TestSecrets::{"
@@ -6232,7 +6271,7 @@ unitSuite = do
               writeFile
                 (tmpDir </> "test-secrets-types.dhall")
                 (Text.unpack renderTestSecretsTypesDhall)
-              writeFile (tmpDir </> "test-secrets.dhall") body
+              writePrivateTestSecrets tmpDir body
               try
                 (Dhall.inputFile Dhall.auto (tmpDir </> "test-secrets.dhall") :: IO TestSecrets)
                 :: IO (Either SomeException TestSecrets)
@@ -6253,8 +6292,8 @@ unitSuite = do
     it "round-trips: a populated acme_eab block decodes through the GENERATED test schema" $
       withSystemTempDirectory "prodbox-schema-roundtrip-eab" $ \tmpDir -> do
         writeFile (tmpDir </> "test-secrets-types.dhall") (Text.unpack renderTestSecretsTypesDhall)
-        writeFile
-          (tmpDir </> "test-secrets.dhall")
+        writePrivateTestSecrets
+          tmpDir
           ( unlines
               [ "let TestSecrets = ./test-secrets-types.dhall"
               , "in  TestSecrets::{"
@@ -6288,8 +6327,8 @@ unitSuite = do
     it "submits the registered ACME EAB payload from a populated fixture" $
       withCapturedTarget $ \tmpDir observed writeTarget -> do
         writeFile (tmpDir </> "test-secrets-types.dhall") (Text.unpack renderTestSecretsTypesDhall)
-        writeFile
-          (tmpDir </> "test-secrets.dhall")
+        writePrivateTestSecrets
+          tmpDir
           ( unlines
               [ "let TestSecrets = ./test-secrets-types.dhall"
               , "in  TestSecrets::{"
@@ -6318,8 +6357,8 @@ unitSuite = do
     it "is a no-op when the acme_eab block is absent (decodes to None)" $
       withCapturedTarget $ \tmpDir observed writeTarget -> do
         writeFile (tmpDir </> "test-secrets-types.dhall") (Text.unpack renderTestSecretsTypesDhall)
-        writeFile
-          (tmpDir </> "test-secrets.dhall")
+        writePrivateTestSecrets
+          tmpDir
           (unlines ["let TestSecrets = ./test-secrets-types.dhall", "in  TestSecrets.default"])
         seedAcmeEabFromTestSecrets writeTarget tmpDir
         actual <- readIORef observed
@@ -7074,6 +7113,28 @@ unitSuite = do
         `shouldBe` Right
           (Options False (RunNative (NativePulumi (PulumiTestResources (PlanOptions False Nothing)))))
 
+      mapM_
+        ( \target ->
+            parseArgs ["aws", "stack", AwsRemedyPolicy.awsStackCliName target, "diff"]
+              `shouldBe` Right (Options False (RunNative (NativePulumi (PulumiStackDiff target))))
+        )
+        [minBound .. maxBound]
+      parseArgs ["aws", "stack", "eks", "purge-dependents"]
+        `shouldBe` Right
+          (Options False (RunNative (NativePulumi (PulumiEksPurgeDependents RepairProvider.NetworkPurgePlan))))
+      let repairArgs = ["aws", "stack", "eks", "purge-dependents"]
+          repairDigest = replicate 64 'a'
+      parseArgs (repairArgs ++ ["--yes", "--plan-digest", repairDigest])
+        `shouldBe` Right
+          ( Options
+              False
+              ( RunNative
+                  (NativePulumi (PulumiEksPurgeDependents (RepairProvider.NetworkPurgeApply (Text.pack repairDigest))))
+              )
+          )
+      mapM_
+        (\arguments -> parseArgs (repairArgs ++ arguments) `shouldSatisfy` isLeft)
+        [["--yes"], ["--plan-digest", repairDigest], ["--yes", "--plan-digest", "bad"]]
       parseArgs ["aws", "stack", "eks", "destroy", "--yes"]
         `shouldBe` Right
           ( Options
@@ -8071,6 +8132,19 @@ unitSuite = do
           Right config ->
             pure (BL8.pack (renderGatewayStartPlan "/tmp/prodbox/gateway.dhall" config))
 
+    it "Sprint 6.5 gateway template targets the retained Authority Service" $ do
+      decoded <-
+        GatewaySettings.decodeDaemonConfigDhallWith
+          (const (pure (Right "resolved-secret")))
+          (Text.pack (renderGatewayConfigTemplate (testValidatedSettings "/tmp/prodbox/.data") "node-a"))
+      case decoded of
+        Left err -> expectationFailure err
+        Right config ->
+          fmap
+            (controlPlaneEndpointText . gatewayLifecycleAuthorityEndpoint)
+            (daemonLifecycleAuthority config)
+            `shouldBe` Just "http://lifecycle-authority.lifecycle-authority.svc.cluster.local:8600"
+
     it "decodes the gateway-daemon validation config (SecretRef-typed cred fields)" $ do
       -- Sprint 3.18 regression: the gateway-daemon validation config must type
       -- its aws_creds / minio_creds / event_keys credential fields as the
@@ -8414,6 +8488,10 @@ unitSuite = do
       dockerfile `shouldContain` "ARG CABAL_VERSION=3.16.1.0"
       dockerfile `shouldContain` "ARG PULUMI_VERSION=3.228.0"
       dockerfile `shouldContain` "ARG PULUMI_AWS_PROVIDER_VERSION=7.44.0"
+      dockerfile `shouldContain` "ARG KUBECTL_VERSION=v1.35.5"
+      dockerfile
+        `shouldContain` "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/${kubectl_arch}/kubectl"
+      dockerfile `shouldContain` "sha256sum --check"
       dockerfile `shouldContain` "WORKDIR /opt/build"
       dockerfile `shouldContain` "BOOTSTRAP_HASKELL_MINIMAL=1"
       dockerfile `shouldContain` "ghcup install ghc \"${GHC_VERSION}\""
@@ -8468,17 +8546,44 @@ unitSuite = do
       dockerfile `shouldNotContain` "--mount="
       dockerfile `shouldNotContain` "type=cache"
 
-    it "Sprint 2.116 excludes ephemeral Cabal output from the runtime build layer" $ do
+    it "Sprint 1.94 isolates compilation and dependency caches from the shipped runtime" $ do
       repoRoot <- getCurrentDirectory
       dockerfile <- readFile (repoRoot </> "docker" </> "prodbox.Dockerfile")
-
-      dockerfile
-        `shouldContain` unlines
-          [ "    && rm -rf \\"
-          , "        .build \\"
-          , "        /root/.cache/cabal \\"
-          , "        /root/.local/state/cabal"
-          ]
+      let instructions = lines dockerfile
+          runtime = unlines (dropWhile (/= "FROM ubuntu:24.04 AS runtime") instructions)
+          builder =
+            unlines
+              ( takeWhile
+                  (/= "FROM ubuntu:24.04 AS runtime")
+                  (dropWhile (/= "FROM ubuntu:24.04 AS builder") instructions)
+              )
+      filter (isPrefixOf "FROM ") instructions
+        `shouldBe` [ "FROM ubuntu:24.04 AS dependency-manifests"
+                   , "FROM ubuntu:24.04 AS builder"
+                   , "FROM ubuntu:24.04 AS runtime"
+                   ]
+      builder `shouldContain` "cabal build --builddir=.build --only-dependencies exe:prodbox"
+      -- Source and the complete module lists enter only after dependency compilation.
+      filter
+        (isPrefixOf "COPY ")
+        ( takeWhile
+            (/= "    && cabal build --builddir=.build --only-dependencies exe:prodbox")
+            (lines builder)
+        )
+        `shouldBe` ["COPY --from=dependency-manifests /opt/build/prodbox.cabal /opt/build/cabal.project ./"]
+      runtime `shouldNotContain` "ghcup"
+      runtime `shouldNotContain` "cabal"
+      runtime `shouldNotContain` "COPY src"
+      runtime `shouldNotContain` "COPY app"
+      runtime `shouldNotContain` "COPY --from=builder /opt/build"
+      filter (isPrefixOf "COPY ") (lines runtime)
+        `shouldBe` [ "COPY --from=builder /usr/local/aws-cli /usr/local/aws-cli"
+                   , "COPY --from=builder /usr/local/bin/pulumi /usr/local/bin/pulumi-language-yaml /usr/local/bin/kubectl /usr/local/bin/"
+                   , "COPY --from=builder /root/.pulumi/plugins /root/.pulumi/plugins"
+                   , "COPY --from=builder /usr/local/bin/prodbox /usr/local/bin/prodbox"
+                   , "COPY pulumi ./pulumi"
+                   ]
+      runtime `shouldContain` "RUN /usr/local/bin/prodbox config generate --portable"
 
     it "keeps the Haskell quality gate on repo-owned formatter and lint inputs" $ do
       repoRoot <- getCurrentDirectory
@@ -9037,6 +9142,10 @@ unitSuite = do
           , TeardownModel.AwsDns01ChallengeRecordKey
           , TeardownModel.AwsEksIamRoleFamilyKey
           , TeardownModel.AwsEksLoadBalancerControllerFamilyKey
+          , TeardownModel.AwsEksVpcCniInterfacesKey
+          , TeardownModel.AwsTestVpcCniInterfacesKey
+          , TeardownModel.AwsEksClusterSecurityGroupsKey
+          , TeardownModel.AwsTestCanarySecurityGroupsKey
           ]
 
     it "maps aggregate all to the native ordered validation workflow" $ do
@@ -9266,7 +9375,8 @@ unitSuite = do
               retainedSesRequirementForValidations (nativeValidations suitePlan)
                 `shouldBe` SesRequired
               integrationRunbookCommandArgs suitePlan `shouldBe` [["cluster", "reconcile", "--with-edge"]]
-              lifecycleCleanupTargetsForSuite suitePlan `shouldBe` []
+              lifecycleCleanupTargetsForSuite suitePlan
+                `shouldBe` [TeardownModel.SesInviteMailObjectsKey, TeardownModel.HomeDns01ChallengeRecordKey]
             DelegatedSuite _ -> expectationFailure "expected native keycloak-invite plan"
 
     it "wraps targeted AWS-substrate validations in the managed IAM harness" $ do
@@ -9279,7 +9389,7 @@ unitSuite = do
               nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
               nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` False
               lifecycleCleanupTargetsForSuite suitePlan
-                `shouldBe` completeLifecyclePerRunTargets
+                `shouldBe` (completeLifecyclePerRunTargets ++ [TeardownModel.SesInviteMailObjectsKey])
             DelegatedSuite _ -> expectationFailure "expected native keycloak-invite plan"
 
       case testExecutionPlan SubstrateAws (TestIntegration IntegrationPublicDns) of
@@ -9339,6 +9449,19 @@ unitSuite = do
               lifecycleCleanupTargetsForSuite suitePlan
                 `shouldBe` completeLifecyclePerRunTargets
             DelegatedSuite _ -> expectationFailure "expected native eks-volume-rebind plan"
+
+    it "gives home cascade qualification its credential harness without provisioning an EKS substrate" $ do
+      case testPlanExecutionMode
+        (testExecutionPlan SubstrateHomeLocal (TestIntegration IntegrationCascadeQualification)) of
+        NativeSuite suitePlan -> do
+          nativeSubstrate suitePlan `shouldBe` SubstrateHomeLocal
+          nativeManagedAwsHarnessPolicyTier suitePlan `shouldBe` Just PolicyFull
+          nativeRequiresSupportedRuntimeBootstrap suitePlan `shouldBe` True
+          nativeRequiresSupportedRuntimePostflight suitePlan `shouldBe` False
+          nativeValidationKubeconfigMode ValidationCascadeQualification
+            `shouldBe` ValidationOwnsKubeconfigScopes
+          awsSubstrateBootstrapCommandArgs suitePlan `shouldBe` []
+        DelegatedSuite _ -> expectationFailure "expected the native home qualification plan"
 
     it "gives cascade qualification one destructive AWS harness and no postflight rebuild" $ do
       case testExecutionPlan SubstrateAws (TestIntegration IntegrationCascadeQualification) of
@@ -12505,7 +12628,7 @@ unitSuite = do
                         `shouldBe` Just (String (Text.pack AwsEks.awsEksCanonicalClusterName))
                       KeyMap.lookup (Key.fromString "endpoint") authorityPayload
                         `shouldBe` Just
-                          (String "http://lifecycle-authority.gateway.svc.cluster.local:8600")
+                          (String "http://lifecycle-authority.lifecycle-authority.svc.cluster.local:8600")
                     _ -> expectationFailure "expected gateway Lifecycle Authority payload"
                   case KeyMap.lookup (Key.fromString "vault") payload of
                     Just (Object vaultPayload) ->
@@ -13548,19 +13671,6 @@ unitSuite = do
   describe "Provider-brokered validation evidence" $ do
     -- The host holds no AWS credential, so dns-aws, keycloak-invite and the
     -- retained-EBS ensure ask the Provider and read its one-line evidence.
-    it "reads the invite-mail evidence as pending or as an object key and a link" $ do
-      parseInviteMailEvidence "ses-invite:pending" `shouldBe` Right InviteMailPending
-      parseInviteMailEvidence
-        "ses-invite:inbound/abc123 https://auth.example.test/realms/r/login-actions/action-token?key=k"
-        `shouldBe` Right
-          ( InviteMailArrived
-              "inbound/abc123"
-              "https://auth.example.test/realms/r/login-actions/action-token?key=k"
-          )
-      parseInviteMailEvidence "ses-invite:inbound/abc123" `shouldSatisfy` isLeft
-      parseInviteMailEvidence "ses-invite:a b c" `shouldSatisfy` isLeft
-      parseInviteMailEvidence "provider-readiness:sts" `shouldSatisfy` isLeft
-
     it "names the validation zone's bare id from the Provider's evidence" $ do
       parseValidationZoneEvidence "validation-zone:Z00231272QFGWVE1AJI2G"
         `shouldBe` Right "Z00231272QFGWVE1AJI2G"
@@ -16439,48 +16549,6 @@ unitSuite = do
             , Residue.residueStackName = "operational-aws-config"
             }
 
-    -- Sprint 7.24: the preflight cleared-verification decision core.
-    it "clearedDecision: configured creds (Vault reachable) are NOT cleared" $
-      operationalCredentialsClearedDecision (Right sampleCreds) (Right False)
-        `shouldBe` False
-
-    it "clearedDecision: empty creds (Vault reachable) ARE cleared" $
-      operationalCredentialsClearedDecision
-        (Right sampleCreds {access_key_id = "", secret_access_key = "", region = ""})
-        (Right True)
-        `shouldBe` True
-
-    it "clearedDecision: Sprint 4.78 — an error saying 'missing' is NOT cleared on its own" $ do
-      -- This case is inverted from what it asserted before Sprint 4.78, and the
-      -- inversion is the point. The decision used to read the words `missing`
-      -- or `empty` out of an arbitrary error string and answer "cleared" — the
-      -- fail-OPEN direction on a teardown gate whose own comment says that
-      -- would strand the operational IAM user. The exact string below is a real
-      -- Vault refusal shape, not a contrived one.
-      operationalCredentialsClearedDecision
-        (Left "permission denied: token is missing the required policy")
-        (Right True)
-        `shouldBe` False
-      -- An unresolvable credential is cleared only when the IAM user is
-      -- independently confirmed absent, which is the rule the doc comment
-      -- always described.
-      operationalCredentialsClearedDecision
-        (Left "operational aws.* is missing")
-        (Right False)
-        `shouldBe` True
-
-    it "clearedDecision: Vault down + IAM user absent is cleared (preflight unblock)" $
-      operationalCredentialsClearedDecision (Left "vault connection refused") (Right False)
-        `shouldBe` True
-
-    it "clearedDecision: Vault down + IAM user present is NOT cleared (fail-closed)" $
-      operationalCredentialsClearedDecision (Left "vault connection refused") (Right True)
-        `shouldBe` False
-
-    it "clearedDecision: Vault down + IAM user unobservable is NOT cleared (fail-closed)" $
-      operationalCredentialsClearedDecision (Left "vault connection refused") (Left "iam unreachable")
-        `shouldBe` False
-
     it "operationalManagedResources entries are all the Operational lifecycle class" $
       all
         ((== ResourceClass.Operational) . ResourceRegistry.resourceClass)
@@ -16490,86 +16558,6 @@ unitSuite = do
     it "operationalManagedResources names match the ResourceClass SSoT Operational class" $
       map ResourceRegistry.resourceName (operationalManagedResources sampleCreds)
         `shouldBe` ResourceClass.resourceNamesOfClass ResourceClass.Operational
-
-  describe "Sprint 7.20 teardown-completeness guard (pure residueFromProbe)" $ do
-    let cleanIam = IamProbe {iamProbeUserPresent = False, iamProbeAccessKeyIds = []}
-
-    it "all-absent IAM + cleared Vault → complete (Right ())" $
-      residueFromProbe cleanIam VaultCredsCleared `shouldBe` Right ()
-
-    it "user-present → residue/fail naming the IAM user" $
-      residueFromProbe
-        IamProbe {iamProbeUserPresent = True, iamProbeAccessKeyIds = []}
-        VaultCredsCleared
-        `shouldBe` Left
-          ResidueError
-            { residueUserLeaked = True
-            , residueLeakedKeys = []
-            , residueVaultPopulated = False
-            }
-
-    it "keys-present → residue/fail naming the leaked keys" $
-      residueFromProbe
-        IamProbe {iamProbeUserPresent = True, iamProbeAccessKeyIds = ["AKIALEAK"]}
-        VaultCredsCleared
-        `shouldBe` Left
-          ResidueError
-            { residueUserLeaked = True
-            , residueLeakedKeys = ["AKIALEAK"]
-            , residueVaultPopulated = False
-            }
-
-    it "Vault-populated → residue/fail naming the Vault cred" $
-      residueFromProbe cleanIam VaultCredsPopulated
-        `shouldBe` Left
-          ResidueError
-            { residueUserLeaked = False
-            , residueLeakedKeys = []
-            , residueVaultPopulated = True
-            }
-
-    it "all three leaks at once → residue/fail carrying every leak" $
-      residueFromProbe
-        IamProbe {iamProbeUserPresent = True, iamProbeAccessKeyIds = ["AKIA1", "AKIA2"]}
-        VaultCredsPopulated
-        `shouldBe` Left
-          ResidueError
-            { residueUserLeaked = True
-            , residueLeakedKeys = ["AKIA1", "AKIA2"]
-            , residueVaultPopulated = True
-            }
-
-    it "renderResidueError names the leaked IAM user" $
-      let rendered =
-            renderResidueError
-              ResidueError
-                { residueUserLeaked = True
-                , residueLeakedKeys = []
-                , residueVaultPopulated = False
-                }
-       in (("`prodbox` IAM user still EXISTS" `isInfixOf` rendered) && ("FAILED" `isInfixOf` rendered))
-            `shouldBe` True
-
-    it "renderResidueError names the leaked access keys by id" $
-      let rendered =
-            renderResidueError
-              ResidueError
-                { residueUserLeaked = True
-                , residueLeakedKeys = ["AKIALEAK"]
-                , residueVaultPopulated = False
-                }
-       in (("access key" `isInfixOf` rendered) && ("AKIALEAK" `isInfixOf` rendered))
-            `shouldBe` True
-
-    it "renderResidueError names the populated Vault credential" $
-      let rendered =
-            renderResidueError
-              ResidueError
-                { residueUserLeaked = False
-                , residueLeakedKeys = []
-                , residueVaultPopulated = True
-                }
-       in ("secret/aws/lifecycle-provider" `isInfixOf` rendered) `shouldBe` True
 
   describe "Sprint 4.17.a canonical cascade phase order" $ do
     it "narration lists drain before per-run destroys (doctrine §5b)" $
@@ -19622,12 +19610,18 @@ unitSuite = do
                      "dns-aws-validation-hosted-zone"
                    , -- Sprint 7.36: the ACME DNS01 challenge TXT records.
                      "dns-aws-dns01-challenge-records"
+                   , "dns-home-dns01-challenge-records"
+                   , "ses-invite-mail-data-versions"
                    , -- Sprint 7.36: the exact EKS IAM role/policy family is
                      -- registered independently of the Pulumi checkpoint.
                      "aws-eks-iam-role-family"
                    , -- Sprint 7.36: the exact AWS Load Balancer Controller
                      -- family is independently registered too.
                      "aws-eks-load-balancer-controller-family"
+                   , "aws-eks-vpc-cni-interfaces"
+                   , "aws-test-vpc-cni-interfaces"
+                   , "aws-eks-cluster-security-groups"
+                   , "aws-test-canary-security-groups"
                    , -- Sprint 4.84: test-scoped EBS is statically PerRun. It was
                      -- `aws-ebs-volumes :: LongLived` until the two families were
                      -- split into separate registered identities.
@@ -22998,26 +22992,31 @@ unitSuite = do
         readIORef eventsRef `shouldReturn` ["acknowledge-failed"]
 
       it "sizes retained replay by role and gives outer refusals precedence (Sprints 2.105/2.127)" $ do
-        ControlPlaneRuntime.lifecycleAuthorityFirstReconcileRequestMaximum `shouldBe` 56
-        ControlPlaneRuntime.lifecycleAuthorityReconcileAttemptRequestMaximum `shouldBe` 60
-        ControlPlaneRuntime.lifecycleAuthorityReplayCapacity `shouldBe` 120
+        ControlPlaneRuntime.lifecycleAuthorityFirstReconcileRequestMaximum `shouldBe` 93
+        ControlPlaneRuntime.lifecycleAuthorityReconcileAttemptRequestMaximum `shouldBe` 97
+        ControlPlaneRuntime.lifecycleAuthorityReplayCapacity `shouldBe` 4110
         ControlPlaneRuntime.lifecycleAuthorityReplayCapacity
-          `shouldBe` (2 * ControlPlaneRuntime.lifecycleAuthorityReconcileAttemptRequestMaximum)
+          `shouldBe` (2 * ControlPlaneRuntime.lifecycleAuthorityQualificationAttemptRequestMaximum)
         ControlPlaneRuntime.authorityBackupReconcileAttemptRequestMaximum `shouldBe` 9
         ControlPlaneRuntime.authorityBackupQualificationPreludeRequestMaximum `shouldBe` 13
-        ControlPlaneRuntime.authorityBackupCascadeCandidateRequestMaximum `shouldBe` 505
-        ControlPlaneRuntime.authorityBackupQualificationAttemptRequestMaximum `shouldBe` 518
-        ControlPlaneRuntime.authorityBackupReplayCapacity `shouldBe` 1036
+        ControlPlaneRuntime.authorityBackupCheckpointAttemptRequestMaximum `shouldBe` 1650
+        ControlPlaneRuntime.providerWorkerQualificationAttemptRequestMaximum `shouldBe` 87
+        ControlPlaneRuntime.providerWorkerReplayCapacity `shouldBe` 174
+        ControlPlaneRuntime.authorityBackupCascadeCandidateRequestMaximum `shouldBe` 649
+        ControlPlaneRuntime.authorityBackupQualificationAttemptRequestMaximum `shouldBe` 2392
+        ControlPlaneRuntime.authorityBackupReplayCapacity `shouldBe` 4784
         ControlPlaneRuntime.authorityBackupReplayCapacity
           `shouldBe` (2 * ControlPlaneRuntime.authorityBackupQualificationAttemptRequestMaximum)
         ControlPlaneRuntime.authorityBackupReplayMaximumEncodedBytes
-          `shouldBe` (32 * 1024 * 1024)
+          `shouldBe` (64 * 1024 * 1024)
         ControlPlaneRuntime.targetSecretAgentReconcileAttemptRequestMaximum `shouldBe` 49
-        ControlPlaneRuntime.targetSecretAgentReplayCapacity `shouldBe` 98
+        ControlPlaneRuntime.targetSecretAgentCascadeCandidateRequestMaximum `shouldBe` 7
+        ControlPlaneRuntime.targetSecretAgentQualificationAttemptRequestMaximum `shouldBe` 121
+        ControlPlaneRuntime.targetSecretAgentReplayCapacity `shouldBe` 242
         ControlPlaneRuntime.targetSecretAgentReplayCapacity
-          `shouldBe` (2 * ControlPlaneRuntime.targetSecretAgentReconcileAttemptRequestMaximum)
+          `shouldBe` (2 * ControlPlaneRuntime.targetSecretAgentQualificationAttemptRequestMaximum)
         ControlPlaneRuntime.targetSecretAgentReplayMaximumEncodedBytes
-          `shouldBe` (198 * 1024 * 1024)
+          `shouldBe` (208 * 1024 * 1024)
         ControlPlaneRuntime.tlsRetentionAdapterAttemptRequestMaximum `shouldBe` 19
         ControlPlaneRuntime.tlsRetentionAdapterReplayCapacity `shouldBe` 38
         ControlPlaneRuntime.tlsRetentionAdapterReplayCapacity
@@ -23027,8 +23026,8 @@ unitSuite = do
         vaultConfig <- readFile "charts/vault/templates/configmap.yaml"
         vaultStatefulSet <- readFile "charts/vault/templates/statefulset.yaml"
         -- The listener ceiling is the physical closure of the projection above:
-        -- 198 MiB of retained responses expand to at most 264 MiB inside the
-        -- Base64 JSON KV write, and 288 MiB keeps a finite margin over that.
+        -- The largest 212 MiB projection expands below 283 MiB inside the
+        -- Base64 JSON KV write, and 288 MiB keeps a finite envelope margin.
         vaultConfig `shouldContain` "max_request_size = 301989888"
         vaultStatefulSet
           `shouldContain` "checksum/config: {{ include (print $.Template.BasePath \"/configmap.yaml\") . | sha256sum }}"
@@ -24237,39 +24236,6 @@ unitSuite = do
         awsTeardownResiduePolicy (teardownInputWith BypassAllResidueForHarnessRefresh)
           `shouldBe` BypassAllResidueForHarnessRefresh
 
-  describe
-    "Sprint 7.34 harness postflight residue scope narrowed to per-run (aws-ses structurally protected)"
-    $ do
-      let sesOnlyResidue =
-            categorizePulumiResidue
-              absentPerRunStatuses
-              (residuePresentFor "aws-ses")
-      it
-        "harnessPostflightResiduePolicy is BypassPerRunResidueForHarnessRefresh (narrowed from Sprint 7.9's BypassAllResidueForHarnessRefresh)"
-        $ harnessPostflightResiduePolicy `shouldBe` BypassPerRunResidueForHarnessRefresh
-      it
-        "the postflight policy is no longer the all-residue bypass"
-        $ (harnessPostflightResiduePolicy == BypassAllResidueForHarnessRefresh) `shouldBe` False
-      it
-        "with aws-ses live, the postflight still clears aws.* unconditionally (Sprint 7.9 stranding fix retained) but does not bypass long-lived protection"
-        $ do
-          -- aws-ses live is the retained-by-design steady state; the Sprint 7.7
-          -- BypassPerRunResidueOnly path would refuse here (naming aws-ses-destroy),
-          -- stranding the freshly-created operational prodbox IAM user. The Sprint
-          -- 7.34 postflight policy proceeds (clears aws.*), because aws-ses is
-          -- admin-managed post-4.10 — but unlike the superseded all-residue bypass
-          -- it does NOT authorize destroying the retained aws-ses stack.
-          let (_, longLived) = partitionResidueByLifecycle sesOnlyResidue
-          map fst longLived `shouldBe` ["aws-ses"]
-          renderPulumiResidueLongLivedRefusal longLived
-            `shouldContain` "aws-ses → prodbox aws stack aws-ses destroy --yes"
-          -- applyAwsTeardown proceeds (clears aws.*) under the postflight policy
-          -- with aws-ses present (it is not a refusing policy), yet the policy
-          -- has the distinct per-run-only constructor.
-          harnessPostflightResiduePolicy `shouldBe` BypassPerRunResidueForHarnessRefresh
-          harnessPostflightResiduePolicy
-            `shouldNotBe` BypassAllResidueForHarnessRefresh
-
   describe "Sprint 7.7 DestroyPulumiResidueFirst dispatch plan (Scenarios J/K/L)" $ do
     it "Scenario J — aws-eks only: destroy plan dispatches just eks-destroy --yes" $ do
       let residue =
@@ -24940,8 +24906,10 @@ unitSuite = do
         Right allocatedPlan -> do
           Allocation.planAllocatable allocatedPlan
             `shouldBe` Capacity.ResourceVector 7000 13312 80032 177952
+          -- Current replay owners use their independently derived memory
+          -- floors; the frozen Provider/idle partition above stays unchanged.
           Allocation.planTotalDraw allocatedPlan
-            `shouldBe` Capacity.ResourceVector 6210 10048 15456 155648
+            `shouldBe` Capacity.ResourceVector 6210 11538 15456 155648
           lookup "provider-worker" (Allocation.planWorkloadDraws allocatedPlan)
             `shouldBe` Just (Capacity.ResourceVector 100 1120 256 0)
       ProviderWorkerBudget.validateProviderWorkerSchemaMemoryCounterexample
@@ -27245,3 +27213,10 @@ isUninstallWithheld :: CascadeUninstallGate -> Bool
 isUninstallWithheld gate = case gate of
   CascadeUninstallWithheld _ -> True
   CascadeUninstallAdmitted -> False
+
+writePrivateTestSecrets :: FilePath -> String -> IO ()
+writePrivateTestSecrets root contents = do
+  let path = root </> "test-secrets.dhall"
+  writeFile path ""
+  setFileMode path 0o600
+  writeFile path contents

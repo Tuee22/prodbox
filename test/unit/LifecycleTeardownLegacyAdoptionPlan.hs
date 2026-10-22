@@ -28,15 +28,18 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
   describe "Sprint 7.36 bounded legacy-adoption planner" $ do
     it "derives the closed family from the registry rather than from discovery" $ do
       -- The eks stack owns its per-run EBS family through the registered
-      -- ownership edge; the other two stacks own only themselves. Nothing here
+      -- ownership edge; EKS and test VPC network families are also declared. Nothing here
       -- is a name-prefix sweep or a tag query.
       legacyAdoptionExpectedFamily AwsEksKey
         `shouldBe` [ AwsEksKey
                    , AwsEbsPerRunTestKey
                    , AwsEksIamRoleFamilyKey
                    , AwsEksLoadBalancerControllerFamilyKey
+                   , AwsEksVpcCniInterfacesKey
+                   , AwsEksClusterSecurityGroupsKey
                    ]
-      legacyAdoptionExpectedFamily AwsTestKey `shouldBe` [AwsTestKey]
+      legacyAdoptionExpectedFamily AwsTestKey
+        `shouldBe` [AwsTestKey, AwsTestVpcCniInterfacesKey, AwsTestCanarySecurityGroupsKey]
 
     it "plans only over a complete observation of that family" $ do
       let plan = mustPlan (observationsFor (completeEksRows ["vol-1"]))
@@ -47,12 +50,16 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
                    , AwsEbsPerRunTestKey
                    , AwsEksIamRoleFamilyKey
                    , AwsEksLoadBalancerControllerFamilyKey
+                   , AwsEksVpcCniInterfacesKey
+                   , AwsEksClusterSecurityGroupsKey
                    ]
       map legacyAdoptionEntryIdentities (legacyAdoptionPlanEntries plan)
         `shouldBe` [ [ObservedResourceIdentity "arn:eks"]
                    , [ObservedResourceIdentity "vol-1"]
                    , [ObservedResourceIdentity "arn:iam-family"]
                    , [ObservedResourceIdentity "arn:lbc-family"]
+                   , []
+                   , []
                    ]
 
     it "records an observed-empty family rather than omitting it" $ do
@@ -64,6 +71,8 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
                    , []
                    , [ObservedResourceIdentity "arn:iam-family"]
                    , [ObservedResourceIdentity "arn:lbc-family"]
+                   , []
+                   , []
                    ]
       renderLegacyAdoptionPlan plan `shouldContainText` "observed-empty"
 
@@ -73,6 +82,8 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
             [ (AwsEksKey, ["arn:eks"])
             , (AwsEksIamRoleFamilyKey, ["arn:iam-family"])
             , (AwsEksLoadBalancerControllerFamilyKey, ["arn:lbc-family"])
+            , (AwsEksVpcCniInterfacesKey, [])
+            , (AwsEksClusterSecurityGroupsKey, [])
             ]
         )
         `shouldBe` Left (LegacyAdoptionCandidatesMissing [AwsEbsPerRunTestKey])
@@ -85,6 +96,8 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
             , (AwsEbsPerRunTestKey, ["vol-1"])
             , (AwsEksIamRoleFamilyKey, ["arn:iam-family"])
             , (AwsEksLoadBalancerControllerFamilyKey, ["arn:lbc-family"])
+            , (AwsEksVpcCniInterfacesKey, [])
+            , (AwsEksClusterSecurityGroupsKey, [])
             , (AwsTestKey, ["arn:test"])
             ]
         )
@@ -98,6 +111,8 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
             , (AwsEbsPerRunTestKey, ["vol-2"])
             , (AwsEksIamRoleFamilyKey, ["arn:iam-family"])
             , (AwsEksLoadBalancerControllerFamilyKey, ["arn:lbc-family"])
+            , (AwsEksVpcCniInterfacesKey, [])
+            , (AwsEksClusterSecurityGroupsKey, [])
             ]
         )
         `shouldBe` Left (LegacyAdoptionCandidatesDuplicated [AwsEbsPerRunTestKey])
@@ -108,6 +123,8 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
         , unobservableObservation AwsEbsPerRunTestKey
         , presentObservation AwsEksIamRoleFamilyKey ["arn:iam-family"]
         , presentObservation AwsEksLoadBalancerControllerFamilyKey ["arn:lbc-family"]
+        , presentObservation AwsEksVpcCniInterfacesKey []
+        , presentObservation AwsEksClusterSecurityGroupsKey []
         ]
         `shouldBe` Left (LegacyAdoptionCandidatesUnobservable [AwsEbsPerRunTestKey])
 
@@ -120,6 +137,8 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
             , (AwsEbsPerRunTestKey, ["shared-arn"])
             , (AwsEksIamRoleFamilyKey, ["arn:iam-family"])
             , (AwsEksLoadBalancerControllerFamilyKey, ["arn:lbc-family"])
+            , (AwsEksVpcCniInterfacesKey, [])
+            , (AwsEksClusterSecurityGroupsKey, [])
             ]
         )
         `shouldBe` Left
@@ -221,6 +240,8 @@ completeEksRows ebsIdentities =
   , (AwsEbsPerRunTestKey, ebsIdentities)
   , (AwsEksIamRoleFamilyKey, ["arn:iam-family"])
   , (AwsEksLoadBalancerControllerFamilyKey, ["arn:lbc-family"])
+  , (AwsEksVpcCniInterfacesKey, [])
+  , (AwsEksClusterSecurityGroupsKey, [])
   ]
 
 permitRequest

@@ -221,6 +221,27 @@ controlPlanePulumiCheckpointSuite =
         other -> expectationFailure ("expected legacy-payload refusal, got " ++ show other)
       readIORef effects `shouldReturn` 0
 
+    it "names the fresh-nonce replay remedy before attempting the checkpoint response decoder" $ do
+      registered <- accepted (registeredPulumiCheckpointByName "aws-test")
+      endpoint <- accepted (mkLifecycleAuthorityEndpoint "http://lifecycle-authority:8600")
+      client <-
+        accepted
+          ( controlPlaneClientWithTransport
+              pulumiCheckpointResponseMaximumBytes
+              endpoint
+              (\_ _ _ _ -> pure (Right (409, "authenticated-read-replay-requires-fresh-nonce\n")))
+          )
+      let capability =
+            lifecycleAuthorityPulumiCheckpoint
+              checkpointTransportBounds
+              checkpointClientProviders
+              registered
+              client
+      observePulumiCheckpoint capability
+        `shouldReturn` Left
+          ( PulumiCheckpointRemoteRefused
+              "checkpoint observation replay requires a fresh nonce; retry the observation"
+          )
     it "round-trips observe, publish, and retire through the exact role-indexed route" $ do
       registered <- accepted (registeredPulumiCheckpointByName "aws-test")
       let publishOperation = operationFixture 1 "publish-request"

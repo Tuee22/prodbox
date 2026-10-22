@@ -22,6 +22,7 @@ module Prodbox.Test.Qualification.CascadeCycleArtifact
   , cascadeArtifactFileName
   , renderCascadeArtifact
   , attestCascadeArtifact
+  , componentImageInventoryDigests
   )
 where
 
@@ -292,7 +293,7 @@ attestCascadeArtifact text = do
   fullManifestDigest <- hexAt single "annotation_full_manifest_digest"
   binaryRaw <- single "annotation_binary_digest"
   let inventory = [value | (name, value) <- pairs, name == "component_image"]
-  images <- traverse parseInventoryLine inventory
+  images <- componentImageInventoryDigests inventory
   if null inventory then Left ArtifactImageInventoryEmpty else Right ()
   recordedInventoryDigest <- single "replacement_component_image_inventory_digest"
   recordedSetDigest <- single "replacement_component_image_set_digest"
@@ -381,13 +382,6 @@ attestCascadeArtifact text = do
   hexAt single key = do
     raw <- single key
     if isHex64 raw then Right raw else Left (ArtifactIdentityUnparsable key)
-  parseInventoryLine rawLine = case Text.breakOn "=sha256:" rawLine of
-    (component, rest)
-      | not (Text.null component)
-      , Just digestRaw <- Text.stripPrefix "=sha256:" rest
-      , Just digest <- mkPublicEvidenceDigest digestRaw ->
-          Right digest
-    _ -> Left (ArtifactIdentityUnparsable "component_image")
   parseProvenance raw
     | raw == "unkeyed" = Right Nothing
     | otherwise = case Text.splitOn ":" raw of
@@ -460,6 +454,19 @@ flagKeys = ["aggregate_succeeded", "cleanup_residue_absent", "lifecycle_succeede
 
 digestOfLines :: [Text] -> Text
 digestOfLines = publicEvidenceDigestText . hashPublicEvidence . Text.unlines
+
+-- | Shared decoder for the actual named, immutable component-image inventory.
+-- Recovery preserves these lines; a digest set alone cannot recreate the names.
+componentImageInventoryDigests :: [Text] -> Either ArtifactDefect [PublicEvidenceDigest]
+componentImageInventoryDigests = traverse parseInventoryLine
+ where
+  parseInventoryLine rawLine = case Text.breakOn "=sha256:" rawLine of
+    (component, rest)
+      | not (Text.null component)
+      , Just digestRaw <- Text.stripPrefix "=sha256:" rest
+      , Just digest <- mkPublicEvidenceDigest digestRaw ->
+          Right digest
+    _ -> Left (ArtifactIdentityUnparsable "component_image")
 
 inventoryDigest :: [Text] -> PublicEvidenceDigest
 inventoryDigest = hashPublicEvidence . Text.unlines

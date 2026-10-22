@@ -50,6 +50,9 @@ import Network.Socket
 import Network.Socket.ByteString (recv)
 import Numeric.Natural (Natural)
 import Prodbox.Aws.SigV4 (hexSha256)
+import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
+  ( AuthorityControlPayload (AuthorityControlObserveProviderBootstrapPredecessor)
+  )
 import Prodbox.ControlPlane.AuthorityBackupEndpoint
   ( AuthorityBackupBlobClass (AuthorityAggregateEnvelope)
   , AuthorityBackupBlobObservation (AuthorityBackupBlobPresent)
@@ -74,7 +77,12 @@ import Prodbox.ControlPlane.AuthorityProviderEndpoint
   , providerDispatchResponseMaximumBytes
   )
 import Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
-  ( AwsAdminProvisionerResponse (AwsAdminFirstReconcileObserved)
+  ( AwsAdminProvisionerRequest (ObserveAwsAdminFirstReconcile, ObserveAwsAdminFirstReconcileRecovery)
+  , AwsAdminProvisionerResponse
+    ( AwsAdminFirstReconcileObserved
+    , AwsAdminFirstReconcileRecoveryObserved
+    , AwsAdminProvisioningRefused
+    )
   )
 import Prodbox.ControlPlane.CleanupRunEndpoint
   ( CleanupRunCommand (..)
@@ -139,6 +147,7 @@ import Prodbox.Lifecycle.Authority.Migration
   , MigrationEpoch
   , mkMigrationEpoch
   )
+import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch (ProviderBootstrapPredecessor)
 import Prodbox.Lifecycle.Authority.Submission
   ( ClientId (ClientId)
   , ClientSequence (ClientSequence)
@@ -385,12 +394,18 @@ authorityBody cleanupRunState request path
   | path == "/v1/authority/control" =
       pure
         ( LazyByteString.toStrict
-            (encodeControlPlaneResponse ("fixture-authority-control-applied" :: Text.Text))
+            ( case authenticatedInnerBody request of
+                Right inner -> case decodeControlPlaneRequest 65536 (LazyByteString.fromStrict inner) of
+                  Right AuthorityControlObserveProviderBootstrapPredecessor ->
+                    encodeControlPlaneResponse (Nothing :: Maybe ProviderBootstrapPredecessor)
+                  _ -> encodeControlPlaneResponse ("fixture-authority-control-applied" :: Text.Text)
+                Left _ -> encodeControlPlaneResponse ("fixture-authority-control-applied" :: Text.Text)
+            )
         )
   | path == "/v1/authority/aws-admin-provisioner" =
       pure
         ( LazyByteString.toStrict
-            (encodeControlPlaneResponse (AwsAdminFirstReconcileObserved Nothing))
+            (encodeControlPlaneResponse (awsAdminProvisionerFixtureResponse request))
         )
   | path == "/v1/authority/provider-dispatch" =
       providerDispatchBody request
@@ -424,6 +439,17 @@ authorityBody cleanupRunState request path
             )
         )
   | otherwise = pure "{}"
+
+-- The empty fixture has no pending first-reconcile journal. These are ordinary
+-- wire observations; unsupported mutations cannot acquire a fixture receipt.
+awsAdminProvisionerFixtureResponse :: ByteString.ByteString -> AwsAdminProvisionerResponse
+awsAdminProvisionerFixtureResponse request =
+  case authenticatedInnerBody request of
+    Left _ -> AwsAdminProvisioningRefused "fixture-request-frame-invalid"
+    Right inner -> case decodeControlPlaneRequest 65536 (LazyByteString.fromStrict inner) of
+      Right ObserveAwsAdminFirstReconcile -> AwsAdminFirstReconcileObserved Nothing
+      Right ObserveAwsAdminFirstReconcileRecovery -> AwsAdminFirstReconcileRecoveryObserved False
+      _ -> AwsAdminProvisioningRefused "fixture-provisioner-request-unsupported"
 
 cleanupRunBody :: IORef (Maybe CleanupRun) -> ByteString.ByteString -> IO ByteString.ByteString
 cleanupRunBody state request =

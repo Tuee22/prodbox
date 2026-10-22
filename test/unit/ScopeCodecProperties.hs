@@ -102,6 +102,7 @@ genScope = do
           , scopeFieldDurableRunScope = runScope
           , scopeFieldLinuxRke2Foundation = foundation
           , scopeFieldAwsScope = awsScope
+          , scopeFieldResourceBindings = Nothing
           , scopeFieldAwsDnsZone = dnsZone
           , scopeFieldLifecycleOperation = operation
           }
@@ -192,6 +193,7 @@ expectedValues
       (LinuxRke2FoundationId foundation)
       awsScope
       dnsZone
+      _bindings
       operation
     ) =
     [ Text.pack (show surface)

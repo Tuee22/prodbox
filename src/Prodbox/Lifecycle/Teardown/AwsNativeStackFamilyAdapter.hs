@@ -18,6 +18,11 @@ module Prodbox.Lifecycle.Teardown.AwsNativeStackFamilyAdapter
   , decodeAwsNativeStackFamilyObservation
   , decodeAwsNativeStackFamilyEvidence
   , encodeAwsNativeStackFamilyEvidence
+  , ExactAwsNetworkFamilyReapAuthorization
+  , authorizeExactAwsNetworkFamilyReap
+  , awsNetworkFamilyReapKey
+  , awsNetworkFamilyReapScope
+  , awsNetworkFamilyReapProviderIntent
   , AwsNativeStackFamilyAdapterError (..)
   )
 where
@@ -31,6 +36,7 @@ import Data.Text qualified as Text
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
   )
+import Prodbox.Lifecycle.AwsNetworkFamily
 import Prodbox.Lifecycle.DnsRecord (hostedZoneIdText)
 import Prodbox.Lifecycle.ProviderWorker.Evidence
   ( decodeProviderEvidenceText
@@ -101,6 +107,9 @@ data AwsNativeStackFamilyAdapterError
   | AwsNativeStackFamilyEvidenceRowMalformed !Text
   | AwsNativeStackFamilyEvidenceIdentityInvalid !Text
   | AwsNativeStackFamilyEvidenceDuplicate !Text
+  | AwsNetworkFamilyObservationBindingInvalid !CompleteObservationSetError
+  | AwsNetworkFamilyObservationRefused !(NonEmpty ObservationDecisionRefusal)
+  | AwsNetworkFamilyDeclarationRequired
   | AwsNativeStackFamilyEvidenceRefused !Text
   deriving (Eq, Show)
 
@@ -115,10 +124,18 @@ mkAwsNativeStackFamilyObservationRequest key scope revision config = do
     AwsEksKey -> Right "aws-eks"
     AwsEksSubzoneKey -> Right "aws-eks-subzone"
     AwsTestKey -> Right "aws-test"
+    AwsEksVpcCniInterfacesKey -> Right (networkFamilyStack EksVpcCniInterfaces)
+    AwsTestVpcCniInterfacesKey -> Right (networkFamilyStack TestVpcCniInterfaces)
+    AwsEksClusterSecurityGroupsKey -> Right (networkFamilyStack EksClusterSecurityGroups)
+    AwsTestCanarySecurityGroupsKey -> Right (networkFamilyStack TestCanarySecurityGroups)
     _ -> Left (AwsNativeStackFamilyKeyUnsupported key)
   identity <-
     maybe (Left (AwsNativeStackFamilyIdentityMissing key)) Right (lookupRegisteredIdentity key)
-  if registeredIdentityKind identity == Stack
+  let networkFamily = case registeredIdentityCoordinate identity of
+        AwsNetworkDependentFamilyCoordinate family -> Just family
+        _ -> Nothing
+      expectedKind = maybe Stack (const ControllerFamily) networkFamily
+  if registeredIdentityKind identity == expectedKind
     then Right ()
     else Left (AwsNativeStackFamilyKindMismatch (registeredIdentityKind identity))
   if cleanupSurfaceAllows (evidenceCleanupSurface scope) identity
@@ -147,7 +164,10 @@ mkAwsNativeStackFamilyObservationRequest key scope revision config = do
     either
       (Left . AwsNativeStackFamilyRefInvalid)
       Right
-      (mkProviderNativeStackFamilyRef stackRef account region zone)
+      ( case networkFamily of
+          Nothing -> mkProviderNativeStackFamilyRef stackRef account region zone
+          Just family -> mkProviderNetworkFamilyRef family account region
+      )
   either
     (Left . AwsNativeStackFamilyConfigInvalid)
     Right
@@ -163,6 +183,46 @@ mkAwsNativeStackFamilyObservationRequest key scope revision config = do
       , internalNativeStackFamilyIntent = intent
       , internalNativeStackFamilyCoordinate = providerIntentCoordinate intent
       }
+
+-- | This capability is available only for a registry-declared network selector.
+-- A stack request cannot acquire class admission by omitting its member list.
+newtype ExactAwsNetworkFamilyReapAuthorization
+  = ExactAwsNetworkFamilyReapAuthorization AwsNativeStackFamilyObservationRequest
+  deriving (Eq, Show)
+
+awsNetworkFamilyReapKey :: ExactAwsNetworkFamilyReapAuthorization -> RegisteredResourceKey
+awsNetworkFamilyReapKey (ExactAwsNetworkFamilyReapAuthorization request) = awsNativeStackFamilyObservationRequestKey request
+
+awsNetworkFamilyReapScope :: ExactAwsNetworkFamilyReapAuthorization -> ObservationEvidenceScope
+awsNetworkFamilyReapScope (ExactAwsNetworkFamilyReapAuthorization request) = internalNativeStackFamilyScope request
+
+awsNetworkFamilyReapProviderIntent :: ExactAwsNetworkFamilyReapAuthorization -> ProviderIntent
+awsNetworkFamilyReapProviderIntent (ExactAwsNetworkFamilyReapAuthorization request) =
+  ReapNativeStackFamily
+    (internalNativeStackFamilyRef request)
+    (internalNativeStackFamilyConfig request)
+    []
+
+authorizeExactAwsNetworkFamilyReap
+  :: AwsNativeStackFamilyObservationRequest
+  -> ExactResourceObservation
+  -> Either AwsNativeStackFamilyAdapterError (Maybe ExactAwsNetworkFamilyReapAuthorization)
+authorizeExactAwsNetworkFamilyReap request exact = do
+  case providerNativeStackFamilyNetworkFamily (internalNativeStackFamilyRef request) of
+    Nothing -> Left AwsNetworkFamilyDeclarationRequired
+    Just _ -> Right ()
+  complete <-
+    first
+      AwsNetworkFamilyObservationBindingInvalid
+      ( mkCompleteObservationSet
+          (internalNativeStackFamilyScope request)
+          [awsNativeStackFamilyObservationRequestKey request]
+          [exact]
+      )
+  case decideCompleteObservationSet complete of
+    AllSelectedResourcesAbsent -> Right Nothing
+    SelectedResourcesRequireCleanup _ -> Right (Just (ExactAwsNetworkFamilyReapAuthorization request))
+    CompleteObservationsRefused failures -> Left (AwsNetworkFamilyObservationRefused failures)
 
 decodeAwsNativeStackFamilyObservation
   :: AwsNativeStackFamilyObservationRequest
@@ -266,7 +326,7 @@ validateIdentities raw = do
 bindingRow :: ProviderNativeStackFamilyRef -> [Text]
 bindingRow ref =
   [ "binding"
-  , providerStackRefText (providerNativeStackFamilyStackRef ref)
+  , providerNativeStackFamilyWireResource ref
   , providerNativeStackFamilyAccountId ref
   , providerNativeStackFamilyRegion ref
   , maybe "none" id (providerNativeStackFamilyHostedZoneId ref)

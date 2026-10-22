@@ -50,6 +50,7 @@ import Prodbox.Lifecycle.Teardown.Registry
   ( awsEksIamManagedPolicyNames
   , awsEksIamRoleNames
   , awsEksProvisionedClusterName
+  , awsEksProvisionedNodeGroupName
   )
 import Prodbox.Subprocess (ProcessOutput (..))
 import System.Exit (ExitCode (..))
@@ -234,20 +235,33 @@ respond world arguments
           )
       "eks" : "describe-cluster" : _
         | null (ofClass AuditEksCluster world) ->
-            failure "An error occurred (ResourceNotFoundException) when calling the DescribeCluster operation"
-        | otherwise ->
+            failure
+              "An error occurred (ResourceNotFoundException) when calling the DescribeCluster operation: missing"
+        | queryOf arguments == "{arn:cluster.arn,status:cluster.status}" ->
             success
-              ( "arn:aws:eks:"
-                  <> region'
-                  <> ":123456789012:cluster/aws-eks-test-cluster https://oidc.eks."
-                  <> region'
-                  <> ".amazonaws.com/id/ABC\n"
+              ( LazyByteStringChar8.unpack
+                  ( encode
+                      ( object
+                          ["arn" .= clusterArn, "status" .= eksStatus AuditEksCluster]
+                      )
+                  )
               )
+        | otherwise ->
+            success (Text.unpack clusterArn <> " https://oidc.eks." <> region' <> ".amazonaws.com/id/ABC\n")
       "eks" : "describe-nodegroup" : _
         | null (ofClass AuditEksNodeGroup world) ->
-            failure "An error occurred (ResourceNotFoundException) when calling the DescribeNodegroup operation"
-        | otherwise ->
-            success ("arn:aws:eks:" <> region' <> ":123456789012:nodegroup/aws-eks-test-node-group\n")
+            failure
+              "An error occurred (ResourceNotFoundException) when calling the DescribeNodegroup operation: missing"
+        | queryOf arguments == "{arn:nodegroup.nodegroupArn,status:nodegroup.status}" ->
+            success
+              ( LazyByteStringChar8.unpack
+                  ( encode
+                      ( object
+                          ["arn" .= nodeGroupArn, "status" .= eksStatus AuditEksNodeGroup]
+                      )
+                  )
+              )
+        | otherwise -> success (Text.unpack nodeGroupArn <> "\n")
       "eks" : "describe-addon" : _
         | null (ofClass AuditEksAddon world) ->
             failure "An error occurred (ResourceNotFoundException) when calling the DescribeAddon operation"
@@ -283,6 +297,19 @@ respond world arguments
         | otherwise -> success emptyPage
       _ -> failure ("unscripted command: " <> unwords arguments)
  where
+  clusterArn = "arn:aws:eks:" <> Text.pack region' <> ":123456789012:cluster/" <> awsEksProvisionedClusterName
+  nodeGroupArn =
+    "arn:aws:eks:"
+      <> Text.pack region'
+      <> ":123456789012:nodegroup/"
+      <> awsEksProvisionedClusterName
+      <> "/"
+      <> awsEksProvisionedNodeGroupName
+      <> "/a8c75f2f-df78-a72f-4063-4b69af3de5b1"
+  eksStatus class' = case ofClass class' world of
+    row : _ -> maybe "ACTIVE" id (lookup "status" (plantedFields row))
+    [] -> "ACTIVE"
+
   rooted = mentions "Name=vpc-id" arguments || mentions "Name=attachment.vpc-id" arguments
   nameIndex args =
     case [ read digits :: Int

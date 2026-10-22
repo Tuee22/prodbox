@@ -132,11 +132,11 @@ tier0:
 
 # Retained Lifecycle Authority identity observed before any Gateway DNS write.
 # The supported ChartPlatform renderer supplies the exact cluster scope and
-# same-namespace service DNS; empty defaults make unsupported generic renders
+# retained Authority service DNS; empty scopes make unsupported generic renders
 # fail closed at runtime rather than granting an ambient authority.
 lifecycleAuthority:
   scope: ""
-  endpoint: "http://lifecycle-authority.gateway.svc.cluster.local:8600"
+  endpoint: "http://lifecycle-authority.lifecycle-authority.svc.cluster.local:8600"
 
 # Route 53 ownership configuration. The dns_write_gate section is mounted
 # into the daemon config so the elected leader keeps the named record

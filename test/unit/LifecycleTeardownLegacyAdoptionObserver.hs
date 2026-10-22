@@ -11,6 +11,7 @@ import Data.Text qualified as Text
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
   )
+import Prodbox.Lifecycle.AwsNetworkFamily (AwsNetworkFamily (..))
 import Prodbox.Lifecycle.DnsRecord (mkHostedZoneId)
 import Prodbox.Lifecycle.ProviderWorker.Evidence
   ( ProviderEvidenceFamily
@@ -28,6 +29,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkAwsTestProviderStackConfig
   , mkProviderStackRef
   , providerIntentCoordinate
+  , providerNativeStackFamilyNetworkFamily
   , providerNativeStackFamilyStackRef
   , providerStackRefText
   , registeredStackAbsenceEvidence
@@ -150,6 +152,11 @@ isReadOnlyIntent intent = case intent of
 
 providerIntentResourceKey :: ProviderIntent -> RegisteredResourceKey
 providerIntentResourceKey intent = case intent of
+  ObserveNativeStackFamily ref _ | Just family <- providerNativeStackFamilyNetworkFamily ref -> case family of
+    EksVpcCniInterfaces -> AwsEksVpcCniInterfacesKey
+    TestVpcCniInterfaces -> AwsTestVpcCniInterfacesKey
+    EksClusterSecurityGroups -> AwsEksClusterSecurityGroupsKey
+    TestCanarySecurityGroups -> AwsTestCanarySecurityGroupsKey
   ObserveNativeStackFamily ref _ -> case providerNativeStackFamilyStackRef ref of
     stackRef
       | providerStackRefText stackRef == "aws-eks-subzone" -> AwsEksSubzoneKey

@@ -10,6 +10,7 @@ module Prodbox.Infra.AwsEksTestStack
   , awsEksCanonicalClusterName
   , awsEksProviderReceiptLabel
   , awsEksDesiredNodeCount
+  , loadAwsEksProviderConfig
   , ensureAwsEksTestStackResources
   , ensureAwsEksTestStackResourcesWithAuthentication
   , destroyAwsEksTestStack

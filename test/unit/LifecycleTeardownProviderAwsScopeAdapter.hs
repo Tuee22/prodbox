@@ -5,6 +5,7 @@
 
 module LifecycleTeardownProviderAwsScopeAdapter
   ( providerAwsScopeAdapterSuite
+  , fixtureProviderAwsScopeEvidence
   )
 where
 
@@ -522,6 +523,7 @@ capabilities evidence =
     , destroyRegisteredStackCapability = \_ _ _ -> unavailableMutation
     , observeRegisteredStackCapability = const unavailableReadOnly
     , readBackRegisteredStackCapability = const unavailableReadOnly
+    , previewRegisteredStackCapability = \_ _ -> unavailableReadOnly
     , boundedScratchCheckpointCapability = const unavailableMutation
     , reconcileSesSendingIdentityCapability = const unavailableMutation
     , reconcileSesDkimCapability = const unavailableMutation
@@ -531,12 +533,15 @@ capabilities evidence =
     , observePublicARecordCapability = const unavailableReadOnly
     , reconcilePublicARecordCapability = const unavailableMutation
     , reapTestEbsVolumesCapability = const unavailableMutation
+    , plantTestVpcCanaryCapability = \_ _ -> unavailableMutation
     , observeTestEbsVolumesCapability = const unavailableReadOnly
     , observeValidationHostedZonesCapability = const unavailableReadOnly
     , reapValidationHostedZonesCapability = const unavailableMutation
     , ensureValidationHostedZoneCapability = \_ _ -> unavailableMutation
-    , observeSesInviteMailCapability = \_ _ -> unavailableReadOnly
-    , reapSesInviteMailCapability = \_ _ -> unavailableMutation
+    , observeHomeDns01RecordsCapability = const unavailableReadOnly
+    , observeSesInviteMailResidueCapability = const unavailableReadOnly
+    , reapSesInviteMailResidueCapability = const unavailableMutation
+    , observeSealedSesInviteMailCapability = \_ _ _ -> unavailableReadOnly
     , ensureRetainedEbsVolumesCapability = \_ _ -> unavailableMutation
     , observeRetainedEbsVolumesCapability = const unavailableReadOnly
     , observeEksIamRoleFamilyCapability = \_ _ -> unavailableReadOnly
@@ -544,6 +549,7 @@ capabilities evidence =
     , observeEksLoadBalancerControllerFamilyCapability = \_ _ -> unavailableReadOnly
     , reapEksLoadBalancerControllerFamilyCapability = \_ _ -> unavailableMutation
     , observeDns01ChallengeRecordsCapability = \_ _ -> unavailableReadOnly
+    , observeGlobalOwnedResourceTagsCapability = const unavailableReadOnly
     , observeOwnedResourceTagsCapability = const unavailableReadOnly
     , reapRetainedEbsVolumesCapability = const unavailableMutation
     , observeSpotPriceCapability = const unavailableReadOnly
@@ -833,3 +839,6 @@ sourceFiles path = do
       children <- listDirectory path
       concat <$> mapM (sourceFiles . (path </>)) children
     else pure [path | ".hs" `isSuffixOf` path]
+
+fixtureProviderAwsScopeEvidence :: Text -> Text -> Text
+fixtureProviderAwsScopeEvidence = fixtureEvidence 1

@@ -533,10 +533,11 @@ adoptionPlan =
         AwsTestKey
         cleanupScope
         [ exactResourceObservationFor
-            (mustIdentity AwsTestKey)
+            (mustIdentity familyKey)
             (ObservationRevision 7)
             cleanupScope
             (ExactResourceAbsent (providerWorkerAbsence "fixture observed absence"))
+        | familyKey <- [AwsTestKey, AwsTestVpcCniInterfacesKey, AwsTestCanarySecurityGroupsKey]
         ]
     )
 

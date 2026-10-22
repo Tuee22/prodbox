@@ -23,15 +23,49 @@
 -- reserves; the fixed regressions below expose decided facts about those
 -- transitions without exporting a way to perform one.
 module Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch
-  ( ProviderAdmissionEpoch
+  ( ProviderCredentialLineageArchive
+  , ProviderCredentialMutationReservation
+  , mkProviderCredentialMutationReservation
+  , providerCredentialCleanupOperationId
+  , providerCredentialCleanupDraftMatches
+  , fixedProviderCredentialCleanupRegression
+  , encodeProviderCredentialLineageArchive
+  , providerCredentialLineageArchiveCanonicalBytes
+  , decodeProviderCredentialLineageArchive
+  , providerCredentialLineageArchiveOperationId
+  , providerCredentialLineageArchiveAction
+  , providerCredentialLineageArchiveGeneration
+  , providerCredentialLineageArchiveRequestDigest
+  , providerCredentialLineageArchiveCompletedReportDigest
   , CascadeAuditFreezeBinding
   , mkCascadeAuditFreezeBinding
   , ProviderAdmissionEpochView (..)
+  , ProviderCredentialRecoveryView (..)
+  , validateProviderCredentialRecoveryView
+  , ProviderAdmissionRecoveryObservation
+  , ProviderAdmissionRecoveryPhase (..)
+  , ProviderAdmissionRecoveryRefusal (..)
+  , providerAdmissionRecoveryRequestDigest
+  , providerAdmissionRecoveryPhase
+  , cascadeAuditRecoveryRequestDigest
+  , restoreCascadeAuditRecoveryBinding
+  , validateProviderAdmissionRecoveryObservation
+  , ProviderBootstrapPredecessor
+  , ProviderBootstrapPredecessorPhase (..)
+  , providerBootstrapPredecessorPhase
+  , providerBootstrapPredecessorRunId
+  , providerBootstrapPredecessorGraphDigest
+  , providerBootstrapPredecessorScopeDigest
+  , validateProviderBootstrapPredecessor
   , ProviderAdmissionEpochError (..)
   , ProviderAdmissionFreshSubmissionRefusal (..)
   , providerAdmissionEpochView
   , ProviderAdmissionEpochRegression
   , fixedProviderAdmissionEpochRegression
+  , fixedProviderCredentialMutationReservationRegression
+  , fixedProviderCredentialLineageRegression
+  , fixedOrdinaryProviderCredentialRetirementRegression
+  , fixedProviderCredentialMutationFenceRegression
   , providerAdmissionEpochRegressionLegacyPreserved
   , providerAdmissionEpochRegressionServingPermitsFresh
   , providerAdmissionEpochRegressionFrozenRefusesFresh
@@ -67,6 +101,9 @@ module Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch
   , confirmCascadeTerminalAuditReceipt
   , CascadeTerminalAuditReceiptRegression (..)
   , fixedCascadeTerminalAuditReceiptRegression
+  , ProviderCredentialRetirementConfirmation
+  , confirmProviderCredentialRetirement
+  , providerCredentialRetirementMatches
   , ProviderCredentialRevocationReceipt
   , mkProviderCredentialRevocationReceipt
   , ProviderAdmissionRevokeRefusal (..)

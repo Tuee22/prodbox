@@ -70,6 +70,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Vector qualified as Vector
 import Prodbox.Result (Result (..))
+import Prodbox.Ses.CaptureLifecycle qualified as CaptureLifecycle
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
@@ -86,10 +87,10 @@ sesReceiveRuleName :: String
 sesReceiveRuleName = "prodbox-capture-all-mail"
 
 sesCaptureKeyPrefix :: String
-sesCaptureKeyPrefix = "inbound/"
+sesCaptureKeyPrefix = CaptureLifecycle.sesCaptureMailPrefix
 
 sesCaptureReadinessKey :: String
-sesCaptureReadinessKey = sesCaptureKeyPrefix ++ ".prodbox-readiness-capability-probe"
+sesCaptureReadinessKey = CaptureLifecycle.sesCaptureReadinessObjectKey
 
 sesInboundMxPriority :: Int
 sesInboundMxPriority = 10

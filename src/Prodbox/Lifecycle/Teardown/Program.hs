@@ -35,12 +35,18 @@ module Prodbox.Lifecycle.Teardown.Program
   , DesiredAbsenceProgramError (..)
   , compileDesiredAbsenceProgram
   , compileDesiredAbsenceProgramForRegisteredKeys
+  , compileAuditedExplicitPerRunProgram
+  , perRunTerminalAuditNodeName
+  , cascadeProgramNodeCount
+  , cascadeProgramCheckpointOperationCount
   )
 where
 
 import Data.List (partition)
 import Data.Set qualified as Set
 import Data.Text (Text)
+import Numeric.Natural (Natural)
+import Prodbox.Lifecycle.AwsNetworkFamily
 import Prodbox.Lifecycle.CleanupRun (CleanupDependencyKind (..))
 import Prodbox.Lifecycle.Teardown.CapabilityCustody.Internal
   ( CapabilityDependants (..)
@@ -205,6 +211,7 @@ data TeardownOperation (surface :: CleanupSurface) (result :: TeardownResultKind
   ReadBackStackCheckpointRetirement
     :: RegisteredTargetBinding
     -> TeardownOperation surface 'CheckpointRetirementReadBackResult
+  AuditPerRunEscapes :: TeardownOperation 'ExplicitPerRun 'TerminalAuditObservationResult
   AuditCascadeEscapes :: TeardownOperation 'Cascade 'TerminalAuditObservationResult
   CommitCascadePreUninstallReport :: TeardownOperation 'Cascade 'MutationAttemptResult
   ReadBackCascadePreUninstallReport :: TeardownOperation 'Cascade 'DurableReceiptObservationResult
@@ -310,6 +317,7 @@ teardownOperationTag operation = case operation of
   RetireStackCheckpointPair target -> targetTag "retire-checkpoint-pair" target
   ReadBackStackCheckpointRetirement target ->
     targetTag "read-back-checkpoint-retirement" target
+  AuditPerRunEscapes -> "audit-per-run-escapes"
   AuditCascadeEscapes -> "audit-cascade-escapes"
   CommitCascadePreUninstallReport -> "commit-cascade-pre-uninstall-report"
   ReadBackCascadePreUninstallReport -> "read-back-cascade-pre-uninstall-report"
@@ -400,6 +408,32 @@ compileDesiredAbsenceProgram
 compileDesiredAbsenceProgram surface =
   compileDesiredAbsenceProgramWithTargets surface (cleanupTargetsForSurface surface)
 
+-- | Replay capacity consumes the same topology as compilation. Registry
+-- growth therefore widens the capacity before the first request is admitted.
+cascadeProgramNodeCount :: Natural
+cascadeProgramNodeCount = fromIntegral (length cascadeProgramBudgetNodes)
+
+cascadeProgramCheckpointOperationCount :: Natural
+cascadeProgramCheckpointOperationCount =
+  fromIntegral (length (filter (isCheckpoint . programNodeOperation) cascadeProgramBudgetNodes))
+ where
+  isCheckpoint :: SomeTeardownOperation surface -> Bool
+  isCheckpoint (SomeTeardownOperation operation) = case operation of
+    ObserveStackCheckpointPair _ -> True
+    ReconcileStackCheckpointRestore _ -> True
+    ReadBackStackCheckpointRecovery _ -> True
+    RetireStackCheckpointPair _ -> True
+    ReadBackStackCheckpointRetirement _ -> True
+    _ -> False
+
+cascadeProgramBudgetNodes :: [ProgramNode 'Cascade]
+cascadeProgramBudgetNodes =
+  cascadeNodes
+    [ targetBinding target
+    | target <- cleanupTargetsForSurface CascadeSurface
+    , cleanupTargetKind target /= LocalSubstrate
+    ]
+
 -- | Compile a canonical subset of one surface's registered targets.
 --
 -- The caller supplies keys, never target descriptors or operations.  Each key
@@ -413,6 +447,14 @@ compileDesiredAbsenceProgramForRegisteredKeys
   -> [RegisteredResourceKey]
   -> Either DesiredAbsenceProgramError (DesiredAbsenceProgram surface)
 compileDesiredAbsenceProgramForRegisteredKeys surface selectedKeys = do
+  targets <- selectedTargetsForRegisteredKeys surface selectedKeys
+  compileDesiredAbsenceProgramWithTargets surface targets
+
+selectedTargetsForRegisteredKeys
+  :: CleanupSurfaceWitness surface
+  -> [RegisteredResourceKey]
+  -> Either DesiredAbsenceProgramError [CleanupTarget surface]
+selectedTargetsForRegisteredKeys surface selectedKeys = do
   selected <- selectedKeySet selectedKeys
   let available = cleanupTargetsForSurface surface
       availableKeys = Set.fromList (cleanupTargetKey <$> available)
@@ -424,9 +466,7 @@ compileDesiredAbsenceProgramForRegisteredKeys surface selectedKeys = do
             unavailable
         )
     Nothing ->
-      compileDesiredAbsenceProgramWithTargets
-        surface
-        [target | target <- available, cleanupTargetKey target `Set.member` selected]
+      Right [target | target <- available, cleanupTargetKey target `Set.member` selected]
  where
   selectedKeySet = go Set.empty
   go observed remaining = case remaining of
@@ -541,10 +581,14 @@ cascadeNodes bindings =
        ]
 
 ordinaryNodes
-  :: RecoverySurfaceWitness surface
-  -> [RegisteredTargetBinding]
-  -> [ProgramNode surface]
+  :: RecoverySurfaceWitness surface -> [RegisteredTargetBinding] -> [ProgramNode surface]
 ordinaryNodes recovery bindings =
+  ordinaryCoreNodes recovery bindings
+    ++ ordinaryReportNodes (ordinaryReportDependencies recovery bindings)
+
+ordinaryCoreNodes
+  :: RecoverySurfaceWitness surface -> [RegisteredTargetBinding] -> [ProgramNode surface]
+ordinaryCoreNodes recovery bindings =
   recoveryNodes recovery
     ++ orderedTargetNodes bindings [success "recovery/read-back"]
     ++ [ programNode
@@ -553,22 +597,44 @@ ordinaryNodes recovery bindings =
            (recoveryDispositionDependencies bindings)
        ]
     ++ credentialDispositionNodes recovery bindings
-    ++ [ programNode
-           "surface/commit-report"
-           CommitOrdinarySurfaceReport
-           reportDependencies
-       , programNode
-           "surface/read-back-report"
-           ReadBackOrdinarySurfaceReport
-           [attempt "surface/commit-report"]
+
+ordinaryReportDependencies
+  :: RecoverySurfaceWitness surface -> [RegisteredTargetBinding] -> [ProgramDependency]
+ordinaryReportDependencies recovery bindings =
+  success "recovery/observe-disposition"
+    : map (success . targetCompletionName) bindings
+    ++ [ success "operational/read-back-credential-revocation"
+       | not (null (credentialDispositionNodes recovery bindings))
        ]
- where
-  reportDependencies =
-    success "recovery/observe-disposition"
-      : map (success . targetCompletionName) bindings
-      ++ [ success "operational/read-back-credential-revocation"
-         | not (null (credentialDispositionNodes recovery bindings))
-         ]
+
+ordinaryReportNodes :: [ProgramDependency] -> [ProgramNode surface]
+ordinaryReportNodes dependencies =
+  [ programNode "surface/commit-report" CommitOrdinarySurfaceReport dependencies
+  , programNode
+      "surface/read-back-report"
+      ReadBackOrdinarySurfaceReport
+      [attempt "surface/commit-report"]
+  ]
+
+perRunTerminalAuditNodeName :: ProgramNodeName
+perRunTerminalAuditNodeName = ProgramNodeName "per-run/audit-escapes"
+
+compileAuditedExplicitPerRunProgram
+  :: [RegisteredResourceKey] -> Either DesiredAbsenceProgramError (DesiredAbsenceProgram 'ExplicitPerRun)
+compileAuditedExplicitPerRunProgram keys = do
+  targets <- selectedTargetsForRegisteredKeys ExplicitPerRunSurface keys
+  base <- compileDesiredAbsenceProgramWithTargets ExplicitPerRunSurface targets
+  let bindings = map targetBinding targets
+      ProgramNodeName auditName = perRunTerminalAuditNodeName
+      nodes =
+        ordinaryCoreNodes ExplicitPerRunRecoverySurface bindings
+          ++ [ programNode
+                 auditName
+                 AuditPerRunEscapes
+                 (ordinaryReportDependencies ExplicitPerRunRecoverySurface bindings)
+             ]
+          ++ ordinaryReportNodes [success auditName]
+  Right base {internalDesiredAbsenceProgramNodes = nodes}
 
 -- | Sprint 4.85: the operational surface's credential disposition.
 --
@@ -681,26 +747,46 @@ recoveryDispositionDependencies bindings =
     : map (terminal . targetCompletionName) bindings
 
 -- | Keep the rendered program in topological order as well as encoding the
--- dependency graph.  The EKS drain prefix must precede controller-family
--- backstops, while the EKS provider destroy tail must follow their exact
--- read-backs.  This is the one projection used by every AWS-owning surface.
+-- dependency graph. EKS drains before the existing controller backstops.
+-- Network backstops follow the stack destroy attempt that releases their
+-- owners, and checkpoint retirement waits for their exact absence.  This is the one projection used by every AWS-owning surface.
 orderedTargetNodes
   :: [RegisteredTargetBinding]
   -> [ProgramDependency]
   -> [ProgramNode surface]
 orderedTargetNodes allTargets observationDependencies =
-  concatMap initialNodes allTargets ++ concatMap finalNodes allTargets
+  concatMap initialNodes allTargets
+    ++ concatMap ownerDestroyNodes ordinary
+    ++ concatMap (directTargetFinalNodes allTargets) network
+    ++ concatMap finalNodes ordinary
  where
+  (network, ordinary) = partition isNetworkTarget allTargets
+  ownsNetwork target =
+    any
+      (\family -> registeredTargetKey family `elem` ownedFamilyKeys (registeredTargetKey target))
+      network
   initialNodes target
-    | registeredTargetKey target == AwsEksKey =
-        eksStackInitialNodes observationDependencies target
-    | registeredTargetKind target == Stack =
-        stackTargetNodes allTargets observationDependencies target
+    | isNetworkTarget target = [directTargetObserveNode allTargets observationDependencies target]
+    | registeredTargetKey target == AwsEksKey = eksStackInitialNodes observationDependencies target
+    | registeredTargetKind target == Stack && ownsNetwork target =
+        stackTargetInitialNodes observationDependencies target
+    | registeredTargetKind target == Stack = stackTargetNodes allTargets observationDependencies target
     | otherwise = directTargetNodes allTargets observationDependencies target
-  finalNodes target
-    | registeredTargetKey target == AwsEksKey =
-        eksStackFinalNodes allTargets target
+  ownerDestroyNodes target
+    | registeredTargetKey target == AwsEksKey = [eksStackDestroyNode allTargets target]
     | otherwise = []
+  finalNodes target
+    | registeredTargetKey target == AwsEksKey = stackTargetFinalNodes allTargets target
+    | registeredTargetKind target == Stack && ownsNetwork target =
+        stackTargetFinalNodes allTargets target
+    | otherwise = []
+
+isNetworkTarget :: RegisteredTargetBinding -> Bool
+isNetworkTarget target = case lookupRegisteredIdentity (registeredTargetKey target) of
+  Just identity -> case registeredIdentityCoordinate identity of
+    AwsNetworkDependentFamilyCoordinate _ -> True
+    _ -> False
+  Nothing -> False
 
 directTargetNodes
   :: [RegisteredTargetBinding]
@@ -708,14 +794,28 @@ directTargetNodes
   -> RegisteredTargetBinding
   -> [ProgramNode surface]
 directTargetNodes allTargets observationDependencies target =
+  directTargetObserveNode allTargets observationDependencies target
+    : directTargetFinalNodes allTargets target
+
+directTargetObserveNode
+  :: [RegisteredTargetBinding] -> [ProgramDependency] -> RegisteredTargetBinding -> ProgramNode surface
+directTargetObserveNode allTargets observationDependencies target =
+  programNode
+    (targetObserveName target)
+    (ObserveRegisteredTarget target)
+    ( observationDependencies
+        ++ if isNetworkTarget target then [] else controllerBackstopDependencies allTargets target
+    )
+
+directTargetFinalNodes
+  :: [RegisteredTargetBinding] -> RegisteredTargetBinding -> [ProgramNode surface]
+directTargetFinalNodes allTargets target =
   [ programNode
-      (targetObserveName target)
-      (ObserveRegisteredTarget target)
-      (observationDependencies ++ controllerBackstopDependencies allTargets target)
-  , programNode
       (targetEffectName target)
       (ReconcileRegisteredTargetAbsent target)
-      [success (targetObserveName target)]
+      ( success (targetObserveName target)
+          : if isNetworkTarget target then controllerBackstopDependencies allTargets target else []
+      )
   , programNode
       (targetReadBackName target)
       (ReadBackRegisteredTargetAbsent target)
@@ -728,6 +828,10 @@ stackTargetNodes
   -> RegisteredTargetBinding
   -> [ProgramNode surface]
 stackTargetNodes allTargets observationDependencies target =
+  stackTargetInitialNodes observationDependencies target ++ stackTargetFinalNodes allTargets target
+
+stackTargetInitialNodes :: [ProgramDependency] -> RegisteredTargetBinding -> [ProgramNode surface]
+stackTargetInitialNodes observationDependencies target =
   [ programNode
       (checkpointObserveName target)
       (ObserveStackCheckpointPair target)
@@ -761,7 +865,12 @@ stackTargetNodes allTargets observationDependencies target =
       , success (checkpointRecoveryReadBackName target)
       , success (awsStackReaderReadBackName target)
       ]
-  , programNode
+  ]
+
+stackTargetFinalNodes
+  :: [RegisteredTargetBinding] -> RegisteredTargetBinding -> [ProgramNode surface]
+stackTargetFinalNodes allTargets target =
+  [ programNode
       (targetReadBackName target)
       (ReadBackRegisteredTargetAbsent target)
       [attempt (targetEffectName target)]
@@ -833,39 +942,18 @@ eksStackInitialNodes observationDependencies target =
       [attempt (eksDrainName target)]
   ]
 
-eksStackFinalNodes
-  :: [RegisteredTargetBinding]
-  -> RegisteredTargetBinding
-  -> [ProgramNode surface]
-eksStackFinalNodes allTargets target =
-  [ programNode
-      (targetEffectName target)
-      (ReconcileRegisteredTargetAbsent target)
-      ( [ success (targetObserveName target)
-        , success (checkpointRecoveryReadBackName target)
-        , success (awsStackReaderReadBackName target)
-        , success (eksDrainReadBackName target)
-        ]
-          ++ eksBackstopSuccessDependencies allTargets target
-      )
-  , programNode
-      (targetReadBackName target)
-      (ReadBackRegisteredTargetAbsent target)
-      [attempt (targetEffectName target)]
-  , programNode
-      (checkpointRetirementName target)
-      (RetireStackCheckpointPair target)
-      (checkpointRetirementDependencies allTargets target)
-  , -- The read-back stays gated on the attempt alone.  A read-back that could
-    -- be blocked is a read-back that cannot close a lost response, which is the
-    -- whole reason every effect is paired with exactly one attempt-gated
-    -- read-back; the Sprint-4.89 discharge it needs is the retirement it
-    -- observes, not a second copy of the ordering the effect already waited on.
-    programNode
-      (checkpointRetirementReadBackName target)
-      (ReadBackStackCheckpointRetirement target)
-      [attempt (checkpointRetirementName target)]
-  ]
+eksStackDestroyNode :: [RegisteredTargetBinding] -> RegisteredTargetBinding -> ProgramNode surface
+eksStackDestroyNode allTargets target =
+  programNode
+    (targetEffectName target)
+    (ReconcileRegisteredTargetAbsent target)
+    ( [ success (targetObserveName target)
+      , success (checkpointRecoveryReadBackName target)
+      , success (awsStackReaderReadBackName target)
+      , success (eksDrainReadBackName target)
+      ]
+        ++ eksBackstopSuccessDependencies allTargets target
+    )
 
 -- | Controller-family backstops run after their owning stack's drain node was
 -- attempted, including when that node refused or lost its response.  They are
@@ -881,14 +969,34 @@ controllerBackstopDependencies
   :: [RegisteredTargetBinding]
   -> RegisteredTargetBinding
   -> [ProgramDependency]
-controllerBackstopDependencies allTargets target =
-  [ attempt (eksDrainName ownerTarget)
-  | ownerTarget <- allTargets
-  , registeredTargetKey ownerTarget `elem` owningStackKeys (registeredTargetKey target)
-  ]
+controllerBackstopDependencies allTargets target
+  | isNetworkTarget target =
+      [ attempt (targetEffectName owner)
+      | owner <- allTargets
+      , registeredTargetKey owner `elem` owningStackKeys (registeredTargetKey target)
+      ]
+        ++ [ success (targetReadBackName interface)
+           | interface <- allTargets
+           , isInterfaceOfSameStack interface
+           ]
+  | otherwise =
+      [ attempt (eksDrainName ownerTarget)
+      | ownerTarget <- allTargets
+      , registeredTargetKey ownerTarget `elem` owningStackKeys (registeredTargetKey target)
+      ]
+ where
+  isInterfaceOfSameStack candidate = case (coordinate target, coordinate candidate) of
+    ( Just (AwsNetworkDependentFamilyCoordinate EksClusterSecurityGroups)
+      , Just (AwsNetworkDependentFamilyCoordinate EksVpcCniInterfaces)
+      ) -> True
+    ( Just (AwsNetworkDependentFamilyCoordinate TestCanarySecurityGroups)
+      , Just (AwsNetworkDependentFamilyCoordinate TestVpcCniInterfaces)
+      ) -> True
+    _ -> False
+  coordinate binding = registeredIdentityCoordinate <$> lookupRegisteredIdentity (registeredTargetKey binding)
 
--- | A registered stack cannot be destroyed until every controller-owned family
--- it owns — each of which can outlive it — has independently converged.
+-- | The pre-destroy backstops must converge first. Network dependents instead
+-- follow the destroy attempt, since that attempt releases their owners.
 eksBackstopSuccessDependencies
   :: [RegisteredTargetBinding]
   -> RegisteredTargetBinding
@@ -896,6 +1004,7 @@ eksBackstopSuccessDependencies
 eksBackstopSuccessDependencies allTargets owner =
   [ success (targetReadBackName backstop)
   | backstop <- allTargets
+  , not (isNetworkTarget backstop)
   , registeredTargetKey backstop `elem` ownedFamilyKeys (registeredTargetKey owner)
   ]
 
@@ -1047,6 +1156,7 @@ operationTargetBinding operation = case operation of
   EstablishRecoveryPlane _ -> Nothing
   ReadBackRecoveryPlane _ -> Nothing
   ObserveRecoveryPlaneDisposition _ -> Nothing
+  AuditPerRunEscapes -> Nothing
   AuditCascadeEscapes -> Nothing
   CommitCascadePreUninstallReport -> Nothing
   ReadBackCascadePreUninstallReport -> Nothing

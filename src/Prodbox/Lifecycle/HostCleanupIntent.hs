@@ -55,7 +55,15 @@ module Prodbox.Lifecycle.HostCleanupIntent
   , ObservedHostCleanupIntent
   , observedHostCleanupIntent
   , restoreObservedHostCleanupReady
+  , HostCleanupTerminalHandoff
+  , hostCleanupTerminalHandoffIntent
+  , hostCleanupTerminalHandoffPrefix
+  , hostCleanupTerminalHandoffDescriptorDigest
+  , hostCleanupTerminalHandoffPath
+  , persistHostCleanupTerminalHandoff
+  , observeHostCleanupTerminalHandoff
   , observeHostCleanupIntentForResume
+  , observeRetiredHostCleanupIntentForResume
   , observeHostCleanupIntent
   , prepareHostCleanupIntent
   , persistHostCleanupReady
@@ -70,6 +78,7 @@ module Prodbox.Lifecycle.HostCleanupIntent
   , hostCleanupIntentRegressionReadyReadBack
   , hostCleanupIntentRegressionPhaseReplay
   , hostCleanupIntentRegressionRetirementReplay
+  , hostCleanupIntentRegressionTerminalHandoff
   , HostCleanupIntentError (..)
   )
 where
@@ -84,6 +93,7 @@ import Prodbox.Lifecycle.HostCleanupIntent.Internal
   , HostCleanupIntentStore
   , HostCleanupReadyBinding
   , HostCleanupScope
+  , HostCleanupTerminalHandoff
   , HostCleanupTerminalIdentity
   , HostTerminalPermitId
   , ObservedHostCleanupIntent
@@ -105,6 +115,7 @@ import Prodbox.Lifecycle.HostCleanupIntent.Internal
   , hostCleanupIntentRegressionPhaseReplay
   , hostCleanupIntentRegressionReadyReadBack
   , hostCleanupIntentRegressionRetirementReplay
+  , hostCleanupIntentRegressionTerminalHandoff
   , hostCleanupIntentRetainedRoot
   , hostCleanupIntentRetiredPath
   , hostCleanupIntentRetirementDigestText
@@ -123,6 +134,10 @@ import Prodbox.Lifecycle.HostCleanupIntent.Internal
   , hostCleanupRun
   , hostCleanupRunId
   , hostCleanupScope
+  , hostCleanupTerminalHandoffDescriptorDigest
+  , hostCleanupTerminalHandoffIntent
+  , hostCleanupTerminalHandoffPath
+  , hostCleanupTerminalHandoffPrefix
   , hostCleanupTerminalIdentity
   , hostCleanupTerminalOperationId
   , hostCleanupTerminalPermitId
@@ -135,8 +150,11 @@ import Prodbox.Lifecycle.HostCleanupIntent.Internal
   , mkHostTerminalPermitId
   , observeHostCleanupIntent
   , observeHostCleanupIntentForResume
+  , observeHostCleanupTerminalHandoff
+  , observeRetiredHostCleanupIntentForResume
   , observedHostCleanupIntent
   , persistHostCleanupReady
+  , persistHostCleanupTerminalHandoff
   , prepareHostCleanupIntent
   , restoreObservedHostCleanupReady
   , retireHostCleanupIntent

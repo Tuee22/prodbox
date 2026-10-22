@@ -22,11 +22,35 @@ import Data.Text (Text)
 import Prodbox.Test.CascadeQualificationCycle
 import Prodbox.Test.Qualification.CascadeCycleIdentity
 import Prodbox.Test.Qualification.CascadeCycleLedger
+import Prodbox.TestRunner
+  ( CascadeQualificationResumeMode (..)
+  , qualificationCyclePurpose
+  , runCascadeQualificationPreparation
+  )
+import System.Exit (ExitCode (..))
 import TestSupport
 
 cascadeQualificationCycleSuite :: SuiteBuilder ()
 cascadeQualificationCycleSuite =
   describe "Sprint 6.5 cascade qualification cycle driver" $ do
+    mapM_
+      ( \mode -> it ("QUALIFICATION-RESUME-FRESH-INSTALL-2026-10-20 selects the real I/O arm for " <> show mode) $ do
+          calls <- newIORef ([] :: [String])
+          let fresh = modifyIORef' calls (<> ["fresh-floor-and-install"]) >> pure ExitSuccess
+              resume = modifyIORef' calls (<> ["resume-candidate"]) >> pure (ExitFailure 17)
+              expected = case mode of
+                QualificationFresh -> (["fresh-floor-and-install"], ExitSuccess)
+                QualificationRegistered -> (["resume-candidate"], ExitFailure 17)
+                QualificationNative -> (["resume-candidate"], ExitFailure 17)
+          result <- runCascadeQualificationPreparation mode fresh resume
+          observed <- readIORef calls
+          (observed, result) `shouldBe` expected
+          qualificationCyclePurpose mode `shouldBe` case mode of
+            QualificationFresh -> QualifyNewRun
+            QualificationRegistered -> RecoverExistingRun
+            QualificationNative -> RecoverExistingRun
+      )
+      [QualificationFresh, QualificationRegistered, QualificationNative]
     orderCases
     refusalCases
     outcomeCases
@@ -50,6 +74,7 @@ data World = World
   , worldCandidate :: Either String Bool
   , worldArtifact :: Either String Text
   , worldRecapture :: Either String IdentityKey
+  , worldPurpose :: CyclePurpose
   }
 
 passingWorld :: World
@@ -60,6 +85,7 @@ passingWorld =
     , worldCandidate = Right True
     , worldArtifact = Right "artifactdigest"
     , worldRecapture = Right (identityKeyOfParts fixtureParts)
+    , worldPurpose = QualifyNewRun
     }
 
 -- | Run the driver and return what it returned, the events in order, and the
@@ -84,6 +110,7 @@ runWorldFrom initial world = do
           , effectWriteArtifact = \attempt _ -> record (WroteArtifact attempt) >> pure (worldArtifact world)
           , effectRecaptureKey = record Recaptured >> pure (worldRecapture world)
           , effectCandidateSucceeded = id
+          , effectCyclePurpose = worldPurpose world
           , effectCleanupRunId = "cascade-qualification-pre-1"
           }
   result <- driveQualificationCycle effects fixtureLabel fixtureParts fixtureAnnotations
@@ -177,6 +204,38 @@ refusalCases = do
 
 outcomeCases :: SuiteBuilder ()
 outcomeCases = do
+  it
+    "QUALIFICATION-FAILED-RUN-REPLAY-2026-10-21 finishes failed cleanup without qualifying the reused run"
+    $ do
+      let (prior, _) = ledgerOf [Fail "pre-1" DeploymentA]
+      (result, events, ledger) <- runWorldFrom prior passingWorld {worldAttempt = Right 2}
+      fmap reportOutcome result `shouldBe` Right (CycleFailed FailedHistoricalRecovery)
+      events
+        `shouldContain` [RanCandidate, WroteArtifact 2, Recaptured, AppendedClosed (CycleFailed FailedHistoricalRecovery)]
+      map resolvedResolution (resolveAttempts ledger)
+        `shouldBe` [AttemptFailed FailedCandidateRefused, AttemptFailed FailedHistoricalRecovery]
+  it "keeps registered/native recovery unqualified even if it has no earlier ledger attempt" $ do
+    (result, _, ledger) <- runWorld passingWorld {worldPurpose = RecoverExistingRun}
+    fmap reportOutcome result `shouldBe` Right (CycleFailed FailedHistoricalRecovery)
+    map resolvedResolution (resolveAttempts ledger) `shouldBe` [AttemptFailed FailedHistoricalRecovery]
+  it "keeps interrupted cleanup recovery unqualified when retrying its stable run id" $ do
+    let (prior, _) = ledgerOf [Interrupt "pre-1" DeploymentA]
+    (result, _, ledger) <- runWorldFrom prior passingWorld {worldAttempt = Right 2}
+    fmap reportOutcome result `shouldBe` Right (CycleFailed FailedHistoricalRecovery)
+    map resolvedResolution (resolveAttempts ledger)
+      `shouldBe` [AttemptInterrupted, AttemptFailed FailedHistoricalRecovery]
+  it "preserves a failed cleanup result in the recovery lane" $ do
+    (result, _, _) <-
+      runWorld passingWorld {worldPurpose = RecoverExistingRun, worldCandidate = Right False}
+    fmap reportOutcome result `shouldBe` Right (CycleFailed FailedLifecycleNotSucceeded)
+  it "preserves source and artifact failures before classifying historical recovery" $ do
+    let moved = identityKeyOfParts fixtureParts {partsGeneratedConfig = digestOf 'M'}
+    (drifted, _, _) <-
+      runWorld passingWorld {worldPurpose = RecoverExistingRun, worldRecapture = Right moved}
+    fmap reportOutcome drifted `shouldBe` Right CycleSourceDrifted
+    (unwritten, _, _) <-
+      runWorld passingWorld {worldPurpose = RecoverExistingRun, worldArtifact = Left "disk full"}
+    fmap reportOutcome unwritten `shouldBe` Right (CycleFailed FailedEvidenceWrite)
   it "records a candidate whose lifecycle did not succeed as failed, with its artifact" $ do
     (result, _, ledger) <- runWorld passingWorld {worldCandidate = Right False}
     fmap reportOutcome result `shouldBe` Right (CycleFailed FailedLifecycleNotSucceeded)

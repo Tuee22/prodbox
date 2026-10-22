@@ -9,6 +9,7 @@
 module Prodbox.Lifecycle.Teardown.CascadeCandidate
   ( CascadeCandidateRegression
   , fixedCascadeCandidateRegression
+  , fixedCascadeCandidateEpochChecks
   , cascadeCandidatePlanIsDeterministic
   , cascadeCandidateTerminalOperationIsCompiled
   , cascadeCandidateDeclaredLeaseIsRequired

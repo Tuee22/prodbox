@@ -53,9 +53,15 @@ import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientError (AuthenticatedClientTransportFailed)
   )
+import Prodbox.ControlPlane.AuthenticationRegistry (callerMayCallRoute)
+import Prodbox.ControlPlane.AuthorityBackupReconcileProduction
+  ( GenesisAwsAdminIntentParameters (..)
+  )
 import Prodbox.ControlPlane.AwsAdminAuthorizedRecoveryProduction
   ( classifyAwsAdminAttemptResourceHttpStatus
   , classifyAwsAdminRecoveryJournalObservation
+  , fixedAwsAdminAttestedRecoveryRegression
+  , fixedAwsAdminCredentialQuiescenceRegression
   )
 import Prodbox.ControlPlane.AwsAdminPreparedTargetProduction
   ( AwsAdminPreparedTargetLifecycle (..)
@@ -75,20 +81,43 @@ import Prodbox.ControlPlane.AwsAdminPreparedTargetProduction
 import Prodbox.ControlPlane.AwsAdminProvisionerClient
   ( AwsAdminPreparedProvisioning (..)
   , AwsAdminProvisionerClient
-  , AwsAdminProvisionerClientError (AwsAdminProvisionerClientUnexpectedResponse)
+  , AwsAdminProvisionerClientError
+    ( AwsAdminProvisionerClientRefused
+    , AwsAdminProvisionerClientUnavailable
+    , AwsAdminProvisionerClientUnexpectedResponse
+    )
   , mkAwsAdminProvisionerClient
   , observeAwsAdminFirstReconcile
+  , observeAwsAdminProviderCredentialRecoveryView
   )
 import Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
   ( AwsAdminFirstReconcileProjection (..)
   , AwsAdminPodObservation (..)
+  , AwsAdminProviderCredentialBoundary (..)
   , AwsAdminProvisionerChallenge (..)
   , AwsAdminProvisionerObservation (..)
-  , AwsAdminProvisionerPhase (AwsAdminProvisionerCompleted, AwsAdminProvisionerPrepared)
+  , AwsAdminProvisionerPhase
+    ( AwsAdminProvisionerAuthorized
+    , AwsAdminProvisionerCompleted
+    , AwsAdminProvisionerPrepared
+    )
   , AwsAdminProvisionerRequest (..)
   , AwsAdminProvisionerResponse (..)
   , awsAdminProvisionerAuthenticatedHandler
   , awsAdminProvisionerResponseMaximumBytes
+  )
+import Prodbox.ControlPlane.AwsAdminTargetRevokeClient
+  ( AwsAdminTargetRevokeClientError (..)
+  , decodeAwsAdminTargetRevokeResponse
+  )
+import Prodbox.ControlPlane.AwsAdminTargetRevokeEndpoint
+  ( AwsAdminTargetRevokeRefusal (..)
+  , AwsAdminTargetRevokeRequest (..)
+  , AwsAdminTargetRevokeResponse (..)
+  , AwsAdminTargetRevokeVerification (..)
+  , awsAdminTargetRevokeAuthenticatedHandler
+  , awsAdminTargetRevokeRequest
+  , mkAwsAdminTargetRevokeBoundary
   )
 import Prodbox.ControlPlane.CallerPrincipal
   ( CallerPrincipal
@@ -96,6 +125,7 @@ import Prodbox.ControlPlane.CallerPrincipal
       , CallerCredentialProvisionerCompletion
       , CallerOperatorCli
       )
+  , allCallerPrincipals
   )
 import Prodbox.ControlPlane.Client
   ( ControlPlaneClientError (ControlPlaneTransportFailed)
@@ -105,9 +135,11 @@ import Prodbox.ControlPlane.Codec
   ( ControlPlaneRequestCodecError (ControlPlaneRequestInvalid)
   , decodeControlPlaneResponse
   , encodeControlPlaneRequest
+  , encodeControlPlaneResponse
   )
+import Prodbox.ControlPlane.RoleReadiness (noRoleReadinessContribution)
 import Prodbox.ControlPlane.Route
-  ( ControlPlaneRoute (LifecycleAwsAdminProvisioner)
+  ( ControlPlaneRoute (LifecycleAwsAdminProvisioner, TargetAwsAdminCredentialRevoke)
   )
 import Prodbox.ControlPlane.TargetAuthorityTrust
   ( allTargetAuthorityTrustBoundaryCauses
@@ -133,12 +165,19 @@ import Prodbox.ControlPlane.TargetMaterialClient
   , decodeTargetMaterialClientResponse
   , renderTargetMaterialClientCause
   )
+import Prodbox.ControlPlane.TargetMaterialEndpoint (TargetMaterialObservation (..))
 import Prodbox.ControlPlane.TargetMaterialRegistry
-  ( AwsCredentialIdentity (AwsAuthorityBackupStore, AwsLifecycleProvider)
+  ( AwsCredentialIdentity
+      ( AwsAuthorityBackupStore
+      , AwsLifecycleProvider
+      , AwsRunCertManagerDns01
+      , AwsTlsRetentionStore
+      )
   , TargetSecretId (TargetAwsCredential)
   )
 import Prodbox.ControlPlane.TargetMaterializationProduction
-  ( classifyTargetIntentIssueError
+  ( classifyAwsAdminTargetReadBack
+  , classifyTargetIntentIssueError
   , classifyTargetWorkerError
   )
 import Prodbox.ControlPlane.TargetSecretAgentExecution
@@ -160,6 +199,7 @@ import Prodbox.Lib.ChartPlatform
   ( KubernetesApiEgressCoordinate (..)
   )
 import Prodbox.Lifecycle.Authority.Genesis (GenesisPlan (..))
+import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch (ProviderCredentialRecoveryView (..))
 import Prodbox.Lifecycle.CheckpointAuthority
   ( ModelBCasAdapter (..)
   , ModelBCasRequest (..)
@@ -186,9 +226,11 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAuthority
   , AwsAdminRecoveryCleanupPhase (..)
   , attestAwsAdminAuthority
   , authorizeAwsAdminAttestation
+  , awsAdminPreparedRenewalBindingsMatch
   , bindAwsAdminAuthorizedRecoveryIntent
   , bindAwsAdminPreparedRenewalIntent
   , commitAwsAdminAttested
+  , commitAwsAdminCompleted
   , commitAwsAdminPrepared
   , commitAwsAdminPreparedAuthorizedRecovery
   , commitAwsAdminPreparedRenewal
@@ -221,6 +263,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   , AwsAdminWorkerReceiptDecodeCause
   , AwsAdminWorkerReceiptEnvelopeDecodeCause (..)
   , AwsAdminWorkerReceiptEnvelopeLineDisposition
+  , AwsAdminWorkerReceiptKind (AwsAdminRevoked)
   , AwsAdminWorkerReceiptLineTopology
   , AwsAdminWorkerReceiptPrefixLineDisposition
   , AwsAdminWorkerReceiptTerminalEnding
@@ -234,6 +277,8 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   , allAwsAdminWorkerJournalUnavailableCauses
   , allAwsAdminWorkerSessionClosureCauses
   , allAwsAdminWorkerTerminalCauses
+  , awsAdminWorkerReceiptGeneration
+  , awsAdminWorkerReceiptKind
   , classifyAwsAdminExecutionError
   , classifyAwsAdminTargetWorkerObservationFailure
   , classifyAwsAdminWorkerJournalUnavailable
@@ -241,6 +286,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   , decideAwsAdminInstallInventory
   , decodeAwsAdminWorkerReceipt
   , decodeAwsAdminWorkerReceiptTextEnvelope
+  , encodeAwsAdminWorkerReceipt
   , encodeAwsAdminWorkerReceiptTextEnvelope
   , executeAwsAdminPermit
   , mkAwsAdminDeliveryBoundary
@@ -265,6 +311,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   , renderAwsAdminWorkerSessionClosureCause
   , renderAwsAdminWorkerTerminalCause
   , renderAwsAdminWorkerTerminalLineDisposition
+  , validateAwsAdminWorkerReceiptForPermit
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecutionJournal
   ( AwsAdminExecutionEvent (..)
@@ -280,6 +327,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecutionVault
   , AwsAdminExecutionJournalPhaseCause (..)
   , AwsAdminExecutionJournalRecoveryFlag (..)
   , AwsAdminExecutionJournalRecoveryObservation (..)
+  , fixedAwsAdminCompletedExecutionRegression
   , renderAwsAdminExecutionJournalObservationCause
   , renderAwsAdminExecutionJournalRecoveryObservation
   )
@@ -304,11 +352,13 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   , SignedAwsAdminPermit
   , awsAdminGenesisKindMatches
   , awsAdminJobNameForPermit
+  , awsAdminPermitIntentAction
   , awsAdminPermitIntentAuthorityEndpoint
   , awsAdminPermitIntentAuthorityScope
   , awsAdminPermitIntentCleanupPredecessor
   , awsAdminPermitIntentDeadline
   , awsAdminPermitIntentGeneration
+  , awsAdminPermitIntentIamParameters
   , awsAdminPermitIntentImageDigest
   , awsAdminPermitIntentKind
   , awsAdminPermitIntentOperationId
@@ -325,10 +375,16 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   , encodeSignedAwsAdminPermit
   , mkAuthorityBackupIamParameters
   , mkAwsAdminJobBinding
+  , mkAwsRunDns01IamParameters
   , mkGenesisAwsAdminPermitIntent
   , mkLifecycleProviderIamParameters
   , mkNormalAwsAdminPermitIntent
+  , mkSomeSignedAwsAdminPermit
+  , mkTlsRetentionIamParameters
   , rebindAwsAdminPermitIntentPreparedTarget
+  , renewAwsAdminProviderPermitIntent
+  , signedAwsAdminPermitBinding
+  , signedAwsAdminPermitIntent
   , withSomeSignedAwsAdminPermit
   )
 import Prodbox.Lifecycle.CredentialProvisioner.Execution
@@ -342,6 +398,25 @@ import Prodbox.Lifecycle.CredentialProvisioner.FirstReconcileJournal
   , firstReconcileJournalPlan
   , initialFirstReconcileJournal
   )
+import Prodbox.Lifecycle.CredentialProvisioner.HarnessCredential
+  ( HarnessCredentialLineage
+  , HarnessCredentialResolution (..)
+  , HarnessCredentialResolutionError (..)
+  , HarnessCredentialSlot (..)
+  , confirmHarnessCredentialOutcome
+  , confirmHarnessCredentialRevocation
+  , harnessCredentialConfirmationGeneration
+  , harnessCredentialRevocationEpochReceipt
+  , harnessCredentialRevocationOperationId
+  , harnessCredentialRevocationReceipt
+  , harnessCredentialSlotOperationId
+  , harnessCredentialSlotScope
+  , mkHarnessCredentialLineage
+  , reconcileFirstReconcileProviderRecovery
+  , resolveHarnessCredentialSlot
+  , resolveHarnessCredentialSubmission
+  , resumePendingHarnessCredentialOperation
+  )
 import Prodbox.Lifecycle.CredentialProvisioner.ImageIdentity
   ( credentialProvisionerRuntimeManifestDigest
   )
@@ -350,10 +425,10 @@ import Prodbox.Lifecycle.CredentialProvisioner.KubernetesJob
   , credentialProvisionerKubectlArguments
   )
 import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
-  ( AwsCredentialClass (LifecycleProviderCredential)
+  ( AwsCredentialClass (..)
   , FirstReconcilePermitBinding
   , FirstReconcilePlanAction (..)
-  , OperatorMaterialAction (InstallOperatorMaterial)
+  , OperatorMaterialAction (..)
   , OperatorMaterialIngressSchema (AwsAdminProvisioningIngress)
   , OperatorMaterialPermit
   , OperatorMaterialRequest
@@ -529,6 +604,38 @@ namedManifestObject _ _ = Nothing
 credentialProvisionerAwsAdminAuthoritySuite :: SuiteBuilder ()
 credentialProvisionerAwsAdminAuthoritySuite =
   describe "AWS-admin Credential Provisioner Authority" $ do
+    awsAdminRevocationOrderCases
+    awsAdminTargetAgentRevocationCases
+    harnessCredentialLineageCases
+    workerReceiptActionCases
+    forM_
+      [ (ProviderCredentialRecoveryIdle, True)
+      , (ProviderCredentialRecoveryPending "credential/exact-operation", True)
+      , (ProviderCredentialRecoveryServing 6 (Text.replicate 64 "a"), True)
+      , (ProviderCredentialRecoveryRetired 6 (Text.replicate 64 "b"), True)
+      , (ProviderCredentialRecoveryClosed, True)
+      , (ProviderCredentialRecoveryRevoked, True)
+      , (ProviderCredentialRecoveryRecorded 6, True)
+      , (ProviderCredentialRecoveryRecorded 0, False)
+      , (ProviderCredentialRecoveryServing 0 (Text.replicate 64 "a"), False)
+      , (ProviderCredentialRecoveryRetired 0 (Text.replicate 64 "a"), False)
+      , (ProviderCredentialRecoveryRetired 6 "malformed scope", False)
+      , (ProviderCredentialRecoveryPending "malformed operation", False)
+      ]
+      $ \(view, valid) ->
+        it ("validates non-authorizing retained credential metadata: " <> show view) $ do
+          let client = mkAwsAdminProvisionerClient $ \request -> pure $ case request of
+                ObserveAwsAdminProviderCredentialRecovery -> Right (AwsAdminProviderCredentialRecoveryObserved view)
+                _ -> Right (AwsAdminProvisioningRefused "unexpected request")
+          answer <- observeAwsAdminProviderCredentialRecoveryView client
+          case (valid, answer) of
+            (True, Right actual) -> actual `shouldBe` view
+            (False, Left _) -> pure ()
+            _ -> expectationFailure (show answer)
+    it "proves legacy credential quiescence only from complete bounded namespace inventories" $ do
+      assertions <- fixedAwsAdminCredentialQuiescenceRegression
+      forM_ assertions $ \(name, passed) ->
+        if passed then pure () else expectationFailure (Text.unpack name)
     it "Sprint 2.109 renders the closed non-secret execution substrate" $ do
       let rendered =
             LazyByteString.toStrict
@@ -564,11 +671,11 @@ credentialProvisionerAwsAdminAuthoritySuite =
                 fixtureCredentialProvisionerSubstrateManifest
       authorityObserver
         `shouldSatisfy` ByteString.isInfixOf
-          "\"resources\":[\"jobs\"],\"verbs\":[\"get\"]"
+          "\"resources\":[\"jobs\"],\"verbs\":[\"get\",\"list\"]"
       authorityObserver
         `shouldSatisfy` ByteString.isInfixOf
-          "\"resources\":[\"pods\"],\"verbs\":[\"get\"]"
-      forM_ ["create", "delete", "list", "patch", "update", "watch"] $ \verb ->
+          "\"resources\":[\"pods\"],\"verbs\":[\"get\",\"list\"]"
+      forM_ ["create", "delete", "patch", "update", "watch", "pods/attach", "pods/log"] $ \verb ->
         authorityObserver
           `shouldSatisfy` (not . ByteString.isInfixOf (TextEncoding.encodeUtf8 verb))
       credentialProvisionerSubstrateMatches
@@ -704,6 +811,7 @@ credentialProvisionerAwsAdminAuthoritySuite =
               (pure (Right signingTime))
               (const (Right repository))
               exactPreparedLifecycle
+              fixtureProviderCredentialBoundary
               authoritySigner
               emptyHandler
           delivery = verifiedCallerSlotFixture CallerCredentialProvisioner 1
@@ -755,6 +863,49 @@ credentialProvisionerAwsAdminAuthoritySuite =
           completeBody
       fmap fst completionResult `shouldBe` Just ReplyConflict
 
+    forM_ [False, True] $ \providerUnavailable ->
+      forM_ [False, True] $ \journalUnavailable ->
+        it
+          ( "settles first-reconcile only after independent serving proof: "
+              <> show (providerUnavailable, journalUnavailable)
+          )
+          $ do
+            events <- newIORef ([] :: [Text])
+            (repository, _) <- freshRepository False
+            let lifecycle =
+                  exactPreparedLifecycle
+                    { settleAwsAdminFirstReconcileRecovery = do
+                        modifyIORef' events (<> ["journal"])
+                        pure (if journalUnavailable then Left "journal unavailable" else Right ())
+                    }
+                provider =
+                  fixtureProviderCredentialBoundary
+                    { confirmAwsAdminProviderCredentialServing = do
+                        modifyIORef' events (<> ["provider"])
+                        pure (if providerUnavailable then Left "Agent unavailable" else Right ())
+                    }
+                handler =
+                  awsAdminProvisionerAuthenticatedHandler
+                    (256 * 1024)
+                    fixtureReadyRoleReadinessSource
+                    (pure (Right (authorityTimeFromMicros 1000000)))
+                    (const (Right repository))
+                    lifecycle
+                    provider
+                    authoritySigner
+                    emptyHandler
+                body = LazyByteString.toStrict (encodeControlPlaneRequest SettleAwsAdminFirstReconcileRecovery)
+            response <-
+              authenticatedHandlerHandle
+                handler
+                (verifiedCallerSlotFixture CallerOperatorCli 1)
+                LifecycleAwsAdminProvisioner
+                body
+            fmap fst response
+              `shouldBe` Just (if providerUnavailable || journalUnavailable then ReplyServiceUnavailable else ReplyOk)
+            readIORef events
+              `shouldReturn` if providerUnavailable then ["provider"] else ["provider", "journal"]
+
     it "replays an exact completed operation without deadline-gated target preparation" $ do
       permit <- authorizedPermitFor permitIntent
       let receipt = must (decodeAwsAdminWorkerReceipt (installedWorkerReceiptBytes permitIntent))
@@ -776,6 +927,7 @@ credentialProvisionerAwsAdminAuthoritySuite =
               (pure (Left "completed replay must not read Authority time"))
               (const (Right repository))
               lifecycle
+              fixtureProviderCredentialBoundary
               authoritySigner
               emptyHandler
           body =
@@ -798,6 +950,266 @@ credentialProvisionerAwsAdminAuthoritySuite =
             (LazyByteString.fromStrict responseBody)
             `shouldBe` Right (AwsAdminProvisioningPrepared coordinatorChallenge)
       readIORef events `shouldReturn` ["phase"]
+
+    forM_ [False, True] $ \prepareReplay ->
+      it
+        ( "AWS-ADMIN-COMPLETION-JOURNAL-REPLAY-2026-10-21: refuses completed replay before journal confirmation; prepare="
+            <> show prepareReplay
+        )
+        $ do
+          permit <- authorizedPermitFor permitIntent
+          world <- newScriptedAwsAdminWorld (initialAwsAdminExecutionJournal permit) [] Nothing
+          executed <-
+            runScriptedAwsAdminPermit
+              world
+              permit
+              (scriptedTargetReceipt "vault:v1:journal-replay" permitIntent)
+          let receipt = must executed
+          (repository, state) <- freshRepository False
+          writeIORef state (0, AwsAdminAuthorityCompleted permit receipt)
+          journalReads <- newIORef (0 :: Int)
+          settlements <- newIORef (0 :: Int)
+          let lifecycle =
+                exactPreparedLifecycle
+                  { commitAwsAdminFirstReconcileReceipt = \_ _ -> do
+                      modifyIORef' journalReads (+ 1)
+                      pure (Left "fixture first-reconcile journal unavailable")
+                  }
+              boundary =
+                fixtureProviderCredentialBoundary
+                  { settleAwsAdminProviderCredential = \_ -> do
+                      modifyIORef' settlements (+ 1)
+                      pure (Right ())
+                  }
+              handler =
+                awsAdminProvisionerAuthenticatedHandler
+                  (256 * 1024)
+                  fixtureReadyRoleReadinessSource
+                  (pure (Left "completed replay must not renew"))
+                  (const (Right repository))
+                  lifecycle
+                  boundary
+                  authoritySigner
+                  emptyHandler
+              operation = operatorMaterialOperationIdText (awsAdminPermitIntentOperationId permitIntent)
+              request =
+                if prepareReplay
+                  then PrepareAwsAdminProvisioning (encodePermitIntent permitIntent)
+                  else ObserveAwsAdminProvisioning operation
+              body = LazyByteString.toStrict (encodeControlPlaneRequest request)
+          forM_ [False, True] $ \_ -> do
+            response <-
+              authenticatedHandlerHandle
+                handler
+                (verifiedCallerSlotFixture CallerOperatorCli 1)
+                LifecycleAwsAdminProvisioner
+                body
+            fmap fst response `shouldBe` Just ReplyServiceUnavailable
+          metadata <-
+            authenticatedHandlerHandle
+              handler
+              (verifiedCallerSlotFixture CallerOperatorCli 1)
+              LifecycleAwsAdminProvisioner
+              (LazyByteString.toStrict (encodeControlPlaneRequest (ObserveAwsAdminProvisioningMetadata operation)))
+          case metadata of
+            Just (ReplyOk, bytes) -> case decodeControlPlaneResponse (256 * 1024) (LazyByteString.fromStrict bytes) of
+              Right (AwsAdminProvisioningObserved observed) -> awsAdminObservedPhase observed `shouldBe` AwsAdminProvisionerCompleted
+              other -> expectationFailure (show other)
+            other -> expectationFailure (show other)
+          readIORef journalReads `shouldReturn` 2
+          readIORef settlements `shouldReturn` 0
+          readIORef state `shouldReturn` (0, AwsAdminAuthorityCompleted permit receipt)
+
+    it "Sprint 6.5 validates the closed expired-attestation recovery matrix" $ do
+      let retained = permitIntent
+          binding = renewalJobBinding retained
+          replacement =
+            must
+              ( renewAwsAdminProviderPermitIntent
+                  (authorityTimeFromMicros 120000000)
+                  imageDigest
+                  targetAgent
+                  retained
+              )
+          cases =
+            must
+              ( fixedAwsAdminAttestedRecoveryRegression
+                  (authorityTimeFromMicros 60000000)
+                  retained
+                  binding
+                  replacement
+              )
+      length cases `shouldBe` 16
+      forM_ cases $ \(name, passed) ->
+        if passed then pure () else expectationFailure (Text.unpack name)
+
+    forM_
+      [ AwsAdminAuthorizedRecoveryJobPresent
+      , AwsAdminAuthorizedRecoveryJobUnobservable
+      , AwsAdminAuthorizedRecoveryPodPresent
+      , AwsAdminAuthorizedRecoveryPodUnobservable
+      ]
+      $ \cause ->
+        it ("Sprint 6.5 refuses expired attestation before target publication: " <> show cause) $ do
+          let retained = permitIntent
+              binding = renewalJobBinding retained
+              replacement =
+                must
+                  ( renewAwsAdminProviderPermitIntent
+                      (authorityTimeFromMicros 120000000)
+                      imageDigest
+                      targetAgent
+                      retained
+                  )
+              current = AwsAdminAuthorityAttested retained binding
+          (repository, state) <- freshRepository False
+          writeIORef state (0, current)
+          events <- newIORef ([] :: [Text])
+          let lifecycle =
+                exactPreparedLifecycle
+                  { proveAwsAdminAttestedAttemptRecovery = \now observedIntent observedBinding -> do
+                      now `shouldBe` authorityTimeFromMicros 60000000
+                      observedIntent `shouldBe` retained
+                      observedBinding `shouldBe` binding
+                      modifyIORef' events (<> ["absence-proof"])
+                      pure (Left cause)
+                  , prepareAndReadBackAwsAdminPreparedTarget = \_ _ -> do
+                      modifyIORef' events (<> ["target-prepare"])
+                      pure (Right replacement)
+                  }
+              handler =
+                awsAdminProvisionerAuthenticatedHandler
+                  (256 * 1024)
+                  fixtureReadyRoleReadinessSource
+                  (pure (Right (authorityTimeFromMicros 60000000)))
+                  (const (Right repository))
+                  lifecycle
+                  fixtureProviderCredentialBoundary
+                  authoritySigner
+                  emptyHandler
+              body =
+                LazyByteString.toStrict
+                  (encodeControlPlaneRequest (PrepareAwsAdminProvisioning (encodePermitIntent replacement)))
+          response <-
+            authenticatedHandlerHandle
+              handler
+              (verifiedCallerSlotFixture CallerOperatorCli 1)
+              LifecycleAwsAdminProvisioner
+              body
+          fmap fst response `shouldBe` Just ReplyServiceUnavailable
+          readIORef state `shouldReturn` (0, current)
+          readIORef events `shouldReturn` ["absence-proof"]
+
+    it "Sprint 6.5 independently confirms completed worker journals without repeating the worker" $ do
+      permit <- authorizedPermitFor permitIntent
+      firstWorld <- newScriptedAwsAdminWorld (initialAwsAdminExecutionJournal permit) [] Nothing
+      changedWorld <- newScriptedAwsAdminWorld (initialAwsAdminExecutionJournal permit) [] Nothing
+      firstResult <-
+        runScriptedAwsAdminPermit
+          firstWorld
+          permit
+          (scriptedTargetReceipt "vault:v1:journal-first" permitIntent)
+      changedResult <-
+        runScriptedAwsAdminPermit
+          changedWorld
+          permit
+          (scriptedTargetReceipt "vault:v1:journal-changed" permitIntent)
+      firstResult `shouldSatisfy` either (const False) (const True)
+      changedResult `shouldSatisfy` either (const False) (const True)
+      completed <- readIORef (scriptedWorldJournal firstWorld)
+      changed <- readIORef (scriptedWorldJournal changedWorld)
+      let assertions = must (fixedAwsAdminCompletedExecutionRegression permit completed changed)
+      length assertions `shouldBe` 7
+      forM_ assertions $ \(name, passed) ->
+        if passed then pure () else expectationFailure (Text.unpack name)
+      foreignPermit <- authorizedPermitFor revocationPermitIntent
+      fixedAwsAdminCompletedExecutionRegression foreignPermit completed changed
+        `shouldSatisfy` either (const True) (const False)
+
+    forM_
+      [ JournalComplete
+      , JournalMissing
+      , JournalUnavailable
+      , JournalForeignReceipt
+      , JournalAdmissionUnavailable
+      ]
+      $ \scenario ->
+        it ("Sprint 6.5 observes journal completion through the actual outbox endpoint: " <> show scenario) $ do
+          permit <- authorizedPermitFor permitIntent
+          world <- newScriptedAwsAdminWorld (initialAwsAdminExecutionJournal permit) [] Nothing
+          executed <-
+            runScriptedAwsAdminPermit
+              world
+              permit
+              (scriptedTargetReceipt "vault:v1:journal-endpoint" permitIntent)
+          let receipt = must executed
+              wrongReceipt = must (decodeAwsAdminWorkerReceipt (workerReceiptBytesForKind permitIntent 2))
+          (repository, state) <- freshRepository False
+          writeIORef state (0, AwsAdminAuthorityAuthorized permit)
+          events <- newIORef ([] :: [Text])
+          let lifecycle =
+                exactPreparedLifecycle
+                  { observeAwsAdminCompletedWorkerReceipt = \selected -> do
+                      selected `shouldBe` permit
+                      modifyIORef' events (<> ["worker-journal"])
+                      pure $ case scenario of
+                        JournalComplete -> Right (Just receipt)
+                        JournalAdmissionUnavailable -> Right (Just receipt)
+                        JournalMissing -> Right Nothing
+                        JournalUnavailable -> Left "fixture journal unavailable"
+                        JournalForeignReceipt -> Right (Just wrongReceipt)
+                  , commitAwsAdminFirstReconcileReceipt = \_ _ -> do
+                      modifyIORef' events (<> ["first-reconcile"])
+                      pure (Right ())
+                  }
+              boundary =
+                fixtureProviderCredentialBoundary
+                  { settleAwsAdminProviderCredential = \_ -> do
+                      modifyIORef' events (<> ["provider-settle"])
+                      pure $ case scenario of
+                        JournalAdmissionUnavailable -> Left "fixture admission unavailable"
+                        _ -> Right ()
+                  }
+              handler =
+                awsAdminProvisionerAuthenticatedHandler
+                  (256 * 1024)
+                  fixtureReadyRoleReadinessSource
+                  (pure (Left "journal replay must not renew the permit"))
+                  (const (Right repository))
+                  lifecycle
+                  boundary
+                  authoritySigner
+                  emptyHandler
+              operation = operatorMaterialOperationIdText (awsAdminPermitIntentOperationId permitIntent)
+              body = LazyByteString.toStrict (encodeControlPlaneRequest (ObserveAwsAdminProvisioning operation))
+              expectedStatus = case scenario of
+                JournalComplete -> ReplyOk
+                JournalMissing -> ReplyOk
+                JournalUnavailable -> ReplyServiceUnavailable
+                JournalForeignReceipt -> ReplyConflict
+                JournalAdmissionUnavailable -> ReplyServiceUnavailable
+              completed = scenario == JournalComplete || scenario == JournalAdmissionUnavailable
+          response <-
+            authenticatedHandlerHandle
+              handler
+              (verifiedCallerSlotFixture CallerOperatorCli 1)
+              LifecycleAwsAdminProvisioner
+              body
+          fmap fst response `shouldBe` Just expectedStatus
+          (snd <$> readIORef state)
+            `shouldReturn` if completed then AwsAdminAuthorityCompleted permit receipt else AwsAdminAuthorityAuthorized permit
+          readIORef events
+            `shouldReturn` if completed then ["worker-journal", "first-reconcile", "provider-settle"] else ["worker-journal"]
+          case (scenario, response) of
+            (JournalComplete, Just (_, payload)) ->
+              case decodeControlPlaneResponse
+                awsAdminProvisionerResponseMaximumBytes
+                (LazyByteString.fromStrict payload) of
+                Right (AwsAdminProvisioningObserved observed) -> do
+                  awsAdminObservedPhase observed `shouldBe` AwsAdminProvisionerCompleted
+                  awsAdminObservedReceipt observed `shouldBe` Just (encodeAwsAdminWorkerReceipt receipt)
+                _ -> expectationFailure "completed journal was not exposed as the exact completed operation"
+            _ -> pure ()
 
     it "Sprint 2.106 renders every prepared-target failure as one unique closed payload-free cause" $ do
       map fst preparedTargetCauseLabels
@@ -2601,6 +3013,7 @@ credentialProvisionerAwsAdminAuthoritySuite =
               (pure (Right renewalNow))
               (const (Right repository))
               lifecycle
+              fixtureProviderCredentialBoundary
               authoritySigner
               emptyHandler
           body =
@@ -2658,6 +3071,7 @@ credentialProvisionerAwsAdminAuthoritySuite =
               (pure (Right signingTime))
               (const (Left "repository must not be selected for continuation observation"))
               lifecycle
+              fixtureProviderCredentialBoundary
               authoritySigner
               emptyHandler
           requestBody =
@@ -3092,6 +3506,1348 @@ credentialProvisionerAwsAdminAuthoritySuite =
         filter (== "create-key") effects `shouldBe` []
         readIORef (scriptedWorldKeys world) >>= (`shouldBe` [resumedKey])
 
+data ServingRepairFault
+  = ServingRepairNormal
+  | ServingRepairCoordinateUnavailable
+  | ServingRepairReceiptMismatch
+  | ServingRepairAgentUnavailable
+  | ServingRepairTargetPresent
+  | ServingRepairRepeated
+  | ServingRepairInvalidIntent
+  | ServingRepairOrdinarySubmission
+  deriving (Eq, Show)
+
+-- | Revoke ordering is tested at the production execution algebra's boundary,
+-- including every failed IAM gate, rather than through a second implementation.
+harnessCredentialLineageCases :: SuiteBuilder ()
+harnessCredentialLineageCases = describe "Sprint 5.51 per-invocation credential slots" $ do
+  forM_ [False, True] $ \servingMissing ->
+    forM_ [False, True] $ \failReplacement ->
+      it
+        ( "recovers first-reconcile retirement durably; serving missing/retry="
+            <> show (servingMissing, failReplacement)
+        )
+        $ do
+          let retired = ProviderCredentialRecoveryRetired 6 (Text.replicate 64 "b")
+              initial = if servingMissing then ProviderCredentialRecoveryServing 6 (Text.replicate 64 "a") else retired
+          view <- newIORef initial
+          target <- newIORef Nothing
+          failed <- newIORef False
+          events <- newIORef ([] :: [Text])
+          submitted <- newIORef []
+          let client = mkAwsAdminProvisionerClient call
+              call request = case request of
+                ObserveAwsAdminProviderCredentialOperation -> pure (Right (AwsAdminProviderCredentialOperationObserved Nothing))
+                ObserveAwsAdminProviderCredentialRecovery -> Right . AwsAdminProviderCredentialRecoveryObserved <$> readIORef view
+                SettleAwsAdminFirstReconcileRecovery -> do
+                  modifyIORef' events (<> ["settle"])
+                  pure (Right AwsAdminFirstReconcileRecoverySettled)
+                _ -> pure (Left AwsAdminProvisionerClientUnexpectedResponse)
+              coordinate intent = do
+                modifyIORef' submitted (<> [intent])
+                case awsAdminPermitIntentAction intent of
+                  RevokeOperatorMaterial -> do
+                    (result, _) <- runRevocationScriptFor intent RevocationSucceeds
+                    writeIORef view retired
+                    writeIORef target Nothing
+                    pure (first show result)
+                  _ -> do
+                    alreadyFailed <- readIORef failed
+                    if failReplacement && not alreadyFailed
+                      then writeIORef failed True >> pure (Left "replacement interrupted")
+                      else do
+                        permit <- authorizedPermitFor intent
+                        world <- newScriptedAwsAdminWorld (initialAwsAdminExecutionJournal permit) [] Nothing
+                        result <- runScriptedAwsAdminPermit world permit (scriptedTargetReceipt "vault:v1:lineage" intent)
+                        let metadata =
+                              (lineageMetadata 1)
+                                { targetMaterialObservedRequestDigest =
+                                    targetValueDigestText (awsAdminPermitIntentRequestDigest intent)
+                                , targetMaterialObservedActionDigest = targetValueDigestText receiptDigest
+                                , targetMaterialObservedPodUid = "credential-provisioner-pod-1"
+                                }
+                        writeIORef target (Just metadata)
+                        writeIORef view (ProviderCredentialRecoveryServing 1 (Text.replicate 64 "c"))
+                        pure (first show result)
+              run =
+                reconcileFirstReconcileProviderRecovery
+                  client
+                  lineageParameters
+                  iamParameters
+                  (Right <$> readIORef target)
+                  (pure 4000000)
+                  coordinate
+                  (modifyIORef' events (<> ["members"]) >> pure (Right ()))
+          firstResult <- run
+          if failReplacement
+            then do
+              firstResult `shouldBe` Left "replacement interrupted"
+              readIORef events `shouldReturn` []
+              readIORef view `shouldReturn` retired
+              run `shouldReturn` Right ()
+            else firstResult `shouldBe` Right ()
+          readIORef events `shouldReturn` ["members", "settle"]
+          intents <- readIORef submitted
+          let installs = filter ((== InstallOperatorMaterial) . awsAdminPermitIntentAction) intents
+          length installs `shouldBe` if failReplacement then 2 else 1
+          case installs of
+            [] -> expectationFailure "first-reconcile recovery submitted no install"
+            installed : rest ->
+              map awsAdminPermitIntentOperationId rest
+                `shouldSatisfy` all (== awsAdminPermitIntentOperationId installed)
+          map awsAdminPermitIntentGeneration installs
+            `shouldBe` replicate (length installs) (must (mkCredentialGeneration 1))
+          length (filter ((== RevokeOperatorMaterial) . awsAdminPermitIntentAction) intents)
+            `shouldBe` if servingMissing then 1 else 0
+  forM_
+    [ ProviderCredentialRecoveryClosed
+    , ProviderCredentialRecoveryRevoked
+    , ProviderCredentialRecoveryRecorded 6
+    , ProviderCredentialRecoveryPending "unresolved"
+    ]
+    $ \view ->
+      it ("refuses closed or still-pending first-reconcile recovery: " <> show view) $ do
+        events <- newIORef ([] :: [Text])
+        let client = mkAwsAdminProvisionerClient $ \request -> pure $ case request of
+              ObserveAwsAdminProviderCredentialOperation -> Right (AwsAdminProviderCredentialOperationObserved Nothing)
+              ObserveAwsAdminProviderCredentialRecovery -> Right (AwsAdminProviderCredentialRecoveryObserved view)
+              _ -> Left AwsAdminProvisionerClientUnexpectedResponse
+        answer <-
+          reconcileFirstReconcileProviderRecovery
+            client
+            lineageParameters
+            iamParameters
+            (pure (Right Nothing))
+            (pure 4000000)
+            (\_ -> modifyIORef' events (<> ["coordinate"]) >> pure (Left "unexpected"))
+            (modifyIORef' events (<> ["members"]) >> pure (Right ()))
+        answer `shouldSatisfy` either (const True) (const False)
+        readIORef events `shouldReturn` []
+  forM_ [1, 6] $ \retainedGenerationValue ->
+    forM_ [False, True] $ \retired ->
+      forM_ [HarnessCredentialInstall, HarnessCredentialRevoke] $ \slot ->
+        it
+          ("uses retained generation for an absent Target: " <> show (retainedGenerationValue, retired, slot))
+          $ do
+            let view =
+                  if retired
+                    then ProviderCredentialRecoveryRetired retainedGenerationValue (Text.replicate 64 "a")
+                    else ProviderCredentialRecoveryServing retainedGenerationValue (Text.replicate 64 "a")
+                client = mkAwsAdminProvisionerClient $ \request -> pure $ case request of
+                  ObserveAwsAdminProvisioning _ -> Left (AwsAdminProvisionerClientRefused "operation-not-found")
+                  ObserveAwsAdminProviderCredentialRecovery -> Right (AwsAdminProviderCredentialRecoveryObserved view)
+                  _ -> Left AwsAdminProvisionerClientUnexpectedResponse
+            answer <-
+              resolveHarnessCredentialSlot
+                client
+                lineageParameters
+                iamParameters
+                lineageFixture
+                slot
+                Nothing
+                4000000
+            case (retired, slot, answer) of
+              (False, HarnessCredentialInstall, Right (RepairHarnessCredentialTarget intent)) -> do
+                awsAdminPermitIntentAction intent `shouldBe` RevokeOperatorMaterial
+                credentialGenerationValue (awsAdminPermitIntentGeneration intent) `shouldBe` retainedGenerationValue
+                operatorMaterialOperationIdText (awsAdminPermitIntentOperationId intent)
+                  `shouldNotBe` must (harnessCredentialSlotOperationId lineageFixture HarnessCredentialRevoke)
+                operatorMaterialOperationIdText (awsAdminPermitIntentOperationId intent)
+                  `shouldNotBe` must (harnessCredentialSlotOperationId lineageFixture HarnessCredentialInstall)
+              (_, HarnessCredentialRevoke, Right (SubmitHarnessCredentialIntent intent)) -> do
+                awsAdminPermitIntentAction intent `shouldBe` RevokeOperatorMaterial
+                credentialGenerationValue (awsAdminPermitIntentGeneration intent) `shouldBe` retainedGenerationValue
+              (True, HarnessCredentialInstall, Right (SubmitHarnessCredentialIntent intent)) -> do
+                awsAdminPermitIntentAction intent `shouldBe` InstallOperatorMaterial
+                credentialGenerationValue (awsAdminPermitIntentGeneration intent) `shouldBe` 1
+              _ -> expectationFailure (show answer)
+  it "changes the serving-repair coordinate across retained lineages and replays the same lineage" $ do
+    let resolve scope =
+          resolveHarnessCredentialSlot
+            ( mkAwsAdminProvisionerClient $ \request -> pure $ case request of
+                ObserveAwsAdminProvisioning _ -> Left (AwsAdminProvisionerClientRefused "operation-not-found")
+                ObserveAwsAdminProviderCredentialRecovery ->
+                  Right
+                    (AwsAdminProviderCredentialRecoveryObserved (ProviderCredentialRecoveryServing 1 scope))
+                _ -> Left AwsAdminProvisionerClientUnexpectedResponse
+            )
+            lineageParameters
+            iamParameters
+            lineageFixture
+            HarnessCredentialInstall
+            Nothing
+            4000000
+        operation (Right (RepairHarnessCredentialTarget intent)) = operatorMaterialOperationIdText (awsAdminPermitIntentOperationId intent)
+        operation other = error (show other)
+    originalOperation <- operation <$> resolve (Text.replicate 64 "a")
+    replay <- operation <$> resolve (Text.replicate 64 "a")
+    successor <- operation <$> resolve (Text.replicate 64 "b")
+    replay `shouldBe` originalOperation
+    successor `shouldNotBe` originalOperation
+  it "proposes a cascade successor without replacing the Authority's predecessor proof" $ do
+    let client = mkAwsAdminProvisionerClient $ \request -> pure $ case request of
+          ObserveAwsAdminProvisioning _ -> Left (AwsAdminProvisionerClientRefused "operation-not-found")
+          ObserveAwsAdminProviderCredentialRecovery -> Right (AwsAdminProviderCredentialRecoveryObserved ProviderCredentialRecoveryRevoked)
+          _ -> Left AwsAdminProvisionerClientUnexpectedResponse
+    installed <-
+      resolveHarnessCredentialSlot
+        client
+        lineageParameters
+        iamParameters
+        lineageFixture
+        HarnessCredentialInstall
+        Nothing
+        4000000
+    case installed of
+      Right (SubmitHarnessCredentialIntent intent) -> do
+        awsAdminPermitIntentAction intent `shouldBe` InstallOperatorMaterial
+        credentialGenerationValue (awsAdminPermitIntentGeneration intent) `shouldBe` 1
+      other -> expectationFailure (show other)
+    revoked <-
+      resolveHarnessCredentialSlot
+        client
+        lineageParameters
+        iamParameters
+        lineageFixture
+        HarnessCredentialRevoke
+        Nothing
+        4000000
+    revoked `shouldBe` Left HarnessCredentialAuthorityClosed
+  it "permits only the recorded generation's final cascade revoke proposal" $ do
+    let client = mkAwsAdminProvisionerClient $ \request -> pure $ case request of
+          ObserveAwsAdminProvisioning _ -> Left (AwsAdminProvisionerClientRefused "operation-not-found")
+          ObserveAwsAdminProviderCredentialRecovery -> Right (AwsAdminProviderCredentialRecoveryObserved (ProviderCredentialRecoveryRecorded 6))
+          _ -> Left AwsAdminProvisionerClientUnexpectedResponse
+    proposed <-
+      resolveHarnessCredentialSlot
+        client
+        lineageParameters
+        iamParameters
+        lineageFixture
+        HarnessCredentialRevoke
+        Nothing
+        4000000
+    case proposed of
+      Right (SubmitHarnessCredentialIntent intent) -> do
+        awsAdminPermitIntentAction intent `shouldBe` RevokeOperatorMaterial
+        credentialGenerationValue (awsAdminPermitIntentGeneration intent) `shouldBe` 6
+      other -> expectationFailure (show other)
+    installed <-
+      resolveHarnessCredentialSlot
+        client
+        lineageParameters
+        iamParameters
+        lineageFixture
+        HarnessCredentialInstall
+        Nothing
+        4000000
+    installed `shouldBe` Left HarnessCredentialAuthorityClosed
+  forM_ [ProviderCredentialRecoveryPending "other/exact-operation", ProviderCredentialRecoveryClosed] $ \view ->
+    forM_ [HarnessCredentialInstall, HarnessCredentialRevoke] $ \slot ->
+      it ("refuses a fresh invocation through occupied or closed admission: " <> show (view, slot)) $ do
+        let client = mkAwsAdminProvisionerClient $ \request -> pure $ case request of
+              ObserveAwsAdminProvisioning _ -> Left (AwsAdminProvisionerClientRefused "operation-not-found")
+              ObserveAwsAdminProviderCredentialRecovery -> Right (AwsAdminProviderCredentialRecoveryObserved view)
+              _ -> Left AwsAdminProvisionerClientUnexpectedResponse
+        answer <-
+          resolveHarnessCredentialSlot
+            client
+            lineageParameters
+            iamParameters
+            lineageFixture
+            slot
+            Nothing
+            4000000
+        answer `shouldSatisfy` either (const True) (const False)
+  forM_
+    [ ServingRepairNormal
+    , ServingRepairCoordinateUnavailable
+    , ServingRepairReceiptMismatch
+    , ServingRepairAgentUnavailable
+    , ServingRepairTargetPresent
+    , ServingRepairRepeated
+    , ServingRepairInvalidIntent
+    , ServingRepairOrdinarySubmission
+    ]
+    $ \fault ->
+      it
+        ("bounds serving credential repair and observes absence before a fresh submission: " <> show fault)
+        $ do
+          (revokeIntent, _, revokedReceipt) <- completedLineageRevoke
+          (installIntent, _, installedReceipt, _) <- completedLineageInstall
+          resolves <- newIORef (0 :: Int)
+          mutations <- newIORef (0 :: Int)
+          observations <- newIORef (0 :: Int)
+          let resolve _ = do
+                modifyIORef' resolves (+ 1)
+                count <- readIORef resolves
+                pure
+                  ( Right $
+                      if fault == ServingRepairOrdinarySubmission
+                        then SubmitHarnessCredentialIntent installIntent
+                        else
+                          if fault == ServingRepairInvalidIntent
+                            then RepairHarnessCredentialTarget installIntent
+                            else
+                              if count == 1 || fault == ServingRepairRepeated
+                                then RepairHarnessCredentialTarget revokeIntent
+                                else SubmitHarnessCredentialIntent installIntent
+                  )
+              coordinate _ = do
+                modifyIORef' mutations (+ 1)
+                pure $ case fault of
+                  ServingRepairCoordinateUnavailable -> Left "coordinator unobservable"
+                  ServingRepairReceiptMismatch -> Right installedReceipt
+                  _ -> Right revokedReceipt
+              observe = do
+                modifyIORef' observations (+ 1)
+                pure $ case fault of
+                  ServingRepairAgentUnavailable -> Left "Agent unobservable"
+                  ServingRepairTargetPresent -> Right (Just (lineageMetadata 1))
+                  _ -> Right Nothing
+              ordinary = fault == ServingRepairOrdinarySubmission
+              invalid = fault == ServingRepairInvalidIntent
+              beforeObserve =
+                fault `elem` [ServingRepairCoordinateUnavailable, ServingRepairReceiptMismatch]
+                  || invalid
+                  || ordinary
+          answer <- resolveHarnessCredentialSubmission resolve coordinate observe Nothing
+          if fault `elem` [ServingRepairNormal, ServingRepairOrdinarySubmission]
+            then answer `shouldBe` Right (SubmitHarnessCredentialIntent installIntent)
+            else answer `shouldSatisfy` either (const True) (const False)
+          readIORef mutations `shouldReturn` if invalid || ordinary then 0 else 1
+          readIORef observations `shouldReturn` if beforeObserve then 0 else 1
+          readIORef resolves
+            `shouldReturn` if fault `elem` [ServingRepairNormal, ServingRepairRepeated] then 2 else 1
+  it "Sprint 6.5 preserves the confirmed fixed-slot revocation receipt" $ do
+    (_, _, receipt) <- completedLineageRevoke
+    let confirmed = must (confirmHarnessCredentialOutcome receipt Nothing)
+        evidence = must (confirmHarnessCredentialRevocation lineageFixture confirmed)
+    harnessCredentialRevocationOperationId evidence
+      `shouldBe` must (harnessCredentialSlotOperationId lineageFixture HarnessCredentialRevoke)
+    harnessCredentialRevocationReceipt evidence `shouldBe` receipt
+    -- One digest standing for both observations is refused by the epoch.
+    -- The narrowing keeps the actual worker attestation and Agent evidence.
+    harnessCredentialRevocationEpochReceipt evidence
+      `shouldSatisfy` either (const False) (const True)
+    harnessCredentialConfirmationGeneration confirmed
+      `shouldBe` credentialGenerationValue (awsAdminWorkerReceiptGeneration receipt)
+  it "Sprint 6.5 refuses another invocation's revocation receipt" $ do
+    (_, _, receipt) <- completedLineageRevoke
+    let confirmed = must (confirmHarnessCredentialOutcome receipt Nothing)
+        otherLineage = must (mkHarnessCredentialLineage "all" (ByteString.replicate 32 2))
+    confirmHarnessCredentialRevocation otherLineage confirmed
+      `shouldBe` Left HarnessCredentialForeignOperation
+  it "Sprint 6.5 withholds confirmation while the revoked Target is still observable" $ do
+    (_, _, receipt) <- completedLineageRevoke
+    confirmHarnessCredentialOutcome receipt (Just (lineageMetadata 1))
+      `shouldBe` Left HarnessCredentialRevokedTargetStillPresent
+  it "Sprint 6.5 cannot promote an installed confirmation into revocation evidence" $ do
+    (_, _, receipt, metadata) <- completedLineageInstall
+    let confirmed = must (confirmHarnessCredentialOutcome receipt (Just metadata))
+    confirmHarnessCredentialRevocation lineageFixture confirmed
+      `shouldBe` Left HarnessCredentialCompletedReceiptKindMismatch
+  forM_ [HarnessCredentialInstall, HarnessCredentialRevoke] $ \slot ->
+    forM_ [False, True] $ \expired ->
+      it
+        ("resumes globally reserved " <> show slot <> " before a fresh lineage; expired=" <> show expired)
+        $ do
+          original <- resolveLineageFixture slot (Just (lineageMetadata 6)) Nothing
+          let retained = submittedLineageIntent original
+              operation = operatorMaterialOperationIdText (awsAdminPermitIntentOperationId retained)
+              observation = lineageObservation AwsAdminProvisionerPrepared retained Nothing Nothing
+              parameters = lineageParameters {genesisIntentDeadline = authorityTimeFromMicros 120000000}
+              now = if expired then 60000000 else 4000000
+              client = mkAwsAdminProvisionerClient $ \request -> pure $ case request of
+                ObserveAwsAdminProviderCredentialOperation -> Right (AwsAdminProviderCredentialOperationObserved (Just operation))
+                ObserveAwsAdminProvisioning selected | selected == operation -> Right (AwsAdminProvisioningObserved observation)
+                _ -> Right (AwsAdminProvisioningRefused "unexpected request")
+          seen <- newIORef []
+          result <- resumePendingHarnessCredentialOperation client parameters iamParameters Nothing now $ \intent -> do
+            modifyIORef' seen (<> [intent])
+            pure (Right ())
+          result `shouldBe` Right True
+          observed <- readIORef seen
+          length observed `shouldBe` 1
+          forM_ observed $ \intent -> do
+            awsAdminPermitIntentOperationId intent `shouldBe` awsAdminPermitIntentOperationId retained
+            awsAdminPermitIntentPermitId intent `shouldBe` awsAdminPermitIntentPermitId retained
+            awsAdminPermitIntentRequestDigest intent `shouldBe` awsAdminPermitIntentRequestDigest retained
+            awsAdminPermitIntentGeneration intent `shouldBe` awsAdminPermitIntentGeneration retained
+            awsAdminPermitIntentAction intent `shouldBe` awsAdminPermitIntentAction retained
+            awsAdminPermitIntentDeadline intent
+              `shouldBe` if expired then genesisIntentDeadline parameters else awsAdminPermitIntentDeadline retained
+            awsAdminPreparedRenewalBindingsMatch retained intent `shouldBe` True
+  it "does not invoke recovery when the Authority has no reserved credential operation" $ do
+    called <- newIORef False
+    let client =
+          mkAwsAdminProvisionerClient
+            (\_ -> pure (Right (AwsAdminProviderCredentialOperationObserved Nothing)))
+    result <- resumePendingHarnessCredentialOperation client lineageParameters iamParameters Nothing 4000000 $ \_ -> do
+      writeIORef called True
+      pure (Right ())
+    result `shouldBe` Right False
+    readIORef called `shouldReturn` False
+  forM_ [False, True] $ \rotating ->
+    forM_ [Nothing, Just (lineageMetadata 1)] $ \target ->
+      it
+        ( "resumes an expired authorized parent through its revoke-only child; rotate="
+            <> show rotating
+            <> "; target="
+            <> show (fmap targetMaterialObservedGeneration target)
+        )
+        $ do
+          original <-
+            resolveLineageFixture
+              HarnessCredentialInstall
+              (if rotating then Just (lineageMetadata 6) else Nothing)
+              Nothing
+          let retained = submittedLineageIntent original
+              operation = operatorMaterialOperationIdText (awsAdminPermitIntentOperationId retained)
+              parameters = lineageParameters {genesisIntentDeadline = authorityTimeFromMicros 120000000}
+              client = mkAwsAdminProvisionerClient $ \request -> pure $ case request of
+                ObserveAwsAdminProviderCredentialOperation -> Right (AwsAdminProviderCredentialOperationObserved (Just operation))
+                ObserveAwsAdminProvisioning selected
+                  | selected == operation ->
+                      Right
+                        ( AwsAdminProvisioningObserved
+                            (lineageObservation AwsAdminProvisionerAuthorized retained Nothing Nothing)
+                        )
+                _ -> Right (AwsAdminProvisioningRefused "unexpected request")
+          seen <- newIORef []
+          result <- resumePendingHarnessCredentialOperation client parameters iamParameters target 60000000 $ \intent -> do
+            modifyIORef' seen (<> [intent])
+            pure (Right ())
+          result `shouldBe` Right True
+          observed <- readIORef seen
+          length observed `shouldBe` 1
+          forM_ observed $ \intent -> do
+            awsAdminPermitIntentAction intent `shouldBe` RevokeOperatorMaterial
+            awsAdminPermitIntentOperationId intent `shouldNotBe` awsAdminPermitIntentOperationId retained
+            credentialGenerationValue (awsAdminPermitIntentGeneration intent)
+              `shouldBe` maybe
+                (credentialGenerationValue (awsAdminPermitIntentGeneration retained))
+                targetMaterialObservedGeneration
+                target
+            awsAdminPermitIntentIamParameters intent `shouldBe` awsAdminPermitIntentIamParameters retained
+            awsAdminPermitIntentAuthorityScope intent `shouldBe` awsAdminPermitIntentAuthorityScope retained
+            awsAdminPermitIntentDeadline intent `shouldBe` genesisIntentDeadline parameters
+  forM_ [AwsAdminProvisionerAuthorized, AwsAdminProvisionerCompleted] $ \phase ->
+    it
+      ( "selects cleanup from retained metadata when normal completion cannot confirm its Target: "
+          <> show phase
+      )
+      $ do
+        original <- resolveLineageFixture HarnessCredentialInstall (Just (lineageMetadata 6)) Nothing
+        let retained = submittedLineageIntent original
+            operation = operatorMaterialOperationIdText (awsAdminPermitIntentOperationId retained)
+            parameters = lineageParameters {genesisIntentDeadline = authorityTimeFromMicros 120000000}
+            client = mkAwsAdminProvisionerClient $ \request -> pure $ case request of
+              ObserveAwsAdminProviderCredentialOperation -> Right (AwsAdminProviderCredentialOperationObserved (Just operation))
+              ObserveAwsAdminProvisioning _ -> Left (AwsAdminProvisionerClientUnavailable "current Target cannot confirm completion")
+              ObserveAwsAdminProvisioningMetadata selected
+                | selected == operation ->
+                    Right
+                      (AwsAdminProvisioningObserved (lineageObservation phase retained Nothing Nothing))
+              _ -> Right (AwsAdminProvisioningRefused "unexpected request")
+        seen <- newIORef []
+        result <- resumePendingHarnessCredentialOperation client parameters iamParameters Nothing 60000000 $ \intent -> do
+          modifyIORef' seen (<> [intent])
+          pure (Right ())
+        result `shouldBe` Right True
+        observed <- readIORef seen
+        length observed `shouldBe` 1
+        forM_ observed $ \intent -> do
+          awsAdminPermitIntentAction intent `shouldBe` RevokeOperatorMaterial
+          awsAdminPermitIntentOperationId intent `shouldNotBe` awsAdminPermitIntentOperationId retained
+          awsAdminPermitIntentGeneration intent `shouldBe` awsAdminPermitIntentGeneration retained
+  it "refuses an unobservable reserved operation before the coordinator" $ do
+    called <- newIORef False
+    let client =
+          mkAwsAdminProvisionerClient
+            (\_ -> pure (Right (AwsAdminProvisioningUnavailable "fixture unavailable")))
+    result <- resumePendingHarnessCredentialOperation client lineageParameters iamParameters Nothing 4000000 $ \_ -> do
+      writeIORef called True
+      pure (Right ())
+    result `shouldSatisfy` either (const True) (const False)
+    readIORef called `shouldReturn` False
+  it "refuses a neighboring retained operation before the coordinator" $ do
+    called <- newIORef False
+    let client = mkAwsAdminProvisionerClient $ \request -> pure $ case request of
+          ObserveAwsAdminProviderCredentialOperation -> Right (AwsAdminProviderCredentialOperationObserved (Just "fixture/foreign-operation"))
+          ObserveAwsAdminProvisioning _ ->
+            Right
+              ( AwsAdminProvisioningObserved
+                  (lineageObservation AwsAdminProvisionerPrepared permitIntent Nothing Nothing)
+              )
+          _ -> Right (AwsAdminProvisioningRefused "unexpected request")
+    result <- resumePendingHarnessCredentialOperation client lineageParameters iamParameters Nothing 4000000 $ \_ -> do
+      writeIORef called True
+      pure (Right ())
+    result `shouldSatisfy` either (const True) (const False)
+    readIORef called `shouldReturn` False
+  it "preserves recovery failure instead of admitting a fresh lineage" $ do
+    original <- resolveLineageFixture HarnessCredentialRevoke Nothing Nothing
+    let retained = submittedLineageIntent original
+        operation = operatorMaterialOperationIdText (awsAdminPermitIntentOperationId retained)
+        client = mkAwsAdminProvisionerClient $ \request -> pure $ case request of
+          ObserveAwsAdminProviderCredentialOperation -> Right (AwsAdminProviderCredentialOperationObserved (Just operation))
+          ObserveAwsAdminProvisioning _ ->
+            Right
+              ( AwsAdminProvisioningObserved
+                  (lineageObservation AwsAdminProvisionerPrepared retained Nothing Nothing)
+              )
+          _ -> Right (AwsAdminProvisioningRefused "unexpected request")
+    resumePendingHarnessCredentialOperation
+      client
+      lineageParameters
+      iamParameters
+      Nothing
+      4000000
+      (\_ -> pure (Left "fixture coordinator refusal"))
+      `shouldReturn` Left "fixture coordinator refusal"
+  it "separates invocations, substrates and install/revoke slots" $ do
+    let otherNonce = must (mkHarnessCredentialLineage "all" (ByteString.replicate 32 2))
+        otherSubstrate = must (mkHarnessCredentialLineage "aws-substrate-all" (ByteString.replicate 32 1))
+    harnessCredentialSlotScope lineageFixture HarnessCredentialInstall
+      `shouldNotBe` harnessCredentialSlotScope otherNonce HarnessCredentialInstall
+    harnessCredentialSlotScope lineageFixture HarnessCredentialInstall
+      `shouldNotBe` harnessCredentialSlotScope otherSubstrate HarnessCredentialInstall
+    harnessCredentialSlotOperationId lineageFixture HarnessCredentialInstall
+      `shouldNotBe` harnessCredentialSlotOperationId lineageFixture HarnessCredentialRevoke
+  it "refuses a malformed lineage without effects" $ do
+    mkHarnessCredentialLineage "" (ByteString.replicate 32 1)
+      `shouldSatisfy` either (const True) (const False)
+    mkHarnessCredentialLineage "all" "short nonce" `shouldSatisfy` either (const True) (const False)
+  it "installs an absent Target under the fresh invocation slot" $ do
+    resolved <- resolveLineageFixture HarnessCredentialInstall Nothing Nothing
+    let intent = submittedLineageIntent resolved
+    awsAdminPermitIntentAction intent `shouldBe` InstallOperatorMaterial
+    credentialGenerationValue (awsAdminPermitIntentGeneration intent) `shouldBe` 1
+  it "rotates a present Target without using its generation as the slot index" $ do
+    resolved <- resolveLineageFixture HarnessCredentialInstall (Just (lineageMetadata 6)) Nothing
+    let intent = submittedLineageIntent resolved
+    awsAdminPermitIntentAction intent `shouldBe` RotateOperatorMaterial
+    credentialGenerationValue (awsAdminPermitIntentGeneration intent) `shouldBe` 7
+    operatorMaterialOperationIdText (awsAdminPermitIntentOperationId intent)
+      `shouldBe` must (harnessCredentialSlotOperationId lineageFixture HarnessCredentialInstall)
+  it "uses the same revoke slot before and after the Target tombstone" $ do
+    present <- resolveLineageFixture HarnessCredentialRevoke (Just (lineageMetadata 6)) Nothing
+    absent <- resolveLineageFixture HarnessCredentialRevoke Nothing Nothing
+    let presentIntent = submittedLineageIntent present
+        absentIntent = submittedLineageIntent absent
+    awsAdminPermitIntentOperationId presentIntent
+      `shouldBe` awsAdminPermitIntentOperationId absentIntent
+    credentialGenerationValue (awsAdminPermitIntentGeneration presentIntent) `shouldBe` 6
+  it "resumes the retained revoke's actual generation when the Target is absent" $ do
+    initialResolution <-
+      resolveLineageFixture HarnessCredentialRevoke (Just (lineageMetadata 6)) Nothing
+    let intent = submittedLineageIntent initialResolution
+    resumed <-
+      resolveLineageFixture
+        HarnessCredentialRevoke
+        Nothing
+        (Just (lineageObservation AwsAdminProvisionerPrepared intent Nothing Nothing))
+    resumed `shouldBe` Right (SubmitHarnessCredentialIntent intent)
+  it "renews an expired revoke without changing its slot or generation" $ do
+    initialResolution <-
+      resolveLineageFixture HarnessCredentialRevoke (Just (lineageMetadata 6)) Nothing
+    let retained = submittedLineageIntent initialResolution
+        parameters = lineageParameters {genesisIntentDeadline = authorityTimeFromMicros 120000000}
+    renewed <-
+      resolveHarnessCredentialSlot
+        (lineageClient (Just (lineageObservation AwsAdminProvisionerPrepared retained Nothing Nothing)))
+        parameters
+        iamParameters
+        lineageFixture
+        HarnessCredentialRevoke
+        Nothing
+        60000000
+    let intent = submittedLineageIntent renewed
+    awsAdminPermitIntentGeneration intent `shouldBe` awsAdminPermitIntentGeneration retained
+    awsAdminPermitIntentOperationId intent `shouldBe` awsAdminPermitIntentOperationId retained
+    awsAdminPermitIntentDeadline intent `shouldBe` genesisIntentDeadline parameters
+  it "rejects a foreign operation returned for the slot" $ do
+    resolved <-
+      resolveLineageFixture
+        HarnessCredentialInstall
+        Nothing
+        (Just (lineageObservation AwsAdminProvisionerPrepared permitIntent Nothing Nothing))
+    resolved `shouldBe` Left HarnessCredentialForeignOperation
+  it "rejects a foreign challenge even when its canonical intent matches" $ do
+    initialResolution <- resolveLineageFixture HarnessCredentialRevoke Nothing Nothing
+    let intent = submittedLineageIntent initialResolution
+        observation = lineageObservation AwsAdminProvisionerPrepared intent Nothing Nothing
+        foreignObservation =
+          observation
+            { awsAdminObservedChallenge =
+                (awsAdminObservedChallenge observation)
+                  { awsAdminChallengeOperationId = "foreign-operation"
+                  }
+            }
+    resolved <- resolveLineageFixture HarnessCredentialRevoke Nothing (Just foreignObservation)
+    resolved `shouldBe` Left HarnessCredentialForeignOperation
+  it "preserves a Target that advanced beyond an unfinished revoke" $ do
+    initialResolution <-
+      resolveLineageFixture HarnessCredentialRevoke (Just (lineageMetadata 6)) Nothing
+    let intent = submittedLineageIntent initialResolution
+    resolved <-
+      resolveLineageFixture
+        HarnessCredentialRevoke
+        (Just (lineageMetadata 7))
+        (Just (lineageObservation AwsAdminProvisionerPrepared intent Nothing Nothing))
+    resolved `shouldBe` Left HarnessCredentialTargetGenerationMismatch
+  it "requires a completed revoke's receipt, and accepts its absent Target" $ do
+    (intent, permit, receipt) <- completedLineageRevoke
+    resolved <-
+      resolveLineageFixture
+        HarnessCredentialRevoke
+        Nothing
+        (Just (lineageObservation AwsAdminProvisionerCompleted intent (Just permit) (Just receipt)))
+    resolved `shouldBe` Right (HarnessCredentialRevocationAlreadyProven receipt)
+  it "refuses a Target still observable after a completed revoke receipt" $ do
+    (intent, permit, receipt) <- completedLineageRevoke
+    resolved <-
+      resolveLineageFixture
+        HarnessCredentialRevoke
+        (Just (lineageMetadata 1))
+        (Just (lineageObservation AwsAdminProvisionerCompleted intent (Just permit) (Just receipt)))
+    resolved `shouldBe` Left HarnessCredentialRevokedTargetStillPresent
+  it "refuses a completed operation with no receipt" $ do
+    (intent, permit, _) <- completedLineageRevoke
+    resolved <-
+      resolveLineageFixture
+        HarnessCredentialRevoke
+        Nothing
+        (Just (lineageObservation AwsAdminProvisionerCompleted intent (Just permit) Nothing))
+    resolved `shouldBe` Left HarnessCredentialCompletedReceiptInvalid
+  it "refuses a completed install receipt in the revoke slot" $ do
+    (intent, permit, _) <- completedLineageRevoke
+    installedPermit <- authorizedPermitFor permitIntent
+    world <- newScriptedAwsAdminWorld (initialAwsAdminExecutionJournal installedPermit) [] Nothing
+    installed <-
+      runScriptedAwsAdminPermit
+        world
+        installedPermit
+        (scriptedTargetReceipt "vault:v1:lineage" permitIntent)
+    resolved <-
+      resolveLineageFixture
+        HarnessCredentialRevoke
+        Nothing
+        (Just (lineageObservation AwsAdminProvisionerCompleted intent (Just permit) (Just (must installed))))
+    resolved `shouldBe` Left HarnessCredentialCompletedReceiptKindMismatch
+  it "never replays a completed install after its Target vanished" $ do
+    initial <- resolveLineageFixture HarnessCredentialInstall Nothing Nothing
+    let intent = submittedLineageIntent initial
+    permit <- authorizedPermitFor intent
+    world <- newScriptedAwsAdminWorld (initialAwsAdminExecutionJournal permit) [] Nothing
+    installed <-
+      runScriptedAwsAdminPermit world permit (scriptedTargetReceipt "vault:v1:lineage" intent)
+    resolved <-
+      resolveLineageFixture
+        HarnessCredentialInstall
+        Nothing
+        (Just (lineageObservation AwsAdminProvisionerCompleted intent (Just permit) (Just (must installed))))
+    resolved `shouldBe` Left HarnessCredentialInstalledTargetMissing
+  it "recovers the exact completed install when its Target receipt is still current" $ do
+    (intent, permit, receipt, metadata) <- completedLineageInstall
+    result <-
+      resolveLineageFixture
+        HarnessCredentialInstall
+        (Just metadata)
+        (Just (lineageObservation AwsAdminProvisionerCompleted intent (Just permit) (Just receipt)))
+    result `shouldBe` Right (SubmitHarnessCredentialIntent intent)
+  it "refuses a different commitment even at the completed install's generation" $ do
+    (intent, permit, receipt, metadata) <- completedLineageInstall
+    let changed = metadata {targetMaterialObservedCommitment = "vault:v1:foreign"}
+    result <-
+      resolveLineageFixture
+        HarnessCredentialInstall
+        (Just changed)
+        (Just (lineageObservation AwsAdminProvisionerCompleted intent (Just permit) (Just receipt)))
+    result `shouldBe` Left HarnessCredentialTargetGenerationMismatch
+  it "refuses another operation's signed permit beside an otherwise valid receipt" $ do
+    (intent, _, receipt) <- completedLineageRevoke
+    foreignPermit <- authorizedPermitFor revocationPermitIntent
+    result <-
+      resolveLineageFixture
+        HarnessCredentialRevoke
+        Nothing
+        (Just (lineageObservation AwsAdminProvisionerCompleted intent (Just foreignPermit) (Just receipt)))
+    result `shouldBe` Left HarnessCredentialCompletedReceiptInvalid
+  it "a new lineage heals an old completed install with an absent Target through a fresh operation" $ do
+    prior <- resolveLineageFixture HarnessCredentialInstall Nothing Nothing
+    let previous = submittedLineageIntent prior
+        freshLineage = must (mkHarnessCredentialLineage "all" (ByteString.replicate 32 3))
+    current <-
+      resolveHarnessCredentialSlot
+        (lineageClient Nothing)
+        lineageParameters
+        iamParameters
+        freshLineage
+        HarnessCredentialInstall
+        Nothing
+        4000000
+    awsAdminPermitIntentOperationId (submittedLineageIntent current)
+      `shouldNotBe` awsAdminPermitIntentOperationId previous
+  it "keeps an unobservable Authority distinct from an absent operation" $ do
+    let unavailable = mkAwsAdminProvisionerClient (\_ -> pure (Left AwsAdminProvisionerClientUnexpectedResponse))
+    result <-
+      resolveHarnessCredentialSlot
+        unavailable
+        lineageParameters
+        iamParameters
+        lineageFixture
+        HarnessCredentialRevoke
+        Nothing
+        4000000
+    result `shouldBe` Left HarnessCredentialObservationUnavailable
+
+lineageFixture :: HarnessCredentialLineage
+lineageFixture = must (mkHarnessCredentialLineage "all" (ByteString.replicate 32 1))
+
+lineageParameters :: GenesisAwsAdminIntentParameters
+lineageParameters =
+  GenesisAwsAdminIntentParameters
+    iamParameters
+    imageDigest
+    "home"
+    "http://lifecycle-authority.lifecycle-authority.svc:8600"
+    targetAgent
+    deadline
+
+lineageMetadata :: Natural -> TargetMaterialObservation
+lineageMetadata value =
+  TargetMaterialObservation
+    value
+    1
+    "vault:v1:lineage"
+    "lineage-owner"
+    1
+    (Text.replicate 64 "a")
+    (Text.replicate 64 "b")
+    "lineage-pod"
+    imageDigest
+
+submittedLineageIntent
+  :: Either HarnessCredentialResolutionError HarnessCredentialResolution -> AwsAdminPermitIntent
+submittedLineageIntent result = case must result of
+  SubmitHarnessCredentialIntent intent -> intent
+  HarnessCredentialRevocationAlreadyProven _ -> error "expected a submitted lineage intent"
+  RepairHarnessCredentialTarget _ -> error "expected an ordinary submitted lineage intent"
+
+resolveLineageFixture
+  :: HarnessCredentialSlot
+  -> Maybe TargetMaterialObservation
+  -> Maybe AwsAdminProvisionerObservation
+  -> IO (Either HarnessCredentialResolutionError HarnessCredentialResolution)
+resolveLineageFixture slot observed retained =
+  resolveHarnessCredentialSlot
+    (lineageClient retained)
+    lineageParameters
+    iamParameters
+    lineageFixture
+    slot
+    observed
+    4000000
+
+lineageClient :: Maybe AwsAdminProvisionerObservation -> AwsAdminProvisionerClient IO
+lineageClient observed = mkAwsAdminProvisionerClient call
+ where
+  call request = pure $ case request of
+    ObserveAwsAdminProviderCredentialRecovery -> Right (AwsAdminProviderCredentialRecoveryObserved ProviderCredentialRecoveryIdle)
+    ObserveAwsAdminProvisioning _ -> case observed of
+      Nothing -> Left (AwsAdminProvisionerClientRefused "operation-not-found")
+      Just value -> Right (AwsAdminProvisioningObserved value)
+    _ -> Left AwsAdminProvisionerClientUnexpectedResponse
+
+lineageObservation
+  :: AwsAdminProvisionerPhase
+  -> AwsAdminPermitIntent
+  -> Maybe SignedAwsAdminPermit
+  -> Maybe AwsAdminWorkerReceipt
+  -> AwsAdminProvisionerObservation
+lineageObservation phase intent permit receipt =
+  AwsAdminProvisionerObservation
+    { awsAdminObservedChallenge =
+        coordinatorChallenge
+          { awsAdminChallengeOperationId =
+              operatorMaterialOperationIdText (awsAdminPermitIntentOperationId intent)
+          , awsAdminChallengeCanonicalIntent = encodeAwsAdminPermitIntent intent
+          }
+    , awsAdminObservedPhase = phase
+    , awsAdminObservedPermit = encodeSignedAwsAdminPermit <$> permit
+    , awsAdminObservedReceipt = encodeAwsAdminWorkerReceipt <$> receipt
+    }
+
+completedLineageRevoke :: IO (AwsAdminPermitIntent, SignedAwsAdminPermit, AwsAdminWorkerReceipt)
+completedLineageRevoke = do
+  initialResolution <- resolveLineageFixture HarnessCredentialRevoke Nothing Nothing
+  let intent = submittedLineageIntent initialResolution
+  permit <- authorizedPermitFor intent
+  (revoked, _) <- runRevocationScriptFor intent RevocationSucceeds
+  pure (intent, permit, must revoked)
+
+completedLineageInstall
+  :: IO (AwsAdminPermitIntent, SignedAwsAdminPermit, AwsAdminWorkerReceipt, TargetMaterialObservation)
+completedLineageInstall = do
+  initial <- resolveLineageFixture HarnessCredentialInstall Nothing Nothing
+  let intent = submittedLineageIntent initial
+  permit <- authorizedPermitFor intent
+  world <- newScriptedAwsAdminWorld (initialAwsAdminExecutionJournal permit) [] Nothing
+  installed <-
+    runScriptedAwsAdminPermit world permit (scriptedTargetReceipt "vault:v1:lineage" intent)
+  let metadata =
+        (lineageMetadata (credentialGenerationValue (awsAdminPermitIntentGeneration intent)))
+          { targetMaterialObservedRequestDigest =
+              targetValueDigestText (awsAdminPermitIntentRequestDigest intent)
+          , targetMaterialObservedActionDigest = targetValueDigestText receiptDigest
+          , targetMaterialObservedPodUid = "credential-provisioner-pod-1"
+          }
+  pure (intent, permit, must installed, metadata)
+
+awsAdminTargetAgentRevocationCases :: SuiteBuilder ()
+awsAdminTargetAgentRevocationCases = describe "Sprint 5.51 permit-verified Agent revocation" $ do
+  it "deletes the exact generation and independently reads metadata absent" $ do
+    permit <- authorizedPermitFor revocationPermitIntent
+    (result, events) <- runAgentLane permit id id CallerCredentialProvisioner AgentLaneSucceeds
+    result `shouldBe` agentLaneAbsent permit
+    events `shouldBe` ["metadata-read", "metadata-delete-all-versions", "metadata-read"]
+  it "replays an absent generation without another delete" $ do
+    permit <- authorizedPermitFor revocationPermitIntent
+    (result, events) <- runAgentLane permit id id CallerCredentialProvisioner AgentLaneAlreadyAbsent
+    result `shouldBe` agentLaneAbsent permit
+    events `shouldBe` ["metadata-read"]
+  it "preserves a newer generation" $ do
+    permit <- authorizedPermitFor revocationPermitIntent
+    (result, events) <- runAgentLane permit id id CallerCredentialProvisioner AgentLaneNewGeneration
+    result `shouldBe` AwsAdminTargetRevokeRefused AwsAdminTargetRevokeGenerationRefused
+    events `shouldBe` ["metadata-read"]
+  mapM_
+    agentFaultCase
+    [ (AgentLaneReadUnavailable, AwsAdminTargetRevokeUnavailable, ["metadata-read"])
+    , (AgentLaneDeleteNotApplied, AwsAdminTargetRevokeUnavailable, mutationTrace)
+    , (AgentLaneReadBackUnavailable, AwsAdminTargetRevokeUnavailable, mutationTrace)
+    ,
+      ( AgentLaneDeleteResponseLost
+      , AwsAdminTargetGenerationAbsent 1 "harness-revocation-permit"
+      , mutationTrace
+      )
+    ,
+      ( AgentLaneExpiresAfterRead
+      , AwsAdminTargetRevokeRefused AwsAdminTargetRevokePermitRefused
+      , ["metadata-read"]
+      )
+    ]
+  mapM_
+    invalidRequestCase
+    [
+      ( "different target"
+      , \request -> request {awsAdminTargetRevokeTarget = TargetAwsCredential AwsAuthorityBackupStore}
+      , AwsAdminTargetRevokeTargetRefused
+      )
+    ,
+      ( "different generation"
+      , \request -> request {awsAdminTargetRevokeGeneration = 2}
+      , AwsAdminTargetRevokeGenerationRefused
+      )
+    ,
+      ( "different operation"
+      , \request -> request {awsAdminTargetRevokeOperation = "foreign-operation"}
+      , AwsAdminTargetRevokeOperationRefused
+      )
+    ,
+      ( "different Pod name"
+      , \request -> request {awsAdminTargetRevokePodName = "foreign-pod"}
+      , AwsAdminTargetRevokePodRefused
+      )
+    ,
+      ( "different Pod UID"
+      , \request -> request {awsAdminTargetRevokePodUid = "foreign-uid"}
+      , AwsAdminTargetRevokePodRefused
+      )
+    ,
+      ( "invalid permit signature"
+      , \request -> request {awsAdminTargetRevokePermit = "invalid signed permit"}
+      , AwsAdminTargetRevokePermitRefused
+      )
+    ]
+  mapM_
+    invalidTrustCase
+    [
+      ( "wrong signer generation"
+      , \verification -> verification {awsAdminTargetRevokeSignerGeneration = 8}
+      , AwsAdminTargetRevokePermitRefused
+      )
+    ,
+      ( "expired permit"
+      , \verification -> verification {awsAdminTargetRevokeCurrentTime = pure (Right deadline)}
+      , AwsAdminTargetRevokePermitRefused
+      )
+    ,
+      ( "different Agent rollout"
+      , \verification -> verification {awsAdminTargetRevokeLocalAgent = renewalTargetAgent}
+      , AwsAdminTargetRevokeAgentRefused
+      )
+    ]
+  it "refuses an unavailable clock before metadata access" $ do
+    permit <- authorizedPermitFor revocationPermitIntent
+    (result, events) <-
+      runAgentLane
+        permit
+        id
+        (\verification -> verification {awsAdminTargetRevokeCurrentTime = pure (Left "clock unavailable")})
+        CallerCredentialProvisioner
+        AgentLaneSucceeds
+    result `shouldBe` AwsAdminTargetRevokeUnavailable
+    events `shouldBe` []
+  it "rejects a well-formed permit with a false Ed25519 signature before Vault" $ do
+    permit <- authorizedPermitFor revocationPermitIntent
+    let forged =
+          withSomeSignedAwsAdminPermit
+            ( must
+                ( mkSomeSignedAwsAdminPermit
+                    7
+                    (signedAwsAdminPermitIntent permit)
+                    (signedAwsAdminPermitBinding permit)
+                    (ByteString.replicate 64 0)
+                )
+            )
+            id
+    (result, events) <- runAgentLane forged id id CallerCredentialProvisioner AgentLaneSucceeds
+    result `shouldBe` AwsAdminTargetRevokeRefused AwsAdminTargetRevokePermitRefused
+    events `shouldBe` []
+  it "refuses a valid install permit before metadata access" $ do
+    permit <- authorizedPermitFor permitIntent
+    (result, events) <- runAgentLane permit id id CallerCredentialProvisioner AgentLaneSucceeds
+    result `shouldBe` AwsAdminTargetRevokeRefused AwsAdminTargetRevokeActionRefused
+    events `shouldBe` []
+  it "refuses a signed LongLived class before metadata access" $ do
+    let intent =
+          agentLaneIntent
+            TlsRetentionStoreCredential
+            RotateOperatorMaterial
+            (TargetAwsCredential AwsTlsRetentionStore)
+            ( must
+                ( mkTlsRetentionIamParameters
+                    (fixtureAwsRegion FixtureUsEast1)
+                    "fixture-tls-retention"
+                    ["public-edge-tls/home-local/certificates"]
+                )
+            )
+    permit <- authorizedPermitFor intent
+    (result, events) <- runAgentLane permit id id CallerCredentialProvisioner AgentLaneSucceeds
+    result `shouldBe` AwsAdminTargetRevokeRefused AwsAdminTargetRevokeClassRefused
+    events `shouldBe` []
+  it "refuses even a valid RunScoped revoke on this Operational-only lane" $ do
+    let intent =
+          agentLaneIntent
+            AwsRunCertManagerDns01Credential
+            RevokeOperatorMaterial
+            (TargetAwsCredential AwsRunCertManagerDns01)
+            (must (mkAwsRunDns01IamParameters (fixtureAwsRegion FixtureUsEast1) "Z123FIXTURE"))
+    permit <- authorizedPermitFor intent
+    (result, events) <- runAgentLane permit id id CallerCredentialProvisioner AgentLaneSucceeds
+    result `shouldBe` AwsAdminTargetRevokeRefused AwsAdminTargetRevokeClassRefused
+    events `shouldBe` []
+  it "refuses every other authenticated caller even if the transport topology were widened" $ do
+    permit <- authorizedPermitFor revocationPermitIntent
+    forM_ (filter (/= CallerCredentialProvisioner) allCallerPrincipals) $ \caller -> do
+      (result, events) <- runAgentLane permit id id caller AgentLaneSucceeds
+      result `shouldBe` AwsAdminTargetRevokeRefused AwsAdminTargetRevokeCallerRefused
+      events `shouldBe` []
+  it "admits only the Provisioner principal in the authenticated route topology" $
+    forM_ allCallerPrincipals $ \caller ->
+      callerMayCallRoute caller TargetAwsAdminCredentialRevoke
+        `shouldBe` (caller == CallerCredentialProvisioner)
+  it "accepts only a successful response bound to this exact permit and generation" $ do
+    permit <- authorizedPermitFor revocationPermitIntent
+    let response status value = ControlPlaneResponse status (LazyByteString.toStrict (encodeControlPlaneResponse value))
+    decodeAwsAdminTargetRevokeResponse permit (response 200 (agentLaneAbsent permit))
+      `shouldBe` Right "aws-admin:harness-revocation-permit:target-absent"
+    forM_
+      [ response 200 (AwsAdminTargetGenerationAbsent 2 "harness-revocation-permit")
+      , response 200 (AwsAdminTargetGenerationAbsent 1 "foreign-permit")
+      , response 503 (agentLaneAbsent permit)
+      , response 200 AwsAdminTargetRevokeUnavailable
+      , ControlPlaneResponse 200 "unrecognised response"
+      ]
+      $ \invalid ->
+        decodeAwsAdminTargetRevokeResponse permit invalid
+          `shouldBe` Left AwsAdminTargetRevokeResponseInvalid
+  it "never counts a different observed generation as independent revoke absence" $ do
+    let metadata value =
+          TargetMaterialObservation
+            value
+            1
+            "vault:v1:fixture"
+            "owner"
+            1
+            (Text.replicate 64 "a")
+            (Text.replicate 64 "b")
+            "pod"
+            imageDigest
+        target = TargetAwsCredential AwsLifecycleProvider
+    forM_
+      [(1, AwsAdminTargetObservationGenerationMismatch), (3, AwsAdminTargetObservationGenerationAdvanced)]
+      $ \(observed, expected) ->
+        classifyAwsAdminTargetReadBack RevokeOperatorMaterial target 2 (metadata observed)
+          `shouldBe` Left expected
+    classifyAwsAdminTargetReadBack InstallOperatorMaterial target 2 (metadata 1)
+      `shouldBe` Right Nothing
+ where
+  mutationTrace = ["metadata-read", "metadata-delete-all-versions", "metadata-read"]
+  agentFaultCase (fault, expected, trace) = it ("handles " ++ show fault ++ " by read-back") $ do
+    permit <- authorizedPermitFor revocationPermitIntent
+    (result, events) <- runAgentLane permit id id CallerCredentialProvisioner fault
+    result `shouldBe` expected
+    events `shouldBe` trace
+  invalidRequestCase (label, change, expected) = it ("refuses " ++ label ++ " before Vault") $ do
+    permit <- authorizedPermitFor revocationPermitIntent
+    (result, events) <- runAgentLane permit change id CallerCredentialProvisioner AgentLaneSucceeds
+    result `shouldBe` AwsAdminTargetRevokeRefused expected
+    events `shouldBe` []
+  invalidTrustCase (label, change, expected) = it ("refuses " ++ label ++ " before Vault") $ do
+    permit <- authorizedPermitFor revocationPermitIntent
+    (result, events) <- runAgentLane permit id change CallerCredentialProvisioner AgentLaneSucceeds
+    result `shouldBe` AwsAdminTargetRevokeRefused expected
+    events `shouldBe` []
+
+data AgentLaneFault
+  = AgentLaneSucceeds
+  | AgentLaneAlreadyAbsent
+  | AgentLaneNewGeneration
+  | AgentLaneReadUnavailable
+  | AgentLaneDeleteNotApplied
+  | AgentLaneReadBackUnavailable
+  | AgentLaneDeleteResponseLost
+  | AgentLaneExpiresAfterRead
+  deriving (Eq, Show)
+
+runAgentLane
+  :: SignedAwsAdminPermit
+  -> (AwsAdminTargetRevokeRequest -> AwsAdminTargetRevokeRequest)
+  -> (AwsAdminTargetRevokeVerification IO -> AwsAdminTargetRevokeVerification IO)
+  -> CallerPrincipal
+  -> AgentLaneFault
+  -> IO (AwsAdminTargetRevokeResponse, [Text])
+runAgentLane permit changeRequest changeVerification caller fault = do
+  events <- newIORef []
+  present <-
+    newIORef
+      ( case fault of
+          AgentLaneAlreadyAbsent -> Nothing
+          AgentLaneNewGeneration -> Just 2
+          _ -> Just 1
+      )
+  expired <- newIORef False
+  let note entry = modifyIORef' events (<> [entry])
+      readMetadata = do
+        note "metadata-read"
+        value <- readIORef present
+        writeIORef expired True
+        pure $ case fault of
+          AgentLaneReadUnavailable -> Left "metadata unavailable"
+          AgentLaneReadBackUnavailable | value == Nothing -> Left "read-back unavailable"
+          _ -> Right value
+      destroyMetadata = do
+        note "metadata-delete-all-versions"
+        case fault of
+          AgentLaneDeleteNotApplied -> pure (Left "delete failed")
+          _ -> do
+            writeIORef present Nothing
+            pure (if fault == AgentLaneDeleteResponseLost then Left "response lost" else Right ())
+      readClock = do
+        hasRead <- readIORef expired
+        pure
+          ( Right
+              (if fault == AgentLaneExpiresAfterRead && hasRead then deadline else authorityTimeFromMicros 4000000)
+          )
+      verification =
+        changeVerification
+          AwsAdminTargetRevokeVerification
+            { awsAdminTargetRevokeSignerGeneration = 7
+            , awsAdminTargetRevokePublicKey = manifestPublicKey
+            , awsAdminTargetRevokeCurrentTime = readClock
+            , awsAdminTargetRevokeLocalAgent = targetAgent
+            }
+      inner =
+        AuthenticatedRoleHandler
+          { authenticatedHandlerReadiness = noRoleReadinessContribution
+          , authenticatedHandlerHandle = \_ _ _ -> pure Nothing
+          }
+      handler =
+        awsAdminTargetRevokeAuthenticatedHandler
+          verification
+          (mkAwsAdminTargetRevokeBoundary readMetadata destroyMetadata)
+          inner
+  response <-
+    authenticatedHandlerHandle
+      handler
+      (verifiedCallerSlotFixture caller 1)
+      TargetAwsAdminCredentialRevoke
+      ( LazyByteString.toStrict
+          (encodeControlPlaneRequest (changeRequest (awsAdminTargetRevokeRequest permit)))
+      )
+  let decoded = case response of
+        Nothing -> error "Agent revocation route was not handled"
+        Just (status, bytes) ->
+          let value = must (decodeControlPlaneResponse (64 * 1024) (LazyByteString.fromStrict bytes))
+           in if status == agentResponseStatus value
+                then value
+                else error "Agent response status did not match its body"
+  recorded <- readIORef events
+  pure (decoded, recorded)
+ where
+  agentResponseStatus response = case response of
+    AwsAdminTargetGenerationAbsent _ _ -> ReplyOk
+    AwsAdminTargetRevokeRefused _ -> ReplyForbidden
+    AwsAdminTargetRevokeUnavailable -> ReplyServiceUnavailable
+
+agentLaneAbsent :: SignedAwsAdminPermit -> AwsAdminTargetRevokeResponse
+agentLaneAbsent permit =
+  AwsAdminTargetGenerationAbsent
+    (credentialGenerationValue (awsAdminPermitIntentGeneration (signedAwsAdminPermitIntent permit)))
+    (operatorMaterialPermitIdText (awsAdminPermitIntentPermitId (signedAwsAdminPermitIntent permit)))
+
+agentLaneIntent
+  :: AwsCredentialClass
+  -> OperatorMaterialAction
+  -> TargetSecretId
+  -> CredentialIamParameters
+  -> AwsAdminPermitIntent
+agentLaneIntent credentialClass action target parameters =
+  must
+    ( mkNormalAwsAdminPermitIntent
+        materialPermit
+        parameters
+        imageDigest
+        "home"
+        "http://lifecycle-authority.lifecycle-authority.svc:8600"
+        prepared
+    )
+ where
+  request =
+    must
+      ( mkAwsOperatorMaterialRequest
+          credentialClass
+          action
+          (must (mkOperatorMaterialOperationId "agent-class-fixture"))
+          generation
+      )
+  materialPermit =
+    must
+      ( mkOperatorMaterialPermit
+          (must (mkOperatorMaterialPermitId "agent-class-permit"))
+          request
+          deadline
+          Nothing
+          "operator-signature"
+      )
+  prepared =
+    must
+      ( mkPreparedCredentialTargetObservation
+          "agent-class-owner"
+          1
+          targetAgent
+          target
+          generation
+          (operatorMaterialRequestDigest request)
+          receiptDigest
+          Nothing
+          deadline
+      )
+
+awsAdminRevocationOrderCases :: SuiteBuilder ()
+awsAdminRevocationOrderCases = describe "Sprint 5.51 IAM-first credential revocation" $ do
+  it "destroys, waits and observes IAM absent before revoking and observing Target absent" $ do
+    (result, events) <- runRevocationScript RevocationSucceeds
+    fmap awsAdminWorkerReceiptKind result `shouldBe` Right AwsAdminRevoked
+    events
+      `shouldBe` [ DestroyIamIdentity
+                 , WaitIamVisibility
+                 , ObserveIamAbsence
+                 , RevokeTargetGeneration
+                 , ObserveTargetAbsence
+                 ]
+  mapM_
+    failedGateCase
+    [ (RevokeDestroyFails, AwsAdminIdentityDestroyFailed "destroy failed", [DestroyIamIdentity])
+    ,
+      ( RevokeVisibilityFails
+      , AwsAdminVisibilityWaitFailed "visibility failed"
+      , [DestroyIamIdentity, WaitIamVisibility]
+      )
+    ,
+      ( RevokeIamUnobservable
+      , AwsAdminIdentityAbsenceUnobservable "IAM unavailable"
+      , [DestroyIamIdentity, WaitIamVisibility, ObserveIamAbsence]
+      )
+    ,
+      ( RevokeIamStillPresent
+      , AwsAdminIdentityStillPresent
+      , [DestroyIamIdentity, WaitIamVisibility, ObserveIamAbsence]
+      )
+    ,
+      ( RevokeTargetFails
+      , AwsAdminTargetRevocationFailed "Target revoke failed"
+      , beforeTarget ++ [RevokeTargetGeneration]
+      )
+    ,
+      ( RevokeTargetUnobservable
+      , AwsAdminTargetRevocationUnobservable "generation-advanced"
+      , beforeTarget ++ [RevokeTargetGeneration, ObserveTargetAbsence]
+      )
+    ,
+      ( RevokeTargetStillPresent
+      , AwsAdminTargetGenerationStillPresent
+      , beforeTarget ++ [RevokeTargetGeneration, ObserveTargetAbsence]
+      )
+    ]
+  it "rejects every LongLived or retained credential revoke at request construction" $ do
+    forM_ [minBound .. maxBound] checkClass
+ where
+  beforeTarget = [DestroyIamIdentity, WaitIamVisibility, ObserveIamAbsence]
+  failedGateCase (fault, expected, expectedEvents) = it ("refuses " ++ show fault ++ " at its exact gate") $ do
+    (result, events) <- runRevocationScript fault
+    void result `shouldBe` Left expected
+    events `shouldBe` expectedEvents
+  checkClass credentialClass = do
+    let request =
+          mkAwsOperatorMaterialRequest
+            credentialClass
+            RevokeOperatorMaterial
+            (must (mkOperatorMaterialOperationId "revoke-class-check"))
+            generation
+        accepted = either (const False) (const True) request
+    accepted
+      `shouldBe` (credentialClass `elem` [LifecycleProviderCredential, AwsRunCertManagerDns01Credential])
+
+data RevocationScriptFault
+  = RevocationSucceeds
+  | RevokeDestroyFails
+  | RevokeVisibilityFails
+  | RevokeIamUnobservable
+  | RevokeIamStillPresent
+  | RevokeTargetFails
+  | RevokeTargetUnobservable
+  | RevokeTargetStillPresent
+  deriving (Eq, Show)
+
+data RevocationScriptEvent
+  = DestroyIamIdentity
+  | WaitIamVisibility
+  | ObserveIamAbsence
+  | RevokeTargetGeneration
+  | ObserveTargetAbsence
+  | UnexpectedRevocationEffect
+  deriving (Eq, Show)
+
+runRevocationScript
+  :: RevocationScriptFault
+  -> IO (Either AwsAdminExecutionError AwsAdminWorkerReceipt, [RevocationScriptEvent])
+runRevocationScript = runRevocationScriptFor revocationPermitIntent
+
+runRevocationScriptFor
+  :: AwsAdminPermitIntent
+  -> RevocationScriptFault
+  -> IO (Either AwsAdminExecutionError AwsAdminWorkerReceipt, [RevocationScriptEvent])
+runRevocationScriptFor intent fault = do
+  permit <- authorizedPermitFor intent
+  journal <- newIORef (initialAwsAdminExecutionJournal permit)
+  events <- newIORef []
+  let note entry = modifyIORef' events (<> [entry])
+      journalBoundary =
+        mkAwsAdminExecutionJournalBoundary
+          (Right <$> readIORef journal)
+          (\_ expected -> writeIORef journal expected >> pure (Right expected))
+      iam =
+        mkAwsAdminIamBoundary
+          (note UnexpectedRevocationEffect >> pure (Right ()))
+          (note UnexpectedRevocationEffect >> pure (AccessKeyInventoryObserved []))
+          (\_ -> note UnexpectedRevocationEffect >> pure (Right ()))
+          ( note UnexpectedRevocationEffect
+              >> pure
+                ( AwsAccessKeyCreated
+                    (must (mkProvisionedAccessKeyId "REVOCATIONKEY"))
+                    (must (mkCreatedAwsAccessKey "REVOCATIONKEY" "fixture-only-secret"))
+                )
+          )
+          ( note DestroyIamIdentity
+              >> pure (if fault == RevokeDestroyFails then Left "destroy failed" else Right ())
+          )
+          ( note ObserveIamAbsence
+              >> pure
+                ( if fault == RevokeIamUnobservable
+                    then Left "IAM unavailable"
+                    else Right (fault /= RevokeIamStillPresent)
+                )
+          )
+          ( note WaitIamVisibility
+              >> pure (if fault == RevokeVisibilityFails then Left "visibility failed" else Right ())
+          )
+      revokeTarget _ _ =
+        note RevokeTargetGeneration
+          >> pure
+            (if fault == RevokeTargetFails then Left "Target revoke failed" else Right "Target tombstone receipt")
+      observeTarget _ _ = do
+        note ObserveTargetAbsence
+        pure $ case fault of
+          RevokeTargetUnobservable -> Left AwsAdminTargetObservationGenerationAdvanced
+          RevokeTargetStillPresent -> Right (Just (scriptedTargetReceipt "vault:v1:retained" intent))
+          _ -> Right Nothing
+      delivery =
+        mkAwsAdminDeliveryBoundary
+          (\_ _ _ -> note UnexpectedRevocationEffect >> pure (Left AwsAdminTargetDeliveryRevokeRejected))
+          revokeTarget
+          observeTarget
+  result <- executeAwsAdminPermit journalBoundary iam delivery permit
+  recorded <- readIORef events
+  pure (result, recorded)
+
+revocationPermitIntent :: AwsAdminPermitIntent
+revocationPermitIntent =
+  must
+    ( mkNormalAwsAdminPermitIntent
+        revokePermit
+        iamParameters
+        imageDigest
+        "home"
+        "http://lifecycle-authority.lifecycle-authority.svc:8600"
+        prepared
+    )
+ where
+  request =
+    must
+      ( mkAwsOperatorMaterialRequest
+          LifecycleProviderCredential
+          RevokeOperatorMaterial
+          (must (mkOperatorMaterialOperationId "harness-revocation-fixture"))
+          generation
+      )
+  revokePermit =
+    must
+      ( mkOperatorMaterialPermit
+          (must (mkOperatorMaterialPermitId "harness-revocation-permit"))
+          request
+          deadline
+          Nothing
+          "operator-signature"
+      )
+  prepared =
+    must
+      ( mkPreparedCredentialTargetObservation
+          "revoke-owner-nonce"
+          1
+          targetAgent
+          (TargetAwsCredential AwsLifecycleProvider)
+          generation
+          (operatorMaterialRequestDigest request)
+          receiptDigest
+          Nothing
+          deadline
+      )
+
 -- | Sprint 4.108: a scripted world for 'executeAwsAdminPermit': the journal
 -- cell, the account's access-key inventory, and the one Target generation the
 -- permit installs into. 'scriptedWorldLog' records every effect in order.
@@ -3185,6 +4941,74 @@ runScriptedAwsAdminPermit world permit deliveredReceipt =
           Right <$> readIORef (scriptedWorldTarget world)
       )
 
+workerReceiptActionCases :: SuiteBuilder ()
+workerReceiptActionCases =
+  describe "Sprint 6.5 receipt kind binds the signed action" $
+    forM_ [InstallOperatorMaterial, RotateOperatorMaterial, RevokeOperatorMaterial] actionCases
+ where
+  actionCases action = forM_ [1, 2] (receiptCase action)
+  receiptCase action kind = it (show action ++ " with terminal kind " ++ show kind) $ do
+    let intent = receiptActionIntent action
+        receipt = must (decodeAwsAdminWorkerReceipt (workerReceiptBytesForKind intent kind))
+        expectedKind = case action of
+          InstallOperatorMaterial -> 1
+          RotateOperatorMaterial -> 1
+          RevokeOperatorMaterial -> 2
+    permit <- authorizedPermitFor intent
+    if kind == expectedKind
+      then do
+        validateAwsAdminWorkerReceiptForPermit permit receipt `shouldBe` Right ()
+        commitAwsAdminCompleted receipt (AwsAdminAuthorityAuthorized permit)
+          `shouldBe` Right (AwsAdminAuthorityCompleted permit receipt)
+      else do
+        validateAwsAdminWorkerReceiptForPermit permit receipt
+          `shouldBe` Left AwsAdminWorkerReceiptInvalid
+        commitAwsAdminCompleted receipt (AwsAdminAuthorityAuthorized permit)
+          `shouldBe` Left (AwsAdminAuthorityReceiptInvalid AwsAdminWorkerReceiptInvalid)
+
+receiptActionIntent :: OperatorMaterialAction -> AwsAdminPermitIntent
+receiptActionIntent action =
+  must
+    ( mkNormalAwsAdminPermitIntent
+        permit
+        iamParameters
+        imageDigest
+        "home"
+        "http://lifecycle-authority.lifecycle-authority.svc:8600"
+        prepared
+    )
+ where
+  request =
+    must
+      ( mkAwsOperatorMaterialRequest
+          LifecycleProviderCredential
+          action
+          (must (mkOperatorMaterialOperationId "receipt-action-fixture"))
+          generation
+      )
+  permit =
+    must
+      ( mkOperatorMaterialPermit
+          (must (mkOperatorMaterialPermitId "receipt-action-fixture"))
+          request
+          deadline
+          Nothing
+          "operator-signature"
+      )
+  prepared =
+    must
+      ( mkPreparedCredentialTargetObservation
+          "receipt-action-owner"
+          1
+          targetAgent
+          (TargetAwsCredential AwsLifecycleProvider)
+          generation
+          (operatorMaterialRequestDigest request)
+          receiptDigest
+          Nothing
+          deadline
+      )
+
 data WireAwsAdminWorkerReceiptFixture = WireAwsAdminWorkerReceiptFixture
   { fixtureWorkerReceiptVersion :: !Word16
   , fixtureWorkerReceiptKind :: !Word8
@@ -3201,9 +5025,12 @@ canonicalRevokedWorkerReceiptBytes :: ByteString.ByteString
 canonicalRevokedWorkerReceiptBytes = wireWorkerReceiptFixtureBytes 1 2
 
 installedWorkerReceiptBytes :: AwsAdminPermitIntent -> ByteString.ByteString
-installedWorkerReceiptBytes intent =
+installedWorkerReceiptBytes intent = workerReceiptBytesForKind intent 1
+
+workerReceiptBytesForKind :: AwsAdminPermitIntent -> Word8 -> ByteString.ByteString
+workerReceiptBytesForKind intent receiptKind =
   wireWorkerReceiptBytes
-    1
+    receiptKind
     ( encodeTargetWorkerReceipt
         ( must
             ( mkTargetWorkerReceiptProjection
@@ -3257,11 +5084,15 @@ exactPreparedLifecycle =
     { recordAwsAdminPrepareAuthorityPhase = const (pure ())
     , proveAwsAdminAuthorizedAttemptRecovery = \_ _ ->
         pure (Left AwsAdminAuthorizedRecoveryNotAuthorized)
+    , observeAwsAdminCompletedWorkerReceipt = \_ -> pure (Right Nothing)
+    , proveAwsAdminAttestedAttemptRecovery = \_ _ _ -> pure (Left AwsAdminAuthorizedRecoveryNotAttested)
     , prepareAndReadBackAwsAdminPreparedTarget = \_ -> pure . Right
     , reobserveRetainedAwsAdminPreparedTarget =
         const (pure (Right preparedTarget))
     , commitAwsAdminFirstReconcileReceipt = \_ _ -> pure (Right ())
     , observeAwsAdminFirstReconcileContinuation = pure (Right Nothing)
+    , observeAwsAdminFirstReconcileRecoveryPending = pure (Right False)
+    , settleAwsAdminFirstReconcileRecovery = pure (Right ())
     }
 
 preparedTargetCauseLabels :: [(AwsAdminPreparedTargetPrepareCause, Text)]
@@ -3309,6 +5140,7 @@ preparedTargetFailureResponse cause detail = do
           (pure (Right signingTime))
           (const (Right repository))
           lifecycle
+          fixtureProviderCredentialBoundary
           authoritySigner
           emptyHandler
       body =
@@ -3900,3 +5732,23 @@ applyRetainedJournalRequest journalState writeCount request = case request of
 
 must :: (Show errorValue) => Either errorValue value -> value
 must = either (error . show) id
+
+-- Endpoint unit fixtures isolate the lifecycle interpreter; production captures
+-- the actual retained aggregate, completed outbox and authenticated Agent.
+fixtureProviderCredentialBoundary :: AwsAdminProviderCredentialBoundary IO
+fixtureProviderCredentialBoundary =
+  AwsAdminProviderCredentialBoundary
+    (\_ -> pure (Right ()))
+    (\_ -> pure (Right ()))
+    (\_ -> pure (Right ()))
+    (pure (Right Nothing))
+    (pure (Right ProviderCredentialRecoveryIdle))
+    (pure (Right ()))
+
+data JournalCompletionScenario
+  = JournalComplete
+  | JournalMissing
+  | JournalUnavailable
+  | JournalForeignReceipt
+  | JournalAdmissionUnavailable
+  deriving (Eq, Show)

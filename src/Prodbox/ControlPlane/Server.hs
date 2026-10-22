@@ -222,6 +222,7 @@ controlPlaneRouteMaximumBodyBytes route = case route of
   TlsRetentionRestore -> controlPlaneMaximumBodyBytes
   TlsRetentionObserveVersion -> controlPlaneMaximumBodyBytes
   TargetMaterialObserve -> controlPlaneMaximumBodyBytes
+  TargetAwsAdminCredentialRevoke -> controlPlaneMaximumBodyBytes
   TargetSecretDecommissionInventory -> controlPlaneMaximumBodyBytes
   TargetSecretDecommissionTombstone -> controlPlaneMaximumBodyBytes
   TargetSecretDecommissionCustodyTombstone -> controlPlaneMaximumBodyBytes

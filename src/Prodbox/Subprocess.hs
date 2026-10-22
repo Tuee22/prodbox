@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
 
 module Prodbox.Subprocess
@@ -34,6 +35,7 @@ import Control.Exception
   ( IOException
   , displayException
   , finally
+  , mask
   , onException
   , try
   , uninterruptibleMask_
@@ -46,9 +48,9 @@ import Data.ByteString.Char8 qualified as ByteStringChar8
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
-import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import GHC.Clock (getMonotonicTimeNSec)
 import Prodbox.Error
   ( AppError
   , errorMsg
@@ -57,8 +59,14 @@ import Prodbox.Error
 import Prodbox.Result
   ( Result (..)
   )
+import Prodbox.Subprocess.OwnedProcessTree
+  ( OwnedProcessRoot
+  , recordOwnedProcessRoot
+  , snapshotOwnedProcessTree
+  , stopOwnedProcessDescendants
+  )
 import System.Exit
-  ( ExitCode (ExitFailure)
+  ( ExitCode
   )
 import System.IO
   ( Handle
@@ -288,11 +296,11 @@ captureSubprocessKillable limits spec
   | killableSubprocessTimeoutMicros limits <= 0
       || killableSubprocessKillGraceMicros limits <= 0 =
       pure (Left (boundedSubprocessError "killable subprocess limits must be positive"))
-  | otherwise = do
+  | otherwise = mask $ \restore -> do
       started <-
         try
           ( Typed.startProcess
-              ( Typed.setCreateGroup
+              ( Typed.setNewSession
                   True
                   ( Typed.setStdin
                       Typed.nullStream
@@ -304,15 +312,24 @@ captureSubprocessKillable limits spec
               )
           )
           :: IO (Either IOException (Typed.Process () Handle Handle))
-      case started of
-        Left err -> pure (Left (subprocessIOException err))
-        Right process -> Right <$> runKillable limits process
+      either (pure . Left . subprocessIOException) (runStarted restore) started
+ where
+  runStarted restore process = do
+    root <- uninterruptibleMask_ (recordStartedRoot process)
+    restore (runKillable limits root process)
+      `onException` void (stopWithEscalation limits root process)
+  recordStartedRoot process = do
+    pid <- Typed.getPid process
+    case pid of
+      Nothing -> pure Nothing
+      Just value -> recordOwnedProcessRoot value
 
 runKillable
   :: KillableSubprocessLimits
+  -> Maybe OwnedProcessRoot
   -> Typed.Process () Handle Handle
-  -> IO KillableSubprocessOutcome
-runKillable limits process = do
+  -> IO (Either AppError KillableSubprocessOutcome)
+runKillable limits root process = do
   stdoutChunks <- newIORef []
   stderrChunks <- newIORef []
   let snapshot exitCode = do
@@ -332,11 +349,13 @@ runKillable limits process = do
         case finished of
           Just exitCode -> do
             settleReaders stdoutReader stderrReader
-            KillableSubprocessCompleted <$> snapshot exitCode
+            Right . KillableSubprocessCompleted <$> snapshot exitCode
           Nothing -> do
-            exitCode <- stopWithEscalation limits process
+            stopped <- stopWithEscalation limits root process
             settleReaders stdoutReader stderrReader
-            KillableSubprocessTimedOut <$> snapshot exitCode
+            case stopped of
+              Left detail -> pure (Left (boundedSubprocessError (Text.unpack detail)))
+              Right exitCode -> Right . KillableSubprocessTimedOut <$> snapshot exitCode
   withAsync
     (drainHandle (Typed.getStdout process) stdoutChunks)
     ( \stdoutReader ->
@@ -344,7 +363,6 @@ runKillable limits process = do
           (drainHandle (Typed.getStderr process) stderrChunks)
           (\stderrReader -> supervise (stdoutReader, stderrReader))
     )
-    `onException` stopWithEscalation limits process
 
 -- | SIGTERM the child's group, repeat the SIGTERM once shortly after, give the
 -- child the rest of the grace to leave, then SIGKILL the group.  The repeat is
@@ -352,24 +370,48 @@ runKillable limits process = do
 -- one that ignores both; it is what stops a Pulumi that took the first as a
 -- request to cancel and is still waiting on the operation in flight.  Polling
 -- rather than waiting on a timer keeps the stop uninterruptible yet bounded, so
--- a cancelled caller cannot skip the kill.
+-- a cancelled caller cannot skip the kill. The child owns a fresh POSIX session;
+-- descendants are recorded before signalling and stopped across process groups.
+-- Root and descendant confirmation share one deadline, preserving the existing
+-- grace plus confirmation allowance.
 stopWithEscalation
-  :: KillableSubprocessLimits -> Typed.Process stdin stdout stderr -> IO ExitCode
-stopWithEscalation limits process = uninterruptibleMask_ $ do
-  signalGroup sigTERM
-  early <- pollExit repeatGap
-  case early of
-    Just exitCode -> pure exitCode
-    Nothing -> do
-      signalGroup sigTERM
-      terminated <- pollExit (grace - repeatGap)
-      case terminated of
-        Just exitCode -> pure exitCode
-        Nothing -> do
-          signalGroup sigKILL
-          killed <- pollExit killConfirmationMicros
-          pure (fromMaybe (ExitFailure 137) killed)
+  :: KillableSubprocessLimits
+  -> Maybe OwnedProcessRoot
+  -> Typed.Process stdin stdout stderr
+  -> IO (Either Text ExitCode)
+stopWithEscalation limits root process = uninterruptibleMask_ $ do
+  started <- getMonotonicTimeNSec
+  let deadline = started + fromIntegral (grace + killConfirmationMicros) * 1000
+  descendants <- case root of
+    Nothing -> pure (Left "cannot establish the owned subprocess session")
+    Just owned -> snapshotOwnedProcessTree owned
+  exitCode <- stopLeader deadline
+  now <- getMonotonicTimeNSec
+  let remaining =
+        min
+          killConfirmationMicros
+          (if now >= deadline then 0 else fromIntegral ((deadline - now) `div` 1000))
+  reaped <- case (root, descendants) of
+    (Just owned, Right recorded) -> stopOwnedProcessDescendants remaining owned recorded
+    (_, Left detail) -> pure (Left detail)
+    (Nothing, Right _) -> pure (Left "cannot establish the owned subprocess session")
+  pure (exitCode >>= (\code -> code <$ reaped))
  where
+  stopLeader deadline = do
+    signalGroup sigTERM
+    early <- pollExit deadline repeatGap
+    case early of
+      Just exitCode -> pure (Right exitCode)
+      Nothing -> do
+        signalGroup sigTERM
+        terminated <- pollExit deadline (grace - repeatGap)
+        case terminated of
+          Just exitCode -> pure (Right exitCode)
+          Nothing -> do
+            signalGroup sigKILL
+            killed <- pollExit deadline killConfirmationMicros
+            pure
+              (maybe (Left "owned subprocess leader did not stop within the kill-confirmation bound") Right killed)
   grace = killableSubprocessKillGraceMicros limits
   repeatGap = min repeatTermAfterMicros (grace `div` 2)
   signalGroup signal = do
@@ -379,15 +421,20 @@ stopWithEscalation limits process = uninterruptibleMask_ $ do
       Just pid -> do
         _ <- try (signalProcessGroup signal pid) :: IO (Either IOException ())
         pure ()
-  pollExit budget = do
+  pollExit outerDeadline budget = do
+    now <- getMonotonicTimeNSec
+    pollUntil (min outerDeadline (now + fromIntegral (max 0 budget) * 1000))
+  pollUntil deadline = do
     exited <- Typed.getExitCode process
     case exited of
       Just exitCode -> pure (Just exitCode)
-      Nothing
-        | budget <= 0 -> pure Nothing
-        | otherwise -> do
-            threadDelay killPollMicros
-            pollExit (budget - killPollMicros)
+      Nothing -> do
+        now <- getMonotonicTimeNSec
+        if now >= deadline
+          then pure Nothing
+          else do
+            threadDelay (min killPollMicros (fromIntegral ((deadline - now) `div` 1000)))
+            pollUntil deadline
 
 -- | Read a handle to its end, keeping every chunk as it arrives so a child
 -- that is stopped before it finishes still has its transcript.

@@ -30,10 +30,18 @@ module Prodbox.Test.LifecycleCleanupClient
   , lifecycleTestHarnessCleanupZoneDisposition
   , lifecycleTestHarnessCleanupSettled
   , lifecycleTestHarnessCleanupExitCode
+  , HarnessCredentialDisposition (..)
+  , lifecycleTestHarnessCredentialDisposition
+  , finishHarnessCredentialCleanup
   , LifecycleTestHarnessCleanupError (..)
   , renderLifecycleTestHarnessCleanupError
   , runLifecycleTestHarnessCleanup
   , HarnessCleanupBracket (..)
+  , HarnessRunRegistration (..)
+  , HarnessBodyScope
+  , harnessBodyObservationScope
+  , harnessBodyRegisteredTargets
+  , harnessBodyRunId
   , orchestrateHarnessCleanup
   , ZoneDisposition (..)
   , ZoneEvidence (..)
@@ -66,6 +74,11 @@ import Data.Text qualified as Text
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Numeric.Natural (Natural)
 import Prodbox.Aws (awsHarnessAdminScope)
+import Prodbox.CLI.Rke2
+  ( reconcileHarnessLifecycleProviderCredential
+  , revokeHarnessLifecycleProviderCredential
+  , runNativeHarnessPostCredentialRuntime
+  )
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientTransport
   )
@@ -121,6 +134,7 @@ import Prodbox.Lifecycle.CleanupRunEntry
   , attachLifecycleCleanupPrimaryOutcome
   , claimLifecycleCleanupRun
   , lifecycleCleanupNodesSucceeded
+  , lifecycleCleanupTerminalAuditSucceeded
   , mkOrdinaryCleanupDescriptor
   , observeLifecycleCleanupResult
   , registerLifecycleCleanupRun
@@ -130,6 +144,7 @@ import Prodbox.Lifecycle.CleanupRunRunner
   ( CleanupRunDriverError
   , resumeDescriptorBoundDurableCleanupWithContext
   )
+import Prodbox.Lifecycle.CredentialProvisioner.HarnessCredential (HarnessCredentialLineage)
 import Prodbox.Lifecycle.DnsRecord (HostedZoneId, mkHostedZoneId)
 import Prodbox.Lifecycle.LiveResidue
   ( PerRunResidueStatuses (perRunAwsEksSubzone)
@@ -140,6 +155,7 @@ import Prodbox.Lifecycle.ResidueStatus
   , renderResidueUnreachableReason
   , residueObservationStatus
   )
+import Prodbox.Lifecycle.RuntimeProfile (NativeRuntimeProfile)
 import Prodbox.Lifecycle.Teardown.CloudRuntime (CloudRuntime)
 import Prodbox.Lifecycle.Teardown.CloudRuntimeProduction
   ( ProductionCloudRuntimeError
@@ -151,19 +167,27 @@ import Prodbox.Lifecycle.Teardown.CloudRuntimeProduction
   )
 import Prodbox.Lifecycle.Teardown.Graph
   ( CompiledDesiredAbsenceProgram
-  , DesiredAbsenceGraphError
-  , compileDesiredAbsenceGraphForRegisteredKeys
+  , DesiredAbsenceGraphError (DesiredAbsenceAuditBindingRequired)
+  , compileAuditedExplicitPerRunGraph
+  , compileDesiredAbsenceGraphForRegisteredKeysWithBindings
   , compiledDesiredAbsenceGraph
   , compiledDesiredAbsenceObservationScope
+  , compiledDesiredAbsenceRunId
   )
 import Prodbox.Lifecycle.Teardown.Model
   ( AwsScope
   , CleanupSurface (ExplicitPerRun)
   , CleanupSurfaceWitness (ExplicitPerRunSurface)
+  , LinuxRke2FoundationId (..)
+  , ObservationEvidenceScope
   , RegisteredResourceKey
   , evidenceAwsDnsZone
+  , evidenceAwsScope
+  , evidenceLinuxRke2Foundation
+  , evidenceResourceScopeBindings
   , registeredResourceKeyRequiresDnsZone
   )
+import Prodbox.Lifecycle.Teardown.ResourceScopeBindings (ResourceScopeBindings)
 import Prodbox.PublicEdge (resolveSubstrateHostedZoneId)
 import Prodbox.Runtime.Role
   ( RuntimeRole (LifecycleAuthorityRuntime)
@@ -183,6 +207,9 @@ data LifecycleTestHarnessCleanupInputs = LifecycleTestHarnessCleanupInputs
   , lifecycleTestHarnessSuiteId :: !Text
   , lifecycleTestHarnessSelectedTargets :: ![RegisteredResourceKey]
   , lifecycleTestHarnessKubectlEnvironment :: ![(String, String)]
+  , lifecycleTestHarnessCredentialLineage :: !HarnessCredentialLineage
+  , lifecycleTestHarnessResourceBindings :: !ResourceScopeBindings
+  , lifecycleTestHarnessRuntimeProfile :: !NativeRuntimeProfile
   }
 
 -- | What became of the families that cannot be addressed without a hosted zone.
@@ -208,7 +235,19 @@ data LifecycleTestHarnessCleanupOutcome = LifecycleTestHarnessCleanupOutcome
   { internalLifecycleTestHarnessPrimaryExit :: !(Maybe ExitCode)
   , internalLifecycleTestHarnessResults :: ![LifecycleCleanupResult]
   , internalLifecycleTestHarnessZoneDisposition :: !ZoneDisposition
+  , internalLifecycleTestHarnessCredentialDisposition :: !HarnessCredentialDisposition
+  , internalLifecycleTestHarnessCredentialPreparationExit :: !ExitCode
   }
+
+data HarnessCredentialDisposition
+  = HarnessCredentialRevoked
+  | HarnessCredentialPreservedForRecovery
+  | HarnessCredentialRevocationUnresolved
+  deriving stock (Eq, Show)
+
+lifecycleTestHarnessCredentialDisposition
+  :: LifecycleTestHarnessCleanupOutcome -> HarnessCredentialDisposition
+lifecycleTestHarnessCredentialDisposition = internalLifecycleTestHarnessCredentialDisposition
 
 -- | The caller every part of this composition authenticates as.
 --
@@ -235,14 +274,22 @@ lifecycleTestHarnessCleanupZoneDisposition = internalLifecycleTestHarnessZoneDis
 -- | Whether the cleanup finished what it was asked to do: every run drove all
 -- of its nodes to success, and no zone-scoped family was left unestablished.
 --
--- A settled cleanup is the precondition for ever releasing the harness's
--- Lifecycle-provider credential, but it releases nothing itself: no production
--- path revokes that credential yet, so the caller reports it as retained.
+-- A settled cleanup is the resource-evidence gate for releasing the harness's
+-- Lifecycle-provider credential. The finalizer runs before cancellation is
+-- rethrown and preserves the credential whenever this evidence is incomplete.
 lifecycleTestHarnessCleanupSettled
   :: LifecycleTestHarnessCleanupOutcome -> Bool
 lifecycleTestHarnessCleanupSettled outcome =
-  all lifecycleCleanupNodesSucceeded (internalLifecycleTestHarnessResults outcome)
-    && not (zoneIncomplete (internalLifecycleTestHarnessZoneDisposition outcome))
+  harnessCleanupSettled
+    (internalLifecycleTestHarnessResults outcome)
+    (internalLifecycleTestHarnessZoneDisposition outcome)
+
+harnessCleanupSettled :: [LifecycleCleanupResult] -> ZoneDisposition -> Bool
+harnessCleanupSettled results disposition =
+  not (null results)
+    && all lifecycleCleanupNodesSucceeded results
+    && any lifecycleCleanupTerminalAuditSucceeded results
+    && not (zoneIncomplete disposition)
  where
   zoneIncomplete = \case
     ZoneIncomplete _ -> True
@@ -253,9 +300,29 @@ lifecycleTestHarnessCleanupExitCode
 lifecycleTestHarnessCleanupExitCode outcome
   | not (lifecycleTestHarnessCleanupSettled outcome) =
       ExitFailure 1
+  | internalLifecycleTestHarnessCredentialDisposition outcome /= HarnessCredentialRevoked =
+      ExitFailure 1
+  | failure@(ExitFailure _) <- internalLifecycleTestHarnessCredentialPreparationExit outcome = failure
   | otherwise = case internalLifecycleTestHarnessPrimaryExit outcome of
       Just exitCode -> exitCode
       Nothing -> ExitFailure 1
+
+-- | The ordinary harness's credential tail. A failed validation still retires
+-- its credential once every resource result is successful; incomplete resource
+-- or zone evidence never invokes the Credential Provisioner.
+finishHarnessCredentialCleanup
+  :: (Monad m)
+  => m ExitCode
+  -> [LifecycleCleanupResult]
+  -> ZoneDisposition
+  -> m HarnessCredentialDisposition
+finishHarnessCredentialCleanup revoke results disposition
+  | not (harnessCleanupSettled results disposition) = pure HarnessCredentialPreservedForRecovery
+  | otherwise = do
+      revoked <- revoke
+      pure $ case revoked of
+        ExitSuccess -> HarnessCredentialRevoked
+        ExitFailure _ -> HarnessCredentialRevocationUnresolved
 
 data LifecycleTestHarnessCleanupError
   = LifecycleTestHarnessPreparationFailed !Text
@@ -314,41 +381,73 @@ renderLifecycleTestHarnessCleanupError = \case
 -- | The two parts of the composition that touch the Authority, with the body
 -- between them.  Neither part returns a session or anything bound to one, so
 -- nothing can carry a dead transport across the body.
-data HarnessCleanupBracket = HarnessCleanupBracket
-  { bracketRegister :: IO (Either LifecycleTestHarnessCleanupError Bool)
-  -- ^ Establish the run before the first mutation and hold it. 'True' means
-  -- this invocation registered it and runs the body; 'False' means it adopted a
-  -- run an earlier invocation left, whose body is not run again.
+data HarnessRunRegistration bodyContext
+  = FreshHarnessRun !bodyContext
+  | AdoptedHarnessRun
+  deriving (Eq, Show)
+
+-- | Only a successful fresh registration/claim returns this metadata to the
+-- body. It carries no session, transport, credential, or mutable reference.
+data HarnessBodyScope = HarnessBodyScope !CleanupRunId !ObservationEvidenceScope ![RegisteredResourceKey]
+
+harnessBodyObservationScope :: HarnessBodyScope -> ObservationEvidenceScope
+harnessBodyObservationScope (HarnessBodyScope _ scope _) = scope
+
+harnessBodyRegisteredTargets :: HarnessBodyScope -> [RegisteredResourceKey]
+harnessBodyRegisteredTargets (HarnessBodyScope _ _ targets) = targets
+
+harnessBodyRunId :: HarnessBodyScope -> Text
+harnessBodyRunId (HarnessBodyScope runId _ _) = cleanupRunIdText runId
+
+data HarnessCleanupBracket bodyContext outcome = HarnessCleanupBracket
+  { bracketRegister :: IO (Either LifecycleTestHarnessCleanupError (HarnessRunRegistration bodyContext))
+  , -- Establish the run before the first mutation and hold it;
+    -- a fresh registration supplies its exact metadata to the body. An adopted
+    -- run is recovered without running its old body again.
+    bracketPrepareCredential :: !(IO ExitCode)
   , bracketDrive
       :: Maybe (Either SomeException ExitCode)
-      -> IO (Either LifecycleTestHarnessCleanupError LifecycleTestHarnessCleanupOutcome)
+      -> IO (Either LifecycleTestHarnessCleanupError outcome)
   -- ^ With a fresh session, record the primary outcome, claim, and drive.
+  , bracketFinalizeCredential
+      :: Either SomeException ExitCode
+      -> outcome
+      -> IO (Either LifecycleTestHarnessCleanupError outcome)
   }
 
 -- | Run the body between the two parts, with cancellation handled as before:
 -- the drive runs masked, and an asynchronous exception the body raised is
 -- rethrown after cleanup has been attempted.
 orchestrateHarnessCleanup
-  :: HarnessCleanupBracket
-  -> IO ExitCode
+  :: HarnessCleanupBracket bodyContext outcome
+  -> (bodyContext -> IO ExitCode)
   -> IO
        ( Either
            LifecycleTestHarnessCleanupError
-           LifecycleTestHarnessCleanupOutcome
+           outcome
        )
 orchestrateHarnessCleanup bracket body = do
   registered <- bracketRegister bracket
   case registered of
     Left err -> pure (Left err)
-    Right runBody ->
+    Right registration ->
       mask $ \restore -> do
-        primaryResult <- capturePrimaryResult runBody (try (restore body))
+        prepared <- try (restore (bracketPrepareCredential bracket))
+        primaryResult <- case prepared of
+          Right ExitSuccess -> capturePrimaryResult registration (try . restore . body)
+          _ -> pure $ case registration of
+            FreshHarnessRun _ -> Just prepared
+            AdoptedHarnessRun -> Nothing
         driven <- bracketDrive bracket primaryResult
-        rethrowCancellation primaryResult driven
+        finalized <- case driven of
+          Left err -> pure (Left err)
+          Right outcome -> bracketFinalizeCredential bracket prepared outcome
+        afterBody <- rethrowCancellation primaryResult finalized
+        rethrowCancellation (Just prepared) afterBody
 
 runLifecycleTestHarnessCleanup
   :: LifecycleTestHarnessCleanupInputs
-  -> IO ExitCode
+  -> (HarnessBodyScope -> IO ExitCode)
   -> IO
        ( Either
            LifecycleTestHarnessCleanupError
@@ -375,12 +474,46 @@ productionBracket
   :: LifecycleTestHarnessCleanupInputs
   -> PreparedInputs
   -> CleanupOwnerId
-  -> HarnessCleanupBracket
+  -> HarnessCleanupBracket HarnessBodyScope LifecycleTestHarnessCleanupOutcome
 productionBracket inputs ready owner =
   HarnessCleanupBracket
     { bracketRegister = registerPart inputs ready owner
+    , bracketPrepareCredential = do
+        established <-
+          reconcileHarnessLifecycleProviderCredential
+            (lifecycleTestHarnessRepositoryRoot inputs)
+            (lifecycleTestHarnessCredentialLineage inputs)
+        case established of
+          failure@(ExitFailure _) -> pure failure
+          ExitSuccess ->
+            runNativeHarnessPostCredentialRuntime
+              (lifecycleTestHarnessRepositoryRoot inputs)
+              (lifecycleTestHarnessRuntimeProfile inputs)
     , bracketDrive = drivePart inputs ready owner
+    , bracketFinalizeCredential = finalizeCredential inputs
     }
+
+finalizeCredential
+  :: LifecycleTestHarnessCleanupInputs
+  -> Either SomeException ExitCode
+  -> LifecycleTestHarnessCleanupOutcome
+  -> IO (Either LifecycleTestHarnessCleanupError LifecycleTestHarnessCleanupOutcome)
+finalizeCredential inputs prepared outcome = do
+  disposition <-
+    finishHarnessCredentialCleanup
+      ( revokeHarnessLifecycleProviderCredential
+          (lifecycleTestHarnessRepositoryRoot inputs)
+          (lifecycleTestHarnessCredentialLineage inputs)
+      )
+      (internalLifecycleTestHarnessResults outcome)
+      (internalLifecycleTestHarnessZoneDisposition outcome)
+  pure
+    ( Right
+        outcome
+          { internalLifecycleTestHarnessCredentialDisposition = disposition
+          , internalLifecycleTestHarnessCredentialPreparationExit = either (const (ExitFailure 1)) id prepared
+          }
+    )
 
 -- | One authenticated session as the cleanup caller, closed when the action
 -- returns.
@@ -412,7 +545,7 @@ registerPart
   :: LifecycleTestHarnessCleanupInputs
   -> PreparedInputs
   -> CleanupOwnerId
-  -> IO (Either LifecycleTestHarnessCleanupError Bool)
+  -> IO (Either LifecycleTestHarnessCleanupError (HarnessRunRegistration HarnessBodyScope))
 registerPart inputs ready owner =
   withCleanupSession inputs $ \transport -> do
     let client = descriptorBoundCleanupRunClient transport
@@ -464,10 +597,11 @@ registerFresh
   -> PreparedInputs
   -> CleanupOwnerId
   -> DescriptorBoundCleanupRunClient IO
-  -> IO (Either LifecycleTestHarnessCleanupError Bool)
+  -> IO (Either LifecycleTestHarnessCleanupError (HarnessRunRegistration HarnessBodyScope))
 registerFresh inputs ready owner client = do
   now <- currentMicros
   case newPlan
+    HarnessFinalCleanupProgram
     (harnessMainRunPrefix (suitePrefixOf inputs))
     (mainRunKeys inputs ready)
     (preparedAwsDnsZone ready)
@@ -490,13 +624,22 @@ registerFresh inputs ready owner client = do
               admitted
           pure $ case claimed of
             Left err -> Left (LifecycleTestHarnessClaimFailed err)
-            Right _ -> Right True
+            Right held -> do
+              compiled <- compiledFromRegistered held
+              Right
+                ( FreshHarnessRun
+                    ( HarnessBodyScope
+                        (compiledDesiredAbsenceRunId compiled)
+                        (compiledDesiredAbsenceObservationScope compiled)
+                        (mainRunKeys inputs ready)
+                    )
+                )
 
 adoptAndClaim
   :: CleanupOwnerId
   -> DescriptorBoundCleanupRunClient IO
   -> DescriptorBoundCleanupRun
-  -> IO (Either LifecycleTestHarnessCleanupError Bool)
+  -> IO (Either LifecycleTestHarnessCleanupError (HarnessRunRegistration HarnessBodyScope))
 adoptAndClaim owner client existing =
   case adoptExplicitPerRunLifecycleCleanup existing of
     Left err -> pure (Left (LifecycleTestHarnessAdoptionFailed err))
@@ -511,7 +654,7 @@ adoptAndClaim owner client existing =
           registered
       pure $ case claimed of
         Left err -> Left (LifecycleTestHarnessClaimFailed err)
-        Right _ -> Right False
+        Right _ -> Right AdoptedHarnessRun
 
 -- | Part three: with a session opened after the body, record the primary
 -- outcome on every run, claim, and drive the zone-scoped run first and the main
@@ -556,18 +699,14 @@ drivePart inputs ready owner primaryResult =
               -- about the program it was registered with, not about the
               -- configuration read now: the configuration can change between an
               -- interrupted invocation and the one that resumes it.
-              let mainHasZone =
-                    isJust
-                      ( evidenceAwsDnsZone
-                          (compiledDesiredAbsenceObservationScope (drivableCompiled mainRun))
-                      )
+              let mainScope = compiledDesiredAbsenceObservationScope (drivableCompiled mainRun)
               zoneTail <-
                 zoneRunFor
                   inputs
                   ready
                   owner
                   client
-                  mainHasZone
+                  mainScope
                   (liveRunsFor (harnessZoneRunPrefix suite) allRuns)
               case zoneTail of
                 Left err -> pure (Left err)
@@ -587,6 +726,8 @@ drivePart inputs ready owner primaryResult =
                         , internalLifecycleTestHarnessResults =
                             map snd zoneDriven ++ [mainLifecycleResult]
                         , internalLifecycleTestHarnessZoneDisposition = disposition
+                        , internalLifecycleTestHarnessCredentialDisposition = HarnessCredentialPreservedForRecovery
+                        , internalLifecycleTestHarnessCredentialPreparationExit = ExitSuccess
                         }
 
 -- | A run ready to drive, with the program it was compiled from.
@@ -603,10 +744,33 @@ zoneRunFor
   -> PreparedInputs
   -> CleanupOwnerId
   -> DescriptorBoundCleanupRunClient IO
+  -> ObservationEvidenceScope
+  -> [DescriptorBoundCleanupRun]
+  -> IO (Either LifecycleTestHarnessCleanupError ([DrivableRun], ZoneDisposition))
+zoneRunFor inputs ready owner client scope liveZoneRuns = case evidenceAwsScope scope of
+  Nothing ->
+    pure
+      (Left (LifecycleTestHarnessPreparationFailed "retained cleanup scope has no AWS account/region"))
+  Just aws ->
+    let LinuxRke2FoundationId foundation = evidenceLinuxRke2Foundation scope
+        retained =
+          ready
+            { preparedFoundation = foundation
+            , preparedAwsScope = aws
+            , preparedAwsDnsZone = evidenceAwsDnsZone scope
+            , preparedResourceBindings = evidenceResourceScopeBindings scope
+            }
+     in zoneRunForBound inputs retained owner client (isJust (evidenceAwsDnsZone scope)) liveZoneRuns
+
+zoneRunForBound
+  :: LifecycleTestHarnessCleanupInputs
+  -> PreparedInputs
+  -> CleanupOwnerId
+  -> DescriptorBoundCleanupRunClient IO
   -> Bool
   -> [DescriptorBoundCleanupRun]
   -> IO (Either LifecycleTestHarnessCleanupError ([DrivableRun], ZoneDisposition))
-zoneRunFor inputs ready owner client mainHasZone liveZoneRuns =
+zoneRunForBound inputs ready owner client mainHasZone liveZoneRuns =
   case (zoneScopedKeys, mainHasZone, liveZoneRuns) of
     ([], _, _) -> pure (Right ([], ZoneNotSelected))
     (_, True, _) -> pure (Right ([], ZoneAuthored))
@@ -632,6 +796,7 @@ zoneRunFor inputs ready owner client mainHasZone liveZoneRuns =
   registerZoneRun zone zoneKeys = do
     now <- currentMicros
     case newPlan
+      HarnessResourceCleanupProgram
       (harnessZoneRunPrefix (suitePrefixOf inputs))
       zoneKeys
       (Just zone)
@@ -716,6 +881,7 @@ data PreparedInputs = PreparedInputs
   { preparedFoundation :: !Text
   , preparedAwsScope :: !AwsScope
   , preparedAwsDnsZone :: !(Maybe HostedZoneId)
+  , preparedResourceBindings :: !(Maybe ResourceScopeBindings)
   }
 
 prepareInputs :: LifecycleTestHarnessCleanupInputs -> IO PreparedInputs
@@ -738,6 +904,7 @@ prepareInputs inputs = do
       { preparedFoundation = checkpointAuthorityClusterId authority
       , preparedAwsScope = awsScope
       , preparedAwsDnsZone = awsDnsZone
+      , preparedResourceBindings = Just (lifecycleTestHarnessResourceBindings inputs)
       }
 
 -- | The sanitized suite id every run id of this composition is built from.
@@ -848,8 +1015,11 @@ observeZoneEvidence repoRoot = do
               Right zone -> ZoneEvidenceResolved zone
 
 -- | Compile, wrap and capture one run over the given targets.
+data HarnessCleanupProgramKind = HarnessResourceCleanupProgram | HarnessFinalCleanupProgram
+
 newPlan
-  :: Text
+  :: HarnessCleanupProgramKind
+  -> Text
   -> [RegisteredResourceKey]
   -> Maybe HostedZoneId
   -> PreparedInputs
@@ -860,7 +1030,7 @@ newPlan
        ( LifecycleCleanupDescriptor 'ExplicitPerRun
        , CompiledDesiredAbsenceProgram 'ExplicitPerRun
        )
-newPlan prefix keys zone prepared owner now = do
+newPlan kind prefix keys zone prepared owner now = do
   runId <-
     firstText
       LifecycleTestHarnessRunIdInvalid
@@ -868,13 +1038,26 @@ newPlan prefix keys zone prepared owner now = do
   compiled <-
     firstValue
       LifecycleTestHarnessProgramInvalid
-      ( compileDesiredAbsenceGraphForRegisteredKeys
-          runId
-          (homeLinuxRke2FoundationId (preparedFoundation prepared))
-          (Just (preparedAwsScope prepared))
-          zone
-          ExplicitPerRunSurface
-          keys
+      ( case kind of
+          HarnessFinalCleanupProgram -> case preparedResourceBindings prepared of
+            Nothing -> Left DesiredAbsenceAuditBindingRequired
+            Just bindings ->
+              compileAuditedExplicitPerRunGraph
+                runId
+                (homeLinuxRke2FoundationId (preparedFoundation prepared))
+                (preparedAwsScope prepared)
+                zone
+                bindings
+                keys
+          HarnessResourceCleanupProgram ->
+            compileDesiredAbsenceGraphForRegisteredKeysWithBindings
+              runId
+              (homeLinuxRke2FoundationId (preparedFoundation prepared))
+              (Just (preparedAwsScope prepared))
+              zone
+              (preparedResourceBindings prepared)
+              ExplicitPerRunSurface
+              keys
       )
   initial <-
     firstValue
@@ -1054,10 +1237,11 @@ leaseMicros = 30 * 60 * 1_000_000
 reportRetentionMicros :: Natural
 reportRetentionMicros = 0
 
-capturePrimaryResult :: Bool -> IO value -> IO (Maybe value)
-capturePrimaryResult shouldRun action = case shouldRun of
-  True -> Just <$> action
-  False -> pure Nothing
+capturePrimaryResult
+  :: HarnessRunRegistration bodyContext -> (bodyContext -> IO value) -> IO (Maybe value)
+capturePrimaryResult registration action = case registration of
+  FreshHarnessRun context -> Just <$> action context
+  AdoptedHarnessRun -> pure Nothing
 
 firstText
   :: (Text -> error)

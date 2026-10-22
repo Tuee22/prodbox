@@ -34,8 +34,14 @@ import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Numeric.Natural (Natural)
+import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
+  ( AuthenticatedRolePlainResponseCause (AuthenticatedRoleReadReplayRequiresFreshNonce)
+  , AuthenticatedRolePlainResponseObservation (AuthenticatedRolePlainResponseKnown)
+  , classifyAuthenticatedRolePlainResponse
+  )
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientError
   , AuthenticatedClientTransport
@@ -86,8 +92,9 @@ import Prodbox.Lifecycle.CleanupRun
   , CleanupRunCodecError
   , CleanupRunError
   , CleanupRunId
-  , CleanupRunReport
+  , CleanupRunReport (cleanupReportRunId)
   , cleanupAttemptIdText
+  , cleanupDigestOfBytes
   , cleanupDigestText
   , cleanupGraphNodes
   , cleanupNodeId
@@ -140,6 +147,10 @@ data DescriptorBoundCleanupRunClient m = DescriptorBoundCleanupRunClient
   , observeDescriptorBoundCleanupRun
       :: CleanupRunId
       -> m (Either CleanupRunClientError DescriptorBoundCleanupRun)
+  , observeDescriptorBoundCleanupRunCompletion
+      :: CleanupRunId
+      -> CleanupDigest
+      -> m (Either CleanupRunClientError (Maybe CleanupRunReport))
   , scanDescriptorBoundCleanupRuns
       :: m (Either CleanupRunClientError [DescriptorBoundCleanupRun])
   , claimDescriptorBoundCleanupRun
@@ -178,6 +189,7 @@ data DescriptorBoundCleanupRunClient m = DescriptorBoundCleanupRunClient
 
 data CleanupRunClientError
   = CleanupRunClientTransportFailed !AuthenticatedClientError
+  | CleanupRunClientReadReplayRequiresFreshNonce
   | CleanupRunClientHttpStatus !Int !Text
   | CleanupRunClientResponseInvalid !CleanupRunCodecError
   | CleanupRunClientScanResponseInvalid !Text
@@ -416,6 +428,7 @@ descriptorBoundCleanupRunClient transport =
   DescriptorBoundCleanupRunClient
     { createDescriptorBoundCleanupRun = createDescriptor
     , observeDescriptorBoundCleanupRun = observeDescriptor
+    , observeDescriptorBoundCleanupRunCompletion = observeCompletion
     , scanDescriptorBoundCleanupRuns = scanDescriptors
     , claimDescriptorBoundCleanupRun = claimDescriptor
     , recordDescriptorBoundCleanupPrimary = recordDescriptorPrimary
@@ -443,6 +456,32 @@ descriptorBoundCleanupRunClient transport =
   observeDescriptor runId =
     expectDescriptorPresent (Just runId) Nothing
       =<< callDescriptor (CleanupRunDescriptorObserve (cleanupRunIdText runId))
+
+  observeCompletion runId descriptorDigest = do
+    response <-
+      callDescriptor
+        (CleanupRunDescriptorObserveCompletion (cleanupRunIdText runId) (cleanupDigestText descriptorDigest))
+    case response of
+      Left cause -> pure (Left cause)
+      Right (CleanupRunDescriptorCompacted rawDigest bytes) -> pure $ do
+        digest <- first CleanupRunClientDescriptorResponseInvalid (mkCleanupDigest rawDigest)
+        report <-
+          first CleanupRunClientResponseInvalid (decodeCleanupRunReport cleanupRunMaximumBytes bytes)
+        if digest == descriptorDigest && cleanupReportRunId report == runId
+          then Right (Just report)
+          else Left (CleanupRunClientDescriptorBindingMismatch "completion response identity differs")
+      Right present@CleanupRunDescriptorPresent {} -> do
+        bound <- expectDescriptorPresent (Just runId) (Just descriptorDigest) (Right present)
+        pure $ do
+          observed <- bound
+          if descriptorBoundCleanupRunTerminal observed
+            then
+              Just
+                <$> first
+                  (CleanupRunClientDescriptorBindingMismatch . Text.pack . show)
+                  (descriptorBoundCleanupRunReport observed)
+            else Right Nothing
+      Right other -> pure (descriptorResponseError other)
 
   scanDescriptors = do
     response <- callDescriptor CleanupRunDescriptorScan
@@ -527,17 +566,58 @@ descriptorBoundCleanupRunClient transport =
                 (decodeCleanupRunReport cleanupRunMaximumBytes reportBytes)
         other -> descriptorResponseError other
 
-  transitionDescriptor bound command =
-    expectDescriptorPresent
-      (Just (descriptorBoundCleanupRunId bound))
-      (Just (descriptorBoundCleanupRunDescriptorDigest bound))
-      =<< callDescriptor command
+  transitionDescriptor bound command = do
+    attempted <- callDescriptor command
+    case attempted of
+      Left cause -> pure (Left cause)
+      Right (CleanupRunDescriptorMutationCommitted runId descriptorDigest stateDigest) ->
+        confirmTransition bound runId descriptorDigest stateDigest
+      Right (CleanupRunDescriptorPresent runId descriptorDigest bytes) ->
+        confirmTransition bound runId descriptorDigest (cleanupDigestText (cleanupDigestOfBytes bytes))
+      Right other -> pure (descriptorResponseError other)
+
+  confirmTransition bound runId descriptorDigest stateDigest
+    | runId /= boundRunIdText bound || descriptorDigest /= boundDescriptorDigestText bound =
+        pure
+          ( Left
+              ( CleanupRunClientDescriptorBindingMismatch
+                  "cleanup transition acknowledgement has different identities"
+              )
+          )
+    | otherwise = do
+        independentlyObserved <- callDescriptor (CleanupRunDescriptorObserve runId)
+        pure $ do
+          response <- independentlyObserved
+          case response of
+            CleanupRunDescriptorPresent observedRun observedDescriptor bytes
+              | cleanupDigestText (cleanupDigestOfBytes bytes) == stateDigest -> do
+                  (actualRunId, actualDescriptor, actualRun) <-
+                    decodeDescriptorRunEntry (observedRun, observedDescriptor, bytes)
+                  if actualRunId /= descriptorBoundCleanupRunId bound
+                    || actualDescriptor /= descriptorBoundCleanupRunDescriptorDigest bound
+                    then
+                      Left
+                        (CleanupRunClientDescriptorBindingMismatch "cleanup transition readback has different identities")
+                    else do
+                      let next = DescriptorBoundCleanupRun (internalDescriptorBoundCleanupRunDescriptor bound) actualRun
+                      _ <- withDescriptorBoundCleanupProgram next (\_ _ _ -> ())
+                      Right next
+              | otherwise ->
+                  Left
+                    ( CleanupRunClientDescriptorBindingMismatch
+                        "cleanup transition readback differs from its acknowledgement"
+                    )
+            other -> descriptorResponseError other
 
   callDescriptor command = do
     attempted <- call (CleanupRunDescriptorBound command)
     pure $ do
       ControlPlaneResponse status body <-
         first CleanupRunClientTransportFailed attempted
+      case classifyAuthenticatedRolePlainResponse status body of
+        AuthenticatedRolePlainResponseKnown AuthenticatedRoleReadReplayRequiresFreshNonce ->
+          Left CleanupRunClientReadReplayRequiresFreshNonce
+        _ -> Right ()
       response <-
         first
           CleanupRunClientDescriptorResponseInvalid
@@ -689,6 +769,7 @@ descriptorBoundCleanupRunClient transport =
     CleanupRunDescriptorTombstoned {} -> ReplyGone
     CleanupRunDescriptorNotFound -> ReplyNotFound
     CleanupRunDescriptorProgramPresent {} -> ReplyOk
+    CleanupRunDescriptorMutationCommitted {} -> ReplyOk
     CleanupRunDescriptorRefused refusal -> case refusal of
       CleanupRunDescriptorCommitConflict -> ReplyConflict
       CleanupRunDescriptorTransitionRefused _ -> ReplyConflict

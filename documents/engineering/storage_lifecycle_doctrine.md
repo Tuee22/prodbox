@@ -40,7 +40,12 @@ provenance, not a parallel status ledger.
   least the plan's: a smaller one (or one that reports none) is refused naming both sizes before
   anything else is created, because it would be bound under a larger claim, and growing it in
   place or replacing the retained family is an operator decision about data the volume holds, not
-  a side effect of the ensure. There is **no dynamic provisioning on either substrate**,
+  a side effect of the ensure. Each retained-PV create carries a domain-versioned SHA-256 client
+  token derived from its stable PV name. EC2 scopes it to the account/region; size, type and zone
+  changes retain that token so conflicting retries fail rather than silently allocate a second
+  volume. A lost response can therefore be retried while tag listings lag, under
+  [EC2's idempotency contract](https://docs.aws.amazon.com/ec2/latest/devguide/ec2-api-idempotency.html).
+  There is **no dynamic provisioning on either substrate**,
   satisfying [cluster_topology_doctrine.md § 4](./cluster_topology_doctrine.md); the legacy
   dynamic `gp2` EKS path (Sprint `7.5.c.i`) is superseded by Sprint `7.28` and tracked for
   removal in
@@ -492,6 +497,20 @@ Rules:
     bootstrap-located coordinates are derived from the one control directory rather than authored at
     each site. It carries no durability index, because unlike the artifact store it must be
     *mutated* while the Authority is absent — recording local absence is exactly that write.
+    The same directory retains one immutable `*.handoff-v2.cbor` slot per run: the canonical
+    program descriptor, armed host intent and successfully observed remote prefix with four
+    Pending local nodes, plus the independently observed credential-retired epoch confirmation.
+    The confirmation binds the exact run, descriptor, graph, scope, audit node, operation and
+    successful attempt, separately preserving the original frozen reservation when a lease
+    takeover replaced the running attempt; only a clean recorded audit followed by credential
+    revocation admits it.
+    It carries metadata and proof digests only. The version-2 envelope reserves 64 KiB for this
+    bounded control metadata and never treats an earlier, unretired handoff as a retired one.
+    It is independently read back before authenticated sessions close.
+    The bounded reader validates the descriptor, complete scope, prefix and retirement; it creates no
+    Authority-committed handle. After uninstall, only native absence and the preserved local
+    completion journal advance the tail. Reinstalling RKE2 would invalidate that absence and is
+    not part of completion.
     That check is not advisory. `Prodbox.Lifecycle.Teardown.RecoveryRepairExecution` is the only
     consumer of a rendered repair, and the value it executes has no constructor reachable from a
     rendered plan alone: a repair is *admitted* from the plan joined against the store listing, or

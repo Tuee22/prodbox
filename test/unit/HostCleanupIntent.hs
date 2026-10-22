@@ -136,6 +136,7 @@ hostCleanupIntentSuite =
       hostCleanupIntentRegressionReadyReadBack regression `shouldBe` True
       hostCleanupIntentRegressionPhaseReplay regression `shouldBe` True
       hostCleanupIntentRegressionRetirementReplay regression `shouldBe` True
+      hostCleanupIntentRegressionTerminalHandoff regression `shouldBe` True
 
     it "rejects explicit run and graph bindings that disagree with the encoded CleanupRun" $ do
       mkHostCleanupIntent

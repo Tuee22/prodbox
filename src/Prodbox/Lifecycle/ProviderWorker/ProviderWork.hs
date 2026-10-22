@@ -80,6 +80,7 @@ module Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkAwsEksProviderStackConfig
   , mkAwsTestProviderStackConfig
   , mkAwsEksSubzoneProviderStackConfig
+  , mkAwsSesPreviewStackConfig
   , mkAwsEksProfileProviderStackConfig
   , mkAwsTestProfileProviderStackConfig
   , providerStackConfigRef
@@ -87,10 +88,20 @@ module Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , validateProviderStackConfig
   , ProviderNativeStackFamilyRef
   , mkProviderNativeStackFamilyRef
+  , mkProviderNetworkFamilyRef
+  , ProviderNetworkPurgeMode (..)
+  , mkProviderNetworkPurgeRef
+  , mkProviderNetworkPurgeApplyMode
+  , providerNativeStackFamilyPurgeMode
+  , providerNativeStackFamilyWireSelector
+  , providerNativeStackFamilyNetworkFamily
+  , providerNativeStackFamilyWireResource
+  , mkProviderNativeStackFamilyWireRef
   , providerNativeStackFamilyStackRef
   , providerNativeStackFamilyAccountId
   , providerNativeStackFamilyRegion
   , providerNativeStackFamilyHostedZoneId
+  , validateTestVpcCanaryRef
 
     -- * Closed native AWS programs
   , ProviderSpotPriceQuery
@@ -148,6 +159,9 @@ module Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , awsAuditEvidenceFamily
   , validationHostedZoneEvidenceFamily
   , dns01ChallengeRecordEvidenceFamily
+  , inviteMailCleanupEvidenceFamily
+  , renderInviteMailCleanupEvidence
+  , inviteMailCleanupAbsentEvidence
   , ownedResourceTagEvidenceFamily
   , registeredEvidenceFamilies
   , validateProviderIntentEvidence
@@ -174,37 +188,60 @@ module Prodbox.Lifecycle.ProviderWorker.ProviderWork
 where
 
 import Codec.Serialise (Serialise)
+import Control.Monad (void)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Bifunctor (bimap)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.Char (isAlphaNum, isAsciiLower, isDigit)
+import Data.List (nub)
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import GHC.Generics (Generic)
 import Numeric (showHex)
 import Numeric.Natural (Natural)
+import Prodbox.Capacity.SesCaptureCleanupBudget (maximumCleanupMailVersions)
 import Prodbox.ControlPlane.EksClientAuthProjection
   ( maximumEksClientAuthEvidenceCharacters
   )
+import Prodbox.Ses.InviteEvidence
+  ( InviteMailPublicKey
+  , inviteMailPublicKeyText
+  , retiredInviteMailEvidence
+  , validateInviteMailEvidence
+  )
+
+import Prodbox.Capacity.Dns01CleanupBudget
+import Prodbox.Lifecycle.AwsNetworkFamily
+import Prodbox.Lifecycle.AwsProviderRecording
+  ( canaryPlantRecordingFromEvidence
+  , maximumCanaryPlantEvidenceCharacters
+  )
+import Prodbox.Lifecycle.AwsTestCanary (TestVpcCanaryRequest, testVpcCanaryRequestWireText)
 import Prodbox.Lifecycle.Lease (AuthorityTime, authorityTimeMicros)
 import Prodbox.Lifecycle.ProviderWorker.Evidence
   ( ProviderEvidenceBound
   , ProviderEvidenceFamily
+  , decodeProviderEvidenceText
+  , encodeProviderEvidence
+  , maximumStackPreviewEvidenceBytes
   , providerEvidenceFamily
   , providerEvidenceFromWire
   , providerEvidenceText
   , renderProviderEvidenceRefusal
   )
 import Prodbox.Lifecycle.ProviderWorker.Evidence.Internal (ProviderEvidenceBound (..))
+import Prodbox.Lifecycle.Teardown.ResourceScopeBindings
 import Prodbox.Settings.AwsSubstrateProfile
   ( AwsSubstrateProfile
   , awsEksStackConfiguration
   , awsSubstrateOperatorCidr
   , awsTestStackConfiguration
   )
+import Prodbox.Settings.Coordinate (mkS3BucketName)
 
 -- | Why a raw provider-resource reference failed validation.
 data ProviderRefError
@@ -458,6 +495,7 @@ data ProviderStackConfig
   | AwsEksSubzoneProviderStackConfig !Text !Text
   | AwsEksProfileProviderStackConfig !AwsSubstrateProfile !Natural
   | AwsTestProfileProviderStackConfig !AwsSubstrateProfile
+  | AwsSesPreviewStackConfig !Text !Text !Text
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -469,6 +507,7 @@ data ProviderStackConfigView
   | AwsEksSubzoneConfig !Text !Text
   | AwsEksProfileConfig !AwsSubstrateProfile !Natural
   | AwsTestProfileConfig !AwsSubstrateProfile
+  | AwsSesPreviewConfig !Text !Text !Text
   deriving stock (Eq, Show)
 
 data ProviderStackConfigError
@@ -479,14 +518,113 @@ data ProviderStackConfigError
 -- | Exact account/region binding for checkpoint-independent observation and
 -- recovery of one registered stack family.  The subzone family additionally
 -- requires its exact hosted-zone id; the other two families forbid one.
-data ProviderNativeStackFamilyRef = ProviderNativeStackFamilyRef
-  { providerNativeStackFamilyStackRef :: !ProviderStackRef
-  , providerNativeStackFamilyAccountId :: !Text
-  , providerNativeStackFamilyRegion :: !Text
-  , providerNativeStackFamilyHostedZoneId :: !(Maybe Text)
-  }
+data ProviderNativeStackFamilyRef
+  = ProviderNativeStackFamilyRef
+      { providerNativeStackFamilyStackRef :: !ProviderStackRef
+      , providerNativeStackFamilyAccountId :: !Text
+      , providerNativeStackFamilyRegion :: !Text
+      , providerNativeStackFamilyHostedZoneId :: !(Maybe Text)
+      }
+  | ProviderNetworkFamilyRef
+      { providerNativeStackFamilyStackRef :: !ProviderStackRef
+      , providerNativeStackFamilyAccountId :: !Text
+      , providerNativeStackFamilyRegion :: !Text
+      , providerNativeStackFamilyHostedZoneId :: !(Maybe Text)
+      , internalNetworkFamily :: !AwsNetworkFamily
+      }
+  | ProviderNetworkPurgeRef
+      { providerNativeStackFamilyStackRef :: !ProviderStackRef
+      , providerNativeStackFamilyAccountId :: !Text
+      , providerNativeStackFamilyRegion :: !Text
+      , providerNativeStackFamilyHostedZoneId :: !(Maybe Text)
+      , internalNetworkPurgeMode :: !ProviderNetworkPurgeMode
+      }
   deriving stock (Eq, Ord, Show, Generic)
   deriving anyclass (Serialise)
+
+data ProviderNetworkPurgeMode = NetworkPurgePlan | NetworkPurgeApply !Text
+  deriving stock (Eq, Ord, Show, Generic)
+  deriving anyclass (Serialise)
+
+providerNativeStackFamilyPurgeMode :: ProviderNativeStackFamilyRef -> Maybe ProviderNetworkPurgeMode
+providerNativeStackFamilyPurgeMode ref = case ref of
+  ProviderNetworkPurgeRef {internalNetworkPurgeMode = mode} -> Just mode
+  ProviderNativeStackFamilyRef {} -> Nothing
+  ProviderNetworkFamilyRef {} -> Nothing
+
+providerNativeStackFamilyWireSelector :: ProviderNativeStackFamilyRef -> Maybe Text
+providerNativeStackFamilyWireSelector ref = case providerNativeStackFamilyPurgeMode ref of
+  Nothing -> providerNativeStackFamilyHostedZoneId ref
+  Just NetworkPurgePlan -> Just "purge-plan"
+  Just (NetworkPurgeApply digest) -> Just ("purge-apply:" <> digest)
+
+mkProviderNetworkPurgeRef
+  :: Text -> Text -> ProviderNetworkPurgeMode -> Either ProviderRefError ProviderNativeStackFamilyRef
+mkProviderNetworkPurgeRef account region mode = do
+  stack <- mkProviderStackRef "aws-eks"
+  validated <- mkProviderNativeStackFamilyRef stack account region Nothing
+  case mode of
+    NetworkPurgePlan -> Right ()
+    NetworkPurgeApply digest -> void (mkProviderNetworkPurgeApplyMode digest)
+  Right
+    ( ProviderNetworkPurgeRef
+        stack
+        (providerNativeStackFamilyAccountId validated)
+        (providerNativeStackFamilyRegion validated)
+        Nothing
+        mode
+    )
+
+mkProviderNetworkPurgeApplyMode :: Text -> Either ProviderRefError ProviderNetworkPurgeMode
+mkProviderNetworkPurgeApplyMode digest
+  | Text.length digest == 64 && Text.all (\c -> isDigit c || c `elem` ['a' .. 'f']) digest =
+      Right (NetworkPurgeApply digest)
+  | otherwise = Left (ProviderRefMalformed "network purge plan digest")
+
+providerNativeStackFamilyNetworkFamily :: ProviderNativeStackFamilyRef -> Maybe AwsNetworkFamily
+providerNativeStackFamilyNetworkFamily ref = case ref of
+  ProviderNativeStackFamilyRef {} -> Nothing
+  ProviderNetworkFamilyRef {internalNetworkFamily = family} -> Just family
+  ProviderNetworkPurgeRef {} -> Nothing
+
+providerNativeStackFamilyWireResource :: ProviderNativeStackFamilyRef -> Text
+providerNativeStackFamilyWireResource ref = case providerNativeStackFamilyPurgeMode ref of
+  Just _ -> "aws-eks-network-purge"
+  Nothing ->
+    maybe
+      (providerStackRefText (providerNativeStackFamilyStackRef ref))
+      networkFamilyName
+      (providerNativeStackFamilyNetworkFamily ref)
+
+mkProviderNetworkFamilyRef
+  :: AwsNetworkFamily -> Text -> Text -> Either ProviderRefError ProviderNativeStackFamilyRef
+mkProviderNetworkFamilyRef family account region = do
+  stack <- mkProviderStackRef (networkFamilyStack family)
+  validated <- mkProviderNativeStackFamilyRef stack account region Nothing
+  Right
+    ( ProviderNetworkFamilyRef
+        stack
+        (providerNativeStackFamilyAccountId validated)
+        (providerNativeStackFamilyRegion validated)
+        Nothing
+        family
+    )
+
+mkProviderNativeStackFamilyWireRef
+  :: Text -> Text -> Text -> Maybe Text -> Either ProviderRefError ProviderNativeStackFamilyRef
+mkProviderNativeStackFamilyWireRef "aws-eks-network-purge" account region selector = do
+  mode <- case selector of
+    Just "purge-plan" -> Right NetworkPurgePlan
+    Just value | Just digest <- Text.stripPrefix "purge-apply:" value -> Right (NetworkPurgeApply digest)
+    _ -> Left (ProviderRefMalformed "network purge selector")
+  mkProviderNetworkPurgeRef account region mode
+mkProviderNativeStackFamilyWireRef resource account region zone =
+  case lookup resource [(networkFamilyName family, family) | family <- [minBound .. maxBound]] of
+    Just family | zone == Nothing -> mkProviderNetworkFamilyRef family account region
+    Just _ -> Left (ProviderRefMalformed "network-dependent family hosted zone")
+    Nothing -> do
+      stack <- mkProviderStackRef resource
+      mkProviderNativeStackFamilyRef stack account region zone
 
 mkProviderNativeStackFamilyRef
   :: ProviderStackRef
@@ -555,6 +693,16 @@ mkAwsEksSubzoneProviderStackConfig parentZoneId subzoneName = do
   validateDnsName "subzone-name" subzoneName
   pure (AwsEksSubzoneProviderStackConfig parentZoneId subzoneName)
 
+-- Preview-only: the mutation compiler deliberately has no matching SES arm.
+mkAwsSesPreviewStackConfig
+  :: Text -> Text -> Text -> Either ProviderStackConfigError ProviderStackConfig
+mkAwsSesPreviewStackConfig sender receive bucket = do
+  validateDnsName "ses-sender-domain" sender
+  validateDnsName "ses-receive-subdomain" receive
+  case mkS3BucketName bucket of
+    Left _ -> Left (ProviderStackConfigFieldInvalid "ses-capture-bucket")
+    Right _ -> Right (AwsSesPreviewStackConfig sender receive bucket)
+
 -- | Append-only profile-bearing form. Existing constructors stay in their
 -- original order so retained Generic-'Serialise' payloads and digests remain
 -- stable; they are observation/destroy compatibility inputs only.
@@ -583,6 +731,7 @@ providerStackConfigView config = case config of
   AwsEksProfileProviderStackConfig profile desiredSize ->
     AwsEksProfileConfig profile desiredSize
   AwsTestProfileProviderStackConfig profile -> AwsTestProfileConfig profile
+  AwsSesPreviewStackConfig sender receive bucket -> AwsSesPreviewConfig sender receive bucket
 
 providerStackConfigRef :: ProviderStackConfig -> ProviderStackRef
 providerStackConfigRef config = ProviderStackRef $ case config of
@@ -593,6 +742,7 @@ providerStackConfigRef config = ProviderStackRef $ case config of
   AwsEksSubzoneProviderStackConfig _ _ -> "aws-eks-subzone"
   AwsEksProfileProviderStackConfig _ _ -> "aws-eks"
   AwsTestProfileProviderStackConfig _ -> "aws-test"
+  AwsSesPreviewStackConfig {} -> "aws-ses"
 
 validateProviderStackConfig
   :: ProviderStackRef
@@ -610,6 +760,8 @@ validateProviderStackConfig expected config = do
       mkAwsEksProfileProviderStackConfig profile desiredSize
     AwsTestProfileProviderStackConfig profile ->
       mkAwsTestProfileProviderStackConfig profile
+    AwsSesPreviewStackConfig sender receive bucket ->
+      mkAwsSesPreviewStackConfig sender receive bucket
   let actual = providerStackConfigRef rebuilt
   if actual == expected
     then Right ()
@@ -826,6 +978,11 @@ productionRegisteredProviderResources =
   [ "stack:aws-eks"
   , "stack:aws-eks-subzone"
   , "stack:aws-test"
+  , "stack-diff:aws-eks"
+  , "stack-diff:aws-test"
+  , "stack-diff:aws-eks-subzone"
+  , "stack-diff:aws-ses"
+  , "ec2:network-purge:aws-eks"
   , "checkpoint:pulumi-scratch"
   , "ses:sending-identity"
   , "ses:dkim"
@@ -836,6 +993,8 @@ productionRegisteredProviderResources =
   , "ebs-reaper:retained"
   , "route53:validation-zone"
   , "ses:invite-mail"
+  , "ses:invite-cleanup"
+  , "route53:home-dns01"
   , "ebs-ensure:retained"
   , "route53:dns01-challenge"
   , "iam:eks-role-family"
@@ -848,6 +1007,7 @@ productionRegisteredProviderResources =
   , "public-edge:a"
   , "eks-client-auth"
   ]
+    ++ map networkFamilyProviderResourceKey [minBound .. maxBound]
 
 -- | The retained state bucket an audit expects to find in the tagging catalog:
 -- its positive control, and the region of the catalog that lists it. The
@@ -1010,19 +1170,12 @@ data ProviderIntent
     -- derived from the nonce by the registered validation-zone owner, so a
     -- caller never supplies a name the Provider then creates.
     EnsureValidationHostedZone !Text !Text
-  | -- | Sprint 5.50: read-only observation of the captured invite message
-    -- addressed to one recipient.  The first 'Text' is the SES capture bucket
-    -- and the second the recipient; the evidence is the object key and the
-    -- invite link, or a statement that nothing has arrived.
-    ObserveSesInviteMail !Text !Text
-  | -- | Sprint 5.50: delete every captured message addressed to that
-    -- recipient from that bucket, and prove none remains. Both the deletion and
-    -- the proof cover the objects the capture reader scans, which are those
-    -- modified within its recency window ('Prodbox.Ses.Capture.captureRecencyWindow'):
-    -- the recipient carries a per-run nonce, so an older object cannot be this
-    -- run's. A consumer that has to clear mail older than that window cannot use
-    -- this intent as it stands.
-    ReapSesInviteMail !Text !Text
+  | -- | Historical plaintext observation slot. Decodes with its original
+    -- coordinates and returns only the retired marker, without reading mail.
+    RetiredSesInviteMailObservation !Text !Text
+  | -- | Historical recency-limited cleanup slot. It no longer mutates or
+    -- claims absence; exact versioned cleanup belongs to the registered family.
+    RetiredSesInviteMailCleanup !Text !Text
   | -- | Sprint 5.50: create the retained EBS volumes the AWS substrate's
     -- retained PersistentVolumes bind to, and name each volume.  The first
     -- 'Text' is the volume type and the second the required volumes as
@@ -1039,6 +1192,15 @@ data ProviderIntent
       !ProviderAuditTarget
       !ProviderStackConfig
       !ProviderAuditControl
+  | PreviewRegisteredStack !ProviderStackRef !ProviderStackConfig
+  | -- | Invocation-encrypted invite delivery. Appended to preserve every
+    -- historical CBOR constructor index, including the retired plaintext slot.
+    ObserveSealedSesInviteMail !Text !Text !InviteMailPublicKey
+  | ObserveHomeDns01Records !HomeDns01Scope
+  | ObserveSesInviteMailResidue !InviteMailScope
+  | ReapSesInviteMailResidue !InviteMailScope
+  | ObserveGlobalOwnedResourceTags !ProviderOwnedTagQuery
+  | PlantTestVpcCanary !ProviderNativeStackFamilyRef !TestVpcCanaryRequest
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -1108,13 +1270,20 @@ providerIntentEvidenceMaximumCharacters intent = case intent of
   ObserveEksClusterIdentity {} -> shared
   ObserveProviderAwsScope -> shared
   ObserveOwnedResourceTags {} -> shared
+  ObserveGlobalOwnedResourceTags {} -> shared
+  PlantTestVpcCanary {} -> maximumCanaryPlantEvidenceCharacters
   ObserveNativeStackFamily {} -> shared
   ReapNativeStackFamily {} -> shared
   EnsureValidationHostedZone {} -> shared
-  ObserveSesInviteMail {} -> shared
-  ReapSesInviteMail {} -> shared
+  RetiredSesInviteMailObservation {} -> shared
+  ObserveSealedSesInviteMail {} -> shared
+  ObserveHomeDns01Records {} -> shared
+  ObserveSesInviteMailResidue {} -> shared
+  ReapSesInviteMailResidue {} -> shared
+  RetiredSesInviteMailCleanup {} -> shared
   EnsureRetainedEbsVolumes {} -> shared
   ObserveAwsAudit {} -> shared
+  PreviewRegisteredStack {} -> maximumStackPreviewEvidenceBytes
  where
   shared = maximumProviderIntentEvidenceCharacters
 
@@ -1124,7 +1293,21 @@ providerIntentEvidenceMaximumCharacters intent = case intent of
 -- The evidence itself is never echoed: an 'IssueEksClientAuth' observation is a
 -- sealed capability projection.
 validateProviderIntentEvidence :: ProviderIntent -> Text -> Either Text Text
-validateProviderIntentEvidence intent evidence =
+validateProviderIntentEvidence intent evidence = do
+  case intent of
+    PlantTestVpcCanary {} -> void (canaryPlantRecordingFromEvidence evidence)
+    RetiredSesInviteMailObservation {}
+      | evidence == retiredInviteMailEvidence -> Right ()
+      | otherwise -> Left "plaintext invite evidence is retired"
+    RetiredSesInviteMailCleanup {}
+      | evidence == retiredInviteMailEvidence -> Right ()
+      | otherwise -> Left "recency-limited invite cleanup is retired"
+    ObserveSealedSesInviteMail _ _ destination -> validateInviteMailEvidence destination evidence
+    ObserveSesInviteMailResidue scope -> validateInviteMailCleanupEvidence scope evidence
+    ReapSesInviteMailResidue _
+      | evidence == inviteMailCleanupAbsentEvidence -> Right ()
+      | otherwise -> Left "mail cleanup mutation evidence is not the closed absence value"
+    _ -> Right ()
   bimap
     renderProviderEvidenceRefusal
     providerEvidenceText
@@ -1177,9 +1360,15 @@ validationHostedZoneEvidenceFamily :: ProviderEvidenceFamily
 validationHostedZoneEvidenceFamily =
   providerEvidenceFamily "prodbox-validation-hosted-zones" 12 140
 
+inviteMailCleanupEvidenceFamily :: ProviderEvidenceFamily
+inviteMailCleanupEvidenceFamily = providerEvidenceFamily "prodbox-invite-mail-cleanup" (maximumCleanupMailVersions + 1) 160
+
 dns01ChallengeRecordEvidenceFamily :: ProviderEvidenceFamily
 dns01ChallengeRecordEvidenceFamily =
-  providerEvidenceFamily "prodbox-dns01-challenge-records" 12 200
+  providerEvidenceFamily
+    "prodbox-dns01-challenge-records"
+    dns01CleanupEvidenceMaximumRows
+    dns01CleanupEvidenceMaximumRowCharacters
 
 -- | The cascade's terminal audit.
 --
@@ -1206,6 +1395,7 @@ registeredEvidenceFamilies =
   , awsAuditEvidenceFamily
   , validationHostedZoneEvidenceFamily
   , dns01ChallengeRecordEvidenceFamily
+  , inviteMailCleanupEvidenceFamily
   , ownedResourceTagEvidenceFamily
   ]
 
@@ -1232,6 +1422,7 @@ providerIntentResourceKey intent = case intent of
   ReconcileRegisteredStack ref _ _ _ -> "stack:" <> providerStackRefText ref
   DestroyRegisteredStack ref _ _ -> "stack:" <> providerStackRefText ref
   ObserveRegisteredStack ref -> "stack:" <> providerStackRefText ref
+  PreviewRegisteredStack ref _ -> "stack-diff:" <> providerStackRefText ref
   ReadBackRegisteredStack ref -> "stack:" <> providerStackRefText ref
   BoundedScratchCheckpoint ref ->
     "checkpoint:pulumi-scratch:" <> providerCheckpointRefText ref
@@ -1285,15 +1476,24 @@ providerIntentResourceKey intent = case intent of
     "elbv2:eks-controller-family"
   ObserveEksClusterIdentity request ->
     "stack:" <> providerStackRefText (eksClusterIdentityRequestStackRef request)
+  PlantTestVpcCanary {} -> networkFamilyProviderResourceKey TestCanarySecurityGroups
+  ObserveGlobalOwnedResourceTags query -> "owned-resource-tags:" <> providerOwnedTagQueryKey query
   ObserveOwnedResourceTags query ->
     "owned-resource-tags:" <> providerOwnedTagQueryKey query
   ObserveNativeStackFamily ref _ ->
-    "stack:" <> providerStackRefText (providerNativeStackFamilyStackRef ref)
+    nativeStackFamilyResourceKey ref
   ReapNativeStackFamily ref _ _ ->
-    "stack:" <> providerStackRefText (providerNativeStackFamilyStackRef ref)
+    nativeStackFamilyResourceKey ref
   EnsureValidationHostedZone nonce _ -> "route53:validation-zone:ensure:" <> nonce
-  ObserveSesInviteMail bucket recipient -> "ses:invite-mail:" <> bucket <> ":" <> recipient
-  ReapSesInviteMail bucket recipient -> "ses:invite-mail:" <> bucket <> ":" <> recipient
+  ObserveHomeDns01Records scope ->
+    "route53:home-dns01:" <> publicKeyDigest (TextEncoding.encodeUtf8 (homeDns01ScopeWireText scope))
+  ObserveSesInviteMailResidue scope ->
+    "ses:invite-cleanup:" <> publicKeyDigest (TextEncoding.encodeUtf8 (inviteMailScopeWireText scope))
+  ReapSesInviteMailResidue scope ->
+    "ses:invite-cleanup:" <> publicKeyDigest (TextEncoding.encodeUtf8 (inviteMailScopeWireText scope))
+  RetiredSesInviteMailObservation bucket recipient -> "ses:invite-mail:" <> bucket <> ":" <> recipient
+  ObserveSealedSesInviteMail bucket recipient _ -> "ses:invite-mail:" <> bucket <> ":" <> recipient
+  RetiredSesInviteMailCleanup bucket recipient -> "ses:invite-mail:" <> bucket <> ":" <> recipient
   EnsureRetainedEbsVolumes _ _ -> "ebs-ensure:retained"
   ObserveAwsAudit target _ _ ->
     "stack:" <> providerStackRefText (providerAuditTargetStack target)
@@ -1346,6 +1546,8 @@ providerIntentCoordinate intent = ProviderIntentCoordinate $ case intent of
       <> ":"
       <> providerStackConfigCoordinate config
   ObserveRegisteredStack ref -> "observe-stack:" <> providerStackRefText ref
+  PreviewRegisteredStack ref config ->
+    "preview-stack:" <> providerStackRefText ref <> ":" <> providerStackConfigCoordinate config
   ReadBackRegisteredStack ref -> "readback-stack:" <> providerStackRefText ref
   BoundedScratchCheckpoint ref -> "scratch-checkpoint:" <> providerCheckpointRefText ref
   ReconcileSesSendingIdentity ref -> "reconcile-ses-identity:" <> sesIdentityRefText ref
@@ -1421,6 +1623,12 @@ providerIntentCoordinate intent = ProviderIntentCoordinate $ case intent of
       <> eksClusterIdentityRequestRegion request
       <> ":"
       <> eksClusterIdentityRequestClusterName request
+  PlantTestVpcCanary ref request ->
+    "plant-test-vpc-canary:"
+      <> nativeStackFamilyCoordinate ref
+      <> ":"
+      <> publicKeyDigest (TextEncoding.encodeUtf8 (testVpcCanaryRequestWireText request))
+  ObserveGlobalOwnedResourceTags query -> "observe-global-owned-resource-tags:" <> providerOwnedTagQueryKey query
   ObserveOwnedResourceTags query ->
     "observe-owned-resource-tags:" <> providerOwnedTagQueryKey query
   ObserveNativeStackFamily ref config ->
@@ -1437,9 +1645,19 @@ providerIntentCoordinate intent = ProviderIntentCoordinate $ case intent of
       <> Text.intercalate "|" admittedIdentities
   EnsureValidationHostedZone nonce baseZone ->
     "ensure-validation-hosted-zone:" <> nonce <> ":" <> baseZone
-  ObserveSesInviteMail bucket recipient ->
+  ObserveHomeDns01Records scope -> "observe-home-dns01:" <> homeDns01ScopeWireText scope
+  ObserveSesInviteMailResidue scope -> "observe-ses-invite-residue:" <> inviteMailScopeWireText scope
+  ReapSesInviteMailResidue scope -> "reap-ses-invite-residue:" <> inviteMailScopeWireText scope
+  RetiredSesInviteMailObservation bucket recipient ->
     "observe-ses-invite-mail:" <> bucket <> ":" <> recipient
-  ReapSesInviteMail bucket recipient ->
+  ObserveSealedSesInviteMail bucket recipient destination ->
+    "observe-sealed-ses-invite-mail:"
+      <> bucket
+      <> ":"
+      <> recipient
+      <> ":"
+      <> inviteMailPublicKeyText destination
+  RetiredSesInviteMailCleanup bucket recipient ->
     "reap-ses-invite-mail:" <> bucket <> ":" <> recipient
   EnsureRetainedEbsVolumes volumeType specs ->
     "ensure-retained-ebs:" <> volumeType <> ":" <> specs
@@ -1453,14 +1671,34 @@ providerIntentCoordinate intent = ProviderIntentCoordinate $ case intent of
       <> ":control="
       <> providerAuditControlText control
 
+networkFamilyProviderResourceKey :: AwsNetworkFamily -> Text
+networkFamilyProviderResourceKey family = "ec2:network-dependent:" <> networkFamilyName family
+
+validateTestVpcCanaryRef :: ProviderNativeStackFamilyRef -> Either ProviderRefError ()
+validateTestVpcCanaryRef ref
+  | providerStackRefText (providerNativeStackFamilyStackRef ref) == "aws-test"
+  , providerNativeStackFamilyNetworkFamily ref == Nothing
+  , providerNativeStackFamilyPurgeMode ref == Nothing
+  , providerNativeStackFamilyHostedZoneId ref == Nothing =
+      Right ()
+  | otherwise =
+      Left (ProviderRefMalformed "canary requires the exact aws-test account/region reference")
+
+nativeStackFamilyResourceKey :: ProviderNativeStackFamilyRef -> Text
+nativeStackFamilyResourceKey ref = case providerNativeStackFamilyPurgeMode ref of
+  Just _ -> "ec2:network-purge:aws-eks"
+  Nothing -> case providerNativeStackFamilyNetworkFamily ref of
+    Nothing -> "stack:" <> providerStackRefText (providerNativeStackFamilyStackRef ref)
+    Just family -> networkFamilyProviderResourceKey family
+
 nativeStackFamilyCoordinate :: ProviderNativeStackFamilyRef -> Text
 nativeStackFamilyCoordinate ref =
   Text.intercalate
     ":"
-    [ providerStackRefText (providerNativeStackFamilyStackRef ref)
+    [ providerNativeStackFamilyWireResource ref
     , providerNativeStackFamilyAccountId ref
     , providerNativeStackFamilyRegion ref
-    , maybe "none" id (providerNativeStackFamilyHostedZoneId ref)
+    , maybe "none" id (providerNativeStackFamilyWireSelector ref)
     ]
 
 providerStackConfigCoordinate :: ProviderStackConfig -> Text
@@ -1477,6 +1715,8 @@ providerStackConfigCoordinate config = case providerStackConfigView config of
       <> Text.pack (show desiredSize)
   AwsTestProfileConfig profile ->
     awsSubstrateOperatorCidr profile <> ":profile:" <> Text.pack (show profile)
+  AwsSesPreviewConfig sender receive bucket ->
+    "ses-preview:" <> sender <> ":" <> receive <> ":" <> bucket
 
 -- | A coordinate reference for a @close@/@recover@/@resolve@ command. It is an
 -- opaque key the decision matches against the in-flight coordinate; an unknown key
@@ -1675,3 +1915,45 @@ stepProviderWork
 stepProviderWork registered bound now deadline state command =
   let decision = decideProviderWork registered bound now deadline state command
    in (decision, foldl evolveProviderWork state (providerWorkDecisionEvents decision))
+
+inviteMailCleanupAbsentEvidence :: Text
+inviteMailCleanupAbsentEvidence = "registered invite mail data versions are absent"
+
+renderInviteMailCleanupEvidence :: InviteMailScope -> [Text] -> Either Text Text
+renderInviteMailCleanupEvidence scope identifiers = do
+  if length identifiers <= maximumCleanupMailVersions
+    && length (nub identifiers) == length identifiers
+    && all validVersionIdentity identifiers
+    then Right ()
+    else Left "mail cleanup evidence contains an invalid version identity"
+  let intent = ObserveSesInviteMailResidue scope
+  bimap
+    renderProviderEvidenceRefusal
+    providerEvidenceText
+    ( encodeProviderEvidence
+        (providerIntentEvidenceBound intent)
+        inviteMailCleanupEvidenceFamily
+        (["family", providerIntentResourceKey intent] : [["version", identifier] | identifier <- identifiers])
+    )
+
+validateInviteMailCleanupEvidence :: InviteMailScope -> Text -> Either Text ()
+validateInviteMailCleanupEvidence scope evidence = do
+  rows <- decodeProviderEvidenceText inviteMailCleanupEvidenceFamily evidence
+  identifiers <- case rows of
+    family : versions
+      | family == ["family", providerIntentResourceKey (ObserveSesInviteMailResidue scope)] ->
+          traverse identityOf versions
+    _ -> Left "mail cleanup evidence names another family"
+  canonical <- renderInviteMailCleanupEvidence scope identifiers
+  if canonical == evidence then Right () else Left "mail cleanup evidence is noncanonical"
+ where
+  identityOf row = case row of
+    ["version", identifier] -> Right identifier
+    _ -> Left "mail cleanup evidence has a malformed version row"
+
+validVersionIdentity :: Text -> Bool
+validVersionIdentity value =
+  Text.length value == 64
+    && Text.all
+      (\character -> (character >= '0' && character <= '9') || (character >= 'a' && character <= 'f'))
+      value

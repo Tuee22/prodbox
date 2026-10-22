@@ -82,7 +82,7 @@ import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   , authorityOperationSubmitHttpStatus
   , authorityOperationSubmitResponseBody
   , authorityTransitionHttpStatus
-  , authorityTransitionSummary
+  , authorityTransitionResponseBody
   , serveAuthorityControlRequest
   , serveAuthorityOperationObserveRequest
   , serveAuthorityOperationSubmitRequest
@@ -428,7 +428,7 @@ lifecycleAuthorityAdmissionInterpreter
         pure
           ( Just
               ( authorityTransitionHttpStatus result
-              , encodeSummary (authorityTransitionSummary result)
+              , LazyByteString.toStrict (authorityTransitionResponseBody result)
               )
           )
       LifecycleAuthorityBackupExport -> do

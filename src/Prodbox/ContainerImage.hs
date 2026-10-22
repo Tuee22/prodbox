@@ -1,3 +1,5 @@
+{-# LANGUAGE ImportQualifiedPost #-}
+
 module Prodbox.ContainerImage
   ( ImageRef (..)
   , EnvoyGatewayRelease (..)
@@ -55,6 +57,12 @@ where
 
 import Data.Char (isSpace)
 import Data.List (find, nub)
+import Data.Text qualified as Text
+import Prodbox.Infra.BootstrapImageArchive
+  ( BootstrapImageComponent (..)
+  , bootstrapImageRepository
+  , bootstrapImageTag
+  )
 
 data ImageRef = ImageRef
   { imageRegistry :: String
@@ -248,16 +256,27 @@ harborPulsarImage :: ImageRef
 harborPulsarImage = harborImageRefFromRepository "pulsar-mirror" "4.0.2"
 
 publicMinioImage :: ImageRef
-publicMinioImage = ImageRef "quay.io" "minio/minio" "RELEASE.2024-12-18T13-15-44Z"
+publicMinioImage = sourceBootstrapImage BootstrapMinioServer
 
 publicMinioMcImage :: ImageRef
-publicMinioMcImage = ImageRef "quay.io" "minio/mc" "RELEASE.2024-11-21T17-21-54Z"
+publicMinioMcImage = sourceBootstrapImage BootstrapMinioClient
 
 harborMinioImage :: ImageRef
-harborMinioImage = harborImageRefFromRepository "minio-mirror" "RELEASE.2024-12-18T13-15-44Z"
+harborMinioImage =
+  harborImageRefFromRepository "minio-mirror" (Text.unpack (bootstrapImageTag BootstrapMinioServer))
 
 harborMinioMcImage :: ImageRef
-harborMinioMcImage = harborImageRefFromRepository "minio-mc-mirror" "RELEASE.2024-11-21T17-21-54Z"
+harborMinioMcImage =
+  harborImageRefFromRepository
+    "minio-mc-mirror"
+    (Text.unpack (bootstrapImageTag BootstrapMinioClient))
+
+sourceBootstrapImage :: BootstrapImageComponent -> ImageRef
+sourceBootstrapImage component =
+  ImageRef
+    "docker.io"
+    (Text.unpack (bootstrapImageRepository component))
+    (Text.unpack (bootstrapImageTag component))
 
 harborMetallbControllerImage :: ImageRef
 harborMetallbControllerImage = harborImageRefFromRepository "metallb-controller-mirror" "v0.14.9"

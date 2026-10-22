@@ -16,6 +16,7 @@ import Data.Maybe (mapMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
+import LifecycleTeardownProviderAwsScopeAdapter (fixtureProviderAwsScopeEvidence)
 import Prodbox.ControlPlane.AuthorityOperationClient
 import Prodbox.ControlPlane.AuthorityProviderEndpoint
   ( ProviderExecutionOutcome
@@ -34,8 +35,10 @@ import Prodbox.ControlPlane.ProviderWorkerExecution
 import Prodbox.ControlPlane.PulumiCheckpointClient
 import Prodbox.Lifecycle.CleanupRun
 import Prodbox.Lifecycle.CleanupRunRunner
+import Prodbox.Lifecycle.OwnedResourceTagEvidence
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
+  , ProviderOwnedTagQuery (..)
   , ProviderRevision
   , ProviderStackConfig
   , mkAwsEksProviderStackConfig
@@ -57,8 +60,11 @@ import Prodbox.Lifecycle.Teardown.EksTeardownExecutor
 import Prodbox.Lifecycle.Teardown.Execution
 import Prodbox.Lifecycle.Teardown.Graph
 import Prodbox.Lifecycle.Teardown.Model
+import Prodbox.Lifecycle.Teardown.PerRunTerminalAuditPlan (maximumPerRunTerminalAuditQueries)
 import Prodbox.Lifecycle.Teardown.Program
 import Prodbox.Lifecycle.Teardown.ProviderDispatch
+import Prodbox.Lifecycle.Teardown.ResourceScopeBindings
+import Prodbox.Lifecycle.Teardown.RetainedNames
 import TestSupport
 
 lifecycleTeardownCloudRuntimeSuite :: SuiteBuilder ()
@@ -77,6 +83,19 @@ lifecycleTeardownCloudRuntimeSuite =
             , checkSurface environment TotalDecommissionSurface
             ]
       Set.fromList routes `shouldBe` Set.fromList [minBound .. maxBound]
+
+    it "executes the registered ordinary audit through the same cloud Provider boundary" $ do
+      environment <- newEnvironment ProviderExact
+      let program = compiledFor ExplicitPerRunSurface
+          plan = planForTag program "audit-per-run-escapes"
+      result <- runCloudEffects (runCompiledTeardownNode program plan) environment
+      result `shouldBe` CleanupNodeSucceeded
+      calls <- readIORef (fakeProviderCalls environment)
+      length calls `shouldBe` maximumPerRunTerminalAuditQueries
+      map providerCallOwner calls `shouldSatisfy` all (== SharedProvider)
+      refused <- newEnvironment ProviderMalformed
+      bad <- runCloudEffects (runCompiledTeardownNode program plan) refused
+      bad `shouldSatisfy` (/= CleanupNodeSucceeded)
 
     it "normalizes checkpoint and EKS Provider observations to one shared interpreter" $ do
       checkpointEnvironment <- newEnvironment ProviderExact
@@ -160,6 +179,7 @@ data CloudRoute
   | EksIntentReadBackRoute
   | EksDrainRoute
   | EksDrainReadBackRoute
+  | OrdinaryTerminalAuditRoute
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 data FakeEnvironment = FakeEnvironment
@@ -312,10 +332,20 @@ providerEvidence :: ProviderMode -> ProviderIntent -> Text
 providerEvidence mode intent = case mode of
   ProviderMalformed -> "malformed Provider observation"
   ProviderExact -> case intent of
+    ObserveProviderAwsScope -> fixtureProviderAwsScopeEvidence "123456789012" (fixtureAwsRegion FixtureCaCentral1)
+    ObserveOwnedResourceTags query -> tagEvidence query
+    ObserveGlobalOwnedResourceTags query -> tagEvidence query
     ObserveEksClusterIdentity _ -> "registered EKS cluster is absent"
     ObserveNativeStackFamily ref _ ->
       mustRight (encodeAwsNativeStackFamilyEvidence ref [])
     _ -> "fixture Provider operation refused by exact decoder"
+
+tagEvidence :: ProviderOwnedTagQuery -> Text
+tagEvidence query =
+  let echo = case query of
+        ProviderOwnedTagKeyQuery key -> OwnedResourceTagKeyEcho key
+        ProviderOwnedTagPairQuery key value -> OwnedResourceTagPairEcho key value
+   in mustRight (renderOwnedResourceTagObservation (OwnedResourceTagObservation echo [] 1))
 
 providerConfig :: RegisteredResourceKey -> ProviderStackConfig
 providerConfig key = case key of
@@ -500,6 +530,7 @@ expectedRoute (SomeTeardownOperation operation) = case operation of
   EstablishRecoveryPlane _ -> Nothing
   ReadBackRecoveryPlane _ -> Nothing
   ObserveRecoveryPlaneDisposition _ -> Nothing
+  AuditPerRunEscapes -> Just OrdinaryTerminalAuditRoute
   AuditCascadeEscapes -> Nothing
   CommitCascadePreUninstallReport -> Nothing
   ReadBackCascadePreUninstallReport -> Nothing
@@ -623,15 +654,17 @@ clientFailure = CleanupRunClientHttpStatus 500
 compiledFor
   :: CleanupSurfaceWitness surface
   -> CompiledDesiredAbsenceProgram surface
-compiledFor surface =
-  mustRight
-    ( compileDesiredAbsenceGraph
-        fixtureRunId
-        fixtureFoundation
-        (awsScopeFor surface)
-        Nothing
-        surface
-    )
+compiledFor surface = case surface of
+  ExplicitPerRunSurface ->
+    mustRight
+      (compileAuditedExplicitPerRunGraph fixtureRunId fixtureFoundation fixtureAwsScope Nothing bindings [])
+  _ ->
+    mustRight
+      (compileDesiredAbsenceGraph fixtureRunId fixtureFoundation (awsScopeFor surface) Nothing surface)
+ where
+  names =
+    mustRight (mkRetainedNameBinding "fixture-state" "fixture-capture" "example.test" "fixture-cluster")
+  bindings = mkResourceScopeBindingsWithAudit Nothing Nothing names
 
 awsScopeFor :: CleanupSurfaceWitness surface -> Maybe AwsScope
 awsScopeFor surface = case surface of

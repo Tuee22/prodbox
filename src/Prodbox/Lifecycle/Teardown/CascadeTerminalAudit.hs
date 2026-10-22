@@ -53,6 +53,9 @@ module Prodbox.Lifecycle.Teardown.CascadeTerminalAudit
   ( -- * Issuing the audit
     CascadeTerminalAuditBoundary (..)
   , cascadeTerminalAuditQueries
+  , CascadeTerminalAuditFullBoundary (..)
+  , observeFullCascadeTerminalAudit
+  , fullCascadeTerminalAuditCatalog
 
     -- * Producing the observation
   , CascadeTerminalAuditRefusal (..)
@@ -74,13 +77,17 @@ module Prodbox.Lifecycle.Teardown.CascadeTerminalAudit
   )
 where
 
+import Codec.Serialise (serialise)
+import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Either (lefts, rights)
 import Data.Functor.Identity (Identity (Identity), runIdentity)
 import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List.NonEmpty qualified as NonEmpty
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.Aws.Region (awsGlobalServiceRegion)
+import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.Lifecycle.AwsInventory
   ( AwsInventoryFailure
   , AwsResourceCoordinate (AwsResourceCoordinate)
@@ -111,9 +118,16 @@ import Prodbox.Lifecycle.Teardown.Model
   )
 import Prodbox.Lifecycle.Teardown.Observation
   ( TerminalAuditObservation (..)
+  , TerminalAuditQueryDigest (..)
   , TerminalAuditResult (..)
   , TerminalAuditScopeError
   , mkTerminalAuditScope
+  )
+import Prodbox.Lifecycle.Teardown.PerRunTerminalAuditPlan
+  ( PerRunAuditQuery
+  , perRunAuditQueryAwsScope
+  , terminalAuditEndpointQueriesFor
+  , terminalAuditEndpointQueryIdentity
   )
 import Prodbox.Lifecycle.Teardown.RetainedInventory
   ( RetainedCatalog
@@ -122,6 +136,7 @@ import Prodbox.Lifecycle.Teardown.RetainedInventory
   , TerminalAuditQuery (..)
   , mkRetainedNameBinding
   , retainedCatalogFor
+  , retainedCatalogForQueryRegions
   , retainedSetDigestFor
   , terminalAuditQueryCatalog
   , terminalAuditQueryDigestFor
@@ -144,6 +159,64 @@ newtype CascadeTerminalAuditBoundary m = CascadeTerminalAuditBoundary
       :: TerminalAuditQuery
       -> m (Either ObservationFailure [AwsTagRow])
   }
+
+-- | Full audit effects. Identity and endpoint reads remain separate so a
+-- missing or foreign actor cannot masquerade as an empty tagged inventory.
+data CascadeTerminalAuditFullBoundary m = CascadeTerminalAuditFullBoundary
+  { fullAuditObserveProviderScope :: m (Either ObservationFailure AwsScope)
+  , fullAuditIssueQuery :: PerRunAuditQuery -> m (Either ObservationFailure [AwsTagRow])
+  }
+
+fullCascadeTerminalAuditCatalog
+  :: AwsScope -> RetainedNameBinding -> Either RetainedCatalogError (RetainedCatalog 'Cascade)
+fullCascadeTerminalAuditCatalog aws names =
+  retainedCatalogForQueryRegions
+    CascadeSurface
+    aws
+    names
+    [ awsScopeRegion (perRunAuditQueryAwsScope aws query)
+    | query <- terminalAuditEndpointQueriesFor aws names
+    ]
+
+-- | The existing classifier over an explicitly complete endpoint plan. Its
+-- digest states the GetResources IAM-user/role exclusion; it claims the declared
+-- field, never an empty AWS account. Every failed read remains unobservable.
+observeFullCascadeTerminalAudit
+  :: (Monad m)
+  => CascadeTerminalAuditFullBoundary m
+  -> RetainedNameBinding
+  -> CompiledDesiredAbsenceProgram 'Cascade
+  -> ObservationRevision
+  -> m (Either CascadeTerminalAuditRefusal (TerminalAuditObservation 'Cascade))
+observeFullCascadeTerminalAudit boundary names compiled revision =
+  case evidenceAwsScope scope of
+    Nothing -> pure (Left CascadeTerminalAuditNoAwsScope)
+    Just aws -> case fullCascadeTerminalAuditCatalog aws names of
+      Left err -> pure (Left (CascadeTerminalAuditCatalogUnavailable err))
+      Right catalog ->
+        let queries = terminalAuditEndpointQueriesFor aws names
+            digest =
+              TerminalAuditQueryDigest . TextEncoding.decodeUtf8 . hexSha256 . LazyByteString.toStrict $
+                serialise
+                  ( "cascade-fenced-terminal-audit-plan/v1/provider-scope-read" :: Text
+                  , map (terminalAuditEndpointQueryIdentity aws) queries
+                  , "GetResources excludes IAM users and roles" :: Text
+                  )
+         in case mkTerminalAuditScope CascadeSurface (cascadeAuditScope scope) digest (retainedSetDigestFor catalog) of
+              Left err -> pure (Left (CascadeTerminalAuditScopeUnavailable err))
+              Right auditScope -> do
+                actor <- fullAuditObserveProviderScope boundary
+                answers <- case actor of
+                  Right actual | actual == aws -> traverse (fullAuditIssueQuery boundary) queries
+                  Right _ ->
+                    pure
+                      [Left (ObservationFailure "terminal audit Provider account/region differs from the retained run")]
+                  Left failure -> pure [Left failure]
+                pure $ case lowerCascadeTerminalAuditRows catalog (concat (rights answers)) (lefts answers) of
+                  Left conflict -> Left (CascadeTerminalAuditDecoderConflict conflict)
+                  Right result -> Right (TerminalAuditObservation auditScope revision result)
+ where
+  scope = compiledDesiredAbsenceObservationScope compiled
 
 -- | The queries whose union is the audit's field of view, in catalog order.
 cascadeTerminalAuditQueries :: RetainedNameBinding -> [TerminalAuditQuery]

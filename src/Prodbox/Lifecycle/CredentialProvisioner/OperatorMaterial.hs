@@ -22,6 +22,7 @@ module Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   , AwsCredentialDescriptor (..)
   , managedAwsCredentialInventory
   , awsCredentialDescriptor
+  , awsCredentialCanRevoke
   , OperatorMaterialOperationId
   , mkOperatorMaterialOperationId
   , operatorMaterialOperationIdText
@@ -212,6 +213,15 @@ data AwsCredentialDescriptor = AwsCredentialDescriptor
 managedAwsCredentialInventory :: [AwsCredentialDescriptor]
 managedAwsCredentialInventory = awsCredentialDescriptor <$> [minBound .. maxBound]
 
+-- | Ordinary revocation never stands in for total decommission or retained
+-- custody destruction. Both request and permit decoding enforce this policy.
+awsCredentialCanRevoke :: AwsCredentialClass -> Bool
+awsCredentialCanRevoke credentialClass = case awsCredentialDescriptorLifetime (awsCredentialDescriptor credentialClass) of
+  OperationalCredential -> True
+  RunScopedCredential -> True
+  LongLivedCredential -> False
+  RetainedCustodyCredential -> False
+
 awsCredentialDescriptor :: AwsCredentialClass -> AwsCredentialDescriptor
 awsCredentialDescriptor credentialClass = case credentialClass of
   LifecycleProviderCredential ->
@@ -319,6 +329,7 @@ data OperatorMaterialRequestError
   | OperatorMaterialIdentifierUnsafe !Text !Char
   | AuthorityBackupInstallRequiresGenesisPermit
   | AuthorityBackupRevocationRequiresDecommission
+  | CredentialRevocationRequiresDecommission !AwsCredentialClass
   | OperatorMaterialRequestTooLarge !Int !Int
   | OperatorMaterialRequestDecodeFailed
   | OperatorMaterialRequestUnsupportedVersion !Word16
@@ -342,6 +353,9 @@ mkAwsOperatorMaterialRequest credentialClass action operationId generation = do
     (AuthorityBackupStoreCredential, RevokeOperatorMaterial) ->
       Left AuthorityBackupRevocationRequiresDecommission
     _ -> Right ()
+  when
+    (action == RevokeOperatorMaterial && not (awsCredentialCanRevoke credentialClass))
+    (Left (CredentialRevocationRequiresDecommission credentialClass))
   pure (AwsOperatorMaterialRequest credentialClass action operationId generation)
 
 mkExternalAcmeEabRequest

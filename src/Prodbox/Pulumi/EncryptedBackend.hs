@@ -58,6 +58,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Numeric (showHex)
+import Prodbox.Capacity.AuthorityBackupBudget qualified as AuthorityBackupBudget
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientTransport
   )
@@ -1096,7 +1097,7 @@ retryAuthorityCall label maximumAttempts call = go maximumAttempts
         | otherwise -> pure (Left (label ++ " failed after bounded retry: " ++ show err))
 
 authorityClientRetryAttempts :: Int
-authorityClientRetryAttempts = 3
+authorityClientRetryAttempts = AuthorityBackupBudget.authorityCheckpointClientRetryAttempts
 
 checkpointObservationToken :: PulumiCheckpointObservation -> String
 checkpointObservationToken observation = case observation of

@@ -7,26 +7,53 @@
 -- | Package-private retained state for the Lifecycle Provider admission
 -- epoch. The public facade exposes only read-only views and fixed diagnostics.
 --
--- Sprint 4.85 added the two transitions this module previously described as
--- absent: binding a serving credential generation, and the atomic Cascade-audit
--- freeze that reserves exactly one terminal-audit submission while fencing
--- every other fresh one. Both are pure and package-private, and both are
--- consumed by @Prodbox.Lifecycle.Authority.Admission@ as commands over the same
--- retained aggregate the submission path reads — which is what makes the freeze
--- atomic with the pending-work proof rather than a second object that could
--- disagree.
---
--- What is still absent is an authenticated route that issues either command, so
--- no production caller can reach the frozen state yet. Revocation likewise has
--- no transition: 'ProviderCredentialRevocationReceipt' remains a retained shape
--- with no constructor.
+-- Mutation reservations fence fresh Provider work in the same retained
+-- aggregate as cascade admission. A completed credential operation publishes
+-- its bounded predecessor archive before a server-owned independent Agent
+-- observation may advance the epoch. Tracked phases keep the immutable
+-- archive link through later freeze, audit and revocation transitions.
 module Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch.Internal
   ( ProviderAdmissionEpoch
   , ProviderAdmissionEpochView (..)
+  , ProviderCredentialRecoveryView (..)
+  , providerCredentialRecoveryViewInternal
+  , providerCredentialServingOperationInternal
+  , validateProviderCredentialRecoveryView
+  , ProviderCredentialMutationReservation
+  , ProviderCredentialMutationOrigin
+  , ProviderCredentialMutationRefusal (..)
+  , mkProviderCredentialInstallReservation
+  , mkProviderCredentialMutationReservation
+  , reserveProviderCredentialMutationInternal
+  , reserveProviderCredentialCleanupInternal
+  , providerCredentialCleanupOperationId
+  , providerCredentialCleanupDraftMatches
+  , fixedProviderCredentialCleanupRegression
+  , reserveProviderCredentialMutationAfterPredecessorInternal
+  , completeProviderCredentialRevokeInternal
+  , providerCredentialLineageArchiveAction
+  , providerCredentialLineageArchiveReservationInternal
+  , fixedProviderCredentialMutationFenceRegression
+  , reserveProviderCredentialInstallInternal
+  , fixedProviderCredentialMutationReservationRegression
+  , fixedProviderCredentialLineageRegression
+  , ProviderCredentialLineageArchive
+  , pendingProviderCredentialLineageArchiveInternal
+  , encodeProviderCredentialLineageArchive
+  , providerCredentialLineageArchiveCanonicalBytes
+  , providerCredentialLineageArchiveOperationId
+  , providerCredentialLineageArchiveGeneration
+  , providerCredentialLineageArchiveRequestDigest
+  , providerCredentialLineageArchiveCompletedReportDigest
+  , decodeProviderCredentialLineageArchive
+  , completeProviderCredentialInstallInternal
+  , fixedOrdinaryProviderCredentialRetirementRegression
   , ProviderAdmissionEpochError (..)
   , ProviderAdmissionFreshSubmissionRefusal (..)
   , providerAdmissionEpochView
   , initialLegacyProviderAdmissionEpochInternal
+  , providerAdmissionNeedsCredentialQuiescenceInternal
+  , providerCredentialRetirementInstallDraftMatchesInternal
   , validateProviderAdmissionEpochInternal
   , providerAdmissionFreshSubmissionRefusalInternal
   , CascadeAuditFreezeBinding
@@ -36,6 +63,25 @@ module Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch.Internal
   , ProviderAdmissionFreezeRefusal (..)
   , bindProviderAdmissionServingGenerationInternal
   , freezeProviderAdmissionForCascadeAuditInternal
+  , freezeProviderAdmissionAtGenerationInternal
+  , ProviderAdmissionRecoveryObservation
+  , ProviderAdmissionRecoveryPhase (..)
+  , providerAdmissionRecoveryRequestDigest
+  , providerAdmissionRecoveryPhase
+  , cascadeAuditRecoveryRequestDigest
+  , ProviderAdmissionRecoveryRefusal (..)
+  , observeProviderAdmissionRecoveryInternal
+  , observeProviderBootstrapPredecessorInternal
+  , providerPredecessorCoordinatesInternal
+  , ProviderBootstrapPredecessor
+  , ProviderBootstrapPredecessorPhase (..)
+  , providerBootstrapPredecessorPhase
+  , providerBootstrapPredecessorRunId
+  , providerBootstrapPredecessorGraphDigest
+  , providerBootstrapPredecessorScopeDigest
+  , validateProviderBootstrapPredecessor
+  , restoreCascadeAuditRecoveryBinding
+  , validateProviderAdmissionRecoveryObservation
   , ProviderAdmissionEpochRegression
   , fixedProviderAdmissionEpochRegression
   , providerAdmissionEpochRegressionLegacyPreserved
@@ -75,6 +121,9 @@ module Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch.Internal
   , confirmCascadeTerminalAuditReceipt
   , CascadeTerminalAuditReceiptRegression (..)
   , fixedCascadeTerminalAuditReceiptRegression
+  , ProviderCredentialRetirementConfirmation
+  , confirmProviderCredentialRetirement
+  , providerCredentialRetirementMatches
   , ProviderCredentialRevocationReceipt
   , mkProviderCredentialRevocationReceipt
   , ProviderAdmissionRevokeRefusal (..)
@@ -85,12 +134,15 @@ module Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch.Internal
   )
 where
 
-import Codec.Serialise (Serialise)
-import Control.Monad (void)
+import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
+import Control.Monad (unless, void)
 import Data.Bifunctor (first)
+import Data.ByteString qualified as ByteString
+import Data.ByteString.Lazy qualified as LazyByteString
 import Data.List (nub, sort)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.Lifecycle.Authority.ClientRegistry
@@ -98,17 +150,43 @@ import Prodbox.Lifecycle.Authority.ClientRegistry
   , clientSubmissionKeyText
   , mkClientSubmissionKey
   )
+import Prodbox.Lifecycle.Authority.CompletedProviderPredecessor
+  ( ObservedCompletedProviderPredecessor
+  , ProviderPredecessorCoordinates (..)
+  , completedProviderPredecessorCoordinates
+  , completedProviderPredecessorReportDigest
+  )
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupAttemptId
   , CleanupDigest
   , CleanupNodeId
   , CleanupOperationId
   , CleanupRunId
+  , cleanupAttemptIdText
+  , cleanupDigestOfBytes
+  , cleanupDigestText
+  , cleanupNodeIdText
+  , cleanupOperationIdText
+  , cleanupRunIdText
   , mkCleanupAttemptId
   , mkCleanupDigest
   , mkCleanupNodeId
   , mkCleanupOperationId
   , mkCleanupRunId
+  )
+import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
+  ( OperatorMaterialAction (..)
+  , OperatorMaterialOperationId
+  , mkOperatorMaterialOperationId
+  , operatorMaterialOperationIdText
+  )
+import Prodbox.Lifecycle.TargetCommitIntent
+  ( CredentialGeneration
+  , TargetValueDigest
+  , credentialGenerationValue
+  , mkCredentialGeneration
+  , mkTargetValueDigest
+  , targetValueDigestText
   )
 
 newtype ProviderCredentialGeneration = ProviderCredentialGeneration Natural
@@ -133,8 +211,8 @@ data CascadeAuditFreezeBinding
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
--- | The future revoke protocol must bind independently read-back IAM and
--- retained Target generations. No constructor or transition is exported.
+-- | Independently observed IAM and Target retirement digests. The receipt
+-- itself is metadata; only its owned aggregate transition changes admission.
 data ProviderCredentialRevocationReceipt
   = ProviderCredentialRevocationReceipt !CleanupDigest !CleanupDigest
   deriving stock (Eq, Show, Generic)
@@ -250,8 +328,265 @@ data ProviderAdmissionEpoch
       !ProviderCredentialGeneration
       !CascadeAuditFreezeBinding
       !CascadeTerminalAuditReceipt
+  | ProviderAdmissionCredentialMutationPendingInternal
+      !ProviderCredentialMutationReservation
+      !ProviderCredentialMutationOrigin
+  | ProviderAdmissionTrackedInternal !ProviderCredentialServingLineage !ProviderAdmissionTrackedPhase
+  | ProviderAdmissionOrdinaryCredentialRetiredInternal
+      !ProviderCredentialGeneration
+      !ProviderCredentialRevocationReceipt
+      !(Maybe ProviderCredentialServingLineage)
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
+
+data ProviderCredentialServingLineage = ProviderCredentialServingLineage !Text !CleanupDigest
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data ProviderAdmissionTrackedPhase
+  = ProviderTrackedServing !ProviderCredentialGeneration
+  | ProviderTrackedFrozen !ProviderCredentialGeneration !CascadeAuditFreezeBinding
+  | ProviderTrackedRecorded
+      !ProviderCredentialGeneration
+      !CascadeAuditFreezeBinding
+      !CascadeTerminalAuditReceipt
+  | ProviderTrackedRevoked
+      !ProviderCredentialGeneration
+      !CascadeAuditFreezeBinding
+      !CascadeTerminalAuditReceipt
+      !ProviderCredentialRevocationReceipt
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+untrackedEpoch :: ProviderAdmissionTrackedPhase -> ProviderAdmissionEpoch
+untrackedEpoch phase = case phase of
+  ProviderTrackedServing generation -> ProviderAdmissionServingInternal generation
+  ProviderTrackedFrozen generation binding -> ProviderAdmissionCascadeAuditFrozenInternal generation binding
+  ProviderTrackedRecorded generation binding audit -> ProviderAdmissionCascadeAuditRecordedInternal generation binding audit
+  ProviderTrackedRevoked generation binding audit receipt -> ProviderAdmissionCascadeCredentialRevokedInternal generation binding audit receipt
+
+trackEpoch :: ProviderCredentialServingLineage -> ProviderAdmissionEpoch -> ProviderAdmissionEpoch
+trackEpoch lineage epoch = case epoch of
+  ProviderAdmissionLegacyServingUnboundInternal -> epoch
+  ProviderAdmissionServingInternal generation -> ProviderAdmissionTrackedInternal lineage (ProviderTrackedServing generation)
+  ProviderAdmissionCascadeAuditFrozenInternal generation binding -> ProviderAdmissionTrackedInternal lineage (ProviderTrackedFrozen generation binding)
+  ProviderAdmissionCascadeAuditRecordedInternal generation binding audit -> ProviderAdmissionTrackedInternal lineage (ProviderTrackedRecorded generation binding audit)
+  ProviderAdmissionCascadeCredentialRevokedInternal generation binding audit receipt ->
+    ProviderAdmissionTrackedInternal lineage (ProviderTrackedRevoked generation binding audit receipt)
+  ProviderAdmissionCredentialMutationPendingInternal {} -> epoch
+  ProviderAdmissionTrackedInternal {} -> epoch
+  ProviderAdmissionOrdinaryCredentialRetiredInternal generation receipt _ -> ProviderAdmissionOrdinaryCredentialRetiredInternal generation receipt (Just lineage)
+
+validateServingLineage :: ProviderCredentialServingLineage -> Either ProviderAdmissionEpochError ()
+validateServingLineage (ProviderCredentialServingLineage operation digest) = do
+  void
+    ( first
+        (ProviderAdmissionBootstrapPredecessorInvalid . Text.pack . show)
+        (mkOperatorMaterialOperationId operation)
+    )
+  void
+    (first ProviderAdmissionBootstrapPredecessorInvalid (mkCleanupDigest (cleanupDigestText digest)))
+
+originEpoch :: ProviderCredentialMutationOrigin -> ProviderAdmissionEpoch
+originEpoch origin = case origin of
+  ProviderInstallInterruptedOrigin _ predecessor _ -> cleanupPredecessorEpoch predecessor
+  ProviderInstallLegacyOrigin -> ProviderAdmissionLegacyServingUnboundInternal
+  ProviderInstallRecordedOrigin generation binding audit lineage -> withLineage lineage (ProviderAdmissionCascadeAuditRecordedInternal generation binding audit)
+  ProviderInstallOrdinaryRetiredOrigin generation receipt lineage -> ProviderAdmissionOrdinaryCredentialRetiredInternal generation receipt lineage
+  ProviderInstallServingOrigin generation lineage -> withLineage lineage (ProviderAdmissionServingInternal generation)
+  ProviderInstallRevokedOrigin generation binding audit receipt lineage ->
+    withLineage
+      lineage
+      (ProviderAdmissionCascadeCredentialRevokedInternal generation binding audit receipt)
+  ProviderInstallCompletedRevokedOrigin generation binding audit receipt lineage _ ->
+    withLineage
+      lineage
+      (ProviderAdmissionCascadeCredentialRevokedInternal generation binding audit receipt)
+ where
+  withLineage Nothing = id
+  withLineage (Just lineage) = trackEpoch lineage
+
+data ProviderCredentialMutationReservation
+  = ProviderCredentialMutationReservation
+      !Text
+      !ProviderCredentialGeneration
+      !Text
+      !ProviderCredentialMutationKind
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data ProviderCredentialMutationKind
+  = ProviderCredentialInstall
+  | ProviderCredentialRotate
+  | ProviderCredentialRevoke
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+-- The origin is closed and nonrecursive. Pending reservation bytes cannot
+-- embed another pending state or grow a recursive history in the aggregate.
+data ProviderCredentialMutationOrigin
+  = ProviderInstallLegacyOrigin
+  | ProviderInstallServingOrigin !ProviderCredentialGeneration !(Maybe ProviderCredentialServingLineage)
+  | ProviderInstallOrdinaryRetiredOrigin
+      !ProviderCredentialGeneration
+      !ProviderCredentialRevocationReceipt
+      !(Maybe ProviderCredentialServingLineage)
+  | ProviderInstallRecordedOrigin
+      !ProviderCredentialGeneration
+      !CascadeAuditFreezeBinding
+      !CascadeTerminalAuditReceipt
+      !(Maybe ProviderCredentialServingLineage)
+  | ProviderInstallRevokedOrigin
+      !ProviderCredentialGeneration
+      !CascadeAuditFreezeBinding
+      !CascadeTerminalAuditReceipt
+      !ProviderCredentialRevocationReceipt
+      !(Maybe ProviderCredentialServingLineage)
+  | ProviderInstallCompletedRevokedOrigin
+      !ProviderCredentialGeneration
+      !CascadeAuditFreezeBinding
+      !CascadeTerminalAuditReceipt
+      !ProviderCredentialRevocationReceipt
+      !(Maybe ProviderCredentialServingLineage)
+      !CleanupDigest
+  | ProviderInstallInterruptedOrigin
+      !ProviderCredentialMutationReservation
+      !ProviderCredentialCleanupPredecessor
+      !CleanupDigest
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+-- A closed, nonrecursive snapshot reuses the existing base phase vocabulary.
+-- Frozen/recorded phases and a completed-report reference on serving are invalid.
+data ProviderCredentialCleanupPredecessor
+  = ProviderCleanupLegacyPredecessor
+  | ProviderCleanupPhasePredecessor
+      !(Maybe ProviderCredentialServingLineage)
+      !ProviderAdmissionTrackedPhase
+      !(Maybe CleanupDigest)
+  | ProviderCleanupRetiredPredecessor
+      !ProviderCredentialGeneration
+      !ProviderCredentialRevocationReceipt
+      !(Maybe ProviderCredentialServingLineage)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data ProviderCredentialMutationRefusal
+  = ProviderCredentialInstallFrozen
+  | ProviderCredentialMutationPendingWork !Int
+  | ProviderCredentialInstallDifferentReservation
+  | ProviderCredentialInstallMalformed !Text
+  | ProviderCredentialInstallGenerationRegressed !Natural !Natural
+  | ProviderCredentialInstallPredecessorMismatch
+  deriving stock (Eq, Show)
+
+mkProviderCredentialInstallReservation
+  :: OperatorMaterialOperationId
+  -> CredentialGeneration
+  -> TargetValueDigest
+  -> Either ProviderCredentialMutationRefusal ProviderCredentialMutationReservation
+mkProviderCredentialInstallReservation = mkProviderCredentialMutationReservation InstallOperatorMaterial
+
+mkProviderCredentialMutationReservation
+  :: OperatorMaterialAction
+  -> OperatorMaterialOperationId
+  -> CredentialGeneration
+  -> TargetValueDigest
+  -> Either ProviderCredentialMutationRefusal ProviderCredentialMutationReservation
+mkProviderCredentialMutationReservation action operation generation digest = do
+  let operationText = operatorMaterialOperationIdText operation
+      generationValue = credentialGenerationValue generation
+      digestText = targetValueDigestText digest
+  void
+    ( first
+        (ProviderCredentialInstallMalformed . Text.pack . show)
+        (mkOperatorMaterialOperationId operationText)
+    )
+  bound <-
+    first
+      (ProviderCredentialInstallMalformed . Text.pack . show)
+      (providerCredentialGeneration generationValue)
+  void
+    (first (ProviderCredentialInstallMalformed . Text.pack . show) (mkTargetValueDigest digestText))
+  let kind = case action of
+        InstallOperatorMaterial -> ProviderCredentialInstall
+        RotateOperatorMaterial -> ProviderCredentialRotate
+        RevokeOperatorMaterial -> ProviderCredentialRevoke
+  Right (ProviderCredentialMutationReservation operationText bound digestText kind)
+
+validateProviderCredentialMutationReservation
+  :: ProviderCredentialMutationReservation -> Either ProviderCredentialMutationRefusal ()
+validateProviderCredentialMutationReservation (ProviderCredentialMutationReservation operation generation digest kind) = do
+  typedOperation <-
+    first
+      (ProviderCredentialInstallMalformed . Text.pack . show)
+      (mkOperatorMaterialOperationId operation)
+  typedGeneration <-
+    first
+      (ProviderCredentialInstallMalformed . Text.pack . show)
+      (mkCredentialGeneration (providerCredentialGenerationValue generation))
+  typedDigest <-
+    first (ProviderCredentialInstallMalformed . Text.pack . show) (mkTargetValueDigest digest)
+  void
+    ( mkProviderCredentialMutationReservation
+        (mutationAction kind)
+        typedOperation
+        typedGeneration
+        typedDigest
+    )
+
+reserveProviderCredentialInstallInternal
+  :: ProviderAdmissionEpoch
+  -> ProviderPendingWork
+  -> ProviderCredentialMutationReservation
+  -> Either ProviderCredentialMutationRefusal ProviderAdmissionEpoch
+reserveProviderCredentialInstallInternal epoch pending reservation = do
+  validateProviderCredentialMutationReservation reservation
+  unless
+    (reservationKind reservation /= ProviderCredentialRevoke)
+    (Left ProviderCredentialInstallDifferentReservation)
+  case epoch of
+    ProviderAdmissionCredentialMutationPendingInternal existing _
+      | existing == reservation -> Right epoch
+      | otherwise -> Left ProviderCredentialInstallDifferentReservation
+    ProviderAdmissionCascadeAuditFrozenInternal {} -> Left ProviderCredentialInstallFrozen
+    ProviderAdmissionCascadeAuditRecordedInternal {} -> Left ProviderCredentialInstallFrozen
+    ProviderAdmissionTrackedInternal lineage phase -> case phase of
+      ProviderTrackedServing old
+        | reservationGeneration <= providerCredentialGenerationValue old ->
+            Left
+              ( ProviderCredentialInstallGenerationRegressed
+                  (providerCredentialGenerationValue old)
+                  reservationGeneration
+              )
+        | otherwise -> reserveOrigin (ProviderInstallServingOrigin old (Just lineage))
+      ProviderTrackedRevoked old binding audit receipt -> reserveOrigin (ProviderInstallRevokedOrigin old binding audit receipt (Just lineage))
+      ProviderTrackedFrozen {} -> Left ProviderCredentialInstallFrozen
+      ProviderTrackedRecorded {} -> Left ProviderCredentialInstallFrozen
+    ProviderAdmissionLegacyServingUnboundInternal -> reserveOrigin ProviderInstallLegacyOrigin
+    ProviderAdmissionOrdinaryCredentialRetiredInternal generation receipt lineage -> reserveOrigin (ProviderInstallOrdinaryRetiredOrigin generation receipt lineage)
+    ProviderAdmissionServingInternal old
+      | reservationGeneration <= providerCredentialGenerationValue old ->
+          Left
+            ( ProviderCredentialInstallGenerationRegressed
+                (providerCredentialGenerationValue old)
+                reservationGeneration
+            )
+      | otherwise -> reserveOrigin (ProviderInstallServingOrigin old Nothing)
+    ProviderAdmissionCascadeCredentialRevokedInternal old binding audit receipt ->
+      reserveOrigin (ProviderInstallRevokedOrigin old binding audit receipt Nothing)
+ where
+  ProviderCredentialMutationReservation _ requestedGeneration _ _ = reservation
+  reservationGeneration = providerCredentialGenerationValue requestedGeneration
+  reserveOrigin origin = case pending of
+    PendingProviderWork count -> Left (ProviderCredentialMutationPendingWork count)
+    NoPendingProviderWork -> do
+      void
+        ( first
+            ProviderCredentialInstallMalformed
+            (encodeProviderCredentialLineageArchive (ProviderCredentialLineageArchive reservation origin))
+        )
+      Right (ProviderAdmissionCredentialMutationPendingInternal reservation origin)
 
 -- | Non-authorizing retained-state view. It intentionally omits the hidden
 -- freeze binding and revocation receipt.
@@ -261,7 +596,331 @@ data ProviderAdmissionEpochView
   | ProviderAdmissionCascadeAuditFrozen !Natural
   | ProviderAdmissionCascadeCredentialRevoked !Natural
   | ProviderAdmissionCascadeAuditRecorded !Natural
+  | ProviderAdmissionCredentialMutationPending !Natural
+  | ProviderAdmissionOrdinaryCredentialRetired !Natural
   deriving stock (Eq, Show)
+
+-- Ordinary retained metadata; no constructor attests an effect or admits work.
+data ProviderCredentialRecoveryView
+  = ProviderCredentialRecoveryIdle
+  | ProviderCredentialRecoveryPending !Text
+  | ProviderCredentialRecoveryServing !Natural !Text
+  | ProviderCredentialRecoveryRetired !Natural !Text
+  | ProviderCredentialRecoveryClosed
+  | ProviderCredentialRecoveryRevoked
+  | ProviderCredentialRecoveryRecorded !Natural
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+validateProviderCredentialRecoveryView :: ProviderCredentialRecoveryView -> Either Text ()
+validateProviderCredentialRecoveryView view = case view of
+  ProviderCredentialRecoveryIdle -> Right ()
+  ProviderCredentialRecoveryClosed -> Right ()
+  ProviderCredentialRecoveryRevoked -> Right ()
+  ProviderCredentialRecoveryRecorded generation -> void (firstShow (providerCredentialGeneration generation))
+  ProviderCredentialRecoveryPending operation -> void (firstShow (mkOperatorMaterialOperationId operation))
+  ProviderCredentialRecoveryServing generation scope -> do
+    void (firstShow (providerCredentialGeneration generation))
+    void (mkCleanupDigest scope)
+  ProviderCredentialRecoveryRetired generation scope -> do
+    void (firstShow (providerCredentialGeneration generation))
+    void (mkCleanupDigest scope)
+
+providerCredentialRecoveryViewInternal :: ProviderAdmissionEpoch -> ProviderCredentialRecoveryView
+providerCredentialRecoveryViewInternal epoch = case epoch of
+  ProviderAdmissionLegacyServingUnboundInternal -> ProviderCredentialRecoveryIdle
+  ProviderAdmissionServingInternal generation -> serving generation
+  ProviderAdmissionTrackedInternal _ phase -> case phase of
+    ProviderTrackedServing generation -> serving generation
+    ProviderTrackedFrozen {} -> ProviderCredentialRecoveryClosed
+    ProviderTrackedRecorded generation _ _ -> ProviderCredentialRecoveryRecorded (providerCredentialGenerationValue generation)
+    ProviderTrackedRevoked {} -> ProviderCredentialRecoveryRevoked
+  ProviderAdmissionOrdinaryCredentialRetiredInternal generation _ _ ->
+    ProviderCredentialRecoveryRetired (providerCredentialGenerationValue generation) scope
+  ProviderAdmissionCredentialMutationPendingInternal
+    (ProviderCredentialMutationReservation operation _ _ _)
+    _ ->
+      ProviderCredentialRecoveryPending operation
+  ProviderAdmissionCascadeAuditFrozenInternal {} -> ProviderCredentialRecoveryClosed
+  ProviderAdmissionCascadeAuditRecordedInternal generation _ _ -> ProviderCredentialRecoveryRecorded (providerCredentialGenerationValue generation)
+  ProviderAdmissionCascadeCredentialRevokedInternal {} -> ProviderCredentialRecoveryRevoked
+ where
+  scope = cleanupDigestText (cleanupDigestOfBytes (LazyByteString.toStrict (serialise epoch)))
+  serving generation = ProviderCredentialRecoveryServing (providerCredentialGenerationValue generation) scope
+
+providerCredentialServingOperationInternal :: ProviderAdmissionEpoch -> Maybe Text
+providerCredentialServingOperationInternal epoch = case epoch of
+  ProviderAdmissionTrackedInternal
+    (ProviderCredentialServingLineage operation _)
+    (ProviderTrackedServing _) -> Just operation
+  _ -> Nothing
+
+data ProviderAdmissionRecoveryPhase
+  = ProviderRecoveryLegacyServingUnbound
+  | ProviderRecoveryServing !Natural
+  | ProviderRecoveryFrozen !Natural !CleanupAttemptId
+  | ProviderRecoveryRecorded !Natural !CleanupAttemptId !CascadeTerminalAuditReceipt
+  | ProviderRecoveryRevoked
+      !Natural
+      !CleanupAttemptId
+      !CascadeTerminalAuditReceipt
+      !ProviderCredentialRevocationReceipt
+  | ProviderRecoveryOrdinaryCredentialRetired !Natural
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data ProviderAdmissionRecoveryObservation = ProviderAdmissionRecoveryObservation
+  { providerAdmissionRecoveryRequestDigest :: !Text
+  , providerAdmissionRecoveryPhase :: !ProviderAdmissionRecoveryPhase
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+-- | Metadata-only proof retained across the final local uninstall. Re-decoding
+-- this value still requires validation against the complete historical binding.
+data ProviderCredentialRetirementConfirmation
+  = ProviderCredentialRetirementConfirmation
+      !CascadeAuditFreezeBinding
+      !CleanupAttemptId
+      !ProviderAdmissionRecoveryObservation
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+confirmProviderCredentialRetirement
+  :: CascadeAuditFreezeBinding
+  -> ProviderAdmissionRecoveryObservation
+  -> Either ProviderAdmissionRecoveryRefusal ProviderCredentialRetirementConfirmation
+confirmProviderCredentialRetirement requested observation = do
+  restored <- restoreCascadeAuditRecoveryBinding requested observation
+  let CascadeAuditFreezeBinding _ _ _ _ _ _ successfulAttempt _ = requested
+  case providerAdmissionRecoveryPhase observation of
+    ProviderRecoveryRevoked _ _ audit _
+      | cascadeTerminalAuditReceiptVerdict audit == CascadeTerminalAuditReceiptClean ->
+          Right (ProviderCredentialRetirementConfirmation restored successfulAttempt observation)
+    _ -> Left ProviderRecoveryPhaseInvalid
+
+-- | Check a decoded confirmation against the sealed run and its successful
+-- audit attempt. It cannot license a different run, program, scope or operation.
+providerCredentialRetirementMatches
+  :: CleanupRunId
+  -> CleanupDigest
+  -> CleanupDigest
+  -> Text
+  -> CleanupNodeId
+  -> CleanupOperationId
+  -> CleanupAttemptId
+  -> ProviderCredentialRetirementConfirmation
+  -> Bool
+providerCredentialRetirementMatches
+  run
+  descriptor
+  graph
+  scope
+  node
+  operation
+  attempt
+  confirmation@(ProviderCredentialRetirementConfirmation binding successfulAttempt observation) =
+    let CascadeAuditFreezeBinding
+          actualRun
+          actualDescriptor
+          actualGraph
+          actualScope
+          actualNode
+          actualOperation
+          _originalAttempt
+          keys = binding
+        requested =
+          CascadeAuditFreezeBinding
+            actualRun
+            actualDescriptor
+            actualGraph
+            actualScope
+            actualNode
+            actualOperation
+            successfulAttempt
+            keys
+     in actualRun == run
+          && actualDescriptor == descriptor
+          && actualGraph == graph
+          && actualScope == scope
+          && actualNode == node
+          && actualOperation == operation
+          && successfulAttempt == attempt
+          && confirmProviderCredentialRetirement requested observation == Right confirmation
+
+data ProviderAdmissionRecoveryRefusal
+  = ProviderRecoveryBindingInvalid !ProviderAdmissionEpochError
+  | ProviderRecoveryBindingMismatch
+  | ProviderRecoveryResponseMismatch
+  | ProviderRecoveryNotFrozen
+  | ProviderRecoveryPhaseInvalid
+  deriving stock (Eq, Show)
+
+-- | The lease attempt may change on takeover; every other reservation field
+-- remains part of this response/request binding.
+cascadeAuditRecoveryRequestDigest :: CascadeAuditFreezeBinding -> Text
+cascadeAuditRecoveryRequestDigest
+  (CascadeAuditFreezeBinding run descriptor graph scope node operation _ keys) =
+    cleanupDigestText
+      ( cleanupDigestOfBytes
+          ( LazyByteString.toStrict
+              ( serialise
+                  ( [ "provider-admission-recovery/v1"
+                    , cleanupRunIdText run
+                    , cleanupDigestText descriptor
+                    , cleanupDigestText graph
+                    , scope
+                    , cleanupNodeIdText node
+                    , cleanupOperationIdText operation
+                    ]
+                      ++ map clientSubmissionKeyText keys
+                  )
+              )
+          )
+      )
+
+-- | Bounded, non-authorizing locator from the one retained admission
+-- object. Submission keys and receipts stay at the Authority.
+data ProviderBootstrapPredecessorPhase
+  = ProviderBootstrapFrozen
+  | ProviderBootstrapRecorded
+  | ProviderBootstrapRevoked
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data ProviderBootstrapPredecessor = ProviderBootstrapPredecessor
+  { providerBootstrapPredecessorRunId :: !CleanupRunId
+  , providerBootstrapPredecessorGraphDigest :: !CleanupDigest
+  , providerBootstrapPredecessorScopeDigest :: !Text
+  , providerBootstrapPredecessorPhase :: !ProviderBootstrapPredecessorPhase
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+validateProviderBootstrapPredecessor
+  :: ProviderBootstrapPredecessor -> Either ProviderAdmissionEpochError ()
+validateProviderBootstrapPredecessor predecessor = do
+  void
+    ( first
+        ProviderAdmissionBootstrapPredecessorInvalid
+        (mkCleanupRunId (cleanupRunIdText (providerBootstrapPredecessorRunId predecessor)))
+    )
+  void
+    ( first
+        ProviderAdmissionBootstrapPredecessorInvalid
+        (mkCleanupDigest (cleanupDigestText (providerBootstrapPredecessorGraphDigest predecessor)))
+    )
+  if isLowerHexSha256 (providerBootstrapPredecessorScopeDigest predecessor)
+    then Right ()
+    else
+      Left
+        (ProviderAdmissionFreezeScopeDigestInvalid (providerBootstrapPredecessorScopeDigest predecessor))
+
+observeProviderBootstrapPredecessorInternal
+  :: ProviderAdmissionEpoch -> Maybe ProviderBootstrapPredecessor
+observeProviderBootstrapPredecessorInternal epoch = case epoch of
+  ProviderAdmissionTrackedInternal _ phase -> observeProviderBootstrapPredecessorInternal (untrackedEpoch phase)
+  ProviderAdmissionCredentialMutationPendingInternal _ origin -> observeProviderBootstrapPredecessorInternal (originEpoch origin)
+  ProviderAdmissionLegacyServingUnboundInternal -> Nothing
+  ProviderAdmissionServingInternal _ -> Nothing
+  ProviderAdmissionOrdinaryCredentialRetiredInternal {} -> Nothing
+  ProviderAdmissionCascadeAuditFrozenInternal _ binding -> Just (project ProviderBootstrapFrozen binding)
+  ProviderAdmissionCascadeAuditRecordedInternal _ binding _ -> Just (project ProviderBootstrapRecorded binding)
+  ProviderAdmissionCascadeCredentialRevokedInternal _ binding _ _ -> Just (project ProviderBootstrapRevoked binding)
+ where
+  project phase (CascadeAuditFreezeBinding runId _ graph scope _ _ _ _) =
+    ProviderBootstrapPredecessor runId graph scope phase
+
+observeProviderAdmissionRecoveryInternal
+  :: ProviderAdmissionEpoch
+  -> CascadeAuditFreezeBinding
+  -> Either ProviderAdmissionRecoveryRefusal ProviderAdmissionRecoveryObservation
+observeProviderAdmissionRecoveryInternal epoch requested = do
+  first ProviderRecoveryBindingInvalid (validateCascadeAuditFreezeBinding requested)
+  phase <- case epoch of
+    ProviderAdmissionTrackedInternal _ trackedPhase ->
+      providerAdmissionRecoveryPhase
+        <$> observeProviderAdmissionRecoveryInternal (untrackedEpoch trackedPhase) requested
+    ProviderAdmissionCredentialMutationPendingInternal {} -> Left ProviderRecoveryPhaseInvalid
+    ProviderAdmissionLegacyServingUnboundInternal -> Right ProviderRecoveryLegacyServingUnbound
+    ProviderAdmissionOrdinaryCredentialRetiredInternal generation _ _ -> Right (ProviderRecoveryOrdinaryCredentialRetired (providerCredentialGenerationValue generation))
+    ProviderAdmissionServingInternal generation ->
+      Right (ProviderRecoveryServing (providerCredentialGenerationValue generation))
+    ProviderAdmissionCascadeAuditFrozenInternal generation binding -> do
+      attempt <- requireBinding binding
+      Right (ProviderRecoveryFrozen (providerCredentialGenerationValue generation) attempt)
+    ProviderAdmissionCascadeAuditRecordedInternal generation binding receipt -> do
+      attempt <- requireBinding binding
+      Right (ProviderRecoveryRecorded (providerCredentialGenerationValue generation) attempt receipt)
+    ProviderAdmissionCascadeCredentialRevokedInternal generation binding receipt revocation -> do
+      attempt <- requireBinding binding
+      Right
+        (ProviderRecoveryRevoked (providerCredentialGenerationValue generation) attempt receipt revocation)
+  let observation = ProviderAdmissionRecoveryObservation expected phase
+  validateProviderAdmissionRecoveryObservation requested observation
+  Right observation
+ where
+  expected = cascadeAuditRecoveryRequestDigest requested
+  requireBinding binding@(CascadeAuditFreezeBinding _ _ _ _ _ _ attempt _)
+    | cascadeAuditRecoveryRequestDigest binding == expected = Right attempt
+    | otherwise = Left ProviderRecoveryBindingMismatch
+
+restoreCascadeAuditRecoveryBinding
+  :: CascadeAuditFreezeBinding
+  -> ProviderAdmissionRecoveryObservation
+  -> Either ProviderAdmissionRecoveryRefusal CascadeAuditFreezeBinding
+restoreCascadeAuditRecoveryBinding requested observation = do
+  validateProviderAdmissionRecoveryObservation requested observation
+  attempt <- case providerAdmissionRecoveryPhase observation of
+    ProviderRecoveryLegacyServingUnbound -> Left ProviderRecoveryNotFrozen
+    ProviderRecoveryServing _ -> Left ProviderRecoveryNotFrozen
+    ProviderRecoveryOrdinaryCredentialRetired _ -> Left ProviderRecoveryNotFrozen
+    ProviderRecoveryFrozen _ original -> Right original
+    ProviderRecoveryRecorded _ original _ -> Right original
+    ProviderRecoveryRevoked _ original _ _ -> Right original
+  let CascadeAuditFreezeBinding run descriptor graph scope node operation _ keys = requested
+  Right (CascadeAuditFreezeBinding run descriptor graph scope node operation attempt keys)
+
+validateProviderAdmissionRecoveryObservation
+  :: CascadeAuditFreezeBinding
+  -> ProviderAdmissionRecoveryObservation
+  -> Either ProviderAdmissionRecoveryRefusal ()
+validateProviderAdmissionRecoveryObservation requested observation = do
+  first ProviderRecoveryBindingInvalid (validateCascadeAuditFreezeBinding requested)
+  if providerAdmissionRecoveryRequestDigest observation == cascadeAuditRecoveryRequestDigest requested
+    then Right ()
+    else Left ProviderRecoveryResponseMismatch
+  case providerAdmissionRecoveryPhase observation of
+    ProviderRecoveryLegacyServingUnbound -> Right ()
+    ProviderRecoveryServing generation -> validateRecoveryGeneration generation
+    ProviderRecoveryOrdinaryCredentialRetired generation -> validateRecoveryGeneration generation
+    ProviderRecoveryFrozen generation attempt -> validateFrozen generation attempt
+    ProviderRecoveryRecorded generation attempt receipt -> do
+      validateFrozen generation attempt
+      validateAudit receipt
+    ProviderRecoveryRevoked generation attempt receipt revocation -> do
+      validateFrozen generation attempt
+      validateAudit receipt
+      validateRevocation revocation
+ where
+  valid :: Either err value -> Either ProviderAdmissionRecoveryRefusal value
+  valid = first (const ProviderRecoveryPhaseInvalid)
+  validateRecoveryGeneration generation = void (valid (providerCredentialGeneration generation))
+  validateFrozen generation attempt = do
+    validateRecoveryGeneration generation
+    _ <- valid (mkCleanupAttemptId (cleanupAttemptIdText attempt))
+    Right ()
+  validateAudit receipt@(CascadeTerminalAuditReceipt scope query retained verdict) = do
+    unless
+      (scope == cascadeAuditFreezeBindingScopeDigest requested)
+      (Left ProviderRecoveryPhaseInvalid)
+    rebuilt <- valid (mkCascadeTerminalAuditReceipt scope query retained verdict)
+    unless (rebuilt == receipt) (Left ProviderRecoveryPhaseInvalid)
+  validateRevocation receipt@(ProviderCredentialRevocationReceipt iam target) = do
+    _ <- valid (mkCleanupDigest (cleanupDigestText iam))
+    _ <- valid (mkCleanupDigest (cleanupDigestText target))
+    rebuilt <- valid (mkProviderCredentialRevocationReceipt iam target)
+    unless (rebuilt == receipt) (Left ProviderRecoveryPhaseInvalid)
 
 data ProviderAdmissionEpochError
   = ProviderAdmissionCredentialGenerationInvalid !Natural
@@ -275,11 +934,14 @@ data ProviderAdmissionEpochError
     ProviderAdmissionAuditReceiptCountInvalid !Natural
   | -- | One read-back digest standing for both proofs a revocation must bind.
     ProviderAdmissionRevocationProofsNotIndependent
+  | ProviderAdmissionBootstrapPredecessorInvalid !Text
+  | ProviderAdmissionCredentialMutationPendingError
   deriving stock (Eq, Show)
 
 data ProviderAdmissionFreshSubmissionRefusal
   = ProviderAdmissionFreshSubmissionCascadeAuditFrozen
   | ProviderAdmissionFreshSubmissionCredentialRevoked
+  | ProviderAdmissionFreshSubmissionCredentialMutationPending
   deriving stock (Eq, Show)
 
 maximumExpectedProviderSubmissions :: Int
@@ -289,11 +951,42 @@ initialLegacyProviderAdmissionEpochInternal :: ProviderAdmissionEpoch
 initialLegacyProviderAdmissionEpochInternal =
   ProviderAdmissionLegacyServingUnboundInternal
 
+providerAdmissionNeedsCredentialQuiescenceInternal :: ProviderAdmissionEpoch -> Bool
+providerAdmissionNeedsCredentialQuiescenceInternal epoch = case epoch of
+  ProviderAdmissionLegacyServingUnboundInternal -> True
+  ProviderAdmissionServingInternal {} -> True
+  ProviderAdmissionCascadeAuditFrozenInternal {} -> True
+  ProviderAdmissionCascadeAuditRecordedInternal {} -> True
+  ProviderAdmissionCascadeCredentialRevokedInternal {} -> True
+  ProviderAdmissionTrackedInternal {} -> False
+  ProviderAdmissionCredentialMutationPendingInternal {} -> False
+  ProviderAdmissionOrdinaryCredentialRetiredInternal _ _ lineage -> case lineage of
+    Nothing -> True
+    Just _ -> False
+
+providerCredentialRetirementInstallDraftMatchesInternal
+  :: ProviderAdmissionEpoch -> ProviderCredentialMutationReservation -> Bool
+providerCredentialRetirementInstallDraftMatchesInternal epoch draft@(ProviderCredentialMutationReservation _ generation _ kind) =
+  kind == ProviderCredentialInstall
+    && providerCredentialGenerationValue generation == 1
+    && case epoch of
+      ProviderAdmissionOrdinaryCredentialRetiredInternal {} -> True
+      ProviderAdmissionCredentialMutationPendingInternal
+        reserved
+        (ProviderInstallOrdinaryRetiredOrigin {}) -> reserved == draft
+      _ -> False
+
 providerAdmissionEpochView
   :: ProviderAdmissionEpoch -> ProviderAdmissionEpochView
 providerAdmissionEpochView epoch = case epoch of
+  ProviderAdmissionTrackedInternal _ phase -> providerAdmissionEpochView (untrackedEpoch phase)
+  ProviderAdmissionCredentialMutationPendingInternal
+    (ProviderCredentialMutationReservation _ generation _ _)
+    _ ->
+      ProviderAdmissionCredentialMutationPending (providerCredentialGenerationValue generation)
   ProviderAdmissionLegacyServingUnboundInternal ->
     ProviderAdmissionLegacyServingUnbound
+  ProviderAdmissionOrdinaryCredentialRetiredInternal generation _ _ -> ProviderAdmissionOrdinaryCredentialRetired (providerCredentialGenerationValue generation)
   ProviderAdmissionServingInternal generation ->
     ProviderAdmissionServing (providerCredentialGenerationValue generation)
   ProviderAdmissionCascadeAuditFrozenInternal generation _ ->
@@ -309,8 +1002,23 @@ providerAdmissionEpochView epoch = case epoch of
 validateProviderAdmissionEpochInternal
   :: ProviderAdmissionEpoch -> Either ProviderAdmissionEpochError ()
 validateProviderAdmissionEpochInternal epoch = case epoch of
+  ProviderAdmissionTrackedInternal lineage phase -> validateServingLineage lineage >> validateProviderAdmissionEpochInternal (untrackedEpoch phase)
+  ProviderAdmissionCredentialMutationPendingInternal reservation origin -> do
+    first
+      (ProviderAdmissionBootstrapPredecessorInvalid . Text.pack . show)
+      (validateProviderCredentialMutationReservation reservation)
+    validateProviderAdmissionEpochInternal (originEpoch origin)
+    first ProviderAdmissionBootstrapPredecessorInvalid (validateOriginReportDigest origin)
+    first ProviderAdmissionBootstrapPredecessorInvalid (validateCleanupOrigin reservation origin)
   ProviderAdmissionLegacyServingUnboundInternal -> Right ()
   ProviderAdmissionServingInternal generation -> validateGeneration generation
+  ProviderAdmissionOrdinaryCredentialRetiredInternal
+    generation
+    (ProviderCredentialRevocationReceipt iam target)
+    lineage -> do
+      validateGeneration generation
+      void (mkProviderCredentialRevocationReceipt iam target)
+      maybe (Right ()) validateServingLineage lineage
   ProviderAdmissionCascadeAuditFrozenInternal generation binding -> do
     validateGeneration generation
     validateCascadeAuditFreezeBinding binding
@@ -339,8 +1047,11 @@ providerAdmissionFreshSubmissionRefusalInternal
   -> ClientSubmissionKey
   -> Maybe ProviderAdmissionFreshSubmissionRefusal
 providerAdmissionFreshSubmissionRefusalInternal epoch submissionKey = case epoch of
+  ProviderAdmissionTrackedInternal _ phase -> providerAdmissionFreshSubmissionRefusalInternal (untrackedEpoch phase) submissionKey
+  ProviderAdmissionCredentialMutationPendingInternal {} -> Just ProviderAdmissionFreshSubmissionCredentialMutationPending
   ProviderAdmissionLegacyServingUnboundInternal -> Nothing
   ProviderAdmissionServingInternal _ -> Nothing
+  ProviderAdmissionOrdinaryCredentialRetiredInternal {} -> Just ProviderAdmissionFreshSubmissionCredentialRevoked
   ProviderAdmissionCascadeAuditFrozenInternal _ binding
     | submissionKey `elem` cascadeAuditFreezeBindingExpectedSubmissions binding ->
         Nothing
@@ -386,6 +1097,8 @@ data ProviderAdmissionFreezeRefusal
   | -- | The credential is revoked; there is nothing left to fence.
     ProviderAdmissionFreezeCredentialRevoked
   | ProviderAdmissionFreezeBindingInvalid !ProviderAdmissionEpochError
+  | ProviderAdmissionFreezeGenerationBindingRefused !ProviderAdmissionEpochError
+  | ProviderAdmissionFreezeCredentialMutationPending
   deriving stock (Eq, Show)
 
 -- | Bind the serving credential generation.
@@ -401,6 +1114,14 @@ bindProviderAdmissionServingGenerationInternal
 bindProviderAdmissionServingGenerationInternal epoch generation = do
   bound <- providerCredentialGeneration generation
   case epoch of
+    ProviderAdmissionTrackedInternal lineage phase ->
+      fmap
+        (trackEpoch lineage)
+        (bindProviderAdmissionServingGenerationInternal (untrackedEpoch phase) generation)
+    ProviderAdmissionCredentialMutationPendingInternal {} -> Left ProviderAdmissionCredentialMutationPendingError
+    ProviderAdmissionOrdinaryCredentialRetiredInternal generationValue _ _ ->
+      Left
+        (ProviderAdmissionCredentialGenerationInvalid (providerCredentialGenerationValue generationValue))
     ProviderAdmissionLegacyServingUnboundInternal ->
       Right (ProviderAdmissionServingInternal bound)
     ProviderAdmissionServingInternal existing
@@ -443,6 +1164,12 @@ freezeProviderAdmissionForCascadeAuditInternal epoch binding pending = do
     Left err -> Left (ProviderAdmissionFreezeBindingInvalid err)
     Right () -> Right ()
   case epoch of
+    ProviderAdmissionTrackedInternal lineage phase ->
+      fmap
+        (trackEpoch lineage)
+        (freezeProviderAdmissionForCascadeAuditInternal (untrackedEpoch phase) binding pending)
+    ProviderAdmissionCredentialMutationPendingInternal {} -> Left ProviderAdmissionFreezeCredentialMutationPending
+    ProviderAdmissionOrdinaryCredentialRetiredInternal {} -> Left ProviderAdmissionFreezeCredentialRevoked
     ProviderAdmissionLegacyServingUnboundInternal ->
       Left ProviderAdmissionFreezeGenerationUnbound
     ProviderAdmissionCascadeCredentialRevokedInternal {} ->
@@ -462,6 +1189,43 @@ freezeProviderAdmissionForCascadeAuditInternal epoch binding pending = do
         Left (ProviderAdmissionFreezePendingWorkPresent count)
       NoPendingProviderWork ->
         Right (ProviderAdmissionCascadeAuditFrozenInternal generation binding)
+
+-- | Bind the serving generation and freeze in one pure transition. The caller
+-- commits only the final result, so a rejected freeze retains no partial bind.
+freezeProviderAdmissionAtGenerationInternal
+  :: ProviderAdmissionEpoch
+  -> Natural
+  -> CascadeAuditFreezeBinding
+  -> ProviderPendingWork
+  -> Either ProviderAdmissionFreezeRefusal ProviderAdmissionEpoch
+freezeProviderAdmissionAtGenerationInternal epoch generation binding pending = do
+  requested <-
+    either
+      (Left . ProviderAdmissionFreezeGenerationBindingRefused)
+      Right
+      (providerCredentialGeneration generation)
+  bound <- case epoch of
+    ProviderAdmissionTrackedInternal lineage phase ->
+      fmap
+        (trackEpoch lineage)
+        (freezeProviderAdmissionAtGenerationInternal (untrackedEpoch phase) generation binding pending)
+    ProviderAdmissionCredentialMutationPendingInternal {} -> Left ProviderAdmissionFreezeCredentialMutationPending
+    ProviderAdmissionOrdinaryCredentialRetiredInternal {} -> Left ProviderAdmissionFreezeCredentialRevoked
+    ProviderAdmissionLegacyServingUnboundInternal ->
+      Right (ProviderAdmissionServingInternal requested)
+    ProviderAdmissionServingInternal existing -> requireSame existing requested
+    ProviderAdmissionCascadeAuditFrozenInternal existing _ -> requireSame existing requested
+    ProviderAdmissionCascadeAuditRecordedInternal existing _ _ -> requireSame existing requested
+    ProviderAdmissionCascadeCredentialRevokedInternal existing _ _ _ -> requireSame existing requested
+  freezeProviderAdmissionForCascadeAuditInternal bound binding pending
+ where
+  requireSame existing requested
+    | existing == requested = Right epoch
+    | otherwise =
+        Left
+          ( ProviderAdmissionFreezeGenerationBindingRefused
+              (ProviderAdmissionCredentialGenerationInvalid (providerCredentialGenerationValue existing))
+          )
 
 -- | Mint the revocation's two-sided proof.
 --
@@ -507,9 +1271,15 @@ revokeCascadeProviderCredentialInternal
   -> ProviderCredentialRevocationReceipt
   -> Either ProviderAdmissionRevokeRefusal ProviderAdmissionEpoch
 revokeCascadeProviderCredentialInternal epoch binding revocation = case epoch of
+  ProviderAdmissionTrackedInternal lineage phase ->
+    fmap
+      (trackEpoch lineage)
+      (revokeCascadeProviderCredentialInternal (untrackedEpoch phase) binding revocation)
+  ProviderAdmissionCredentialMutationPendingInternal {} -> Left ProviderAdmissionRevokeNotFrozen
   ProviderAdmissionLegacyServingUnboundInternal ->
     Left ProviderAdmissionRevokeNotFrozen
   ProviderAdmissionServingInternal _ -> Left ProviderAdmissionRevokeNotFrozen
+  ProviderAdmissionOrdinaryCredentialRetiredInternal {} -> Left ProviderAdmissionRevokeNotFrozen
   ProviderAdmissionCascadeAuditFrozenInternal _ existing
     | existing /= binding -> Left ProviderAdmissionRevokeBindingMismatch
     | otherwise -> Left ProviderAdmissionRevokeAuditNotRecorded
@@ -536,6 +1306,8 @@ revokeCascadeProviderCredentialInternal epoch binding revocation = case epoch of
 revokedCascadeTerminalAuditReceiptInternal
   :: ProviderAdmissionEpoch -> Maybe CascadeTerminalAuditReceipt
 revokedCascadeTerminalAuditReceiptInternal epoch = case epoch of
+  ProviderAdmissionTrackedInternal _ phase -> revokedCascadeTerminalAuditReceiptInternal (untrackedEpoch phase)
+  ProviderAdmissionCredentialMutationPendingInternal _ origin -> revokedCascadeTerminalAuditReceiptInternal (originEpoch origin)
   ProviderAdmissionCascadeCredentialRevokedInternal _ _ receipt _ -> Just receipt
   _ -> Nothing
 
@@ -584,10 +1356,16 @@ recordCascadeTerminalAuditReceiptInternal epoch binding receipt = do
             auditedScope
         )
   case epoch of
+    ProviderAdmissionTrackedInternal lineage phase ->
+      fmap
+        (trackEpoch lineage)
+        (recordCascadeTerminalAuditReceiptInternal (untrackedEpoch phase) binding receipt)
+    ProviderAdmissionCredentialMutationPendingInternal {} -> Left ProviderAdmissionAuditRecordNotFrozen
     ProviderAdmissionLegacyServingUnboundInternal ->
       Left ProviderAdmissionAuditRecordNotFrozen
     ProviderAdmissionServingInternal _ ->
       Left ProviderAdmissionAuditRecordNotFrozen
+    ProviderAdmissionOrdinaryCredentialRetiredInternal {} -> Left ProviderAdmissionAuditRecordCredentialRevoked
     ProviderAdmissionCascadeCredentialRevokedInternal {} ->
       Left ProviderAdmissionAuditRecordCredentialRevoked
     ProviderAdmissionCascadeAuditFrozenInternal generation existing
@@ -615,6 +1393,7 @@ data ProviderAdmissionAuditReadBackRefusal
 observedCascadeTerminalAuditReceiptInternal
   :: ProviderAdmissionEpoch -> Maybe CascadeTerminalAuditReceipt
 observedCascadeTerminalAuditReceiptInternal epoch = case epoch of
+  ProviderAdmissionTrackedInternal _ phase -> observedCascadeTerminalAuditReceiptInternal (untrackedEpoch phase)
   ProviderAdmissionCascadeAuditRecordedInternal _ _ receipt -> Just receipt
   _ -> Nothing
 
@@ -632,6 +1411,7 @@ confirmCascadeTerminalAuditReceipt
   -> Either ProviderAdmissionAuditReadBackRefusal ()
 confirmCascadeTerminalAuditReceipt epoch binding committed =
   case epoch of
+    ProviderAdmissionTrackedInternal _ phase -> confirmCascadeTerminalAuditReceipt (untrackedEpoch phase) binding committed
     ProviderAdmissionCascadeAuditRecordedInternal _ existing recorded
       | existing /= binding ->
           Left ProviderAdmissionAuditReadBackBindingMismatch
@@ -1237,3 +2017,1241 @@ fixedAlternateCascadeAuditFreezeBinding = do
         attemptId
         [otherKey]
     )
+
+fixedProviderCredentialMutationReservationRegression :: Either Text [(Text, Bool)]
+fixedProviderCredentialMutationReservationRegression = do
+  binding <- fixedCascadeAuditFreezeBinding
+  operation <- firstShow (mkOperatorMaterialOperationId "credential/reservation")
+  otherOperation <- firstShow (mkOperatorMaterialOperationId "credential/foreign")
+  generation <- firstShow (mkCredentialGeneration 1)
+  later <- firstShow (mkCredentialGeneration 8)
+  digest <- firstShow (mkTargetValueDigest (Text.replicate 64 "a"))
+  reservation <- firstShow (mkProviderCredentialInstallReservation operation generation digest)
+  future <- firstShow (mkProviderCredentialInstallReservation operation later digest)
+  foreignReservation <-
+    firstShow (mkProviderCredentialInstallReservation otherOperation generation digest)
+  let initial = initialLegacyProviderAdmissionEpochInternal
+  pending <-
+    firstShow (reserveProviderCredentialInstallInternal initial NoPendingProviderWork reservation)
+  serving <- firstShow (bindProviderAdmissionServingGenerationInternal initial 7)
+  frozen <-
+    firstShow (freezeProviderAdmissionAtGenerationInternal serving 7 binding NoPendingProviderWork)
+  audit <-
+    firstShow
+      ( mkCascadeTerminalAuditReceipt
+          (cascadeAuditFreezeBindingScopeDigest binding)
+          (Text.replicate 64 "1")
+          (Text.replicate 64 "2")
+          CascadeTerminalAuditReceiptClean
+      )
+  recorded <- firstShow (recordCascadeTerminalAuditReceiptInternal frozen binding audit)
+  iam <- mkCleanupDigest (Text.replicate 64 "c")
+  target <- mkCleanupDigest (Text.replicate 64 "d")
+  revokeReceipt <- firstShow (mkProviderCredentialRevocationReceipt iam target)
+  revoked <- firstShow (revokeCascadeProviderCredentialInternal recorded binding revokeReceipt)
+  successor <-
+    firstShow (reserveProviderCredentialInstallInternal revoked NoPendingProviderWork reservation)
+  key <- firstShow (mkClientSubmissionKey "credential/unrelated-provider")
+  pure
+    [
+      ( "pending install fences fresh Provider"
+      , providerAdmissionFreshSubmissionRefusalInternal pending key
+          == Just ProviderAdmissionFreshSubmissionCredentialMutationPending
+      )
+    ,
+      ( "same reservation replays"
+      , reserveProviderCredentialInstallInternal pending NoPendingProviderWork reservation == Right pending
+      )
+    ,
+      ( "foreign reservation refuses"
+      , reserveProviderCredentialInstallInternal pending NoPendingProviderWork foreignReservation
+          == Left ProviderCredentialInstallDifferentReservation
+      )
+    ,
+      ( "frozen audit refuses install"
+      , reserveProviderCredentialInstallInternal frozen NoPendingProviderWork future
+          == Left ProviderCredentialInstallFrozen
+      )
+    ,
+      ( "recorded audit refuses install"
+      , reserveProviderCredentialInstallInternal recorded NoPendingProviderWork future
+          == Left ProviderCredentialInstallFrozen
+      )
+    ,
+      ( "pending Provider work refuses install"
+      , reserveProviderCredentialInstallInternal serving (PendingProviderWork 1) future
+          == Left (ProviderCredentialMutationPendingWork 1)
+      )
+    ,
+      ( "serving generation cannot regress"
+      , reserveProviderCredentialInstallInternal serving NoPendingProviderWork reservation
+          == Left (ProviderCredentialInstallGenerationRegressed 7 1)
+      )
+    ,
+      ( "pending cannot be rebound serving"
+      , bindProviderAdmissionServingGenerationInternal pending 1
+          == Left ProviderAdmissionCredentialMutationPendingError
+      )
+    ,
+      ( "pending cannot freeze"
+      , freezeProviderAdmissionAtGenerationInternal pending 1 binding NoPendingProviderWork
+          == Left ProviderAdmissionFreezeCredentialMutationPending
+      )
+    ,
+      ( "revoked successor retains predecessor locator"
+      , observeProviderBootstrapPredecessorInternal successor
+          == observeProviderBootstrapPredecessorInternal revoked
+      )
+    ,
+      ( "revoked successor retains audit proof"
+      , revokedCascadeTerminalAuditReceiptInternal successor == Just audit
+      )
+    ,
+      ( "revoked successor may restart Target generation"
+      , providerAdmissionEpochView successor == ProviderAdmissionCredentialMutationPending 1
+      )
+    , ("pending canonical codec", deserialiseOrFail (serialise successor) == Right successor)
+    ,
+      ( "new constructor appended at five"
+      , LazyByteString.take 2 (serialise successor) == LazyByteString.pack [0x83, 5]
+      )
+    ,
+      ( "legacy constructor preserved"
+      , LazyByteString.take 2 (serialise initial) == LazyByteString.pack [0x81, 0]
+      )
+    , ("pending shape validates", validateProviderAdmissionEpochInternal successor == Right ())
+    ]
+
+-- Non-authorizing metadata to be published with the independently observed
+-- completed Provisioner outbox before the private completion fold is called.
+data ProviderCredentialLineageArchive
+  = ProviderCredentialLineageArchive
+      !ProviderCredentialMutationReservation
+      !ProviderCredentialMutationOrigin
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+pendingProviderCredentialLineageArchiveInternal
+  :: ProviderAdmissionEpoch -> Maybe ProviderCredentialLineageArchive
+pendingProviderCredentialLineageArchiveInternal epoch = case epoch of
+  ProviderAdmissionCredentialMutationPendingInternal reservation origin -> Just (ProviderCredentialLineageArchive reservation origin)
+  _ -> Nothing
+
+validateProviderCredentialLineageArchive :: ProviderCredentialLineageArchive -> Either Text ()
+validateProviderCredentialLineageArchive (ProviderCredentialLineageArchive reservation origin) = do
+  firstShow (validateProviderCredentialMutationReservation reservation)
+  firstShow (validateProviderAdmissionEpochInternal (originEpoch origin))
+  validateOriginReportDigest origin
+  validateCleanupOrigin reservation origin
+
+validateOriginReportDigest :: ProviderCredentialMutationOrigin -> Either Text ()
+validateOriginReportDigest origin = case origin of
+  ProviderInstallCompletedRevokedOrigin _ _ _ _ _ digest ->
+    void (mkCleanupDigest (cleanupDigestText digest))
+  _ -> Right ()
+
+encodeProviderCredentialLineageArchive
+  :: ProviderCredentialLineageArchive -> Either Text ByteString.ByteString
+encodeProviderCredentialLineageArchive archive = do
+  validateProviderCredentialLineageArchive archive
+  let bytes = providerCredentialLineageArchiveCanonicalBytes archive
+  if ByteString.length bytes > 65536
+    then Left "provider credential lineage archive exceeds 64 KiB"
+    else Right bytes
+
+decodeProviderCredentialLineageArchive
+  :: ByteString.ByteString -> Either Text ProviderCredentialLineageArchive
+decodeProviderCredentialLineageArchive bytes = do
+  if ByteString.length bytes > 65536
+    then Left "provider credential lineage archive exceeds 64 KiB"
+    else Right ()
+  (version, archive) <- firstShow (deserialiseOrFail (LazyByteString.fromStrict bytes))
+  if version /= (1 :: Word16) && version /= 2 && version /= 3
+    then Left "provider credential lineage archive version invalid"
+    else Right ()
+  canonical <- encodeProviderCredentialLineageArchive archive
+  if canonical == bytes
+    then Right archive
+    else Left "provider credential lineage archive is not canonical"
+
+-- Private fold only. Production must first verify the attested completed
+-- operation, independently read its archived bytes and re-observe the Agent.
+completeProviderCredentialInstallInternal
+  :: ProviderAdmissionEpoch
+  -> ProviderCredentialMutationReservation
+  -> ProviderCredentialLineageArchive
+  -> Either ProviderCredentialMutationRefusal ProviderAdmissionEpoch
+completeProviderCredentialInstallInternal epoch reservation archive@(ProviderCredentialLineageArchive archived origin) = do
+  bytes <- first ProviderCredentialInstallMalformed (encodeProviderCredentialLineageArchive archive)
+  let ProviderCredentialMutationReservation operation generation _ kind = reservation
+      lineage = ProviderCredentialServingLineage operation (cleanupDigestOfBytes bytes)
+  if archived /= reservation || kind == ProviderCredentialRevoke
+    then Left ProviderCredentialInstallDifferentReservation
+    else Right ()
+  case epoch of
+    ProviderAdmissionCredentialMutationPendingInternal pending old
+      | pending == reservation && old == origin ->
+          Right (ProviderAdmissionTrackedInternal lineage (ProviderTrackedServing generation))
+      | otherwise -> Left ProviderCredentialInstallDifferentReservation
+    ProviderAdmissionTrackedInternal existing (ProviderTrackedServing current)
+      | existing == lineage && current == generation -> Right epoch
+      | otherwise -> Left ProviderCredentialInstallDifferentReservation
+    _ -> Left ProviderCredentialInstallDifferentReservation
+
+fixedProviderCredentialLineageRegression :: Either Text [(Text, Bool)]
+fixedProviderCredentialLineageRegression = do
+  binding <- fixedCascadeAuditFreezeBinding
+  one <- reservationFor "lineage/first" 1
+  two <- reservationFor "lineage/rotation" 2
+  three <- reservationFor "lineage/after-revoke" 1
+  let initial = initialLegacyProviderAdmissionEpochInternal
+  pendingOne <- firstShow (reserveProviderCredentialInstallInternal initial NoPendingProviderWork one)
+  archiveOne <- archiveFor pendingOne
+  bytesOne <- encodeProviderCredentialLineageArchive archiveOne
+  servingOne <- firstShow (completeProviderCredentialInstallInternal pendingOne one archiveOne)
+  pendingTwo <-
+    firstShow (reserveProviderCredentialInstallInternal servingOne NoPendingProviderWork two)
+  archiveTwo <- archiveFor pendingTwo
+  bytesTwo <- encodeProviderCredentialLineageArchive archiveTwo
+  servingTwo <- firstShow (completeProviderCredentialInstallInternal pendingTwo two archiveTwo)
+  frozen <-
+    firstShow (freezeProviderAdmissionAtGenerationInternal servingTwo 2 binding NoPendingProviderWork)
+  audit <-
+    firstShow
+      ( mkCascadeTerminalAuditReceipt
+          (cascadeAuditFreezeBindingScopeDigest binding)
+          (Text.replicate 64 "1")
+          (Text.replicate 64 "2")
+          CascadeTerminalAuditReceiptClean
+      )
+  recorded <- firstShow (recordCascadeTerminalAuditReceiptInternal frozen binding audit)
+  iam <- mkCleanupDigest (Text.replicate 64 "c")
+  target <- mkCleanupDigest (Text.replicate 64 "d")
+  receipt <- firstShow (mkProviderCredentialRevocationReceipt iam target)
+  revoked <- firstShow (revokeCascadeProviderCredentialInternal recorded binding receipt)
+  pendingThree <-
+    firstShow (reserveProviderCredentialInstallInternal revoked NoPendingProviderWork three)
+  archiveThree <- archiveFor pendingThree
+  bytesThree <- encodeProviderCredentialLineageArchive archiveThree
+  servingThree <-
+    firstShow (completeProviderCredentialInstallInternal pendingThree three archiveThree)
+  let lineOne = lineageOf servingOne
+      lineTwo = lineageOf servingTwo
+      lineThree = lineageOf servingThree
+      ProviderCredentialLineageArchive _ originTwo = archiveTwo
+      ProviderCredentialLineageArchive _ originThree = archiveThree
+      foreignOrigin = ProviderCredentialLineageArchive two ProviderInstallLegacyOrigin
+      linkedServing = case originTwo of
+        ProviderInstallServingOrigin _ prior -> prior == lineOne
+        _ -> False
+      linkedRevoked = case originThree of
+        ProviderInstallRevokedOrigin _ priorBinding priorAudit priorReceipt prior ->
+          prior == lineTwo && priorBinding == binding && priorAudit == audit && priorReceipt == receipt
+        _ -> False
+  pure
+    [
+      ( "tracked constructor appends at six"
+      , LazyByteString.take 2 (serialise servingOne) == LazyByteString.pack [0x83, 6]
+      )
+    ,
+      ( "first archive decodes canonically"
+      , decodeProviderCredentialLineageArchive bytesOne == Right archiveOne
+      )
+    , ("rotation archive links prior operation", linkedServing)
+    , ("freeze preserves operation lineage", lineageOf frozen == lineTwo)
+    , ("record preserves operation lineage", lineageOf recorded == lineTwo)
+    , ("revoke preserves operation lineage", lineageOf revoked == lineTwo)
+    , ("revoked archive retains full evidence and prior link", linkedRevoked)
+    ,
+      ( "generation reset is serving only after matching completion"
+      , providerAdmissionEpochView servingThree == ProviderAdmissionServing 1
+      )
+    , ("generation reset produces distinct lineage", lineThree /= lineOne && lineThree /= lineTwo)
+    ,
+      ( "same generation old operation cannot replace new lineage"
+      , completeProviderCredentialInstallInternal servingThree one archiveOne
+          == Left ProviderCredentialInstallDifferentReservation
+      )
+    ,
+      ( "matching completion replays exactly"
+      , completeProviderCredentialInstallInternal servingTwo two archiveTwo == Right servingTwo
+      )
+    ,
+      ( "unreserved completion refuses"
+      , completeProviderCredentialInstallInternal initial one archiveOne
+          == Left ProviderCredentialInstallDifferentReservation
+      )
+    ,
+      ( "neighboring archived operation refuses"
+      , completeProviderCredentialInstallInternal pendingTwo two archiveOne
+          == Left ProviderCredentialInstallDifferentReservation
+      )
+    ,
+      ( "caller-selected predecessor refuses"
+      , completeProviderCredentialInstallInternal pendingTwo two foreignOrigin
+          == Left ProviderCredentialInstallDifferentReservation
+      )
+    ,
+      ( "all archive objects stay bounded"
+      , all ((< 4096) . ByteString.length) [bytesOne, bytesTwo, bytesThree]
+      )
+    ,
+      ( "trailing archive bytes refuse"
+      , case decodeProviderCredentialLineageArchive (bytesThree <> ByteString.singleton 0) of
+          Left _ -> True
+          _ -> False
+      )
+    , ("tracked serving validates", validateProviderAdmissionEpochInternal servingThree == Right ())
+    , ("tracked revoked validates", validateProviderAdmissionEpochInternal revoked == Right ())
+    ,
+      ( "tracked serving cannot bind another generation"
+      , case bindProviderAdmissionServingGenerationInternal servingThree 2 of Left _ -> True; _ -> False
+      )
+    , ("tracked epoch canonical codec", deserialiseOrFail (serialise revoked) == Right revoked)
+    ]
+ where
+  reservationFor operation generation = do
+    op <- firstShow (mkOperatorMaterialOperationId operation)
+    gen <- firstShow (mkCredentialGeneration generation)
+    digest <- firstShow (mkTargetValueDigest (Text.replicate 64 "a"))
+    firstShow (mkProviderCredentialInstallReservation op gen digest)
+  archiveFor =
+    maybe (Left "pending epoch has no archive") Right . pendingProviderCredentialLineageArchiveInternal
+  lineageOf epoch = case epoch of
+    ProviderAdmissionTrackedInternal lineage _ -> Just lineage
+    _ -> Nothing
+
+providerCredentialLineageArchiveOperationId :: ProviderCredentialLineageArchive -> Text
+providerCredentialLineageArchiveOperationId (ProviderCredentialLineageArchive (ProviderCredentialMutationReservation operation _ _ _) _) = operation
+providerCredentialLineageArchiveGeneration :: ProviderCredentialLineageArchive -> Natural
+providerCredentialLineageArchiveGeneration (ProviderCredentialLineageArchive (ProviderCredentialMutationReservation _ generation _ _) _) = providerCredentialGenerationValue generation
+providerCredentialLineageArchiveRequestDigest :: ProviderCredentialLineageArchive -> Text
+providerCredentialLineageArchiveRequestDigest (ProviderCredentialLineageArchive (ProviderCredentialMutationReservation _ _ digest _) _) = digest
+
+providerCredentialLineageArchiveCanonicalBytes
+  :: ProviderCredentialLineageArchive -> ByteString.ByteString
+providerCredentialLineageArchiveCanonicalBytes archive@(ProviderCredentialLineageArchive _ origin) =
+  LazyByteString.toStrict (serialise (version, archive))
+ where
+  version :: Word16
+  version = case origin of
+    ProviderInstallInterruptedOrigin {} -> 3
+    ProviderInstallCompletedRevokedOrigin {} -> 2
+    _ -> 1
+
+-- Private metadata fold; a runtime caller must first fence the revoke and
+-- independently confirm its attested completed operation plus Agent absence.
+-- Ordinary retirement never substitutes for a cascade's clean audit/revoke.
+retireOrdinaryProviderCredentialInternal
+  :: ProviderAdmissionEpoch
+  -> Natural
+  -> ProviderCredentialRevocationReceipt
+  -> Either ProviderCredentialMutationRefusal ProviderAdmissionEpoch
+retireOrdinaryProviderCredentialInternal epoch generation receipt@(ProviderCredentialRevocationReceipt iam target) = do
+  bound <-
+    first
+      (ProviderCredentialInstallMalformed . Text.pack . show)
+      (providerCredentialGeneration generation)
+  void
+    ( first
+        (ProviderCredentialInstallMalformed . Text.pack . show)
+        (mkProviderCredentialRevocationReceipt iam target)
+    )
+  case epoch of
+    ProviderAdmissionLegacyServingUnboundInternal -> Right (ProviderAdmissionOrdinaryCredentialRetiredInternal bound receipt Nothing)
+    ProviderAdmissionServingInternal existing
+      | existing == bound ->
+          Right (ProviderAdmissionOrdinaryCredentialRetiredInternal bound receipt Nothing)
+      | otherwise -> Left ProviderCredentialInstallDifferentReservation
+    ProviderAdmissionTrackedInternal lineage (ProviderTrackedServing existing)
+      | existing == bound ->
+          Right (ProviderAdmissionOrdinaryCredentialRetiredInternal bound receipt (Just lineage))
+      | otherwise -> Left ProviderCredentialInstallDifferentReservation
+    ProviderAdmissionOrdinaryCredentialRetiredInternal existing recorded _
+      | existing == bound && recorded == receipt -> Right epoch
+      | otherwise -> Left ProviderCredentialInstallDifferentReservation
+    _ -> Left ProviderCredentialInstallFrozen
+
+fixedOrdinaryProviderCredentialRetirementRegression :: Either Text [(Text, Bool)]
+fixedOrdinaryProviderCredentialRetirementRegression = do
+  binding <- fixedCascadeAuditFreezeBinding
+  receipt <-
+    firstShow
+      ( mkProviderCredentialRevocationReceipt
+          (cleanupDigestOfBytes "ordinary IAM absence")
+          (cleanupDigestOfBytes "ordinary Target absence")
+      )
+  otherReceipt <-
+    firstShow
+      ( mkProviderCredentialRevocationReceipt
+          (cleanupDigestOfBytes "other IAM absence")
+          (cleanupDigestOfBytes "other Target absence")
+      )
+  audit <-
+    firstShow
+      ( mkCascadeTerminalAuditReceipt
+          (cascadeAuditFreezeBindingScopeDigest binding)
+          (Text.replicate 64 "a")
+          (Text.replicate 64 "b")
+          CascadeTerminalAuditReceiptClean
+      )
+  firstReservation <- reservationFor "ordinary/first" 7
+  next <- reservationFor "ordinary/next" 1
+  pending <-
+    firstShow
+      ( reserveProviderCredentialInstallInternal
+          initialLegacyProviderAdmissionEpochInternal
+          NoPendingProviderWork
+          firstReservation
+      )
+  originalArchive <- archiveFor pending
+  serving <-
+    firstShow (completeProviderCredentialInstallInternal pending firstReservation originalArchive)
+  retired <- firstShow (retireOrdinaryProviderCredentialInternal serving 7 receipt)
+  nextPending <-
+    firstShow (reserveProviderCredentialInstallInternal retired NoPendingProviderWork next)
+  nextArchive <- archiveFor nextPending
+  nextServing <- firstShow (completeProviderCredentialInstallInternal nextPending next nextArchive)
+  frozen <-
+    firstShow (freezeProviderAdmissionForCascadeAuditInternal serving binding NoPendingProviderWork)
+  recorded <- firstShow (recordCascadeTerminalAuditReceiptInternal frozen binding audit)
+  revoked <- firstShow (revokeCascadeProviderCredentialInternal recorded binding receipt)
+  afterCascade <-
+    firstShow (reserveProviderCredentialInstallInternal revoked NoPendingProviderWork next)
+  cascadeArchive <- archiveFor afterCascade
+  cascadeSuccessor <-
+    firstShow (completeProviderCredentialInstallInternal afterCascade next cascadeArchive)
+  cascadeSuccessorRetired <-
+    firstShow (retireOrdinaryProviderCredentialInternal cascadeSuccessor 1 otherReceipt)
+  afterOrdinary <-
+    firstShow
+      ( reserveProviderCredentialInstallInternal
+          cascadeSuccessorRetired
+          NoPendingProviderWork
+          firstReservation
+      )
+  afterOrdinaryArchive <- archiveFor afterOrdinary
+  key <- firstShow (mkClientSubmissionKey "ordinary/fresh-provider-work")
+  Right
+    [
+      ( "ordinary retirement retains the positive generation"
+      , providerAdmissionEpochView retired == ProviderAdmissionOrdinaryCredentialRetired 7
+      )
+    ,
+      ( "ordinary retirement fences Provider work"
+      , providerAdmissionFreshSubmissionRefusalInternal retired key
+          == Just ProviderAdmissionFreshSubmissionCredentialRevoked
+      )
+    ,
+      ( "ordinary retirement exact replay"
+      , retireOrdinaryProviderCredentialInternal retired 7 receipt == Right retired
+      )
+    ,
+      ( "ordinary retirement different receipt refuses"
+      , case retireOrdinaryProviderCredentialInternal retired 7 otherReceipt of Left _ -> True; _ -> False
+      )
+    ,
+      ( "ordinary retirement wrong generation refuses"
+      , case retireOrdinaryProviderCredentialInternal serving 1 receipt of Left _ -> True; _ -> False
+      )
+    ,
+      ( "ordinary retirement cannot lift pending install"
+      , case retireOrdinaryProviderCredentialInternal pending 7 receipt of Left _ -> True; _ -> False
+      )
+    ,
+      ( "ordinary retirement cannot lift frozen audit"
+      , case retireOrdinaryProviderCredentialInternal frozen 7 receipt of Left _ -> True; _ -> False
+      )
+    ,
+      ( "ordinary retirement cannot lift recorded audit"
+      , case retireOrdinaryProviderCredentialInternal recorded 7 receipt of Left _ -> True; _ -> False
+      )
+    ,
+      ( "ordinary retirement cannot replace cascade revocation"
+      , case retireOrdinaryProviderCredentialInternal revoked 7 receipt of Left _ -> True; _ -> False
+      )
+    ,
+      ( "ordinary retirement permits next generation one"
+      , providerAdmissionEpochView nextServing == ProviderAdmissionServing 1
+      )
+    ,
+      ( "ordinary successor archive retains retirement"
+      , case nextArchive of
+          ProviderCredentialLineageArchive
+            _
+            (ProviderInstallOrdinaryRetiredOrigin generationValue recordedReceipt _) -> providerCredentialGenerationValue generationValue == 7 && recordedReceipt == receipt
+          _ -> False
+      )
+    ,
+      ( "ordinary successor archive retains predecessor link"
+      , case nextArchive of
+          ProviderCredentialLineageArchive _ (ProviderInstallOrdinaryRetiredOrigin _ _ link) -> link == lineageOf serving
+          _ -> False
+      )
+    , ("ordinary retired state validates", validateProviderAdmissionEpochInternal retired == Right ())
+    , ("ordinary retired state codec", deserialiseOrFail (serialise retired) == Right retired)
+    ,
+      ( "ordinary retired state cannot freeze"
+      , freezeProviderAdmissionAtGenerationInternal retired 7 binding NoPendingProviderWork
+          == Left ProviderAdmissionFreezeCredentialRevoked
+      )
+    ,
+      ( "ordinary retired state cannot rebind"
+      , case bindProviderAdmissionServingGenerationInternal retired 7 of Left _ -> True; _ -> False
+      )
+    ,
+      ( "ordinary retirement adds no cascade locator"
+      , observeProviderBootstrapPredecessorInternal retired == Nothing
+      )
+    ,
+      ( "cascade audit remains in successor archive"
+      , case cascadeArchive of
+          ProviderCredentialLineageArchive _ (ProviderInstallRevokedOrigin _ _ oldAudit _ _) -> oldAudit == audit
+          _ -> False
+      )
+    ,
+      ( "later ordinary retirement preserves cascade archive link"
+      , case afterOrdinaryArchive of
+          ProviderCredentialLineageArchive _ (ProviderInstallOrdinaryRetiredOrigin _ _ link) -> link == lineageOf cascadeSuccessor
+          _ -> False
+      )
+    ]
+ where
+  reservationFor operation generation = do
+    op <- firstShow (mkOperatorMaterialOperationId operation)
+    gen <- firstShow (mkCredentialGeneration generation)
+    digest <- firstShow (mkTargetValueDigest (Text.replicate 64 "a"))
+    firstShow (mkProviderCredentialInstallReservation op gen digest)
+  archiveFor =
+    maybe (Left "pending epoch has no archive") Right . pendingProviderCredentialLineageArchiveInternal
+  lineageOf epoch = case epoch of
+    ProviderAdmissionTrackedInternal lineage _ -> Just lineage
+    _ -> Nothing
+
+mutationAction :: ProviderCredentialMutationKind -> OperatorMaterialAction
+mutationAction kind = case kind of
+  ProviderCredentialInstall -> InstallOperatorMaterial
+  ProviderCredentialRotate -> RotateOperatorMaterial
+  ProviderCredentialRevoke -> RevokeOperatorMaterial
+
+reservationKind :: ProviderCredentialMutationReservation -> ProviderCredentialMutationKind
+reservationKind (ProviderCredentialMutationReservation _ _ _ kind) = kind
+
+providerCredentialLineageArchiveAction :: ProviderCredentialLineageArchive -> OperatorMaterialAction
+providerCredentialLineageArchiveAction (ProviderCredentialLineageArchive reservation _) = mutationAction (reservationKind reservation)
+
+reserveProviderCredentialMutationInternal
+  :: ProviderAdmissionEpoch
+  -> ProviderPendingWork
+  -> ProviderCredentialMutationReservation
+  -> Either ProviderCredentialMutationRefusal ProviderAdmissionEpoch
+reserveProviderCredentialMutationInternal epoch pending reservation = do
+  validateProviderCredentialMutationReservation reservation
+  case reservationKind reservation of
+    ProviderCredentialInstall -> reserveProviderCredentialInstallInternal epoch pending reservation
+    ProviderCredentialRotate -> reserveProviderCredentialInstallInternal epoch pending reservation
+    ProviderCredentialRevoke -> reserveRevoke epoch
+ where
+  ProviderCredentialMutationReservation _ requested _ _ = reservation
+  reserveRevoke current = case current of
+    ProviderAdmissionCredentialMutationPendingInternal existing _
+      | existing == reservation -> Right current
+      | otherwise -> Left ProviderCredentialInstallDifferentReservation
+    ProviderAdmissionLegacyServingUnboundInternal -> reserveOrigin ProviderInstallLegacyOrigin
+    ProviderAdmissionServingInternal generation -> requireGeneration generation >> reserveOrigin (ProviderInstallServingOrigin generation Nothing)
+    ProviderAdmissionOrdinaryCredentialRetiredInternal generation receipt lineage -> reserveOrigin (ProviderInstallOrdinaryRetiredOrigin generation receipt lineage)
+    ProviderAdmissionCascadeAuditRecordedInternal generation binding audit -> reserveRecorded generation binding audit Nothing
+    ProviderAdmissionTrackedInternal lineage phase -> case phase of
+      ProviderTrackedServing generation ->
+        requireGeneration generation
+          >> reserveOrigin (ProviderInstallServingOrigin generation (Just lineage))
+      ProviderTrackedRecorded generation binding audit -> reserveRecorded generation binding audit (Just lineage)
+      _ -> Left ProviderCredentialInstallFrozen
+    _ -> Left ProviderCredentialInstallFrozen
+  requireGeneration generation = unless (generation == requested) (Left ProviderCredentialInstallDifferentReservation)
+  reserveRecorded generation binding audit lineage = do
+    requireGeneration generation
+    unless
+      (cascadeTerminalAuditReceiptVerdict audit == CascadeTerminalAuditReceiptClean)
+      (Left ProviderCredentialInstallFrozen)
+    reserveOrigin (ProviderInstallRecordedOrigin generation binding audit lineage)
+  reserveOrigin origin = case pending of
+    PendingProviderWork count -> Left (ProviderCredentialMutationPendingWork count)
+    NoPendingProviderWork -> do
+      void
+        ( first
+            ProviderCredentialInstallMalformed
+            (encodeProviderCredentialLineageArchive (ProviderCredentialLineageArchive reservation origin))
+        )
+      Right (ProviderAdmissionCredentialMutationPendingInternal reservation origin)
+
+completeProviderCredentialRevokeInternal
+  :: ProviderAdmissionEpoch
+  -> ProviderCredentialMutationReservation
+  -> ProviderCredentialLineageArchive
+  -> ProviderCredentialRevocationReceipt
+  -> Either ProviderCredentialMutationRefusal ProviderAdmissionEpoch
+completeProviderCredentialRevokeInternal epoch reservation archive@(ProviderCredentialLineageArchive archived origin) receipt@(ProviderCredentialRevocationReceipt iam target) = do
+  bytes <- first ProviderCredentialInstallMalformed (encodeProviderCredentialLineageArchive archive)
+  void
+    ( first
+        (ProviderCredentialInstallMalformed . Text.pack . show)
+        (mkProviderCredentialRevocationReceipt iam target)
+    )
+  let ProviderCredentialMutationReservation operation generation _ kind = reservation
+      lineage = ProviderCredentialServingLineage operation (cleanupDigestOfBytes bytes)
+      retired = ProviderAdmissionOrdinaryCredentialRetiredInternal generation receipt (Just lineage)
+  unless
+    (archived == reservation && kind == ProviderCredentialRevoke)
+    (Left ProviderCredentialInstallDifferentReservation)
+  next <- case origin of
+    ProviderInstallInterruptedOrigin {} -> Right retired
+    _ -> normalNext retired lineage
+  case epoch of
+    ProviderAdmissionCredentialMutationPendingInternal existing old
+      | existing == reservation && old == origin -> Right next
+      | otherwise -> Left ProviderCredentialInstallDifferentReservation
+    _
+      | epoch == next -> Right epoch
+      | otherwise -> Left ProviderCredentialInstallDifferentReservation
+ where
+  normalNext retired lineage = case originEpoch origin of
+    ProviderAdmissionLegacyServingUnboundInternal -> Right retired
+    ProviderAdmissionServingInternal _ -> Right retired
+    ProviderAdmissionTrackedInternal _ (ProviderTrackedServing _) -> Right retired
+    ProviderAdmissionOrdinaryCredentialRetiredInternal {} -> Right retired
+    ProviderAdmissionCascadeAuditRecordedInternal _ binding _ ->
+      fmap
+        (trackEpoch lineage)
+        ( first
+            (const ProviderCredentialInstallFrozen)
+            (revokeCascadeProviderCredentialInternal (originEpoch origin) binding receipt)
+        )
+    ProviderAdmissionTrackedInternal _ (ProviderTrackedRecorded _ binding _) ->
+      fmap
+        (trackEpoch lineage)
+        ( first
+            (const ProviderCredentialInstallFrozen)
+            (revokeCascadeProviderCredentialInternal (originEpoch origin) binding receipt)
+        )
+    _ -> Left ProviderCredentialInstallFrozen
+
+fixedProviderCredentialMutationFenceRegression :: Either Text [(Text, Bool)]
+fixedProviderCredentialMutationFenceRegression = do
+  binding <- fixedCascadeAuditFreezeBinding
+  install <- reservationFor InstallOperatorMaterial "mutation/install" 3
+  revoke <- reservationFor RevokeOperatorMaterial "mutation/revoke" 3
+  next <- reservationFor InstallOperatorMaterial "mutation/next" 1
+  pending <-
+    firstShow
+      ( reserveProviderCredentialMutationInternal
+          initialLegacyProviderAdmissionEpochInternal
+          NoPendingProviderWork
+          install
+      )
+  installArchive <- archiveFor pending
+  serving <- firstShow (completeProviderCredentialInstallInternal pending install installArchive)
+  revokePending <-
+    firstShow (reserveProviderCredentialMutationInternal serving NoPendingProviderWork revoke)
+  revokeArchive <- archiveFor revokePending
+  receipt <-
+    firstShow
+      ( mkProviderCredentialRevocationReceipt
+          (cleanupDigestOfBytes "fenced IAM absence")
+          (cleanupDigestOfBytes "fenced Agent absence")
+      )
+  retired <-
+    firstShow (completeProviderCredentialRevokeInternal revokePending revoke revokeArchive receipt)
+  nextPending <-
+    firstShow (reserveProviderCredentialMutationInternal retired NoPendingProviderWork next)
+  nextArchive <- archiveFor nextPending
+  nextServing <- firstShow (completeProviderCredentialInstallInternal nextPending next nextArchive)
+  frozen <-
+    firstShow (freezeProviderAdmissionForCascadeAuditInternal serving binding NoPendingProviderWork)
+  clean <- auditFor CascadeTerminalAuditReceiptClean
+  escaped <- auditFor (CascadeTerminalAuditReceiptEscaped 1)
+  unknown <- auditFor (CascadeTerminalAuditReceiptUnobservable 1)
+  recorded <- firstShow (recordCascadeTerminalAuditReceiptInternal frozen binding clean)
+  recordedEscape <- firstShow (recordCascadeTerminalAuditReceiptInternal frozen binding escaped)
+  recordedUnknown <- firstShow (recordCascadeTerminalAuditReceiptInternal frozen binding unknown)
+  cascadePending <-
+    firstShow (reserveProviderCredentialMutationInternal recorded NoPendingProviderWork revoke)
+  cascadeArchive <- archiveFor cascadePending
+  revoked <-
+    firstShow (completeProviderCredentialRevokeInternal cascadePending revoke cascadeArchive receipt)
+  key <- firstShow (mkClientSubmissionKey "mutation/provider-work")
+  Right
+    [
+      ( "revoke reservation fences all Provider work"
+      , providerAdmissionFreshSubmissionRefusalInternal revokePending key
+          == Just ProviderAdmissionFreshSubmissionCredentialMutationPending
+      )
+    ,
+      ( "revoke reservation fences freeze"
+      , freezeProviderAdmissionForCascadeAuditInternal revokePending binding NoPendingProviderWork
+          == Left ProviderAdmissionFreezeCredentialMutationPending
+      )
+    ,
+      ( "revoke reservation exact replay"
+      , reserveProviderCredentialMutationInternal revokePending NoPendingProviderWork revoke
+          == Right revokePending
+      )
+    ,
+      ( "install cannot supersede reserved revoke"
+      , case reserveProviderCredentialMutationInternal revokePending NoPendingProviderWork next of
+          Left _ -> True
+          _ -> False
+      )
+    ,
+      ( "pending Provider work blocks revoke"
+      , reserveProviderCredentialMutationInternal serving (PendingProviderWork 1) revoke
+          == Left (ProviderCredentialMutationPendingWork 1)
+      )
+    ,
+      ( "revoke reservation cannot complete as install"
+      , case completeProviderCredentialInstallInternal revokePending revoke revokeArchive of
+          Left _ -> True
+          _ -> False
+      )
+    ,
+      ( "install reservation cannot complete as revoke"
+      , case completeProviderCredentialRevokeInternal pending install installArchive receipt of
+          Left _ -> True
+          _ -> False
+      )
+    ,
+      ( "revoke completion exact replay"
+      , completeProviderCredentialRevokeInternal retired revoke revokeArchive receipt == Right retired
+      )
+    ,
+      ( "ordinary fenced revoke permits next generation one"
+      , providerAdmissionEpochView nextServing == ProviderAdmissionServing 1
+      )
+    ,
+      ( "ordinary revoke archives original serving lineage"
+      , case revokeArchive of
+          ProviderCredentialLineageArchive _ (ProviderInstallServingOrigin _ (Just _)) -> True
+          _ -> False
+      )
+    ,
+      ( "revoke before audit record refuses"
+      , reserveProviderCredentialMutationInternal frozen NoPendingProviderWork revoke
+          == Left ProviderCredentialInstallFrozen
+      )
+    ,
+      ( "revoke after escaped audit refuses"
+      , reserveProviderCredentialMutationInternal recordedEscape NoPendingProviderWork revoke
+          == Left ProviderCredentialInstallFrozen
+      )
+    ,
+      ( "revoke after unobservable audit refuses"
+      , reserveProviderCredentialMutationInternal recordedUnknown NoPendingProviderWork revoke
+          == Left ProviderCredentialInstallFrozen
+      )
+    ,
+      ( "clean audit licenses only fenced revoke"
+      , providerAdmissionEpochView revoked == ProviderAdmissionCascadeCredentialRevoked 3
+      )
+    ,
+      ( "cascade revoke keeps original audit"
+      , revokedCascadeTerminalAuditReceiptInternal revoked == Just clean
+      )
+    ,
+      ( "existing cascade confirmation remains exact replay"
+      , revokeCascadeProviderCredentialInternal revoked binding receipt == Right revoked
+      )
+    ,
+      ( "cascade revoke archive keeps recorded audit"
+      , case cascadeArchive of
+          ProviderCredentialLineageArchive _ (ProviderInstallRecordedOrigin _ oldBinding audit _) -> oldBinding == binding && audit == clean
+          _ -> False
+      )
+    ,
+      ( "cascade revoke cannot be replaced by generic retire"
+      , case retireOrdinaryProviderCredentialInternal revoked 3 receipt of Left _ -> True; _ -> False
+      )
+    ,
+      ( "completed cascade remains fenced"
+      , providerAdmissionFreshSubmissionRefusalInternal revoked key
+          == Just ProviderAdmissionFreshSubmissionCredentialRevoked
+      )
+    ]
+ where
+  reservationFor action operation generation = do
+    op <- firstShow (mkOperatorMaterialOperationId operation)
+    gen <- firstShow (mkCredentialGeneration generation)
+    digest <- firstShow (mkTargetValueDigest (Text.replicate 64 "a"))
+    firstShow (mkProviderCredentialMutationReservation action op gen digest)
+  archiveFor =
+    maybe (Left "pending epoch has no archive") Right . pendingProviderCredentialLineageArchiveInternal
+  auditFor verdict = do
+    binding <- fixedCascadeAuditFreezeBinding
+    firstShow
+      ( mkCascadeTerminalAuditReceipt
+          (cascadeAuditFreezeBindingScopeDigest binding)
+          (Text.replicate 64 "a")
+          (Text.replicate 64 "b")
+          verdict
+      )
+
+-- | A distinct successor requires server-observed completion of the exact
+-- revoked cascade. Keep the report reference with its original audit and
+-- revocation evidence before permitting any credential effect.
+reserveProviderCredentialMutationAfterPredecessorInternal
+  :: ProviderAdmissionEpoch
+  -> ProviderPendingWork
+  -> ProviderCredentialMutationReservation
+  -> ObservedCompletedProviderPredecessor
+  -> Either ProviderCredentialMutationRefusal ProviderAdmissionEpoch
+reserveProviderCredentialMutationAfterPredecessorInternal epoch pending reservation proof =
+  case epoch of
+    ProviderAdmissionCascadeCredentialRevokedInternal generation binding audit receipt ->
+      reserveFrom generation binding audit receipt Nothing
+    ProviderAdmissionTrackedInternal lineage (ProviderTrackedRevoked generation binding audit receipt) ->
+      reserveFrom generation binding audit receipt (Just lineage)
+    ProviderAdmissionCredentialMutationPendingInternal existing origin ->
+      case origin of
+        ProviderInstallCompletedRevokedOrigin _ binding _ _ _ digest
+          | existing == reservation
+              && matches binding
+              && digest == completedProviderPredecessorReportDigest proof ->
+              Right epoch
+        _ -> Left ProviderCredentialInstallPredecessorMismatch
+    _ -> Left ProviderCredentialInstallPredecessorMismatch
+ where
+  matches binding = coordinatesFor binding == Right (completedProviderPredecessorCoordinates proof)
+  reserveFrom generation binding audit receipt lineage = do
+    unless (matches binding) (Left ProviderCredentialInstallPredecessorMismatch)
+    _ <- reserveProviderCredentialInstallInternal epoch pending reservation
+    let origin =
+          ProviderInstallCompletedRevokedOrigin
+            generation
+            binding
+            audit
+            receipt
+            lineage
+            (completedProviderPredecessorReportDigest proof)
+    void
+      ( first
+          ProviderCredentialInstallMalformed
+          (encodeProviderCredentialLineageArchive (ProviderCredentialLineageArchive reservation origin))
+      )
+    Right (ProviderAdmissionCredentialMutationPendingInternal reservation origin)
+
+providerPredecessorCoordinatesInternal
+  :: ProviderAdmissionEpoch -> Maybe ProviderPredecessorCoordinates
+providerPredecessorCoordinatesInternal epoch = case epoch of
+  ProviderAdmissionTrackedInternal _ phase -> providerPredecessorCoordinatesInternal (untrackedEpoch phase)
+  ProviderAdmissionCredentialMutationPendingInternal _ origin -> providerPredecessorCoordinatesInternal (originEpoch origin)
+  ProviderAdmissionCascadeAuditFrozenInternal _ binding -> either (const Nothing) Just (coordinatesFor binding)
+  ProviderAdmissionCascadeAuditRecordedInternal _ binding _ -> either (const Nothing) Just (coordinatesFor binding)
+  ProviderAdmissionCascadeCredentialRevokedInternal _ binding _ _ -> either (const Nothing) Just (coordinatesFor binding)
+  ProviderAdmissionLegacyServingUnboundInternal -> Nothing
+  ProviderAdmissionServingInternal _ -> Nothing
+  ProviderAdmissionOrdinaryCredentialRetiredInternal {} -> Nothing
+
+coordinatesFor :: CascadeAuditFreezeBinding -> Either Text ProviderPredecessorCoordinates
+coordinatesFor (CascadeAuditFreezeBinding run descriptor graph scope _ _ _ _) =
+  ProviderPredecessorCoordinates run descriptor graph <$> mkCleanupDigest scope
+
+providerCredentialLineageArchiveReservationInternal
+  :: ProviderCredentialLineageArchive -> ProviderCredentialMutationReservation
+providerCredentialLineageArchiveReservationInternal (ProviderCredentialLineageArchive reservation _) = reservation
+
+providerCredentialLineageArchiveCompletedReportDigest
+  :: ProviderCredentialLineageArchive -> Maybe CleanupDigest
+providerCredentialLineageArchiveCompletedReportDigest (ProviderCredentialLineageArchive _ origin) =
+  case origin of
+    ProviderInstallCompletedRevokedOrigin _ _ _ _ _ digest -> Just digest
+    ProviderInstallInterruptedOrigin _ (ProviderCleanupPhasePredecessor _ _ report) _ -> report
+    _ -> Nothing
+
+cleanupPredecessorEpoch :: ProviderCredentialCleanupPredecessor -> ProviderAdmissionEpoch
+cleanupPredecessorEpoch predecessor = case predecessor of
+  ProviderCleanupLegacyPredecessor -> ProviderAdmissionLegacyServingUnboundInternal
+  ProviderCleanupPhasePredecessor lineage phase _ -> maybe id trackEpoch lineage (untrackedEpoch phase)
+  ProviderCleanupRetiredPredecessor generation receipt lineage -> ProviderAdmissionOrdinaryCredentialRetiredInternal generation receipt lineage
+
+cleanupPredecessorFor
+  :: ProviderCredentialMutationOrigin -> Either Text ProviderCredentialCleanupPredecessor
+cleanupPredecessorFor origin = case origin of
+  ProviderInstallLegacyOrigin -> Right ProviderCleanupLegacyPredecessor
+  ProviderInstallServingOrigin generation lineage -> Right (ProviderCleanupPhasePredecessor lineage (ProviderTrackedServing generation) Nothing)
+  ProviderInstallOrdinaryRetiredOrigin generation receipt lineage -> Right (ProviderCleanupRetiredPredecessor generation receipt lineage)
+  ProviderInstallRevokedOrigin generation binding audit receipt lineage ->
+    Right
+      ( ProviderCleanupPhasePredecessor
+          lineage
+          (ProviderTrackedRevoked generation binding audit receipt)
+          Nothing
+      )
+  ProviderInstallCompletedRevokedOrigin generation binding audit receipt lineage report ->
+    Right
+      ( ProviderCleanupPhasePredecessor
+          lineage
+          (ProviderTrackedRevoked generation binding audit receipt)
+          (Just report)
+      )
+  ProviderInstallRecordedOrigin {} -> Left "cleanup parent cannot own a recorded audit"
+  ProviderInstallInterruptedOrigin {} -> Left "cleanup cannot create another cleanup child"
+
+providerCredentialCleanupOperationId
+  :: ProviderCredentialMutationReservation -> Either Text OperatorMaterialOperationId
+providerCredentialCleanupOperationId parent = do
+  firstShow (validateProviderCredentialMutationReservation parent)
+  unless
+    (reservationKind parent /= ProviderCredentialRevoke)
+    (Left "cleanup parent must install or rotate")
+  let digest =
+        cleanupDigestOfBytes
+          (LazyByteString.toStrict (serialise ("provider-credential-cleanup/v1" :: Text, parent)))
+  firstShow (mkOperatorMaterialOperationId ("credential-cleanup/" <> cleanupDigestText digest))
+
+-- | Metadata preparation only. The owned runtime still proves the expired
+-- parent's identity, workload absence and current Agent generation.
+providerCredentialCleanupDraftMatches
+  :: ProviderCredentialLineageArchive
+  -> ProviderCredentialMutationReservation
+  -> Bool
+providerCredentialCleanupDraftMatches (ProviderCredentialLineageArchive parent origin) draft =
+  case origin of
+    ProviderInstallInterruptedOrigin {} -> draft == parent
+    _ -> case providerCredentialCleanupOperationId parent of
+      Left _ -> False
+      Right operation ->
+        reservationKind draft == ProviderCredentialRevoke
+          && reservationOperation draft == operatorMaterialOperationIdText operation
+          && reservationGeneration draft <= reservationGeneration parent
+ where
+  reservationOperation (ProviderCredentialMutationReservation operation _ _ _) = operation
+  reservationGeneration (ProviderCredentialMutationReservation _ generation _ _) =
+    providerCredentialGenerationValue generation
+
+validateCleanupOrigin
+  :: ProviderCredentialMutationReservation -> ProviderCredentialMutationOrigin -> Either Text ()
+validateCleanupOrigin child origin = case origin of
+  ProviderInstallInterruptedOrigin parent predecessor permitDigest -> do
+    expected <- providerCredentialCleanupOperationId parent
+    let ProviderCredentialMutationReservation childOperation childGeneration _ childKind = child
+        ProviderCredentialMutationReservation _ parentGeneration _ _ = parent
+    unless
+      ( childOperation == operatorMaterialOperationIdText expected
+          && childKind == ProviderCredentialRevoke
+          && providerCredentialGenerationValue childGeneration
+            <= providerCredentialGenerationValue parentGeneration
+      )
+      (Left "cleanup child does not bind the parent operation and generation ceiling")
+    void (mkCleanupDigest (cleanupDigestText permitDigest))
+    case predecessor of
+      ProviderCleanupLegacyPredecessor -> Right ()
+      ProviderCleanupRetiredPredecessor {} -> Right ()
+      ProviderCleanupPhasePredecessor _ phase report -> case phase of
+        ProviderTrackedServing _ -> unless (report == Nothing) (Left "serving predecessor cannot carry a cascade report")
+        ProviderTrackedRevoked {} -> maybe (Right ()) (void . mkCleanupDigest . cleanupDigestText) report
+        ProviderTrackedFrozen {} -> Left "cleanup predecessor cannot be frozen"
+        ProviderTrackedRecorded {} -> Left "cleanup predecessor cannot be merely recorded"
+  _ -> Right ()
+
+reserveProviderCredentialCleanupInternal
+  :: ProviderAdmissionEpoch
+  -> ProviderCredentialLineageArchive
+  -> ProviderCredentialMutationReservation
+  -> CleanupDigest
+  -> Either ProviderCredentialMutationRefusal ProviderAdmissionEpoch
+reserveProviderCredentialCleanupInternal epoch parentArchive@(ProviderCredentialLineageArchive parent origin) child permitDigest = do
+  void
+    (first ProviderCredentialInstallMalformed (encodeProviderCredentialLineageArchive parentArchive))
+  predecessor <- first ProviderCredentialInstallMalformed (cleanupPredecessorFor origin)
+  let cleanupOrigin = ProviderInstallInterruptedOrigin parent predecessor permitDigest
+      expected = ProviderAdmissionCredentialMutationPendingInternal child cleanupOrigin
+  void
+    ( first
+        ProviderCredentialInstallMalformed
+        (encodeProviderCredentialLineageArchive (ProviderCredentialLineageArchive child cleanupOrigin))
+    )
+  case epoch of
+    ProviderAdmissionCredentialMutationPendingInternal current stored
+      | current == parent && stored == origin -> Right expected
+      | epoch == expected -> Right epoch
+      | otherwise -> Left ProviderCredentialInstallDifferentReservation
+    _ -> Left ProviderCredentialInstallDifferentReservation
+
+fixedProviderCredentialCleanupRegression :: Either Text [(Text, Bool)]
+fixedProviderCredentialCleanupRegression = do
+  parent <- reservation InstallOperatorMaterial "cleanup/parent" 3
+  let initial = initialLegacyProviderAdmissionEpochInternal
+  pending <-
+    firstShow (reserveProviderCredentialMutationInternal initial NoPendingProviderWork parent)
+  parentArchive <- archiveFor pending
+  parentServing <- firstShow (completeProviderCredentialInstallInternal pending parent parentArchive)
+  childOperation <- providerCredentialCleanupOperationId parent
+  child <- reservation RevokeOperatorMaterial (operatorMaterialOperationIdText childOperation) 2
+  let permitDigest = cleanupDigestOfBytes "fixture exact expired parent permit"
+  cleanup <-
+    firstShow (reserveProviderCredentialCleanupInternal pending parentArchive child permitDigest)
+  childArchive <- archiveFor cleanup
+  bytes <- encodeProviderCredentialLineageArchive childArchive
+  receipt <-
+    firstShow
+      ( mkProviderCredentialRevocationReceipt
+          (cleanupDigestOfBytes "fixture IAM absence")
+          (cleanupDigestOfBytes "fixture Target absence")
+      )
+  retired <- firstShow (completeProviderCredentialRevokeInternal cleanup child childArchive receipt)
+  next <- reservation InstallOperatorMaterial "cleanup/next" 1
+  fresh <- firstShow (reserveProviderCredentialMutationInternal retired NoPendingProviderWork next)
+  wrongGenerationInstall <- reservation InstallOperatorMaterial "cleanup/next" 2
+  childAbove <- reservation RevokeOperatorMaterial (operatorMaterialOperationIdText childOperation) 4
+  childInstall <-
+    reservation InstallOperatorMaterial (operatorMaterialOperationIdText childOperation) 2
+  foreignChild <- reservation RevokeOperatorMaterial "cleanup/foreign-child" 2
+  secondChild <- reservation RevokeOperatorMaterial "cleanup/recursive-child" 1
+  let repairChecks =
+        [
+          ( "retirement permits generation-one metadata preparation"
+          , providerCredentialRetirementInstallDraftMatchesInternal retired next
+          )
+        ,
+          ( "retirement install preparation replays its exact reservation"
+          , providerCredentialRetirementInstallDraftMatchesInternal fresh next
+          )
+        ,
+          ( "retirement install preparation refuses another reservation"
+          , not (providerCredentialRetirementInstallDraftMatchesInternal fresh foreignChild)
+          )
+        ,
+          ( "retirement install preparation refuses another generation"
+          , not (providerCredentialRetirementInstallDraftMatchesInternal retired wrongGenerationInstall)
+          )
+        ,
+          ( "legacy metadata cannot assert retirement"
+          , not (providerCredentialRetirementInstallDraftMatchesInternal initial next)
+          )
+        ,
+          ( "serving metadata cannot assert retirement"
+          , not (providerCredentialRetirementInstallDraftMatchesInternal parentServing next)
+          )
+        ]
+      checks =
+        repairChecks
+          ++ [
+               ( "recovery metadata observes legacy idle"
+               , providerCredentialRecoveryViewInternal initial == ProviderCredentialRecoveryIdle
+               )
+             ,
+               ( "recovery metadata observes the exact pending parent"
+               , providerCredentialRecoveryViewInternal pending == ProviderCredentialRecoveryPending "cleanup/parent"
+               )
+             ,
+               ( "recovery metadata observes serving generation without Target material"
+               , case providerCredentialRecoveryViewInternal parentServing of
+                   ProviderCredentialRecoveryServing 3 scope -> validateProviderCredentialRecoveryView (ProviderCredentialRecoveryServing 3 scope) == Right ()
+                   _ -> False
+               )
+             ,
+               ( "recovery metadata scopes retirement deterministically"
+               , case providerCredentialRecoveryViewInternal retired of
+                   view@(ProviderCredentialRecoveryRetired _ _) ->
+                     validateProviderCredentialRecoveryView view == Right ()
+                       && deserialiseOrFail (serialise view) == Right view
+                   _ -> False
+               )
+             ,
+               ( "recovery metadata rejects zero serving generation"
+               , isLeft
+                   (validateProviderCredentialRecoveryView (ProviderCredentialRecoveryServing 0 (Text.replicate 64 "a")))
+               )
+             ,
+               ( "recovery metadata rejects malformed scope"
+               , isLeft (validateProviderCredentialRecoveryView (ProviderCredentialRecoveryRetired 2 "bad scope"))
+               )
+             ,
+               ( "recovery metadata rejects malformed operation"
+               , isLeft (validateProviderCredentialRecoveryView (ProviderCredentialRecoveryPending "bad operation"))
+               )
+             ,
+               ( "metadata preparation accepts the deterministic cleanup draft"
+               , providerCredentialCleanupDraftMatches parentArchive child
+               )
+             ,
+               ( "metadata preparation replays the exact child"
+               , providerCredentialCleanupDraftMatches childArchive child
+               )
+             ,
+               ( "metadata preparation rejects a recursive child"
+               , not (providerCredentialCleanupDraftMatches childArchive secondChild)
+               )
+             ,
+               ( "metadata preparation rejects a higher generation"
+               , not (providerCredentialCleanupDraftMatches parentArchive childAbove)
+               )
+             ,
+               ( "metadata preparation rejects an install"
+               , not (providerCredentialCleanupDraftMatches parentArchive childInstall)
+               )
+             ,
+               ( "cleanup child is the one deterministic operation"
+               , providerCredentialLineageArchiveOperationId childArchive
+                   == operatorMaterialOperationIdText childOperation
+               )
+             , ("cleanup archive uses version three", ByteString.take 2 bytes == ByteString.pack [0x82, 3])
+             ,
+               ( "cleanup archive is bounded and canonical"
+               , ByteString.length bytes <= 65536
+                   && decodeProviderCredentialLineageArchive bytes == Right childArchive
+               )
+             , ("pending cleanup aggregate round-trips", deserialiseOrFail (serialise cleanup) == Right cleanup)
+             ,
+               ( "cleanup reservation exact replay"
+               , reserveProviderCredentialCleanupInternal cleanup parentArchive child permitDigest == Right cleanup
+               )
+             ,
+               ( "cleanup replay cannot substitute the parent permit"
+               , isLeft
+                   ( reserveProviderCredentialCleanupInternal
+                       cleanup
+                       parentArchive
+                       child
+                       (cleanupDigestOfBytes "foreign parent permit")
+                   )
+               )
+             ,
+               ( "cleanup child cannot exceed parent generation"
+               , isLeft (reserveProviderCredentialCleanupInternal pending parentArchive childAbove permitDigest)
+               )
+             ,
+               ( "cleanup child cannot install"
+               , isLeft (reserveProviderCredentialCleanupInternal pending parentArchive childInstall permitDigest)
+               )
+             ,
+               ( "cleanup child cannot substitute its operation"
+               , isLeft (reserveProviderCredentialCleanupInternal pending parentArchive foreignChild permitDigest)
+               )
+             ,
+               ( "cleanup child cannot create another child"
+               , isLeft (reserveProviderCredentialCleanupInternal cleanup childArchive secondChild permitDigest)
+               )
+             ,
+               ( "parent completion cannot replace its cleanup child"
+               , isLeft (completeProviderCredentialInstallInternal cleanup parent parentArchive)
+               )
+             ,
+               ( "cleanup completion retires the exact observed generation"
+               , providerAdmissionEpochView retired == ProviderAdmissionOrdinaryCredentialRetired 2
+               )
+             ,
+               ( "cleanup completion exact replay"
+               , completeProviderCredentialRevokeInternal retired child childArchive receipt == Right retired
+               )
+             ,
+               ( "fresh install follows cleanup at generation one"
+               , providerAdmissionEpochView fresh == ProviderAdmissionCredentialMutationPending 1
+               )
+             , ("pending cleanup validates", validateProviderAdmissionEpochInternal cleanup == Right ())
+             ]
+  parentRevoke <- reservation RevokeOperatorMaterial "cleanup/parent-revoke" 3
+  revokePending <-
+    firstShow (reserveProviderCredentialMutationInternal initial NoPendingProviderWork parentRevoke)
+  revokeArchive <- archiveFor revokePending
+  priorCases <- cleanupPredecessorSnapshotRegression
+  Right
+    ( checks
+        ++ [
+             ( "a revoke cannot become a cleanup parent"
+             , isLeft (reserveProviderCredentialCleanupInternal revokePending revokeArchive child permitDigest)
+             )
+           ]
+        ++ priorCases
+    )
+ where
+  isLeft = either (const True) (const False)
+  reservation action name generation = do
+    operation <- firstShow (mkOperatorMaterialOperationId name)
+    value <- firstShow (mkCredentialGeneration generation)
+    digest <- firstShow (mkTargetValueDigest (Text.replicate 64 "a"))
+    firstShow (mkProviderCredentialMutationReservation action operation value digest)
+  archiveFor =
+    maybe (Left "cleanup fixture archive missing") Right
+      . pendingProviderCredentialLineageArchiveInternal
+
+cleanupPredecessorSnapshotRegression :: Either Text [(Text, Bool)]
+cleanupPredecessorSnapshotRegression = do
+  generation <- firstShow (providerCredentialGeneration 7)
+  receipt <-
+    firstShow
+      ( mkProviderCredentialRevocationReceipt
+          (cleanupDigestOfBytes "prior IAM")
+          (cleanupDigestOfBytes "prior Target")
+      )
+  binding <- fixedCascadeAuditFreezeBinding
+  audit <-
+    firstShow
+      ( mkCascadeTerminalAuditReceipt
+          (cascadeAuditFreezeBindingScopeDigest binding)
+          (Text.replicate 64 "a")
+          (Text.replicate 64 "b")
+          CascadeTerminalAuditReceiptClean
+      )
+  let lineage =
+        Just
+          (ProviderCredentialServingLineage "cleanup/prior-lineage" (cleanupDigestOfBytes "prior archive"))
+      report = cleanupDigestOfBytes "prior completed report"
+      origins =
+        [ ("legacy", ProviderInstallLegacyOrigin)
+        , ("serving", ProviderInstallServingOrigin generation Nothing)
+        , ("tracked serving", ProviderInstallServingOrigin generation lineage)
+        , ("ordinary retired", ProviderInstallOrdinaryRetiredOrigin generation receipt lineage)
+        , ("revoked", ProviderInstallRevokedOrigin generation binding audit receipt lineage)
+        ,
+          ( "completed revoked"
+          , ProviderInstallCompletedRevokedOrigin generation binding audit receipt lineage report
+          )
+        ]
+  concat <$> traverse (one receipt) origins
+ where
+  one receipt (label, origin) = do
+    operation <-
+      firstShow (mkOperatorMaterialOperationId ("cleanup/snapshot/" <> Text.replace " " "-" label))
+    generation <- firstShow (mkCredentialGeneration 8)
+    digest <- firstShow (mkTargetValueDigest (Text.replicate 64 "a"))
+    parent <-
+      firstShow
+        (mkProviderCredentialMutationReservation InstallOperatorMaterial operation generation digest)
+    childOperation <- providerCredentialCleanupOperationId parent
+    child <-
+      firstShow
+        (mkProviderCredentialMutationReservation RevokeOperatorMaterial childOperation generation digest)
+    let parentArchive = ProviderCredentialLineageArchive parent origin
+        pending = ProviderAdmissionCredentialMutationPendingInternal parent origin
+        permitDigest = cleanupDigestOfBytes "snapshot parent permit"
+    cleanup <-
+      firstShow (reserveProviderCredentialCleanupInternal pending parentArchive child permitDigest)
+    archive <-
+      maybe
+        (Left "snapshot child archive missing")
+        Right
+        (pendingProviderCredentialLineageArchiveInternal cleanup)
+    bytes <- encodeProviderCredentialLineageArchive archive
+    retired <- firstShow (completeProviderCredentialRevokeInternal cleanup child archive receipt)
+    let preserved = case archive of
+          ProviderCredentialLineageArchive _ (ProviderInstallInterruptedOrigin old predecessor storedPermit) ->
+            old == parent
+              && cleanupPredecessorEpoch predecessor == originEpoch origin
+              && storedPermit == permitDigest
+          _ -> False
+    Right
+      [ (label <> " predecessor is preserved", preserved)
+      ,
+        ( label <> " predecessor archive round-trips"
+        , decodeProviderCredentialLineageArchive bytes == Right archive
+        )
+      ,
+        ( label <> " prior completed report is preserved"
+        , providerCredentialLineageArchiveCompletedReportDigest archive
+            == providerCredentialLineageArchiveCompletedReportDigest parentArchive
+        )
+      ,
+        ( label <> " cleanup produces exact retired phase"
+        , providerAdmissionEpochView retired == ProviderAdmissionOrdinaryCredentialRetired 8
+        )
+      ]

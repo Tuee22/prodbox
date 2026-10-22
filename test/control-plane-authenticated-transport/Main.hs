@@ -18,6 +18,8 @@ import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.Aws.Region (canonicalRegressionAwsRegion)
+import Prodbox.Capacity.AuthorityBackupBudget qualified as AuthorityBackupBudget
+import Prodbox.Capacity.ControlPlaneReplayBudget qualified as ReplayBudget
 import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
 import Prodbox.ControlPlane.AuthenticatedRuntime
 import Prodbox.ControlPlane.AuthenticatedTransport
@@ -33,15 +35,26 @@ import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   , AuthorityOperationSubmitResponse (..)
   , authorityOperationResponseMaximumBytes
   )
+import Prodbox.ControlPlane.CleanupRunEndpoint
+  ( CleanupRunCommand (..)
+  , CleanupRunDescriptorCommand (..)
+  )
 import Prodbox.ControlPlane.Client
   ( ControlPlaneResponse (..)
   , ControlPlaneRouteFor
-    ( LifecycleEksDrainIntentRoute
+    ( AuthorityBackupCopyRoute
+    , AuthorityBackupObserveRoute
+    , LifecycleAwsAdminProvisionerRoute
+    , LifecycleCleanupRunRoute
+    , LifecycleEksDrainIntentRoute
     , LifecycleEksDrainReadBackReceiptRoute
     , LifecycleOperationSubmitRoute
+    , LifecyclePulumiCheckpointRoute
+    , LifecycleRecoveryPlaneRoute
     , ProviderWorkApplyRoute
     )
   , controlPlaneClientWithTransport
+  , mkAuthorityBackupEndpoint
   , mkLifecycleAuthorityEndpoint
   , mkProviderWorkerEndpoint
   )
@@ -49,6 +62,7 @@ import Prodbox.ControlPlane.Codec
   ( decodeControlPlaneRequest
   , decodeControlPlaneResponse
   , encodeControlPlaneRequest
+  , encodeControlPlaneResponse
   )
 import Prodbox.ControlPlane.ConfigEndpoint
   ( ConfigAuthorityRepository (..)
@@ -71,6 +85,7 @@ import Prodbox.ControlPlane.PulumiCheckpointEndpoint
   , PulumiCheckpointPairObservation (PulumiCheckpointPairUnobservable)
   , PulumiCheckpointPublicationResult (PulumiCheckpointPublicationUnavailable)
   , PulumiCheckpointRepository (..)
+  , PulumiCheckpointRequest (..)
   , PulumiCheckpointRestoreReadBack (PulumiCheckpointRestoreReadBackUnavailable)
   , PulumiCheckpointRestoreResult (PulumiCheckpointRestoreUnavailable)
   , PulumiCheckpointRetirementAttemptResult (PulumiCheckpointRetirementAttemptUnavailable)
@@ -102,17 +117,23 @@ import Prodbox.ControlPlane.Route
   )
 import Prodbox.ControlPlane.Runtime
   ( authorityBackupCascadeCandidateRequestMaximum
+  , authorityBackupCheckpointAttemptRequestMaximum
   , authorityBackupQualificationAttemptRequestMaximum
   , authorityBackupQualificationPreludeRequestMaximum
   , authorityBackupReconcileAttemptRequestMaximum
   , authorityBackupReplayCapacity
   , authorityBackupReplayMaximumEncodedBytes
   , lifecycleAuthorityFirstReconcileRequestMaximum
+  , lifecycleAuthorityQualificationAttemptRequestMaximum
+  , lifecycleAuthorityQualificationResponseProfile
   , lifecycleAuthorityReconcileAttemptRequestMaximum
   , lifecycleAuthorityReplayCapacity
   , providerWorkerQualificationAttemptRequestMaximum
   , providerWorkerReplayCapacity
   , providerWorkerReplayMaximumEncodedBytes
+  , targetSecretAgentCascadeCandidateRequestMaximum
+  , targetSecretAgentCascadeCandidateResponseMaximumBytes
+  , targetSecretAgentQualificationAttemptRequestMaximum
   , targetSecretAgentReconcileAttemptRequestMaximum
   , targetSecretAgentReplayCapacity
   , targetSecretAgentReplayMaximumEncodedBytes
@@ -123,6 +144,8 @@ import Prodbox.ControlPlane.Runtime
 import Prodbox.ControlPlane.Server
   ( RoleInterpreter (..)
   )
+import Prodbox.ControlPlane.TargetMaterialEndpoint qualified as TargetMaterial
+import Prodbox.ControlPlane.TargetMaterialRegistry (TargetSecretId (TargetSesSmtp))
 import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionAggregate
@@ -154,16 +177,18 @@ import Prodbox.Lifecycle.CleanupRun
   , beginCleanupNode
   , claimCleanupRun
   , cleanupDigestOfBytes
+  , cleanupGraphDigest
   , cleanupGraphNodes
   , cleanupNodeId
+  , cleanupRunId
   , cleanupRunStoredCodec
   , completeCleanupNode
-  , mkCleanupAttemptId
   , mkCleanupOwnerId
   , mkCleanupRunId
   , newCleanupRun
   , recordPrimaryOutcome
   )
+import Prodbox.Lifecycle.CleanupRunRunner (descriptorCleanupNodeAttemptId)
 import Prodbox.Lifecycle.Lease
   ( AuthorityDuration
   , AuthorityTime
@@ -181,6 +206,7 @@ import Prodbox.Lifecycle.Teardown.Model
   , CleanupSurfaceWitness (CascadeSurface)
   , LinuxRke2FoundationId (LinuxRke2FoundationId)
   )
+import Prodbox.Lifecycle.Teardown.Program (cascadeProgramCheckpointOperationCount)
 import Prodbox.Runtime.Role
   ( RuntimeRole (..)
   )
@@ -205,6 +231,59 @@ tests =
     , authenticatedTransportTests
     , authenticatedRoleInterpreterTests
     , authenticatedRuntimeTests
+    , targetMetadataResponseTests
+    ]
+
+targetMetadataResponseTests :: TestTree
+targetMetadataResponseTests =
+  testGroup
+    "Target metadata producer response bound"
+    [ testCase label $ do
+        let metadata =
+              TargetMaterial.TargetMaterialObservation
+                1
+                1
+                commitment
+                "owner"
+                1
+                "request"
+                "action"
+                "pod"
+                "image"
+            handler =
+              TargetMaterial.targetMaterialObservationAuthenticatedHandler
+                4096
+                TargetMaterial.TargetMaterialRepository
+                  { TargetMaterial.observeTargetMaterial = const (pure (Right (Just metadata)))
+                  , TargetMaterial.targetMaterialRepositoryReadiness = transportReadyReadinessSource
+                  }
+            expected =
+              if oversized
+                then
+                  ( ReplyServiceUnavailable
+                  , TargetMaterial.TargetMaterialObserveRefused "target-metadata-response-too-large"
+                  )
+                else (ReplyOk, TargetMaterial.TargetMaterialObserved metadata)
+        actual <-
+          authenticatedHandlerHandle
+            handler
+            (verifiedRequestCallerSlot (verifiedFor nonceA body))
+            TargetMaterialObserve
+            ( LazyByteString.toStrict
+                (encodeControlPlaneRequest (TargetMaterial.TargetMaterialObserveRequest TargetSesSmtp))
+            )
+        actual @?= Just (fst expected, LazyByteString.toStrict (encodeControlPlaneResponse (snd expected)))
+        case actual of
+          Just (_, encoded) -> ByteString.length encoded <= TargetMaterial.targetMaterialResponseMaximumBytes @?= True
+          Nothing -> assertBool "the metadata route must be handled" False
+    | (label, commitment, oversized) <-
+        [ ("preserves a bounded metadata response", "commitment", False)
+        ,
+          ( "refuses oversized metadata at the producer before retained replay"
+          , Text.replicate (64 * 1024) "x"
+          , True
+          )
+        ]
     ]
 
 replayPureTests :: TestTree
@@ -332,7 +411,7 @@ replayPureTests =
                 (mkRequestReplayLimits lifecycleAuthorityReplayCapacity 64 skew)
             requests =
               [ verifiedFor
-                  (mustRight (mkRequestNonce (ByteString.replicate 16 (fromIntegral index))))
+                  (nonceForIndex index)
                   body
               | index <- [1 .. lifecycleAuthorityFirstReconcileRequestMaximum]
               ]
@@ -344,9 +423,9 @@ replayPureTests =
           @?= replicate 4 ReplayReservationFresh
             <> [ReplayReservationCapacityExhausted]
         requestReplayEntryCount oldProjection @?= 4
-        lifecycleAuthorityFirstReconcileRequestMaximum @?= 56
-        lifecycleAuthorityReconcileAttemptRequestMaximum @?= 60
-        lifecycleAuthorityReplayCapacity @?= 120
+        lifecycleAuthorityFirstReconcileRequestMaximum @?= 93
+        lifecycleAuthorityReconcileAttemptRequestMaximum @?= 97
+        lifecycleAuthorityReplayCapacity @?= 4110
         currentDecisions
           @?= replicate
             (fromIntegral lifecycleAuthorityFirstReconcileRequestMaximum)
@@ -358,10 +437,10 @@ replayPureTests =
             currentLimits =
               mustRight
                 (mkRequestReplayLimits lifecycleAuthorityReplayCapacity 64 skew)
-            requestCount = 2 * lifecycleAuthorityReconcileAttemptRequestMaximum
+            requestCount = 2 * lifecycleAuthorityQualificationAttemptRequestMaximum
             requests =
               [ verifiedFor
-                  (mustRight (mkRequestNonce (ByteString.replicate 16 (fromIntegral index))))
+                  (nonceForIndex index)
                   body
               | index <- [1 .. requestCount]
               ]
@@ -369,15 +448,42 @@ replayPureTests =
               reserveRequestSequence priorLimits requests
             (currentDecisions, currentProjection) =
               reserveRequestSequence currentLimits requests
-        requestCount @?= 120
+        requestCount @?= 4110
         priorDecisions
           @?= replicate 64 ReplayReservationFresh
-            <> replicate 56 ReplayReservationCapacityExhausted
+            <> replicate 4046 ReplayReservationCapacityExhausted
         requestReplayEntryCount priorProjection @?= 64
-        currentDecisions @?= replicate 120 ReplayReservationFresh
-        requestReplayEntryCount currentProjection @?= 120
+        currentDecisions @?= replicate 4110 ReplayReservationFresh
+        requestReplayEntryCount currentProjection @?= 4110
+    , testCase "bounds the complete Authority response profile and its immediate retry" $ do
+        let limits = mustRight (mkRequestReplayLimits lifecycleAuthorityReplayCapacity (2 * 1024 * 1024) skew)
+            maximumBytes = ReplayBudget.lifecycleAuthorityReplayMaximumEncodedBytes
+            responses =
+              concat
+                [ replicate
+                    (fromIntegral (2 * count))
+                    (mustRight (mkReplayResponse limits ReplyOk (ByteString.replicate width 97)))
+                | (count, width) <- lifecycleAuthorityQualificationResponseProfile
+                ]
+            requests = [verifiedFor (nonceForIndex index) body | index <- [1 .. lifecycleAuthorityReplayCapacity]]
+            completed =
+              foldl'
+                (\projection (request, reply) -> completeReplayRequest limits reply projection request)
+                (initialRequestReplayProjection limits)
+                (zip requests responses)
+            encoded = mustRight (encodeRequestReplayProjection maximumBytes limits completed)
+        sum (map fst lifecycleAuthorityQualificationResponseProfile) @?= 2055
+        length responses @?= fromIntegral lifecycleAuthorityReplayCapacity
+        requestReplayEntryCount completed @?= lifecycleAuthorityReplayCapacity
+        assertBool
+          "whole response profile fits its production encoded ceiling"
+          (ByteString.length encoded <= maximumBytes)
+        decodeRequestReplayProjection maximumBytes limits encoded @?= Right completed
+        -- The listener receives Base64 JSON. Charge the exact Base64 ceiling
+        -- plus one MiB for its finite envelope, below the rendered 288 MiB.
+        ((maximumBytes + 2) `div` 3) * 4 + 1024 * 1024 <= 288 * 1024 * 1024 @?= True
     , testCase "sizes Authority Backup for the complete qualification cascade and one retry" $ do
-        let priorLimits = mustRight (mkRequestReplayLimits 4 64 skew)
+        let priorLimits = mustRight (mkRequestReplayLimits 1324 64 skew)
             currentLimits =
               mustRight
                 (mkRequestReplayLimits authorityBackupReplayCapacity 64 skew)
@@ -394,17 +500,19 @@ replayPureTests =
               reserveRequestSequence currentLimits requests
         authorityBackupReconcileAttemptRequestMaximum @?= 9
         authorityBackupQualificationPreludeRequestMaximum @?= 13
-        authorityBackupCascadeCandidateRequestMaximum @?= 505
-        authorityBackupQualificationAttemptRequestMaximum @?= 518
-        authorityBackupReplayCapacity @?= 1036
+        authorityBackupCascadeCandidateRequestMaximum @?= 649
+        cascadeProgramCheckpointOperationCount @?= 15
+        authorityBackupCheckpointAttemptRequestMaximum @?= 1650
+        authorityBackupQualificationAttemptRequestMaximum @?= 2392
+        authorityBackupReplayCapacity @?= 4784
         priorDecisions
-          @?= replicate 4 ReplayReservationFresh
-            <> replicate 1032 ReplayReservationCapacityExhausted
-        requestReplayEntryCount priorProjection @?= 4
-        currentDecisions @?= replicate 1036 ReplayReservationFresh
-        requestReplayEntryCount currentProjection @?= 1036
+          @?= replicate 1324 ReplayReservationFresh
+            <> replicate 3460 ReplayReservationCapacityExhausted
+        requestReplayEntryCount priorProjection @?= 1324
+        currentDecisions @?= replicate 4784 ReplayReservationFresh
+        requestReplayEntryCount currentProjection @?= 4784
     , testCase "sizes Provider Worker for the complete qualification cascade and one retry" $ do
-        let priorLimits = mustRight (mkRequestReplayLimits 4 64 skew)
+        let priorLimits = mustRight (mkRequestReplayLimits 80 64 skew)
             currentLimits =
               mustRight
                 (mkRequestReplayLimits providerWorkerReplayCapacity 64 skew)
@@ -417,22 +525,25 @@ replayPureTests =
               reserveRequestSequence priorLimits requests
             (currentDecisions, currentProjection) =
               reserveRequestSequence currentLimits requests
-        providerWorkerQualificationAttemptRequestMaximum @?= 40
-        providerWorkerReplayCapacity @?= 80
+        providerWorkerQualificationAttemptRequestMaximum @?= 87
+        providerWorkerReplayCapacity @?= 174
         priorDecisions
-          @?= replicate 4 ReplayReservationFresh
-            <> replicate 76 ReplayReservationCapacityExhausted
-        requestReplayEntryCount priorProjection @?= 4
-        currentDecisions @?= replicate 80 ReplayReservationFresh
-        requestReplayEntryCount currentProjection @?= 80
+          @?= replicate 80 ReplayReservationFresh
+            <> replicate 94 ReplayReservationCapacityExhausted
+        requestReplayEntryCount priorProjection @?= 80
+        currentDecisions @?= replicate 174 ReplayReservationFresh
+        requestReplayEntryCount currentProjection @?= 174
     , testCase "bounds the encoded Authority Backup qualification envelope" $ do
-        let responseMaximum = 2 * 1024 * 1024
-            aggregateResponseMaximum = 24 * 1024
+        let legacyJournalCapacity =
+              2
+                * (authorityBackupQualificationPreludeRequestMaximum + authorityBackupCascadeCandidateRequestMaximum)
+            responseMaximum = 2 * 1024 * 1024
+            aggregateResponseMaximum = AuthorityBackupBudget.authorityBackupAggregateResponseMaximumBytes
             qualificationPreludeResponseMaximum = 224 * 1024
-            priorMaximumEncodedBytes = 12 * 1024 * 1024
+            priorMaximumEncodedBytes = 32 * 1024 * 1024
             limits =
               mustRight
-                (mkRequestReplayLimits authorityBackupReplayCapacity responseMaximum skew)
+                (mkRequestReplayLimits legacyJournalCapacity responseMaximum skew)
             maximumAggregateResponse =
               mustRight
                 ( mkReplayResponse
@@ -449,7 +560,7 @@ replayPureTests =
                 )
             requests =
               [ verifiedFor (nonceForIndex index) body
-              | index <- [1 .. authorityBackupReplayCapacity]
+              | index <- [1 .. legacyJournalCapacity]
               ]
             responses =
               replicate
@@ -499,10 +610,16 @@ replayPureTests =
                 )
             claimed = mustRight (claimCleanupRun owner 1 1800000001 initial)
             primary = mustRight (recordPrimaryOutcome owner 1 CleanupPrimarySucceeded claimed)
-            advance run (index, node) =
+            advance run node =
               let attempt =
                     mustRight
-                      (mkCleanupAttemptId ("authority-backup-attempt-" <> Text.pack (show index)))
+                      ( descriptorCleanupNodeAttemptId
+                          (cleanupRunId initial)
+                          (cleanupGraphDigest graph)
+                          descriptorDigest
+                          1
+                          node
+                      )
                   begun =
                     mustRight
                       (beginCleanupNode owner 1 (cleanupNodeId node) attempt run)
@@ -519,7 +636,7 @@ replayPureTests =
               scanl
                 advance
                 primary
-                (zip [1 :: Int ..] (cleanupGraphNodes graph))
+                (cleanupGraphNodes graph)
             descriptorDigest = cleanupDigestOfBytes "authority-backup-capacity-descriptor"
             aggregateSizes =
               [ ByteString.length
@@ -531,11 +648,11 @@ replayPureTests =
                   )
               | run <- runs
               ]
-        length (cleanupGraphNodes graph) @?= 59
+        length (cleanupGraphNodes graph) @?= 77
         assertBool
           "the compiled cascade aggregate outgrew its replay-response proof bound"
           (maximum aggregateSizes < aggregateResponseMaximum)
-        requestReplayEntryCount completed @?= authorityBackupReplayCapacity
+        requestReplayEntryCount completed @?= legacyJournalCapacity
         ByteString.length encoded > priorMaximumEncodedBytes @?= True
         ByteString.length encoded <= authorityBackupReplayMaximumEncodedBytes @?= True
         decodeRequestReplayProjection authorityBackupReplayMaximumEncodedBytes limits encoded
@@ -546,6 +663,36 @@ replayPureTests =
                 (ByteString.length encoded)
                 priorMaximumEncodedBytes
             )
+    , testCase "bounds compact checkpoint traffic alongside a full retained old journal prefix" $ do
+        let limits = mustRight (mkRequestReplayLimits authorityBackupReplayCapacity (2 * 1024 * 1024) skew)
+            preludeCount = authorityBackupQualificationPreludeRequestMaximum
+            oldJournalCount = authorityBackupCascadeCandidateRequestMaximum
+            compactCount = authorityBackupReplayCapacity - 2 * preludeCount - oldJournalCount
+            reply bytes = mustRight (mkReplayResponse limits ReplyOk (ByteString.replicate bytes 97))
+            responses =
+              replicate (fromIntegral (2 * preludeCount)) (reply (224 * 1024))
+                ++ replicate
+                  (fromIntegral oldJournalCount)
+                  (reply AuthorityBackupBudget.authorityBackupAggregateResponseMaximumBytes)
+                ++ replicate
+                  (fromIntegral compactCount)
+                  (reply AuthorityBackupBudget.authorityBackupRetainedCopyResponseMaximumBytes)
+            requests = [verifiedFor (nonceForIndex index) body | index <- [1 .. authorityBackupReplayCapacity]]
+            completed =
+              foldl'
+                (\projection (request, response') -> completeReplayRequest limits response' projection request)
+                (initialRequestReplayProjection limits)
+                (zip requests responses)
+            encoded =
+              mustRight (encodeRequestReplayProjection authorityBackupReplayMaximumEncodedBytes limits completed)
+        requestReplayEntryCount completed @?= authorityBackupReplayCapacity
+        authorityBackupReplayMaximumEncodedBytes @?= 64 * 1024 * 1024
+        AuthorityBackupBudget.authorityBackupProductionMemoryMebibytes @?= 240
+        assertBool
+          "mixed retained/compact schedule must fit the production byte ceiling"
+          (ByteString.length encoded <= authorityBackupReplayMaximumEncodedBytes)
+        decodeRequestReplayProjection authorityBackupReplayMaximumEncodedBytes limits encoded
+          @?= Right completed
     , testCase
         "sizes the Target Agent for the complete credential and TLS qualification envelope plus its retry"
         $ do
@@ -553,10 +700,10 @@ replayPureTests =
               currentLimits =
                 mustRight
                   (mkRequestReplayLimits targetSecretAgentReplayCapacity 64 skew)
-              requestCount = 2 * targetSecretAgentReconcileAttemptRequestMaximum
+              requestCount = 2 * targetSecretAgentQualificationAttemptRequestMaximum
               requests =
                 [ verifiedFor
-                    (mustRight (mkRequestNonce (ByteString.replicate 16 (fromIntegral index))))
+                    (nonceForIndex index)
                     body
                 | index <- [1 .. requestCount]
                 ]
@@ -565,13 +712,15 @@ replayPureTests =
               (currentDecisions, currentProjection) =
                 reserveRequestSequence currentLimits requests
           targetSecretAgentReconcileAttemptRequestMaximum @?= 49
-          targetSecretAgentReplayCapacity @?= 98
+          targetSecretAgentCascadeCandidateRequestMaximum @?= 7
+          targetSecretAgentQualificationAttemptRequestMaximum @?= 121
+          targetSecretAgentReplayCapacity @?= 242
           priorDecisions
             @?= replicate 10 ReplayReservationFresh
-              <> replicate 88 ReplayReservationCapacityExhausted
+              <> replicate 232 ReplayReservationCapacityExhausted
           requestReplayEntryCount priorProjection @?= 10
-          currentDecisions @?= replicate 98 ReplayReservationFresh
-          requestReplayEntryCount currentProjection @?= 98
+          currentDecisions @?= replicate 242 ReplayReservationFresh
+          requestReplayEntryCount currentProjection @?= 242
     ]
 
 replayCodecTests :: TestTree
@@ -595,7 +744,7 @@ replayCodecTests =
         decodeRequestReplayProjection 65536 otherLimits encoded
           @?= Left RequestReplayLimitsMismatch
     , testCase
-        "widens canonical v2 through v14 limits into v15 without dropping retained entries"
+        "widens canonical v2 through v18 limits into v19 without dropping retained entries"
         $ do
           let targetLimits = mustRight (mkRequestReplayLimits 120 64 skew)
               tooSmallLimits = mustRight (mkRequestReplayLimits 3 64 skew)
@@ -669,6 +818,45 @@ replayCodecTests =
                           "response"
                       )
                   )
+              providerV15Bytes =
+                LazyByteString.toStrict
+                  (serialise (previousReplayEnvelopeWithResponse 15 80 providerWorkerResponseMaximumBytes "response"))
+              backupV15Bytes =
+                LazyByteString.toStrict
+                  (serialise (previousReplayEnvelopeWithResponse 15 1036 (2 * 1024 * 1024) "response"))
+              providerV16Bytes =
+                LazyByteString.toStrict
+                  (serialise (previousReplayEnvelopeWithResponse 16 104 providerWorkerResponseMaximumBytes "response"))
+              backupV16Bytes =
+                LazyByteString.toStrict
+                  (serialise (previousReplayEnvelopeWithResponse 16 1180 (2 * 1024 * 1024) "response"))
+              providerV17Bytes =
+                LazyByteString.toStrict
+                  (serialise (previousReplayEnvelopeWithResponse 17 130 providerWorkerResponseMaximumBytes "response"))
+              backupV17Bytes =
+                LazyByteString.toStrict
+                  (serialise (previousReplayEnvelopeWithResponse 17 1276 (2 * 1024 * 1024) "response"))
+              authorityV18Bytes =
+                LazyByteString.toStrict
+                  (serialise (previousReplayEnvelopeWithResponse 18 120 (2 * 1024 * 1024) "response"))
+              authorityCurrentLimits =
+                mustRight (mkRequestReplayLimits lifecycleAuthorityReplayCapacity (2 * 1024 * 1024) skew)
+              widenedAuthorityV18 =
+                mustRight (decodeRequestReplayProjection 65536 authorityCurrentLimits authorityV18Bytes)
+              widenedProviderV17 =
+                mustRight (decodeRequestReplayProjection 65536 providerLimits providerV17Bytes)
+              widenedBackupV17 =
+                mustRight (decodeRequestReplayProjection 65536 backupLimits backupV17Bytes)
+              widenedProviderV16 =
+                mustRight (decodeRequestReplayProjection 65536 providerLimits providerV16Bytes)
+              widenedBackupV16 =
+                mustRight (decodeRequestReplayProjection 65536 backupLimits backupV16Bytes)
+              backupLimits =
+                mustRight (mkRequestReplayLimits authorityBackupReplayCapacity (2 * 1024 * 1024) skew)
+              widenedProviderV15 =
+                mustRight (decodeRequestReplayProjection 65536 providerLimits providerV15Bytes)
+              widenedBackupV15 =
+                mustRight (decodeRequestReplayProjection 65536 backupLimits backupV15Bytes)
               widenedV2 =
                 mustRight
                   (decodeRequestReplayProjection 65536 targetLimits legacyV2Bytes)
@@ -753,6 +941,20 @@ replayCodecTests =
                       show
                       (deserialiseOrFail (LazyByteString.fromStrict currentBytes))
                   )
+          requestReplayProjectionLimits widenedProviderV17 @?= providerLimits
+          requestReplayProjectionLimits widenedBackupV17 @?= backupLimits
+          requestReplayEntryCount widenedProviderV17 @?= 1
+          requestReplayEntryCount widenedBackupV17 @?= 1
+          replayReservationDecision
+            (reserveVerifiedRequest now attemptA verifiedRequest widenedProviderV17)
+            @?= ReplayReservationDuplicateCompleted response
+          replayReservationDecision
+            (reserveVerifiedRequest now attemptA verifiedRequest widenedBackupV17)
+            @?= ReplayReservationDuplicateCompleted response
+          requestReplayProjectionLimits widenedProviderV16 @?= providerLimits
+          requestReplayProjectionLimits widenedBackupV16 @?= backupLimits
+          requestReplayEntryCount widenedProviderV16 @?= 1
+          requestReplayEntryCount widenedBackupV16 @?= 1
           requestReplayProjectionLimits widenedV2 @?= targetLimits
           requestReplayProjectionLimits widenedV3 @?= targetLimits
           requestReplayProjectionLimits widenedV4 @?= targetLimits
@@ -782,7 +984,25 @@ replayCodecTests =
           requestReplayEntryCount widenedTargetAgentV8 @?= 1
           requestReplayEntryCount widenedTargetAgentV9 @?= 1
           requestReplayEntryCount widenedTargetAgentV10 @?= 1
-          previousReplayEnvelopeVersion currentEnvelope @?= 15
+          requestReplayProjectionLimits widenedProviderV15 @?= providerLimits
+          requestReplayProjectionLimits widenedBackupV15 @?= backupLimits
+          requestReplayEntryCount widenedProviderV15 @?= 1
+          requestReplayEntryCount widenedBackupV15 @?= 1
+          replayReservationDecision
+            (reserveVerifiedRequest now attemptA verifiedRequest widenedProviderV15)
+            @?= ReplayReservationDuplicateCompleted response
+          replayReservationDecision
+            (reserveVerifiedRequest now attemptA verifiedRequest widenedBackupV15)
+            @?= ReplayReservationDuplicateCompleted response
+          decodeRequestReplayProjection 65536 tooSmallLimits providerV15Bytes
+            @?= Left RequestReplayLimitsMismatch
+          decodeRequestReplayProjection 65536 tooSmallLimits backupV15Bytes
+            @?= Left RequestReplayLimitsMismatch
+          requestReplayEntryCount widenedAuthorityV18 @?= 1
+          replayReservationDecision
+            (reserveVerifiedRequest now attemptA verifiedRequest widenedAuthorityV18)
+            @?= ReplayReservationDuplicateCompleted response
+          previousReplayEnvelopeVersion currentEnvelope @?= 19
           previousReplayEnvelopeCapacity currentEnvelope @?= 120
           decodeRequestReplayProjection 65536 targetLimits currentBytes
             @?= Right widenedV5
@@ -913,7 +1133,7 @@ replayCodecTests =
                 (ByteString.length encoded)
                 priorMaximumEncodedBytes
             )
-    , testCase "bounds the complete Target Agent envelope at maximum response size" $ do
+    , testCase "bounds the complete Target Agent mixed envelope at producer maxima" $ do
         let responseMaximum = 2 * 1024 * 1024
             priorMaximumEncodedBytes = 24 * 1024 * 1024
             limits =
@@ -922,13 +1142,31 @@ replayCodecTests =
             maximumResponse =
               mustRight
                 (mkReplayResponse limits ReplyOk (ByteString.replicate responseMaximum 97))
+            metadataResponse =
+              mustRight
+                ( mkReplayResponse
+                    limits
+                    ReplyOk
+                    (ByteString.replicate targetSecretAgentCascadeCandidateResponseMaximumBytes 98)
+                )
+            responses =
+              replicate (fromIntegral (2 * targetSecretAgentReconcileAttemptRequestMaximum)) maximumResponse
+                <> replicate
+                  (fromIntegral (targetSecretAgentReplayCapacity - 2 * targetSecretAgentReconcileAttemptRequestMaximum))
+                  metadataResponse
             requests =
               [ verifiedFor
-                  (mustRight (mkRequestNonce (ByteString.replicate 16 (fromIntegral index))))
+                  (nonceForIndex index)
                   body
               | index <- [1 .. targetSecretAgentReplayCapacity]
               ]
-            completed = foldl' (completeRequest limits maximumResponse) (initialRequestReplayProjection limits) requests
+            completed =
+              foldl'
+                ( \projection (request, retainedResponse) -> completeRequest limits retainedResponse projection request
+                )
+                (initialRequestReplayProjection limits)
+                (zip requests responses)
+            allLarge = foldl' (completeRequest limits maximumResponse) (initialRequestReplayProjection limits) requests
             encoded =
               mustRight
                 ( encodeRequestReplayProjection
@@ -936,7 +1174,14 @@ replayCodecTests =
                     limits
                     completed
                 )
+        targetSecretAgentCascadeCandidateResponseMaximumBytes @?= 64 * 1024
         requestReplayEntryCount completed @?= targetSecretAgentReplayCapacity
+        case encodeRequestReplayProjection targetSecretAgentReplayMaximumEncodedBytes limits allLarge of
+          Left RequestReplayEnvelopeTooLarge {} -> pure ()
+          other ->
+            assertBool
+              ("all-wide replies must exceed the production ceiling: " <> show (fmap ByteString.length other))
+              False
         ByteString.length encoded > priorMaximumEncodedBytes @?= True
         ByteString.length encoded <= targetSecretAgentReplayMaximumEncodedBytes @?= True
         decodeRequestReplayProjection targetSecretAgentReplayMaximumEncodedBytes limits encoded
@@ -1002,6 +1247,69 @@ durableReplayTests =
             (modifyIORef' effects (+ 1) >> pure (Right response :: Either Text ReplayResponse))
         result @?= ReplayProtectedExecuted response
         readIORef effects >>= (@?= 1)
+    , testCase "read replay refuses legacy retained observations without invoking the read" $ do
+        let refusal = mustRight (mkReplayResponse replayLimits ReplyConflict "fresh-nonce")
+            completed = completeReplayRequest replayLimits response emptyReplay verifiedRequest
+        state <- newReplayState completed
+        effects <- newIORef (0 :: Int)
+        result <-
+          runReplayProtectedReadRequest
+            refusal
+            casAttempts
+            (fakeReplayRepository state RequestReplayCasApplied)
+            now
+            attemptB
+            verifiedRequest
+            (modifyIORef' effects (+ 1) >> pure (Right otherResponse :: Either Text ReplayResponse))
+        result @?= ReplayProtectedRecovered refusal
+        readIORef effects >>= (@?= 0)
+    , testCase "read replay delivers only after exact completion readback despite a lost CAS response" $ do
+        let refusal = mustRight (mkReplayResponse replayLimits ReplyConflict "fresh-nonce")
+        state <- newReplayState emptyReplay
+        result <-
+          runReplayProtectedReadRequest
+            refusal
+            casAttempts
+            (fakeReplayRepository state responseLostCas)
+            now
+            attemptA
+            verifiedRequest
+            (pure (Right response :: Either Text ReplayResponse))
+        result @?= ReplayProtectedExecuted response
+        duplicate <-
+          runReplayProtectedReadRequest
+            refusal
+            casAttempts
+            (fakeReplayRepository state RequestReplayCasApplied)
+            now
+            attemptB
+            verifiedRequest
+            (pure (Right otherResponse :: Either Text ReplayResponse))
+        duplicate @?= ReplayProtectedRecovered refusal
+    , testCase "read replay withholds the ephemeral observation when completion cannot be confirmed" $ do
+        let refusal = mustRight (mkReplayResponse replayLimits ReplyConflict "fresh-nonce")
+        state <- newReplayState emptyReplay
+        writes <- newIORef (0 :: Int)
+        let base = fakeReplayRepository state RequestReplayCasApplied
+            dropping =
+              base
+                { compareAndSwapRequestReplayProjection = \expected next -> do
+                    count <- readIORef writes
+                    modifyIORef' writes (+ 1)
+                    if count == 0
+                      then compareAndSwapRequestReplayProjection base expected next
+                      else pure RequestReplayCasApplied
+                }
+        result <-
+          runReplayProtectedReadRequest
+            refusal
+            casAttempts
+            dropping
+            now
+            attemptA
+            verifiedRequest
+            (pure (Right response :: Either Text ReplayResponse))
+        result @?= ReplayProtectedCompletionUnconfirmed DurableReplayCompletionAttemptsExhausted
     , testCase "an unobservable read and a concurrent in-flight owner never run the effect" $ do
         effects <- newIORef (0 :: Int)
         unavailable <-
@@ -1314,249 +1622,421 @@ authenticatedRoleInterpreterTests :: TestTree
 authenticatedRoleInterpreterTests =
   testGroup
     "authenticated role interpreter composition"
-    [ testCase "passes the opaque verified slot to the context-aware handler" $ do
-        let cliSigner = signerForPrincipal CallerOperatorCli
-            cliTrusted = trustedRequestKeyFromSigner cliSigner
-            cliProviders = serverProvidersForRole LifecycleAuthorityRuntime cliTrusted
-        captured <-
-          captureLifecycleFrame
-            (clientProvidersFor cliSigner)
-            LifecycleOperationSubmitRoute
-            (operationSubmitBody "request-a")
-        state <- newReplayState emptyReplay
-        effects <- newIORef (0 :: Int)
-        seenCaller <- newIORef Nothing
-        seenKey <- newIORef Nothing
-        let handleInner slot route requestBody = case route of
-              LifecycleOperationSubmit -> do
-                let decoded =
-                      mustRight
-                        ( decodeControlPlaneRequest
-                            1024
-                            (LazyByteString.fromStrict requestBody)
-                        )
-                writeIORef seenCaller (Just (verifiedCallerSlotPrincipal slot))
-                writeIORef seenKey (Just (authorityOperationSubmitKey decoded))
-                modifyIORef' effects (+ 1)
-                pure (Just (ReplyOk, "inner-response"))
-              _ -> pure Nothing
-            inner =
-              AuthenticatedRoleHandler
-                { authenticatedHandlerReadiness = transportReadyReadinessSource
-                , authenticatedHandlerHandle = handleInner
-                }
-            wrapped =
-              wrappedHandler
-                cliProviders
-                attemptA
-                state
-                LifecycleAuthorityRuntime
-                inner
-        handled <-
-          interpreterHandle
-            wrapped
-            LifecycleOperationSubmit
-            (LazyByteString.toStrict captured)
-        handled @?= Just (ReplyOk, "inner-response")
-        readIORef effects >>= (@?= 1)
-        readIORef seenCaller >>= (@?= Just CallerOperatorCli)
-        readIORef seenKey >>= (@?= Just "request-a")
-    , testCase "admits registered operations only through the authenticated aggregate handler" $ do
-        let cliSigner = signerForPrincipal CallerOperatorCli
-            cliProviders =
-              serverProvidersForRole
-                LifecycleAuthorityRuntime
-                (trustedRequestKeyFromSigner cliSigner)
-        captured <-
-          captureLifecycleFrame
-            (clientProvidersFor cliSigner)
-            LifecycleOperationSubmitRoute
-            (operationSubmitBody "request-a")
-        replayState <- newReplayState emptyReplay
-        (handler, authorityRevision) <- freshProductionAuthorityHandler
-        let wrapped =
-              wrappedHandler
-                cliProviders
-                attemptA
-                replayState
-                LifecycleAuthorityRuntime
-                handler
-        handled <-
-          interpreterHandle
-            wrapped
-            LifecycleOperationSubmit
-            (LazyByteString.toStrict captured)
-        case handled of
-          Just (ReplyOk, responseBody) ->
-            decodeControlPlaneResponse
-              authorityOperationResponseMaximumBytes
-              (LazyByteString.fromStrict responseBody)
-              @?= Right (AuthorityOperationAccepted expectedAcceptedOperation)
-          other -> assertFailure ("unexpected operation response: " <> show other)
-        readIORef authorityRevision >>= (@?= 1)
-    , testCase "an authenticated but unregistered principal cannot create authority state" $ do
-        let harnessSigner = signerForPrincipal CallerTestHarness
-            harnessProviders =
-              serverProvidersForRole
-                LifecycleAuthorityRuntime
-                (trustedRequestKeyFromSigner harnessSigner)
-        captured <-
-          captureLifecycleFrame
-            (clientProvidersFor harnessSigner)
-            LifecycleOperationSubmitRoute
-            (operationSubmitBody "request-a")
-        replayState <- newReplayState emptyReplay
-        (handler, authorityRevision) <- freshProductionAuthorityHandler
-        let wrapped =
-              wrappedHandler
-                harnessProviders
-                attemptA
-                replayState
-                LifecycleAuthorityRuntime
-                handler
-        handled <-
-          interpreterHandle
-            wrapped
-            LifecycleOperationSubmit
-            (LazyByteString.toStrict captured)
-        case handled of
-          Just (ReplyForbidden, responseBody) ->
-            decodeControlPlaneResponse
-              authorityOperationResponseMaximumBytes
-              (LazyByteString.fromStrict responseBody)
-              @?= Right
-                ( AuthorityOperationSubmitRefused
-                    "authority-operation-refused-unregistered"
-                )
-          other -> assertFailure ("unexpected operation refusal: " <> show other)
-        readIORef authorityRevision >>= (@?= 0)
-    , testCase "confirms the durable reservation before effect and recovers an exact duplicate" $ do
-        let cliSigner = signerForPrincipal CallerOperatorCli
-            cliTrusted = trustedRequestKeyFromSigner cliSigner
-            cliProviders = serverProvidersForRole LifecycleAuthorityRuntime cliTrusted
-        captured <-
-          captureLifecycleFrame
-            (clientProvidersFor cliSigner)
-            LifecycleOperationSubmitRoute
-            (operationSubmitBody "request-a")
-        state <- newReplayState emptyReplay
-        effects <- newIORef (0 :: Int)
-        reservedBeforeEffect <- newIORef False
-        seenCaller <- newIORef Nothing
-        let handleInner slot route requestBody = case route of
-              LifecycleOperationSubmit -> do
-                observed <- readIORef state
-                writeIORef
-                  reservedBeforeEffect
-                  (requestReplayEntryCount (fakeReplayProjection observed) == 1)
-                let decoded =
-                      mustRight
-                        ( decodeControlPlaneRequest
-                            1024
-                            (LazyByteString.fromStrict requestBody)
-                        )
-                authorityOperationSubmitKey decoded @?= "request-a"
-                writeIORef seenCaller (Just (verifiedCallerSlotPrincipal slot))
-                modifyIORef' effects (+ 1)
-                pure (Just (ReplyOk, "inner-response"))
-              _ -> pure Nothing
-            inner =
-              AuthenticatedRoleHandler
-                { authenticatedHandlerReadiness = transportReadyReadinessSource
-                , authenticatedHandlerHandle = handleInner
-                }
-            firstWrapper =
-              wrappedHandler
-                cliProviders
-                attemptA
-                state
-                LifecycleAuthorityRuntime
-                inner
-            duplicateWrapper =
-              wrappedHandler
-                cliProviders
-                attemptB
-                state
-                LifecycleAuthorityRuntime
-                inner
-            raw = LazyByteString.toStrict captured
-        first <- interpreterHandle firstWrapper LifecycleOperationSubmit raw
-        duplicate <- interpreterHandle duplicateWrapper LifecycleOperationSubmit raw
-        first @?= Just (ReplyOk, "inner-response")
-        duplicate @?= Just (ReplyOk, "inner-response")
-        readIORef effects >>= (@?= 1)
-        readIORef reservedBeforeEffect >>= (@?= True)
-        readIORef seenCaller >>= (@?= Just CallerOperatorCli)
-    , testCase "refuses a concurrently owned in-flight request without invoking the handler" $ do
-        captured <- captureAuthenticatedFrame clientProviders body
-        authenticated <-
-          authenticateControlPlaneFrame
-            transportBounds
-            maximumLifetime
-            serverProviders
-            ProviderWorkerRuntime
-            ProviderWorkApply
-            captured
-        request <- mustRightIO authenticated
-        let reserved =
-              replayReservationProjection
-                ( reserveVerifiedRequest
-                    now
-                    attemptA
-                    (authenticatedServerVerifiedRequest request)
-                    emptyReplay
-                )
-        state <- newReplayState reserved
-        effects <- newIORef (0 :: Int)
-        let wrapped =
-              wrappedInterpreter
-                serverProviders
-                attemptB
-                state
-                ProviderWorkerRuntime
-                (countingInterpreter effects)
-        handled <-
-          interpreterHandle
-            wrapped
-            ProviderWorkApply
-            (LazyByteString.toStrict captured)
-        handled @?= Just (ReplyConflict, "authenticated-replay-in-flight\n")
-        readIORef effects >>= (@?= 0)
-    , testCase "projects every replay outcome onto a stable status and body" $
-        mapM_
-          (\(outcome, expected) -> replayProtectedResponse outcome @?= expected)
-          replayResponseFixtures
-    , testCase "projects authentication and attempt-provider refusals" $ do
-        authenticatedServerErrorResponse
-          (AuthenticatedServerFrameFailed AuthenticatedFrameInvalid)
-          @?= (ReplyBadRequest, "authenticated-frame-refused\n")
-        authenticatedServerErrorResponse
-          (AuthenticatedServerRequestAuthenticationFailed [])
-          @?= (ReplyUnauthorized, "authentication-refused\n")
-        captured <- captureAuthenticatedFrame clientProviders body
-        state <- newReplayState emptyReplay
-        let unavailableAttemptProviders =
-              AuthenticatedRoleProviders
-                { authenticatedRoleServerProviders = serverProviders
-                , provideAuthenticatedReplayAttempt = pure (Left "rng unavailable")
-                }
-            wrapped =
-              authenticatedRoleInterpreter
-                transportBounds
-                maximumLifetime
-                unavailableAttemptProviders
-                ProviderWorkerRuntime
-                casAttempts
-                replayLimits
-                (fakeReplayRepository state RequestReplayCasApplied)
-                (contextFreeAuthenticatedRoleHandler countingInterpreterDiscarded)
-        handled <-
-          interpreterHandle
-            wrapped
-            ProviderWorkApply
-            (LazyByteString.toStrict captured)
-        handled @?= Just (ReplyServiceUnavailable, "authenticated-replay-attempt-unavailable\n")
-    ]
+    $ [ testCase ("checkpoint observation retains only a fresh-nonce refusal: " <> show request) $ do
+          let limits = mustRight (mkRequestReplayLimits 4 (2 * 1024 * 1024) skew)
+              payload = ByteString.replicate (2 * 1024 * 1024) 97
+              requestBody = LazyByteString.toStrict (encodeControlPlaneRequest request)
+          state <- newReplayState (initialRequestReplayProjection limits)
+          effects <- newIORef (0 :: Int)
+          frame <- captureLifecycleFrame clientProviders LifecyclePulumiCheckpointRoute requestBody
+          freshFrame <-
+            captureLifecycleFrame
+              (clientProviders {provideAuthenticatedClientNonce = pure (Right nonceB)})
+              LifecyclePulumiCheckpointRoute
+              requestBody
+          let inner =
+                RoleInterpreter
+                  transportReadyReadinessSource
+                  (\_ _ -> modifyIORef' effects (+ 1) >> pure (Just (ReplyOk, payload)))
+              wrapped = authorityReadInterpreter limits state inner
+          first <- interpreterHandle wrapped LifecyclePulumiCheckpoint (LazyByteString.toStrict frame)
+          first @?= Just (ReplyOk, payload)
+          duplicate <- interpreterHandle wrapped LifecyclePulumiCheckpoint (LazyByteString.toStrict frame)
+          duplicate @?= Just (ReplyConflict, "authenticated-read-replay-requires-fresh-nonce\n")
+          readIORef effects >>= (@?= 1)
+          fresh <- interpreterHandle wrapped LifecyclePulumiCheckpoint (LazyByteString.toStrict freshFrame)
+          fresh @?= Just (ReplyOk, payload)
+          readIORef effects >>= (@?= 2)
+          projection <- fakeReplayProjection <$> readIORef state
+          assertBool
+            "checkpoint payloads must not enter retained replay"
+            (ByteString.length (mustRight (encodeRequestReplayProjection 1024 limits projection)) < 1024)
+      | request <- [ObservePulumiCheckpoint "aws-eks", ObservePulumiCheckpointPair "aws-eks"]
+      ]
+      ++ [ testCase ("cleanup observation retains only a fresh-nonce refusal: " <> show request) $ do
+             let limits = mustRight (mkRequestReplayLimits 4 (2 * 1024 * 1024) skew)
+                 payload = ByteString.replicate (2 * 1024 * 1024) 98
+                 requestBody = LazyByteString.toStrict (encodeControlPlaneRequest (CleanupRunDescriptorBound request))
+             state <- newReplayState (initialRequestReplayProjection limits)
+             effects <- newIORef (0 :: Int)
+             frame <- captureLifecycleFrame clientProviders LifecycleCleanupRunRoute requestBody
+             let inner =
+                   RoleInterpreter
+                     transportReadyReadinessSource
+                     (\_ _ -> modifyIORef' effects (+ 1) >> pure (Just (ReplyOk, payload)))
+                 wrapped = authorityReadInterpreter limits state inner
+             first <- interpreterHandle wrapped LifecycleCleanupRun (LazyByteString.toStrict frame)
+             first @?= Just (ReplyOk, payload)
+             duplicate <- interpreterHandle wrapped LifecycleCleanupRun (LazyByteString.toStrict frame)
+             duplicate @?= Just (ReplyConflict, "authenticated-read-replay-requires-fresh-nonce\n")
+             readIORef effects >>= (@?= 1)
+             projection <- fakeReplayProjection <$> readIORef state
+             assertBool
+               "cleanup snapshots must not enter retained replay"
+               (ByteString.length (mustRight (encodeRequestReplayProjection 1024 limits projection)) < 1024)
+         | request <-
+             [ CleanupRunDescriptorObserve "run-fixture"
+             , CleanupRunDescriptorObserveCompletion "run-fixture" (Text.replicate 64 "a")
+             , CleanupRunDescriptorReadBackProgram "run-fixture"
+             ]
+         ]
+      ++ [ testCase ("producer enforces retained metadata bound: " <> show serverRoute) $ do
+             let limits = mustRight (mkRequestReplayLimits 4 (2 * 1024 * 1024) skew)
+                 requestBody = "malformed request still has a finite reply"
+             state <- newReplayState (initialRequestReplayProjection limits)
+             frame <- captureLifecycleFrame clientProviders clientRoute requestBody
+             let inner =
+                   RoleInterpreter
+                     transportReadyReadinessSource
+                     (\_ _ -> pure (Just (ReplyOk, ByteString.replicate (maximumBytes + 1) 97)))
+                 wrapped = authorityReadInterpreter limits state inner
+             actual <- interpreterHandle wrapped serverRoute (LazyByteString.toStrict frame)
+             actual @?= Just (authenticatedRolePlainResponse AuthenticatedRoleHandlerInvalidResponse)
+             -- Refusing an oversized producer does not invent a completion.
+             let nextOwner = authorityReadInterpreterWithAttempt attemptB limits state inner
+             duplicate <- interpreterHandle nextOwner serverRoute (LazyByteString.toStrict frame)
+             duplicate @?= Just (authenticatedRolePlainResponse AuthenticatedRoleReplayInFlight)
+         | (clientRoute, serverRoute, maximumBytes) <-
+             [
+               ( LifecycleAwsAdminProvisionerRoute
+               , LifecycleAwsAdminProvisioner
+               , ReplayBudget.awsAdminResponseMaximumBytes
+               )
+             ,
+               ( LifecycleOperationSubmitRoute
+               , LifecycleOperationSubmit
+               , ReplayBudget.checkpointMetadataResponseMaximumBytes
+               )
+             ,
+               ( LifecyclePulumiCheckpointRoute
+               , LifecyclePulumiCheckpoint
+               , ReplayBudget.checkpointMetadataResponseMaximumBytes
+               )
+             , (LifecycleRecoveryPlaneRoute, LifecycleRecoveryPlane, 256 * 1024)
+             ]
+         ]
+      ++ [ testCase "cleanup transitions, scan and legacy raw reads keep exact replay" $ do
+             let requests =
+                   [ CleanupRunObserve "run-fixture"
+                   , CleanupRunDescriptorBound CleanupRunDescriptorScan
+                   , CleanupRunDescriptorBound
+                       (CleanupRunDescriptorClaim "run-fixture" (Text.replicate 64 "a") "owner" 1000 2000)
+                   ]
+             mapM_
+               ( authorityExactReplay LifecycleCleanupRunRoute LifecycleCleanupRun
+                   . LazyByteString.toStrict
+                   . encodeControlPlaneRequest
+               )
+               requests
+         ]
+      ++ [ testCase "checkpoint mutation and malformed payloads retain exact replay" $ do
+             let requests =
+                   [ LazyByteString.toStrict
+                       (encodeControlPlaneRequest (ReadBackPulumiCheckpointRestore "aws-eks" expectedAcceptedOperation))
+                   , "not-canonical-checkpoint-cbor"
+                   , ByteString.snoc
+                       (LazyByteString.toStrict (encodeControlPlaneRequest (ObservePulumiCheckpoint "aws-eks")))
+                       0
+                   ]
+             mapM_ checkpointExactReplay requests
+         , testCase "Backup read returns ciphertext without retaining it in the replay ledger" $ do
+             let limits = mustRight (mkRequestReplayLimits 4 (2 * 1024 * 1024) skew)
+                 ciphertext = ByteString.replicate (2 * 1024 * 1024) 97
+             state <- newReplayState (initialRequestReplayProjection limits)
+             effects <- newIORef (0 :: Int)
+             frame <- captureBackupFrame clientProviders AuthorityBackupObserveRoute body
+             let inner =
+                   RoleInterpreter
+                     transportReadyReadinessSource
+                     (\_ _ -> modifyIORef' effects (+ 1) >> pure (Just (ReplyOk, ciphertext)))
+                 wrapped = backupReadInterpreter limits state inner
+             first <- interpreterHandle wrapped AuthorityBackupObserve (LazyByteString.toStrict frame)
+             first @?= Just (ReplyOk, ciphertext)
+             projection <- fakeReplayProjection <$> readIORef state
+             let encoded = mustRight (encodeRequestReplayProjection (3 * 1024 * 1024) limits projection)
+             assertBool
+               "an observation must retain only nonce/digest and its replay refusal"
+               (ByteString.length encoded < 1024)
+         , testCase "Backup read requires a fresh nonce after a delivered or lost read response" $ do
+             let limits = mustRight (mkRequestReplayLimits 4 64 skew)
+             state <- newReplayState (initialRequestReplayProjection limits)
+             effects <- newIORef (0 :: Int)
+             frame <- captureBackupFrame clientProviders AuthorityBackupObserveRoute body
+             freshFrame <-
+               captureBackupFrame
+                 (clientProviders {provideAuthenticatedClientNonce = pure (Right nonceB)})
+                 AuthorityBackupObserveRoute
+                 body
+             let inner =
+                   RoleInterpreter
+                     transportReadyReadinessSource
+                     (\_ _ -> modifyIORef' effects (+ 1) >> pure (Just (ReplyOk, "fresh-observation")))
+                 wrapped = backupReadInterpreter limits state inner
+             _ <- interpreterHandle wrapped AuthorityBackupObserve (LazyByteString.toStrict frame)
+             duplicate <- interpreterHandle wrapped AuthorityBackupObserve (LazyByteString.toStrict frame)
+             duplicate @?= Just (ReplyConflict, "authenticated-read-replay-requires-fresh-nonce\n")
+             readIORef effects >>= (@?= 1)
+             fresh <- interpreterHandle wrapped AuthorityBackupObserve (LazyByteString.toStrict freshFrame)
+             fresh @?= Just (ReplyOk, "fresh-observation")
+             readIORef effects >>= (@?= 2)
+         , testCase "Backup read policy preserves exact replay of the immutable copy mutation" $ do
+             let limits = mustRight (mkRequestReplayLimits 4 64 skew)
+             state <- newReplayState (initialRequestReplayProjection limits)
+             effects <- newIORef (0 :: Int)
+             frame <- captureBackupFrame clientProviders AuthorityBackupCopyRoute body
+             let inner =
+                   RoleInterpreter
+                     transportReadyReadinessSource
+                     (\_ _ -> modifyIORef' effects (+ 1) >> pure (Just (ReplyOk, "copy-receipt")))
+                 wrapped = backupReadInterpreter limits state inner
+             first <- interpreterHandle wrapped AuthorityBackupCopy (LazyByteString.toStrict frame)
+             second <- interpreterHandle wrapped AuthorityBackupCopy (LazyByteString.toStrict frame)
+             first @?= Just (ReplyOk, "copy-receipt")
+             second @?= first
+             readIORef effects >>= (@?= 1)
+         , testCase "passes the opaque verified slot to the context-aware handler" $ do
+             let cliSigner = signerForPrincipal CallerOperatorCli
+                 cliTrusted = trustedRequestKeyFromSigner cliSigner
+                 cliProviders = serverProvidersForRole LifecycleAuthorityRuntime cliTrusted
+             captured <-
+               captureLifecycleFrame
+                 (clientProvidersFor cliSigner)
+                 LifecycleOperationSubmitRoute
+                 (operationSubmitBody "request-a")
+             state <- newReplayState emptyReplay
+             effects <- newIORef (0 :: Int)
+             seenCaller <- newIORef Nothing
+             seenKey <- newIORef Nothing
+             let handleInner slot route requestBody = case route of
+                   LifecycleOperationSubmit -> do
+                     let decoded =
+                           mustRight
+                             ( decodeControlPlaneRequest
+                                 1024
+                                 (LazyByteString.fromStrict requestBody)
+                             )
+                     writeIORef seenCaller (Just (verifiedCallerSlotPrincipal slot))
+                     writeIORef seenKey (Just (authorityOperationSubmitKey decoded))
+                     modifyIORef' effects (+ 1)
+                     pure (Just (ReplyOk, "inner-response"))
+                   _ -> pure Nothing
+                 inner =
+                   AuthenticatedRoleHandler
+                     { authenticatedHandlerReadiness = transportReadyReadinessSource
+                     , authenticatedHandlerHandle = handleInner
+                     }
+                 wrapped =
+                   wrappedHandler
+                     cliProviders
+                     attemptA
+                     state
+                     LifecycleAuthorityRuntime
+                     inner
+             handled <-
+               interpreterHandle
+                 wrapped
+                 LifecycleOperationSubmit
+                 (LazyByteString.toStrict captured)
+             handled @?= Just (ReplyOk, "inner-response")
+             readIORef effects >>= (@?= 1)
+             readIORef seenCaller >>= (@?= Just CallerOperatorCli)
+             readIORef seenKey >>= (@?= Just "request-a")
+         , testCase "admits registered operations only through the authenticated aggregate handler" $ do
+             let cliSigner = signerForPrincipal CallerOperatorCli
+                 cliProviders =
+                   serverProvidersForRole
+                     LifecycleAuthorityRuntime
+                     (trustedRequestKeyFromSigner cliSigner)
+             captured <-
+               captureLifecycleFrame
+                 (clientProvidersFor cliSigner)
+                 LifecycleOperationSubmitRoute
+                 (operationSubmitBody "request-a")
+             replayState <- newReplayState emptyReplay
+             (handler, authorityRevision) <- freshProductionAuthorityHandler
+             let wrapped =
+                   wrappedHandler
+                     cliProviders
+                     attemptA
+                     replayState
+                     LifecycleAuthorityRuntime
+                     handler
+             handled <-
+               interpreterHandle
+                 wrapped
+                 LifecycleOperationSubmit
+                 (LazyByteString.toStrict captured)
+             case handled of
+               Just (ReplyOk, responseBody) ->
+                 decodeControlPlaneResponse
+                   authorityOperationResponseMaximumBytes
+                   (LazyByteString.fromStrict responseBody)
+                   @?= Right (AuthorityOperationAccepted expectedAcceptedOperation)
+               other -> assertFailure ("unexpected operation response: " <> show other)
+             readIORef authorityRevision >>= (@?= 1)
+         , testCase "an authenticated but unregistered principal cannot create authority state" $ do
+             let harnessSigner = signerForPrincipal CallerTestHarness
+                 harnessProviders =
+                   serverProvidersForRole
+                     LifecycleAuthorityRuntime
+                     (trustedRequestKeyFromSigner harnessSigner)
+             captured <-
+               captureLifecycleFrame
+                 (clientProvidersFor harnessSigner)
+                 LifecycleOperationSubmitRoute
+                 (operationSubmitBody "request-a")
+             replayState <- newReplayState emptyReplay
+             (handler, authorityRevision) <- freshProductionAuthorityHandler
+             let wrapped =
+                   wrappedHandler
+                     harnessProviders
+                     attemptA
+                     replayState
+                     LifecycleAuthorityRuntime
+                     handler
+             handled <-
+               interpreterHandle
+                 wrapped
+                 LifecycleOperationSubmit
+                 (LazyByteString.toStrict captured)
+             case handled of
+               Just (ReplyForbidden, responseBody) ->
+                 decodeControlPlaneResponse
+                   authorityOperationResponseMaximumBytes
+                   (LazyByteString.fromStrict responseBody)
+                   @?= Right
+                     ( AuthorityOperationSubmitRefused
+                         "authority-operation-refused-unregistered"
+                     )
+               other -> assertFailure ("unexpected operation refusal: " <> show other)
+             readIORef authorityRevision >>= (@?= 0)
+         , testCase "confirms the durable reservation before effect and recovers an exact duplicate" $ do
+             let cliSigner = signerForPrincipal CallerOperatorCli
+                 cliTrusted = trustedRequestKeyFromSigner cliSigner
+                 cliProviders = serverProvidersForRole LifecycleAuthorityRuntime cliTrusted
+             captured <-
+               captureLifecycleFrame
+                 (clientProvidersFor cliSigner)
+                 LifecycleOperationSubmitRoute
+                 (operationSubmitBody "request-a")
+             state <- newReplayState emptyReplay
+             effects <- newIORef (0 :: Int)
+             reservedBeforeEffect <- newIORef False
+             seenCaller <- newIORef Nothing
+             let handleInner slot route requestBody = case route of
+                   LifecycleOperationSubmit -> do
+                     observed <- readIORef state
+                     writeIORef
+                       reservedBeforeEffect
+                       (requestReplayEntryCount (fakeReplayProjection observed) == 1)
+                     let decoded =
+                           mustRight
+                             ( decodeControlPlaneRequest
+                                 1024
+                                 (LazyByteString.fromStrict requestBody)
+                             )
+                     authorityOperationSubmitKey decoded @?= "request-a"
+                     writeIORef seenCaller (Just (verifiedCallerSlotPrincipal slot))
+                     modifyIORef' effects (+ 1)
+                     pure (Just (ReplyOk, "inner-response"))
+                   _ -> pure Nothing
+                 inner =
+                   AuthenticatedRoleHandler
+                     { authenticatedHandlerReadiness = transportReadyReadinessSource
+                     , authenticatedHandlerHandle = handleInner
+                     }
+                 firstWrapper =
+                   wrappedHandler
+                     cliProviders
+                     attemptA
+                     state
+                     LifecycleAuthorityRuntime
+                     inner
+                 duplicateWrapper =
+                   wrappedHandler
+                     cliProviders
+                     attemptB
+                     state
+                     LifecycleAuthorityRuntime
+                     inner
+                 raw = LazyByteString.toStrict captured
+             first <- interpreterHandle firstWrapper LifecycleOperationSubmit raw
+             duplicate <- interpreterHandle duplicateWrapper LifecycleOperationSubmit raw
+             first @?= Just (ReplyOk, "inner-response")
+             duplicate @?= Just (ReplyOk, "inner-response")
+             readIORef effects >>= (@?= 1)
+             readIORef reservedBeforeEffect >>= (@?= True)
+             readIORef seenCaller >>= (@?= Just CallerOperatorCli)
+         , testCase "refuses a concurrently owned in-flight request without invoking the handler" $ do
+             captured <- captureAuthenticatedFrame clientProviders body
+             authenticated <-
+               authenticateControlPlaneFrame
+                 transportBounds
+                 maximumLifetime
+                 serverProviders
+                 ProviderWorkerRuntime
+                 ProviderWorkApply
+                 captured
+             request <- mustRightIO authenticated
+             let reserved =
+                   replayReservationProjection
+                     ( reserveVerifiedRequest
+                         now
+                         attemptA
+                         (authenticatedServerVerifiedRequest request)
+                         emptyReplay
+                     )
+             state <- newReplayState reserved
+             effects <- newIORef (0 :: Int)
+             let wrapped =
+                   wrappedInterpreter
+                     serverProviders
+                     attemptB
+                     state
+                     ProviderWorkerRuntime
+                     (countingInterpreter effects)
+             handled <-
+               interpreterHandle
+                 wrapped
+                 ProviderWorkApply
+                 (LazyByteString.toStrict captured)
+             handled @?= Just (ReplyConflict, "authenticated-replay-in-flight\n")
+             readIORef effects >>= (@?= 0)
+         , testCase "projects every replay outcome onto a stable status and body" $
+             mapM_
+               (\(outcome, expected) -> replayProtectedResponse outcome @?= expected)
+               replayResponseFixtures
+         , testCase "projects authentication and attempt-provider refusals" $ do
+             authenticatedServerErrorResponse
+               (AuthenticatedServerFrameFailed AuthenticatedFrameInvalid)
+               @?= (ReplyBadRequest, "authenticated-frame-refused\n")
+             authenticatedServerErrorResponse
+               (AuthenticatedServerRequestAuthenticationFailed [])
+               @?= (ReplyUnauthorized, "authentication-refused\n")
+             captured <- captureAuthenticatedFrame clientProviders body
+             state <- newReplayState emptyReplay
+             let unavailableAttemptProviders =
+                   AuthenticatedRoleProviders
+                     { authenticatedRoleServerProviders = serverProviders
+                     , provideAuthenticatedReplayAttempt = pure (Left "rng unavailable")
+                     }
+                 wrapped =
+                   authenticatedRoleInterpreter
+                     transportBounds
+                     maximumLifetime
+                     unavailableAttemptProviders
+                     ProviderWorkerRuntime
+                     casAttempts
+                     replayLimits
+                     (fakeReplayRepository state RequestReplayCasApplied)
+                     (contextFreeAuthenticatedRoleHandler countingInterpreterDiscarded)
+             handled <-
+               interpreterHandle
+                 wrapped
+                 ProviderWorkApply
+                 (LazyByteString.toStrict captured)
+             handled @?= Just (ReplyServiceUnavailable, "authenticated-replay-attempt-unavailable\n")
+         ]
 
 authenticatedRuntimeTests :: TestTree
 authenticatedRuntimeTests =
@@ -1723,6 +2203,89 @@ wrappedHandler providers attempt state localRole =
     casAttempts
     replayLimits
     (fakeReplayRepository state RequestReplayCasApplied)
+
+backupReadInterpreter
+  :: RequestReplayLimits -> IORef FakeReplayState -> RoleInterpreter IO -> RoleInterpreter IO
+backupReadInterpreter limits state inner =
+  authenticatedRoleInterpreter
+    transportBounds
+    maximumLifetime
+    ( AuthenticatedRoleProviders
+        (serverProvidersForRole AuthorityBackupRuntime trusted)
+        (pure (Right attemptA))
+    )
+    AuthorityBackupRuntime
+    casAttempts
+    limits
+    (fakeReplayRepository state RequestReplayCasApplied)
+    (contextFreeAuthenticatedRoleHandler inner)
+
+authorityReadInterpreter
+  :: RequestReplayLimits -> IORef FakeReplayState -> RoleInterpreter IO -> RoleInterpreter IO
+authorityReadInterpreter = authorityReadInterpreterWithAttempt attemptA
+
+authorityReadInterpreterWithAttempt
+  :: ReplayAttemptId
+  -> RequestReplayLimits
+  -> IORef FakeReplayState
+  -> RoleInterpreter IO
+  -> RoleInterpreter IO
+authorityReadInterpreterWithAttempt attempt limits state inner =
+  authenticatedRoleInterpreter
+    transportBounds
+    maximumLifetime
+    ( AuthenticatedRoleProviders
+        (serverProvidersForRole LifecycleAuthorityRuntime trusted)
+        (pure (Right attempt))
+    )
+    LifecycleAuthorityRuntime
+    casAttempts
+    limits
+    (fakeReplayRepository state RequestReplayCasApplied)
+    (contextFreeAuthenticatedRoleHandler inner)
+
+checkpointExactReplay :: ByteString -> IO ()
+checkpointExactReplay = authorityExactReplay LifecyclePulumiCheckpointRoute LifecyclePulumiCheckpoint
+
+authorityExactReplay
+  :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime -> ControlPlaneRoute -> ByteString -> IO ()
+authorityExactReplay clientRoute serverRoute requestBody = do
+  let limits = mustRight (mkRequestReplayLimits 4 64 skew)
+  state <- newReplayState (initialRequestReplayProjection limits)
+  effects <- newIORef (0 :: Int)
+  frame <- captureLifecycleFrame clientProviders clientRoute requestBody
+  let inner =
+        RoleInterpreter
+          transportReadyReadinessSource
+          (\_ _ -> modifyIORef' effects (+ 1) >> pure (Just (ReplyConflict, "retained-mutation-result")))
+      wrapped = authorityReadInterpreter limits state inner
+  first <- interpreterHandle wrapped serverRoute (LazyByteString.toStrict frame)
+  duplicate <- interpreterHandle wrapped serverRoute (LazyByteString.toStrict frame)
+  first @?= Just (ReplyConflict, "retained-mutation-result")
+  duplicate @?= first
+  readIORef effects >>= (@?= 1)
+
+captureBackupFrame
+  :: AuthenticatedClientProviders IO
+  -> ControlPlaneRouteFor 'AuthorityBackupRuntime
+  -> ByteString
+  -> IO LazyByteString.ByteString
+captureBackupFrame providers route innerBody = do
+  captured <- newIORef Nothing
+  endpoint <- mustRightIO (mkAuthorityBackupEndpoint "http://authority-backup:8600")
+  client <-
+    mustRightIO
+      ( controlPlaneClientWithTransport
+          1024
+          endpoint
+          (\_ _ _ requestBody -> writeIORef captured (Just requestBody) >> pure (Right (200, "ok")))
+      )
+  result <- callAuthenticatedControlPlane transportBounds providers client route innerBody
+  result @?= Right (ControlPlaneResponse 200 "ok")
+  observed <- readIORef captured
+  case observed of
+    Nothing -> assertFailure "authenticated Backup client did not invoke transport"
+    Just requestBody -> pure (LazyByteString.fromStrict requestBody)
 
 freshProductionAuthorityHandler
   :: IO (AuthenticatedRoleHandler IO, IORef Natural)
@@ -1967,12 +2530,12 @@ decodeTestMetadata bytes =
 
 makeReplayVersionNonCanonical :: ByteString -> ByteString
 makeReplayVersionNonCanonical bytes =
-  case replaceFirst "\x19\x00\x0f" "\x18\x0f" bytes of
+  case replaceFirst "\x19\x00\x13" "\x18\x13" bytes of
     Just replaced -> replaced
     Nothing -> replaceShortReplayVersion bytes
 
 replaceShortReplayVersion :: ByteString -> ByteString
-replaceShortReplayVersion bytes = case replaceFirst "\x0f" "\x18\x0f" bytes of
+replaceShortReplayVersion bytes = case replaceFirst "\x13" "\x18\x13" bytes of
   Just replaced -> replaced
   Nothing -> error "unexpected replay envelope encoding"
 

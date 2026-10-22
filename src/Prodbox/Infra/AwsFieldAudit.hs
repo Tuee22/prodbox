@@ -16,6 +16,7 @@ module Prodbox.Infra.AwsFieldAudit
   ( FieldAudit (..)
   , FieldSink (..)
   , takeFieldAudit
+  , renderFieldAuditReport
   , withFieldDiff
   , withFieldDiffVia
   , printFieldAfterCreate
@@ -127,8 +128,8 @@ stackConfig stack = case stack of
 
 -- | The operator's report for one inventory: the account and region it covers,
 -- then the verdict, the counts, the rows and the control.
-reportLines :: FieldAudit -> [Text]
-reportLines audit =
+renderFieldAuditReport :: FieldAudit -> [Text]
+renderFieldAuditReport audit =
   [ "AWS_FIELD "
       <> auditStackLabel (fieldAuditStack audit)
       <> " account="
@@ -184,7 +185,7 @@ withFieldDiffVia sink stack takeInventory action = do
       fieldSinkDiagnostic
         sink
         ("AWS_FIELD " <> auditStackLabel stack <> " baseline unavailable: " <> detail)
-    Right audit -> mapM_ (fieldSinkOutput sink) (take 1 (reportLines audit))
+    Right audit -> mapM_ (fieldSinkOutput sink) (take 1 (renderFieldAuditReport audit))
   actionExit <- action
   final <- takeInventory
   case final of
@@ -216,7 +217,7 @@ withFieldDiffVia sink stack takeInventory action = do
                   <> auditVerdictLabel verdict
                   <> " (no baseline was taken, so nothing is compared)"
               ]
-      mapM_ (fieldSinkOutput sink) (comparison <> reportLines audit)
+      mapM_ (fieldSinkOutput sink) (comparison <> renderFieldAuditReport audit)
       pure (firstFailure actionExit (auditExitCode verdict))
 
 -- | After a create the field legitimately holds the new stack, so the
@@ -231,7 +232,7 @@ printFieldAfterCreate authentication repoRoot stack = do
       fieldSinkDiagnostic
         terminalSink
         ("AWS_FIELD " <> auditStackLabel stack <> " inventory unavailable: " <> detail)
-    Right audit -> mapM_ (fieldSinkOutput terminalSink) (reportLines audit)
+    Right audit -> mapM_ (fieldSinkOutput terminalSink) (renderFieldAuditReport audit)
 
 -- | The status several inventories earn together. A row is a refutation and
 -- stands whatever else went unanswered, so residue (4) outranks an inventory
@@ -281,7 +282,7 @@ runAwsFieldAudit repoRoot stacks emitScript
           )
         pure (ExitFailure 5)
       Right audit -> do
-        mapM_ (writeOutputLine . Text.unpack) (reportLines audit)
+        mapM_ (writeOutputLine . Text.unpack) (renderFieldAuditReport audit)
         pure (auditExitCode (auditVerdict (fieldAuditObservation audit)))
 
 -- | The first failure of two statuses.

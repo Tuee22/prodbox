@@ -169,7 +169,7 @@ import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   , withTargetSecretAgentAuthenticatedTransport
   , withTlsRetentionAuthenticatedTransport
   )
-import Prodbox.ControlPlane.ListenPort (controlPlaneListenPort)
+import Prodbox.ControlPlane.ListenPort (controlPlaneClusterServiceUrl, controlPlaneListenPort)
 import Prodbox.ControlPlane.Route
   ( controlPlaneRoutePath
   , routesForRole
@@ -3503,11 +3503,11 @@ valuesForGateway substrate namespace rootChart settings _gatewayEventKeys shared
             .= object
               [ "scope" .= lifecycleAuthorityScope
               , "endpoint"
-                  .= ( "http://lifecycle-authority."
-                         ++ namespace
-                         ++ ".svc.cluster.local:"
-                         ++ show controlPlaneListenPort
-                     )
+                  .= controlPlaneClusterServiceUrl
+                    "lifecycle-authority"
+                    ( Text.unpack
+                        (AuthorityStatics.lifecycleAuthorityStaticNamespace AuthorityStatics.lifecycleAuthorityChartStatics)
+                    )
               ]
         , "dnsWriteGate" .= gatewayDnsWriteGateValue substrate zoneId sharedHostFqdn awsRegion
         , "vault"

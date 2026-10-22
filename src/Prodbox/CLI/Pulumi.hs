@@ -52,6 +52,7 @@ import Prodbox.ControlPlane.LegacyAdoptionManifestRepository
 import Prodbox.Infra.AwsEksSubzoneStack qualified as SubzoneStack
 import Prodbox.Infra.AwsEksTestStack qualified as EksStack
 import Prodbox.Infra.AwsSesStack qualified as SesStack
+import Prodbox.Infra.AwsStackRepair (runAwsNetworkPurge, runAwsStackDiff)
 import Prodbox.Infra.AwsTestStack qualified as TestStack
 import Prodbox.Infra.StackOutputs (StackName (..))
 import Prodbox.Lifecycle.Authority.AdminAction
@@ -131,6 +132,8 @@ runPulumiCommand repoRoot =
 runPulumiCommandWithGate :: IO VaultGateOutcome -> FilePath -> PulumiCommand -> IO ExitCode
 runPulumiCommandWithGate gate repoRoot command =
   case command of
+    PulumiStackDiff target -> runAwsStackDiff repoRoot target
+    PulumiEksPurgeDependents mode -> runAwsNetworkPurge repoRoot mode
     PulumiEksResources planOptions ->
       runPlanWithOptions
         planOptions

@@ -110,6 +110,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (ReconcileRegisteredStack)
   , ProviderRevision
   , ProviderStackConfig
+  , ProviderStackConfigError (..)
   , ProviderStackConfigView (..)
   , ProviderStackRef
   , mkAwsEksProfileProviderStackConfig
@@ -492,6 +493,9 @@ data ProviderConfigWire
   | AwsEksSubzoneProviderConfigWire !Text !Text
   | AwsEksProfileProviderConfigWire !AwsSubstrateProfile !Natural
   | AwsTestProfileProviderConfigWire !AwsSubstrateProfile
+  | -- | No admitted creation can contain this config; never alias it to a
+    -- mutation config when projecting the wider Provider configuration type.
+    PreviewOnlyProviderConfigWire
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -1027,11 +1031,14 @@ providerConfigToWire config = case providerStackConfigView config of
   AwsEksProfileConfig profile desiredSize ->
     AwsEksProfileProviderConfigWire profile desiredSize
   AwsTestProfileConfig profile -> AwsTestProfileProviderConfigWire profile
+  AwsSesPreviewConfig {} -> PreviewOnlyProviderConfigWire
 
 providerConfigFromWire
   :: ProviderConfigWire -> Either AwsStackCreationBindingError ProviderStackConfig
 providerConfigFromWire wire =
   first (AwsStackCreationProviderConfigInvalid . Text.pack . show) $ case wire of
+    PreviewOnlyProviderConfigWire ->
+      Left (ProviderStackConfigFieldInvalid "preview-only configuration cannot authorize stack mutation")
     AwsEksProviderConfigWire operatorCidr ->
       mkAwsEksProviderStackConfig operatorCidr
     AwsTestProviderConfigWire operatorCidr ->

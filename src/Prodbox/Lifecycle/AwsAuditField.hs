@@ -37,6 +37,7 @@ import Data.Aeson (Value (..), eitherDecodeStrict')
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap (KeyMap)
 import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Char (isAsciiUpper)
 import Data.List (isPrefixOf, nub, sort)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -46,6 +47,7 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Vector qualified as Vector
 import Numeric.Natural (Natural)
+import Prodbox.Aws.CliError (awsCliServiceErrorMatches)
 import Prodbox.Aws.Region (awsGlobalServiceRegion)
 import Prodbox.Lifecycle.AwsAudit
 import Prodbox.Lifecycle.AwsNativeStackFamily
@@ -81,6 +83,7 @@ import Prodbox.Lifecycle.Teardown.Registry
   ( awsEksIamManagedPolicyNames
   , awsEksIamRoleNames
   , awsEksProvisionedClusterName
+  , awsEksProvisionedNodeGroupName
   , awsEksPulumiStackName
   , awsTestPulumiStackName
   )
@@ -236,7 +239,9 @@ auditStackField runner ref config =
         if stack == AuditAwsEks
           then registeredAnswers runner ref
           else pure Map.empty
-      let sources = [exactAnswers, locatedVpcAnswers stack located, rooted, registered]
+      readiness <-
+        if stack == AuditAwsEks then eksReadinessAnswers runner ref else pure Map.empty
+      let sources = [exactAnswers, locatedVpcAnswers stack located, rooted, registered, readiness]
           answerFor class' =
             case [answer | source <- sources, Just answer <- [Map.lookup class' source]] of
               [] -> auditUnanswered "no query covers the class"
@@ -497,6 +502,97 @@ runAuditQuery runner query = do
               (queryLabel (auditQueryArgs query) <> " answered in a shape the audit does not read: " <> detail)
           Right rows -> auditAnswered rows
     )
+
+-- | State is read independently of the native destroy identities. Its ARN is
+-- the same identity, so merging enriches the row without counting an alias.
+-- AWS schema: /eks/latest/APIReference/API_DescribeCluster.html and
+-- /eks/latest/APIReference/API_DescribeNodegroup.html (arn/status fields).
+data EksReadinessQuery = ClusterReadiness | NodeGroupReadiness
+  deriving (Enum, Bounded)
+
+eksReadinessQueries :: [EksReadinessQuery]
+eksReadinessQueries = [minBound .. maxBound]
+
+eksReadinessClass :: EksReadinessQuery -> AuditClass
+eksReadinessClass query = case query of
+  ClusterReadiness -> AuditEksCluster
+  NodeGroupReadiness -> AuditEksNodeGroup
+
+eksReadinessOperation :: EksReadinessQuery -> Text
+eksReadinessOperation query = case query of
+  ClusterReadiness -> "DescribeCluster"
+  NodeGroupReadiness -> "DescribeNodegroup"
+
+eksReadinessArgs :: EksReadinessQuery -> [String]
+eksReadinessArgs query = case query of
+  ClusterReadiness ->
+    [ "eks"
+    , "describe-cluster"
+    , "--name"
+    , Text.unpack awsEksProvisionedClusterName
+    , "--query"
+    , "{arn:cluster.arn,status:cluster.status}"
+    , "--output"
+    , "json"
+    ]
+  NodeGroupReadiness ->
+    [ "eks"
+    , "describe-nodegroup"
+    , "--cluster-name"
+    , Text.unpack awsEksProvisionedClusterName
+    , "--nodegroup-name"
+    , Text.unpack awsEksProvisionedNodeGroupName
+    , "--query"
+    , "{arn:nodegroup.nodegroupArn,status:nodegroup.status}"
+    , "--output"
+    , "json"
+    ]
+
+eksReadinessAnswers
+  :: (Monad m)
+  => AwsNativeStackFamilyRunner m
+  -> ProviderNativeStackFamilyRef
+  -> m (Map AuditClass AuditAnswer)
+eksReadinessAnswers runner ref = Map.fromList <$> traverse observe eksReadinessQueries
+ where
+  observe query = do
+    let args = eksReadinessArgs query
+        class' = eksReadinessClass query
+    output <- runAwsNativeStackFamilyCommand runner args
+    pure (class', answer query args output)
+  answer query args output = case processExitCode output of
+    ExitSuccess -> case decodeJson (processStdout output) >>= readinessRow query of
+      Left detail -> auditUnanswered detail
+      Right row -> auditAnswered [row]
+    ExitFailure _
+      | awsCliServiceErrorMatches "ResourceNotFoundException" (eksReadinessOperation query) output ->
+          auditAnswered []
+      | otherwise -> auditUnanswered (queryFailure args output)
+  readinessRow query value = case value of
+    Object fields -> case (textField "arn" fields, textField "status" fields) of
+      (Just arn, Just status)
+        | Just resource <- Text.stripPrefix arnPrefix arn
+        , resourceMatches query resource
+        , not (Text.null status)
+        , Text.length status <= 32
+        , Text.all (\char -> isAsciiUpper char || char == '_') status ->
+            Right (mkAuditRow (eksReadinessClass query) arn status)
+      _ -> Left "EKS readiness response has no exact ARN and state"
+    _ -> Left "EKS readiness response is not an object"
+  arnPrefix =
+    "arn:aws:eks:"
+      <> providerNativeStackFamilyRegion ref
+      <> ":"
+      <> providerNativeStackFamilyAccountId ref
+      <> ":"
+  resourceMatches query value = case query of
+    ClusterReadiness -> value == "cluster/" <> awsEksProvisionedClusterName
+    NodeGroupReadiness -> case Text.splitOn "/" value of
+      ["nodegroup", cluster, name, suffix] ->
+        cluster == awsEksProvisionedClusterName
+          && name == awsEksProvisionedNodeGroupName
+          && not (Text.null suffix)
+      _ -> False
 
 -- | The registered IAM names and the per-run volumes the cluster owns.
 registeredAnswers
@@ -862,6 +958,7 @@ auditReadOnlyScript stack bucket controlRegion =
             , "json"
             ]
         ]
+          <> map (scriptCommand . eksReadinessArgs) eksReadinessQueries
           <> [ scriptCommand ["iam", "get-role", "--role-name", Text.unpack name, "--output", "json"]
              | name <- awsEksIamRoleNames
              ]

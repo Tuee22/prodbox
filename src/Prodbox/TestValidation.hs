@@ -11,6 +11,8 @@ module Prodbox.TestValidation
   , gatewayRuntimeExpectedReplicas
   , gatewayRuntimeKubeconfigRetryDelayMicroseconds
   , runNativeValidationWithGatewayStability
+  , runNativeValidationWithCleanupScope
+  , boundKeycloakInviteRecipient
   , GatewayRuntimeStabilityRecorder
   , GatewayRuntimeStabilityMonitor
   , newGatewayRuntimeStabilityRecorder
@@ -56,8 +58,6 @@ module Prodbox.TestValidation
   , observedBrokerRouteLine
   , keycloakInviteRecipient
   , retryWhileGatewayDnsPending
-  , InviteMailObservation (..)
-  , parseInviteMailEvidence
   , parseValidationZoneEvidence
   )
 where
@@ -89,6 +89,7 @@ import Control.Monad (foldM, void, when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except (ExceptT, runExceptT, throwE)
 import Crypto.Hash.SHA256 qualified as SHA256
+import Crypto.Random (getRandomBytes)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
@@ -99,6 +100,7 @@ import Data.Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Bifunctor qualified as Bifunctor
+import Data.ByteString qualified as ByteString
 import Data.ByteString.Base64 qualified as Base64
 import Data.ByteString.Base64.URL qualified as Base64Url
 import Data.ByteString.Char8 qualified as BS8
@@ -133,11 +135,11 @@ import Network.Socket
   , withSocketsDo
   )
 import Network.WebSockets qualified as WebSocket
-import Numeric (showHex)
 import Numeric.Natural (Natural)
 import Prodbox.Aws
   ( runAwsIamHarnessInspect
   )
+import Prodbox.Aws.SigV4 qualified as AwsHash
 import Prodbox.Bootstrap.Broker.Client (BrokerEndpoint, brokerRouteUrl)
 import Prodbox.Bootstrap.Broker.PortForward
   ( renderBrokerHostConnectionError
@@ -174,7 +176,9 @@ import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.ControlPlane.Capacity qualified as EmitterCapacity
 import Prodbox.ControlPlane.Deadline qualified as Deadline
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
-  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityTestHarness)
+  ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator, LifecycleAuthorityTestHarness)
+  , renderLifecycleAuthorityAuthenticationError
+  , withHostLifecycleAuthorityAuthentication
   )
 import Prodbox.ControlPlane.ListenPort (controlPlaneListenPort)
 import Prodbox.ControlPlane.ProviderCaller
@@ -204,13 +208,16 @@ import Prodbox.Gateway.Types
   , PeerEndpoint (..)
   )
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
+import Prodbox.Infra.AwsFieldAudit qualified as LifecycleAudit
 import Prodbox.Infra.AwsTestStack qualified as AwsTest
 import Prodbox.Infra.StackOutputs (StackName (..))
 import Prodbox.Keycloak.CredentialSetupForm qualified as CredentialSetupForm
+import Prodbox.Keycloak.InviteHttp qualified as InviteHttp
 import Prodbox.Lib.Storage (testManualPvHostRootEnv)
+import Prodbox.Lifecycle.AwsAudit (AuditStack (..))
+import Prodbox.Lifecycle.AwsProviderRecording qualified as ProviderRecording
 import Prodbox.Lifecycle.LiveResidue
-  ( awsEksTestStackName
-  , awsTestStackName
+  ( awsTestStackName
   , fetchPerRunStackOutputs
   )
 import Prodbox.Lifecycle.OwnedResourceTags (dnsValidationHostedZoneNamePrefix)
@@ -219,8 +226,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
       ( EnsureValidationHostedZone
       , ObserveProviderReadiness
       , ObservePublicARecord
-      , ObserveSesInviteMail
-      , ReapSesInviteMail
+      , ObserveSealedSesInviteMail
       , ReapValidationHostedZones
       , ReconcilePublicARecord
       )
@@ -234,6 +240,7 @@ import Prodbox.Lifecycle.Teardown.CascadeCandidate
   ( CascadeCandidatePlanSummary (..)
   , fixedCascadeCandidatePlanSummary
   )
+import Prodbox.Lifecycle.Teardown.ResourceScopeBindings
 import Prodbox.Lifecycle.ValidationHostedZone qualified as Route53ValidationZone
 import Prodbox.Minio.ObjectStoreTypes (defaultObjectStoreBucket)
 import Prodbox.PublicEdge
@@ -294,6 +301,7 @@ import Prodbox.Pulsar.TopicResidue
   , topicDiscover
   )
 import Prodbox.Result (Result (..))
+import Prodbox.Ses.InviteEvidence qualified as InviteEvidence
 import Prodbox.Settings
   ( ValidatedCoordinates (..)
   , ValidatedServedHost (..)
@@ -324,6 +332,9 @@ import Prodbox.Subprocess
   , stopBackgroundProcess
   )
 import Prodbox.Substrate (Substrate (..), gatewayNodeIdsForSubstrate, substrateId)
+import Prodbox.Test.AwsLifecycle qualified as AwsLifecycle
+import Prodbox.Test.AwsLifecycleCanary (registeredCanaryPlantIntent, registeredLifecycleAwsBinding)
+import Prodbox.Test.AwsStackEvidence qualified as AwsStackEvidence
 import Prodbox.Test.CascadeQualification
   ( cascadeQualificationAttempt
   , cascadeQualificationCycleOutcome
@@ -334,6 +345,7 @@ import Prodbox.Test.CascadeQualification
   , cascadeQualificationLedgerEntries
   , cascadeQualificationLedgerTip
   , cascadeQualificationLifecycleResult
+  , cascadeQualificationRecoveryOnly
   , cascadeQualificationRunId
   , runCascadeQualificationCandidate
   )
@@ -366,6 +378,11 @@ import Prodbox.Test.GatewayRuntimeStability
   , observeGatewayRuntimeFailure
   , observeGatewayRuntimePayloads
   , renderGatewayRuntimeStabilityReport
+  )
+import Prodbox.Test.LifecycleCleanupClient
+  ( HarnessBodyScope
+  , harnessBodyRegisteredTargets
+  , harnessBodyRunId
   )
 import Prodbox.TestPlan
   ( NativeValidation (..)
@@ -1442,7 +1459,21 @@ runNativeValidationWithGatewayStability
   -> [(String, String)]
   -> NativeValidation
   -> IO ExitCode
-runNativeValidationWithGatewayStability maybeGatewayStability substrate repoRoot environment validation = do
+runNativeValidationWithGatewayStability = runNativeValidationWithCleanupScope Nothing Nothing
+
+runNativeValidationWithCleanupScope
+  :: Maybe HarnessBodyScope
+  -> Maybe InviteMailScope
+  -> Maybe GatewayRuntimeStabilityRecorder
+  -> Substrate
+  -> FilePath
+  -> [(String, String)]
+  -> NativeValidation
+  -> IO ExitCode
+runNativeValidationWithCleanupScope bodyScope inviteBinding maybeGatewayStability substrate repoRoot environment validation = do
+  case bodyScope of
+    Nothing -> pure ()
+    Just registered -> writeDiagnosticLine ("CLEANUP_RUN_ID=" ++ Text.unpack (harnessBodyRunId registered))
   writeOutputLine
     ("Validation: " ++ nativeValidationId validation ++ " (substrate=" ++ substrateId substrate ++ ")")
   writeDiagnosticLine
@@ -1488,24 +1519,14 @@ runNativeValidationWithGatewayStability maybeGatewayStability substrate repoRoot
           "aws-iam harness inspection"
           (runAwsIamHarnessInspect repoRoot)
           ["PROVIDER_ROLE=", "IAM_PRINCIPAL=assumed-role", "CONFIG_PATH="]
+      ValidationAwsLifecycle ->
+        runAwsLifecycleScopeValidation bodyScope AwsLifecycle.AwsStackCycles repoRoot environment
+      ValidationAwsLifecycleCanary ->
+        runAwsLifecycleScopeValidation bodyScope AwsLifecycle.AwsTestVpcCanary repoRoot environment
       ValidationAwsEks ->
-        runSequentially
-          [ assertNativeCommandOutputContainsAll
-              repoRoot
-              environment
-              ["aws", "stack", "eks", "reconcile"]
-              [AwsEks.awsEksProviderReceiptLabel ++ "sha256:"]
-          , verifyAwsEksSnapshot repoRoot
-          ]
+        runAwsStackCreateValidation repoRoot environment AwsStackEvidence.AwsEksValidation
       ValidationPulumi ->
-        runSequentially
-          [ assertNativeCommandOutputContainsAll
-              repoRoot
-              environment
-              ["aws", "stack", "test", "reconcile"]
-              [AwsTest.awsTestProviderReceiptLabel ++ "sha256:"]
-          , verifyAwsTestSnapshot repoRoot
-          ]
+        runAwsStackCreateValidation repoRoot environment AwsStackEvidence.PulumiValidation
       ValidationHaRke2Aws ->
         runHaRke2AwsValidation repoRoot environment
       ValidationGatewayDaemon -> runGatewayDaemonValidation repoRoot environment
@@ -1590,7 +1611,7 @@ runNativeValidationWithGatewayStability maybeGatewayStability substrate repoRoot
             runNativeCliCommandForExitCode repoRoot environment ["vault", "unseal"]
           , runNativeCliCommandForExitCode repoRoot environment ["cluster", "health"]
           ]
-      ValidationKeycloakInvite -> runKeycloakInviteValidation repoRoot substrate environment
+      ValidationKeycloakInvite -> runKeycloakInviteValidation inviteBinding repoRoot substrate environment
       ValidationSealedVault -> runSealedVaultValidation repoRoot environment
 
 -- | Most AWS validations run wholly against the selected EKS target and may
@@ -1627,6 +1648,8 @@ nativeValidationKubeconfigMode validation =
   case validation of
     ValidationCascadeQualification -> ValidationOwnsKubeconfigScopes
     ValidationAwsEks -> ValidationOwnsKubeconfigScopes
+    ValidationAwsLifecycle -> ValidationOwnsKubeconfigScopes
+    ValidationAwsLifecycleCanary -> ValidationOwnsKubeconfigScopes
     ValidationChartsPlatform -> ValidationUsesHomeCluster
     ValidationChartsStorage -> ValidationUsesHomeCluster
     ValidationGatewayDaemon -> ValidationUsesHomeCluster
@@ -3087,7 +3110,7 @@ runHaRke2AwsValidation repoRoot environment = do
         ExitSuccess -> pure ExitSuccess
         firstFailure@(ExitFailure _) -> do
           writeDiagnosticLine
-            "AWS test-stack SSH validation failed after reconcile; destroying and recreating the retained stack once before retry."
+            "AWS test-stack SSH validation failed after reconcile; destroying and recreating the test stack once before retry."
           destroyExit <-
             runNativeCliCommandForExitCode repoRoot environment ["aws", "stack", "test", "destroy", "--yes"]
           case destroyExit of
@@ -3104,14 +3127,135 @@ runHaRke2AwsValidation repoRoot environment = do
 
 provisionAndVerifyAwsTestStack :: FilePath -> [(String, String)] -> IO ExitCode
 provisionAndVerifyAwsTestStack repoRoot environment =
-  runSequentially
-    [ assertNativeCommandOutputContainsAll
-        repoRoot
-        environment
-        ["aws", "stack", "test", "reconcile"]
-        [AwsTest.awsTestProviderReceiptLabel ++ "sha256:"]
-    , verifyAwsTestSnapshot repoRoot
-    ]
+  runAwsStackCreateValidation repoRoot environment AwsStackEvidence.HaRke2AwsValidation
+
+-- The outer durable bracket owns every exit. Each public stack command is a
+-- peer of that cleanup kernel, and every observation is authenticated through
+-- the retained operator identity rather than a Gateway-lifetime identity.
+runAwsLifecycleScopeValidation
+  :: Maybe HarnessBodyScope
+  -> AwsLifecycle.AwsLifecycleExercise
+  -> FilePath
+  -> [(String, String)]
+  -> IO ExitCode
+runAwsLifecycleScopeValidation Nothing _ _ _ =
+  failWith "AWS lifecycle validation requires its registered credential/cleanup harness"
+runAwsLifecycleScopeValidation (Just registered) exercise repoRoot environment =
+  case registeredLifecycleAwsBinding registered of
+    Left detail -> failWith (Text.unpack detail)
+    Right binding
+      | not
+          ( all
+              (`elem` harnessBodyRegisteredTargets registered)
+              (AwsLifecycle.lifecycleExerciseCleanupTargets exercise)
+          ) ->
+          failWith "AWS lifecycle registration is missing a declared cleanup family"
+      | otherwise -> do
+          let boundary =
+                AwsLifecycle.AwsLifecycleBoundary
+                  { AwsLifecycle.emitLifecycleFieldCoverage = mapM_ (writeOutputLine . Text.unpack)
+                  , AwsLifecycle.observeLifecycleField = observe
+                  , AwsLifecycle.reconcileLifecycleStack = reconcile
+                  , AwsLifecycle.destroyLifecycleStack = destroy
+                  }
+              program = case exercise of
+                AwsLifecycle.AwsStackCycles -> AwsLifecycle.AwsStackCycleProgram boundary
+                AwsLifecycle.AwsTestVpcCanary -> AwsLifecycle.AwsTestVpcCanaryProgram boundary plant
+          result <- AwsLifecycle.runAwsLifecycleExercise binding program
+          case result of
+            Left err -> failWith (Text.unpack (AwsLifecycle.renderAwsLifecycleError err))
+            Right () -> do
+              writeOutputLine ("AWS_LIFECYCLE_SCOPE=" ++ scopeName ++ " verdict=Clean")
+              pure ExitSuccess
+ where
+  scopeName = case exercise of
+    AwsLifecycle.AwsStackCycles -> "aws-lifecycle"
+    AwsLifecycle.AwsTestVpcCanary -> "aws-lifecycle-canary"
+  observe stack = do
+    authenticated <- withHostLifecycleAuthorityAuthentication LifecycleAuthorityOperator repoRoot $ \authentication ->
+      LifecycleAudit.takeFieldAudit authentication repoRoot stack
+    pure
+      (Bifunctor.first (Text.pack . renderLifecycleAuthorityAuthenticationError) authenticated >>= id)
+  reconcile stack = case stack of
+    AuditAwsEks -> Right <$> runAwsStackCreateValidation repoRoot environment AwsStackEvidence.AwsEksValidation
+    AuditAwsTest -> Right <$> runAwsStackCreateValidation repoRoot environment AwsStackEvidence.PulumiValidation
+    AuditAwsEksSubzone -> pure (Left "the lifecycle drill does not create a hosted subzone")
+  destroy stack = case stack of
+    AuditAwsEks -> captureDestroy "eks"
+    AuditAwsTest -> captureDestroy "test"
+    AuditAwsEksSubzone -> pure (Left "the lifecycle drill does not destroy a hosted subzone")
+  captureDestroy stack = do
+    captured <- captureNativeCliCommand repoRoot environment ["aws", "stack", stack, "destroy", "--yes"]
+    case captured of
+      Left detail -> pure (Left (Text.pack detail))
+      Right output -> do
+        writeOutput (processStdout output)
+        writeDiagnostic (processStderr output)
+        pure (Right (processExitCode output))
+  plant = do
+    recorded <- fetchPerRunStackOutputs repoRoot (StackName (Text.pack AwsTest.awsTestStackName))
+    case Bifunctor.first Text.pack recorded >>= registeredCanaryPlantIntent registered of
+      Left detail -> pure (Left detail)
+      Right intent -> do
+        dispatched <-
+          dispatchHostProviderIntentFresh
+            LifecycleAuthorityOperator
+            repoRoot
+            "aws-lifecycle-canary-plant"
+            intent
+        case Bifunctor.first (Text.pack . renderProviderCallerError) dispatched
+          >>= ProviderRecording.canaryPlantRecordingFromEvidence of
+          Left detail -> pure (Left detail)
+          Right recording -> do
+            let bytes = ProviderRecording.scrubbedProviderRecordingBytes recording
+                runDigest =
+                  TextEncoding.decodeUtf8 (AwsHash.hexSha256 (TextEncoding.encodeUtf8 (harnessBodyRunId registered)))
+                recordingDigest = TextEncoding.decodeUtf8 (AwsHash.hexSha256 bytes)
+                directory = repoRoot </> ".build" </> "aws-lifecycle-recordings" </> Text.unpack runDigest
+                destination = directory </> Text.unpack recordingDigest ++ ".json"
+            createDirectoryIfMissing True directory
+            ByteString.writeFile destination bytes
+            writeOutputLine ("AWS_LIFECYCLE_CANARY_RECORDING=" ++ destination)
+            pure (Right ExitSuccess)
+
+-- Capture the real public create verb, then join its provider field to the
+-- independently fetched recorded outputs. No substrate identity selects an assertion.
+runAwsStackCreateValidation
+  :: FilePath -> [(String, String)] -> AwsStackEvidence.AwsStackValidation -> IO ExitCode
+runAwsStackCreateValidation repoRoot environment validation = do
+  verified <- AwsStackEvidence.runAwsStackEvidenceValidation boundary validation
+  case verified of
+    Right () -> pure ExitSuccess
+    Left err -> do
+      writeDiagnosticLine
+        (show validation <> ": " <> Text.unpack (AwsStackEvidence.renderAwsStackEvidenceError err))
+      pure $ case err of
+        AwsStackEvidence.AwsStackCommandFailed failure -> failure
+        _ -> ExitFailure 1
+ where
+  boundary =
+    AwsStackEvidence.AwsStackValidationBoundary
+      { AwsStackEvidence.reconcileValidationStack = reconcile
+      , AwsStackEvidence.readValidationStackOutputs = readOutputs
+      }
+  reconcile stack = case stack of
+    AuditAwsEks -> capture ["aws", "stack", "eks", "reconcile"]
+    AuditAwsTest -> capture ["aws", "stack", "test", "reconcile"]
+    AuditAwsEksSubzone -> pure (Left "no create validation targets the subzone alone")
+  capture args = do
+    captured <- captureNativeCliCommand repoRoot environment args
+    case captured of
+      Left detail -> pure (Left (Text.pack detail))
+      Right output -> do
+        writeOutput (processStdout output)
+        writeDiagnostic (processStderr output)
+        pure (Right output)
+  readOutputs stack = case stack of
+    AuditAwsEks -> fetch AwsEks.awsEksTestStackName
+    AuditAwsTest -> fetch AwsTest.awsTestStackName
+    AuditAwsEksSubzone -> pure (Left "no recorded create projection targets the subzone alone")
+  fetch name = Bifunctor.first Text.pack <$> fetchPerRunStackOutputs repoRoot (StackName (Text.pack name))
+
 gatewayPartitionValidationReport :: IO (Either String String)
 gatewayPartitionValidationReport =
   case gatewayPartitionLegacyReport of
@@ -5599,54 +5743,55 @@ runCleanRoomHandoffValidation repoRoot = do
 runCascadeQualificationValidation
   :: FilePath -> [(String, String)] -> Substrate -> IO ExitCode
 runCascadeQualificationValidation repoRoot environment substrate =
-  case substrate of
-    SubstrateHomeLocal ->
+  case lookup cascadeQualificationCycleVariable environment of
+    Nothing ->
       failWith
-        "cascade-qualification is destructive AWS-harness work; rerun with --substrate aws"
-    SubstrateAws ->
-      case lookup cascadeQualificationCycleVariable environment of
-        Nothing ->
+        ( cascadeQualificationCycleVariable
+            ++ " must name the stable qualification cycle (for example pre-1, pre-2, or post-1)"
+        )
+    Just cycleLabel
+      | null cycleLabel || any isSpace cycleLabel ->
           failWith
-            ( cascadeQualificationCycleVariable
-                ++ " must name the stable qualification cycle (for example pre-1, pre-2, or post-1)"
-            )
-        Just cycleLabel
-          | null cycleLabel || any isSpace cycleLabel ->
-              failWith
-                (cascadeQualificationCycleVariable ++ " must be non-empty and contain no whitespace")
-          | otherwise -> do
-              driven <-
-                runCascadeQualificationCandidate
-                  repoRoot
-                  environment
-                  (Text.pack cycleLabel)
-              case driven of
-                Left err -> failWith ("cascade qualification failed: " ++ err)
-                Right outcome -> do
-                  let result = cascadeQualificationLifecycleResult outcome
-                  writeOutput
-                    ( unlines
-                        [ "CASCADE_QUALIFICATION_RESULT"
-                        , "CYCLE=" ++ cycleLabel
-                        , "ATTEMPT=" ++ show (cascadeQualificationAttempt outcome)
-                        , "CLEANUP_RUN_ID="
-                            ++ Text.unpack (cascadeQualificationRunId outcome)
-                        , "IDENTITY_KEY="
-                            ++ Text.unpack (cascadeQualificationIdentityKey outcome)
-                        , "EVIDENCE_PATH=" ++ cascadeQualificationEvidencePath outcome
-                        , "EVIDENCE_DIGEST="
-                            ++ Text.unpack (cascadeQualificationEvidenceDigest outcome)
-                        , "LIFECYCLE_RESULT=" ++ show result
-                        , "CYCLE_OUTCOME="
-                            ++ Text.unpack (cascadeQualificationCycleOutcome outcome)
-                        , "LEDGER_ENTRIES="
-                            ++ show (cascadeQualificationLedgerEntries outcome)
-                        , "LEDGER_TIP="
-                            ++ Text.unpack (cascadeQualificationLedgerTip outcome)
-                        ]
-                    )
-                  if cascadeQualificationCyclePassed outcome
-                    then pure ExitSuccess
+            (cascadeQualificationCycleVariable ++ " must be non-empty and contain no whitespace")
+      | otherwise -> do
+          driven <-
+            runCascadeQualificationCandidate
+              repoRoot
+              environment
+              substrate
+              (Text.pack cycleLabel)
+          case driven of
+            Left err -> failWith ("cascade qualification failed: " ++ err)
+            Right outcome -> do
+              let result = cascadeQualificationLifecycleResult outcome
+              writeOutput
+                ( unlines
+                    [ "CASCADE_QUALIFICATION_RESULT"
+                    , "CYCLE=" ++ cycleLabel
+                    , "ATTEMPT=" ++ show (cascadeQualificationAttempt outcome)
+                    , "CLEANUP_RUN_ID="
+                        ++ Text.unpack (cascadeQualificationRunId outcome)
+                    , "IDENTITY_KEY="
+                        ++ Text.unpack (cascadeQualificationIdentityKey outcome)
+                    , "EVIDENCE_PATH=" ++ cascadeQualificationEvidencePath outcome
+                    , "EVIDENCE_DIGEST="
+                        ++ Text.unpack (cascadeQualificationEvidenceDigest outcome)
+                    , "LIFECYCLE_RESULT=" ++ show result
+                    , "CYCLE_OUTCOME="
+                        ++ Text.unpack (cascadeQualificationCycleOutcome outcome)
+                    , "LEDGER_ENTRIES="
+                        ++ show (cascadeQualificationLedgerEntries outcome)
+                    , "LEDGER_TIP="
+                        ++ Text.unpack (cascadeQualificationLedgerTip outcome)
+                    ]
+                )
+              if cascadeQualificationCyclePassed outcome
+                then pure ExitSuccess
+                else
+                  if cascadeQualificationRecoveryOnly outcome
+                    then
+                      failWith
+                        "historical cascade cleanup recovered; its failed attempt remains unqualified. Use a fresh PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE label for the next qualifying run."
                     else
                       failWith
                         ( "cascade qualification cycle did not qualify ("
@@ -6128,51 +6273,6 @@ reserveLocalTcpPort =
             SockAddrInet6 port _ _ _ -> pure (fromIntegral port)
             _ -> fail "failed to reserve a local TCP port for gateway validation"
       )
-
--- | Sprint 4.18: AWS EKS validation reads the live Pulumi outputs
--- from the in-cluster MinIO backend rather than the legacy
--- @.prodbox-state\/aws-eks-test\/stack-snapshot.json@ file.
---
--- Sprint 5.6: assert the substrate-equivalence properties the AWS EKS run
--- must hold (per @DEVELOPMENT_PLAN/substrates.md@ and
--- @phase-7-aws-substrate-foundations.md@) by decoding the outputs through
--- the structured 'AwsEks.parseAwsEksTestStackFromOutputs' parser —
--- mirroring the stronger sibling 'verifyAwsTestSnapshot' (which structurally
--- decodes the three-node topology). The parser requires every field
--- (@cluster_name@, @node_group_name@, @vpc_id@, the structured
--- @subnet_ids@ JSON list, the cluster OIDC issuer, the OIDC provider ARN,
--- and the AWS Load Balancer Controller policy/role ARNs that make the EKS
--- substrate stand up the same load-balancer edge as home) to be present,
--- non-empty, and well-formed — replacing the weaker
--- @null clusterName || Text.null subnetIdsRaw@ existence check that passed
--- on a structurally invalid @subnet_ids@ payload.
-verifyAwsEksSnapshot :: FilePath -> IO ExitCode
-verifyAwsEksSnapshot repoRoot = do
-  outputsResult <-
-    fetchPerRunStackOutputs repoRoot (StackName (Text.pack awsEksTestStackName))
-  case outputsResult of
-    Left err ->
-      failWith ("AWS EKS validation could not read Pulumi outputs: " ++ err)
-    Right outputs ->
-      case AwsEks.parseAwsEksTestStackFromOutputs outputs of
-        Left err -> failWith ("AWS EKS Pulumi outputs are incomplete: " ++ err)
-        Right snapshot
-          | null (AwsEks.eksSnapshotSubnetIds snapshot) ->
-              failWith "AWS EKS Pulumi outputs parsed but contain no subnet_ids"
-          | otherwise -> pure ExitSuccess
-
--- | Sprint 4.18: AWS test-stack validation reads the live Pulumi
--- @nodes@ output from the in-cluster MinIO backend rather than the
--- legacy @.prodbox-state\/aws-test\/stack-snapshot.json@ file.
-verifyAwsTestSnapshot :: FilePath -> IO ExitCode
-verifyAwsTestSnapshot repoRoot = do
-  nodesResult <- fetchAwsTestNodes repoRoot
-  case nodesResult of
-    Left err -> failWith err
-    Right nodes ->
-      if length nodes /= 3
-        then failWith "AWS test-stack Pulumi outputs did not contain the expected three-node topology"
-        else pure ExitSuccess
 
 verifyAwsTestSshReachability :: FilePath -> IO ExitCode
 verifyAwsTestSshReachability repoRoot = do
@@ -6665,7 +6765,7 @@ failWith message = do
 -- 1. Generate a unique recipient at `ses.receive_subdomain`.
 -- 2. Call `UsersAdmin.inviteUser` (live Keycloak admin API). Asserts the created
 --    user lands with `emailVerified=false`.
--- 3. Poll the SES capture bucket through the Provider (`ObserveSesInviteMail`) for the
+-- 3. Poll the SES capture bucket through the Provider (`ObserveSealedSesInviteMail`) for the
 --    inbound message (60 s deadline).
 -- 4. Extract the action-token URL via `Prodbox.Keycloak.Email.parseKeycloakInviteLink`.
 -- 5. Follow the link with a cookie jar, parse and POST the Keycloak
@@ -6673,45 +6773,66 @@ failWith message = do
 -- 6. Perform a fresh OIDC password-grant login for the invited user and assert the
 --    token claims include the selected issuer, `email=<recipient>`, and
 --    `email_verified=true`.
--- 7. Cleanup: `UsersAdmin.revokeUser ident --delete` and `ReapSesInviteMail`.
-runKeycloakInviteValidation :: FilePath -> Substrate -> [(String, String)] -> IO ExitCode
-runKeycloakInviteValidation repoRoot substrate _environment = do
+-- 7. Revoke the test user; the registered outer lifecycle owns mail cleanup.
+runKeycloakInviteValidation
+  :: Maybe InviteMailScope -> FilePath -> Substrate -> [(String, String)] -> IO ExitCode
+runKeycloakInviteValidation Nothing _ _ _ =
+  failWith "ValidationKeycloakInvite requires a durably registered invitation cleanup scope."
+runKeycloakInviteValidation (Just binding) repoRoot substrate _environment = do
   settingsResult <- validateAndLoadSettings repoRoot
   case settingsResult of
     Left err -> failWith err
     Right settings -> do
-      readyExit <- waitForPublicEdgeReady repoRoot substrate
-      case readyExit of
-        ExitFailure _ -> pure readyExit
-        ExitSuccess -> do
-          nonce <- generateInviteNonce
-          let sesSection = Prodbox.Settings.ses (Prodbox.Settings.validatedConfig settings)
-              recipientResult =
-                keycloakInviteRecipient
-                  nonce
-                  (Prodbox.Settings.sender_domain sesSection)
-                  (Prodbox.Settings.receive_subdomain sesSection)
-              captureBucket =
-                s3BucketNameText
-                  <$> Prodbox.Settings.coordinateSesCaptureBucket
-                    (Prodbox.Settings.validatedCoordinates settings)
-          -- Sprint 1.84: the served host is resolved through the refusing
-          -- accessor, beside the recipient guard that already refuses on the
-          -- same shape of missing config.
-          case (recipientResult, requireSubstratePublicFqdn settings substrate, captureBucket) of
-            (Left err, _, _) -> failWith ("ValidationKeycloakInvite: " ++ err)
-            (_, Left err, _) -> failWith err
-            (_, _, Nothing) ->
-              failWith "ValidationKeycloakInvite: ses.capture_bucket must be set in prodbox.dhall."
-            (Right recipient, Right keycloakPublicHost, Just bucket) ->
-              runInviteFlow repoRoot settings substrate keycloakPublicHost bucket recipient nonce
+      let sesSection = Prodbox.Settings.ses (Prodbox.Settings.validatedConfig settings)
+          captureBucket =
+            s3BucketNameText
+              <$> Prodbox.Settings.coordinateSesCaptureBucket (Prodbox.Settings.validatedCoordinates settings)
+          recipient = case captureBucket of
+            Nothing -> Left "ses.capture_bucket must be set in prodbox.dhall"
+            Just bucket ->
+              boundKeycloakInviteRecipient
+                bucket
+                (Prodbox.Settings.sender_domain sesSection)
+                (Prodbox.Settings.receive_subdomain sesSection)
+                binding
+      case (recipient, requireSubstratePublicFqdn settings substrate) of
+        (Left detail, _) -> failWith ("ValidationKeycloakInvite: " <> detail)
+        (_, Left detail) -> failWith detail
+        (Right selected, Right publicHost) -> do
+          readyExit <- waitForPublicEdgeReady repoRoot substrate
+          case readyExit of
+            failure@(ExitFailure _) -> pure failure
+            ExitSuccess ->
+              runInviteFlow
+                repoRoot
+                settings
+                substrate
+                publicHost
+                (s3BucketNameText (inviteMailBucket binding))
+                selected
+
+-- | A changed configuration cannot redirect a registered invocation's mail.
+-- The exact recipient is selected before registration; domain-wide recovery
+-- selectors deliberately cannot stand in for one new invitation.
+boundKeycloakInviteRecipient
+  :: Text.Text -> Text.Text -> Text.Text -> InviteMailScope -> Either String String
+boundKeycloakInviteRecipient bucket sender receiveLabel binding = do
+  recipient <- case inviteMailSelector binding of
+    ExactInviteRecipient value -> Right value
+    ValidationInviteDomain _ -> Left "new invitation requires an exact registered recipient"
+  let nonce = Text.unpack (Text.takeWhile (/= '@') (Text.drop 5 recipient))
+  expected <- keycloakInviteRecipient nonce sender receiveLabel
+  if bucket == s3BucketNameText (inviteMailBucket binding) && Text.pack expected == recipient
+    then Right expected
+    else Left "invitation configuration differs from its registered cleanup coordinates"
 
 -- | Invite a throwaway user, read the invite message back through the Provider,
--- complete the credential setup, and remove the user and the message.
+-- complete the credential setup, remove the user, and leave mail deletion to
+-- the already registered lifecycle program.
 --
--- The captured message is read and deleted by the Provider because the host
--- holds no AWS credential. Cleanup runs whether or not the flow succeeded, and
--- a failure of the flow is never replaced by a failure of its cleanup.
+-- The Provider reads captured mail; the durable harness tail removes its exact
+-- data versions after success, failure or interruption. The validation result
+-- remains independent of that cleanup result.
 runInviteFlow
   :: FilePath
   -> Prodbox.Settings.ValidatedSettings
@@ -6719,10 +6840,10 @@ runInviteFlow
   -> String
   -> Text.Text
   -> String
-  -> String
   -> IO ExitCode
-runInviteFlow repoRoot settings substrate keycloakPublicHost bucket recipient nonce = do
-  let invitePassword = inviteCredentialPassword nonce
+runInviteFlow repoRoot settings substrate keycloakPublicHost bucket recipient = do
+  passwordEntropy <- getRandomBytes 24 :: IO ByteString.ByteString
+  let invitePassword = inviteCredentialPassword (BS8.unpack (Base64.encode passwordEntropy))
   writeOutputLine ("KEYCLOAK_INVITE_PUBLIC_FQDN=" ++ keycloakPublicHost)
   writeOutputLine ("KEYCLOAK_INVITE_RECIPIENT=" ++ recipient)
   inviteResult <-
@@ -6742,21 +6863,17 @@ runInviteFlow repoRoot settings substrate keycloakPublicHost bucket recipient no
         Right (key, inviteUrl) -> do
           writeOutputLine ("KEYCLOAK_INVITE_S3_KEY=" ++ key)
           writeOutputLine "KEYCLOAK_INVITE_LINK_PARSED=true"
-          completeInviteFlow repoRoot settings substrate recipient invitePassword inviteUrl
+          completeInviteFlow repoRoot settings substrate keycloakPublicHost recipient invitePassword inviteUrl
       _ <-
         Prodbox.UsersAdmin.revokeUserAtPublicHost
           repoRoot
           (Text.pack keycloakPublicHost)
           userId
           True
-      reaped <-
-        dispatchDnsAws repoRoot "validation-invite-mail-reap" $
-          ReapSesInviteMail bucket (Text.pack recipient)
-      case (outcome, reaped) of
-        (Failure err, _) -> failWith err
-        (Success (), Left err) -> failWith ("captured invite message was not removed: " ++ err)
-        (Success (), Right _) -> do
-          writeOutputLine "KEYCLOAK_INVITE_CLEANUP=true"
+      case outcome of
+        Failure err -> failWith err
+        Success () -> do
+          writeOutputLine "KEYCLOAK_INVITE_CLEANUP=registered-lifecycle-pending"
           pure ExitSuccess
 
 completeInviteFlow
@@ -6766,9 +6883,11 @@ completeInviteFlow
   -> String
   -> String
   -> String
+  -> String
   -> IO (Result ())
-completeInviteFlow repoRoot settings substrate recipient invitePassword inviteUrl = do
-  credentialResult <- completeInviteCredentialSetup repoRoot inviteUrl invitePassword
+completeInviteFlow repoRoot settings substrate keycloakPublicHost recipient invitePassword inviteUrl = do
+  credentialResult <-
+    completeInviteCredentialSetup repoRoot keycloakPublicHost inviteUrl invitePassword
   case credentialResult of
     Failure err -> pure (Failure ("credential setup failed: " ++ err))
     Success () -> do
@@ -6781,45 +6900,32 @@ completeInviteFlow repoRoot settings substrate recipient invitePassword inviteUr
           writeOutputLine "KEYCLOAK_INVITE_OIDC_CLAIMS_VERIFIED=true"
           pure (Success ())
 
--- | What the invite-mail observation reported.
-data InviteMailObservation
-  = InviteMailPending
-  | InviteMailArrived !String !String
-  deriving (Eq, Show)
-
--- | Read the Provider's invite-mail evidence: @ses-invite:pending@, or
--- @ses-invite:\<object-key> \<invite-link>@.
-parseInviteMailEvidence :: Text.Text -> Either String InviteMailObservation
-parseInviteMailEvidence evidence =
-  case Text.stripPrefix "ses-invite:" evidence of
-    Nothing -> Left ("unexpected invite-mail evidence: " ++ Text.unpack evidence)
-    Just "pending" -> Right InviteMailPending
-    Just arrived -> case Text.words arrived of
-      [key, inviteLink] ->
-        Right (InviteMailArrived (Text.unpack key) (Text.unpack inviteLink))
-      _ -> Left "invite-mail evidence is not an object key and a link"
-
--- | Poll the Provider for the invite message, one observation per attempt.
+-- | One receiver secret belongs to this invocation. Each Provider observation
+-- carries only its public key; replay stores and Authority evidence retain no
+-- decrypting material. A fresh invocation polls with a fresh key and operation.
 awaitInviteMail
   :: FilePath -> Text.Text -> Text.Text -> Int -> IO (Either String (String, String))
-awaitInviteMail repoRoot bucket recipient attemptsLeft
-  | attemptsLeft <= 0 =
-      pure
-        ( Left
-            ( "no inbound message addressed to "
-                ++ Text.unpack recipient
-                ++ " arrived within the deadline"
-            )
-        )
-  | otherwise = do
-      observed <-
-        dispatchDnsAws repoRoot "validation-invite-mail" (ObserveSesInviteMail bucket recipient)
-      case observed >>= parseInviteMailEvidence of
-        Left err -> pure (Left err)
-        Right (InviteMailArrived key inviteLink) -> pure (Right (key, inviteLink))
-        Right InviteMailPending -> do
-          threadDelay inviteMailPollDelayMicroseconds
-          awaitInviteMail repoRoot bucket recipient (attemptsLeft - 1)
+awaitInviteMail repoRoot bucket recipient attemptsLeft = do
+  receiver <- InviteEvidence.newInviteMailReceiver
+  poll receiver attemptsLeft
+ where
+  poll receiver remaining
+    | remaining <= 0 =
+        pure
+          (Left ("no inbound message addressed to " ++ Text.unpack recipient ++ " arrived within the deadline"))
+    | otherwise = do
+        observed <-
+          dispatchDnsAws
+            repoRoot
+            "validation-invite-mail"
+            (ObserveSealedSesInviteMail bucket recipient (InviteEvidence.inviteMailReceiverPublicKey receiver))
+        case observed
+          >>= Bifunctor.first Text.unpack . InviteEvidence.openInviteMailEvidence receiver bucket recipient of
+          Left err -> pure (Left err)
+          Right (Just (key, inviteLink)) -> pure (Right (Text.unpack key, Text.unpack inviteLink))
+          Right Nothing -> do
+            threadDelay inviteMailPollDelayMicroseconds
+            poll receiver (remaining - 1)
 
 inviteMailAttempts :: Int
 inviteMailAttempts = 20
@@ -6840,25 +6946,16 @@ keycloakInviteRecipient nonce senderDomain receiveLabel =
   (\domain -> "test-" ++ nonce ++ "@" ++ Text.unpack domain)
     <$> Prodbox.Settings.sesReceiveDomain senderDomain receiveLabel
 
--- | Generate a 16-character lowercase hex nonce from the current `POSIXTime` for
--- per-test recipient uniqueness. Avoids pulling in a stronger RNG; sub-second
--- collisions are acceptable for a validation harness that runs serially.
-generateInviteNonce :: IO String
-generateInviteNonce = do
-  now <- Data.Time.Clock.POSIX.getPOSIXTime
-  let micros = floor (now * 1e6) :: Integer
-  pure (Numeric.showHex micros "")
-
 inviteCredentialPassword :: String -> String
 inviteCredentialPassword nonce =
   "ProdboxInvite-" ++ nonce ++ "!Aa1"
 
-completeInviteCredentialSetup :: FilePath -> String -> String -> IO (Result ())
-completeInviteCredentialSetup repoRoot inviteUrl password =
+completeInviteCredentialSetup :: FilePath -> String -> String -> String -> IO (Result ())
+completeInviteCredentialSetup repoRoot publicHost inviteUrl password =
   withTemporaryFilePath repoRoot "prodbox-invite-cookies" $ \cookieJarPath ->
     withTemporaryFilePath repoRoot "prodbox-invite-setup-body" $ \getBodyPath ->
       withTemporaryFilePath repoRoot "prodbox-invite-setup-post-body" $ \postBodyPath -> do
-        formResult <- fetchInviteCredentialSetupForm repoRoot cookieJarPath getBodyPath inviteUrl
+        formResult <- fetchInviteCredentialSetupForm repoRoot publicHost cookieJarPath getBodyPath inviteUrl
         case formResult of
           Failure err -> pure (Failure err)
           Success form -> do
@@ -6874,36 +6971,20 @@ completeInviteCredentialSetup repoRoot inviteUrl password =
                         (Text.pack password)
                     )
             postResult <-
-              runTextCommand
-                Subprocess
-                  { subprocessPath = "curl"
-                  , subprocessArguments =
-                      [ "-sS"
-                      , "-L"
-                      , "--fail-with-body"
-                      , "-c"
-                      , cookieJarPath
-                      , "-b"
-                      , cookieJarPath
-                      , "-H"
-                      , "Content-Type: application/x-www-form-urlencoded"
-                      , "--data-binary"
-                      , postBody
-                      , "-o"
-                      , postBodyPath
-                      , actionUrl
-                      ]
-                  , subprocessEnvironment = Nothing
-                  , subprocessWorkingDirectory = Just repoRoot
-                  }
+              runInviteHttpRequest repoRoot publicHost cookieJarPath postBodyPath actionUrl (Just postBody)
             case postResult of
               Left err -> pure (Failure ("credential-setup form POST failed: " ++ err))
               Right _ -> pure (Success ())
 
 fetchInviteCredentialSetupForm
-  :: FilePath -> FilePath -> FilePath -> String -> IO (Result CredentialSetupForm.CredentialSetupForm)
-fetchInviteCredentialSetupForm repoRoot cookieJarPath getBodyPath inviteUrl = do
-  getResult <- curlGetWithCookieJar repoRoot cookieJarPath getBodyPath inviteUrl
+  :: FilePath
+  -> String
+  -> FilePath
+  -> FilePath
+  -> String
+  -> IO (Result CredentialSetupForm.CredentialSetupForm)
+fetchInviteCredentialSetupForm repoRoot publicHost cookieJarPath getBodyPath inviteUrl = do
+  getResult <- curlGetWithCookieJar repoRoot publicHost cookieJarPath getBodyPath inviteUrl
   case getResult of
     Left err -> pure (Failure ("invite link GET failed: " ++ err))
     Right _ -> do
@@ -6925,7 +7006,8 @@ fetchInviteCredentialSetupForm repoRoot cookieJarPath getBodyPath inviteUrl = do
               let continuationUrl =
                     resolveCredentialSetupActionUrl inviteUrl (Text.unpack continuationHref)
               writeOutputLine "KEYCLOAK_INVITE_VERIFY_CONTINUATION_FOLLOWED=true"
-              continuationResult <- curlGetWithCookieJar repoRoot cookieJarPath getBodyPath continuationUrl
+              continuationResult <-
+                curlGetWithCookieJar repoRoot publicHost cookieJarPath getBodyPath continuationUrl
               case continuationResult of
                 Left err -> pure (Failure ("credential-setup continuation GET failed: " ++ err))
                 Right _ -> do
@@ -6940,26 +7022,17 @@ fetchInviteCredentialSetupForm repoRoot cookieJarPath getBodyPath inviteUrl = do
                         )
                     Right form -> pure (Success form)
 
-curlGetWithCookieJar :: FilePath -> FilePath -> FilePath -> String -> IO (Either String String)
-curlGetWithCookieJar repoRoot cookieJarPath outputPath url =
-  runTextCommand
-    Subprocess
-      { subprocessPath = "curl"
-      , subprocessArguments =
-          [ "-sS"
-          , "-L"
-          , "--fail-with-body"
-          , "-c"
-          , cookieJarPath
-          , "-b"
-          , cookieJarPath
-          , "-o"
-          , outputPath
-          , url
-          ]
-      , subprocessEnvironment = Nothing
-      , subprocessWorkingDirectory = Just repoRoot
-      }
+curlGetWithCookieJar
+  :: FilePath -> String -> FilePath -> FilePath -> String -> IO (Either String ())
+curlGetWithCookieJar repoRoot publicHost cookieJarPath outputPath url =
+  runInviteHttpRequest repoRoot publicHost cookieJarPath outputPath url Nothing
+
+runInviteHttpRequest
+  :: FilePath -> String -> FilePath -> FilePath -> String -> Maybe String -> IO (Either String ())
+runInviteHttpRequest repoRoot publicHost cookieJarPath outputPath url body =
+  case InviteHttp.mkInviteHttpRequest publicHost url body of
+    Left refusal -> pure (Left refusal)
+    Right request -> InviteHttp.runInviteHttp repoRoot cookieJarPath outputPath request
 
 resolveCredentialSetupActionUrl :: String -> String -> String
 resolveCredentialSetupActionUrl inviteUrl actionUrl

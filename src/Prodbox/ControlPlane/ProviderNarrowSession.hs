@@ -19,9 +19,12 @@ module Prodbox.ControlPlane.ProviderNarrowSession
 where
 
 import Data.Text (Text)
+import Prodbox.Ses.InviteEvidence (InviteMailPublicKey)
+
 import Prodbox.ControlPlane.ProviderCredentialSession
   ( ProviderCredentialSessionBinding
   )
+import Prodbox.Lifecycle.AwsTestCanary (TestVpcCanaryRequest)
 import Prodbox.Lifecycle.Lease (AuthorityTime)
 import Prodbox.Lifecycle.ProviderWorker.Evidence
   ( ProviderEvidence
@@ -49,6 +52,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , SesIdentityRef
   , SesRuleSetRef
   )
+import Prodbox.Lifecycle.Teardown.ResourceScopeBindings
 
 -- | Authoritative observation of one mutation's exact postcondition.
 data ProviderEffectObservation
@@ -121,6 +125,10 @@ data ProviderIntentCapabilities m session = ProviderIntentCapabilities
   , readBackRegisteredStackCapability
       :: ProviderStackRef
       -> ProviderReadOnly m session
+  , previewRegisteredStackCapability
+      :: ProviderStackRef
+      -> ProviderStackConfig
+      -> ProviderReadOnly m session
   , boundedScratchCheckpointCapability
       :: ProviderCheckpointRef
       -> ProviderMutation m session
@@ -186,6 +194,7 @@ data ProviderIntentCapabilities m session = ProviderIntentCapabilities
   -- ^ Sprint 7.36: the DNS01 challenge record family, read-only.  There is no
   -- reap capability beside it: cert-manager's solver owns the record, so the
   -- removal is a Kubernetes owner delete outside the Provider's capability set.
+  , observeGlobalOwnedResourceTagsCapability :: ProviderOwnedTagQuery -> ProviderReadOnly m session
   , observeOwnedResourceTagsCapability
       :: ProviderOwnedTagQuery
       -> ProviderReadOnly m session
@@ -230,15 +239,17 @@ data ProviderIntentCapabilities m session = ProviderIntentCapabilities
       -> ProviderMutation m session
   -- ^ Sprint 5.50: the @dns-aws@ validation's throwaway zone, created beneath a
   -- base zone name from a run nonce.
-  , observeSesInviteMailCapability
+  , observeHomeDns01RecordsCapability :: HomeDns01Scope -> ProviderReadOnly m session
+  , observeSesInviteMailResidueCapability :: InviteMailScope -> ProviderReadOnly m session
+  , reapSesInviteMailResidueCapability :: InviteMailScope -> ProviderMutation m session
+  , observeSealedSesInviteMailCapability
       :: Text
       -> Text
+      -> InviteMailPublicKey
       -> ProviderReadOnly m session
   -- ^ Sprint 5.50: the captured invite message for one recipient, read-only.
-  , reapSesInviteMailCapability
-      :: Text
-      -> Text
-      -> ProviderMutation m session
+  , plantTestVpcCanaryCapability
+      :: ProviderNativeStackFamilyRef -> TestVpcCanaryRequest -> ProviderMutation m session
   , ensureRetainedEbsVolumesCapability
       :: Text
       -> Text
@@ -259,7 +270,8 @@ newtype ProviderNarrowSessionRunner m session = ProviderNarrowSessionRunner
   }
 
 data ProviderIntentOperation m session
-  = ProviderIntentMutation !(ProviderMutation m session)
+  = ProviderIntentRetired
+  | ProviderIntentMutation !(ProviderMutation m session)
   | ProviderIntentReadOnly !(ProviderReadOnly m session)
 
 -- | Exhaustive dispatch.  Adding a ninth provider action requires extending
@@ -332,6 +344,8 @@ operationForProviderIntent capabilities intent = case intent of
           loadBalancerName
           tags
       )
+  PlantTestVpcCanary ref request -> ProviderIntentMutation (plantTestVpcCanaryCapability capabilities ref request)
+  ObserveGlobalOwnedResourceTags query -> ProviderIntentReadOnly (observeGlobalOwnedResourceTagsCapability capabilities query)
   ObserveOwnedResourceTags query ->
     ProviderIntentReadOnly
       (observeOwnedResourceTagsCapability capabilities query)
@@ -357,15 +371,19 @@ operationForProviderIntent capabilities intent = case intent of
       (reapNativeStackFamilyCapability capabilities ref config admittedIdentities)
   ObserveAwsAudit target config control ->
     ProviderIntentReadOnly (observeAwsAuditCapability capabilities target config control)
+  PreviewRegisteredStack ref config ->
+    ProviderIntentReadOnly (previewRegisteredStackCapability capabilities ref config)
   EnsureValidationHostedZone nonce baseZone ->
     ProviderIntentMutation
       (ensureValidationHostedZoneCapability capabilities nonce baseZone)
-  ObserveSesInviteMail bucket recipient ->
+  ObserveHomeDns01Records scope -> ProviderIntentReadOnly (observeHomeDns01RecordsCapability capabilities scope)
+  ObserveSesInviteMailResidue scope -> ProviderIntentReadOnly (observeSesInviteMailResidueCapability capabilities scope)
+  ReapSesInviteMailResidue scope -> ProviderIntentMutation (reapSesInviteMailResidueCapability capabilities scope)
+  RetiredSesInviteMailObservation {} -> ProviderIntentRetired
+  ObserveSealedSesInviteMail bucket recipient destination ->
     ProviderIntentReadOnly
-      (observeSesInviteMailCapability capabilities bucket recipient)
-  ReapSesInviteMail bucket recipient ->
-    ProviderIntentMutation
-      (reapSesInviteMailCapability capabilities bucket recipient)
+      (observeSealedSesInviteMailCapability capabilities bucket recipient destination)
+  RetiredSesInviteMailCleanup {} -> ProviderIntentRetired
   EnsureRetainedEbsVolumes volumeType specs ->
     ProviderIntentMutation
       (ensureRetainedEbsVolumesCapability capabilities volumeType specs)

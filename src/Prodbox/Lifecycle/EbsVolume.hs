@@ -78,6 +78,7 @@ where
 
 import Control.Concurrent (threadDelay)
 import Control.Monad (foldM)
+import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson
   ( Value (..)
   , eitherDecode
@@ -86,6 +87,8 @@ import Data.Aeson qualified as Aeson
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Bifunctor (first)
+import Data.ByteArray.Encoding (Base (Base16), convertToBase)
+import Data.ByteString.Char8 qualified as ByteString8
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (isDigit, isHexDigit)
 import Data.List (intercalate, isInfixOf, nub, sort)
@@ -440,6 +443,8 @@ ebsCreateVolumeArgs :: AwsEbsVolumeType -> EbsRequiredVolume -> [String]
 ebsCreateVolumeArgs volumeType required =
   [ "ec2"
   , "create-volume"
+  , "--client-token"
+  , retainedEbsCreateClientToken required
   , "--availability-zone"
   , ebsRequiredAvailabilityZone required
   , "--size"
@@ -451,6 +456,26 @@ ebsCreateVolumeArgs volumeType required =
   , "--output"
   , "json"
   ]
+
+-- | The retained family is account/region-scoped by EC2 and keyed by PV name.
+-- Size, type and zone deliberately do not mint a new identity: EC2 must refuse
+-- conflicting parameters rather than duplicate a volume behind a lagging read.
+-- JSON framing and a domain version keep the 64-byte ASCII token unambiguous.
+retainedEbsCreateClientToken :: EbsRequiredVolume -> String
+retainedEbsCreateClientToken required =
+  ByteString8.unpack
+    ( convertToBase
+        Base16
+        ( SHA256.hash
+            ( BL8.toStrict
+                ( Aeson.encode
+                    [ "prodbox-retained-ebs-create/v1"
+                    , ebsRequiredPersistentVolumeName required
+                    ]
+                )
+            )
+        )
+    )
 
 -- | The exact volumes, by id. Sprint 4.109: the answer a volume wait polls
 -- for; the @aws ec2 wait volume-available@ child it replaces polls for minutes
@@ -858,10 +883,9 @@ ensureRetainedEbsVolumesVia run waits volumeType =
 -- waits (bounded) for every required volume to be listed on consecutive reads;
 -- when it created nothing, one read is the whole answer.
 --
--- A create is not idempotent, and the tag listing a rerun decides from lags the
--- create. So every failure after the first create names the volumes this call
--- created: a message that read as "never created" would invite the rerun that
--- creates them a second time.
+-- The create carries the retained PV's stable client token, so a retry after
+-- a lost response recovers the original volume despite lagging tag discovery.
+-- Failures still name every returned volume id to support exact recovery.
 ensureRetainedEbsVolumesWith
   :: (Monad m)
   => EbsEnsureEffects m

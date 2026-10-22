@@ -127,7 +127,7 @@ awsSesLifecycleSuite = do
           sesSnapshotReceiveSubdomainMxTarget snapshot
             `shouldBe` ("inbound-smtp." <> (fixtureAwsRegion FixtureUsEast1) <> ".amazonaws.com")
           sesSnapshotCaptureReadinessKey snapshot
-            `shouldBe` "inbound/.prodbox-readiness-capability-probe"
+            `shouldBe` ".prodbox-readiness-capability-probe"
       parseAwsSesStackFromOutputs (Map.delete "capture_readiness_key" canonicalSesOutputs)
         `shouldBe` Left "aws-ses Pulumi outputs missing required field 'capture_readiness_key'"
       parseAwsSesStackFromOutputs
@@ -245,5 +245,5 @@ canonicalSesOutputs =
     , ("capture_bucket_name", "prodbox-test-ses-capture")
     , ("capture_bucket_arn", "arn:aws:s3:::prodbox-test-ses-capture")
     , ("capture_bucket_key_prefix", "inbound/")
-    , ("capture_readiness_key", "inbound/.prodbox-readiness-capability-probe")
+    , ("capture_readiness_key", ".prodbox-readiness-capability-probe")
     ]

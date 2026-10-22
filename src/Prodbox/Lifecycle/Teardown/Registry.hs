@@ -42,6 +42,7 @@ module Prodbox.Lifecycle.Teardown.Registry
   , pulumiProjectNamePrefix
   , pulumiProjectNameFor
   , awsEksProvisionedClusterName
+  , awsEksProvisionedNodeGroupName
   , localLinuxRke2Resource
   , awsEksResource
   , awsEksSubzoneResource
@@ -50,12 +51,15 @@ module Prodbox.Lifecycle.Teardown.Registry
   , awsEbsProductionRetainedResource
   , awsDnsValidationZoneResource
   , awsDns01ChallengeRecordResource
+  , homeDns01ChallengeRecordResource
+  , sesInviteMailObjectsResource
   , awsEksIamRoleFamilyResource
   , awsEksIamRoleNames
   , awsEksIamManagedPolicyNames
   , awsEksLoadBalancerControllerFamilyResource
   , awsEksLoadBalancerControllerName
   , awsEksLoadBalancerControllerTags
+  , awsNetworkFamiliesForStack
   , managedResourceRegistry
   , lifecycleRegistry
   , lookupRegisteredIdentity
@@ -78,6 +82,7 @@ where
 
 import Data.List (group, sort)
 import Data.Text (Text)
+import Prodbox.Lifecycle.AwsNetworkFamily
 import Prodbox.Lifecycle.OwnedResourceTags
   ( dns01ChallengeRecordNamePrefix
   , dnsValidationHostedZoneNamePrefix
@@ -257,9 +262,9 @@ localLinuxRke2Resource =
 -- them silently. This is the compiled source; the other two are projections of
 -- it.
 awsEksPulumiStackName, awsEksSubzonePulumiStackName, awsTestPulumiStackName :: Text
-awsEksPulumiStackName = "aws-eks-test"
+awsEksPulumiStackName = networkFamilyPulumiStack EksVpcCniInterfaces
 awsEksSubzonePulumiStackName = "aws-eks-subzone"
-awsTestPulumiStackName = "aws-test"
+awsTestPulumiStackName = networkFamilyPulumiStack TestVpcCniInterfaces
 
 -- | Every provisioning program's Pulumi project is @prodbox-\<stack name\>@;
 -- see the @name:@ field of each @pulumi\/*\/Pulumi.yaml@, which
@@ -279,6 +284,9 @@ pulumiProjectNameFor stackName = pulumiProjectNamePrefix <> stackName
 awsEksProvisionedClusterName :: Text
 awsEksProvisionedClusterName =
   awsEksPulumiStackName <> pulumiEksClusterNameSuffix
+
+awsEksProvisionedNodeGroupName :: Text
+awsEksProvisionedNodeGroupName = awsEksPulumiStackName <> "-node-group"
 
 awsEksResource :: ManagedResourceDescriptor 'PerRun 'Stack
 awsEksResource =
@@ -397,6 +405,24 @@ awsDns01ChallengeRecordResource =
 -- Derived from the registered stack and cluster names so the cleanup family,
 -- the Pulumi program, and the stack/family ownership edge share one naming
 -- rule. The EBS CSI role predates the common prefix but is still exact.
+homeDns01ChallengeRecordResource :: ManagedResourceDescriptor 'PerRun 'DnsRecordFamily
+homeDns01ChallengeRecordResource =
+  mkManagedResource
+    HomeDns01ChallengeRecordKey
+    PerRunLifecycle
+    DnsRecordFamilyKind
+    HomeRoute53Dns01ChallengeRecordFamilyCoordinate
+    AwsResourceApiAuthority
+
+sesInviteMailObjectsResource :: ManagedResourceDescriptor 'PerRun 'MailObjectFamily
+sesInviteMailObjectsResource =
+  mkManagedResource
+    SesInviteMailObjectsKey
+    PerRunLifecycle
+    MailObjectFamilyKind
+    SesInviteMailDataVersionFamilyCoordinate
+    AwsResourceApiAuthority
+
 awsEksIamRoleNames :: [Text]
 awsEksIamRoleNames =
   [ iamPrefix <> "-cluster-role"
@@ -456,6 +482,24 @@ awsEksLoadBalancerControllerFamilyResource =
     )
     AwsResourceApiAuthority
 
+networkDependentFamilyResource
+  :: RegisteredResourceKey -> AwsNetworkFamily -> ManagedResourceDescriptor 'PerRun 'ControllerFamily
+networkDependentFamilyResource key family =
+  mkManagedResource
+    key
+    PerRunLifecycle
+    ControllerFamilyKind
+    (AwsNetworkDependentFamilyCoordinate family)
+    AwsResourceApiAuthority
+
+awsNetworkFamiliesForStack :: Text -> [AwsNetworkFamily]
+awsNetworkFamiliesForStack stack =
+  [ family
+  | SomeManagedResourceDescriptor descriptor <- managedResourceRegistry
+  , AwsNetworkDependentFamilyCoordinate family <- [managedResourceCoordinate descriptor]
+  , networkFamilyPulumiStack family == stack
+  ]
+
 managedResourceRegistry :: [SomeManagedResourceDescriptor]
 managedResourceRegistry =
   [ SomeManagedResourceDescriptor awsEksResource
@@ -466,7 +510,17 @@ managedResourceRegistry =
   , SomeManagedResourceDescriptor awsDns01ChallengeRecordResource
   , SomeManagedResourceDescriptor awsEksIamRoleFamilyResource
   , SomeManagedResourceDescriptor awsEksLoadBalancerControllerFamilyResource
+  , SomeManagedResourceDescriptor
+      (networkDependentFamilyResource AwsEksVpcCniInterfacesKey EksVpcCniInterfaces)
+  , SomeManagedResourceDescriptor
+      (networkDependentFamilyResource AwsTestVpcCniInterfacesKey TestVpcCniInterfaces)
+  , SomeManagedResourceDescriptor
+      (networkDependentFamilyResource AwsEksClusterSecurityGroupsKey EksClusterSecurityGroups)
   , SomeManagedResourceDescriptor awsEbsProductionRetainedResource
+  , SomeManagedResourceDescriptor homeDns01ChallengeRecordResource
+  , SomeManagedResourceDescriptor sesInviteMailObjectsResource
+  , SomeManagedResourceDescriptor
+      (networkDependentFamilyResource AwsTestCanarySecurityGroupsKey TestCanarySecurityGroups)
   ]
 
 lifecycleRegistry :: [RegisteredIdentity]

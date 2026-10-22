@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Lifecycle-owned orchestration for the destructive host boundary of a
@@ -31,6 +32,8 @@ module Prodbox.Lifecycle.HostCleanupRunner
   , validateHostCleanupReady
   , runHostCleanupRunner
   , resumeHostCleanupRunner
+  , runHostCleanupTerminalHandoff
+  , compileHostCleanupTerminalReport
   , HostCleanupRunnerProgress (..)
   , stepHostCleanupRunner
   , HostCleanupRunnerRegression
@@ -45,12 +48,13 @@ module Prodbox.Lifecycle.HostCleanupRunner
   , hostCleanupRunnerRegressionSteppedTopology
   , hostCleanupRunnerRegressionStepStopsAtOnePhase
   , hostCleanupRunnerRegressionProgressedPrepareResumes
+  , hostCleanupRunnerRegressionTerminalHandoffCompletes
   )
 where
 
 import Control.Concurrent (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.Async (wait, withAsync)
-import Control.Monad (void)
+import Control.Monad (foldM, void)
 import Data.IORef
   ( IORef
   , atomicModifyIORef'
@@ -59,22 +63,32 @@ import Data.IORef
   , readIORef
   )
 import Data.List (find)
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupDigest
+  , CleanupLease (..)
+  , CleanupNodeOutcome (CleanupNodeSucceeded)
+  , CleanupNodeState (..)
   , CleanupOperationId
-  , CleanupRun (cleanupRunGraph, cleanupRunGraphDigest, cleanupRunId)
+  , CleanupRun (cleanupRunGraph, cleanupRunGraphDigest, cleanupRunId, cleanupRunLease)
   , CleanupRunId
+  , CleanupRunReport (..)
+  , beginCleanupNode
   , cleanupGraphNodes
   , cleanupNodeId
   , cleanupNodeIdText
   , cleanupNodeOperationId
+  , compactCleanupRun
+  , completeCleanupNode
   )
+import Prodbox.Lifecycle.CleanupRunRunner (descriptorCleanupNodeAttemptId)
 import Prodbox.Lifecycle.HostCleanupIntent
 import Prodbox.Lifecycle.HostCleanupIntent.Internal
   ( hostCleanupIntentSameBaseBinding
   , transitionHostCleanupIntent
+  , withFixedHostCleanupTerminalHandoffInternal
   , withHostCleanupExecutionLease
   )
 import Prodbox.Lifecycle.Teardown.CascadeEvidence
@@ -169,7 +183,7 @@ data HostCleanupRunnerAction
   | HostCleanupArmTerminal
   | HostCleanupIssueLocalUninstall
   | HostCleanupRecordLocalAbsence
-  | HostCleanupRecoverAuthority
+  | HostCleanupConfirmLocalHandoff
   | HostCleanupCommitCompletion
   | HostCleanupVerifyCompletion
   | HostCleanupFinished
@@ -181,7 +195,7 @@ nextHostCleanupRunnerAction intent = case hostCleanupIntentPhase intent of
   HostCleanupAuthorityAccepted -> HostCleanupArmTerminal
   HostCleanupTerminalArmed -> HostCleanupIssueLocalUninstall
   HostCleanupLocalUninstallIssued -> HostCleanupRecordLocalAbsence
-  HostCleanupLocalAbsenceRecorded -> HostCleanupRecoverAuthority
+  HostCleanupLocalAbsenceRecorded -> HostCleanupConfirmLocalHandoff
   HostCleanupAuthorityReconciled -> HostCleanupCommitCompletion
   HostCleanupCompletionCommitted -> HostCleanupVerifyCompletion
   HostCleanupComplete -> HostCleanupFinished
@@ -271,31 +285,13 @@ data HostCleanupRunnerEffects m = HostCleanupRunnerEffects
       :: HostCleanupRunnerContext
       -> ReadyToUninstallEvidence
       -> m (Either Text (Maybe (LocalUninstallEvidence 'Cascade)))
-  , hostRunnerReestablishBootstrapRecovery
-      :: HostCleanupRunnerContext
-      -> m HostCleanupEffectOutcome
-  , hostRunnerReadBackBootstrapRecovery
-      :: HostCleanupRunnerContext
-      -> m (Either Text HostRecoveryPlaneCheck)
-  , hostRunnerReestablishLifecycleAuthority
-      :: HostCleanupRunnerContext
-      -> m HostCleanupEffectOutcome
-  , hostRunnerReadBackLifecycleAuthority
-      :: HostCleanupRunnerContext
-      -> m (Either Text ReadyToUninstallEvidence)
-  , hostRunnerReconcileCleanupRun
-      :: HostCleanupRunnerContext
-      -> LocalUninstallEvidence 'Cascade
-      -> m HostCleanupEffectOutcome
-  , hostRunnerReadBackCleanupRun
-      :: HostCleanupRunnerContext
-      -> m (Either Text CleanupRun)
   , hostRunnerCommitCompletionReceipt
       :: HostCleanupRunnerContext
       -> LocalUninstallEvidence 'Cascade
       -> m HostCleanupEffectOutcome
   , hostRunnerReadBackCompletionReceipt
       :: HostCleanupRunnerContext
+      -> ReadyToUninstallEvidence
       -> m (Either Text HostCleanupCompletionReadBack)
   }
 
@@ -339,6 +335,7 @@ data HostCleanupRunnerError
   | HostCleanupRunnerCompletionEvidenceInvalid !CascadeEvidenceError
   | HostCleanupRunnerCompletionReceiptNotObserved
   | HostCleanupRunnerCompletionReceiptDigestMissing
+  | HostCleanupRunnerTerminalHandoffRefused !Text
   deriving (Eq, Show)
 
 -- | Persist a Prepared intent and independently observe the exact canonical
@@ -450,6 +447,103 @@ resumeHostCleanupRunner
   -> IO (Either HostCleanupRunnerError HostCleanupRunnerResult)
 resumeHostCleanupRunner store effects =
   runHostCleanupRunnerUnderLease store effects Nothing toCompletion id
+
+-- | Finish only the local tail of an independently observed immutable
+-- handoff.  The run-wide lease covers binding checks, uninstall, fresh local
+-- absence and journal read-back.  The final report preserves every remote
+-- outcome; its four local outcomes are justified by that separate read-back,
+-- without a post-uninstall Authority write.
+runHostCleanupTerminalHandoff
+  :: HostCleanupIntentStore
+  -> HostCleanupRunnerEffects IO
+  -> HostCleanupTerminalHandoff
+  -> IO (Either HostCleanupRunnerError (HostCleanupRunnerResult, CleanupRunReport))
+runHostCleanupTerminalHandoff store effects handoff = do
+  observed <- observeHostCleanupIntentForResume store
+  case observed of
+    Left err -> pure (Left (HostCleanupRunnerIntentError err))
+    Right Nothing -> pure (Left HostCleanupRunnerIntentMissing)
+    Right (Just exact)
+      | not (matches (observedHostCleanupIntent exact)) ->
+          pure
+            ( Left
+                (HostCleanupRunnerTerminalHandoffRefused "active host intent differs from the terminal handoff")
+            )
+      | otherwise -> do
+          leased <- withHostCleanupExecutionLease store exact $ do
+            current <- observeHostCleanupIntentForResume store
+            case current of
+              Right (Just held) | matches (observedHostCleanupIntent held) -> do
+                completed <- runHostCleanupRunnerWithReady store effects Nothing toCompletion id
+                pure $ do
+                  result <- completed
+                  if matches (completedHostCleanupIntent result)
+                    then Right ()
+                    else
+                      Left
+                        (HostCleanupRunnerTerminalHandoffRefused "completed host intent differs from the terminal handoff")
+                  report <- finishLocalReport
+                  Right (result, report)
+              Left err -> pure (Left (HostCleanupRunnerIntentError err))
+              _ ->
+                pure
+                  (Left (HostCleanupRunnerTerminalHandoffRefused "host intent changed before the terminal lease"))
+          pure (either (Left . HostCleanupRunnerExecutionLeaseUnavailable) id leased)
+ where
+  snapshot = hostCleanupTerminalHandoffIntent handoff
+  matches intent =
+    hostCleanupIntentSameBaseBinding snapshot intent
+      && hostCleanupReadyBinding snapshot == hostCleanupReadyBinding intent
+      && hostCleanupIntentPhase intent >= HostCleanupTerminalArmed
+
+  finishLocalReport = compileHostCleanupTerminalReport handoff
+
+-- | Project the terminal report's canonical local attempt identities. This is
+-- ordinary report data, not evidence that any local operation happened.
+compileHostCleanupTerminalReport
+  :: HostCleanupTerminalHandoff
+  -> Either HostCleanupRunnerError CleanupRunReport
+compileHostCleanupTerminalReport handoff = do
+  terminal <- foldM completeLocal prefix local
+  mapHandoffRefusal (compactCleanupRun terminal)
+ where
+  prefix = hostCleanupTerminalHandoffPrefix handoff
+  local =
+    dropWhile
+      ((/= "lifecycle/cascade/uninstall-local") . cleanupNodeIdText . cleanupNodeId)
+      (cleanupGraphNodes (cleanupRunGraph prefix))
+  completeLocal run plan = do
+    let lease = cleanupRunLease run
+    attempt <-
+      mapHandoffRefusal
+        ( descriptorCleanupNodeAttemptId
+            (cleanupRunId run)
+            (cleanupRunGraphDigest run)
+            (hostCleanupTerminalHandoffDescriptorDigest handoff)
+            (cleanupLeaseFence lease)
+            plan
+        )
+    begun <-
+      mapHandoffRefusal
+        ( beginCleanupNode
+            (cleanupLeaseOwner lease)
+            (cleanupLeaseFence lease)
+            (cleanupNodeId plan)
+            attempt
+            run
+        )
+    mapHandoffRefusal
+      ( completeCleanupNode
+          (cleanupLeaseOwner lease)
+          (cleanupLeaseFence lease)
+          (cleanupNodeId plan)
+          attempt
+          CleanupNodeSucceeded
+          begun
+      )
+
+  mapHandoffRefusal :: (Show err) => Either err value -> Either HostCleanupRunnerError value
+  mapHandoffRefusal = either (Left . HostCleanupRunnerTerminalHandoffRefused . Text.pack . show) Right
 
 -- | What one durable phase of the runner did.
 --
@@ -640,20 +734,15 @@ runHostCleanupRunnerWithReady store effects suppliedReady afterAdvance onFinishe
             Left err -> pure (Left err)
             Right _ ->
               advanceAndResume intent HostCleanupLocalAbsenceRecorded Nothing
-        HostCleanupRecoverAuthority -> do
+        HostCleanupConfirmLocalHandoff -> do
+          -- Wire phase 5 retains its historical name for stored intents.  The
+          -- single-host tail confirms local absence; it must never reinstall
+          -- the RKE2 foundation that hosts the Authority it just removed.
           local <- readBackLocal context selectedReady
           case local of
             Left err -> pure (Left err)
-            Right localEvidence -> do
-              recovered <-
-                recoverAuthority context selectedReady localEvidence
-              case recovered of
-                Left err -> pure (Left err)
-                Right () ->
-                  advanceAndResume
-                    intent
-                    HostCleanupAuthorityReconciled
-                    Nothing
+            Right _ ->
+              advanceAndResume intent HostCleanupAuthorityReconciled Nothing
         HostCleanupCommitCompletion -> do
           local <- readBackLocal context selectedReady
           case local of
@@ -679,16 +768,20 @@ runHostCleanupRunnerWithReady store effects suppliedReady afterAdvance onFinishe
                 (Just (hostCompletionReadBackReceiptDigest readBack))
         HostCleanupFinished -> case hostCleanupCompletionReceiptDigest intent of
           Nothing -> pure (Left HostCleanupRunnerCompletionReceiptDigestMissing)
-          Just digest ->
-            pure
-              ( Right
-                  ( onFinished
-                      HostCleanupRunnerComplete
-                        { completedHostCleanupIntent = intent
-                        , completedHostCleanupReceiptDigest = digest
-                        }
-                  )
-              )
+          Just digest -> do
+            verified <- verifyCompletion context selectedReady
+            pure $ case verified of
+              Left err -> Left err
+              Right readBack
+                | hostCompletionReadBackReceiptDigest readBack == digest ->
+                    Right
+                      ( onFinished
+                          HostCleanupRunnerComplete
+                            { completedHostCleanupIntent = intent
+                            , completedHostCleanupReceiptDigest = digest
+                            }
+                      )
+                | otherwise -> Left HostCleanupRunnerPreparedReadBackMismatch
    where
     intent = observedHostCleanupIntent observedIntent
 
@@ -702,30 +795,10 @@ runHostCleanupRunnerWithReady store effects suppliedReady afterAdvance onFinishe
     readBack <- hostRunnerReadBackLocalAbsence effects context selectedReady
     pure (requireExactLocalAbsenceReadBack selectedReady readBack)
 
-  recoverAuthority context selectedReady localEvidence = do
-    recoveryAttempt <- hostRunnerReestablishBootstrapRecovery effects context
-    recovery <- hostRunnerReadBackBootstrapRecovery effects context
-    case requireRecovery recoveryAttempt context recovery of
-      Left err -> pure (Left err)
-      Right () -> do
-        authorityAttempt <- hostRunnerReestablishLifecycleAuthority effects context
-        authority <- hostRunnerReadBackLifecycleAuthority effects context
-        case requireExactReady
-          HostCleanupReadBackAuthorityStep
-          authorityAttempt
-          selectedReady
-          authority of
-          Left err -> pure (Left err)
-          Right () -> do
-            runAttempt <-
-              hostRunnerReconcileCleanupRun effects context localEvidence
-            runReadBack <- hostRunnerReadBackCleanupRun effects context
-            pure (requireRunReadBack runAttempt context runReadBack)
-
   commitCompletion context selectedReady localEvidence = do
     receiptAttempt <-
       hostRunnerCommitCompletionReceipt effects context localEvidence
-    receipt <- hostRunnerReadBackCompletionReceipt effects context
+    receipt <- hostRunnerReadBackCompletionReceipt effects context selectedReady
     pure
       ( void
           ( requireCompletionReadBack
@@ -743,29 +816,14 @@ runHostCleanupRunnerWithReady store effects suppliedReady afterAdvance onFinishe
     case local of
       Left err -> pure (Left err)
       Right localEvidence -> do
-        recovery <- hostRunnerReadBackBootstrapRecovery effects context
-        case requireRecoveryReadBack context recovery of
-          Left err -> pure (Left err)
-          Right () -> do
-            authority <- hostRunnerReadBackLifecycleAuthority effects context
-            case requireExactReadyReadBack
-              HostCleanupReadBackAuthorityStep
+        receipt <- hostRunnerReadBackCompletionReceipt effects context selectedReady
+        pure
+          ( requireCompletionReadBackOnly
+              context
               selectedReady
-              authority of
-              Left err -> pure (Left err)
-              Right () -> do
-                runReadBack <- hostRunnerReadBackCleanupRun effects context
-                case requireRunReadBackOnly context runReadBack of
-                  Left err -> pure (Left err)
-                  Right () -> do
-                    receipt <- hostRunnerReadBackCompletionReceipt effects context
-                    pure
-                      ( requireCompletionReadBackOnly
-                          context
-                          selectedReady
-                          localEvidence
-                          receipt
-                      )
+              localEvidence
+              receipt
+          )
 
 persistExactTransition
   :: HostCleanupIntentStore
@@ -815,16 +873,6 @@ requireExactReady
   -> Either HostCleanupRunnerError ()
 requireExactReady step attempt expected observed = case observed of
   Left detail -> mutationObservationFailure step attempt detail
-  Right actual ->
-    requireBinding HostCleanupAuthorityProofBinding (actual == expected)
-
-requireExactReadyReadBack
-  :: HostCleanupRunnerStep
-  -> ReadyToUninstallEvidence
-  -> Either Text ReadyToUninstallEvidence
-  -> Either HostCleanupRunnerError ()
-requireExactReadyReadBack step expected observed = case observed of
-  Left detail -> Left (HostCleanupRunnerObservationFailed step detail)
   Right actual ->
     requireBinding HostCleanupAuthorityProofBinding (actual == expected)
 
@@ -898,84 +946,6 @@ validateLocalEvidence ready evidence = do
       )
   requireBinding HostCleanupLocalAbsenceProofBinding (evidence == expected)
   Right evidence
-
-requireRecovery
-  :: HostCleanupEffectOutcome
-  -> HostCleanupRunnerContext
-  -> Either Text HostRecoveryPlaneCheck
-  -> Either HostCleanupRunnerError ()
-requireRecovery attempt context observed = case observed of
-  Left detail ->
-    mutationObservationFailure HostCleanupReadBackRecoveryStep attempt detail
-  Right recovery -> validateRecovery context recovery
-
-requireRecoveryReadBack
-  :: HostCleanupRunnerContext
-  -> Either Text HostRecoveryPlaneCheck
-  -> Either HostCleanupRunnerError ()
-requireRecoveryReadBack context observed = case observed of
-  Left detail ->
-    Left
-      ( HostCleanupRunnerObservationFailed
-          HostCleanupReadBackRecoveryStep
-          detail
-      )
-  Right recovery -> validateRecovery context recovery
-
-validateRecovery
-  :: HostCleanupRunnerContext
-  -> HostRecoveryPlaneCheck
-  -> Either HostCleanupRunnerError ()
-validateRecovery context recovery = do
-  requireBinding
-    HostCleanupRecoveryScopeBinding
-    ( hostRecoveryPlaneCheckScope recovery
-        == hostCleanupRunnerObservationScope context
-    )
-  case hostRecoveryPlaneCheckResult recovery of
-    HostRecoveryPlaneAvailable -> Right ()
-    HostRecoveryPlaneUnavailable failure ->
-      Left (HostCleanupRunnerRecoveryUnavailable failure)
-    HostRecoveryPlaneUnobservable failure ->
-      Left (HostCleanupRunnerRecoveryUnobservable failure)
-
-requireRunReadBack
-  :: HostCleanupEffectOutcome
-  -> HostCleanupRunnerContext
-  -> Either Text CleanupRun
-  -> Either HostCleanupRunnerError ()
-requireRunReadBack attempt context observed = case observed of
-  Left detail ->
-    mutationObservationFailure HostCleanupReadBackRunStep attempt detail
-  Right run -> validateRunReadBack context run
-
-requireRunReadBackOnly
-  :: HostCleanupRunnerContext
-  -> Either Text CleanupRun
-  -> Either HostCleanupRunnerError ()
-requireRunReadBackOnly context observed = case observed of
-  Left detail ->
-    Left
-      ( HostCleanupRunnerObservationFailed
-          HostCleanupReadBackRunStep
-          detail
-      )
-  Right run -> validateRunReadBack context run
-
-validateRunReadBack
-  :: HostCleanupRunnerContext
-  -> CleanupRun
-  -> Either HostCleanupRunnerError ()
-validateRunReadBack context observed = do
-  requireBinding
-    HostCleanupRunReadBackIdBinding
-    (cleanupRunId observed == hostCleanupRunnerRunId context)
-  requireBinding
-    HostCleanupRunReadBackGraphBinding
-    ( cleanupRunGraphDigest observed == hostCleanupRunnerGraphDigest context
-        && cleanupRunGraph observed
-          == cleanupRunGraph (hostCleanupRun (hostCleanupRunnerIntent context))
-    )
 
 requireCompletionReadBack
   :: HostCleanupRunnerStep
@@ -1109,6 +1079,7 @@ data HostCleanupRunnerRegression = HostCleanupRunnerRegression
   , hostCleanupRunnerRegressionSteppedTopology :: !Bool
   , hostCleanupRunnerRegressionStepStopsAtOnePhase :: !Bool
   , hostCleanupRunnerRegressionProgressedPrepareResumes :: !Bool
+  , hostCleanupRunnerRegressionTerminalHandoffCompletes :: !Bool
   }
 
 fixedHostCleanupRunnerRegression
@@ -1183,6 +1154,7 @@ runFixedHostCleanupRunnerRegression run ready local complete otherReady =
             (temporaryRoot </> "progressed-prepare")
             intent
             ready
+        handoffCompleted <- fixedTerminalHandoffRunnerScenario local complete
         pure
           ( Right
               HostCleanupRunnerRegression
@@ -1200,8 +1172,42 @@ runFixedHostCleanupRunnerRegression run ready local complete otherReady =
                     stoppedAtOnePhase
                 , hostCleanupRunnerRegressionProgressedPrepareResumes =
                     progressedPrepare
+                , hostCleanupRunnerRegressionTerminalHandoffCompletes = handoffCompleted
                 }
           )
+
+-- | The same fixed run's proofs stay package-private.  The persisted prefix
+-- and production runner, rather than a second completion model, make the report.
+fixedTerminalHandoffRunnerScenario
+  :: LocalUninstallEvidence 'Cascade
+  -> CascadeCompleteEvidence
+  -> IO Bool
+fixedTerminalHandoffRunnerScenario local complete = do
+  result <- withFixedHostCleanupTerminalHandoffInternal $ \store handoff run ready -> do
+    state <- newIORef freshFixedHostRunnerState {fixedHostAuthorityAccepted = True}
+    let effects = fixedHostRunnerEffects run ready local complete state HostCleanupEffectApplied False
+    first <- runHostCleanupTerminalHandoff store effects handoff
+    replay <- runHostCleanupTerminalHandoff store effects handoff
+    afterReplay <- readIORef state
+    modifyIORef' state (\current -> current {fixedHostLocalAbsent = False})
+    reinstalled <- runHostCleanupTerminalHandoff store effects handoff
+    afterRefusal <- readIORef state
+    let succeeded outcome = case outcome of
+          Right (_, report) ->
+            cleanupReportRunId report == cleanupRunId run
+              && all nodeSucceeded (Map.elems (cleanupReportNodeStates report))
+          Left _ -> False
+        nodeSucceeded (CleanupNodeCompleted _ CleanupNodeSucceeded) = True
+        nodeSucceeded _ = False
+    pure
+      ( succeeded first
+          && succeeded replay
+          && fixedHostLocalAbsent afterReplay
+          && fixedHostUninstallCount afterReplay == 1
+          && isLeftRunner reinstalled
+          && fixedHostUninstallCount afterRefusal == 1
+      )
+  pure (either (const False) id result)
 
 data FixedHostRunnerState = FixedHostRunnerState
   { fixedHostAuthorityAccepted :: !Bool
@@ -1316,6 +1322,7 @@ fixedSuccessfulScenario root intent run ready local complete outcome = do
             && isCompletedWith (cleanupRunGraphDigest run) result
             && fixedHostUninstallCount finalState == 1
             && fixedHostReceiptCommitted finalState
+            && fixedHostLocalAbsent finalState
         )
 
 -- | Drive the same successful topology one phase at a time.
@@ -1360,6 +1367,7 @@ fixedSteppedScenario root intent run ready local complete = do
             && maybe False (isCompletedWith (cleanupRunGraphDigest run) . Right) steps
             && fixedHostUninstallCount finalState == 1
             && fixedHostReceiptCommitted finalState
+            && fixedHostLocalAbsent finalState
         , firstStep == Right (HostCleanupRunnerAdvanced HostCleanupAuthorityAccepted)
             && fmap
               (fmap hostCleanupIntentPhase)
@@ -1627,7 +1635,7 @@ fixedHostRunnerEffects
   -> HostCleanupEffectOutcome
   -> Bool
   -> HostCleanupRunnerEffects IO
-fixedHostRunnerEffects run ready local complete stateRef outcome missingCompletion =
+fixedHostRunnerEffects _run ready local complete stateRef outcome missingCompletion =
   HostCleanupRunnerEffects
     { hostRunnerAcceptAuthority = \_ _ -> do
         fixedModify stateRef $ \state -> state {fixedHostAuthorityAccepted = True}
@@ -1647,38 +1655,10 @@ fixedHostRunnerEffects run ready local complete stateRef outcome missingCompleti
     , hostRunnerReadBackLocalAbsence = \_ _ -> do
         state <- fixedObserve stateRef
         pure (Right (if fixedHostLocalAbsent state then Just local else Nothing))
-    , hostRunnerReestablishBootstrapRecovery = \_ -> do
-        fixedModify stateRef $ \state -> state {fixedHostRecoveryAvailable = True}
-        pure outcome
-    , hostRunnerReadBackBootstrapRecovery = \context -> do
-        state <- fixedObserve stateRef
-        pure
-          ( if fixedHostRecoveryAvailable state
-              then
-                Right
-                  HostRecoveryPlaneCheck
-                    { hostRecoveryPlaneCheckScope =
-                        hostCleanupRunnerObservationScope context
-                    , hostRecoveryPlaneCheckResult = HostRecoveryPlaneAvailable
-                    }
-              else Left "recovery unavailable"
-          )
-    , hostRunnerReestablishLifecycleAuthority = \_ -> do
-        fixedModify stateRef $ \state -> state {fixedHostAuthorityAvailable = True}
-        pure outcome
-    , hostRunnerReadBackLifecycleAuthority = \_ -> do
-        state <- fixedObserve stateRef
-        pure (if fixedHostAuthorityAvailable state then Right ready else Left "authority unavailable")
-    , hostRunnerReconcileCleanupRun = \_ _ -> do
-        fixedModify stateRef $ \state -> state {fixedHostRunReconciled = True}
-        pure outcome
-    , hostRunnerReadBackCleanupRun = \_ -> do
-        state <- fixedObserve stateRef
-        pure (if fixedHostRunReconciled state then Right run else Left "run unavailable")
     , hostRunnerCommitCompletionReceipt = \_ _ -> do
         fixedModify stateRef $ \state -> state {fixedHostReceiptCommitted = True}
         pure outcome
-    , hostRunnerReadBackCompletionReceipt = \context -> do
+    , hostRunnerReadBackCompletionReceipt = \context _ -> do
         state <- fixedObserve stateRef
         pure
           ( if missingCompletion

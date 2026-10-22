@@ -4,12 +4,11 @@
 --
 -- The shared SES infrastructure (Sprint 8.1) routes inbound mail addressed to
 -- the receive domain into the capture bucket under the @inbound/@ key prefix.
--- These functions find the messages addressed to one recipient and delete them.
+-- These functions find recent messages addressed to one recipient for delivery.
 --
 -- They run inside the Provider Worker under its assumed-role session, never on
 -- the host: the host holds no AWS credential, and the invite validation reaches
--- the bucket through the @ObserveSesInviteMail@ and @ReapSesInviteMail@
--- Provider intents. Each is a single observation; the caller polls by issuing
+-- the bucket through the @ObserveSealedSesInviteMail@ Provider intent. Each is a single observation; the caller polls by issuing
 -- another intent, because a poll loop inside one Provider request would hold
 -- the request open for the whole deadline.
 --
@@ -17,15 +16,16 @@
 -- every call carries the Provider's child-process permit and wall-clock bound,
 -- and so a unit case can drive these functions against a scripted runner.
 --
--- __An absence claim must not fail open.__ A conclusion that no message
+-- __A delivery poll must not fail open.__ A conclusion that no message
 -- remains is only as strong as the listing and the reads behind it, so a
 -- listing that cannot be walked to its end, and an object that cannot be read,
 -- are failures: reporting \"none\" past either would let a one-time invite token
 -- stay in the bucket under a clean verdict.
 --
--- __The claim is about recent objects, and the bucket grows without bound.__ The
--- capture bucket keeps every message the receive domain is sent and nothing
--- expires it, while the invite recipient carries a per-run nonce, so a message
+-- __Delivery polling covers recent objects.__ Exact cleanup is versioned and
+-- has no recency window; see "Prodbox.Ses.CaptureCleanup". Captured mail becomes eligible for
+-- lifecycle expiry after one day, independently of exact per-run cleanup. The
+-- invite recipient carries a per-run nonce, so a message
 -- older than a run cannot be that run's. Reading every object in the bucket
 -- made each poll cost one process per object ever delivered and, past a hundred,
 -- refused outright. The listing is therefore walked page by page to its end,
@@ -37,9 +37,8 @@ module Prodbox.Ses.Capture
   ( CapturedEmail (..)
   , CaptureRunner (..)
   , findCapturedEmail
-  , capturedEmailKeysFor
-  , deleteCapturedObject
   , messageAddressedTo
+  , messageAddressees
   , maximumInboundObjects
   , maximumRecentInboundObjects
   , captureRecencyWindow
@@ -48,7 +47,6 @@ module Prodbox.Ses.Capture
   )
 where
 
-import Control.Monad (foldM)
 import Data.Aeson (Value (..), eitherDecode)
 import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
@@ -147,46 +145,6 @@ findCapturedEmail runner bucket recipient = do
         | messageAddressedTo recipient body ->
             pure (Success (Just CapturedEmail {capturedEmailKey = keyText, capturedEmailBody = body}))
         | otherwise -> firstMatch rest
-
--- | Every captured object key whose message is addressed to the recipient.
--- An object that cannot be read fails the whole answer: it cannot be shown not
--- to name the recipient.
-capturedEmailKeysFor
-  :: CaptureRunner
-  -> String
-  -> Text
-  -> IO (Result [Text])
-capturedEmailKeysFor runner bucket recipient = do
-  listed <- listInboundKeys runner bucket
-  case listed of
-    Failure err -> pure (Failure err)
-    Success keys -> fmap reverse <$> foldM collect (Success []) keys
- where
-  collect (Failure err) _ = pure (Failure err)
-  collect (Success matched) keyText = do
-    fetched <- getInboundObject runner bucket keyText
-    pure $ case fetched of
-      Failure err -> Failure err
-      Success body
-        | messageAddressedTo recipient body -> Success (keyText : matched)
-        | otherwise -> Success matched
-
--- | Hard-delete one captured object.
-deleteCapturedObject :: CaptureRunner -> String -> Text -> IO (Result ())
-deleteCapturedObject runner bucket keyText = do
-  output <-
-    runCaptureAws
-      runner
-      ["s3api", "delete-object", "--bucket", bucket, "--key", Text.unpack keyText]
-  pure $ case processExitCode output of
-    ExitSuccess -> Success ()
-    ExitFailure code ->
-      Failure
-        ( "aws s3api delete-object exit "
-            <> show code
-            <> ": "
-            <> trim (processStderr output)
-        )
 
 -- | The inbound object keys worth reading: every page of the listing is walked
 -- to its end, and the keys of the objects modified within the recency window are
@@ -348,9 +306,11 @@ getInboundObject runner bucket keyText =
 -- deleted.
 messageAddressedTo :: Text -> ByteString -> Bool
 messageAddressedTo recipient raw =
-  any (elem wanted . addresses) toHeaders
+  Text.toLower (Text.strip recipient) `elem` messageAddressees raw
+
+messageAddressees :: ByteString -> [Text]
+messageAddressees raw = concatMap addresses toHeaders
  where
-  wanted = Text.toLower (Text.strip recipient)
   decoded = TextEncoding.decodeUtf8With TextEncodingError.lenientDecode (BL.toStrict raw)
   headerLines = takeWhile (not . Text.null . Text.strip) (Text.lines (Text.replace "\r" "" decoded))
   unfolded = unfold headerLines

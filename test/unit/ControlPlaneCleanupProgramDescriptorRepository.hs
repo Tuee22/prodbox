@@ -1,20 +1,35 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE TupleSections #-}
 
 module ControlPlaneCleanupProgramDescriptorRepository
   ( controlPlaneCleanupProgramDescriptorRepositorySuite
   )
 where
 
+import Codec.CBOR.Read (deserialiseFromBytes)
+import Codec.CBOR.Term (Term (..), decodeTerm, encodeTerm)
+import Codec.CBOR.Write (toLazyByteString)
+import Codec.Serialise (Serialise, serialise)
 import Control.Monad (filterM, forM_)
+import Data.Aeson (FromJSON (..), eitherDecodeStrict', withObject, (.:))
 import Data.ByteString qualified as ByteString
+import Data.ByteString.Base64 qualified as Base64
+import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Either (isLeft)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf, isPrefixOf, sort)
+import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
+import Data.Word (Word16)
+import GHC.Generics (Generic)
 import Network.HTTP.Types.Header (Header)
 import Network.HTTP.Types.Method (Method)
 import Prodbox.ControlPlane.AuthenticatedTransport
@@ -34,13 +49,18 @@ import Prodbox.ControlPlane.CleanupRunClient
   , descriptorBoundCleanupRunDescriptorDigest
   , descriptorBoundCleanupRunGraphDigest
   , descriptorBoundCleanupRunId
+  , withDescriptorBoundCleanupProgram
   )
 import Prodbox.ControlPlane.CleanupRunEndpoint
-  ( CleanupRunDescriptorResponse (..)
+  ( CleanupRunDescriptorCommand (CleanupRunDescriptorRecordPrimary)
+  , CleanupRunDescriptorRefusal (..)
+  , CleanupRunDescriptorResponse (..)
   , CleanupRunEndpointResult (CleanupRunEndpointDescriptorBound)
+  , cleanupRunDescriptorMutationAckMaximumBytes
   , cleanupRunEndpointBody
   , cleanupRunEndpointStatus
   , cleanupRunMaximumBytes
+  , compactDescriptorTransitionResponse
   , decodeCleanupRunDescriptorResponse
   , encodeCleanupRunDescriptorResponse
   )
@@ -81,7 +101,13 @@ import Prodbox.Lifecycle.Teardown.CleanupProgramDescriptor
 import Prodbox.Lifecycle.Teardown.Graph
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Program (someTeardownOperationTag)
-import Prodbox.Lifecycle.Teardown.Registry (lifecycleRegistryRevision)
+import Prodbox.Lifecycle.Teardown.Registry
+  ( cleanupTargetKey
+  , cleanupTargetsForSurface
+  , lifecycleRegistryRevision
+  )
+import Prodbox.Lifecycle.Teardown.ResourceScopeBindings
+import Prodbox.Settings.Coordinate (mkS3BucketName)
 import System.Directory (doesDirectoryExist, listDirectory)
 import System.FilePath (takeExtension, (</>))
 import TestSupport
@@ -110,7 +136,7 @@ controlPlaneCleanupProgramDescriptorRepositorySuite =
                 cleanupProgramDescriptorOperationIdentityVersion
                   `shouldBe` "lifecycle-cleanup-operation/v3"
                 cleanupProgramDescriptorCompilerVersion
-                  `shouldBe` "lifecycle-desired-absence-program-compiler/v5"
+                  `shouldBe` "lifecycle-desired-absence-program-compiler/v7"
                 cleanupProgramDescriptorCapabilityCatalogVersion
                   `shouldBe` "lifecycle-recovery-capability-catalog/v1"
                 cleanupProgramDescriptorCapabilitySetVersion
@@ -138,7 +164,7 @@ controlPlaneCleanupProgramDescriptorRepositorySuite =
               (Just fixtureAwsScope)
               (Just alternateAwsDnsZone)
           )
-      cleanupProgramDescriptorFormatVersion `shouldBe` 2
+      cleanupProgramDescriptorFormatVersion `shouldBe` 3
       cleanupProgramDescriptorAwsDnsZone firstDescriptor
         `shouldBe` Just fixtureAwsDnsZone
       cleanupProgramDescriptorAwsDnsZone secondDescriptor
@@ -150,8 +176,256 @@ controlPlaneCleanupProgramDescriptorRepositorySuite =
         `shouldNotBe` cleanupProgramDescriptorGraphDigest secondDescriptor
       cleanupProgramDescriptorDigest firstDescriptor
         `shouldNotBe` cleanupProgramDescriptorDigest secondDescriptor
-      cleanupDigestText (cleanupProgramDescriptorDigest firstDescriptor)
-        `shouldBe` "3b0b8bcf6022ec57b7e9bcb400f7ca5a43057d8832ca0bf29456d79fdb1856fc"
+      (_, _, historical) <-
+        expectDescriptorFixture
+          ( legacyDescriptorFixtureWithZone
+              CascadeSurface
+              fixtureRunId
+              fixtureFoundation
+              (Just fixtureAwsScope)
+              (Just fixtureAwsDnsZone)
+          )
+      cleanupDigestText (cleanupDigestOfBytes (legacyV2Bytes historical))
+        `shouldBe` "9945312c1ba45af61e005b07e69f316b8c11100ed6d02f633ec453fb7c2ffbd1"
+
+    it "restarts an unbound v2 descriptor without changing its bytes or graph" $ do
+      (compiled, initialRun, descriptor) <-
+        expectDescriptorFixture
+          ( legacyDescriptorFixtureWithZone
+              CascadeSurface
+              fixtureRunId
+              fixtureFoundation
+              (Just fixtureAwsScope)
+              (Just fixtureAwsDnsZone)
+          )
+      encodedRun <- mustRightIO (firstShow (encodeCleanupRun cleanupRunMaximumBytes initialRun))
+      let legacy = legacyV2Bytes descriptor
+          digest = cleanupDigestOfBytes legacy
+      (client, remaining) <-
+        authenticatedDescriptorClientFor
+          [ CleanupRunDescriptorPresent (cleanupRunIdText fixtureRunId) (cleanupDigestText digest) encodedRun
+          , CleanupRunDescriptorProgramPresent (cleanupRunIdText fixtureRunId) (cleanupDigestText digest) legacy
+          ]
+      recovered <- mustRightIO =<< observeDescriptorBoundCleanupRun client fixtureRunId
+      remaining >>= (`shouldBe` [])
+      descriptorBoundCleanupRunDescriptorDigest recovered `shouldBe` digest
+      descriptorBoundCleanupRunGraphDigest recovered
+        `shouldBe` cleanupGraphDigest (compiledDesiredAbsenceGraph compiled)
+      mustRightIO
+        ( withDescriptorBoundCleanupProgram
+            recovered
+            (\_ restored _ -> evidenceResourceScopeBindings (compiledDesiredAbsenceObservationScope restored))
+        )
+        >>= (`shouldBe` Nothing)
+
+    it "restarts all seven frozen v3 programs without changing their graphs or acquiring a later family" $ do
+      bytes <- ByteString.readFile "test/fixtures/lifecycle-descriptor-v3.json"
+      cleanupDigestText (cleanupDigestOfBytes bytes)
+        `shouldBe` "a939f5d898bb03ab2fb8eca45626a0cf5c57aaee769bfb4c3656cf4ba6cc8914"
+      frozen <- mustRightIO (eitherDecodeStrict' bytes)
+      frozenV3Format frozen `shouldBe` 3
+      frozenV3Compiler frozen `shouldBe` "lifecycle-desired-absence-program-compiler/v6"
+      length (frozenV3Programs frozen) `shouldBe` 7
+      forM_ (frozenV3Programs frozen) $ \fixture -> do
+        descriptor <- mustRightIO (Base64.decode (TextEncoding.encodeUtf8 (frozenV3Bytes fixture)))
+        let digest = cleanupDigestOfBytes descriptor
+        cleanupDigestText digest `shouldBe` frozenV3Digest fixture
+        (runId, initial) <- frozenV3RunAndInitial descriptor
+        (client, remaining) <-
+          authenticatedDescriptorClientFor
+            [ CleanupRunDescriptorPresent (cleanupRunIdText runId) (cleanupDigestText digest) initial
+            , CleanupRunDescriptorProgramPresent (cleanupRunIdText runId) (cleanupDigestText digest) descriptor
+            ]
+        recovered <- mustRightIO =<< observeDescriptorBoundCleanupRun client runId
+        remaining >>= (`shouldBe` [])
+        descriptorBoundCleanupRunDescriptorDigest recovered `shouldBe` digest
+        cleanupDigestText (descriptorBoundCleanupRunGraphDigest recovered) `shouldBe` frozenV3Graph fixture
+        nodes <-
+          mustRightIO
+            ( withDescriptorBoundCleanupProgram recovered $ \_ compiled _ ->
+                map (cleanupNodeIdText . cleanupNodeId) (cleanupGraphNodes (compiledDesiredAbsenceGraph compiled))
+            )
+        nodes `shouldSatisfy` all (not . Text.isInfixOf "aws-test-canary-security-groups")
+
+    it "bounds a mutation reply independently of the committed run size" $ do
+      (_, initialRun, descriptor) <-
+        expectDescriptorFixture
+          ( descriptorFixtureWithZone
+              CascadeSurface
+              fixtureRunId
+              fixtureFoundation
+              (Just fixtureAwsScope)
+              (Just fixtureAwsDnsZone)
+          )
+      let lease = cleanupRunLease initialRun
+          owner = cleanupLeaseOwner lease
+          fence = cleanupLeaseFence lease
+          primary = CleanupPrimaryFailed (Text.replicate (128 * 1024) "x")
+          descriptorText = cleanupDigestText (cleanupProgramDescriptorDigest descriptor)
+          runText = cleanupRunIdText fixtureRunId
+      failedRun <- mustRightIO (firstShow (recordPrimaryOutcome owner fence primary initialRun))
+      bytes <- mustRightIO (firstShow (encodeCleanupRun cleanupRunMaximumBytes failedRun))
+      let command = CleanupRunDescriptorRecordPrimary runText descriptorText (cleanupOwnerIdText owner) fence primary
+          reply =
+            compactDescriptorTransitionResponse
+              command
+              (CleanupRunDescriptorPresent runText descriptorText bytes)
+      ByteString.length bytes `shouldSatisfy` (> 128 * 1024)
+      reply
+        `shouldBe` CleanupRunDescriptorMutationCommitted
+          runText
+          descriptorText
+          (cleanupDigestText (cleanupDigestOfBytes bytes))
+      encoded <- mustRightIO (encodeCleanupRunDescriptorResponse reply)
+      ByteString.length encoded `shouldSatisfy` (<= cleanupRunDescriptorMutationAckMaximumBytes)
+    it "appends bounded transition metadata at response index seven and refuses its v1 envelope" $ do
+      let acknowledgement =
+            CleanupRunDescriptorMutationCommitted
+              (Text.replicate 160 "r")
+              (Text.replicate 64 "a")
+              (Text.replicate 64 "b")
+      encoded <- mustRightIO (encodeCleanupRunDescriptorResponse acknowledgement)
+      ByteString.length encoded `shouldSatisfy` (<= cleanupRunDescriptorMutationAckMaximumBytes)
+      decodeCleanupRunDescriptorResponse encoded `shouldBe` Right acknowledgement
+      (_, term) <- mustRightIO (deserialiseFromBytes decodeTerm (LazyByteString.fromStrict encoded))
+      case term of
+        TList [TInt 0, TInt 2, TList (TInt 7 : _)] ->
+          decodeCleanupRunDescriptorResponse
+            (LazyByteString.toStrict (serialise (DescriptorResponseEnvelopeFixture 1 acknowledgement)))
+            `shouldBe` Left "descriptor-bound cleanup response v1 contains v2 state"
+        _ ->
+          expectationFailure
+            "transition acknowledgement moved an existing response constructor or envelope version"
+    forM_ [minBound .. maxBound :: TransitionAckFault] $ \fault ->
+      it ("confirms cleanup transition acknowledgements through one independent run read: " <> show fault) $ do
+        (_, initialRun, descriptor) <-
+          expectDescriptorFixture
+            ( descriptorFixtureWithZone
+                CascadeSurface
+                fixtureRunId
+                fixtureFoundation
+                (Just fixtureAwsScope)
+                (Just fixtureAwsDnsZone)
+            )
+        initialBytes <- mustRightIO (firstShow (encodeCleanupRun cleanupRunMaximumBytes initialRun))
+        let owner = cleanupLeaseOwner (cleanupRunLease initialRun)
+            now = cleanupLeaseExpiresAtMicros (cleanupRunLease initialRun) + 1
+            expires = now + 1000
+            digest = cleanupProgramDescriptorDigest descriptor
+            runText = cleanupRunIdText fixtureRunId
+            descriptorText = cleanupDigestText digest
+        claimed <- mustRightIO (firstShow (claimCleanupRun owner now expires initialRun))
+        claimedBytes <- mustRightIO (firstShow (encodeCleanupRun cleanupRunMaximumBytes claimed))
+        let present bytes = CleanupRunDescriptorPresent runText descriptorText bytes
+            program =
+              CleanupRunDescriptorProgramPresent runText descriptorText (cleanupProgramDescriptorBytes descriptor)
+            stateDigest = cleanupDigestText (cleanupDigestOfBytes claimedBytes)
+            acknowledgement = case fault of
+              AckLegacyFull -> present claimedBytes
+              AckForeignRun -> CleanupRunDescriptorMutationCommitted "different-run" descriptorText stateDigest
+              AckForeignDescriptor -> CleanupRunDescriptorMutationCommitted runText (Text.replicate 64 "a") stateDigest
+              AckForeignState -> CleanupRunDescriptorMutationCommitted runText descriptorText (Text.replicate 64 "b")
+              AckMalformed -> CleanupRunDescriptorMutationCommitted runText descriptorText "malformed"
+              _ -> CleanupRunDescriptorMutationCommitted runText descriptorText stateDigest
+            closing = case fault of
+              AckChangedReadback -> present initialBytes
+              AckUnobservableReadback -> CleanupRunDescriptorRefused (CleanupRunDescriptorUnavailable "run readback unavailable")
+              AckWrongReadbackKind -> program
+              _ -> present claimedBytes
+        (client, remaining) <-
+          authenticatedDescriptorClientFor [present initialBytes, program, acknowledgement, closing]
+        bound <- mustRightIO =<< observeDescriptorBoundCleanupRun client fixtureRunId
+        result <- claimDescriptorBoundCleanupRun client bound owner now expires
+        if fault `elem` [AckConfirmed, AckLegacyFull]
+          then do
+            confirmed <- mustRightIO result
+            descriptorBoundCleanupRunId confirmed `shouldBe` fixtureRunId
+            descriptorBoundCleanupRunGraphDigest confirmed
+              `shouldBe` cleanupGraphDigest (cleanupRunGraph claimed)
+          else result `shouldSatisfy` either (const True) (const False)
+        remaining
+          >>= ( `shouldBe`
+                  [closing | fault `elem` [AckForeignRun, AckForeignDescriptor, AckMalformed]]
+              )
+
+    it "refuses a historical compiler tag on a graph that declares the new canary family" $ do
+      (compiled, initial, descriptor) <-
+        expectDescriptorFixture
+          (descriptorFixture CascadeSurface fixtureRunId fixtureFoundation (Just fixtureAwsScope))
+      map (cleanupNodeIdText . cleanupNodeId) (cleanupGraphNodes (compiledDesiredAbsenceGraph compiled))
+        `shouldSatisfy` any (Text.isInfixOf "aws-test-canary-security-groups")
+      (_, term) <-
+        mustRightIO
+          ( deserialiseFromBytes
+              decodeTerm
+              (LazyByteString.fromStrict (cleanupProgramDescriptorBytes descriptor))
+          )
+      forged <- case term of
+        TList fields ->
+          pure
+            ( LazyByteString.toStrict
+                ( toLazyByteString
+                    ( encodeTerm
+                        ( TList
+                            [ if index == 11 then TString "lifecycle-desired-absence-program-compiler/v6" else value
+                            | (index, value) <- zip [0 :: Int ..] fields
+                            ]
+                        )
+                    )
+                )
+            )
+        _ -> fail "current descriptor is not a list"
+      encodedRun <- mustRightIO (firstShow (encodeCleanupRun cleanupRunMaximumBytes initial))
+      let digest = cleanupDigestText (cleanupDigestOfBytes forged)
+      (client, _) <-
+        authenticatedDescriptorClientFor
+          [ CleanupRunDescriptorPresent (cleanupRunIdText fixtureRunId) digest encodedRun
+          , CleanupRunDescriptorProgramPresent (cleanupRunIdText fixtureRunId) digest forged
+          ]
+      observeDescriptorBoundCleanupRun client fixtureRunId >>= (`shouldSatisfy` isLeft)
+
+    it "reconstructs bound home DNS01 and exact mail coordinates after authenticated restart" $ do
+      let home = mustRight (mkHomeDns01Scope alternateAwsDnsZone ("auth.example.test" :| []))
+          bucket = mustRight (mkS3BucketName "fixture-capture-mail")
+          mail = mustRight (mkInviteMailScope bucket (ExactInviteRecipient "test-abc123@receive.example.test"))
+          bindings = mkResourceScopeBindings (Just home) (Just mail)
+          compile value =
+            compileDesiredAbsenceGraphForRegisteredKeysWithBindings
+              fixtureRunId
+              fixtureFoundation
+              (Just fixtureAwsScope)
+              (Just fixtureAwsDnsZone)
+              (Just value)
+              ExplicitPerRunSurface
+              []
+      compiled <- mustRightIO (firstShow (compile bindings))
+      initialRun <-
+        mustRightIO
+          (firstShow (newCleanupRun fixtureRunId (compiledDesiredAbsenceGraph compiled) fixtureOwner 0 1000000))
+      descriptor <- mustRightIO (firstShow (captureCleanupProgramDescriptor compiled initialRun))
+      encodedRun <- mustRightIO (firstShow (encodeCleanupRun cleanupRunMaximumBytes initialRun))
+      let responses =
+            [ CleanupRunDescriptorPresent
+                (cleanupRunIdText fixtureRunId)
+                (cleanupDigestText (cleanupProgramDescriptorDigest descriptor))
+                encodedRun
+            , CleanupRunDescriptorProgramPresent
+                (cleanupRunIdText fixtureRunId)
+                (cleanupDigestText (cleanupProgramDescriptorDigest descriptor))
+                (cleanupProgramDescriptorBytes descriptor)
+            ]
+      (client, remaining) <- authenticatedDescriptorClientFor responses
+      recovered <- mustRightIO =<< observeDescriptorBoundCleanupRun client fixtureRunId
+      remaining >>= (`shouldBe` [])
+      mustRightIO
+        ( withDescriptorBoundCleanupProgram
+            recovered
+            (\_ restored _ -> evidenceResourceScopeBindings (compiledDesiredAbsenceObservationScope restored))
+        )
+        >>= (`shouldBe` Just bindings)
+      changed <- mustRightIO (firstShow (compile emptyResourceScopeBindings))
+      cleanupGraphDigest (compiledDesiredAbsenceGraph changed)
+        `shouldNotBe` cleanupProgramDescriptorGraphDigest descriptor
 
     it "refuses a transitioned run and any compiled/run identity disagreement" $ do
       case descriptorFixture
@@ -303,6 +577,7 @@ controlPlaneCleanupProgramDescriptorRepositorySuite =
       sort descriptorInternalImporters
         `shouldBe` sort
           [ "src/Prodbox/Lifecycle/Teardown/CleanupProgramDescriptor.hs"
+          , "src/Prodbox/Lifecycle/HostCleanupIntent/Internal.hs"
           , "src/Prodbox/ControlPlane/CleanupProgramDescriptorRepository/Internal.hs"
           , "src/Prodbox/ControlPlane/CleanupRunEndpoint.hs"
           ]
@@ -316,6 +591,8 @@ controlPlaneCleanupProgramDescriptorRepositorySuite =
           [ "src/Prodbox/ControlPlane/CleanupProgramDescriptorRepository.hs"
           , "src/Prodbox/ControlPlane/CleanupRunClient.hs"
           , "src/Prodbox/ControlPlane/CleanupRunEndpoint.hs"
+          , "src/Prodbox/ControlPlane/CompletedProviderPredecessorRegression/Internal.hs"
+          , "src/Prodbox/ControlPlane/CredentialSuccessorRegression/Internal.hs"
           , "src/Prodbox/ControlPlane/RecoveryPlaneEndpoint/Internal.hs"
           , "src/Prodbox/ControlPlane/Runtime.hs"
           ]
@@ -604,6 +881,42 @@ descriptorFixtureWithZone witness runId foundation maybeAwsScope maybeAwsDnsZone
     firstShow (captureCleanupProgramDescriptor compiled initialRun)
   Right (compiled, initialRun, descriptor)
 
+legacyDescriptorFixtureWithZone
+  :: CleanupSurfaceWitness surface
+  -> CleanupRunId
+  -> LinuxRke2FoundationId
+  -> Maybe AwsScope
+  -> Maybe HostedZoneId
+  -> Either
+       Text.Text
+       (CompiledDesiredAbsenceProgram surface, CleanupRun, CleanupProgramDescriptor)
+legacyDescriptorFixtureWithZone witness runId foundation maybeAwsScope maybeAwsDnsZone = do
+  compiled <-
+    firstShow
+      ( compileDesiredAbsenceGraphForRegisteredKeys
+          runId
+          foundation
+          maybeAwsScope
+          maybeAwsDnsZone
+          witness
+          [ cleanupTargetKey target
+          | target <- cleanupTargetsForSurface witness
+          , cleanupTargetKey target < HomeDns01ChallengeRecordKey
+          ]
+      )
+  initialRun <-
+    firstShow
+      ( newCleanupRun
+          runId
+          (compiledDesiredAbsenceGraph compiled)
+          fixtureOwner
+          1
+          1000
+      )
+  descriptor <-
+    firstShow (captureCleanupProgramDescriptor compiled initialRun)
+  Right (compiled, initialRun, descriptor)
+
 expectDescriptorFixture
   :: Either
        Text.Text
@@ -778,3 +1091,84 @@ mustRightIO result = case result of
     expectationFailure (show err)
     fail "invalid descriptor-bound cleanup fixture"
   Right value -> pure value
+
+-- The measured v2 generic constructor has 18 fields after its constructor tag.
+-- Keep the byte fixture honest while current captures append the v3 extension.
+legacyV2Bytes :: CleanupProgramDescriptor -> ByteString.ByteString
+legacyV2Bytes descriptor = LazyByteString.toStrict (toLazyByteString (encodeTerm legacy))
+ where
+  term =
+    snd
+      ( mustRight
+          ( deserialiseFromBytes
+              decodeTerm
+              (LazyByteString.fromStrict (cleanupProgramDescriptorBytes descriptor))
+          )
+      )
+  legacy = case term of
+    TList fields ->
+      TList
+        [ case index of
+            1 -> TInt 2
+            11 -> TString "lifecycle-desired-absence-program-compiler/v5"
+            _ -> value
+        | (index, value) <- zip [0 :: Int ..] (init fields)
+        ]
+    _ -> error "descriptor fixture is not a list"
+
+-- Frozen before the canary registry extension; these bytes are never regenerated
+-- by a test and contain synthetic metadata only.
+data FrozenV3Document = FrozenV3Document
+  { frozenV3Format :: !Int
+  , frozenV3Compiler :: !Text.Text
+  , frozenV3Programs :: ![FrozenV3Program]
+  }
+
+instance FromJSON FrozenV3Document where
+  parseJSON = withObject "FrozenV3Document" $ \object ->
+    FrozenV3Document <$> object .: "format" <*> object .: "compiler" <*> object .: "fixtures"
+
+data FrozenV3Program = FrozenV3Program
+  { frozenV3Bytes :: !Text.Text
+  , frozenV3Digest :: !Text.Text
+  , frozenV3Graph :: !Text.Text
+  }
+
+instance FromJSON FrozenV3Program where
+  parseJSON = withObject "FrozenV3Program" $ \object ->
+    FrozenV3Program
+      <$> object .: "descriptor_base64"
+      <*> object .: "descriptor_digest"
+      <*> object .: "graph_digest"
+
+frozenV3RunAndInitial :: ByteString.ByteString -> IO (CleanupRunId, ByteString.ByteString)
+frozenV3RunAndInitial bytes = do
+  (remaining, term) <- mustRightIO (deserialiseFromBytes decodeTerm (LazyByteString.fromStrict bytes))
+  remaining `shouldBe` LazyByteString.empty
+  case term of
+    TList fields -> case (lookup 1 indexed, lookup 2 indexed, lookup 17 indexed) of
+      (Just (TInt 3), Just (TString runId), Just (TBytes initial)) ->
+        (,initial) <$> mustRightIO (mkCleanupRunId runId)
+      _ -> fail "frozen v3 metadata is malformed"
+     where
+      indexed = zip [0 :: Int ..] fields
+    _ -> fail "frozen v3 descriptor is not a list"
+
+-- Faults cross the real authenticated client decoder and committed-descriptor reader.
+data TransitionAckFault
+  = AckConfirmed
+  | AckLegacyFull
+  | AckForeignRun
+  | AckForeignDescriptor
+  | AckForeignState
+  | AckChangedReadback
+  | AckUnobservableReadback
+  | AckWrongReadbackKind
+  | AckMalformed
+  deriving (Bounded, Enum, Eq, Show)
+
+-- The same canonical envelope shape under a deliberately obsolete version.
+data DescriptorResponseEnvelopeFixture
+  = DescriptorResponseEnvelopeFixture Word16 CleanupRunDescriptorResponse
+  deriving stock (Generic)
+  deriving anyclass (Serialise)

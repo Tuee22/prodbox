@@ -21,6 +21,8 @@ module Prodbox.ControlPlane.CleanupRunEndpoint
   , encodeCleanupRunDescriptorResponse
   , decodeCleanupRunDescriptorResponse
   , cleanupRunDescriptorResponseMaximumBytes
+  , cleanupRunDescriptorMutationAckMaximumBytes
+  , compactDescriptorTransitionResponse
   )
 where
 
@@ -29,17 +31,23 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.List (nub)
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Word (Word16)
 import GHC.Generics (Generic)
-import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.AuthorityBackupClient
   ( AuthorityAggregateBackupClient (..)
   , AuthorityAggregateBackupObservation (..)
   )
-import Prodbox.ControlPlane.AuthorityBackupEndpoint (authorityBackupCiphertextBytes)
+import Prodbox.ControlPlane.AuthorityBackupEndpoint
+  ( AuthorityBackupBlobClass (AuthorityAggregateEnvelope)
+  , authorityBackupCiphertextBytes
+  , authorityBackupDigestText
+  , authorityBackupReceiptClass
+  , authorityBackupReceiptDigest
+  )
 import Prodbox.ControlPlane.CleanupProgramDescriptorRepository
   ( CleanupProgramDescriptorAuthorityClient
   , CleanupProgramDescriptorCommitResult (..)
@@ -54,6 +62,11 @@ import Prodbox.ControlPlane.CleanupProgramDescriptorRepository.Internal
   ( committedCleanupProgramDescriptorBytes
   , withCommittedCleanupProgramDescriptor
   )
+import Prodbox.ControlPlane.CleanupRunProtocol
+  ( CleanupRunCommand (..)
+  , CleanupRunDescriptorCommand (..)
+  , cleanupRunMaximumBytes
+  )
 import Prodbox.ControlPlane.Codec
   ( ControlPlaneRequestCodecError
   , decodeControlPlaneRequest
@@ -63,16 +76,15 @@ import Prodbox.Lifecycle.CleanupRun
   ( CleanupAttemptId
   , CleanupDigest
   , CleanupNodeId
-  , CleanupNodeOutcome
+  , CleanupNodeState (CleanupNodeCompleted)
   , CleanupOwnerId
-  , CleanupPrimaryOutcome
   , CleanupRun
   , CleanupRunError
   , CleanupRunId
   , CleanupRunIndexEntry (..)
   , CleanupRunIndexRepository (..)
   , CleanupRunIndexSnapshot (..)
-  , CleanupRunReport
+  , CleanupRunReport (..)
   , CleanupRunRepository (..)
   , CleanupRunSnapshot (..)
   , CleanupRunStoreError
@@ -86,6 +98,7 @@ import Prodbox.Lifecycle.CleanupRun
   , applyDescriptorBoundCleanupRunTransition
   , beginCleanupNode
   , claimCleanupRun
+  , cleanupDigestOfBytes
   , cleanupDigestText
   , cleanupLeaseExpiresAtMicros
   , cleanupRunGraph
@@ -94,9 +107,11 @@ import Prodbox.Lifecycle.CleanupRun
   , cleanupRunIdText
   , cleanupRunIndexEntries
   , cleanupRunLease
+  , cleanupRunNodeStates
   , cleanupRunTerminal
   , cleanupRunTombstoneId
   , cleanupRunTombstoneReportDigest
+  , compactCleanupRun
   , compactCleanupRunDurably
   , compactDescriptorBoundCleanupRunDurably
   , completeCleanupNode
@@ -125,55 +140,11 @@ import Prodbox.Lifecycle.Teardown.CleanupProgramDescriptor.Internal
   ( decodeAndValidateCleanupProgramDescriptor
   )
 
-cleanupRunMaximumBytes :: Int
-cleanupRunMaximumBytes = 3 * 1024 * 1024
-
 cleanupRunDescriptorResponseMaximumBytes :: Int
 cleanupRunDescriptorResponseMaximumBytes = 2 * 1024 * 1024
 
-data CleanupRunCommand
-  = CleanupRunCreate !Text !ByteString
-  | CleanupRunObserve !Text
-  | CleanupRunClaim !Text !Text !Natural !Natural
-  | CleanupRunRecordPrimary !Text !Text !Natural !CleanupPrimaryOutcome
-  | CleanupRunBeginNode !Text !Text !Natural !Text !Text
-  | CleanupRunCompleteNode !Text !Text !Natural !Text !Text !CleanupNodeOutcome
-  | CleanupRunScan
-  | CleanupRunCompact !Text !Natural !Natural
-  | CleanupRunDescriptorBound !CleanupRunDescriptorCommand
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (Serialise)
-
-data CleanupRunDescriptorCommand
-  = CleanupRunDescriptorCreate !Text !ByteString
-  | CleanupRunDescriptorObserve !Text
-  | CleanupRunDescriptorClaim !Text !Text !Text !Natural !Natural
-  | CleanupRunDescriptorRecordPrimary
-      !Text
-      !Text
-      !Text
-      !Natural
-      !CleanupPrimaryOutcome
-  | CleanupRunDescriptorBeginNode
-      !Text
-      !Text
-      !Text
-      !Natural
-      !Text
-      !Text
-  | CleanupRunDescriptorCompleteNode
-      !Text
-      !Text
-      !Text
-      !Natural
-      !Text
-      !Text
-      !CleanupNodeOutcome
-  | CleanupRunDescriptorScan
-  | CleanupRunDescriptorCompact !Text !Text !Natural !Natural
-  | CleanupRunDescriptorReadBackProgram !Text
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (Serialise)
+cleanupRunDescriptorMutationAckMaximumBytes :: Int
+cleanupRunDescriptorMutationAckMaximumBytes = 4 * 1024
 
 data CleanupRunDescriptorRefusal
   = CleanupRunDescriptorLegacyState
@@ -197,6 +168,7 @@ data CleanupRunDescriptorResponse
   | CleanupRunDescriptorNotFound
   | CleanupRunDescriptorRefused !CleanupRunDescriptorRefusal
   | CleanupRunDescriptorProgramPresent !Text !Text !ByteString
+  | CleanupRunDescriptorMutationCommitted !Text !Text !Text
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -327,6 +299,7 @@ serveCommand provider command = case command of
             pure $ either CleanupRunEndpointUnavailable CleanupRunEndpointCompacted compacted
   CleanupRunDescriptorBound descriptorCommand ->
     CleanupRunEndpointDescriptorBound
+      . compactDescriptorTransitionResponse descriptorCommand
       <$> serveDescriptorCommand provider descriptorCommand
  where
   activeRuns entries = [run | CleanupRunIndexActive run <- entries]
@@ -382,6 +355,25 @@ serveCommand provider command = case command of
           <$> applyCleanupRunTransition
             (cleanupRunRepositoryFor provider runId)
             (transition owner node attempt)
+
+-- The digest is metadata only. The client must independently read this state
+-- and validate it against its actual committed descriptor before using it.
+compactDescriptorTransitionResponse
+  :: CleanupRunDescriptorCommand -> CleanupRunDescriptorResponse -> CleanupRunDescriptorResponse
+compactDescriptorTransitionResponse command response = case command of
+  CleanupRunDescriptorClaim {} -> compact
+  CleanupRunDescriptorRecordPrimary {} -> compact
+  CleanupRunDescriptorBeginNode {} -> compact
+  CleanupRunDescriptorCompleteNode {} -> compact
+  _ -> response
+ where
+  compact = case response of
+    CleanupRunDescriptorPresent runId descriptorDigest bytes ->
+      CleanupRunDescriptorMutationCommitted
+        runId
+        descriptorDigest
+        (cleanupDigestText (cleanupDigestOfBytes bytes))
+    _ -> response
 
 serveDescriptorCommand
   :: (Monad m)
@@ -531,6 +523,60 @@ serveDescriptorCommand provider command = case command of
                     Right report -> descriptorCompacted descriptorDigest report
   CleanupRunDescriptorReadBackProgram rawRunId ->
     withDescriptorRunId rawRunId (readBackDescriptorProgram provider)
+  CleanupRunDescriptorObserveCompletion rawRunId rawDescriptorDigest ->
+    withDescriptorIdentity rawRunId rawDescriptorDigest $ \runId descriptorDigest -> do
+      committed <- readCommittedInitial provider runId (Just descriptorDigest)
+      case committed of
+        Left refusal -> pure (CleanupRunDescriptorRefused refusal)
+        Right (_, initial) -> do
+          observed <- readDescriptorBoundCleanupRun (descriptorBoundCleanupRunRepositoryFor provider runId)
+          case validateDescriptorBoundObservation descriptorDigest initial observed of
+            Left response -> pure response
+            Right (Right run)
+              | not (cleanupRunTerminal run) -> pure (descriptorPresent descriptorDigest run)
+              | otherwise -> pure $ case compactCleanupRun run of
+                  Left cause -> refusedBinding (Text.pack (show cause))
+                  Right report -> descriptorCompacted descriptorDigest report
+            Right (Left tombstone) -> do
+              backup <-
+                observeAuthorityAggregateBackup
+                  (cleanupRunAggregateBackup provider)
+                  (cleanupRunTombstoneReportDigest tombstone)
+              pure $ case validateBackedUpCompletion initial tombstone backup of
+                Left detail -> CleanupRunDescriptorRefused (CleanupRunDescriptorUnavailable detail)
+                Right report -> descriptorCompacted descriptorDigest report
+
+validateBackedUpCompletion
+  :: CleanupRun
+  -> CleanupRunTombstone
+  -> Either error AuthorityAggregateBackupObservation
+  -> Either Text CleanupRunReport
+validateBackedUpCompletion initial tombstone response = do
+  (body, receipt) <- case response of
+    Left _ -> Left "cleanup report backup is unobservable"
+    Right AuthorityAggregateBackupMissing -> Left "cleanup report backup is missing"
+    Right (AuthorityAggregateBackupCorrupt _) -> Left "cleanup report backup is corrupt"
+    Right (AuthorityAggregateBackupCurrent body receipt) -> Right (body, receipt)
+  digest <- mkCleanupDigest (cleanupRunTombstoneReportDigest tombstone)
+  let bytes = authorityBackupCiphertextBytes body
+  if authorityBackupReceiptClass receipt /= AuthorityAggregateEnvelope
+    || authorityBackupDigestText (authorityBackupReceiptDigest receipt) /= cleanupDigestText digest
+    || cleanupDigestOfBytes bytes /= digest
+    then Left "cleanup report backup receipt or bytes differ from the tombstone"
+    else pure ()
+  report <-
+    either
+      (Left . Text.pack . show)
+      Right
+      (decodeCleanupRunReport cleanupRunDescriptorResponseMaximumBytes bytes)
+  if cleanupReportRunId report /= cleanupRunId initial
+    || cleanupReportGraphDigest report /= cleanupRunGraphDigest initial
+    || Map.keys (cleanupReportNodeStates report) /= Map.keys (cleanupRunNodeStates initial)
+    || not (all terminal (Map.elems (cleanupReportNodeStates report)))
+    then Left "cleanup report differs from its committed descriptor"
+    else Right report
+ where
+  terminal state = case state of CleanupNodeCompleted {} -> True; _ -> False
 
 readBackDescriptorProgram
   :: (Monad m)
@@ -1005,6 +1051,7 @@ cleanupRunDescriptorResponseStatus response = case response of
   CleanupRunDescriptorTombstoned {} -> ReplyGone
   CleanupRunDescriptorNotFound -> ReplyNotFound
   CleanupRunDescriptorProgramPresent {} -> ReplyOk
+  CleanupRunDescriptorMutationCommitted {} -> ReplyOk
   CleanupRunDescriptorRefused refusal -> case refusal of
     CleanupRunDescriptorCommitConflict -> ReplyConflict
     CleanupRunDescriptorTransitionRefused _ -> ReplyConflict
@@ -1041,7 +1088,10 @@ encodeCleanupRunDescriptorResponse response = do
       bytes =
         LazyByteString.toStrict
           (serialise (CleanupRunDescriptorResponseEnvelope version response))
-  if ByteString.length bytes > cleanupRunDescriptorResponseMaximumBytes
+  let maximumBytes = case response of
+        CleanupRunDescriptorMutationCommitted {} -> cleanupRunDescriptorMutationAckMaximumBytes
+        _ -> cleanupRunDescriptorResponseMaximumBytes
+  if ByteString.length bytes > maximumBytes
     then Left "descriptor-bound cleanup response exceeds its encoded bound"
     else Right bytes
 
@@ -1064,6 +1114,7 @@ decodeCleanupRunDescriptorResponse bytes
 descriptorResponseUsesV2 :: CleanupRunDescriptorResponse -> Bool
 descriptorResponseUsesV2 response = case response of
   CleanupRunDescriptorProgramPresent {} -> True
+  CleanupRunDescriptorMutationCommitted {} -> True
   _ -> False
 
 validateCleanupRunDescriptorResponse
@@ -1089,6 +1140,11 @@ validateCleanupRunDescriptorResponse response = case response of
     _ <- mkCleanupDigest rawReportDigest
     Right ()
   CleanupRunDescriptorNotFound -> Right ()
+  CleanupRunDescriptorMutationCommitted rawRunId rawDescriptorDigest rawStateDigest -> do
+    _ <- mkCleanupRunId rawRunId
+    _ <- mkCleanupDigest rawDescriptorDigest
+    _ <- mkCleanupDigest rawStateDigest
+    Right ()
   CleanupRunDescriptorRefused refusal -> validateRefusal refusal
   CleanupRunDescriptorProgramPresent rawRunId rawDescriptorDigest descriptorBytes -> do
     runId <- mkCleanupRunId rawRunId

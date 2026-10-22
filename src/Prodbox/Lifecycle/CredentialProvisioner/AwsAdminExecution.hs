@@ -47,6 +47,7 @@ module Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   , AwsAdminExecutionJournalBoundary
   , mkAwsAdminExecutionJournalBoundary
   , AwsAdminWorkerReceipt
+  , awsAdminWorkerReceiptMaximumBytes
   , AwsAdminWorkerReceiptKind (..)
   , awsAdminWorkerReceiptKind
   , awsAdminWorkerReceiptPermitId
@@ -313,6 +314,7 @@ data AwsAdminTargetObservationCause
   | AwsAdminTargetObservationRetainedUnobservable
   | AwsAdminTargetObservationRetainedDeliveryFailed
   | AwsAdminTargetObservationRetainedReceiptInvalid
+  | AwsAdminTargetObservationGenerationMismatch
   deriving stock (Eq, Show)
 
 allAwsAdminTargetObservationCauses :: [AwsAdminTargetObservationCause]
@@ -327,6 +329,7 @@ allAwsAdminTargetObservationCauses =
        , AwsAdminTargetObservationRetainedUnobservable
        , AwsAdminTargetObservationRetainedDeliveryFailed
        , AwsAdminTargetObservationRetainedReceiptInvalid
+       , AwsAdminTargetObservationGenerationMismatch
        ]
 
 renderAwsAdminTargetObservationCause :: AwsAdminTargetObservationCause -> Text
@@ -335,6 +338,7 @@ renderAwsAdminTargetObservationCause cause = case cause of
   AwsAdminTargetObservationClient clientCause ->
     "client/" <> renderTargetMaterialClientCause clientCause
   AwsAdminTargetObservationGenerationAdvanced -> "generation-advanced"
+  AwsAdminTargetObservationGenerationMismatch -> "generation-mismatch"
   AwsAdminTargetObservationReceiptInvalid -> "receipt-invalid"
   AwsAdminTargetObservationRetainedGenerationMismatch ->
     "retained/generation-mismatch"
@@ -1914,28 +1918,11 @@ executeAwsAdminPermit journalBoundary iam delivery permit = do
           | readBack == expected -> Right readBack
           | otherwise -> Left AwsAdminExecutionJournalReadBackMismatch
 
--- | Revoke one credential identity, reading __both__ absences back.
---
--- Sprint 4.85 (2026-08-18): the revoke response used to be the only evidence
--- that the target generation was gone.  @internalRevokeCredentialTarget@
--- returns the worker's own claim about work it just performed, and a claim is
--- not a read-back — which is what
--- @CanonicalTargetRevocationReadBackUnavailable@ named.  The target is now
--- re-observed through the same boundary the delivery path already uses to
--- distinguish present from absent, and a still-present generation is a
--- refusal rather than a successful revocation.
---
--- The two absences are then bound by 'mkOperatorMaterialRevocationReadBack',
--- the smart constructor the pure provisioner algebra already uses, so
--- \"revocation read-back\" has one definition across both paths instead of one
--- per path.  It refuses unless the external identity and the target generation
--- are __both__ independently observed absent, so neither half can stand in for
--- the other.
---
--- Ordering is deliberate: the target generation is revoked and read back
--- before the IAM identity is destroyed.  A run that fails in between leaves an
--- identity with no usable material rather than material with no identity to
--- revoke it under.
+-- | Revoke one credential identity, reading both absences back. IAM grants
+-- authority: destroy it, wait for visibility and positively observe absence
+-- before touching retained material. A failed or unknown IAM result leaves
+-- the Target boundary untouched. The Target's revoke response is provisional;
+-- only its independent absence read-back can complete the existing joint proof.
 revokeIdentity
   :: (Monad m)
   => AwsAdminIamBoundary m
@@ -1944,59 +1931,37 @@ revokeIdentity
   -> PreparedCredentialTargetObservation
   -> m (Either AwsAdminExecutionError AwsAdminWorkerReceipt)
 revokeIdentity iam delivery permit prepared = do
-  targetResult <- internalRevokeCredentialTarget delivery prepared permit
-  case targetResult of
-    Left detail -> pure (Left (AwsAdminTargetRevocationFailed detail))
-    Right evidence -> do
-      observedTarget <- internalObserveCredentialTarget delivery prepared permit
-      case observedTarget of
-        Left cause ->
-          pure
-            ( decide
-                evidence
-                RevokedTargetUnobservable
-                RevokedIdentityNotReached
-                (Just (renderAwsAdminTargetObservationCause cause))
-            )
-        Right (Just _) ->
-          pure
-            ( decide
-                evidence
-                RevokedTargetStillPresent
-                RevokedIdentityNotReached
-                Nothing
-            )
-        Right Nothing -> do
-          destroyed <- internalDestroyIamIdentity iam
-          case destroyed of
-            Left detail -> pure (Left (AwsAdminIdentityDestroyFailed detail))
-            Right () -> do
-              absent <- internalObserveIamIdentityAbsent iam
-              pure $ case absent of
-                Left detail ->
-                  decide
-                    evidence
-                    RevokedTargetAbsent
-                    RevokedIdentityUnobservable
-                    (Just detail)
-                Right False ->
-                  decide
-                    evidence
-                    RevokedTargetAbsent
-                    RevokedIdentityStillPresent
-                    Nothing
-                Right True ->
-                  decide evidence RevokedTargetAbsent RevokedIdentityAbsent Nothing
+  destroyed <- internalDestroyIamIdentity iam
+  case destroyed of
+    Left detail -> pure (Left (AwsAdminIdentityDestroyFailed detail))
+    Right () -> do
+      waited <- internalWaitIamVisibilityGrace iam
+      case waited of
+        Left detail -> pure (Left (AwsAdminVisibilityWaitFailed detail))
+        Right () -> do
+          absent <- internalObserveIamIdentityAbsent iam
+          case absent of
+            Left detail -> pure (Left (AwsAdminIdentityAbsenceUnobservable detail))
+            Right False -> pure (Left AwsAdminIdentityStillPresent)
+            Right True -> revokeTarget
  where
-  -- Both outcomes come from the canonical decision rather than from local
-  -- guards, so this path and the pure provisioner algebra cannot drift apart
-  -- about what a revocation read-back is.
-  decide evidence targetObservation identityObservation detail =
+  revokeTarget = do
+    targetResult <- internalRevokeCredentialTarget delivery prepared permit
+    case targetResult of
+      Left detail -> pure (Left (AwsAdminTargetRevocationFailed detail))
+      Right evidence -> do
+        observedTarget <- internalObserveCredentialTarget delivery prepared permit
+        pure $ case observedTarget of
+          Left cause -> decide evidence RevokedTargetUnobservable (Just (renderAwsAdminTargetObservationCause cause))
+          Right (Just _) -> decide evidence RevokedTargetStillPresent Nothing
+          Right Nothing -> decide evidence RevokedTargetAbsent Nothing
+
+  decide evidence targetObservation detail =
     case decideCredentialRevocationReadBack
       (awsCredentialDescriptorTarget (awsCredentialDescriptor credentialClass))
       (preparedCredentialTargetGeneration prepared)
       targetObservation
-      identityObservation of
+      RevokedIdentityAbsent of
       Left refusal -> Left (revocationRefusalError refusal detail)
       Right _ ->
         Right
@@ -2101,8 +2066,13 @@ validateWorkerReceiptForPermit
   -> AwsAdminWorkerReceipt
   -> Either AwsAdminExecutionError ()
 validateWorkerReceiptForPermit permit prepared receipt = do
+  let expectedKind = case awsAdminPermitIntentAction (signedAwsAdminPermitIntent permit) of
+        InstallOperatorMaterial -> AwsAdminInstalled
+        RotateOperatorMaterial -> AwsAdminInstalled
+        RevokeOperatorMaterial -> AwsAdminRevoked
   unless
-    ( awsAdminWorkerReceiptPermitId receipt == permitIdText permit
+    ( awsAdminWorkerReceiptKind receipt == expectedKind
+        && awsAdminWorkerReceiptPermitId receipt == permitIdText permit
         && awsAdminWorkerReceiptRequestDigest receipt == permitRequestDigest permit
         && awsAdminWorkerReceiptTarget receipt == preparedCredentialTargetId prepared
         && awsAdminWorkerReceiptGeneration receipt

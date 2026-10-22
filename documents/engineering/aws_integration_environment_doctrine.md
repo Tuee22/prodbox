@@ -661,12 +661,14 @@ Minimum rule:
    by the named `prodbox aws stack ...` and `prodbox test integration ...` surfaces plus the aggregate
    test suite
 
-> **Current revision.** Rule 8's converging destroy is built in the Provider (Sprint `4.111`, first
-> increment) and no Provider image carries it yet; until one is rolled the supported destroy is a
-> single bounded pass that ends in `DependencyViolation` on a leaked interface. The registry does not
-> yet declare the network-dependent families. See
+> Rule 8 consumes the registry's VPC CNI interface declarations for EKS and the test VPC,
+> plus the EKS cluster security-group declaration. The typed cleanup graph attempts stack destruction
+> before independent network-family reconciliation so nodes and control-plane interfaces can release;
+> family absence gates checkpoint retirement and final completion. Both destroy implementations clear
+> admitted dependents before subnet/VPC deletion. See
 > [Lifecycle Reconciliation Doctrine § 3.2b](./lifecycle_reconciliation_doctrine.md#32b-controller-created-network-dependents-are-declared-families).
-> Status lives only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+> Rollout, live proof and deployment qualification live in the
+> [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 ### 4.4 Temporary-Admin Credential Harness
 
@@ -982,12 +984,69 @@ The action executes in this order:
    read-only observations of the prepared result and never dispatch another reconcile. Ordinary
    postflight uses `SesNotRequired` and never schedules retained-SES destruction.
 
+Ordinary harness runs register their home DNS01 and invitation cleanup coordinates before the
+validation body. Home challenges bind the retained parent zone and exact names; AWS challenges
+retain their separate subzone scope. The invitation recipient is derived from the fresh public
+run lineage, while its password seed remains private invocation randomness. The consumer refuses
+a bucket or recipient configuration that differs from the registered scope.
+
+Postflight removes matching mail data versions by exact S3 version ID, without an age cutoff,
+and independently re-lists. It preserves foreign-recipient versions, the capture bucket and
+bodyless delete markers. Eight data versions, six pages, one MiB per message and a 53-child-call
+ceiling bound this operation; a field it cannot read completely remains unresolved. The earlier
+recent-object-only cleanup wire slot has no executable deletion capability.
+
+The final ordinary audit observes the Provider account/region, then issues every declared filter
+against the run and global Tagging API endpoints under distinct cleanup-owned submission keys.
+Its complete scope and retained catalog digest gate the terminal report and IAM-first credential
+retirement. A failed filter, mismatched scope or tagged escape preserves recovery credentials.
+IAM users and roles require their independent exact observers because `GetResources` does not
+return them. An audit-clean field is a scoped observation, never a claim that the account is empty.
+
+The Provider's capture-bucket desired-presence step also reads the complete mail lifecycle policy.
+Its two canonical enabled rules target only `inbound/`: current mail expires after one day,
+noncurrent versions after one day, incomplete uploads after one day, and expired delete markers
+are removed. Expiry is background retention, not per-run cleanup evidence; exact recipient cleanup
+still reads back absence. The empty readiness probe is outside that prefix and remains retained.
+A successful lifecycle write stays provisional until the Provider observes the complete policy.
+Malformed, denied, unknown or oversized reads are unobservable, never missing or current. These
+rules follow the [S3 lifecycle API](https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutBucketLifecycleConfiguration.html).
+
+The invite validation creates one ephemeral receiver key per invocation and submits only its
+public key in `ObserveSealedSesInviteMail`. The Provider's bounded capture reader feeds the
+canonical `Prodbox.Ses.InviteDelivery` producer; new Provider replay and Authority completion
+records contain either the closed pending marker or sealed evidence, never a plaintext action
+link. Authenticated settlement validates the envelope shape and receiver binding before storing
+it. Only the invocation holding the receiver secret opens the object key and link. The receiver
+has no serialization or raw-secret projection and is not written to Vault, disk, argv or a daemon
+configuration. A fresh invocation uses a fresh key and Provider operation.
+
+`Prodbox.Ses.InviteEvidence` uses X25519 with low-order refusal, HKDF-SHA256 extract/expand, and
+ChaCha20-Poly1305. Canonical versioned CBOR binds bucket, recipient and both public keys as AAD;
+canonical base64 carries the envelope on the existing evidence wire. Its size is derived from a
+2,800-byte plaintext maximum, the fixed key/nonce/tag fields and encoding overhead, and fits the
+unchanged 4,096-character Provider evidence cap. Malformed, oversized, mismatched or unauthentic
+material is refused without echoing it. Key agreement and derivation follow
+[RFC 7748 §6.1](https://www.rfc-editor.org/rfc/rfc7748.html#section-6.1) and
+[RFC 5869](https://www.rfc-editor.org/rfc/rfc5869.html).
+
+The historical plaintext constructor keeps its original CBOR index and coordinates, but executes
+only a retired marker. A replay of an already retained historical completion also returns that
+marker; its immutable historical record is not rewritten. This is a boundary for new writes and
+current replies, not a claim that historical backups were erased. The current validation accepts
+only the sealed route. Its HTTPS form requests check the configured public host, keep the URL and
+form on bounded curl stdin, disable ambient curl configuration, and return value-free failures.
+The child has a 30-second outer bound, 25-second curl limit, at most five HTTPS redirects, a one
+MiB body-file limit, 64 KiB stdin and 16 KiB per captured output stream. Form bytes use literal
+`data-raw`, including an initial `@`; they cannot select a host file. The encoding follows the
+[curl configuration syntax](https://curl.se/docs/manpage.html#-K).
+
 `Prodbox.Ses.Readiness` accepts only the configured domain identity with
 `VerifiedForSendingStatus = true`, verification and DKIM status `SUCCESS`, and DKIM signing enabled;
 the single exact priority-10 regional inbound MX target; the configured active rule set with one
 enabled exact-recipient S3 action targeting the configured bucket and `inbound/` prefix; and
 operational-credential list/get access to
-`inbound/.prodbox-readiness-capability-probe`. Missing resources and explicit propagation states are
+`.prodbox-readiness-capability-probe`. Missing resources and explicit propagation states are
 `AwsSesPending`; wrong identity, disabled or terminal status, wrong MX/rule/action, or other
 authoritative mismatch is `AwsSesFailed`; denial, malformed output, unknown status, transport
 failure, and other observation uncertainty are `AwsSesUnobservable`. Only Pending repeats under the
@@ -1330,6 +1389,41 @@ least-privilege policy, key family, and repair deletion behind Credential Provis
 retained-home `SesSmtpSource` custody. Missing-checkpoint provider recovery imports only the
 registered non-credential capture bucket, SES identity/rules, and DNS records. Ad-hoc `aws ses *`,
 `aws s3 *`, and `aws iam create-access-key|delete-access-key` mutations remain unsupported.
+
+## Stack-create validation evidence
+
+The `aws-eks`, `pulumi` and `ha-rke2-aws` validations consume the create verb's canonical
+`AWS_FIELD` report and independently read its recorded outputs. A receipt of empty input fails
+with the named empty-input counterexample. A successful create normally reports `Residue` because
+the stack is present; the validation requires its exact recorded VPC, subnets, security group and
+cluster/node-group or instance coordinates, a seen positive control and no unanswered class.
+Neither a printed prefix nor a `Clean` field proves created-resource presence. Missing or omitted
+required identities remain a refusal, and node-group names match exact ARN segments.
+
+The existing audit reads EKS cluster and node-group ARN/state projections through its fenced
+runner; both must be `ACTIVE`. EC2 instance rows must be `running`. The two additional exact
+EKS reads add no Provider request, capability, action code or resource envelope and retain the
+existing absolute intent deadline. Their schema is defined by AWS
+([DescribeCluster](https://docs.aws.amazon.com/eks/latest/APIReference/API_DescribeCluster.html),
+[DescribeNodegroup](https://docs.aws.amazon.com/eks/latest/APIReference/API_DescribeNodegroup.html)).
+The CLI decoder requires the exact service error code and operation, including the measured
+`(reached max retries: 0)` header variant; denied, malformed, ambiguous and wrong-operation
+responses never prove absence. Installed-CLI loopback recordings test this framing; they are not
+live AWS service evidence. Destroy still exits zero only from its closing `Clean` inventory.
+
+
+## Lifecycle harness readiness profile
+
+The internal lifecycle profile projects the existing retained bootstrap/config prefix and the
+Provider and TLS Retention role readiness steps from the ordered reconcile graph. It dispatches
+no application-chart, public-edge, or certificate retain/restore operation. Readiness of those
+retained services remains a prerequisite; the profile does not qualify their durable workers.
+Ordinary suites select the full local runtime profile.
+
+A fresh authenticated cleanup registration and claim returns opaque run-id, observation-scope
+and target metadata to its body. An adopted run recovers cleanup without rerunning that body.
+The metadata contains no live transport, session or credential. A canary consumes this retained
+scope rather than deriving an owner from process output or generating a second invocation nonce.
 
 ## Cross-References
 

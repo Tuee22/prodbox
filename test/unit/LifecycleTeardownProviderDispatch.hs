@@ -5,6 +5,7 @@ module LifecycleTeardownProviderDispatch
   )
 where
 
+import CleanupScopeFixtures (fixtureInviteMailScope)
 import Control.Monad (void)
 import Data.IORef
 import Data.List (nub)
@@ -23,6 +24,7 @@ import Prodbox.Lifecycle.Authority.ClientRegistry
   ( ClientSubmissionKeyError (ClientSubmissionKeyTooLong)
   , clientSubmissionKeyText
   )
+import Prodbox.Lifecycle.AwsNetworkFamily (AwsNetworkFamily (EksVpcCniInterfaces))
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupOperationId
   , mkCleanupOperationId
@@ -34,11 +36,13 @@ import Prodbox.Lifecycle.OwnedResourceTags
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( EksClusterIdentityRequest
   , ProviderIntent (..)
+  , ProviderOwnedTagQuery (ProviderOwnedTagKeyQuery)
   , ProviderRevision
   , ProviderStackConfig
   , ProviderStackRef
   , mkAwsEksProviderStackConfig
   , mkEksClusterIdentityRequest
+  , mkProviderNetworkFamilyRef
   , mkProviderRevision
   , mkProviderStackRef
   , providerIntentCoordinate
@@ -63,6 +67,19 @@ import TestSupport
 lifecycleTeardownProviderDispatchSuite :: SuiteBuilder ()
 lifecycleTeardownProviderDispatchSuite =
   describe "Sprint 4.85 stable registered Provider dispatch" $ do
+    it "separates fenced audit observations from v1 completions and each endpoint" $ do
+      let query = ProviderOwnedTagKeyQuery "prodbox.io/managed-by"
+          intents = [ObserveOwnedResourceTags query, ObserveGlobalOwnedResourceTags query]
+          oldKeys = map (mustRight . mkTerminalAuditProviderDispatchKey operationId) intents
+          fencedKeys = map (mustRight . mkFencedTerminalAuditProviderDispatchKey operationId) intents
+      length (nub fencedKeys) `shouldBe` length intents
+      and (zipWith (/=) oldKeys fencedKeys) `shouldBe` True
+      map (mustRight . mkFencedTerminalAuditProviderDispatchKey operationId) intents
+        `shouldBe` fencedKeys
+      map providerDispatchKeyOperationId fencedKeys `shouldBe` replicate (length intents) operationId
+      map providerDispatchKeyPurpose fencedKeys
+        `shouldBe` replicate (length intents) ProviderTerminalAudit
+
     it "derives deterministic, purpose-separated Authority submission keys" $ do
       let decision = keyFor ProviderDecisionObservation
           mutation = keyFor ProviderRegisteredMutation
@@ -497,12 +514,27 @@ executorIntents executor = case executor of
         -- for the provider dispatcher to admit at the mutation purpose.
         executorMutationIntent = Nothing
       }
+  SesInviteMailObjectsExecutor ->
+    ExecutorIntents
+      { executorDecisionIntent = ObserveSesInviteMailResidue fixtureInviteMailScope
+      , executorReadBackIntent = ObserveSesInviteMailResidue fixtureInviteMailScope
+      , executorMutationIntent = Just (ReapSesInviteMailResidue fixtureInviteMailScope)
+      }
   EksIamRoleFamilyExecutor ->
     ExecutorIntents
       { executorDecisionIntent = iamObservation
       , executorReadBackIntent = iamObservation
       , executorMutationIntent = Just iamReap
       }
+  NetworkDependentFamilyExecutor ->
+    let ref =
+          mustRight
+            (mkProviderNetworkFamilyRef EksVpcCniInterfaces "123456789012" (fixtureAwsRegion FixtureCaCentral1))
+     in ExecutorIntents
+          { executorDecisionIntent = ObserveNativeStackFamily ref stackConfig
+          , executorReadBackIntent = ObserveNativeStackFamily ref stackConfig
+          , executorMutationIntent = Just (ReapNativeStackFamily ref stackConfig [])
+          }
   EksLoadBalancerControllerFamilyExecutor ->
     ExecutorIntents
       { executorDecisionIntent = lbcObservation

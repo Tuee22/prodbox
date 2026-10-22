@@ -200,9 +200,10 @@ data GatewayMemoryPressure
 -- so it is a definitive fault, distinct from a merely-incomplete observation.
 data GatewayUnobservableReason
   = GatewayRestartCountRegressed
-  { gatewayPreviousRestartCount :: Natural
-  , gatewayCurrentRestartCount :: Natural
-  }
+      { gatewayPreviousRestartCount :: Natural
+      , gatewayCurrentRestartCount :: Natural
+      }
+  | GatewayRestartCountUnavailable
   deriving (Eq, Show)
 
 -- | A Ready+Running Pod whose field or metrics scrape has not yet landed — a
@@ -214,7 +215,6 @@ data GatewayUnobservableReason
 data GatewayObservationIncompleteReason
   = GatewayPhaseIncomplete
   | GatewayReadinessIncomplete
-  | GatewayRestartCountIncomplete
   | GatewayContainerLimitIncomplete
   | GatewayMemoryReadingIncomplete
   deriving (Eq, Show)
@@ -247,9 +247,9 @@ data GatewayPodHealthObservation
   | GatewayPodUnobservable GatewayUnobservableReason GatewayPodDiagnostic
   deriving (Eq, Show)
 
--- | Project one typed sample.  An absent baseline means the first sample for a
--- Pod UID; its existing restart count is therefore compared with zero rather
--- than accepted as a new healthy baseline.
+-- | Project one typed sample against the run's fixed restart baseline.
+-- The snapshot fold supplies existing counters from the first snapshot;
+-- a UID absent from that snapshot is compared with zero.
 classifyGatewayPodHealth
   :: GatewayMemoryThresholds
   -> Maybe Natural
@@ -336,7 +336,7 @@ classifyWithoutRestart thresholds restartDelta sampledHighWater termination samp
   pending = GatewayPodPending diagnostic
   classifyReadyStatus =
     case gatewaySampleRestartCount sample of
-      Nothing -> incomplete GatewayRestartCountIncomplete
+      Nothing -> GatewayPodUnobservable GatewayRestartCountUnavailable diagnostic
       Just _ ->
         case gatewaySampleCurrentLimitBytes sample of
           Nothing -> incomplete GatewayContainerLimitIncomplete
@@ -749,6 +749,7 @@ data GatewayStabilityState = GatewayStabilityState
   { stabilityStatePolicy :: GatewayStabilityPolicy
   , stabilityStateAbsorbingOutcome :: Maybe GatewayAbsorbingOutcome
   , stabilityStateHealthyWindow :: GatewayHealthyWindow
+  , stabilityStateRestartBaselines :: Maybe (Map Text Natural)
   }
   deriving (Eq, Show)
 
@@ -770,6 +771,7 @@ initialGatewayStabilityState policy =
     { stabilityStatePolicy = policy
     , stabilityStateAbsorbingOutcome = Nothing
     , stabilityStateHealthyWindow = emptyHealthyWindow
+    , stabilityStateRestartBaselines = Nothing
     }
 
 emptyHealthyWindow :: GatewayHealthyWindow
@@ -800,6 +802,7 @@ foldGatewayRuntimeSnapshot snapshot state
       state
         { stabilityStateAbsorbingOutcome = firstAbsorbingOutcome observations
         , stabilityStateHealthyWindow = nextWindow
+        , stabilityStateRestartBaselines = Just restartBaselines
         }
  where
   policy = stabilityStatePolicy state
@@ -809,6 +812,9 @@ foldGatewayRuntimeSnapshot snapshot state
   samples = gatewaySnapshotSamples snapshot
   currentUids = Set.fromList (map gatewaySamplePodUid samples)
   previousRestarts = healthyWindowRestartCounts previousWindow
+  -- Only the initial snapshot is retained, so UID churn cannot grow this map.
+  -- Planned rollouts and Pod deletion reset the healthy window, never this map.
+  restartBaselines = maybe retainedRestarts id (stabilityStateRestartBaselines state)
   previousHighWater = healthyWindowHighWaterBytes previousWindow
   highWaterFor sample =
     maximumMaybe
@@ -820,7 +826,7 @@ foldGatewayRuntimeSnapshot snapshot state
       ( \sample ->
           classifyGatewayPodHealth
             policyThresholds
-            (Map.lookup (gatewaySamplePodUid sample) previousRestarts)
+            (Just (Map.findWithDefault 0 (gatewaySamplePodUid sample) restartBaselines))
             (highWaterFor sample)
             sample
       )

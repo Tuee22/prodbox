@@ -33,10 +33,16 @@ lifecycleTeardownRegistrySuite = do
                    , (AwsDns01ChallengeRecordKey, Just PerRun, DnsRecordFamily)
                    , (AwsEksIamRoleFamilyKey, Just PerRun, ControllerFamily)
                    , (AwsEksLoadBalancerControllerFamilyKey, Just PerRun, ControllerFamily)
+                   , (AwsEksVpcCniInterfacesKey, Just PerRun, ControllerFamily)
+                   , (AwsTestVpcCniInterfacesKey, Just PerRun, ControllerFamily)
+                   , (AwsEksClusterSecurityGroupsKey, Just PerRun, ControllerFamily)
                    , (AwsEbsProductionRetainedKey, Just LongLived, VolumeFamily)
+                   , (HomeDns01ChallengeRecordKey, Just PerRun, DnsRecordFamily)
+                   , (SesInviteMailObjectsKey, Just PerRun, MailObjectFamily)
+                   , (AwsTestCanarySecurityGroupsKey, Just PerRun, ControllerFamily)
                    ]
       map registeredIdentityAuthority lifecycleRegistry
-        `shouldBe` replicate 10 LinuxRke2LifecycleAuthority
+        `shouldBe` replicate 16 LinuxRke2LifecycleAuthority
       lifecycleRegistryValidation `shouldBe` Right ()
 
     it "keeps the two EBS families on distinct exact coordinates and fixed classes" $ do
@@ -79,10 +85,22 @@ lifecycleTeardownRegistrySuite = do
                    , AwsDns01ChallengeRecordKey
                    , AwsEksIamRoleFamilyKey
                    , AwsEksLoadBalancerControllerFamilyKey
+                   , AwsEksVpcCniInterfacesKey
+                   , AwsTestVpcCniInterfacesKey
+                   , AwsEksClusterSecurityGroupsKey
+                   , HomeDns01ChallengeRecordKey
+                   , SesInviteMailObjectsKey
+                   , AwsTestCanarySecurityGroupsKey
                    , LocalLinuxRke2Key
                    ]
       map cleanupTargetLifecycleClass (cleanupTargetsForSurface CascadeSurface)
         `shouldBe` [ Just PerRun
+                   , Just PerRun
+                   , Just PerRun
+                   , Just PerRun
+                   , Just PerRun
+                   , Just PerRun
+                   , Just PerRun
                    , Just PerRun
                    , Just PerRun
                    , Just PerRun
@@ -368,7 +386,13 @@ surfaceTable =
   , (AwsDns01ChallengeRecordKey, [Cascade, ExplicitPerRun, TotalDecommission])
   , (AwsEksIamRoleFamilyKey, [Cascade, ExplicitPerRun, TotalDecommission])
   , (AwsEksLoadBalancerControllerFamilyKey, [Cascade, ExplicitPerRun, TotalDecommission])
+  , (AwsEksVpcCniInterfacesKey, [Cascade, ExplicitPerRun, TotalDecommission])
+  , (AwsTestVpcCniInterfacesKey, [Cascade, ExplicitPerRun, TotalDecommission])
+  , (AwsEksClusterSecurityGroupsKey, [Cascade, ExplicitPerRun, TotalDecommission])
   , (AwsEbsProductionRetainedKey, [ExplicitLongLived, TotalDecommission])
+  , (HomeDns01ChallengeRecordKey, [Cascade, ExplicitPerRun, TotalDecommission])
+  , (SesInviteMailObjectsKey, [Cascade, ExplicitPerRun, TotalDecommission])
+  , (AwsTestCanarySecurityGroupsKey, [Cascade, ExplicitPerRun, TotalDecommission])
   ]
 
 stackKeys :: [RegisteredResourceKey]

@@ -9,8 +9,9 @@
 
 -- | Package-private canonical codec and exact recompilation checks for a
 -- desired-absence program descriptor.  The public facade can capture a
--- candidate from an already compiled program and its exact initial run; only
--- the Authority repository imports the decoder that can validate stored bytes.
+-- candidate from an already compiled program and its exact initial run.  The
+-- Authority repository and bounded local terminal-handoff reader validate
+-- stored bytes; only the Authority repository mints committed remote evidence.
 module Prodbox.Lifecycle.Teardown.CleanupProgramDescriptor.Internal
   ( CleanupProgramDescriptor
   , CleanupProgramDescriptorError (..)
@@ -38,7 +39,9 @@ module Prodbox.Lifecycle.Teardown.CleanupProgramDescriptor.Internal
   )
 where
 
-import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
+import Codec.CBOR.Decoding qualified as Cbor
+import Codec.CBOR.Encoding qualified as Cbor
+import Codec.Serialise (Serialise (..), deserialiseOrFail, serialise)
 import Control.Monad (unless, when)
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
@@ -74,9 +77,10 @@ import Prodbox.Lifecycle.DnsRecord
 import Prodbox.Lifecycle.ResourceClass (LifecycleClass (..))
 import Prodbox.Lifecycle.Teardown.Graph
   ( CompiledDesiredAbsenceProgram
-  , DesiredAbsenceGraphError
+  , DesiredAbsenceGraphError (DesiredAbsenceAuditBindingRequired)
+  , compileAuditedExplicitPerRunGraph
   , compileDesiredAbsenceGraph
-  , compileDesiredAbsenceGraphForRegisteredKeys
+  , compileDesiredAbsenceGraphForRegisteredKeysWithBindings
   , compiledDesiredAbsenceGraph
   , compiledDesiredAbsenceObservationScope
   , compiledDesiredAbsenceOperations
@@ -93,7 +97,7 @@ import Prodbox.Lifecycle.Teardown.Model
   , LifecycleOperation (ReconcileDesiredAbsent)
   , LinuxRke2FoundationId (..)
   , ObservationEvidenceScope
-  , RegisteredResourceKey
+  , RegisteredResourceKey (..)
   , RegistryRevision (..)
   , ResourceKind (..)
   , cleanupSurfaceFromWitness
@@ -104,6 +108,7 @@ import Prodbox.Lifecycle.Teardown.Model
   , evidenceLifecycleOperation
   , evidenceLinuxRke2Foundation
   , evidenceRegistryRevision
+  , evidenceResourceScopeBindings
   , managedResourceCoordinateDigestText
   , registeredResourceKeyFromText
   , registeredResourceKeyText
@@ -129,6 +134,11 @@ import Prodbox.Lifecycle.Teardown.RecoveryCapability.Internal
   , recoveryCapabilitySetVersion
   )
 import Prodbox.Lifecycle.Teardown.Registry (lifecycleRegistryRevision)
+import Prodbox.Lifecycle.Teardown.ScopeCodec
+  ( ResourceScopeBindingsWire
+  , resourceBindingsFromWire
+  , resourceBindingsToWire
+  )
 
 data CleanupProgramDescriptor = CleanupProgramDescriptor
   { internalDescriptorRunId :: !CleanupRunId
@@ -214,13 +224,68 @@ data CleanupProgramDescriptorWire = CleanupProgramDescriptorWire
   , descriptorWireCapabilityCatalogDigest :: !Text
   , descriptorWireInitialRun :: !ByteString
   , descriptorWireSemanticOperations :: ![SemanticOperationWire]
+  , descriptorWireResourceBindings :: !(Maybe ResourceScopeBindingsWire)
   }
   deriving stock (Eq, Show, Generic)
-  deriving anyclass (Serialise)
+
+-- v1 has its own historical decoder below. v2 retains its exact generic
+-- constructor shape; v3 appends the canonical resource binding value.
+instance Serialise CleanupProgramDescriptorWire where
+  encode wire =
+    Cbor.encodeListLen (if descriptorWireFormatVersion wire == 2 then 19 else 20)
+      <> Cbor.encodeWord 0
+      <> encode (descriptorWireFormatVersion wire)
+      <> encode (descriptorWireRunId wire)
+      <> encode (descriptorWireSurface wire)
+      <> encode (descriptorWireFoundation wire)
+      <> encode (descriptorWireAwsAccount wire)
+      <> encode (descriptorWireAwsRegion wire)
+      <> encode (descriptorWireAwsDnsZone wire)
+      <> encode (descriptorWireRegistryRevision wire)
+      <> encode (descriptorWireDurableRunScope wire)
+      <> encode (descriptorWireLifecycleOperation wire)
+      <> encode (descriptorWireCompilerVersion wire)
+      <> encode (descriptorWireOperationIdentityVersion wire)
+      <> encode (descriptorWireCapabilityCatalogVersion wire)
+      <> encode (descriptorWireCapabilitySetVersion wire)
+      <> encode (descriptorWireGraphDigest wire)
+      <> encode (descriptorWireCapabilityCatalogDigest wire)
+      <> encode (descriptorWireInitialRun wire)
+      <> encode (descriptorWireSemanticOperations wire)
+      <> ( if descriptorWireFormatVersion wire == 2
+             then mempty
+             else encode (descriptorWireResourceBindings wire)
+         )
+  decode = do
+    count <- Cbor.decodeListLen
+    tag <- Cbor.decodeWord
+    version <- decode
+    unless
+      ((tag :: Word) == 0 && ((version == 2 && count == 19) || (version == 3 && count == 20)))
+      (fail "cleanup program descriptor format or field count")
+    CleanupProgramDescriptorWire version
+      <$> decode
+      <*> decode
+      <*> decode
+      <*> decode
+      <*> decode
+      <*> decode
+      <*> decode
+      <*> decode
+      <*> decode
+      <*> decode
+      <*> decode
+      <*> decode
+      <*> decode
+      <*> decode
+      <*> decode
+      <*> decode
+      <*> decode
+      <*> (if version == 2 then pure Nothing else decode)
 
 -- | Sprint 7.38's superseded v1 wire. It remains restart-readable so adding
 -- the zone binding cannot strand a retained zoneless descriptor. New captures
--- always use 'CleanupProgramDescriptorWire' v2.
+-- always use 'CleanupProgramDescriptorWire' v3.
 data LegacyCleanupProgramDescriptorWire = LegacyCleanupProgramDescriptorWire
   { legacyDescriptorWireFormatVersion :: !Int
   , legacyDescriptorWireRunId :: !Text
@@ -244,11 +309,11 @@ data LegacyCleanupProgramDescriptorWire = LegacyCleanupProgramDescriptorWire
   deriving anyclass (Serialise)
 
 cleanupProgramDescriptorFormatVersion :: Int
-cleanupProgramDescriptorFormatVersion = 2
+cleanupProgramDescriptorFormatVersion = 3
 
 cleanupProgramDescriptorCompilerVersion :: Text
 cleanupProgramDescriptorCompilerVersion =
-  "lifecycle-desired-absence-program-compiler/v5"
+  "lifecycle-desired-absence-program-compiler/v7"
 
 -- Descriptors captured before selected-key programs existed compiled the full
 -- surface. Their semantic-operation catalog still reconstructs that exact
@@ -316,6 +381,7 @@ captureCleanupProgramDescriptor compiled initialRun = do
           , descriptorWireCapabilityCatalogDigest =
               compiledDesiredAbsenceRecoveryCapabilityCatalogDigest compiled
           , descriptorWireInitialRun = initialRunBytes
+          , descriptorWireResourceBindings = resourceBindingsToWire <$> evidenceResourceScopeBindings scope
           , descriptorWireSemanticOperations = semanticOperations compiled
           }
       bytes = LazyByteString.toStrict (serialise wire)
@@ -349,6 +415,9 @@ legacyV1CleanupProgramDescriptorBytesForRegression descriptor = do
   unless
     (canonicalBytes == cleanupProgramDescriptorBytes descriptor)
     (Left CleanupProgramDescriptorNonCanonical)
+  when
+    (descriptorWireResourceBindings wire /= Nothing)
+    (Left (CleanupProgramDescriptorScopeMismatch "legacy v1 resource bindings"))
   when
     (descriptorWireAwsDnsZone wire /= Nothing)
     (Left (CleanupProgramDescriptorScopeMismatch "legacy v1 AWS DNS zone"))
@@ -393,7 +462,7 @@ decodeDescriptorWire
 decodeDescriptorWire bytes =
   case deserialiseOrFail encoded of
     Right wire
-      | descriptorWireFormatVersion wire == cleanupProgramDescriptorFormatVersion ->
+      | descriptorWireFormatVersion wire `elem` [2, cleanupProgramDescriptorFormatVersion] ->
           Right (wire, LazyByteString.toStrict (serialise wire))
       | otherwise ->
           Left
@@ -435,6 +504,7 @@ upgradeLegacyDescriptorWire legacy =
     , descriptorWireAwsAccount = legacyDescriptorWireAwsAccount legacy
     , descriptorWireAwsRegion = legacyDescriptorWireAwsRegion legacy
     , descriptorWireAwsDnsZone = Nothing
+    , descriptorWireResourceBindings = Nothing
     , descriptorWireRegistryRevision = legacyDescriptorWireRegistryRevision legacy
     , descriptorWireDurableRunScope = legacyDescriptorWireDurableRunScope legacy
     , descriptorWireLifecycleOperation = legacyDescriptorWireLifecycleOperation legacy
@@ -497,7 +567,7 @@ decodeAndValidateCleanupProgramDescriptorWith bytes consume = do
     (Left CleanupProgramDescriptorNonCanonical)
   unless
     ( descriptorWireFormatVersion wire
-        `elem` [1, cleanupProgramDescriptorFormatVersion]
+        `elem` [1, 2, cleanupProgramDescriptorFormatVersion]
     )
     ( Left
         ( CleanupProgramDescriptorVersionUnsupported
@@ -595,9 +665,10 @@ descriptorCompilerVersionSupported wire =
         `elem` [ legacyCleanupProgramDescriptorCompilerVersion
                , profileCleanupProgramDescriptorCompilerVersion
                ]
-    2 ->
+    2 -> descriptorWireCompilerVersion wire == "lifecycle-desired-absence-program-compiler/v5"
+    3 ->
       descriptorWireCompilerVersion wire
-        == cleanupProgramDescriptorCompilerVersion
+        `elem` ["lifecycle-desired-absence-program-compiler/v6", cleanupProgramDescriptorCompilerVersion]
     _ -> False
 
 validateForSurfaceWith
@@ -705,20 +776,31 @@ validateDescriptorForWitnessWith
   initialRun
   consume = do
     selectedKeys <- selectedExplicitPerRunKeys witness wire
+    bindings <-
+      first
+        (CleanupProgramDescriptorFieldInvalid . Text.pack . show)
+        (traverse resourceBindingsFromWire (descriptorWireResourceBindings wire))
     compiled <-
       first
         CleanupProgramDescriptorCompilationFailed
-        ( case selectedKeys of
-            Nothing ->
-              compileDesiredAbsenceGraph runId foundation awsScope awsDnsZone witness
-            Just keys ->
-              compileDesiredAbsenceGraphForRegisteredKeys
-                runId
-                foundation
-                awsScope
-                awsDnsZone
-                witness
-                keys
+        ( case ( witness
+               , any ((== "audit-per-run-escapes") . semanticOperationTag) (descriptorWireSemanticOperations wire)
+               ) of
+            (ExplicitPerRunSurface, True) -> case (awsScope, bindings, selectedKeys) of
+              (Just aws, Just bound, Just keys) -> compileAuditedExplicitPerRunGraph runId foundation aws awsDnsZone bound keys
+              _ -> Left DesiredAbsenceAuditBindingRequired
+            _ -> case selectedKeys of
+              Nothing ->
+                compileDesiredAbsenceGraph runId foundation awsScope awsDnsZone witness
+              Just keys ->
+                compileDesiredAbsenceGraphForRegisteredKeysWithBindings
+                  runId
+                  foundation
+                  awsScope
+                  awsDnsZone
+                  bindings
+                  witness
+                  keys
         )
     validateCompiledWire compiled wire initialRun
     let descriptor =
@@ -741,10 +823,16 @@ selectedExplicitPerRunKeys
   :: CleanupSurfaceWitness surface
   -> CleanupProgramDescriptorWire
   -> Either CleanupProgramDescriptorError (Maybe [RegisteredResourceKey])
-selectedExplicitPerRunKeys witness wire = case witness of
-  ExplicitPerRunSurface -> Just . Set.toAscList . Set.fromList <$> traverse decodeKey targetNames
-  _ -> Right Nothing
+selectedExplicitPerRunKeys witness wire =
+  Just . Set.toAscList . Set.fromList . (localKeys <>) <$> traverse decodeKey targetNames
  where
+  localKeys = case witness of
+    LocalOnlySurface -> [LocalLinuxRke2Key]
+    CascadeSurface -> [LocalLinuxRke2Key]
+    TotalDecommissionSurface -> [LocalLinuxRke2Key]
+    ExplicitPerRunSurface -> []
+    OperationalTeardownSurface -> []
+    ExplicitLongLivedSurface -> []
   targetNames =
     [ semanticTargetKey target
     | operation <- descriptorWireSemanticOperations wire
@@ -757,8 +845,14 @@ selectedExplicitPerRunKeys witness wire = case witness of
               ("semantic operation names an unregistered target: " <> raw)
           )
       )
-      Right
+      checkCompilerKey
       (registeredResourceKeyFromText raw)
+  checkCompilerKey key
+    | key == AwsTestCanarySecurityGroupsKey
+    , descriptorWireCompilerVersion wire /= cleanupProgramDescriptorCompilerVersion =
+        Left
+          (CleanupProgramDescriptorFieldInvalid "historical compiler cannot declare the test canary family")
+    | otherwise = Right key
 
 validateCompiledWire
   :: CompiledDesiredAbsenceProgram surface
@@ -795,6 +889,11 @@ validateCompiledWire compiled wire initialRun = do
         == (hostedZoneIdText <$> evidenceAwsDnsZone scope)
     )
     (Left (CleanupProgramDescriptorScopeMismatch "AWS DNS hosted zone"))
+  unless
+    ( descriptorWireResourceBindings wire
+        == (resourceBindingsToWire <$> evidenceResourceScopeBindings scope)
+    )
+    (Left (CleanupProgramDescriptorScopeMismatch "resource bindings"))
   unless
     (descriptorWireRegistryRevision wire == registryRevisionText scope)
     (Left (CleanupProgramDescriptorScopeMismatch "registry revision"))
@@ -910,6 +1009,7 @@ operationTarget operation = case operation of
   EstablishRecoveryPlane _ -> Nothing
   ReadBackRecoveryPlane _ -> Nothing
   ObserveRecoveryPlaneDisposition _ -> Nothing
+  AuditPerRunEscapes -> Nothing
   AuditCascadeEscapes -> Nothing
   CommitCascadePreUninstallReport -> Nothing
   ReadBackCascadePreUninstallReport -> Nothing
@@ -1043,6 +1143,7 @@ resourceKindText resourceKind = case resourceKind of
   VolumeFamily -> "volume-family"
   DnsZoneFamily -> "dns-zone-family"
   DnsRecordFamily -> "dns-record-family"
+  MailObjectFamily -> "mail-object-family"
   LocalSubstrate -> "local-substrate"
 
 cleanupProgramDescriptorRunId :: CleanupProgramDescriptor -> CleanupRunId

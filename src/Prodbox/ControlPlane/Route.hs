@@ -96,6 +96,7 @@ data ControlPlaneRoute
   | TlsRetentionObserveVersion
   | LifecycleTlsRetentionLegacyRecoveryStage
   | LifecycleTlsRetentionUnopenableSuccessorStage
+  | TargetAwsAdminCredentialRevoke
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 allControlPlaneRoutes :: [ControlPlaneRoute]
@@ -127,6 +128,7 @@ controlPlaneRouteMethod route = case route of
   TlsRetentionStore -> ControlPlanePost
   TlsRetentionRestore -> ControlPlanePost
   TargetMaterialObserve -> ControlPlaneGet
+  TargetAwsAdminCredentialRevoke -> ControlPlanePost
   TargetSecretDecommissionInventory -> ControlPlanePost
   TargetSecretDecommissionTombstone -> ControlPlanePost
   TargetSecretDecommissionCustodyTombstone -> ControlPlanePost
@@ -193,6 +195,7 @@ controlPlaneRoutePath route = case route of
   TlsRetentionStore -> "/v1/tls-retention/store"
   TlsRetentionRestore -> "/v1/tls-retention/restore"
   TargetMaterialObserve -> "/v1/target-material/observe"
+  TargetAwsAdminCredentialRevoke -> "/v1/target-secret/aws-admin/revoke"
   TargetSecretDecommissionInventory -> "/v1/target-secret/decommission/inventory"
   TargetSecretDecommissionTombstone -> "/v1/target-secret/decommission/tombstone"
   TargetSecretDecommissionCustodyTombstone ->
@@ -267,6 +270,7 @@ controlPlaneRouteRole route = case route of
   TlsRetentionStore -> TlsRetentionRuntime
   TlsRetentionRestore -> TlsRetentionRuntime
   TargetMaterialObserve -> TargetSecretAgentRuntime
+  TargetAwsAdminCredentialRevoke -> TargetSecretAgentRuntime
   TargetSecretDecommissionInventory -> TargetSecretAgentRuntime
   TargetSecretDecommissionTombstone -> TargetSecretAgentRuntime
   TargetSecretDecommissionCustodyTombstone -> TargetSecretAgentRuntime

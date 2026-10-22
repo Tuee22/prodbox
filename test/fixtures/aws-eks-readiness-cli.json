@@ -1,0 +1,93 @@
+{
+  "scope": "Installed AWS CLI against unsigned loopback fixtures; not an AWS provider recording.",
+  "recorded_on": "2026-10-20",
+  "tool_version": "aws-cli/2.34.18",
+  "schema_sources": [
+    "https://docs.aws.amazon.com/eks/latest/APIReference/API_DescribeCluster.html",
+    "https://docs.aws.amazon.com/eks/latest/APIReference/API_DescribeNodegroup.html"
+  ],
+  "cases": {
+    "cluster_active": {
+      "arguments": [
+        "eks",
+        "describe-cluster",
+        "--name",
+        "aws-eks-test-cluster",
+        "--query",
+        "{arn:cluster.arn,status:cluster.status}",
+        "--output",
+        "json"
+      ],
+      "exit_code": 0,
+      "stdout": "{\n    \"arn\": \"arn:aws:eks:ca-central-1:123456789012:cluster/aws-eks-test-cluster\",\n    \"status\": \"ACTIVE\"\n}\n",
+      "stderr": ""
+    },
+    "nodegroup_active": {
+      "arguments": [
+        "eks",
+        "describe-nodegroup",
+        "--cluster-name",
+        "aws-eks-test-cluster",
+        "--nodegroup-name",
+        "aws-eks-test-node-group",
+        "--query",
+        "{arn:nodegroup.nodegroupArn,status:nodegroup.status}",
+        "--output",
+        "json"
+      ],
+      "exit_code": 0,
+      "stdout": "{\n    \"arn\": \"arn:aws:eks:ca-central-1:123456789012:nodegroup/aws-eks-test-cluster/aws-eks-test-node-group/a8c75f2f-df78-a72f-4063-4b69af3de5b1\",\n    \"status\": \"ACTIVE\"\n}\n",
+      "stderr": ""
+    },
+    "cluster_missing": {
+      "arguments": [
+        "eks",
+        "describe-cluster",
+        "--name",
+        "aws-eks-test-cluster",
+        "--query",
+        "{arn:cluster.arn,status:cluster.status}",
+        "--output",
+        "json"
+      ],
+      "exit_code": 254,
+      "stdout": "",
+      "stderr": "\naws: [ERROR]: An error occurred (ResourceNotFoundException) when calling the DescribeCluster operation (reached max retries: 0): fixture resource absent\n\nAdditional error details:\nmessage: fixture resource absent\n"
+    },
+    "nodegroup_missing": {
+      "arguments": [
+        "eks",
+        "describe-nodegroup",
+        "--cluster-name",
+        "aws-eks-test-cluster",
+        "--nodegroup-name",
+        "aws-eks-test-node-group",
+        "--query",
+        "{arn:nodegroup.nodegroupArn,status:nodegroup.status}",
+        "--output",
+        "json"
+      ],
+      "exit_code": 254,
+      "stdout": "",
+      "stderr": "\naws: [ERROR]: An error occurred (ResourceNotFoundException) when calling the DescribeNodegroup operation (reached max retries: 0): fixture resource absent\n\nAdditional error details:\nmessage: fixture resource absent\n"
+    }
+  },
+  "requests": [
+    {
+      "method": "GET",
+      "path": "/clusters/aws-eks-test-cluster"
+    },
+    {
+      "method": "GET",
+      "path": "/clusters/aws-eks-test-cluster/node-groups/aws-eks-test-node-group"
+    },
+    {
+      "method": "GET",
+      "path": "/clusters/aws-eks-test-cluster"
+    },
+    {
+      "method": "GET",
+      "path": "/clusters/aws-eks-test-cluster/node-groups/aws-eks-test-node-group"
+    }
+  ]
+}

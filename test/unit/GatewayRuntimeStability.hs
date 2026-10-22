@@ -145,6 +145,37 @@ gatewayRuntimeStabilitySuite =
       gatewayRuntimeStabilityReport firstState `shouldBe` NotStableYet 1 2
       gatewayRuntimeStabilityReport secondState `shouldBe` StableObserved 2
 
+    it "accepts existing counters and keeps the run baseline across planned rollouts" $ do
+      let first = observeCount "uid-a" 5 (initialGatewayStabilityState policyTwoSamples)
+          second = observeCount "uid-a" 5 first
+          rolled = beginPlannedGatewayRollout second
+      gatewayRuntimeStabilityReport first `shouldBe` NotStableYet 1 2
+      gatewayRuntimeStabilityReport second `shouldBe` StableObserved 2
+      gatewayRuntimeStabilityReport (observeCount "uid-a" 5 rolled) `shouldBe` NotStableYet 1 2
+      gatewayRuntimeStabilityReport (observeCount "uid-a" 6 rolled) `shouldSatisfy` isRestartReport
+      gatewayRuntimeStabilityReport (observeCount "uid-a" 4 rolled)
+        `shouldSatisfy` isCounterUnobservableReport
+
+    it "requires a Pod first seen after run start to have zero restarts" $ do
+      let initial = observeCount "uid-a" 0 (initialGatewayStabilityState policyTwoSamples)
+      gatewayRuntimeStabilityReport (observeCount "uid-b" 1 initial) `shouldSatisfy` isRestartReport
+
+    it "retains an initial UID baseline after deletion and replacement" $ do
+      let initial = observeCount "uid-a" 5 (initialGatewayStabilityState policyTwoSamples)
+          replacement = observeCount "uid-b" 0 (noteGatewayPodDeleted "uid-a" initial)
+      gatewayRuntimeStabilityReport (observeCount "uid-a" 4 replacement)
+        `shouldSatisfy` isCounterUnobservableReport
+
+    it "fails a Ready Running Pod whose restart counter cannot be observed" $ do
+      let observed =
+            foldGatewayRuntimeSnapshot
+              GatewayRuntimeSnapshot
+                { gatewaySnapshotMemoryThresholds = thresholds
+                , gatewaySnapshotSamples = [readySample {gatewaySampleRestartCount = Nothing}]
+                }
+              (initialGatewayStabilityState policyTwoSamples)
+      gatewayRuntimeStabilityReport observed `shouldSatisfy` isCounterUnobservableReport
+
     it "keeps restart evidence across deletion, UID replacement, and planned rollout" $ do
       let restarted =
             observeGatewayRuntimePayloads
@@ -152,7 +183,7 @@ gatewayRuntimeStabilitySuite =
               (podsPayload [podValue "gateway-a" "uid-old" 1 Nothing])
               emptyListPayload
               (metricsPayload [("gateway-a", 70)])
-              (initialGatewayStabilityState policyTwoSamples)
+              (observeCount "uid-old" 0 (initialGatewayStabilityState policyTwoSamples))
           afterDeletion = noteGatewayPodDeleted "uid-old" restarted
           afterReplacement = observeGreen "uid-new" afterDeletion
           afterRollout = beginPlannedGatewayRollout afterReplacement
@@ -202,7 +233,6 @@ gatewayRuntimeStabilitySuite =
           cases =
             [ ("phase", readySample {gatewaySamplePhase = Nothing}, GatewayPhaseIncomplete)
             , ("Ready condition", readySample {gatewaySampleReady = Nothing}, GatewayReadinessIncomplete)
-            , ("restart count", readySample {gatewaySampleRestartCount = Nothing}, GatewayRestartCountIncomplete)
             ,
               ( "container limit"
               , readySample {gatewaySampleCurrentLimitBytes = Nothing}
@@ -561,6 +591,19 @@ isOomReport report =
   case report of
     RuntimeUnhealthy (GatewayOomKilledResidue _) -> True
     _ -> False
+
+isCounterUnobservableReport :: GatewayRuntimeStabilityReport -> Bool
+isCounterUnobservableReport report = case report of
+  StabilityUnreachable (GatewayPodObservationUnreachable _ _) -> True
+  _ -> False
+
+observeCount :: Text -> Natural -> GatewayStabilityState -> GatewayStabilityState
+observeCount uid count =
+  observeGatewayRuntimePayloads
+    sampleTime
+    (podsPayload [podValue "gateway-a" uid count Nothing])
+    emptyListPayload
+    (metricsPayload [("gateway-a", 70)])
 
 isRestartReport :: GatewayRuntimeStabilityReport -> Bool
 isRestartReport report =

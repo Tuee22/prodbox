@@ -39,6 +39,7 @@ where
 import Codec.Serialise (Serialise)
 import Data.Bifunctor qualified
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.List (find)
 import Data.Text (Text)
@@ -200,7 +201,17 @@ targetMaterialObservationAuthenticatedHandler maximumBytes repository =
             Left _ -> (ReplyServiceUnavailable, TargetMaterialObserveRefused "target-metadata-unavailable")
             Right Nothing -> (ReplyNotFound, TargetMaterialMissing)
             Right (Just metadata) -> (ReplyOk, TargetMaterialObserved metadata)
-      pure (Just (Data.Bifunctor.second responseBody response))
+      let encoded = Data.Bifunctor.second responseBody response
+      pure
+        ( Just
+            ( if ByteString.length (snd encoded) <= targetMaterialResponseMaximumBytes
+                then encoded
+                else
+                  ( ReplyServiceUnavailable
+                  , responseBody (TargetMaterialObserveRefused "target-metadata-response-too-large")
+                  )
+            )
+        )
     _ -> pure Nothing
 
 responseBody :: (Serialise value) => value -> ByteString

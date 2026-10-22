@@ -126,6 +126,7 @@ import Prodbox.Lifecycle.Teardown.ExecutionIdentity.Internal
 import Prodbox.Lifecycle.Teardown.Graph
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
+import Prodbox.Lifecycle.Teardown.PerRunTerminalAuditPlan
 import Prodbox.Lifecycle.Teardown.Program
 import Prodbox.Lifecycle.Teardown.RecoveryPlane
   ( RecoveryPlaneFinalDisposition (..)
@@ -835,6 +836,7 @@ validateNodeResult
     RetireStackCheckpointPair target -> expectCheckpointRetirement target nodeResult
     ReadBackStackCheckpointRetirement target ->
       expectCheckpointRetirementReadBack target nodeResult
+    AuditPerRunEscapes -> expectPerRunTerminalAudit nodeResult
     AuditCascadeEscapes -> expectTerminalAudit nodeResult
     CommitCascadePreUninstallReport -> expectMutation nodeResult
     ReadBackCascadePreUninstallReport ->
@@ -1467,8 +1469,10 @@ validateNodeResult
         mutationAttemptOutcome attempt
       RegisteredTargetAwsIamRoleFamilyMutation attempt ->
         mutationAttemptOutcome attempt
+      RegisteredTargetAwsNetworkFamilyMutation attempt -> mutationAttemptOutcome attempt
       RegisteredTargetAwsLoadBalancerControllerFamilyMutation attempt ->
         mutationAttemptOutcome attempt
+      RegisteredTargetInviteMailMutation attempt -> mutationAttemptOutcome attempt
       RegisteredTargetDns01ChallengeOwnerDelete attempt ->
         mutationAttemptOutcome attempt
       RegisteredTargetReconcileRefused detail -> CleanupNodeFailed detail
@@ -1487,8 +1491,17 @@ validateNodeResult
         CleanupNodeEffectUnconfirmed detail
       RegisteredTargetMutationRefused detail -> CleanupNodeFailed detail
 
+    expectPerRunTerminalAudit
+      :: TeardownNodeResult 'ExplicitPerRun 'TerminalAuditObservationResult -> CleanupNodeOutcome
+    expectPerRunTerminalAudit result = case (mkPerRunTerminalAuditPlan expectedScope, result) of
+      (Right plan, TeardownTerminalAuditObservation observation)
+        | terminalAuditScope observation == perRunAuditPlanScope plan -> expectTerminalAudit result
+        | otherwise -> bindingMismatch
+      (Left detail, _) -> CleanupNodeFailed detail
+      (_, TeardownNodeRefused detail) -> CleanupNodeFailed detail
+
     expectTerminalAudit
-      :: TeardownNodeResult surface 'TerminalAuditObservationResult -> CleanupNodeOutcome
+      :: TeardownNodeResult auditSurface 'TerminalAuditObservationResult -> CleanupNodeOutcome
     expectTerminalAudit result = case result of
       TeardownTerminalAuditObservation observation
         | terminalAuditEvidenceScope (terminalAuditScope observation)

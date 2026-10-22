@@ -12,15 +12,20 @@ module SubprocessKillable
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (IOException, try)
+import Control.Exception (IOException, finally, try)
 import Data.List (isInfixOf)
 import Data.Maybe (isNothing)
+import Data.Text qualified as Text
 import GHC.Clock (getMonotonicTimeNSec)
 import Prodbox.Subprocess
+import Prodbox.Subprocess.OwnedProcessTree
+import System.Directory (doesFileExist)
 import System.Exit (ExitCode (..))
+import System.IO.Error (isDoesNotExistError)
 import System.IO.Temp (withSystemTempDirectory)
-import System.Posix.Signals (nullSignal, signalProcess)
+import System.Posix.Signals (nullSignal, sigKILL, signalProcess)
 import System.Posix.Types (CPid (..))
+import System.Process qualified as Process
 import System.Timeout (timeout)
 import TestSupport
 
@@ -61,6 +66,7 @@ eventuallyGone pid = go (40 :: Int)
 subprocessKillableSuite :: SuiteBuilder ()
 subprocessKillableSuite =
   describe "killable subprocess runner" $ do
+    ownedProcessTreeCases
     it "reports the exit and both streams of a child that completes" $ do
       result <-
         captureSubprocessKillable
@@ -200,3 +206,91 @@ subprocessKillableSuite =
   isRefused result = case result of
     Left _ -> True
     Right _ -> False
+
+-- A process in a separate session also has a separate process group, which is
+-- stronger than the Pulumi plugin shape that originally escaped the group kill.
+ownedProcessTreeCases :: SuiteBuilder ()
+ownedProcessTreeCases = describe "Sprint 4.111 owned descendant stop" $ do
+  it "parses proc identities even when the command contains parentheses and spaces" $ do
+    let fields = "S 10 123 123 " ++ unwords (replicate 15 "0") ++ " 999 0 0"
+    parseProcessStat (Text.pack ("123 (command with ) spaces) " ++ fields))
+      `shouldBe` Just (ProcessStat 123 10 123 999 "S")
+    map parseProcessStat ["", "123", "123 (name) S 1 2 3", "nonnumeric (name) S 1 2 3"]
+      `shouldBe` replicate 4 Nothing
+
+  it "stops a separately grouped plugin after killing its parent, preserving a foreign process" $
+    withSystemTempDirectory "killable-plugin" $ \directory -> do
+      (_, _, _, foreignProcess) <- Process.createProcess (Process.proc "/bin/sleep" ["30"])
+      let pluginFile = directory <> "/plugin"
+          body = pluginBody pluginFile ++ " trap '' TERM; echo parent-started; wait"
+      ( do
+          (result, elapsed) <-
+            elapsedMillis
+              ( captureSubprocessKillable
+                  (KillableSubprocessLimits 500000 600000)
+                  (script body)
+              )
+          case result of
+            Right (KillableSubprocessTimedOut output) -> processStdout output `shouldContain` "parent-started"
+            other -> expectationFailure (show other)
+          elapsed `shouldSatisfy` (< 4000)
+          recordedPid pluginFile >>= processStopped >>= (`shouldBe` True)
+          Process.getProcessExitCode foreignProcess >>= (`shouldBe` Nothing)
+        )
+        `finally` ( cleanupPlugin pluginFile
+                      >> Process.terminateProcess foreignProcess
+                      >> Process.waitForProcess foreignProcess
+                      >> pure ()
+                  )
+
+  it "stops a separately grouped plugin when the caller is cancelled" $
+    withSystemTempDirectory "killable-plugin-cancel" $ \directory -> do
+      let pluginFile = directory <> "/plugin"
+      ( do
+          (result, elapsed) <-
+            elapsedMillis
+              ( timeout
+                  500000
+                  ( captureSubprocessKillable
+                      (KillableSubprocessLimits 30000000 600000)
+                      (script (pluginBody pluginFile ++ " trap '' TERM; wait"))
+                  )
+              )
+          result `shouldSatisfy` isNothing
+          elapsed `shouldSatisfy` (< 4000)
+          recordedPid pluginFile >>= processStopped >>= (`shouldBe` True)
+        )
+        `finally` cleanupPlugin pluginFile
+ where
+  -- Positional shell arguments keep the fixture path out of the program text.
+  pluginBody path =
+    "setsid /bin/sh -c 'echo $$ > \"$1\"; cat /proc/$$/stat > \"$1.stat\"; trap \"\" TERM; exec sleep 30' plugin "
+      ++ quote path
+      ++ " &"
+  quote value = "'" ++ concatMap (\c -> if c == '\'' then "'\"'\"'" else [c]) value ++ "'"
+  cleanupPlugin path = do
+    exists <- doesFileExist (path <> ".stat")
+    if exists
+      then do
+        original <- parseProcessStat . Text.pack <$> readFile (path <> ".stat")
+        case original of
+          Nothing -> pure ()
+          Just identity -> do
+            current <-
+              try (readFile ("/proc/" ++ show (statPid identity) ++ "/stat")) :: IO (Either IOException String)
+            case current of
+              Right value
+                | Just row <- parseProcessStat (Text.pack value)
+                , statStart row == statStart identity -> do
+                    _ <- try (signalProcess sigKILL (statPid identity)) :: IO (Either IOException ())
+                    pure ()
+              _ -> pure ()
+      else pure ()
+  -- A zombie has stopped and no longer holds a plugin's memory or pipes.
+  processStopped pid = do
+    contents <- try (readFile ("/proc/" ++ show pid ++ "/stat")) :: IO (Either IOException String)
+    pure $ case contents of
+      Left err -> isDoesNotExistError err
+      Right value -> case parseProcessStat (Text.pack value) of
+        Just row -> statState row `elem` ["Z", "X"]
+        Nothing -> False

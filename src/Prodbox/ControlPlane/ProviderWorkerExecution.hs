@@ -109,6 +109,12 @@ import Data.Text.Encoding qualified as TextEncoding
 import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.Ses.InviteEvidence
+  ( inviteMailPublicKeyText
+  , mkInviteMailPublicKey
+  , retiredInviteMailEvidence
+  )
+
 import Prodbox.ControlPlane.Coordinate (AuthorityEpoch (..))
 import Prodbox.ControlPlane.ProviderCredentialSession
   ( ProviderAcceptedAuthorityDigest
@@ -148,6 +154,11 @@ import Prodbox.ControlPlane.RequestAuthentication
   , signCanonicalBytesWithRequestCapability
   , signingKeyGenerationValue
   )
+import Prodbox.Lifecycle.AwsTestCanary
+  ( renderTestCanaryError
+  , testVpcCanaryRequestFromWireText
+  , testVpcCanaryRequestWireText
+  )
 import Prodbox.Lifecycle.Lease
   ( AuthorityTime
   , FencingToken
@@ -163,6 +174,7 @@ import Prodbox.Lifecycle.ProviderWorker.Evidence (providerEvidenceText)
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderIntent (..)
   , ProviderIntentCoordinate
+  , ProviderNetworkPurgeMode (..)
   , ProviderOwnedTagQuery (..)
   , ProviderReadinessProbe (..)
   , ProviderRevision
@@ -181,7 +193,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkEksClusterIdentityRequest
   , mkProviderAuditTarget
   , mkProviderCheckpointRef
-  , mkProviderNativeStackFamilyRef
+  , mkProviderNativeStackFamilyWireRef
   , mkProviderRevision
   , mkProviderRunMarker
   , mkProviderSpotPriceQuery
@@ -201,9 +213,12 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , providerIntentEvidenceBound
   , providerIntentResourceKey
   , providerNativeStackFamilyAccountId
-  , providerNativeStackFamilyHostedZoneId
+  , providerNativeStackFamilyNetworkFamily
+  , providerNativeStackFamilyPurgeMode
   , providerNativeStackFamilyRegion
   , providerNativeStackFamilyStackRef
+  , providerNativeStackFamilyWireResource
+  , providerNativeStackFamilyWireSelector
   , providerRevisionNatural
   , providerRunMarkerRunScope
   , providerRunMarkerSubmission
@@ -225,6 +240,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , sesRuleSetRefText
   , validateProviderIntentEvidence
   , validateProviderStackConfig
+  , validateTestVpcCanaryRef
   )
 import Prodbox.Lifecycle.TargetCommitIntent
   ( TargetValueDigest
@@ -233,6 +249,7 @@ import Prodbox.Lifecycle.TargetCommitIntent
   , sha256TargetValueDigest
   , targetValueDigestText
   )
+import Prodbox.Lifecycle.Teardown.ResourceScopeBindings
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 
 newtype ProviderIntentSigningKey = ProviderIntentSigningKey Ed25519.SecretKey
@@ -665,6 +682,9 @@ wireProviderIntent intent = case intent of
   -- rather than as a scan of the whole zone.
   ObserveDns01ChallengeRecords zoneId recordNamePrefix ->
     WireProviderIntent 26 zoneId Nothing Nothing (Just recordNamePrefix) Nothing
+  ObserveGlobalOwnedResourceTags (ProviderOwnedTagKeyQuery key) -> simple 43 key
+  ObserveGlobalOwnedResourceTags (ProviderOwnedTagPairQuery key value) ->
+    WireProviderIntent 43 key Nothing Nothing (Just value) Nothing
   ObserveOwnedResourceTags (ProviderOwnedTagKeyQuery key) -> simple 25 key
   ObserveOwnedResourceTags (ProviderOwnedTagPairQuery key value) ->
     WireProviderIntent 25 key Nothing Nothing (Just value) Nothing
@@ -684,9 +704,9 @@ wireProviderIntent intent = case intent of
   -- than as a create beneath no zone.
   EnsureValidationHostedZone nonce baseZone ->
     WireProviderIntent 33 nonce Nothing Nothing (Just baseZone) Nothing
-  ObserveSesInviteMail bucket recipient ->
+  RetiredSesInviteMailObservation bucket recipient ->
     WireProviderIntent 34 recipient Nothing Nothing (Just bucket) Nothing
-  ReapSesInviteMail bucket recipient ->
+  RetiredSesInviteMailCleanup bucket recipient ->
     WireProviderIntent 35 recipient Nothing Nothing (Just bucket) Nothing
   EnsureRetainedEbsVolumes volumeType specs ->
     WireProviderIntent 36 volumeType Nothing Nothing (Just specs) Nothing
@@ -702,6 +722,27 @@ wireProviderIntent intent = case intent of
       (Just config)
       (Just (maybe "none" id (providerAuditTargetHostedZoneId target)))
       (Just (providerAuditControlText control))
+  PreviewRegisteredStack ref config ->
+    WireProviderIntent 38 (providerStackRefText ref) Nothing (Just config) Nothing Nothing
+  PlantTestVpcCanary ref request ->
+    WireProviderIntent
+      44
+      (providerStackRefText (providerNativeStackFamilyStackRef ref))
+      Nothing
+      Nothing
+      (Just (providerNativeStackFamilyAccountId ref))
+      (Just (providerNativeStackFamilyRegion ref <> "\n" <> testVpcCanaryRequestWireText request))
+  ObserveHomeDns01Records scope -> simple 40 (homeDns01ScopeWireText scope)
+  ObserveSesInviteMailResidue scope -> simple 41 (inviteMailScopeWireText scope)
+  ReapSesInviteMailResidue scope -> simple 42 (inviteMailScopeWireText scope)
+  ObserveSealedSesInviteMail bucket recipient destination ->
+    WireProviderIntent
+      39
+      recipient
+      Nothing
+      Nothing
+      (Just bucket)
+      (Just (inviteMailPublicKeyText destination))
  where
   simple tag resource = WireProviderIntent tag resource Nothing Nothing Nothing Nothing
   publicARecordWire tag ref =
@@ -715,14 +756,14 @@ wireProviderIntent intent = case intent of
   nativeStackFamilyWire tag config ref admittedIdentities =
     WireProviderIntent
       tag
-      (providerStackRefText (providerNativeStackFamilyStackRef ref))
+      (providerNativeStackFamilyWireResource ref)
       Nothing
       config
       (Just (providerNativeStackFamilyAccountId ref))
       ( Just
           ( providerNativeStackFamilyRegion ref
               <> ":"
-              <> maybe "none" id (providerNativeStackFamilyHostedZoneId ref)
+              <> maybe "none" id (providerNativeStackFamilyWireSelector ref)
               <> Text.concat (map ("\nidentity|" <>) admittedIdentities)
           )
       )
@@ -1372,6 +1413,9 @@ providerIntentFromWire wire = case wireProviderIntentTag wire of
     pure (ReapEksLoadBalancerControllerFamily resource tags)
   31 -> do
     ref <- nativeStackFamilyRef True
+    case providerNativeStackFamilyPurgeMode ref of
+      Just (NetworkPurgeApply _) -> Left (ProviderCommittedIntentValueInvalid "purge apply selector on an observation")
+      _ -> Right ()
     config <- requireStackConfig wire
     mapIntentValue (validateProviderStackConfig (providerNativeStackFamilyStackRef ref) config)
     pure (ObserveNativeStackFamily ref config)
@@ -1379,17 +1423,21 @@ providerIntentFromWire wire = case wireProviderIntentTag wire of
     (ref, admittedIdentities) <- nativeStackFamilyRefWithIdentities True
     config <- requireStackConfig wire
     mapIntentValue (validateProviderStackConfig (providerNativeStackFamilyStackRef ref) config)
-    validateNativeStackFamilyIdentities admittedIdentities
+    case (providerNativeStackFamilyPurgeMode ref, providerNativeStackFamilyNetworkFamily ref) of
+      (Just NetworkPurgePlan, _) -> Left (ProviderCommittedIntentValueInvalid "purge plan selector on a mutation")
+      (Nothing, Nothing) -> validateNativeStackFamilyIdentities admittedIdentities
+      _ | null admittedIdentities -> Right ()
+      _ -> Left (ProviderCommittedIntentValueInvalid "network-dependent repair forbids a member allowlist")
     pure (ReapNativeStackFamily ref config admittedIdentities)
   33 -> do
     (selector, baseZone) <- selectorAndSecondary "validation-zone nonce" "validation-zone base"
     pure (EnsureValidationHostedZone selector baseZone)
   34 -> do
     (recipient, bucket) <- selectorAndSecondary "SES invite recipient" "SES invite bucket"
-    pure (ObserveSesInviteMail bucket recipient)
+    pure (RetiredSesInviteMailObservation bucket recipient)
   35 -> do
     (recipient, bucket) <- selectorAndSecondary "SES invite recipient" "SES invite bucket"
-    pure (ReapSesInviteMail bucket recipient)
+    pure (RetiredSesInviteMailCleanup bucket recipient)
   36 -> do
     (volumeType, specs) <- selectorAndSecondary "retained EBS volume type" "retained EBS volume specs"
     pure (EnsureRetainedEbsVolumes volumeType specs)
@@ -1405,6 +1453,73 @@ providerIntentFromWire wire = case wireProviderIntentTag wire of
     controlText <- requireTertiary "missing audit control" wire
     control <- mapIntentValue (parseProviderAuditControl controlText)
     pure (ObserveAwsAudit target config control)
+  38 -> do
+    noRevision wire
+    ref <- mapIntentValue (mkProviderStackRef resource)
+    config <- requireStackConfig wire
+    mapIntentValue (validateProviderStackConfig ref config)
+    noSecondary wire
+    noTertiary wire
+    pure (PreviewRegisteredStack ref config)
+  39 -> do
+    noRevision wire
+    noStackConfig wire
+    bucket <- requireSecondary "missing SES invite bucket" wire
+    destinationText <- requireTertiary "missing SES invite public key" wire
+    destination <- first ProviderCommittedIntentValueInvalid (mkInviteMailPublicKey destinationText)
+    if Text.null resource || Text.null bucket
+      then Left (ProviderCommittedIntentValueInvalid "missing SES invite recipient or bucket")
+      else pure (ObserveSealedSesInviteMail bucket resource destination)
+  40 -> do
+    noRevision wire
+    noStackConfig wire
+    noSecondary wire
+    noTertiary wire
+    ObserveHomeDns01Records
+      <$> first ProviderCommittedIntentValueInvalid (homeDns01ScopeFromWireText resource)
+  41 -> do
+    noRevision wire
+    noStackConfig wire
+    noSecondary wire
+    noTertiary wire
+    ObserveSesInviteMailResidue
+      <$> first ProviderCommittedIntentValueInvalid (inviteMailScopeFromWireText resource)
+  42 -> do
+    noRevision wire
+    noStackConfig wire
+    noSecondary wire
+    noTertiary wire
+    ReapSesInviteMailResidue
+      <$> first ProviderCommittedIntentValueInvalid (inviteMailScopeFromWireText resource)
+  43 -> do
+    noRevision wire
+    noStackConfig wire
+    noTertiary wire
+    if Text.null resource
+      then Left (ProviderCommittedIntentValueInvalid "missing owned-resource tag key")
+      else Right ()
+    pure
+      ( ObserveGlobalOwnedResourceTags
+          ( case wireProviderIntentSecondary wire of
+              Nothing -> ProviderOwnedTagKeyQuery resource
+              Just value -> ProviderOwnedTagPairQuery resource value
+          )
+      )
+  44 -> do
+    noRevision wire
+    noStackConfig wire
+    account <- requireSecondary "missing canary account" wire
+    regionAndRequest <- requireTertiary "missing canary region/request" wire
+    (region, requestText) <- case Text.splitOn "\n" regionAndRequest of
+      [region, requestText] -> Right (region, requestText)
+      _ -> Left (ProviderCommittedIntentValueInvalid "malformed canary region/request")
+    ref <- mapIntentValue (mkProviderNativeStackFamilyWireRef resource account region Nothing)
+    mapIntentValue (validateTestVpcCanaryRef ref)
+    request <-
+      first
+        (ProviderCommittedIntentValueInvalid . renderTestCanaryError)
+        (testVpcCanaryRequestFromWireText requestText)
+    pure (PlantTestVpcCanary ref request)
   tag -> Left (ProviderCommittedIntentUnsupportedAction tag)
  where
   resource = wireProviderIntentResource wire
@@ -1451,7 +1566,6 @@ providerIntentFromWire wire = case wireProviderIntentTag wire of
   nativeStackFamilyRefWithIdentities permitsConfig = do
     noRevision wire
     if permitsConfig then Right () else noStackConfig wire
-    stackRef <- mapIntentValue (mkProviderStackRef resource)
     account <- requireSecondary "missing native stack-family account" wire
     regionZoneAndIdentities <- requireTertiary "missing native stack-family region/zone" wire
     (regionAndZone, identityRows) <- case Text.lines regionZoneAndIdentities of
@@ -1462,7 +1576,7 @@ providerIntentFromWire wire = case wireProviderIntentTag wire of
       Nothing -> Left (ProviderCommittedIntentValueInvalid "missing native stack-family zone")
       Just value -> Right value
     let zone = if zoneText == "none" then Nothing else Just zoneText
-    ref <- mapIntentValue (mkProviderNativeStackFamilyRef stackRef account region zone)
+    ref <- mapIntentValue (mkProviderNativeStackFamilyWireRef resource account region zone)
     identities <- traverse decodeIdentity identityRows
     Right (ref, identities)
   decodeIdentity row = case Text.stripPrefix "identity|" row of
@@ -2094,6 +2208,11 @@ executeVerifiedProviderIntentBoundWith observeStage boundary verified = do
 
   executeUnderSession session =
     case operationForProviderIntent (providerExecutionCapabilities boundary) intent of
+      ProviderIntentRetired ->
+        pure
+          ( ProviderIntentExecutionObserved coordinate
+              <$> validateExecutionEvidence intent retiredInviteMailEvidence
+          )
       ProviderIntentReadOnly operation -> executeReadOnly session operation
       ProviderIntentMutation operation -> executeMutation session operation
 

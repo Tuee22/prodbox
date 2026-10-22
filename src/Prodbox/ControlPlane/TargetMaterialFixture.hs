@@ -51,7 +51,8 @@ seedAcmeEabFromTestSecrets writeTarget repoRoot = do
                     Left err -> ioError (userError err)
                     Right () -> pure ()
         _ -> pure ()
-    _ -> pure ()
+    Just (Left detail) -> ioError (userError detail)
+    Nothing -> pure ()
 
 -- | The operation id the harness submits its ACME EAB fixture under (Sprint
 -- 5.53): the cluster, then a digest of the frame that carries the credential.

@@ -21,6 +21,7 @@ import Prodbox.Lifecycle.Teardown.AwsRegisteredTargetInterpreter
 import Prodbox.Lifecycle.Teardown.AwsStackReaderInterpreter
 import Prodbox.Lifecycle.Teardown.EksTeardownExecutor
 import Prodbox.Lifecycle.Teardown.Execution
+import Prodbox.Lifecycle.Teardown.PerRunTerminalAudit (observePerRunTerminalAudit)
 import Prodbox.Lifecycle.Teardown.Program
 
 -- | Closed component inventory for the cloud portion of lifecycle teardown.
@@ -118,6 +119,13 @@ executeCloudOperation runtime context operation = case operation of
   EstablishRecoveryPlane _ -> pure Nothing
   ReadBackRecoveryPlane _ -> pure Nothing
   ObserveRecoveryPlaneDisposition _ -> pure Nothing
+  AuditPerRunEscapes ->
+    fmap
+      (Just . either TeardownNodeRefused TeardownTerminalAuditObservation)
+      ( observePerRunTerminalAudit
+          (awsRegisteredTargetProviderBoundary (internalCloudRegisteredTargetInterpreter runtime))
+          context
+      )
   AuditCascadeEscapes -> pure Nothing
   CommitCascadePreUninstallReport -> pure Nothing
   ReadBackCascadePreUninstallReport -> pure Nothing

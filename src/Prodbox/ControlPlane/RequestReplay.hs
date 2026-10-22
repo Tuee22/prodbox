@@ -66,6 +66,7 @@ module Prodbox.ControlPlane.RequestReplay
   , completeVerifiedRequestDurably
   , ReplayProtectedResult (..)
   , runReplayProtectedRequest
+  , runReplayProtectedReadRequest
   )
 where
 
@@ -532,10 +533,10 @@ data RequestReplayValueWire
   deriving anyclass (Serialise)
 
 requestReplayCodecVersion :: Word16
-requestReplayCodecVersion = 15
+requestReplayCodecVersion = 19
 
 legacyRequestReplayCodecVersions :: [Word16]
-legacyRequestReplayCodecVersions = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+legacyRequestReplayCodecVersions = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]
 
 encodeRequestReplayProjection
   :: Int
@@ -1016,7 +1017,45 @@ runReplayProtectedRequest
   -> VerifiedControlPlaneRequest
   -> m (Either failure ReplayResponse)
   -> m (ReplayProtectedResult failure)
-runReplayProtectedRequest attempts repository now attempt verified effect = do
+runReplayProtectedRequest = runReplayProtectedRequestWithRetention RetainExactReplayResponse
+
+-- | Read-only effects still reserve and confirm the signed nonce. Their first
+-- response is delivered only after a compact replay refusal is durable; a
+-- duplicate nonce returns that refusal and cannot return a stale observation.
+-- The caller must select this only for an independently authenticated read route.
+runReplayProtectedReadRequest
+  :: (Monad m)
+  => ReplayResponse
+  -> ReplayCasAttempts
+  -> RequestReplayRepository m revision
+  -> AuthorityTime
+  -> ReplayAttemptId
+  -> VerifiedControlPlaneRequest
+  -> m (Either failure ReplayResponse)
+  -> m (ReplayProtectedResult failure)
+runReplayProtectedReadRequest refusal =
+  runReplayProtectedRequestWithRetention (RetainReadReplayRefusal refusal)
+
+data ReplayResponseRetention
+  = RetainExactReplayResponse
+  | RetainReadReplayRefusal !ReplayResponse
+
+retainedReplayResponse :: ReplayResponseRetention -> ReplayResponse -> ReplayResponse
+retainedReplayResponse retention response = case retention of
+  RetainExactReplayResponse -> response
+  RetainReadReplayRefusal refusal -> refusal
+
+runReplayProtectedRequestWithRetention
+  :: (Monad m)
+  => ReplayResponseRetention
+  -> ReplayCasAttempts
+  -> RequestReplayRepository m revision
+  -> AuthorityTime
+  -> ReplayAttemptId
+  -> VerifiedControlPlaneRequest
+  -> m (Either failure ReplayResponse)
+  -> m (ReplayProtectedResult failure)
+runReplayProtectedRequestWithRetention retention attempts repository now attempt verified effect = do
   reservation <-
     reserveVerifiedRequestDurably attempts repository now attempt verified
   case reservation of
@@ -1031,11 +1070,15 @@ runReplayProtectedRequest attempts repository now attempt verified effect = do
               repository
               attempt
               verified
-              response
+              (retainedReplayResponse retention response)
           pure $ case completion of
-            DurableReplayCompletionConfirmed recorded -> ReplayProtectedExecuted recorded
+            DurableReplayCompletionConfirmed recorded ->
+              ReplayProtectedExecuted $ case retention of
+                RetainExactReplayResponse -> recorded
+                RetainReadReplayRefusal _ -> response
             _ -> ReplayProtectedCompletionUnconfirmed completion
-    DurableReplayReservationRecovered response -> pure (ReplayProtectedRecovered response)
+    DurableReplayReservationRecovered response ->
+      pure (ReplayProtectedRecovered (retainedReplayResponse retention response))
     DurableReplayReservationInFlight -> pure ReplayProtectedInFlight
     DurableReplayReservationTombstoned -> pure ReplayProtectedTombstoned
     DurableReplayReservationDigestConflict -> pure ReplayProtectedDigestConflict

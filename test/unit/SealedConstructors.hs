@@ -98,6 +98,12 @@ sealedModule exportEntry =
     , "proveFixture value = Just (FixtureProof value)"
     ]
 
+positionalViolations :: String -> [String]
+positionalViolations contents =
+  sealedConstructorViolations
+    [(modulePath, contents)]
+    (registeredRow {sealedConstructorOrigin = SealedPositionalHere})
+
 violationsFor :: String -> [String]
 violationsFor contents =
   sealedConstructorViolations [(modulePath, contents)] registeredRow
@@ -123,6 +129,39 @@ sealedConstructorsSuite =
       it "carries the reason the seal is load-bearing into the refusal" $
         violationsFor (sealedModule "FixtureProof (..)")
           `shouldSatisfy` any ("the fixture's claim rests on it" `isInfixOf`)
+
+    describe "positional proof seals" $ do
+      it "refuses exported record-update fields behind an abstract constructor" $ do
+        let source =
+              unlines
+                [ "module Prodbox.Synthetic (FixtureProof, proofField) where"
+                , "data FixtureProof = FixtureProof"
+                , "  { proofField :: Int }"
+                ]
+        positionalViolations source `shouldSatisfy` any ("record fields or an alias" `isInfixOf`)
+      it "refuses an inline record declaration" $ do
+        let source =
+              unlines
+                [ "module Prodbox.Synthetic (FixtureProof, proofField) where"
+                , "data FixtureProof = FixtureProof { proofField :: Int }"
+                ]
+        positionalViolations source `shouldSatisfy` any ("record fields or an alias" `isInfixOf`)
+      it "refuses replacing a direct proof declaration with an alias" $ do
+        let source =
+              unlines
+                [ "module Prodbox.Synthetic (FixtureProof) where"
+                , "type FixtureProof = Int"
+                ]
+        positionalViolations source `shouldSatisfy` any ("record fields or an alias" `isInfixOf`)
+      it "admits a positional constructor with ordinary read-only getters" $ do
+        let source =
+              unlines
+                [ "module Prodbox.Synthetic (FixtureProof, proofField) where"
+                , "data FixtureProof = FixtureProof Int"
+                , "proofField :: FixtureProof -> Int"
+                , "proofField (FixtureProof value) = value"
+                ]
+        positionalViolations source `shouldBe` []
 
     describe "the rule stays quiet where it must" $ do
       it "admits an abstract export" $

@@ -1,4 +1,13 @@
-FROM ubuntu:24.04
+# Module declarations describe project sources, not third-party dependencies.
+# Copy the normalized manifests across a stage boundary so a module-list edit
+# keeps the dependency layer's input bytes unchanged with basic Docker builders.
+FROM ubuntu:24.04 AS dependency-manifests
+WORKDIR /opt/build
+COPY prodbox.cabal cabal.project ./
+RUN sed -E '/^    (exposed-modules|other-modules):/,/^    [^[:space:]]/ { /^    (exposed-modules|other-modules):/d; /^        /d; }' prodbox.cabal > dependencies.cabal \
+    && mv dependencies.cabal prodbox.cabal
+
+FROM ubuntu:24.04 AS builder
 
 ARG GHC_VERSION=9.12.4
 ARG CABAL_VERSION=3.16.1.0
@@ -18,10 +27,8 @@ WORKDIR /opt/build
 
 # One union runtime image for every in-cluster role (gateway daemon + api /
 # websocket workloads). It is the SAME compiled `prodbox` binary; the role is
-# selected by each chart's container `args:` (`gateway start` vs `workload
-# start`). `tini` is PID 1 for clean signal handling / graceful drain of the
-# long-running gateway daemon; the AWS CLI is bundled because the gateway shells
-# out to `aws route53 change-resource-record-sets` for DNS writes.
+# selected by each chart's container `args:`. Runtime tools are installed here
+# once and copied separately from the compiler and dependency store.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
@@ -109,22 +116,48 @@ RUN curl --proto '=https' --tlsv1.2 -fsSL https://get-ghcup.haskell.org -o /tmp/
     && ghcup set cabal "${CABAL_VERSION}" \
     && rm -f /tmp/ghcup.sh
 
-COPY prodbox.cabal cabal.project LICENSE README.md ./
+COPY --from=dependency-manifests /opt/build/prodbox.cabal /opt/build/cabal.project ./
+# Plain RUN and COPY --from work with basic docker build; no cache mounts.
+RUN cabal update \
+    && cabal build --builddir=.build --only-dependencies exe:prodbox
+
+COPY prodbox.cabal LICENSE README.md ./
 COPY app ./app
 COPY src ./src
-COPY pulumi ./pulumi
+RUN cabal build --builddir=.build exe:prodbox \
+    && cp "$(cabal list-bin --builddir=.build exe:prodbox)" /usr/local/bin/prodbox
 
-# Plain RUN — no BuildKit cache mounts. The build uses basic `docker build`
-# with the daemon's default builder (no `docker buildx`, no docker-container
-# builder, no BuildKit-only Dockerfile features). See
-# documents/engineering/dependency_management.md §1.
-RUN cabal update \
-    && cabal build --builddir=.build exe:prodbox \
-    && cp "$(cabal list-bin --builddir=.build exe:prodbox)" /usr/local/bin/prodbox \
-    && rm -rf \
-        .build \
-        /root/.cache/cabal \
-        /root/.local/state/cabal
+FROM ubuntu:24.04 AS runtime
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+WORKDIR /opt/build
+
+# Runtime shared libraries and subprocess tools; the compiler and Cabal store
+# stay in the builder. Keep the Provider's native-architecture tool pins exact.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        libffi8 \
+        libgmp10 \
+        libncurses6 \
+        libnuma1 \
+        libssl3t64 \
+        libtinfo6 \
+        tini \
+        unzip \
+        zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/local/aws-cli /usr/local/aws-cli
+RUN ln -s /usr/local/aws-cli/v2/current/bin/aws /usr/local/bin/aws \
+    && ln -s /usr/local/aws-cli/v2/current/bin/aws_completer /usr/local/bin/aws_completer
+COPY --from=builder /usr/local/bin/pulumi /usr/local/bin/pulumi-language-yaml /usr/local/bin/kubectl /usr/local/bin/
+COPY --from=builder /root/.pulumi/plugins /root/.pulumi/plugins
+COPY --from=builder /usr/local/bin/prodbox /usr/local/bin/prodbox
+COPY pulumi ./pulumi
 
 # Sprint 1.49: the binary owns its config — there is NO committed/COPY-ed
 # `docker/default-prodbox.dhall`. After the binary is installed, RUN it to

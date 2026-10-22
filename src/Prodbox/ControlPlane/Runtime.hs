@@ -72,6 +72,8 @@ module Prodbox.ControlPlane.Runtime
   , lifecycleAuthorityFirstReconcileRequestMaximum
   , lifecycleAuthorityReconcileAttemptRequestMaximum
   , lifecycleAuthorityReplayCapacity
+  , lifecycleAuthorityQualificationAttemptRequestMaximum
+  , lifecycleAuthorityQualificationResponseProfile
   , providerWorkerQualificationAttemptRequestMaximum
   , providerWorkerReplayCapacity
   , providerWorkerReplayMaximumEncodedBytes
@@ -82,9 +84,13 @@ module Prodbox.ControlPlane.Runtime
   , authorityBackupQualificationPreludeRequestMaximum
   , authorityBackupCascadeCandidateRequestMaximum
   , authorityBackupQualificationAttemptRequestMaximum
+  , authorityBackupCheckpointAttemptRequestMaximum
   , authorityBackupReplayCapacity
   , authorityBackupReplayMaximumEncodedBytes
   , targetSecretAgentReconcileAttemptRequestMaximum
+  , targetSecretAgentCascadeCandidateRequestMaximum
+  , targetSecretAgentCascadeCandidateResponseMaximumBytes
+  , targetSecretAgentQualificationAttemptRequestMaximum
   , targetSecretAgentReplayCapacity
   , targetSecretAgentReplayMaximumEncodedBytes
   , classifyTlsRetentionWorkflowFailure
@@ -160,6 +166,13 @@ import Prodbox.CLI.Command
   , runPlanWithOptions
   )
 import Prodbox.CLI.Output (writeDiagnosticLine)
+import Prodbox.Capacity.AuthorityBackupBudget qualified as AuthorityBackupBudget
+import Prodbox.Capacity.AwsLifecycleBudget
+  ( AwsLifecycleWorkload (..)
+  , awsLifecycleProviderBodyRequestMaximum
+  , awsLifecycleRecordedOutputReadMaximum
+  )
+import Prodbox.Capacity.ControlPlaneReplayBudget qualified as ReplayBudget
 import Prodbox.Capacity.ProviderWorkerBudget qualified as ProviderWorkerBudget
 import Prodbox.Capacity.TargetWorkerBudget qualified as TargetWorkerBudget
 import Prodbox.ControlPlane.AdminActionAuthorityExecutionEndpoint
@@ -234,7 +247,10 @@ import Prodbox.ControlPlane.AuthorityProviderEndpoint
   , authorityProviderDispatchAuthenticatedHandler
   )
 import Prodbox.ControlPlane.AwsAdminAuthorizedRecoveryProduction
-  ( productionProveAwsAdminAuthorizedRecovery
+  ( productionObserveCredentialWorkerQuiescence
+  , productionObserveExpiredAwsAdminAttemptAbsence
+  , productionProveAwsAdminAttestedRecovery
+  , productionProveAwsAdminAuthorizedRecovery
   )
 import Prodbox.ControlPlane.AwsAdminPreparedTargetProduction
   ( productionAwsAdminPreparedTargetLifecycle
@@ -242,6 +258,12 @@ import Prodbox.ControlPlane.AwsAdminPreparedTargetProduction
 import Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
   ( awsAdminProvisionerAuthenticatedHandler
   , awsAdminProvisionerMaximumBytes
+  )
+import Prodbox.ControlPlane.AwsAdminTargetRevokeEndpoint
+  ( AwsAdminTargetRevokeVerification (..)
+  , awsAdminTargetRevokeAuthenticatedHandler
+  , awsAdminTargetRevokeMaximumBytes
+  , vaultAwsAdminTargetRevokeBoundary
   )
 import Prodbox.ControlPlane.AwsStackCreationBindingRepository
   ( awsStackCreationBindingModelBCodec
@@ -417,6 +439,10 @@ import Prodbox.ControlPlane.ProjectionImportRegistration
   )
 import Prodbox.ControlPlane.ProviderAwsScopeReceipt.Internal
   ( lifecycleAuthorityProviderAwsScopeReaderInternal
+  )
+import Prodbox.ControlPlane.ProviderCredentialMutationRuntime
+  ( ProviderCredentialParentRecoveryBoundary (..)
+  , providerCredentialMutationBoundary
   )
 import Prodbox.ControlPlane.ProviderProduction
   ( providerProductionCapabilities
@@ -615,6 +641,7 @@ import Prodbox.ControlPlane.TargetMaterialEndpoint
   , observeVaultTargetMaterialDependencies
   , renderTargetMaterialReadinessStage
   , targetMaterialObservationAuthenticatedHandler
+  , targetMaterialResponseMaximumBytes
   , vaultTargetMaterialRepository
   )
 import Prodbox.ControlPlane.TargetMaterialRegistry
@@ -832,6 +859,9 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAuthority
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   ( renderAwsAdminTargetIntentIssueCause
   )
+import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecutionVault
+  ( observeAwsAdminCompletedExecutionReceipt
+  )
 import Prodbox.Lifecycle.CredentialProvisioner.ExternalIngress
   ( externalMaterialIngressStateCodec
   , mkExternalMaterialTargetReceipt
@@ -893,11 +923,26 @@ import Prodbox.Lifecycle.TargetCommitIntent
   , mkCredentialGeneration
   , targetValueDigestText
   )
+import Prodbox.Lifecycle.Teardown.Model
+  ( CleanupSurfaceWitness (CascadeSurface)
+  , RegisteredResourceKey (AwsEksKey)
+  , ResourceKind (DnsRecordFamily, LocalSubstrate)
+  )
+import Prodbox.Lifecycle.Teardown.PerRunTerminalAuditPlan (maximumPerRunTerminalAuditQueries)
+import Prodbox.Lifecycle.Teardown.Program
+  ( cascadeProgramCheckpointOperationCount
+  , cascadeProgramNodeCount
+  )
 import Prodbox.Lifecycle.Teardown.RecoveryPlaneComponentObserver.Internal
   ( productionRecoveryPlaneComponentObserverInternal
   )
 import Prodbox.Lifecycle.Teardown.RecoveryPlaneInterpreter.Internal
   ( recoveryPlaneAuthorityReadBackInterpreterInternal
+  )
+import Prodbox.Lifecycle.Teardown.Registry
+  ( cleanupTargetKey
+  , cleanupTargetKind
+  , cleanupTargetsForSurface
   )
 import Prodbox.Minio.ObjectStoreNative
   ( ObjectStoreHttpStatusClass (..)
@@ -2724,6 +2769,8 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                 ( productionProveAwsAdminAuthorizedRecovery
                     vaultSession
                 )
+                (observeAwsAdminCompletedExecutionReceipt vaultSession)
+                productionProveAwsAdminAttestedRecovery
             adminActionRepositoryResolver operationId = do
               coordinate <-
                 mapLeft
@@ -3133,6 +3180,20 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                   currentAuthorityTime
                   awsAdminRepositoryResolver
                   awsAdminTargetLifecycle
+                  ( providerCredentialMutationBoundary
+                      admissionRepository
+                      awsAdminRepositoryResolver
+                      cleanupProgramDescriptorClient
+                      descriptorBoundCleanupRunRepositoryForId
+                      aggregateBackupClient
+                      (targetMaterialClient targetTransport)
+                      ( ProviderCredentialParentRecoveryBoundary
+                          currentAuthorityTime
+                          (observeAwsAdminCompletedExecutionReceipt vaultSession)
+                          productionObserveExpiredAwsAdminAttemptAbsence
+                          productionObserveCredentialWorkerQuiescence
+                      )
+                  )
                   manifestSigner
                   providerHandler
               adminActionHandler =
@@ -3659,6 +3720,7 @@ lifecycleAuthorityFirstReconcileRequestMaximum =
     + genesisReceiptRequests
     + remainingMemberCount * requestsPerRemainingMember
     + finalContinuationObservation
+    + firstReconcileRecoveryRequests
  where
   initialAdmissionRequests = 3
   genesisProvisionerRequests = 5
@@ -3666,6 +3728,12 @@ lifecycleAuthorityFirstReconcileRequestMaximum =
   remainingMemberCount = fromIntegral (firstReconcileHardMaximum - 1)
   requestsPerRemainingMember = 6
   finalContinuationObservation = 1
+  -- Marker observe/settle; one reserved-operation lookup with both observation
+  -- forms; three recovery-view reads; and at most three seven-RPC coordinations
+  -- (resume, revoke, reinstall), including worker Target-intent issuance and
+  -- lost-completion recovery. Each ordinary member also has one lost reply.
+  firstReconcileRecoveryRequests =
+    2 + 3 + 3 + 3 * 7 + fromIntegral firstReconcileHardMaximum
 
 lifecycleAuthorityReconcileAttemptRequestMaximum :: Natural
 lifecycleAuthorityReconcileAttemptRequestMaximum =
@@ -3677,24 +3745,66 @@ lifecycleAuthorityReconcileAttemptRequestMaximum =
   -- marker, then load the in-force projection as the final transition barrier.
   inForceConfigTransitionRequests = 4
 
+-- | The complete caller schedule includes bootstrap, the pre/postflight
+-- credential loops, predecessor import, journal transitions, graph-owned
+-- metadata, Provider dispatch, and the checkpoint traffic nested under it.
+-- The response profile is deliberately conservative: every config load gets
+-- the full replay width; small checkpoint metadata is producer-bounded.
+lifecycleAuthorityQualificationResponseProfile :: [(Natural, Int)]
+lifecycleAuthorityQualificationResponseProfile =
+  [
+    ( lifecycleAuthorityFirstReconcileRequestMaximum + harnessCredentialRequests
+    , ReplayBudget.awsAdminResponseMaximumBytes
+    )
+  , (20, lifecycleAuthorityReplayResponseMaximumBytes)
+  , (historicalImportRequests, 4096)
+  , (2, lifecycleAuthorityReplayResponseMaximumBytes)
+  , (cascadeJournalRequests - 2, 4096)
+  , (checkpointRequests, ReplayBudget.checkpointMetadataResponseMaximumBytes)
+  , (providerWorkerQualificationAttemptRequestMaximum, 64 * 1024)
+  , (graphMetadataRequests, 256 * 1024)
+  , (retainedMaterialRequests, lifecycleAuthorityReplayResponseMaximumBytes)
+  ]
+ where
+  -- Each harness side may resume, repair and submit once; five lookups cover
+  -- the pending slot, both observation forms, invocation slot and recovery view.
+  harnessCredentialRequests = 2 * (3 * 7 + 5)
+  -- Four post-uninstall nodes: begin/read + explicit observe/program-read,
+  -- complete/read + explicit observe/program-read; initial/claim/final reads.
+  historicalImportRequests = 4 * 8 + 8
+  -- Create, claim, primary and closing/recovery observations, plus ACK/read
+  -- pairs for both transitions of every compiled node. Post-uninstall nodes
+  -- actually run locally, so charging all nodes also covers an interrupted tail.
+  cascadeJournalRequests = 12 + 4 * cascadeProgramNodeCount
+  checkpointRequests =
+    providerWorkerQualificationAttemptRequestMaximum * (3 * 3 + 2 * 3)
+      + cascadeProgramCheckpointOperationCount * 4
+      + 2 * (3 + 2 * 3)
+  -- Recovery-plane (3), reader commits/readbacks (6), four EKS nodes each
+  -- charged four calls (16), three freeze/record/read audit rounds (15), and
+  -- revoke/closing epoch confirmation (6). Provider calls are charged above.
+  graphMetadataRequests = 3 + 6 + 4 * 4 + 3 * 5 + 6
+  -- Two retained-ingress recovery paths at four calls each, three TLS workflow
+  -- calls and three selected retained-delivery calls. These retain full replies.
+  retainedMaterialRequests = 2 * 4 + 3 + 3
+
+lifecycleAuthorityQualificationAttemptRequestMaximum :: Natural
+lifecycleAuthorityQualificationAttemptRequestMaximum =
+  sum (map fst lifecycleAuthorityQualificationResponseProfile)
+
 lifecycleAuthorityReplayCapacity :: Natural
 lifecycleAuthorityReplayCapacity =
-  immediateSupportedAttemptCount * lifecycleAuthorityReconcileAttemptRequestMaximum
- where
-  -- A rollout attempt can finish while all of its five-minute requests still
-  -- occupy the additional one-minute replay-skew horizon. The immediately
-  -- supported unchanged retry therefore needs a second complete envelope.
-  immediateSupportedAttemptCount = 2
+  2 * lifecycleAuthorityQualificationAttemptRequestMaximum
 
 -- | One complete cascade qualification reaches Provider Worker through the
 -- exact closed Provider envelope. It first proves the operational AWS scope.
--- Six non-EKS Provider-owned registered targets each perform the program
+-- Provider-mutated non-EKS registered targets each perform the program
 -- observation, the reconcile decision observation, the mutation, and the
 -- mandatory absence read-back. DNS01 performs the same three observations but
 -- deletes through its Kubernetes owner. EKS performs the program observation,
 -- fresh observations for drain commit, drain, drain read-back, and destroy,
 -- then the destroy mutation and absence read-back. The terminal audit issues
--- the five queries in its closed catalog.
+-- every regional/global query in the largest closed catalog.
 providerWorkerQualificationAttemptRequestMaximum :: Natural
 providerWorkerQualificationAttemptRequestMaximum =
   providerAwsScopeObservationRequests
@@ -3702,13 +3812,36 @@ providerWorkerQualificationAttemptRequestMaximum =
     + dns01TargetRequests
     + eksTargetRequests
     + terminalAuditQueryRequests
+    + standaloneLifecycleBodyRequests
  where
+  -- An interrupted named-client body can immediately enter the complete
+  -- cleanup path. Reserve both schedules without relying on elapsed AWS time.
+  standaloneLifecycleBodyRequests =
+    max
+      (awsLifecycleProviderBodyRequestMaximum AwsStackCycleWorkload)
+      (awsLifecycleProviderBodyRequestMaximum AwsTestVpcCanaryWorkload)
   providerAwsScopeObservationRequests = 1
-  providerMutatedNonEksTargetCount = 6
+  providerMutatedNonEksTargetCount =
+    fromIntegral
+      ( length
+          [ target
+          | target <- cleanupTargetsForSurface CascadeSurface
+          , cleanupTargetKey target /= AwsEksKey
+          , cleanupTargetKind target `notElem` [LocalSubstrate, DnsRecordFamily]
+          ]
+      )
   requestsPerProviderMutatedNonEksTarget = 4
-  dns01TargetRequests = 3
+  dns01TargetRequests =
+    3
+      * fromIntegral
+        ( length
+            [ target
+            | target <- cleanupTargetsForSurface CascadeSurface
+            , cleanupTargetKind target == DnsRecordFamily
+            ]
+        )
   eksTargetRequests = 7
-  terminalAuditQueryRequests = 5
+  terminalAuditQueryRequests = fromIntegral maximumPerRunTerminalAuditQueries
 
 providerWorkerReplayCapacity :: Natural
 providerWorkerReplayCapacity =
@@ -3718,7 +3851,7 @@ providerWorkerReplayCapacity =
   -- unchanged retry begins, so the retry receives a second complete envelope.
   immediateSupportedAttemptCount = 2
 
--- Eighty maximum-size Provider responses plus replay metadata remain below the
+-- 174 maximum-size Provider responses plus replay metadata remain below the
 -- generic 12 MiB retained-object ceiling. The transport suite constructs and
 -- round-trips that exact worst-case projection.
 providerWorkerReplayMaximumEncodedBytes :: Int
@@ -3753,7 +3886,7 @@ tlsRetentionAdapterReplayCapacity =
 -- this encoded projection after Base64/JSON expansion.
 tlsRetentionAdapterReplayMaximumEncodedBytes :: Int
 tlsRetentionAdapterReplayMaximumEncodedBytes =
-  39 * standardAuthenticatedResponseMaximumBytes
+  ReplayBudget.tlsRetentionAdapterReplayMaximumEncodedBytes
 
 -- | The Authority Backup Adapter sees a different request envelope from the
 -- Lifecycle Authority that calls it. A complete ordinary reconcile can repair
@@ -3779,12 +3912,12 @@ authorityBackupQualificationPreludeRequestMaximum =
  where
   qualificationRecoveryBoundaryObservationMaximum = 4
 
--- | The closed 59-node cascade performs eight backup calls while registering
+-- | The compiled cascade performs eight backup calls while registering
 -- the descriptor-bound run, six while claiming it, six while recording the
 -- primary outcome, eight for each begin/complete node pair, and thirteen for
 -- terminal report backup, run/index tombstoning, and independent read-back.
--- Keep the node count explicit here and prove it against the compiled graph in
--- the transport suite so registry growth cannot silently under-size replay.
+-- Derive its node count from the same topology the compiler consumes and prove
+-- the complete request/encoding envelope in the transport suite.
 authorityBackupCascadeCandidateRequestMaximum :: Natural
 authorityBackupCascadeCandidateRequestMaximum =
   registrationRequests
@@ -3796,14 +3929,42 @@ authorityBackupCascadeCandidateRequestMaximum =
   registrationRequests = 8
   claimRequests = 6
   primaryOutcomeRequests = 6
-  cascadeNodeCount = 59
+  cascadeNodeCount = cascadeProgramNodeCount
   requestsPerNode = 8
   terminalReportRequests = 13
+
+-- | Checkpoint traffic is separate from journal replication. Charge every
+-- Provider dispatch at the maximum backend branch, every direct checkpoint
+-- cleanup node at its finite recovery maximum, and both host output reads.
+-- The deliberate over-approximation also covers interrupted bodies entering
+-- the complete cascade immediately; it assumes no minimum elapsed AWS time.
+authorityBackupCheckpointAttemptRequestMaximum :: Natural
+authorityBackupCheckpointAttemptRequestMaximum =
+  providerWorkerQualificationAttemptRequestMaximum
+    * AuthorityBackupBudget.authorityCheckpointBackupPerProviderRequestMaximum
+    + cascadeProgramCheckpointOperationCount
+      * AuthorityBackupBudget.authorityCheckpointBackupPerGraphOperationMaximum
+    + hostOutputReads * AuthorityBackupBudget.authorityCheckpointBackupPerOutputReadMaximum
+ where
+  hostOutputReads =
+    max
+      (awsLifecycleRecordedOutputReadMaximum AwsStackCycleWorkload)
+      (awsLifecycleRecordedOutputReadMaximum AwsTestVpcCanaryWorkload)
 
 authorityBackupQualificationAttemptRequestMaximum :: Natural
 authorityBackupQualificationAttemptRequestMaximum =
   authorityBackupQualificationPreludeRequestMaximum
     + authorityBackupCascadeCandidateRequestMaximum
+    + authorityBackupCheckpointAttemptRequestMaximum
+    + historicalImportBackupRequests
+    + credentialRecoveryBackupRequests
+ where
+  -- Four local-tail nodes each need two three-call mutations, their ACK reads
+  -- and two explicit run/program observations. Claim plus initial/final reads.
+  historicalImportBackupRequests = 4 * 12 + 10
+  -- Nine bounded recovery coordinations, the ordinary first-reconcile Provider
+  -- installation, and settlement can each read the predecessor pair.
+  credentialRecoveryBackupRequests = 2 * (9 + 1 + 1)
 
 authorityBackupReplayCapacity :: Natural
 authorityBackupReplayCapacity =
@@ -3814,13 +3975,12 @@ authorityBackupReplayCapacity =
   -- prelude-plus-candidate envelope without discarding the first prefix.
   immediateSupportedAttemptCount = 2
 
--- | The actual descriptor-bound 59-node aggregate remains below 24 KiB at
--- every transition.  Two complete qualification envelopes, including a
--- rounded 224 KiB allowance for each prelude response, plus canonical replay
--- metadata fit below 32 MiB; the transport suite constructs that exact graph
--- and response shape and rejects the former 12 MiB ceiling.
+-- | The transport proof covers the complete compact schedule and a retained
+-- old journal prefix alongside it. The old aggregate stays below 40 KiB, new
+-- copy replies are bounded at 4 KiB, and read replies retain a fixed refusal.
+-- Both profiles, their prelude responses and replay metadata fit in 64 MiB.
 authorityBackupReplayMaximumEncodedBytes :: Int
-authorityBackupReplayMaximumEncodedBytes = 32 * 1024 * 1024
+authorityBackupReplayMaximumEncodedBytes = AuthorityBackupBudget.authorityBackupReplayMaximumEncodedBytes
 
 -- | One complete qualification attempt can observe the provider credential and
 -- an already committed external-material source, then perform the retained
@@ -3882,19 +4042,52 @@ targetSecretAgentReconcileAttemptRequestMaximum =
   authorityLaneUnopenableSuccessorAdditionalRequests = 2
   authorityLaneBoundedSuccessorCollisionAdditionalRequests = 3
 
+-- | Audit, report commit and report read-back each re-observe the frozen
+-- generation. Retirement observes before/after at the CLI, then the worker
+-- sends one fixed-slot revoke and independently reads its absence. Authority
+-- prepared-target observations read the primary journal, not this Agent.
+targetSecretAgentCascadeCandidateRequestMaximum :: Natural
+targetSecretAgentCascadeCandidateRequestMaximum =
+  auditGenerationReads + cliRetirementReads + workerRetirementRequests
+ where
+  auditGenerationReads = 3
+  cliRetirementReads = 2
+  workerRetirementRequests = 2
+
+targetSecretAgentCascadeCandidateResponseMaximumBytes :: Int
+targetSecretAgentCascadeCandidateResponseMaximumBytes =
+  max targetMaterialResponseMaximumBytes awsAdminTargetRevokeMaximumBytes
+
+targetSecretAgentQualificationAttemptRequestMaximum :: Natural
+targetSecretAgentQualificationAttemptRequestMaximum =
+  targetSecretAgentReconcileAttemptRequestMaximum
+    + targetSecretAgentCascadeCandidateRequestMaximum
+    + credentialRecoveryRequests
+ where
+  -- Eight first-reconcile workers install/read back their exact targets.
+  firstReconcileWorkerRequests = 8 * 2
+  -- One pending resume and two repairs: six worker calls, six predecessor
+  -- reads, initial/three recovery/after-two/settlement observations (seven).
+  firstReconcileRecoveryRequests = 3 * 2 + 3 * 2 + 7
+  -- Each harness side can coordinate three workers, read predecessors for the
+  -- three, and observe the public target before/after recovery and at closure.
+  harnessRecoveryRequests = 2 * (3 * 2 + 3 * 2 + 3)
+  credentialRecoveryRequests =
+    firstReconcileWorkerRequests + firstReconcileRecoveryRequests + harnessRecoveryRequests
+
 targetSecretAgentReplayCapacity :: Natural
 targetSecretAgentReplayCapacity =
-  immediateSupportedAttemptCount * targetSecretAgentReconcileAttemptRequestMaximum
+  immediateSupportedAttemptCount * targetSecretAgentQualificationAttemptRequestMaximum
  where
   immediateSupportedAttemptCount = 2
 
--- Ninety-eight maximum-size responses plus their retained replay metadata fit
--- below ninety-nine response-widths. The corresponding Vault listener request
--- ceiling includes the Base64/JSON expansion of this finite bound: 198 MiB
--- expands to at most 264 MiB, which the listener's 288 MiB maximum covers.
+-- Two complete attempts retain 98 general responses at 2 MiB and 144
+-- metadata responses at 64 KiB. Their 205 MiB payload plus bounded metadata
+-- fits the 208 MiB encoded ceiling. Base64/JSON fits the 288 MiB Vault listener;
+-- the separate runtime memory floor covers simultaneous representations.
 targetSecretAgentReplayMaximumEncodedBytes :: Int
 targetSecretAgentReplayMaximumEncodedBytes =
-  99 * standardAuthenticatedResponseMaximumBytes
+  ReplayBudget.targetSecretAgentReplayMaximumEncodedBytes
 
 -- Replay stores the bounded response, not the potentially large checkpoint
 -- request.  Keeping this limit independent from the request frame prevents a
@@ -3907,7 +4100,7 @@ lifecycleAuthorityReplayCasAttempts :: Natural
 lifecycleAuthorityReplayCasAttempts = 8
 
 lifecycleAuthorityReplayMaximumEncodedBytes :: Int
-lifecycleAuthorityReplayMaximumEncodedBytes = 12 * 1024 * 1024
+lifecycleAuthorityReplayMaximumEncodedBytes = ReplayBudget.lifecycleAuthorityReplayMaximumEncodedBytes
 
 provideAuthenticationAuthorityEpoch
   :: AuthorityAdmissionRepository IO revision
@@ -4838,7 +5031,7 @@ targetSecretAgentRuntimeHandler vaultConfig vaultSession clusterId agentIdentity
       signerResult <- readAuthorityManifestPublicKey signer
       pure $ case signerResult of
         Left _ -> Left TargetSecretAgentStartupHandlerAuthorityManifest
-        Right (_, publicKey) ->
+        Right (signerGeneration, publicKey) ->
           let decommissionInputs =
                 TargetSecretAgentDecommissionProvisioned
                   (manifestPublicKeyDigest publicKey)
@@ -4879,7 +5072,16 @@ targetSecretAgentRuntimeHandler vaultConfig vaultSession clusterId agentIdentity
                 targetOneShotOperationAuthenticatedHandler
                   controlPlaneMaximumBodyBytes
                   oneShotBoundary
-                  adminActionHandler
+                  ( awsAdminTargetRevokeAuthenticatedHandler
+                      AwsAdminTargetRevokeVerification
+                        { awsAdminTargetRevokeSignerGeneration = signerGeneration
+                        , awsAdminTargetRevokePublicKey = publicKey
+                        , awsAdminTargetRevokeCurrentTime = currentAuthorityTime
+                        , awsAdminTargetRevokeLocalAgent = agentIdentity
+                        }
+                      (vaultAwsAdminTargetRevokeBoundary vaultSession)
+                      adminActionHandler
+                  )
            in Right
                 ( targetAuthorityTrustAuthenticatedHandler
                     controlPlaneMaximumBodyBytes

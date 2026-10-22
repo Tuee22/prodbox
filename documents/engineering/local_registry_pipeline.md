@@ -69,9 +69,9 @@ The target native Haskell lifecycle reconciles registry state in this order:
    `ReconcileManagedResourceAbsent` intent and read back absence. Failure/unobservability is typed,
    retained in the cleanup report, and blocks only the conflicting registry apply—not independent
    always-run cleanup.
-3. Registry storage-backend bootstrap from public `quay.io/minio/*` image refs, **seeded into RKE2
-   containerd from the host Docker cache immediately before each consumer** (see *Pre-registry image
-   seeding* below), including MinIO reconcile plus the `prodbox-harbor-registry` bucket and credential
+3. Registry storage-backend bootstrap from the pinned source-built MinIO/mc images, **seeded into
+   RKE2 containerd with their verified config identities immediately before each consumer** (see
+   *Pre-registry image seeding* below), including MinIO reconcile plus the `prodbox-harbor-registry` bucket and credential
    bootstrap. The bootstrap Job
    reads MinIO root credentials through the `minio` service account and Vault Kubernetes auth; the
    registry itself receives a generated, persisted MinIO user in its `harbor-registry-s3` storage
@@ -99,8 +99,8 @@ The target native Haskell lifecycle reconciles registry state in this order:
 13. On home only, exact registered Gateway-DNS A-record reconcile through its bounded capability.
     The current optional direct Route 53 bootstrap call is pre-cutover residue removed by Sprint
     `4.50`; AWS-substrate A records are Lifecycle Authority provider intents owned by Sprint `7.33`.
-14. MinIO steady-state re-reconcile, kept on the **public** `quay.io/minio/minio` image (never
-    the registry mirror; the seed above keeps that name present in containerd): MinIO is the registry's own storage backend, so it cannot source its
+14. MinIO steady-state re-reconcile keeps the source-built bootstrap image independent of the
+    registry mirror; the seed above verifies its exact identity in containerd: MinIO is the registry's own storage backend, so it cannot source its
     image from the registry — a circular dependency a non-surging single-replica StatefulSet
     cannot break (a registry-sourced MinIO image would deadlock: MinIO down → registry 5xx → MinIO
     `ImagePullBackOff`). The earlier bitnami Deployment masked this by surging a replacement pod
@@ -120,28 +120,39 @@ The critical split is:
   registry
 - later Helm deployment: registry-backed images only
 
-**Pre-registry image seeding.** MinIO is the registry's own storage backend, so the MinIO server and the
-`mc` client its two bootstrap Jobs run are the home cluster's only images that cannot come from the registry.
-Their public upstream, `quay.io/minio/*`, no longer serves an anonymous pull (a token is issued, then the
-manifest and tag-list requests are refused with HTTP 401; Docker Hub's `minio/*` is refused the same way), and
-the kubelet's image garbage collection, which prodbox runs at a 70 % high and 60 % low threshold, removes an
-image no container uses once the disk crosses 70 %. A reconcile that left the two images to the kubelet
-therefore worked only while both stayed cached, and a rebuilt cluster, whose containerd is empty, could not
-start MinIO at all. `Prodbox.Infra.BootstrapImageSeed` owns the policy and `ensureBootstrapImagesSeeded` runs
-it on the home substrate inside `ensureMinioRuntime`, before the registry bucket Job, before the gateway MinIO
-bootstrap Job and in the harness restore step:
+**Pre-registry image seeding.** MinIO is the registry's storage backend. Its server and the
+`mc` client used by bootstrap Jobs therefore have a source independent of that registry.
+`Prodbox.Infra.BootstrapImageSource` pins the official MinIO/mc release archives, their exact
+commits, the checksum-verified Go `1.23.4` SDK and immutable BusyBox/CA image indexes.
+`BootstrapImageSourceNative` acquires those public inputs and compiles in basic Docker with a
+2 GiB memory limit, two CPUs, 256 PIDs and a 900-second in-container timeout. Source and SDK
+mounts are read-only. Explicit Go module checks use the pinned release's `go.sum`; Go scratch
+uses the owned work mount. Exact-name ownership labels and an OS lease bound container cleanup,
+including an applied create whose reply was lost.
 
-- an image RKE2 containerd lists under its exact name is left alone, whatever digest it carries;
-- one containerd lacks and the host Docker cache holds is saved out of the cache and imported;
-- one neither holds is pulled into the cache first, which is the only step that needs the network;
-- every import is read back, and every refusal names the image, what each store lacked, the registry's first
-  line of answer, and the two ways to restore it (`docker load -i <archive>`, or `docker pull` from a mirror
-  followed by `docker tag` to the exact name).
+`BootstrapImageArchive` renders deterministic layers, config and Docker archive bytes. The private
+`.build/bootstrap-images-v1` cache retains verified downloads, compiled binaries, base/CA/licence
+inputs, recipe receipts and image archives independently of RKE2 state. It is public reproducible
+build tooling, distinct from the Authority-owned retained-artifact inventory. An incomplete build
+resumes from checksum-verified downloads; corrupt completed inputs refuse before use. Source
+recipe changes require an explicit source-version tag change.
 
-The seed is a host-side step: the AWS substrate's EKS nodes pull the same refs themselves and have no host
-containerd to seed, which is an open decision of Sprint `7.47`. A host whose Docker cache does not hold the two
-images has no source; keeping an offline copy under the retained root is a policy choice the seeding does not
-make.
+The canonical names are `docker.io/prodbox/minio-bootstrap:<release>-source-v1` and
+`docker.io/prodbox/mc-bootstrap:<release>-source-v1`. They identify local build products and are
+never pulled from a public registry or relabelled as upstream releases. The ordinary mirror path
+uses those same artifacts and tags the independently verified image config ID before publishing
+its `source-v1` registry mirror. It republishes these exact artifacts rather than accepting an
+existing target solely by tag or platform.
+
+`BootstrapImageSeed` compares each artifact's expected config digest with containerd, then Docker
+when an import is needed. A wrong cached tag requires the verified import. An import succeeds
+only after an independent containerd read reports the expected config digest; absent, malformed
+and unobservable observations cannot prove identity. `ensureBootstrapImagesSeeded` runs before
+MinIO, the registry bucket Job, the gateway MinIO Job and the harness restore step.
+
+The home seed imports into host RKE2 containerd. EKS requires its own bootstrap publication
+projection, owned by Sprint `7.47`; an unpublished local build-product name is never replaced by
+an unverified fallback. Qualification status lives in the development-plan resumption ledger.
 
 ### 2.1 Registry Readiness Contract
 
@@ -404,9 +415,11 @@ prodbox directly on Linux and through the Lima/WSL2 frame on non-Linux hosts.
 
 Container build requirements:
 
-1. use single-stage `ubuntu:24.04` for the repository-owned Haskell image
+1. use `ubuntu:24.04` builder and runtime stages for the repository-owned Haskell image, with
+   a manifest-preparation stage that removes module lists before the dependency-cache boundary
 2. build the Haskell `prodbox` binary under `/opt/build`
-3. install `ghcup` in-image, pin GHC `9.12.4`, and do not create symlinked Haskell tool shims
+3. install `ghcup` only in the builder, pin GHC `9.12.4` and Cabal `3.16.1.0`, and do not
+   create symlinked Haskell tool shims
 4. build once through ordinary host-native `docker build`
 5. push the resulting registry tags through ordinary `docker push`
 6. keep `.dockerignore` synchronized with the intended build inputs
@@ -420,10 +433,11 @@ Container build requirements:
 10. bound host-Docker generation retention to exact canonical dangling image IDs observed under
     the managed union-runtime repository; run it before build and after the publication/import
     attempt, require empty read-back, and never substitute broad prune or build-cache deletion
-11. after copying the resolved executable, delete `.build`, Cabal's downloaded package cache, and
-    Cabal's build state before the same build `RUN` commits; retain the pinned in-image toolchain,
-    repository source, YAML Provider programs, and installed binary, and do not substitute global
-    Docker build-cache deletion
+11. resolve third-party dependencies before copying project sources, using normalized Cabal
+    manifests so module-list edits preserve the dependency cache; copy only the executable, runtime
+    tools, and provider plugin into the runtime stage, copy the YAML programs there, and generate
+    portable sibling configuration with the installed binary; keep the Haskell toolchain, Cabal
+    store, and project source in the builder, and do not substitute global Docker build-cache deletion
 12. before each retained-home custom-image build, snapshot every current concrete registry tag,
     enter the typed read-only mode, run Distribution's own untagged-manifest collector, restore and
     observe read-write service, and require the exact snapshot plus S3 write edge to read back;

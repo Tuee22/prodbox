@@ -10,6 +10,7 @@ module Prodbox.ControlPlane.TargetMaterializationProduction
   , productionTargetMaterializationBoundary
   , productionAwsAdminPreparedTargetMaterializer
   , productionAwsAdminDeliveryBoundary
+  , classifyAwsAdminTargetReadBack
   , productionRewrappedTargetMaterializer
   , classifyTargetIntentIssueError
   , classifyTargetWorkerError
@@ -22,6 +23,9 @@ import Data.ByteString (ByteString)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
+import Prodbox.ControlPlane.AwsAdminTargetRevokeClient
+  ( AwsAdminTargetRevokeClient (revokeAwsAdminTarget)
+  )
 import Prodbox.ControlPlane.TargetAuthorityTrust
   ( TargetAuthorityTrustBoundaryCause (TargetAuthorityTrustBoundaryOther)
   , parseTargetAuthorityTrustBoundaryCause
@@ -36,7 +40,8 @@ import Prodbox.ControlPlane.TargetMaterialClient
   , targetWorkerReceiptFromMaterialObservation
   )
 import Prodbox.ControlPlane.TargetMaterialEndpoint
-  ( targetMaterialObservedGeneration
+  ( TargetMaterialObservation
+  , targetMaterialObservedGeneration
   )
 import Prodbox.ControlPlane.TargetMaterialRegistry
   ( AwsCredentialIdentity (..)
@@ -249,9 +254,10 @@ productionRewrappedTargetMaterializer boundary request opening = do
 productionAwsAdminDeliveryBoundary
   :: ProductionTargetMaterializationBoundary
   -> TargetMaterialClient IO
+  -> AwsAdminTargetRevokeClient IO
   -> SignedAwsAdminPermit
   -> AwsAdminDeliveryBoundary IO
-productionAwsAdminDeliveryBoundary boundary observer expectedPermit =
+productionAwsAdminDeliveryBoundary boundary observer revoker expectedPermit =
   mkAwsAdminDeliveryBoundary deliver revoke observe
  where
   deliver prepared permit material
@@ -260,7 +266,11 @@ productionAwsAdminDeliveryBoundary boundary observer expectedPermit =
         Left cause -> pure (Left cause)
         Right payload ->
           productionAwsAdminPreparedTargetMaterializer boundary permit prepared payload
-  revoke _ _ = pure (Left "ordinary AWS-admin delivery cannot revoke a Target generation")
+  revoke prepared permit
+    | permit /= expectedPermit = pure (Left "Target revoke permit substitution refused")
+    | prepared /= awsAdminPermitIntentPreparedTarget (signedAwsAdminPermitIntent permit) =
+        pure (Left "Target revoke prepared binding substitution refused")
+    | otherwise = first (Text.pack . show) <$> revokeAwsAdminTarget revoker permit
   observe prepared permit
     | permit /= expectedPermit = pure (Left AwsAdminTargetObservationPermitSubstitution)
     | otherwise = do
@@ -268,21 +278,33 @@ productionAwsAdminDeliveryBoundary boundary observer expectedPermit =
         pure $ case observed of
           Left err -> Left (AwsAdminTargetObservationClient (classifyTargetMaterialClientError err))
           Right Nothing -> Right Nothing
-          Right (Just metadata)
-            | targetMaterialObservedGeneration metadata
-                < credentialGenerationValue (preparedCredentialTargetGeneration prepared) ->
-                Right Nothing
-            | targetMaterialObservedGeneration metadata
-                > credentialGenerationValue (preparedCredentialTargetGeneration prepared) ->
-                Left AwsAdminTargetObservationGenerationAdvanced
-            | otherwise ->
-                first
-                  (const AwsAdminTargetObservationReceiptInvalid)
-                  ( Just
-                      <$> targetWorkerReceiptFromMaterialObservation
-                        (preparedCredentialTargetId prepared)
-                        metadata
-                  )
+          Right (Just metadata) ->
+            classifyAwsAdminTargetReadBack
+              (awsAdminPermitIntentAction (signedAwsAdminPermitIntent permit))
+              (preparedCredentialTargetId prepared)
+              (credentialGenerationValue (preparedCredentialTargetGeneration prepared))
+              metadata
+
+-- | An older installed generation is not absence during revoke. Install and
+-- rotate still distinguish that prior generation from their new one.
+classifyAwsAdminTargetReadBack
+  :: OperatorMaterialAction
+  -> TargetSecretId
+  -> Natural
+  -> TargetMaterialObservation
+  -> Either AwsAdminTargetObservationCause (Maybe TargetWorkerReceipt)
+classifyAwsAdminTargetReadBack action target expected metadata
+  | observed > expected =
+      Left AwsAdminTargetObservationGenerationAdvanced
+  | action == RevokeOperatorMaterial && observed < expected =
+      Left AwsAdminTargetObservationGenerationMismatch
+  | observed < expected = Right Nothing
+  | otherwise =
+      first
+        (const AwsAdminTargetObservationReceiptInvalid)
+        (Just <$> targetWorkerReceiptFromMaterialObservation target metadata)
+ where
+  observed = targetMaterialObservedGeneration metadata
 
 directPayload
   :: ProvisionedTargetMaterial schema -> Either AwsAdminTargetDeliveryCause TargetSecretPayload

@@ -1,0 +1,27 @@
+{
+  "kind": "Non-authorizing canonical predecessor metadata; no secrets, completion capabilities or absence evidence.",
+  "producer": "Private ProviderAdmissionEpoch owner through reserveProviderCredentialMutationInternal and encodeProviderCredentialLineageArchive; deterministic regression operation lineage/publication, generation1, Legacy origin. Foreign fixture uses lineage/neighbor.",
+  "schema": "ProviderCredentialLineageArchive version1",
+  "artifacts": [
+    {
+      "path": "foreign-archive.cbor",
+      "bytes": 96,
+      "sha256": "bf35b0d63cae58eea307b85c88a5cb92732471a77077441e260bbd1bedfc2ea4"
+    },
+    {
+      "path": "install-archive.cbor",
+      "bytes": 99,
+      "sha256": "c96f443e3f5fcdf65e7c8112ea0ff9d15018910aa5580b939a125a8f3f395816"
+    },
+    {
+      "path": "revoke-archive.cbor",
+      "bytes": 99,
+      "sha256": "50bde183ce5443e964317d253bde85a98484da570b42ff4cb9f02c1154a3a25c"
+    },
+    {
+      "path": "rotate-archive.cbor",
+      "bytes": 99,
+      "sha256": "b52ba2225a973762fccf57406326cbc0471408738dfeebfd4b2c779e57aa2818"
+    }
+  ]
+}

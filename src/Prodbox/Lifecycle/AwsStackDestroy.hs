@@ -59,6 +59,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , providerNativeStackFamilyStackRef
   , providerStackRefText
   )
+import Prodbox.Lifecycle.Teardown.Registry (awsNetworkFamiliesForStack)
 import Prodbox.Subprocess (ProcessOutput (..))
 import System.Exit (ExitCode (..))
 
@@ -336,7 +337,8 @@ repair world recorded =
     Left reason -> pure ["network dependents were not touched: " <> reason]
     Right target ->
       describeRepair
-        <$> clearNetworkDependents
+        <$> clearNetworkFamilies
+          (awsNetworkFamiliesForStack (Text.pack (worldStackName world)))
           (runAwsNativeStackFamilyCommand (worldAws world))
           reserved
           target

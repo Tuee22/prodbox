@@ -424,12 +424,20 @@ host capacity changes. AWS CLI calls additionally carry a narrower physical 30-s
 path carry no such bound. `src/Prodbox/Lifecycle/K8sDrain.hs` runs them through the unbounded
 capture, and the drain's five-minute timeout bounds only its completion poll, so a blocked call
 hangs rather than refusing. Sprint `4.93` brings them under the bounded runner.
-Authority Backup independently uses a `144 MiB` request-equals-limit envelope. Its role-specific
-replay codec admits at most 32 MiB of canonical bytes for the complete 59-node qualification
-envelope and immediate retry; the additional 64 MiB over its former container limit covers the
-simultaneous encoded input, decoded retained responses, replacement encoding, and native runtime
-headroom. This raises the steady workload memory draw from 9,984 MiB to 10,048 MiB, still within the
-unchanged 13,312 MiB allocatable host budget.
+Retained replay memory is coupled to the largest canonical encoding, rather than only the Vault
+listener's HTTP ceiling. Encoded input, decoded retained responses and replacement encoding may
+coexist. `Prodbox.Capacity.ControlPlaneReplayBudget` gives the Lifecycle Authority a 212 MiB
+encoding ceiling and `3 * 212 + 92 = 728 MiB` request-equals-limit envelope; the Target Agent has
+208 MiB and `3 * 208 + 48 = 672 MiB`; the TLS Adapter retains 78 MiB and uses
+`3 * 78 + 48 = 282 MiB`. `AuthorityBackupBudget` couples 64 MiB to `3 * 64 + 48 = 240 MiB`.
+Capacity validation rejects any authored profile below its role's floor. The complete authenticated
+schedule proofs charge actual bounded response classes, immutable-read replay refusals, retries,
+historical imports and credential recovery; the shared producer enforces metadata widths before
+completion. The 288 MiB Vault listener covers the largest Base64/JSON request. September scheduler
+counterexamples freeze their original four role-memory profiles and unchanged causal totals;
+production replay sizing does not rewrite that historical evidence.
+The current default draw is `6210m / 11538 MiB / 15456 MiB / 155648 MiB`, within
+`7000m / 13312 MiB / 80032 MiB / 177952 MiB` allocatable; current memory headroom is 1774 MiB.
 The Lifecycle Authority's Provider-route HTTP response budget is derived from the same admitted
 schedule maximum. A live registered EKS create completed after about fourteen minutes, invalidating
 the former 300-second child bound. The effect and signed intent are now physically bounded at thirty

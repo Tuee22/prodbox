@@ -23,21 +23,26 @@ owning implementation change updates `CommandSpec` and regenerates this section.
 | `prodbox aws quotas request` | Request supported AWS quotas |
 | `prodbox aws audit` | Inventory a stack's field in the provider |
 | `prodbox aws ebs reap-test` | Delete test-scoped EBS volumes |
+| `prodbox aws stack eks diff` | Show the eks stack resource and property delta |
 | `prodbox aws stack eks reconcile` | Provision or inspect the eks stack |
 | `prodbox aws stack eks destroy` | Destroy the eks stack |
 | `prodbox aws stack eks prune-corrupt-checkpoint` | Clear a corrupt eks per-run Pulumi checkpoint |
 | `prodbox aws stack eks adopt-legacy plan` | Render the eks adoption candidate plan and its digest |
 | `prodbox aws stack eks adopt-legacy apply` | Adopt the eks family under a confirmed plan digest |
+| `prodbox aws stack eks purge-dependents` | Plan or repair the registered EKS network dependents |
+| `prodbox aws stack test diff` | Show the test stack resource and property delta |
 | `prodbox aws stack test reconcile` | Provision or inspect the test stack |
 | `prodbox aws stack test destroy` | Destroy the test stack |
 | `prodbox aws stack test prune-corrupt-checkpoint` | Clear a corrupt test per-run Pulumi checkpoint |
 | `prodbox aws stack test adopt-legacy plan` | Render the test adoption candidate plan and its digest |
 | `prodbox aws stack test adopt-legacy apply` | Adopt the test family under a confirmed plan digest |
+| `prodbox aws stack aws-subzone diff` | Show the aws-subzone stack resource and property delta |
 | `prodbox aws stack aws-subzone reconcile` | Provision or inspect the aws-subzone stack |
 | `prodbox aws stack aws-subzone destroy` | Destroy the aws-subzone stack |
 | `prodbox aws stack aws-subzone prune-corrupt-checkpoint` | Clear a corrupt aws-subzone per-run Pulumi checkpoint |
 | `prodbox aws stack aws-subzone adopt-legacy plan` | Render the aws-subzone adoption candidate plan and its digest |
 | `prodbox aws stack aws-subzone adopt-legacy apply` | Adopt the aws-subzone family under a confirmed plan digest |
+| `prodbox aws stack aws-ses diff` | Show the aws-ses stack resource and property delta |
 | `prodbox aws stack aws-ses reconcile` | Provision or inspect the aws-ses stack |
 | `prodbox aws stack aws-ses destroy` | Destroy the aws-ses stack |
 | `prodbox aws stack aws-ses migrate-backend` | Migrate aws-ses Pulumi state onto the long-lived S3 backend |
@@ -114,6 +119,8 @@ owning implementation change updates `CommandSpec` and regenerates this section.
 | `prodbox test integration clean-room-handoff` | Verify clean-room migration, rollback refusal, and legacy absence |
 | `prodbox test integration cascade-qualification` | Run one named destructive recover-to-clean cascade qualification cycle |
 | `prodbox test integration cascade-qualification-receipt` | Report whether the cycle ledger holds consecutive qualifying cascade cycles |
+| `prodbox test integration aws-lifecycle` | Exercise audit-bracketed AWS stack create and destroy cycles |
+| `prodbox test integration aws-lifecycle-canary` | Exercise planted test-VPC network dependencies and exact cleanup |
 | `prodbox test integration ha-rke2-aws` | Run HA RKE2 AWS integration tests |
 | `prodbox test integration lifecycle` | Run lifecycle integration tests |
 | `prodbox test integration pulumi` | Run Pulumi integration tests |

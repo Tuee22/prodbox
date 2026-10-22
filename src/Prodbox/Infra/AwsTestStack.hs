@@ -9,6 +9,7 @@ module Prodbox.Infra.AwsTestStack
   , AwsTestStackSnapshot (..)
   , awsTestStackName
   , awsTestProviderReceiptLabel
+  , loadAwsTestProviderConfig
   , ensureAwsTestStackResources
   , ensureAwsTestStackResourcesWithAuthentication
   , destroyAwsTestStack

@@ -26,6 +26,7 @@ module Prodbox.ControlPlane.ProviderProduction
   , validateEksLoadBalancerControllerFamilyProjection
   , DesiredState (..)
   , observePulumiStackVia
+  , previewPulumiStackVia
   , pulumiDestroySelected
   , stackEvidence
   , withProviderChildProcessPermit
@@ -59,7 +60,8 @@ import Data.Char (isAsciiLower, isDigit)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.List (nub, sort)
 import Data.List.NonEmpty qualified as NonEmpty
-import Data.Maybe (fromMaybe)
+import Data.Map.Strict qualified as Map
+import Data.Maybe (catMaybes, fromMaybe)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -133,13 +135,13 @@ import Prodbox.ControlPlane.ProviderNarrowSession
   , ProviderReadOnly (..)
   )
 import Prodbox.ControlPlane.ProviderPulumiConfigProjection
-  ( providerPulumiPreviewArguments
+  ( providerPulumiDiffArguments
+  , providerPulumiPreviewArguments
   , providerRunMarkerConfiguration
   )
 import Prodbox.Error (errorMsg)
 import Prodbox.Http.Client (renderHttpError)
 import Prodbox.Infra.AwsEksTestStack (pulumiAwsProviderEnv)
-import Prodbox.Keycloak.Email (parseKeycloakInviteLink)
 import Prodbox.Lib.Storage (StaticEbsVolumeBinding (..))
 import Prodbox.Lifecycle.Authority.Genesis (AuthorityEpoch)
 import Prodbox.Lifecycle.AwsAudit (mkAuditObservation)
@@ -156,6 +158,8 @@ import Prodbox.Lifecycle.AwsNativeStackFamily
   , reapAwsNativeStackFamilyWithin
   )
 import Prodbox.Lifecycle.AwsNetworkDependents (deleteSecurityGroupsWithin)
+import Prodbox.Lifecycle.AwsNetworkPurge
+import Prodbox.Lifecycle.AwsProviderRecording qualified as Recording
 import Prodbox.Lifecycle.AwsStackDestroy
   ( PulumiRun
   , StackDestroyWorld (..)
@@ -163,6 +167,13 @@ import Prodbox.Lifecycle.AwsStackDestroy
   , pulumiRemoveStack
   , stackDestroy
   )
+import Prodbox.Lifecycle.AwsStackDiff
+  ( StackPreview
+  , decodePulumiStackPreview
+  , encodeStackPreviewEvidence
+  )
+import Prodbox.Lifecycle.AwsTestCanary qualified as Canary
+import Prodbox.Lifecycle.AwsTestCanaryExecution qualified as CanaryExecution
 import Prodbox.Lifecycle.AwsWait (AwsWaitEnvironment (..))
 import Prodbox.Lifecycle.DnsRecord
   ( AwsAccountId
@@ -183,6 +194,7 @@ import Prodbox.Lifecycle.DnsRecord
   , dnsCoordinateType
   , dnsOwnerAuthorityForProcess
   , dnsRecordSetValues
+  , hostedZoneIdText
   , mkAwsAccountId
   , mkDnsRecordSet
   , mkDnsRecordValue
@@ -221,8 +233,10 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , ProviderAuditControl
   , ProviderAuditTarget
   , ProviderCheckpointRef
+  , ProviderIntent (ObserveHomeDns01Records)
   , ProviderIntentCoordinate
   , ProviderNativeStackFamilyRef
+  , ProviderNetworkPurgeMode (..)
   , ProviderOwnedTagQuery (..)
   , ProviderReadinessProbe (..)
   , ProviderRunMarker
@@ -245,13 +259,17 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , eksClusterIdentityRequestRegion
   , eksIamRoleFamilyEvidenceFamily
   , eksLoadBalancerControllerFamilyEvidenceFamily
+  , inviteMailCleanupAbsentEvidence
   , mkProviderNativeStackFamilyRef
   , providerAuditControlBucket
   , providerAuditControlRegion
   , providerAuditTargetHostedZoneId
   , providerAuditTargetStack
   , providerCheckpointRefText
+  , providerIntentResourceKey
   , providerNativeStackFamilyAccountId
+  , providerNativeStackFamilyNetworkFamily
+  , providerNativeStackFamilyPurgeMode
   , providerNativeStackFamilyRegion
   , providerSpotPriceInstanceType
   , providerSpotPriceProductDescription
@@ -262,6 +280,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , publicARecordTtl
   , publicARecordValues
   , registeredStackAbsenceEvidence
+  , renderInviteMailCleanupEvidence
   , sesBucketRefText
   , sesDnsHostedZoneId
   , sesDnsIdentityDomain
@@ -270,6 +289,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , sesRuleSetCaptureBucket
   , sesRuleSetRecipient
   , sesRuleSetRefText
+  , validateTestVpcCanaryRef
   , validationHostedZoneEvidenceFamily
   )
 import Prodbox.Lifecycle.TagSweep qualified as TagSweep
@@ -281,6 +301,7 @@ import Prodbox.Lifecycle.Teardown.ProviderAwsScopeAdapter.Internal
   ( encodeProviderAwsScopeEvidence
   )
 import Prodbox.Lifecycle.Teardown.Registry qualified as TeardownRegistry
+import Prodbox.Lifecycle.Teardown.ResourceScopeBindings
 import Prodbox.Lifecycle.ValidationHostedZone qualified as Route53ValidationZone
 import Prodbox.Pulumi.EncryptedBackend
   ( EncryptedBackendError
@@ -294,6 +315,10 @@ import Prodbox.Runtime.Role
   ( RuntimeRole (LifecycleAuthorityRuntime, ProviderWorkerRuntime)
   )
 import Prodbox.Ses.Capture qualified as SesCapture
+import Prodbox.Ses.CaptureCleanup qualified as CaptureCleanup
+import Prodbox.Ses.CaptureLifecycle qualified as CaptureLifecycle
+import Prodbox.Ses.InviteDelivery qualified as InviteDelivery
+import Prodbox.Ses.InviteEvidence (InviteMailPublicKey)
 import Prodbox.Settings (Credentials (..))
 import Prodbox.Settings.AwsSubstrateProfile
   ( AwsEbsVolumeType
@@ -302,6 +327,7 @@ import Prodbox.Settings.AwsSubstrateProfile
   , mkAwsEbsVolumeType
   , renderAwsSubstrateProfileError
   )
+import Prodbox.Settings.Coordinate (S3BucketName, mkS3BucketName, s3BucketNameText)
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
   , KillableSubprocessLimits (..)
@@ -343,6 +369,8 @@ data ProviderProductionSession = ProviderProductionSession
   -- A long child is bounded by what is left of it, so the session cannot
   -- expire under a running child.
   , productionSessionNowMicros :: !(IO (Either Text Natural))
+  , productionSessionCanaryEvidence :: !(IORef (Maybe Text))
+  -- ^ Invocation-only scrubbed probe buffer; it grants no lifecycle authority.
   -- ^ The Authority clock the session window is judged against.
   }
 
@@ -397,7 +425,8 @@ providerProductionNarrowSession vaultSession authorityTransport readAuthorityEpo
                     startingAt <- clock
                     case startingAt >>= first renderSessionWindowRefusal . sessionWindowMicros expiresAt of
                       Left detail -> pure (Left detail)
-                      Right _ ->
+                      Right _ -> do
+                        canaryEvidence <- newIORef Nothing
                         action
                           (Just (validatedProviderCredentialSessionBindingInternal resolved))
                           ProviderProductionSession
@@ -409,6 +438,7 @@ providerProductionNarrowSession vaultSession authorityTransport readAuthorityEpo
                             , productionSessionAuthorityEpoch = readAuthorityEpoch
                             , productionSessionExpiresAtMicros = expiresAt
                             , productionSessionNowMicros = clock
+                            , productionSessionCanaryEvidence = canaryEvidence
                             }
     }
 
@@ -433,6 +463,7 @@ providerProductionCapabilities =
           ( \session _ providerBound ->
               sealProviderEvidence providerBound <$> observeStackRef session ref
           )
+    , previewRegisteredStackCapability = stackPreviewObservation
     , boundedScratchCheckpointCapability = scratchCheckpointMutation
     , reconcileSesSendingIdentityCapability = sesIdentityMutation
     , reconcileSesDkimCapability = sesDkimMutation
@@ -454,6 +485,8 @@ providerProductionCapabilities =
         eksLoadBalancerControllerFamilyObservation
     , reapEksLoadBalancerControllerFamilyCapability =
         eksLoadBalancerControllerFamilyReaperMutation
+    , observeGlobalOwnedResourceTagsCapability =
+        ownedResourceTagObservationInRegion (Just awsGlobalServiceRegion)
     , observeOwnedResourceTagsCapability = ownedResourceTagObservation
     , observeSpotPriceCapability = spotPriceObservation
     , observeOperationalIdentityCapability = operationalIdentityObservation
@@ -461,12 +494,15 @@ providerProductionCapabilities =
     , observeProviderReadinessCapability = readinessObservation
     , issueEksClientAuthCapability = eksClientAuthObservation
     , observeEksClusterIdentityCapability = eksClusterIdentityObservation
+    , plantTestVpcCanaryCapability = testVpcCanaryMutation
     , observeNativeStackFamilyCapability = nativeStackFamilyObservation
     , reapNativeStackFamilyCapability = nativeStackFamilyReaperMutation
     , observeAwsAuditCapability = awsAuditObservation
     , ensureValidationHostedZoneCapability = validationHostedZoneEnsureMutation
-    , observeSesInviteMailCapability = sesInviteMailObservation
-    , reapSesInviteMailCapability = sesInviteMailReaperMutation
+    , observeHomeDns01RecordsCapability = homeDns01RecordObservation
+    , observeSesInviteMailResidueCapability = inviteMailResidueObservation
+    , reapSesInviteMailResidueCapability = inviteMailResidueMutation
+    , observeSealedSesInviteMailCapability = sesInviteMailObservation
     , ensureRetainedEbsVolumesCapability = retainedEbsEnsureMutation
     }
 
@@ -974,6 +1010,77 @@ observeStackRef session ref =
         Right PulumiStackObservedAbsent -> Right (registeredStackAbsenceEvidence ref)
         Right (PulumiStackObservedPresent evidence) -> Right evidence
 
+stackPreviewObservation
+  :: ProviderStackRef -> ProviderStackConfig -> ProviderReadOnly IO ProviderProductionSession
+stackPreviewObservation ref config = ProviderReadOnly $ \session _ providerBound ->
+  sealProviderEvidence providerBound <$> do
+    case previewCompiledStack session ref config of
+      Left detail -> pure (Left detail)
+      Right unbounded -> do
+        let compiled = boundToSession session unbounded
+        environment <- pulumiEnvironment (productionSessionCredentials session)
+        result <-
+          withAuthenticatedObservedDecryptedStackEnvironment
+            (productionSessionAuthorityTransport session)
+            (compiledStackPulumiRef compiled)
+            environment
+            ( \configured ->
+                first Text.unpack
+                  <$> previewPulumiStackVia
+                    (runPulumi compiled configured)
+                    (backendUrl configured)
+                    (stackName compiled)
+                    (compiledStackConfiguration compiled)
+            )
+        pure $ case result of
+          Left _ -> Left "Provider stack preview checkpoint is unobservable"
+          Right preview -> encodeStackPreviewEvidence (providerStackRefText ref) preview
+
+-- SES preview has its own compiler arm. The mutation compiler above continues
+-- to reject SES, and stack-diff resource keys grant no stack mutation.
+previewCompiledStack
+  :: ProviderProductionSession -> ProviderStackRef -> ProviderStackConfig -> Either Text CompiledStack
+previewCompiledStack session ref config = case (providerStackRefText ref, providerStackConfigView config) of
+  ("aws-ses", AwsSesPreviewConfig sender receive bucket) ->
+    Right
+      CompiledStack
+        { compiledStackPulumiRef = PulumiStackRef "prodbox-aws-ses" "aws-ses"
+        , compiledStackProjectDirectory = providerBuildRoot </> "pulumi" </> "aws-ses"
+        , compiledStackConfiguration =
+            [ ("senderDomain", Text.unpack sender)
+            , ("receiveSubdomain", Text.unpack receive)
+            , ("captureBucket", Text.unpack bucket)
+            , ("awsRegion", Text.unpack (region (productionSessionCredentials session)))
+            ]
+        , compiledStackApplication = CompiledStackObservationOnly
+        , compiledStackChildLimits = pure (Right pulumiChildLimits)
+        }
+  _ -> do
+    compiled <- compiledStackFor ref config Nothing
+    case compiledStackApplication compiled of
+      CompiledStackObservationOnly -> Left "stack diff requires an authored AWS substrate profile"
+      CompiledStackApplyable -> Right compiled
+
+-- | The complete diagnostic boundary. Failure text never includes a child
+-- transcript: those fields can contain provider values even without secrets.
+previewPulumiStackVia
+  :: (Monad m)
+  => PulumiRun m
+  -> String
+  -> String
+  -> [(String, String)]
+  -> m (Either Text StackPreview)
+previewPulumiStackVia run backend stack configuration = do
+  login <- run ["login", backend]
+  case processExitCode login of
+    ExitFailure _ -> pure (Left "Pulumi preview backend login failed")
+    ExitSuccess -> do
+      selected <- run ["stack", "select", "--stack", stack, "--non-interactive"]
+      case processExitCode selected of
+        ExitFailure _ -> pure (Left "Pulumi preview requires an observable registered checkpoint")
+        ExitSuccess ->
+          decodePulumiStackPreview <$> run (providerPulumiDiffArguments stack configuration)
+
 defaultCompiledStack :: ProviderStackRef -> Either Text CompiledStack
 defaultCompiledStack ref = case providerStackRefText ref of
   "aws-eks" -> observationStack "prodbox-aws-eks-test" "aws-eks-test" "aws-eks"
@@ -1345,6 +1452,11 @@ nativeStackFamilyObservation
   :: ProviderNativeStackFamilyRef
   -> ProviderStackConfig
   -> ProviderReadOnly IO ProviderProductionSession
+nativeStackFamilyObservation ref _
+  | Just NetworkPurgePlan <- providerNativeStackFamilyPurgeMode ref = ProviderReadOnly $ \session _ providerBound ->
+      sealProviderEvidence providerBound <$> do
+        observed <- observeNetworkPurgeForSession session ref
+        pure (observed >>= encodeNetworkPurgeReport)
 nativeStackFamilyObservation ref config = ProviderReadOnly $ \session _ providerBound ->
   sealProviderEvidence providerBound <$> do
     observed <- observeNativeStackFamilyForSession session ref config
@@ -1357,6 +1469,22 @@ nativeStackFamilyReaperMutation
   -> ProviderStackConfig
   -> [Text]
   -> ProviderMutation IO ProviderProductionSession
+nativeStackFamilyReaperMutation ref _ []
+  | Just (NetworkPurgeApply digest) <- providerNativeStackFamilyPurgeMode ref =
+      ProviderMutation
+        { observeProviderMutation = \session _ -> do
+            observed <- observeNetworkPurgeForSession session ref
+            pure $ case observed of
+              Left detail -> ProviderEffectUnobservable detail
+              Right plan | networkPurgeAbsent plan -> ProviderEffectSatisfied "registered EKS network families are absent"
+              Right _ -> ProviderEffectNeedsApply "registered EKS network families remain"
+        , applyProviderMutation = \session _ -> failedApply $ do
+            environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+            binding <- validateNativeStackFamilySession environment ref
+            case binding of
+              Left detail -> pure (Left detail)
+              Right () -> applyNetworkPurge (runAws environment) (sessionWaitEnvironment session) ref digest
+        }
 nativeStackFamilyReaperMutation ref config admittedIdentities =
   ProviderMutation
     { observeProviderMutation = \session _ -> do
@@ -1365,7 +1493,10 @@ nativeStackFamilyReaperMutation ref config admittedIdentities =
           Left detail -> ProviderEffectUnobservable detail
           Right [] -> ProviderEffectSatisfied "registered native stack family is absent"
           Right identities
-            | all (`elem` admittedIdentities) identities ->
+            | maybe
+                (all (`elem` admittedIdentities) identities)
+                (const (null admittedIdentities))
+                (providerNativeStackFamilyNetworkFamily ref) ->
                 ProviderEffectNeedsApply "registered native stack family remains"
             | otherwise ->
                 ProviderEffectUnobservable
@@ -1385,6 +1516,123 @@ nativeStackFamilyReaperMutation ref config admittedIdentities =
               admittedIdentities
     }
 
+-- Only the invocation-local scrubbed buffer can complete a plant. A restarted
+-- worker may observe shapes, but cannot invent the provider errors a lost
+-- invocation failed to return. Cleanup still owns those shapes in that case.
+testVpcCanaryMutation
+  :: ProviderNativeStackFamilyRef
+  -> Canary.TestVpcCanaryRequest
+  -> ProviderMutation IO ProviderProductionSession
+testVpcCanaryMutation ref request =
+  ProviderMutation
+    { observeProviderMutation = \session _ -> do
+        environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+        binding <- testCanarySessionBinding environment ref
+        case binding of
+          Left detail -> pure (ProviderEffectUnobservable detail)
+          Right () -> do
+            observed <-
+              CanaryExecution.observeTestVpcCanary (canaryRunWithinSession session environment) request
+            recorded <- readIORef (productionSessionCanaryEvidence session)
+            pure $ case observed of
+              Left detail -> ProviderEffectUnobservable detail
+              Right snapshot -> case (CanaryExecution.canaryPlantComplete snapshot, recorded) of
+                (True, Just evidence) -> ProviderEffectSatisfied evidence
+                _ ->
+                  ProviderEffectNeedsApply
+                    "the closed canary shapes and both captured dependency refusals are required"
+    , applyProviderMutation = \session _ -> failedApply $ do
+        modifyIORef' (productionSessionCanaryEvidence session) (const Nothing)
+        environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+        binding <- testCanarySessionBinding environment ref
+        case binding of
+          Left detail -> pure (Left detail)
+          Right () -> do
+            started <- productionSessionNowMicros session
+            case started of
+              Left detail -> pure (Left detail)
+              Right at -> do
+                probeCalls <- newIORef (at, [])
+                result <-
+                  CanaryExecution.plantTestVpcCanary
+                    (runCanaryWithProbeCapture session environment probeCalls)
+                    request
+                case result of
+                  Left detail -> pure (Left detail)
+                  Right _ -> do
+                    (_, calls) <- readIORef probeCalls
+                    let transcript = Recording.ProviderTranscript Recording.LiveCanaryCapture calls
+                        recorded =
+                          Recording.scrubProviderRecording (canaryRecordingNames request) transcript
+                            >>= Recording.canaryPlantRecordingEvidence
+                    case recorded of
+                      Left detail -> pure (Left detail)
+                      Right evidence -> do
+                        modifyIORef' (productionSessionCanaryEvidence session) (const (Just evidence))
+                        pure (Right ())
+    }
+
+testCanarySessionBinding
+  :: [(String, String)] -> ProviderNativeStackFamilyRef -> IO (Either Text ())
+testCanarySessionBinding environment ref = case validateTestVpcCanaryRef ref of
+  Left _ -> pure (Left "test canary received a reference outside the test stack")
+  Right () -> validateNativeStackFamilySession environment ref
+
+canaryRunWithinSession
+  :: ProviderProductionSession -> [(String, String)] -> [String] -> IO ProcessOutput
+canaryRunWithinSession session environment arguments = do
+  now <- productionSessionNowMicros session
+  case now
+    >>= first renderSessionWindowRefusal . sessionWindowMicros (productionSessionExpiresAtMicros session) of
+    Right remaining | remaining >= awsCliChildBoundMicros -> runAws environment arguments
+    _ ->
+      pure
+        (ProcessOutput (ExitFailure 1) "" "test canary has no session window for another bounded AWS child")
+
+runCanaryWithProbeCapture
+  :: ProviderProductionSession
+  -> [(String, String)]
+  -> IORef (Natural, [Recording.ProviderRecordedCall])
+  -> [String]
+  -> IO ProcessOutput
+runCanaryWithProbeCapture session environment probeCalls arguments = do
+  started <- productionSessionNowMicros session
+  output <- canaryRunWithinSession session environment arguments
+  case (take 2 arguments, started) of
+    (["ec2", "delete-security-group"], Right at) -> do
+      (previous, calls) <- readIORef probeCalls
+      let label = case length calls of
+            0 -> "delete-security-group:held"
+            1 -> "delete-security-group:left"
+            _ -> "unexpected-additional-probe"
+          call =
+            Recording.ProviderRecordedCall
+              { Recording.recordedOperation = label
+              , Recording.recordedDelayMicros = at - min at previous
+              , Recording.recordedExitCode = case processExitCode output of
+                  ExitSuccess -> 0
+                  ExitFailure code -> code
+              , Recording.recordedStdout = Text.pack (processStdout output)
+              , Recording.recordedStderr = Text.pack (processStderr output)
+              }
+      modifyIORef' probeCalls (const (at, calls ++ [call]))
+    _ -> pure ()
+  pure output
+
+canaryRecordingNames :: Canary.TestVpcCanaryRequest -> [(Text, Text)]
+canaryRecordingNames request =
+  Map.toList $
+    Map.fromList
+      ( [ (Canary.testCanaryRunScope binding, "recording-cleanup-run")
+        , (Canary.testCanaryStackRunScope binding, "recording-stack-run")
+        , (Canary.testCanaryStackSubmission binding, "recording-stack-submission")
+        , (Canary.canaryInterfaceDescription binding, "recording-canary-interface")
+        ]
+          ++ [(Canary.canaryGroupName binding shape, "recording-canary-group") | shape <- [minBound .. maxBound]]
+      )
+ where
+  binding = Canary.testCanaryBinding request
+
 observeNativeStackFamilyForSession
   :: ProviderProductionSession
   -> ProviderNativeStackFamilyRef
@@ -1400,6 +1648,15 @@ observeNativeStackFamilyForSession session ref config = do
         (AwsNativeStackFamilyRunner (runAws environment))
         ref
         config
+
+observeNetworkPurgeForSession
+  :: ProviderProductionSession -> ProviderNativeStackFamilyRef -> IO (Either Text NetworkPurgePlan)
+observeNetworkPurgeForSession session ref = do
+  environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+  binding <- validateNativeStackFamilySession environment ref
+  case binding of
+    Left detail -> pure (Left detail)
+    Right () -> observeNetworkPurgePlan (runAws environment) ref
 
 validateNativeStackFamilySession
   :: [(String, String)]
@@ -2372,84 +2629,22 @@ validationZoneEvidence :: String -> Text
 validationZoneEvidence zoneId =
   "validation-zone:" <> Text.pack (Route53ValidationZone.bareHostedZoneId zoneId)
 
--- | Sprint 5.50: the captured invite message addressed to one recipient.
---
--- Read-only and single-shot: the validation polls by issuing the intent again,
--- because a poll loop inside one Provider request would hold the request open
--- for its whole deadline. The bucket is checked to be the SES capture bucket
--- before it is read, because the Provider's object grants are not scoped to a
--- bucket and the intent names one. The evidence is the object key and the
--- invite link, or a statement that nothing has arrived. The link is a
--- one-time action token for a throwaway user the validation deletes in the
--- same run.
+-- | Read one recipient's captured mail through the fenced runner. Only the
+-- invocation receiver can open the evidence retained by the Authority.
 sesInviteMailObservation
-  :: Text -> Text -> ProviderReadOnly IO ProviderProductionSession
-sesInviteMailObservation bucket recipient = ProviderReadOnly $ \session _ providerBound ->
+  :: Text -> Text -> InviteMailPublicKey -> ProviderReadOnly IO ProviderProductionSession
+sesInviteMailObservation bucket recipient destination = ProviderReadOnly $ \session _ providerBound ->
   sealProviderEvidence providerBound <$> do
     environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
     guarded <- requireSesInviteTarget environment bucket recipient
     case guarded of
       Left detail -> pure (Left detail)
-      Right () -> do
-        found <- SesCapture.findCapturedEmail (captureRunner environment) (Text.unpack bucket) recipient
-        pure $ case found of
-          Failure detail -> Left (Text.pack detail)
-          Success Nothing -> Right "ses-invite:pending"
-          Success (Just captured) ->
-            case parseKeycloakInviteLink (SesCapture.capturedEmailBody captured) of
-              Left detail ->
-                Left ("captured message has no usable invite link: " <> Text.pack detail)
-              Right link
-                | Text.any (\character -> character <= ' ') (SesCapture.capturedEmailKey captured) ->
-                    Left "captured object key is not a single printable token"
-                | otherwise ->
-                    Right
-                      ( "ses-invite:"
-                          <> SesCapture.capturedEmailKey captured
-                          <> " "
-                          <> Text.pack link
-                      )
-
--- | Sprint 5.50: delete every captured message addressed to that recipient, and
--- prove none remains.
-sesInviteMailReaperMutation
-  :: Text -> Text -> ProviderMutation IO ProviderProductionSession
-sesInviteMailReaperMutation bucket recipient =
-  ProviderMutation
-    { observeProviderMutation = \session _ -> do
-        environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
-        guarded <- requireSesInviteTarget environment bucket recipient
-        case guarded of
-          Left detail -> pure (ProviderEffectUnobservable detail)
-          Right () -> do
-            keys <- SesCapture.capturedEmailKeysFor (captureRunner environment) (Text.unpack bucket) recipient
-            pure $ case keys of
-              Failure detail -> ProviderEffectUnobservable (Text.pack detail)
-              Success [] ->
-                ProviderEffectSatisfied
-                  ( "ses invite mail is absent from the objects "
-                      <> Text.pack SesCapture.captureWindowStatement
-                  )
-              Success _ -> ProviderEffectNeedsApply "ses invite mail remains"
-    , applyProviderMutation = \session _ ->
-        failedApply $ do
-          environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
-          guarded <- requireSesInviteTarget environment bucket recipient
-          case guarded of
-            Left detail -> pure (Left detail)
-            Right () -> do
-              keys <- SesCapture.capturedEmailKeysFor (captureRunner environment) (Text.unpack bucket) recipient
-              case keys of
-                Failure detail -> pure (Left (Text.pack detail))
-                Success found -> deleteEach environment found
-    }
- where
-  deleteEach _ [] = pure (Right ())
-  deleteEach environment (key : rest) = do
-    deleted <- SesCapture.deleteCapturedObject (captureRunner environment) (Text.unpack bucket) key
-    case deleted of
-      Failure detail -> pure (Left (Text.pack detail))
-      Success () -> deleteEach environment rest
+      Right () ->
+        InviteDelivery.observeCapturedInviteEvidence
+          (captureRunner environment)
+          destination
+          bucket
+          recipient
 
 -- | The Provider's bounded AWS CLI invocation, in the shape the capture reader
 -- takes, so every capture call carries the child-process permit and bound.
@@ -3994,9 +4189,16 @@ observeSesCaptureBucket
   :: ProviderProductionSession
   -> SesBucketRef
   -> IO ProviderEffectObservation
-observeSesCaptureBucket session ref = do
+observeSesCaptureBucket session ref =
+  case mkS3BucketName (sesBucketRefText ref) of
+    Left _ -> pure (ProviderEffectUnobservable "SES capture bucket name is invalid")
+    Right bucket -> observeSesCaptureBucketBound session ref bucket
+
+observeSesCaptureBucketBound
+  :: ProviderProductionSession -> SesBucketRef -> S3BucketName -> IO ProviderEffectObservation
+observeSesCaptureBucketBound session ref captureBucket = do
   environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
-  let bucket = Text.unpack (sesBucketRefText ref)
+  let bucket = Text.unpack (s3BucketNameText captureBucket)
   headBucket <- runAws environment ["s3api", "head-bucket", "--bucket", bucket]
   case commandSuccess headBucket of
     Left _
@@ -4025,36 +4227,50 @@ observeSesCaptureBucket session ref = do
                       "SES capture bucket does not carry its prodbox-owned tag families"
                   )
               Right True -> do
-                readiness <-
-                  runAws
-                    environment
-                    [ "s3api"
-                    , "head-object"
-                    , "--bucket"
-                    , bucket
-                    , "--key"
-                    , sesCaptureReadinessKey
-                    ]
-                pure $ case commandSuccess readiness of
-                  Left _
-                    | knownAwsAbsent readiness ->
-                        ProviderEffectNeedsApply "SES capture readiness object is absent"
-                    | otherwise -> ProviderEffectUnobservable (Text.pack (commandDetail readiness))
-                  Right _ ->
-                    ProviderEffectSatisfied
-                      ( providerAwsEvidence
-                          "ses-capture-bucket"
-                          [headBucket, policy, tagging, readiness]
-                      )
+                (lifecycle, lifecycleRead) <-
+                  CaptureLifecycle.observeCaptureLifecycle (runAws environment) captureBucket
+                case lifecycle of
+                  CaptureLifecycle.CaptureLifecycleMissing -> pure (ProviderEffectNeedsApply "SES capture lifecycle is absent")
+                  CaptureLifecycle.CaptureLifecycleDifferent -> pure (ProviderEffectNeedsApply "SES capture lifecycle differs")
+                  CaptureLifecycle.CaptureLifecycleUnobservable detail -> pure (ProviderEffectUnobservable detail)
+                  CaptureLifecycle.CaptureLifecycleCurrent -> do
+                    readiness <-
+                      runAws
+                        environment
+                        [ "s3api"
+                        , "head-object"
+                        , "--bucket"
+                        , bucket
+                        , "--key"
+                        , sesCaptureReadinessKey
+                        ]
+                    pure $ case commandSuccess readiness of
+                      Left _
+                        | knownAwsAbsent readiness ->
+                            ProviderEffectNeedsApply "SES capture readiness object is absent"
+                        | otherwise -> ProviderEffectUnobservable (Text.pack (commandDetail readiness))
+                      Right _ ->
+                        ProviderEffectSatisfied
+                          ( providerAwsEvidence
+                              "ses-capture-bucket"
+                              [headBucket, policy, tagging, lifecycleRead, readiness]
+                          )
 
 applySesCaptureBucket
   :: ProviderProductionSession
   -> SesBucketRef
   -> IO (Either Text ())
-applySesCaptureBucket session ref = do
+applySesCaptureBucket session ref =
+  case mkS3BucketName (sesBucketRefText ref) of
+    Left _ -> pure (Left "SES capture bucket name is invalid")
+    Right bucket -> applySesCaptureBucketBound session ref bucket
+
+applySesCaptureBucketBound
+  :: ProviderProductionSession -> SesBucketRef -> S3BucketName -> IO (Either Text ())
+applySesCaptureBucketBound session ref captureBucket = do
   let credentials = productionSessionCredentials session
       awsRegion = Text.unpack (region credentials)
-      bucket = Text.unpack (sesBucketRefText ref)
+      bucket = Text.unpack (s3BucketNameText captureBucket)
       createArguments =
         ["s3api", "create-bucket", "--bucket", bucket]
           <> if awsRegion == awsGlobalServiceRegion
@@ -4096,21 +4312,25 @@ applySesCaptureBucket session ref = do
           case commandSuccess tagging of
             Left detail -> pure (Left (Text.pack detail))
             Right _ -> do
-              readiness <-
-                runAws
-                  environment
-                  [ "s3api"
-                  , "put-object"
-                  , "--bucket"
-                  , bucket
-                  , "--key"
-                  , sesCaptureReadinessKey
-                  , "--body"
-                  , "/dev/null"
-                  , "--content-type"
-                  , "text/plain"
-                  ]
-              pure (Control.Monad.void (firstText (commandSuccess readiness)))
+              lifecycle <- CaptureLifecycle.applyCaptureLifecycle (runAws environment) captureBucket
+              case lifecycle of
+                Left detail -> pure (Left detail)
+                Right () -> do
+                  readiness <-
+                    runAws
+                      environment
+                      [ "s3api"
+                      , "put-object"
+                      , "--bucket"
+                      , bucket
+                      , "--key"
+                      , sesCaptureReadinessKey
+                      , "--body"
+                      , "/dev/null"
+                      , "--content-type"
+                      , "text/plain"
+                      ]
+                  pure (Control.Monad.void (firstText (commandSuccess readiness)))
 
 applySingleAwsCommand
   :: ProviderProductionSession
@@ -4125,10 +4345,10 @@ sesReceiveRuleName :: String
 sesReceiveRuleName = "prodbox-capture-all-mail"
 
 sesCaptureKeyPrefix :: Text
-sesCaptureKeyPrefix = "inbound/"
+sesCaptureKeyPrefix = Text.pack CaptureLifecycle.sesCaptureMailPrefix
 
 sesCaptureReadinessKey :: String
-sesCaptureReadinessKey = "inbound/.prodbox-readiness-capability-probe"
+sesCaptureReadinessKey = CaptureLifecycle.sesCaptureReadinessObjectKey
 
 desiredSesReceiptRule :: SesRuleSetRef -> Value
 desiredSesReceiptRule ref =
@@ -4340,7 +4560,11 @@ providerAwsEvidence label outputs =
 ownedResourceTagObservation
   :: ProviderOwnedTagQuery
   -> ProviderReadOnly IO ProviderProductionSession
-ownedResourceTagObservation query = ProviderReadOnly $ \session _ providerBound ->
+ownedResourceTagObservation = ownedResourceTagObservationInRegion Nothing
+
+ownedResourceTagObservationInRegion
+  :: Maybe Text -> ProviderOwnedTagQuery -> ProviderReadOnly IO ProviderProductionSession
+ownedResourceTagObservationInRegion requestedRegion query = ProviderReadOnly $ \session _ providerBound ->
   sealProviderEvidence providerBound <$> do
     environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
     listed <-
@@ -4358,7 +4582,7 @@ ownedResourceTagObservation query = ProviderReadOnly $ \session _ providerBound 
             -- a clean verdict may claim when a service answers only from the
             -- global-service region.
             TaggedResourceQuery.taggedResourceQueryRegion =
-              region (productionSessionCredentials session)
+              fromMaybe (region (productionSessionCredentials session)) requestedRegion
           }
     pure $ case listed of
       Left detail -> Left (Text.pack detail)
@@ -4460,3 +4684,89 @@ retainedEbsReaperMutation lifecycleValue =
     if wrongFamily
       then pure (ProviderEffectUnobservable wrongFamilyDetail)
       else action
+
+-- Exact parent-zone names are durable coordinates, never a whole-zone prefix.
+-- The Provider has no mutation for them; cert-manager owns their removal.
+homeDns01RecordObservation :: HomeDns01Scope -> ProviderReadOnly IO ProviderProductionSession
+homeDns01RecordObservation scope = ProviderReadOnly observe
+ where
+  observe session _ bound =
+    case route53ClientForSession session of
+      Left detail -> pure (Left detail)
+      Right client -> do
+        results <-
+          traverse
+            ( \name ->
+                NativeRoute53.listExactResourceRecordSet
+                  client
+                  (hostedZoneIdText (homeDns01HostedZone scope))
+                  name
+                  NativeRoute53.RecordTXT
+            )
+            (NonEmpty.toList (homeDns01RecordNames scope))
+        let exact =
+              fmap
+                (map (\row -> row {NativeRoute53.rrsName = Text.toLower (NativeRoute53.rrsName row)}) . catMaybes)
+                (sequence results)
+        pure
+          ( renderDns01ChallengeEvidence
+              bound
+              (hostedZoneIdText (homeDns01HostedZone scope))
+              (providerIntentResourceKey (ObserveHomeDns01Records scope))
+              exact
+          )
+
+inviteMailResidueObservation :: InviteMailScope -> ProviderReadOnly IO ProviderProductionSession
+inviteMailResidueObservation scope = ProviderReadOnly $ \session _ bound -> do
+  observed <- observeInviteMailResidue session scope
+  pure
+    ( sealProviderEvidence
+        bound
+        ( observed >>= \versions -> renderInviteMailCleanupEvidence scope (map CaptureCleanup.capturedMailVersionIdentity versions)
+        )
+    )
+
+observeInviteMailResidue
+  :: ProviderProductionSession
+  -> InviteMailScope
+  -> IO (Either Text [CaptureCleanup.CapturedMailVersion])
+observeInviteMailResidue session scope = do
+  environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+  guarded <- requireCaptureCleanupBucket environment scope
+  case guarded of
+    Left detail -> pure (Left detail)
+    Right () -> CaptureCleanup.observeCapturedMailVersions (captureRunner environment) scope
+
+requireCaptureCleanupBucket :: [(String, String)] -> InviteMailScope -> IO (Either Text ())
+requireCaptureCleanupBucket environment scope = do
+  tagging <-
+    runAws
+      environment
+      [ "s3api"
+      , "get-bucket-tagging"
+      , "--bucket"
+      , Text.unpack (s3BucketNameText (inviteMailBucket scope))
+      , "--output"
+      , "json"
+      ]
+  pure $ case observedSesCaptureBucketTagging tagging of
+    Right True -> Right ()
+    Right False -> Left "registered mail cleanup bucket lacks its exact capture-bucket owned tags"
+    Left detail -> Left detail
+
+inviteMailResidueMutation :: InviteMailScope -> ProviderMutation IO ProviderProductionSession
+inviteMailResidueMutation scope =
+  ProviderMutation
+    { observeProviderMutation = \session _ -> do
+        observed <- observeInviteMailResidue session scope
+        pure $ case observed of
+          Left detail -> ProviderEffectUnobservable detail
+          Right [] -> ProviderEffectSatisfied inviteMailCleanupAbsentEvidence
+          Right _ -> ProviderEffectNeedsApply "registered invite mail data versions remain"
+    , applyProviderMutation = \session _ -> failedApply $ do
+        environment <- awsCliSubprocessEnvironment (productionSessionCredentials session)
+        observed <- observeInviteMailResidue session scope
+        case observed of
+          Left detail -> pure (Left detail)
+          Right versions -> CaptureCleanup.deleteCapturedMailVersions (captureRunner environment) scope versions
+    }

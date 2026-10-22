@@ -102,9 +102,12 @@ observeAndPlanLegacyAdoption surface stackKey scope revision config observer = d
     _ -> pure (Left (LegacyAdoptionObservationKeyUnsupported stackKey))
  where
   dispatch = runLegacyAdoptionProviderObservation observer
+  isNetworkFamily identity = case registeredIdentityCoordinate identity of
+    AwsNetworkDependentFamilyCoordinate _ -> True
+    _ -> False
 
   observeOne key = case lookupRegisteredIdentity key of
-    Just identity | registeredIdentityKind identity == Stack -> do
+    Just identity | registeredIdentityKind identity == Stack || isNetworkFamily identity -> do
       case mkAwsNativeStackFamilyObservationRequest key scope revision config of
         Left err -> pure (Left (LegacyAdoptionStackRequestInvalid key err))
         Right request -> do

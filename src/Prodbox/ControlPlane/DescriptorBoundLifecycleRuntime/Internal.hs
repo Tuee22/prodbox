@@ -201,6 +201,9 @@ import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Program
   ( SomeTeardownOperation (..)
   , TeardownOperation (..)
+  , compileAuditedExplicitPerRunProgram
+  , desiredAbsenceProgramNodes
+  , programNodeOperation
   , someTeardownOperationTag
   , teardownOperationTag
   )
@@ -297,6 +300,7 @@ data DescriptorBoundLifecycleOperationShape
   | DescriptorBoundLifecycleReadBackDecommissionLocalDataDisposition
   | DescriptorBoundLifecycleCommitDecommissionTerminalReceipt
   | DescriptorBoundLifecycleReadBackDecommissionTerminalReceipt
+  | DescriptorBoundLifecycleAuditPerRunEscapes
   deriving stock (Bounded, Enum, Eq, Ord, Show)
 
 -- | Total descriptor-bound lifecycle action. Recovery-plane operations use
@@ -460,6 +464,7 @@ operationShape operation = case operation of
     DescriptorBoundLifecycleRetireStackCheckpointPair
   ReadBackStackCheckpointRetirement _ ->
     DescriptorBoundLifecycleReadBackStackCheckpointRetirement
+  AuditPerRunEscapes -> DescriptorBoundLifecycleAuditPerRunEscapes
   AuditCascadeEscapes -> DescriptorBoundLifecycleAuditCascadeEscapes
   CommitCascadePreUninstallReport ->
     DescriptorBoundLifecycleCommitCascadePreUninstallReport
@@ -542,6 +547,7 @@ routeOperationShape shape = case shape of
     DescriptorBoundLifecycleCloudRoute
   DescriptorBoundLifecycleReadBackStackCheckpointRetirement ->
     DescriptorBoundLifecycleCloudRoute
+  DescriptorBoundLifecycleAuditPerRunEscapes -> DescriptorBoundLifecycleCloudRoute
   DescriptorBoundLifecycleAuditCascadeEscapes ->
     DescriptorBoundLifecycleCascadePreUninstallRoute
   DescriptorBoundLifecycleCommitCascadePreUninstallReport ->
@@ -805,7 +811,7 @@ fixedDescriptorBoundLifecycleRuntimeRegression = do
       cloudExact =
         either
           (const False)
-          (\shapes -> shapes == allShapes && routeCount isCloudRoute shapes == 14)
+          (\shapes -> shapes == allShapes && routeCount isCloudRoute shapes == 15)
           inventory
       recoveryExact =
         either
@@ -985,9 +991,17 @@ regressionOperationShapeInventory = do
       "dispatcher-total-decommission"
       TotalDecommissionSurface
       (Just regressionAwsScope)
+  audited <- firstShow (compileAuditedExplicitPerRunProgram [])
+  let auditedShapes =
+        Set.fromList
+          [ operationShape operation
+          | node <- desiredAbsenceProgramNodes audited
+          , SomeTeardownOperation operation <- [programNodeOperation node]
+          ]
   pure
     ( Set.unions
-        [ localOnly
+        [ auditedShapes
+        , localOnly
         , cascade
         , explicitPerRun
         , operational
@@ -1107,14 +1121,8 @@ regressionHostRunnerEffects =
     , hostRunnerReadBackAuthorityAcceptance = \_ -> pure (Left unreachable)
     , hostRunnerRunLocalUninstall = \_ -> pure refusedEffect
     , hostRunnerReadBackLocalAbsence = \_ _ -> pure (Left unreachable)
-    , hostRunnerReestablishBootstrapRecovery = \_ -> pure refusedEffect
-    , hostRunnerReadBackBootstrapRecovery = \_ -> pure (Left unreachable)
-    , hostRunnerReestablishLifecycleAuthority = \_ -> pure refusedEffect
-    , hostRunnerReadBackLifecycleAuthority = \_ -> pure (Left unreachable)
-    , hostRunnerReconcileCleanupRun = \_ _ -> pure refusedEffect
-    , hostRunnerReadBackCleanupRun = \_ -> pure (Left unreachable)
     , hostRunnerCommitCompletionReceipt = \_ _ -> pure refusedEffect
-    , hostRunnerReadBackCompletionReceipt = \_ -> pure (Left unreachable)
+    , hostRunnerReadBackCompletionReceipt = \_ _ -> pure (Left unreachable)
     }
  where
   refusedEffect = HostCleanupEffectRefused unreachable

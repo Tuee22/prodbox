@@ -1,17 +1,25 @@
-cabal-version:   3.8
-name:            prodbox
-version:         0.1.0
-license:         MIT
-license-file:    LICENSE
-tested-with:     ghc ==9.12.4
-build-type:      Simple
-extra-doc-files: README.md
+cabal-version:      3.8
+name:               prodbox
+version:            0.1.0
+license:            MIT
+license-file:       LICENSE
+tested-with:        ghc ==9.12.4
+build-type:         Simple
+extra-source-files:
+    test/fixtures/aws-eks-readiness-cli.json
+    test/fixtures/lifecycle-descriptor-v3.json
+    test/fixtures/credential-successor/*.cbor
+    test/fixtures/credential-successor/provenance.json
+    test/golden/aws-lifecycle/*.json
+
+extra-doc-files:    README.md
 
 library
     exposed-modules:
         Prodbox.App
         Prodbox.Aws
         Prodbox.Aws.AdminCredentials
+        Prodbox.Aws.CliError
         Prodbox.Aws.CredentialHandle
         Prodbox.Aws.Native.Xml
         Prodbox.Aws.Native.Wire
@@ -65,6 +73,11 @@ library
         Prodbox.Bootstrap.Broker.VaultWire
         Prodbox.BuildSupport
         Prodbox.Capacity.Allocation
+        Prodbox.Capacity.AuthorityBackupBudget
+        Prodbox.Capacity.ControlPlaneReplayBudget
+        Prodbox.Capacity.AwsLifecycleBudget
+        Prodbox.Capacity.Dns01CleanupBudget
+        Prodbox.Capacity.SesCaptureCleanupBudget
         Prodbox.Capacity.Config
         Prodbox.Capacity.Derivation
         Prodbox.Capacity.HostProbe
@@ -290,8 +303,13 @@ library
         Prodbox.ControlPlane.TargetOneShotOperationEndpoint
         Prodbox.ControlPlane.TargetWorkerExecutionPermit
         Prodbox.ControlPlane.TargetMaterialEndpoint
+        Prodbox.ControlPlane.AwsAdminTargetRevokeEndpoint
+        Prodbox.ControlPlane.AwsAdminTargetRevokeClient
         Prodbox.ControlPlane.TargetMaterialFixture
         Prodbox.ControlPlane.TargetMaterialClient
+        Prodbox.ControlPlane.ProviderCredentialPublication
+        Prodbox.ControlPlane.CredentialSuccessorRegression
+        Prodbox.ControlPlane.CompletedProviderPredecessorRegression
         Prodbox.ControlPlane.TargetMaterialRecordCodec
         Prodbox.ControlPlane.TargetMaterialRegistry
         Prodbox.ControlPlane.TargetMaterializationProduction
@@ -369,6 +387,7 @@ library
         Prodbox.Infra.AwsFieldAudit
         Prodbox.Infra.AwsSesStack
         Prodbox.Infra.AwsTestStack
+        Prodbox.Infra.AwsStackRepair
         Prodbox.Infra.LongLivedPulumiBackend
         Prodbox.Infra.LongLivedDecommission
         Prodbox.Infra.StackDescriptor
@@ -400,6 +419,9 @@ library
         Prodbox.Lifecycle.Authority.MigrationInterpreter
         Prodbox.Lifecycle.Authority.ProjectionImport
         Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch
+        Prodbox.Lifecycle.Authority.ProviderCredentialAdmissionEvidence
+        Prodbox.Lifecycle.Authority.ProviderCredentialCleanupEvidence
+        Prodbox.Lifecycle.Authority.CompletedProviderPredecessor
         Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
         Prodbox.Lifecycle.Authority.RetainedMaterial
         Prodbox.Lifecycle.Decommission.AuthorityExport
@@ -435,6 +457,10 @@ library
         Prodbox.Lifecycle.AwsAuditField
         Prodbox.Lifecycle.AwsDestroyConverge
         Prodbox.Lifecycle.AwsNetworkDependents
+        Prodbox.Lifecycle.AwsNetworkFamily
+        Prodbox.Lifecycle.AwsTestCanary
+        Prodbox.Lifecycle.AwsTestCanaryExecution
+        Prodbox.Lifecycle.AwsProviderRecording
         Prodbox.Lifecycle.AwsStackDestroy
         Prodbox.Lifecycle.AwsWait
         Prodbox.Lifecycle.CascadeNoInstall
@@ -478,6 +504,7 @@ library
         Prodbox.Lifecycle.HostCleanupRunner
         Prodbox.Lifecycle.HostCleanupLocalAbsence
         Prodbox.Lifecycle.HostCleanupCompletion
+        Prodbox.Lifecycle.HostCleanupHistoryReconcile
         Prodbox.Lifecycle.HostCleanupProductionEffects
         Prodbox.Lifecycle.HostCleanupCompositionRoot
         Prodbox.Lifecycle.HostCleanupRecoveryPlane
@@ -519,6 +546,7 @@ library
         Prodbox.Lifecycle.ResidueStatus
         Prodbox.Lifecycle.OwnedResourceTags
         Prodbox.Lifecycle.ResourceClass
+        Prodbox.Lifecycle.RuntimeProfile
         Prodbox.Lifecycle.ResourceRegistry
         Prodbox.Lifecycle.SmtpKeyRepair
         Prodbox.Lifecycle.SmtpKeyRepairInterpreter
@@ -551,10 +579,8 @@ library
         Prodbox.Lifecycle.Teardown.CapabilityCustody
         Prodbox.Lifecycle.Teardown.CapabilityCustody.Universe
         Prodbox.Lifecycle.Teardown.CascadeCandidate
-        Prodbox.Lifecycle.Teardown.CascadeCredentialRevocation
         Prodbox.Lifecycle.Teardown.CascadeTerminalAudit
         Prodbox.Lifecycle.Teardown.CascadeTerminalAuditAdapter
-        Prodbox.Lifecycle.Teardown.CascadeTerminalAuditLane
         Prodbox.Lifecycle.Teardown.CheckpointAuthority
         Prodbox.Lifecycle.Teardown.CloudRuntime
         Prodbox.Lifecycle.Teardown.CreateRecordCoverage
@@ -619,6 +645,9 @@ library
         Prodbox.UsersAdmin
         Prodbox.Infra.MinioBackend
         Prodbox.Infra.EphemeralKubeconfigPath
+        Prodbox.Infra.BootstrapImageArchive
+        Prodbox.Infra.BootstrapImageSource
+        Prodbox.Infra.BootstrapImageSourceNative
         Prodbox.Infra.BootstrapImageSeed
         Prodbox.K8s
         Prodbox.K8s.InCluster
@@ -710,9 +739,36 @@ library
         Prodbox.Workload
         Prodbox.Workload.PodIdentity
         Prodbox.Workload.Settings
+        Prodbox.Keycloak.InviteHttp
+        Prodbox.Lifecycle.AwsNetworkPurge
+        Prodbox.Lifecycle.AwsRemedy
+        Prodbox.Lifecycle.AwsStackDiff
+        Prodbox.Lifecycle.CredentialProvisioner.HarnessCredential
+        Prodbox.Lifecycle.Teardown.PerRunTerminalAudit
+        Prodbox.Lifecycle.Teardown.PerRunTerminalAuditPlan
+        Prodbox.Lifecycle.Teardown.ResourceScopeBindings
+        Prodbox.Lifecycle.Teardown.RetainedNames
+        Prodbox.Lifecycle.Teardown.SesInviteMailAdapter
+        Prodbox.Ses.CaptureCleanup
+        Prodbox.Ses.CaptureLifecycle
+        Prodbox.Ses.InviteDelivery
+        Prodbox.Ses.InviteEvidence
+        Prodbox.Subprocess.OwnedProcessTree
+        Prodbox.Test.AwsLifecycle
+        Prodbox.Test.AwsLifecycleCanary
+        Prodbox.Test.AwsStackEvidence
 
     hs-source-dirs:   src
     other-modules:
+        Prodbox.Lifecycle.Authority.ProviderCredentialCleanupEvidence.Internal
+        Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAttestedRecovery.Internal
+        Prodbox.ControlPlane.CompletedProviderPredecessor
+        Prodbox.ControlPlane.ProviderCredentialMutationRuntime
+        Prodbox.ControlPlane.CompletedProviderPredecessorRegression.Internal
+        Prodbox.Lifecycle.Authority.CompletedProviderPredecessor.Internal
+        Prodbox.ControlPlane.ProviderCredentialAdmissionEvidence
+        Prodbox.ControlPlane.ProviderCredentialPublication.Internal
+        Prodbox.ControlPlane.CredentialSuccessorRegression.Internal
         Paths_prodbox
         Prodbox.Bootstrap.Broker.Request.Internal
         Prodbox.Config.LocalRetainedRoot.Internal
@@ -731,6 +787,9 @@ library
         Prodbox.Lifecycle.Teardown.CascadeCandidate.Internal
         Prodbox.Test.CascadeQualification
         Prodbox.Test.CascadeQualificationLocal
+        Prodbox.ControlPlane.PulumiCheckpointProtocol
+        Prodbox.ControlPlane.CleanupRunProtocol
+        Prodbox.Lifecycle.CleanupRun.Outcome
         Prodbox.Lifecycle.Teardown.CapabilityCustody.Internal
         Prodbox.ControlPlane.CascadeRetainedSlotEndpoint.Internal
         Prodbox.ControlPlane.CascadeRetainedSlotClient.Internal
@@ -742,6 +801,7 @@ library
         Prodbox.ControlPlane.ProviderCredentialSession.Internal
         Prodbox.ControlPlane.TargetMaterialEndpoint.Internal
         Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch.Internal
+        Prodbox.Lifecycle.Authority.ProviderCredentialAdmissionEvidence.Internal
         Prodbox.Lifecycle.HostCleanupIntent.Internal
         Prodbox.Lifecycle.Teardown.CascadeEvidence.Internal
         Prodbox.Lifecycle.Teardown.ExecutionIdentity.Internal
@@ -824,8 +884,13 @@ test-suite prodbox-unit
         AdminActionQuotaJournal
         AdminActionLifecycle
         Allocation
+        BootstrapImageArchive
+        BootstrapImageSource
+        BootstrapImageSourceNative
+        BootstrapSourceFixture
         BootstrapImageSeed
         EbsEnsure
+        TestSecretsSecurity
         HarnessSesSmtp
         KeycloakConsumerScript
         ProviderAwsRunner
@@ -834,6 +899,16 @@ test-suite prodbox-unit
         RetainedDeliveryRefusalLog
         RegistryProbe
         SesCapture
+        SesCapturePolicy
+        SesCaptureCleanup
+        CleanupScopeFixtures
+        ResourceScopeBindings
+        ResourceScopeCodec
+        RegisteredHarnessCleanupFamilies
+        PerRunTerminalAudit
+        SesInviteEvidence
+        SesInviteDelivery
+        KeycloakInviteHttp
         AwsNativeClients
         AwsControlPlaneIsolation
         AwsSesDecommission
@@ -899,6 +974,9 @@ test-suite prodbox-unit
         HostCleanupRke2
         LifecycleHostCleanupLocalAbsence
         LifecycleHostCleanupCompletion
+        HostCleanupHistoryReconcile
+        HistoryAuthorityFixture
+        HistoryAuthorityAuthenticationFixture
         LifecycleHostCleanupProductionEffects
         LifecycleHostCleanupRecoveryPlane
         LifecycleHostCleanupAuthorityArms
@@ -949,6 +1027,7 @@ test-suite prodbox-unit
         ControlPlaneVaultSession
         CredentialProvisioner
         CredentialProvisionerAwsAdminAuthority
+        CredentialSuccessor
         CredentialProvisionerJointIamDisposition
         ExternalMaterialIngressLifecycle
         EksClientAuthProjection
@@ -978,6 +1057,9 @@ test-suite prodbox-unit
         LifecycleTeardownAwsEksDestroyAdapter
         LifecycleTeardownAwsEksRegisteredTargetDestroyInterpreter
         LifecycleAwsNativeStackFamily
+        AwsRemedy
+        AwsNetworkPurge
+        AwsStackDiff
         LifecycleTeardownAwsIamRoleFamilyAdapter
         LifecycleTeardownAwsLoadBalancerControllerFamilyAdapter
         LifecycleTeardownAwsRegisteredTargetInterpreter
@@ -999,7 +1081,6 @@ test-suite prodbox-unit
         LifecycleTeardownCloudRuntime
         LifecycleTeardownCloudRuntimeProduction
         LifecycleTeardownCascadeEvidence
-        LifecycleTeardownCascadeTerminalAuditLane
         LifecycleTeardownCheckpoint
         LifecycleTeardownCheckpointAuthority
         LifecycleTeardownDecision
@@ -1089,6 +1170,14 @@ test-suite prodbox-unit
         ProviderStackReceipt
         AwsAuditVerdict
         AwsAuditEnumeration
+        AwsLifecycleScope
+        AwsLifecycleCanary
+        AwsTestCanary
+        AwsProviderRecording
+        AwsCanaryFixtures
+        AwsLifecycleStub
+        AwsTestCanaryExecution
+        AwsStackEvidence
         AwsAuditWire
         AwsFieldAuditExit
         AwsDestroyConverge
@@ -1112,6 +1201,7 @@ test-suite prodbox-unit
         base ^>=4.21.2.0,
         base64-bytestring ^>=1.2,
         bytestring ^>=0.11.5.3,
+        cborg ^>=0.2.10.0,
         containers ^>=0.6.7,
         crypton ^>=1.0.6,
         cryptohash-sha1 ^>=0.11,
@@ -1135,6 +1225,7 @@ test-suite prodbox-unit
         temporary ^>=1.3,
         text ^>=2.0.2,
         time ^>=1.12,
+        transformers ^>=0.6,
         unix ^>=2.8.8.0,
         vector ^>=0.13
 
@@ -1144,6 +1235,7 @@ test-suite prodbox-integration
     hs-source-dirs:   test/integration test/support
     other-modules:
         CliSuite
+        BootstrapSourceFixture
         EnvSuite
         FixtureServer
         TestSupport
@@ -1172,7 +1264,8 @@ test-suite prodbox-integration
         tasty-hunit ^>=0.10.2,
         tasty-quickcheck ^>=0.11,
         text ^>=2.0.2,
-        temporary ^>=1.3
+        temporary ^>=1.3,
+        unix ^>=2.8.8.0
 
 test-suite prodbox-authority-admission-unit
     type:             exitcode-stdio-1.0

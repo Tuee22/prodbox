@@ -50,6 +50,7 @@ import Prodbox.Gateway.Types
   , supportedDaemonConfigSchemaVersion
   , validateDaemonTimingAgainstOrders
   )
+import Prodbox.Lifecycle.Authority.ChartStatics qualified as AuthorityStatics
 import Prodbox.Prerequisite (prerequisiteRegistry)
 import Prodbox.PrerequisiteId (PrerequisiteId (..))
 import Prodbox.Result (Result (..))
@@ -206,7 +207,11 @@ renderGatewayConfigTemplate settings nodeId =
     , "      Some"
     , "        { authority_scope = \"replace-with-home-cluster-id\""
     , "        , endpoint = \""
-        ++ controlPlaneClusterServiceUrl "lifecycle-authority" "gateway"
+        ++ controlPlaneClusterServiceUrl
+          "lifecycle-authority"
+          ( Text.unpack
+              (AuthorityStatics.lifecycleAuthorityStaticNamespace AuthorityStatics.lifecycleAuthorityChartStatics)
+          )
         ++ "\""
     , "        }"
     , "  , dns_write_gate ="

@@ -14,14 +14,17 @@ module Prodbox.Lifecycle.Teardown.ProviderAwsScopeAdapter
   , verifiedProviderAwsScopeOperationId
   , verifiedProviderAwsScopeCoordinate
   , decodeVerifiedProviderAwsScope
+  , decodeProviderAwsScopeResponse
   , ProviderAwsScopeAdapterError (..)
   )
 where
 
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.ControlPlane.AuthorityProviderEndpoint (ProviderExecutionOutcome (..))
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ExecutedProviderIntent
+  , ProviderExecutionKind (..)
   , ProviderIntentExecutionResult (..)
   , executedProviderIntentAction
   , executedProviderIntentCoordinate
@@ -86,6 +89,20 @@ data ProviderAwsScopeAdapterError
   | ProviderAwsScopeResultKindMismatch
   | ProviderAwsScopeEvidenceInvalid !Text
   deriving (Eq, Show)
+
+-- | An authenticated operator response can select a repair scope, but cannot
+-- mint the admission-bound 'VerifiedProviderAwsScope' used by teardown.
+decodeProviderAwsScopeResponse :: ProviderExecutionOutcome -> Either Text (Text, Text)
+decodeProviderAwsScopeResponse outcome
+  | providerExecutionOutcomeKind outcome /= ProviderExecutionObservedKind =
+      Left "Provider AWS scope response was not a read-only observation"
+  | providerExecutionOutcomeCoordinate outcome /= providerAwsScopeIntentCoordinate =
+      Left "Provider AWS scope response coordinate differs"
+  | otherwise =
+      either
+        (const (Left "Provider AWS scope response evidence is invalid"))
+        Right
+        (decodeProviderAwsScopeEvidence (providerExecutionOutcomeEvidence outcome))
 
 -- | Promote only the exact read-only scope intent and its exact observed
 -- terminal result.  Admission-bound operation/revision metadata comes from

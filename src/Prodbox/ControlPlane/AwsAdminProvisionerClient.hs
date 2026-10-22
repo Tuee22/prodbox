@@ -15,7 +15,12 @@ module Prodbox.ControlPlane.AwsAdminProvisionerClient
   , authorizeAwsAdminProvisioning
   , completeAwsAdminProvisioning
   , observeAwsAdminProvisioning
+  , observeAwsAdminProvisioningMetadata
   , observeAwsAdminFirstReconcile
+  , observeAwsAdminFirstReconcileRecovery
+  , settleAwsAdminFirstReconcileRecovery
+  , observePendingAwsAdminProviderCredentialOperation
+  , observeAwsAdminProviderCredentialRecoveryView
   )
 where
 
@@ -45,6 +50,10 @@ import Prodbox.ControlPlane.Codec
   , decodeControlPlaneResponse
   , encodeControlPlaneRequest
   )
+import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch
+  ( ProviderCredentialRecoveryView
+  , validateProviderCredentialRecoveryView
+  )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   ( AwsAdminWorkerReceipt
   , decodeAwsAdminWorkerReceipt
@@ -73,7 +82,8 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   , withSomeSignedAwsAdminPermit
   )
 import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
-  ( operatorMaterialOperationIdText
+  ( mkOperatorMaterialOperationId
+  , operatorMaterialOperationIdText
   , operatorMaterialPermitIdText
   )
 import Prodbox.Lifecycle.TargetCommitIntent
@@ -305,13 +315,43 @@ observeAwsAdminProvisioning
            AwsAdminProvisionerClientError
            AwsAdminProvisionerObservation
        )
-observeAwsAdminProvisioning client operationId = do
+observeAwsAdminProvisioning = observeAwsAdminProvisioningWith ObserveAwsAdminProvisioning
+
+-- Retained metadata cannot attest completion or the current Agent state.
+observeAwsAdminProvisioningMetadata
+  :: (Monad m)
+  => AwsAdminProvisionerClient m
+  -> Text
+  -> m (Either AwsAdminProvisionerClientError AwsAdminProvisionerObservation)
+observeAwsAdminProvisioningMetadata = observeAwsAdminProvisioningWith ObserveAwsAdminProvisioningMetadata
+
+observeAwsAdminProvisioningWith
+  :: (Monad m)
+  => (Text -> AwsAdminProvisionerRequest)
+  -> AwsAdminProvisionerClient m
+  -> Text
+  -> m (Either AwsAdminProvisionerClientError AwsAdminProvisionerObservation)
+observeAwsAdminProvisioningWith request client operationId = do
   response <-
-    callAwsAdminProvisioner client (ObserveAwsAdminProvisioning operationId)
+    callAwsAdminProvisioner client (request operationId)
   pure $ do
     value <- response
     case value of
       AwsAdminProvisioningObserved observation -> Right observation
+      _ -> Left AwsAdminProvisionerClientUnexpectedResponse
+
+observeAwsAdminProviderCredentialRecoveryView
+  :: (Monad m)
+  => AwsAdminProvisionerClient m
+  -> m (Either AwsAdminProvisionerClientError ProviderCredentialRecoveryView)
+observeAwsAdminProviderCredentialRecoveryView client = do
+  observed <- callAwsAdminProvisioner client ObserveAwsAdminProviderCredentialRecovery
+  pure $ do
+    response <- observed
+    case response of
+      AwsAdminProviderCredentialRecoveryObserved view ->
+        view
+          <$ first (const AwsAdminProvisionerClientBindingInvalid) (validateProviderCredentialRecoveryView view)
       _ -> Left AwsAdminProvisionerClientUnexpectedResponse
 
 observeAwsAdminFirstReconcile
@@ -329,3 +369,39 @@ observeAwsAdminFirstReconcile client = do
     case value of
       AwsAdminFirstReconcileObserved continuation -> Right continuation
       _ -> Left AwsAdminProvisionerClientUnexpectedResponse
+
+observeAwsAdminFirstReconcileRecovery
+  :: (Monad m) => AwsAdminProvisionerClient m -> m (Either AwsAdminProvisionerClientError Bool)
+observeAwsAdminFirstReconcileRecovery client = do
+  observed <- callAwsAdminProvisioner client ObserveAwsAdminFirstReconcileRecovery
+  pure $ do
+    response <- observed
+    case response of
+      AwsAdminFirstReconcileRecoveryObserved pending -> Right pending
+      _ -> Left AwsAdminProvisionerClientUnexpectedResponse
+
+settleAwsAdminFirstReconcileRecovery
+  :: (Monad m) => AwsAdminProvisionerClient m -> m (Either AwsAdminProvisionerClientError ())
+settleAwsAdminFirstReconcileRecovery client = do
+  observed <- callAwsAdminProvisioner client SettleAwsAdminFirstReconcileRecovery
+  pure $ do
+    response <- observed
+    case response of
+      AwsAdminFirstReconcileRecoverySettled -> Right ()
+      _ -> Left AwsAdminProvisionerClientUnexpectedResponse
+
+observePendingAwsAdminProviderCredentialOperation
+  :: (Monad m) => AwsAdminProvisionerClient m -> m (Either AwsAdminProvisionerClientError (Maybe Text))
+observePendingAwsAdminProviderCredentialOperation client = do
+  response <- callAwsAdminProvisioner client ObserveAwsAdminProviderCredentialOperation
+  pure $ do
+    value <- response
+    case value of
+      AwsAdminProviderCredentialOperationObserved operation ->
+        traverse validateOperation operation
+      _ -> Left AwsAdminProvisionerClientUnexpectedResponse
+ where
+  validateOperation value = do
+    operation <-
+      first (const AwsAdminProvisionerClientIntentInvalid) (mkOperatorMaterialOperationId value)
+    Right (operatorMaterialOperationIdText operation)

@@ -12,7 +12,7 @@ import AwsWaitPolling
   , virtualNowMicros
   , virtualStartMicros
   )
-import Control.Monad ((>=>))
+import Control.Monad (forM_, (>=>))
 import Data.Aeson (Value, eitherDecodeStrict, object, (.=))
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.List (find, findIndex, isInfixOf, isPrefixOf, isSuffixOf)
@@ -28,6 +28,7 @@ import Prodbox.Lifecycle.AwsNativeStackFamily
   , observeAwsNativeStackFamily
   )
 import Prodbox.Lifecycle.AwsNativeStackFamily qualified as Native
+import Prodbox.Lifecycle.AwsNetworkFamily
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
 import Prodbox.Lifecycle.Teardown.AwsNativeStackFamilyAdapter
 import Prodbox.Lifecycle.Teardown.Model
@@ -39,6 +40,7 @@ import TestSupport
 lifecycleAwsNativeStackFamilySuite :: SuiteBuilder ()
 lifecycleAwsNativeStackFamilySuite =
   describe "Sprint 7.36 native registered stack families" $ do
+    declaredNetworkFamilyCases
     nativeFamilyEvidenceValidationCase
     it "observes the aws-test family only through exact managed names" $ do
       calls <- newIORef []
@@ -537,6 +539,279 @@ nativeFamilyEvidenceValidationCase =
     let absent = mustRight (encodeAwsNativeStackFamilyEvidence ref [])
     validateProviderIntentEvidence intent absent `shouldBe` Right absent
 
+declaredNetworkFamilyCases :: SuiteBuilder ()
+declaredNetworkFamilyCases = describe "Sprint 4.111 declared network selectors" $ do
+  forM_ [EksVpcCniInterfaces, TestVpcCniInterfaces, EksClusterSecurityGroups] $ \family -> do
+    it ("authorizes only its registry-bound declaration for " ++ show family) $ do
+      let request =
+            mustRight
+              (mkAwsNativeStackFamilyObservationRequest (familyKey family) testScope revision (familyConfig family))
+          ref = awsNativeStackFamilyObservationRequestRef request
+          encoded = mustRight (encodeAwsNativeStackFamilyEvidence ref [familyIdentity family])
+          observed =
+            mustRight
+              ( decodeAwsNativeStackFamilyObservation
+                  request
+                  ( Right
+                      (ProviderIntentExecutionObserved (awsNativeStackFamilyObservationRequestCoordinate request) encoded)
+                  )
+              )
+          authorization = mustRight (authorizeExactAwsNetworkFamilyReap request observed)
+      providerNativeStackFamilyNetworkFamily ref `shouldBe` Just family
+      fmap awsNetworkFamilyReapKey authorization `shouldBe` Just (familyKey family)
+      fmap awsNetworkFamilyReapScope authorization `shouldBe` Just testScope
+      fmap awsNetworkFamilyReapProviderIntent authorization
+        `shouldBe` Just (ReapNativeStackFamily ref (familyConfig family) [])
+      let emptyEvidence = mustRight (encodeAwsNativeStackFamilyEvidence ref [])
+          absent =
+            mustRight
+              ( decodeAwsNativeStackFamilyObservation
+                  request
+                  ( Right
+                      ( ProviderIntentExecutionObserved
+                          (awsNativeStackFamilyObservationRequestCoordinate request)
+                          emptyEvidence
+                      )
+                  )
+              )
+      authorizeExactAwsNetworkFamilyReap request absent `shouldBe` Right Nothing
+      mkAwsNativeStackFamilyObservationRequest
+        (familyKey family)
+        testScope
+        revision
+        (if family == TestVpcCniInterfaces then eksConfig else testConfig)
+        `shouldSatisfy` isLeft
+
+    it ("reaps only the declared class for " ++ show family) $ do
+      gone <- newIORef False
+      calls <- newIORef []
+      world <- newVirtualWorld
+      let runner = AwsNativeStackFamilyRunner $ \arguments -> do
+            modifyIORef' calls (++ [arguments])
+            absent <- readIORef gone
+            case take 2 arguments of
+              ["ec2", "describe-vpcs"] -> pure (success (familyVpc family))
+              ["ec2", verb]
+                | verb == familyListing family ->
+                    pure (success (if absent then "[]" else familyMember family "vpc-0123456789abcdef0"))
+              ["ec2", verb] | verb == familyDelete family -> modifyIORef' gone (const True) >> pure (success "")
+              _ -> pure (failure "unexpected class or mutation")
+      observed <- Native.observeAwsNativeStackFamily runner (familyRef family) (familyConfig family)
+      observed `shouldBe` Right [familyIdentity family]
+      result <-
+        Native.reapAwsNativeStackFamilyWithin
+          runner
+          (roomyWaitEnvironment world)
+          (familyRef family)
+          (familyConfig family)
+          []
+      result `shouldBe` Right ()
+      commands <- readIORef calls
+      filter (any ("delete-" `isPrefixOf`)) commands
+        `shouldBe` [["ec2", familyDelete family, familyDeleteFlag family, familyId family]]
+      all (\args -> notElem (familyOtherListing family) args) commands `shouldBe` True
+      closed <- Native.observeAwsNativeStackFamily runner (familyRef family) (familyConfig family)
+      closed `shouldBe` Right []
+
+    it ("refuses a foreign VPC row for " ++ show family) $ do
+      calls <- newIORef []
+      world <- newVirtualWorld
+      let runner =
+            recordingRunner
+              calls
+              ( \arguments ->
+                  if "describe-vpcs" `elem` arguments
+                    then success (familyVpc family)
+                    else success (familyMember family "vpc-fffffffffffffffff")
+              )
+      result <-
+        Native.reapAwsNativeStackFamilyWithin
+          runner
+          (roomyWaitEnvironment world)
+          (familyRef family)
+          (familyConfig family)
+          []
+      result `shouldSatisfy` isLeft
+      commands <- readIORef calls
+      filter (any ("delete-" `isPrefixOf`)) commands `shouldBe` []
+
+    it ("binds family evidence and refuses a member allowlist for " ++ show family) $ do
+      let ref = familyRef family
+          encoded = mustRight (encodeAwsNativeStackFamilyEvidence ref [familyIdentity family])
+      decodeAwsNativeStackFamilyEvidence ref encoded `shouldBe` Right [familyIdentity family]
+      let sameStackRef =
+            mustRight
+              ( mkProviderNativeStackFamilyRef
+                  (providerNativeStackFamilyStackRef ref)
+                  (providerNativeStackFamilyAccountId ref)
+                  (providerNativeStackFamilyRegion ref)
+                  Nothing
+              )
+          wholeStackIntent = ObserveNativeStackFamily sameStackRef (familyConfig family)
+          familyIntent = ObserveNativeStackFamily ref (familyConfig family)
+      decodeAwsNativeStackFamilyEvidence sameStackRef encoded `shouldSatisfy` isLeft
+      providerIntentResourceKey familyIntent `shouldNotBe` providerIntentResourceKey wholeStackIntent
+      providerIntentCoordinate familyIntent `shouldNotBe` providerIntentCoordinate wholeStackIntent
+      forM_
+        [ other
+        | other <- [EksVpcCniInterfaces, EksClusterSecurityGroups]
+        , networkFamilyStack other == networkFamilyStack family
+        , other /= family
+        ]
+        $ \other ->
+          decodeAwsNativeStackFamilyEvidence (familyRef other) encoded `shouldSatisfy` isLeft
+      world <- newVirtualWorld
+      calls <- newIORef []
+      result <-
+        Native.reapAwsNativeStackFamilyWithin
+          (recordingRunner calls (const (failure "must not run")))
+          (roomyWaitEnvironment world)
+          ref
+          (familyConfig family)
+          [familyIdentity family]
+      result `shouldSatisfy` isLeft
+      readIORef calls >>= (`shouldBe` [])
+
+  it "keeps controller cluster groups under one registered inventory owner" $ do
+    calls <- newIORef []
+    let response arguments
+          | elem "Name=tag:aws:eks:cluster-name,Values=aws-eks-test-cluster" arguments =
+              success "sg-0123456789abcdef0\n"
+          | otherwise = emptyEksResponse arguments
+    stackObserved <-
+      Native.observeAwsNativeStackFamily (recordingRunner calls response) eksRef eksConfig
+    shouldBe stackObserved (Right [])
+    familyObserved <-
+      observeDeclaredGroups (familyMember EksClusterSecurityGroups "vpc-0123456789abcdef0")
+    shouldBe familyObserved (Right [familyIdentity EksClusterSecurityGroups])
+    commands <- readIORef calls
+    shouldSatisfy
+      commands
+      (all (notElem "Name=tag:aws:eks:cluster-name,Values=aws-eks-test-cluster"))
+
+  it "does not claim stack-native security groups as controller-family members" $ do
+    let nativeGroup =
+          "{\"id\":\"sg-11111111111111111\",\"vpc\":\"vpc-0123456789abcdef0\",\"name\":\"aws-eks-test-node-sg\",\"cluster\":null}"
+        groups =
+          "[" ++ nativeGroup ++ "," ++ drop 1 (familyMember EksClusterSecurityGroups "vpc-0123456789abcdef0")
+    observed <- observeDeclaredGroups groups
+    shouldBe observed (Right [familyIdentity EksClusterSecurityGroups])
+    empty <- observeDeclaredGroups ("[" ++ nativeGroup ++ "]")
+    shouldBe empty (Right [])
+
+  it "refuses partially marked controller groups instead of admitting them to adoption" $ do
+    let partial =
+          "[{\"id\":\"sg-0123456789abcdef0\",\"vpc\":\"vpc-0123456789abcdef0\",\"name\":\"eks-cluster-sg-aws-eks-test-cluster-123\",\"cluster\":null}]"
+    observed <- observeDeclaredGroups partial
+    shouldSatisfy observed isLeft
+
+  it "cannot turn a whole-stack observation into class authority" $ do
+    let request = mustRight (mkAwsNativeStackFamilyObservationRequest AwsTestKey testScope revision testConfig)
+        ref = awsNativeStackFamilyObservationRequestRef request
+        evidence = mustRight (encodeAwsNativeStackFamilyEvidence ref ["vpc/vpc-0123456789abcdef0"])
+        observed =
+          mustRight
+            ( decodeAwsNativeStackFamilyObservation
+                request
+                ( Right
+                    (ProviderIntentExecutionObserved (awsNativeStackFamilyObservationRequestCoordinate request) evidence)
+                )
+            )
+    authorizeExactAwsNetworkFamilyReap request observed
+      `shouldBe` Left AwsNetworkFamilyDeclarationRequired
+
+  forM_
+    [ "null"
+    , "[{}]"
+    , "[{\"id\":\"vpc-0123456789abcdef0\",\"tags\":[]}]"
+    , "["
+        ++ drop 1 (init (familyVpc TestVpcCniInterfaces))
+        ++ ","
+        ++ drop 1 (init (familyVpc TestVpcCniInterfaces))
+        ++ "]"
+    ]
+    $ \payload ->
+      it ("refuses an unjoined or ambiguous VPC: " ++ payload) $ do
+        calls <- newIORef []
+        observed <-
+          Native.observeAwsNativeStackFamily
+            (recordingRunner calls (const (success payload)))
+            (familyRef TestVpcCniInterfaces)
+            testConfig
+        observed `shouldSatisfy` isLeft
+        commands <- readIORef calls
+        length commands `shouldBe` 1
+
+observeDeclaredGroups :: String -> IO (Either Text [Text])
+observeDeclaredGroups groups =
+  Native.observeAwsNativeStackFamily
+    (AwsNativeStackFamilyRunner respond)
+    (familyRef EksClusterSecurityGroups)
+    eksConfig
+ where
+  respond arguments
+    | elem "describe-vpcs" arguments = pure (success (familyVpc EksClusterSecurityGroups))
+    | elem "describe-security-groups" arguments = pure (success groups)
+    | otherwise = pure (failure "unexpected command while observing a declared group family")
+
+familyKey :: AwsNetworkFamily -> RegisteredResourceKey
+familyKey family = case family of
+  EksVpcCniInterfaces -> AwsEksVpcCniInterfacesKey
+  TestVpcCniInterfaces -> AwsTestVpcCniInterfacesKey
+  EksClusterSecurityGroups -> AwsEksClusterSecurityGroupsKey
+  TestCanarySecurityGroups -> AwsTestCanarySecurityGroupsKey
+
+familyRef :: AwsNetworkFamily -> ProviderNativeStackFamilyRef
+familyRef family = mustRight (mkProviderNetworkFamilyRef family "123456789012" region)
+
+familyConfig :: AwsNetworkFamily -> ProviderStackConfig
+familyConfig family = if family == TestVpcCniInterfaces then testConfig else eksConfig
+
+familyVpc :: AwsNetworkFamily -> String
+familyVpc family =
+  "[{\"id\":\"vpc-0123456789abcdef0\",\"tags\":[{\"Key\":\"Name\",\"Value\":\""
+    ++ Text.unpack (networkFamilyPulumiStack family)
+    ++ "-vpc\"},{\"Key\":\"prodbox.io/managed-by\",\"Value\":\"prodbox\"}]}]"
+
+familyListing
+  , familyOtherListing
+  , familyDelete
+  , familyDeleteFlag
+  , familyId
+    :: AwsNetworkFamily -> String
+familyListing family =
+  if family == EksClusterSecurityGroups
+    then "describe-security-groups"
+    else "describe-network-interfaces"
+familyOtherListing family =
+  if family == EksClusterSecurityGroups
+    then "describe-network-interfaces"
+    else "describe-security-groups"
+familyDelete family =
+  if family == EksClusterSecurityGroups then "delete-security-group" else "delete-network-interface"
+familyDeleteFlag family = if family == EksClusterSecurityGroups then "--group-id" else "--network-interface-id"
+familyId family = if family == EksClusterSecurityGroups then "sg-0123456789abcdef0" else "eni-0123456789abcdef0"
+
+familyIdentity :: AwsNetworkFamily -> Text
+familyIdentity family =
+  (if family == EksClusterSecurityGroups then "security-group/" else "network-interface/")
+    <> Text.pack (familyId family)
+
+familyMember :: AwsNetworkFamily -> String -> String
+familyMember family vpc
+  | family == EksClusterSecurityGroups =
+      "[{\"id\":\""
+        ++ familyId family
+        ++ "\",\"vpc\":\""
+        ++ vpc
+        ++ "\",\"name\":\"eks-cluster-sg-aws-eks-test-cluster-123\",\"cluster\":\"aws-eks-test-cluster\"}]"
+  | otherwise =
+      "[{\"id\":\""
+        ++ familyId family
+        ++ "\",\"vpc\":\""
+        ++ vpc
+        ++ "\",\"status\":\"available\",\"managed\":false,\"type\":\"interface\",\"description\":\"aws-K8S-example\",\"owner\":null,\"cluster\":null}]"
+
 -- | The reaper over a world in which nothing waits: a case that never polls
 -- does not read the clock, and a case that does builds its own world.
 reapNative
@@ -765,6 +1040,9 @@ recordingRunner calls respond =
 
 awsTestResponse :: [String] -> ProcessOutput
 awsTestResponse arguments
+  | queryOf arguments == "Vpcs[].{id:VpcId,tags:Tags}" =
+      success
+        "[{\"id\":\"vpc-0a1b2c3d4e5f60718\",\"tags\":[{\"Key\":\"Name\",\"Value\":\"aws-test-vpc\"},{\"Key\":\"prodbox.io/managed-by\",\"Value\":\"prodbox\"}]}]"
   | "--output" `elem` arguments
   , "text" `elem` arguments =
       success $ case queryOf arguments of

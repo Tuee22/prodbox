@@ -30,7 +30,7 @@
 --     missing-field error at the one constructor, before it can be silently
 --     dropped anywhere. Uncommenting either line below fails the build:
 --
---     > eightFields (ObservationEvidenceScopeFields a b c d e f g h) = ()
+--     > sevenFields (ObservationEvidenceScopeFields a b c d e f g) = ()
 --
 --     > sixFields (ObservationEvidenceScopeFields a b c d e f) = ()
 module ScopeCodecWitness

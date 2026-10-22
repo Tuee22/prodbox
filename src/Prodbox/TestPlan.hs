@@ -4,6 +4,9 @@ module Prodbox.TestPlan
   , TestExecutionMode (..)
   , TestExecutionPlan (..)
   , nativeValidationId
+  , HarnessPreparationStep (..)
+  , harnessPreparationSteps
+  , harnessRuntimeProfileForValidations
   , retainedSesRequirementForValidations
   , validationInitialPrerequisites
   , validationDeferredPrerequisites
@@ -25,6 +28,7 @@ import Prodbox.CLI.Command
   , PolicyTier (..)
   , TestScope (..)
   )
+import Prodbox.Lifecycle.RuntimeProfile (NativeRuntimeProfile (..))
 import Prodbox.PrerequisiteId
   ( PrerequisiteId (..)
   , prerequisiteIdEngagesIamHarness
@@ -63,7 +67,28 @@ data NativeValidation
   | ValidationLifecycle
   | ValidationKeycloakInvite
   | ValidationSealedVault
+  | ValidationAwsLifecycle
+  | ValidationAwsLifecycleCanary
   deriving (Eq, Show)
+
+data HarnessPreparationStep = HarnessAcmeEabIngress | HarnessSesSmtpIngress
+  deriving (Eq, Show)
+
+harnessPreparationSteps :: [NativeValidation] -> [HarnessPreparationStep]
+harnessPreparationSteps validations
+  | lifecycleOnlyValidations validations = []
+  | otherwise =
+      HarnessAcmeEabIngress : [HarnessSesSmtpIngress | ValidationKeycloakInvite `elem` validations]
+
+harnessRuntimeProfileForValidations :: [NativeValidation] -> NativeRuntimeProfile
+harnessRuntimeProfileForValidations validations
+  | lifecycleOnlyValidations validations = LifecycleWorkersRuntime
+  | otherwise = FullRuntime
+
+lifecycleOnlyValidations :: [NativeValidation] -> Bool
+lifecycleOnlyValidations validations =
+  not (null validations)
+    && all (`elem` [ValidationAwsLifecycle, ValidationAwsLifecycleCanary]) validations
 
 data NativeSuitePlan = NativeSuitePlan
   { nativeSuiteId :: String
@@ -279,6 +304,18 @@ testExecutionPlan substrate scope =
             "integration dns-aws"
             "integration-dns-aws"
             [ValidationDnsAws]
+            False
+        IntegrationAwsLifecycle ->
+          nativeNamedSuite
+            "integration aws-lifecycle"
+            "integration-aws-lifecycle"
+            [ValidationAwsLifecycle]
+            False
+        IntegrationAwsLifecycleCanary ->
+          nativeNamedSuite
+            "integration aws-lifecycle-canary"
+            "integration-aws-lifecycle-canary"
+            [ValidationAwsLifecycleCanary]
             False
         IntegrationAwsEks ->
           nativeNamedSuite
@@ -573,6 +610,13 @@ validationInitialPrerequisites validation =
     ValidationAwsIam -> [AwsIamHarnessReady, ToolAws]
     -- The Pulumi-substrate stacks consume validated AWS credentials +
     -- the cluster (the MinIO Pulumi backend lives in-cluster) + pulumi.
+    -- These clients always engage the LCP harness and its strict Provider
+    -- readiness profile. AwsCredentialsValid still checks legacy aws.* config
+    -- fields, which that credential reconcile neither needs nor authors.
+    -- The existing independent encrypted-output reader runs read-only
+    -- Pulumi against a scratch file backend. Mutations remain Provider-owned.
+    ValidationAwsLifecycle -> clusterPrerequisites ++ [ToolPulumi]
+    ValidationAwsLifecycleCanary -> clusterPrerequisites ++ [ToolPulumi]
     ValidationAwsEks -> pulumiSubstratePrerequisites
     ValidationPulumi -> pulumiSubstratePrerequisites
     ValidationHaRke2Aws -> pulumiSubstratePrerequisites ++ [ToolSsh]
@@ -618,6 +662,8 @@ validationDeferredPrerequisites validation =
     ValidationPublicDns -> []
     ValidationDnsAws -> []
     ValidationAwsIam -> []
+    ValidationAwsLifecycle -> []
+    ValidationAwsLifecycleCanary -> []
     ValidationAwsEks -> [PulumiLoggedIn]
     ValidationPulumi -> [PulumiLoggedIn]
     ValidationHaRke2Aws -> [PulumiLoggedIn]
@@ -670,6 +716,9 @@ derivedTier substrate validations
   alwaysEngagesHarness validation =
     case validation of
       ValidationAwsIam -> True
+      ValidationAwsLifecycle -> True
+      ValidationAwsLifecycleCanary -> True
+      ValidationCascadeQualification -> True
       ValidationKeycloakInvite -> True
       _ -> False
 
@@ -739,6 +788,8 @@ nativeValidationId validation =
     ValidationPublicDns -> "public-dns"
     ValidationDnsAws -> "dns-aws"
     ValidationAwsIam -> "aws-iam"
+    ValidationAwsLifecycle -> "aws-lifecycle"
+    ValidationAwsLifecycleCanary -> "aws-lifecycle-canary"
     ValidationAwsEks -> "aws-eks"
     ValidationPulumi -> "pulumi"
     ValidationHaRke2Aws -> "ha-rke2-aws"

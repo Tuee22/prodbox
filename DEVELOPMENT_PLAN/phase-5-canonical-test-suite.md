@@ -11,16 +11,21 @@
 
 ## Phase Status
 
+✅ **Reclosed on the code-owned surface, 2026-10-20 (Standards A/N/O).** Sprints `5.51`,
+`5.53`, `5.58` and `5.59` are Done with independent validation. The final canonical gate passes
+6,251 primary plus 27/35/47 auxiliary cases; built-frontend CLI/config integration passes 74/74.
+Live canaries, Standard-Q class closure and Standard-P qualification remain pending. The dated
+reopen records below explain the owned work and do not carry a competing current queue.
+
 🔄 **Reopen extended 2026-10-18 to Sprints `5.58`–`5.59` (Standards A/N).** Same own surface, the
-canonical suite's validation bodies and the harness that runs them. The AWS stack validations
-(`aws-eks`, `pulumi`, `ha-rke2-aws`) assert a label and the prefix `sha256:`, and all three printed
-the digest of zero bytes in the 2026-10-13 to 2026-10-15 sweeps while passing; Sprint `5.58` makes
-them assert the provider's verdict and typed rows. The AWS stack lifecycle is reachable only through a run that first brings up
+canonical suite's validation bodies and the harness that runs them. At the reopen, the AWS stack
+validations (`aws-eks`, `pulumi`, `ha-rke2-aws`) asserted a label and the prefix `sha256:`, and all
+three printed the digest of zero bytes in the 2026-10-13 to 2026-10-15 sweeps while passing.
+Completed Sprint `5.58` requires the provider's complete observations and typed identities/readiness. The AWS stack lifecycle is reachable only through a run that first brings up
 the home restore graph, whose own defects stop it first; Sprint `5.59` adds a suite scope that
 exercises only the stack lifecycle and a canary that plants the failure shapes on demand. `5.58`
 was unblocked on 2026-10-19, when Phase `4`'s Sprint `4.110` landed the report and verdict it reads;
-`5.59` waits on Sprint `4.111`. The phase now recloses when `5.51`, `5.53`, `5.58` and
-`5.59` reach `Done`. Rationale and decisions: Sprint `0.36`.
+`5.59` is unblocked on its code-owned prerequisite by Sprint `4.111` (2026-10-19). Sprint `5.51` is code-owned Done (2026-10-20). Sprint `5.53` is code-owned Done (2026-10-20). Sprint `5.58` is code-owned Done (2026-10-20). Sprint `5.59` is code-owned Done (2026-10-20), closing this extension. Rationale and decisions: Sprint `0.36`.
 
 🔄 **Reopened 2026-10-08 on Sprints `5.49`–`5.53` (Standards A/N).** Own-surface reopen on the
 canonical suite's validation bodies and on the harness that runs them. A static audit on 2026-10-07
@@ -37,12 +42,14 @@ across the body and covers the zone-scoped families from evidence; the validatio
 host ask the Provider; and the Phase `5` half of a second audit of the AWS arm (the stability policy, the
 guardrails, the cluster each validation addresses, the continuity restart, the kubeconfig error) is
 repaired. The platform findings of that audit are Phase `7`'s, Sprints `7.46` and `7.47`. Sprint `5.51` is
-`Planned`: no production path can revoke the harness credential, so a completed run retains it, and the
-revocation lane is a new trust edge that waits on operator decisions. A third audit of the home and shared arms
+`Done` (2026-10-20, code-owned): the operator-approved scoped Agent lane, IAM-first revoke,
+invocation lineage and ordinary harness cleanup composition pass four sequential canonical gates.
+The final gate passes 5,974 primary plus 27/35/40 auxiliary cases and frontend integration passes
+74/74. Live proof and deployment qualification remain pending; Sprint `6.5` owns qualification
+candidate retirement before local uninstall. A third audit of the home and shared arms
 (2026-10-08) found four more deterministic failures a healthy system would have hit, which Sprint `5.52`
 repairs (`Done`, 2026-10-08); the weaknesses the review of that landing found and no row owned are Sprint
-`5.53`'s. The phase recloses when `5.51` and `5.53` reach `Done`; until then this entry records an open reopen,
-not a closure.
+`5.53`'s. All code-owned rows of this reopen and its extension are Done (2026-10-20); the reclose is recorded above.
 
 ✅ **Reclosed 2026-09-15 on Sprints `5.47`–`5.48` (Standards A/N).** Both reached `Done` on
 2026-09-14 with `prodbox dev check` at 0; the reclose is written here on 2026-09-15 because the
@@ -5168,20 +5175,21 @@ non-blocking (Standard O).
 
 None.
 
-## Sprint 5.51: A Harness Credential No Production Path Can Revoke [📋 Planned]
+## Sprint 5.51: A Harness Credential No Production Path Can Revoke [✅ Done]
 
-**Status**: Planned (2026-10-08). Phase `5` own-surface reopen (Standards A/N) on the harness's credential
-teardown, registered before any behavior change. It is parked behind Sprint `5.50` and starts only after
-the operator has decided the points under Remaining Work, because it adds a trust edge to the control plane.
+**Status**: Done (2026-10-20, code-owned; Standards O/P). The operator approved the listed
+revocation design on 2026-10-19. All four gated landings pass. The ordinary retained-control-plane
+harness retires its Lifecycle-provider credential after proven resource cleanup. Sprint `6.5`
+owns the separate qualification candidate's pre-uninstall composition.
 **Doctrine**: [AWS Admin Credentials](../documents/engineering/aws_admin_credentials.md),
 [Lifecycle Reconciliation Doctrine](../documents/engineering/lifecycle_reconciliation_doctrine.md), and
 [Vault Doctrine](../documents/engineering/vault_doctrine.md).
 **Implementation**: `src/Prodbox/Lifecycle/CredentialProvisioner/AwsAdminExecution.hs`,
 `src/Prodbox/ControlPlane/TargetMaterializationProduction.hs`, a Target Agent revocation route and its
-caller topology, a new non-Test harness-credential module, `src/Prodbox/CLI/Rke2.hs`, and
+caller topology, `src/Prodbox/Lifecycle/CredentialProvisioner/HarnessCredential.hs`, `src/Prodbox/CLI/Rke2.hs`, and
 `src/Prodbox/TestRunner.hs`.
 **Blocked by**: none.
-**Live-proof**: pending. Nothing here can be proven without the operator's `test-secrets.dhall`.
+**Live-proof**: pending. Requires live IAM, Vault and the deployed Agent route.
 **Deployment qualification**: pending — invalidated: the change is destructive cleanup and a new
 capability edge under Standard P.
 **Independent Validation**: fake-boundary cases over the worker's revoke order, the Agent's permit
@@ -5193,7 +5201,7 @@ verification and refusals, the harness resolvers and the composition trace; no l
 
 ### Objective
 
-Make the harness retire the credential it provisions, through the Credential Provisioner, with a typed
+Make the ordinary retained-control-plane harness retire the credential it provisions, through the Credential Provisioner, with a typed
 read-back, so that Exit Definition item 6 ("destroys Operational resources") is true of a harness run.
 Sprint `5.50` leaves the credential retained and says so; this sprint removes the reason it has to.
 
@@ -5222,23 +5230,63 @@ Sprint `5.50` leaves the credential retained and says so; this sprint removes th
 4. The composition revokes only after every cleanup result succeeded and never on an incomplete one.
 5. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
 
+### Completion Evidence — 2026-10-20
+
+The four landings are independently gated in order:
+
+1. **Worker order and lifetime.** The frozen old library fails all nine new order/lifetime cases
+   while its other 58 Authority cases pass. The corrected group passes 67/67, and
+   `dev-check-worker-order.log` exits 0 with 5,929 primary plus 27/35/40 auxiliary cases.
+2. **Agent lane.** The Provisioner-only authenticated route verifies permit signer/generation,
+   deadline, action, Operational class, fixed target, rollout, operation and Pod binding before
+   Vault metadata access. Absent metadata converges; another generation is preserved. Response
+   loss requires absent read-back. The Agent uses its existing Vault capabilities and refreshes
+   its pinned Authority key on restart. Focused cases pass 93/93; the canonical gate exits 0
+   (`dev-check-agent-lane-complete.log`, 5,955 primary plus 27/35/40 auxiliary).
+3. **Lineage.** Fresh 256-bit command-boundary entropy binds substrate/suite/cycle to separate
+   fixed install/revoke slots. A tombstone cannot change the revoke lookup identity. Retained
+   intents and receipts must match their immutable bindings and current Target observation.
+   The combined callers pass 198/198; `dev-check-lineage-complete.log` exits 0 with 5,975 primary
+   plus 27/35/40 auxiliary cases.
+4. **Resume and cleanup composition.** Resource registration/adoption precedes credential
+   preparation. Adoption re-establishes the credential without rerunning the validation body.
+   Nonempty, wholly successful resource results and complete zone evidence admit the fixed revoke
+   slot; incomplete or unobservable results make zero revoke calls. Both new and retained receipts
+   require a fresh Agent read. Failed preparation skips the body but attempts cleanup, and
+   cancellation is rethrown after cleanup and its eligible credential tail. The obsolete host
+   harness setup/teardown chain, private policy/reporting helpers and their vacated unit assertions
+   are removed; the read-only IAM inspector remains. The expanded caller/composition group passes
+   **214/214** (`resume-integration.log`). All targets build with `-Werror`, targeted HLint has no
+   hints, and the canonical gate exits **0** (`dev-check-resume.log`, **5,974** primary plus
+   **27/35/40** auxiliary). The built-frontend CLI/config suite passes **74/74** (`cli-env.log`).
+
+No lint exemption, warning suppression or test exclusion is added. One cleanup row moves to
+Completed: pending **65 → 64**, unowned **16 → 16**, completed **406 → 407**. No live mutation or
+runtime image roll is performed for this sprint; live proof and deployment qualification remain
+pending.
+
+**Composition ownership:** the separate cascade-qualification runner removes local RKE2 itself.
+Sprint `6.5` owns credential retirement inside that candidate after fence, clean audit and durable
+record, before uninstall while Authority and Agent remain available. Its current retained
+disposition stays explicit until that composition is implemented and qualified.
+
 ### Remaining Work
 
-Operator decisions first, because each changes what is built:
+None on this sprint's code-owned surface. Live proof and deployment qualification remain on their
+declared axes; the qualification candidate composition is Sprint `6.5`'s owned surface.
 
-- Whether the end state of a clean harness run may be **no Lifecycle-provider credential**. Provider
-  readiness is then false and every later full cluster reconcile blocks at the Provider chart until a
-  credential is provisioned again, and the public `aws setup` is still a stub. The alternative is to keep
-  the retained end state until `aws setup` exists over the Provisioner.
-- Whether to reverse the Sprint `4.85` "Target first" revoke order to IAM first, which Exit Definition
-  item 6, the lifecycle reconciliation doctrine, the AWS integration doctrine and the Vault doctrine all
-  already say.
-- Whether to approve the one new trust edge exactly as scoped above.
-- Whether an interrupted revoke after cleanup is terminal is healed by the next lineage rather than
-  resumed in place.
+### Operator Decision — 2026-10-19
 
-Then the worker order, the Agent lane, the lineage scope and the resume path, in that order, each as its
-own gated landing.
+The operator selected "Implement the listed revocation design":
+
+- A clean harness run ends with **no Lifecycle-provider credential**. Provider readiness is false
+  until a subsequent run provisions it again; the public `aws setup` stub is not a recovery path.
+- IAM destruction and observed absence precede the Vault tombstone, superseding Sprint `4.85`'s
+  Target-first order.
+- The one metadata-only Credential Provisioner → Target Agent revoke route is approved exactly
+  within the Operational-lifetime Lifecycle-provider target scope in Deliverables.
+- The next run lineage heals an interrupted revoke after cleanup becomes terminal.
+
 ## Sprint 5.52: Validations Asserted States The Cluster Never Held [✅ Done]
 
 **Status**: Done (2026-10-08). Phase `5` own-surface reopen (Standards A/N) on the validation bodies and
@@ -5359,16 +5407,13 @@ healthy run:
 
 None. Live proof of the four repairs is a `Live-proof: pending` note and is non-blocking under Standard O.
 
-## Sprint 5.53: Weaknesses The Third Audit Found And No Row Owned [🔄 Active]
+## Sprint 5.53: Weaknesses The Third Audit Found And No Row Owned [✅ Done]
 
-**Status**: Active (2026-10-08). Phase `5` own-surface reopen (Standards A/N) on the harness's secret handling and
-cleanup families and on the Provider's interpreters and retained-volume ensure, registered before any behavior
-change. The third audit of the home and shared arms, and the review of Sprint `5.52`'s landing, found weaknesses
-that are real, that stop no healthy run, and that no sprint owned: Sprint `5.52` carried them as Remaining Work
-until its review handed them here, and the review found most had no tracked owner. This sprint is where they are
-tracked. It is a code-owned row that waits on no sprint; its queue state is owned by
-[README.md → Resume Here](README.md#resume-here) (decision D6 of Sprint `0.36` keeps it `Parked` behind
-the AWS stack lifecycle track).
+**Status**: Done (2026-10-20, code-owned; Standards O/P). Retained-volume idempotency,
+private fixture/region preflight, capture policy/expiry, confidential invitation delivery and
+registered cleanup/audit composition each pass their own canonical gate. The final cleanup
+landing also passes built-frontend CLI/config integration. Live proof and deployment
+qualification remain distinct and pending.
 **Doctrine**: [Integration Fixture Doctrine](../documents/engineering/integration_fixture_doctrine.md),
 [Vault Doctrine](../documents/engineering/vault_doctrine.md), and
 [Storage Lifecycle Doctrine](../documents/engineering/storage_lifecycle_doctrine.md).
@@ -5376,10 +5421,12 @@ the AWS stack lifecycle track).
 `src/Prodbox/Vault/Host.hs`, `src/Prodbox/TestRunner.hs`, `src/Prodbox/Ses/Capture.hs`, and
 `src/Prodbox/Lifecycle/Teardown/Registry.hs`.
 **Blocked by**: none.
-**Live-proof**: pending. Nothing here can be proven without the operator's `test-secrets.dhall` and a live account.
+**Live-proof**: pending. Requires the deployed Provider/Authority, fixture and live account.
 **Deployment qualification**: pending — invalidated by any landing that changes destructive cleanup.
 **Independent Validation**: pure and fake-boundary cases per item; no live AWS.
-**Docs to update**: this file, `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
+**Docs to update**: `documents/engineering/storage_lifecycle_doctrine.md`,
+`documents/engineering/vault_doctrine.md`, `documents/engineering/aws_admin_credentials.md`,
+`documents/engineering/aws_integration_environment_doctrine.md`, this file, `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and
 `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md`.
 
 ### Objective
@@ -5394,10 +5441,12 @@ Give each weakness below an owner and close it, as its own gated landing.
   than the plan, or one that reports no size, naming the volume and both sizes, before it creates anything for the
   other volumes; growing in place is not built. A create that was interrupted inside the tag listing's lag is not
   repeated: the ensure already names the ids it created in every failure it reports after a create (Sprint `5.52`);
-  what is left is that a rerun reconciles against them instead of against the tag listing alone.
+  the create now carries a stable PV client token (**landed 2026-10-20**), so a lost response is
+  recovered on a lagging-listing retry instead of allocating a duplicate.
 - **Harness secrets.** `test-secrets.dhall` is refused unless it is a regular file the effective user owns with
   no group or other permission bit, and the refusal names the `chmod`; its region is compared with the Pulumi
-  backend's before the credential Job runs and not only inside it; a changed `acme_eab` selects the rotate arm of
+  backend's before the credential Job runs and not only inside it (**landed 2026-10-20**, including
+  same-descriptor UTF-8 decoding and EAB refusal propagation); a changed `acme_eab` selects the rotate arm of
   the request builder instead of replaying the retained generation (**landed 2026-10-15**: the fixture's operation
   id was the cluster alone, so the rotate arm was unreachable from its one caller; it now carries a digest of the
   credential frame, so a changed credential names a different operation, which a completed retained operation
@@ -5410,13 +5459,15 @@ Give each weakness below an owner and close it, as its own gated landing.
   argument, and the Provider passes its own); the SES capture reader no longer refuses once `inbound/` holds more than 100 objects (landed: it
   walks the listing page by page and reads only the objects modified within the last six hours, because the invite
   recipient carries a per-run nonce no older message can have, and it refuses only past 10,000 objects listed or
-  20 read), and the capture bucket expires what it holds (not started: it needs
-  `s3:PutLifecycleConfiguration` in the Provider role policy, which is a policy revision); the Provider role's S3
-  object grants name the capture bucket instead of `Resource "*"` behind a tag guard the same role can forge; the
-  invite link, a one-time action token, is not retained in Authority operation evidence.
+  20 read), and the capture bucket expires what it holds (**landed and validated 2026-10-20**:
+  canonical prefix-scoped lifecycle rules, matching read-back and exact bucket-scoped permissions, including
+  `s3:PutLifecycleConfiguration`, select a new policy revision). The Provider role's S3 object grants name the
+  configured capture bucket instead of `Resource "*"` behind a tag guard the same role can forge; the
+  invite link, a one-time action token, is not retained in new Authority operation evidence
+  (**landed and validated 2026-10-20**: receiver-bound sealed delivery and retired historical replies).
 - **Cleanup families.** A test run ends with a terminal escape audit; the SES invite mail objects have a
   registered cleanup; home-zone DNS01 challenge records have a cleanup family; and the two substrates no longer
-  share one suite id, so a leftover live run of one cannot be adopted by the other (**landed 2026-10-15**: the
+  share one suite id (**cleanup/audit landed and validated 2026-10-20**), so a leftover live run of one cannot be adopted by the other (**landed 2026-10-15**: the
   cleanup client's suite id is `aws-substrate-` followed by the suite id on the AWS substrate and unchanged on the
   home substrate, so the runs already on record keep their identity and a run id of one is not read as a run of
   the other).
@@ -5455,28 +5506,214 @@ Provider's confirming read reports a refused volume as one it cannot bind rather
 the substrate-scoped cleanup suite id, and the EAB fixture's content-derived operation id; and a fourth, the
 Provider's EBS, Route 53 validation-zone and owned-tag interpreters, which now start the AWS CLI through the
 Provider's bounded runner (five cases over a scripted runner assert the exact argument vectors and that a refused or
-unstartable invocation is named, and a source pin keeps the Provider off the direct entrances). Nothing else in
-this sprint has started.
+unstartable invocation is named, and a source pin keeps the Provider off the direct entrances). The retained-volume client-token landing is also validated (2026-10-20): focused cases **12/12**,
+warning-clean library build, no HLint hints, and canonical gate **0** (`.build/sprint-5.53/dev-check-ebs-token.log`,
+**5,978/5,978** primary plus **27/35/40** auxiliary, **1122.27s**). The harness-secret landing is also validated (2026-10-20): **21/21** focused metadata/region/EAB
+consumer cases; the canonical gate exits **0** with **5,999** primary plus **27/35/40** auxiliary
+cases, and built-frontend CLI/config integration passes **74/74**. The capture-policy/expiry landing also passes: **6,011** primary plus **27/35/40** auxiliary
+cases and updated frontend **74/74**. Confidential invite delivery also passes its own gate: **6,033** primary plus **27/35/40** auxiliary
+cases and updated frontend **74/74**. The final cleanup-family landing also passes; its completion evidence is below.
 
-### Remaining Work
+**Validated landing — 2026-10-20:** the retained-EBS create carries a 64-character ASCII
+SHA-256 client token derived from the domain-versioned retained PV identity. Size, type and AZ
+changes preserve the token, allowing EC2 to refuse parameter conflicts instead of minting a second
+volume. A subprocess-boundary regression models a lost create response and a still-lagging tag
+listing on retry. The frozen old library fails the two direct token assertions; the corrected
+subprocess fixture and expanded retained-volume group pass **12/12** (`.build/sprint-5.53/ebs-token-green.log`).
+Its tokenless negative control allocates two volumes after a lost response, while the production
+retry allocates one and returns its original binding. The library build passes with `-Werror`,
+targeted HLint reports no hints and fresh formatter checks pass. The canonical landing gate exits
+**0** with **5,978** primary plus **27/35/40** auxiliary tests; no live AWS call is made.
 
-Everything above except what is marked landed: the capture reader's pagination and recency window and the ensure's
-created-volume notes (Sprint `5.52`), and the refusing arm, the EAB rotation and the substrate-scoped suite id
-(2026-10-15). The operator decision on a retained volume smaller than the plan is taken here by its conservative
-arm: the ensure refuses (the volume holds MinIO or Vault data, and the only supported way to replace it deletes the
-whole retained family); growing it in place (EBS can grow a volume and cannot shrink one, and the file system must
-then be grown too) stays the operator's to ask for. Then each remaining deliverable as its own gated landing.
+**Validated landing — harness secrets (2026-10-20):** enforce an owner-only regular fixture through an opened,
+non-following descriptor, and reject a credential/backend region mismatch before any credential Job.
+The implementation is active: metadata checks apply to a non-following descriptor, decoding reads
+that same descriptor with the repository import root, and fixture writers use private modes.
+The region guard covers the shared harness caller and the lazy Authority-backup credential loader.
+The frozen old loader fails both world-readable and symlink regressions (`secrets-red.log`);
+the focused metadata/region group passes **19/19**. Two additional EAB-consumer cases reproduce
+an existing swallowed-refusal branch (`secrets-consumer-red.log`, **2/21** fail). The helper now
+propagates a refused fixture with zero material deliveries, and the full focused group passes
+**21/21** (`secrets-green-final.log`). The final library build is warning-clean and targeted HLint
+has no hints. The first all-target preflight was interrupted intentionally after adding the two
+consumer regressions. The settled source passes the all-target `-Werror` build
+(`build-secrets-all-complete.log`). The canonical gate exits **0** (`dev-check-secrets.log`,
+**1048.56s**): **5,999/5,999** primary plus **27/35/40** auxiliary cases, with no exclusions or
+lint exemptions. The updated built-frontend CLI/config suite exits **0** with **74/74** cases
+(`cli-env-secrets.log`). The Provider-interpreter deliverables are next; no live AWS call or
+runtime image roll is performed for these landings.
 
-**Added 2026-10-18 (Sprint `0.36`).** The retained-volume create carries no client token
-(`ebsCreateVolumeArgs` in `src/Prodbox/Lifecycle/EbsVolume.hs` passes none), and the bounded runner
-now kills it at thirty seconds. A kill after the effect landed loses the volume id, and a rerun
-creates a second volume with the same tags. EC2's `CreateVolume` accepts a client token, and the
-AWS CLI's `create-volume` takes `--client-token`, so the create is made idempotent by the call
-itself, with a token derived from the plan's volume identity. That is this sprint's, as an item of
-the retained-volume deliverable. The growth remedy for the size refusal stays the operator's
+**Validated landing — Provider capture policy and expiry (2026-10-20):** the Lifecycle-provider IAM program binds
+an optional exact capture bucket (no configured bucket means no capture-object grant), preserving
+historical permit decoding without granting wildcard object access. The capture bucket receives a
+canonical observed lifecycle policy for its mail prefix; its stable non-secret readiness probe sits
+outside that expiring prefix. The canonical policy revision selects successor work, and script-boundary
+cases cover absent, differing, malformed and unreadable lifecycle state. The warning-clean library
+build and targeted HLint pass. A frozen old program fails the no-S3-without-scope case
+(`capture-policy-red.log`), and the combined new/consumer group initially passes 90/92: only the
+historical current-revision pins still name the prior policy. They now pin the new canonical
+revision `77fe1c831cd0d0535146ece2d6e5e73015d9a296b6b520bf841da8b4273bfd5d`, preserving
+the frozen causal profile and resource envelope; the explicit old-revision negative control stays.
+Historical parameter CBOR is measured and pinned. The metadata decoder stops at 64 Ki characters.
+The successful-read/write/read path adds three child calls at most, still within the thirty-minute
+intent envelope (the full fifteen-call path has at most 450 seconds of child service time at the 30-second
+child bound; queueing and overhead also consume the absolute thirty-minute deadline).
+Provider request/replay counts and graph/Backup bounds do not change. The updated combined group
+passes **92/92** (`capture-policy-focused-complete.log`); the new module is registered in the
+Provider CLI/action-coverage inventory. The all-target `-Werror` build passes
+(`build-capture-all.log`). The first canonical/frontend pair was stopped at **143** after a read-only loopback check
+against installed AWS CLI `2.34.18` exposed its `aws: [ERROR]:` service-error prefix.
+The frozen observer passes the real success JSON but fails the measured missing-policy response
+(`capture-cli-red.log`, **1/2 fail**); the parser now recognizes both the historical bare service
+error and the measured CLI prefix while still refusing denied/unknown reads. This is an offline
+HTTP fixture, with unsigned calls confined to loopback and no AWS access. The regression joins
+the existing missing-policy case. The measured group now passes **2/2** (`capture-cli-green.log`)
+and the combined group again passes **92/92** (`capture-policy-focused-cli.log`); targeted HLint
+and fresh formatter checks pass. The corrected all-target `-Werror` build passes (`build-capture-all-corrected.log`).
+Replacement gates both exit **0**: canonical **6,011** primary plus **27/35/40** auxiliary
+cases (`dev-check-capture-corrected.log`, **1065.76s**), and built-frontend CLI/config integration
+**74/74** (`cli-env-capture-corrected.log`). No source changes occurred during either completed gate. The production
+SES entrypoint submits fresh Provider operations per reconciliation, so the lifecycle observer is
+reached even after an earlier successful reconcile. No live AWS call or runtime image roll is claimed by this offline validation.
+
+**Validated landing — confidential invite evidence (2026-10-20):** production now uses the invocation-only
+X25519 / HKDF-SHA256 / ChaCha20-Poly1305 codec, bounded captured-mail producer and HTTPS form
+runner in `Prodbox.Ses.InviteEvidence`, `Prodbox.Ses.InviteDelivery` and
+`Prodbox.Keycloak.InviteHttp`. `ObserveSealedSesInviteMail` appends wire action **39**, with a
+validated receiver public key; the historical plaintext slot preserves its CBOR index and
+coordinate but returns only the retired marker and has no executable mail-reading capability.
+Authenticated Authority settlement admits only receiver-bound envelopes or the closed pending
+marker for new observations. Historical plaintext completions remain readable and immutable,
+but current replay replies project only the retired marker. The current validation holds the
+receiver secret only in invocation memory, with no serialization or raw-secret projection.
+
+The envelope's derived bound fits the existing 4,096-character evidence cap with a 2,800-byte
+plaintext ceiling. AAD binds bucket, recipient, version and both public keys; key/CBOR/base64,
+low-order, binding, authentication and size failures do not echo input. The HTTPS consumer checks
+the configured host, sends URL/form through bounded stdin, disables ambient curl configuration,
+and redacts child/process errors. Literal `data-raw` prevents an initial `@` from selecting a
+host file. The 30-second outer / 25-second curl limits, five-redirect HTTPS ceiling, one MiB
+body-file limit, 64 KiB stdin and 16 KiB captured streams bound that existing child boundary.
+This adds no service, Vault route, IAM permission, Provider request, cleanup node or evidence-cap
+increase; the existing Provider and Backup count/size floors remain unchanged.
+
+The frozen old settlement validator fails **1/1** (`invite-evidence-red.log`). Prototype codec,
+HTTP and reader-to-sealer groups pass **8/8**, **6/6** and **3/3**, with independent crypto and
+installed-curl loopback interoperability (`invite-interop.log`, `invite-curl-interop.log`).
+The production library passes `-Werror`; its first build caught one missing explicit constructor
+import, corrected before the completed build. The combined production/consumer group initially
+passes **98/99** (`invite-focused.log`): its only failure is a one-to-one credential-consumer
+fixture counting both the current route and its retired alias. The fixture now checks the alias
+explicitly beside the active inventory, and an additional literal-`@` case joins the HTTP group.
+All **100/100** focused cases pass (`invite-focused-complete.log`), including authenticated
+Authority persistence/replay, refusal before plaintext persistence and immutable-history reply
+redaction. The first all-target preflight finds two other credential-fixture records still naming the
+removed plaintext capability field; both now use the sealed capability and its receiver argument.
+The corrected all-target `-Werror` build passes (`build-invite-all-complete.log`), as do fresh
+formatter checks over all changed Haskell sources and targeted HLint. Both final gates exit **0**:
+canonical **6,033** primary plus **27/35/40** auxiliary cases (`dev-check-invite.log`, **1029.60s**),
+and built-frontend CLI/config **74/74** (`cli-env-invite.log`, **1096.51s**). Source stayed frozen
+during both completed gates. Independent crypto
+and installed-curl measurements also pass against the built production library, including exact
+quote/backslash and literal-`@` form bytes (`invite-interop-current.log`, `invite-curl-current.log`).
+No live AWS request or runtime image roll is claimed.
+
+**Validated landing — cleanup families and terminal escape audit (2026-10-20):** a frozen executable built against the
+current finalizer receives a nonempty successful report from a real compiled ordinary program,
+but no terminal audit exists in that program. It still reaches credential revocation; the
+regression requiring preservation fails **1/1** (`cleanup-audit-red.log`). This is the planned
+cleanup-family landing's baseline, not a failure of the invite codec. The replacement cleanup gates now pass. The retained executable
+`cleanup-audit-old` must not be overwritten by the later library build.
+
+The coordinate foundation initially passes **46/46** carrier/restart cases and **89/89**
+paired-family, signed Provider and scan cases. The historical-v2 test incorrectly selected the
+retained EBS family on Cascade; its corrected selection preserves the frozen historical bytes,
+and carriers now pass **47/47**. Closed mail-cleanup evidence rejects plaintext URL material
+(the frozen validator fails **1/1**), and the updated family group passes **93/93**. The combined
+registered scope, recovery, paired executor, finalizer, terminal-audit and shared-cloud-runtime
+composition passes **179/179** (`cleanup-complete.log`). Its first pass exposed an overlong
+query submission identity; the domain-versioned hash now binds both graph operation and query
+while fitting the existing limit and preserving the graph operation as cleanup owner.
+
+The harness registers exact home parent-zone DNS01 names and an invocation-specific mail
+bucket/recipient before validation. The invitation consumer refuses changed configuration, and
+its new password seed is independent private randomness. Historical unbound scopes remain unknown.
+The mail executor walks all-age data versions and deletes exact version IDs. It preserves bodyless
+delete markers as retained bucket metadata under expiry, and refuses beyond eight data versions,
+six listing pages or an unreadable field. Installed AWS CLI loopback interoperability passes all
+seven list/get/delete/read-back calls, preserving a foreign version (`capture-cleanup-cli.log`).
+The old recent-object reaper capability and inline validation tail are removed in source; action
+35 keeps its historical wire slot as a retired non-mutating reply, with the landing's gates passing.
+
+The ordinary audit follows resource read-backs and precedes the durable surface report. A fresh
+Provider account/region observation precedes five filters against both the run and global
+endpoints (one endpoint when those regions coincide); incomplete reads, residue or a mismatched
+plan cannot authorize credential retirement. The conservative maximum derives 65 Provider
+requests / 130 replay entries and a 74-node candidate's 638 Backup requests / 1,276 replay entries.
+Replay format v17 retains canonical v16 projections without dropping entries; the 48 MiB encoded
+and 192 MiB Backup memory bounds are unchanged, and the complete encoded projection passes its proof. The final all-target
+warning-clean build and canonical/frontend gates pass. No runtime image or live run is claimed.
+
+The audit composition corrects two observed gaps. The superseded cascade
+composition gave every catalog query the same Provider submission key, so different filters
+cannot all execute under their own retained read. The corrected composition uses query-specific
+keys that keep the exact graph operation as cleanup owner. The superseded reach table also said IAM
+roles are returned from the global Tagging API endpoint, but AWS explicitly says `GetResources`
+does not return IAM users or roles ([AWS reference](https://docs.aws.amazon.com/resourcegroupstagging/latest/APIReference/Welcome.html)).
+The declared tag field states that exclusion and retains independent exact IAM-family reads;
+a successful regional/global tag listing cannot claim IAM-role or whole-account absence. The
+global query plan and its actual answers are bound into the audit, with an incomplete endpoint
+remaining unobservable. These are code-owned corrections, not closed live defect classes.
+
+
+The first canonical cleanup gate stops at native doctrine checks before HLint or units
+(`dev-check-cleanup-doctrine-red.log`, exit 1, 110.17s): the home observer uses a case inside a
+lambda, and the new mail decoder has not yet been registered as an absence-observation owner.
+The home observer now uses a named helper. `SesInviteMailAdapter` joins `absenceMinterOwners`
+because it validates the Provider coordinate and complete exact family before minting Provider
+absence; this is the new observation boundary, with no exemption for downstream consumers.
+The corrected warning-clean rebuild passes. The replacement canonical gate exits **0**
+(`dev-check-cleanup.log`, **991.03s**): **6,084** primary plus **27/35/40** auxiliary cases, with
+no HLint hints. The built-frontend CLI/config suite also passes; completion evidence is below.
+
+**Retained-volume counterexample registered 2026-10-18 (Sprint `0.36`).** The former create
+omitted a client token. A thirty-second runner bound could kill it after EC2 accepted the effect,
+lose the volume id and let a lagging-listing rerun create a second volume with the same tags.
+The validated create now passes `--client-token` derived from the retained PV identity, so EC2
+recovers that original create. The tokenless form remains a test-only negative control. The growth remedy for the size refusal stays the operator's
 decision above; Sprint `4.112`'s cause-to-remedy table registers the refusal as `NukeOnly` with that
 reason until a growth verb exists.
 
+
+### Completion Evidence — 2026-10-20
+
+The cleanup landing passes the combined **179/179** scope, recovery, adapter, finalizer and actual
+shared-cloud-runtime cases. The broader preflight initially reports **14/6,084** failures from
+superseded inventories, counts, graph digest, field classification and selection assertions; these
+now pin both new standalone families and retain the prior pre-binding and pre-network graph
+digests. The 89-case broader run isolates two final ordering/class-vector pins; their corrected
+focused rerun passes **2/2**, and all **77/77** harness planning cases pass. All targets build with
+`-Werror`; targeted HLint and fresh formatter checks pass.
+
+The transport proof passes **40/40**, including retained v16-to-v17 migration without dropping
+entries, 65/130 Provider request/replay bounds and 638/1,276 Backup bounds. Its exact 74-node
+aggregate and maximum-response projection fit the unchanged 32 KiB aggregate / 48 MiB encoded
+ceilings and 192 MiB Backup memory floor. The frozen no-audit finalizer and plaintext cleanup
+validator remain expected-failure artifacts; no historical state is rewritten to invent evidence.
+
+The canonical gate exits **0** (`dev-check-cleanup.log`, **991.03s**), with **6,084**
+primary plus **27/35/40** auxiliary cases. Updated built-frontend CLI/config integration exits
+**0**, **74/74** (`cli-env-cleanup.log`, **1019.87s**). Implementation source remains settled during both
+completed gates. No warning suppression, lint exemption or test exclusion is added. The obsolete
+recent-object cleanup capability and inline tail move to Completed: pending **65 → 64**, unowned
+**16 → 16**, completed **408 → 409**. No runtime image roll or live AWS-spending attempt is claimed;
+Standard-P qualification and Standard-Q class closure remain pending. Sprint `6.5` owns the
+candidate's pre-uninstall composition, including bindings for the newly registered families.
+
+### Remaining Work
+
+None on the code-owned surface. Live provider canaries, audit-clean cycles and deployment
+qualification remain on their declared axes and confer no operational-cutover claim here.
 
 ## Sprint 5.54: A Harness Credential Whose Retained Operation Expired Is Replaced, Not Resubmitted [✅ Done]
 
@@ -5653,20 +5890,21 @@ Make the DNS validation wait out the refusal the public-edge wait already waits 
 None. Not a validation's to repair: the refusal itself comes from a gateway that restarts about every ninety
 minutes, which is the heap-growth loop of Sprint `6.5`'s item 4.
 
-## Sprint 5.58: A Validation That Asserts A Prefix Proves Nothing About AWS [📋 Planned]
+## Sprint 5.58: A Validation That Asserts A Prefix Proves Nothing About AWS [✅ Done]
 
-**Status**: Planned (2026-10-18; unblocked 2026-10-19, when Sprint `4.110` landed). Phase `5` own-surface reopen (Standards A/N) on the AWS stack
+**Status**: Done (2026-10-20; registered 2026-10-18; unblocked 2026-10-19, when Sprint `4.110` landed). Phase `5` own-surface reopen (Standards A/N) on the AWS stack
 validations' assertions, registered before any behavior change. Sprint `5.49` repaired three
 validations for output nobody printed any more; what they assert now is a label and a prefix.
 **Doctrine**: [Unit Testing Policy § 5](../documents/engineering/unit_testing_policy.md#5-production-adapter-composition)
 and [Lifecycle Reconciliation Doctrine § 3.0](../documents/engineering/lifecycle_reconciliation_doctrine.md#30-positive-absence).
 **Implementation**: `src/Prodbox/TestValidation.hs`, `src/Prodbox/Infra/AwsEksTestStack.hs`,
-`src/Prodbox/Infra/AwsTestStack.hs`, and `test/unit/Main.hs`.
+`src/Prodbox/Infra/AwsTestStack.hs`, `src/Prodbox/Lifecycle/AwsAuditField.hs`,
+`src/Prodbox/Test/AwsStackEvidence.hs`, and `test/unit/Main.hs`.
 **Blocked by**: none. The assertions consume the report and the verdict that Sprint `4.110` produces
 (`Done`, 2026-10-19).
 **Live-proof**: pending. The three validations are run against real stacks on the home substrate.
-**Deployment qualification**: pending — not invalidated: the sprint changes suite content and no
-production composition.
+**Deployment qualification**: pending. The implementation extends the existing read-only audit
+projection; it adds no process, capability, wire action or resource envelope. No runtime roll is claimed.
 **Independent Validation**: producer-to-consumer composition cases over the real renderers, with the
 prior assertion kept as a test-only negative control; no live AWS.
 **Docs to update**: `DEVELOPMENT_PLAN/substrates.md` (Per-Validation Substrate Coverage Notes),
@@ -5708,33 +5946,71 @@ a green suite says nothing about whether the producer produces anything.
    substrate as today.
 5. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
 
+### Implementation And Completion Evidence — 2026-10-20
+
+The three native validation bodies use one suite-owned consumer in
+`Prodbox.Test.AwsStackEvidence`. It decodes the actual canonical field renderer, requires a seen
+positive control and no unanswered class, and compares the complete recorded topology with
+provider rows. A post-create `Residue` verdict supplies positive presence; `Clean` does not.
+Exact cluster/node-group states must be `ACTIVE`; all three recorded EC2 instances must be
+`running`. Missing or neighboring identities, omitted report rows, contradictory counts,
+duplicate receipts, incomplete observations and the empty-input digest fail closed. Failed
+child commands retain their exit code. The validation bodies branch on no substrate identity.
+
+The existing read-only audit enriches its EKS rows through two exact `DescribeCluster` and
+`DescribeNodegroup` state reads. They use the existing fenced runner and permissions, add at
+most two 30-second child calls, and fit its existing absolute budget. Registry keys, Provider
+request/replay counts, wire actions and resource envelopes are unchanged. Both audit and native
+cluster-absence observation share a metadata-only strict service-error decoder.
+
+The installed AWS CLI **2.34.18** recording in
+`test/fixtures/aws-eks-readiness-cli.json` contains four unsigned loopback calls: active cluster
+and node group, and each missing resource. This measures the installed tool's response framing,
+not live AWS behavior. The initial scripted group passes **114/114**, while the recording
+exposes **1/116** failures: the CLI inserts `operation (reached max retries: 0):` in its error
+header. The frozen `readiness-cli-before` executable and `readiness-cli-red.log` preserve that
+failure. The strict replacement accepts the measured service code/operation framing and keeps
+denied, malformed and wrong-operation replies unobservable.
+
+The complete producer/codec/real-renderer/consumer group passes **118/118**
+(`.build/sprint-5.58/focused-green.log`); affected purge/destroy boundaries pass **22/22**
+(`boundaries.log`). Each validation kind has a real renderer-to-consumer composition case and
+a test-only frozen prefix check that incorrectly accepts the empty-input receipt. Warning-clean
+all-target compilation, targeted HLint and fresh pinned-formatter checks pass. The first
+canonical attempt passes full HLint and stops on Cabal header formatting (681.02 seconds); its
+log is retained as `cabal-format-red-dev-check.log`. Cabal formats the new fixture metadata,
+a fresh comparison passes, and the complete canonical gate is rerun. The final canonical
+gate exits **0**, **6,121** primary plus **27/35/40** auxiliary cases (`dev-check.log`,
+**1003.72s**). Updated built-frontend CLI/config integration exits **0**, **74/74**
+(`cli-env.log`, **1020.92s**). Implementation source stays settled during both gates.
+No warning suppression, lint exemption or test exclusion is added.
+
+The prefix-only validation ledger row moves to Completed: pending **64 → 63**, unowned
+**16 → 16**, completed **409 → 410**. No runtime image roll or live AWS-spending attempt is
+claimed. The empty-input defect class remains open under Standard Q: a tool-loopback recording
+and local composition proof do not replace the provider canary and two audit-clean cycles.
+
 ### Remaining Work
 
-Everything above. Sprint `4.110` is `Done` and fixes what the assertions read. The audit prints its
-report on standard output as stable lines: `AWS_FIELD <stack> account=… region=…`, then `verdict=`,
-`class=… count=…` for each non-empty class, `<class> <identity> <detail>` for each row (at most twenty
-per class, then `omitted=`), `unanswered=` for each gap, and `control=`. The create verbs print the
-same report after a successful create and gate nothing, so after a create the verdict is `Residue` by
-construction: the field holds the new stack, and the assertion is that the rows match the identities
-the stack recorded and that no query went unanswered, not that the verdict is `Clean`. A converged
-stack's receipt is now the digest of its recorded outputs and cannot be the digest of empty input, so
-the empty-input check lands as a test-only negative control beside the content assertion. The destroy
-verbs exit 4 or 5 from `Residue` or `Unobservable`, which a validation that drives them sees as a
-failed command and no longer as a pass.
+None on the code-owned surface. Live stack validation and Standard-P qualification remain
+pending on their declared axes; no operational-cutover or class-closure claim is made.
 
-## Sprint 5.59: The AWS Stack Lifecycle Is Rehearsed In Minutes, Not Discovered In A Home-Wide Run [⏸️ Blocked]
+## Sprint 5.59: The AWS Stack Lifecycle Is Rehearsed In Minutes, Not Discovered In A Home-Wide Run [✅ Done]
 
-**Status**: Blocked (2026-10-18). Phase `5` own-surface reopen (Standards A/N) on canonical-suite
+**Status**: Done (2026-10-20, code-owned; registered 2026-10-19). Phase `5` own-surface reopen (Standards A/N) on canonical-suite
 content and the harness that runs it: a suite scope that exercises the AWS stack lifecycle by
 itself, and a canary that plants the shapes a destroy must clear.
 **Doctrine**: [Integration Fixture Doctrine § 2B](../documents/engineering/integration_fixture_doctrine.md#2b-planted-residue-and-recorded-provider-behaviour),
 [Unit Testing Policy § 5.1](../documents/engineering/unit_testing_policy.md#51-recorded-laws-for-aws-dependency-behaviour),
 and [Development Plan Standard Q](development_plan_standards.md#q-live-campaign-protocol-and-class-closure).
 **Implementation**: `src/Prodbox/TestPlan.hs`, `src/Prodbox/TestRunner.hs`,
-`src/Prodbox/TestValidation.hs`, `src/Prodbox/Lifecycle/ProviderWorker/ProviderWork.hs`,
+`src/Prodbox/TestValidation.hs`, `src/Prodbox/Test/AwsLifecycle.hs`,
+`src/Prodbox/Lifecycle/RuntimeProfile.hs`, `src/Prodbox/CLI/Rke2.hs`,
+`src/Prodbox/Capacity/AwsLifecycleBudget.hs`,
+`src/Prodbox/Lifecycle/AwsTestCanary.hs`, `src/Prodbox/Lifecycle/ProviderWorker/ProviderWork.hs`,
 `src/Prodbox/ControlPlane/ProviderProduction.hs`, `src/Prodbox/Test/LifecycleCleanupClient.hs`, the
 `test/support/` directory, and a recordings directory under `test/golden/`.
-**Blocked by**: Sprint `4.111`. The canary's expected outcome is the converge loop's.
+**Blocked by**: none. Sprint `4.111` is code-owned Done; the canary exercises its converge loop.
 **Live-proof**: pending. The canary runs live twice, and the recordings from those runs extend the
 stub's laws.
 **Deployment qualification**: pending — invalidated: the plant intent adds a Provider request
@@ -5821,10 +6097,180 @@ accident.
    claim's *not covered* list; a test holds the two lists against each other.
 8. **Canonical gate.** Focused groups, primary unit suite, and `prodbox dev check` at 0.
 
+### Registered Implementation Boundary — 2026-10-20
+
+The admitted scope uses two named clients: `test integration aws-lifecycle` for test/EKS
+stack cycles and `test integration aws-lifecycle-canary` for the cheap test-VPC plant/destroy
+exercise. Both use the retained bootstrap floor and credential reconcile; neither enters EAB,
+SMTP, application charts, public-edge reconcile, or a retained-certificate retain/restore cycle.
+The coverage projection names every target-field omission before a clean assertion.
+
+The current post-credential command is a full local-only reconcile. Although it omits the edge
+phase, its steady phase installs the gateway, cert-manager, load-balancer and PostgreSQL
+operator as well as Provider and TLS Retention roles. That is wider than the scope's stated
+prerequisites and can stop it on an application prerequisite. Before changing this boundary,
+this sprint registers a harness-only readiness profile: the existing bootstrap/config floor,
+then Provider and TLS Retention role readiness only. Other suites keep their existing profile.
+The TLS role is deployed/readied; no certificate retain, restore or public serving proof is
+entered. Tests must pin the actual profile's steps and its execution selection.
+
+The named clients engage the credential harness on either selected substrate and use the
+lifecycle readiness profile. Their preparation plan contains no EAB or SMTP action. Initial
+prerequisites contain the retained host/bootstrap tools and settings. Credential reconciliation,
+the strict Provider readiness profile and the initial authenticated audit validate the fixed LCP
+credential. `AwsCredentialsValid` still checks legacy `aws.*` config fields before its Provider
+probe; these clients do not select that unrelated config gate. Independent recorded-output reads
+use the existing read-only host Pulumi reader against its own scratch file backend, so
+`ToolPulumi` is an actual prerequisite. `PulumiLoggedIn` is unnecessary; the reader establishes
+its own file backend. AWS mutations remain on the fenced Provider path. The clients have no
+application bootstrap/postflight or Gateway monitor and are explicit named drills, outside the
+aggregate's application validation order. The canary selects only the test stack and its two
+network families; the two-stack drill selects its actual stack/controller/EBS families without
+uncreated hosted-zone or certificate families. The body uses the retained operator authentication,
+because the Gateway-lifetime harness identity need not exist on this profile.
+
+### Local Implementation Progress — 2026-10-20
+
+The internal readiness profile and pure lifecycle/coverage core build with `-Werror`. The
+opaque bracket context carries the fresh registered run id, observation scope and exact targets;
+an adopted run supplies no body context and skips the body. The registry appends the test canary
+group family; its backstop waits for test-interface read-back. The EKS group predicate stays
+unchanged. Compiler v7 keeps descriptor format v3. All seven frozen compiler-v6 programs in
+`test/fixtures/lifecycle-descriptor-v3.json` (SHA-256
+`a939f5d898bb03ab2fb8eca45626a0cf5c57aaee769bfb4c3656cf4ba6cc8914`)
+restart with unchanged bytes and graph identities; relabelling a current canary graph as v6 is
+refused. Family-only bounds are 77 graph nodes, 69 Provider requests / 138 replay slots and
+662 Backup requests / 1,324 slots. Codec v18 preserves retained v2–v17 entries. Transport and
+encoded/memory checks pass **40/40**; the complete new client schedule remains to be derived.
+
+The append-only plant request (wire action 44) uses the existing fenced narrow-session boundary
+and Lifecycle-provider role. It checks exact VPC/subnet and creating-run coordinates, stamps
+frozen VPC markers before creating three tagged groups and one idempotent unattached interface,
+then captures both exact dependency refusals. An invocation-only scrubbed buffer supplies that
+evidence; a restart cannot qualify a run merely by finding the shapes. The first stateful replay
+passes 14/16 and demonstrates that wait-only cleanup leaves the mutual pair behind. Its binary,
+log and identity remain in `.build/sprint-5.59/canary-execution-before`,
+`canary-execution-red.log` and `canary-red-identity.json`. The repair freshly checks VPC markers
+and the complete group projections before removing only admitted TCP/443 peer rules. The
+warning-clean library and expanded family/dispatch/descriptor/recording/ownership group pass
+**216/216** in **91.28 seconds**, including all seventeen canary execution cases. Existing
+network/destroy/audit/purge regressions pass **183/183** after their complete read-only
+VPC/tag projections are updated. Targeted HLint reports no hints.
+
+Six files in `test/golden/aws-lifecycle/` pass through the opaque scrubber. They distinguish the
+2026-10-14 hand transcription, authored dependency/release assumptions and installed CLI
+2.34.18 unsigned loopback captures. A query-digest check binds optional-list normalization to
+its actual CLI capture; identity and owned tags remain strict. Recording framing controls
+reproduce three permissive cases on the retained pre-fix binary and pass **20/20** after the
+exact-shape repair. No live provider recording has been acquired. The bounded mutable stub now covers the canary's groups/interfaces and interruption prefixes,
+VPC/subnet dependencies, cluster/node-group ownership, load-balancer release lag, and virtual
+clock. Its **27/27** cases include the full supported destroy and real audit projection. The
+normalized hand-inventory CNI/group shapes fail the preserved single-pass control **2/2** and
+converge through the replacement. Their original raw tag keys are unavailable, so the fixture
+retains only the normalized fields the old transcription contains. No local replay qualifies a
+deployment.
+
+The named command paths, typed preparation/profile selection and exact drill target sets are
+now wired in source. Their initial provider audit is bound to the account/region of the retained
+registration before any create. The canary's unsigned request consumes that same opaque body
+context and exact recorded stack/subnet/run outputs; it mints no second cleanup nonce. The
+minimal prerequisite/profile tables and planner negative controls pass **39/39** after a full
+`-Werror` library build; targeted HLint reports no hints. Both substrates select the actual
+minimal client plan. Missing registered targets, unrelated families, missing or malformed outputs,
+oversized subnet lists, a changed run and a wrong initial audit scope refuse before the plant.
+The current operator binary still predates this wiring; no image roll or live attempt is claimed.
+The settled prerequisite/body-planner group passes **40/40** after including the Provider schedule:
+18 extra body requests for the full drill, ten for the canary, and two host output reads each.
+The Provider reservation derives **87 requests / 174 replay slots** with its unchanged 12 MiB bound.
+Compact Backup read replay and its ownership/legacy/copy controls pass **46/46**; the complete
+Backup schedule and mixed-response proof then pass **47/47** (3.18 seconds). The Provider/cleanup
+branch is conservatively charged eighteen checkpoint calls per RPC; fifteen compiled checkpoint
+operations add four each, and two host output reads add twelve each. Thus Backup adds 1,650
+checkpoint requests to the 662-request journal/prelude profile: **2,312 per attempt / 4,624 replay
+slots**. Copy receipts are producer-bounded at 4 KiB, while read replay retains only its fixed
+fresh-nonce refusal. The mixed legacy-journal/current-compact proof fits the unchanged **48 MiB
+encoded / 192 MiB memory** limits. Checkpoint/copy/planner regressions pass **45/45**, and the expanded
+canary/family/descriptor/ownership group passes **233/233** (85.42 seconds). Targeted HLint has no
+hints. The topology-derived checkpoint-node count replaces an independently authored multiplier;
+all-target warning-clean compilation and final gates follow.
+
+The warning-clean all-target build exposed four older fixture omissions (the two named parser
+paths, two unavailable-capability records, and the new family selector); they are explicit now.
+The first canonical attempt stops at the initial policy gate: the lifecycle-class inventory lacks
+the canary row, and four new files contain literal region coordinates. The inventory row and named
+protocol/regression region values repair those findings without suppressing a check or changing
+recording bytes. The rebuilt all-target set passes, generated inventory is refreshed, and file and
+documentation lint both exit **0**. The full canonical and frontend gates are being rerun against
+settled sources.
+
+The next canonical attempt reaches custom Haskell style and reports two nested lambda cases and
+three production imports of validation-owned profile/budget types. Named helpers replace the
+nested cases. The readiness profile moves to `Prodbox.Lifecycle.RuntimeProfile`; closed workload
+arithmetic moves to `Prodbox.Capacity.AwsLifecycleBudget`. Production imports neither validation
+module. The harness adapts its exercise into the capacity-owned workload, and its actual executed
+callback trace is charged against that bound. Cabal's complete source-module inventory is preserved,
+all-target compilation passes after the move, and file/documentation lint both exit zero.
+
+The first complete primary run reports **22/6,251** failures in older closed-family fixtures,
+ordered target/ownership tables, graph-count/dependency/digest pins and replay expectations
+(`family-red-dev-check.log`, 962.52 seconds). Explicit canary-family absence is now included in
+legacy-adoption fixtures; current registry/manifest assertions include the new member. Program
+surfaces pin 77/72/80 nodes, preserve the frozen pre-extension identity checks and require the
+canary group backstop after exact test-interface absence. Current graph identity is
+`2e4a12378afa743db67b987b4d294a2f7d811b184a7cb1cf6495fcc7ce739f5c`.
+The complete family/registry/manifest/legacy/program group passes **106/106**, and affected primary
+planning/resource/replay cases pass **85/85** after the warning-clean all-target rebuild. Full
+canonical and frontend validation remain required before closure.
+
+### Registered Replay Boundary Correction — 2026-10-20
+
+The complete client schedule reaches Authority Backup through encrypted checkpoint observations,
+not only the cleanup journal. The existing generic replay path retains the entire observation
+body, so the 32 KiB journal-response proof cannot stand for this traffic. The authenticated
+composition counterexample retains a two-MiB read response and replays its stale bytes; the
+expected compact-read/fresh-nonce laws fail **2/3** while the copy-mutation replay control passes
+(`.build/sprint-5.59/backup-read-before`, `backup-read-red.log`, and its identity record).
+
+Before changing that boundary, this sprint registers one narrow policy: only the authenticated
+Authority Backup `observe` route durably retains a nonce/digest and a fixed fresh-nonce refusal.
+The first caller receives its exact bounded observation only after completion read-back; the same
+signed nonce receives the refusal, and a newly signed nonce performs a fresh independent read.
+Every mutation, including Backup `copy`, preserves exact retained-response replay. Authentication,
+reservation ownership, digest conflict, expiry and completion confirmation remain mandatory.
+This avoids retaining checkpoint ciphertext as repeated replay payloads. The full checkpoint call
+schedule and mixed-response encoded/memory proof remain required before closure.
+
+### Completion Evidence — 2026-10-20
+
+All-target `-Werror` compilation, generated CLI artifacts, file/documentation lint and fresh
+pinned formatting pass. The final canonical gate exits **0**, **6,251** primary plus
+**27/35/47** auxiliary cases (**972.19s**), followed by built-frontend CLI/config integration
+**0**, **74/74** (**1015.69s**). Sources stay settled through both gates. The complete
+family/registry/manifest/legacy/program group passes **106/106** and affected primary planning,
+resource and replay cases **85/85**. Final logs/results and the earlier red controls remain in
+`.build/sprint-5.59/`; no warning suppression, lint exception or test exclusion is added.
+
+The audit-field ledger row moves to Completed through its declared alternative: every omission
+is explicitly outside the claim and printed before any clean assertion. No missing enumeration
+is represented as absence. Mechanical recount: pending **63 → 62**, unowned **16 → 16**,
+completed **410 → 411**. Phase `5` recloses and numerical execution advances to Sprint `6.5`.
+
+### First Live Invocation — 2026-10-20
+
+The supported canary client exits **1** after **29.69 seconds** at its bootstrap floor. The pinned
+MinIO server image is absent from both RKE2 containerd and host Docker; the public pull returns
+`unauthorized`. This is the cache/source limitation already documented in Local Registry Pipeline
+Doctrine. No AWS-spending boundary or new runtime-image deployment is reached; the invocation
+supplies no canary or qualification evidence. The command's supported host-inotify adjustment is
+recorded, with no hand action. Logs/results are `.build/sprint-5.59/live-canary-1.*`. No unchanged
+retry or alternate image is applied.
+
 ### Remaining Work
 
-Everything above, after `4.111`. Requester-managed interface release lag cannot be planted and is
-recorded only from real EKS cycles; the budgets that depend on it stay generous until then.
+None on the code-owned surface. Requester-managed release timing remains assumption-labelled
+until real EKS cycles record it. The two live canaries, their measured time/cost targets, Standard-Q
+class closure and Standard-P qualification remain pending on their declared axes. No runtime image
+roll, live AWS-spending attempt or operational cutover is claimed.
 
 ## Documentation Requirements
 

@@ -25,16 +25,70 @@ dependency licenses the deviation ([Standard N.2](development_plan_standards.md#
 
 | Order | Sprint | Phase | State | Dependency |
 |-------|--------|-------|-------|------------|
-| 1 | `1.94` | 1 | Next | — |
-| 2 | `4.111` | 4 | Parked | — |
-| 3 | `4.112` | 4 | Blocked | `4.111` |
-| 4 | `5.51` | 5 | Parked | — |
-| 5 | `5.53` | 5 | Parked | — |
-| 6 | `5.58` | 5 | Parked | — |
-| 7 | `5.59` | 5 | Blocked | `4.111` |
-| 8 | `6.5` | 6 | Parked | `4.111` |
-| 9 | `6.7` | 6 | Blocked | `5.59` |
-| 10 | `7.47` | 7 | Parked | — |
+| 1 | `6.5` | 6 | Next | — |
+| 2 | `6.7` | 6 | Parked | — |
+| 3 | `7.47` | 7 | Parked | — |
+
+**Current checkpoint, 2026-10-21 17:35 UTC.** Sprint `6.5` remains Active. The complete
+credential-recovery/replay increment passes warning-clean canonical validation: **6,573** primary
+plus **27/35/61** auxiliary cases, exit **0** in **1066.95 seconds**. Full built-CLI/configuration
+integration passes **75/75**, exit **0** in **1047.26 seconds**. Root, frozen candidate and Cabal
+executables all match `245ed60a0260494d5c13157d0088fb922103a42be4e395f3b18254725f8624eb`.
+The stale full-suite expectations and seven fixture protocol mismatches are corrected; every prior
+failed transcript is retained. Runtime/test source is unchanged since these final gates. Exact
+commands, identities, controls, counts and limitations are in
+`.build/sprint-6.5/recovery-batch-validation.json`. This is code-local validation, not deployment
+qualification or activation. No runtime image roll or paid AWS attempt has occurred.
+
+**Operator update, 2026-10-21:** the executable-surface qualification-key policy is approved.
+Standard P and Sprint `6.5` now record that choice; the existing implementation already matches
+it. Git HEAD, clean/dirty state, the full manifest and running binary digest remain provenance.
+Documentation-only updates do not reset the key. The operator has additionally requested AWS
+resource cleanup and preparation for an operator-run `git clean -fxd`, followed by manual
+restoration of `test-secrets.dhall`. Preserve untracked implementation and required recovery
+state outside this checkout before that cleanup; AWS absence is not yet proved.
+
+**Cleanup checkpoint, 2026-10-21 23:58 UTC.** The approved identity policy passes its **15/15**
+focused tests, documentation lint and file lint. Preservation is staged outside the checkout at
+`/home/matthewnowak/prodbox-cleanup-20261021`: **104** untracked implementation files with a
+verified, overwrite-refusing `restore-untracked.py`, the tracked diff, operator binary/config,
+and retained development-evidence/source artifacts. No secret fixture is copied. The existing
+`.test-data/` snapshot contains **zero regular files**; it is not a validated recovery backup or
+evidence that capabilities may be retired. Do not infer AWS absence from it.
+
+AWS cleanup is **unverified**. The canonical audit exits **5** because Vault is sealed; all four
+explicit stack destroys (`eks`, `test`, `aws-subzone`, `aws-ses`) refuse before mutation. Supported
+`vault unseal` times out waiting for the Bootstrap Broker, whose existing runtime image cannot
+be pulled from the unavailable node-local registry; MinIO is also waiting on the refused public
+image. The node now reports `Ready=True`, `DiskPressure=False`, with no taints. A read-only STS
+probe using the canonical fixture loader independently returns **InvalidClientTokenId**; the
+operator has been asked to refresh `aws_admin_for_test_simulation` locally. The bootstrap config
+also predates the validated replay memory floors, so `cluster reconcile --dry-run` refuses its
+128 MiB Authority profile against the current 728 MiB floor. These are unresolved prerequisites,
+not a successful teardown. Long-lived backup/shared-bucket and retained IAM cleanup remains the
+operator-only `prodbox nuke` surface under AGENTS.md; stack cleanup alone cannot establish it.
+The planned `git clean -fxd` is **not yet cleared**. No AWS mutation, runtime image roll, cluster
+delete, Git mutation or phase advancement has occurred during this cleanup preparation.
+
+**Input pending before counted live cycles:** host disk admission requires **45 GiB** free;
+the latest observation and required margin are in
+`.build/sprint-6.5/live-disk-admission-latest.json`, and the operator's free/designate-space question
+is pending. Qualification-key ratification is complete. The earlier approved credential,
+restart, image-source and EKS delivery
+choices remain recorded and need no reconfirmation. Reversible scratch archiving recovered
+another **1.93 GiB**; immutable-cache inventory admitted no candidates and changed nothing.
+The public legacy writer stays sole. Two current-identity home candidate cycles, qualified
+activation/native caller conversion, legacy deletion and post-deletion qualification remain owed.
+Sprints `6.7` and `7.47` remain parked in numerical order.
+
+**Execution resumed, 2026-10-19.** The operator requested numerical-order implementation and validation
+of every open phase. Phase `1` is reclosed on Sprint `1.94`: the builder/runtime image and normalized
+manifest boundary build successfully, the measured source-only rebuild reuses dependencies, the image
+shrinks from 5.87 GB to 1.76 GB, runtime smoke passes, the canonical gate passes, and the built-frontend
+CLI/config suite passes. Exact commands and evidence are in the sprint block. Sprint `4.111` is code-owned Done: its registry, graph, replay-envelope and owned-process changes pass the canonical gate (5,887 primary tests plus 27/35/40 auxiliary tests).
+No Provider image has been rolled and no live AWS attempt has been launched in this session. Disk
+admission was 73 GiB available; about 54 GiB remained at frontend validation. Platform readiness will
+be re-observed before live work; the wrap-up below is a dated observation.
 
 **Wrap-up, 2026-10-19: development stopped at the operator's instruction.** The lifecycle work of Sprints `4.109` to
 `4.111` (budgeted waits, the provider-enumerated audit, and the converging destroy) is implemented offline and gated
@@ -54,41 +108,389 @@ The record (manifest, both inventories and their diff, the commands with read-ba
 recreates the deleted records) is outside the repository, in `~/prodbox-manual-recovery/20261019T195637Z-wrapup/`.
 Decisions D8 to D11 stay open. The working tree is uncommitted and its new modules are untracked, so commit before any
 `git clean`; a copy is in `~/prodbox-wrapup-20261019T195637Z/`. Anyone resuming should treat the `aws stack` destroys
-as unproven, start from Sprint `4.111`'s Remaining Work, and run the first live audit before anything that spends.
+as unproven, follow the execution queue above, and run the first live audit before anything that spends.
 
-**Resume at Sprint `1.94`. Ten rows remain: the four that stood on 2026-10-15 (Sprints `5.51`, `5.53`, `6.5`
-and `7.47`) and six of the eight that Sprint `0.36` opened on 2026-10-18 (`1.94`, `4.111`, `4.112`, `5.58`,
-`5.59` and `6.7`).** The other two have left the queue, `Done` on their code-owned surfaces with no Provider
-image yet carrying either: Sprint `4.109` (the budgeted polls that replace the waits a thirty-second child
-cannot finish) landed on 2026-10-18, and Sprint `4.110` (the provider-enumerated verdict behind `prodbox aws
-audit`, the destroy verbs' closing inventory, and receipts that carry content) on 2026-10-19. Sprint `4.111`
-is `Active` and stays in the queue as a `Parked` row: its first increment (the closed rule for what a controller
-leaves in a VPC, the converging destroy in the Provider, and the manifest route's clearing) landed on 2026-10-19 on
-its code-owned surface, also with no Provider image carrying it, and the registry's declaration of the families is
-the row's remaining work. The operator asked on 2026-10-15 why, after many attempts, the project still cannot cleanly create and
+**Resume at Sprint `6.5` (Active). Three rows remain.** Sprint `5.59` is code-owned Done
+(2026-10-20), and Phase `5` recloses on its owned suite-content surface. The named
+`aws-lifecycle` and `aws-lifecycle-canary` clients use the retained bootstrap/config floor and
+Provider/TLS Retention readiness. Their exact registered targets precede creation; explicit field
+omissions precede any clean assertion. The closed canary plants tagged test-VPC dependencies and
+the native family clears only its admitted peer rules. Six scrubbed recordings distinguish hand
+transcriptions, installed CLI loopback behavior and authored assumptions. The bounded stateful
+stub passes **27/27**; both recorded single-pass negative controls fail as expected.
+
+The complete schedule reserves **87 Provider requests / 174 replay slots** and **2,312 Backup
+requests / 4,624 slots**. Compact authenticated Backup reads require a fresh nonce on replay;
+mutations retain exact replies. Producer-bounded copy receipts preserve the unchanged **48 MiB
+encoded / 192 MiB memory** envelope. Transport passes **47/47**, checkpoint/copy/planner
+regressions **45/45**, expanded canary/family/descriptor/ownership **233/233**, complete structural
+expectations **106/106**, and affected primary planning/resource/replay **85/85**.
+
+The canonical gate exits **0**, **6,251** primary plus **27/35/47** auxiliary cases
+(**972.19s**); built-frontend CLI/config integration exits **0**, **74/74**
+(**1015.69s**). Evidence and retained red controls are in `.build/sprint-5.59/`.
+The field-coverage ledger row closes through the explicit omissions: pending **62**, unowned
+**16**, completed **411**. Live canaries, Standard-Q defect-class closure and Standard-P
+qualification remain pending. No runtime image roll or live AWS-spending attempt is claimed.
+Sprint `6.7`'s code dependency is discharged; it remains parked behind numerical-order work on
+`6.5`. The first supported live canary invocation (2026-10-20 20:50 UTC)
+exits 1 after 29.69 seconds at bootstrap: the pinned MinIO image is absent from containerd and
+Docker, and its public pull is unauthorized. It reaches no AWS-spending boundary, deploys no
+new runtime image, and supplies no qualifying cycle. Evidence: `.build/sprint-5.59/live-canary-1.*`.
+The documented bootstrap-cache source limitation remains live-proof work; no alternate image
+or hand repair was applied. Sprint `6.5` still owns pre-uninstall credential retirement, its live candidate campaign,
+qualification-gated activation and legacy removal. No activation is licensed by these local gates. Sprint `6.5`'s first increment repairs the gateway epoch
+route and its paired ingress rule; **104/104** focused cases and four rendered-policy controls
+pass, with full sprint gates still owed. The operator approved a fixed run-start restart baseline and reproducible MinIO/mc builds from
+the existing pinned official releases with retained bootstrap artifacts (2026-10-20). The credential-evidence increment passes **219/219**, preserves
+the authenticated receipt and fresh Agent confirmation. The candidate now consumes atomic freeze,
+recovery reads and the complete regional/global audit under fenced-v2 keys. The pre-fence replay
+control is **1/1 red**, while the audit/dispatch matrix passes **48/48**. The candidate revokes
+through the Credential Provisioner, independently confirms the revoked epoch, and only then
+publishes the v2 native handoff. Its confirmation preserves both the original frozen reservation
+and the successful takeover attempt: the retained takeover control is **1/1 red**, and the admission
+group passes **29/29**. The scope/runtime suite passes **24/24** across eleven audit and twelve
+retirement scenarios; the native host matrix passes **70/70**. Historical DNS/mail/audit-name
+coordinates are sealed in the descriptor, and qualification preserves the actual named image
+capture before Begin. The outer harness now selects registered/native recovery before any fresh
+floor or credential install. Its frozen arm-selection control is **2/3 red**; the corrected
+snapshot/ledger/cycle suite passes **54/54**. Native recovery reads only the preserved journals,
+bootstrap floor and frozen evidence; connected recovery uses its stored DNS zone and inventory.
+Frozen identity drift refuses before the candidate. The combined warning-clean all-target build and canonical gate pass: **6,288** primary plus
+**27/35/47** auxiliary cases, exit **0** in **1165.92s**. Installed-frontend CLI/config integration
+passes **74/74**, exit **0** in **1024.20s**. The validated binary identity and transcripts are in
+`.build/sprint-6.5/combined-resume-validation-3.json` and its referenced logs. The earlier audit/retirement
+checkpoint passed all-target, style and repository lints. Next-bootstrap Authority reconciliation,
+exact intent retirement, attested successor admission,
+activation and the existing operational proof obligations remain open. The dormant direct
+IAM/tombstone revocation algebra has an explicit Sprint-`6.5` removal row: pending **63**, unowned
+**16**, completed **411**. The public legacy writer stays sole; no activation is licensed. No
+second live invocation or image roll has been launched. The approved source-build route is being
+implemented before another live bootstrap. The gateway baseline suite passes **22/22**. The source-built MinIO/mc
+binaries, basic-Docker images and retained archives reproduce exactly across two builds, and
+their isolated bucket/object smoke passes. Production Haskell acquisition, artifact retention and
+cluster reference wiring remain open; no RKE2 image substitution occurred.
+The removal/accounting and restart-baseline checkpoint passes the warning-clean all-target build
+(**185.17s**), canonical gate (**6,291** primary plus **27/35/49**, **1020.24s**) and full
+frontend suite (**74/74**, **1050.40s**). Target Agent reserves **112** mixed-width replay slots
+for two **56-request** attempts under the unchanged **198 MiB** replay and **288 MiB** Vault
+limits. Both installed gateway baseline and sampled-OOM controls pass. The dormant direct
+revocation row closes: pending **62**, unowned **16**, completed **412**. Its earlier missing
+retired-source citation failure remains recorded; the corrected gate passes. Exact commands,
+timestamps and binary identity are in `.build/sprint-6.5/source-archive-validation.json`.
+The home source-acquisition/retention/seed/mirror integration passes warning-clean all-target,
+canonical (**6,301** primary plus **27/35/49**, **1034.54s**) and full installed-frontend
+validation (**74/74**, **1048.58s**, completed 2026-10-21). Cold compilation passes in
+**183.83s**; a second compilation produces identical binaries and image archives, warm reuse
+passes in **2.75s**, and isolated MinIO/mc round-trip passes. Lost Docker-create replies are
+cleaned with independent absence confirmation. Exact commands and binary identity are in
+`.build/sprint-6.5/acquisition-validation.json`. No RKE2 image import or runtime roll is claimed.
+The next-bootstrap history-reader and authenticated-import foundations are promoted for validation.
+Their scratch matrix passes six historical-journal checks, nine filesystem observations and
+**12/12** authenticated import/replay cases (**7.41s**). It preserves historical attempts through
+a new fence and refuses retirement without an independent exact terminal report. The corrected warning-clean all-target build passes; the built-library journal/root/import group
+passes **32/32** (**6.51s**) and private/opaque/facade ownership checks pass **156/156**
+(**14.68s**). The earlier missing-import build failure is retained. Archived-intent restart replay passes **15/15** focused cases (**4.41s**) and is promoted for
+validation before runtime wiring. It re-reads the immutable retirement archive without recreating
+an active intent or repeating Authority nodes; missing/corrupt archives refuse. Attested successor
+admission, failed-cycle recovery,
+activation and live qualification remain open. The public legacy cascade is sole. No additional
+live invocation or AWS-spending attempt has occurred. Sprint `7.47` decisions D5–D7 have been
+answered while `6.5` continues; all four selected designs are recorded in Sprint `7.47`, and the EKS projection stays parked.
+
+The archived-history increment passes warning-clean all-target and **190/190** focused ownership,
+journal and authenticated-replay cases (**21.16s**). Home qualification now selects its full
+credential harness while skipping EKS substrate preparation, and resolves the home DNS coordinate;
+registered recovery retains its sealed coordinates. The frozen old planning control fails as
+expected and the replacement passes; the planning/qualification/history matrix passes **154/154**
+(**5.88s**). The first routing build's private-helper reference was corrected and its failed log
+is retained. A pre-installer historical-journal guard and the post-Backup-admission import hook
+are wired for validation. The import precedes fresh credential continuation. A read-only Authority query at appended wire
+index **10** now locates retired predecessor history through run/graph/scope metadata; earlier
+wire indices remain fixed. The corrected warning-clean all-target build passes (**172.77s**), and the combined history,
+epoch and ownership suite passes **252/252** (**19.58s**). The real installed ordering case passes
+(**22.17s**), the composed authenticated hook/filesystem matrix passes **8/8** (**0.54s**), and
+documentation lint passes (**12.31s**). The initial all-target failure from an unhandled query in
+the bootstrap test interpreter remains recorded. The first canonical attempt exits **1** after **101.96s** on two nested-case policies and a
+FIFO fixture constructor in production source; no full frontend follows it. The cases now use
+named helpers, FIFO creation belongs to the unit fixture, and the filesystem matrix restores a
+valid marker before unsafe-path checks. The query now carries its explicit frozen/recorded/revoked
+phase: unfinished audits, and revocation interrupted before the local handoff, retain the original
+cycle's recovery path. The final batch passes warning-clean all-target (**268.42s**), **252/252** focused cases
+(**23.33s**) and the composed hook/filesystem matrix (**9/9**, **0.65s**). The new check preserves
+recovery when revocation precedes handoff publication. The pinned HLint reports no hints on the
+changed protocol helpers; repository-wide style passes. Canonical attempt 2 passes policy/style/build, then exits **1**
+after **1059.58s** because one of **6,324** primary cases has a stale closed route-tag table.
+The table now includes the appended read-only bootstrap query. The failed transcript is retained;
+no full frontend followed that failure. The warning-clean unit rebuild passes (**162.73s**) and the affected inventory suite
+passes (**0.18s**). The final canonical gate exits **0** with **6,324** primary plus **27/35/49**
+auxiliary cases (**1056.94s**); installed CLI/config integration passes **75/75** (**1049.56s**).
+The binary SHA-256 remains `c659b1f1a0289528ecfbbb7428217dfe1f1baa839e54ad8a02511291ec9e8336`
+through both gates. Exact commands, timestamps and retained failure references are in
+`.build/sprint-6.5/bootstrap-history-validation-3.json`.
+Attested successor epoch admission and failed-cycle recovery remain open. No new live invocation,
+image roll or AWS-spending attempt is claimed. Evidence is in `.build/sprint-6.5/home-routing-*`,
+`home-qualification-routing-*`, `archive-promoted-*` and `bootstrap-predecessor-*`.
+
+The next credential-succession increment is under validation. A frozen control exposes receipt
+kind/action mismatches; the production repair passes warning-clean all-target and **123/123**
+affected cases. Private mutation/retirement/archive laws pass **74** isolated checks, and actual
+repository-publication plus independent Agent proof checks pass **43**. The data/proof owners and
+opaque-proof aggregate folds are promoted; runtime reservation, interrupted-operation recovery,
+revoked-predecessor terminal admission and replay accounting remain open. A compiler control also
+exposes proof mutation through exported record selectors; positional proof declarations and a
+specific sealed-constructor guard are being validated. No new live run or activation is claimed.
+The corrected warning-clean all-target build passes (**262.77s**) and the focused matrix passes
+**265/265** (**4.17s**); its earlier zero-match filter is invalidated. Both record-update compiler
+controls now refuse. The pure proof owner and actual IO producer remain separate, with exact
+private ownership enforced. Full canonical/frontend gates are owed for this increment; earlier
+build failures and controls remain under `.build/sprint-6.5/`. Verified compression retains the
+exact bytes of 130 older project scratch executables and recovers **11.18 GiB**; restoration is
+documented in `scratch-elf-retention-result.json`. The current validated binary, runtime state,
+official bootstrap source/SDK/image archives and other projects are preserved. This is build
+artifact housekeeping, not operational cleanup or disk admission for another image build.
+The first successor-foundation canonical attempt exits **1** at HLint (**685.11s**); no frontend
+follows it. Its pattern hint is corrected. A separate compiler control shows that public raw IO
+builders permit caller-supplied proof origins; those builders are now package-private, with
+read-only public facades and assertion-only fixed diagnostics. Both public compiler probes refuse.
+The warning-clean all-target build passes (**229.70s**), **266/266** focused cases pass
+(**7.21s**) and all **79** fixed boundary assertions pass; pinned HLint reports no hints.
+The earlier premature focused run is retained and superseded by the identified post-build run.
+Full canonical/frontend gates remain owed. Runtime successor admission remains open.
+The private-owner gate then refuses a literal port in the relocated diagnostic (**113.47s**).
+The compiled endpoint helper replaces it; warning-clean all-target (**46.17s**), the identified
+post-build focus (**266/266**, **6.41s**) and pinned HLint pass. The refused gate runs no frontend.
+The repaired frozen candidate passes the canonical gate (**6,411** primary plus **27/35/49**,
+**1036.80s**) and full installed CLI/config integration (**75/75**, **1049.22s**). SHA-256
+`d933d31ba2f2e0c772d06d7fcdb187a8c22ef50fce39ac08d24df622b6060607` remains unchanged
+through both gates; exact commands and timestamps are in
+`.build/sprint-6.5/successor-private-validation-2.json`. This validates the private proof/archive
+foundation. Runtime reservation, independently observed predecessor admission, interrupted-operation
+recovery and composed replay accounting remain open. No live run, image roll or activation is claimed.
+The successor's exact completed-history predicate, versioned report reference and production
+endpoint/CAS interpreter are promoted for validation. The initial predicate/fold build passes;
+the first integrated build refuses a monomorphic diagnostic helper, now corrected with its failed
+log retained. Boundary regressions, interrupted-operation recovery, compacted bootstrap import
+and the composed replay worksheet remain open; no additional live attempt is launched.
+The integrated warning-clean rebuild passes. The first focused run is **282/283**: the new
+predecessor cases pass, while a module-prefix ownership assertion refuses. Exact import matching
+replaces prefix matching. Runtime fault cases are added; their first **281/283** run also exposes
+a retry fixture that incorrectly repeats an already completed worker. That fixture now replays
+completion. The global reservation's canonical operation commits first, and an appended read-only
+operation lookup plus same-operation renewal/resume bridge are under validation. Completed-journal
+and cleanup-only interrupted-install recovery remain open, along with compacted bootstrap import
+and replay accounting. No full or live qualification is claimed for this batch.
+The corrected integrated matrix passes **283/283** (**17.55s**), including the actual runtime
+fault interpreter. Direct pending-operation and expiry-renewal cases are added; their first build
+refuses a missing fixture import, now corrected. The current warning-clean all-target rebuild
+passes, and those expanded cases are under focused validation. Evidence is indexed in
+`.build/sprint-6.5/predecessor-runtime-progress.json`. Full gates remain owed for this batch.
+The expanded focus passes **291/291** (**22.50s**); pinned HLint, repository-policy lint
+(**39.95s**) and documentation lint (**14.18s**) pass. Completed execution-journal observation and
+settlement are the next increment under validation. The superseded project single-stage image is
+retained in a verified **1,145,066,247-byte** compressed archive: its exact config and all **13**
+ordered layers match before removal of its unused tag. The restore command and metadata are in
+`.build/sprint-6.5/docker-image-retention/ec6d55ea8facff02448a6188fa916101670b499c253b72cc01a1a3137e4ad85c.json`.
+This is scoped build-cache housekeeping; runtime image-build disk admission remains unclaimed.
+The completed-journal increment exposes named law
+`AWS-ADMIN-COMPLETION-JOURNAL-REPLAY-2026-10-21`: both completed observation and preparation
+incorrectly bypass an unavailable first-reconcile journal. The frozen control fails **2/2** as
+expected (**0.18s**), with source, executable and identity retained in
+`.build/sprint-6.5/completion-journal-replay-control/`. Both paths now re-confirm that journal;
+the repaired build and focus are under validation. Earlier fixture-only build refusals are
+retained. A read-only supported cluster status reports RKE2 active and Vault sealed; restoration
+through `prodbox` remains part of the later live preflight. No new live campaign attempt is claimed.
+The journal repair passes warning-clean all-target, pinned HLint and **299/299** focused cases
+(**18.01s** command wall time), including both formerly failing controls. The expired-attestation
+increment is now under validation: only exact old Job/Pod absence after expiry permits renewal,
+and immutable bindings plus replacement-target readback remain mandatory. Its proof constructor
+and raw observer stay private; fixed diagnostics return facts. A 16-case matrix and four endpoint
+refusals are added. Pinned HLint passes; build/focus and full gates remain owed for this increment.
+The expiry increment passes warning-clean all-target, **304/304** focused cases (**18.45s**),
+repository-policy lint (**31.94s**) and documentation lint (**11.94s**). The isolated cleanup-child
+model compiles warning-clean and passes **114** model assertions, including the existing
+**74**, while preserving four canonical archive fixtures. Its closed predecessor snapshot adds
+no recursive history; the bounded child uses the existing revoke route. The kernel is now
+promoted with a private observed-admission proof, actual parent/workload/Agent checks and a
+first-reconcile metadata-preparation exception. Its warning-clean build and composed runtime
+coverage are under validation. Completed-parent recovery, legacy-worker quiescence, compacted
+bootstrap import, replay accounting and full canonical/frontend gates remain owed. No live
+recovery, image roll, activation or new campaign attempt is claimed.
+The promoted child increment passes warning-clean all-target and **353/353** focused cases
+(**20.52s** command wall time), including **45** model assertions, **60** private runtime child
+assertions and four direct client-resume cases. Pinned HLint, repository-policy lint (**32.77s**)
+and documentation lint (**11.95s**) pass. The initial unused import, diagnostic shadowing and
+missing fixture imports are corrected with all failed build logs retained. Evidence is indexed in
+`.build/sprint-6.5/cleanup-child-progress.json`. Compacted bootstrap import is the next increment;
+the remaining credential recovery gaps and full gates stay open.
+Compacted bootstrap import now has an appended read-only completion query under validation.
+The Authority validates the actual Backup receipt class, digest, bytes and committed descriptor;
+the host compares two independently observed reports with its exact sealed history before intent
+retirement. The initial build refuses a missing composition import, now corrected with its log
+retained. Ten actual endpoint assertions and six host restart/refusal cases are added; their build
+and focused validation remain owed. No full or live qualification is claimed.
+The corrected warning-clean all-target build passes. The first expanded focus is **396/402**:
+the six new host cases expose a fixture that compacts before establishing its authenticated
+descriptor binding. Fault arming now follows setup and resets its observation counter. The same
+matrix passes **402/402** (**26.22s** command wall time); pinned HLint reports no hints. Both
+transcripts remain retained. Repository/documentation gates are running; full gates and live
+qualification remain owed.
+Compacted-history repository-policy lint (**32.17s**) and documentation lint (**11.85s**) both
+pass. `.build/sprint-6.5/compacted-history-progress.json` indexes the warning-clean build, **402/402**
+focus, actual endpoint assertions, corrected fixture control and retained failures. Legacy-worker
+quiescence is the next code increment; full canonical/frontend gates and live qualification remain
+owed.
+Legacy/untracked credential admission now has a worker-quiescence guard under validation. Its
+owned observer uses bounded, complete namespace Job/Pod inventories; partial, continued,
+oversized and unavailable observations refuse before reservation. The namespace Role adds only
+read-only lists. Fourteen fixed observation/body-collector assertions and six actual runtime
+refusal/retry assertions are added. The warning-clean build is running; pinned HLint passes.
+Completed-parent/Target-missing recovery, first-reconcile restart, replay accounting and full
+gates remain open.
+The quiescence increment passes warning-clean all-target and **403/403** expanded cases
+(**27.10s** command wall time), pinned HLint, repository-policy lint (**31.28s**) and documentation
+lint (**11.69s**). `.build/sprint-6.5/legacy-quiescence-progress.json` records the exact evidence.
+Completed-parent/Target-missing recovery is next; full gates and live qualification remain owed.
+Completed-parent recovery now appends an explicit metadata-only operation lookup and extends the
+owned cleanup observer under validation. A completed outbox or worker journal must supply the
+exact permit-bound receipt; conflicting receipts refuse, and an exactly matching current Target
+refuses cleanup. Missing/changed Target material still requires expiry, exact workload absence
+and unchanged-parent readback. The expanded private matrix and client/endpoint cases are building;
+pinned HLint passes. Serving-Target-missing repair, first-reconcile restart, failed-cycle lineage,
+replay accounting and full gates remain open.
+Completed-parent recovery passes warning-clean all-target, **405/405** expanded cases (**26.15s**
+command wall time), pinned HLint, repository-policy lint (**32.11s**) and documentation lint
+(**11.82s**). The private child matrix now has **76** assertions, including healthy completed
+Target refusal; two direct client cases and two metadata-endpoint assertions pass. Exact evidence
+is indexed in `.build/sprint-6.5/completed-parent-progress.json`. The retained-state query and
+serving-Target-missing/first-reconcile composition are next; full gates and live qualification
+remain owed.
+The retained-state foundation is under validation: an appended read-only query reports idle,
+pending, serving generation/scope, retirement scope or closed cascade admission. Scope derives
+from canonical retained metadata, and all client fields are validated. A generation-one install
+licensed by ordinary retirement can be prepared alongside a later unfinished first-reconcile
+member without advancing that member. Pure/client cases are added; the library build and pinned
+HLint pass, while executable builds and focused validation remain in progress. Harness and
+first-reconcile consumers are still open.
+The retained-state foundation passes warning-clean all-target, **426/426** expanded cases
+(**26.64s** command wall time), **21/21** exact Authority Backup cases, pinned HLint and
+repository/documentation lint (**31.44/11.87s**). The optional backup-adapter filter matched no
+cases; the exact existing suite is separately run and retained. Evidence is indexed in
+`.build/sprint-6.5/recovery-view-progress.json`. Harness consumer repair is next; no live or
+full canonical/frontend qualification is claimed.
+The harness consumer is under validation. Its undeployed recovery projection now carries the
+retired generation and distinguishes a revoked predecessor from frozen/recorded closure. An absent
+serving Target selects a distinct, epoch-scoped revoke; exact receipt and fresh Agent absence
+precede the ordinary invocation slot, with at most one repair. Postflight absence uses the retained
+generation. Tests cover coordinator/receipt/Agent failures, repeated repair, scope succession and
+cascade-successor proposal while retaining server-owned proof admission. Two initial build refusals
+identify a missing receipt-id getter and its typed/text projection; both are corrected with logs
+retained. The warning-clean rebuild is running; pinned HLint passes. First-reconcile consumer
+composition, replay/deadline accounting and full gates remain open.
+The cascade call-site review separates recorded-audit admission: only its generation-bound final
+revoke may be proposed, while install remains closed. The server still requires its exact clean
+audit. Named law `CASCADE-CREDENTIAL-REVOKE-COMMITTED-CALLBACK-LOST-2026-10-21` then exposes a
+callback failure after the revoked epoch has already committed. The frozen control fails exactly
+**1/27** assertions (**0.02s**); the repair passes **27/27** (**0.02s**) by independently confirming
+the exact revoked audit/generation and fresh Agent absence, with no repeated revoke or epoch write.
+Present/unobservable siblings remain refused. Sources, executables, identities and transcripts are
+retained in `.build/sprint-6.5/cascade-revoke-lost-reply-control/`. The current all-target rebuild
+and combined focus remain owed; no live cycle or activation is claimed.
+The current warning-clean all-target build passes, followed by **481/481** combined cases
+(**27.98s** command wall time), including the cascade-candidate and exact Authority Backup suites.
+The 27-case lost-callback control remains green and pinned HLint reports no hints. Intermediate
+build logs and the red control remain retained. Repository/documentation gates pass (**31.88/12.00s**);
+evidence is indexed in `.build/sprint-6.5/serving-repair-progress.json`.
+First-reconcile consumer composition, failed-cycle lineage, replay/deadline accounting and full
+canonical/frontend gates remain open. No image roll, live attempt or activation is claimed.
+The operator has selected all Sprint `7.47` designs: D5 uses the scoped cert-manager OIDC workload
+role; D6–D7 use the sealed selected-Agent lane for EAB and SMTP; D8 retains pinned official-source
+MinIO/mc builds. Sprint `7.47` remains parked behind the current numerical queue.
+First-reconcile recovery is now wired for validation through an appended authenticated query and
+settlement request. The existing journal's version-2 envelope separates receipt completion from
+recovery settlement; version-1 canonical bytes remain readable without reminting a credential for
+an already completed legacy plan. Bootstrap resumes one pending operation, performs at most two
+additional repairs, continues members, and requires server-owned serving-lineage/Agent proof before
+settlement. Migration, interrupted replacement, closed-state and endpoint ordering cases are added.
+The first build refused a partial list access in a new test; it is corrected, and the warning-clean
+rebuild passes (**178.60s**), followed by **500/500** expanded cases (**27.14s**) and pinned
+HLint with no hints. Repository/documentation lint passes (**34.46/12.23s**). Evidence is indexed in
+`.build/sprint-6.5/first-reconcile-recovery-progress.json`. Failed-cycle lineage, replay/deadline
+accounting, full canonical/frontend gates and live qualification remain open. No image roll, live
+attempt, activation or sprint closure is claimed.
+The next law, `QUALIFICATION-FAILED-RUN-REPLAY-2026-10-21`, now has a retained red control:
+attempt 2 reuses a failed run and reports `CyclePassed`. Its executable exits **1** as expected;
+source, binary identity and ledger transcript are retained in
+`.build/sprint-6.5/failed-lineage-control/`. The repair adds an explicit fresh/recovery purpose and
+records `failed-historical-recovery` for registered/native cleanup or a reused label, while retaining
+cleanup execution, artifacts and earlier failed attempts. The CLI names a fresh label as the remedy.
+The warning-clean all-target build passes (**202.30s**), as do **550/550** expanded cases
+(**30.33s**) and pinned HLint. The repaired frozen control records `FailedHistoricalRecovery` and
+exits **0** (**0.003947s**); repository/documentation lint passes (**34.00/12.66s**). Evidence is
+indexed in `.build/sprint-6.5/failed-lineage-progress.json`. Replay/deadline accounting and full
+canonical/frontend gates remain open; live qualification, activation and class closure remain
+unclaimed. No live attempt or image roll has occurred.
+The replay audit now records `AUTHORITY-CASCADE-REPLAY-SCHEDULE-2026-10-21`. A retained
+built-library control uses the compiled 77-node graph, the production attempt-ID helper, real
+authenticated begin/complete bodies and canonical endpoint replies. Its 73 pre-uninstall nodes
+require **146** requests before charging registration, audits, credentials or checkpoints. The
+current **120**-slot projection refuses request **121**; the control exits **1** as expected
+(**0.147045s**). Its largest reply is **35,467 bytes** and the accepted prefix encodes to
+**3,826,694 bytes**. Evidence is in `.build/sprint-6.5/authority-cascade-replay-control/`. The
+earlier model with shorter attempt names is retained separately and is superseded for producer-size
+claims. The complete request, producer-byte and deadline audit remains open; no capacity repair,
+full gate or live class closure is claimed.
+The first byte repair is under validation: checkpoint request DTOs move unchanged to a pure protocol
+module, and only its two canonical immutable observations select compact fresh-nonce replay. Other
+commands and malformed payloads retain exact response replay. Tests exercise two large observation
+responses, duplicate refusal, fresh reads and mutation/malformed replay. The client names the
+fresh-nonce remedy before endpoint decoding. The library build is running; the initial four-file
+pinned HLint pass predates the client addition. No slots, byte ceilings, codec version or memory
+envelopes have changed yet.
+The initial library build passes. Two all-target attempts fail in the new transport tests: first
+a missing route import, then list-concatenation precedence around the table-driven group. Both are
+corrected and their transcripts are retained. The third warning-clean all-target build passes
+(**9.89s** incremental completion), followed by **52/52** transport cases (**3.35s**) and
+**584/584** expanded cases (**26.97s**). Pinned HLint passes; repository/documentation lint passes
+(**33.90/12.47s**). Evidence is indexed in `.build/sprint-6.5/replay-observation-progress.json`.
+The compact transition acknowledgement/readback, complete slot/byte/memory worksheet, deadline
+audit and full canonical/frontend gates remain open. No live qualification or class closure is claimed.
+The acknowledgement foundation is wired for validation. Four descriptor mutations return appended
+v2 metadata at constructor index **7**, bounded to **4 KiB**. Both acknowledgements and legacy full
+mutation replies require one independent exact-digest run read; that fresh state is checked against
+the already read-back immutable descriptor before a bound handle is returned. Canonical descriptor
+observe, completion and program reads use fresh-nonce replay. Initial creation still independently
+reads the program. The first library attempt found a DTO/kernel/Backup-client dependency cycle;
+plain outcomes move unchanged to a pure module to break it. The second attempt rejects stale
+imports, which are removed; the third library build passes warning-clean. Nine authenticated client
+fault cases, an appended-wire/bound case and cleanup read/mutation replay cases are added. Existing
+lost-reply fixtures now return acknowledgements. Affected test builds are running; no test, full
+gate, capacity repair or live class closure is claimed for this foundation yet.
+
+The operator asked on 2026-10-15 why, after many attempts, the project still cannot cleanly create and
 destroy on AWS. Sprint `0.36` records the answer — no supported route clears a child an in-cluster controller made
 after the plan was confirmed, clean is never measured on AWS, discovery is welded to the home restore graph,
 refusals ship without remedies, and the structural remedy was staged behind a queue that grew — and schedules the
 remedy as one AWS stack lifecycle track: converge in the Provider (`4.109`, `4.110`, `4.111`), measure on AWS
 (`4.110`, `5.58`), rehearse cheaply (`5.59`, with `1.94` shortening the image roll it needs), give every refusal a
-remedy (`4.112`), and qualify under its own identity (`6.7`). Phases `1` and `4` reopened on their own surfaces;
-Phases `5` and `6` were already open and are extended; Sprint `6.5` gained a closure dependency on `4.111`, because
-every cycle it qualifies destroys a real EKS stack. `1.94` heads the queue only because the queue orders by sprint
-number: `4.111` does not wait for it (`4.109` and `4.110` did not, and landed first), and only the first Provider
-image roll does, by choice. That roll is also gated on the host's disk, not on any row: the runtime-image build adds
+remedy (`4.112`), and qualify under its own identity (`6.7`). Phase `1` reclosed on its own surface with `1.94`; Phase `4` reclosed on its code-owned surface with `4.112` (2026-10-20).
+Phases `5` and `6` were already open and are extended; Sprint `6.5`'s closure dependency on `4.111` is discharged on the code-owned surface; its
+current-revision live qualification remains pending. Sprint `1.94` is complete; the offline AWS rows were always independently runnable. The first
+Provider image roll uses its cached dependency build and batches known fixes under Standard Q.
+That roll is also gated on the host's disk, not on any row: the runtime-image build adds
 about 16 GiB while it runs, the node's kubelet evicts pods below 20 GiB free and stops only near 43 GiB, and a host
 under about 45 GiB free needs the operator to free space first (a scoped Docker prune, as on 2026-10-14, or stale
-scratch outside this repository; the host is shared). On 2026-10-19 the
-host has 31.6 GiB free, the node has carried `DiskPressure` and its `NoSchedule` taint since 2026-10-17 02:46 EDT, and
-every prodbox role (Vault, MinIO, the Authority, the Provider, the registry) is `Pending` or `Error` with only
-`kube-system` running, so no live AWS command has run against this code and none can until the platform is
-restored. **Rows `5.51`, `5.53`, `6.5` and `7.47` stay `Parked` behind the track (decision D6,
-accepted with the plan on 2026-10-15): no work on them is admitted ahead of rows 1–3.** The queue orders by sprint
-number, so after row 3 its own order reaches `5.51` (which waits on operator decisions, as it did before this
-landing) and `5.53` before `5.58`, `5.59` and `6.7`. D6 asks that `5.53` not be worked ahead of the AWS rows, and the
-table cannot express that priority, so this paragraph is its record: after row 3, work `5.58`, then `5.59`, then
-`6.7`, as each is unblocked, and take `5.53` only while those wait on live time. `6.5` additionally closes only after
-`4.111`. Live
+scratch outside this repository; the host is shared). At the earlier 2026-10-19 wrap-up, the host had 31.6 GiB free and the node carried `DiskPressure`
+and `NoSchedule` from 2026-10-17; every prodbox role was `Pending` or `Error`. The current session
+re-observed disk space as described above and has not yet re-observed platform readiness. Before
+live work, observe and restore the platform through the documented `prodbox` entrypoints as needed,
+and run the first AWS audit read-only before spending.
+
+**Execution order, operator instruction 2026-10-19.** Numerical phase/sprint order supersedes the
+prior decision-D6 preference to take the AWS track ahead of `5.51` and `5.53`. The queue controls
+admitted work; each phase is validated before the next, with declared physical dependencies retained.
+Sprint `5.51`'s four revocation-design decisions were approved in this session and are recorded in
+its sprint block. Sprint `6.5`'s declared closure dependency on `4.111` is discharged. Live
 runs are rationed by
 [Standard Q](development_plan_standards.md#q-live-campaign-protocol-and-class-closure): three attempts that spend
 on AWS per session unless a new offline reproducer fails on the last run's behavior. The session-level goal that
@@ -13165,6 +13567,12 @@ mandatory retained-local-control-plane architecture. Rerun `prodbox test integra
 `prodbox test integration env`, and the applicable Standard-P live qualification inside the
 supported Linux RKE2 frame before claiming deployment closure.
 
+The compact-transition foundation subsequently passes the warning-clean affected-target build (**148.57 seconds**), **56/56** authenticated transport cases (**3.28 seconds**) and **606/606** expanded cases (**30.40 seconds** command wall time). Pinned HLint reports no hints. The first focused run's stale private-owner inventory assertion and the added producer test's missing constructor import are corrected; their failed transcripts are retained. The producer test uses a real run with a 128 KiB diagnostic and proves the actual acknowledgement stays within 4 KiB. Evidence is indexed in `.build/sprint-6.5/transition-ack-progress.json`. Full all-target/canonical/frontend gates follow the composed replay/deadline batch; no capacity, live or activation closure is claimed.
+
+The composed replay/deadline repair now includes the complete Authority response profile (2,055 requests per attempt / 4,110 slots), Backup predecessor import and credential reads (2,392 / 4,784), and Target recovery metadata (121 / 242). Shared producer guards bound small response classes; replay v19 preserves canonical v2–v18 entries. Encoded ceilings are 212 MiB Authority, 64 MiB Backup, 208 MiB Agent and unchanged 78 MiB TLS; coupled default/authored memory floors are 728/240/672/282 MiB. The September causal scheduler retains its original memory values. Legacy-worker setup and both lists share one five-second deadline. The first library build passes warning-clean; the first all-target build found missing imports in newly added transport tests, now corrected. Full mixed-encoding, migration, resource-admission, authenticated transport and expanded regression validation is still owed; these are proposed production bounds, not qualification evidence. No image roll or paid live attempt has occurred.
+
+The composed replay increment passes warning-clean all-target (**174.84 seconds**), **61/61** authenticated transport cases (**5.47 seconds**) and **643/643** expanded resource/credential/history cases (**30.37 seconds** command wall time). Pinned HLint reports no hints; repository/documentation lint passes (**34.63/12.41 seconds**). The normalized old counterexample still refuses request 121 under the same encoded allowance; the replacement admits all 146 pre-uninstall transitions, with largest actual ACK **167 bytes** and retained encoding **35,639 bytes**. The full Authority mixed-profile codec probe peaks at **501,248 KiB RSS**, below its 728 MiB production floor. Exact identities, retained failures, commands and transcripts are indexed in `.build/sprint-6.5/replay-composed-progress.json`. Full canonical/frontend gates, live disk admission, current-revision qualification, activation and legacy removal remain open. This is code-local evidence, not live class closure. The shared host has about 33 GiB free against the recorded 45 GiB build-admission rule; the operator has been asked to free or designate at least 12 GiB while offline validation continues.
+
 ## Historical Closure Record
 
 The dated records below preserve earlier checkpoints and counterexamples. They are not a resume
@@ -14824,8 +15232,8 @@ rule is met: a landed repair alone closes no class on that surface.
 
 | Counterexample | Disposition | Owner |
 |---|---|---|
-| `EMPTY-INPUT-RECEIPT-ACCEPTED-AS-PROVIDER-EVIDENCE-2026-10-15` | Open — repaired on the producer side, class not closed. The 2026-10-13 to 2026-10-15 regression sweeps passed `ha-rke2-aws`, `aws-eks` and `pulumi` printing `Provider receipt: sha256:e3b0c442…b855`, the digest of zero bytes. On an already-converged stack the satisfied observation's evidence was `stackEvidence` over the stdout of `pulumi stack select`, which is empty, and the validations assert a label and the prefix `sha256:`, so the receipt carried no information about AWS. Sprint `4.110` (2026-10-19) made a converged stack's receipt the digest of the outputs the stack recorded, made `stackEvidence` refuse empty input, and kept the old derivation as a test-only negative control (`test/unit/ProviderStackReceipt.hs`, red on the prior behavior): the producer half of the reproducer. The consumer half is owed by Sprint `5.58` (the real renderer fed to the real assertion for all three validations), and the validations still assert only a label and the prefix until it lands; no frozen fixture family exists yet | Sprint `5.58` |
-| `EKS-CONTROLLER-DEPENDENT-DESTROY-BLOCKED-2026-09-30` | Open — a leaked VPC CNI interface and an orphaned EKS cluster security group ended `aws stack eks destroy --yes` in `DependencyViolation` on the subnet in the 2026-09-29/30 incident, and the residue it left stayed until a hand clearing on 2026-10-14. Neither destroy route could clear or correctly wait for a child an in-cluster controller created after the plan was confirmed. Repaired on the code surface for both routes by Sprint `4.111`'s first increment (2026-10-19, no Provider image carries it yet): the Provider's destroy of a stack with a VPC converges under a closed predicate, and the manifest route clears the same dependents; the repository-owned reproducer is `test/unit/AwsDestroyConverge.hs`, red on the single-pass destroy and green under the loop, from shapes transcribed by hand from the 2026-10-14 inventory with reserved example identifiers. The class is not closed: the registry does not yet declare the families (second increment), no scrubbed fixture family exists (Sprint `5.59`), and nothing has run live (Sprint `6.7`) | Sprint `4.111` |
+| `EMPTY-INPUT-RECEIPT-ACCEPTED-AS-PROVIDER-EVIDENCE-2026-10-15` | Open — repaired on the producer side, class not closed. The 2026-10-13 to 2026-10-15 regression sweeps passed `ha-rke2-aws`, `aws-eks` and `pulumi` printing `Provider receipt: sha256:e3b0c442…b855`, the digest of zero bytes. On an already-converged stack the satisfied observation's evidence was `stackEvidence` over the stdout of `pulumi stack select`, which is empty, and the validations assert a label and the prefix `sha256:`, so the receipt carried no information about AWS. Sprint `4.110` (2026-10-19) made a converged stack's receipt the digest of the outputs the stack recorded, made `stackEvidence` refuse empty input, and kept the old derivation as a test-only negative control (`test/unit/ProviderStackReceipt.hs`, red on the prior behavior): the producer half of the reproducer. Sprint `5.58` (2026-10-20) lands the consumer half: real renderer-to-consumer cases for all three validations, a frozen weak-prefix negative control that accepts the empty digest, and named rejection by the replacement. The installed CLI loopback recording covers tool framing only. Both code halves pass canonical validation, but the provider canary and two audit-clean cycles remain pending; the class is open | Sprint `5.58` |
+| `EKS-CONTROLLER-DEPENDENT-DESTROY-BLOCKED-2026-09-30` | Open — a leaked VPC CNI interface and an orphaned EKS cluster security group ended `aws stack eks destroy --yes` in `DependencyViolation` on the subnet in the 2026-09-29/30 incident, and the residue it left stayed until a hand clearing on 2026-10-14. Neither destroy route could clear or correctly wait for a child an in-cluster controller created after the plan was confirmed. Repaired on the code surface for both routes by Sprint `4.111`'s first increment (2026-10-19, no Provider image carries it yet): the Provider's destroy of a stack with a VPC converges under a closed predicate, and the manifest route clears the same dependents; the repository-owned reproducer is `test/unit/AwsDestroyConverge.hs`, red on the single-pass destroy and green under the loop, from shapes transcribed by hand from the 2026-10-14 inventory with reserved example identifiers. The class remains open: the second increment's three registry declarations and owned-process repair pass canonical validation in the resumed session; Sprint `5.59` adds six scrubbed provenance-labelled recordings and a bounded stateful stub, including recorded CNI/group shapes that fail the frozen single-pass control and converge through the replacement. Nothing has run live in this session; the provider canary and two audit-clean cycles remain pending under Sprint `6.7` | Sprint `4.111` |
 | `CASCADE-QUALIFICATION-TLS-RETAIN-PROVISIONAL-FAILURE-CAUSE-DISCARDED-2026-09-24` | Closed by repair — live cycle `recovery-terminal-v4-fresh-source-20260924` crosses the repaired terminal-v4 source resourceVersion relation, then VS Code retain selects exact `coordinator/attach-failed/provisional-read-unavailable`. The bounded early-close path now carries only bounded stderr and exit status to an exact allowlist: exit 1 with the sole fixed worker refusal becomes `provisional-read-unavailable/worker-vault-session-cleanup-unavailable`, while every other output remains generic and raw detail is erased. The named exact-output regression passes 1/1 and canonical `prodbox dev check` passes; live re-crossing is pending | — |
 | `CASCADE-QUALIFICATION-TLS-TERMINAL-REPLACEMENT-SOURCE-LINEAGE-INVALID-2026-09-24` | Closed by repair and live-closed — live cycle `recovery-tls-terminal-evidence-cause-20260924` first selected broad `source-lineage`; the behavior-neutral split then separated source UID from source resource-version lineage. Cycle `recovery-target-accessor-lookup-cause-20260924` selected exact `source-resource-version-lineage`. The retained v2/v3 proof still requires one exact source coordinate; terminal v4 retains that UID but admits its freshly observed resourceVersion only while the existing authenticated-encryption binding, retained reference/outbox, immutable read-back, and exact selected-Agent source re-observation remain satisfied. The production-shaped superseded-versus-replacement reproducer and complete diagnostic-family table pass 1/1 each; canonical `prodbox dev check` passes. Live cycle `recovery-terminal-v4-fresh-source-20260924` crosses the repair into Phase 1.6 | — |
 | `CASCADE-QUALIFICATION-TLS-TERMINAL-REPLACEMENT-EVIDENCE-INVALID-2026-09-24` | Closed by repair and live-closed — live cycle `recovery-tls-authority-remote-refusal-20260924` selected the generic terminal-replacement evidence refusal. The behavior-neutral split distinguishes malformed evidence, version, digest, approval, certificate, source, and recovery-disposition families; its named table-shaped reproducer passes 1/1. Live cycle `recovery-tls-terminal-evidence-cause-20260924` selects the exact successor as `source-lineage` | — |
@@ -15116,6 +15524,16 @@ AWS stack lifecycle row is the exception to the identity sentence: it carries it
 | Home local | pending complete old-cascade identity bound to `TEARDOWN-2026-08-15` | pending exact recover-to-clean identity | Run `prodbox test all --substrate home-local` twice, then `prodbox cluster delete --cascade --yes` twice under the same qualified replacement identity | Hold background load, ordered fault schedule, and topology-normalized total CPU/memory/ephemeral-storage/persistence constant; record every exact old→new envelope mapping and a separate rendered production profile | `LCPC-2026-07-11`; `TEARDOWN-2026-08-15`; API absent/stopped; caller/RBAC/Vault/MinIO/Authority/backup faults; cancellation/response loss before and after every durable transition | pending | pending exact per-run/family absence, exact intended-retained set with zero unexpected resources, same-run resume, private `ReadyToUninstallEvidence` from the backed-up/read-back pre-uninstall report/permit, distinct `CascadeCompleteEvidence` from exact `LocalUninstallEvidence` plus matching read-back receipt, and exact `RecoveryPlaneDisposition` for every incomplete arm | pending | pending `test/qualification/TEARDOWN-2026-08-15.*` inputs plus complete secret-safe qualification evidence/digest | **pending** (`8.12` final composition; `6.5` teardown prerequisite) |
 | AWS | pending complete old global-fallback/checkpoint-kubeconfig identity bound to `TEARDOWN-2026-08-15` | pending exact per-stack/manifest/provider-drain-session identity | Run `prodbox test all --substrate aws` twice; exercise `prodbox aws stack eks destroy --yes`, `prodbox aws stack aws-subzone destroy --yes`, and `prodbox aws stack test destroy --yes`; then run `prodbox cluster delete --cascade --yes` twice | Hold the same four topology-normalized totals, load, and fault schedule; record exact observer/write-ahead-or-confirmed-legacy-manifest/session and old→new envelope mappings plus a separate rendered EKS production profile | Home matrix plus independent stack observation, all checkpoint/write-ahead-manifest arms, every bounded pre-manifest adoption confirm/read-back/refusal arm, EKS session binding, controller-family backstop, AWS unobservability, and duplicate/paginated tag rows | pending | pending exact stack/EBS/DNS/IAM/family absence; exact intended-retained set once and never per-run; same-scope backed-up report and local completion evidence | pending | pending `TEARDOWN-2026-08-15` inputs plus complete secret-safe AWS evidence/digest | **pending** (`8.12` final composition; `7.36` teardown prerequisite) |
 | AWS stack lifecycle (scoped claim) | pending complete old single-pass-destroy identity bound to `EKS-CONTROLLER-DEPENDENT-DESTROY-BLOCKED-2026-09-30` | pending exact scoped identity: the scoped source-manifest policy (identifier, version, digest) over the named AWS lifecycle module list and `pulumi/**` (Sprint `6.7`), with the Provider component-image digest recorded per drill | Run the `aws-lifecycle` suite scope (Sprint `5.59`) for the canary twice, a leak-injected `prodbox aws stack eks destroy --yes`, a destroy killed mid-run and rerun, two consecutive EKS create-and-destroy cycles from audit-clean starts, and a soak of ten runs over at least five calendar days with two after merges that leave the scoped list unchanged; `prodbox aws audit` brackets every drill | Hold the topology-normalized totals, load, and fault schedule constant; record the old→new mapping from the single-pass destroy to the converge loop, and each wait budget with the recording it came from | A leaked VPC CNI interface, an orphaned cluster security group, a late requester-managed interface release, a destroy killed mid-run, a stale checkpoint after SIGTERM, a lost apply response, and an unobservable audit | pending | pending a `Clean` verdict for the declared field after every drill and an empty scoped diff (prodbox tags and recorded VPC ids); any hand action disqualifies the drill; retained families are reported and never touched | pending | pending scoped evidence and digest from the Sprint `6.7` receipt | **pending** (`6.7` receipt; `4.111` and `5.59` prerequisites). *Not covered:* the retained TLS lane, the credential and EAB chain, SES, Keycloak, every chart, and the home cascade cutover. *Depended on and not qualified:* the retained Authority, Vault, the Authority Backup Adapter, and the credential reconcile that provisions the Provider |
+
+**Scoped audit exclusions (Sprint `5.59`, 2026-10-20).** In addition to the components excluded
+above, the lifecycle audit does not join the recorded VPC identifier or run-scope tags, enumerate
+the retained-EBS or validation-zone families, resolve the per-run hosted-zone identifier from the
+command, or bracket the `aws-subzone`, `aws-ses` and home-cascade destroys. Retained EBS is intended
+to survive, but this audit does not report it. Authority settlement still retains bounded resource
+identifiers under open decision D9. The canary also excludes classes belonging only to the EKS
+stack. The exhaustive typed coverage table prints each omission before any observation or clean
+claim; `Clean` covers only the enumerated field. Sprint `6.7`'s receipt must carry these audit
+limits as well as the component exclusions above.
 
 Any change to process topology, capability wiring, deadline algebra, resource envelopes,
 persistence, lifecycle orchestration, or cleanup invalidates a prior `proven` row. The scoped row is
@@ -15763,9 +16181,10 @@ marked affected are retained only to name their cutover owner:
 - Supported AWS subprocesses now strip ambient AWS auth and profile variables before projecting
   Vault/Tier-0 credentials into the subprocess environment, so supported paths cannot fall back
   to host AWS auth state.
-- The supported container topology lives entirely under `docker/`. Every repository-owned
-  Haskell-build Dockerfile stays single-stage `ubuntu:24.04`, installs `ghcup` in-image, pins GHC
-  `9.12.4`, and does not create symlinked Haskell tool shims.
+- The supported container topology lives entirely under `docker/`. The Haskell-build Dockerfile
+  uses `ubuntu:24.04` builder/runtime stages and manifest preparation, installs `ghcup` only in
+  the builder, pins GHC `9.12.4`, creates no symlinked Haskell tool shims, and ships no Haskell
+  toolchain, Cabal store, or project source.
 - The authoritative local lifecycle target is Haskell-owned and uses a single in-cluster
   `registry:2` backed by MinIO; required public and custom images are present there before later
   Helm deployments proceed.
@@ -16008,8 +16427,9 @@ This plan is complete only when all of the following are true:
    `cabal build --builddir=.build exe:prodbox` invocation plus a copy step.
 8. Container-side build artifacts live under `/opt/build`, and every repository-owned Dockerfile
    lives under `docker/`.
-9. Every repository-owned Haskell-build Dockerfile is single-stage from `ubuntu:24.04`, installs
-   `ghcup` in-image, pins GHC `9.12.4`, and does not create symlinked Haskell tool shims; no
+9. The repository-owned Haskell-build Dockerfile uses `ubuntu:24.04` builder/runtime stages and
+   manifest preparation, installs `ghcup` only in the builder, pins GHC `9.12.4`, creates no symlinked
+   Haskell tool shims, and ships no Haskell toolchain, Cabal store, or project source; no
    supported browser-facing auth path depends on a repository-owned nginx auth-proxy image.
 10. `prodbox.cabal`, `cabal.project`, and the canonical build-and-test surfaces are explicitly
     upgraded for GHC `9.12.4`, including any required cabal-bound changes and full canonical

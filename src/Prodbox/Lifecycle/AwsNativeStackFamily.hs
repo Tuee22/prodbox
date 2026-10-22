@@ -9,6 +9,8 @@ module Prodbox.Lifecycle.AwsNativeStackFamily
   ( AwsNativeStackFamilyRunner (..)
   , observeAwsNativeStackFamily
   , observeEksOwners
+  , observeEksClusterAbsent
+  , locateNetworkFamily
   , reapAwsNativeStackFamily
   , reapAwsNativeStackFamilyWithin
   )
@@ -31,15 +33,22 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Vector qualified as Vector
+import Prodbox.Aws.CliError (awsCliServiceErrorMatches)
 import Prodbox.Aws.Region (awsGlobalServiceRegion)
 import Prodbox.ControlPlane.OperationBudget (WaitFact (..))
 import Prodbox.Lifecycle.AwsNetworkDependents
   ( Dependent (..)
+  , DependentKind (..)
   , DependentsRepair (..)
-  , clearNetworkDependents
+  , DependentsTarget
+  , Disposition (..)
+  , clearNetworkFamilies
+  , clearNetworkFamily
   , mkDependentsTarget
+  , observeNetworkFamily
   , renderDependents
   )
+import Prodbox.Lifecycle.AwsNetworkFamily
 import Prodbox.Lifecycle.AwsWait
   ( AwsWaitEnvironment
   , WaitStep (..)
@@ -57,7 +66,9 @@ import Prodbox.Lifecycle.TaggedResourceQuery
 import Prodbox.Lifecycle.Teardown.Registry
   ( awsEksIamRoleNames
   , awsEksProvisionedClusterName
+  , awsEksProvisionedNodeGroupName
   , awsEksPulumiStackName
+  , awsNetworkFamiliesForStack
   )
 import Prodbox.Subprocess (ProcessOutput (..))
 import System.Exit (ExitCode (..))
@@ -72,12 +83,24 @@ observeAwsNativeStackFamily
   -> ProviderNativeStackFamilyRef
   -> ProviderStackConfig
   -> m (Either Text [Text])
-observeAwsNativeStackFamily runner ref config =
-  case providerStackRefText (providerNativeStackFamilyStackRef ref) of
-    "aws-test" -> observeEc2Family runner "aws-test" 3 False
-    "aws-eks" -> observeEksFamily runner ref
-    "aws-eks-subzone" -> observeSubzoneFamily runner ref config
-    _ -> pure (Left "native stack-family observer received an unsupported stack")
+observeAwsNativeStackFamily runner ref config
+  | Just family <- providerNativeStackFamilyNetworkFamily ref = do
+      located <- locateNetworkFamily runner family
+      case located of
+        Left detail -> pure (Left detail)
+        Right Nothing -> pure (Right [])
+        Right (Just target) -> do
+          observed <- observeNetworkFamily family (runAwsNativeStackFamilyCommand runner) target
+          pure $ do
+            rows <- observed
+            case filter unadmittedNetworkDependent rows of
+              [] -> Right (map networkDependentIdentity rows)
+              blocked -> Left (networkFamilyBlocked family blocked)
+  | otherwise = case providerStackRefText (providerNativeStackFamilyStackRef ref) of
+      "aws-test" -> observeEc2Family runner "aws-test" 3
+      "aws-eks" -> observeEksFamily runner ref
+      "aws-eks-subzone" -> observeSubzoneFamily runner ref config
+      _ -> pure (Left "native stack-family observer received an unsupported stack")
 
 reapAwsNativeStackFamily
   :: (Monad m)
@@ -104,18 +127,102 @@ reapAwsNativeStackFamilyWithin
   -> ProviderStackConfig
   -> [Text]
   -> m (Either Text ())
-reapAwsNativeStackFamilyWithin runner waits ref config admitted = do
-  observed <- observeAwsNativeStackFamily runner ref config
-  case observed of
+reapAwsNativeStackFamilyWithin runner waits ref config admitted
+  | Just family <- providerNativeStackFamilyNetworkFamily ref =
+      if null admitted
+        then reapDeclaredNetworkFamily runner waits family
+        else pure (Left "declared network family forbids a member allowlist")
+  | otherwise = do
+      observed <- observeAwsNativeStackFamily runner ref config
+      case observed of
+        Left detail -> pure (Left detail)
+        Right identities
+          | all (`elem` admitted) identities ->
+              reapObservedNativeStackFamily runner waits ref config identities
+          | otherwise ->
+              pure
+                ( Left
+                    "native stack-family observation contained an identity outside the manifest allowlist"
+                )
+
+networkDependentIdentity :: Dependent -> Text
+networkDependentIdentity row = case dependentKind row of
+  DependentInterface -> "network-interface/" <> dependentIdentity row
+  DependentSecurityGroup -> "security-group/" <> dependentIdentity row
+
+-- The listing filter and every returned row must agree on the declared tags.
+-- More than one VPC is ambiguous, including a remnant of an earlier run.
+locateNetworkFamily
+  :: (Monad m)
+  => AwsNativeStackFamilyRunner m -> AwsNetworkFamily -> m (Either Text (Maybe DependentsTarget))
+locateNetworkFamily runner family = do
+  output <-
+    runAwsNativeStackFamilyCommand
+      runner
+      ( ["ec2", "describe-vpcs", "--filters"]
+          ++ [ "Name=tag:" ++ Text.unpack key ++ ",Values=" ++ Text.unpack value
+             | (key, value) <- networkFamilyVpcTags family
+             ]
+          ++ ["--query", "Vpcs[].{id:VpcId,tags:Tags}", "--output", "json"]
+      )
+  pure $
+    if processExitCode output /= ExitSuccess
+      then Left (renderFailure "locate declared network-family VPC" output)
+      else do
+        value <-
+          first Text.pack (eitherDecodeStrict' (TextEncoding.encodeUtf8 (Text.pack (processStdout output))))
+        rows <- case value of
+          Array values -> traverse parseVpc (Vector.toList values)
+          _ -> Left "network-family VPC listing was not an array"
+        case rows of
+          [] -> Right Nothing
+          [vpc] -> Just <$> mkDependentsTarget vpc (networkFamilyCluster family)
+          _ -> Left "network-family VPC tags matched more than one VPC"
+ where
+  parseVpc (Object row) = do
+    vpc <- case KeyMap.lookup "id" row of
+      Just (String value) -> Right value
+      _ -> Left "network-family VPC identifier missing"
+    tags <- case KeyMap.lookup "tags" row of
+      Just (Array values) -> traverse parseTag (Vector.toList values)
+      _ -> Left "network-family VPC tags missing"
+    if all (`elem` tags) (networkFamilyVpcTags family)
+      then Right vpc
+      else Left "network-family VPC listing exceeded its exact tag predicate"
+  parseVpc _ = Left "network-family VPC row malformed"
+  parseTag (Object row) = case (KeyMap.lookup "Key" row, KeyMap.lookup "Value" row) of
+    (Just (String key), Just (String value)) -> Right (key, value)
+    _ -> Left "network-family VPC tag malformed"
+  parseTag _ = Left "network-family VPC tag malformed"
+
+reapDeclaredNetworkFamily
+  :: (Monad m)
+  => AwsNativeStackFamilyRunner m -> AwsWaitEnvironment m -> AwsNetworkFamily -> m (Either Text ())
+reapDeclaredNetworkFamily runner waits family = do
+  located <- locateNetworkFamily runner family
+  case located of
     Left detail -> pure (Left detail)
-    Right identities
-      | all (`elem` admitted) identities ->
-          reapObservedNativeStackFamily runner waits ref config identities
-      | otherwise ->
-          pure
-            ( Left
-                "native stack-family observation contained an identity outside the manifest allowlist"
-            )
+    Right Nothing -> pure (Right ())
+    Right (Just target) -> do
+      result <- clearNetworkFamily family (runAwsNativeStackFamilyCommand runner) waits target
+      pure $ case result of
+        Left detail -> Left detail
+        Right repaired | null (repairRemaining repaired) -> Right ()
+        Right repaired -> Left (networkFamilyBlocked family (repairRemaining repaired))
+
+unadmittedNetworkDependent :: Dependent -> Bool
+unadmittedNetworkDependent row = case dependentDisposition row of
+  Admitted -> False
+  HeldByService _ -> False
+  NotAdmitted _ -> True
+
+networkFamilyBlocked :: AwsNetworkFamily -> [Dependent] -> Text
+networkFamilyBlocked family remaining =
+  "blocked by declared network family: "
+    <> renderDependents remaining
+    <> "; next safe command: prodbox aws stack "
+    <> (if family == TestVpcCniInterfaces then "test" else "eks")
+    <> " destroy --yes"
 
 reapObservedNativeStackFamily
   :: (Monad m)
@@ -125,12 +232,14 @@ reapObservedNativeStackFamily
   -> ProviderStackConfig
   -> [Text]
   -> m (Either Text ())
-reapObservedNativeStackFamily runner waits ref config identities =
-  case providerStackRefText (providerNativeStackFamilyStackRef ref) of
-    "aws-test" -> reapEc2Family runner waits Nothing identities
-    "aws-eks" -> reapEksFamily runner waits ref identities
-    "aws-eks-subzone" -> reapSubzoneFamily runner ref config
-    _ -> pure (Left "native stack-family reaper received an unsupported stack")
+reapObservedNativeStackFamily runner waits ref config identities
+  | Just family <- providerNativeStackFamilyNetworkFamily ref =
+      reapDeclaredNetworkFamily runner waits family
+  | otherwise = case providerStackRefText (providerNativeStackFamilyStackRef ref) of
+      "aws-test" -> reapEc2Family runner waits Nothing identities
+      "aws-eks" -> reapEksFamily runner waits ref identities
+      "aws-eks-subzone" -> reapSubzoneFamily runner ref config
+      _ -> pure (Left "native stack-family reaper received an unsupported stack")
 
 observeEksFamily
   :: (Monad m)
@@ -138,7 +247,7 @@ observeEksFamily
   -> ProviderNativeStackFamilyRef
   -> m (Either Text [Text])
 observeEksFamily runner ref = do
-  network <- observeEc2Family runner awsEksPulumiStackName 2 True
+  network <- observeEc2Family runner awsEksPulumiStackName 2
   cluster <- observeEksCluster runner
   nodeGroup <- observeEksNodeGroup runner
   addon <- observeEksAddon runner
@@ -179,6 +288,21 @@ observeEksOwners runner = do
     addonRows <- prefixSingleton "eks-addon" =<< addon
     pure (["eks-cluster" | not (null clusterFields)] <> nodeRows <> addonRows)
 
+-- | Repair admission requires AWS's exact absence response. A successful
+-- empty/malformed projection is never positive evidence that a cluster is gone.
+observeEksClusterAbsent :: (Monad m) => AwsNativeStackFamilyRunner m -> m (Either Text Bool)
+observeEksClusterAbsent runner = do
+  output <-
+    runAwsNativeStackFamilyCommand
+      runner
+      ["eks", "describe-cluster", "--name", Text.unpack awsEksProvisionedClusterName, "--output", "json"]
+  pure $ case processExitCode output of
+    ExitSuccess -> Right False
+    ExitFailure _
+      | awsCliServiceErrorMatches "ResourceNotFoundException" "DescribeCluster" output ->
+          Right True
+      | otherwise -> Left "could not observe EKS cluster absence"
+
 observeEksCluster
   :: (Monad m) => AwsNativeStackFamilyRunner m -> m (Either Text [Text])
 observeEksCluster runner =
@@ -206,7 +330,7 @@ observeEksNodeGroup runner =
     , "--cluster-name"
     , Text.unpack awsEksProvisionedClusterName
     , "--nodegroup-name"
-    , Text.unpack awsEksNodeGroupName
+    , Text.unpack awsEksProvisionedNodeGroupName
     , "--query"
     , "nodegroup.nodegroupArn"
     , "--output"
@@ -358,9 +482,8 @@ observeEc2Family
   => AwsNativeStackFamilyRunner m
   -> Text
   -> Int
-  -> Bool
   -> m (Either Text [Text])
-observeEc2Family runner stackName subnetCount includeEksSecurityGroups = do
+observeEc2Family runner stackName subnetCount = do
   vpc <- exactTaggedIds runner "VPC" "ec2" "describe-vpcs" "Vpcs[].VpcId" (stackName <> "-vpc") []
   gateway <-
     exactTaggedIds
@@ -428,24 +551,8 @@ observeEc2Family runner stackName subnetCount includeEksSecurityGroups = do
           )
           [0 .. 2 :: Int]
       else pure []
-  eksSecurityGroups <-
-    if includeEksSecurityGroups
-      then
-        boundedTextValues
-          runner
-          "EKS cluster security group"
-          32
-          [ "ec2"
-          , "describe-security-groups"
-          , "--filters"
-          , "Name=tag:aws:eks:cluster-name,Values="
-              <> Text.unpack awsEksProvisionedClusterName
-          , "--query"
-          , "SecurityGroups[].GroupId"
-          , "--output"
-          , "text"
-          ]
-      else pure (Right [])
+  -- Controller-created cluster groups have their own registry declaration and
+  -- observer. Claiming them here too makes legacy adoption cross-claim an ID.
   pure $ do
     vpcIds <- vpc
     gatewayIds <- gateway
@@ -454,14 +561,13 @@ observeEc2Family runner stackName subnetCount includeEksSecurityGroups = do
     subnetIds <- concat <$> sequence subnets
     securityGroupIds <- securityGroup
     instanceIds <- concat <$> sequence instances
-    eksSecurityGroupIds <- eksSecurityGroups
     boundedIdentities
       ( prefixed "vpc" vpcIds
           <> prefixed "internet-gateway" gatewayIds
           <> prefixed "route-table" routeTableIds
           <> prefixed "route-table-association" associationIds
           <> prefixed "subnet" subnetIds
-          <> prefixed "security-group" (securityGroupIds <> eksSecurityGroupIds)
+          <> prefixed "security-group" securityGroupIds
           <> prefixed "instance" instanceIds
       )
 
@@ -578,7 +684,7 @@ reapEksFamily runner waits ref identities =
         , "--cluster-name"
         , Text.unpack awsEksProvisionedClusterName
         , "--nodegroup-name"
-        , Text.unpack awsEksNodeGroupName
+        , Text.unpack awsEksProvisionedNodeGroupName
         ]
     , runExactLayer
         runner
@@ -632,7 +738,7 @@ eksNodeGroupStatusArguments =
   , "--cluster-name"
   , Text.unpack awsEksProvisionedClusterName
   , "--nodegroup-name"
-  , Text.unpack awsEksNodeGroupName
+  , Text.unpack awsEksProvisionedNodeGroupName
   , "--query"
   , "nodegroup.status"
   , "--output"
@@ -868,7 +974,12 @@ reapEc2Family runner waits cluster identities = do
     [vpc] -> case mkDependentsTarget vpc cluster of
       Left reason -> pure (Left ("network dependents: " <> reason))
       Right target -> do
-        repaired <- clearNetworkDependents (runAwsNativeStackFamilyCommand runner) waits target
+        repaired <-
+          clearNetworkFamilies
+            (awsNetworkFamiliesForStack (maybe "aws-test" (const awsEksPulumiStackName) cluster))
+            (runAwsNativeStackFamilyCommand runner)
+            waits
+            target
         pure (judgeRepair ownedGroups repaired)
     _ -> pure (Right ())
   judgeRepair ownedGroups repaired = case repaired of
@@ -1243,9 +1354,6 @@ knownMissing output =
         , "nosuchhostedzone"
         , "does not exist"
         ]
-
-awsEksNodeGroupName :: Text
-awsEksNodeGroupName = awsEksPulumiStackName <> "-node-group"
 
 renderFailure :: Text -> ProcessOutput -> Text
 renderFailure label output =

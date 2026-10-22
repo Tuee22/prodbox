@@ -59,6 +59,7 @@ import Prodbox.ControlPlane.AwsAdminProvisionerClient
 import Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
   ( awsAdminProvisionerResponseMaximumBytes
   )
+import Prodbox.ControlPlane.AwsAdminTargetRevokeClient (awsAdminTargetRevokeClient)
 import Prodbox.ControlPlane.CallerPrincipal
   ( CallerPrincipal
       ( CallerCredentialProvisioner
@@ -1066,6 +1067,7 @@ productionDeliveryResolver session _ permit options = do
           productionAwsAdminDeliveryBoundary
             boundary
             (targetMaterialClient targetTransport)
+            (awsAdminTargetRevokeClient targetTransport)
             permit
         retainedDelivery source retainedPermit = do
           let retainedIntent = signedAwsAdminPermitIntent retainedPermit

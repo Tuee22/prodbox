@@ -2,55 +2,12 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Sprint 4.86: the host cleanup runner's production effects record.
---
--- "Prodbox.Lifecycle.HostCleanupRunner" performs the destructive host boundary
--- through twelve injected arms, and by the time this module was written every
--- one of them had a production surface and nothing assembled them: the runner
--- could only ever be driven by a fixture.  This module is the assembly, and it
--- is what "Prodbox.ControlPlane.CascadeHostRuntime" is handed to become a
--- closed runtime.
---
--- Four properties carry the design.
---
---   * __Every arm reads its own source.__  No arm is told another's answer and
---     the record holds no mutable state, so an arm asked twice observes twice.
---     That is what makes the runner's two readiness read-backs — the same
---     question before the uninstall and after re-establishment — two
---     observations rather than one cached value.
---
---   * __The completion read-back derives its own prerequisites.__  It needs the
---     run's readiness and its observed local-uninstall evidence, and it obtains
---     both by observing: the readiness from the Authority's durable slot, the
---     absence from a fresh marker observation.  Remembering what the commit arm
---     was handed would have been wrong in the case that matters most — a
---     resumed run reaches the verification without issuing a commit at all, so
---     a remembered value would be missing exactly when the run is closing.
---
---   * __A host that is not absent refuses the completion read-back.__  The
---     receipt's meaning is that /this run/ recorded its own local absence, so
---     asking the journal about a host whose markers are still present would
---     compare a durable entry against a proof the run does not hold.  A host
---     that could not be observed is a third answer and stays distinct from
---     both.
---
---   * __The repair closure decides with production observations.__  Everything
---     the repair needs to /decide/ — the substrate observation and the
---     retained-store listing — is production here, and listing the store is
---     available from a bootstrap-located root because listing is not a
---     mutation, which is what a recovery holds while the Authority is absent.
---     The mutations under it are
---     "Prodbox.Lifecycle.Teardown.RecoveryRepairProduction" for the install,
---     the service start, the API wait, and the image import; only the recovery
---     chart reconcile is supplied from above, because chart delivery sits above
---     the lifecycle surface rather than beside it.
---
--- What this module does not own: the content of any arm, which belongs to the
--- production surface it delegates to; the durable phase transitions, which
--- belong to "Prodbox.Lifecycle.HostCleanupIntent"; and the construction of the
--- sources themselves, which is the non-public candidate entrypoint Sprint
--- @4.86@ still owns.  Assembling this record activates no writer: nothing in
--- the repository constructs it.
+-- | Production effects for the host terminal boundary.  Authority readiness
+-- is accepted before the handoff is armed.  The separate local effects record
+-- captures only the native RKE2 adapter and preserved completion journal, so
+-- it can outlive authenticated sessions without retaining remote closures.
+-- Every completion read takes a fresh native absence observation and compares
+-- the journal receipt with the opaque readiness restored by the host runner.
 module Prodbox.Lifecycle.HostCleanupProductionEffects
   ( -- * The production repair closure
     productionHostRecoveryPlaneRepair
@@ -63,6 +20,7 @@ module Prodbox.Lifecycle.HostCleanupProductionEffects
     -- * The record
   , HostCleanupProductionSources (..)
   , productionHostCleanupRunnerEffects
+  , productionHostCleanupLocalRunnerEffects
 
     -- * Regression over the closed prerequisite table
   , HostCleanupProductionEffectsRegression
@@ -76,28 +34,17 @@ module Prodbox.Lifecycle.HostCleanupProductionEffects
 where
 
 import Data.Text (Text)
-import Numeric.Natural (Natural)
 import Prodbox.Config.LocalRke2RecoveryState
   ( localRke2RecoveryStateView
   , observeLocalRke2RecoveryState
   , renderLocalRke2RecoveryStateError
   )
-import Prodbox.Config.OrdinaryTeardownRecovery (OrdinaryTeardownRecovery)
-import Prodbox.Config.OrdinaryTeardownRepair (RetainedArtifactInventory)
-import Prodbox.ControlPlane.CleanupRunClient (CleanupRunClient)
 import Prodbox.ControlPlane.HostCleanupReadinessRepository
   ( HostCleanupReadinessAuthorityClient
-  )
-import Prodbox.ControlPlane.LifecycleAuthorityRestoreProduction
-  ( LifecycleAuthorityAdmissionWait
-  , RetainedAuthorityAggregateSources
-  , productionHostCleanupAuthorityReestablish
   )
 import Prodbox.Lifecycle.HostCleanupAuthorityArms
   ( productionHostCleanupAcceptAuthority
   , productionHostCleanupAuthorityReadBack
-  , productionHostCleanupRunReadBack
-  , productionHostCleanupRunReconcile
   )
 import Prodbox.Lifecycle.HostCleanupCompletion
   ( HostCleanupCompletionJournal
@@ -109,16 +56,14 @@ import Prodbox.Lifecycle.HostCleanupLocalAbsence
   )
 import Prodbox.Lifecycle.HostCleanupRecoveryPlane
   ( HostRecoveryPlaneRepair (..)
-  , establishHostRecoveryPlane
-  , hostRecoveryPlaneEstablishmentEffect
-  , productionHostCleanupRecoveryPlaneReadBack
   )
 import Prodbox.Lifecycle.HostCleanupRke2
   ( LocalRke2TerminalAdapter
   , hostCleanupRunLocalRke2Uninstall
   )
 import Prodbox.Lifecycle.HostCleanupRunner
-  ( HostCleanupRunnerContext
+  ( HostCleanupEffectOutcome (HostCleanupEffectRefused)
+  , HostCleanupRunnerContext
   , HostCleanupRunnerEffects (..)
   )
 import Prodbox.Lifecycle.Teardown.CascadeEvidence
@@ -130,8 +75,7 @@ import Prodbox.Lifecycle.Teardown.RecoveryRepairExecution
   ( RecoveryRepairBoundary
   )
 import Prodbox.Lifecycle.Teardown.RetainedArtifactCustody
-  ( RetainedArtifactSourceCatalog
-  , RetainedArtifactStore
+  ( RetainedArtifactStore
   , observeRetainedArtifactStore
   )
 
@@ -220,90 +164,56 @@ completionReadBackPrerequisites readiness absence = case readiness of
 -- The record
 -- ---------------------------------------------------------------------------
 
--- | The production surfaces every arm of the runner delegates to.
---
--- Grouped rather than passed positionally because the runner has twelve arms
--- and a positional assembly of eleven sources is a defect waiting to be
--- introduced by an insertion.
+-- | Sources needed while Authority readiness is accepted.  Recovery and
+-- credential retirement belong to the remote prefix, before these effects
+-- arm the terminal handoff.
 data HostCleanupProductionSources = HostCleanupProductionSources
   { hostCleanupReadinessClient :: !(HostCleanupReadinessAuthorityClient IO)
-  , hostCleanupRunClient :: !(CleanupRunClient IO)
   , hostCleanupTerminalAdapter :: !(LocalRke2TerminalAdapter IO)
   , hostCleanupCompletionJournal :: !HostCleanupCompletionJournal
-  , hostCleanupRecoveryInventory :: !RetainedArtifactInventory
-  , hostCleanupRecoveryCatalog :: !RetainedArtifactSourceCatalog
-  , hostCleanupRecoveryClosure :: !OrdinaryTeardownRecovery
-  , hostCleanupRecoveryRepair :: !(HostRecoveryPlaneRepair IO)
-  , hostCleanupAuthorityPause :: !(Natural -> IO ())
-  , hostCleanupAuthorityWait :: !LifecycleAuthorityAdmissionWait
-  , hostCleanupAuthorityAggregate :: !(RetainedAuthorityAggregateSources IO)
   }
 
--- | Assemble the twelve arms.
---
--- Each arm is one production surface applied to one source; the assembly adds
--- no decision of its own except the completion read-back's prerequisites,
--- which are resolved by the table above rather than here.
 productionHostCleanupRunnerEffects
   :: HostCleanupProductionSources -> HostCleanupRunnerEffects IO
 productionHostCleanupRunnerEffects sources =
-  HostCleanupRunnerEffects
+  ( productionHostCleanupLocalRunnerEffects
+      (hostCleanupTerminalAdapter sources)
+      (hostCleanupCompletionJournal sources)
+  )
     { hostRunnerAcceptAuthority =
         productionHostCleanupAcceptAuthority (hostCleanupReadinessClient sources)
-    , hostRunnerReadBackAuthorityAcceptance = readBackReadiness
-    , hostRunnerRunLocalUninstall =
-        hostCleanupRunLocalRke2Uninstall (hostCleanupTerminalAdapter sources)
+    , hostRunnerReadBackAuthorityAcceptance =
+        productionHostCleanupAuthorityReadBack (hostCleanupReadinessClient sources)
+    }
+
+-- | The post-session record has no Authority, Backup or Agent transport.
+-- An unarmed record refuses rather than recovering or installing a cluster.
+productionHostCleanupLocalRunnerEffects
+  :: LocalRke2TerminalAdapter IO
+  -> HostCleanupCompletionJournal
+  -> HostCleanupRunnerEffects IO
+productionHostCleanupLocalRunnerEffects terminal journal =
+  HostCleanupRunnerEffects
+    { hostRunnerAcceptAuthority = \_ _ -> pure (HostCleanupEffectRefused unarmed)
+    , hostRunnerReadBackAuthorityAcceptance = \_ -> pure (Left unarmed)
+    , hostRunnerRunLocalUninstall = hostCleanupRunLocalRke2Uninstall terminal
     , hostRunnerReadBackLocalAbsence = readBackAbsence
-    , hostRunnerReestablishBootstrapRecovery = \_context ->
-        hostRecoveryPlaneEstablishmentEffect
-          <$> establishHostRecoveryPlane
-            (hostCleanupRecoveryInventory sources)
-            (hostCleanupRecoveryCatalog sources)
-            (hostCleanupRecoveryClosure sources)
-            (hostCleanupRecoveryRepair sources)
-    , hostRunnerReadBackBootstrapRecovery =
-        productionHostCleanupRecoveryPlaneReadBack
-    , hostRunnerReestablishLifecycleAuthority =
-        productionHostCleanupAuthorityReestablish
-          (hostCleanupAuthorityPause sources)
-          (hostCleanupAuthorityWait sources)
-          (hostCleanupAuthorityAggregate sources)
-    , -- The same question the acceptance read-back asks, asked again after
-      -- re-establishment.  An Authority that cannot produce the readiness it
-      -- accepted has not been re-established in the sense the run needs, and a
-      -- weaker second source would hide exactly that.
-      hostRunnerReadBackLifecycleAuthority = readBackReadiness
-    , hostRunnerReconcileCleanupRun = \context _local ->
-        productionHostCleanupRunReconcile (hostCleanupRunClient sources) context
-    , hostRunnerReadBackCleanupRun =
-        productionHostCleanupRunReadBack (hostCleanupRunClient sources)
-    , hostRunnerCommitCompletionReceipt =
-        productionHostCleanupCompletionCommit (hostCleanupCompletionJournal sources)
-    , hostRunnerReadBackCompletionReceipt = \context -> do
-        readiness <- readBackReadiness context
-        absence <- case readiness of
-          Left detail -> pure (Left detail)
-          Right ready -> readBackAbsence context ready
-        case completionReadBackPrerequisites readiness absence of
+    , hostRunnerCommitCompletionReceipt = productionHostCleanupCompletionCommit journal
+    , hostRunnerReadBackCompletionReceipt = \context ready -> do
+        absence <- readBackAbsence context ready
+        case completionReadBackPrerequisites (Right ready) absence of
           Left refusal -> pure (Left (renderCompletionPrerequisiteRefusal refusal))
-          Right (ready, local) ->
-            productionHostCleanupCompletionReadBack
-              (hostCleanupCompletionJournal sources)
-              ready
-              local
-              context
+          Right (observedReady, local) ->
+            productionHostCleanupCompletionReadBack journal observedReady local context
     }
  where
-  readBackReadiness :: HostCleanupRunnerContext -> IO (Either Text ReadyToUninstallEvidence)
-  readBackReadiness =
-    productionHostCleanupAuthorityReadBack (hostCleanupReadinessClient sources)
+  unarmed = "the local terminal tail requires an Authority-accepted, armed handoff"
 
   readBackAbsence
     :: HostCleanupRunnerContext
     -> ReadyToUninstallEvidence
     -> IO (Either Text (Maybe (LocalUninstallEvidence 'Cascade)))
-  readBackAbsence =
-    productionHostCleanupLocalAbsenceReadBack (hostCleanupTerminalAdapter sources)
+  readBackAbsence = productionHostCleanupLocalAbsenceReadBack terminal
 
 -- ---------------------------------------------------------------------------
 -- Regression over the closed prerequisite table

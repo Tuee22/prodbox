@@ -1041,12 +1041,12 @@ Containerization is first-class for integration/runtime image publishing:
   are admitted. A missing Gateway-DNS generation blocks only DNS mutation; it cannot silently
   substitute the Lifecycle-provider or cert-manager identity
 - the publish path runs an ordinary host-native `docker build`, then pushes the resulting registry
-  tags from the repo-owned single-stage `ubuntu:24.04` Dockerfile with in-image `ghcup` and
-  pinned GHC `9.12.4`; the Provider tooling layer installs Pulumi CLI `3.228.0` and its matching
+  tags from the repo-owned `ubuntu:24.04` builder/runtime Dockerfile with builder-only `ghcup`,
+  pinned GHC `9.12.4`, and a manifest-preparation stage preserving the dependency cache across
+  module-list changes; the Provider tooling layer installs Pulumi CLI `3.228.0` and its matching
   `pulumi-language-yaml` host from the same pinned native-architecture archive, never from an
-  ambient host plugin; after installing the binary, the same build step removes only its
-  ephemeral `.build` and Cabal cache/state roots so compilation output cannot become unique
-  retained bytes in every runtime generation
+  ambient host plugin; the runtime receives the executable, runtime tools, and provider plugin
+  without the Haskell toolchain, Cabal store, source, or compilation output
 - before cluster readiness and again after the publication/import attempt, the host-Docker cache
   reconciles only canonical dangling image IDs from the exact managed union-runtime repository to
   empty read-back; tagged/foreign images, broad prune, and build-cache deletion are not admitted

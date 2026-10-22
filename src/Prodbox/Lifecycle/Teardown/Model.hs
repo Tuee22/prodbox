@@ -50,6 +50,8 @@ module Prodbox.Lifecycle.Teardown.Model
   , evidenceAwsScope
   , evidenceAwsDnsZone
   , mkObservationEvidenceScopeWithDnsZone
+  , mkObservationEvidenceScopeWithResourceBindings
+  , evidenceResourceScopeBindings
   , evidenceLifecycleOperation
   , ObservationRevision (..)
   , ObservationFailure (..)
@@ -63,6 +65,9 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Word (Word64)
 import Numeric (showHex)
+import Prodbox.Lifecycle.Teardown.ResourceScopeBindings (ResourceScopeBindings)
+
+import Prodbox.Lifecycle.AwsNetworkFamily
 import Prodbox.Lifecycle.DnsRecord (HostedZoneId)
 import Prodbox.Lifecycle.ResourceClass (LifecycleClass (..))
 
@@ -93,6 +98,7 @@ data ResourceKind
     -- other.
     DnsRecordFamily
   | LocalSubstrate
+  | MailObjectFamily
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 data ResourceKindWitness (kind :: ResourceKind) where
@@ -104,6 +110,7 @@ data ResourceKindWitness (kind :: ResourceKind) where
   VolumeFamilyKind :: ResourceKindWitness 'VolumeFamily
   DnsZoneFamilyKind :: ResourceKindWitness 'DnsZoneFamily
   DnsRecordFamilyKind :: ResourceKindWitness 'DnsRecordFamily
+  MailObjectFamilyKind :: ResourceKindWitness 'MailObjectFamily
   LocalSubstrateKind :: ResourceKindWitness 'LocalSubstrate
 
 resourceKindFromWitness :: ResourceKindWitness kind -> ResourceKind
@@ -117,6 +124,7 @@ resourceKindFromWitness witness = case witness of
   DnsZoneFamilyKind -> DnsZoneFamily
   DnsRecordFamilyKind -> DnsRecordFamily
   LocalSubstrateKind -> LocalSubstrate
+  MailObjectFamilyKind -> MailObjectFamily
 
 -- | Authority surfaces stay distinct even when they select some of the same
 -- descriptors.  In particular, an explicit per-run operation is not a
@@ -216,6 +224,12 @@ data RegisteredResourceKey
   | AwsDns01ChallengeRecordKey
   | AwsEksIamRoleFamilyKey
   | AwsEksLoadBalancerControllerFamilyKey
+  | AwsEksVpcCniInterfacesKey
+  | AwsTestVpcCniInterfacesKey
+  | AwsEksClusterSecurityGroupsKey
+  | HomeDns01ChallengeRecordKey
+  | SesInviteMailObjectsKey
+  | AwsTestCanarySecurityGroupsKey
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 registeredResourceKeyText :: RegisteredResourceKey -> Text
@@ -231,6 +245,12 @@ registeredResourceKeyText key = case key of
   AwsEksIamRoleFamilyKey -> "aws-eks-iam-role-family"
   AwsEksLoadBalancerControllerFamilyKey ->
     "aws-eks-load-balancer-controller-family"
+  AwsEksVpcCniInterfacesKey -> networkFamilyName EksVpcCniInterfaces
+  AwsTestVpcCniInterfacesKey -> networkFamilyName TestVpcCniInterfaces
+  AwsEksClusterSecurityGroupsKey -> networkFamilyName EksClusterSecurityGroups
+  HomeDns01ChallengeRecordKey -> "dns-home-dns01-challenge-records"
+  SesInviteMailObjectsKey -> "ses-invite-mail-data-versions"
+  AwsTestCanarySecurityGroupsKey -> networkFamilyName TestCanarySecurityGroups
 
 -- | Whether a registered family cannot be observed or removed without the
 -- hosted zone the run names.
@@ -254,6 +274,12 @@ registeredResourceKeyRequiresDnsZone key = case key of
   AwsDns01ChallengeRecordKey -> True
   AwsEksIamRoleFamilyKey -> False
   AwsEksLoadBalancerControllerFamilyKey -> False
+  AwsEksVpcCniInterfacesKey -> False
+  AwsTestVpcCniInterfacesKey -> False
+  AwsEksClusterSecurityGroupsKey -> False
+  HomeDns01ChallengeRecordKey -> False
+  SesInviteMailObjectsKey -> False
+  AwsTestCanarySecurityGroupsKey -> False
 
 -- | The inverse of 'registeredResourceKeyText', over the closed enumeration.
 --
@@ -312,6 +338,7 @@ data ManagedResourceCoordinate
       , awsLoadBalancerControllerName :: !Text
       , awsLoadBalancerControllerTags :: ![(Text, Text)]
       }
+  | AwsNetworkDependentFamilyCoordinate !AwsNetworkFamily
   | -- | Sprint 7.36: the @dns-aws@ validation hosted-zone family.
     --
     -- Bounded by the zone-name prefix its creator authors, because the rest of
@@ -339,6 +366,8 @@ data ManagedResourceCoordinate
     AwsRoute53Dns01ChallengeRecordFamilyCoordinate
       { awsRoute53Dns01RecordNamePrefix :: !Text
       }
+  | HomeRoute53Dns01ChallengeRecordFamilyCoordinate
+  | SesInviteMailDataVersionFamilyCoordinate
   deriving (Eq, Ord, Show)
 
 coordinateIsAws :: ManagedResourceCoordinate -> Bool
@@ -348,9 +377,12 @@ coordinateIsAws coordinate = case coordinate of
   AwsEbsPerRunFamilyCoordinate {} -> True
   AwsEbsRetainedFamilyCoordinate {} -> True
   AwsIamRoleFamilyCoordinate {} -> True
+  AwsNetworkDependentFamilyCoordinate {} -> True
   AwsLoadBalancerControllerFamilyCoordinate {} -> True
   AwsRoute53ValidationZoneFamilyCoordinate {} -> True
   AwsRoute53Dns01ChallengeRecordFamilyCoordinate {} -> True
+  HomeRoute53Dns01ChallengeRecordFamilyCoordinate -> True
+  SesInviteMailDataVersionFamilyCoordinate -> True
 
 -- | The AWS convention for "a Kubernetes cluster owns or shares this
 -- resource": @kubernetes.io\/cluster\/\<cluster-name\>@.  The cluster name is
@@ -374,9 +406,6 @@ clusterOwnedTagValue = "owned"
 -- external fact is written down; deriving the ownership relation from it is
 -- what keeps a controller-owned family's owning stack from being an
 -- independently authored third statement.
-pulumiEksClusterNameSuffix :: Text
-pulumiEksClusterNameSuffix = "-cluster"
-
 -- | The Kubernetes cluster whose controllers own this resource family, if any.
 --
 -- Total over the coordinate universe, so a new coordinate shape is an
@@ -395,6 +424,7 @@ coordinateControllerOwnerCluster coordinate = case coordinate of
   -- cluster ownership tag, which is exactly what lets it outlive any cluster.
   AwsEbsRetainedFamilyCoordinate {} -> Nothing
   AwsIamRoleFamilyCoordinate ownerCluster _ _ -> Just ownerCluster
+  AwsNetworkDependentFamilyCoordinate family -> networkFamilyCluster family
   AwsLoadBalancerControllerFamilyCoordinate ownerCluster _ _ ->
     Just ownerCluster
   -- A validation hosted zone is created by a suite validation, not by a
@@ -404,6 +434,8 @@ coordinateControllerOwnerCluster coordinate = case coordinate of
   -- cluster -- but the record outlives no cluster's teardown order, and the
   -- solver that owns it is selected per certificate rather than per cluster.
   AwsRoute53Dns01ChallengeRecordFamilyCoordinate {} -> Nothing
+  HomeRoute53Dns01ChallengeRecordFamilyCoordinate -> Nothing
+  SesInviteMailDataVersionFamilyCoordinate -> Nothing
 
 -- | The cluster name a registered stack's provisioning program would give an
 -- EKS cluster, if that program declares one.
@@ -419,9 +451,12 @@ coordinateProvisionedClusterName coordinate = case coordinate of
   AwsEbsPerRunFamilyCoordinate {} -> Nothing
   AwsEbsRetainedFamilyCoordinate {} -> Nothing
   AwsIamRoleFamilyCoordinate {} -> Nothing
+  AwsNetworkDependentFamilyCoordinate {} -> Nothing
   AwsLoadBalancerControllerFamilyCoordinate {} -> Nothing
   AwsRoute53ValidationZoneFamilyCoordinate {} -> Nothing
   AwsRoute53Dns01ChallengeRecordFamilyCoordinate {} -> Nothing
+  HomeRoute53Dns01ChallengeRecordFamilyCoordinate -> Nothing
+  SesInviteMailDataVersionFamilyCoordinate -> Nothing
 
 newtype ManagedResourceCoordinateDigest
   = ManagedResourceCoordinateDigest Text
@@ -441,6 +476,8 @@ managedResourceCoordinateDigest coordinate =
     )
  where
   canonical = case coordinate of
+    HomeRoute53Dns01ChallengeRecordFamilyCoordinate -> "home-route53-dns01-family/v1"
+    SesInviteMailDataVersionFamilyCoordinate -> "ses-invite-mail-data-version-family/v1"
     LocalRke2Coordinate name -> Text.intercalate "\NUL" ["local-rke2/v1", name]
     AwsPulumiStackCoordinate projectName stackName ->
       Text.intercalate "\NUL" ["aws-pulumi-stack/v1", projectName, stackName]
@@ -463,6 +500,17 @@ managedResourceCoordinateDigest coordinate =
             : roleNames
             ++ ["managed-policies"]
             ++ policyNames
+        )
+    AwsNetworkDependentFamilyCoordinate family ->
+      Text.intercalate
+        "\NUL"
+        ( [ "aws-network-dependent-family/v1"
+          , networkFamilyName family
+          , networkFamilyPulumiStack family
+          , maybe "none" id (networkFamilyCluster family)
+          , networkFamilyPredicate family
+          ]
+            ++ concatMap (\(key, value) -> [key, value]) (networkFamilyVpcTags family)
         )
     AwsLoadBalancerControllerFamilyCoordinate ownerCluster name tags ->
       Text.intercalate
@@ -542,6 +590,7 @@ data ObservationEvidenceScope = ObservationEvidenceScope
   -- refuses rather than guessing: a challenge record swept in the wrong zone
   -- is either a no-op that reads as absence or a deletion in an operator's
   -- parent zone.
+  , internalEvidenceResourceScopeBindings :: !(Maybe ResourceScopeBindings)
   , internalEvidenceLifecycleOperation :: !LifecycleOperation
   }
   deriving (Eq, Ord, Show)
@@ -566,6 +615,7 @@ mkObservationEvidenceScope surface revision runScope foundation awsScope operati
     , internalEvidenceLinuxRke2Foundation = foundation
     , internalEvidenceAwsScope = awsScope
     , internalEvidenceAwsDnsZone = Nothing
+    , internalEvidenceResourceScopeBindings = Nothing
     , internalEvidenceLifecycleOperation = operation
     }
 
@@ -599,8 +649,37 @@ mkObservationEvidenceScopeWithDnsZone
       , internalEvidenceLinuxRke2Foundation = foundation
       , internalEvidenceAwsScope = awsScope
       , internalEvidenceAwsDnsZone = Just dnsZone
+      , internalEvidenceResourceScopeBindings = Nothing
       , internalEvidenceLifecycleOperation = operation
       }
+
+-- | Complete scope minter for families with invocation/configuration-bound
+-- coordinates. Absence means no such binding was retained, never evidence
+-- that a resource family is absent.
+mkObservationEvidenceScopeWithResourceBindings
+  :: CleanupSurface
+  -> RegistryRevision
+  -> DurableObservationRunScope
+  -> LinuxRke2FoundationId
+  -> Maybe AwsScope
+  -> Maybe HostedZoneId
+  -> Maybe ResourceScopeBindings
+  -> LifecycleOperation
+  -> ObservationEvidenceScope
+mkObservationEvidenceScopeWithResourceBindings surface revision runScope foundation awsScope dnsZone bindings operation =
+  ObservationEvidenceScope
+    { internalEvidenceCleanupSurface = surface
+    , internalEvidenceRegistryRevision = revision
+    , internalEvidenceDurableRunScope = runScope
+    , internalEvidenceLinuxRke2Foundation = foundation
+    , internalEvidenceAwsScope = awsScope
+    , internalEvidenceAwsDnsZone = dnsZone
+    , internalEvidenceResourceScopeBindings = bindings
+    , internalEvidenceLifecycleOperation = operation
+    }
+
+evidenceResourceScopeBindings :: ObservationEvidenceScope -> Maybe ResourceScopeBindings
+evidenceResourceScopeBindings = internalEvidenceResourceScopeBindings
 
 evidenceAwsDnsZone :: ObservationEvidenceScope -> Maybe HostedZoneId
 evidenceAwsDnsZone = internalEvidenceAwsDnsZone

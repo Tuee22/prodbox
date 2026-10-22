@@ -37,6 +37,7 @@ module Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   , serveAuthorityControlRequest
   , authorityTransitionHttpStatus
   , authorityTransitionSummary
+  , authorityTransitionResponseBody
 
     -- * Operation endpoints
   , AuthorityOperationSubmitResult (..)
@@ -67,6 +68,7 @@ import Data.Either (fromLeft)
 import Data.Map.Strict (Map)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
@@ -206,6 +208,14 @@ data AuthorityControlPayload
     AuthorityControlRevokeCascadeProviderCredential
       !CascadeAuditFreezeBinding
       !ProviderCredentialRevocationReceipt
+  | -- | Bind and freeze in the same aggregate CAS; no partial serving bind
+    -- survives a refused reservation. Earlier constructor indices stay fixed.
+    AuthorityControlFreezeProviderAdmissionAtGeneration
+      !Natural
+      !CascadeAuditFreezeBinding
+  | -- | Read the durable phase and original reservation attempt without CAS.
+    AuthorityControlObserveProviderAdmissionRecovery !CascadeAuditFreezeBinding
+  | AuthorityControlObserveProviderBootstrapPredecessor
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -230,6 +240,11 @@ authorityControlPayloadRoute payload = case payload of
     AuthorityControlCascadeAuditReceiptRoute
   AuthorityControlRevokeCascadeProviderCredential _ _ ->
     AuthorityControlCascadeCredentialRevokeRoute
+  AuthorityControlFreezeProviderAdmissionAtGeneration _ _ ->
+    AuthorityControlCascadeGenerationFreezeRoute
+  AuthorityControlObserveProviderAdmissionRecovery _ ->
+    AuthorityControlProviderRecoveryObservationRoute
+  AuthorityControlObserveProviderBootstrapPredecessor -> AuthorityControlProviderBootstrapPredecessorRoute
 
 -- | The aggregate command one externally admissible payload issues.
 authorityControlPayloadCommand
@@ -248,6 +263,11 @@ authorityControlPayloadCommand payload = case payload of
     RecordCascadeTerminalAuditReceipt binding receipt
   AuthorityControlRevokeCascadeProviderCredential binding revocation ->
     RevokeCascadeProviderCredential binding revocation
+  AuthorityControlFreezeProviderAdmissionAtGeneration generation binding ->
+    FreezeProviderAdmissionAtGeneration generation binding
+  AuthorityControlObserveProviderAdmissionRecovery binding ->
+    ObserveProviderAdmissionRecovery binding
+  AuthorityControlObserveProviderBootstrapPredecessor -> ObserveProviderBootstrapPredecessor
 
 data AuthorityOperationSubmitPayload = AuthorityOperationSubmitPayload
   { authorityOperationSubmitKey :: !Text
@@ -727,6 +747,30 @@ serveAuthorityControlRequest
 serveAuthorityControlRequest maximumBytes repository body =
   case decodeControlPlaneRequest maximumBytes body of
     Left err -> pure (AuthorityTransitionBadRequest err)
+    Right payload@(AuthorityControlObserveProviderAdmissionRecovery _) -> do
+      observed <- readAuthorityAdmission repository
+      pure $ case observed of
+        Left detail -> AuthorityTransitionReadFailed detail
+        Right snapshot ->
+          AuthorityTransitionDecided
+            ( fst
+                ( stepAuthorityAdmission
+                    (authorityAdmissionSnapshotState snapshot)
+                    (authorityControlPayloadCommand payload)
+                )
+            )
+    Right AuthorityControlObserveProviderBootstrapPredecessor -> do
+      observed <- readAuthorityAdmission repository
+      pure $ case observed of
+        Left detail -> AuthorityTransitionReadFailed detail
+        Right snapshot ->
+          AuthorityTransitionDecided
+            ( fst
+                ( stepAuthorityAdmission
+                    (authorityAdmissionSnapshotState snapshot)
+                    ObserveProviderBootstrapPredecessor
+                )
+            )
     Right payload ->
       serveAuthorityTransition repository (authorityControlPayloadCommand payload)
 
@@ -752,6 +796,8 @@ authorityTransitionHttpStatus result = case result of
     AuthorityCascadeTerminalAuditReceiptRecorded -> ReplyOk
     AuthorityCascadeProviderCredentialRevoked -> ReplyOk
     AuthorityAdmissionCommandRefused _ -> ReplyConflict
+    AuthorityProviderAdmissionRecoveryObserved _ -> ReplyOk
+    AuthorityProviderBootstrapPredecessorObserved _ -> ReplyOk
 
 authorityTransitionSummary :: AuthorityTransitionResult -> Text
 authorityTransitionSummary result = case result of
@@ -796,6 +842,18 @@ authorityTransitionSummary result = case result of
     AuthorityCascadeProviderCredentialRevoked ->
       "authority-cascade-provider-credential-revoked"
     AuthorityAdmissionCommandRefused _ -> "authority-transition-refused"
+    AuthorityProviderAdmissionRecoveryObserved _ -> "authority-provider-admission-recovery-observed"
+    AuthorityProviderBootstrapPredecessorObserved _ -> "authority-provider-bootstrap-predecessor-observed"
+
+-- | Existing control replies preserve their exact text envelope. Only the new
+-- recovery observation carries its typed, request-bound metadata projection.
+authorityTransitionResponseBody :: AuthorityTransitionResult -> ByteString
+authorityTransitionResponseBody result = case result of
+  AuthorityTransitionDecided (AuthorityProviderAdmissionRecoveryObserved observation) ->
+    encodeControlPlaneResponse observation
+  AuthorityTransitionDecided (AuthorityProviderBootstrapPredecessorObserved binding) ->
+    encodeControlPlaneResponse binding
+  _ -> LazyByteString.fromStrict (TextEncoding.encodeUtf8 (authorityTransitionSummary result))
 
 data AuthorityOperationSubmitResult
   = AuthorityOperationSubmitDecided !AuthorityRegisteredSubmissionDecision
@@ -1097,6 +1155,8 @@ authorityOperationSubmitSummary result = case result of
       "authority-operation-refused-provider-cascade-audit-frozen"
     AuthorityProviderAdmissionCredentialRevoked ->
       "authority-operation-refused-provider-credential-revoked"
+    AuthorityProviderAdmissionCredentialMutationPending ->
+      "authority-operation-refused-provider-credential-mutation-pending"
 
 authorityOperationSubmitResponseBody
   :: AuthorityOperationSubmitResult -> StrictByteString.ByteString

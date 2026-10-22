@@ -14,10 +14,13 @@ module Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecutionVault
   , AwsAdminExecutionJournalPhaseCause (..)
   , AwsAdminExecutionJournalRecoveryObservation (..)
   , observeAwsAdminExecutionJournalRecovery
+  , observeAwsAdminCompletedExecutionReceipt
+  , fixedAwsAdminCompletedExecutionRegression
   , renderAwsAdminExecutionJournalRecoveryObservation
   )
 where
 
+import Control.Monad.Trans.State.Strict (get, put, runState)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
@@ -31,7 +34,10 @@ import Numeric.Natural (Natural)
 import Prodbox.Http.Client (HttpError (..), renderHttpError)
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   ( AwsAdminExecutionJournalBoundary
+  , AwsAdminWorkerReceipt
+  , decodeAwsAdminWorkerReceipt
   , mkAwsAdminExecutionJournalBoundary
+  , validateAwsAdminWorkerReceiptForPermit
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecutionJournal
   ( AwsAdminExecutionJournal
@@ -153,6 +159,81 @@ observeAwsAdminExecutionJournalRecovery session permit = do
         | otherwise ->
             AwsAdminExecutionJournalRecoveryPresent
               (classifyJournalPhase (awsAdminExecutionJournalPhase journal))
+
+-- | Recover ordinary receipt metadata from the exact permit-derived journal.
+-- Two independent canonical reads must agree. Authority admission still
+-- requires its owned outbox publication and a fresh authenticated Agent read.
+observeAwsAdminCompletedExecutionReceipt
+  :: VaultSession
+  -> SignedAwsAdminPermit
+  -> IO (Either Text (Maybe AwsAdminWorkerReceipt))
+observeAwsAdminCompletedExecutionReceipt session permit =
+  observeCompletedReceipt permit readJournal
+ where
+  readJournal = do
+    observed <- withSessionTokenDetailed session $ \token ->
+      vaultKvReadVersionedV2
+        (sessionAddress session)
+        token
+        executionJournalVaultMount
+        (awsAdminExecutionJournalVaultPath permit)
+    pure $ case observed of
+      Left (VaultSessionRequestFailed (HttpStatus 404 _)) -> Right Nothing
+      Left _ -> Left "execution-journal-completion-unobservable"
+      Right versioned -> do
+        (_, journal) <-
+          either (const (Left "execution-journal-completion-invalid")) Right (decodeVersioned versioned)
+        Right (Just journal)
+
+-- The raw observer stays private. Diagnostics below return decided facts and
+-- cannot hand a caller an observation product from caller-supplied callbacks.
+observeCompletedReceipt
+  :: (Monad m)
+  => SignedAwsAdminPermit
+  -> m (Either Text (Maybe AwsAdminExecutionJournal))
+  -> m (Either Text (Maybe AwsAdminWorkerReceipt))
+observeCompletedReceipt permit observe = do
+  first <- observeCandidate
+  case first of
+    Left detail -> pure (Left detail)
+    Right Nothing -> pure (Right Nothing)
+    Right (Just (journal, receipt)) -> do
+      closing <- observeCandidate
+      pure $ case closing of
+        Right (Just (actual, confirmed))
+          | actual == journal && confirmed == receipt -> Right (Just receipt)
+        Left detail -> Left detail
+        _ -> Left "execution-journal-completion-changed"
+ where
+  observeCandidate = do
+    observed <- observe
+    pure $ do
+      current <- observed
+      case current of
+        Nothing -> Right Nothing
+        Just journal -> completedJournalCandidate permit journal
+
+completedJournalCandidate
+  :: SignedAwsAdminPermit
+  -> AwsAdminExecutionJournal
+  -> Either Text (Maybe (AwsAdminExecutionJournal, AwsAdminWorkerReceipt))
+completedJournalCandidate permit journal
+  | not (journalPermitMatches permit journal) = Left "execution-journal-completion-permit-mismatch"
+  | otherwise = candidate (awsAdminExecutionJournalPhase journal)
+ where
+  candidate phase = case phase of
+    AwsAdminExecutionComplete bytes -> do
+      receipt <-
+        either
+          (const (Left "execution-journal-completion-receipt-invalid"))
+          Right
+          (decodeAwsAdminWorkerReceipt bytes)
+      either
+        (const (Left "execution-journal-completion-receipt-mismatch"))
+        Right
+        (validateAwsAdminWorkerReceiptForPermit permit receipt)
+      Right (Just (journal, receipt))
+    _ -> Right Nothing
 
 classifyJournalPhase
   :: AwsAdminExecutionPhase -> AwsAdminExecutionJournalPhaseCause
@@ -409,3 +490,60 @@ sha256Text = Text.pack . concatMap byteHex . ByteString.unpack . SHA256.hash
 
 renderVaultError :: HttpError -> Text
 renderVaultError = Text.take 256 . Text.pack . renderHttpError
+
+-- | Fixed read-boundary diagnostics over ordinary journal metadata. No
+-- session, proof, signer or callback leaves this function.
+fixedAwsAdminCompletedExecutionRegression
+  :: SignedAwsAdminPermit
+  -> AwsAdminExecutionJournal
+  -> AwsAdminExecutionJournal
+  -> Either Text [(Text, Bool)]
+fixedAwsAdminCompletedExecutionRegression permit completed changed = do
+  (_, expected) <- requireComplete completed
+  (_, different) <- requireComplete changed
+  if expected == different
+    then Left "completion regression needs distinct valid receipts"
+    else Right ()
+  let initial = initialAwsAdminExecutionJournal permit
+      cases =
+        [
+          ( "complete journal requires two independent reads"
+          , [Right (Just completed), Right (Just completed)]
+          , Right (Just expected)
+          , 2
+          )
+        , ("missing journal is not completion", [Right Nothing], Right Nothing, 1)
+        , ("unfinished journal is not completion", [Right (Just initial)], Right Nothing, 1)
+        , ("unobservable first read refuses", [Left "fixture unavailable"], Left "fixture unavailable", 1)
+        ,
+          ( "unobservable closing read refuses"
+          , [Right (Just completed), Left "fixture unavailable"]
+          , Left "fixture unavailable"
+          , 2
+          )
+        ,
+          ( "missing closing journal refuses"
+          , [Right (Just completed), Right Nothing]
+          , Left "execution-journal-completion-changed"
+          , 2
+          )
+        ,
+          ( "changed completed receipt refuses"
+          , [Right (Just completed), Right (Just changed)]
+          , Left "execution-journal-completion-changed"
+          , 2
+          )
+        ]
+      run (name, responses, expectedAnswer, expectedReads) =
+        let observe = do
+              (remaining, count) <- get
+              case remaining of
+                [] -> put ([], count + 1) >> pure (Left "fixture unexpected read")
+                value : rest -> put (rest, count + 1) >> pure value
+            (answer, (unconsumed, observedCount)) = runState (observeCompletedReceipt permit observe) (responses, 0 :: Int)
+         in (name, answer == expectedAnswer && null unconsumed && observedCount == expectedReads)
+  Right (map run cases)
+ where
+  requireComplete journal = do
+    result <- completedJournalCandidate permit journal
+    maybe (Left "completion regression needs completed journal metadata") Right result

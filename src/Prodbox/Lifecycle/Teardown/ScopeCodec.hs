@@ -60,6 +60,10 @@ module Prodbox.Lifecycle.Teardown.ScopeCodec
   , scopeFromWire
   , ScopeWireError (..)
   , renderScopeWireError
+  , ResourceScopeBindingsWire
+  , resourceBindingsToWire
+  , resourceBindingsFromWire
+  , resourceBindingsIdentityFields
 
     -- * The canonical identity projection
   , scopeIdentityFields
@@ -67,11 +71,17 @@ module Prodbox.Lifecycle.Teardown.ScopeCodec
   )
 where
 
-import Codec.Serialise (Serialise)
+import Codec.CBOR.Decoding qualified as Cbor
+import Codec.CBOR.Encoding qualified as Cbor
+import Codec.Serialise (Serialise (..), serialise)
+import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Bifunctor (first)
+import Data.ByteArray.Encoding (Base (Base16), convertToBase)
+import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Char (isAsciiLower, isDigit)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import GHC.Generics (Generic)
 import Prodbox.Lifecycle.DnsRecord
   ( HostedZoneId
@@ -95,9 +105,11 @@ import Prodbox.Lifecycle.Teardown.Model
   , evidenceLifecycleOperation
   , evidenceLinuxRke2Foundation
   , evidenceRegistryRevision
-  , mkObservationEvidenceScope
-  , mkObservationEvidenceScopeWithDnsZone
+  , evidenceResourceScopeBindings
+  , mkObservationEvidenceScopeWithResourceBindings
   )
+
+import Prodbox.Lifecycle.Teardown.ResourceScopeBindings
 
 -- | The scope's complete field set.
 --
@@ -113,6 +125,7 @@ data ObservationEvidenceScopeFields = ObservationEvidenceScopeFields
   , scopeFieldLinuxRke2Foundation :: !LinuxRke2FoundationId
   , scopeFieldAwsScope :: !(Maybe AwsScope)
   , scopeFieldAwsDnsZone :: !(Maybe HostedZoneId)
+  , scopeFieldResourceBindings :: !(Maybe ResourceScopeBindings)
   , scopeFieldLifecycleOperation :: !LifecycleOperation
   }
   deriving stock (Eq, Ord, Show)
@@ -128,6 +141,7 @@ observationEvidenceScopeFields scope =
     , scopeFieldLinuxRke2Foundation = evidenceLinuxRke2Foundation scope
     , scopeFieldAwsScope = evidenceAwsScope scope
     , scopeFieldAwsDnsZone = evidenceAwsDnsZone scope
+    , scopeFieldResourceBindings = evidenceResourceScopeBindings scope
     , scopeFieldLifecycleOperation = evidenceLifecycleOperation scope
     }
 
@@ -142,19 +156,18 @@ observationEvidenceScopeFromFields
       foundation
       awsScope
       dnsZone
+      bindings
       operation
-    ) = case dnsZone of
-    Nothing ->
-      mkObservationEvidenceScope surface revision runScope foundation awsScope operation
-    Just zone ->
-      mkObservationEvidenceScopeWithDnsZone
-        surface
-        revision
-        runScope
-        foundation
-        awsScope
-        zone
-        operation
+    ) =
+    mkObservationEvidenceScopeWithResourceBindings
+      surface
+      revision
+      runScope
+      foundation
+      awsScope
+      dnsZone
+      bindings
+      operation
 
 -- | Re-scope a run's evidence scope to its terminal escape audit.
 --
@@ -213,9 +226,9 @@ scopeForOwnershipManifestCleanupReadBack scope =
 -- | The canonical encoded projection of a scope.
 --
 -- Every durable envelope in the tree embeds this as one nested value rather than
--- flattening the scope's fields among its own, so the field set has one
--- statement and an envelope's own version tag is the only thing an author has to
--- remember to bump.
+-- flattening the scope's fields among its own. The scope carries its own closed
+-- wire tag, so an envelope cannot silently decode an extension as an older
+-- scope. Historical unbound bytes remain canonical under tag zero.
 data ScopeWire = ScopeWire
   { scopeWireSurface :: !Int
   , scopeWireRegistryRevision :: !Text
@@ -225,9 +238,50 @@ data ScopeWire = ScopeWire
   , scopeWireAwsRegion :: !(Maybe Text)
   , scopeWireAwsDnsZone :: !(Maybe Text)
   , scopeWireOperation :: !Int
+  , scopeWireResourceBindings :: !(Maybe ResourceScopeBindingsWire)
   }
   deriving stock (Eq, Show, Generic)
-  deriving anyclass (Serialise)
+
+data ScopeWireLayout = HistoricalScope | ResourceBoundScope
+
+-- The historical tag/field count remains canonical only for an unbound scope.
+-- A bound scope has its own closed tag; it cannot be decoded by dropping fields.
+instance Serialise ScopeWire where
+  encode wire =
+    let extension = scopeWireResourceBindings wire
+     in Cbor.encodeListLen (maybe 9 (const 10) extension)
+          <> Cbor.encodeWord (maybe 0 (const 1) extension)
+          <> encode (scopeWireSurface wire)
+          <> encode (scopeWireRegistryRevision wire)
+          <> encode (scopeWireRunScope wire)
+          <> encode (scopeWireFoundation wire)
+          <> encode (scopeWireAwsAccount wire)
+          <> encode (scopeWireAwsRegion wire)
+          <> encode (scopeWireAwsDnsZone wire)
+          <> encode (scopeWireOperation wire)
+          <> maybe mempty encode extension
+  decode = do
+    fields <- Cbor.decodeListLen
+    tag <- Cbor.decodeWord
+    layout <- case (tag :: Word, fields) of
+      (0, 9) -> pure HistoricalScope
+      (1, 10) -> pure ResourceBoundScope
+      _ -> fail "ScopeWire: unsupported scope tag or field count"
+    surface <- decode
+    revision <- decode
+    runScope <- decode
+    foundation <- decode
+    account <- decode
+    region <- decode
+    zone <- decode
+    operation <- decode
+    bindings <- case layout of
+      HistoricalScope -> pure Nothing
+      ResourceBoundScope -> Just <$> decode
+    pure (ScopeWire surface revision runScope foundation account region zone operation bindings)
+
+-- The bound coordinates own their one closed, validated codec.
+type ResourceScopeBindingsWire = ResourceScopeBindings
 
 -- | Why a stored scope could not be decoded.
 --
@@ -250,6 +304,7 @@ data ScopeWireError
   | ScopeWireAwsAccountInvalid !Text
   | ScopeWireAwsRegionInvalid !Text
   | ScopeWireDnsZoneInvalid !Text
+  | ScopeWireResourceBindingsInvalid !Text
   deriving stock (Eq, Show)
 
 renderScopeWireError :: ScopeWireError -> Text
@@ -266,6 +321,7 @@ renderScopeWireError err = case err of
     "scope AWS account " <> value <> " is not twelve digits"
   ScopeWireAwsRegionInvalid value -> "scope AWS region " <> value <> " is invalid"
   ScopeWireDnsZoneInvalid value -> "scope AWS DNS zone " <> value <> " is invalid"
+  ScopeWireResourceBindingsInvalid reason -> "scope resource bindings are invalid: " <> reason
 
 scopeToWire :: ObservationEvidenceScope -> ScopeWire
 scopeToWire = encodeFields . observationEvidenceScopeFields
@@ -278,6 +334,7 @@ scopeToWire = encodeFields . observationEvidenceScopeFields
         (LinuxRke2FoundationId foundation)
         awsScope
         dnsZone
+        bindings
         operation
       ) =
       ScopeWire
@@ -289,6 +346,7 @@ scopeToWire = encodeFields . observationEvidenceScopeFields
         , scopeWireAwsRegion = regionText <$> awsScope
         , scopeWireAwsDnsZone = hostedZoneIdText <$> dnsZone
         , scopeWireOperation = operationTag operation
+        , scopeWireResourceBindings = resourceBindingsToWire <$> bindings
         }
 
 scopeFromWire :: ScopeWire -> Either ScopeWireError ObservationEvidenceScope
@@ -308,6 +366,7 @@ scopeFromWire wire = do
     Nothing -> Right Nothing
     Just raw -> Just <$> first (const (ScopeWireDnsZoneInvalid raw)) (mkHostedZoneId raw)
   operation <- decodeOperation (scopeWireOperation wire)
+  bindings <- traverse resourceBindingsFromWire (scopeWireResourceBindings wire)
   Right
     ( observationEvidenceScopeFromFields
         ObservationEvidenceScopeFields
@@ -317,16 +376,17 @@ scopeFromWire wire = do
           , scopeFieldLinuxRke2Foundation = foundation
           , scopeFieldAwsScope = awsScope
           , scopeFieldAwsDnsZone = dnsZone
+          , scopeFieldResourceBindings = bindings
           , scopeFieldLifecycleOperation = operation
           }
     )
 
 -- | The canonical identity projection of a scope.
 --
--- Every field is emitted, and every optional field emits a present\/absent
--- discriminator __beside__ its value, so an absent zone and a present empty one
--- cannot render the same. Callers frame and join this list themselves, because
--- the framing convention belongs to the envelope rather than to the scope.
+-- The fixed historical field set is unchanged. A resource-binding extension
+-- appends a versioned digest of its canonical public coordinates; an unbound
+-- historical scope keeps its original identity. A present empty binding is
+-- distinct from an unbound scope. Callers frame and join these fields themselves.
 scopeIdentityFields :: ObservationEvidenceScope -> [Text]
 scopeIdentityFields = identityFields . observationEvidenceScopeFields
  where
@@ -338,6 +398,7 @@ scopeIdentityFields = identityFields . observationEvidenceScopeFields
         (LinuxRke2FoundationId foundation)
         awsScope
         dnsZone
+        bindings
         operation
       ) =
       [ Text.pack (show surface)
@@ -351,6 +412,25 @@ scopeIdentityFields = identityFields . observationEvidenceScopeFields
       , maybe "" hostedZoneIdText dnsZone
       , Text.pack (show operation)
       ]
+        <> maybe [] resourceBindingsIdentityFields bindings
+
+resourceBindingsToWire :: ResourceScopeBindings -> ResourceScopeBindingsWire
+resourceBindingsToWire = id
+
+resourceBindingsFromWire :: ResourceScopeBindingsWire -> Either ScopeWireError ResourceScopeBindings
+resourceBindingsFromWire = Right
+
+resourceBindingsIdentityFields :: ResourceScopeBindings -> [Text]
+resourceBindingsIdentityFields value = ["resources/v1", resourceBindingsDigest value]
+
+resourceBindingsDigest :: ResourceScopeBindings -> Text
+resourceBindingsDigest =
+  TextEncoding.decodeUtf8
+    . convertToBase Base16
+    . SHA256.hash
+    . LazyByteString.toStrict
+    . serialise
+    . resourceBindingsToWire
 
 -- | The identity projection as one length-framed string.
 --

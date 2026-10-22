@@ -1982,6 +1982,7 @@ confirmationOperation (SomeTeardownOperation operation) = case operation of
   ReadBackEksKubernetesDrain _ -> Nothing
   ReadBackRegisteredTargetAbsent _ -> Nothing
   ReadBackStackCheckpointRetirement _ -> Nothing
+  AuditPerRunEscapes -> Nothing
   AuditCascadeEscapes -> Nothing
   ReadBackCascadePreUninstallReport -> Nothing
   ReadBackCascadeLocalAbsence -> Nothing
@@ -2025,6 +2026,7 @@ operationIsMandatoryReadBack (SomeTeardownOperation operation) = case operation 
   ReadBackEksDrainIntent _ -> True
   ReadBackEksKubernetesDrain _ -> True
   ReadBackStackCheckpointRetirement _ -> True
+  AuditPerRunEscapes -> True
   AuditCascadeEscapes -> True
   ReadBackCascadePreUninstallReport -> True
   ReadBackCascadeLocalAbsence -> True

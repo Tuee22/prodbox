@@ -32,6 +32,17 @@ module Prodbox.Lifecycle.Authority.Admission
   , authorityAggregateConfig
   , authorityAggregateDecommission
   , authorityAggregateProviderAdmissionEpochView
+  , authorityAggregateNeedsProviderCredentialQuiescence
+  , authorityAggregateProviderCredentialRecoveryView
+  , authorityAggregateAllowsProviderCredentialRetirementInstall
+  , AuthorityProviderCredentialMutationRefusal (..)
+  , reserveAuthorityProviderCredentialMutation
+  , reserveAuthorityProviderCredentialMutationAfterPredecessor
+  , reserveAuthorityProviderCredentialCleanup
+  , authorityAggregateProviderPredecessorCoordinates
+  , completeAuthorityProviderCredentialMutation
+  , authorityAggregatePendingCredentialArchive
+  , authorityAggregateServingCredentialOperation
   , authorityAggregateCascadeTerminalAuditReceipt
   , confirmAggregateCascadeTerminalAuditReceipt
   , authorityAggregateSubmissionEpoch
@@ -100,6 +111,7 @@ import Codec.CBOR.Encoding qualified as Cbor
 import Codec.Serialise (Serialise (decode, encode), serialise)
 import Control.Monad (unless)
 import Crypto.Hash.SHA256 qualified as SHA256
+import Data.Bifunctor (first)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Foldable (traverse_)
@@ -111,6 +123,8 @@ import Data.Text qualified as Text
 import GHC.Generics (Generic)
 import Numeric (showHex)
 import Numeric.Natural (Natural)
+import Prodbox.Ses.InviteEvidence (retiredInviteMailEvidence)
+
 import Prodbox.ControlPlane.CallerPrincipal (CallerPrincipal)
 import Prodbox.Lifecycle.Authority.BackupRepair
   ( BackupRepairCommand
@@ -135,6 +149,10 @@ import Prodbox.Lifecycle.Authority.ClientRegistry
   , registeredClientTableConfigurationMatches
   , reserveRegisteredSubmission
   , validateRegisteredClientTable
+  )
+import Prodbox.Lifecycle.Authority.CompletedProviderPredecessor
+  ( ObservedCompletedProviderPredecessor
+  , ProviderPredecessorCoordinates
   )
 import Prodbox.Lifecycle.Authority.Config
   ( ConfigProposal
@@ -184,19 +202,55 @@ import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch.Internal
   , ProviderAdmissionEpochError
   , ProviderAdmissionFreezeRefusal
   , ProviderAdmissionFreshSubmissionRefusal (..)
+  , ProviderAdmissionRecoveryObservation
+  , ProviderAdmissionRecoveryRefusal
   , ProviderAdmissionRevokeRefusal
+  , ProviderBootstrapPredecessor
+  , ProviderBootstrapPredecessorPhase (ProviderBootstrapRevoked)
+  , ProviderCredentialLineageArchive
+  , ProviderCredentialMutationRefusal (..)
+  , ProviderCredentialMutationReservation
+  , ProviderCredentialRecoveryView
   , ProviderCredentialRevocationReceipt
   , ProviderPendingWork (NoPendingProviderWork, PendingProviderWork)
   , bindProviderAdmissionServingGenerationInternal
+  , completeProviderCredentialInstallInternal
+  , completeProviderCredentialRevokeInternal
   , confirmCascadeTerminalAuditReceipt
+  , freezeProviderAdmissionAtGenerationInternal
   , freezeProviderAdmissionForCascadeAuditInternal
   , initialLegacyProviderAdmissionEpochInternal
+  , observeProviderAdmissionRecoveryInternal
+  , observeProviderBootstrapPredecessorInternal
   , observedCascadeTerminalAuditReceiptInternal
+  , pendingProviderCredentialLineageArchiveInternal
   , providerAdmissionEpochView
   , providerAdmissionFreshSubmissionRefusalInternal
+  , providerAdmissionNeedsCredentialQuiescenceInternal
+  , providerBootstrapPredecessorPhase
+  , providerCredentialLineageArchiveReservationInternal
+  , providerCredentialRecoveryViewInternal
+  , providerCredentialRetirementInstallDraftMatchesInternal
+  , providerCredentialServingOperationInternal
+  , providerPredecessorCoordinatesInternal
   , recordCascadeTerminalAuditReceiptInternal
+  , reserveProviderCredentialCleanupInternal
+  , reserveProviderCredentialMutationAfterPredecessorInternal
+  , reserveProviderCredentialMutationInternal
   , revokeCascadeProviderCredentialInternal
   , validateProviderAdmissionEpochInternal
+  )
+import Prodbox.Lifecycle.Authority.ProviderCredentialAdmissionEvidence
+  ( ObservedProviderCredentialAdmission
+  , ProviderCredentialAdmissionKind (..)
+  , observedProviderCredentialAdmissionArchive
+  , observedProviderCredentialAdmissionKind
+  )
+import Prodbox.Lifecycle.Authority.ProviderCredentialCleanupEvidence
+  ( ObservedProviderCredentialCleanup
+  , observedCredentialCleanupParent
+  , observedCredentialCleanupPermitDigest
+  , observedCredentialCleanupReservation
   )
 import Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
   ( AuthorityPulumiCheckpointInvariantError
@@ -235,7 +289,7 @@ import Prodbox.Lifecycle.Authority.Submission
 import Prodbox.Lifecycle.CleanupRun (CleanupOperationId)
 import Prodbox.Lifecycle.Decommission.Frame (FrameDigest (FrameDigest))
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
-  ( ProviderIntent
+  ( ProviderIntent (RetiredSesInviteMailObservation)
   , validateProviderIntentEvidence
   )
 import Prodbox.Lifecycle.PulumiCheckpoint
@@ -585,6 +639,161 @@ authorityAggregateProviderAdmissionEpochView =
   providerAdmissionEpochView
     . internalAuthorityAggregateProviderAdmissionEpoch
 
+authorityAggregateNeedsProviderCredentialQuiescence :: AuthorityAdmissionAggregate -> Bool
+authorityAggregateNeedsProviderCredentialQuiescence =
+  providerAdmissionNeedsCredentialQuiescenceInternal
+    . internalAuthorityAggregateProviderAdmissionEpoch
+
+authorityAggregateProviderCredentialRecoveryView
+  :: AuthorityAdmissionAggregate -> ProviderCredentialRecoveryView
+authorityAggregateProviderCredentialRecoveryView =
+  providerCredentialRecoveryViewInternal . internalAuthorityAggregateProviderAdmissionEpoch
+
+authorityAggregateAllowsProviderCredentialRetirementInstall
+  :: AuthorityAdmissionAggregate -> ProviderCredentialMutationReservation -> Bool
+authorityAggregateAllowsProviderCredentialRetirementInstall aggregate =
+  providerCredentialRetirementInstallDraftMatchesInternal
+    (internalAuthorityAggregateProviderAdmissionEpoch aggregate)
+
+-- | Server-only folds, deliberately absent from the wire command universe.
+-- Completion consumes a transient proof produced by the actual completed
+-- publication and fresh-Agent observer, never a caller assertion.
+data AuthorityProviderCredentialMutationRefusal
+  = AuthorityCredentialMutationAdmissionClosed !AuthoritySubmissionGateRefusal
+  | AuthorityCredentialMutationPredecessorCompletionRequired
+  | AuthorityCredentialMutationReservationRefused !ProviderCredentialMutationRefusal
+  | AuthorityCredentialMutationArchiveMissing
+  deriving stock (Eq, Show)
+
+reserveAuthorityProviderCredentialMutation
+  :: AuthorityAdmissionAggregate
+  -> ProviderCredentialMutationReservation
+  -> Either
+       AuthorityProviderCredentialMutationRefusal
+       (AuthorityAdmissionAggregate, ProviderCredentialLineageArchive)
+reserveAuthorityProviderCredentialMutation aggregate reservation = do
+  _ <- first AuthorityCredentialMutationAdmissionClosed (activeAuthorityEpoch aggregate)
+  case authorityAggregatePendingCredentialArchive aggregate of
+    Just archive
+      | providerCredentialLineageArchiveReservationInternal archive == reservation ->
+          Right (aggregate, archive)
+      | otherwise ->
+          Left (AuthorityCredentialMutationReservationRefused ProviderCredentialInstallDifferentReservation)
+    Nothing -> reserveFreshAuthorityProviderCredentialMutation aggregate reservation
+
+reserveFreshAuthorityProviderCredentialMutation
+  :: AuthorityAdmissionAggregate
+  -> ProviderCredentialMutationReservation
+  -> Either
+       AuthorityProviderCredentialMutationRefusal
+       (AuthorityAdmissionAggregate, ProviderCredentialLineageArchive)
+reserveFreshAuthorityProviderCredentialMutation aggregate reservation = do
+  case observeProviderBootstrapPredecessorInternal epoch of
+    Just predecessor
+      | providerBootstrapPredecessorPhase predecessor == ProviderBootstrapRevoked ->
+          Left AuthorityCredentialMutationPredecessorCompletionRequired
+    _ -> Right ()
+  next <-
+    first
+      AuthorityCredentialMutationReservationRefused
+      (reserveProviderCredentialMutationInternal epoch (aggregatePendingProviderWork aggregate) reservation)
+  archive <-
+    maybe
+      (Left AuthorityCredentialMutationArchiveMissing)
+      Right
+      (pendingProviderCredentialLineageArchiveInternal next)
+  Right (aggregate {internalAuthorityAggregateProviderAdmissionEpoch = next}, archive)
+ where
+  epoch = internalAuthorityAggregateProviderAdmissionEpoch aggregate
+
+reserveAuthorityProviderCredentialMutationAfterPredecessor
+  :: AuthorityAdmissionAggregate
+  -> ProviderCredentialMutationReservation
+  -> ObservedCompletedProviderPredecessor
+  -> Either
+       AuthorityProviderCredentialMutationRefusal
+       (AuthorityAdmissionAggregate, ProviderCredentialLineageArchive)
+reserveAuthorityProviderCredentialMutationAfterPredecessor aggregate reservation proof = do
+  _ <- first AuthorityCredentialMutationAdmissionClosed (activeAuthorityEpoch aggregate)
+  next <-
+    first
+      AuthorityCredentialMutationReservationRefused
+      ( reserveProviderCredentialMutationAfterPredecessorInternal
+          (internalAuthorityAggregateProviderAdmissionEpoch aggregate)
+          (aggregatePendingProviderWork aggregate)
+          reservation
+          proof
+      )
+  archive <-
+    maybe
+      (Left AuthorityCredentialMutationArchiveMissing)
+      Right
+      (pendingProviderCredentialLineageArchiveInternal next)
+  Right (aggregate {internalAuthorityAggregateProviderAdmissionEpoch = next}, archive)
+
+authorityAggregateProviderPredecessorCoordinates
+  :: AuthorityAdmissionAggregate -> Maybe ProviderPredecessorCoordinates
+authorityAggregateProviderPredecessorCoordinates =
+  providerPredecessorCoordinatesInternal . internalAuthorityAggregateProviderAdmissionEpoch
+
+reserveAuthorityProviderCredentialCleanup
+  :: AuthorityAdmissionAggregate
+  -> ObservedProviderCredentialCleanup
+  -> Either
+       AuthorityProviderCredentialMutationRefusal
+       (AuthorityAdmissionAggregate, ProviderCredentialLineageArchive)
+reserveAuthorityProviderCredentialCleanup aggregate evidence = do
+  _ <- first AuthorityCredentialMutationAdmissionClosed (activeAuthorityEpoch aggregate)
+  case aggregatePendingProviderWork aggregate of
+    NoPendingProviderWork -> Right ()
+    PendingProviderWork count ->
+      Left (AuthorityCredentialMutationReservationRefused (ProviderCredentialMutationPendingWork count))
+  next <-
+    first
+      AuthorityCredentialMutationReservationRefused
+      ( reserveProviderCredentialCleanupInternal
+          (internalAuthorityAggregateProviderAdmissionEpoch aggregate)
+          (observedCredentialCleanupParent evidence)
+          (observedCredentialCleanupReservation evidence)
+          (observedCredentialCleanupPermitDigest evidence)
+      )
+  archive <-
+    maybe
+      (Left AuthorityCredentialMutationArchiveMissing)
+      Right
+      (pendingProviderCredentialLineageArchiveInternal next)
+  Right (aggregate {internalAuthorityAggregateProviderAdmissionEpoch = next}, archive)
+
+completeAuthorityProviderCredentialMutation
+  :: AuthorityAdmissionAggregate
+  -> ObservedProviderCredentialAdmission
+  -> Either AuthorityProviderCredentialMutationRefusal AuthorityAdmissionAggregate
+completeAuthorityProviderCredentialMutation aggregate evidence = do
+  _ <- first AuthorityCredentialMutationAdmissionClosed (activeAuthorityEpoch aggregate)
+  let archive = observedProviderCredentialAdmissionArchive evidence
+      reservation = providerCredentialLineageArchiveReservationInternal archive
+  next <- case observedProviderCredentialAdmissionKind evidence of
+    ProviderCredentialAdmissionInstalled ->
+      first
+        AuthorityCredentialMutationReservationRefused
+        (completeProviderCredentialInstallInternal epoch reservation archive)
+    ProviderCredentialAdmissionRevoked retired ->
+      first
+        AuthorityCredentialMutationReservationRefused
+        (completeProviderCredentialRevokeInternal epoch reservation archive retired)
+  Right (aggregate {internalAuthorityAggregateProviderAdmissionEpoch = next})
+ where
+  epoch = internalAuthorityAggregateProviderAdmissionEpoch aggregate
+
+authorityAggregatePendingCredentialArchive
+  :: AuthorityAdmissionAggregate -> Maybe ProviderCredentialLineageArchive
+authorityAggregatePendingCredentialArchive =
+  pendingProviderCredentialLineageArchiveInternal . internalAuthorityAggregateProviderAdmissionEpoch
+
+authorityAggregateServingCredentialOperation :: AuthorityAdmissionAggregate -> Maybe Text
+authorityAggregateServingCredentialOperation =
+  providerCredentialServingOperationInternal . internalAuthorityAggregateProviderAdmissionEpoch
+
 -- | Sprint 7.36: the terminal-audit receipt this retained object carries.
 --
 -- This is the read half of the independent read-back: a caller that committed
@@ -739,6 +948,7 @@ data AuthoritySubmissionGateRefusal
   | AuthorityMigrationWritersQuiesced
   | AuthorityProviderAdmissionCascadeFrozen
   | AuthorityProviderAdmissionCredentialRevoked
+  | AuthorityProviderAdmissionCredentialMutationPending
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -879,6 +1089,11 @@ data AuthorityAdmissionCommand
     RevokeCascadeProviderCredential
       !CascadeAuditFreezeBinding
       !ProviderCredentialRevocationReceipt
+  | FreezeProviderAdmissionAtGeneration
+      !Natural
+      !CascadeAuditFreezeBinding
+  | ObserveProviderAdmissionRecovery !CascadeAuditFreezeBinding
+  | ObserveProviderBootstrapPredecessor
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -899,6 +1114,9 @@ data AuthorityAdmissionCommandTag
   | FreezeProviderAdmissionForCascadeAuditTag
   | RecordCascadeTerminalAuditReceiptTag
   | RevokeCascadeProviderCredentialTag
+  | FreezeProviderAdmissionAtGenerationTag
+  | ObserveProviderAdmissionRecoveryTag
+  | ObserveProviderBootstrapPredecessorTag
   deriving stock (Bounded, Enum, Eq, Ord, Show)
 
 -- | Total over the closed command universe, so a new command is an
@@ -919,6 +1137,11 @@ authorityAdmissionCommandTag command = case command of
     RecordCascadeTerminalAuditReceiptTag
   RevokeCascadeProviderCredential _ _ ->
     RevokeCascadeProviderCredentialTag
+  FreezeProviderAdmissionAtGeneration _ _ ->
+    FreezeProviderAdmissionAtGenerationTag
+  ObserveProviderAdmissionRecovery _ ->
+    ObserveProviderAdmissionRecoveryTag
+  ObserveProviderBootstrapPredecessor -> ObserveProviderBootstrapPredecessorTag
 
 -- | Sprint 4.85: the closed vocabulary of control transitions an authenticated
 -- caller may issue, as data.
@@ -941,6 +1164,9 @@ data AuthorityControlRoute
   | AuthorityControlCascadeAuditFreezeRoute
   | AuthorityControlCascadeAuditReceiptRoute
   | AuthorityControlCascadeCredentialRevokeRoute
+  | AuthorityControlCascadeGenerationFreezeRoute
+  | AuthorityControlProviderRecoveryObservationRoute
+  | AuthorityControlProviderBootstrapPredecessorRoute
   deriving stock (Bounded, Enum, Eq, Ord, Show)
 
 authorityControlRouteTag :: AuthorityControlRoute -> Text
@@ -957,6 +1183,12 @@ authorityControlRouteTag route = case route of
     "authority-control/record-cascade-terminal-audit-receipt"
   AuthorityControlCascadeCredentialRevokeRoute ->
     "authority-control/revoke-cascade-provider-credential"
+  AuthorityControlCascadeGenerationFreezeRoute ->
+    "authority-control/freeze-provider-admission-at-generation"
+  AuthorityControlProviderRecoveryObservationRoute ->
+    "authority-control/observe-provider-admission-recovery"
+  AuthorityControlProviderBootstrapPredecessorRoute ->
+    "authority-control/observe-provider-bootstrap-predecessor"
 
 -- | Which aggregate command one externally admissible route issues.
 authorityControlRouteIssuedCommandTag
@@ -974,6 +1206,11 @@ authorityControlRouteIssuedCommandTag route = case route of
     RecordCascadeTerminalAuditReceiptTag
   AuthorityControlCascadeCredentialRevokeRoute ->
     RevokeCascadeProviderCredentialTag
+  AuthorityControlCascadeGenerationFreezeRoute ->
+    FreezeProviderAdmissionAtGenerationTag
+  AuthorityControlProviderRecoveryObservationRoute ->
+    ObserveProviderAdmissionRecoveryTag
+  AuthorityControlProviderBootstrapPredecessorRoute -> ObserveProviderBootstrapPredecessorTag
 
 -- | Does any externally admissible control route issue the Cascade-audit
 -- freeze?
@@ -997,6 +1234,7 @@ data AuthorityAdmissionCommandRefusal
   | AuthorityMigrationBeforeGenesis
   | AuthorityMigrationDuringBackupRepair
   | AuthorityMigrationEpochRegressed !AuthorityEpoch !AuthorityEpoch
+  | AuthorityProviderAdmissionRecoveryRefused !ProviderAdmissionRecoveryRefusal
   deriving stock (Eq, Show)
 
 data AuthorityAdmissionDecision
@@ -1011,6 +1249,8 @@ data AuthorityAdmissionDecision
   | AuthorityMigrationImportDecided !MigrationImportDecision
   | AuthorityForwardMigrationDecided !MigrationForwardDecision
   | AuthorityAdmissionCommandRefused !AuthorityAdmissionCommandRefusal
+  | AuthorityProviderAdmissionRecoveryObserved !ProviderAdmissionRecoveryObservation
+  | AuthorityProviderBootstrapPredecessorObserved !(Maybe ProviderBootstrapPredecessor)
   deriving stock (Eq, Show)
 
 -- | Apply one control transition to the same object used by submission.  A
@@ -1091,6 +1331,32 @@ stepAuthorityAdmission aggregate command = case command of
             { internalAuthorityAggregateProviderAdmissionEpoch = nextEpoch
             }
         )
+  FreezeProviderAdmissionAtGeneration generation binding ->
+    case freezeProviderAdmissionAtGenerationInternal
+      (internalAuthorityAggregateProviderAdmissionEpoch aggregate)
+      generation
+      binding
+      (aggregatePendingProviderWork aggregate) of
+      Left refusal -> refuse (AuthorityProviderAdmissionFreezeRefused refusal)
+      Right nextEpoch ->
+        ( AuthorityProviderAdmissionFrozenForCascadeAudit
+        , aggregate
+            { internalAuthorityAggregateProviderAdmissionEpoch = nextEpoch
+            }
+        )
+  ObserveProviderAdmissionRecovery binding ->
+    case observeProviderAdmissionRecoveryInternal
+      (internalAuthorityAggregateProviderAdmissionEpoch aggregate)
+      binding of
+      Left refusal -> refuse (AuthorityProviderAdmissionRecoveryRefused refusal)
+      Right observation -> (AuthorityProviderAdmissionRecoveryObserved observation, aggregate)
+  ObserveProviderBootstrapPredecessor ->
+    ( AuthorityProviderBootstrapPredecessorObserved
+        ( observeProviderBootstrapPredecessorInternal
+            (internalAuthorityAggregateProviderAdmissionEpoch aggregate)
+        )
+    , aggregate
+    )
   RecordCascadeTerminalAuditReceipt binding receipt ->
     case recordCascadeTerminalAuditReceiptInternal
       (internalAuthorityAggregateProviderAdmissionEpoch aggregate)
@@ -1442,7 +1708,7 @@ stepRegisteredProviderSubmission aggregate caller generation submissionKey diges
                   AuthorityProviderPending {} ->
                     AuthorityProviderSubmissionDuplicatePending operation
                   AuthorityProviderCompleted _ _ evidence _ ->
-                    AuthorityProviderSubmissionDuplicateCompleted operation evidence
+                    AuthorityProviderSubmissionDuplicateCompleted operation (providerReplyEvidence intent evidence)
               , submitted
               )
       _ ->
@@ -1452,6 +1718,13 @@ stepRegisteredProviderSubmission aggregate caller generation submissionKey diges
               (operationIdSequence operation)
           )
 
+-- Historical completions remain immutable, but their plaintext action token is
+-- never projected back onto a current control-plane response.
+providerReplyEvidence :: ProviderIntent -> Text -> Text
+providerReplyEvidence intent evidence = case intent of
+  RetiredSesInviteMailObservation {} -> retiredInviteMailEvidence
+  _ -> evidence
+
 providerAdmissionGateRefusal
   :: ProviderAdmissionFreshSubmissionRefusal
   -> AuthoritySubmissionGateRefusal
@@ -1460,6 +1733,8 @@ providerAdmissionGateRefusal refusal = case refusal of
     AuthorityProviderAdmissionCascadeFrozen
   ProviderAdmissionFreshSubmissionCredentialRevoked ->
     AuthorityProviderAdmissionCredentialRevoked
+  ProviderAdmissionFreshSubmissionCredentialMutationPending ->
+    AuthorityProviderAdmissionCredentialMutationPending
 
 -- | Settle the exact retained Provider operation and its submission ledger in
 -- one transition.  The completed evidence is immutable; a divergent replay is
@@ -1504,7 +1779,8 @@ stepRegisteredProviderSettlement caller generation operation intent evidence agg
 
   settle _ (AuthorityProviderCompleted _ _ existing _)
     | existing == evidence =
-        pure (AuthorityProviderSettlementAlreadyCompleted existing, aggregate)
+        pure
+          (AuthorityProviderSettlementAlreadyCompleted (providerReplyEvidence intent existing), aggregate)
     | otherwise =
         pure
           ( AuthorityProviderSettlementRefused "provider completion evidence mismatch"

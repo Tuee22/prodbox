@@ -1,3 +1,6 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -6,18 +9,45 @@ module LifecycleAuthorityProviderAdmissionEpoch
   )
 where
 
-import Control.Monad (filterM)
+import Codec.Serialise (Serialise)
+import Control.Monad (filterM, forM_)
 import Data.ByteString qualified as ByteString
+import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Either (isLeft)
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (isInfixOf, isPrefixOf, sort)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Word (Word8)
+import GHC.Generics (Generic)
 import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
-  ( authorityAdmissionStateCodec
+  ( AuthorityAdmissionRepository (..)
+  , AuthorityAdmissionSnapshot (..)
+  , AuthorityControlPayload (..)
+  , AuthorityTransitionResult (..)
+  , authorityAdmissionStateCodec
+  , authorityControlPayloadCommand
+  , authorityControlPayloadRoute
+  , authorityTransitionHttpStatus
+  , authorityTransitionResponseBody
+  , serveAuthorityControlRequest
+  )
+import Prodbox.ControlPlane.AuthorityControlClient
+  ( AuthorityControlClientError (..)
+  , decodeAuthorityControlTextResponse
+  , decodeProviderAdmissionRecoveryResponse
+  , decodeProviderBootstrapPredecessorResponse
   )
 import Prodbox.ControlPlane.CallerPrincipal (CallerPrincipal (CallerService))
+import Prodbox.ControlPlane.Client (ControlPlaneResponse (..))
+import Prodbox.ControlPlane.Codec
+  ( decodeControlPlaneRequest
+  , decodeControlPlaneResponse
+  , encodeControlPlaneRequest
+  , encodeControlPlaneResponse
+  )
+import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionAggregate
   , AuthorityAdmissionCommand (..)
@@ -66,18 +96,26 @@ import Prodbox.Lifecycle.CheckpointAuthority
   ( ModelBCodec (decodeModelBValue, encodeModelBValue)
   )
 import Prodbox.Lifecycle.CleanupRun
-  ( mkCleanupAttemptId
+  ( CleanupDigest
+  , CleanupRunId
+  , mkCleanupAttemptId
   , mkCleanupDigest
   , mkCleanupNodeId
   , mkCleanupOperationId
   , mkCleanupRunId
   )
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
-  ( ProviderIntent (IssueEksClientAuth, ObserveOperationalIdentity)
+  ( ProviderIntent (IssueEksClientAuth, ObserveOperationalIdentity, ObserveOwnedResourceTags)
+  , ProviderOwnedTagQuery (ProviderOwnedTagKeyQuery)
   , maximumProviderIntentEvidenceCharacters
   , mkEksClientAuthRequest
   , providerIntentEvidenceMaximumCharacters
   , validateProviderIntentEvidence
+  )
+import Prodbox.Lifecycle.Teardown.ProviderDispatch
+  ( mkFencedTerminalAuditProviderDispatchKey
+  , mkTerminalAuditProviderDispatchKey
+  , providerDispatchSubmissionKey
   )
 import Prodbox.Runtime.Role (RuntimeRole (ProviderWorkerRuntime))
 import System.Directory (doesDirectoryExist, doesFileExist, listDirectory)
@@ -99,6 +137,283 @@ issueEksClientAuthIntent =
 lifecycleAuthorityProviderAdmissionEpochSuite :: SuiteBuilder ()
 lifecycleAuthorityProviderAdmissionEpochSuite =
   describe "Lifecycle Provider admission epoch" $ do
+    it "discovers only the retained bootstrap predecessor without any aggregate write" $ do
+      initial <- expectRightIO (initialCleanInstallAuthority 1 1)
+      serving <- decidedAggregate initial (BindProviderAdmissionGeneration 7)
+      frozen <- decidedAggregate initial (FreezeProviderAdmissionAtGeneration 7 auditFreezeBinding)
+      recorded <-
+        decidedAggregate frozen (RecordCascadeTerminalAuditReceipt auditFreezeBinding auditReceipt)
+      revoked <-
+        decidedAggregate
+          recorded
+          (RevokeCascadeProviderCredential auditFreezeBinding recoveryRevocationProof)
+      mapM_
+        ( \(aggregate, present, expectedPhase) -> do
+            (result, writes) <-
+              observeControlFixture (Right aggregate) AuthorityControlObserveProviderBootstrapPredecessor
+            writes `shouldBe` 0
+            authorityTransitionHttpStatus result `shouldBe` ReplyOk
+            predecessor <-
+              expectRightIO
+                ( decodeProviderBootstrapPredecessorResponse
+                    (ControlPlaneResponse 200 (LazyByteString.toStrict (authorityTransitionResponseBody result)))
+                )
+            case predecessor of
+              Nothing -> present `shouldBe` False
+              Just metadata -> do
+                present `shouldBe` True
+                providerBootstrapPredecessorRunId metadata
+                  `shouldBe` expectRight (mkCleanupRunId "provider-epoch-audit-run")
+                providerBootstrapPredecessorGraphDigest metadata
+                  `shouldBe` expectRight (mkCleanupDigest (Text.replicate 64 "b"))
+                providerBootstrapPredecessorScopeDigest metadata `shouldBe` auditScopeDigest
+                Just (providerBootstrapPredecessorPhase metadata) `shouldBe` expectedPhase
+                LazyByteString.length (authorityTransitionResponseBody result) `shouldSatisfy` (< 1024)
+            snd (stepAuthorityAdmission aggregate ObserveProviderBootstrapPredecessor) `shouldBe` aggregate
+        )
+        [ (initial, False, Nothing)
+        , (serving, False, Nothing)
+        , (frozen, True, Just ProviderBootstrapFrozen)
+        , (recorded, True, Just ProviderBootstrapRecorded)
+        , (revoked, True, Just ProviderBootstrapRevoked)
+        ]
+
+    it "keeps unavailable predecessor reads distinct from absence and rejects malformed metadata" $ do
+      (failed, writes) <-
+        observeControlFixture (Left "unavailable") AuthorityControlObserveProviderBootstrapPredecessor
+      writes `shouldBe` 0
+      authorityTransitionHttpStatus failed `shouldBe` ReplyServiceUnavailable
+      decodeProviderBootstrapPredecessorResponse
+        (ControlPlaneResponse 503 (LazyByteString.toStrict (authorityTransitionResponseBody failed)))
+        `shouldSatisfy` isLeft
+      let malformed =
+            BootstrapPredecessorWireFixture
+              (expectRight (mkCleanupRunId "provider-epoch-audit-run"))
+              (expectRight (mkCleanupDigest (Text.replicate 64 "a")))
+              "invalid scope"
+              ProviderBootstrapRevoked
+      decodeProviderBootstrapPredecessorResponse
+        (ControlPlaneResponse 200 (LazyByteString.toStrict (encodeControlPlaneResponse (Just malformed))))
+        `shouldSatisfy` isLeft
+      decodeProviderBootstrapPredecessorResponse
+        (ControlPlaneResponse 200 "authority-provider-bootstrap-predecessor-observed")
+        `shouldSatisfy` isLeft
+      decodeProviderBootstrapPredecessorResponse (ControlPlaneResponse 200 (ByteString.replicate 65537 0))
+        `shouldSatisfy` isLeft
+
+    it "appends the bootstrap query at wire index ten and leaves earlier control bytes unchanged" $ do
+      let query = AuthorityControlObserveProviderBootstrapPredecessor
+          bytes = encodeControlPlaneRequest query
+      LazyByteString.take 5 bytes `shouldBe` LazyByteString.pack [0x83, 0, 1, 0x81, 10]
+      decodeControlPlaneRequest 4096 bytes `shouldBe` Right query
+      authorityControlPayloadCommand query `shouldBe` ObserveProviderBootstrapPredecessor
+      authorityControlPayloadRoute query `shouldBe` AuthorityControlProviderBootstrapPredecessorRoute
+      LazyByteString.take
+        5
+        (encodeControlPlaneRequest (AuthorityControlObserveProviderAdmissionRecovery auditFreezeBinding))
+        `shouldBe` LazyByteString.pack [0x83, 0, 1, 0x82, 9]
+
+    it "Sprint 6.5 refuses malformed generation and foreign audit metadata after canonical decoding" $ do
+      let attempt = expectRight (mkCleanupAttemptId "provider-epoch-audit-attempt")
+          otherReceipt =
+            expectRight
+              ( mkCascadeTerminalAuditReceipt
+                  (Text.replicate 64 "f")
+                  (Text.replicate 64 "1")
+                  (Text.replicate 64 "2")
+                  CascadeTerminalAuditReceiptClean
+              )
+          phases =
+            [ ProviderRecoveryServing 0
+            , ProviderRecoveryFrozen 0 attempt
+            , ProviderRecoveryRecorded 7 attempt otherReceipt
+            , ProviderRecoveryRevoked 7 attempt otherReceipt recoveryRevocationProof
+            ]
+      mapM_
+        ( \phase -> do
+            let bytes =
+                  encodeControlPlaneResponse
+                    (RecoveryObservationWireFixture (cascadeAuditRecoveryRequestDigest auditFreezeBinding) phase)
+            decoded <- expectRightIO (decodeControlPlaneResponse 4096 bytes)
+            providerAdmissionRecoveryPhase decoded `shouldBe` phase
+            decodeProviderAdmissionRecoveryResponse
+              auditFreezeBinding
+              (ControlPlaneResponse 200 (LazyByteString.toStrict bytes))
+              `shouldSatisfy` isLeft
+        )
+        phases
+
+    it "Sprint 6.5 observes recovery without any aggregate write and restores the original attempt" $ do
+      initial <- expectRightIO (initialCleanInstallAuthority 1 1)
+      frozen <- decidedAggregate initial (FreezeProviderAdmissionAtGeneration 7 auditFreezeBinding)
+      let takeover = auditFreezeBindingFor "provider-epoch-audit-run" "takeover-attempt"
+      (result, writes) <- observeRecoveryFixture (Right frozen) takeover
+      writes `shouldBe` 0
+      observation <- recoveryObservation result
+      providerAdmissionRecoveryPhase observation
+        `shouldBe` ProviderRecoveryFrozen 7 (expectRight (mkCleanupAttemptId "provider-epoch-audit-attempt"))
+      restoreCascadeAuditRecoveryBinding takeover observation `shouldBe` Right auditFreezeBinding
+      cascadeAuditRecoveryRequestDigest takeover
+        `shouldBe` cascadeAuditRecoveryRequestDigest auditFreezeBinding
+      decodeProviderAdmissionRecoveryResponse
+        takeover
+        (ControlPlaneResponse 200 (LazyByteString.toStrict (authorityTransitionResponseBody result)))
+        `shouldBe` Right observation
+
+    it "Sprint 6.5 recovery refuses another cascade without returning its reservation" $ do
+      initial <- expectRightIO (initialCleanInstallAuthority 1 1)
+      frozen <- decidedAggregate initial (FreezeProviderAdmissionAtGeneration 7 auditFreezeBinding)
+      let neighboringBinding = auditFreezeBindingFor "neighboring-run" "neighboring-attempt"
+      (result, writes) <- observeRecoveryFixture (Right frozen) neighboringBinding
+      writes `shouldBe` 0
+      authorityTransitionHttpStatus result `shouldBe` ReplyConflict
+      decodeProviderAdmissionRecoveryResponse
+        neighboringBinding
+        (ControlPlaneResponse 409 (LazyByteString.toStrict (authorityTransitionResponseBody result)))
+        `shouldBe` Left (AuthorityControlRefused "authority-transition-refused")
+
+    it "Sprint 6.5 recovery keeps a failed read unobservable without manufacturing a serving epoch" $ do
+      (result, writes) <- observeRecoveryFixture (Left "unavailable") auditFreezeBinding
+      writes `shouldBe` 0
+      result `shouldBe` AuthorityTransitionReadFailed "unavailable"
+      authorityTransitionHttpStatus result `shouldBe` ReplyServiceUnavailable
+
+    it "Sprint 6.5 recovery observes serving without minting a frozen reservation" $ do
+      initial <- expectRightIO (initialCleanInstallAuthority 1 1)
+      (result, writes) <- observeRecoveryFixture (Right initial) auditFreezeBinding
+      writes `shouldBe` 0
+      observation <- recoveryObservation result
+      providerAdmissionRecoveryPhase observation `shouldBe` ProviderRecoveryLegacyServingUnbound
+      restoreCascadeAuditRecoveryBinding auditFreezeBinding observation
+        `shouldBe` Left ProviderRecoveryNotFrozen
+
+    it "Sprint 6.5 recovery preserves recorded and revoked receipts under the original attempt" $ do
+      initial <- expectRightIO (initialCleanInstallAuthority 1 1)
+      bound <- decidedAggregate initial (BindProviderAdmissionGeneration 7)
+      frozen <- decidedAggregate initial (FreezeProviderAdmissionAtGeneration 7 auditFreezeBinding)
+      recorded <-
+        decidedAggregate frozen (RecordCascadeTerminalAuditReceipt auditFreezeBinding auditReceipt)
+      revoked <-
+        decidedAggregate
+          recorded
+          (RevokeCascadeProviderCredential auditFreezeBinding recoveryRevocationProof)
+      let attempt = expectRight (mkCleanupAttemptId "provider-epoch-audit-attempt")
+          takeover = auditFreezeBindingFor "provider-epoch-audit-run" "takeover-attempt"
+      mapM_
+        ( \(aggregate, expected) -> do
+            (result, writes) <- observeRecoveryFixture (Right aggregate) takeover
+            writes `shouldBe` 0
+            observation <- recoveryObservation result
+            providerAdmissionRecoveryPhase observation `shouldBe` expected
+            decodeProviderAdmissionRecoveryResponse
+              takeover
+              (ControlPlaneResponse 200 (LazyByteString.toStrict (authorityTransitionResponseBody result)))
+              `shouldBe` Right observation
+        )
+        [ (bound, ProviderRecoveryServing 7)
+        , (recorded, ProviderRecoveryRecorded 7 attempt auditReceipt)
+        , (revoked, ProviderRecoveryRevoked 7 attempt auditReceipt recoveryRevocationProof)
+        ]
+
+    it "Sprint 6.5 recovery rejects a response bound to a neighboring request" $ do
+      initial <- expectRightIO (initialCleanInstallAuthority 1 1)
+      (result, _) <- observeRecoveryFixture (Right initial) auditFreezeBinding
+      observation <- recoveryObservation result
+      let neighboringBinding = auditFreezeBindingFor "neighboring-run" "neighboring-attempt"
+      restoreCascadeAuditRecoveryBinding neighboringBinding observation
+        `shouldBe` Left ProviderRecoveryResponseMismatch
+      decodeProviderAdmissionRecoveryResponse
+        neighboringBinding
+        (ControlPlaneResponse 200 (LazyByteString.toStrict (authorityTransitionResponseBody result)))
+        `shouldBe` Left AuthorityControlRecoveryResponseMismatch
+
+    it "Sprint 6.5 preserves ordinary text replies and rejects them as recovery observations" $ do
+      let result = AuthorityTransitionDecided AuthorityProviderAdmissionFrozenForCascadeAudit
+          bytes = authorityTransitionResponseBody result
+      bytes `shouldBe` "authority-provider-admission-frozen-for-cascade-audit"
+      decodeAuthorityControlTextResponse (ControlPlaneResponse 200 (LazyByteString.toStrict bytes))
+        `shouldBe` Right "authority-provider-admission-frozen-for-cascade-audit"
+      decodeProviderAdmissionRecoveryResponse
+        auditFreezeBinding
+        (ControlPlaneResponse 200 (LazyByteString.toStrict bytes))
+        `shouldSatisfy` isLeft
+
+    it "Sprint 6.5 atomically binds and freezes the legacy serving epoch" $ do
+      initial <- expectRightIO (initialCleanInstallAuthority 1 1)
+      let (decision, frozen) =
+            stepAuthorityAdmission initial (FreezeProviderAdmissionAtGeneration 7 auditFreezeBinding)
+      decision `shouldBe` AuthorityProviderAdmissionFrozenForCascadeAudit
+      authorityAggregateProviderAdmissionEpochView frozen
+        `shouldBe` ProviderAdmissionCascadeAuditFrozen 7
+
+    it "Sprint 6.5 rejects pending work without the split protocol's partial bind" $ do
+      closed <- expectRightIO (initialCleanInstallAuthorityWithRegisteredClients 4 4 registry)
+      (_, pending) <-
+        expectRightIO
+          ( stepRegisteredProviderSubmission
+              (openAdmission closed)
+              providerCaller
+              providerGeneration
+              providerSubmissionKey
+              providerDigest
+              ObserveOperationalIdentity
+              ProviderOperationUnownedByCleanupRun
+          )
+      assertAdmissionRefusedUnchanged pending (FreezeProviderAdmissionAtGeneration 7 auditFreezeBinding)
+      splitBound <- decidedAggregate pending (BindProviderAdmissionGeneration 7)
+      assertAdmissionRefusedUnchanged
+        splitBound
+        (FreezeProviderAdmissionForCascadeAudit auditFreezeBinding)
+      authorityAggregateProviderAdmissionEpochView pending
+        `shouldBe` ProviderAdmissionLegacyServingUnbound
+      authorityAggregateProviderAdmissionEpochView splitBound
+        `shouldBe` ProviderAdmissionServing 7
+
+    it "Sprint 6.5 withholds an invalid or neighboring generation without changing state" $ do
+      initial <- expectRightIO (initialCleanInstallAuthority 1 1)
+      assertAdmissionRefusedUnchanged initial (FreezeProviderAdmissionAtGeneration 0 auditFreezeBinding)
+      bound <- decidedAggregate initial (BindProviderAdmissionGeneration 7)
+      assertAdmissionRefusedUnchanged bound (FreezeProviderAdmissionAtGeneration 8 auditFreezeBinding)
+
+    it "Sprint 6.5 replays an identical atomic freeze without replacing its recorded audit" $ do
+      initial <- expectRightIO (initialCleanInstallAuthority 1 1)
+      let command = FreezeProviderAdmissionAtGeneration 7 auditFreezeBinding
+      frozen <- decidedAggregate initial command
+      decidedAggregate frozen command `shouldReturn` frozen
+      recorded <-
+        decidedAggregate frozen (RecordCascadeTerminalAuditReceipt auditFreezeBinding auditReceipt)
+      decidedAggregate recorded command `shouldReturn` recorded
+      assertAdmissionRefusedUnchanged recorded (FreezeProviderAdmissionAtGeneration 8 auditFreezeBinding)
+
+    it "Sprint 6.5 cannot use atomic freeze to reopen a revoked epoch" $ do
+      initial <- expectRightIO (initialCleanInstallAuthority 1 1)
+      frozen <- decidedAggregate initial (FreezeProviderAdmissionAtGeneration 7 auditFreezeBinding)
+      recorded <-
+        decidedAggregate frozen (RecordCascadeTerminalAuditReceipt auditFreezeBinding auditReceipt)
+      let revokedProof =
+            expectRight
+              ( mkProviderCredentialRevocationReceipt
+                  (expectRight (mkCleanupDigest (Text.replicate 64 "c")))
+                  (expectRight (mkCleanupDigest (Text.replicate 64 "d")))
+              )
+      revoked <-
+        decidedAggregate recorded (RevokeCascadeProviderCredential auditFreezeBinding revokedProof)
+      assertAdmissionRefusedUnchanged revoked (FreezeProviderAdmissionAtGeneration 7 auditFreezeBinding)
+      assertAdmissionRefusedUnchanged revoked (FreezeProviderAdmissionAtGeneration 8 auditFreezeBinding)
+
+    it "Sprint 6.5 appends the atomic payload without changing earlier wire constructor indices" $ do
+      let oldPayload = AuthorityControlFreezeProviderAdmissionForCascadeAudit auditFreezeBinding
+          newPayload = AuthorityControlFreezeProviderAdmissionAtGeneration 7 auditFreezeBinding
+          oldBytes = encodeControlPlaneRequest oldPayload
+          newBytes = encodeControlPlaneRequest newPayload
+      LazyByteString.take 5 oldBytes `shouldBe` LazyByteString.pack [0x83, 0, 1, 0x82, 5]
+      LazyByteString.take 5 newBytes `shouldBe` LazyByteString.pack [0x83, 0, 1, 0x83, 8]
+      decodeControlPlaneRequest 4096 oldBytes `shouldBe` Right oldPayload
+      decodeControlPlaneRequest 4096 newBytes `shouldBe` Right newPayload
+      authorityControlPayloadRoute newPayload `shouldBe` AuthorityControlCascadeGenerationFreezeRoute
+      authorityControlPayloadCommand newPayload
+        `shouldBe` FreezeProviderAdmissionAtGeneration 7 auditFreezeBinding
+
     it "decodes the exact canonical v6 bytes as LegacyServingUnbound" $ do
       ByteString.length legacyV6Fixture `shouldBe` 119
       ByteString.take 3 legacyV6Fixture `shouldBe` ByteString.pack [0x83, 0x00, 0x06]
@@ -123,6 +438,68 @@ lifecycleAuthorityProviderAdmissionEpochSuite =
         `shouldSatisfy` isLeft
       decodeModelBValue (authorityAdmissionStateCodec 1 1 1) legacyV6Fixture
         `shouldSatisfy` isLeft
+
+    it "CASCADE-FENCED-AUDIT-REPLAY-2026-10-20 cannot reuse a completed unfenced query" $ do
+      closed <- expectRightIO (initialCleanInstallAuthorityWithRegisteredClients 4 4 registry)
+      let initial = openAdmission closed
+          operationRef = expectRight (mkCleanupOperationId "fenced-audit-replay/operation")
+          intent = ObserveOwnedResourceTags (ProviderOwnedTagKeyQuery "prodbox.io/managed-by")
+          oldKey =
+            providerDispatchSubmissionKey (expectRight (mkTerminalAuditProviderDispatchKey operationRef intent))
+          -- The retained v1 completion cannot answer the fenced lane's
+          -- separately named, freshly admitted query.
+          fencedKey =
+            providerDispatchSubmissionKey
+              (expectRight (mkFencedTerminalAuditProviderDispatchKey operationRef intent))
+          binding =
+            expectRight
+              ( mkCascadeAuditFreezeBinding
+                  (expectRight (mkCleanupRunId "fenced-audit-replay/run"))
+                  (expectRight (mkCleanupDigest (Text.replicate 64 "a")))
+                  (expectRight (mkCleanupDigest (Text.replicate 64 "b")))
+                  auditScopeDigest
+                  (expectRight (mkCleanupNodeId "fenced-audit-replay/node"))
+                  operationRef
+                  (expectRight (mkCleanupAttemptId "fenced-audit-replay/attempt"))
+                  [fencedKey]
+              )
+      (admitted, pending) <-
+        expectRightIO
+          ( stepRegisteredProviderSubmission
+              initial
+              providerCaller
+              providerGeneration
+              oldKey
+              providerDigest
+              intent
+              ProviderOperationUnownedByCleanupRun
+          )
+      operation <- acceptedOperation admitted
+      (_, completed) <-
+        expectRightIO
+          ( stepRegisteredProviderSettlement
+              providerCaller
+              providerGeneration
+              operation
+              intent
+              "old-unfenced-evidence"
+              pending
+          )
+      frozen <- decidedAggregate completed (FreezeProviderAdmissionAtGeneration 7 binding)
+      (afterFreeze, _) <-
+        expectRightIO
+          ( stepRegisteredProviderSubmission
+              frozen
+              providerCaller
+              providerGeneration
+              fencedKey
+              providerDigest
+              intent
+              ProviderOperationUnownedByCleanupRun
+          )
+      case afterFreeze of
+        AuthorityProviderSubmissionAccepted _ -> pure ()
+        other -> expectationFailure ("the fenced audit reused a pre-freeze answer: " <> show other)
 
     it "keeps legacy submissions compatible with exact duplicate and settlement replay" $ do
       closed <-
@@ -272,6 +649,29 @@ lifecycleAuthorityProviderAdmissionEpochSuite =
     -- Sprint 4.85: the two transitions this module previously described as
     -- absent. Every arm is a decision a caller could otherwise get wrong in a
     -- way no type would catch.
+    it "keeps text control responses bounded, strict UTF-8 and separate from metadata CBOR" $ do
+      decodeAuthorityControlTextResponse (ControlPlaneResponse 200 "authority-migration-started")
+        `shouldBe` Right "authority-migration-started"
+      decodeAuthorityControlTextResponse (ControlPlaneResponse 503 "authority-transition-unavailable")
+        `shouldBe` Left (AuthorityControlHttpStatus 503 "authority-transition-unavailable")
+      decodeAuthorityControlTextResponse
+        (ControlPlaneResponse 200 (ByteString.replicate (64 * 1024 + 1) 65))
+        `shouldBe` Left (AuthorityControlTextResponseTooLarge (64 * 1024 + 1) (64 * 1024))
+      decodeAuthorityControlTextResponse (ControlPlaneResponse 200 (ByteString.pack [255]))
+        `shouldBe` Left AuthorityControlTextResponseInvalidUtf8
+      decodeAuthorityControlTextResponse
+        ( ControlPlaneResponse
+            200
+            (LazyByteString.toStrict (encodeControlPlaneResponse ("authority-migration-started" :: Text)))
+        )
+        `shouldBe` Left AuthorityControlTextResponseInvalidUtf8
+
+    it "AUTHORITY-CONTROL-LEGACY-REPLY-WIRE-2026-10-20 decodes the established text refusal" $
+      decodeProviderAdmissionRecoveryResponse
+        auditFreezeBinding
+        (ControlPlaneResponse 409 "authority-transition-refused")
+        `shouldBe` Left (AuthorityControlRefused "authority-transition-refused")
+
     it "Sprint 4.85 decides the freeze and generation-binding transition matrix" $ do
       regression <- expectRightIO fixedProviderAdmissionFreezeRegression
       -- A freeze must name the generation it fenced, or a later revoke cannot
@@ -420,6 +820,113 @@ lifecycleAuthorityProviderAdmissionEpochSuite =
       -- One read-back digest may not stand for both proofs.
       revocationRegressionSharedProofRefused regression `shouldBe` True
 
+    it
+      "CASCADE-AUDIT-TAKEOVER-HANDOFF-2026-10-20 preserves the original reservation and successful takeover attempt"
+      $ do
+        initial <- expectRightIO (initialCleanInstallAuthority 1 1)
+        frozen <- decidedAggregate initial (FreezeProviderAdmissionAtGeneration 7 auditFreezeBinding)
+        recorded <-
+          decidedAggregate frozen (RecordCascadeTerminalAuditReceipt auditFreezeBinding auditReceipt)
+        revoked <-
+          decidedAggregate
+            recorded
+            (RevokeCascadeProviderCredential auditFreezeBinding recoveryRevocationProof)
+        let replacement = auditFreezeBindingFor "provider-epoch-audit-run" "second-audit-attempt"
+        observation <- case stepAuthorityAdmission revoked (ObserveProviderAdmissionRecovery replacement) of
+          (AuthorityProviderAdmissionRecoveryObserved value, _) -> pure value
+          (other, _) -> expectationFailure (show other) >> fail "unreachable"
+        restoreCascadeAuditRecoveryBinding replacement observation `shouldBe` Right auditFreezeBinding
+        confirmation <- expectRightIO (confirmProviderCredentialRetirement replacement observation)
+        let matches attempt =
+              providerCredentialRetirementMatches
+                (expectRight (mkCleanupRunId "provider-epoch-audit-run"))
+                (expectRight (mkCleanupDigest (Text.replicate 64 "a")))
+                (expectRight (mkCleanupDigest (Text.replicate 64 "b")))
+                auditScopeDigest
+                (expectRight (mkCleanupNodeId "provider-epoch-audit-node"))
+                (expectRight (mkCleanupOperationId "provider-epoch-audit-operation"))
+                (expectRight (mkCleanupAttemptId attempt))
+                confirmation
+        matches "second-audit-attempt" `shouldBe` True
+        matches "provider-epoch-audit-attempt" `shouldBe` False
+
+    it "binds a credential-retired handoff to every historical audit identity" $ do
+      initial <- expectRightIO (initialCleanInstallAuthority 1 1)
+      frozen <- decidedAggregate initial (FreezeProviderAdmissionAtGeneration 7 auditFreezeBinding)
+      recorded <-
+        decidedAggregate frozen (RecordCascadeTerminalAuditReceipt auditFreezeBinding auditReceipt)
+      revoked <-
+        decidedAggregate
+          recorded
+          (RevokeCascadeProviderCredential auditFreezeBinding recoveryRevocationProof)
+      let observe aggregate = case stepAuthorityAdmission aggregate (ObserveProviderAdmissionRecovery auditFreezeBinding) of
+            (AuthorityProviderAdmissionRecoveryObserved value, _) -> pure value
+            (other, _) -> expectationFailure (show other) >> fail "unreachable"
+      mapM_
+        ( \aggregate -> do
+            observation <- observe aggregate
+            confirmProviderCredentialRetirement auditFreezeBinding observation
+              `shouldSatisfy` either (const True) (const False)
+        )
+        [initial, frozen, recorded]
+      observation <- observe revoked
+      confirmation <- expectRightIO (confirmProviderCredentialRetirement auditFreezeBinding observation)
+      let run = expectRight (mkCleanupRunId "provider-epoch-audit-run")
+          descriptor = expectRight (mkCleanupDigest (Text.replicate 64 "a"))
+          graph = expectRight (mkCleanupDigest (Text.replicate 64 "b"))
+          node = expectRight (mkCleanupNodeId "provider-epoch-audit-node")
+          operation = expectRight (mkCleanupOperationId "provider-epoch-audit-operation")
+          attempt = expectRight (mkCleanupAttemptId "provider-epoch-audit-attempt")
+          matches = providerCredentialRetirementMatches
+      matches run descriptor graph auditScopeDigest node operation attempt confirmation `shouldBe` True
+      sequence_
+        [ matches
+            (expectRight (mkCleanupRunId "other"))
+            descriptor
+            graph
+            auditScopeDigest
+            node
+            operation
+            attempt
+            confirmation
+            `shouldBe` False
+        , matches run graph graph auditScopeDigest node operation attempt confirmation `shouldBe` False
+        , matches run descriptor descriptor auditScopeDigest node operation attempt confirmation
+            `shouldBe` False
+        , matches run descriptor graph (Text.replicate 64 "f") node operation attempt confirmation
+            `shouldBe` False
+        , matches
+            run
+            descriptor
+            graph
+            auditScopeDigest
+            (expectRight (mkCleanupNodeId "other"))
+            operation
+            attempt
+            confirmation
+            `shouldBe` False
+        , matches
+            run
+            descriptor
+            graph
+            auditScopeDigest
+            node
+            (expectRight (mkCleanupOperationId "other"))
+            attempt
+            confirmation
+            `shouldBe` False
+        , matches
+            run
+            descriptor
+            graph
+            auditScopeDigest
+            node
+            operation
+            (expectRight (mkCleanupAttemptId "other"))
+            confirmation
+            `shouldBe` False
+        ]
+
     it "Sprint 7.36 reaches the revocation through an authenticated control route" $ do
       -- A transition no route issues is the defect this repository has found
       -- twice; the route relation is a projection rather than a claim.
@@ -488,8 +995,152 @@ lifecycleAuthorityProviderAdmissionEpochSuite =
       unlines libraryExposed `shouldNotContain` internalModule
       unlines libraryPrivate `shouldContain` internalModule
 
+    it "keeps the transient credential proof private to its actual producer and facade" $ do
+      importers <-
+        sourceImporters
+          "src"
+          "import Prodbox.Lifecycle.Authority.ProviderCredentialAdmissionEvidence.Internal"
+      importers
+        `shouldBe` [ "src/Prodbox/ControlPlane/ProviderCredentialAdmissionEvidence.hs"
+                   , "src/Prodbox/Lifecycle/Authority/ProviderCredentialAdmissionEvidence.hs"
+                   ]
+      cabal <- readFile "prodbox.cabal"
+      let (libraryExposed, privateAndTests) = break (== "    other-modules:") (lines cabal)
+          libraryPrivate = takeWhile (not . isPrefixOf "test-suite ") privateAndTests
+          internalModule = "Prodbox.Lifecycle.Authority.ProviderCredentialAdmissionEvidence.Internal"
+      unlines libraryExposed `shouldNotContain` internalModule
+      unlines libraryPrivate `shouldContain` internalModule
+
+    it "keeps raw publication and Agent proof producers package-private" $ do
+      let boundaries =
+            [
+              ( "Prodbox.Lifecycle.Authority.ProviderCredentialCleanupEvidence.Internal"
+              ,
+                [ "src/Prodbox/ControlPlane/ProviderCredentialMutationRuntime.hs"
+                , "src/Prodbox/Lifecycle/Authority/ProviderCredentialCleanupEvidence.hs"
+                ]
+              )
+            ,
+              ( "Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAttestedRecovery.Internal"
+              ,
+                [ "src/Prodbox/ControlPlane/AwsAdminAuthorizedRecoveryProduction.hs"
+                , "src/Prodbox/Lifecycle/CredentialProvisioner/AwsAdminAuthority.hs"
+                ]
+              )
+            ,
+              ( "Prodbox.ControlPlane.CompletedProviderPredecessor"
+              ,
+                [ "src/Prodbox/ControlPlane/CompletedProviderPredecessorRegression/Internal.hs"
+                , "src/Prodbox/ControlPlane/ProviderCredentialMutationRuntime.hs"
+                ]
+              )
+            ,
+              ( "Prodbox.Lifecycle.Authority.CompletedProviderPredecessor.Internal"
+              ,
+                [ "src/Prodbox/ControlPlane/CompletedProviderPredecessor.hs"
+                , "src/Prodbox/Lifecycle/Authority/CompletedProviderPredecessor.hs"
+                ]
+              )
+            ,
+              ( "Prodbox.ControlPlane.CompletedProviderPredecessorRegression.Internal"
+              , ["src/Prodbox/ControlPlane/CompletedProviderPredecessorRegression.hs"]
+              )
+            ,
+              ( "Prodbox.ControlPlane.ProviderCredentialMutationRuntime"
+              ,
+                [ "src/Prodbox/ControlPlane/CredentialSuccessorRegression/Internal.hs"
+                , "src/Prodbox/ControlPlane/Runtime.hs"
+                ]
+              )
+            ,
+              ( "Prodbox.ControlPlane.ProviderCredentialPublication.Internal"
+              ,
+                [ "src/Prodbox/ControlPlane/CredentialSuccessorRegression/Internal.hs"
+                , "src/Prodbox/ControlPlane/ProviderCredentialMutationRuntime.hs"
+                , "src/Prodbox/ControlPlane/ProviderCredentialPublication.hs"
+                ]
+              )
+            ,
+              ( "Prodbox.ControlPlane.ProviderCredentialAdmissionEvidence"
+              ,
+                [ "src/Prodbox/ControlPlane/CredentialSuccessorRegression/Internal.hs"
+                , "src/Prodbox/ControlPlane/ProviderCredentialMutationRuntime.hs"
+                ]
+              )
+            ,
+              ( "Prodbox.ControlPlane.CredentialSuccessorRegression.Internal"
+              , ["src/Prodbox/ControlPlane/CredentialSuccessorRegression.hs"]
+              )
+            ]
+      cabal <- readFile "prodbox.cabal"
+      let (libraryExposed, privateAndTests) = break (== "    other-modules:") (lines cabal)
+          libraryPrivate = takeWhile (not . isPrefixOf "test-suite ") privateAndTests
+      forM_ boundaries $ \(internalModule, expected) -> do
+        importers <- sourceImporters "src" ("import " ++ internalModule)
+        importers `shouldBe` expected
+        (internalModule `elem` map (unwords . words) libraryExposed) `shouldBe` False
+        (internalModule `elem` map (unwords . words) libraryPrivate) `shouldBe` True
+
 fixtureCodec :: ModelBCodec AuthorityAdmissionAggregate
 fixtureCodec = authorityAdmissionStateCodec 4096 1 1
+
+-- The Generic CBOR record shape matches the public response while allowing a
+-- peer's malformed fields to reach the actual client decoder.
+data RecoveryObservationWireFixture
+  = RecoveryObservationWireFixture
+      !Text
+      !ProviderAdmissionRecoveryPhase
+  deriving stock (Generic)
+  deriving anyclass (Serialise)
+
+data BootstrapPredecessorWireFixture
+  = BootstrapPredecessorWireFixture
+      !CleanupRunId
+      !CleanupDigest
+      !Text
+      !ProviderBootstrapPredecessorPhase
+  deriving stock (Generic)
+  deriving anyclass (Serialise)
+
+observeRecoveryFixture
+  :: Either Text AuthorityAdmissionAggregate
+  -> CascadeAuditFreezeBinding
+  -> IO (AuthorityTransitionResult, Int)
+observeRecoveryFixture observed binding =
+  observeControlFixture observed (AuthorityControlObserveProviderAdmissionRecovery binding)
+
+observeControlFixture
+  :: Either Text AuthorityAdmissionAggregate
+  -> AuthorityControlPayload
+  -> IO (AuthorityTransitionResult, Int)
+observeControlFixture observed payload = do
+  writes <- newIORef 0
+  let repository =
+        AuthorityAdmissionRepository
+          { readAuthorityAdmission = pure (AuthorityAdmissionSnapshot () <$> observed)
+          , compareAndSwapAuthorityAdmission = \_ _ -> do
+              modifyIORef' writes (+ 1)
+              pure (Right ())
+          }
+  result <-
+    serveAuthorityControlRequest
+      4096
+      repository
+      (encodeControlPlaneRequest payload)
+  count <- readIORef writes
+  pure (result, count)
+
+recoveryObservation :: AuthorityTransitionResult -> IO ProviderAdmissionRecoveryObservation
+recoveryObservation result = case result of
+  AuthorityTransitionDecided (AuthorityProviderAdmissionRecoveryObserved observation) -> pure observation
+  other -> expectationFailure ("expected a recovery observation, got " <> show other) >> fail "unreachable"
+
+assertAdmissionRefusedUnchanged :: AuthorityAdmissionAggregate -> AuthorityAdmissionCommand -> IO ()
+assertAdmissionRefusedUnchanged aggregate command = do
+  let (decision, after) = stepAuthorityAdmission aggregate command
+  case decision of
+    AuthorityAdmissionCommandRefused _ -> after `shouldBe` aggregate
+    other -> expectationFailure ("expected an unchanged refusal, got " <> show other)
 
 decidedAggregate
   :: AuthorityAdmissionAggregate
@@ -514,16 +1165,19 @@ auditScopeDigest :: Text
 auditScopeDigest = Text.replicate 64 "e"
 
 auditFreezeBinding :: CascadeAuditFreezeBinding
-auditFreezeBinding =
+auditFreezeBinding = auditFreezeBindingFor "provider-epoch-audit-run" "provider-epoch-audit-attempt"
+
+auditFreezeBindingFor :: Text -> Text -> CascadeAuditFreezeBinding
+auditFreezeBindingFor run attempt =
   expectRight
     ( mkCascadeAuditFreezeBinding
-        (expectRight (mkCleanupRunId "provider-epoch-audit-run"))
+        (expectRight (mkCleanupRunId run))
         (expectRight (mkCleanupDigest (Text.replicate 64 "a")))
         (expectRight (mkCleanupDigest (Text.replicate 64 "b")))
         auditScopeDigest
         (expectRight (mkCleanupNodeId "provider-epoch-audit-node"))
         (expectRight (mkCleanupOperationId "provider-epoch-audit-operation"))
-        (expectRight (mkCleanupAttemptId "provider-epoch-audit-attempt"))
+        (expectRight (mkCleanupAttemptId attempt))
         (sort [auditSubmissionKeyOne, auditSubmissionKeyTwo])
     )
 
@@ -535,6 +1189,14 @@ auditReceipt =
         (Text.replicate 64 "1")
         (Text.replicate 64 "2")
         CascadeTerminalAuditReceiptClean
+    )
+
+recoveryRevocationProof :: ProviderCredentialRevocationReceipt
+recoveryRevocationProof =
+  expectRight
+    ( mkProviderCredentialRevocationReceipt
+        (expectRight (mkCleanupDigest (Text.replicate 64 "c")))
+        (expectRight (mkCleanupDigest (Text.replicate 64 "d")))
     )
 
 legacyV6Fixture :: ByteString.ByteString
@@ -634,7 +1296,7 @@ haskellFiles path = do
 fileContains :: String -> FilePath -> IO Bool
 fileContains needle path = do
   contents <- readFile path
-  pure (needle `isInfixOf` contents)
+  pure (any ((== words needle) . take 2 . words) (lines contents))
 
 expectRight :: (Show err) => Either err value -> value
 expectRight result = case result of

@@ -60,12 +60,14 @@ import Prodbox.ControlPlane.TargetSecretWorkerRuntime
 import Prodbox.Lifecycle.AdminAction.Runner
   ( AdminActionRunnerOptions
   )
+import Prodbox.Lifecycle.AwsRemedy (AwsStackTarget)
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminWorker
   ( AwsAdminWorkerOptions
   )
 import Prodbox.Lifecycle.CredentialProvisioner.ExternalMaterialWorker
   ( ExternalMaterialWorkerOptions
   )
+import Prodbox.Lifecycle.ProviderWorker.ProviderWork (ProviderNetworkPurgeMode)
 import Prodbox.Lifecycle.Teardown.LegacyAdoptionLane
   ( AdoptableLegacyStack (..)
   )
@@ -409,6 +411,8 @@ data PulumiResiduePolicy
 
 data PulumiCommand
   = PulumiEksResources PlanOptions
+  | PulumiStackDiff AwsStackTarget
+  | PulumiEksPurgeDependents ProviderNetworkPurgeMode
   | PulumiEksDestroy Bool PlanOptions
   | PulumiTestResources PlanOptions
   | PulumiTestDestroy Bool PlanOptions
@@ -575,6 +579,8 @@ data IntegrationSuite
   | IntegrationPublicDns
   | IntegrationKeycloakInvite
   | IntegrationSealedVault
+  | IntegrationAwsLifecycle
+  | IntegrationAwsLifecycleCanary
   deriving (Eq, Show)
 
 data CoverageFlags = CoverageFlags

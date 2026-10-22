@@ -50,7 +50,7 @@ _prodbox() {
     5)
       case "$words[2,4]" in
         "aws stack eks")
-          words=("reconcile" "destroy" "prune-corrupt-checkpoint" "adopt-legacy")
+          words=("diff" "reconcile" "destroy" "prune-corrupt-checkpoint" "adopt-legacy" "purge-dependents")
           _describe 'subcommand' words
           ;;
       esac
@@ -66,7 +66,7 @@ _prodbox() {
     5)
       case "$words[2,4]" in
         "aws stack test")
-          words=("reconcile" "destroy" "prune-corrupt-checkpoint" "adopt-legacy")
+          words=("diff" "reconcile" "destroy" "prune-corrupt-checkpoint" "adopt-legacy")
           _describe 'subcommand' words
           ;;
       esac
@@ -82,7 +82,7 @@ _prodbox() {
     5)
       case "$words[2,4]" in
         "aws stack aws-subzone")
-          words=("reconcile" "destroy" "prune-corrupt-checkpoint" "adopt-legacy")
+          words=("diff" "reconcile" "destroy" "prune-corrupt-checkpoint" "adopt-legacy")
           _describe 'subcommand' words
           ;;
       esac
@@ -98,7 +98,7 @@ _prodbox() {
     5)
       case "$words[2,4]" in
         "aws stack aws-ses")
-          words=("reconcile" "destroy" "migrate-backend")
+          words=("diff" "reconcile" "destroy" "migrate-backend")
           _describe 'subcommand' words
           ;;
       esac
@@ -266,7 +266,7 @@ _prodbox() {
     4)
       case "$words[2,3]" in
         "test integration")
-          words=("all" "cli" "aws-iam" "dns-aws" "aws-eks" "env" "gateway-daemon" "gateway-pods" "control-plane-counterexample" "teardown-recovery" "create-interrupted" "certificate-scope" "clean-room-handoff" "cascade-qualification" "cascade-qualification-receipt" "ha-rke2-aws" "lifecycle" "pulumi" "eks-volume-rebind" "charts-storage" "charts-platform" "resource-guardrails" "daemon-bootstrap" "pulsar-broker" "charts-vscode" "charts-api" "charts-websocket" "admin-routes" "public-dns" "keycloak-invite" "sealed-vault")
+          words=("all" "cli" "aws-iam" "dns-aws" "aws-eks" "env" "gateway-daemon" "gateway-pods" "control-plane-counterexample" "teardown-recovery" "create-interrupted" "certificate-scope" "clean-room-handoff" "cascade-qualification" "cascade-qualification-receipt" "aws-lifecycle" "aws-lifecycle-canary" "ha-rke2-aws" "lifecycle" "pulumi" "eks-volume-rebind" "charts-storage" "charts-platform" "resource-guardrails" "daemon-bootstrap" "pulsar-broker" "charts-vscode" "charts-api" "charts-websocket" "admin-routes" "public-dns" "keycloak-invite" "sealed-vault")
           _describe 'subcommand' words
           ;;
       esac

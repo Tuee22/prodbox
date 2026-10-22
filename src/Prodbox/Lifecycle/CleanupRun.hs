@@ -135,6 +135,10 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , ModelBObservation (..)
   , StoreLifetime (ClusterRetained)
   )
+import Prodbox.Lifecycle.CleanupRun.Outcome
+  ( CleanupNodeOutcome (..)
+  , CleanupPrimaryOutcome (..)
+  )
 import Prodbox.Lifecycle.TargetCommitIntent (targetValueDigestText)
 
 newtype CleanupRunId = CleanupRunId Text
@@ -320,22 +324,6 @@ graphAcyclic nodes = go Set.empty Set.empty (map cleanupNodeId nodes)
 
 cleanupGraphDigest :: CleanupGraph -> CleanupDigest
 cleanupGraphDigest = CleanupDigest . sha256Text . LazyByteString.toStrict . serialise
-
-data CleanupPrimaryOutcome
-  = CleanupPrimarySucceeded
-  | CleanupPrimaryFailed !Text
-  | CleanupPrimaryCancelled
-  | CleanupPrimaryRunnerLost
-  | CleanupPrimaryExitFailure !Int
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (Serialise)
-
-data CleanupNodeOutcome
-  = CleanupNodeSucceeded
-  | CleanupNodeFailed !Text
-  | CleanupNodeEffectUnconfirmed !Text
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (Serialise)
 
 data CleanupNodeState
   = CleanupNodePending

@@ -5,8 +5,12 @@ module LifecycleTeardownOperationalCredentialInventory
   )
 where
 
+import SesInviteEvidence (fixtureInvitePublicKey)
+
+import AwsCanaryFixtures
+import CleanupScopeFixtures
 import Data.ByteString qualified as ByteString
-import Data.List (sort)
+import Data.List (nub, sort)
 import Data.Text qualified as Text
 import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   ( AuthorityControlPayload (..)
@@ -122,10 +126,13 @@ lifecycleTeardownOperationalCredentialInventorySuite =
       operationalCredentialInventoryGenerationOwner inventory
         `shouldBe` LifecycleAuthorityFirstReconcileJournal
 
-    it "classifies every closed Provider intent as an exact consumer" $ do
+    it "classifies every active Provider consumer and its retired invite alias exactly" $ do
       let classified = map operationalCredentialConsumerForIntent providerIntents
-      classified `shouldBe` [minBound .. maxBound]
-      operationalCredentialInventoryConsumers inventory `shouldBe` classified
+      sort (nub classified) `shouldBe` [minBound .. maxBound]
+      operationalCredentialConsumerForIntent
+        (RetiredSesInviteMailObservation "capture-bucket" "test-1759900000@receive.example.test")
+        `shouldBe` SesInviteMailObserveConsumer
+      operationalCredentialInventoryConsumers inventory `shouldBe` sort (nub classified)
 
     it "admits every closed Provider intent at the production resource allowlist" $ do
       -- The allowlist the accepted authority carries is the boundary a
@@ -133,8 +140,8 @@ lifecycleTeardownOperationalCredentialInventorySuite =
       -- joined to the intent universe: the validation hosted-zone and
       -- retained-EBS families were registered as intents with no entry here, so
       -- either would have been refused as an unregistered resource while every
-      -- adapter table stayed green. The fixture below is exhaustive over the
-      -- intent constructors by the preceding case, so this measures coverage
+      -- adapter table stayed green. The fixture below covers every active
+      -- credential consumer by the preceding case, so this measures coverage
       -- rather than restating the list.
       filter
         ( \intent ->
@@ -319,6 +326,9 @@ lifecycleTeardownOperationalCredentialInventorySuite =
                      -- the two independent read-backs it binds happen after the
                      -- record and before the credential ends.
                      RevokeCascadeProviderCredentialTag
+                   , FreezeProviderAdmissionAtGenerationTag
+                   , ObserveProviderAdmissionRecoveryTag
+                   , ObserveProviderBootstrapPredecessorTag
                    ]
 
     it "keeps the pre-cutover identity distinct and names what supersedes it" $ do
@@ -388,7 +398,8 @@ freezeBinding =
 
 providerIntents :: [ProviderIntent]
 providerIntents =
-  [ ReconcileRegisteredStack stackRef revision stackConfig fixtureProviderRunMarker
+  [ PlantTestVpcCanary fixtureCanaryReference fixtureCanaryRequest
+  , ReconcileRegisteredStack stackRef revision stackConfig fixtureProviderRunMarker
   , DestroyRegisteredStack stackRef revision stackConfig
   , ObserveRegisteredStack stackRef
   , ReadBackRegisteredStack stackRef
@@ -425,8 +436,15 @@ providerIntents =
   , ObserveNativeStackFamily nativeStackFamilyRef stackConfig
   , ReapNativeStackFamily nativeStackFamilyRef stackConfig ["vpc/vpc-fixture"]
   , EnsureValidationHostedZone "1759900000" "example.test"
-  , ObserveSesInviteMail "capture-bucket" "test-1759900000@receive.example.test"
-  , ReapSesInviteMail "capture-bucket" "test-1759900000@receive.example.test"
+  , ObserveGlobalOwnedResourceTags (ProviderOwnedTagKeyQuery "prodbox.io/managed-by")
+  , ObserveHomeDns01Records fixtureHomeDns01Scope
+  , ObserveSesInviteMailResidue fixtureInviteMailScope
+  , ReapSesInviteMailResidue fixtureInviteMailScope
+  , ObserveSealedSesInviteMail
+      "capture-bucket"
+      "test-1759900000@receive.example.test"
+      fixtureInvitePublicKey
+  , RetiredSesInviteMailCleanup "capture-bucket" "test-1759900000@receive.example.test"
   , EnsureRetainedEbsVolumes "gp3" "pv-minio-0:30:ca-central-1a"
   , ObserveAwsAudit auditTarget stackConfig auditControl
   ]

@@ -1,3 +1,4 @@
+{-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.CLI.Rke2
@@ -127,8 +128,14 @@ module Prodbox.CLI.Rke2
   , runAnchoredReconcileSteps
   , runEdgeCommand
   , runNativeHarnessBootstrapFloor
+  , runNativeHarnessPostCredentialRuntime
+  , nativeHarnessProviderReadinessStepOrder
   , harnessLifecycleProviderCredentialCaller
   , reconcileHarnessLifecycleProviderCredential
+  , revokeHarnessLifecycleProviderCredential
+  , revokeHarnessLifecycleProviderCredentialWithEvidence
+  , observeHarnessLifecycleProviderCredential
+  , harnessPostCredentialRuntimeCommand
   , reconcileHarnessSesSmtpCredential
   , HarnessCredentialRequest (..)
   , sesSmtpCredentialRequest
@@ -188,6 +195,7 @@ import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import Data.Word (Word8)
 import Numeric.Natural (Natural)
 import Prodbox.Aws (adminAwsEnvironment)
+import Prodbox.Aws.AdminCredentials (validateAdminAwsRegion)
 import Prodbox.Aws.CredentialHandle (baseCredentialHandleFromSettings)
 import Prodbox.Aws.Native.Sts qualified as NativeSts
 import Prodbox.Aws.Native.Wire (httpSend)
@@ -285,6 +293,7 @@ import Prodbox.ControlPlane.AwsAdminProvisionerClient
   ( AwsAdminProvisionerClient
   , AwsAdminProvisionerClientError (AwsAdminProvisionerClientRefused)
   , awsAdminProvisionerClient
+  , observeAwsAdminFirstReconcileRecovery
   , observeAwsAdminProvisioning
   )
 import Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
@@ -360,7 +369,9 @@ import Prodbox.Http.Client
   , renderHttpError
   )
 import Prodbox.Infra.AwsEksTestStack (awsEksCanonicalClusterName, withEksKubeconfig)
+import Prodbox.Infra.BootstrapImageArchive qualified as BootstrapImageArchive
 import Prodbox.Infra.BootstrapImageSeed qualified as BootstrapImageSeed
+import Prodbox.Infra.BootstrapImageSourceNative qualified as BootstrapImageSourceNative
 import Prodbox.Infra.LongLivedPulumiBackend (loadAdminAwsCredentials)
 import Prodbox.Infra.MinioBackend (resolveHomeClusterKubeconfig)
 import Prodbox.Lib.ChartPlatform
@@ -433,6 +444,11 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminCoordinator
   ( AwsAdminKubernetesBoundary
   , coordinateAwsAdminProvisioning
   )
+import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
+  ( AwsAdminWorkerReceiptKind (AwsAdminInstalled, AwsAdminRevoked)
+  , awsAdminWorkerReceiptKind
+  , awsAdminWorkerReceiptTarget
+  )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminKubernetes
   ( oneShotAwsAdminJobResources
   , productionAwsAdminKubernetesBoundary
@@ -448,7 +464,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   , mkAuthorityBackupIamParameters
   , mkGatewayDnsIamParameters
   , mkHomeDns01IamParameters
-  , mkLifecycleProviderIamParameters
+  , mkScopedLifecycleProviderIamParameters
   , mkSesSmtpIamParameters
   , mkTlsRetentionIamParameters
   )
@@ -459,15 +475,27 @@ import Prodbox.Lifecycle.CredentialProvisioner.ExternalIngress
       , ExternalMaterialIngressReceiptCommitted
       )
   )
+import Prodbox.Lifecycle.CredentialProvisioner.HarnessCredential
+  ( HarnessCredentialConfirmation
+  , HarnessCredentialLineage
+  , HarnessCredentialResolution (..)
+  , HarnessCredentialRevocationEvidence
+  , HarnessCredentialSlot (HarnessCredentialInstall, HarnessCredentialRevoke)
+  , confirmHarnessCredentialOutcome
+  , confirmHarnessCredentialRevocation
+  , harnessCredentialConfirmationGeneration
+  , harnessCredentialSlotScope
+  , reconcileFirstReconcileProviderRecovery
+  , resolveHarnessCredentialSlot
+  , resolveHarnessCredentialSubmission
+  , resumePendingHarnessCredentialOperation
+  )
 import Prodbox.Lifecycle.CredentialProvisioner.KubernetesJob
   ( CredentialProvisionerJobConnection (..)
   )
 import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   ( AwsCredentialClass (..)
   , OperatorMaterialAction (InstallOperatorMaterial, RevokeOperatorMaterial, RotateOperatorMaterial)
-  )
-import Prodbox.Lifecycle.CredentialProvisioner.ProviderRolePolicyOperationScope
-  ( providerRolePolicyOperationScope
   )
 import Prodbox.Lifecycle.CredentialProvisioner.Substrate
   ( productionCredentialProvisionerSubstrateBoundary
@@ -489,6 +517,11 @@ import Prodbox.Lifecycle.FederatedVault
   , renderParentReadinessBlock
   , vaultLifecycleFromBasics
   , vaultLifecycleHelmSealArgs
+  )
+import Prodbox.Lifecycle.HostCleanupCompositionRoot
+  ( reconcileHostCleanupBootstrapPredecessor
+  , renderHostCleanupCompositionError
+  , resolveHostCleanupBootstrapPredecessor
   )
 import Prodbox.Lifecycle.K8sDrain qualified as K8sDrain
 import Prodbox.Lifecycle.Lease (AuthorityTime, authorityTimeFromMicros, authorityTimeMicros)
@@ -514,6 +547,7 @@ import Prodbox.Lifecycle.RegistryBackendWitness (registryBackendWitness)
 import Prodbox.Lifecycle.ResidueStatus qualified as ResidueStatus
 import Prodbox.Lifecycle.ResourceRegistry qualified as ResourceRegistry
 import Prodbox.Lifecycle.RetainedRootSurvey (surveyRetainedRoots)
+import Prodbox.Lifecycle.RuntimeProfile (NativeRuntimeProfile (..))
 import Prodbox.Lifecycle.TagSweep qualified as TagSweep
 import Prodbox.Lifecycle.TargetCommitIntent (credentialGenerationValue)
 import Prodbox.Lifecycle.Teardown.RecoveryPlane
@@ -1613,7 +1647,17 @@ runNativeInstall repoRoot planOptions withEdge = do
 -- component, especially Provider Worker deep readiness. The public
 -- @cluster reconcile@ path always uses the full mode below.
 runNativeHarnessBootstrapFloor :: FilePath -> IO ExitCode
-runNativeHarnessBootstrapFloor repoRoot = do
+runNativeHarnessBootstrapFloor = runNativeHarnessInstall NativeInstallHarnessBootstrapFloor
+
+-- | The cheap lifecycle client stops after its two retained worker roles are
+-- ready. The ordinary profile preserves the full local reconcile.
+runNativeHarnessPostCredentialRuntime :: FilePath -> NativeRuntimeProfile -> IO ExitCode
+runNativeHarnessPostCredentialRuntime repoRoot profile = case profile of
+  FullRuntime -> runRke2Command repoRoot harnessPostCredentialRuntimeCommand
+  LifecycleWorkersRuntime -> runNativeHarnessInstall NativeInstallHarnessProviderReadiness repoRoot
+
+runNativeHarnessInstall :: NativeInstallMode -> FilePath -> IO ExitCode
+runNativeHarnessInstall mode repoRoot = do
   settingsResult <- validateAndLoadBootstrapSettings repoRoot
   case settingsResult of
     Left err -> failWith err
@@ -1633,7 +1677,7 @@ runNativeHarnessBootstrapFloor repoRoot = do
             Left structuredError -> failWith (errorNarrative structuredError)
             Right plan ->
               applyNativeInstallPlanWithMode
-                NativeInstallHarnessBootstrapFloor
+                mode
                 repoRoot
                 bootstrapSettings
                 (planPayload plan)
@@ -1998,6 +2042,23 @@ nativeHarnessBootstrapFloorStepOrder =
           || reconcileStepPhase step == PhaseTransition
     )
 
+-- | The same anchored order with only the retained Provider and TLS roles
+-- after the Authority/config floor. In particular no gateway/application chart
+-- or public-edge/certificate operation can enter this profile.
+nativeHarnessProviderReadinessStepOrder :: [ReconcileStepId] -> [ReconcileStepId]
+nativeHarnessProviderReadinessStepOrder =
+  filter
+    ( \step ->
+        reconcileStepPhase step `elem` [PhaseBootstrap, PhaseTransition]
+          || step `elem` map fst harnessProviderReadinessComponents
+    )
+
+harnessProviderReadinessComponents :: [(ReconcileStepId, ComponentId)]
+harnessProviderReadinessComponents =
+  [ (StepProviderWorkerChartReady, ComponentChartProviderWorker)
+  , (StepTlsRetentionChartReady, ComponentChartTlsRetention)
+  ]
+
 deriveNativeInstallStepOrder
   :: [ComponentNode] -> Either String (ComponentDag, [ReconcileStepId])
 deriveNativeInstallStepOrder = compileAnchoredOrder nativeAnchoredOrderSpec
@@ -2143,6 +2204,7 @@ applyNativeInstallPlan = applyNativeInstallPlanWithMode NativeInstallFull
 data NativeInstallMode
   = NativeInstallFull
   | NativeInstallHarnessBootstrapFloor
+  | NativeInstallHarnessProviderReadiness
   deriving (Eq)
 
 applyNativeInstallPlanWithMode
@@ -2152,6 +2214,18 @@ applyNativeInstallPlanWithMode
   -> NativeInstallPayload
   -> IO ExitCode
 applyNativeInstallPlanWithMode mode repoRoot bootstrapSettings payload = do
+  predecessor <- resolveHostCleanupBootstrapPredecessor repoRoot
+  case predecessor of
+    Left cause -> failWith (renderHostCleanupCompositionError cause)
+    Right _ -> applyNativeInstallPlanAfterPredecessor mode repoRoot bootstrapSettings payload
+
+applyNativeInstallPlanAfterPredecessor
+  :: NativeInstallMode
+  -> FilePath
+  -> ValidatedSettings
+  -> NativeInstallPayload
+  -> IO ExitCode
+applyNativeInstallPlanAfterPredecessor mode repoRoot bootstrapSettings payload = do
   -- Sprint 4.43: execution is projected from the SAME ordered step table
   -- (`nativeInstallStepOrder`) the plan narration reads, so the two cannot drift
   -- (bootstrap_readiness_doctrine.md M1). The pre-Vault bootstrap runs the
@@ -2238,6 +2312,15 @@ applyNativeInstallPlanWithMode mode repoRoot bootstrapSettings payload = do
                         ExitSuccess
                           | mode == NativeInstallHarnessBootstrapFloor ->
                               pure ExitSuccess
+                          | mode == NativeInstallHarnessProviderReadiness ->
+                              fmap fst $
+                                runAnchoredReconcileSteps
+                                  repoRoot
+                                  settings
+                                  dag
+                                  (harnessProviderReadinessStepAction settings)
+                                  authorityAdmissions
+                                  [step | step <- order, reconcileStepPhase step == PhaseSteady]
                           | otherwise -> do
                               lanDefaultsResult <- resolveClusterPlatformLanDefaults
                               case lanDefaultsResult of
@@ -2269,6 +2352,14 @@ applyNativeInstallPlanWithMode mode repoRoot bootstrapSettings payload = do
     NativeInstallFull -> nativeInstallPayloadStepOrder payload
     NativeInstallHarnessBootstrapFloor ->
       nativeHarnessBootstrapFloorStepOrder (nativeInstallPayloadStepOrder payload)
+    NativeInstallHarnessProviderReadiness ->
+      nativeHarnessProviderReadinessStepOrder (nativeInstallPayloadStepOrder payload)
+
+  harnessProviderReadinessStepAction settings step =
+    case lookup step harnessProviderReadinessComponents of
+      Just component -> ensureInternalControlPlaneChartReady repoRoot settings SubstrateHomeLocal component
+      Nothing ->
+        failWith ("Harness Provider readiness received an unregistered step: " ++ reconcileStepToken step)
 
   -- The @PhaseBootstrap@ executor is total. A wrong-phase call fails loudly;
   -- no newly-added step can silently no-op through a wildcard.
@@ -3262,9 +3353,13 @@ requireEstablishedAuthorityBackupAdmission repoRoot settings = do
                   withLifecycleAuthorityAuthenticatedTransport authentication $ \authorityTransport ->
                     withAuthorityBackupAuthenticatedTransport authentication $ \backupTransport -> do
                       let provisionerClient = awsAdminProvisionerClient authorityTransport
-                          loadCredentials =
-                            either (Left . Text.pack) Right
-                              <$> loadAdminAwsCredentials repoRoot
+                          loadCredentials = do
+                            loaded <- loadAdminAwsCredentials repoRoot
+                            pure
+                              ( Bifunctor.first
+                                  Text.pack
+                                  (loaded >>= validateAdminAwsRegion (coordinatePulumiBackendRegion (validatedCoordinates settings)))
+                              )
                           boundary =
                             productionAuthorityBackupReconcileBoundary
                               (basicsClusterId basics)
@@ -3282,17 +3377,57 @@ requireEstablishedAuthorityBackupAdmission repoRoot settings = do
                         Left err ->
                           pure (Left ("Authority backup admission reconciliation failed: " ++ show err))
                         Right ready@(AuthorityBackupAdmissionReady _) -> do
-                          continuation <-
-                            reconcileRemainingFirstReconcileCredentials
-                              provisionerClient
-                              kubernetes
-                              loadCredentials
-                              intentParameters
-                              (firstReconcileIamParameters basics settings)
-                          pure $ case continuation of
-                            Left detail ->
-                              Left ("First-reconcile credential continuation failed: " ++ Text.unpack detail)
-                            Right () -> Right ready
+                          importNow <- round . (* 1000000) <$> getPOSIXTime
+                          predecessor <-
+                            reconcileHostCleanupBootstrapPredecessor repoRoot authorityTransport importNow
+                          case predecessor of
+                            Left cause -> pure (Left (renderHostCleanupCompositionError cause))
+                            Right () -> do
+                              let continueMembers =
+                                    reconcileRemainingFirstReconcileCredentials
+                                      provisionerClient
+                                      kubernetes
+                                      loadCredentials
+                                      intentParameters
+                                      (firstReconcileIamParameters basics settings)
+                                  observeTarget = do
+                                    observed <- withTargetSecretAgentAuthenticatedTransport authentication $ \transport ->
+                                      observeRegisteredTargetMaterial
+                                        (targetMaterialClient transport)
+                                        (TargetAwsCredential AwsLifecycleProvider)
+                                    pure $ case observed of
+                                      Left cause -> Left (renderLifecycleAuthorityAuthenticationError cause)
+                                      Right value -> Bifunctor.first show value
+                              recovery <- observeAwsAdminFirstReconcileRecovery provisionerClient
+                              continuation <- case recovery of
+                                Left cause -> pure (Left (Text.pack (show cause)))
+                                Right False -> continueMembers
+                                Right True -> do
+                                  loaded <- loadCredentials
+                                  case loaded of
+                                    Left detail -> pure (Left detail)
+                                    Right credentials -> do
+                                      iam <- firstReconcileIamParameters basics settings credentials LifecycleProviderCredential
+                                      case iam of
+                                        Left detail -> pure (Left detail)
+                                        Right parameters -> do
+                                          recovered <-
+                                            reconcileFirstReconcileProviderRecovery
+                                              provisionerClient
+                                              intentParameters
+                                              parameters
+                                              observeTarget
+                                              (round . (* 1000000) <$> getPOSIXTime)
+                                              ( \intent ->
+                                                  Bifunctor.first show
+                                                    <$> coordinateAwsAdminProvisioning provisionerClient kubernetes credentials intent
+                                              )
+                                              (fmap (Bifunctor.first Text.unpack) continueMembers)
+                                          pure (Bifunctor.first Text.pack recovered)
+                              pure $ case continuation of
+                                Left detail ->
+                                  Left ("First-reconcile credential continuation failed: " ++ Text.unpack detail)
+                                Right () -> Right ready
                         Right frozen -> pure (Right frozen)
               )
           case reconciled of
@@ -3390,19 +3525,80 @@ currentAwsAdminJobHeartbeat = do
         )
 
 -- | Refresh the harness's operational Lifecycle-provider credential through
--- the authenticated, attested Credential Provisioner. The operation scope is
--- stable for a qualification cycle. If a response is lost after Target
--- material advances, the matching retained Authority operation is recovered
--- byte-for-byte instead of allocating another generation.
+-- the authenticated, attested Credential Provisioner. A fresh invocation
+-- lineage separates it from completed installs; its fixed slot recovers a lost
+-- response even after the Target generation advances.
 harnessLifecycleProviderCredentialCaller :: ExternalLifecycleAuthorityCaller
 harnessLifecycleProviderCredentialCaller = LifecycleAuthorityOperator
 
 reconcileHarnessLifecycleProviderCredential
   :: FilePath
-  -> Text.Text
+  -> HarnessCredentialLineage
   -> IO ExitCode
-reconcileHarnessLifecycleProviderCredential repoRoot operationScope =
-  reconcileHarnessCredential repoRoot request describe
+reconcileHarnessLifecycleProviderCredential repoRoot lineage =
+  reconcileHarnessLifecycleProviderSlot repoRoot lineage HarnessCredentialInstall
+
+revokeHarnessLifecycleProviderCredential :: FilePath -> HarnessCredentialLineage -> IO ExitCode
+revokeHarnessLifecycleProviderCredential repoRoot lineage =
+  reconcileHarnessLifecycleProviderSlot repoRoot lineage HarnessCredentialRevoke
+
+-- | Read only the fixed operational Target's metadata. The cascade uses
+-- this before freezing admission; it needs no admin credential or Provider
+-- effect and never installs or rotates material as a consequence of a read.
+observeHarnessLifecycleProviderCredential
+  :: FilePath -> IO (Either String (Maybe TargetMaterialObservation))
+observeHarnessLifecycleProviderCredential repoRoot = do
+  observed <- withHostLifecycleAuthorityAuthentication
+    harnessLifecycleProviderCredentialCaller
+    repoRoot
+    $ \authentication ->
+      withTargetSecretAgentAuthenticatedTransport authentication $ \transport ->
+        observeRegisteredTargetMaterial
+          (targetMaterialClient transport)
+          (TargetAwsCredential AwsLifecycleProvider)
+  pure $ case observed of
+    Left err -> Left (renderLifecycleAuthorityAuthenticationError err)
+    Right (Left err) -> Left (renderLifecycleAuthorityAuthenticationError err)
+    Right (Right (Left err)) -> Left ("observe Lifecycle-provider Target metadata: " ++ show err)
+    Right (Right (Right metadata)) -> Right metadata
+
+-- | Credential repair precedes deep Provider readiness, on fresh and adopted
+-- cleanup runs alike. This is their shared local-runtime reconcile command.
+harnessPostCredentialRuntimeCommand :: Rke2Command
+harnessPostCredentialRuntimeCommand = Rke2Reconcile (PlanOptions False Nothing) False
+
+reconcileHarnessLifecycleProviderSlot
+  :: FilePath -> HarnessCredentialLineage -> HarnessCredentialSlot -> IO ExitCode
+reconcileHarnessLifecycleProviderSlot repoRoot lineage slot = do
+  result <- reconcileHarnessLifecycleProviderSlotResult repoRoot lineage slot
+  case result of
+    Left detail -> failWith detail
+    Right confirmed -> do
+      writeOutputLine
+        (describeHarnessLifecycleProviderCredential slot (harnessCredentialConfirmationGeneration confirmed))
+      pure ExitSuccess
+
+-- | Return the fixed-slot receipt only after the Provisioner and independent
+-- Agent read-back have confirmed that both sides are absent.
+revokeHarnessLifecycleProviderCredentialWithEvidence
+  :: FilePath
+  -> HarnessCredentialLineage
+  -> IO (Either String HarnessCredentialRevocationEvidence)
+revokeHarnessLifecycleProviderCredentialWithEvidence repoRoot lineage = do
+  result <- reconcileHarnessLifecycleProviderSlotResult repoRoot lineage HarnessCredentialRevoke
+  pure $ do
+    confirmed <- result
+    Bifunctor.first
+      (("Lifecycle-provider revocation evidence refused: " ++) . show)
+      (confirmHarnessCredentialRevocation lineage confirmed)
+
+reconcileHarnessLifecycleProviderSlotResult
+  :: FilePath
+  -> HarnessCredentialLineage
+  -> HarnessCredentialSlot
+  -> IO (Either String HarnessCredentialConfirmation)
+reconcileHarnessLifecycleProviderSlotResult repoRoot lineage slot =
+  reconcileHarnessCredentialResult repoRoot request resolveSlot
  where
   request basics settings adminCredentials = do
     iamResult <-
@@ -3415,11 +3611,30 @@ reconcileHarnessLifecycleProviderCredential repoRoot operationScope =
       ( HarnessCredentialRequest
           LifecycleProviderCredential
           (TargetAwsCredential AwsLifecycleProvider)
-          (providerRolePolicyOperationScope operationScope)
+          (harnessCredentialSlotScope lineage slot)
           <$> iamResult
       )
-  describe generation =
+  resolveSlot client parameters requested observed now = do
+    result <-
+      resolveHarnessCredentialSlot
+        client
+        parameters
+        (harnessCredentialIamParameters requested)
+        lineage
+        slot
+        observed
+        now
+    pure $ case result of
+      Left err -> Left ("resolve Lifecycle-provider credential: " ++ show err)
+      Right resolved -> Right resolved
+describeHarnessLifecycleProviderCredential :: HarnessCredentialSlot -> Natural -> String
+describeHarnessLifecycleProviderCredential slot generation = case slot of
+  HarnessCredentialInstall ->
     "Lifecycle-provider credential is current through the authenticated Credential Provisioner at generation "
+      ++ show generation
+      ++ "."
+  HarnessCredentialRevoke ->
+    "Lifecycle-provider IAM family and Target generation are absent after Credential Provisioner revoke at generation "
       ++ show generation
       ++ "."
 
@@ -3441,8 +3656,11 @@ reconcileHarnessSesSmtpCredential
   -> Text.Text
   -> IO ExitCode
 reconcileHarnessSesSmtpCredential repoRoot operationScope =
-  reconcileHarnessCredential repoRoot request describe
+  reconcileHarnessCredential repoRoot request resolveRetained describe
  where
+  resolveRetained client parameters requested observed now = do
+    result <- resolveHarnessCredentialIntent client parameters requested observed now
+    pure (SubmitHarnessCredentialIntent <$> result)
   request _basics settings adminCredentials = do
     accountResult <- adminCredentialAccountId adminCredentials
     pure $ do
@@ -3506,28 +3724,62 @@ reconcileHarnessCredential
        -> Credentials
        -> IO (Either Text.Text HarnessCredentialRequest)
      )
+  -> ( AwsAdminProvisionerClient IO
+       -> GenesisAwsAdminIntentParameters
+       -> HarnessCredentialRequest
+       -> Maybe TargetMaterialObservation
+       -> Natural
+       -> IO (Either String HarnessCredentialResolution)
+     )
   -> (Natural -> String)
   -> IO ExitCode
-reconcileHarnessCredential repoRoot buildRequest describeCurrent = do
+reconcileHarnessCredential repoRoot buildRequest resolveIntent describeCurrent = do
+  result <- reconcileHarnessCredentialResult repoRoot buildRequest resolveIntent
+  case result of
+    Left detail -> failWith detail
+    Right confirmed -> do
+      writeOutputLine (describeCurrent (harnessCredentialConfirmationGeneration confirmed))
+      pure ExitSuccess
+
+reconcileHarnessCredentialResult
+  :: FilePath
+  -> ( UnencryptedBasics
+       -> ValidatedSettings
+       -> Credentials
+       -> IO (Either Text.Text HarnessCredentialRequest)
+     )
+  -> ( AwsAdminProvisionerClient IO
+       -> GenesisAwsAdminIntentParameters
+       -> HarnessCredentialRequest
+       -> Maybe TargetMaterialObservation
+       -> Natural
+       -> IO (Either String HarnessCredentialResolution)
+     )
+  -> IO (Either String HarnessCredentialConfirmation)
+reconcileHarnessCredentialResult repoRoot buildRequest resolveIntent = do
   settingsResult <- validateAndLoadSettings repoRoot
   basicsResult <- loadUnencryptedBasics repoRoot
   imageResult <- resolveRuntimeChartImageForSubstrate SubstrateHomeLocal
-  adminResult <- loadAdminAwsCredentials repoRoot
+  loadedAdmin <- loadAdminAwsCredentials repoRoot
+  let adminResult = do
+        settings <- settingsResult
+        credentials <- loadedAdmin
+        validateAdminAwsRegion (coordinatePulumiBackendRegion (validatedCoordinates settings)) credentials
   now <- round . (* 1000000) <$> getPOSIXTime
   case (settingsResult, basicsResult, imageResult, adminResult) of
-    (Left detail, _, _, _) -> failWith detail
-    (_, Left detail, _, _) -> failWith detail
-    (_, _, Left detail, _) -> failWith detail
+    (Left detail, _, _, _) -> pure (Left detail)
+    (_, Left detail, _, _) -> pure (Left detail)
+    (_, _, Left detail, _) -> pure (Left detail)
     (_, _, Right Nothing, _) ->
-      failWith "The pinned runtime image is unavailable for the Credential Provisioner Job."
-    (_, _, _, Left detail) -> failWith detail
+      pure (Left "The pinned runtime image is unavailable for the Credential Provisioner Job.")
+    (_, _, _, Left detail) -> pure (Left detail)
     (Right settings, Right basics, Right (Just image), Right adminCredentials) ->
       case authorityBackupRuntimeInputs repoRoot basics settings image now of
-        Left detail -> failWith detail
+        Left detail -> pure (Left detail)
         Right (_, parameters, kubernetes) -> do
           requestResult <- buildRequest basics settings adminCredentials
           case requestResult of
-            Left detail -> failWith (Text.unpack detail)
+            Left detail -> pure (Left (Text.unpack detail))
             Right request -> do
               reconciled <-
                 withHostLifecycleAuthorityAuthentication
@@ -3555,16 +3807,28 @@ reconcileHarnessCredential repoRoot buildRequest describeCurrent = do
                           authorityResult <-
                             withLifecycleAuthorityAuthenticatedTransport authentication $ \transport -> do
                               let client = awsAdminProvisionerClient transport
-                              intentResult <-
-                                resolveHarnessCredentialIntent
-                                  client
-                                  parameters
-                                  request
-                                  observedTarget
-                                  now
+                              recovered <-
+                                resumeReservedCredential client parameters request kubernetes adminCredentials observedTarget now
+                              currentTarget <- case recovered of
+                                Left detail -> pure (Left detail)
+                                Right False -> pure (Right observedTarget)
+                                Right True -> observeFreshCredentialTarget authentication request
+                              intentResult <- case currentTarget of
+                                Left detail -> pure (Left detail)
+                                Right metadata ->
+                                  resolveHarnessCredentialSubmission
+                                    (\current -> resolveIntent client parameters request current now)
+                                    ( \repair ->
+                                        Bifunctor.first (("repair serving Lifecycle-provider credential: " ++) . show)
+                                          <$> coordinateAwsAdminProvisioning client kubernetes adminCredentials repair
+                                    )
+                                    (observeFreshCredentialTarget authentication request)
+                                    metadata
                               case intentResult of
                                 Left detail -> pure (Left detail)
-                                Right intent -> do
+                                Right (HarnessCredentialRevocationAlreadyProven receipt) ->
+                                  pure (Right receipt)
+                                Right (SubmitHarnessCredentialIntent intent) -> do
                                   coordinated <-
                                     coordinateAwsAdminProvisioning
                                       client
@@ -3579,21 +3843,55 @@ reconcileHarnessCredential repoRoot buildRequest describeCurrent = do
                                             ++ " credential: "
                                             ++ show err
                                         )
-                                    Right _ ->
-                                      Right
-                                        ( credentialGenerationValue
-                                            (awsAdminPermitIntentGeneration intent)
-                                        )
-                          pure $ case authorityResult of
-                            Left err -> Left (renderLifecycleAuthorityAuthenticationError err)
-                            Right outcome -> outcome
+                                    Right receipt ->
+                                      let expectedKind = case awsAdminPermitIntentAction intent of
+                                            InstallOperatorMaterial -> AwsAdminInstalled
+                                            RotateOperatorMaterial -> AwsAdminInstalled
+                                            RevokeOperatorMaterial -> AwsAdminRevoked
+                                       in if awsAdminWorkerReceiptKind receipt == expectedKind
+                                            then Right receipt
+                                            else Left "Credential Provisioner returned the wrong receipt kind"
+                                Right (RepairHarnessCredentialTarget _) ->
+                                  pure (Left "credential repair did not resolve an ordinary invocation slot")
+                          case authorityResult of
+                            Left err -> pure (Left (renderLifecycleAuthorityAuthenticationError err))
+                            Right (Left detail) -> pure (Left detail)
+                            Right (Right receipt)
+                              | awsAdminWorkerReceiptTarget receipt /= harnessCredentialTarget request ->
+                                  pure (Left "Credential Provisioner returned a different Target receipt")
+                              | otherwise -> do
+                                  readBack <- withTargetSecretAgentAuthenticatedTransport authentication $ \transport ->
+                                    observeRegisteredTargetMaterial (targetMaterialClient transport) (harnessCredentialTarget request)
+                                  pure $ case readBack of
+                                    Left err -> Left (renderLifecycleAuthorityAuthenticationError err)
+                                    Right (Left err) -> Left ("Credential Target read-back failed: " ++ show err)
+                                    Right (Right metadata) ->
+                                      Bifunctor.first
+                                        (("Credential Target read-back refused: " ++) . show)
+                                        (confirmHarnessCredentialOutcome receipt metadata)
                   )
-              case reconciled of
-                Left err -> failWith (renderLifecycleAuthorityAuthenticationError err)
-                Right (Left detail) -> failWith detail
-                Right (Right generation) -> do
-                  writeOutputLine (describeCurrent generation)
-                  pure ExitSuccess
+              pure $ case reconciled of
+                Left err -> Left (renderLifecycleAuthorityAuthenticationError err)
+                Right outcome -> outcome
+ where
+  resumeReservedCredential client parameters request kubernetes adminCredentials observedTarget now
+    | harnessCredentialClass request /= LifecycleProviderCredential = pure (Right False)
+    | otherwise =
+        resumePendingHarnessCredentialOperation
+          client
+          parameters
+          (harnessCredentialIamParameters request)
+          observedTarget
+          now
+          $ \intent -> do
+            result <- coordinateAwsAdminProvisioning client kubernetes adminCredentials intent
+            pure (Bifunctor.first (("resume reserved Lifecycle-provider operation: " ++) . show) (void result))
+  observeFreshCredentialTarget authentication request = do
+    result <- withTargetSecretAgentAuthenticatedTransport authentication $ \transport ->
+      observeRegisteredTargetMaterial (targetMaterialClient transport) (harnessCredentialTarget request)
+    pure $ case result of
+      Left cause -> Left (renderLifecycleAuthorityAuthenticationError cause)
+      Right observed -> Bifunctor.first (("observe credential after reserved-operation recovery: " ++) . show) observed
 
 -- | The intent to submit for one harness credential: the one the Authority
 -- already holds when that operation can still be resumed or has completed, and
@@ -3726,10 +4024,11 @@ firstReconcileIamParameters _basics settings credentials credentialClass =
       pure $ do
         accountId <- accountResult
         firstText
-          ( mkLifecycleProviderIamParameters
+          ( mkScopedLifecycleProviderIamParameters
               backendRegion
               accountId
               lifecycleProviderRoleName
+              (s3BucketNameText <$> coordinateSesCaptureBucket (validatedCoordinates settings))
           )
     AuthorityBackupStoreCredential ->
       pure (Left "authority-backup install is valid only as first-reconcile member zero")
@@ -9475,7 +9774,12 @@ collectClusterImages repoRoot = do
 
 ensureMirroredClusterImage :: FilePath -> [String] -> String -> IO ExitCode
 ensureMirroredClusterImage repoRoot sourceCandidates target = do
-  targetAvailableResult <- harborTargetAvailableForHostArchitecture repoRoot target
+  targetAvailableResult <-
+    if any
+      (`elem` map ContainerImage.renderImageRef BootstrapImageSeed.bootstrapSeedImages)
+      sourceCandidates
+      then pure (Right False)
+      else harborTargetAvailableForHostArchitecture repoRoot target
   case targetAvailableResult of
     Left err -> failWith err
     Right True -> pure ExitSuccess
@@ -9984,42 +10288,45 @@ mirrorHostArchitectureTarget repoRoot source target =
 mirrorHostArchitectureTargetFor
   :: FilePath -> String -> String -> String -> IO (Either String ())
 mirrorHostArchitectureTargetFor repoRoot platform source target = do
-  pullResult <- captureDockerToolOutput repoRoot ["pull", "--platform", platform, source]
-  case pullResult of
-    Left err -> pure (Left err)
-    Right pullOutput ->
-      case processExitCode pullOutput of
-        ExitFailure _ -> pure (Left (outputDetail pullOutput))
+  sourceResult <- prepareSource
+  case sourceResult of
+    Left cause -> pure (Left cause)
+    Right sourceIdentity -> do
+      purgeExit <- purgeHarborMirrorTarget repoRoot target
+      case purgeExit of
+        ExitFailure _ ->
+          pure
+            (Left ("Failed to reset Harbor mirror target '" <> target <> "' before mirroring from " <> source))
         ExitSuccess -> do
-          purgeExit <- purgeHarborMirrorTarget repoRoot target
-          case purgeExit of
-            ExitFailure _ ->
-              pure
-                ( Left
-                    ( "Failed to reset Harbor mirror target '"
-                        ++ target
-                        ++ "' before mirroring from "
-                        ++ source
-                    )
-                )
-            ExitSuccess -> do
-              tagResult <- captureDockerToolOutput repoRoot ["tag", source, target]
-              case tagResult of
-                Left err -> pure (Left err)
-                Right tagOutput ->
-                  case processExitCode tagOutput of
-                    ExitFailure _ -> pure (Left (outputDetail tagOutput))
-                    ExitSuccess ->
-                      do
-                        pushExit <-
-                          pushDockerImageWithRetry
-                            repoRoot
-                            platform
-                            target
-                            ("mirror target " ++ target)
-                        case pushExit of
-                          ExitSuccess -> pure (Right ())
-                          ExitFailure _ -> pure (Left ("push failed for " ++ target))
+          tagged <- captureDockerToolOutput repoRoot ["tag", sourceIdentity, target]
+          case tagged of
+            Left cause -> pure (Left cause)
+            Right output -> case processExitCode output of
+              ExitFailure _ -> pure (Left (outputDetail output))
+              ExitSuccess -> do
+                pushed <- pushDockerImageWithRetry repoRoot platform target ("mirror target " <> target)
+                pure $ case pushed of
+                  ExitSuccess -> Right ()
+                  ExitFailure _ -> Left ("push failed for " <> target)
+ where
+  prepareSource
+    | source `elem` map ContainerImage.renderImageRef BootstrapImageSeed.bootstrapSeedImages = do
+        acquired <- acquireHomeBootstrapArtifacts repoRoot
+        pure $ do
+          artifacts <- acquired
+          case [ artifact
+               | artifact <- artifacts
+               , Text.unpack (BootstrapImageSourceNative.bootstrapSourceArtifactReference artifact) == source
+               ] of
+            [artifact] -> Right (Text.unpack (BootstrapImageSourceNative.bootstrapSourceArtifactIdentity artifact))
+            _ -> Left "The local source-built bootstrap artifact is missing."
+    | otherwise = do
+        pulled <- captureDockerToolOutput repoRoot ["pull", "--platform", platform, source]
+        pure $ do
+          output <- pulled
+          case processExitCode output of
+            ExitSuccess -> Right source
+            ExitFailure _ -> Left (outputDetail output)
 
 mergeMirrorCandidatePairs :: [([String], String)] -> [([String], String)]
 mergeMirrorCandidatePairs = foldl mergePair []
@@ -10222,17 +10529,9 @@ importImageIntoRke2Containerd repoRoot imageRef = do
                     }
               ]
 
--- | Sprint 4.106: put the pre-registry public images (the MinIO server and the
--- @mc@ client its bootstrap Jobs run) into RKE2 containerd before a consumer
--- starts, so the kubelet never has to pull them. Their upstream no longer
--- serves an anonymous pull and the kubelet's image garbage collection removes
--- one nothing is using, so a cluster that is rebuilt, or whose disk crosses the
--- collection threshold between two uses, cannot start MinIO or either Job from
--- the public name alone. The policy and its failure text are
--- "Prodbox.Infra.BootstrapImageSeed"; this is its Docker and containerd client.
---
--- The AWS substrate has no operator-host containerd to seed: its nodes pull
--- these images themselves, which is a separate, open problem (Sprint @7.47@).
+-- | Compile/reuse the pinned public-source bootstrap artifacts and seed their
+-- exact config identities before the home MinIO consumers start. A cached tag
+-- alone is insufficient. EKS publication is the separate Sprint 7.47 projection.
 ensureBootstrapImagesSeeded :: Substrate -> FilePath -> IO ExitCode
 ensureBootstrapImagesSeeded substrate repoRoot =
   case substrate of
@@ -10243,55 +10542,71 @@ ensureBootstrapImagesSeeded substrate repoRoot =
 
 seedHomeBootstrapImages :: FilePath -> String -> IO ExitCode
 seedHomeBootstrapImages repoRoot socketPath = do
-  seeded <-
-    BootstrapImageSeed.seedBootstrapImages
-      (homeBootstrapImageSeedEffects repoRoot socketPath)
-      BootstrapImageSeed.bootstrapSeedImages
-  either failWith reportSeeded seeded
+  acquired <- acquireHomeBootstrapArtifacts repoRoot
+  case acquired of
+    Left cause -> failWith cause
+    Right artifacts -> do
+      let inputs =
+            [ BootstrapImageSeed.BootstrapImageSeedInput
+                reference
+                (Text.unpack (BootstrapImageSourceNative.bootstrapSourceArtifactIdentity artifact))
+            | artifact <- artifacts
+            , reference <- BootstrapImageSeed.bootstrapSeedImages
+            , ContainerImage.renderImageRef reference
+                == Text.unpack (BootstrapImageSourceNative.bootstrapSourceArtifactReference artifact)
+            ]
+      if length inputs /= length BootstrapImageSeed.bootstrapSeedImages
+        then failWith "The source bootstrap artifact set does not match the registered MinIO references."
+        else do
+          seeded <-
+            BootstrapImageSeed.seedBootstrapImages (homeBootstrapImageSeedEffects repoRoot socketPath) inputs
+          either failWith reportSeeded seeded
  where
   reportSeeded outcomes = do
     mapM_ (writeOutputLine . BootstrapImageSeed.renderBootstrapImageSeedOutcome) outcomes
     pure ExitSuccess
 
+acquireHomeBootstrapArtifacts
+  :: FilePath -> IO (Either String [BootstrapImageSourceNative.BootstrapSourceArtifact])
+acquireHomeBootstrapArtifacts repoRoot = case supportedHostArchitecture of
+  Left cause -> pure (Left cause)
+  Right host -> do
+    let architecture = case host of
+          HostArchitectureAmd64 -> BootstrapImageArchive.BootstrapImageAmd64
+          HostArchitectureArm64 -> BootstrapImageArchive.BootstrapImageArm64
+    result <- BootstrapImageSourceNative.ensureBootstrapSourceArtifacts repoRoot architecture
+    pure (either (Left . renderBootstrapSourceFailure) Right result)
+ where
+  renderBootstrapSourceFailure cause =
+    "Bootstrap source artifact acquisition failed: "
+      <> show cause
+      <> ". Verified public inputs and image archives are retained under .build/bootstrap-images-v1. Rerun `prodbox cluster reconcile` to resume an interrupted build."
+
 homeBootstrapImageSeedEffects :: FilePath -> String -> BootstrapImageSeed.BootstrapImageSeedEffects
 homeBootstrapImageSeedEffects repoRoot socketPath =
   BootstrapImageSeed.BootstrapImageSeedEffects
-    { BootstrapImageSeed.seedEffectContainerdHolds = \reference ->
-        succeeded
-          <$> captureToolOutput
+    { BootstrapImageSeed.seedEffectContainerdIdentity = \reference -> do
+        result <-
+          captureToolOutput
             repoRoot
             "sudo"
             ["ctr", "--address", socketPath, "-n", "k8s.io", "images", "inspect", reference]
-    , BootstrapImageSeed.seedEffectHostDockerHolds = \reference ->
-        succeeded <$> captureDockerToolOutput repoRoot ["image", "inspect", reference]
-    , BootstrapImageSeed.seedEffectPullIntoHostDocker = pullBootstrapImageIntoHostDocker repoRoot
-    , BootstrapImageSeed.seedEffectImportIntoContainerd = importBootstrapImageIntoContainerd repoRoot
+        pure (successfulStdout result >>= parseContainerdConfigDigest reference)
+    , BootstrapImageSeed.seedEffectHostDockerIdentity = \reference -> do
+        result <- captureDockerToolOutput repoRoot ["image", "inspect", "--format", "{{.Id}}", reference]
+        pure (successfulStdout result >>= parseCanonicalDigestOutput)
+    , BootstrapImageSeed.seedEffectImportIntoContainerd = \reference -> do
+        imported <- importImageIntoRke2Containerd repoRoot reference
+        pure $ case imported of
+          ExitSuccess -> Right ()
+          ExitFailure code -> Left ("docker save or ctr import exited with status " <> show code)
     }
  where
-  succeeded = either (const False) ((== ExitSuccess) . processExitCode)
-
--- | The only step of the seeding that needs the network: a public pull into the
--- host Docker cache, inside the ephemeral Docker configuration every other
--- public pull of this module uses.
-pullBootstrapImageIntoHostDocker :: FilePath -> String -> IO (Either String ())
-pullBootstrapImageIntoHostDocker repoRoot reference =
-  withEphemeralDockerConfig $ do
-    pulled <- captureDockerToolOutput repoRoot ["pull", reference]
-    pure (pulled >>= requireSuccess)
- where
-  requireSuccess output =
+  successfulStdout result = do
+    output <- either (const Nothing) Just result
     case processExitCode output of
-      ExitSuccess -> Right ()
-      ExitFailure _ -> Left (outputDetail output)
-
-importBootstrapImageIntoContainerd :: FilePath -> String -> IO (Either String ())
-importBootstrapImageIntoContainerd repoRoot reference = do
-  imported <- importImageIntoRke2Containerd repoRoot reference
-  pure $
-    case imported of
-      ExitSuccess -> Right ()
-      ExitFailure code ->
-        Left ("docker save or ctr import exited with status " ++ show code ++ " (its output is above)")
+      ExitSuccess -> Just (processStdout output)
+      ExitFailure _ -> Nothing
 
 -- | Persisted content of 'inotifyDropInPath'. Kept deterministic (stable
 -- comment block + trailing newline) so 'ensureHostInotifyLimits' can compare

@@ -111,6 +111,10 @@ lifecycleTeardownOwnershipManifestSuite =
         `shouldBe` [ (AwsEksKey, AwsEbsPerRunTestKey)
                    , (AwsEksKey, AwsEksIamRoleFamilyKey)
                    , (AwsEksKey, AwsEksLoadBalancerControllerFamilyKey)
+                   , (AwsEksKey, AwsEksVpcCniInterfacesKey)
+                   , (AwsEksKey, AwsEksClusterSecurityGroupsKey)
+                   , (AwsTestKey, AwsTestVpcCniInterfacesKey)
+                   , (AwsTestKey, AwsTestCanarySecurityGroupsKey)
                    ]
 
       -- The join is by cluster name, not by position or by which stack happens
@@ -120,6 +124,8 @@ lifecycleTeardownOwnershipManifestSuite =
         `shouldBe` [ (AwsEbsPerRunTestKey, "aws-eks-test-cluster")
                    , (AwsEksIamRoleFamilyKey, "aws-eks-test-cluster")
                    , (AwsEksLoadBalancerControllerFamilyKey, "aws-eks-test-cluster")
+                   , (AwsEksVpcCniInterfacesKey, "aws-eks-test-cluster")
+                   , (AwsEksClusterSecurityGroupsKey, "aws-eks-test-cluster")
                    ]
       lookup AwsEksKey registeredStackClusters `shouldBe` Just "aws-eks-test-cluster"
       lookup AwsTestKey registeredStackClusters `shouldBe` Just "aws-test-cluster"
@@ -150,7 +156,19 @@ lifecycleTeardownOwnershipManifestSuite =
           , AwsEbsPerRunTestKey
           , AwsEksIamRoleFamilyKey
           , AwsEksLoadBalancerControllerFamilyKey
+          , AwsEksVpcCniInterfacesKey
+          , AwsEksClusterSecurityGroupsKey
           ]
+
+    it "Sprint 4.111 declares test-VPC interfaces without inventing a cluster" $ do
+      projectRegisteredOwnershipEdge AwsTestKey AwsTestVpcCniInterfacesKey `shouldSatisfy` isRightEdge
+      projectRegisteredOwnershipEdge AwsEksKey AwsTestVpcCniInterfacesKey
+        `shouldBe` Left (OwnershipEdgeNotRegistered AwsEksKey AwsTestVpcCniInterfacesKey)
+      let intent = mustRight (mkWriteAheadManifestIntent CascadeSurface AwsTestKey creationScope)
+          entries = ownershipManifestWriteEntries (initialWriteAheadManifestWrite intent)
+      map ownershipManifestEntryKey entries
+        `shouldBe` [AwsTestKey, AwsTestVpcCniInterfacesKey, AwsTestCanarySecurityGroupsKey]
+      map ownershipManifestEntryObservedIdentities entries `shouldBe` [[], [], []]
 
     it "Sprint 4.85 distinguishes an owning cluster from a merely sharing one" $ do
       -- `owned` makes the named cluster the owner; `shared` does not, because a

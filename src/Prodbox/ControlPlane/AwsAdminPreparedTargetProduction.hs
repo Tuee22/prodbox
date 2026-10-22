@@ -54,6 +54,9 @@ import Prodbox.ControlPlane.TargetSecretWorker
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionAggregate
   , authorityAggregateAdmission
+  , authorityAggregateAllowsProviderCredentialRetirementInstall
+  , authorityAggregatePendingCredentialArchive
+  , authorityAggregateProviderCredentialRecoveryView
   )
 import Prodbox.Lifecycle.Authority.Genesis
   ( AuthorityAdmissionState (..)
@@ -65,6 +68,18 @@ import Prodbox.Lifecycle.Authority.Genesis
   , authorityEpochValue
   , nextAuthorityEpoch
   )
+import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch
+  ( ProviderCredentialRecoveryView
+      ( ProviderCredentialRecoveryPending
+      , ProviderCredentialRecoveryServing
+      )
+  , mkProviderCredentialMutationReservation
+  , providerCredentialCleanupDraftMatches
+  , providerCredentialLineageArchiveAction
+  , providerCredentialLineageArchiveGeneration
+  , providerCredentialLineageArchiveOperationId
+  , providerCredentialLineageArchiveRequestDigest
+  )
 import Prodbox.Lifecycle.CheckpointAuthority
   ( LongLivedCheckpointAuthority
   , ModelBCasAdapter (..)
@@ -75,7 +90,8 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , mkClusterRetainedCoordinate
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAuthority
-  ( AwsAdminAuthorizedRecoveryError
+  ( AwsAdminAttestedRecoveryProof
+  , AwsAdminAuthorizedRecoveryError
   , AwsAdminAuthorizedRecoveryProof
   , awsAdminPreparedRenewalBindingsMatch
   )
@@ -87,6 +103,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   ( AwsAdminCleanupRecoveryProgram (..)
+  , AwsAdminJobBinding
   , AwsAdminPermitIntent
   , AwsAdminPermitKind (..)
   , BackupRepairFrozenBinding
@@ -94,10 +111,12 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminPermit
   , awsAdminPermitIntentAction
   , awsAdminPermitIntentCredentialClass
   , awsAdminPermitIntentDeadline
+  , awsAdminPermitIntentGeneration
   , awsAdminPermitIntentKind
   , awsAdminPermitIntentOperationId
   , awsAdminPermitIntentPlanBinding
   , awsAdminPermitIntentPreparedTarget
+  , awsAdminPermitIntentRequestDigest
   , backupRepairFrozenAuthorityEpoch
   , backupRepairFrozenPlanDigest
   , bindAwsAdminPermitIntentPreparedTarget
@@ -110,15 +129,17 @@ import Prodbox.Lifecycle.CredentialProvisioner.FirstReconcileJournal
   , firstReconcileJournalCodec
   , firstReconcileJournalCursor
   , firstReconcileJournalPlan
+  , firstReconcileJournalRecoveryPending
   , initialFirstReconcileJournal
+  , settleFirstReconcileJournalStore
   )
 import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
-  ( AwsCredentialClass (AuthorityBackupStoreCredential)
+  ( AwsCredentialClass (AuthorityBackupStoreCredential, LifecycleProviderCredential)
   , FirstReconcilePermitBinding
   , FirstReconcilePlanAction (..)
   , FirstReconcilePlanMember
   , FirstReconcileReceipt
-  , OperatorMaterialAction (InstallOperatorMaterial)
+  , OperatorMaterialAction (InstallOperatorMaterial, RevokeOperatorMaterial)
   , defaultFirstReconcileProvisioningPlan
   , firstReconcilePermitMemberDigest
   , firstReconcilePermitMemberIndex
@@ -158,7 +179,8 @@ import Prodbox.Lifecycle.Lease
   , authorityTimeMicros
   )
 import Prodbox.Lifecycle.TargetCommitIntent
-  ( targetValueDigestText
+  ( credentialGenerationValue
+  , targetValueDigestText
   )
 
 -- | The endpoint consumes this complete lifecycle rather than a read-only
@@ -175,6 +197,13 @@ data AwsAdminPreparedTargetLifecycle m = AwsAdminPreparedTargetLifecycle
                AwsAdminAuthorizedRecoveryError
                AwsAdminAuthorizedRecoveryProof
            )
+  , observeAwsAdminCompletedWorkerReceipt
+      :: SignedAwsAdminPermit -> m (Either Text (Maybe AwsAdminWorkerReceipt))
+  , proveAwsAdminAttestedAttemptRecovery
+      :: AuthorityTime
+      -> AwsAdminPermitIntent
+      -> AwsAdminJobBinding
+      -> m (Either AwsAdminAuthorizedRecoveryError AwsAdminAttestedRecoveryProof)
   , prepareAndReadBackAwsAdminPreparedTarget
       :: Maybe (AuthorityTime, AwsAdminPermitIntent)
       -> AwsAdminPermitIntent
@@ -188,6 +217,8 @@ data AwsAdminPreparedTargetLifecycle m = AwsAdminPreparedTargetLifecycle
       -> m (Either Text ())
   , observeAwsAdminFirstReconcileContinuation
       :: m (Either Text (Maybe FirstReconcileContinuation))
+  , observeAwsAdminFirstReconcileRecoveryPending :: m (Either Text Bool)
+  , settleAwsAdminFirstReconcileRecovery :: m (Either Text ())
   }
 
 -- | Value-free retained Authority phase observed before prepared-target
@@ -314,16 +345,36 @@ productionAwsAdminPreparedTargetLifecycle
                 AwsAdminAuthorizedRecoveryProof
             )
      )
+  -> (SignedAwsAdminPermit -> IO (Either Text (Maybe AwsAdminWorkerReceipt)))
+  -> ( AuthorityTime
+       -> AwsAdminPermitIntent
+       -> AwsAdminJobBinding
+       -> IO (Either AwsAdminAuthorizedRecoveryError AwsAdminAttestedRecoveryProof)
+     )
   -> AwsAdminPreparedTargetLifecycle IO
-productionAwsAdminPreparedTargetLifecycle store authority admissionRepository journalCoordinate selectedAgent observeNow proveAuthorizedRecovery =
+productionAwsAdminPreparedTargetLifecycle store authority admissionRepository journalCoordinate selectedAgent observeNow proveAuthorizedRecovery observeCompletedReceipt proveAttestedRecovery =
   AwsAdminPreparedTargetLifecycle
     { recordAwsAdminPrepareAuthorityPhase =
         writeDiagnosticLine . Text.unpack . renderAwsAdminPrepareAuthorityPhaseDiagnostic
     , proveAwsAdminAuthorizedAttemptRecovery = proveAuthorizedRecovery
+    , observeAwsAdminCompletedWorkerReceipt = observeCompletedReceipt
+    , proveAwsAdminAttestedAttemptRecovery = proveAttestedRecovery
     , prepareAndReadBackAwsAdminPreparedTarget = prepare
     , reobserveRetainedAwsAdminPreparedTarget = reobservePrepared
     , commitAwsAdminFirstReconcileReceipt = commitFirstReconcile
     , observeAwsAdminFirstReconcileContinuation = observeContinuation
+    , observeAwsAdminFirstReconcileRecoveryPending = do
+        journal <- observeJournal journalAdapter journalCoordinate
+        pure (maybe False firstReconcileJournalRecoveryPending <$> journal)
+    , settleAwsAdminFirstReconcileRecovery = do
+        written <- settleFirstReconcileJournalStore journalAdapter journalCoordinate
+        case written of
+          Left cause -> pure (Left (Text.pack (show cause)))
+          Right _ -> do
+            independentlyObserved <- observeJournal journalAdapter journalCoordinate
+            pure $ case independentlyObserved of
+              Right (Just journal) | not (firstReconcileJournalRecoveryPending journal) -> Right ()
+              _ -> Left "first-reconcile settlement read-back failed"
     }
  where
   preparedAdapter =
@@ -519,6 +570,18 @@ contextForIntent adapter coordinate aggregate intent =
                     Just (genesisProgressPlan progress, member)
                 }
     (BackupEstablished epoch _ _, normalKind)
+      | isNormalOperatorMaterialKind normalKind
+          && isPendingCredentialCleanup ->
+          pure
+            ( Right
+                PreparedAuthorityContext
+                  { preparedContextFence = authorityEpochValue epoch
+                  , preparedContextPlanBinding = Nothing
+                  , preparedContextDeadline = awsAdminPermitIntentDeadline intent
+                  , preparedContextGenesis = Nothing
+                  }
+            )
+    (BackupEstablished epoch _ _, normalKind)
       | isNormalOperatorMaterialKind normalKind -> do
           journalResult <- observeJournalForPrepare adapter coordinate
           pure $ do
@@ -532,6 +595,15 @@ contextForIntent adapter coordinate aggregate intent =
                     , preparedContextDeadline = awsAdminPermitIntentDeadline intent
                     , preparedContextGenesis = Nothing
                     }
+              Just journal
+                | firstReconcileJournalRecoveryPending journal && isServingRecoveryRevoke ->
+                    pure
+                      PreparedAuthorityContext
+                        { preparedContextFence = authorityEpochValue epoch
+                        , preparedContextPlanBinding = Nothing
+                        , preparedContextDeadline = awsAdminPermitIntentDeadline intent
+                        , preparedContextGenesis = Nothing
+                        }
               Just journal -> case nextFirstReconcileMember
                 (firstReconcileJournalPlan journal)
                 (firstReconcileJournalCursor journal) of
@@ -556,6 +628,15 @@ contextForIntent adapter coordinate aggregate intent =
                           AwsAdminPreparedTargetJournalMemberMismatch
                           "first-reconcile genesis receipt has not committed"
                       )
+                  ProvisionAwsCredentialMember expectedClass
+                    | expectedClass /= LifecycleProviderCredential && isRetirementInstall ->
+                        pure
+                          PreparedAuthorityContext
+                            { preparedContextFence = authorityEpochValue epoch
+                            , preparedContextPlanBinding = Nothing
+                            , preparedContextDeadline = awsAdminPermitIntentDeadline intent
+                            , preparedContextGenesis = Nothing
+                            }
                   ProvisionAwsCredentialMember expectedClass -> do
                     unless
                       ( awsAdminPermitIntentCredentialClass intent == expectedClass
@@ -613,6 +694,41 @@ contextForIntent adapter coordinate aggregate intent =
                 "AWS-admin request is not admitted by retained Authority state"
             )
         )
+ where
+  draftReservation =
+    mkProviderCredentialMutationReservation
+      (awsAdminPermitIntentAction intent)
+      (awsAdminPermitIntentOperationId intent)
+      (awsAdminPermitIntentGeneration intent)
+      (awsAdminPermitIntentRequestDigest intent)
+  isRetirementInstall =
+    awsAdminPermitIntentCredentialClass intent == LifecycleProviderCredential
+      && case draftReservation of
+        Right reservation -> authorityAggregateAllowsProviderCredentialRetirementInstall aggregate reservation
+        Left _ -> False
+  isServingRecoveryRevoke =
+    awsAdminPermitIntentCredentialClass intent == LifecycleProviderCredential
+      && awsAdminPermitIntentAction intent == RevokeOperatorMaterial
+      && case authorityAggregateProviderCredentialRecoveryView aggregate of
+        ProviderCredentialRecoveryServing generation _ -> credentialGenerationValue (awsAdminPermitIntentGeneration intent) == generation
+        ProviderCredentialRecoveryPending operation -> case authorityAggregatePendingCredentialArchive aggregate of
+          Just archive ->
+            operation == operatorMaterialOperationIdText (awsAdminPermitIntentOperationId intent)
+              && providerCredentialLineageArchiveOperationId archive == operation
+              && providerCredentialLineageArchiveAction archive == RevokeOperatorMaterial
+              && providerCredentialLineageArchiveGeneration archive
+                == credentialGenerationValue (awsAdminPermitIntentGeneration intent)
+              && providerCredentialLineageArchiveRequestDigest archive
+                == targetValueDigestText (awsAdminPermitIntentRequestDigest intent)
+          Nothing -> False
+        _ -> False
+  isPendingCredentialCleanup =
+    awsAdminPermitIntentCredentialClass intent == LifecycleProviderCredential
+      && case ( authorityAggregatePendingCredentialArchive aggregate
+              , draftReservation
+              ) of
+        (Just parent, Right draft) -> providerCredentialCleanupDraftMatches parent draft
+        _ -> False
 
 isNormalOperatorMaterialKind :: AwsAdminPermitKind -> Bool
 isNormalOperatorMaterialKind kind = case kind of

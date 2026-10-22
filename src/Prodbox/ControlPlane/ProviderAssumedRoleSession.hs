@@ -133,13 +133,20 @@ providerRoleForIntent intent = case intent of
   ObserveEksClusterIdentity _ -> LifecycleProviderRole
   ObserveProviderAwsScope -> LifecycleProviderRole
   ObserveOwnedResourceTags _ -> LifecycleProviderRole
+  ObserveGlobalOwnedResourceTags _ -> LifecycleProviderRole
+  PlantTestVpcCanary {} -> LifecycleProviderRole
   ObserveNativeStackFamily _ _ -> LifecycleProviderRole
   ReapNativeStackFamily {} -> LifecycleProviderRole
   EnsureValidationHostedZone {} -> LifecycleProviderRole
-  ObserveSesInviteMail {} -> LifecycleProviderRole
-  ReapSesInviteMail {} -> LifecycleProviderRole
+  RetiredSesInviteMailObservation {} -> LifecycleProviderRole
+  ObserveSealedSesInviteMail {} -> LifecycleProviderRole
+  ObserveHomeDns01Records {} -> LifecycleProviderRole
+  ObserveSesInviteMailResidue {} -> LifecycleProviderRole
+  ReapSesInviteMailResidue {} -> LifecycleProviderRole
+  RetiredSesInviteMailCleanup {} -> LifecycleProviderRole
   EnsureRetainedEbsVolumes {} -> LifecycleProviderRole
   ObserveAwsAudit {} -> LifecycleProviderRole
+  PreviewRegisteredStack {} -> LifecycleProviderRole
 
 -- | The request at the STS floor.  Production derives the duration per
 -- operation with 'providerAssumeRoleRequestFor'.

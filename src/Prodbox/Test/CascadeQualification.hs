@@ -14,17 +14,25 @@ module Prodbox.Test.CascadeQualification
   , cascadeQualificationIdentityKey
   , cascadeQualificationCycleOutcome
   , cascadeQualificationCyclePassed
+  , cascadeQualificationRecoveryOnly
   , cascadeQualificationLedgerEntries
   , cascadeQualificationLedgerTip
   , frozenFactLines
   , runCascadeQualificationCandidate
+  , CascadeQualificationResumeMode (..)
+  , qualificationCyclePurpose
+  , cascadeQualificationResumeMode
   )
 where
 
+import Control.Exception (IOException, try)
+import Control.Monad (void)
 import Crypto.Hash.SHA256 qualified as SHA256
+import Crypto.Random (getRandomBytes)
 import Data.Bifunctor (first)
 import Data.ByteString qualified as ByteString
 import Data.List (nub, sort)
+import Data.List.NonEmpty qualified as NonEmpty
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -39,10 +47,12 @@ import Prodbox.CLI.Rke2
   , ensureInternalControlPlaneChartReady
   , ensureMinioRuntime
   , ensureVaultRuntime
+  , revokeHarnessLifecycleProviderCredentialWithEvidence
   )
 import Prodbox.Config.Basics (UnencryptedBasics (basicsClusterId))
 import Prodbox.Config.ComponentGraph (componentIdForChartName)
 import Prodbox.Config.FloorDhall (loadUnencryptedBasics)
+import Prodbox.Config.LocalRetainedRoot (LocalRetainedRootEntry (..), LocalRetainedRootError (..))
 import Prodbox.Config.OrdinaryTeardownRecovery
   ( OrdinaryTeardownTargetAgent (OrdinaryTeardownWithTargetAgent)
   )
@@ -69,19 +79,39 @@ import Prodbox.Lifecycle.CleanupRunEntry
   ( LifecycleCleanupResult
   , lifecycleCleanupResultSucceeded
   )
+import Prodbox.Lifecycle.CredentialProvisioner.HarnessCredential
+  ( HarnessCredentialRevocationEvidence
+  , mkHarnessCredentialLineage
+  )
 import Prodbox.Lifecycle.DnsRecord (HostedZoneId, mkHostedZoneId)
 import Prodbox.Lifecycle.HostCleanupCompositionRoot
-  ( HostCleanupCompositionInputs (..)
+  ( HostCleanupCompositionError (..)
+  , HostCleanupCompositionInputs (..)
+  , hostCleanupTerminalIntentStore
+  , resolveHostCleanupTerminalComposition
   )
-import Prodbox.Lifecycle.HostCleanupIntent (mkHostTerminalPermitId)
+import Prodbox.Lifecycle.HostCleanupIntent
+  ( HostCleanupIntentPhase (..)
+  , hostCleanupIntentPhase
+  , hostCleanupObservationEvidenceScope
+  , hostCleanupRunId
+  , hostCleanupScope
+  , mkHostTerminalPermitId
+  , observeHostCleanupIntent
+  )
 import Prodbox.Lifecycle.Teardown.CascadeCandidate.Internal
   ( CascadeCandidateEnvironment (..)
+  , CascadeCandidateError (..)
+  , CascadeCandidateHostResume
   , CascadeCandidateInputs (..)
   , CascadeCandidateOutcome (..)
   , CascadeCandidatePlanSummary (..)
+  , cascadeCandidateHostResumeInputs
   , cascadeCandidateShapeSummary
+  , observeCascadeCandidateHostResume
   , renderCascadeCandidateError
   , runCascadeCandidate
+  , runCascadeCandidateHostResume
   )
 import Prodbox.Lifecycle.Teardown.CloudRuntimeProduction
   ( derivedEksDrainLeaseSeconds
@@ -91,26 +121,35 @@ import Prodbox.Lifecycle.Teardown.Model
   ( AwsAccountId (..)
   , AwsRegion (..)
   , AwsScope (..)
+  , evidenceAwsDnsZone
   )
 import Prodbox.Lifecycle.Teardown.RecoveryRepairProduction
   ( mkSubstrateApiWait
   )
 import Prodbox.Lifecycle.Teardown.Registry qualified as Registry
+import Prodbox.Lifecycle.Teardown.ResourceScopeBindings
+  ( InviteMailSelector (ValidationInviteDomain)
+  , mkHomeDns01Scope
+  , mkInviteMailScope
+  , mkResourceScopeBindingsWithAudit
+  , resourceScopeAuditRetainedNames
+  )
 import Prodbox.Lifecycle.Teardown.RetainedInventory
   ( RetainedNameBinding
   , mkRetainedNameBinding
   )
-import Prodbox.PublicEdge (resolveSubstrateHostedZoneId)
+import Prodbox.PublicEdge (requireSubstrateCertScopeSet, resolveSubstrateHostedZoneId)
 import Prodbox.Result (Result (..))
 import Prodbox.Settings
   ( ValidatedCoordinates (..)
   , ValidatedSettings
   , renderConfigDhall
+  , sesReceiveDomain
   , validateAndLoadSettings
   , validatedConfig
   , validatedCoordinates
   )
-import Prodbox.Settings.Coordinate (s3BucketNameText)
+import Prodbox.Settings.Coordinate (dnsLabelText, route53ZoneIdText, s3BucketNameText)
 import Prodbox.Subprocess
   ( ProcessOutput (..)
   , Subprocess (..)
@@ -119,6 +158,7 @@ import Prodbox.Subprocess
 import Prodbox.Substrate (Substrate (SubstrateAws, SubstrateHomeLocal))
 import Prodbox.Test.CascadeQualificationCycle
   ( CycleEffects (..)
+  , CyclePurpose (..)
   , CycleReport (..)
   , driveQualificationCycle
   )
@@ -139,7 +179,7 @@ import Prodbox.Test.Qualification.CascadeCycleArtifact
 import Prodbox.Test.Qualification.CascadeCycleIdentity
   ( CompareOnlyParts (..)
   , CycleAnnotations
-  , CycleIdentityParts
+  , CycleIdentityParts (..)
   , IdentityKey
   , RecomputedLocalParts (..)
   , annotationsOf
@@ -150,16 +190,25 @@ import Prodbox.Test.Qualification.CascadeCycleIdentity
   , topologyWiringDigest
   )
 import Prodbox.Test.Qualification.CascadeCycleLedger
-  ( CycleOutcome (..)
+  ( BegunRecord (..)
+  , CycleFailureClass (FailedHistoricalRecovery)
+  , CycleOutcome (..)
   , LedgerEntry (..)
+  , LedgerRecord (..)
   , LedgerRefusal
   , labelDisposition
+  , ledgerEntries
   , renderCycleOutcome
   , renderLedgerRefusal
   )
 import Prodbox.Test.Qualification.CascadeCycleLedgerStore
   ( appendCycleRecord
   , cycleLedgerPath
+  , mkQualificationResumeSnapshot
+  , observeQualificationResumeSnapshot
+  , persistQualificationResumeSnapshot
+  , qualificationResumeBegun
+  , qualificationResumeImages
   , readCycleLedger
   , renderLedgerStoreError
   )
@@ -190,7 +239,7 @@ import Prodbox.Test.Qualification.TeardownCounterexample
   , teardownArtifactDigestText
   , teardownFixtureIdText
   )
-import Prodbox.Tls.CertScope (fqdnText)
+import Prodbox.Tls.CertScope (certScopeSetDnsNames, fqdnText)
 import System.Directory (createDirectoryIfMissing)
 import System.Exit (ExitCode (..))
 import System.FilePath ((</>))
@@ -240,6 +289,10 @@ cascadeQualificationCyclePassed :: CascadeQualificationOutcome -> Bool
 cascadeQualificationCyclePassed outcome =
   internalQualificationCycleOutcome outcome == CyclePassed
 
+cascadeQualificationRecoveryOnly :: CascadeQualificationOutcome -> Bool
+cascadeQualificationRecoveryOnly outcome =
+  internalQualificationCycleOutcome outcome == CycleFailed FailedHistoricalRecovery
+
 -- | How many entries the ledger holds after this cycle closed.
 cascadeQualificationLedgerEntries :: CascadeQualificationOutcome -> Int
 cascadeQualificationLedgerEntries = internalQualificationLedgerEntries
@@ -248,25 +301,198 @@ cascadeQualificationLedgerEntries = internalQualificationLedgerEntries
 cascadeQualificationLedgerTip :: CascadeQualificationOutcome -> Text
 cascadeQualificationLedgerTip = internalQualificationLedgerTip
 
+qualificationCanonicalCommand :: Substrate -> CycleLabel -> Text
+qualificationCanonicalCommand substrate label =
+  "PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE="
+    <> cycleLabelText label
+    <> " prodbox test integration cascade-qualification"
+    <> case substrate of
+      SubstrateHomeLocal -> ""
+      SubstrateAws -> " --substrate aws"
+
 -- | Drive one named qualification cycle.  The cycle identifier is part of
--- every durable identity, so restarting the same cycle resumes it while the
--- second consecutive cycle must use a distinct identifier.
+-- every durable identity. Restarting a label recovers its cleanup; a new
+-- qualification cycle requires a distinct identifier.
 runCascadeQualificationCandidate
   :: FilePath
   -> [(String, String)]
+  -> Substrate
   -> Text
   -> IO (Either String CascadeQualificationOutcome)
-runCascadeQualificationCandidate repoRoot environment rawLabel =
+runCascadeQualificationCandidate repoRoot environment substrate rawLabel =
   case mkCycleLabel rawLabel of
     Left err -> pure (Left ("invalid qualification cycle label: " ++ show err))
-    Right cycleLabel -> runLabelledCycle repoRoot environment cycleLabel
+    Right cycleLabel -> runLabelledCycle repoRoot environment substrate cycleLabel
+
+-- | Admission hint only; it authorizes no cleanup or credential effect.
+-- A registered predecessor bypasses fresh install, while an observed handoff
+-- additionally bypasses every service prerequisite in the qualification body.
+data CascadeQualificationResumeMode
+  = QualificationFresh
+  | QualificationRegistered
+  | QualificationNative
+  deriving (Eq, Show)
+
+qualificationCyclePurpose :: CascadeQualificationResumeMode -> CyclePurpose
+qualificationCyclePurpose mode = case mode of
+  QualificationFresh -> QualifyNewRun
+  QualificationRegistered -> RecoverExistingRun
+  QualificationNative -> RecoverExistingRun
+
+cascadeQualificationResumeMode
+  :: FilePath -> Text -> IO (Either String CascadeQualificationResumeMode)
+cascadeQualificationResumeMode repoRoot rawLabel = case mkCycleLabel rawLabel of
+  Left err -> pure (Left ("invalid qualification cycle label: " <> show err))
+  Right label -> fmap (fmap fst) (observeLabelledQualificationResume repoRoot label)
+
+observeLabelledQualificationResume
+  :: FilePath
+  -> CycleLabel
+  -> IO (Either String (CascadeQualificationResumeMode, Maybe CascadeCandidateHostResume))
+observeLabelledQualificationResume repoRoot label = case qualificationRunIdFor label of
+  Left detail -> pure (Left detail)
+  Right runId -> do
+    native <- observeCascadeCandidateHostResume repoRoot runId
+    case native of
+      Right (Just captured) -> pure (Right (QualificationNative, Just captured))
+      Right Nothing -> do
+        resolved <- resolveHostCleanupTerminalComposition repoRoot
+        case resolved of
+          Left err -> pure (Left (show err))
+          Right local -> do
+            active <- observeHostCleanupIntent (hostCleanupTerminalIntentStore local)
+            pure $ case active of
+              Left err -> Left ("the qualification host intent is unobservable: " <> show err)
+              Right Nothing -> Right (QualificationFresh, Nothing)
+              Right (Just intent)
+                | hostCleanupRunId intent /= runId ->
+                    Left
+                      ( "finish the existing cascade run before starting another qualification label: "
+                          <> Text.unpack (cleanupRunIdText (hostCleanupRunId intent))
+                      )
+                | otherwise -> case hostCleanupIntentPhase intent of
+                    HostCleanupPrepared -> Right (QualificationRegistered, Nothing)
+                    HostCleanupAuthorityAccepted -> Right (QualificationRegistered, Nothing)
+                    HostCleanupTerminalArmed -> Right (QualificationRegistered, Nothing)
+                    _ ->
+                      Left
+                        "the local cleanup tail has no independently observed credential-retired handoff; fresh bootstrap and credential installation are refused"
+      Left err
+        | missingBootstrapRoot err -> freshWithoutHistory
+        | otherwise -> pure (Left (renderCascadeCandidateError err))
+ where
+  freshWithoutHistory = do
+    snapshot <- observeQualificationResumeSnapshot repoRoot label
+    ledger <- readCycleLedger (cycleLedgerPath repoRoot)
+    pure $ case (snapshot, ledger) of
+      (Left detail, _) -> Left detail
+      (_, Left err) -> Left (renderLedgerStoreError err)
+      (Right Nothing, Right history) | null (ledgerEntries history) -> Right (QualificationFresh, Nothing)
+      _ ->
+        Left
+          "the recorded qualification history has no observable retained host root; a fresh bootstrap cannot replace its licensing evidence"
+
+  missingBootstrapRoot err = case err of
+    CascadeCandidateCompositionFailed
+      (HostCleanupCompositionRetainedRootUnusable (LocalRetainedRootEntryMissing entry)) ->
+        entry
+          `elem` [ LocalRetainedRootDirectory
+                 , LocalRetainedRootControlDirectory
+                 , LocalRetainedRootMinioDirectory
+                 , LocalRetainedRootVaultDirectory
+                 , LocalRetainedRootEstablishmentMarker
+                 ]
+    _ -> False
+
+qualificationRunIdFor :: CycleLabel -> Either String CleanupRunId
+qualificationRunIdFor label = first Text.unpack (mkCleanupRunId ("cascade-qualification-" <> cycleLabelText label))
+
+runNativeQualificationResume
+  :: FilePath
+  -> Substrate
+  -> CycleLabel
+  -> CascadeCandidateHostResume
+  -> IO (Either String CascadeQualificationOutcome)
+runNativeQualificationResume repoRoot substrate label native = do
+  observed <- observeQualificationResumeSnapshot repoRoot label
+  localResult <- recomputeLocalParts repoRoot
+  fixtureResult <- loadTeardownCounterexampleFixture repoRoot CanonicalTeardownTrace
+  case (observed, localResult, fixtureResult) of
+    (Left detail, _, _) -> pure (Left detail)
+    (Right Nothing, _, _) ->
+      pure
+        ( Left
+            "the native qualification resume has no pre-uninstall named image capture; its historical evidence cannot be reconstructed from a rebuilt cluster"
+        )
+    (_, Left err, _) -> pure (Left (renderLocalRecomputeError err))
+    (_, _, Left err) -> pure (Left ("load teardown counterexample: " <> show err))
+    (Right (Just snapshot), Right local, Right fixture) -> do
+      let begun = qualificationResumeBegun snapshot
+          inputs = cascadeCandidateHostResumeInputs native
+          images = qualificationResumeImages snapshot
+          restored = do
+            current <- qualificationIdentityParts local inputs images
+            if current == begunParts begun
+              then Right ()
+              else
+                Left
+                  "the frozen qualification identity changed; the original cycle label cannot qualify a different source, config, resource envelope or program"
+            names <-
+              maybe
+                (Left "the historical cascade has no sealed audit names")
+                Right
+                (resourceScopeAuditRetainedNames (cascadeCandidateResourceScopeBindings inputs))
+            Right (current, names)
+      case restored of
+        Left detail -> pure (Left detail)
+        Right (parts, names) -> do
+          oracleResult <- runTeardownRecoveryOracle fixture (canonicalTeardownRecoveryInterpreter fixture)
+          case oracleResult of
+            Left err -> pure (Left ("run teardown counterexample oracle: " <> show err))
+            Right oracle -> do
+              startedAt <- getCurrentTime
+              let context =
+                    CycleContext
+                      { contextRepoRoot = repoRoot
+                      , contextPurpose = RecoverExistingRun
+                      , contextLabel = label
+                      , contextCanonicalCommand = qualificationCanonicalCommand substrate label
+                      , contextStartedAt = startedAt
+                      , contextRunId = cascadeCandidateRunId inputs
+                      , contextParts = parts
+                      , contextAnnotations = begunAnnotations begun
+                      , contextConfigDigest = partsGeneratedConfig parts
+                      , contextRetainedBinding = names
+                      , contextFixture = fixture
+                      , contextOracle = oracle
+                      , contextImageInventory = images
+                      , contextRunCandidate = first renderCascadeCandidateError <$> runCascadeCandidateHostResume native
+                      }
+              driven <-
+                driveQualificationCycle (productionCycleEffects context) label parts (begunAnnotations begun)
+              pure (outcomeOf context <$> driven)
 
 runLabelledCycle
   :: FilePath
   -> [(String, String)]
+  -> Substrate
   -> CycleLabel
   -> IO (Either String CascadeQualificationOutcome)
-runLabelledCycle repoRoot environment cycleLabel = do
+runLabelledCycle repoRoot environment substrate cycleLabel = do
+  resumed <- observeLabelledQualificationResume repoRoot cycleLabel
+  case resumed of
+    Left detail -> pure (Left detail)
+    Right (_, Just native) -> runNativeQualificationResume repoRoot substrate cycleLabel native
+    Right (mode, Nothing) -> runConnectedLabelledCycle repoRoot environment substrate cycleLabel mode
+
+runConnectedLabelledCycle
+  :: FilePath
+  -> [(String, String)]
+  -> Substrate
+  -> CycleLabel
+  -> CascadeQualificationResumeMode
+  -> IO (Either String CascadeQualificationOutcome)
+runConnectedLabelledCycle repoRoot environment substrate cycleLabel mode = do
   startedAt <- getCurrentTime
   settingsResult <- validateAndLoadSettings repoRoot
   basicsResult <- loadUnencryptedBasics repoRoot
@@ -288,7 +514,7 @@ runLabelledCycle repoRoot environment cycleLabel = do
       | inForceConfigDigest settings /= localGeneratedConfig local ->
           pure (Left bootstrapConfigDisagrees)
       | otherwise -> do
-          dnsZoneResult <- resolveQualificationDnsZone repoRoot settings
+          dnsZoneResult <- qualificationDnsZoneForMode repoRoot substrate cycleLabel mode settings
           case dnsZoneResult >>= \dnsZone ->
             qualificationComposition repoRoot environment cycleLabel settings basics dnsZone of
             Left err -> pure (Left err)
@@ -297,7 +523,7 @@ runLabelledCycle repoRoot environment cycleLabel = do
               -- bind the immutable running-image inventory before that mutation.
               -- Capturing afterward would either fail to reach Kubernetes or,
               -- worse, identify a subsequently rebuilt deployment.
-              observed <- observeIdentityParts repoRoot environment local inputs
+              observed <- qualificationIdentityForMode repoRoot environment cycleLabel mode local inputs
               case observed of
                 Left err -> pure (Left err)
                 Right (imageInventory, parts) -> do
@@ -306,21 +532,128 @@ runLabelledCycle repoRoot environment cycleLabel = do
                       context =
                         CycleContext
                           { contextRepoRoot = repoRoot
+                          , contextPurpose = qualificationCyclePurpose mode
                           , contextLabel = cycleLabel
+                          , contextCanonicalCommand = qualificationCanonicalCommand substrate cycleLabel
                           , contextStartedAt = startedAt
                           , contextRunId = runId
                           , contextParts = parts
                           , contextAnnotations = annotations
-                          , contextSettings = settings
+                          , contextConfigDigest = inForceConfigDigest settings
                           , contextRetainedBinding = retainedBinding
                           , contextFixture = fixture
                           , contextOracle = oracle
                           , contextImageInventory = imageInventory
-                          , contextInputs = inputs
-                          , contextEnvironment = candidateEnvironment
+                          , contextRunCandidate =
+                              first renderCascadeCandidateError <$> runCascadeCandidate inputs candidateEnvironment
                           }
-                  driven <- driveQualificationCycle (productionCycleEffects context) cycleLabel parts annotations
-                  pure (outcomeOf context <$> driven)
+                  captured <- captureQualificationResumeSnapshot context
+                  case captured of
+                    Left detail -> pure (Left detail)
+                    Right () -> do
+                      driven <- driveQualificationCycle (productionCycleEffects context) cycleLabel parts annotations
+                      pure (outcomeOf context <$> driven)
+
+-- The registered recovery lane uses its stored zone and named image capture.
+-- Neither read submits Provider work after the terminal audit fence.
+qualificationDnsZoneForMode
+  :: FilePath
+  -> Substrate
+  -> CycleLabel
+  -> CascadeQualificationResumeMode
+  -> ValidatedSettings
+  -> IO (Either String HostedZoneId)
+qualificationDnsZoneForMode repoRoot substrate label mode settings = case mode of
+  QualificationFresh -> resolveQualificationDnsZone repoRoot substrate settings
+  QualificationNative -> pure (Left "the native handoff cannot fall back to connected qualification")
+  QualificationRegistered -> do
+    resolved <- resolveHostCleanupTerminalComposition repoRoot
+    case resolved of
+      Left err -> pure (Left (show err))
+      Right local -> do
+        observed <- observeHostCleanupIntent (hostCleanupTerminalIntentStore local)
+        pure $ do
+          runId <- qualificationRunIdFor label
+          intent <- case observed of
+            Left err -> Left ("the registered qualification host intent is unobservable: " <> show err)
+            Right Nothing -> Left "the registered qualification host intent disappeared"
+            Right (Just actual) | hostCleanupRunId actual == runId -> Right actual
+            Right (Just _) -> Left "the registered qualification host intent changed runs"
+          maybe
+            (Left "the registered qualification has no sealed AWS DNS zone")
+            Right
+            (evidenceAwsDnsZone (hostCleanupObservationEvidenceScope (hostCleanupScope intent)))
+
+qualificationIdentityForMode
+  :: FilePath
+  -> [(String, String)]
+  -> CycleLabel
+  -> CascadeQualificationResumeMode
+  -> RecomputedLocalParts
+  -> CascadeCandidateInputs
+  -> IO (Either String ([Text], CycleIdentityParts))
+qualificationIdentityForMode repoRoot environment label mode local inputs = case mode of
+  QualificationFresh -> observeIdentityParts repoRoot environment local inputs
+  QualificationNative -> pure (Left "the native handoff cannot request a new component inventory")
+  QualificationRegistered -> do
+    observed <- observeQualificationResumeSnapshot repoRoot label
+    pure $ do
+      snapshot <- case observed of
+        Left detail -> Left detail
+        Right Nothing -> Left "the registered qualification has no pre-uninstall named image capture"
+        Right (Just actual) -> Right actual
+      let images = qualificationResumeImages snapshot
+      current <- qualificationIdentityParts local inputs images
+      if current == begunParts (qualificationResumeBegun snapshot)
+        then Right (images, current)
+        else
+          Left
+            "the frozen registered qualification identity changed; no Provider work or credential installation is admitted for this cycle label"
+
+-- | Store the actual named image observation before Begin can admit any
+-- destructive effect. An older interrupted cycle without this capture cannot
+-- borrow the inventory of a rebuilt cluster to qualify its historical work.
+captureQualificationResumeSnapshot :: CycleContext -> IO (Either String ())
+captureQualificationResumeSnapshot context = do
+  let repoRoot = contextRepoRoot context
+      label = contextLabel context
+  observed <- observeQualificationResumeSnapshot repoRoot label
+  case observed of
+    Left detail -> pure (Left detail)
+    Right (Just snapshot)
+      | begunParts (qualificationResumeBegun snapshot) == contextParts context
+      , qualificationResumeImages snapshot == contextImageInventory context ->
+          pure (Right ())
+      | otherwise ->
+          pure (Left "the current qualification identity differs from its immutable pre-uninstall capture")
+    Right Nothing -> do
+      recorded <- readCycleLedger (cycleLedgerPath repoRoot)
+      case recorded of
+        Left err -> pure (Left (renderLedgerStoreError err))
+        Right ledger
+          | any (ownsLabel label . entryRecord) (ledgerEntries ledger) ->
+              pure
+                ( Left
+                    "the existing qualification cycle has no pre-uninstall image capture; historical cleanup remains unresolved and cannot borrow a new inventory to qualify"
+                )
+          | otherwise -> do
+              let begun =
+                    BegunRecord
+                      { begunLabel = label
+                      , begunAttempt = 1
+                      , begunKey = identityKeyOfParts (contextParts context)
+                      , begunParts = contextParts context
+                      , begunAnnotations = contextAnnotations context
+                      , begunStartedAt = Text.pack (iso8601Show (contextStartedAt context))
+                      }
+              case mkQualificationResumeSnapshot begun (contextImageInventory context) of
+                Left detail -> pure (Left detail)
+                Right snapshot -> fmap void (persistQualificationResumeSnapshot repoRoot snapshot)
+ where
+  ownsLabel label record = case record of
+    RecordCycleBegun begun -> begunLabel begun == label
+    RecordCycleClosed _ -> False
+    RecordCutoverMark _ -> False
 
 -- | The config the Lifecycle Authority holds, as a digest. A cycle's identity is
 -- recomputed after the cascade from the bootstrap seed, because the Authority
@@ -339,18 +672,19 @@ bootstrapConfigDisagrees =
 -- | Everything one cycle needs from the repository, the cluster and its own plan.
 data CycleContext = CycleContext
   { contextRepoRoot :: !FilePath
+  , contextPurpose :: !CyclePurpose
   , contextLabel :: !CycleLabel
+  , contextCanonicalCommand :: !Text
   , contextStartedAt :: !UTCTime
   , contextRunId :: !CleanupRunId
   , contextParts :: !CycleIdentityParts
   , contextAnnotations :: !CycleAnnotations
-  , contextSettings :: !ValidatedSettings
+  , contextConfigDigest :: !PublicEvidenceDigest
   , contextRetainedBinding :: !RetainedNameBinding
   , contextFixture :: !FrozenTeardownCounterexample
   , contextOracle :: !ReplacementTeardownResult
   , contextImageInventory :: ![Text]
-  , contextInputs :: !CascadeCandidateInputs
-  , contextEnvironment :: !CascadeCandidateEnvironment
+  , contextRunCandidate :: !(IO (Either String CascadeCandidateOutcome))
   }
 
 -- | The effects of a cycle over the real ledger, source tree and cluster.
@@ -360,9 +694,7 @@ productionCycleEffects context =
     { effectAttemptNumber = attemptNumberFor ledgerPath (contextLabel context)
     , effectNow = Text.pack . iso8601Show <$> getCurrentTime
     , effectAppend = \record -> first renderLedgerStoreError <$> appendCycleRecord ledgerPath record
-    , effectRunCandidate =
-        first renderCascadeCandidateError
-          <$> runCascadeCandidate (contextInputs context) (contextEnvironment context)
+    , effectRunCandidate = contextRunCandidate context
     , effectWriteArtifact = \attempt candidate ->
         fmap snd <$> writeQualificationEvidence context attempt candidate
     , effectRecaptureKey =
@@ -370,6 +702,7 @@ productionCycleEffects context =
           <$> recaptureExecutableKey (contextRepoRoot context) (contextParts context)
     , effectCandidateSucceeded =
         lifecycleCleanupResultSucceeded . cascadeCandidateOutcomeLifecycleResult
+    , effectCyclePurpose = contextPurpose context
     , effectCleanupRunId = cleanupRunIdText (contextRunId context)
     }
  where
@@ -512,7 +845,32 @@ qualificationComposition repoRoot environment cycleLabel settings basics dnsZone
           senderDomain
           Registry.awsEksProvisionedClusterName
       )
-  let composition =
+  homeZone <-
+    maybe
+      (Left "cascade cleanup requires the home route53.zone_id")
+      Right
+      (coordinateHomeZoneId coordinates)
+  typedHomeZone <- first show (mkHostedZoneId (route53ZoneIdText homeZone))
+  certificates <- requireSubstrateCertScopeSet settings SubstrateHomeLocal
+  certificateNames <-
+    maybe
+      (Left "cascade cleanup requires configured home certificate names")
+      Right
+      (NonEmpty.nonEmpty (certScopeSetDnsNames certificates))
+  home <- first show (mkHomeDns01Scope typedHomeZone certificateNames)
+  typedCaptureBucket <-
+    maybe
+      (Left "cascade cleanup requires ses.capture_bucket")
+      Right
+      (coordinateSesCaptureBucket coordinates)
+  receiveLabel <-
+    requireCoordinate
+      "ses.receive_subdomain"
+      (dnsLabelText <$> coordinateSesReceiveSubdomain coordinates)
+  receiveDomain <- sesReceiveDomain senderDomain receiveLabel
+  mail <- first show (mkInviteMailScope typedCaptureBucket (ValidationInviteDomain receiveDomain))
+  let resourceBindings = mkResourceScopeBindingsWithAudit (Just home) (Just mail) binding
+      composition =
         HostCleanupCompositionInputs
           { hostCleanupRepositoryRoot = repoRoot
           , hostCleanupCaller = LifecycleAuthorityOperator
@@ -529,13 +887,14 @@ qualificationComposition repoRoot environment cycleLabel settings basics dnsZone
           , cascadeCandidateFoundation =
               homeLinuxRke2FoundationId (basicsClusterId basics)
           , cascadeCandidateAwsDnsZone = Just dnsZone
+          , cascadeCandidateResourceScopeBindings = resourceBindings
           , cascadeCandidateTerminalPermitId = terminalPermit
           , cascadeCandidateDeclaredLeaseMicros = declaredLeaseMicros
           }
       candidateEnvironment =
         CascadeCandidateEnvironment
           { cascadeCandidateComposition = composition
-          , cascadeCandidateRetainedNameBinding = binding
+          , cascadeCandidateRevokeProviderCredential = revokeCascadeCredential repoRoot runId
           , cascadeCandidateKubectlPath = "kubectl"
           , cascadeCandidateKubectlEnvironment = environment
           , cascadeCandidateKubectlWorkingDirectory = Just repoRoot
@@ -571,14 +930,13 @@ qualificationComposition repoRoot environment cycleLabel settings basics dnsZone
             SubstrateHomeLocal
             component
 
--- | The qualification graph needs the exact provisioned AWS subzone even
--- when the operator intentionally leaves the authored override empty.  Use
--- the same config-or-live-stack-output resolver as every other AWS-substrate
--- consumer, then retain the typed coordinate in the durable descriptor.
+-- | Fresh qualification seals the selected substrate's exact DNS coordinate.
+-- Home uses its authored parent zone; AWS uses the provisioned subzone through
+-- the shared config-or-stack resolver. Recovery above keeps the stored zone.
 resolveQualificationDnsZone
-  :: FilePath -> ValidatedSettings -> IO (Either String HostedZoneId)
-resolveQualificationDnsZone repoRoot settings = do
-  resolved <- resolveSubstrateHostedZoneId repoRoot settings SubstrateAws
+  :: FilePath -> Substrate -> ValidatedSettings -> IO (Either String HostedZoneId)
+resolveQualificationDnsZone repoRoot substrate settings = do
+  resolved <- resolveSubstrateHostedZoneId repoRoot settings substrate
   pure (resolved >>= first show . mkHostedZoneId)
 
 observeComponentImageInventory
@@ -652,10 +1010,7 @@ writeQualificationEvidence context attempt candidateOutcome = do
         CascadeArtifactFields
           { fieldsLabel = cycleLabel
           , fieldsAttempt = attempt
-          , fieldsCanonicalCommand =
-              "PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE="
-                <> cycleLabelText cycleLabel
-                <> " prodbox test integration cascade-qualification --substrate aws"
+          , fieldsCanonicalCommand = contextCanonicalCommand context
           , fieldsStartedAt = Text.pack (iso8601Show (contextStartedAt context))
           , fieldsCompletedAt = Text.pack (iso8601Show completedAt)
           , fieldsAwsAccount = awsAccount
@@ -669,7 +1024,7 @@ writeQualificationEvidence context attempt candidateOutcome = do
           , fieldsRunScopedWiringDigest =
               cleanupDigestText (cascadeCandidateOutcomeDescriptorDigest candidateOutcome)
           , fieldsInForceConfigDigest =
-              publicEvidenceDigestText (inForceConfigDigest (contextSettings context))
+              publicEvidenceDigestText (contextConfigDigest context)
           , fieldsFrozenLines =
               frozenFactLines (contextFixture context) (contextOracle context)
                 ++ [("intended_retained_set", Text.pack (show (contextRetainedBinding context)))]
@@ -784,3 +1139,16 @@ activeLeaseMicros = 30 * 60 * 1_000_000
 
 reportRetentionMicros :: Natural
 reportRetentionMicros = 30 * 24 * 60 * 60 * 1_000_000
+
+-- | Fresh per-entry lineage heals an interrupted Provisioner revoke without
+-- borrowing the install operation of this or any previous qualification cycle.
+revokeCascadeCredential
+  :: FilePath -> CleanupRunId -> IO (Either Text HarnessCredentialRevocationEvidence)
+revokeCascadeCredential repoRoot runId = do
+  entropy <-
+    try (getRandomBytes 32 :: IO ByteString.ByteString) :: IO (Either IOException ByteString.ByteString)
+  case entropy of
+    Left _ -> pure (Left "cannot allocate the cascade credential-retirement lineage")
+    Right nonce -> case mkHarnessCredentialLineage ("cascade-retirement:" <> cleanupRunIdText runId) nonce of
+      Left err -> pure (Left (Text.pack (show err)))
+      Right lineage -> first Text.pack <$> revokeHarnessLifecycleProviderCredentialWithEvidence repoRoot lineage

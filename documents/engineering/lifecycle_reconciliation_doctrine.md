@@ -130,11 +130,16 @@ remain canonical in
 [Lifecycle Control-Plane Architecture](./lifecycle_control_plane_architecture.md).
 
 The Authority's purpose-bound aggregate export is itself an authenticated, replay-protected
-operation. Its HTTP-200 body remains subject to the same bounded canonical codec as every other
-control-plane response. HTTP 200 carries the direct canonical export response; non-200 cases carry
+operation. Its HTTP-200 body remains subject to the bounded canonical export codec.
+HTTP 200 carries the direct canonical export response; non-200 cases carry
 only their closed bounded summaries. The client fails closed on every other shape, and the
 Sprint-`2.117` diagnostic may classify only direct, endpoint-success, endpoint-failure, empty, or
 other without exposing or accepting retained aggregate material.
+
+Existing Authority control summaries retain their bounded raw UTF-8 bytes and HTTP statuses.
+The successful admission-recovery read carries its typed canonical metadata response instead;
+non-success control outcomes remain text. Both clients reject malformed or oversized input, and
+a mutation acknowledgement never substitutes for independently observing the retained epoch.
 
 When the aggregate-backup or config-backup client cannot decode its canonical response, it also
 applies the authenticated-role interpreter's total exact status/body projection and retains only
@@ -153,13 +158,13 @@ Lifecycle Authority derives `2 * (56 + 4) = 120`: 56 requests for the hard eight
 first-reconcile protocol, then config observe, proposal/read-back, the Authority-bound retained-root
 marker's fresh authenticated observation, and in-force projection load. Authority Backup derives a
 separate qualification envelope. Its prelude is the nine-request ordinary reconcile plus four
-recovery-boundary observations. The 59-node cascade then uses eight requests for registration, six
+recovery-boundary observations. The 74-node cascade then uses eight requests for registration, six
 for claim, six for primary-outcome attachment, eight per node for begin/complete backup custody, and
 thirteen for terminal report custody, run/index tombstones, and independent read-back:
-`2 * (13 + 8 + 6 + 6 + 59 * 8 + 13) = 1036`. The factor of two retains any interrupted prefix while
-admitting one immediate unchanged retry. Its exact compiled cascade aggregate stays below 24 KiB,
-so the independently enforced replay-encoding ceiling is 32 MiB rather than 1036 response-widths.
-Target Secret Agent derives `2 * 49 = 98`: one provider-credential observation, one committed-source
+`2 * (13 + 8 + 6 + 6 + 74 * 8 + 13) = 1276`. The factor of two retains any interrupted prefix while
+admitting one immediate unchanged retry. Its exact compiled cascade aggregate stays below 32 KiB,
+so the independently enforced replay-encoding ceiling is 48 MiB rather than 1276 response-widths.
+Target Secret Agent starts with 49 general requests per attempt: one provider-credential observation, one committed-source
 recovery observation, three retained-delivery requests, the complete retain/restore/retain-on-ready
 TLS envelope, the two-request legacy-adoption plus three-request immutable-version recovery maxima,
 the two net requests added when an unopenable exact version-2 collision stages fresh
@@ -169,17 +174,22 @@ against the pre-outbox maxima: the mutual exclusion holds at one retain, not acr
 because a first retain that enters empty and promotes leaves the aggregate current and the
 retain-on-ready later in the same attempt can then take an Authority-lane branch. The terminal
 legacy successor and its same-version race add eight requests, and the bounded Authority successor's
-same-version race adds three. Its encoded ceiling is 198 MiB so 98 accepted 2 MiB responses plus
-metadata fit. The Vault listener's finite 288 MiB request ceiling covers that projection's at-most 264 MiB Base64 expansion
+same-version race adds three. The candidate adds seven metadata calls: three audit-generation reads,
+two CLI retirement reads, the Provisioner's fixed-slot Agent revoke and the worker's independent
+absence read. It derives `2 * (49 + 7) = 112` slots. The unchanged 198 MiB ceiling contains 98
+general replies at 2 MiB and fourteen producer-capped metadata replies at 64 KiB, plus bounded
+replay metadata. An all-wide schedule refuses at that ceiling. The Vault listener's finite 288 MiB request ceiling covers that projection's at-most 264 MiB Base64 expansion
 plus the bounded KV JSON envelope. Provider Worker derives
-`2 * (1 + 6 * 4 + 3 + 7 + 5) = 80`: the exact scope, six Provider-mutated non-EKS registered
-families, Kubernetes-owned DNS01, EKS drain/destroy, terminal-audit catalog, and immediate-retry
-envelopes. Its replay response maximum is the Provider client's 64 KiB bound, so the complete
+`2 * (1 + 10 * 4 + 2 * 3 + 7 + 11) = 130`: the exact scope, ten Provider-mutated non-EKS registered
+families, both Kubernetes-owned DNS01 families, EKS drain/destroy, and an eleven-read terminal
+audit (one fresh Provider account/region observation plus five filters in both the run and global
+regions). The global endpoint is queried only once when it is also the run region. The second
+envelope retains the immediate retry. Its replay response maximum is the Provider client's 64 KiB bound, so the complete
 maximum-response projection fits under the unchanged 12 MiB encoded ceiling. TLS Retention keeps
 an exact `2 * (10 + 1 + 8) = 38` capacity: terminal pre-outbox collision recovery, the restore it
 enables, and bounded Authority-lane collision recovery may all occur sequentially in one attempt,
 and the second envelope retains its immediate retry. Thirty-eight maximum 2 MiB responses plus
-metadata fit under the 78 MiB encoded ceiling. The v15 migration admits canonical v2-through-v14 state only when stored capacity
+metadata fit under the 78 MiB encoded ceiling. The v17 migration admits canonical v2-through-v16 state only when stored capacity
 is no greater than the compiled target, stored response maximum is
 no smaller than the new maximum, clock skew is identical, and every retained response fits the new
 bound. It drops no entry. Response-limit widening, capacity shrink, clock-skew drift, and an
@@ -886,8 +896,11 @@ deadline plus a five-minute read-back grace, never below the 900-second STS floo
 the role's declared 3,600-second maximum. The session carries its parsed expiry, a session with no
 usable window left starts no work, and each Pulumi child is bounded by the smaller of the child
 maximum and the window left, so the credential cannot expire under a running child. A child is
-stopped by SIGTERM and then, after a thirty-second grace, SIGKILL, together with the plugin
-processes in its process group; the same stop runs if its caller is cancelled.
+stopped by SIGTERM, one repeated SIGTERM, and then SIGKILL after the grace. The child starts in a
+fresh POSIX session; the runner records descendants before signalling and stops them across process
+groups, checking PID/start-time identities before each signal. Parent and descendant confirmation
+share the existing bounded stop deadline, and failed observation or confirmation is an error.
+The same stop runs if its caller is cancelled.
 
 The authenticated request that waits for terminal delivery has a route-specific finite response
 budget containing that persisted five-minute operation plus 30 seconds for authenticated framing,
@@ -1023,6 +1036,25 @@ An execution-coordinate alias is not a second registry identity and is refused a
 boundary even when it selects the same Provider program.
 
 ## 3. Exact-Keyed Desired-Absence Reconciliation
+
+Ordinary harness cleanup binds the parent-zone exact DNS01 names, the invitation's exact
+bucket/recipient, and the optional retained catalog names into its durable resource scope before
+validation starts. The v3 program descriptor preserves those coordinates on recovery; historical
+unbound v1/v2 descriptors keep their original identity and cannot infer a new binding. Home and
+AWS DNS01 use separate registered families and explicit kubeconfig selection. Mail cleanup walks
+all-age S3 data versions, deletes matching exact version IDs, and independently lists again. It
+refuses beyond eight data versions, six pages or unreadable content; bodyless delete markers remain
+retained bucket metadata governed by prefix expiry.
+
+The ordinary terminal audit follows all resource read-backs and gates the durable surface report
+and credential revocation. Its query digest binds endpoints and filters. Every query uses a distinct
+bounded Provider submission identity with the graph audit operation as its cleanup owner. A fresh
+Provider account/region observation precedes the field reads. An incomplete endpoint or mismatched
+scope preserves credentials for recovery. The regional/global Tagging API field excludes IAM users
+and roles, which AWS does not return; independent exact IAM-family observations and the IAM-first
+credential-retirement proof remain required. This audit claims neither an empty account nor absence
+of untagged resources outside its declared field.
+
 
 Resource truth is never inferred from the continued existence, readability, or contents of a
 checkpoint. A checkpoint is authoritative only for whether a provider operation can be resumed.
@@ -1952,12 +1984,9 @@ hide it.
 
 ### 3.2b Controller-created network dependents are declared families
 
-> **Target.** The families this section declares are not yet declared in the registry. The closed
-> rule, the converging destroy, and the manifest route's clearing they rely on are built, and so are
-> the budgeted waits (see **Current revision**). It extends the controller-family rule above to the children an EKS
-> cluster's networking controllers create, and states the one place where a reaper may remove a
-> resource that no manifest could list in advance. Status lives only in the
-> [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+The registry declares the network families by exact key and coordinate; their closed predicates
+and bounded executor are shared by both destroy routes. Live proof and deployment qualification
+are separate claims recorded only in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 A cluster's controllers create children that no create in this repository can record, because they
 do not exist until a controller acts: the VPC CNI attaches network interfaces to nodes to hold pod
@@ -1990,9 +2019,14 @@ the security-group family's predicate names the group EKS created for the cluste
 `aws-eks` only. A shape that a test-scoped intent plants is admitted by that intent's own closed
 predicate (its run-scope tag), never by a production predicate widening to take it.
 
-Order is part of the declaration. The families are reaped after the workloads that own them have
-gone and before the stack's native family, because a subnet or VPC delete that runs first fails with
-`DependencyViolation`. The same families serve both destroy routes: the supported
+Order is part of the declaration. Both destroy implementations clear the families after their
+owners terminate and before subnet and VPC deletion, which would otherwise fail with
+`DependencyViolation`. Workload drain alone does not terminate EKS nodes or the control plane.
+The typed teardown therefore attempts the owning stack's destroy before independent network-family
+reconciliation; those obligations run even after a failed destroy attempt. The security-group family
+waits for the interface family's absence read-back. Each mandatory read-back retains its attempt-only
+edge to its own mutation. Checkpoint retirement and final program completion wait for every selected
+family's exact absence, so a failed or unobservable family cannot be hidden by a successful stack destroy. The same families serve both destroy routes: the supported
 `aws stack <stack> destroy --yes`, which converges (a bounded destroy pass, the families, a second
 pass, then an inventory under § 3.0), and the manifest-authorized native-family reaper, whose
 allowlist rule (§ 3.2) is unchanged because the families are declared rather than discovered. The
@@ -2000,8 +2034,14 @@ outcome is `Clean` or a typed `Blocked` naming the class counts, the first ident
 the next safe command; every step is idempotent and observes before it mutates, so a rerun makes
 progress.
 
-**Current revision.** The closed rule, the converging destroy, and the manifest route's clearing exist
-(Sprint `4.111`, first increment); the registry's declaration of the families does not.
+**Implementation.** The registry declares `aws-eks-vpc-cni-interfaces`,
+`aws-test-vpc-cni-interfaces`, and `aws-eks-cluster-security-groups` as per-run controller families.
+Their coordinates carry the closed declaration in `Prodbox.Lifecycle.AwsNetworkFamily`, including
+owning stack, optional cluster, exact VPC tags and predicate version. Ownership manifests declare
+them before the owning stack's first effect, without a member allowlist. Their Observe/Reap uses
+closed selectors on the existing native-family intents, with distinct Provider resource keys,
+intent coordinates and evidence bindings. A selector cannot take a member allowlist, and a
+whole-stack native reaper cannot acquire class admission by dropping its allowlist.
 `Prodbox.Lifecycle.AwsNetworkDependents` evaluates the two predicates — an interface in the stack's VPC that
 is `available`, not requester-managed, an ordinary interface, carrying the VPC CNI's tag or description and
 tagged for no other cluster; the group in that VPC named `eks-cluster-sg-<cluster>-…` that carries the tag
@@ -2027,16 +2067,18 @@ their own, each retried once. Every read outside a mutation is held to the sessi
 window is left the unread classes are gaps and the report is returned inside the intent. A pass is
 stopped by SIGTERM, a second SIGTERM two seconds later, and SIGKILL only after the grace: measured on Pulumi
 3.228.0, the second signal makes it exit at once with no lock and no plugin left, where the first alone waits
-for the operation in flight and a SIGKILL strands the plugins, which run in process groups of their own. The
+for the operation in flight and the former group-only SIGKILL stranded plugins in separate groups.
+The runner now records the child session and descendants before stopping the leader, then stops
+remaining owned descendants across groups and confirms their exit within the same deadline. PID
+start-time checks reject reused identities; unrelated sessions do not enter the owned set. The
 cascade's per-run destroys submit the same Provider intent, so they run the same loop. The native-family
 reaper (`reapEc2Family`) clears the same dependents after the instances terminate and before the route-table
 and subnet deletes, and refuses with a named remainder when a service still holds an interface or a candidate
-is outside the predicate; its allowlist rule is unchanged. No Provider request branch was added.
+is outside the predicate; its allowlist rule is unchanged. No Provider request branch was added. Three independent network-family targets add twelve Provider
+requests per qualification attempt: 52 requests for one attempt and 104 replay entries for an
+immediate retry. The full maximum-response projection fits the existing 12 MiB store ceiling.
 
-What is not built is the declaration. The registry has no row for either family, the create-record coverage
-table has no row, the typed teardown's graph has no position for them, and the dispatch rows do not name them,
-so the admission by class is a property of the code of two Provider operations and not of the registry; until
-Sprint `4.111`'s second increment lands, the rule above is not met as written. The waits are loops of short
+The waits are loops of short
 describe or delete calls, each a child well inside the Provider's thirty-second bound, and no `aws … wait`
 child remains in the Provider's AWS code: `Prodbox.Lifecycle.AwsWait` polls under a named budget from
 `Prodbox.ControlPlane.OperationBudget`, ending at the nearer of the fact's ceiling and the session's usable
@@ -2046,9 +2088,8 @@ reaper, and the destroy, which spends 450 thousandths before its first wait) is 
 what it promises is its reserve. No recording of an interface release exists: the scripted account that gates
 the loop is a model, built from shapes transcribed by hand from the operator's 2026-10-14 hand inventory.
 Classes the executor does not clear — NAT gateways, endpoints, an unknown owner, an unmarked group, an
-interface a service never releases — are reported and make the result `Blocked`. Two risks are known and
-unbuilt: a Pulumi that ignores both signals for the grace is killed and strands its plugin processes, and the
-loop's reading of emptiness sets the positive control aside. The Provider runs its children one at a time
+interface a service never releases — are reported and make the result `Blocked`. The
+loop's reading of emptiness still sets the positive control aside. The Provider runs its children one at a time
 under a small CPU envelope, so a call is seconds and not an instant; the budgets were authored for less and
 the live recordings will measure it. The clearing recorded on 2026-10-14 was a hand deletion, which is the
 last resort that
@@ -3131,25 +3172,24 @@ The nodes have these contracts:
    only write the repository can issue is into an empty slot, so a second and different readiness
    under one run is a conflict rather than a second key — two readiness proofs under one run would
    be two permits — while an exact replay is a success, because a rerun accepting what it already
-   accepted is what a resumable cascade does. The acceptance read-back and the read-back taken after
-   the Authority is re-established are the same observation asked at two times, so an Authority
-   restored without the readiness it accepted cannot satisfy the run; re-establishment reports only
-   what the attempt did and never that the readiness survived, and admission is awaited only after a
-   successful restore, because admission from an Authority whose bytes were not restored would
-   accept an empty control plane that has forgotten the run.
-   `Prodbox.ControlPlane.LifecycleAuthorityRestoreProduction` is the production answer to that
-   restore boundary. Restoration succeeds only from `BackupEstablished`, so a cascade never advances
-   genesis on its own behalf — an Authority that genesis re-opened would admit requests and have
-   forgotten the run, which is the empty control plane the ordering rule exists to refuse — and it
-   is joined to the physically separate Backup Adapter through the exact `BackupReceipt` the
-   retained projection itself names, so the Authority is not the only surface answering for its own
-   aggregate. The bounded wait covers a control plane that is not yet routable and nothing else: a
-   decided refusal and a terminal observation failure are answers, and waiting on an answer would
-   report a timeout where the run should report the refusal. The cleanup-run reconciliation begins
-   and completes the local-uninstall node under the one deterministic attempt derivation shared with
-   the durable cleanup driver, so a rerun after a lost response replays its own attempt rather than
-   colliding with it, and a transport failure is reported as a lost response because the run
-   read-back is what decides.
+   accepted is what a resumable cascade does. The acceptance read-back occurs before the host
+   terminal handoff is armed. The retained host intent carries that exact opaque readiness;
+   completion restores it from an independently observed local record, freshly observes native
+   absence, and reads the scoped local completion journal. Reinstalling the same RKE2 foundation
+   to contact its Authority would invalidate the absence observation and is not a completion step.
+   `Prodbox.ControlPlane.LifecycleAuthorityRestoreProduction` owns pre-uninstall recovery when the
+   remote prefix needs it. Restoration requires `BackupEstablished` and the exact independent
+   Backup Adapter receipt; a cascade does not advance genesis to replace a forgotten run. The
+   bounded admission wait covers a control plane that is not yet routable; decided refusals and
+   terminal observation failures remain explicit answers. The successful remote prefix, its exact
+   program descriptor and armed host intent form a bounded immutable handoff below the retained
+   root. It preserves the same run, graph, scope and compiled local operation identities, and
+   includes the independently read-back clean-audit/revoked-epoch confirmation for that exact
+   historical audit attempt. The Credential Provisioner removes IAM first and proves absence,
+   then revokes the Target through its metadata-only Agent route. A control acknowledgement
+   alone cannot license the handoff: the epoch must independently confirm the matching receipt.
+   An already-revoked resume observes fresh Target absence and does not reinstall the credential.
+   The local tail uses no Authority, Backup, Provider or Target Agent session after uninstall.
    All three of those retained slots — the accepted readiness, the committed report identity, and
    the one-shot permit — live in the Authority's own object namespace, and the cascade that needs
    them runs on the host. `Prodbox.ControlPlane.CascadeRetainedSlotEndpoint` is the authenticated
@@ -3191,6 +3231,44 @@ The nodes have these contracts:
    not be read are distinct answers. Every field of the read-back is decoded from the durable
    bytes and none is taken from the running context, so the runner's binding comparison is
    between two independent sources rather than a value with itself.
+
+Before uninstall, a failed credential-revoke callback can be recovered only from independently
+observed durable state. The runtime re-observes the exact revoked reservation, checks its generation
+and recorded clean audit, and requires fresh Agent absence. A matching committed state avoids
+another revoke or epoch write. Present Target material and unobservable Authority/Agent reads
+remain incomplete. This confirmation precedes entering the host terminal tail.
+
+A later bootstrap reads completed host journals as history, without minting current absence.
+The installer checks the exact active-intent coordinate before its first reconcile effect. A
+present predecessor requires its complete intent, sealed handoff and independent completion
+entry; an interrupted terminal tail is resumed through its registered qualification cycle.
+Registered and native resumes are cleanup recovery, and every later attempt under the same cycle
+label reuses the original run identity. Even a successful lifecycle report and valid artifact do
+not make either a qualifying cycle. The driver retains the earlier attempts, writes the recovery
+artifact and closes successful recovery as `failed-historical-recovery`; a fresh label and new run
+are required for qualifying evidence. Primary-outcome immutability remains a separate obligation:
+an already failed primary cannot become successful merely because cleanup finished.
+After restored Authority/Backup admission, the historical local attempts are imported through
+the descriptor-bound cleanup client. A separate exact terminal-report read precedes retirement
+of the local active intent and fresh credential continuation. Historical attempts retain their
+original identities through the import's new lease fence. An exact retirement archive supports
+restart observation without recreating the active intent. The restored Authority's read-only
+bootstrap query locates its retained predecessor by run, graph, scope and explicit phase; the host
+validates that metadata against its sealed terminal-audit history before import. Frozen/recorded
+work and a revocation interrupted before local handoff retain the registered cycle's recovery
+path. A completed active intent permits historical tail import; archive re-entry independently
+requires the Authority run to be terminal. This query never mutates the
+epoch or substitutes a host-local scan for Authority lineage. Successor credential admission must
+independently bind the completed predecessor and attested fresh install; binding a generation
+alone never reopens a revoked epoch.
+
+Compacted history is observed through the read-only descriptor completion route. The Authority
+checks the actual Backup receipt class and digest, hashes the returned bytes against the tombstone,
+and validates the canonical report's run, graph and terminal node set against the committed
+descriptor. The host compares two independent reports with its exact sealed local history before
+retiring the intent. Compaction between observations preserves this comparison. Missing, changed,
+corrupt or unobservable reports leave the intent available for retry; the tombstone alone cannot
+license retirement or fresh credentials. The route neither compacts a run nor rewrites its index.
 
 **One durable phase per compiled cascade host node.** The graph reaches the destructive boundary
 through four separate nodes — `UninstallCascadeLocalFoundation`, `ReadBackCascadeLocalAbsence`,
@@ -3269,9 +3347,10 @@ failure and opens only the `RequiresAttempt` backstop edges. The graph cannot do
 because provider destroy succeeded, and it cannot issue two drain attempts under separately
 materialized kubeconfigs.
 
-> **Target.** The controller-family obligations are to include the network dependents declared in
-> § 3.2b, cleared after the drain and before the stack's native family. Status lives only in the
-> [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+The network-family obligations in § 3.2b follow the stack-destroy attempt, because that operation
+terminates the nodes and control plane that hold interfaces. Both destroy implementations clear
+those dependents before subnet/VPC deletion; the graph's independent family absence proofs gate
+checkpoint retirement and final completion.
 
 
 ### 5d. Historical Shared-Credential Postflight Record (Sprint 7.10)
@@ -3284,21 +3363,30 @@ effects, and the lifecycle result decides whether every selected node succeeded.
 `clearOperationalCredsAfterPostflight` helper and the validation-authored callback graph have no
 surviving caller.
 
-Operational credential revocation is the remaining pre-cutover tail, and no production path performs
-it. The legacy host IAM teardown that once stood here was a constant refusal and is off the runner's
-path; the Credential Provisioner's revoke is refused at its production delivery boundary, and the
-closed `OperationalTeardown` dispatcher is not released until Sprint `6.5`. A harness run therefore
-**retains** the Lifecycle-provider credential once `lifecycleCleanupNodesSucceeded` holds over every
-run the client formed and the zone-scoped families are established from evidence, and it says so with
-`OPERATIONAL_CREDENTIAL_DISPOSITION=retained` rather than claiming a teardown. A failed, blocked,
-unobservable, or otherwise incomplete per-run node, or a zone that could not be established,
-preserves operational `aws.*`, emits the stable cleanup result for recovery, and makes the suite exit
-non-zero. This gate is deliberately a lifecycle-owned exact-node decision rather than a
-validation-side exit-code fold. It prevents stranding live AWS resources whose recovery still requires
-those credentials while making no false claim that the credential's retirement is descriptor-bound.
-The revocation lane that would close the gap — IAM identity first, then the Vault generation, through
-a Provisioner-only permit-verified Target Agent route — is Sprint `5.51`, parked on operator
-decisions.
+The ordinary harness registers or adopts its resource run before preparing the Lifecycle-provider
+credential, including when it resumes a previous run without rerunning the validation body. The
+command obtains a fresh invocation lineage with separate fixed install and revoke slots. After
+nonempty, wholly successful lifecycle results and complete zone evidence, its credential tail
+submits the fixed revoke slot through the Credential Provisioner. The worker destroys/read-backs
+the IAM family first and then uses the Provisioner-only, permit-verified Agent route to
+remove/read-back the exact Vault generation. The command independently reads Agent metadata after
+both a fresh execution and a retained completed receipt before reporting
+`OPERATIONAL_CREDENTIAL_DISPOSITION=revoked`.
+
+Failed, blocked, unobservable or incomplete resource results make zero revoke calls, preserve the
+credential for recovery, and fail the suite. A failed credential revoke is explicitly unresolved
+and also fails the suite. A failed validation still retires its credential when cleanup is proven;
+its original failure remains the exit result. Cancellation during preparation or validation is
+rethrown only after resource cleanup and the eligible credential tail have been attempted. The
+retired host harness setup/teardown helpers have no surviving production caller. This tail is a
+fixed credential operation composed after the lifecycle-owned resource decision, not a second
+resource graph or a claim that invocation alone proves absence.
+
+The separate cascade-qualification runner currently retains its credential: it removes the local
+control plane, so an Agent call after return is unavailable. Sprint `6.5` owns its pre-uninstall
+fence/audit/record/revoke composition and the release of the closed `OperationalTeardown`
+dispatcher. No ordinary-harness closure qualifies that destructive composition. Its approved design
+and current queue live in the [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 The cleanup client authenticates as the operator, not the harness identity: the first node of every
 ordinary program posts the recovery-plane host observation, which only the operator may call, and the
@@ -3328,7 +3416,7 @@ deletion externally.
 
 ### 5e. Harness Residue Bypass Is Per-Run Only (Sprint 7.34)
 
-The harness preflight/postflight residue policy bypasses **per-run** residue only
+The historical harness preflight/postflight residue policy bypassed **per-run** residue only
 (`BypassPerRunResidueForHarnessRefresh`): the refresh clears operational `aws.*` and per-run
 stacks unconditionally, but the long-lived `aws-ses` and `public-edge-tls` residue protection of
 the lifecycle preconditions is never bypassed by automation. The broader
@@ -3341,7 +3429,7 @@ policy. This narrowing reverses the residue half of the Sprint `7.9` decision re
 the §5d per-run credential-hold rule (Sprint `7.10`) stands unchanged. The narrowing is owned by
 Sprint `7.34` in
 [phase-7-aws-substrate-foundations.md](../../DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md);
-the policy history lives in
+the ordinary harness now uses the exact cleanup and credential composition in §5d, and the policy history lives in
 [aws_integration_environment_doctrine.md](./aws_integration_environment_doctrine.md).
 
 ## 6. Scoped terminal escape audit
@@ -3387,9 +3475,12 @@ registry-owned IAM identity is a backstop for this audit, never an ownership aut
 
 Reach has a **second axis, and it is the audited region**. The Resource Groups Tagging API is
 regional: a regional resource is returned by a query issued in the region that holds it, and a
-global-service resource — IAM, Route 53 — is returned only from the global-service region. The audit
-composes its queries from the audited scope and issues them in that scope's own region, so an audit
-taken elsewhere asks about no global-service resource at all. The set of global services this
+global-service resource — supported IAM policies/OIDC providers and Route 53 — is returned only
+from the global-service region. IAM users and roles are excluded by AWS `GetResources` even at that
+endpoint; exact native family observations cover them. The generic regional-only audit profile
+issues its queries in the audited scope's region, so a profile taken elsewhere asks about no
+global-service resource at all. The ordinary per-run profile explicitly queries both endpoints and
+binds them in its plan; the kernel requires an answer to every declared query. The set of global services this
 repository provisions into is derived from the reach classification itself rather than authored
 beside it, so a newly classified global-service type widens the bound without a second list.
 
@@ -3406,8 +3497,9 @@ superseded executing tag sweep binds no region at all and that the deletion ledg
 residual until the consumer conversion deleted it. The sweep now binds its regions explicitly and
 follows its cursor, because the conversion that would have retired it is gated on a live
 qualification campaign while the blindness was reachable on every cascade run today. It issues each
-filter in the run's own region **and** in the global-service region, so IAM — which this repository
-creates, and which a regional call cannot return at all — is asked about rather than assumed absent.
+filter in the run's own region **and** in the global-service region, so supported global-service
+types are asked about rather than assumed absent. This does not extend the API's field to IAM users
+or roles, and the exact native IAM observations remain mandatory.
 The listing is the same bounded cursor-following one the compiled audit uses, so a truncated answer
 fails instead of shortening.
 

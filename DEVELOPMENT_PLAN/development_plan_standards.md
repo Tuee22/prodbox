@@ -432,10 +432,16 @@ into an unexercised claim about the aggregate deployment.
   lifecycle orchestration, destructive cleanup, or substrate routing invalidates prior
   qualification.
 - **Required evidence.** `proven` records two complete identities: the frozen superseded identity
-  and the replacement identity. Each independently binds a `SourceIdentity` (Git HEAD, clean/dirty
-  flag, source-manifest policy identity, and deterministic source-manifest digest), secret-safe
+  and the replacement identity. Each independently records a complete `SourceIdentity` (Git HEAD,
+  clean/dirty flag, source-manifest policy identity, and deterministic full-manifest digest).
+  The qualification key binds the separately identified executable-surface manifest, secret-safe
   generated-config identity, component-image, resolved topology/wiring, resource-envelope, and
-  authored-load digests. The record also names substrate, canonical commands, the normalized
+  authored-load digests. Git HEAD, clean/dirty state, the full manifest and the running binary digest
+  remain recorded provenance; they do not independently reset the consecutive-run count. Governed
+  documentation-only changes therefore retain the key, while changes to an admitted executable
+  input or to the key policy reset it. The frozen superseded artifact and its original manifest
+  policy remain unchanged. This policy was approved by the operator on 2026-10-21.
+  The record also names substrate, canonical commands, the normalized
   old→new envelope mapping, production resource envelopes/load, counterexample results, complete
   fault matrix, aggregate result, cleanup/residue result, start/completion timestamps, and evidence
   digest. Historical runs remain evidence only for the complete identity they exercised.
@@ -524,8 +530,8 @@ when a defect class is closed.
   about 78% for two runs, 63% for three, and 26% for ten. Two consecutive cycles are an entry ticket
   to a soak, not a proof.
 
-These are review obligations. Only the remedy-row obligation has a mechanical check, and that check
-is scheduled rather than built; its owner and status live only in
+These are review obligations. Only the remedy-row obligation has a mechanical check; its owner
+and status live only in
 [README.md → Resume Here](README.md#resume-here).
 
 ## Related Documents

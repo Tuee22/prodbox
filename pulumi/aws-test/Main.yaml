@@ -275,6 +275,8 @@ resources:
         prodbox.io/managed-by: prodbox
 
 outputs:
+  prodbox_run_scope: ${prodboxRunScope}
+  prodbox_submission: ${prodboxSubmission}
   backend_bucket: prodbox-state
   vpc_id: ${vpc.id}
   subnet_ids:

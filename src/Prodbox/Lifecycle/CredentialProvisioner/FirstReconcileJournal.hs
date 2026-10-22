@@ -18,6 +18,9 @@ module Prodbox.Lifecycle.CredentialProvisioner.FirstReconcileJournal
   , firstReconcileJournalCursor
   , firstReconcileJournalReceipts
   , firstReconcileJournalComplete
+  , firstReconcileJournalRecoveryPending
+  , settleFirstReconcileJournal
+  , settleFirstReconcileJournalStore
   , appendFirstReconcileReceipt
   , encodeFirstReconcileJournal
   , decodeFirstReconcileJournal
@@ -86,7 +89,11 @@ data FirstReconcileJournal = FirstReconcileJournal
   { internalFirstReconcileJournalPlan :: !FirstReconcileProvisioningPlan
   , internalFirstReconcileJournalReceipts :: ![FirstReconcileReceipt]
   , internalFirstReconcileJournalCursor :: !FirstReconcileCursor
+  , internalFirstReconcileJournalRecovery :: !FirstReconcileRecovery
   }
+  deriving stock (Eq, Show)
+
+data FirstReconcileRecovery = LegacyFirstReconcile | PendingFirstReconcile | SettledFirstReconcile
   deriving stock (Eq, Show)
 
 data FirstReconcileJournalError
@@ -99,6 +106,7 @@ data FirstReconcileJournalError
   | FirstReconcileJournalPlanDigestInvalid
   | FirstReconcileJournalReceiptDigestInvalid !Natural
   | FirstReconcileJournalReceiptCountInvalid !Int !Natural
+  | FirstReconcileJournalRecoveryIncomplete
   deriving stock (Eq, Show)
 
 initialFirstReconcileJournal
@@ -108,6 +116,7 @@ initialFirstReconcileJournal plan =
     { internalFirstReconcileJournalPlan = plan
     , internalFirstReconcileJournalReceipts = []
     , internalFirstReconcileJournalCursor = initialFirstReconcileCursor plan
+    , internalFirstReconcileJournalRecovery = PendingFirstReconcile
     }
 
 firstReconcileJournalPlan
@@ -128,6 +137,21 @@ firstReconcileJournalComplete journal =
     (firstReconcileJournalCursor journal) of
     Right Nothing -> True
     _ -> False
+
+-- The final member receipt does not prove Provider settlement. Keep recovery
+-- live until the authenticated interpreter separately confirms the Agent.
+firstReconcileJournalRecoveryPending :: FirstReconcileJournal -> Bool
+firstReconcileJournalRecoveryPending journal = case internalFirstReconcileJournalRecovery journal of
+  LegacyFirstReconcile -> not (firstReconcileJournalComplete journal)
+  PendingFirstReconcile -> True
+  SettledFirstReconcile -> False
+
+settleFirstReconcileJournal
+  :: FirstReconcileJournal -> Either FirstReconcileJournalError FirstReconcileJournal
+settleFirstReconcileJournal journal
+  | not (firstReconcileJournalComplete journal) = Left FirstReconcileJournalRecoveryIncomplete
+  | not (firstReconcileJournalRecoveryPending journal) = Right journal
+  | otherwise = Right journal {internalFirstReconcileJournalRecovery = SettledFirstReconcile}
 
 -- | Commit exactly the next receipt.  Exact replay is idempotent; a different
 -- receipt for an already-occupied member is a permanent conflict.
@@ -159,6 +183,7 @@ appendFirstReconcileReceipt receipt journal =
           { internalFirstReconcileJournalReceipts =
               firstReconcileJournalReceipts journal ++ [receipt]
           , internalFirstReconcileJournalCursor = nextCursor
+          , internalFirstReconcileJournalRecovery = PendingFirstReconcile
           }
  where
   sameIndex existing =
@@ -204,8 +229,10 @@ firstReconcileJournalMaximumBytes :: Int
 firstReconcileJournalMaximumBytes = 32 * 1024
 
 encodeFirstReconcileJournal :: FirstReconcileJournal -> ByteString
-encodeFirstReconcileJournal =
-  LazyByteString.toStrict . serialise . journalToWire
+encodeFirstReconcileJournal journal = LazyByteString.toStrict $ case internalFirstReconcileJournalRecovery journal of
+  LegacyFirstReconcile -> serialise (journalToWire journal)
+  PendingFirstReconcile -> serialise (2 :: Word16, journalToWire journal, False)
+  SettledFirstReconcile -> serialise (2 :: Word16, journalToWire journal, True)
 
 decodeFirstReconcileJournal
   :: ByteString -> Either FirstReconcileJournalError FirstReconcileJournal
@@ -217,9 +244,13 @@ decodeFirstReconcileJournal bytes
             firstReconcileJournalMaximumBytes
         )
   | otherwise = do
-      wire <- case deserialiseOrFail (LazyByteString.fromStrict bytes) of
-        Left _ -> Left FirstReconcileJournalDecodeFailed
-        Right value -> Right value
+      (wire, recovery) <- case deserialiseOrFail (LazyByteString.fromStrict bytes) of
+        Right value -> Right (value, LegacyFirstReconcile)
+        Left _ -> case deserialiseOrFail (LazyByteString.fromStrict bytes) of
+          Left _ -> Left FirstReconcileJournalDecodeFailed
+          Right (version, value, settled)
+            | version /= (2 :: Word16) -> Left (FirstReconcileJournalUnsupportedVersion version)
+            | otherwise -> Right (value, if settled then SettledFirstReconcile else PendingFirstReconcile)
       unless
         (wireJournalVersion wire == firstReconcileJournalVersion)
         (Left (FirstReconcileJournalUnsupportedVersion (wireJournalVersion wire)))
@@ -245,11 +276,15 @@ decodeFirstReconcileJournal bytes
                 (firstReconcilePlanMaximumCount plan)
             )
         )
-      journal <-
+      reconstructed <-
         foldM
           (appendWireReceipt plan)
           (initialFirstReconcileJournal plan)
           (wireJournalReceipts wire)
+      let journal = reconstructed {internalFirstReconcileJournalRecovery = recovery}
+      when
+        (recovery == SettledFirstReconcile && not (firstReconcileJournalComplete journal))
+        (Left FirstReconcileJournalRecoveryIncomplete)
       unless
         (encodeFirstReconcileJournal journal == bytes)
         (Left FirstReconcileJournalNonCanonical)
@@ -418,6 +453,24 @@ appendFirstReconcileJournalStore adapter coordinate receipt = do
       pure (Left (FirstReconcileJournalStoreEndpointUnready detail))
     ModelBUnobservable detail ->
       pure (Left (FirstReconcileJournalStoreUnobservable detail))
+
+settleFirstReconcileJournalStore
+  :: (Monad m)
+  => ModelBCasAdapter 'ClusterRetained m FirstReconcileJournal
+  -> ModelBObjectCoordinate 'ClusterRetained
+  -> m (Either FirstReconcileJournalStoreError FirstReconcileJournalStoreResult)
+settleFirstReconcileJournalStore adapter coordinate = do
+  observed <- modelBObserve adapter coordinate
+  case observed of
+    ModelBMissing -> pure (Left FirstReconcileJournalStoreNotInitialized)
+    ModelBObserved version current -> case settleFirstReconcileJournal current of
+      Left cause -> pure (Left (FirstReconcileJournalStoreTransitionFailed cause))
+      Right next
+        | next == current -> pure (Right (FirstReconcileJournalStoreAlreadyCurrent current))
+        | otherwise -> writeJournal adapter (ModelBReplace coordinate version next)
+    ModelBCorrupt detail -> pure (Left (FirstReconcileJournalStoreCorrupt detail))
+    ModelBEndpointUnready detail -> pure (Left (FirstReconcileJournalStoreEndpointUnready detail))
+    ModelBUnobservable detail -> pure (Left (FirstReconcileJournalStoreUnobservable detail))
 
 writeJournal
   :: (Monad m)

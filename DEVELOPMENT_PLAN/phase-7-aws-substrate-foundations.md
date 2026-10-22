@@ -32,7 +32,7 @@ AWS gateway emitters' journal claims have no volume at all. Sprint `7.46` repair
 barrier included, which now asks the registry from inside its own pod. Sprint
 `7.47` owns the material no production code delivers to the EKS Vault (the ACME EAB, the SES SMTP secret
 and the AWS-run DNS01 credential) and the source of the MinIO images the per-run cluster starts from, and is
-parked on four operator decisions. None of this touches the home
+parked in the numerical queue; all four operator decisions are recorded in Sprint `7.47`. None of this touches the home
 substrate or Sprint `6.5`'s campaign, whose cycles run home. Sprints `7.46` and `7.48` are `Done` (live proof
 pending); until Sprint `7.47` is `Done`, the AWS-substrate rows of Deployment Qualification cannot be attempted.
 
@@ -5279,32 +5279,12 @@ authenticate EKS drain without checkpoint-derived kubeconfig materialization.
   worker zero times and still names its operation, a repeated admission stays at zero and answers with
   the same operation, the execute lane on the same key runs it exactly once and returns that same
   operation, and a payload at the superseded version is refused with nothing executed.
-- **The fence, the audit, the record, and the revocation now have one production driver (landed
-  2026-08-22).** Every transition in this protocol was proven and none of them ran: nothing in
-  production issued `AuthorityControlFreezeProviderAdmissionForCascadeAudit`,
-  `AuthorityControlRecordCascadeTerminalAuditReceipt`, or
-  `AuthorityControlRevokeCascadeProviderCredential`, so four correct transitions composed an unrun
-  protocol. `Prodbox.Lifecycle.Teardown.CascadeTerminalAuditLane` drives all four in the one order
-  the epoch admits, and `Prodbox.Lifecycle.Teardown.CascadeCredentialRevocation` supplies the two
-  independent read-back digests the revocation route needs — which is the wiring this sprint's
-  Remaining Work named as the revoke's last piece.
-  **The lane's own contribution is restraint.** The epoch already refuses a record with no fence and
-  a revocation with no record or an unclean verdict, so the lane cannot widen what is permitted. What
-  it adds is that an escape or a blind spot is *not attempted*: the IAM destroy and the retained-material
-  tombstone are never called, because the credential is exactly what a retry or an investigation runs
-  as. Nine unit cases count effects rather than assert intent — the clean run submits freeze, record,
-  and revoke in that order and destroys once on each side; the escaped and blind-spot runs submit
-  freeze and record and destroy zero times; a refused fence issues zero audit queries; and a refused
-  record destroys nothing.
-  **The revocation's internal order is a safety property.** The IAM family is destroyed first because
-  the IAM identity is what grants, so a surviving copy of the material is already inert once it is
-  gone; ending the material first would leave the grant standing with no record of what it was. A
-  revocation whose IAM half is not proved absent leaves the retained material untouched, and one whose
-  retained Target generation survives submits nothing. The Target half's digest names the coordinate,
-  the generation, and *which* read-back proved absence, so a retry that finds the work already done
-  cannot produce the digest of the run that performed it.
-  **This is composability, not cutover.** No public writer invokes the lane; activating one is Sprint
-  `6.5`'s qualified single-writer cutover, and this sprint makes no claim about it.
+- **The terminal epoch and audit laws remain; the dormant direct-effect composition is retired
+  by Sprint `6.5`.** The earlier audit-lane helper had no production caller and modeled direct
+  IAM disposal plus a retained-generation tombstone. The approved candidate instead composes the
+  authenticated Credential Provisioner → Target Agent route with independent epoch read-back.
+  Sprint `6.5` owns that replacement's validation and removal ledger; the epoch laws, terminal
+  audit adapter and IAM-first provisioning laws remain tested on their actual boundaries.
 - **The cascade credential revocation is reachable and strictly ordered (landed 2026-08-22).**
   `ProviderCredentialRevocationReceipt` had a declared shape, no constructor, and no transition.
   `mkProviderCredentialRevocationReceipt` binds the joint IAM disposition digest and the retained
@@ -7239,8 +7219,8 @@ None. Live proof is a `Live-proof: pending` note and is non-blocking under Stand
 ## Sprint 7.47: Material No Production Code Delivers To The EKS Vault [📋 Planned]
 
 **Status**: Planned (2026-10-08). Phase `7` own-surface reopen (Standards A/N), registered before any
-behavior change. It is parked behind four operator decisions because two of its three delivery routes
-add a trust edge to the control plane, and the fourth is a supply-chain choice only the operator can make.
+behavior change. All four operator decisions are recorded below; implementation remains parked in
+the numerical queue. The selected EAB and SMTP routes add an attested selected-Agent delivery lane.
 **Doctrine**: [Vault Doctrine](../documents/engineering/vault_doctrine.md),
 [Lifecycle Control-Plane Architecture](../documents/engineering/lifecycle_control_plane_architecture.md),
 and [AWS Admin Credentials](../documents/engineering/aws_admin_credentials.md).
@@ -7294,7 +7274,7 @@ holds one registered agent identity, and the host-bridged lane that carries the 
 clusters. The EKS Lifecycle Authority copy is the intent source for the EKS Agent's one-shot workers; the
 skeptic found that removing it would strand that lane, so Sprint `7.46` keeps it and this sprint decides.
 
-Operator decisions, written here so the work does not guess:
+Operator decisions (accepted 2026-10-21 for D5–D7; D8 accepted 2026-10-20):
 
 - **D5, DNS01 on EKS.** (a) A workload IAM role for cert-manager in the `aws-eks` stack, bound to the
   cert-manager ServiceAccount by the cluster's existing OIDC provider, with the Route 53 policy limited to
@@ -7304,15 +7284,17 @@ Operator decisions, written here so the work does not guess:
   describe the run-scoped Vault generation, and the zone has to reach the stack. (b) Implement the
   doctrine as written: issue the AWS-run credential through the Credential Provisioner and deliver it to
   the EKS Agent. That needs a selected-Agent lane for credentials, a substrate-aware Target Secret Worker
-  policy and a new Provisioner entry. Recommended: (a).
+  policy and a new Provisioner entry. **Selected: (a), the scoped workload IAM role.**
 - **D6, EAB on EKS.** Register the canonical EKS agent identity as a second retained-delivery target and
   add the host-bridged lane the TLS workflow already shapes. There is no alternative that keeps the EAB off
   the host. Unmeasured: whether ZeroSSL accepts a fresh ACME account key for the same EAB on every per-run
   cluster; if it treats an EAB pair as single use, every second AWS run fails registration.
+  **Selected:** implement this sealed selected-Agent lane; plaintext remains off the host.
 - **D7, SMTP on EKS.** The same lane, for the SES schema.
   The premise that the home arm already delivers the SMTP secret to its own sink was wrong: nothing submitted
   the Credential Provisioner permit that creates the family (Sprint `8.13` supplies the home harness's
   submission). The EKS lane therefore also needs the family to exist in retained-home custody before any rewrap.
+  **Selected:** implement the same sealed selected-Agent lane for SMTP.
 - **D8, the MinIO source on EKS.** MinIO is the registry's own storage backend, so these two images cannot come
   from the in-cluster registry. (a) Pin a maintained fork or a frozen legacy image that is still served; the
   operator must vet its provenance and licence. Measured available to an anonymous client on 2026-10-08, and not
@@ -7322,10 +7304,14 @@ Operator decisions, written here so the work does not guess:
   filesystem-backed bootstrap registry for these two images alone to break the circularity. (c) Replace MinIO as
   the registry and Authority object store, which is a design change of its own. A fresh host whose Docker cache
   does not hold the two images has the same question for the home substrate.
+  **Operator decision, 2026-10-20:** build reproducible images from the existing pinned official
+  MinIO and mc releases and retain their bootstrap artifacts. Sprint `6.5` implements the home
+  bootstrap prerequisite in execution order; this sprint retains the EKS projection and proof.
+  No fork or moving release is selected. Implementation and validation remain outstanding.
 
 ### Deliverables
 
-- Whichever route the operator chooses for D5, D6 and D7, with the producer search repeated and a test that
+- Implement selected D5–D7 routes, with the producer search repeated and a test that
   every Vault path the AWS materializers read is the target of a compiled production writer.
 - The AWS arm's ACME step either converges or is skipped for a stated reason, and never waits on an
   object nothing writes.
@@ -7342,7 +7328,9 @@ Operator decisions, written here so the work does not guess:
 
 ### Remaining Work
 
-The operator's decisions D5–D8, then the repairs.
+Implement and validate the selected D5–D7 routes and the approved D8 source-build projection when
+this sprint reaches the numerical queue.
+
 ## Sprint 7.48: The Per-Run Subzone Could Not Be Deleted While It Held What The Run Wrote [✅ Done]
 
 **Status**: Done (2026-10-08). Phase `7` own-surface reopen (Standards A/N) on the AWS per-run subzone's

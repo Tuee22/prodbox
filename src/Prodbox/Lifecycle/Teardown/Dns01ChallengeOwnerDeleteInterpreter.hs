@@ -57,12 +57,14 @@ import Prodbox.Lifecycle.Teardown.AwsRegisteredTargetInterpreter
 import Prodbox.Lifecycle.Teardown.Dns01ChallengeRecordAdapter
   ( ExactDns01ChallengeOwnerDeleteAuthorization
   , dns01ChallengeOwnerDeleteObservedRecords
+  , dns01ChallengeOwnerDeleteResourceKey
   )
 import Prodbox.Lifecycle.Teardown.EphemeralKubectl
   ( EphemeralKubectl
   , EphemeralKubectlUnavailable (..)
   , runEphemeralKubectl
   , withEphemeralKubectlForProjection
+  , withHomeCleanupKubectl
   )
 import Prodbox.Lifecycle.Teardown.Execution
   ( teardownExecutionIdentity
@@ -74,6 +76,7 @@ import Prodbox.Lifecycle.Teardown.Model
   , AwsRegion (..)
   , AwsScope
   , ObservationFailure (..)
+  , RegisteredResourceKey (..)
   , awsScopeAccountId
   , awsScopeRegion
   , evidenceAwsScope
@@ -99,7 +102,12 @@ data Dns01ChallengeOwner = Dns01ChallengeOwner
 dns01ChallengeOwnerRecordName :: Dns01ChallengeOwner -> Text
 dns01ChallengeOwnerRecordName owner =
   canonicalRecordName
-    (dns01ChallengeRecordNamePrefix <> dns01ChallengeOwnerDnsName owner)
+    ( dns01ChallengeRecordNamePrefix
+        <> maybe
+          (dns01ChallengeOwnerDnsName owner)
+          id
+          (Text.stripPrefix "*." (dns01ChallengeOwnerDnsName owner))
+    )
 
 -- | Lower case with exactly one trailing dot.  Route 53 answers with a trailing
 -- dot and cert-manager's @spec.dnsName@ carries none, so comparing them
@@ -178,15 +186,24 @@ productionDns01ChallengeOwnerDeleteBoundary
   workingDirectory =
     mkDns01ChallengeOwnerDeleteBoundary
       ( \context _target authorization ->
-          deleteThroughEphemeralClient
-            caller
-            repoRoot
-            kubectl
-            environment
-            workingDirectory
-            (evidenceAwsScope (teardownExecutionObservationScope context))
-            (teardownExecutionIdentity context)
-            authorization
+          if dns01ChallengeOwnerDeleteResourceKey authorization == HomeDns01ChallengeRecordKey
+            then
+              Right
+                <$> withHomeCleanupKubectl
+                  kubectl
+                  environment
+                  workingDirectory
+                  (consumeOwnerDeleteClient authorization)
+            else
+              deleteThroughEphemeralClient
+                caller
+                repoRoot
+                kubectl
+                environment
+                workingDirectory
+                (evidenceAwsScope (teardownExecutionObservationScope context))
+                (teardownExecutionIdentity context)
+                authorization
       )
 
 deleteThroughEphemeralClient

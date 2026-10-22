@@ -57,6 +57,7 @@ import Prodbox.Lifecycle.Teardown.AwsEbsAdapter
 import Prodbox.Lifecycle.Teardown.AwsEksAdapter
 import Prodbox.Lifecycle.Teardown.AwsIamRoleFamilyAdapter
 import Prodbox.Lifecycle.Teardown.AwsLoadBalancerControllerFamilyAdapter
+import Prodbox.Lifecycle.Teardown.AwsNativeStackFamilyAdapter
 import Prodbox.Lifecycle.Teardown.AwsRetainedEbsAdapter
 import Prodbox.Lifecycle.Teardown.AwsRoute53ZoneAdapter
 import Prodbox.Lifecycle.Teardown.AwsStackAdapter
@@ -77,6 +78,7 @@ import Prodbox.Lifecycle.Teardown.ProviderDispatch
 import Prodbox.Lifecycle.Teardown.RegisteredTargetExecutor
 import Prodbox.Lifecycle.Teardown.RegisteredTargetResult
 import Prodbox.Lifecycle.Teardown.Registry
+import Prodbox.Lifecycle.Teardown.SesInviteMailAdapter
 
 -- | Opaque, durable-reader-produced inputs for the total stack decision.  The
 -- smart constructor rechecks key and scope before an effect interpreter can
@@ -354,7 +356,8 @@ data AwsRegisteredTargetInterpreter m = AwsRegisteredTargetInterpreter
   }
 
 data AwsRegisteredTargetInterpreterError
-  = AwsRegisteredTargetBindingMissing !RegisteredResourceKey
+  = AwsRegisteredTargetNetworkFamilyInvalid !AwsNativeStackFamilyAdapterError
+  | AwsRegisteredTargetBindingMissing !RegisteredResourceKey
   | AwsRegisteredTargetBindingKeyMismatch
       !RegisteredResourceKey
       !RegisteredResourceKey
@@ -429,6 +432,7 @@ data AwsRegisteredTargetInterpreterError
       !ObservationEvidenceScope
       !ObservationEvidenceScope
   | AwsRegisteredTargetResultInvalid !RegisteredTargetReconcileError
+  | AwsRegisteredTargetInviteMailInvalid !InviteMailCleanupError
   deriving (Eq, Show)
 
 -- | Execute one exact read-only observation.  Unsupported registry kinds fail
@@ -481,16 +485,20 @@ observeAwsRegisteredTarget interpreter context target =
             interpreter
             ProviderDecisionObservation
             context
+        Right NetworkDependentFamilyExecutor ->
+          observeNetworkDependentFamily interpreter ProviderDecisionObservation context target
         Right EksLoadBalancerControllerFamilyExecutor ->
           observeLoadBalancerControllerFamily
             interpreter
             ProviderDecisionObservation
             context
+        Right SesInviteMailObjectsExecutor -> observeInviteMail interpreter ProviderDecisionObservation context
         Right Dns01ChallengeRecordFamilyExecutor ->
           observeDns01Challenge
             interpreter
             ProviderDecisionObservation
             context
+            (registeredTargetKey target)
         Left unexecutable ->
           pure
             ( Right
@@ -534,8 +542,11 @@ reconcileAwsRegisteredTargetAbsent interpreter context target =
         reconcileRetainedEbs interpreter context target
       Right EksIamRoleFamilyExecutor ->
         reconcileIamRoleFamily interpreter context target
+      Right NetworkDependentFamilyExecutor ->
+        reconcileNetworkDependentFamily interpreter context target
       Right EksLoadBalancerControllerFamilyExecutor ->
         reconcileLoadBalancerControllerFamily interpreter context target
+      Right SesInviteMailObjectsExecutor -> reconcileInviteMail interpreter context target
       Right Dns01ChallengeRecordFamilyExecutor ->
         reconcileDns01Challenge interpreter context target
       Left unexecutable ->
@@ -582,16 +593,20 @@ readBackAwsRegisteredTargetAbsent interpreter context target =
           interpreter
           ProviderAbsenceReadBack
           context
+      Right NetworkDependentFamilyExecutor ->
+        observeNetworkDependentFamily interpreter ProviderAbsenceReadBack context target
       Right EksLoadBalancerControllerFamilyExecutor ->
         observeLoadBalancerControllerFamily
           interpreter
           ProviderAbsenceReadBack
           context
+      Right SesInviteMailObjectsExecutor -> observeInviteMail interpreter ProviderAbsenceReadBack context
       Right Dns01ChallengeRecordFamilyExecutor ->
         observeDns01Challenge
           interpreter
           ProviderAbsenceReadBack
           context
+          (registeredTargetKey target)
       Left unexecutable ->
         pure
           ( Left
@@ -1426,35 +1441,13 @@ mapDns01Challenge =
 -- | Sprint 7.36: surface-witness dispatch for the DNS01 challenge record
 -- request, in the same shape 'mkValidationZoneObservationRequest' uses.
 mkDns01ChallengeObservationRequest
-  :: ObservationRevision
+  :: RegisteredResourceKey
+  -> ObservationRevision
   -> ObservationEvidenceScope
   -> Either Dns01ChallengeAdapterError ExactDns01ChallengeObservationRequest
-mkDns01ChallengeObservationRequest revision scope =
-  case evidenceCleanupSurface scope of
-    LocalOnly ->
-      mkExactDns01ChallengeObservationRequest LocalOnlySurface revision scope
-    Cascade ->
-      mkExactDns01ChallengeObservationRequest CascadeSurface revision scope
-    ExplicitPerRun ->
-      mkExactDns01ChallengeObservationRequest
-        ExplicitPerRunSurface
-        revision
-        scope
-    OperationalTeardown ->
-      mkExactDns01ChallengeObservationRequest
-        OperationalTeardownSurface
-        revision
-        scope
-    ExplicitLongLived ->
-      mkExactDns01ChallengeObservationRequest
-        ExplicitLongLivedSurface
-        revision
-        scope
-    TotalDecommission ->
-      mkExactDns01ChallengeObservationRequest
-        TotalDecommissionSurface
-        revision
-        scope
+mkDns01ChallengeObservationRequest key revision scope =
+  case cleanupSurfaceWitnessFor (evidenceCleanupSurface scope) of
+    SomeCleanupSurfaceWitness witness -> mkExactDns01ChallengeObservationRequestForKey witness key revision scope
 
 -- | Sprint 7.36: the Route 53 half of the DNS01 family, used for both the
 -- decision observation and the mandatory absence read-back.
@@ -1463,12 +1456,14 @@ observeDns01Challenge
   => AwsRegisteredTargetInterpreter m
   -> ProviderDispatchPurpose
   -> TeardownExecutionContext surface
+  -> RegisteredResourceKey
   -> m (Either AwsRegisteredTargetInterpreterError ExactResourceObservation)
-observeDns01Challenge interpreter purpose context =
+observeDns01Challenge interpreter purpose context key =
   case mkProviderDispatchKey operationId purpose of
     Left err -> pure (Left (AwsRegisteredTargetDispatchKeyInvalid err))
     Right dispatchKey ->
       case mkDns01ChallengeObservationRequest
+        key
         (observationRevisionForProviderDispatchKey dispatchKey)
         scope of
         Left err -> pure (Left (AwsRegisteredTargetDns01ChallengeInvalid err))
@@ -1508,7 +1503,7 @@ reconcileDns01Challenge
   -> m (Either AwsRegisteredTargetInterpreterError RegisteredTargetReconcileResult)
 reconcileDns01Challenge interpreter context target = do
   exactResult <-
-    observeDns01Challenge interpreter ProviderDecisionObservation context
+    observeDns01Challenge interpreter ProviderDecisionObservation context (registeredTargetKey target)
   case exactResult of
     Left err -> pure (refusedResult context target err)
     Right exact ->
@@ -1522,6 +1517,7 @@ reconcileDns01Challenge interpreter context target = do
             )
         Right dispatchKey ->
           case mkDns01ChallengeObservationRequest
+            (registeredTargetKey target)
             (observationRevisionForProviderDispatchKey dispatchKey)
             scope of
             Left err ->
@@ -2078,6 +2074,117 @@ reconcileLoadBalancerControllerFamily interpreter context target = do
                   mutation
               )
 
+networkDependentFamilyRequest
+  :: (Monad m)
+  => AwsRegisteredTargetInterpreter m
+  -> ProviderDispatchPurpose
+  -> TeardownExecutionContext surface
+  -> RegisteredTargetBinding
+  -> m (Either AwsRegisteredTargetInterpreterError AwsNativeStackFamilyObservationRequest)
+networkDependentFamilyRequest interpreter purpose context target =
+  case [ ownershipEdgeStackKey edge
+       | edge <- registeredOwnershipEdges
+       , ownershipEdgeResourceKey edge == registeredTargetKey target
+       ] of
+    [owner] -> do
+      loaded <- awsRegisteredTargetReadStackCreationBinding interpreter operationId owner scope
+      pure $ do
+        binding <- either (Left . AwsRegisteredTargetProviderBindingUnavailable) Right loaded
+        if awsStackProviderBindingKey binding == owner
+          && awsStackProviderBindingScope binding == scope
+          && awsStackProviderBindingOperationId binding == operationId
+          then Right ()
+          else Left AwsRegisteredTargetProviderBindingMismatch
+        dispatchKey <-
+          either
+            (Left . AwsRegisteredTargetDispatchKeyInvalid)
+            Right
+            (mkProviderDispatchKey operationId purpose)
+        either
+          (Left . AwsRegisteredTargetNetworkFamilyInvalid)
+          Right
+          ( mkAwsNativeStackFamilyObservationRequest
+              (registeredTargetKey target)
+              scope
+              (observationRevisionForProviderDispatchKey dispatchKey)
+              (awsStackProviderBindingConfig binding)
+          )
+    _ -> pure (Left (AwsRegisteredTargetBindingMissing (registeredTargetKey target)))
+ where
+  operationId = teardownExecutionOperationId context
+  scope = teardownExecutionObservationScope context
+
+observeNetworkDependentFamily
+  :: (Monad m)
+  => AwsRegisteredTargetInterpreter m
+  -> ProviderDispatchPurpose
+  -> TeardownExecutionContext surface
+  -> RegisteredTargetBinding
+  -> m (Either AwsRegisteredTargetInterpreterError ExactResourceObservation)
+observeNetworkDependentFamily interpreter purpose context target = do
+  requested <- networkDependentFamilyRequest interpreter purpose context target
+  case requested of
+    Left err -> pure (Left err)
+    Right request -> dispatchNetworkDependentFamilyObservation interpreter purpose context request
+
+dispatchNetworkDependentFamilyObservation
+  :: (Monad m)
+  => AwsRegisteredTargetInterpreter m
+  -> ProviderDispatchPurpose
+  -> TeardownExecutionContext surface
+  -> AwsNativeStackFamilyObservationRequest
+  -> m (Either AwsRegisteredTargetInterpreterError ExactResourceObservation)
+dispatchNetworkDependentFamilyObservation interpreter purpose context request =
+  case mkProviderDispatchKey (teardownExecutionOperationId context) purpose of
+    Left err -> pure (Left (AwsRegisteredTargetDispatchKeyInvalid err))
+    Right dispatchKey -> do
+      dispatched <-
+        dispatchRegisteredProviderObservation
+          (awsRegisteredTargetProviderBoundary interpreter)
+          dispatchKey
+          (awsNativeStackFamilyObservationRequestIntent request)
+      pure $ do
+        result <- either (Left . AwsRegisteredTargetDispatchInvalid) Right dispatched
+        either
+          (Left . AwsRegisteredTargetNetworkFamilyInvalid)
+          Right
+          (decodeAwsNativeStackFamilyObservation request (Right result))
+
+reconcileNetworkDependentFamily
+  :: (Monad m)
+  => AwsRegisteredTargetInterpreter m
+  -> TeardownExecutionContext surface
+  -> RegisteredTargetBinding
+  -> m (Either AwsRegisteredTargetInterpreterError RegisteredTargetReconcileResult)
+reconcileNetworkDependentFamily interpreter context target = do
+  requested <- networkDependentFamilyRequest interpreter ProviderDecisionObservation context target
+  exactResult <- case requested of
+    Left err -> pure (Left err)
+    Right request ->
+      dispatchNetworkDependentFamilyObservation interpreter ProviderDecisionObservation context request
+  case (requested, exactResult) of
+    (Left err, _) -> pure (refusedResult context target err)
+    (_, Left err) -> pure (refusedResult context target err)
+    (Right request, Right exact) -> case authorizeExactAwsNetworkFamilyReap request exact of
+      Left err -> pure (refusedResult context target (AwsRegisteredTargetNetworkFamilyInvalid err))
+      Right Nothing -> pure (mapResult (mkAlreadyAbsentRegisteredTargetReconcile operationId target scope exact))
+      Right (Just authorization) -> case mkProviderDispatchKey operationId ProviderRegisteredMutation of
+        Left err -> pure (refusedResult context target (AwsRegisteredTargetDispatchKeyInvalid err))
+        Right dispatchKey -> do
+          attempted <-
+            dispatchRegisteredProviderMutation
+              (awsRegisteredTargetProviderBoundary interpreter)
+              dispatchKey
+              (awsNetworkFamilyReapProviderIntent authorization)
+          pure $ case attempted of
+            Left err -> refusedResult context target (AwsRegisteredTargetDispatchInvalid err)
+            Right mutation ->
+              mapResult
+                (mkAwsNetworkFamilyRegisteredTargetReconcile operationId target scope authorization mutation)
+ where
+  operationId = teardownExecutionOperationId context
+  scope = teardownExecutionObservationScope context
+
 requireStackIdentity
   :: RegisteredResourceKey
   -> Either AwsRegisteredTargetInterpreterError RegisteredIdentity
@@ -2104,3 +2211,64 @@ providerStackRefForKey key = do
  where
   registeredKind selected =
     maybe Stack registeredIdentityKind (lookupRegisteredIdentity selected)
+
+mkInviteMailRequest
+  :: TeardownExecutionContext surface
+  -> ProviderDispatchPurpose
+  -> Either InviteMailCleanupError InviteMailCleanupRequest
+mkInviteMailRequest context purpose =
+  mkInviteMailCleanupRequest
+    (teardownExecutionSurfaceWitness context)
+    (observationRevision context purpose)
+    (teardownExecutionObservationScope context)
+
+observeInviteMail
+  :: (Monad m)
+  => AwsRegisteredTargetInterpreter m
+  -> ProviderDispatchPurpose
+  -> TeardownExecutionContext surface
+  -> m (Either AwsRegisteredTargetInterpreterError ExactResourceObservation)
+observeInviteMail interpreter purpose context = case mkInviteMailRequest context purpose of
+  Left err -> pure (Left (AwsRegisteredTargetInviteMailInvalid err))
+  Right request -> case mkProviderDispatchKey (teardownExecutionOperationId context) purpose of
+    Left err -> pure (Left (AwsRegisteredTargetDispatchKeyInvalid err))
+    Right key -> do
+      result <-
+        dispatchRegisteredProviderObservation
+          (awsRegisteredTargetProviderBoundary interpreter)
+          key
+          (inviteMailCleanupObservationIntent request)
+      pure $
+        either
+          (Left . AwsRegisteredTargetInviteMailInvalid)
+          Right
+          (decodeInviteMailCleanupObservation request (either (Left . renderDispatchError) Right result))
+
+reconcileInviteMail
+  :: (Monad m)
+  => AwsRegisteredTargetInterpreter m
+  -> TeardownExecutionContext surface
+  -> RegisteredTargetBinding
+  -> m (Either AwsRegisteredTargetInterpreterError RegisteredTargetReconcileResult)
+reconcileInviteMail interpreter context target = do
+  observed <- observeInviteMail interpreter ProviderDecisionObservation context
+  case observed of
+    Left err -> pure (refusedResult context target err)
+    Right exact -> case mkInviteMailRequest context ProviderDecisionObservation
+      >>= (\request -> authorizeInviteMailCleanup request exact) of
+      Left err -> pure (refusedResult context target (AwsRegisteredTargetInviteMailInvalid err))
+      Right Nothing -> pure (mapResult (mkAlreadyAbsentRegisteredTargetReconcile operationId target scope exact))
+      Right (Just authorization) -> case mkProviderDispatchKey operationId ProviderRegisteredMutation of
+        Left err -> pure (refusedResult context target (AwsRegisteredTargetDispatchKeyInvalid err))
+        Right key -> do
+          attempted <-
+            dispatchRegisteredProviderMutation
+              (awsRegisteredTargetProviderBoundary interpreter)
+              key
+              (inviteMailCleanupReapIntent authorization)
+          pure $ case attempted of
+            Left err -> refusedResult context target (AwsRegisteredTargetDispatchInvalid err)
+            Right attempt -> mapResult (mkInviteMailRegisteredTargetReconcile operationId target scope authorization attempt)
+ where
+  operationId = teardownExecutionOperationId context
+  scope = teardownExecutionObservationScope context

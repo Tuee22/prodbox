@@ -49,6 +49,7 @@ import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import GHC.Generics (Generic)
 import Prodbox.Aws.SigV4 (hexSha256)
+import Prodbox.Capacity.AuthorityBackupBudget (authorityBackupRetainedCopyResponseMaximumBytes)
 import Prodbox.ControlPlane.Codec
   ( ControlPlaneRequestCodecError
   , controlPlaneRequestCodecToken
@@ -231,7 +232,11 @@ serveBackupCopyRequest maximumBytes repository body =
               (authorityBackupCopyCiphertext request)
           pure $ case copied of
             Left detail -> AuthorityBackupCopyFailed detail
-            Right receipt -> AuthorityBackupCopySucceeded receipt
+            Right receipt
+              | ByteString.length (authorityBackupCopyResponseBody (AuthorityBackupCopySucceeded receipt))
+                  > authorityBackupRetainedCopyResponseMaximumBytes ->
+                  AuthorityBackupCopyFailed "backup receipt exceeds its bounded metadata projection"
+              | otherwise -> AuthorityBackupCopySucceeded receipt
 
 serveBackupObserveRequest
   :: (Monad m)

@@ -28,6 +28,8 @@ hostCleanupRunnerSuite =
         hostCleanupRunnerRegressionConcurrentLeaseFenced regression `shouldBe` True
         hostCleanupRunnerRegressionProgressedPrepareResumes regression
           `shouldBe` True
+        hostCleanupRunnerRegressionTerminalHandoffCompletes regression
+          `shouldBe` True
 
     it "reaches the same completion one durable phase at a time" $ do
       -- Sprint 4.86: the compiled cascade graph reaches the destructive host

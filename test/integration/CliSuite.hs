@@ -1,3 +1,5 @@
+{-# LANGUAGE ImportQualifiedPost #-}
+
 module CliSuite
   ( integrationCliSuite
   , runInstalledWithFakeAuthority
@@ -7,6 +9,8 @@ module CliSuite
   )
 where
 
+import BootstrapSourceFixture (writeBootstrapSourceFixture)
+import Codec.Serialise (serialise)
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar
   ( MVar
@@ -72,6 +76,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.Substrate qualified as Credential
 -- still needs it, and the `dev check` rule barring this import is scoped to
 -- `src/`.
 import Prodbox.Lifecycle.DependencyAdmission.Internal (noAdmissions)
+import Prodbox.Lifecycle.HostCleanupIntent qualified as HostCleanup
 import Prodbox.Settings qualified as Settings
 import Prodbox.Settings.SecretRef
   ( SecretRef (SecretRefVault)
@@ -97,6 +102,7 @@ import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.FilePath (takeDirectory, (</>))
 import System.IO qualified as IO
 import System.IO.Temp (withSystemTempDirectory)
+import System.Posix.Files (setFileMode)
 import System.Process
   ( CreateProcess (create_group, cwd, env, std_err, std_out)
   , ProcessHandle
@@ -819,7 +825,7 @@ integrationCliSuite = do
         stdoutText `shouldContain` "BESTEFFORT_PODS=0"
         stdoutText `shouldContain` "UNCAPPED_CONTAINERS=0"
 
-    it "runs gateway-pods through the bounded runtime-stability oracle" $
+    it "runs gateway-pods with existing restart counters through the bounded stability oracle" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
@@ -1652,6 +1658,53 @@ integrationCliSuite = do
         readFile (tmpDir </> "fake-rke2-state" </> "registry-gc-partial-audit.txt")
           `shouldReturn` "178->30\n"
 
+    it "refuses installer effects until an incomplete host cleanup resumes" $ do
+      sourceRoot <- getCurrentDirectory
+      withSystemTempDirectory "prodbox-hs-cli-predecessor" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
+        envVars <- fakeRke2Environment tmpDir
+        completedBytes <- BS8.readFile (sourceRoot </> "test/fixtures/host-cleanup-history/active.cbor")
+        completed <-
+          either (ioError . userError . show) pure (HostCleanup.decodeHostCleanupIntent completedBytes)
+        prepared <-
+          either (ioError . userError . show) pure $
+            HostCleanup.mkHostCleanupIntent
+              (HostCleanup.hostCleanupRunId completed)
+              (HostCleanup.hostCleanupGraphDigest completed)
+              (HostCleanup.hostCleanupRun completed)
+              (HostCleanup.hostCleanupScope completed)
+              (HostCleanup.hostCleanupTerminalIdentity completed)
+        store <-
+          either
+            (ioError . userError . show)
+            pure
+            (HostCleanup.mkHostCleanupIntentStore (tmpDir </> ".data/prodbox"))
+        preparedBytes <-
+          either (ioError . userError . show) pure (HostCleanup.encodeHostCleanupIntent prepared)
+        createDirectoryIfMissing True (takeDirectory (HostCleanup.hostCleanupIntentPath store))
+        BS8.writeFile (HostCleanup.hostCleanupIntentPath store) preparedBytes
+        setFileMode (HostCleanup.hostCleanupIntentPath store) 0o600
+        -- Non-authorizing locator bytes: the journal reader must still
+        -- independently reject the incomplete intent before installation.
+        LazyBS8.writeFile (tmpDir </> ".data/prodbox/.cluster-established") $
+          serialise
+            ( Text.pack "prodbox-local-retained-root"
+            , 1 :: Word
+            , Text.pack tmpDir
+            , Text.pack ".data"
+            , Text.pack (tmpDir </> ".data")
+            )
+        (exit, _, stderrText) <-
+          runRke2ReconcileWithFakeGateway tmpDir binary ["cluster", "reconcile"] envVars
+        exit `shouldBe` ExitFailure 1
+        stderrText `shouldContain` "HistoricalHostCleanupNotComplete HostCleanupPrepared"
+        stderrText `shouldContain` "PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE"
+        doesFileExist (tmpDir </> "fake-rke2-state/sysctl.txt") `shouldReturn` False
+        doesFileExist (tmpDir </> "fake-rke2-state/kubectl-apply.count") `shouldReturn` False
+        BS8.readFile (HostCleanup.hostCleanupIntentPath store) `shouldReturn` preparedBytes
+
     it "fails closed on an exit-zero Registry GC usage rejection and restores read-write mode" $
       withSystemTempDirectory "prodbox-hs-cli-registry-gc-refusal" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
@@ -1867,7 +1920,7 @@ integrationCliSuite = do
         applyHarborBootstrap `shouldContain` harborRegistryStorageSecretName
         applyHarborBootstrap `shouldContain` "REGISTRY_STORAGE_S3_ACCESSKEY"
         applyHarborBootstrap `shouldContain` "REGISTRY_STORAGE_S3_SECRETKEY"
-        applyHarborBootstrap `shouldContain` "quay.io/minio/mc"
+        applyHarborBootstrap `shouldContain` "docker.io/prodbox/mc-bootstrap"
         applyHarborBootstrap
           `shouldContain` ("mc mb --ignore-existing local/" ++ harborRegistryStorageBucket)
         applyHarborBootstrap `shouldContain` "s3:AbortMultipartUpload"
@@ -1912,7 +1965,7 @@ integrationCliSuite = do
         helmRecord `shouldNotContain` "repo|add|minio|https://charts.min.io/"
         helmRecord `shouldNotContain` "upgrade|--install|minio|minio/minio"
         helmRecord `shouldContain` "/charts/minio|--namespace|prodbox|--create-namespace"
-        helmRecord `shouldContain` "image.repository=quay.io/minio/minio"
+        helmRecord `shouldContain` "image.repository=docker.io/prodbox/minio-bootstrap"
         helmRecord `shouldContain` "--set|storage.className=manual"
         helmRecord `shouldNotContain` "image.repository=127.0.0.1:30080/prodbox/minio-mirror"
         helmRecord `shouldNotContain` "mcImage.repository"
@@ -2335,8 +2388,8 @@ integrationCliSuite = do
         writeTier0Fixture
           tmpDir
           (tier0FixtureWithParameters validConfigWithBlankOperationalAwsAndConfiguredAdmin)
-        writeFile
-          (tmpDir </> "test-secrets.dhall")
+        writePrivateTestSecrets
+          tmpDir
           ( testSecretsDhallWithAdmin
               "CASCADEFIXTUREKEY"
               "cascade-fixture-secret"
@@ -2386,8 +2439,8 @@ integrationCliSuite = do
         writeTier0Fixture
           tmpDir
           (tier0FixtureWithParameters validConfigWithBlankOperationalAwsAndConfiguredAdmin)
-        writeFile
-          (tmpDir </> "test-secrets.dhall")
+        writePrivateTestSecrets
+          tmpDir
           ( testSecretsDhallWithAdmin
               "CASCADEFIXTUREKEY"
               "cascade-fixture-secret"
@@ -2415,8 +2468,8 @@ integrationCliSuite = do
         writeTier0Fixture
           tmpDir
           (tier0FixtureWithParameters validConfigWithBlankOperationalAwsAndConfiguredAdmin)
-        writeFile
-          (tmpDir </> "test-secrets.dhall")
+        writePrivateTestSecrets
+          tmpDir
           ( testSecretsDhallWithAdmin
               "CASCADEFIXTUREKEY"
               "cascade-fixture-secret"
@@ -2506,7 +2559,7 @@ integrationCliSuite = do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
         writeRepoMarkers tmpDir
         writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
-        writeFile (tmpDir </> "test-secrets.dhall") testSecretsDhall
+        writePrivateTestSecrets tmpDir testSecretsDhall
         withFakeVaultLifecycleServer $ \vaultPort _stateRef -> do
           baseEnvVars <- fakeVaultLifecycleEnvironment tmpDir vaultPort
           let runVault args =
@@ -2665,8 +2718,8 @@ integrationCliSuite = do
               binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
               repoRoot <- getCurrentDirectory
               writeRepoMarkers tmpDir
-              writeFile
-                (tmpDir </> "test-secrets.dhall")
+              writePrivateTestSecrets
+                tmpDir
                 ( testSecretsDhallWithAdmin
                     "CONFIGADMINKEY"
                     "config-admin-secret"
@@ -2994,8 +3047,8 @@ integrationCliSuite = do
         writeTier0Fixture
           tmpDir
           (tier0FixtureWithParameters validConfigWithBlankOperationalAwsAndConfiguredAdmin)
-        writeFile
-          (tmpDir </> "test-secrets.dhall")
+        writePrivateTestSecrets
+          tmpDir
           ( testSecretsDhallWithAdmin
               "CONFIGADMINKEY"
               "config-admin-secret"
@@ -3032,8 +3085,8 @@ integrationCliSuite = do
         writeTier0Fixture
           tmpDir
           (tier0FixtureWithParameters validConfigWithLeakedOperationalAwsAndConfiguredAdmin)
-        writeFile
-          (tmpDir </> "test-secrets.dhall")
+        writePrivateTestSecrets
+          tmpDir
           ( testSecretsDhallWithAdmin
               "CONFIGADMINKEY"
               "config-admin-secret"
@@ -3097,8 +3150,8 @@ integrationCliSuite = do
         writeTier0Fixture
           tmpDir
           (tier0FixtureWithParameters validConfigWithLeakedOperationalAwsAndConfiguredAdmin)
-        writeFile
-          (tmpDir </> "test-secrets.dhall")
+        writePrivateTestSecrets
+          tmpDir
           ( testSecretsDhallWithAdminAndAcmeEab
               "CONFIGADMINKEY"
               "config-admin-secret"
@@ -3985,10 +4038,10 @@ fakeSesReadinessAwsScript repoRoot =
     , "  'ses describe-active-receipt-rule-set --output json')"
     , "    printf '%s\\n' '{\"Metadata\":{\"Name\":\"prodbox-receive-rule-set\"},\"Rules\":[{\"Name\":\"prodbox-capture-all-mail\",\"Enabled\":true,\"Recipients\":[\"inbox.test.example.test\"],\"Actions\":[{\"S3Action\":{\"BucketName\":\"prodbox-test-ses-capture\",\"ObjectKeyPrefix\":\"inbound/\"}}]}]}'"
     , "    ;;"
-    , "  's3api list-objects-v2 --bucket prodbox-test-ses-capture --prefix inbound/.prodbox-readiness-capability-probe --max-keys 1 --output json')"
-    , "    printf '%s\\n' '{\"KeyCount\":1,\"Contents\":[{\"Key\":\"inbound/.prodbox-readiness-capability-probe\"}]}'"
+    , "  's3api list-objects-v2 --bucket prodbox-test-ses-capture --prefix .prodbox-readiness-capability-probe --max-keys 1 --output json')"
+    , "    printf '%s\\n' '{\"KeyCount\":1,\"Contents\":[{\"Key\":\".prodbox-readiness-capability-probe\"}]}'"
     , "    ;;"
-    , "  s3api\\ get-object\\ --bucket\\ prodbox-test-ses-capture\\ --key\\ inbound/.prodbox-readiness-capability-probe\\ *\\ --output\\ json)"
+    , "  s3api\\ get-object\\ --bucket\\ prodbox-test-ses-capture\\ --key\\ .prodbox-readiness-capability-probe\\ *\\ --output\\ json)"
     , "    printf '%s\\n' '{\"ContentLength\":38,\"ContentType\":\"text/plain\"}'"
     , "    ;;"
     , "  *)"
@@ -4407,6 +4460,13 @@ fakeRke2Environment repoRoot = do
       endpointStatusRoot = repoRoot </> "fake-endpoint-status"
       kubeconfigPath = repoRoot </> "fake-rke2-kubeconfig"
   createDirectoryIfMissing True recordDir
+  bootstrapFixtures <- writeBootstrapSourceFixture repoRoot
+  writeFile
+    (recordDir </> "bootstrap-image-identities")
+    ( concatMap
+        (\(reference, identity, _) -> Text.unpack reference <> "|" <> Text.unpack identity <> "\n")
+        bootstrapFixtures
+    )
   writeFile socketPath ""
   writeFile kubeconfigPath "server: https://127.0.0.1:6443\n"
   createDirectoryIfMissing True endpointStatusRoot
@@ -5379,9 +5439,17 @@ fakeRke2DockerScript =
     , "  printf '%s' \"$arg\" >> \"$record_dir/docker.txt\""
     , "done"
     , "printf '\\n' >> \"$record_dir/docker.txt\""
+    , "source_image_identity() {"
+    , "  while IFS='|' read -r ref identity; do"
+    , "    if [[ \"$ref\" == \"$1\" ]]; then printf '%s' \"$identity\"; return 0; fi"
+    , "  done < \"$record_dir/bootstrap-image-identities\""
+    , "  return 1"
+    , "}"
     , "case \"${1:-}\" in"
     , "  image)"
-    , "    if [[ \"${2:-}\" == 'ls' ]]; then"
+    , "    if [[ \"${2:-}\" == 'load' ]]; then"
+    , "      exit 0"
+    , "    elif [[ \"${2:-}\" == 'ls' ]]; then"
     , "      dangling_id=${PRODBOX_FAKE_RKE2_DANGLING_RUNTIME_IMAGE_ID:-}"
     , "      if [[ -n \"$dangling_id\" && ! -f \"$record_dir/dangling-runtime-image-removed\" ]]; then"
     , "        printf '127.0.0.1:30080/prodbox/prodbox-runtime\\t%s\\n' \"$dangling_id\""
@@ -5396,6 +5464,7 @@ fakeRke2DockerScript =
     , "      exit 1"
     , "    elif [[ \"${2:-}\" == 'inspect' ]]; then"
     , "      if [[ \"${3:-}\" == '--format' && \"${4:-}\" == '{{.Id}}' ]]; then"
+    , "        if identity=$(source_image_identity \"${5:-}\"); then printf '%s\\n' \"$identity\"; exit 0; fi"
     , "        printf 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\\n'"
     , "        exit 0"
     , "      elif [[ \"${3:-}\" == '--format' && \"${4:-}\" == '{{json .RepoDigests}}' ]]; then"
@@ -5404,6 +5473,9 @@ fakeRke2DockerScript =
     , "          printf '[\"127.0.0.1:30080/prodbox/prodbox-runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]\\n'"
     , "          exit 0"
     , "        fi"
+    , "      elif identity=$(source_image_identity \"${3:-}\"); then"
+    , "        printf '[{\"Id\":\"%s\",\"Architecture\":\"amd64\",\"RootFS\":{\"Layers\":[]},\"RepoDigests\":[]}]\\n' \"$identity\""
+    , "        exit 0"
     , "      fi"
     , "      exit 1"
     , "    fi"
@@ -5501,6 +5573,15 @@ fakeRke2CtrScript =
     , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
     , "/bin/mkdir -p \"$record_dir\""
     , "printf '%s\\n' \"$*\" >> \"$record_dir/ctr.txt\""
+    , "if [[ \"$*\" == *'images inspect '* ]]; then"
+    , "  requested=${!#}"
+    , "  while IFS='|' read -r ref identity; do"
+    , "    if [[ \"$ref\" == \"$requested\" ]]; then"
+    , "      printf '%s\\n  application/vnd.oci.image.config.v1+json @%s\\n' \"$ref\" \"$identity\""
+    , "      exit 0"
+    , "    fi"
+    , "  done < \"$record_dir/bootstrap-image-identities\""
+    , "fi"
     , "exit 0"
     ]
 
@@ -6436,7 +6517,7 @@ renderFakeGatewayPodItems firstPodOomKilled =
     podName = "gateway-" ++ show index
     podUid = "gateway-uid-" ++ show index
     isOomKilled = firstPodOomKilled && index == 0
-    restartCount = if isOomKilled then (1 :: Int) else 0
+    restartCount = if isOomKilled then (1 :: Int) else 5
     lastState =
       if isOomKilled
         then
@@ -6451,3 +6532,10 @@ renderFakeGatewayMetricItems =
     "{\"metadata\":{\"name\":\"gateway-"
       ++ show index
       ++ "\"},\"containers\":[{\"name\":\"gateway\",\"usage\":{\"memory\":\"128Mi\"}}]}"
+
+writePrivateTestSecrets :: FilePath -> String -> IO ()
+writePrivateTestSecrets root contents = do
+  let path = root </> "test-secrets.dhall"
+  writeFile path ""
+  setFileMode path 0o600
+  writeFile path contents

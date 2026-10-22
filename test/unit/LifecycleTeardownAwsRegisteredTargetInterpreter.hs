@@ -601,7 +601,7 @@ completeManifestEvidence key scope =
           CascadeSurface
           key
           scope
-          [ exactResourceObservationFor
+          ( exactResourceObservationFor
               (mustIdentity key)
               (ObservationRevision 1)
               scope
@@ -610,7 +610,15 @@ completeManifestEvidence key scope =
                       (ObservedResourceIdentity "vpc/vpc-fixture" :| [])
                   )
               )
-          ]
+              : [ exactResourceObservationFor
+                    (mustIdentity family)
+                    (ObservationRevision 1)
+                    scope
+                    (ExactResourceAbsent (providerWorkerAbsence "fixture observed empty controller family"))
+                | family <- legacyAdoptionExpectedFamily key
+                , family /= key
+                ]
+          )
       )
   permit =
     mustRight

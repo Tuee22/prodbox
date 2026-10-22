@@ -1,7 +1,11 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Host-durable intent for the destructive boundary of one cleanup run.
@@ -64,6 +68,14 @@ module Prodbox.Lifecycle.HostCleanupIntent.Internal
   , observedHostCleanupIntent
   , restoreObservedHostCleanupReady
   , observeHostCleanupIntentForResume
+  , observeRetiredHostCleanupIntentForResume
+  , HostCleanupTerminalHandoff
+  , hostCleanupTerminalHandoffIntent
+  , hostCleanupTerminalHandoffPrefix
+  , hostCleanupTerminalHandoffDescriptorDigest
+  , hostCleanupTerminalHandoffPath
+  , persistHostCleanupTerminalHandoff
+  , observeHostCleanupTerminalHandoff
   , withHostCleanupExecutionLease
   , observeHostCleanupIntent
   , prepareHostCleanupIntent
@@ -85,11 +97,13 @@ module Prodbox.Lifecycle.HostCleanupIntent.Internal
   , retireHostCleanupIntentAfterTerminalFailure
   , HostCleanupIntentRegression
   , fixedHostCleanupIntentRegression
+  , withFixedHostCleanupTerminalHandoffInternal
   , hostCleanupIntentRegressionBoundCodec
   , hostCleanupIntentRegressionBoundPreparationRefused
   , hostCleanupIntentRegressionReadyReadBack
   , hostCleanupIntentRegressionPhaseReplay
   , hostCleanupIntentRegressionRetirementReplay
+  , hostCleanupIntentRegressionTerminalHandoff
   , HostCleanupIntentError (..)
   )
 where
@@ -106,6 +120,7 @@ import Control.Exception
   , throwIO
   , try
   )
+import Control.Monad (foldM)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Trans.Except (ExceptT (..), runExceptT)
 import Data.Bifunctor (first)
@@ -127,25 +142,67 @@ import Prodbox.Config.LocalRetainedRoot
   , BootstrapRetainedRootLocator
   , authorityBoundRetainedRootControlDirectory
   , bootstrapRetainedRootControlDirectory
+  , hostCleanupActiveIntentRelativePath
+  )
+import Prodbox.ControlPlane.CleanupRunClient
+  ( DescriptorBoundCleanupRun
+  , descriptorBoundCleanupRunDescriptorDigest
+  , withDescriptorBoundCleanupProgram
+  )
+import Prodbox.ControlPlane.CleanupRunClient.Internal
+  ( DescriptorBoundCleanupRun (internalDescriptorBoundCleanupRunValue)
+  )
+import Prodbox.Lifecycle.Authority.Admission
+  ( AuthorityAdmissionCommand (..)
+  , AuthorityAdmissionDecision (..)
+  , initialCleanInstallAuthority
+  , stepAuthorityAdmission
+  )
+import Prodbox.Lifecycle.Authority.ClientRegistry (mkClientSubmissionKey)
+import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch
+  ( CascadeTerminalAuditVerdict (CascadeTerminalAuditReceiptClean)
+  , ProviderCredentialRetirementConfirmation
+  , confirmProviderCredentialRetirement
+  , mkCascadeAuditFreezeBinding
+  , mkCascadeTerminalAuditReceipt
+  , mkProviderCredentialRevocationReceipt
+  , providerCredentialRetirementMatches
   )
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupDigest
+  , CleanupLease (..)
   , CleanupNodeOutcome (..)
   , CleanupNodeState (..)
   , CleanupOperationId
-  , CleanupRun (cleanupRunGraph, cleanupRunGraphDigest, cleanupRunId)
+  , CleanupPrimaryOutcome (..)
+  , CleanupRun
+    ( cleanupRunGraph
+    , cleanupRunGraphDigest
+    , cleanupRunId
+    , cleanupRunLease
+    , cleanupRunNodeStates
+    , cleanupRunPrimaryOutcome
+    )
   , CleanupRunCodecError
   , CleanupRunId
   , CleanupRunReport (..)
+  , beginCleanupNode
   , cleanupDigestOfBytes
   , cleanupDigestText
   , cleanupGraphDigest
+  , cleanupGraphNodes
+  , cleanupNodeId
+  , cleanupNodeIdText
+  , cleanupNodeOperationId
   , cleanupRunIdText
+  , completeCleanupNode
   , decodeCleanupRun
   , decodeCleanupRunReport
   , encodeCleanupRun
   , encodeCleanupRunReport
+  , mkCleanupAttemptId
   , mkCleanupDigest
+  , recordPrimaryOutcome
   )
 import Prodbox.Lifecycle.DnsRecord (HostedZoneId)
 import Prodbox.Lifecycle.Teardown.CascadeEvidence
@@ -175,23 +232,41 @@ import Prodbox.Lifecycle.Teardown.CascadeEvidence.Internal
   , restoreReadyToUninstallEvidence
   , withFixedCascadeEvidenceFixtureInternal
   )
+import Prodbox.Lifecycle.Teardown.CleanupProgramDescriptor.Internal
+  ( CleanupProgramDescriptor
+  , captureCleanupProgramDescriptor
+  , cleanupProgramDescriptorBytes
+  , cleanupProgramDescriptorDigest
+  , decodeAndValidateCleanupProgramDescriptor
+  , maximumCleanupProgramDescriptorBytes
+  , withRecompiledCleanupProgramDescriptor
+  )
+import Prodbox.Lifecycle.Teardown.Graph
+  ( CompiledDesiredAbsenceProgram
+  , compiledDesiredAbsenceGraph
+  , compiledDesiredAbsenceObservationScope
+  )
 import Prodbox.Lifecycle.Teardown.Model
   ( AwsAccountId (..)
   , AwsRegion (..)
   , AwsScope (..)
   , CleanupSurface (..)
+  , CleanupSurfaceWitness (..)
   , DurableObservationRunScope (..)
   , LifecycleOperation (..)
   , LinuxRke2FoundationId (..)
   , ObservationEvidenceScope
   , RegistryRevision (..)
   )
+import Prodbox.Lifecycle.Teardown.Observation (terminalAuditEvidenceScopeDigest)
+import Prodbox.Lifecycle.Teardown.ResourceScopeBindings (ResourceScopeBindings)
 import Prodbox.Lifecycle.Teardown.ScopeCodec
   ( ObservationEvidenceScopeFields (..)
   , ScopeWire
   , observationEvidenceScopeFields
   , observationEvidenceScopeFromFields
   , renderScopeWireError
+  , scopeForCascadeTerminalAudit
   , scopeFromWire
   , scopeToWire
   )
@@ -200,7 +275,7 @@ import System.Directory
   , createDirectoryIfMissing
   , renameFile
   )
-import System.FilePath (isAbsolute, normalise, (</>))
+import System.FilePath (isAbsolute, normalise, takeDirectory, (</>))
 import System.IO (SeekMode (AbsoluteSeek))
 import System.IO.Error (isDoesNotExistError, isEOFError)
 import System.IO.Temp (withSystemTempDirectory)
@@ -287,14 +362,14 @@ hostCleanupIntentRetainedRoot = internalRetainedRoot
 -- | The single segment naming the record inside the prodbox-owned control
 -- directory, beside the retained-artifact store and the establishment marker.
 hostCleanupIntentStoreDirectoryName :: FilePath
-hostCleanupIntentStoreDirectoryName = "host-cleanup-intent"
+hostCleanupIntentStoreDirectoryName = takeDirectory hostCleanupActiveIntentRelativePath
 
 hostCleanupIntentDirectory :: HostCleanupIntentStore -> FilePath
 hostCleanupIntentDirectory store =
   hostCleanupIntentRetainedRoot store </> hostCleanupIntentStoreDirectoryName
 
 hostCleanupIntentPath :: HostCleanupIntentStore -> FilePath
-hostCleanupIntentPath store = hostCleanupIntentDirectory store </> "active-v1.cbor"
+hostCleanupIntentPath store = hostCleanupIntentRetainedRoot store </> hostCleanupActiveIntentRelativePath
 
 hostCleanupIntentTemporaryPath :: HostCleanupIntentStore -> FilePath
 hostCleanupIntentTemporaryPath store =
@@ -341,6 +416,7 @@ data HostCleanupScope = HostCleanupScope
   , internalAwsAccountId :: !(Maybe Text)
   , internalAwsRegion :: !(Maybe Text)
   , internalAwsDnsZone :: !(Maybe HostedZoneId)
+  , internalResourceBindings :: !(Maybe ResourceScopeBindings)
   , internalLifecycleOperation :: !LifecycleOperation
   }
   deriving stock (Eq, Show)
@@ -360,6 +436,7 @@ mkHostCleanupScope expectedRunId evidence =
         (LinuxRke2FoundationId foundation)
         awsScope
         dnsZone
+        bindings
         operation
       ) = do
       if surface == Cascade
@@ -384,6 +461,7 @@ mkHostCleanupScope expectedRunId evidence =
           , internalAwsAccountId = account
           , internalAwsRegion = region
           , internalAwsDnsZone = dnsZone
+          , internalResourceBindings = bindings
           , internalLifecycleOperation = operation
           }
 
@@ -421,6 +499,7 @@ hostCleanupObservationEvidenceScope scope =
           LinuxRke2FoundationId (internalFoundationId scope)
       , scopeFieldAwsScope = awsScope
       , scopeFieldAwsDnsZone = internalAwsDnsZone scope
+      , scopeFieldResourceBindings = internalResourceBindings scope
       , scopeFieldLifecycleOperation = internalLifecycleOperation scope
       }
  where
@@ -980,6 +1059,8 @@ data HostCleanupIntentError
   | HostCleanupIntentFailureRetirementIntentMismatch
   | HostCleanupIntentFailureRetirementDescriptorMismatch
   | HostCleanupIntentFailureRetirementReportMismatch
+  | HostCleanupIntentTerminalHandoffInvalid !Text
+  | HostCleanupIntentTerminalHandoffConflict
   | HostCleanupIntentIoFailure !String
   deriving stock (Eq, Show)
 
@@ -992,21 +1073,23 @@ data HostCleanupIntentRegression = HostCleanupIntentRegression
   , hostCleanupIntentRegressionReadyReadBack :: !Bool
   , hostCleanupIntentRegressionPhaseReplay :: !Bool
   , hostCleanupIntentRegressionRetirementReplay :: !Bool
+  , hostCleanupIntentRegressionTerminalHandoff :: !Bool
   }
 
 fixedHostCleanupIntentRegression
   :: IO (Either Text HostCleanupIntentRegression)
 fixedHostCleanupIntentRegression =
   case withFixedCascadeEvidenceFixtureInternal
-    (\_ run ready _ _ -> fixedHostCleanupIntentRegressionFor run ready) of
+    (\compiled run ready _ _ -> fixedHostCleanupIntentRegressionFor compiled run ready) of
     Left detail -> pure (Left detail)
     Right regression -> regression
 
 fixedHostCleanupIntentRegressionFor
-  :: CleanupRun
+  :: CompiledDesiredAbsenceProgram 'Cascade
+  -> CleanupRun
   -> ReadyToUninstallEvidence
   -> IO (Either Text HostCleanupIntentRegression)
-fixedHostCleanupIntentRegressionFor run ready =
+fixedHostCleanupIntentRegressionFor compiled run ready =
   withSystemTempDirectory "prodbox-host-cleanup-fixed-regression" $ \retainedRoot ->
     runExceptT $ do
       scope <-
@@ -1042,14 +1125,19 @@ fixedHostCleanupIntentRegressionFor run ready =
       observedReady <- case observed of
         Nothing -> ExceptT (pure (Left "fixed Ready read-back disappeared"))
         Just exact -> fromEitherText (restoreObservedHostCleanupReady exact)
-      completed <-
+      armed <-
         advanceFixedHostCleanupPhases
           store
           bound
           receipt
-          [ HostCleanupAuthorityAccepted
-          , HostCleanupTerminalArmed
-          , HostCleanupLocalUninstallIssued
+          [HostCleanupAuthorityAccepted, HostCleanupTerminalArmed]
+      handoffRegression <- fixedTerminalHandoffRegression store compiled run armed
+      completed <-
+        advanceFixedHostCleanupPhases
+          store
+          armed
+          receipt
+          [ HostCleanupLocalUninstallIssued
           , HostCleanupLocalAbsenceRecorded
           , HostCleanupAuthorityReconciled
           , HostCleanupCompletionCommitted
@@ -1094,7 +1182,225 @@ fixedHostCleanupIntentRegressionFor run ready =
                 && reopened == Just completed
           , hostCleanupIntentRegressionRetirementReplay =
               replayedRetirement == retirement && afterRetirement == Nothing
+          , hostCleanupIntentRegressionTerminalHandoff = handoffRegression
           }
+
+fixedTerminalHandoffValue
+  :: CompiledDesiredAbsenceProgram 'Cascade
+  -> CleanupRun
+  -> HostCleanupIntent
+  -> Either HostCleanupIntentError HostCleanupTerminalHandoff
+fixedTerminalHandoffValue compiled initial armed = do
+  descriptor <- mapHandoffError (captureCleanupProgramDescriptor compiled initial)
+  primary <-
+    mapHandoffError
+      ( recordPrimaryOutcome
+          (cleanupLeaseOwner (cleanupRunLease initial))
+          (cleanupLeaseFence (cleanupRunLease initial))
+          CleanupPrimarySucceeded
+          initial
+      )
+  let remote =
+        takeWhile
+          ((/= "lifecycle/cascade/uninstall-local") . cleanupNodeIdText . cleanupNodeId)
+          (cleanupGraphNodes (cleanupRunGraph initial))
+      finish run plan = do
+        attempt <- mkCleanupAttemptId ("handoff-regression/" <> cleanupNodeIdText (cleanupNodeId plan))
+        running <-
+          either
+            (Left . Text.pack . show)
+            Right
+            ( beginCleanupNode
+                (cleanupLeaseOwner (cleanupRunLease run))
+                (cleanupLeaseFence (cleanupRunLease run))
+                (cleanupNodeId plan)
+                attempt
+                run
+            )
+        either
+          (Left . Text.pack . show)
+          Right
+          ( completeCleanupNode
+              (cleanupLeaseOwner (cleanupRunLease run))
+              (cleanupLeaseFence (cleanupRunLease run))
+              (cleanupNodeId plan)
+              attempt
+              CleanupNodeSucceeded
+              running
+          )
+  prefix <- mapHandoffError (foldM finish primary remote)
+  retirement <- fixedTerminalHandoffRetirement descriptor compiled prefix
+  let handoff = HostCleanupTerminalHandoff armed prefix descriptor retirement
+  validateTerminalHandoffProgram handoff CascadeSurface compiled initial
+  Right handoff
+
+-- | The fixture uses the owning aggregate's real freeze/record/revoke fold.
+fixedTerminalHandoffRetirement
+  :: CleanupProgramDescriptor
+  -> CompiledDesiredAbsenceProgram 'Cascade
+  -> CleanupRun
+  -> Either HostCleanupIntentError ProviderCredentialRetirementConfirmation
+fixedTerminalHandoffRetirement descriptor compiled prefix = do
+  (node, attempt) <- case [ (plan, selected)
+                          | plan <- cleanupGraphNodes (cleanupRunGraph prefix)
+                          , cleanupNodeIdText (cleanupNodeId plan) == "lifecycle/cascade/audit-escapes"
+                          , Just (CleanupNodeCompleted selected CleanupNodeSucceeded) <-
+                              [Map.lookup (cleanupNodeId plan) (cleanupRunNodeStates prefix)]
+                          ] of
+    [selected] -> Right selected
+    _ -> Left (handoffInvalid "fixed terminal audit attempt missing")
+  key <- mapHandoffError (mkClientSubmissionKey "fixed/host-handoff-audit")
+  let scope =
+        terminalAuditEvidenceScopeDigest
+          (scopeForCascadeTerminalAudit (compiledDesiredAbsenceObservationScope compiled))
+      digest label = cleanupDigestText (cleanupDigestOfBytes label)
+  binding <-
+    mapHandoffError
+      ( mkCascadeAuditFreezeBinding
+          (cleanupRunId prefix)
+          (cleanupProgramDescriptorDigest descriptor)
+          (cleanupRunGraphDigest prefix)
+          scope
+          (cleanupNodeId node)
+          (cleanupNodeOperationId node)
+          attempt
+          [key]
+      )
+  audit <-
+    mapHandoffError
+      ( mkCascadeTerminalAuditReceipt
+          scope
+          (digest "query")
+          (digest "retained")
+          CascadeTerminalAuditReceiptClean
+      )
+  proof <-
+    mapHandoffError
+      ( mkProviderCredentialRevocationReceipt
+          (cleanupDigestOfBytes "IAM absence")
+          (cleanupDigestOfBytes "Target absence")
+      )
+  initial <- mapHandoffError (initialCleanInstallAuthority 1 1)
+  let transition current command = case stepAuthorityAdmission current command of
+        (AuthorityAdmissionCommandRefused refusal, _) -> Left (handoffInvalid (Text.pack (show refusal)))
+        (_, next) -> Right next
+  frozen <- transition initial (FreezeProviderAdmissionAtGeneration 1 binding)
+  recorded <- transition frozen (RecordCascadeTerminalAuditReceipt binding audit)
+  revoked <- transition recorded (RevokeCascadeProviderCredential binding proof)
+  case stepAuthorityAdmission revoked (ObserveProviderAdmissionRecovery binding) of
+    (AuthorityProviderAdmissionRecoveryObserved observation, _) ->
+      mapHandoffError (confirmProviderCredentialRetirement binding observation)
+    (other, _) -> Left (handoffInvalid (Text.pack (show other)))
+
+-- | Fixed package-private fixture.  No fixture capability is exported by the
+-- public intent facade; the host runner consumes it only for closed checks.
+withFixedHostCleanupTerminalHandoffInternal
+  :: ( HostCleanupIntentStore
+       -> HostCleanupTerminalHandoff
+       -> CleanupRun
+       -> ReadyToUninstallEvidence
+       -> IO result
+     )
+  -> IO (Either Text result)
+withFixedHostCleanupTerminalHandoffInternal consume =
+  case withFixedCascadeEvidenceFixtureInternal
+    ( \compiled initial ready _ _ ->
+        withSystemTempDirectory "prodbox-terminal-handoff-runner" $ \root -> runExceptT $ do
+          store <- fromEitherText (mkHostCleanupIntentStore root)
+          scope <- fromEitherText (mkHostCleanupScope (cleanupRunId initial) (readyToUninstallScope ready))
+          permit <-
+            fromEitherText
+              (mkHostTerminalPermitId (localCompletionPermitIdText (readyToUninstallPermitId ready)))
+          let operation = cascadeLocalUninstallOperationId (readyToUninstallOperationReferences ready)
+          intent <-
+            fromEitherText
+              ( mkHostCleanupIntent
+                  (cleanupRunId initial)
+                  (cleanupRunGraphDigest initial)
+                  initial
+                  scope
+                  (mkHostCleanupTerminalIdentity operation permit)
+              )
+          prepared <- ioEitherText (prepareHostCleanupIntent store intent)
+          bound <- ioEitherText (persistHostCleanupReady store prepared ready)
+          unusedReceipt <- fromEitherText (mkCleanupDigest (Text.replicate 64 "c"))
+          armed <-
+            advanceFixedHostCleanupPhases
+              store
+              bound
+              unusedReceipt
+              [HostCleanupAuthorityAccepted, HostCleanupTerminalArmed]
+          fixture <- fromEitherText (fixedTerminalHandoffValue compiled initial armed)
+          persisted <-
+            ioEitherText
+              ( withHostCleanupIntentLock
+                  store
+                  (\preparedStore -> persistCapturedTerminalHandoff preparedStore fixture)
+              )
+          liftIO (consume store persisted initial ready)
+    ) of
+    Left detail -> pure (Left detail)
+    Right action -> action
+
+-- | The fixture stays inside this evidence owner and exercises the same
+-- immutable writer and reader as the authenticated production capture.
+fixedTerminalHandoffRegression
+  :: HostCleanupIntentStore
+  -> CompiledDesiredAbsenceProgram 'Cascade
+  -> CleanupRun
+  -> HostCleanupIntent
+  -> ExceptT Text IO Bool
+fixedTerminalHandoffRegression store compiled initial armed = do
+  handoff <- fromEitherText (fixedTerminalHandoffValue compiled initial armed)
+  let prefix = hostCleanupTerminalHandoffPrefix handoff
+      descriptor = internalTerminalHandoffDescriptor handoff
+      incomplete = handoff {hostCleanupTerminalHandoffPrefix = initial}
+  bytes <- fromEitherText (encodeTerminalHandoff handoff)
+  persisted <-
+    ioEitherText
+      (withHostCleanupIntentLock store (\prepared -> persistCapturedTerminalHandoff prepared handoff))
+  replayed <-
+    ioEitherText
+      (withHostCleanupIntentLock store (\prepared -> persistCapturedTerminalHandoff prepared handoff))
+  observed <- ioEitherText (observeHostCleanupTerminalHandoff store (cleanupRunId initial))
+  let laterPrefix =
+        prefix
+          { cleanupRunLease =
+              (cleanupRunLease prefix)
+                { cleanupLeaseExpiresAtMicros = cleanupLeaseExpiresAtMicros (cleanupRunLease prefix) + 1
+                }
+          }
+      laterHandoff = handoff {hostCleanupTerminalHandoffPrefix = laterPrefix}
+  conflict <-
+    liftIO
+      (withHostCleanupIntentLock store (\prepared -> persistCapturedTerminalHandoff prepared laterHandoff))
+  incompleteBytes <- fromEitherText (encodeTerminalHandoff incomplete)
+  unarmedBytes <-
+    fromEitherText
+      ( encodeTerminalHandoff
+          ( handoff
+              { hostCleanupTerminalHandoffIntent = armed {internalCleanupIntentPhase = HostCleanupPrepared}
+              }
+          )
+      )
+  let exact actual =
+        hostCleanupTerminalHandoffPrefix actual == prefix
+          && hostCleanupTerminalHandoffIntent actual == armed
+          && hostCleanupTerminalHandoffDescriptorDigest actual == cleanupProgramDescriptorDigest descriptor
+      refused result = case result of Left _ -> True; Right _ -> False
+  pure
+    ( exact persisted
+        && exact replayed
+        && maybe False exact observed
+        && conflictIsExact conflict
+        && refused (decodeTerminalHandoff incompleteBytes)
+        && refused (decodeTerminalHandoff unarmedBytes)
+        && refused (decodeTerminalHandoff (ByteString.snoc bytes 0))
+        && refused (decodeTerminalHandoff (ByteString.take (ByteString.length bytes - 1) bytes))
+    )
+ where
+  conflictIsExact (Left HostCleanupIntentTerminalHandoffConflict) = True
+  conflictIsExact _ = False
 
 advanceFixedHostCleanupPhases
   :: HostCleanupIntentStore
@@ -1238,6 +1544,324 @@ observeHostCleanupIntentForResume store =
           Left (err :: IOException) ->
             Left (HostCleanupIntentIoFailure (show err))
           Right () -> Right (Just (ObservedHostCleanupIntent intent))
+
+-- | Restore only an exact immutable retirement archive. The expected DTO
+-- supplies its content-addressed locator, not evidence: every returned field
+-- is read from the private archive and independently synced.
+observeRetiredHostCleanupIntentForResume
+  :: HostCleanupIntentStore
+  -> HostCleanupIntent
+  -> IO (Either HostCleanupIntentError (Maybe ObservedHostCleanupIntent))
+observeRetiredHostCleanupIntentForResume store expected
+  | hostCleanupIntentPhase expected /= HostCleanupComplete =
+      pure (Left (HostCleanupIntentRetirementRequiresComplete (hostCleanupIntentPhase expected)))
+  | otherwise = withHostCleanupIntentLock store observeArchive
+ where
+  observeArchive preparedStore =
+    case (hostCleanupIntentRetiredPath preparedStore expected, encodeHostCleanupIntent expected) of
+      (Left cause, _) -> pure (Left cause)
+      (_, Left cause) -> pure (Left cause)
+      (Right path, Right expectedBytes) -> do
+        observed <- readStoredIntent path
+        case observed of
+          Left cause -> pure (Left cause)
+          Right StoredIntentMissing -> pure (Right Nothing)
+          Right archive@(StoredIntentPresent _ actual)
+            | exactStoredIntent expectedBytes expected archive -> do
+                synced <- try (syncIntentDirectory preparedStore)
+                pure $ case synced of
+                  Left (cause :: IOException) -> Left (HostCleanupIntentIoFailure (show cause))
+                  Right () -> Right (Just (ObservedHostCleanupIntent actual))
+            | otherwise -> pure (Left HostCleanupIntentRetirementArchiveConflict)
+
+-- | Local provenance for the remote-to-host handoff.  This is not a new
+-- Authority handle: reading it never remints committed remote evidence.
+data HostCleanupTerminalHandoff = HostCleanupTerminalHandoff
+  { hostCleanupTerminalHandoffIntent :: !HostCleanupIntent
+  , hostCleanupTerminalHandoffPrefix :: !CleanupRun
+  , internalTerminalHandoffDescriptor :: !CleanupProgramDescriptor
+  , internalTerminalHandoffRetirement :: !ProviderCredentialRetirementConfirmation
+  }
+
+hostCleanupTerminalHandoffDescriptorDigest :: HostCleanupTerminalHandoff -> CleanupDigest
+hostCleanupTerminalHandoffDescriptorDigest =
+  cleanupProgramDescriptorDigest . internalTerminalHandoffDescriptor
+
+data HostCleanupTerminalHandoffEnvelope = HostCleanupTerminalHandoffEnvelope
+  { terminalHandoffVersion :: !Word16
+  , terminalHandoffIntent :: !ByteString
+  , terminalHandoffPrefix :: !ByteString
+  , terminalHandoffDescriptor :: !ByteString
+  , terminalHandoffRetirement :: !ProviderCredentialRetirementConfirmation
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+maximumHostCleanupTerminalHandoffBytes :: Int
+maximumHostCleanupTerminalHandoffBytes =
+  maximumHostCleanupIntentBytes
+    + maximumCleanupRunBytes
+    + maximumCleanupProgramDescriptorBytes
+    + (64 * 1024)
+    + 1024
+
+-- | One immutable slot per run; a different graph under that run conflicts.
+hostCleanupTerminalHandoffPath :: HostCleanupIntentStore -> CleanupRunId -> FilePath
+hostCleanupTerminalHandoffPath store runId =
+  hostCleanupIntentDirectory store
+    </> ( Text.unpack
+            ( cleanupDigestText
+                ( cleanupDigestOfBytes
+                    (TextEncoding.encodeUtf8 ("host-terminal-handoff/v2/" <> cleanupRunIdText runId))
+                )
+            )
+            <> ".handoff-v2.cbor"
+        )
+
+persistHostCleanupTerminalHandoff
+  :: HostCleanupIntentStore
+  -> DescriptorBoundCleanupRun
+  -> ProviderCredentialRetirementConfirmation
+  -> IO (Either HostCleanupIntentError HostCleanupTerminalHandoff)
+persistHostCleanupTerminalHandoff store bound retirement =
+  withHostCleanupIntentLock store $ \preparedStore -> do
+    active <- readStoredIntent (hostCleanupIntentPath preparedStore)
+    case active of
+      Left err -> pure (Left err)
+      Right StoredIntentMissing -> pure (Left HostCleanupIntentMissing)
+      Right (StoredIntentPresent _ intent) ->
+        case withDescriptorBoundCleanupProgram bound (capture intent) of
+          Left err -> pure (Left (handoffInvalid (Text.pack (show err))))
+          Right (Left err) -> pure (Left err)
+          Right (Right handoff) -> persistCapturedTerminalHandoff preparedStore handoff
+ where
+  capture
+    :: HostCleanupIntent
+    -> CleanupSurfaceWitness surface
+    -> CompiledDesiredAbsenceProgram surface
+    -> DescriptorBoundCleanupRun
+    -> Either HostCleanupIntentError HostCleanupTerminalHandoff
+  capture intent witness compiled observed = do
+    descriptor <- mapHandoffError (captureCleanupProgramDescriptor compiled (hostCleanupRun intent))
+    if cleanupProgramDescriptorDigest descriptor == descriptorBoundCleanupRunDescriptorDigest observed
+      then Right ()
+      else Left (handoffInvalid "remote descriptor differs from the host's initial run")
+    let handoff =
+          HostCleanupTerminalHandoff
+            intent
+            (internalDescriptorBoundCleanupRunValue observed)
+            descriptor
+            retirement
+    validateTerminalHandoffProgram handoff witness compiled (hostCleanupRun intent)
+    Right handoff
+
+persistCapturedTerminalHandoff
+  :: HostCleanupIntentStore
+  -> HostCleanupTerminalHandoff
+  -> IO (Either HostCleanupIntentError HostCleanupTerminalHandoff)
+persistCapturedTerminalHandoff preparedStore handoff = case encodeTerminalHandoff handoff of
+  Left err -> pure (Left err)
+  Right bytes -> do
+    let path =
+          hostCleanupTerminalHandoffPath
+            preparedStore
+            (hostCleanupRunId (hostCleanupTerminalHandoffIntent handoff))
+    existing <- readTerminalHandoff path
+    case existing of
+      Left err -> pure (Left err)
+      Right (Just (_, original))
+        | original == bytes -> observeExact preparedStore path bytes
+        | otherwise -> pure (Left HostCleanupIntentTerminalHandoffConflict)
+      Right Nothing -> do
+        attempted <- publishImmutableHostCleanupFile preparedStore (path <> ".staging") path bytes
+        observed <- observeExact preparedStore path bytes
+        pure $ case observed of
+          Right exact -> Right exact
+          Left err -> case attempted of
+            Left writeError -> Left writeError
+            Right () -> Left err
+ where
+  observeExact observedStore path bytes = do
+    observed <- readTerminalHandoff path
+    case observed of
+      Right (Just (observedHandoff, actual)) | actual == bytes -> do
+        synced <- try (syncIntentDirectory observedStore)
+        pure $ case synced of
+          Left (err :: IOException) -> Left (HostCleanupIntentIoFailure (show err))
+          Right () -> Right observedHandoff
+      Left err -> pure (Left err)
+      _ -> pure (Left HostCleanupIntentReadBackMismatch)
+
+observeHostCleanupTerminalHandoff
+  :: HostCleanupIntentStore
+  -> CleanupRunId
+  -> IO (Either HostCleanupIntentError (Maybe HostCleanupTerminalHandoff))
+observeHostCleanupTerminalHandoff store runId =
+  withHostCleanupIntentLock store $ \preparedStore -> do
+    observed <- readTerminalHandoff (hostCleanupTerminalHandoffPath preparedStore runId)
+    case observed of
+      Left err -> pure (Left err)
+      Right Nothing -> pure (Right Nothing)
+      Right (Just (handoff, _))
+        | hostCleanupRunId (hostCleanupTerminalHandoffIntent handoff) /= runId ->
+            pure (Left (handoffInvalid "handoff path names another run"))
+        | otherwise -> do
+            synced <- try (syncIntentDirectory preparedStore)
+            pure $ case synced of
+              Left (err :: IOException) -> Left (HostCleanupIntentIoFailure (show err))
+              Right () -> Right (Just handoff)
+
+encodeTerminalHandoff :: HostCleanupTerminalHandoff -> Either HostCleanupIntentError ByteString
+encodeTerminalHandoff handoff = do
+  intent <- encodeHostCleanupIntent (hostCleanupTerminalHandoffIntent handoff)
+  prefix <-
+    either
+      (Left . HostCleanupIntentCleanupRunInvalid)
+      Right
+      (encodeCleanupRun maximumCleanupRunBytes (hostCleanupTerminalHandoffPrefix handoff))
+  validateTerminalHandoffRetirementBound (internalTerminalHandoffRetirement handoff)
+  let bytes =
+        LazyByteString.toStrict
+          ( serialise
+              ( HostCleanupTerminalHandoffEnvelope
+                  2
+                  intent
+                  prefix
+                  (cleanupProgramDescriptorBytes (internalTerminalHandoffDescriptor handoff))
+                  (internalTerminalHandoffRetirement handoff)
+              )
+          )
+  if ByteString.length bytes <= maximumHostCleanupTerminalHandoffBytes
+    then Right bytes
+    else Left (handoffInvalid "handoff exceeds its encoded bound")
+
+decodeTerminalHandoff :: ByteString -> Either HostCleanupIntentError HostCleanupTerminalHandoff
+decodeTerminalHandoff bytes = case deserialiseOrFail (LazyByteString.fromStrict bytes) of
+  Left _ -> Left (handoffInvalid "invalid handoff envelope")
+  Right envelope
+    | terminalHandoffVersion envelope /= 2 -> Left (handoffInvalid "unsupported handoff version")
+    | LazyByteString.toStrict (serialise envelope) /= bytes ->
+        Left (handoffInvalid "noncanonical handoff envelope")
+    | otherwise -> do
+        validateTerminalHandoffRetirementBound (terminalHandoffRetirement envelope)
+        intent <- decodeHostCleanupIntent (terminalHandoffIntent envelope)
+        prefix <-
+          either
+            (Left . HostCleanupIntentCleanupRunInvalid)
+            Right
+            (decodeCleanupRun maximumCleanupRunBytes (terminalHandoffPrefix envelope))
+        descriptor <-
+          mapHandoffError (decodeAndValidateCleanupProgramDescriptor (terminalHandoffDescriptor envelope))
+        let handoff = HostCleanupTerminalHandoff intent prefix descriptor (terminalHandoffRetirement envelope)
+        checked <-
+          mapHandoffError
+            (withRecompiledCleanupProgramDescriptor descriptor (validateTerminalHandoffProgram handoff))
+        checked
+        Right handoff
+
+validateTerminalHandoffRetirementBound
+  :: ProviderCredentialRetirementConfirmation -> Either HostCleanupIntentError ()
+validateTerminalHandoffRetirementBound confirmation
+  | LazyByteString.length (serialise confirmation) <= 64 * 1024 = Right ()
+  | otherwise = Left (handoffInvalid "credential-retirement metadata exceeds its 64 KiB bound")
+
+validateTerminalHandoffProgram
+  :: HostCleanupTerminalHandoff
+  -> CleanupSurfaceWitness surface
+  -> CompiledDesiredAbsenceProgram surface
+  -> CleanupRun
+  -> Either HostCleanupIntentError ()
+validateTerminalHandoffProgram handoff witness compiled initial = case witness of
+  CascadeSurface -> do
+    let intent = hostCleanupTerminalHandoffIntent handoff
+        prefix = hostCleanupTerminalHandoffPrefix handoff
+        localNames =
+          map
+            ("lifecycle/cascade/" <>)
+            ["uninstall-local", "read-back-local-absence", "commit-completion", "read-back-completion"]
+        plans = cleanupGraphNodes (cleanupRunGraph prefix)
+        states = cleanupRunNodeStates prefix
+        validNode plan = case Map.lookup (cleanupNodeId plan) states of
+          Just CleanupNodePending -> cleanupNodeIdText (cleanupNodeId plan) `elem` localNames
+          Just (CleanupNodeCompleted _ CleanupNodeSucceeded) -> cleanupNodeIdText (cleanupNodeId plan) `notElem` localNames
+          _ -> False
+        localNodes = filter (`elem` localNames) (map (cleanupNodeIdText . cleanupNodeId) plans)
+        retirementMatches = case [ (plan, attempt)
+                                 | plan <- plans
+                                 , cleanupNodeIdText (cleanupNodeId plan) == "lifecycle/cascade/audit-escapes"
+                                 , Just (CleanupNodeCompleted attempt CleanupNodeSucceeded) <- [Map.lookup (cleanupNodeId plan) states]
+                                 ] of
+          [(plan, attempt)] ->
+            providerCredentialRetirementMatches
+              (hostCleanupRunId intent)
+              (hostCleanupTerminalHandoffDescriptorDigest handoff)
+              (hostCleanupGraphDigest intent)
+              ( terminalAuditEvidenceScopeDigest
+                  (scopeForCascadeTerminalAudit (compiledDesiredAbsenceObservationScope compiled))
+              )
+              (cleanupNodeId plan)
+              (cleanupNodeOperationId plan)
+              attempt
+              (internalTerminalHandoffRetirement handoff)
+          _ -> False
+    if retirementMatches
+      && hostCleanupIntentPhase intent == HostCleanupTerminalArmed
+      && hostCleanupReadyBinding intent /= Nothing
+      && initial == hostCleanupRun intent
+      && compiledDesiredAbsenceObservationScope compiled
+        == hostCleanupObservationEvidenceScope (hostCleanupScope intent)
+      && compiledDesiredAbsenceGraph compiled == cleanupRunGraph prefix
+      && cleanupRunGraph prefix == cleanupRunGraph initial
+      && cleanupRunGraphDigest prefix == hostCleanupGraphDigest intent
+      && cleanupRunId prefix == hostCleanupRunId intent
+      && cleanupRunPrimaryOutcome prefix /= Nothing
+      && localNodes == localNames
+      && all validNode plans
+      then Right ()
+      else
+        Left
+          ( handoffInvalid
+              "handoff is not the exact armed run with a successful remote prefix and four pending local nodes"
+          )
+  _ -> Left (handoffInvalid "only the cascade has a terminal host handoff")
+
+mapHandoffError :: (Show err) => Either err value -> Either HostCleanupIntentError value
+mapHandoffError = either (Left . handoffInvalid . Text.pack . show) Right
+
+handoffInvalid :: Text -> HostCleanupIntentError
+handoffInvalid = HostCleanupIntentTerminalHandoffInvalid
+
+readTerminalHandoff
+  :: FilePath -> IO (Either HostCleanupIntentError (Maybe (HostCleanupTerminalHandoff, ByteString)))
+readTerminalHandoff path = do
+  result <-
+    try
+      ( bracket
+          (openFd path ReadOnly defaultFileFlags {nofollow = True, cloexec = True})
+          safeCloseFd
+          readOpen
+      )
+  pure $ case result of
+    Left (err :: IOException)
+      | isDoesNotExistError err -> Right Nothing
+      | otherwise -> Left (HostCleanupIntentIoFailure (show err))
+    Right value -> value
+ where
+  readOpen fd = do
+    status <- getFdStatus fd
+    if not (isRegularFile status)
+      then pure (Left HostCleanupIntentFileNotRegular)
+      else
+        if fileMode status `intersectFileModes` accessModes /= ownerFileMode
+          then pure (Left HostCleanupIntentFileModeInvalid)
+          else do
+            bytes <- readFdBounded fd (maximumHostCleanupTerminalHandoffBytes + 1)
+            pure $
+              if ByteString.length bytes > maximumHostCleanupTerminalHandoffBytes
+                then Left (handoffInvalid "handoff exceeds its encoded bound")
+                else do
+                  handoff <- decodeTerminalHandoff bytes
+                  Right (Just (handoff, bytes))
 
 -- | Hold one run-bound host execution lease across the complete terminal
 -- effect interval.  The durable lease file binds the exact run, graph, scope,
@@ -1995,38 +2619,47 @@ publishFailureRetirement
 publishFailureRetirement store intent report archivePath bytes =
   case hostCleanupIntentFailureTemporaryPath store intent report of
     Left err -> pure (Left err)
-    Right temporaryPath -> do
-      result <- try . mask_ $ do
-        bracket
-          ( openFd
-              temporaryPath
-              WriteOnly
-              defaultFileFlags
-                { trunc = True
-                , creat = Just ownerFileMode
-                , nofollow = True
-                , cloexec = True
-                }
-          )
-          safeCloseFd
-          ( \fd -> do
-              setFdMode fd ownerFileMode
-              status <- getFdStatus fd
-              if not (isRegularFile status)
-                then
-                  ioError
-                    (userError "cleanup failure retirement temporary path is not regular")
-                else do
-                  writeAll fd bytes
-                  fileSynchronise fd
-          )
-        createLink temporaryPath archivePath
-        syncIntentDirectory store
-        removeLink temporaryPath
-        syncIntentDirectory store
-      pure $ case result :: Either IOException () of
-        Left err -> Left (HostCleanupIntentIoFailure (show err))
-        Right () -> Right ()
+    Right temporaryPath ->
+      publishImmutableHostCleanupFile store temporaryPath archivePath bytes
+
+publishImmutableHostCleanupFile
+  :: HostCleanupIntentStore
+  -> FilePath
+  -> FilePath
+  -> ByteString
+  -> IO (Either HostCleanupIntentError ())
+publishImmutableHostCleanupFile store temporaryPath archivePath bytes = do
+  result <- try . mask_ $ do
+    bracket
+      ( openFd
+          temporaryPath
+          WriteOnly
+          defaultFileFlags
+            { trunc = True
+            , creat = Just ownerFileMode
+            , nofollow = True
+            , cloexec = True
+            }
+      )
+      safeCloseFd
+      ( \fd -> do
+          setFdMode fd ownerFileMode
+          status <- getFdStatus fd
+          if not (isRegularFile status)
+            then
+              ioError
+                (userError "cleanup immutable journal temporary path is not regular")
+            else do
+              writeAll fd bytes
+              fileSynchronise fd
+      )
+    createLink temporaryPath archivePath
+    syncIntentDirectory store
+    removeLink temporaryPath
+    syncIntentDirectory store
+  pure $ case result :: Either IOException () of
+    Left err -> Left (HostCleanupIntentIoFailure (show err))
+    Right () -> Right ()
 
 removeFailureRetirementActive
   :: HostCleanupIntentStore

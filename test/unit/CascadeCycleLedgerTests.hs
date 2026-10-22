@@ -13,24 +13,93 @@ where
 
 import CycleIdentityFixtures
 import CycleLedgerFixtures
+import Data.ByteString qualified as ByteString
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Prodbox.Test.Qualification.CascadeCycleArtifact
 import Prodbox.Test.Qualification.CascadeCycleIdentity
 import Prodbox.Test.Qualification.CascadeCycleLedger
+import Prodbox.Test.Qualification.CascadeCycleLedgerStore
 import Prodbox.Test.Qualification.Evidence (hashPublicEvidence, publicEvidenceDigestText)
+import System.Directory (removeFile)
+import System.IO.Temp (withSystemTempDirectory)
+import System.Posix.Files (createNamedPipe, createSymbolicLink, setFileMode)
+import System.Timeout (timeout)
 import TestSupport
 
 cascadeCycleLedgerSuite :: SuiteBuilder ()
 cascadeCycleLedgerSuite =
   describe "Sprint 6.5 cascade cycle ledger" $ do
+    resumeSnapshotCases
     appendCases
     readCases
     resolutionCases
     judgeCases
     artifactCases
     markCases
+
+resumeSnapshotCases :: SuiteBuilder ()
+resumeSnapshotCases = describe "pre-uninstall named image capture" $ do
+  it "keeps the exact Begin and observed inventory through immutable replay" $
+    withSystemTempDirectory "qualification-resume" $ \root -> do
+      let begun = beganFor "pre-1" DeploymentA 1
+          snapshot = acceptedSnapshot begun (inventoryFor (partsComponentImages (partsOfVariant DeploymentA)))
+      observeQualificationResumeSnapshot root (labelOf "pre-1") `shouldReturn` Right Nothing
+      persistQualificationResumeSnapshot root snapshot `shouldReturn` Right snapshot
+      persistQualificationResumeSnapshot root snapshot `shouldReturn` Right snapshot
+      observeQualificationResumeSnapshot root (labelOf "pre-1") `shouldReturn` Right (Just snapshot)
+      qualificationResumeBegun snapshot `shouldBe` begun
+      qualificationResumeImages snapshot
+        `shouldBe` inventoryFor (partsComponentImages (partsOfVariant DeploymentA))
+      let changed =
+            acceptedSnapshot
+              (beganFor "pre-1" DeploymentB 1)
+              (inventoryFor (partsComponentImages (partsOfVariant DeploymentB)))
+      persistQualificationResumeSnapshot root changed >>= (`shouldSatisfy` snapshotRefused)
+      observeQualificationResumeSnapshot root (labelOf "pre-1") `shouldReturn` Right (Just snapshot)
+  it "refuses an invented inventory and a snapshot that claims a later ledger attempt" $ do
+    mkQualificationResumeSnapshot
+      (beganFor "pre-1" DeploymentA 1)
+      (inventoryFor (partsComponentImages (partsOfVariant DeploymentAfterDeletion)))
+      `shouldSatisfy` snapshotRefused
+    mkQualificationResumeSnapshot
+      (beganFor "pre-1" DeploymentA 2)
+      (inventoryFor (partsComponentImages (partsOfVariant DeploymentA)))
+      `shouldSatisfy` snapshotRefused
+    mkQualificationResumeSnapshot (beganFor "pre-1" DeploymentA 1) []
+      `shouldSatisfy` snapshotRefused
+  it "refuses malformed, oversized, non-private, symlink and FIFO storage" $
+    withSystemTempDirectory "qualification-resume-hostile" $ \root -> do
+      let label = labelOf "pre-1"
+          path = qualificationResumeSnapshotPath root label
+          other = qualificationResumeSnapshotPath root (labelOf "pre-2")
+          snapshot =
+            acceptedSnapshot
+              (beganFor "pre-1" DeploymentA 1)
+              (inventoryFor (partsComponentImages (partsOfVariant DeploymentA)))
+      persistQualificationResumeSnapshot root snapshot `shouldReturn` Right snapshot
+      bytes <- ByteString.readFile path
+      let malformed = [ByteString.init bytes, ByteString.snoc bytes 10, ByteString.replicate (512 * 1024 + 1) 65]
+      mapM_
+        ( \value -> do
+            ByteString.writeFile path value
+            observeQualificationResumeSnapshot root label >>= (`shouldSatisfy` snapshotRefused)
+        )
+        malformed
+      ByteString.writeFile path bytes
+      setFileMode path 0o644
+      observeQualificationResumeSnapshot root label >>= (`shouldSatisfy` snapshotRefused)
+      setFileMode path 0o600
+      createSymbolicLink path other
+      observeQualificationResumeSnapshot root (labelOf "pre-2") >>= (`shouldSatisfy` snapshotRefused)
+      removeFile other
+      createNamedPipe other 0o600
+      bounded <- timeout 1000000 (observeQualificationResumeSnapshot root (labelOf "pre-2"))
+      bounded `shouldSatisfy` maybe False snapshotRefused
+ where
+  acceptedSnapshot begun images = either error id (mkQualificationResumeSnapshot begun images)
+  snapshotRefused result = case result of Left _ -> True; Right _ -> False
 
 -- Cases -------------------------------------------------------------------------------
 

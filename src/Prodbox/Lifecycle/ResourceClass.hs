@@ -76,12 +76,18 @@ resourceLifecycleClasses =
     -- before issuance completes is exactly the case that strands one. The name
     -- matches 'Prodbox.Lifecycle.Teardown.Model.AwsDns01ChallengeRecordKey'.
     ("dns-aws-dns01-challenge-records", PerRun)
+  , ("dns-home-dns01-challenge-records", PerRun)
+  , ("ses-invite-mail-data-versions", PerRun)
   , -- Sprint 7.36: exact deterministic EKS IAM roles and the sole
     -- prodbox-managed policy are one registered per-run controller family.
     ("aws-eks-iam-role-family", PerRun)
   , -- Sprint 7.36: the exact load balancer, listeners, target groups, and
     -- security groups created for the public edge by the EKS controller.
     ("aws-eks-load-balancer-controller-family", PerRun)
+  , ("aws-eks-vpc-cni-interfaces", PerRun)
+  , ("aws-test-vpc-cni-interfaces", PerRun)
+  , ("aws-eks-cluster-security-groups", PerRun)
+  , ("aws-test-canary-security-groups", PerRun)
   , -- Sprint 4.84: test-scoped EBS volumes that back EKS static
     -- @Retain@ PersistentVolumes for the lifetime of one validation
     -- run. They carry @prodbox.io/lifecycle=per-run-test@ plus the EKS

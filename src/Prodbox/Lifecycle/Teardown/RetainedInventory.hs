@@ -52,6 +52,7 @@ module Prodbox.Lifecycle.Teardown.RetainedInventory
   , retainedClusterTagName
   , RetainedBindingError (..)
   , mkRetainedNameBinding
+  , mkOptionalRetainedNameBinding
 
     -- * Matchers
   , RetainedMatchRule (..)
@@ -72,11 +73,13 @@ module Prodbox.Lifecycle.Teardown.RetainedInventory
   , retainedCatalogMatchers
   , RetainedCatalogError (..)
   , retainedCatalogFor
+  , retainedCatalogForQueryRegions
   , retainedSetDigestFor
 
     -- * The query catalog
   , TerminalAuditQuery (..)
   , terminalAuditQueryCatalog
+  , terminalAuditQueryCatalogMaximumCardinality
   , terminalAuditQueryDigestFor
   , clusterOwnershipTagPrefix
   , auditQueryCoversTag
@@ -149,6 +152,7 @@ import Prodbox.Lifecycle.Teardown.Registry
   , registeredIdentityKey
   , registeredIdentityLifecycleClass
   )
+import Prodbox.Lifecycle.Teardown.RetainedNames
 import Prodbox.Lifecycle.Teardown.TaggingApiReach
   ( TaggingApiReach (..)
   , globalServiceTaggingRegion
@@ -265,8 +269,8 @@ retainedFamilyTaggingApiReach family = case family of
     UntaggableByTaggingApi "a classic SES identity accepts no tags"
   RetainedSesReceiptRuleSet ->
     UntaggableByTaggingApi "a classic SES receipt rule set accepts no tags"
-  RetainedOperationalIamPrincipal -> ReachableWhenTaggedFromGlobalRegion "iam"
-  RetainedManagedCredentialPrincipal {} -> ReachableWhenTaggedFromGlobalRegion "iam"
+  RetainedOperationalIamPrincipal -> UntaggableByTaggingApi "GetResources does not return IAM users"
+  RetainedManagedCredentialPrincipal {} -> UntaggableByTaggingApi "GetResources does not return IAM users"
   RetainedManagedCredentialPolicy {} -> ReachableWhenTaggedFromGlobalRegion "iam"
   RetainedRegisteredLongLivedFamily {} -> ReachableWhenTagged
 
@@ -289,68 +293,6 @@ retainedMatcherCreatorTags family rule = case rule of
     RetainedManagedCredentialPrincipal {} -> []
     RetainedManagedCredentialPolicy {} -> []
     RetainedRegisteredLongLivedFamily {} -> []
-
--- | The operator-configured names the retained set depends on.  The catalog
--- refuses to be built from raw text: every field passes 'mkRetainedNameBinding'
--- first, so a blank or whitespace-bearing value cannot compose an ARN that
--- silently matches nothing.
-data RetainedNameBinding = RetainedNameBinding
-  { internalStateBucketName :: !Text
-  , internalCaptureBucketName :: !Text
-  , internalSenderDomain :: !Text
-  , internalClusterTagName :: !Text
-  }
-  deriving (Eq, Ord, Show)
-
-retainedStateBucketName :: RetainedNameBinding -> Text
-retainedStateBucketName = internalStateBucketName
-
-retainedCaptureBucketName :: RetainedNameBinding -> Text
-retainedCaptureBucketName = internalCaptureBucketName
-
-retainedSenderDomain :: RetainedNameBinding -> Text
-retainedSenderDomain = internalSenderDomain
-
-retainedClusterTagName :: RetainedNameBinding -> Text
-retainedClusterTagName = internalClusterTagName
-
-data RetainedBindingError
-  = RetainedBindingFieldEmpty !Text
-  | RetainedBindingFieldNotCanonical !Text !Text
-  deriving (Eq, Show)
-
--- | Build the binding.  Field names are carried in the error so a
--- configuration defect names the field it came from.
-mkRetainedNameBinding
-  :: Text
-  -- ^ @pulumi_state_backend.bucket_name@
-  -> Text
-  -- ^ @ses.capture_bucket@
-  -> Text
-  -- ^ @ses.sender_domain@
-  -> Text
-  -- ^ the per-run EKS cluster name used by the ownership tag query
-  -> Either RetainedBindingError RetainedNameBinding
-mkRetainedNameBinding stateBucket captureBucket senderDomain clusterName = do
-  validatedState <- canonicalField "pulumi_state_backend.bucket_name" stateBucket
-  validatedCapture <- canonicalField "ses.capture_bucket" captureBucket
-  validatedDomain <- canonicalField "ses.sender_domain" senderDomain
-  validatedCluster <- canonicalField "aws-eks.cluster_name" clusterName
-  Right
-    RetainedNameBinding
-      { internalStateBucketName = validatedState
-      , internalCaptureBucketName = validatedCapture
-      , internalSenderDomain = validatedDomain
-      , internalClusterTagName = validatedCluster
-      }
-
-canonicalField :: Text -> Text -> Either RetainedBindingError Text
-canonicalField field raw
-  | Text.null raw = Left (RetainedBindingFieldEmpty field)
-  | raw /= Text.strip raw = Left (RetainedBindingFieldNotCanonical field raw)
-  | Text.any (`elem` (" \t\r\n\NUL" :: String)) raw =
-      Left (RetainedBindingFieldNotCanonical field raw)
-  | otherwise = Right raw
 
 -- | How one matcher recognizes its resource.
 data RetainedMatchRule
@@ -396,6 +338,7 @@ retainedMatcherRule = internalMatcherRule
 data RetainedCatalog (surface :: CleanupSurface) = RetainedCatalog
   { internalCatalogSurface :: !CleanupSurface
   , internalCatalogAwsScope :: !AwsScope
+  , internalCatalogQueryRegions :: ![AwsRegion]
   , internalCatalogMatchers :: ![RetainedMatcher]
   }
   deriving (Eq, Show)
@@ -435,10 +378,20 @@ retainedCatalogFor
   -> AwsScope
   -> RetainedNameBinding
   -> Either RetainedCatalogError (RetainedCatalog surface)
-retainedCatalogFor surfaceWitness scope binding = do
+retainedCatalogFor witness scope binding = retainedCatalogForQueryRegions witness scope binding []
+
+-- | Declared endpoints of the issued query plan. Missing answers are kept as
+-- observation failures by the audit kernel; they never turn this plan clean.
+retainedCatalogForQueryRegions
+  :: CleanupSurfaceWitness surface
+  -> AwsScope
+  -> RetainedNameBinding
+  -> [AwsRegion]
+  -> Either RetainedCatalogError (RetainedCatalog surface)
+retainedCatalogForQueryRegions surfaceWitness scope binding extraRegions = do
   declared <- surfaceRules
   let matchers =
-        map (uncurry (mkRetainedMatcher (awsScopeRegion scope) queries)) declared
+        map (uncurry (mkRetainedMatcher queryRegions queries)) declared
   case duplicateRules matchers of
     duplicate : _ -> Left (RetainedCatalogDuplicateRule duplicate)
     [] ->
@@ -446,10 +399,12 @@ retainedCatalogFor surfaceWitness scope binding = do
         RetainedCatalog
           { internalCatalogSurface = surface
           , internalCatalogAwsScope = scope
+          , internalCatalogQueryRegions = queryRegions
           , internalCatalogMatchers = sort matchers
           }
  where
   surface = cleanupSurfaceFromWitness surfaceWitness
+  queryRegions = sort (nub (awsScopeRegion scope : extraRegions))
 
   queries = terminalAuditQueryCatalog binding
 
@@ -476,12 +431,12 @@ retainedCatalogFor surfaceWitness scope binding = do
 -- never asked for, and a tagged, queried, global-service family is still
 -- returned by nothing when the audit issues its queries in another region.
 mkRetainedMatcher
-  :: AwsRegion
+  :: [AwsRegion]
   -> [TerminalAuditQuery]
   -> RetainedFamily
   -> RetainedMatchRule
   -> RetainedMatcher
-mkRetainedMatcher region queries family rule =
+mkRetainedMatcher regions queries family rule =
   RetainedMatcher
     { internalMatcherFamily = family
     , internalMatcherDiscoverability =
@@ -494,10 +449,10 @@ mkRetainedMatcher region queries family rule =
   tagged =
     any (auditQueryCoversTag queries) (retainedMatcherCreatorTags family rule)
 
-  regionAnswers =
-    case unreachedGlobalService region (retainedFamilyTaggingApiReach family) of
-      Nothing -> True
-      Just _ -> False
+  regionAnswers = any answers regions
+  answers region = case unreachedGlobalService region (retainedFamilyTaggingApiReach family) of
+    Nothing -> True
+    Just _ -> False
 
 storageRules
   :: AwsScope
@@ -505,19 +460,19 @@ storageRules
   -> Either RetainedCatalogError [(RetainedFamily, RetainedMatchRule)]
 storageRules scope binding =
   sequence
-    [ exactRule
-        RetainedLongLivedPulumiStateBucket
-        (bucketArnText (internalStateBucketName binding))
-    , exactRule
-        RetainedSesCaptureBucket
-        (bucketArnText (internalCaptureBucketName binding))
-    , exactRule
-        RetainedSesDomainIdentity
-        (sesArnText scope "identity" (internalSenderDomain binding))
-    , exactRule
-        RetainedSesReceiptRuleSet
-        (sesArnText scope "receipt-rule-set" retainedReceiptRuleSetName)
-    ]
+    ( [ exactRule RetainedLongLivedPulumiStateBucket (bucketArnText name)
+      | Just name <- [retainedStateBucketName binding]
+      ]
+        ++ [ exactRule RetainedSesCaptureBucket (bucketArnText name)
+           | Just name <- [retainedCaptureBucketName binding]
+           ]
+        ++ [ exactRule RetainedSesDomainIdentity (sesArnText scope "identity" name)
+           | Just name <- [retainedSenderDomain binding]
+           ]
+        ++ [ exactRule RetainedSesReceiptRuleSet (sesArnText scope "receipt-rule-set" retainedReceiptRuleSetName)
+           | Just _ <- [retainedSenderDomain binding]
+           ]
+    )
 
 -- | Every shared IAM identity the audited surface keeps.
 --
@@ -685,14 +640,25 @@ data TerminalAuditQuery
 -- tag family appears, so a retained resource carrying any of them is returned
 -- and classified rather than falling outside the audit unseen.
 terminalAuditQueryCatalog :: RetainedNameBinding -> [TerminalAuditQuery]
-terminalAuditQueryCatalog binding =
-  sort
-    [ AuditQueryTagPair "prodbox.io/managed-by" "prodbox"
-    , AuditQueryTagKey "prodbox.io/role"
-    , AuditQueryTagKey "prodbox.io/substrate"
-    , AuditQueryTagKey "prodbox.io/lifecycle"
-    , AuditQueryTagKey (clusterOwnershipTagPrefix <> internalClusterTagName binding)
-    ]
+terminalAuditQueryCatalog binding = sort (map queryFor [minBound .. maxBound])
+ where
+  queryFor family = case family of
+    ManagedByAuditQuery -> AuditQueryTagPair "prodbox.io/managed-by" "prodbox"
+    RoleAuditQuery -> AuditQueryTagKey "prodbox.io/role"
+    SubstrateAuditQuery -> AuditQueryTagKey "prodbox.io/substrate"
+    LifecycleAuditQuery -> AuditQueryTagKey "prodbox.io/lifecycle"
+    ClusterOwnershipAuditQuery -> AuditQueryTagKey (clusterOwnershipTagPrefix <> retainedClusterTagName binding)
+
+data TerminalAuditQueryFamily
+  = ManagedByAuditQuery
+  | RoleAuditQuery
+  | SubstrateAuditQuery
+  | LifecycleAuditQuery
+  | ClusterOwnershipAuditQuery
+  deriving (Bounded, Enum)
+
+terminalAuditQueryCatalogMaximumCardinality :: Int
+terminalAuditQueryCatalogMaximumCardinality = length ([minBound .. maxBound] :: [TerminalAuditQueryFamily])
 
 -- | Would the audit\'s query catalog return a resource carrying this tag?
 --
@@ -835,4 +801,5 @@ terminalAuditResultFor catalog inventory =
                \inventory is not evidence that it is gone."
         )
     | service <- unreachedGlobalServicesFrom auditedRegion
+    , all (elem service . unreachedGlobalServicesFrom) (internalCatalogQueryRegions catalog)
     ]

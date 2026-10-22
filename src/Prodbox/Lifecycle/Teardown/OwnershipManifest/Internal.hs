@@ -73,6 +73,7 @@ import Data.List (nub, sort, sortOn)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import GHC.Generics (Generic)
+import Prodbox.Lifecycle.AwsNetworkFamily
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
 import Prodbox.Lifecycle.Teardown.Registry
@@ -202,6 +203,14 @@ registeredOwnershipEdges =
   , (stackKey, candidateCluster) <- registeredStackClusters
   , ownerCluster == candidateCluster
   ]
+    ++ [ RegisteredOwnershipEdge (managedResourceKey owner) (managedResourceKey resource)
+       | SomeManagedResourceDescriptor resource <- managedResourceRegistry
+       , AwsNetworkDependentFamilyCoordinate family <- [managedResourceCoordinate resource]
+       , networkFamilyCluster family == Nothing
+       , SomeManagedResourceDescriptor owner <- managedResourceRegistry
+       , AwsPulumiStackCoordinate _ stack <- [managedResourceCoordinate owner]
+       , stack == networkFamilyPulumiStack family
+       ]
 
 -- | Every registered managed resource that declares a controller owner, with
 -- the cluster name it names.

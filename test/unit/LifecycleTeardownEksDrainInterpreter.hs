@@ -5,6 +5,15 @@
 
 module LifecycleTeardownEksDrainInterpreter
   ( lifecycleTeardownEksDrainInterpreterSuite
+  , commitSelectionCompiled
+  , commitSelectionCommitPlan
+  , commitSelectionEffectPlan
+  , commitSelectionReadBackPlan
+  , commitSelectionEksTarget
+  , commitSelectionBinding
+  , commitSelectionVerifiedPresent
+  , contextVerifiedFor
+  , fixtureUid
   )
 where
 

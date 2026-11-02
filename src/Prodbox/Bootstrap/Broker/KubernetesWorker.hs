@@ -154,10 +154,12 @@ import Prodbox.Bootstrap.Broker.Request
   ( RequestDigest
   , renderRequestDigest
   )
+import Prodbox.Bootstrap.Broker.ResetEvidence (rootResetIdentityMatches)
 import Prodbox.Bootstrap.Broker.SecretWorker
   ( RawSecretWorkerAttestation (..)
   , SecretFreeWorkerRequest
   , SecretWorkerAttestationObservation (..)
+  , SecretWorkerAttestationReadCause (..)
   , SecretWorkerCleanupBinding (..)
   , SecretWorkerIntent
   , SecretWorkerLifecycleObservation (..)
@@ -283,6 +285,7 @@ data KubernetesWorkerBoundary = KubernetesWorkerBoundary
       -> IO (Either Text VaultStorageIdentity)
   , kubernetesResetVaultStorage
       :: Deadline
+      -> ArtifactDigest
       -> PristineResetProof
       -> IO (Either VaultStorageResetFailure VaultStorageIdentity)
   }
@@ -426,9 +429,8 @@ productionKubernetesWorkerBoundary = do
         , kubernetesObserveWorkerAttestation = \deadline request -> do
             response <- requestKubernetes manager deadline "GET" (workerPodUrl namespace) Nothing
             pure $ case response of
-              Left detail ->
-                SecretWorkerAttestationUnobservable
-                  (unobservableReason "Kubernetes Pod observation unavailable" detail)
+              Left _ ->
+                SecretWorkerAttestationReadRefused WorkerAttestationApiUnavailable
               Right (code, body) -> workerAttestationFromResponse namespace request code body
         , kubernetesDiscardUnreceiptedWorker =
             discardUnreceiptedWorker manager namespace
@@ -642,9 +644,10 @@ resetVaultStorage
   :: Manager
   -> Text
   -> Deadline
+  -> ArtifactDigest
   -> PristineResetProof
   -> IO (Either VaultStorageResetFailure VaultStorageIdentity)
-resetVaultStorage manager brokerNamespace deadline proof = do
+resetVaultStorage manager brokerNamespace deadline action proof = do
   identityResult <- observeVaultStorageIdentity manager deadline
   digestObservation <-
     observeControllerImage
@@ -663,6 +666,9 @@ resetVaultStorage manager brokerNamespace deadline proof = do
   case (identityResult, pullResult) of
     (Left _, _) -> pure (Left VaultResetIdentityUnavailable)
     (_, Left _) -> pure (Left VaultResetControllerImageUnavailable)
+    (Right identity, Right _)
+      | not (rootResetIdentityMatches action proof (renderVaultStorageIdentity identity)) ->
+          pure (Left VaultResetIdentityChanged)
     (Right identity, Right pullReference) -> do
       scaledDown <- setVaultScale manager deadline 0
       case scaledDown of
@@ -1252,8 +1258,6 @@ workerRequestFromRunningResponse namespace operation actionDigest requestDigest 
           Right
           (decodeWorkerPod namespace body)
       let observed = podSnapshotObservation snapshot
-      requireCreateEqual "worker phase" "Running" (observedWorkerPhase observed)
-      requireCreateEqual "worker readiness" True (observedWorkerContainerReady observed)
       case observedWorkerDeletionTimestamp observed of
         Nothing -> Right ()
         Just _ -> Left "worker Pod is deleting"
@@ -1270,6 +1274,10 @@ workerRequestFromRunningResponse namespace operation actionDigest requestDigest 
         "storage generation"
         storageGeneration
         (secretWorkerRequestStorageGeneration request)
+      case observedWorkerPhase observed of
+        "Failed" -> Left "matching worker terminated unsuccessfully; inspect its protected worker diagnostic"
+        _ -> requireCreateEqual "worker phase" "Running" (observedWorkerPhase observed)
+      requireCreateEqual "worker readiness" True (observedWorkerContainerReady observed)
       Right request
 
 -- | Worker-side reconstruction of its own exact secret-free binding.  The
@@ -1472,16 +1480,26 @@ workerAttestationFromResponse
   -> ByteString
   -> SecretWorkerAttestationObservation
 workerAttestationFromResponse namespace request code body
-  | code == 404 = SecretWorkerAttestationUnobservable "worker Pod is absent"
-  | code /= 200 = SecretWorkerAttestationUnobservable "worker Pod GET returned a non-success status"
+  | code == 404 = refused WorkerAttestationPodMissing
+  | code /= 200 = refused (WorkerAttestationHttpStatus code)
   | otherwise = case decodeWorkerPod namespace body of
-      Left reason ->
-        SecretWorkerAttestationUnobservable
-          ( unobservableReason
-              "worker Pod response is invalid"
-              (renderWorkerPodDecodeReason reason)
-          )
+      Left reason -> refused (attestationDecodeCause reason)
       Right snapshot -> attestWorkerPodObservation request (podSnapshotObservation snapshot)
+ where
+  refused = SecretWorkerAttestationReadRefused
+
+attestationDecodeCause :: WorkerPodDecodeReason -> SecretWorkerAttestationReadCause
+attestationDecodeCause reason = case reason of
+  WorkerPodResponseUnparsable -> WorkerAttestationPodUnreadable
+  WorkerPodIdentityUnexpected _ -> WorkerAttestationPodIdentityUnexpected
+  WorkerPodContainerNotSole -> WorkerAttestationContainerNotSole
+  WorkerPodNotStarted -> WorkerAttestationNotStarted
+  WorkerPodContainerStatusNotSole -> WorkerAttestationContainerStatusNotSole
+  WorkerPodImageNotResolved -> WorkerAttestationImageNotResolved
+  WorkerPodDeclaredImageUnusable -> WorkerAttestationDeclaredImageUnusable
+  WorkerPodRuntimeImageUnusable -> WorkerAttestationRuntimeImageUnusable
+  WorkerPodImageDeclaredRuntimeDisagree -> WorkerAttestationDeclaredRuntimeImageDisagree
+  WorkerPodAnnotationUnusable _ -> WorkerAttestationAnnotationUnusable
 
 workerExitFromResponse
   :: Text
@@ -2134,10 +2152,11 @@ data ControllerSelfObservationScope
 -- A container image carries two sha256 identities, and they are the same
 -- sixty-four lower-hex characters:
 --
---   * the __config digest__, which the container runtime reports as
---     @status.containerStatuses[].imageID@. It names the runtime's layer. It is
---     the identity two Pods must share to have run the same bytes, and it is
---     the one an OCI registry __cannot__ resolve — there is no reverse index
+--   * the observed runtime identity, @status.containerStatuses[].imageID@.
+--     CRI can report a bare config identity before repository metadata exists,
+--     then a repository digest for the same config. Runtime publication must
+--     settle that representation before controller admission. A bare config
+--     digest is the one an OCI registry __cannot__ resolve — there is no reverse index
 --     from a config digest to the manifest that references it, so
 --     @GET \/v2\/\<name\>\/manifests\/\<config digest\>@ is an error, not a
 --     lookup.
@@ -2655,11 +2674,11 @@ requireSoleNamedContainerStatus statuses = case statuses of
 
 -- | Read a container runtime's reported image identity.
 --
--- __Which layer this names__ (Sprint 2.51). @status.containerStatuses[].imageID@
--- is the container runtime's identity for an image. Under containerd it is the
--- image's __config__ digest, reported bare for an image that is present locally
--- rather than pulled; other runtimes prefix it (@docker-pullable:\/\/repo\@…@),
--- which the second arm accepts.
+-- __Which layer this names__. The public field contains CRI ImageRef. It may
+-- be a bare config digest before repository metadata exists or a repository
+-- digest afterwards. The publisher independently observes the stable expected
+-- repository reference before Broker admission; this parser only validates and
+-- extracts the reported digest. It never equates two different hashes.
 --
 -- The result is therefore an attestation identity — two Pods sharing it ran the
 -- same bytes — and __not__ a registry coordinate. It must never be concatenated

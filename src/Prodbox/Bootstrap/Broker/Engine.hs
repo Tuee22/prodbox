@@ -165,6 +165,10 @@ import Prodbox.Bootstrap.Broker.Fence
   , bootstrapFenceStorageGeneration
   , vaultEffectPermitActionDigest
   )
+import Prodbox.Bootstrap.Broker.InitializationEvidence
+import Prodbox.Bootstrap.Broker.InitializationRecovery
+  ( RootInitRecoveryObservation (..)
+  )
 import Prodbox.Bootstrap.Broker.Model
   ( PostUnsealHandoffCommand (..)
   , PostUnsealHandoffPlan (..)
@@ -245,6 +249,7 @@ import Prodbox.Bootstrap.Broker.Request
   ( RequestDigest
   , requestDigestForBytes
   )
+import Prodbox.Bootstrap.Broker.ResetEvidence (RootResetEvidenceCause)
 import Prodbox.Bootstrap.Broker.Routes
   ( BrokerBodyRequirement (..)
   , BrokerHttpMethod
@@ -393,6 +398,8 @@ import Prodbox.ControlPlane.Deadline
 data EngineBoundaryError
   = EngineBoundaryUnavailable !Text
   | EngineBoundaryRefused !Text
+  | EngineBoundaryRootInitializationEvidence !RootInitializationEvidenceCause
+  | EngineBoundaryRootResetEvidence !RootResetEvidenceCause
   | EngineBoundaryAmbiguous !Text
   | EngineBoundaryRootAccessorAbsenceProof !RootAccessorAbsenceProofCause
   | EngineBoundaryRootAccessorRevocation !RootAccessorRevocationCause
@@ -1156,9 +1163,9 @@ decodedAction call = case call of
 -- controller JSON.  Separate fields keep one route from asking for another
 -- route's evidence and leave no generic store lookup escape.
 data BrokerProgramEvidenceBoundary m = BrokerProgramEvidenceBoundary
-  { resolvePristineStorageProof
+  { resolveRootInitializationEvidence
       :: BrokerActionRequest
-      -> m (Either EngineBoundaryError PristineStorageProof)
+      -> m (Either EngineBoundaryError RootInitializationEvidence)
   , resolveUnsealRecoveryCustody
       :: BrokerActionRequest
       -> m (Either EngineBoundaryError RecoveryCustodyReceipt)
@@ -1191,6 +1198,9 @@ data PreparedExecution (operation :: CapabilityKind) result where
     :: PreparedExecution 'VaultBootstrapObserve BootstrapStatus
   ExecuteVaultInitialize
     :: !PristineStorageProof
+    -> PreparedExecution 'VaultBootstrapMutate RecoveryCustodyReceipt
+  ExecuteVaultResumeInitialization
+    :: !RootInitResumeEvidence
     -> PreparedExecution 'VaultBootstrapMutate RecoveryCustodyReceipt
   ExecuteVaultUnseal
     :: !RecoveryCustodyReceipt
@@ -1280,11 +1290,25 @@ prepareDecodedCall engine decoded = case decoded of
   DecodedReadiness _ -> pure (Right (makePrepared engine decoded ObserveBrokerReadiness ExecuteReadiness))
   DecodedVaultStatus _ -> pure (Right (makePrepared engine decoded ObserveBootstrapStatus ExecuteVaultStatus))
   DecodedVaultInitialize _ action -> do
-    evidence <- resolve (resolvePristineStorageProof evidenceBoundary action)
+    evidence <- resolve (resolveRootInitializationEvidence evidenceBoundary action)
     pure $ do
-      proof <- evidence
-      requireRootGeneration route action (pristineStorageBinding proof)
-      Right (makePrepared engine decoded (InitializeVault proof) (ExecuteVaultInitialize proof))
+      admission <- evidence
+      case admission of
+        BeginRootInitialization proof -> do
+          requireRootGeneration route action (pristineStorageBinding proof)
+          Right (makePrepared engine decoded (InitializeVault proof) (ExecuteVaultInitialize proof))
+        ContinueRootInitialization resume -> do
+          requireRootGeneration
+            route
+            action
+            (pristineStorageBinding (rootInitResumePristineCommitment resume))
+          Right
+            ( makePrepared
+                engine
+                decoded
+                (ResumeVaultInitialization resume)
+                (ExecuteVaultResumeInitialization resume)
+            )
   DecodedVaultUnseal _ action -> do
     evidence <- resolve (resolveUnsealRecoveryCustody evidenceBoundary action)
     pure $ do
@@ -1511,12 +1535,9 @@ data RootInitCallOutcome
   | RootInitAppliedWithoutResponse !InitializationAmbiguityCause
   deriving stock (Eq, Show)
 
--- | Recovery observation for a journal already in the in-flight phase after
--- process loss.  It either recovers the exact encrypted receipt or makes the
--- ambiguity explicit; there is no "assume absent and retry" constructor.
-data RootInitRecoveryObservation
-  = RootInitRecoveredResponse !EncryptedInitResponseReceipt
-  | RootInitRecoveredAmbiguity
+data RootInitRecoveryDisposition
+  = RecoveredInitResponse !EncryptedInitResponseReceipt
+  | RecoveredInitAmbiguity !InitializationAmbiguityCause
   deriving stock (Eq, Show)
 
 -- | Secret-free configuration committed before recovery-recipient
@@ -2154,6 +2175,12 @@ encodeBrokerResponse = LazyByteString.toStrict . encode . responseObject
             .= bootstrapStatusRecoveryCustodyDurable status
         , "initialization_ambiguous"
             .= bootstrapStatusInitializationAmbiguous status
+        , "initialization_phase"
+            .= fmap rootInitJournalPhaseText (bootstrapStatusInitializationPhase status)
+        , "initialization_reset_from_generation"
+            .= fmap renderVaultStorageGeneration (bootstrapStatusInitializationResetFromGeneration status)
+        , "initialization_reset_action_digest"
+            .= fmap renderArtifactDigest (bootstrapStatusInitializationResetActionDigest status)
         , "root_session_active" .= bootstrapStatusRootSessionActive status
         , "handoff_observed" .= bootstrapStatusHandoffObserved status
         ]
@@ -2532,6 +2559,10 @@ executeInMemoryPreparedPlan engine boundary attempt prepared =
             (recoveryCustodyBinding receipt /= pristineStorageBinding proof)
             (Left (EngineResponseEvidenceMismatch BrokerVaultInitialize))
           Right (BrokerVaultInitializeResponse receipt)
+    ExecuteVaultResumeInitialization resume ->
+      withMutationAttempt attempt $ \mutationAttempt -> do
+        result <- driveResumedRootInitialization engine mutationAttempt reference resume
+        pure (BrokerVaultInitializeResponse <$> result)
     ExecuteVaultUnseal custody ->
       executeMutation
         BootstrapVaultSubmitUnsealShare
@@ -2787,6 +2818,10 @@ executePhysicalPreparedPlan engine attempt prepared =
     ExecuteVaultInitialize proof ->
       withMutationAttempt attempt $ \mutationAttempt -> do
         result <- driveRootInitialization engine mutationAttempt reference proof
+        pure (BrokerVaultInitializeResponse <$> result)
+    ExecuteVaultResumeInitialization resume ->
+      withMutationAttempt attempt $ \mutationAttempt -> do
+        result <- driveResumedRootInitialization engine mutationAttempt reference resume
         pure (BrokerVaultInitializeResponse <$> result)
     ExecuteVaultUnseal custody ->
       withMutationAttempt attempt $ \mutationAttempt -> do
@@ -3403,8 +3438,49 @@ driveRootInitialization
   -> CapabilityRef 'VaultBootstrapMutate
   -> PristineStorageProof
   -> m (Either BrokerEngineError RecoveryCustodyReceipt)
-driveRootInitialization engine attempt reference proof = do
-  loaded <- loadOrCreateRootInitJournal engine attempt proof
+driveRootInitialization engine attempt reference proof =
+  driveRootInitializationFrom
+    engine
+    attempt
+    reference
+    proof
+    (loadOrCreateRootInitJournal engine attempt proof)
+
+driveResumedRootInitialization
+  :: (Monad m)
+  => BrokerEngine m
+  -> MutationAttempt
+  -> CapabilityRef 'VaultBootstrapMutate
+  -> RootInitResumeEvidence
+  -> m (Either BrokerEngineError RecoveryCustodyReceipt)
+driveResumedRootInitialization engine attempt reference evidence =
+  driveRootInitializationFrom engine attempt reference proof loadExisting
+ where
+  proof = rootInitResumePristineCommitment evidence
+  store = engineStoreBoundary (brokerEngineBoundary engine)
+  loadExisting = do
+    observed <- readRootInitJournal store (pristineStorageBinding proof)
+    pure $ case storeReadResult observed of
+      Left failure -> Left failure
+      Right StoreObjectAbsent -> refused InitEvidenceResumeAbsent
+      Right (StoreObjectPresent version _ snapshot)
+        | version == rootInitResumeVersion evidence
+            && snapshot == rootInitResumeSnapshot evidence ->
+            Right (version, snapshot)
+        | otherwise -> refused InitEvidenceResumeChanged
+  refused = Left . EngineProgramEvidenceRefused . EngineBoundaryRootInitializationEvidence
+
+driveRootInitializationFrom
+  :: forall m
+   . (Monad m)
+  => BrokerEngine m
+  -> MutationAttempt
+  -> CapabilityRef 'VaultBootstrapMutate
+  -> PristineStorageProof
+  -> m (Either BrokerEngineError (StoreVersion, RootInitState))
+  -> m (Either BrokerEngineError RecoveryCustodyReceipt)
+driveRootInitializationFrom engine attempt reference proof loadInitial = do
+  loaded <- loadInitial
   case loaded of
     Left failure -> pure (Left failure)
     Right (version, state) -> rootLoop 0 version state
@@ -3494,7 +3570,7 @@ driveRootInitialization engine attempt reference proof = do
                     prepared
                     recoveredResult of
                     Left failure -> pure (Left failure)
-                    Right durableResult ->
+                    Right (durableResult, disposition) ->
                       case engineSecretWorkerBoundary
                         (brokerEngineBoundary engine) of
                         Nothing ->
@@ -3512,17 +3588,17 @@ driveRootInitialization engine attempt reference proof = do
                           case reconciled of
                             Left failure ->
                               pure (Left (EngineSecretWorkerRefused failure))
-                            Right () -> case recoveredResult of
-                              RootInitRecoveredResponse receipt ->
+                            Right () -> case disposition of
+                              RecoveredInitResponse receipt ->
                                 advanceRoot
                                   steps
                                   version
                                   state
                                   (Right receipt)
                                   CaptureEncryptedInitResponse
-                              RootInitRecoveredAmbiguity ->
+                              RecoveredInitAmbiguity cause ->
                                 persistRootAmbiguity
-                                  InitializationCauseUnclassified
+                                  cause
                                   version
                                   state
                 _ ->
@@ -3697,16 +3773,25 @@ driveRootInitialization engine attempt reference proof = do
   authoritativeRootInitWorkerResult prepared recoveredResult =
     case recoveredResult of
       RootInitRecoveredAmbiguity ->
-        Right ambiguousInitializationWorkerResult
-      RootInitRecoveredResponse receipt
-        | encryptedResponseBinding receipt == preparedInitBinding prepared
-            && encryptedResponseSchemaVersion receipt
-              == preparedInitSchemaVersion prepared
-            && encryptedResponseRecipientCommitment receipt
-              == preparedInitRecipientCommitment prepared ->
-            Right (encryptedInitializationWorkerResult receipt)
-        | otherwise ->
-            Left (EngineResponseEvidenceMismatch BrokerVaultInitialize)
+        Right (ambiguousInitializationWorkerResult, RecoveredInitAmbiguity InitializationCauseUnclassified)
+      RootInitRecoveredResponse receipt ->
+        validateResponse (encryptedInitializationWorkerResult receipt) receipt
+      RootInitRecoveredWorkerResult durableResult ->
+        case durableEncryptedInitialization durableResult of
+          Just receipt -> validateResponse durableResult receipt
+          Nothing -> case durableInitializationAmbiguityCause durableResult of
+            Just cause -> Right (durableResult, RecoveredInitAmbiguity cause)
+            Nothing -> Left (EngineResponseEvidenceMismatch BrokerVaultInitialize)
+   where
+    validateResponse durableResult receipt
+      | encryptedResponseBinding receipt == preparedInitBinding prepared
+          && encryptedResponseSchemaVersion receipt
+            == preparedInitSchemaVersion prepared
+          && encryptedResponseRecipientCommitment receipt
+            == preparedInitRecipientCommitment prepared =
+          Right (durableResult, RecoveredInitResponse receipt)
+      | otherwise =
+          Left (EngineResponseEvidenceMismatch BrokerVaultInitialize)
 
 prepareRootInitRecipients
   :: (Monad m)
@@ -5694,65 +5779,66 @@ resetAmbiguousInitialization engine attempt reference ambiguity resetProof actio
                 )
         RootInitializationAmbiguous observed
           | observed == ambiguity -> do
-              audited <-
-                runAuthorizedPhysical
+              armed <-
+                transitionAndPersistRoot
                   engine
                   attempt
-                  BootstrapVaultResetAmbiguousInitialization
-                  ( \permit ->
-                      PhysicalResetAmbiguousInitialization
-                        reference
-                        permit
-                        ambiguity
-                        resetProof
-                  )
-              case audited of
+                  version
+                  state
+                  (BeginAmbiguousRootReset resetProof actionDigest)
+              case armed of
                 Left failure -> pure (Left failure)
-                Right confirmedProof
-                  | confirmedProof /= resetProof ->
-                      pure
-                        ( Left
-                            ( EngineResponseEvidenceMismatch
-                                BrokerVaultResetAmbiguousInitialization
-                            )
-                        )
-                  | otherwise -> do
-                      advancedGeneration <-
-                        advanceResetGeneration engine attempt confirmedProof
-                      preparedRemoved <-
-                        removeAmbiguousPreparedEnvelope
-                          engine
-                          attempt
-                          ambiguity
-                      case (advancedGeneration, preparedRemoved) of
-                        (Left failure, _) -> pure (Left failure)
-                        (_, Left failure) -> pure (Left failure)
-                        (Right (), Right ()) -> do
-                          advanced <-
-                            transitionAndPersistRoot
-                              engine
-                              attempt
-                              version
-                              state
-                              (ResetAmbiguousRootInitialization confirmedProof)
-                          pure $ case advanced of
-                            Left failure -> Left failure
-                            Right (_, nextState) -> case rootInitStatePhase nextState of
-                              RootResetPristine persistedProof
-                                | persistedProof == confirmedProof ->
-                                    Right
-                                      BootstrapMutationReceipt
-                                        { bootstrapMutationDigest = actionDigest
-                                        , bootstrapMutationChanged = True
-                                        }
-                              _ -> Left EngineStoreReadBackMismatch
-          | otherwise ->
-              pure (Left (EngineResponseEvidenceMismatch BrokerVaultResetAmbiguousInitialization))
+                Right (armedVersion, armedState) -> executeReset armedVersion armedState
+          | otherwise -> mismatch
+        RootResetInFlight recorded recordedAction
+          | recorded == resetProof && recordedAction == actionDigest -> executeReset version state
+          | otherwise -> mismatch
         _ ->
           pure
             ( Left
                 (EngineCustodyTransitionRefused "reset requested outside ambiguous initialization")
             )
+ where
+  mismatch = pure (Left (EngineResponseEvidenceMismatch BrokerVaultResetAmbiguousInitialization))
+
+  executeReset version state = do
+    audited <-
+      runAuthorizedPhysical
+        engine
+        attempt
+        BootstrapVaultResetAmbiguousInitialization
+        (\permit -> PhysicalResetAmbiguousInitialization reference permit ambiguity resetProof)
+    case audited of
+      Left failure -> pure (Left failure)
+      Right confirmedProof
+        | confirmedProof /= resetProof -> mismatch
+        | otherwise -> do
+            advanced <- advanceResetGeneration engine attempt confirmedProof
+            case advanced of
+              Left failure -> pure (Left failure)
+              Right () -> do
+                removed <- removeAmbiguousPreparedEnvelope engine attempt ambiguity
+                case removed of
+                  Left failure -> pure (Left failure)
+                  Right () -> do
+                    completed <-
+                      transitionAndPersistRoot
+                        engine
+                        attempt
+                        version
+                        state
+                        (ResetAmbiguousRootInitialization confirmedProof)
+                    pure $ case completed of
+                      Left failure -> Left failure
+                      Right (_, nextState) -> case rootInitStatePhase nextState of
+                        RootResetPristine actual
+                          | actual == confirmedProof ->
+                              Right
+                                BootstrapMutationReceipt
+                                  { bootstrapMutationDigest = actionDigest
+                                  , bootstrapMutationChanged = True
+                                  }
+                        _ -> Left EngineStoreReadBackMismatch
 
 advanceResetGeneration
   :: (Monad m)

@@ -1,0 +1,224 @@
+{
+  "schema_version": 1,
+  "counterexample": "VAULT-RESET-GENERATION-CAS-LOST-PRODUCER-RECOVERY-2026-10-23",
+  "evidence_origin": "offline physical fault plus exact production predicates",
+  "actual_live_observation": false,
+  "planted_schedule": [
+    "initialize applied without durable response",
+    "observe ambiguity",
+    "request audited reset",
+    "apply storage-generation CAS then lose its response",
+    "observe subsequent preparation removal and unchanged old ambiguous journal"
+  ],
+  "superseded_result": {
+    "exit": 1,
+    "fault_applied": true,
+    "generation_advanced": true,
+    "preparation_absent": true,
+    "old_ambiguous_journal": true,
+    "production_status_admits": false,
+    "production_audit_has_preparation": false,
+    "permissive_fake_replay_passes": true,
+    "full_frozen_broker_replayed": false
+  },
+  "required_replacement": "audited reset proof and exact action digest read back before effects; exact old/replacement binding recovery; fresh-client replay uses both stored old generation and action",
+  "legacy_unjournaled_partial_reset": "preserved refusal, not retroactively furnished with an audited proof",
+  "causal_profile": {
+    "role_resources": {
+      "bootstrap-broker": {
+        "superseded": {
+          "limits": {
+            "cpu": "100m",
+            "ephemeral-storage": "256Mi",
+            "memory": "128Mi"
+          },
+          "requests": {
+            "cpu": "100m",
+            "ephemeral-storage": "256Mi",
+            "memory": "128Mi"
+          }
+        },
+        "replacement": {
+          "limits": {
+            "cpu": "100m",
+            "ephemeral-storage": "256Mi",
+            "memory": "128Mi"
+          },
+          "requests": {
+            "cpu": "100m",
+            "ephemeral-storage": "256Mi",
+            "memory": "128Mi"
+          }
+        }
+      },
+      "bootstrap-secret-worker": {
+        "superseded": {
+          "limits": {
+            "cpu": "250m",
+            "ephemeral-storage": "256Mi",
+            "memory": "256Mi"
+          },
+          "requests": {
+            "cpu": "250m",
+            "ephemeral-storage": "256Mi",
+            "memory": "256Mi"
+          }
+        },
+        "replacement": {
+          "limits": {
+            "cpu": "250m",
+            "ephemeral-storage": "256Mi",
+            "memory": "256Mi"
+          },
+          "requests": {
+            "cpu": "250m",
+            "ephemeral-storage": "256Mi",
+            "memory": "256Mi"
+          }
+        }
+      },
+      "vault": {
+        "superseded": {
+          "limits": {
+            "cpu": "250m",
+            "ephemeral-storage": "1Gi",
+            "memory": "512Mi"
+          },
+          "requests": {
+            "cpu": "200m",
+            "ephemeral-storage": "1Gi",
+            "memory": "256Mi"
+          }
+        },
+        "replacement": {
+          "limits": {
+            "cpu": "250m",
+            "ephemeral-storage": "1Gi",
+            "memory": "512Mi"
+          },
+          "requests": {
+            "cpu": "200m",
+            "ephemeral-storage": "1Gi",
+            "memory": "256Mi"
+          }
+        }
+      }
+    },
+    "background_load": "one retained journal; no concurrent writer; no fault change between old and replacement controls",
+    "budgets_increased": false,
+    "persistence_format_changed": true,
+    "new_inflight_vault_init_post_permitted": false,
+    "persistence_format_change": "one appended pending phase; all nineteen previous constructor encodings unchanged and independently fingerprinted before repair"
+  },
+  "legacy_phase_codecs": {
+    "phase_prefixes": {
+      "RootEncryptedResponseCapturePending": [
+        131,
+        7
+      ],
+      "RootEncryptedResponseReadBack": [
+        131,
+        9
+      ],
+      "RootEncryptedResponseWritten": [
+        131,
+        8
+      ],
+      "RootFinalBundlePromoted": [
+        132,
+        11
+      ],
+      "RootFinalBundlePromotionPending": [
+        132,
+        10
+      ],
+      "RootFinalBundleReadBack": [
+        132,
+        12
+      ],
+      "RootInitCallInFlight": [
+        130,
+        6
+      ],
+      "RootInitCallPending": [
+        130,
+        5
+      ],
+      "RootInitPristine": [
+        130,
+        0
+      ],
+      "RootInitializationAmbiguous": [
+        130,
+        18
+      ],
+      "RootPreparedAbsent": [
+        130,
+        15
+      ],
+      "RootPreparedDeleted": [
+        131,
+        14
+      ],
+      "RootPreparedDeletionPending": [
+        131,
+        13
+      ],
+      "RootPreparedReadBack": [
+        130,
+        4
+      ],
+      "RootPreparedWritePending": [
+        130,
+        2
+      ],
+      "RootPreparedWritten": [
+        130,
+        3
+      ],
+      "RootRecoveryCustodyAcknowledgementPending": [
+        130,
+        16
+      ],
+      "RootRecoveryCustodyDurable": [
+        131,
+        17
+      ],
+      "RootResetPristine": [
+        130,
+        1
+      ]
+    },
+    "phase_sha256": {
+      "RootEncryptedResponseCapturePending": "2a51aa5f42583ddc6d680242e84a199d60ce5492d40b375e0836a17112ae5325",
+      "RootEncryptedResponseReadBack": "1f54c16a0288d01d68eb6412233677c2af7a12a8f9bab030e3c0c4ab01644329",
+      "RootEncryptedResponseWritten": "1be64596c90eefb0261f1bcec260d0d1f6d968de1da8c1a1bc2cb3af0b45b7b7",
+      "RootFinalBundlePromoted": "b1bfad9010922b7d1610e70bd275b16b729509c6414947d25858bab873f7c1f8",
+      "RootFinalBundlePromotionPending": "f81f6096a74251472572dfcc136bc9689572e46696a0732601590f1d311cc1a5",
+      "RootFinalBundleReadBack": "56a8e913e5909b6bc5951e9b50ddb500f7422f65004401cc8a9bdadcbd40e17f",
+      "RootInitCallInFlight": "0ff5874261aa2d56b2105087f0b38add4ae11f9db821919495c6753168c1272c",
+      "RootInitCallPending": "404c2a102e5e8c49e41509fac7ae24477b7c291fa1342095c4728eb1d9907b76",
+      "RootInitPristine": "c2f95cf488c6cf8189738ab840a07af74b560856da8ce3cc820ad55223fe572b",
+      "RootInitializationAmbiguous": "7e54ea631d5e1cabbb553044eaa0f559d1b3fea3c11e1caa4e812df0f2cd7a2b",
+      "RootPreparedAbsent": "c8403423d3fe8726aba2639c7dc810947746871647efa7751128034ad4b22fb0",
+      "RootPreparedDeleted": "01f382e4926e541416b52cd8602ff8222f17af09b132e3c082fa104b09776ce4",
+      "RootPreparedDeletionPending": "9c88daa0625b5d59227f4491a9bcf732f42b5381f62c313dd5ccee2dc03b84cf",
+      "RootPreparedReadBack": "2b655e7cc018b42d29e8f0c3b2b6a988e24fe0b0a6cbd13fefd366cadeafae06",
+      "RootPreparedWritePending": "062f62de60d8bb192306debffe20fef27b58e1f32f4537da94f99ae4194fbb7f",
+      "RootPreparedWritten": "69ffa949e0e6bdd52c5f415a7a796979a81d0a4a389ac1cbe83988bfdd5e26da",
+      "RootRecoveryCustodyAcknowledgementPending": "c36643ae3d310fdbf7e4022e70aed15fbc9ea3c0717219eb6e0b3d549d513590",
+      "RootRecoveryCustodyDurable": "44a4782e1aa52907b204d0661a2d43c9a36a674f72c3f4638ee1e7995597c262",
+      "RootResetPristine": "b43df8b9f4b239398dc64d4c498e9045c3f2c10ced269ef70ebf2901eb3eda94"
+    },
+    "synthetic_fixture_only": true
+  },
+  "runtime_component_config_digest": "sha256:9d370c2a2bd31936e9842f1f9ff1580f11098384a533be6eb9b681455315b8df",
+  "component_role_limits_are_recorded_not_replayed_by_pure_control": true,
+  "physical_identity_sibling": {
+    "origin": "offline source review plus planted identity matrix",
+    "superseded_guard": "physical path observed the current PVC but did not compare it to the proof replacement commitment",
+    "required_guard": "existing replacement-binding derivation of exact action, ambiguity and observed PVC equals stored replacement binding before scale-down or reset Pod",
+    "same_binding_encoding": true,
+    "full_old_kubernetes_reset_replayed": false
+  }
+}

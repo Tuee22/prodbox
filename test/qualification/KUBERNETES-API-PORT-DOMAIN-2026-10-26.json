@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "name": "KUBERNETES-API-PORT-DOMAIN-2026-10-26",
+  "scope": "Code-local parser comparison only. Actual frozen and replacement packaged implementations, the same repository-owned fixture, unchanged execution profile. No image, Kubernetes/AWS invocation or deployment qualification.",
+  "source_identity_frozen": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"0b253d4cdf607bafd297344c80ea9adf7d48475cc248ce52a0c866b16960fa15\", sourceManifestEntryCount = 1549},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"2bfd976130e42c5abbaebe0be44faf1736d06b129619fe5aee81ab0456dcbe93\", sourceManifestEntryCount = 1486})",
+  "source_identity_replacement_entry": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"963f12f92c3f0250b14e2080304da63f150448396c5be666bcef54e9e900d539\", sourceManifestEntryCount = 1549},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"113abd590c2c4971525b9a07322b69e62ab4e158788545abfc04b5796af8ebd2\", sourceManifestEntryCount = 1486})",
+  "source_identity_replacement_exit": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"963f12f92c3f0250b14e2080304da63f150448396c5be666bcef54e9e900d539\", sourceManifestEntryCount = 1549},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"113abd590c2c4971525b9a07322b69e62ab4e158788545abfc04b5796af8ebd2\", sourceManifestEntryCount = 1486})",
+  "source_identity_replacement_equal": true,
+  "fixture_sha256": "e0f2aee9439e042fca343c3ddae9090fc05086acacd95cdefb688f235190ba93",
+  "complete_positive_domain": 65535,
+  "boundary_sibling_controls": 21,
+  "frozen_expected_failures": 8,
+  "frozen": {
+    "scope": "Actual compiled pre-repair parser; all 65535 positive TCP ports pass, while zero, high, wraparound and overlong spellings violate the boundary fixture. Static-discovered code-owned input defect, no live infrastructure.",
+    "binary": ".build/sprint-3.50/api-port-20261026/frozen-parser-1",
+    "binary_sha256": "5eb3a440938b0f971ac4dfec32bacf13ae3229bdc11a82da5eca944aca66678b",
+    "fixture_sha256": "e0f2aee9439e042fca343c3ddae9090fc05086acacd95cdefb688f235190ba93",
+    "result": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-frozen-control-1-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=60s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        ".build/sprint-3.50/api-port-20261026/frozen-parser-1",
+        "+RTS",
+        "-M134217728b",
+        "-N1",
+        "-RTS"
+      ],
+      "started_utc": "2026-10-26T17:35:22.450350+00:00",
+      "completed_utc": "2026-10-26T17:35:22.736918+00:00",
+      "exit_code": 1,
+      "wall_seconds": 0.28658300498500466
+    }
+  },
+  "replacement": {
+    "binary": ".build/sprint-3.50/api-port-20261026/replacement-parser-1",
+    "snapshot": ".build/sprint-3.50/api-port-20261026/replacement-inputs-1/replacement-parser",
+    "sha256": "8502981d389a3c154a2a95c1b676b656494b37bf882fe61562d5dff7a16f298b",
+    "result": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-replacement-control-1-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=60s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        ".build/sprint-3.50/api-port-20261026/replacement-parser-1",
+        "+RTS",
+        "-M134217728b",
+        "-N1",
+        "-RTS"
+      ],
+      "started_utc": "2026-10-26T17:43:24.406000+00:00",
+      "completed_utc": "2026-10-26T17:43:24.674060+00:00",
+      "exit_code": 0,
+      "wall_seconds": 0.2680769730359316
+    }
+  },
+  "inputs": [
+    {
+      "path": "src/Prodbox/Lib/ChartPlatform.hs",
+      "snapshot": ".build/sprint-3.50/api-port-20261026/replacement-inputs-1/src/Prodbox/Lib/ChartPlatform.hs",
+      "sha256": "a33668cb5791d76602be8c6ac7b6390d445f785bef3a9a705113c56a14961e27"
+    },
+    {
+      "path": "test/unit/Main.hs",
+      "snapshot": ".build/sprint-3.50/api-port-20261026/replacement-inputs-1/test/unit/Main.hs",
+      "sha256": "18f773447360708e003d232dff3609ce8b0208715c17374d805cade166d7a97d"
+    },
+    {
+      "path": "test/qualification/KubernetesApiPort.hs",
+      "snapshot": ".build/sprint-3.50/api-port-20261026/replacement-inputs-1/test/qualification/KubernetesApiPort.hs",
+      "sha256": "e0f2aee9439e042fca343c3ddae9090fc05086acacd95cdefb688f235190ba93"
+    },
+    {
+      "path": "prodbox.cabal",
+      "snapshot": ".build/sprint-3.50/api-port-20261026/replacement-inputs-1/prodbox.cabal",
+      "sha256": "1170fae8e338d0dd36ee283a4f18fbcb29cafd014c2194b01c8c1b86ce25e2a6"
+    },
+    {
+      "path": "documents/engineering/helm_chart_platform_doctrine.md",
+      "snapshot": ".build/sprint-3.50/api-port-20261026/replacement-inputs-1/documents/engineering/helm_chart_platform_doctrine.md",
+      "sha256": "5adaf4f2f0d2406ef82354006bf01b598d3ebddfc74ddbb8d2facb5f1bf07e78"
+    },
+    {
+      "path": "DEVELOPMENT_PLAN/README.md",
+      "snapshot": ".build/sprint-3.50/api-port-20261026/replacement-inputs-1/DEVELOPMENT_PLAN/README.md",
+      "sha256": "b87749ae7ab10dafc6f4402e7dabf21792ae258d92e96501dba65f33a616e179"
+    },
+    {
+      "path": "DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md",
+      "snapshot": ".build/sprint-3.50/api-port-20261026/replacement-inputs-1/DEVELOPMENT_PLAN/phase-3-chart-platform-vscode.md",
+      "sha256": "ef7b5020f8e86928b89a436e8ad8e3a473ca4dfcac4eaefc24774b646c177db3"
+    },
+    {
+      "path": "DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md",
+      "snapshot": ".build/sprint-3.50/api-port-20261026/replacement-inputs-1/DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md",
+      "sha256": "11126340fca983d4cb43b8d4ecb630b8746258e54d5f03d2741e08f07876d587"
+    },
+    {
+      "path": "DEVELOPMENT_PLAN/00-overview.md",
+      "snapshot": ".build/sprint-3.50/api-port-20261026/replacement-inputs-1/DEVELOPMENT_PLAN/00-overview.md",
+      "sha256": "75e2231ba69a8b268c9e8376b3f9ffd2c8bbcfd13d7da60f91ea01c0ff45e82c"
+    }
+  ],
+  "admission": {
+    "development_memory_max_bytes": 5368709120,
+    "development_swap_max_bytes": 0,
+    "native_heap_max_bytes": 134217728,
+    "native_capabilities": 1,
+    "native_timeout_seconds": 60
+  },
+  "qualification": "pending; this code-owned parser proof is independent of later phases and live infrastructure"
+}

@@ -432,8 +432,10 @@ lifecycleAuthorityProviderAdmissionEpochSuite =
       encodeModelBValue fixtureCodec initial `shouldBe` Right encoded
       decodeModelBValue fixtureCodec (replaceByte 2 0x05 legacyV6Fixture)
         `shouldSatisfy` isUnsupportedVersion 5
+      decodeModelBValue fixtureCodec (replaceByte 2 0x09 legacyV6Fixture)
+        `shouldSatisfy` isUnsupportedVersion 9
       decodeModelBValue fixtureCodec (replaceByte 2 0x08 legacyV6Fixture)
-        `shouldSatisfy` isUnsupportedVersion 8
+        `shouldBe` Left "AuthorityAdmissionInvalid"
       decodeModelBValue fixtureCodec (ByteString.snoc encoded 0)
         `shouldSatisfy` isLeft
       decodeModelBValue (authorityAdmissionStateCodec 1 1 1) legacyV6Fixture

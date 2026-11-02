@@ -19,6 +19,7 @@ module Prodbox.Lifecycle.CredentialProvisioner.FirstReconcileJournal
   , firstReconcileJournalReceipts
   , firstReconcileJournalComplete
   , firstReconcileJournalRecoveryPending
+  , firstReconcileJournalPlanIsCompiled
   , settleFirstReconcileJournal
   , settleFirstReconcileJournalStore
   , appendFirstReconcileReceipt
@@ -60,6 +61,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   , FirstReconcileProvisioningPlan
   , FirstReconcileReceipt
   , advanceFirstReconcileCursor
+  , defaultFirstReconcileProvisioningPlan
   , firstReconcilePlanDeadline
   , firstReconcilePlanDigest
   , firstReconcilePlanMaximumCount
@@ -122,6 +124,13 @@ initialFirstReconcileJournal plan =
 firstReconcileJournalPlan
   :: FirstReconcileJournal -> FirstReconcileProvisioningPlan
 firstReconcileJournalPlan = internalFirstReconcileJournalPlan
+
+firstReconcileJournalPlanIsCompiled :: FirstReconcileJournal -> Bool
+firstReconcileJournalPlanIsCompiled journal =
+  firstReconcilePlanDigest plan
+    == firstReconcilePlanDigest (defaultFirstReconcileProvisioningPlan (firstReconcilePlanDeadline plan))
+ where
+  plan = firstReconcileJournalPlan journal
 
 firstReconcileJournalCursor :: FirstReconcileJournal -> FirstReconcileCursor
 firstReconcileJournalCursor = internalFirstReconcileJournalCursor

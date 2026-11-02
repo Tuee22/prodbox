@@ -1,0 +1,225 @@
+{
+  "scope": "Private atomic original-expiry request and complete manager field only. The native fixture supplies the controller. Production dispatch, pinned inputs, transport/command scopes, placement/admission receipts, alarm retirement/recovery and deployment qualification remain open.",
+  "source_identity_equal": true,
+  "before": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-before-1.json",
+  "first_five_controls": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-five-controls-1.json",
+  "inputs": [
+    {
+      "path": "src/Prodbox/Subprocess/HostOperationFamily.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-inputs-1/src/Prodbox/Subprocess/HostOperationFamily.hs",
+      "sha256": "f70d01e65b47d12e73c3e7003f12e9bf8159916d30440898c8012cdf42bfbd4c"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdBus.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-inputs-1/src/Prodbox/Subprocess/SystemdBus.hs",
+      "sha256": "5dd80095b063a73e59482bbae224dceb4314f4e642083a9c830bea97a1666013"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-inputs-1/src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "sha256": "83b53baf0446afe195c9c6d4efcea8a7e16b00448f1210dfb155a608d1e13630"
+    },
+    {
+      "path": "src/Prodbox/Capacity/HostExecution.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-inputs-1/src/Prodbox/Capacity/HostExecution.hs",
+      "sha256": "092ece17fb98e941eb4847e875d0f5b01c9ca458c810d8851207aac9dfba6a8c"
+    },
+    {
+      "path": "test/qualification/HostOperationFamily.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-inputs-1/test/qualification/HostOperationFamily.hs",
+      "sha256": "7a221d54ef00f2d9344573b267452f4eacebcbea3c66c2d0a75e4d568923d456"
+    },
+    {
+      "path": "prodbox.cabal",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-inputs-1/prodbox.cabal",
+      "sha256": "806f00332cdf2868d2b3b3463608cb07c46c9266389f5f0d99b6afdb143a586a"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-native-1",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-inputs-1/.build/sprint-6.5/rpc-coordinator-20261025/operation-family-native-1",
+      "sha256": "b2599ab29a7b123c5e89da2c96a6349dd66b094bc737d13b9a3ef32a8b5499e1"
+    }
+  ],
+  "profile": {
+    "scope": "Isolated native controller fixture, observed host admission, no production Authority or transport caller.",
+    "maximum_child_us": 5000000,
+    "original_offsets_ns": {
+      "work": 2000000000,
+      "hard": 2150000000,
+      "stop": 2500000000,
+      "finish": 3000000000,
+      "outer": 5000000000
+    },
+    "expired_submit_work_ns": 30000000,
+    "helper_start_us": 20000,
+    "helper_stop_us": 20000,
+    "aggregate": {
+      "memory_mib": 256,
+      "milli_cpu": 700,
+      "tasks": 56,
+      "ephemeral_storage_mib": 1,
+      "durable_storage_mib": 0
+    },
+    "before": {
+      "memory_mib": {
+        "parent": 176,
+        "command": 64,
+        "helper": 16,
+        "transport": 0
+      },
+      "cpu_usec_per_second": {
+        "parent": 100000,
+        "command": 500000,
+        "helper": 100000,
+        "transport": 0
+      },
+      "tasks": {
+        "parent": 16,
+        "command": 32,
+        "helper": 8,
+        "transport": 0
+      }
+    },
+    "after": {
+      "memory_mib": {
+        "parent": 176,
+        "command": 48,
+        "helper": 16,
+        "transport": 16
+      },
+      "cpu_usec_per_second": {
+        "parent": 100000,
+        "command": 400000,
+        "helper": 100000,
+        "transport": 100000
+      },
+      "tasks": {
+        "parent": 16,
+        "command": 24,
+        "helper": 8,
+        "transport": 8
+      }
+    }
+  },
+  "controls": [
+    "operation-family-expiry-2",
+    "operation-family-late-effect-2",
+    "operation-family-early-exit-2",
+    "operation-family-foreign-field-2",
+    "operation-family-expired-submit-2",
+    "operation-family-invalid-window-1",
+    "operation-family-oversized-helper-1",
+    "operation-family-expired-observation-1"
+  ],
+  "retained_setup_failures": [
+    "native formatter parse error from a misplaced closing parenthesis",
+    "native compilation noFollow field spelling; changed to nofollow",
+    "native compilation missing runExceptT import"
+  ],
+  "primary_sources": [
+    "https://github.com/systemd/systemd/blob/main/docs/TRANSIENT-SETTINGS.md"
+  ],
+  "evidence_limits": [
+    "No actual persistent transport or command scope is created in these controls.",
+    "Late-effect control delays the fixture effect beyond the original hard end; it does not inject a real lost manager reply.",
+    "Inventory is not placement, kernel ownership or Authority admission.",
+    "Held cgroup retirement and workspace absence are checked in the four controls that start a controller; refusal controls create no family."
+  ],
+  "schema_version": 1,
+  "name": "HOST-OPERATION-ABSOLUTE-EXPIRY-2026-10-26",
+  "status": "eight native request controls validated; complete production family and full gates pending",
+  "private_evidence": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-progress-1.json",
+  "source_identity_before_publication": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"f8c983571c26e7416739f90991f76cb787d745f5f8ba5e6c2f370b1d3017c710\", sourceManifestEntryCount = 1538},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"3b2a5e49f1a301a6be3cb7f80d9c9fc0a8363dd6ec641e7659580da1b73c4857\", sourceManifestEntryCount = 1475})",
+  "results": {
+    "operation-family-library-build-1": {
+      "exit_code": 0,
+      "wall_seconds": 18.209672417026013,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-library-build-1.result.json"
+    },
+    "operation-family-hlint-1": {
+      "exit_code": 0,
+      "wall_seconds": 1.121643983758986,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-hlint-1.result.json"
+    },
+    "operation-family-hlint-2": {
+      "exit_code": 0,
+      "wall_seconds": 0.6576404832303524,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-hlint-2.result.json"
+    },
+    "operation-family-hlint-3": {
+      "exit_code": 0,
+      "wall_seconds": 0.6931836782023311,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-hlint-3.result.json"
+    },
+    "operation-family-hlint-4": {
+      "exit_code": 0,
+      "wall_seconds": 0.7201962741091847,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-hlint-4.result.json"
+    },
+    "operation-family-format-3": {
+      "exit_code": 102,
+      "wall_seconds": 0.1584261259995401,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-format-3.result.json"
+    },
+    "operation-family-native-build-1": {
+      "exit_code": 1,
+      "wall_seconds": 1.240615771152079,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-native-build-1.result.json"
+    },
+    "operation-family-native-build-2": {
+      "exit_code": 1,
+      "wall_seconds": 0.40352000296115875,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-native-build-2.result.json"
+    },
+    "operation-family-native-build-3": {
+      "exit_code": 0,
+      "wall_seconds": 2.770016119815409,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-native-build-3.result.json"
+    },
+    "operation-family-native-build-4": {
+      "exit_code": 0,
+      "wall_seconds": 2.726137524936348,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-native-build-4.result.json"
+    },
+    "operation-family-expiry-2": {
+      "exit_code": 0,
+      "wall_seconds": 2.191548516973853,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-expiry-2.result.json"
+    },
+    "operation-family-late-effect-2": {
+      "exit_code": 0,
+      "wall_seconds": 2.188759791199118,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-late-effect-2.result.json"
+    },
+    "operation-family-early-exit-2": {
+      "exit_code": 0,
+      "wall_seconds": 2.1939178653992712,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-early-exit-2.result.json"
+    },
+    "operation-family-foreign-field-2": {
+      "exit_code": 0,
+      "wall_seconds": 2.1833933512680233,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-foreign-field-2.result.json"
+    },
+    "operation-family-expired-submit-2": {
+      "exit_code": 0,
+      "wall_seconds": 0.06845190888270736,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-expired-submit-2.result.json"
+    },
+    "operation-family-invalid-window-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.028079882264137268,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-invalid-window-1.result.json"
+    },
+    "operation-family-oversized-helper-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.024623894598335028,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-oversized-helper-1.result.json"
+    },
+    "operation-family-expired-observation-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.02285921899601817,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-family-expired-observation-1.result.json"
+    }
+  }
+}

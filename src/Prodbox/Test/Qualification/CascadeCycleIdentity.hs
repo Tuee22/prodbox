@@ -28,6 +28,7 @@ module Prodbox.Test.Qualification.CascadeCycleIdentity
   , CycleIdentityParts (..)
   , CycleAnnotations (..)
   , RecomputedLocalParts (..)
+  , generatedConfigDigestFromParts
   , CompareOnlyParts (..)
   , annotationsOf
   , assembleCurrentIdentity
@@ -193,9 +194,24 @@ data RecomputedLocalParts = RecomputedLocalParts
   { localExecutableSource :: !SourceIdentity
   , localFullSource :: !SourceIdentity
   , localGeneratedConfig :: !PublicEvidenceDigest
+  , localInForceConfigDigest :: !PublicEvidenceDigest
+  , localRpcRegistrationDigest :: !PublicEvidenceDigest
   , localResourceEnvelope :: !PublicEvidenceDigest
   , localLoadFault :: !PublicEvidenceDigest
   }
+
+-- | The public startup requirement is independent of the Authority-held
+-- parameters. Neither input may change without resetting deployment evidence.
+generatedConfigDigestFromParts
+  :: PublicEvidenceDigest -> PublicEvidenceDigest -> PublicEvidenceDigest
+generatedConfigDigestFromParts parameters registration =
+  hashPublicEvidence
+    ( Text.unlines
+        [ "prodbox-generated-config/registration-pin-v1"
+        , publicEvidenceDigestText parameters
+        , publicEvidenceDigestText registration
+        ]
+    )
 
 -- | What can only be compared. The cluster is gone after the cascade, so the
 -- images that ran and the shape of the program that ran are carried by the

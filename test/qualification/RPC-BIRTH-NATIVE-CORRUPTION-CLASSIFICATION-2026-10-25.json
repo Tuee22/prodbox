@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "counterexample": "RPC-BIRTH-NATIVE-CORRUPTION-CLASSIFICATION-2026-10-25",
+  "owning_sprint": "6.5",
+  "banked_utc": "2026-10-25T03:17:28.064092+00:00",
+  "scope": "Actual native Model-B adapter composition with injected read-only observations; known-corruption classification through authentication and ordinary admission. No physical retained-store or deployed repair qualification.",
+  "repository_reproducer": {
+    "module": "test/unit/ControlPlaneRpcAdmissionBirth.hs",
+    "case": "preserves recovery evidence across native reads corrupt -> corrupt",
+    "canonical_validation": "prodbox dev check"
+  },
+  "causal_profile": {
+    "read_schedule": "primary -> marker -> same corrupt primary",
+    "marker": "Missing",
+    "native_key_reads": 0,
+    "cas_writes": 0,
+    "old_observed_result": "RpcBirthObservationUnavailable",
+    "replacement_required_result": "RpcBirthStateInvalid",
+    "old_to_new_envelope_mapping": "Identical native read schedule, source topology, state codecs and existing CPU/memory/ephemeral/persistence envelopes; classification-only change.",
+    "resource_envelopes_increased": false
+  },
+  "frozen": {
+    "full_manifest": "bbe16ff9d408120fcac69ced88947cff91ab59d47687d823cb82f607605f7506",
+    "executable_manifest": "3953c6d65caa0dacf1ec92315c4b381487cd85b12ac3f078086bb9de96e73074",
+    "source_identity_record": ".build/sprint-6.5/rpc-birth-recovery-20261025/frozen-source.log",
+    "binary_sha256": "49291ce0aa2892b555dfc6173aeb01954cde9ac7cf1fdf6fdac6e6da6ddd16a4",
+    "semantic_exit": 1,
+    "wall_seconds": 0.0025484799407422543
+  },
+  "replacement": {
+    "full_manifest": "33585266a5f58227f9cb33af739180133aba5ac3f5df9320faaf47ce92f9936b",
+    "executable_manifest": "d920237b7199eb26fdd197f74870c1006b8159aca2aae1d74f665b8fef146c93",
+    "source_identity_record": ".build/sprint-6.5/rpc-birth-recovery-20261025/banking-source.log",
+    "binary_sha256": "0063adeab20e9118445ce8d350b0173a1ab3ee2d964561d15870e36ab21dcff0",
+    "semantic_exit": 0,
+    "wall_seconds": 0.0025595189072191715,
+    "primary_read_combinations": 36,
+    "marker_failure_cases": 3,
+    "composed_cases_at_banking": 174,
+    "validation_record": ".build/sprint-6.5/rpc-birth-recovery-20261025/validation-progress.json"
+  },
+  "production_profile": {
+    "production_runtime_uses_same_native_reader": true,
+    "operational_resource_configuration_changed": false,
+    "physical_store_qualified": false,
+    "backup_pair_repair_qualified": false
+  },
+  "deployment_qualification": "pending",
+  "qualified_cycles": 0,
+  "hand_actions": []
+}

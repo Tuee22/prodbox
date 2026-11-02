@@ -52,7 +52,12 @@ module Prodbox.Config.Tier0
   , configFileToTier0Parameters
   , writeOperatorParametersToTier0
   , writeOperatorDeploymentConfigToTier0
+  , writeOperatorParametersToTier0AtPath
+  , writeOperatorDeploymentConfigToTier0AtPath
+  , compareAndSwapTier0RpcRegistrationAtPath
+  , observeTier0RpcRegistrationAtPath
   , writeTier0FloorPreservingParameters
+  , writeTier0FloorPreservingParametersAtPath
 
     -- * In-cluster daemon binary context (Sprint 1.40)
   , defaultDaemonProjectConfig
@@ -62,8 +67,9 @@ module Prodbox.Config.Tier0
   , decodeProjectConfigDhall
   , loadDaemonBinaryContext
 
-    -- * Schema-from-Haskell render (pure)
+    -- * Schema-from-Haskell rendering and template recognition
   , renderProjectConfigDhall
+  , isCanonicalUnauthoredProjectConfigDhall
   , tier0RecordWitness
   , tier0WitnessPrefix
   , stampTier0Witness
@@ -96,7 +102,6 @@ import Data.Maybe (catMaybes)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
-import Data.Text.IO qualified as TextIO
 import Data.Void (Void)
 import Dhall
   ( FromDhall (..)
@@ -110,8 +115,9 @@ import GHC.Generics (Generic)
 import Numeric (showHex)
 import Prodbox.CLI.Output (writeOutputLine)
 import Prodbox.Capacity.Allocation (compileResourcePlanUncertified)
-import Prodbox.Capacity.Config (ResourceVector, resource_plan)
-import Prodbox.Capacity.Placement (concurrentPlanDraws)
+import Prodbox.Capacity.Config (ResourcePlan (host_capacity), ResourceVector, resource_plan)
+import Prodbox.Capacity.LegacyDhall qualified as LegacyCapacity
+import Prodbox.Capacity.Placement (concurrentWorkloadDraws)
 import Prodbox.Config.Basics
   ( ParentRef (..)
   , SealMode (..)
@@ -120,9 +126,13 @@ import Prodbox.Config.Basics
 import Prodbox.Config.ComponentGraph (ComponentNode)
 import Prodbox.Config.FloorDhall (loadUnencryptedBasicsAtPath)
 import Prodbox.Config.RetainedArtifacts (RetainedArtifactsSection)
+import Prodbox.Config.Tier0File
+import Prodbox.ControlPlane.Coordinate (AuthorityScope, mkAuthorityScope)
+import Prodbox.ControlPlane.RpcAdmissionBirthConfig (RpcBirthConfig (..), validateRpcBirthConfig)
 import Prodbox.Repo
   ( resolveTier0ConfigPath
   )
+import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 import Prodbox.Settings
   ( AcmeSection
   , AwsCredentialsRef (..)
@@ -138,8 +148,7 @@ import Prodbox.Settings
   )
 import Prodbox.Settings qualified as Settings
 import Prodbox.Settings.SecretRef (SecretRef (..))
-import System.Directory (createDirectoryIfMissing, doesFileExist)
-import System.FilePath (takeDirectory)
+import System.Directory (doesFileExist)
 
 -- | The kind of binary frame this context describes — mirrors
 -- @hostbootstrap@'s @contextKind@ discriminator. The host CLI is a
@@ -205,6 +214,7 @@ data ProdboxContext = ProdboxContext
   , cluster_id :: Text
   , vault_address :: Text
   , minio_endpoint :: Text
+  , rpc_registration :: RpcBirthConfig
   , topology :: ProdboxTopology
   , capabilities :: [Capability]
   }
@@ -259,6 +269,7 @@ defaultProdboxContext =
     , cluster_id = ""
     , vault_address = ""
     , minio_endpoint = ""
+    , rpc_registration = RpcBirthConfigLegacy
     , topology =
         ProdboxTopology
           { seal_mode = Tier0Shamir
@@ -334,73 +345,124 @@ defaultProjectConfig =
 -- @prodbox-config.dhall@ writer.
 writeOperatorParametersToTier0 :: FilePath -> Settings.ConfigFile -> IO (Either String ())
 writeOperatorParametersToTier0 repoRoot config = do
-  tier0Path <- resolveTier0ConfigPath repoRoot
-  existing <- decodeProjectConfigDhall tier0Path
-  let base = either (const defaultProjectConfig) id existing
-      merged = base {parameters = configFileToTier0Parameters config}
-  writeTier0 repoRoot merged
+  path <- resolveTier0ConfigPath repoRoot
+  writeOperatorParametersToTier0AtPath path config
 
--- | Author parameters and deployment-varying context in one Tier-0 write.
--- Used by interactive @config setup@ so validation never observes freshly
--- authored parameters beside compiled or stale context coordinates.
+writeOperatorParametersToTier0AtPath :: FilePath -> Settings.ConfigFile -> IO (Either String ())
+writeOperatorParametersToTier0AtPath path config =
+  modifyTier0AtPath PreserveTier0RpcPin path $ \_ existing ->
+    pure
+      ( Right
+          defaultProjectConfig
+            { context = maybe defaultProdboxContext id existing
+            , parameters = configFileToTier0Parameters config
+            }
+      )
+
+-- | Parameter/context authoring preserves an established pin. Publishing or
+-- removing a pin belongs to its separate migration operation, not config setup.
 writeOperatorDeploymentConfigToTier0
   :: FilePath
   -> Settings.ConfigFile
   -> Settings.DeploymentContextInput
   -> IO (Either String ())
-writeOperatorDeploymentConfigToTier0 repoRoot config contextInput = do
-  tier0Path <- resolveTier0ConfigPath repoRoot
-  existing <- decodeProjectConfigDhall tier0Path
-  let base = either (const defaultProjectConfig) id existing
-      currentContext = context base
-      authoredContext =
-        currentContext
-          { cluster_id = Settings.contextInputClusterId contextInput
-          , vault_address = Settings.contextInputVaultAddress contextInput
-          , minio_endpoint = Settings.contextInputMinioEndpoint contextInput
-          }
-      merged =
-        base
-          { parameters = configFileToTier0Parameters config
-          , context = authoredContext
-          }
-  writeTier0 repoRoot merged
+writeOperatorDeploymentConfigToTier0 repoRoot config input = do
+  path <- resolveTier0ConfigPath repoRoot
+  writeOperatorDeploymentConfigToTier0AtPath path config input
 
--- | Sprint 1.42 Part B / Sprint 7.25: establish the Tier-0 floor at first-ever
--- bring-up (@vault init@) by stamping the cluster identity (cluster id + Vault
--- address) into the @context@ of the EXISTING @prodbox.dhall@, PRESERVING its
--- operator-authored @parameters@/@witness@. There is **no fallback default**:
--- if @prodbox.dhall@ is absent or unreadable this FAILS fast rather than
--- synthesizing a default config — the file must already exist, authored by
--- @prodbox config setup@ (operator) or the test harness. The reconcile preflight
--- ([Settings.loadConfigFile]) already gates on it, so by @vault init@ it is
--- present; a standalone @vault init@ with no config now errors clearly instead of
--- silently inventing one.
+writeOperatorDeploymentConfigToTier0AtPath
+  :: FilePath
+  -> Settings.ConfigFile
+  -> Settings.DeploymentContextInput
+  -> IO (Either String ())
+writeOperatorDeploymentConfigToTier0AtPath path config input =
+  modifyTier0AtPath PreserveTier0RpcPin path $ \_ existing -> pure $ do
+    let base = defaultProjectConfig
+        current = maybe defaultProdboxContext id existing
+        selectedPin = maybe (Settings.contextInputRpcRegistration input) rpc_registration existing
+    case Settings.contextInputRpcRegistration input of
+      RpcBirthConfigLegacy -> pure ()
+      requested@(RpcBirthConfigRegistered _)
+        | requested == selectedPin -> pure ()
+        | otherwise ->
+            Left "existing Tier-0 registration pin differs; use the explicit registration publication operation"
+    Right
+      base
+        { parameters = configFileToTier0Parameters config
+        , context =
+            current
+              { cluster_id = Settings.contextInputClusterId input
+              , vault_address = Settings.contextInputVaultAddress input
+              , minio_endpoint = Settings.contextInputMinioEndpoint input
+              , rpc_registration = selectedPin
+              }
+        }
+
+-- | Floor stamping cannot change the scope of an independently pinned root.
 writeTier0FloorPreservingParameters :: FilePath -> Text -> Text -> IO (Either String ())
 writeTier0FloorPreservingParameters repoRoot clusterId vaultAddress = do
-  tier0Path <- resolveTier0ConfigPath repoRoot
-  existing <- decodeProjectConfigDhall tier0Path
-  case existing of
-    Left err ->
-      pure
-        ( Left
-            ( "cannot stamp the Tier-0 cluster identity: `prodbox.dhall` is required but absent or "
-                ++ "unreadable ("
-                ++ err
-                ++ "). Generate it with `prodbox config setup` (or the test harness) first — the "
-                ++ "binary does not synthesize a default config."
-            )
-        )
-    Right base -> do
-      let projectConfig =
-            base
-              { context =
-                  (context base)
-                    { cluster_id = clusterId
-                    , vault_address = vaultAddress
-                    }
-              }
-      writeTier0 repoRoot projectConfig
+  path <- resolveTier0ConfigPath repoRoot
+  writeTier0FloorPreservingParametersAtPath path clusterId vaultAddress
+
+writeTier0FloorPreservingParametersAtPath :: FilePath -> Text -> Text -> IO (Either String ())
+writeTier0FloorPreservingParametersAtPath path clusterId vaultAddress =
+  modifyTier0ProjectAtPath PreserveTier0RpcPin path update
+ where
+  update existing = case existing of
+    Nothing ->
+      Left
+        "cannot stamp the Tier-0 cluster identity: prodbox.dhall is required; run prodbox config setup first"
+    Just base ->
+      Right base {context = (context base) {cluster_id = clusterId, vault_address = vaultAddress}}
+
+-- | Observe the independently readable public context from one safe opened
+-- snapshot under the canonical lock. Keeping the snapshot also confirms its
+-- file/directory durability without decoding or rewriting parameters.
+observeTier0RpcRegistrationAtPath
+  :: FilePath -> IO (Either String (AuthorityScope, RpcBirthConfig))
+observeTier0RpcRegistrationAtPath path = do
+  result <- modifyTier0File path observeSource
+  pure $ case result of
+    Left (Tier0FileRejected message) -> Left (Text.unpack message)
+    Left failure -> Left ("Tier-0 registration observation refused: " <> show failure)
+    Right observed -> Right observed
+ where
+  observeSource source = case source of
+    Nothing -> pure (Left "registration observation requires an existing authored Tier-0 context")
+    Just bytes -> do
+      decoded <- decodeAuthoringContext path bytes
+      pure $ do
+        observed <- either (Left . Text.pack) Right decoded
+        scope <-
+          either
+            (const (Left "Tier-0 registration scope is invalid"))
+            Right
+            (mkAuthorityScope (cluster_id observed))
+        _ <-
+          either
+            (const (Left "Tier-0 registration pin is invalid"))
+            Right
+            (validateRpcBirthConfig LifecycleAuthorityRuntime scope (rpc_registration observed))
+        Right (Tier0FileKeep (scope, rpc_registration observed))
+
+-- | Public constraint publication is CAS/readback under the same lock as every
+-- canonical parameter writer. An idempotent call confirms file/directory fsync.
+-- It grants no admission and cannot remove or replace an admitted pin.
+compareAndSwapTier0RpcRegistrationAtPath
+  :: FilePath -> RpcBirthConfig -> RpcBirthConfig -> IO (Either String ())
+compareAndSwapTier0RpcRegistrationAtPath path expected desired =
+  modifyTier0ProjectAtPath (PublishTier0RpcPin expected desired) path update
+ where
+  update existing = case existing of
+    Nothing -> Left "registration publication requires an existing authored Tier-0 context"
+    Just base
+      | rpc_registration (context base) == desired -> Right base
+      | rpc_registration (context base) /= expected ->
+          Left "Tier-0 registration pin changed; re-observe before publication"
+      | otherwise -> case (expected, desired) of
+          (RpcBirthConfigLegacy, RpcBirthConfigRegistered _) ->
+            Right base {context = (context base) {rpc_registration = desired}}
+          _ -> Left "Tier-0 registration publication cannot remove or replace an admitted pin"
 
 -- | The unauthored in-cluster gateway rendering template: the 'Daemon'-frame
 -- variant of 'defaultProdboxContext'. It supplies only capability shape.
@@ -463,7 +525,11 @@ daemonConfigMapTier0Path configDir = configDir <> "/prodbox.dhall"
 -- all — and @acme.eab_*@ had no local-tier check on any path.
 decodeProjectConfigDhall :: FilePath -> IO (Either String ProdboxProjectConfig)
 decodeProjectConfigDhall path = do
-  result <- try (Dhall.inputFile Dhall.auto path) :: IO (Either SomeException ProdboxProjectConfig)
+  result <-
+    LegacyCapacity.decodeDhallFileWithLegacyPlatformDemand
+      Dhall.auto
+      LegacyCapacity.ProjectParameters
+      path
   pure $ case result of
     Left err ->
       Left
@@ -642,6 +708,37 @@ secretRefIsValue ref = case ref of
 -- source text. The empty annotation type is the one used by the Dhall AST.
 type DhallExpr = Expr Src Void
 
+-- | An unauthored template cannot decode its empty machine identity. Project
+-- only the host vector, then require the entire canonical rendering, including
+-- its witness. No other authored value or textual edit is eligible for reset.
+isCanonicalUnauthoredProjectConfigDhall :: Text -> IO Bool
+isCanonicalUnauthoredProjectConfigDhall document
+  | document == renderProjectConfigDhall defaultProjectConfig = pure True
+  | otherwise = do
+      projected <-
+        try
+          ( Dhall.input
+              Dhall.auto
+              ("(" <> document <> ").parameters.capacity.resource_plan.host_capacity")
+          )
+          :: IO (Either SomeException ResourceVector)
+      pure (either (const False) matchesTemplate projected)
+ where
+  defaults = parameters defaultProjectConfig
+  defaultCapacity = capacity defaults
+  matchesTemplate vector =
+    document
+      == renderProjectConfigDhall
+        defaultProjectConfig
+          { parameters =
+              defaults
+                { capacity =
+                    defaultCapacity
+                      { resource_plan = (resource_plan defaultCapacity) {host_capacity = vector}
+                      }
+                }
+          }
+
 -- | Render a Tier-0 record as @prodbox.dhall@ source text from the Haskell
 -- source of truth — the same @'Dhall.inject' \/ 'Dhall.embed'@ mechanism
 -- "Prodbox.Config.SchemaDhall" uses for @prodbox-config-types.dhall@. The
@@ -661,7 +758,7 @@ type DhallExpr = Expr Src Void
 renderProjectConfigDhall :: ProdboxProjectConfig -> Text
 renderProjectConfigDhall unstamped =
   case compileResourcePlanUncertified plan of
-    Right _ -> tier0Header <> planGuardedConfigBody config (concurrentPlanDraws plan)
+    Right _ -> tier0Header <> planGuardedConfigBody config (concurrentWorkloadDraws plan)
     Left _ -> tier0Header <> plainConfigBody config
  where
   -- Sprint 0.29: the generator stamps the record's own witness before
@@ -749,10 +846,11 @@ plainConfigBody config =
   Core.pretty (injectedValue (Dhall.inject @ProdboxProjectConfig) config) <> "\n"
 
 -- | Sprint 1.72: the Ring-1 over-commit-guarded body. Emits the config bound as
--- @cfg@, the precomputed concurrent workload draws (the same
--- 'concurrentPlanDraws' the Haskell Ring-2 proof threads), and a small inlined
+-- @cfg@, the precomputed application draws from 'concurrentWorkloadDraws',
+-- and a small inlined
 -- copy of the capacity algebra that recomputes the reservation and cluster
--- allocatable from @cfg@'s own host numbers and asserts the plan fits. Because
+-- allocatable from @cfg@'s own host numbers, adds its in-force platform requests,
+-- refuses an omitted baseline and asserts the complete plan fits. Because
 -- @cfg@ references no lemma binding, every @let@ (including the @assert@)
 -- normalizes away and the file's normal form is exactly the config record — so
 -- extraction through @'Dhall.inputFile' 'Dhall.auto'@ is unchanged, while an
@@ -849,8 +947,13 @@ planAssertBody =
     , ""
     , "let planFits"
     , "    : Bool"
-    , "    =     vectorFitsWithin reservation hostCapacity"
-    , "      &&  vectorFitsWithin (sumVectors concurrentDraws) allocatable"
+    , "    =     merge { None = False, Some = \\(_ : RV) -> True } cfg.parameters.capacity.resource_plan.platform_scheduler_requests"
+    , "      &&  vectorFitsWithin reservation hostCapacity"
+    , "      &&  vectorFitsWithin"
+    , "            (vectorPlus"
+    , "              (merge { None = zeroVector, Some = \\(requests : RV) -> requests } cfg.parameters.capacity.resource_plan.platform_scheduler_requests)"
+    , "              (sumVectors concurrentDraws))"
+    , "            allocatable"
     , ""
     , "let _ = assert : planFits === True"
     ]
@@ -895,23 +998,115 @@ writeTier0 repoRoot config = do
 -- binary-sibling path ('resolveTier0ConfigPath') and delegates here; this is
 -- the path-injection seam in-process unit tests exercise directly. Sprint 1.48.
 writeTier0AtPath :: FilePath -> ProdboxProjectConfig -> IO (Either String ())
-writeTier0AtPath tier0Path config = do
-  writeResult <-
-    try
-      ( do
-          createDirectoryIfMissing True (takeDirectory tier0Path)
-          TextIO.writeFile tier0Path (renderProjectConfigDhall config)
-      )
-      :: IO (Either SomeException ())
-  pure $ case writeResult of
-    Left err ->
-      Left
-        ( "Failed to write Tier-0 prodbox.dhall at `"
-            ++ tier0Path
-            ++ "`: "
-            ++ displayException err
-        )
+writeTier0AtPath path config = modifyTier0AtPath PreserveTier0RpcPin path (\_ _ -> pure (Right config))
+
+data Tier0WriteIntent
+  = PreserveTier0RpcPin
+  | PublishTier0RpcPin !RpcBirthConfig !RpcBirthConfig
+
+modifyTier0AtPath
+  :: Tier0WriteIntent
+  -> FilePath
+  -> (Maybe ByteString -> Maybe ProdboxContext -> IO (Either String ProdboxProjectConfig))
+  -> IO (Either String ())
+modifyTier0AtPath intent path transform = do
+  result <- modifyTier0File path $ \source -> do
+    previous <- traverse (decodeAuthoringContext path) source
+    case sequence previous of
+      Left failure -> pure (Left (Text.pack failure))
+      Right existing -> do
+        proposed <- transform source existing
+        pure $ do
+          config <- either (Left . Text.pack) Right proposed
+          either (Left . Text.pack) Right (validateTier0Publication intent existing config)
+          let rendered = TextEncoding.encodeUtf8 (renderProjectConfigDhall config)
+          Right (if Just rendered == source then Tier0FileKeep () else Tier0FileReplace rendered ())
+  pure $ case result of
+    Left (Tier0FileRejected message) -> Left (Text.unpack message)
+    Left failure -> Left ("Tier-0 publication refused: " <> show failure)
     Right () -> Right ()
+
+-- Parameter authoring can repair incompatible parameters while retaining the
+-- exact readable context. Stamping and pin publication additionally need the
+-- complete previous parameters; both decodes consume the same opened snapshot.
+modifyTier0ProjectAtPath
+  :: Tier0WriteIntent
+  -> FilePath
+  -> (Maybe ProdboxProjectConfig -> Either String ProdboxProjectConfig)
+  -> IO (Either String ())
+modifyTier0ProjectAtPath intent path transform =
+  modifyTier0AtPath intent path $ \source _ -> do
+    previous <- traverse (decodeAuthoringSource path) source
+    pure (sequence previous >>= transform)
+
+decodeAuthoringContext :: FilePath -> ByteString -> IO (Either String ProdboxContext)
+decodeAuthoringContext path bytes = case TextEncoding.decodeUtf8' bytes of
+  Left _ -> pure (Left "existing Tier-0 context is not UTF-8; restore it before authoring")
+  Right source -> do
+    decoded <-
+      LegacyCapacity.decodeDhallSourceProjection Dhall.auto LegacyCapacity.ContextFromProject path source
+    pure
+      ( either
+          ( const
+              ( Left
+                  "existing Tier-0 context is undecodable; restore its complete schema and registration pin before authoring"
+              )
+          )
+          Right
+          decoded
+      )
+
+decodeAuthoringSource :: FilePath -> ByteString -> IO (Either String ProdboxProjectConfig)
+decodeAuthoringSource path bytes = case TextEncoding.decodeUtf8' bytes of
+  Left _ -> pure (Left "existing Tier-0 source is not UTF-8; restore it before publication")
+  Right source -> do
+    decoded <-
+      LegacyCapacity.decodeDhallSourceWithLegacyPlatformDemand
+        Dhall.auto
+        LegacyCapacity.ProjectParameters
+        path
+        source
+    pure $ case decoded of
+      Left _ ->
+        Left
+          "existing Tier-0 parameters are undecodable; repair them while preserving context before publication"
+      Right config -> case tier0SecretValueFields config of
+        [] -> Right config
+        fields -> Left (tier0SecretValueRefusal path fields)
+
+validateTier0Publication
+  :: Tier0WriteIntent -> Maybe ProdboxContext -> ProdboxProjectConfig -> Either String ()
+validateTier0Publication intent existing proposed = do
+  case tier0SecretValueFields proposed of
+    [] -> pure ()
+    fields -> Left (tier0SecretValueRefusal "prodbox.dhall" fields)
+  case intent of
+    PreserveTier0RpcPin -> case existing of
+      Just previous
+        | rpc_registration previous /= rpc_registration (context proposed) ->
+            Left "ordinary Tier-0 authoring cannot change an existing registration pin"
+      _ -> pure ()
+    PublishTier0RpcPin expected desired -> do
+      case (expected, desired) of
+        (RpcBirthConfigLegacy, RpcBirthConfigRegistered _) -> pure ()
+        _ -> Left "Tier-0 registration publication cannot remove or replace an admitted pin"
+      case existing of
+        Nothing -> Left "registration publication requires an existing authored Tier-0 context"
+        Just previous
+          | rpc_registration previous `elem` [expected, desired]
+              && rpc_registration (context proposed) == desired ->
+              pure ()
+          | otherwise -> Left "Tier-0 registration pin changed; re-observe before publication"
+  case rpc_registration (context proposed) of
+    RpcBirthConfigLegacy -> pure ()
+    registered@(RpcBirthConfigRegistered _) -> do
+      scope <-
+        either
+          (const (Left "Tier-0 registration pin requires its exact authored root scope"))
+          Right
+          (mkAuthorityScope (cluster_id (context proposed)))
+      _ <- either (Left . show) Right (validateRpcBirthConfig LifecycleAuthorityRuntime scope registered)
+      pure ()
 
 -- | Sprint 1.39 (self-heal): idempotently guarantee the Tier-0 @prodbox.dhall@
 -- — the sole source of the dependency-free sealed-Vault bootstrap floor — exists

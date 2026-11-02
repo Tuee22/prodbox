@@ -1,0 +1,1878 @@
+{
+  "id": "OWNED-KERNEL-RUNNER-2026-10-25",
+  "recorded_utc": "2026-10-25T22:37:23.270903+00:00",
+  "scope": "Actual public captureOwnedSubprocess kernel lifecycle and execution controls with explicit diagnostic wire bounds. This component recording contains no host-placement/concurrency admission, full canonical/frontend gate or deployment qualification.",
+  "sources": [
+    {
+      "path": "src/Prodbox/Subprocess.hs",
+      "sha256": "f7ea1b0f5040d06ce6c6b96e4529454494186aefdabcfc9cd3543e92f53b7d87",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-source-Subprocess.hs-f7ea1b0f5040d06c"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/KernelScope.hs",
+      "sha256": "26497eea211e646eada035e46b976d36f5b3d28a6d93f9e511f080a3e21b4cc8",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-source-KernelScope.hs-26497eea211e646e"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/ScopeFamily.hs",
+      "sha256": "ebcd77861ec71d77384d6f567b9e079f14c3040485665954f56da064b0185367",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-source-ScopeFamily.hs-ebcd77861ec71d77"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdBus.hs",
+      "sha256": "2acd2873132f07ae412cb182ecff2ff047eee43de95967905c7e50b8f2dc01b9",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-source-SystemdBus.hs-2acd2873132f07ae"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "sha256": "ebbae68005102b59afc01ef3e302f9b54067369c3d790e4bf12221002ab51337",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-source-SystemdIdentity.hs-ebbae68005102b59"
+    },
+    {
+      "path": "test/unit/SubprocessKillable.hs",
+      "sha256": "ad95ba78d34bc1c1a19efbf96bcb14e5e7c2dd4eb87b2ada98ae6ef599f07450",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-source-SubprocessKillable.hs-ad95ba78d34bc1c1"
+    },
+    {
+      "path": "test/qualification/KernelScopeObservation.hs",
+      "sha256": "f964ea70647b1f86d1cf7e3a32c27a06663e48eb33e607ad82827930b6b66366",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-source-KernelScopeObservation.hs-f964ea70647b1f86"
+    },
+    {
+      "path": "test/qualification/OwnedSubprocessFastSessionEscape.hs",
+      "sha256": "d6ebf3688f9f7ed4346d8969985a9a9d700d2b266df9035920a9db6db3fabd8e",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-source-OwnedSubprocessFastSessionEscape.hs-d6ebf3688f9f7ed4"
+    },
+    {
+      "path": "test/qualification/OwnedSubprocessExecSemantics.hs",
+      "sha256": "da2d9bc6d0c54bec4ef9c21588d82c222ab3796a343cf88446130f997fb8a964",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-source-OwnedSubprocessExecSemantics.hs-da2d9bc6d0c54bec"
+    },
+    {
+      "path": "prodbox.cabal",
+      "sha256": "43031ab1bb4e1a468af45782d9f629e2097534644caae2b16d2823cced3de297",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-source-prodbox.cabal-43031ab1bb4e1a46"
+    }
+  ],
+  "binaries": [
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-native-threaded-3",
+      "sha256": "ff20e1c798272ee670fcba976ce4a56f834f6bcaa62d54b518463d1a447dfcaa"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-native-nonthreaded-3",
+      "sha256": "7fe152d30166d7faf444ea27bf0083a29e572f2b8ddaac0b503da71263cce8c4"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-exec-threaded-3",
+      "sha256": "9891ccbb3249db2c9af4eb5798c01d4831aeb35058c4ade121df9362141cb90e"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-exec-nonthreaded-3",
+      "sha256": "754b694dc47a157658e428c963115631801ca3e41d73339e2bb39738bddaf2f0"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+      "sha256": "9ff04aa8b7b4276b5dd2691b72175d86e1314843146d469e182bd85ec2120abf"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+      "sha256": "681252f70574fc815a3ad6adff58092308f97db62a994dae15673d3bd07c98bc"
+    }
+  ],
+  "native_observation_count": 85,
+  "native": [
+    {
+      "kind": "actual-public-fast-session",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-fast-session-threaded-3.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-native-threaded-3"
+        ],
+        "started_utc": "2026-10-25T22:27:09.395056+00:00",
+        "completed_utc": "2026-10-25T22:27:09.768293+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.37325363187119365
+      },
+      "observation": {
+        "cases": [
+          {
+            "case": 1,
+            "elapsed_micros": 39875,
+            "escaped_child_live_after_return": false,
+            "observed_child_identity": true,
+            "outcome": "Completed ExitSuccess"
+          },
+          {
+            "case": 2,
+            "elapsed_micros": 44785,
+            "escaped_child_live_after_return": false,
+            "observed_child_identity": true,
+            "outcome": "Completed ExitSuccess"
+          },
+          {
+            "case": 3,
+            "elapsed_micros": 45838,
+            "escaped_child_live_after_return": false,
+            "observed_child_identity": true,
+            "outcome": "Completed ExitSuccess"
+          },
+          {
+            "case": 4,
+            "elapsed_micros": 48829,
+            "escaped_child_live_after_return": false,
+            "observed_child_identity": true,
+            "outcome": "Completed ExitSuccess"
+          },
+          {
+            "case": 5,
+            "elapsed_micros": 43854,
+            "escaped_child_live_after_return": false,
+            "observed_child_identity": true,
+            "outcome": "Completed ExitSuccess"
+          },
+          {
+            "case": 6,
+            "elapsed_micros": 52745,
+            "escaped_child_live_after_return": false,
+            "observed_child_identity": true,
+            "outcome": "Completed ExitSuccess"
+          },
+          {
+            "case": 7,
+            "elapsed_micros": 39862,
+            "escaped_child_live_after_return": false,
+            "observed_child_identity": true,
+            "outcome": "Completed ExitSuccess"
+          },
+          {
+            "case": 8,
+            "elapsed_micros": 51898,
+            "escaped_child_live_after_return": false,
+            "observed_child_identity": true,
+            "outcome": "Completed ExitSuccess"
+          }
+        ],
+        "failed_cases": 0,
+        "fixed_case_count": 8
+      }
+    },
+    {
+      "kind": "actual-public-exec",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-exec-semantics-threaded-3.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-exec-threaded-3"
+        ],
+        "started_utc": "2026-10-25T22:34:57.953934+00:00",
+        "completed_utc": "2026-10-25T22:34:58.710143+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.7562274551019073
+      },
+      "observation": {
+        "actual_public_api": true,
+        "cases": [
+          {
+            "case": "absolute-inherited",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "absolute-explicit-cwd-env",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "search-uses-parent-path",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "relative-unicode",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "nul-argument",
+            "expectation": "RefuseNul",
+            "matched": false,
+            "passed": true
+          },
+          {
+            "case": "missing-executable",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "missing-cwd",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "plain-executable-shell-fallback",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "sigpipe-inheritance",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "sigint-inheritance",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "sigquit-inheritance",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "close-on-exec-descriptor",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "closed-stdin",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          }
+        ],
+        "count": 13,
+        "invalid_input_count": 1,
+        "paired_count": 12,
+        "passed": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-observer-threaded-kill-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "kill"
+        ],
+        "started_utc": "2026-10-25T22:28:11.396134+00:00",
+        "completed_utc": "2026-10-25T22:28:11.424167+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.028048658277839422
+      },
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 23602,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "kill",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": false,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-observer-threaded-terminate-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "terminate"
+        ],
+        "started_utc": "2026-10-25T22:28:11.453330+00:00",
+        "completed_utc": "2026-10-25T22:28:11.490272+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.03695860179141164
+      },
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 32481,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "terminate",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": false,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-observer-threaded-terminate-then-kill-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "terminate-then-kill"
+        ],
+        "started_utc": "2026-10-25T22:28:11.519475+00:00",
+        "completed_utc": "2026-10-25T22:28:11.574343+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.05488705821335316
+      },
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 50218,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "terminate-then-kill",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": false,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-observer-threaded-delayed-admission-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "delayed-admission"
+        ],
+        "started_utc": "2026-10-25T22:28:11.613989+00:00",
+        "completed_utc": "2026-10-25T22:28:11.697877+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.08390696905553341
+      },
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 78376,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "delayed-admission",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": false,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-observer-threaded-wrong-limits-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "wrong-limits"
+        ],
+        "started_utc": "2026-10-25T22:28:11.726891+00:00",
+        "completed_utc": "2026-10-25T22:28:11.767004+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.04013099800795317
+      },
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 35976,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "wrong-limits",
+        "native_bus_result": "Right (Left KernelScopeResourceMismatch)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeResourceMismatch",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-observer-threaded-wrong-cpu-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "wrong-cpu"
+        ],
+        "started_utc": "2026-10-25T22:28:11.796253+00:00",
+        "completed_utc": "2026-10-25T22:28:11.841991+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.045754368882626295
+      },
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 41384,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "wrong-cpu",
+        "native_bus_result": "Right (Left KernelScopeResourceMismatch)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeResourceMismatch",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-observer-threaded-foreign-descriptor-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "foreign-descriptor"
+        ],
+        "started_utc": "2026-10-25T22:28:11.871733+00:00",
+        "completed_utc": "2026-10-25T22:28:11.896106+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.02438969723880291
+      },
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 20095,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "foreign-descriptor",
+        "native_bus_result": "Right (Left KernelScopeChildRefused)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeChildRefused",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-observer-threaded-invalid-unit-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "invalid-unit"
+        ],
+        "started_utc": "2026-10-25T22:28:11.924172+00:00",
+        "completed_utc": "2026-10-25T22:28:11.947091+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.022944889031350613
+      },
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 18782,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "invalid-unit",
+        "native_bus_result": "Right (Left KernelScopeInvalidInput)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeInvalidInput",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-observer-threaded-expired-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "expired"
+        ],
+        "started_utc": "2026-10-25T22:28:11.975786+00:00",
+        "completed_utc": "2026-10-25T22:28:12.000515+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.0247455439530313
+      },
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 20421,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "expired",
+        "native_bus_result": "Right (Left KernelScopeDeadlineReached)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeDeadlineReached",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-observer-threaded-cancel-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "cancel"
+        ],
+        "started_utc": "2026-10-25T22:28:12.029280+00:00",
+        "completed_utc": "2026-10-25T22:28:12.070174+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.04091210989281535
+      },
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 36496,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "cancel",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-observer-threaded-parent-deadline-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "parent-deadline"
+        ],
+        "started_utc": "2026-10-25T22:28:12.098813+00:00",
+        "completed_utc": "2026-10-25T22:28:12.339167+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.24037101585417986
+      },
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 235930,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Just (Left KernelScopeDeadlineReached)",
+        "mode": "parent-deadline",
+        "native_bus_result": "Left (BusDeadlineReached BusRelease)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "family",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-family-threaded-retire-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "family",
+          "retire"
+        ],
+        "started_utc": "2026-10-25T22:28:12.368115+00:00",
+        "completed_utc": "2026-10-25T22:28:12.417026+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.04892633482813835
+      },
+      "observation": {
+        "early_retirement": true,
+        "elapsed_micros": 44718,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-2462907438f9e8faa8cf4552d0ca1bae.scope",
+          "prodbox-owned-2462907438f9e8faa8cf4552d0ca1bae-expiry.timer",
+          "prodbox-owned-2462907438f9e8faa8cf4552d0ca1bae-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "retire",
+        "negative_request": false,
+        "observed_terminal_ns": 2234083158161047,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "kind": "family",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-family-threaded-reject-live-retire-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "family",
+          "reject-live-retire"
+        ],
+        "started_utc": "2026-10-25T22:28:12.446015+00:00",
+        "completed_utc": "2026-10-25T22:28:12.498232+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.052248203195631504
+      },
+      "observation": {
+        "early_retirement": true,
+        "elapsed_micros": 47376,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-0549d1bc4e53e26a2ca117558526c00b.scope",
+          "prodbox-owned-0549d1bc4e53e26a2ca117558526c00b-expiry.timer",
+          "prodbox-owned-0549d1bc4e53e26a2ca117558526c00b-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "reject-live-retire",
+        "negative_request": false,
+        "observed_terminal_ns": 2234083239750681,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": true
+      }
+    },
+    {
+      "kind": "family",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-family-threaded-expired-retire-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "family",
+          "expired-retire"
+        ],
+        "started_utc": "2026-10-25T22:28:12.527707+00:00",
+        "completed_utc": "2026-10-25T22:28:12.574412+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.046728764194995165
+      },
+      "observation": {
+        "early_retirement": true,
+        "elapsed_micros": 41030,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-7af1e58f8bb7f8958c54dc1767f93cd6.scope",
+          "prodbox-owned-7af1e58f8bb7f8958c54dc1767f93cd6-expiry.timer",
+          "prodbox-owned-7af1e58f8bb7f8958c54dc1767f93cd6-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "expired-retire",
+        "negative_request": false,
+        "observed_terminal_ns": 2234083318048955,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": true
+      }
+    },
+    {
+      "kind": "family",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-family-threaded-unsubmitted-retire-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "family",
+          "unsubmitted-retire"
+        ],
+        "started_utc": "2026-10-25T22:28:12.606365+00:00",
+        "completed_utc": "2026-10-25T22:28:12.649740+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.04339252877980471
+      },
+      "observation": {
+        "early_retirement": true,
+        "elapsed_micros": 39029,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-ba40700a1dcd2a81c1f18b3afa862807.scope",
+          "prodbox-owned-ba40700a1dcd2a81c1f18b3afa862807-expiry.timer",
+          "prodbox-owned-ba40700a1dcd2a81c1f18b3afa862807-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "unsubmitted-retire",
+        "negative_request": false,
+        "observed_terminal_ns": 2234083394153031,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": true
+      }
+    },
+    {
+      "kind": "family",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-family-threaded-expiry-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "family",
+          "expiry"
+        ],
+        "started_utc": "2026-10-25T22:28:12.677642+00:00",
+        "completed_utc": "2026-10-25T22:28:13.059840+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.3822161899879575
+      },
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 377242,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-5741ea4760ad10f00d172638ae8d22cc.scope",
+          "prodbox-owned-5741ea4760ad10f00d172638ae8d22cc-expiry.timer",
+          "prodbox-owned-5741ea4760ad10f00d172638ae8d22cc-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "expiry",
+        "negative_request": false,
+        "observed_terminal_ns": 2234083797125157,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "kind": "family",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-family-threaded-term-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "family",
+          "term"
+        ],
+        "started_utc": "2026-10-25T22:28:13.090604+00:00",
+        "completed_utc": "2026-10-25T22:28:13.464917+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.3743306640535593
+      },
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 369907,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-9bbe64fe1104cbb19f3d20e72555e284.scope",
+          "prodbox-owned-9bbe64fe1104cbb19f3d20e72555e284-expiry.timer",
+          "prodbox-owned-9bbe64fe1104cbb19f3d20e72555e284-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "term",
+        "negative_request": false,
+        "observed_terminal_ns": 2234083880406879,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "kind": "family",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-family-threaded-duplicate-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "family",
+          "duplicate"
+        ],
+        "started_utc": "2026-10-25T22:28:13.495448+00:00",
+        "completed_utc": "2026-10-25T22:28:13.873957+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.3785256310366094
+      },
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 374127,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-23a894251445983c6213cfcdf7e20e60.scope",
+          "prodbox-owned-23a894251445983c6213cfcdf7e20e60-expiry.timer",
+          "prodbox-owned-23a894251445983c6213cfcdf7e20e60-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "duplicate",
+        "negative_request": false,
+        "observed_terminal_ns": 2234084614069879,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "kind": "family",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-family-threaded-expired-create-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "family",
+          "expired-create"
+        ],
+        "started_utc": "2026-10-25T22:28:13.903877+00:00",
+        "completed_utc": "2026-10-25T22:28:13.911481+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.00762006314471364
+      },
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 2315,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-8bd96849e689df4f23bfc55aa00c1bf5.scope",
+          "prodbox-owned-8bd96849e689df4f23bfc55aa00c1bf5-expiry.timer",
+          "prodbox-owned-8bd96849e689df4f23bfc55aa00c1bf5-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "expired-create",
+        "negative_request": true,
+        "observed_terminal_ns": null,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "kind": "family",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-family-threaded-future-create-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "family",
+          "future-create"
+        ],
+        "started_utc": "2026-10-25T22:28:13.939845+00:00",
+        "completed_utc": "2026-10-25T22:28:13.947728+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.007909237872809172
+      },
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 2573,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-b365f28a74690ee9020a7c8037b6dc64.scope",
+          "prodbox-owned-b365f28a74690ee9020a7c8037b6dc64-expiry.timer",
+          "prodbox-owned-b365f28a74690ee9020a7c8037b6dc64-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "future-create",
+        "negative_request": true,
+        "observed_terminal_ns": null,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "kind": "family",
+      "style": "threaded",
+      "result": {
+        "record": "owned-kernel-family-threaded-foreign-descriptor-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-threaded-1",
+          "family",
+          "foreign-descriptor"
+        ],
+        "started_utc": "2026-10-25T22:28:13.978541+00:00",
+        "completed_utc": "2026-10-25T22:28:13.986493+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.007969642989337444
+      },
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 2774,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-ff7c341d79e2f04bc8fe503caf54f390.scope",
+          "prodbox-owned-ff7c341d79e2f04bc8fe503caf54f390-expiry.timer",
+          "prodbox-owned-ff7c341d79e2f04bc8fe503caf54f390-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "foreign-descriptor",
+        "negative_request": true,
+        "observed_terminal_ns": null,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "kind": "actual-public-fast-session",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-fast-session-nonthreaded-3.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-native-nonthreaded-3"
+        ],
+        "started_utc": "2026-10-25T22:28:10.951198+00:00",
+        "completed_utc": "2026-10-25T22:28:11.336462+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.3852794002741575
+      },
+      "observation": {
+        "cases": [
+          {
+            "case": 1,
+            "elapsed_micros": 54935,
+            "escaped_child_live_after_return": false,
+            "observed_child_identity": true,
+            "outcome": "Completed ExitSuccess"
+          },
+          {
+            "case": 2,
+            "elapsed_micros": 47763,
+            "escaped_child_live_after_return": false,
+            "observed_child_identity": true,
+            "outcome": "Completed ExitSuccess"
+          },
+          {
+            "case": 3,
+            "elapsed_micros": 42980,
+            "escaped_child_live_after_return": false,
+            "observed_child_identity": true,
+            "outcome": "Completed ExitSuccess"
+          },
+          {
+            "case": 4,
+            "elapsed_micros": 49803,
+            "escaped_child_live_after_return": false,
+            "observed_child_identity": true,
+            "outcome": "Completed ExitSuccess"
+          },
+          {
+            "case": 5,
+            "elapsed_micros": 45745,
+            "escaped_child_live_after_return": false,
+            "observed_child_identity": true,
+            "outcome": "Completed ExitSuccess"
+          },
+          {
+            "case": 6,
+            "elapsed_micros": 46190,
+            "escaped_child_live_after_return": false,
+            "observed_child_identity": true,
+            "outcome": "Completed ExitSuccess"
+          },
+          {
+            "case": 7,
+            "elapsed_micros": 48684,
+            "escaped_child_live_after_return": false,
+            "observed_child_identity": true,
+            "outcome": "Completed ExitSuccess"
+          },
+          {
+            "case": 8,
+            "elapsed_micros": 43751,
+            "escaped_child_live_after_return": false,
+            "observed_child_identity": true,
+            "outcome": "Completed ExitSuccess"
+          }
+        ],
+        "failed_cases": 0,
+        "fixed_case_count": 8
+      }
+    },
+    {
+      "kind": "actual-public-exec",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-exec-semantics-nonthreaded-3.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-exec-nonthreaded-3"
+        ],
+        "started_utc": "2026-10-25T22:34:58.738526+00:00",
+        "completed_utc": "2026-10-25T22:34:59.497997+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.7594866077415645
+      },
+      "observation": {
+        "actual_public_api": true,
+        "cases": [
+          {
+            "case": "absolute-inherited",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "absolute-explicit-cwd-env",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "search-uses-parent-path",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "relative-unicode",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "nul-argument",
+            "expectation": "RefuseNul",
+            "matched": false,
+            "passed": true
+          },
+          {
+            "case": "missing-executable",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "missing-cwd",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "plain-executable-shell-fallback",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "sigpipe-inheritance",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "sigint-inheritance",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "sigquit-inheritance",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "close-on-exec-descriptor",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          },
+          {
+            "case": "closed-stdin",
+            "expectation": "MatchProcess",
+            "matched": true,
+            "passed": true
+          }
+        ],
+        "count": 13,
+        "invalid_input_count": 1,
+        "paired_count": 12,
+        "passed": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-observer-nonthreaded-kill-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "kill"
+        ],
+        "started_utc": "2026-10-25T22:28:14.014978+00:00",
+        "completed_utc": "2026-10-25T22:28:14.045400+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.030442022252827883
+      },
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 26045,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "kill",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": false,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-observer-nonthreaded-terminate-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "terminate"
+        ],
+        "started_utc": "2026-10-25T22:28:14.074153+00:00",
+        "completed_utc": "2026-10-25T22:28:14.105253+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.031117322854697704
+      },
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 27126,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "terminate",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": false,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-observer-nonthreaded-terminate-then-kill-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "terminate-then-kill"
+        ],
+        "started_utc": "2026-10-25T22:28:14.134026+00:00",
+        "completed_utc": "2026-10-25T22:28:14.194830+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.06082107778638601
+      },
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 56620,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "terminate-then-kill",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": false,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-observer-nonthreaded-delayed-admission-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "delayed-admission"
+        ],
+        "started_utc": "2026-10-25T22:28:14.225942+00:00",
+        "completed_utc": "2026-10-25T22:28:14.305296+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.0793717079795897
+      },
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 75459,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "delayed-admission",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": false,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-observer-nonthreaded-wrong-limits-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "wrong-limits"
+        ],
+        "started_utc": "2026-10-25T22:28:14.333834+00:00",
+        "completed_utc": "2026-10-25T22:28:14.374915+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.04109738860279322
+      },
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 37162,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "wrong-limits",
+        "native_bus_result": "Right (Left KernelScopeResourceMismatch)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeResourceMismatch",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-observer-nonthreaded-wrong-cpu-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "wrong-cpu"
+        ],
+        "started_utc": "2026-10-25T22:28:14.405800+00:00",
+        "completed_utc": "2026-10-25T22:28:14.444124+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.0383410737849772
+      },
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 34324,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "wrong-cpu",
+        "native_bus_result": "Right (Left KernelScopeResourceMismatch)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeResourceMismatch",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-observer-nonthreaded-foreign-descriptor-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "foreign-descriptor"
+        ],
+        "started_utc": "2026-10-25T22:28:14.475209+00:00",
+        "completed_utc": "2026-10-25T22:28:14.497934+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.022743361070752144
+      },
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 18828,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "foreign-descriptor",
+        "native_bus_result": "Right (Left KernelScopeChildRefused)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeChildRefused",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-observer-nonthreaded-invalid-unit-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "invalid-unit"
+        ],
+        "started_utc": "2026-10-25T22:28:14.528202+00:00",
+        "completed_utc": "2026-10-25T22:28:14.548000+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.019813769031316042
+      },
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 15944,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "invalid-unit",
+        "native_bus_result": "Right (Left KernelScopeInvalidInput)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeInvalidInput",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-observer-nonthreaded-expired-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "expired"
+        ],
+        "started_utc": "2026-10-25T22:28:14.576813+00:00",
+        "completed_utc": "2026-10-25T22:28:14.601974+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.025182994082570076
+      },
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 21178,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "expired",
+        "native_bus_result": "Right (Left KernelScopeDeadlineReached)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeDeadlineReached",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-observer-nonthreaded-cancel-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "cancel"
+        ],
+        "started_utc": "2026-10-25T22:28:14.632773+00:00",
+        "completed_utc": "2026-10-25T22:28:14.664126+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.03137041535228491
+      },
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 27426,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "cancel",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "observer",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-observer-nonthreaded-parent-deadline-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "parent-deadline"
+        ],
+        "started_utc": "2026-10-25T22:28:14.695613+00:00",
+        "completed_utc": "2026-10-25T22:28:14.935270+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.23967626364901662
+      },
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 235176,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Just (Left KernelScopeDeadlineReached)",
+        "mode": "parent-deadline",
+        "native_bus_result": "Left (BusDeadlineReached BusRelease)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "kind": "family",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-family-nonthreaded-retire-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "family",
+          "retire"
+        ],
+        "started_utc": "2026-10-25T22:28:14.974213+00:00",
+        "completed_utc": "2026-10-25T22:28:15.035923+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.061731703113764524
+      },
+      "observation": {
+        "early_retirement": true,
+        "elapsed_micros": 56601,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-79e655ea00229ded10732d7c9154a2a4.scope",
+          "prodbox-owned-79e655ea00229ded10732d7c9154a2a4-expiry.timer",
+          "prodbox-owned-79e655ea00229ded10732d7c9154a2a4-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "retire",
+        "negative_request": false,
+        "observed_terminal_ns": 2234085771433796,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "kind": "family",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-family-nonthreaded-reject-live-retire-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "family",
+          "reject-live-retire"
+        ],
+        "started_utc": "2026-10-25T22:28:15.069390+00:00",
+        "completed_utc": "2026-10-25T22:28:15.119170+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.049796609207987785
+      },
+      "observation": {
+        "early_retirement": true,
+        "elapsed_micros": 45308,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-0961a8ccc371b4b2d4a1513da92ca152.scope",
+          "prodbox-owned-0961a8ccc371b4b2d4a1513da92ca152-expiry.timer",
+          "prodbox-owned-0961a8ccc371b4b2d4a1513da92ca152-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "reject-live-retire",
+        "negative_request": false,
+        "observed_terminal_ns": 2234085857212219,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": true
+      }
+    },
+    {
+      "kind": "family",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-family-nonthreaded-expired-retire-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "family",
+          "expired-retire"
+        ],
+        "started_utc": "2026-10-25T22:28:15.152346+00:00",
+        "completed_utc": "2026-10-25T22:28:15.206288+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.05396169237792492
+      },
+      "observation": {
+        "early_retirement": true,
+        "elapsed_micros": 49659,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-3443ff69786b99aac037e12748356160.scope",
+          "prodbox-owned-3443ff69786b99aac037e12748356160-expiry.timer",
+          "prodbox-owned-3443ff69786b99aac037e12748356160-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "expired-retire",
+        "negative_request": false,
+        "observed_terminal_ns": 2234085943037892,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": true
+      }
+    },
+    {
+      "kind": "family",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-family-nonthreaded-unsubmitted-retire-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "family",
+          "unsubmitted-retire"
+        ],
+        "started_utc": "2026-10-25T22:28:15.241183+00:00",
+        "completed_utc": "2026-10-25T22:28:15.285889+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.044724219013005495
+      },
+      "observation": {
+        "early_retirement": true,
+        "elapsed_micros": 40336,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-7b579f045b9bbc9641c8087fc1252681.scope",
+          "prodbox-owned-7b579f045b9bbc9641c8087fc1252681-expiry.timer",
+          "prodbox-owned-7b579f045b9bbc9641c8087fc1252681-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "unsubmitted-retire",
+        "negative_request": false,
+        "observed_terminal_ns": 2234086028146646,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": true
+      }
+    },
+    {
+      "kind": "family",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-family-nonthreaded-expiry-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "family",
+          "expiry"
+        ],
+        "started_utc": "2026-10-25T22:28:15.317573+00:00",
+        "completed_utc": "2026-10-25T22:28:15.692882+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.3753351392224431
+      },
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 370436,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-c3cf5667182ad4b8a08ac3ecaf12a138.scope",
+          "prodbox-owned-c3cf5667182ad4b8a08ac3ecaf12a138-expiry.timer",
+          "prodbox-owned-c3cf5667182ad4b8a08ac3ecaf12a138-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "expiry",
+        "negative_request": false,
+        "observed_terminal_ns": 2234086436657436,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "kind": "family",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-family-nonthreaded-term-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "family",
+          "term"
+        ],
+        "started_utc": "2026-10-25T22:28:15.747810+00:00",
+        "completed_utc": "2026-10-25T22:28:16.127413+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.3796314881183207
+      },
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 374497,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-52b86df4e07659982deff5af69bab40f.scope",
+          "prodbox-owned-52b86df4e07659982deff5af69bab40f-expiry.timer",
+          "prodbox-owned-52b86df4e07659982deff5af69bab40f-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "term",
+        "negative_request": false,
+        "observed_terminal_ns": 2234086540910317,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "kind": "family",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-family-nonthreaded-duplicate-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "family",
+          "duplicate"
+        ],
+        "started_utc": "2026-10-25T22:28:16.158674+00:00",
+        "completed_utc": "2026-10-25T22:28:16.536025+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.37737060990184546
+      },
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 373188,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-7f921e2eabab2ffac41cffff38447b1d.scope",
+          "prodbox-owned-7f921e2eabab2ffac41cffff38447b1d-expiry.timer",
+          "prodbox-owned-7f921e2eabab2ffac41cffff38447b1d-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "duplicate",
+        "negative_request": false,
+        "observed_terminal_ns": 2234087277255201,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "kind": "family",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-family-nonthreaded-expired-create-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "family",
+          "expired-create"
+        ],
+        "started_utc": "2026-10-25T22:28:16.567103+00:00",
+        "completed_utc": "2026-10-25T22:28:16.574260+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.00717400386929512
+      },
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 2421,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-a5ba680634855af3d8ce59ae03455ead.scope",
+          "prodbox-owned-a5ba680634855af3d8ce59ae03455ead-expiry.timer",
+          "prodbox-owned-a5ba680634855af3d8ce59ae03455ead-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "expired-create",
+        "negative_request": true,
+        "observed_terminal_ns": null,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "kind": "family",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-family-nonthreaded-future-create-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "family",
+          "future-create"
+        ],
+        "started_utc": "2026-10-25T22:28:16.604386+00:00",
+        "completed_utc": "2026-10-25T22:28:16.611710+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.007341661956161261
+      },
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 2439,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-1ef9a94823979c02a969c7540f87beb5.scope",
+          "prodbox-owned-1ef9a94823979c02a969c7540f87beb5-expiry.timer",
+          "prodbox-owned-1ef9a94823979c02a969c7540f87beb5-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "future-create",
+        "negative_request": true,
+        "observed_terminal_ns": null,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "kind": "family",
+      "style": "nonthreaded",
+      "result": {
+        "record": "owned-kernel-family-nonthreaded-foreign-descriptor-1.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-observer-nonthreaded-1",
+          "family",
+          "foreign-descriptor"
+        ],
+        "started_utc": "2026-10-25T22:28:16.648859+00:00",
+        "completed_utc": "2026-10-25T22:28:16.656164+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.007322598714381456
+      },
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 2535,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-0b338a00347a755ecb1162bddb3c877f.scope",
+          "prodbox-owned-0b338a00347a755ecb1162bddb3c877f-expiry.timer",
+          "prodbox-owned-0b338a00347a755ecb1162bddb3c877f-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "foreign-descriptor",
+        "negative_request": true,
+        "observed_terminal_ns": null,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "kind": "runtime-refusal-before-effect",
+      "style": "threaded-N2",
+      "result": {
+        "record": "owned-kernel-runtime-n2-2.result.json",
+        "command": [
+          ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-exec-threaded-3",
+          "--unsupported",
+          "+RTS",
+          "-N2",
+          "-RTS"
+        ],
+        "started_utc": "2026-10-25T22:34:59.526980+00:00",
+        "completed_utc": "2026-10-25T22:34:59.529933+00:00",
+        "exit_code": 0,
+        "wall_seconds": 0.002965231891721487
+      },
+      "observation": {
+        "elapsed_micros": 4,
+        "passed": true,
+        "runtime_refused_before_effect": true
+      }
+    }
+  ],
+  "subprocess_suite": {
+    "test_count": 47,
+    "result": {
+      "record": "owned-kernel-lifecycle-focus-4.result.json",
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-owned-kernel-lifecycle-focus-20261025-4",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=300s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "/home/matthewnowak/prodbox/.build/build/x86_64-linux/ghc-9.12.4/prodbox-0.1.0/t/prodbox-unit/build/prodbox-unit/prodbox-unit",
+        "-p",
+        "/killable subprocess runner/"
+      ],
+      "started_utc": "2026-10-25T22:33:20.925899+00:00",
+      "completed_utc": "2026-10-25T22:33:31.107414+00:00",
+      "exit_code": 0,
+      "wall_seconds": 10.18153418879956
+    }
+  },
+  "checks": [
+    {
+      "record": "owned-kernel-unit-build-3.result.json",
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-owned-kernel-unit-build-20261025-3",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=1800s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "cabal",
+        "build",
+        "--builddir=.build",
+        "lib:prodbox",
+        "test:prodbox-unit",
+        "--ghc-options=-Werror"
+      ],
+      "started_utc": "2026-10-25T22:27:15.395112+00:00",
+      "completed_utc": "2026-10-25T22:32:43.892794+00:00",
+      "exit_code": 0,
+      "wall_seconds": 328.49769990937784
+    },
+    {
+      "record": "owned-kernel-hlint-3.result.json",
+      "command": [
+        ".build/prodbox-style-tools/bin/hlint",
+        "--hint=.hlint.yaml",
+        "--with-group=default",
+        "--with-group=extra",
+        "src/Prodbox/Subprocess.hs",
+        "src/Prodbox/Subprocess/ScopeFamily.hs",
+        "src/Prodbox/Subprocess/KernelScope.hs",
+        "src/Prodbox/Subprocess/SystemdBus.hs",
+        "src/Prodbox/Subprocess/SystemdIdentity.hs",
+        "test/qualification/KernelScopeObservation.hs",
+        "test/qualification/OwnedSubprocessFastSessionEscape.hs",
+        "test/qualification/OwnedSubprocessExecSemantics.hs",
+        "test/unit/SubprocessKillable.hs"
+      ],
+      "started_utc": "2026-10-25T22:33:20.908407+00:00",
+      "completed_utc": "2026-10-25T22:33:27.236434+00:00",
+      "exit_code": 0,
+      "wall_seconds": 6.328049912117422
+    }
+  ],
+  "fixture_model_note": "Twelve valid execution cases match System.Process per runtime build. A separate typed RefuseNul case requires rejection before fork; System.Process truncates that invalid argument. The earlier 13-way equality expectation is retained as a failed fixture model. The standalone expectation/style follow-up changed no library or unit input from owned-kernel-unit-build-3.",
+  "resource_note": "Fixture child64MiB/tasks16/1CPU and helper16MiB/tasks8/1CPU/start30ms/stop30ms are explicit diagnostic limits, not production defaults or a measured deployment minimum. Scope admission independently reads manager and kernel CPU/memory/swap/PID limits. Host parent/family placement and concurrency admission remain required before the physical caller.",
+  "frozen_counterexample": "test/qualification/BOUNDED-CHILD-FAST-SESSION-ESCAPE-2026-10-25.json",
+  "preserved_failures": [
+    "owned-kernel-library-build-1.result.json",
+    "owned-kernel-lifecycle-focus-1.result.json",
+    "owned-kernel-lifecycle-focus-2.result.json",
+    "owned-kernel-hlint-2.result.json",
+    "owned-kernel-exec-semantics-threaded-2.result.json"
+  ],
+  "remaining": [
+    "whole-family parent/child/helper host-placement and concurrency admission",
+    "unknown-admission and lost-reply/cancellation recovery faults",
+    "actual API parent-crash/external-kill and pre-Go inherited-writer faults",
+    "physical held chart interpreter and coordinator caller",
+    "current full canonical/frontend and deployment qualification"
+  ]
+}

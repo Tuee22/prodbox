@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "counterexample": "VAULT-INIT-AUTHORITATIVE-WORKER-SUPERSEDED-FENCE-2026-10-24",
+  "live_recording": {
+    "invocation": "pre-6",
+    "exit": 1,
+    "wall_seconds": 1526.61,
+    "http_status": 409,
+    "wire_status": "state-conflict",
+    "engine_cause": "EngineSecretWorkerRefused",
+    "worker_cause": "StoredRequestBindingMismatch",
+    "binding_site": "authoritative-stored-request",
+    "differing_fields": [
+      "fence-generation",
+      "owner-nonce",
+      "operation-deadline"
+    ],
+    "closing_phase": "init-call-in-flight",
+    "vault_initialized": false,
+    "vault_sealed": true,
+    "ambiguity_observed": false,
+    "candidate_cycles": 0,
+    "hand_actions": []
+  },
+  "superseded_identity": {
+    "operator_sha256": "996a5c8c1daee93ba5d5485f3af4d51d566653995e9a390cda2d77689d48f4e7",
+    "full_source_manifest": "6f2f8e406b6918dc1253bd7f0b6f8939703dec9906baad740df0d22ff998f704",
+    "executable_source_manifest": "172de983a9ec637accfcc466b8443770abc6c44c769dc176da0c55840e779ff6",
+    "complete_source_identity_record": ".build/sprint-6.5/retained-init-state-conflict-20261024/superseded-source-identity.log",
+    "runtime_config_digest": "sha256:a268cf23aa2e881ee2b8c94a340c0a591d53773f7e2b690b7ef470998f907885",
+    "runtime_registry_manifest": "sha256:d9d3660458ec8adf68fa7e38dce101a17bd5dd094f37127dbb368b1989778cf9"
+  },
+  "causal_profile": {
+    "authored_load": "one serialized authoritative-recovery client with a retained worker checkpoint",
+    "fault_schedule": "acquire successor fence with fresh generation/owner/deadline; retain operation/action/request/storage and authoritative result",
+    "old_to_new_resource_mapping": "unchanged component and boundary-test envelopes; no additional worker or retained owner",
+    "broker_requests_and_limits": {
+      "cpu": "100m",
+      "memory": "128Mi",
+      "ephemeral_storage": "256Mi"
+    },
+    "parent_deadline_micros": 900000000,
+    "transport_maximum_micros": 300000000,
+    "broker_maximum_micros": 300000000,
+    "full_deployment_replayed_by_fixture": false,
+    "secret_values_recorded_or_hashed": false
+  },
+  "superseded_controls": {
+    "frozen_control_sha256": "6976bd21afa67f2277e819d590b2ffca7def12edc86bce87df746c1422fd7848",
+    "control_compiled_before_behavior_changes": true,
+    "linked_implementation": "current installed prodbox library at executable manifest 172de983a9ec637accfcc466b8443770abc6c44c769dc176da0c55840e779ff6; exact frozen worker source retained",
+    "helper_scope": "private exports opened only in ignored copy of the existing unit boundary harness",
+    "results": {
+      "pre-receipt": {
+        "command": [
+          ".build/sprint-2.145/superseded-control",
+          "pre-receipt"
+        ],
+        "exit": 1,
+        "expected_exit": 1,
+        "wall_seconds": 0.003,
+        "semantic_control_executed": true,
+        "completed_utc": "2026-10-24T01:36:52.678606+00:00"
+      },
+      "authoritative-terminal": {
+        "command": [
+          ".build/sprint-2.145/superseded-control",
+          "authoritative-terminal"
+        ],
+        "exit": 1,
+        "expected_exit": 1,
+        "wall_seconds": 0.003,
+        "semantic_control_executed": true,
+        "completed_utc": "2026-10-24T01:36:52.681434+00:00"
+      }
+    }
+  },
+  "required_replacement": "Only exact immutable identity plus strictly superseded fence may settle an authoritative predecessor. Preserve UID-preconditioned quiescence/readback, exact result comparison and receipt cleanup; never allocate/replay init or reset storage.",
+  "replacement_controls": {
+    "pre-receipt": {
+      "exit": 0,
+      "wall_seconds": 0.003,
+      "semantic_control_executed": true,
+      "completed_utc": "2026-10-24T02:10:11.730070+00:00"
+    },
+    "authoritative-terminal": {
+      "exit": 0,
+      "wall_seconds": 0.003,
+      "semantic_control_executed": true,
+      "completed_utc": "2026-10-24T02:10:11.733060+00:00"
+    }
+  },
+  "qualification": "pending; no class closure",
+  "retained_result_sibling": {
+    "scope": "offline source/physical composition finding; not claimed as the pre-6 live checkpoint shape",
+    "mechanism": "Production read only the separate encrypted-response object while the older physical fixture remembered its init mode. A durable worker result can precede that separate publication.",
+    "superseded_controls": {
+      "control_sha256": "ef71ecba8fb62a6f9673b9af895d3193ec68fe84faf931e8f5f73041631263ce",
+      "producer": "frozen actual ProductionEngine.runLocal with private exports opened; only package-qualified Crypto.Random import added to resolve workbench package ambiguity",
+      "clients_scope": "Exact closed LocalRecoverRootInitCall branch does not evaluate clients; all store observations come from the retained boundary snapshot",
+      "result_scope": "offline sibling finding; not the live pre-6 checkpoint shape",
+      "first_compile_refusal": "root-control-build-superseded.log; PackageImports correction is control-only",
+      "results": {
+        "captured": {
+          "command": [
+            ".build/sprint-2.145/superseded-root-producer-control",
+            "captured"
+          ],
+          "exit": 1,
+          "expected_exit": 1,
+          "wall_seconds": 0.004,
+          "semantic_control_executed": true,
+          "completed_utc": "2026-10-24T01:53:28.616604+00:00"
+        },
+        "classified": {
+          "command": [
+            ".build/sprint-2.145/superseded-root-producer-control",
+            "classified"
+          ],
+          "exit": 1,
+          "expected_exit": 1,
+          "wall_seconds": 0.005,
+          "semantic_control_executed": true,
+          "completed_utc": "2026-10-24T01:53:28.621403+00:00"
+        }
+      }
+    },
+    "required_replacement": "Use the shared retained-store observer; validate encrypted response root binding/schema/recipient commitment and reconcile exact worker result before root advancement. Preserve classified ambiguity and treat non-durable responses as ambiguity.",
+    "replacement_controls": {
+      "captured": {
+        "exit": 0,
+        "wall_seconds": 0.006,
+        "semantic_control_executed": true,
+        "completed_utc": "2026-10-24T02:10:14.847854+00:00"
+      },
+      "classified": {
+        "exit": 0,
+        "wall_seconds": 0.005,
+        "semantic_control_executed": true,
+        "completed_utc": "2026-10-24T02:10:14.852771+00:00"
+      }
+    },
+    "replacement_target_adapter": "Same retained-store fault inputs; CPP selects shared replacement observer instead of the frozen actual producer. Original control main and frozen executable remain preserved."
+  },
+  "regression_scope": {
+    "focused_cases": 56,
+    "owned_suite_cases": 168,
+    "full_deployment_replayed": false,
+    "canonical_and_frontend": "pending"
+  }
+}

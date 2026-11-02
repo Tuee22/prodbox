@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "counterexample": "RPC-BIRTH-RETIREMENT-PUBLIC-SOURCE-DISCARDED-2026-10-25",
+  "owning_sprint": "6.5",
+  "banked_utc": "2026-10-25T09:16:44.971076+00:00",
+  "scope": "Canonical retained-record transition/reload and exact-version native Vault signing after latest-version drift. Synthetic fixed home source; no deployed startup, physical pair restore or qualification claim.",
+  "repository_reproducer": {
+    "module": "test/unit/ControlPlaneRpcAdmissionBirth.hs",
+    "cases": "All5 historical schema-one byte roundtrips, source-known historical retirement, new durable Retiring/Retired native signing under drift, unchanged footprint, missing/malformed/unknown provenance, original wire guards.",
+    "canonical_validation": "prodbox dev check"
+  },
+  "causal_profile": {
+    "old_result": "Retire/finish discards public source seed. Both canonically reloaded phases refuse RpcBirthSeedChanged when native latest becomes2 while original version1 remains available.",
+    "required_result": "Schema2 retains exact original complete public seed through precommit retirement; cold recovery signs original native1 without mutation or unrelated key lookups. Historical schema1 retains its original bytes/meaning and explicit migration/removal ownership.",
+    "old_to_new_envelope_mapping": "Same admission/marker coordinates, descriptor pin, inner Authority aggregate, source identities, client/reservation bounds and native key material. Retiring/Retired keep the same byte footprint as the already admitted schema2 preparation. No resource or transport ceiling increases.",
+    "new_current_record_schema": 2,
+    "historical_record_schema": 1,
+    "record_frame_unchanged": "prodbox-rpc-birth/v1 NUL with explicit payload schema discriminator",
+    "resource_envelopes_increased": false
+  },
+  "frozen": {
+    "full_manifest": "2ada128fe2d656079b8db5d4e11a31ac4181e2c19b01af87b3b8f6665f0d2d56",
+    "executable_manifest": "edef16a257afe0714268931d984cad0da8a101b013909d879719d86947f63ac1",
+    "binary_sha256": "38701e205ef29084cbc8b440a5c2399b0fece07e23d894714e577842fed9c9cb",
+    "probe_source_sha256": "aff5cfe232870847edf415edb606371c6a675a83d175a28006b5b95b39574c1f",
+    "fixture_source_sha256": "465da6f6f0cd3841265cad1ffe724f45da0940276d46000ab1af6bb910c34431",
+    "semantic_exit": 1,
+    "wall_seconds": 0.042267235927283764,
+    "record": ".build/sprint-6.5/rpc-retired-provenance-20261025/frozen-record.json"
+  },
+  "replacement": {
+    "full_manifest_at_probe_banking": "2855ffd5872f6e5a5a1e0b3bd47b1d0cd0544437a06386287376b833795b2f6c",
+    "executable_manifest_at_probe_banking": "99bbc70d42f8e0d8046c1d9fe1c5dda1f6613b92f1d6a09b1a59da634022eac0",
+    "preserved_binary": ".build/sprint-6.5/rpc-retired-provenance-20261025/replacement-retired-probe-r1",
+    "binary_sha256": "13fc82e3b21cc002b7fbda51c87aa5d4873a47bcf64dcb2c94995d34a44987b1",
+    "probe_source_sha256": "aff5cfe232870847edf415edb606371c6a675a83d175a28006b5b95b39574c1f",
+    "semantic_exit": 0,
+    "wall_seconds": 0.04814770491793752,
+    "validation_record": ".build/sprint-6.5/rpc-retired-provenance-20261025/validation-progress.json"
+  },
+  "historical_fixture": "RPC-BIRTH-SCHEMA-ONE-HISTORICAL-2026-10-25.json",
+  "historical_cleanup_owner": "Sprint6.5; schema-one operational readers/seedless terminal writers remain Pending Removal until native migration, remedy and archival disposition are verified.",
+  "deployment_qualification": "pending",
+  "qualified_cycles": 0,
+  "hand_actions": []
+}

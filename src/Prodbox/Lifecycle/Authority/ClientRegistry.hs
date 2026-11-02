@@ -5,7 +5,7 @@
 
 -- | Fixed-capacity registered clients for Lifecycle Authority submission.
 --
--- A transport principal is registered at one numeric slot and key generation.
+-- Each origin has one numeric slot with independently retained key generations.
 -- Callers supply only a stable submission key and request digest; the Authority
 -- allocates the monotone sequence.  Exact replay returns the original
 -- 'OperationId', while an arbitrary principal can never create a map entry.
@@ -14,6 +14,8 @@ module Prodbox.Lifecycle.Authority.ClientRegistry
   , ClientPrincipalError (..)
   , mkClientPrincipal
   , clientPrincipalForCaller
+  , clientPrincipalForRpcOrigin
+  , clientPrincipalCaller
   , clientPrincipalText
   , ClientSubmissionKey
   , ClientSubmissionKeyError (..)
@@ -39,7 +41,13 @@ module Prodbox.Lifecycle.Authority.ClientRegistry
   , RegisteredClientTable
   , RegisteredClientTableError (..)
   , mkRegisteredClientTable
+  , mkVersionedRegisteredClientTable
+  , reconcileRegisteredClientTable
+  , registeredClientTableSpecifications
+  , registeredClientTableRetired
+  , registeredClientTableRequiresRpcRegistry
   , registeredClientTableCapacity
+  , registeredClientMaximumSlots
   , registeredClientTableSize
   , registeredClientReservationCount
   , RegisteredClientTableInvariantError (..)
@@ -56,14 +64,20 @@ module Prodbox.Lifecycle.Authority.ClientRegistry
   )
 where
 
-import Codec.Serialise (Serialise)
+import Codec.CBOR.Decoding qualified as Cbor
+import Codec.CBOR.Encoding qualified as Cbor
+import Codec.Serialise (Serialise (decode, encode))
+import Control.Monad (unless)
 import Data.Char (isControl, isSpace)
 import Data.Foldable (traverse_)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Read qualified as TextRead
+import Data.Word (Word64)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.CallerPrincipal
@@ -92,6 +106,9 @@ import Prodbox.Lifecycle.Authority.Submission
 hardMaximumRegisteredClients :: Natural
 hardMaximumRegisteredClients = 1024
 
+registeredClientMaximumSlots :: Natural
+registeredClientMaximumSlots = hardMaximumRegisteredClients
+
 hardMaximumReservationsPerClient :: Natural
 hardMaximumReservationsPerClient = 65536
 
@@ -119,12 +136,40 @@ mkClientPrincipal value
             maximumIdentityCharacters
         )
   | Text.any invalidIdentityCharacter value = Left ClientPrincipalInvalidCharacter
-  | value `notElem` fmap callerPrincipalText allCallerPrincipals =
+  | clientPrincipalCaller (ClientPrincipal value) == Nothing =
       Left (ClientPrincipalUnknown value)
   | otherwise = Right (ClientPrincipal value)
 
 clientPrincipalForCaller :: CallerPrincipal -> ClientPrincipal
 clientPrincipalForCaller = ClientPrincipal . callerPrincipalText
+
+-- | This suffix is retained Authority metadata, never a submission field.
+clientPrincipalForRpcOrigin
+  :: CallerPrincipal -> RegisteredClientGeneration -> Either ClientPrincipalError ClientPrincipal
+clientPrincipalForRpcOrigin caller generation =
+  mkClientPrincipal
+    ( callerPrincipalText caller
+        <> "/rpc-origin/"
+        <> naturalText (registeredClientGenerationValue generation)
+    )
+
+clientPrincipalCaller :: ClientPrincipal -> Maybe CallerPrincipal
+clientPrincipalCaller (ClientPrincipal value) =
+  case filter matches allCallerPrincipals of
+    [caller] -> Just caller
+    _ -> Nothing
+ where
+  matches caller
+    | value == callerPrincipalText caller = True
+    | otherwise = case Text.stripPrefix (callerPrincipalText caller <> "/rpc-origin/") value of
+        Nothing -> False
+        Just suffix -> case TextRead.decimal suffix of
+          Right (number, rest) ->
+            Text.null rest
+              && number > (0 :: Natural)
+              && number <= fromIntegral (maxBound :: Word64)
+              && naturalText number == suffix
+          Left _ -> False
 
 clientPrincipalText :: ClientPrincipal -> Text
 clientPrincipalText (ClientPrincipal value) = value
@@ -256,12 +301,10 @@ registeredClientIdForCaller
   -> RegisteredClientGeneration
   -> RegisteredClientTable
   -> Maybe ClientId
-registeredClientIdForCaller caller generation table = do
-  client <- Map.lookup (clientPrincipalForCaller caller) (registeredClientStates table)
-  let spec = registeredClientStateSpec client
-  if registeredClientGeneration spec == generation
-    then Just (registeredClientId spec)
-    else Nothing
+registeredClientIdForCaller caller generation table =
+  case callerState caller generation table of
+    Right (_, client) -> Just (registeredClientId (registeredClientStateSpec client))
+    Left _ -> Nothing
 
 data RegisteredReservation = RegisteredReservation
   { registeredReservationSequence :: !ClientSequence
@@ -279,12 +322,76 @@ data RegisteredClientState = RegisteredClientState
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
+type RegisteredClientIdentity = (ClientPrincipal, RegisteredClientGeneration)
+
 data RegisteredClientTable = RegisteredClientTable
-  { registeredClientTableCapacity :: !Natural
-  , registeredClientStates :: !(Map ClientPrincipal RegisteredClientState)
+  { internalRegisteredClientCapacity :: !Natural
+  , registeredClientStates :: !(Map RegisteredClientIdentity RegisteredClientState)
+  , internalRegisteredClientRetired :: !(Set RegisteredClientIdentity)
   }
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (Serialise)
+  deriving stock (Eq, Show)
+
+registeredClientTableCapacity :: RegisteredClientTable -> Natural
+registeredClientTableCapacity = internalRegisteredClientCapacity
+
+registeredClientTableSpecifications :: RegisteredClientTable -> [RegisteredClientSpec]
+registeredClientTableSpecifications = fmap registeredClientStateSpec . Map.elems . registeredClientStates
+
+registeredClientTableRetired :: RegisteredClientTable -> Set RegisteredClientIdentity
+registeredClientTableRetired = internalRegisteredClientRetired
+
+registeredClientTableRequiresRpcRegistry :: RegisteredClientTable -> Bool
+registeredClientTableRequiresRpcRegistry table =
+  not (Set.null (internalRegisteredClientRetired table))
+    || length principals /= Set.size (Set.fromList principals)
+    || any
+      (\principal -> clientPrincipalText principal `notElem` fmap callerPrincipalText allCallerPrincipals)
+      principals
+ where
+  principals = map registeredClientPrincipal (registeredClientTableSpecifications table)
+
+-- Preserve the exact legacy product/map encoding while that shape suffices.
+-- A versioned table keeps prior generations and retired reservations in place.
+instance Serialise RegisteredClientTable where
+  encode table
+    | Set.null (internalRegisteredClientRetired table)
+        && length principals == Set.size (Set.fromList principals)
+        && all legacy principals =
+        Cbor.encodeListLen 3
+          <> Cbor.encodeWord 0
+          <> encode (registeredClientTableCapacity table)
+          <> encode (Map.fromList [(principal, state) | ((principal, _), state) <- states])
+    | otherwise =
+        Cbor.encodeListLen 5
+          <> Cbor.encodeWord 0
+          <> Cbor.encodeWord 2
+          <> encode (registeredClientTableCapacity table)
+          <> encode (registeredClientStates table)
+          <> encode (internalRegisteredClientRetired table)
+   where
+    states = Map.toAscList (registeredClientStates table)
+    principals = fmap (fst . fst) states
+    legacy principal = clientPrincipalText principal `elem` fmap callerPrincipalText allCallerPrincipals
+  decode = do
+    fields <- Cbor.decodeListLen
+    tag <- Cbor.decodeWord
+    unless (tag == (0 :: Word)) (fail "RegisteredClientTable: unknown constructor")
+    case fields of
+      3 -> do
+        capacity <- decode
+        states <- decode
+        pure (RegisteredClientTable capacity (restoreLegacy states) Set.empty)
+      5 -> do
+        version <- Cbor.decodeWord
+        unless (version == (2 :: Word)) (fail "RegisteredClientTable: unknown schema")
+        RegisteredClientTable <$> decode <*> decode <*> decode
+      _ -> fail "RegisteredClientTable: unknown field count"
+   where
+    restoreLegacy states =
+      Map.fromList
+        [ ((principal, registeredClientGeneration (registeredClientStateSpec state)), state)
+        | (principal, state) <- Map.toAscList states
+        ]
 
 data RegisteredClientTableError
   = RegisteredClientTableCapacityMustBePositive
@@ -292,6 +399,14 @@ data RegisteredClientTableError
   | RegisteredClientTableOverCapacity !Natural !Natural
   | RegisteredClientPrincipalDuplicated !ClientPrincipal
   | RegisteredClientSlotDuplicated !RegisteredClientSlot
+  | RegisteredClientGenerationDuplicated !ClientPrincipal !RegisteredClientGeneration
+  | RegisteredClientPrincipalSlotChanged !ClientPrincipal
+  | RegisteredClientCallerGenerationDuplicated !CallerPrincipal !RegisteredClientGeneration
+  | RegisteredClientPrincipalDefinitionInvalid !ClientPrincipal
+  | RegisteredClientRetirementMissing !ClientPrincipal !RegisteredClientGeneration
+  | RegisteredClientDefinitionChanged !ClientPrincipal !RegisteredClientGeneration
+  | RegisteredClientRetirementRegressed !ClientPrincipal !RegisteredClientGeneration
+  | RegisteredClientCapacityChanged
   deriving stock (Eq, Show)
 
 mkRegisteredClientTable
@@ -312,26 +427,87 @@ mkRegisteredClientTable capacity specs
       Left (RegisteredClientPrincipalDuplicated duplicate)
   | Just duplicate <- firstDuplicate slots =
       Left (RegisteredClientSlotDuplicated duplicate)
-  | otherwise =
-      Right
-        RegisteredClientTable
-          { registeredClientTableCapacity = capacity
-          , registeredClientStates =
-              Map.fromList
-                [ ( registeredClientPrincipal spec
-                  , RegisteredClientState
-                      { registeredClientStateSpec = spec
-                      , registeredClientSequenceHighWater = 0
-                      , registeredClientReservations = Map.empty
-                      }
-                  )
-                | spec <- specs
-                ]
-          }
+  | otherwise = mkVersionedRegisteredClientTable capacity specs Set.empty
  where
   observedSize = fromIntegral (length specs)
   principals = fmap registeredClientPrincipal specs
   slots = fmap registeredClientSlot specs
+
+mkVersionedRegisteredClientTable
+  :: Natural
+  -> [RegisteredClientSpec]
+  -> Set RegisteredClientIdentity
+  -> Either RegisteredClientTableError RegisteredClientTable
+mkVersionedRegisteredClientTable capacity specs retired = do
+  unless (capacity > 0) (Left RegisteredClientTableCapacityMustBePositive)
+  unless
+    (capacity <= hardMaximumRegisteredClients)
+    (Left (RegisteredClientTableCapacityExceedsHardMaximum capacity hardMaximumRegisteredClients))
+  unless
+    (fromIntegral (length specs) <= capacity)
+    (Left (RegisteredClientTableOverCapacity (fromIntegral (length specs)) capacity))
+  case firstDuplicate (map specIdentity specs) of
+    Just (principal, generation) -> Left (RegisteredClientGenerationDuplicated principal generation)
+    Nothing -> Right ()
+  traverse_ validPrincipal specs
+  traverse_
+    checkPair
+    [(left, right) | (index, left) <- zip [0 :: Int ..] specs, right <- drop (index + 1) specs]
+  let states =
+        Map.fromList
+          [(specIdentity spec, RegisteredClientState spec 0 Map.empty) | spec <- specs]
+  case Set.lookupMin (Set.difference retired (Map.keysSet states)) of
+    Just (principal, generation) -> Left (RegisteredClientRetirementMissing principal generation)
+    Nothing -> Right (RegisteredClientTable capacity states retired)
+ where
+  validPrincipal spec = case mkClientPrincipal (clientPrincipalText (registeredClientPrincipal spec)) of
+    Left _ -> Left (RegisteredClientPrincipalDefinitionInvalid (registeredClientPrincipal spec))
+    Right _ -> Right ()
+  checkPair (left, right)
+    | registeredClientPrincipal left == registeredClientPrincipal right
+        && registeredClientSlot left /= registeredClientSlot right =
+        Left (RegisteredClientPrincipalSlotChanged (registeredClientPrincipal left))
+    | registeredClientPrincipal left /= registeredClientPrincipal right
+        && registeredClientSlot left == registeredClientSlot right =
+        Left (RegisteredClientSlotDuplicated (registeredClientSlot left))
+    | clientPrincipalCaller (registeredClientPrincipal left)
+        == clientPrincipalCaller (registeredClientPrincipal right)
+        && registeredClientGeneration left == registeredClientGeneration right =
+        case clientPrincipalCaller (registeredClientPrincipal left) of
+          Just caller -> Left (RegisteredClientCallerGenerationDuplicated caller (registeredClientGeneration left))
+          Nothing -> Left (RegisteredClientPrincipalDefinitionInvalid (registeredClientPrincipal left))
+    | otherwise = Right ()
+
+specIdentity :: RegisteredClientSpec -> RegisteredClientIdentity
+specIdentity spec = (registeredClientPrincipal spec, registeredClientGeneration spec)
+
+-- | Add definitions and retire membership without dropping any cursor/history.
+-- Capacity and all previous definitions are immutable; retirement is monotone.
+reconcileRegisteredClientTable
+  :: RegisteredClientTable
+  -> RegisteredClientTable
+  -> Either RegisteredClientTableError RegisteredClientTable
+reconcileRegisteredClientTable desired previous = do
+  unless
+    (registeredClientTableCapacity desired == registeredClientTableCapacity previous)
+    (Left RegisteredClientCapacityChanged)
+  traverse_ preserve (Map.toAscList (registeredClientStates previous))
+  case Set.lookupMin
+    (Set.difference (internalRegisteredClientRetired previous) (internalRegisteredClientRetired desired)) of
+    Just (principal, generation) -> Left (RegisteredClientRetirementRegressed principal generation)
+    Nothing -> Right ()
+  pure
+    desired
+      { registeredClientStates =
+          Map.union (registeredClientStates previous) (registeredClientStates desired)
+      }
+ where
+  preserve (identity@(principal, generation), state) =
+    unless
+      ( fmap registeredClientStateSpec (Map.lookup identity (registeredClientStates desired))
+          == Just (registeredClientStateSpec state)
+      )
+      (Left (RegisteredClientDefinitionChanged principal generation))
 
 registeredClientTableSize :: RegisteredClientTable -> Natural
 registeredClientTableSize = fromIntegral . Map.size . registeredClientStates
@@ -339,11 +515,13 @@ registeredClientTableSize = fromIntegral . Map.size . registeredClientStates
 registeredClientReservationCount
   :: ClientPrincipal -> RegisteredClientTable -> Maybe Natural
 registeredClientReservationCount principal table =
-  fromIntegral . Map.size . registeredClientReservations
-    <$> Map.lookup principal (registeredClientStates table)
+  case [state | ((owner, _), state) <- Map.toList (registeredClientStates table), owner == principal] of
+    [] -> Nothing
+    states -> Just (sum (map (fromIntegral . Map.size . registeredClientReservations) states))
 
 data RegisteredClientTableInvariantError
   = RegisteredClientTableDefinitionInvalid !RegisteredClientTableError
+  | RegisteredClientStateGenerationMismatch !ClientPrincipal
   | RegisteredClientStateKeyMismatch !ClientPrincipal !ClientPrincipal
   | RegisteredClientPrincipalInvalid !ClientPrincipal !ClientPrincipalError
   | RegisteredClientSlotInvalid !ClientPrincipal !RegisteredClientSlotError
@@ -369,12 +547,15 @@ validateRegisteredClientTable
 validateRegisteredClientTable ledger table = do
   let states = Map.toList (registeredClientStates table)
       specs = fmap (registeredClientStateSpec . snd) states
-  case mkRegisteredClientTable (registeredClientTableCapacity table) specs of
+  case mkVersionedRegisteredClientTable
+    (registeredClientTableCapacity table)
+    specs
+    (internalRegisteredClientRetired table) of
     Left err -> Left (RegisteredClientTableDefinitionInvalid err)
     Right _ -> Right ()
   traverse_ validateState states
  where
-  validateState (mapPrincipal, client) = do
+  validateState ((mapPrincipal, mapGeneration), client) = do
     let spec = registeredClientStateSpec client
         specPrincipal = registeredClientPrincipal spec
         reservationCount = fromIntegral (Map.size (registeredClientReservations client))
@@ -383,6 +564,9 @@ validateRegisteredClientTable ledger table = do
     if mapPrincipal == specPrincipal
       then Right ()
       else Left (RegisteredClientStateKeyMismatch mapPrincipal specPrincipal)
+    unless
+      (mapGeneration == registeredClientGeneration spec)
+      (Left (RegisteredClientStateGenerationMismatch specPrincipal))
     case mkClientPrincipal (clientPrincipalText specPrincipal) of
       Left err -> Left (RegisteredClientPrincipalInvalid specPrincipal err)
       Right _ -> Right ()
@@ -451,12 +635,13 @@ validateRegisteredClientTable ledger table = do
           _ -> Left (RegisteredClientReservationMissingFromLedger principal submissionKey)
 
 -- | Compare only immutable registry definition: capacity, principals, slots,
--- key generations, and per-client reservation ceilings.  Evolving cursors and
+-- key generations, retired membership, and per-client reservation ceilings.  Evolving cursors and
 -- reservations are deliberately ignored.
 registeredClientTableConfigurationMatches
   :: RegisteredClientTable -> RegisteredClientTable -> Bool
 registeredClientTableConfigurationMatches expected observed =
   registeredClientTableCapacity expected == registeredClientTableCapacity observed
+    && internalRegisteredClientRetired expected == internalRegisteredClientRetired observed
     && specifications expected == specifications observed
  where
   specifications = Map.map registeredClientStateSpec . registeredClientStates
@@ -522,27 +707,36 @@ inspectRegisteredSubmission
   -> RequestDigest
   -> RegisteredSubmissionInspection
 inspectRegisteredSubmission ledger table caller generation submissionKey digest =
-  case Map.lookup principal (registeredClientStates table) of
-    Nothing -> known RegisteredSubmissionRefusedUnregistered
-    Just client
-      | expectedGeneration /= generation ->
-          known
-            ( RegisteredSubmissionRefusedGenerationMismatch
-                expectedGeneration
-                generation
-            )
-      | otherwise ->
-          case Map.lookup submissionKey (registeredClientReservations client) of
-            Nothing -> RegisteredSubmissionFresh
-            Just reservation -> known (replayExistingSubmission ledger client reservation digest)
+  case callerState caller generation table of
+    Left refusal -> RegisteredSubmissionKnown refusal
+    Right (_, client) -> case Map.lookup submissionKey (registeredClientReservations client) of
+      Nothing -> RegisteredSubmissionFresh
+      Just reservation -> RegisteredSubmissionKnown (replayExistingSubmission ledger client reservation digest)
+
+callerState
+  :: CallerPrincipal
+  -> RegisteredClientGeneration
+  -> RegisteredClientTable
+  -> Either RegisteredSubmissionDecision (RegisteredClientIdentity, RegisteredClientState)
+callerState caller generation table =
+  case filter ((== generation) . snd . fst) candidates of
+    [entry@(identity, _)]
+      | identity `Set.member` internalRegisteredClientRetired table ->
+          Left RegisteredSubmissionRefusedUnregistered
+      | otherwise -> Right entry
+    [] -> case [ keyGeneration
+               | (identity@(_, keyGeneration), _) <- candidates
+               , identity `Set.notMember` internalRegisteredClientRetired table
+               ] of
+      [] -> Left RegisteredSubmissionRefusedUnregistered
+      active -> Left (RegisteredSubmissionRefusedGenerationMismatch (maximum active) generation)
+    _ -> Left RegisteredSubmissionRefusedUnregistered
  where
-  principal = clientPrincipalForCaller caller
-  expectedGeneration =
-    maybe
-      generation
-      (registeredClientGeneration . registeredClientStateSpec)
-      (Map.lookup principal (registeredClientStates table))
-  known = RegisteredSubmissionKnown
+  candidates =
+    [ (identity, state)
+    | (identity@(principal, _), state) <- Map.toAscList (registeredClientStates table)
+    , clientPrincipalCaller principal == Just caller
+    ]
 
 reserveRegisteredSubmission
   :: AuthorityEpoch
@@ -557,13 +751,12 @@ reserveRegisteredSubmission epoch ledger table caller generation submissionKey d
   case inspectRegisteredSubmission ledger table caller generation submissionKey digest of
     RegisteredSubmissionKnown decision -> unchanged decision
     RegisteredSubmissionFresh ->
-      case Map.lookup principal (registeredClientStates table) of
-        Nothing -> unchanged RegisteredSubmissionRefusedUnregistered
-        Just client -> reserveFresh client
+      case callerState caller generation table of
+        Left refusal -> unchanged refusal
+        Right (identity, client) -> reserveFresh identity client
  where
-  principal = clientPrincipalForCaller caller
   unchanged decision = (decision, ledger, table)
-  reserveFresh client
+  reserveFresh identity client
     | fromIntegral (Map.size (registeredClientReservations client))
         >= registeredClientMaximumReservations (registeredClientStateSpec client) =
         unchanged RegisteredSubmissionRefusedReservationCapacity
@@ -593,7 +786,7 @@ reserveRegisteredSubmission epoch ledger table caller generation submissionKey d
                     nextTable =
                       table
                         { registeredClientStates =
-                            Map.insert principal nextClient (registeredClientStates table)
+                            Map.insert identity nextClient (registeredClientStates table)
                         }
                  in (RegisteredSubmissionAccepted operationId, nextLedger, nextTable)
               SubmissionDuplicate _ ->
@@ -644,25 +837,20 @@ observeRegisteredSubmission
   -> ClientSubmissionKey
   -> RegisteredSubmissionObservation
 observeRegisteredSubmission ledger table caller generation submissionKey =
-  case Map.lookup principal (registeredClientStates table) of
-    Nothing -> RegisteredSubmissionObserveRefusedUnregistered
-    Just client
-      | registeredClientGeneration (registeredClientStateSpec client) /= generation ->
-          RegisteredSubmissionObserveRefusedGenerationMismatch
-            (registeredClientGeneration (registeredClientStateSpec client))
-            generation
-      | otherwise -> case Map.lookup submissionKey (registeredClientReservations client) of
-          Nothing -> RegisteredSubmissionUnknown
-          Just reservation ->
-            let operationId = operationIdFor client reservation
-             in case submissionStatus
-                  (registeredClientId (registeredClientStateSpec client))
-                  (registeredReservationSequence reservation)
-                  ledger of
-                  StatusUnknown -> RegisteredSubmissionObserveDiverged
-                  status -> RegisteredSubmissionObserved operationId status
- where
-  principal = clientPrincipalForCaller caller
+  case callerState caller generation table of
+    Left (RegisteredSubmissionRefusedGenerationMismatch expected actual) ->
+      RegisteredSubmissionObserveRefusedGenerationMismatch expected actual
+    Left _ -> RegisteredSubmissionObserveRefusedUnregistered
+    Right (_, client) -> case Map.lookup submissionKey (registeredClientReservations client) of
+      Nothing -> RegisteredSubmissionUnknown
+      Just reservation ->
+        let operationId = operationIdFor client reservation
+         in case submissionStatus
+              (registeredClientId (registeredClientStateSpec client))
+              (registeredReservationSequence reservation)
+              ledger of
+              StatusUnknown -> RegisteredSubmissionObserveDiverged
+              status -> RegisteredSubmissionObserved operationId status
 
 lookupSubmissionRecord
   :: SubmissionLedger -> ClientId -> ClientSequence -> Maybe SubmissionRecord

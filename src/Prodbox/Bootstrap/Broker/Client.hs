@@ -32,6 +32,7 @@ module Prodbox.Bootstrap.Broker.Client
   , mkBrokerActionRequest
   , brokerRequestDigestForAction
   , brokerRequestDigestForPkiAction
+  , brokerMutationTransportTimeoutMicros
   , queryBrokerHealth
   , queryBrokerReadiness
   , initializeVault
@@ -678,4 +679,7 @@ targetReadConfig :: HttpConfig
 targetReadConfig = defaultHttpConfig {httpRequestTimeoutMicros = 5 * 1000 * 1000}
 
 targetWriteConfig :: HttpConfig
-targetWriteConfig = defaultHttpConfig {httpRequestTimeoutMicros = 5 * 60 * 1000 * 1000}
+targetWriteConfig = defaultHttpConfig {httpRequestTimeoutMicros = brokerMutationTransportTimeoutMicros}
+
+brokerMutationTransportTimeoutMicros :: Int
+brokerMutationTransportTimeoutMicros = 5 * 60 * 1000 * 1000

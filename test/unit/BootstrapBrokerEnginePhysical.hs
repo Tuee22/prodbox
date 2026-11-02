@@ -17,7 +17,7 @@ module BootstrapBrokerEnginePhysical
   )
 where
 
-import Codec.Serialise (serialise)
+import Codec.Serialise (deserialiseOrFail, serialise)
 import Control.Exception
   ( AsyncException (ThreadKilled)
   , SomeException
@@ -26,7 +26,9 @@ import Control.Exception
   , throwIO
   , try
   )
-import Control.Monad (forM_, void)
+import Control.Monad (forM_, void, when)
+import Data.Aeson (eitherDecodeStrict', withObject, (.:))
+import Data.Aeson.Types (parseEither)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Base64 qualified as Base64
@@ -38,6 +40,7 @@ import Data.IORef
   , readIORef
   )
 import Data.List (nub)
+import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -57,6 +60,7 @@ import Network.Socket
   , withSocketsDo
   )
 import Numeric.Natural (Natural)
+import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.Bootstrap.Broker.Client qualified as Client
 import Prodbox.Bootstrap.Broker.Custody
 import Prodbox.Bootstrap.Broker.Engine
@@ -69,11 +73,18 @@ import Prodbox.Bootstrap.Broker.EngineAdapter
 import Prodbox.Bootstrap.Broker.EngineSecretWorker
 import Prodbox.Bootstrap.Broker.Fake qualified as Fake
 import Prodbox.Bootstrap.Broker.Fence
+import Prodbox.Bootstrap.Broker.InitializationEvidence
+  ( RootInitJournalPhase (..)
+  , RootInitializationEvidence (..)
+  )
+import Prodbox.Bootstrap.Broker.InitializationEvidence qualified as InitEvidence
+import Prodbox.Bootstrap.Broker.InitializationRecovery qualified as InitRecovery
 import Prodbox.Bootstrap.Broker.Model
 import Prodbox.Bootstrap.Broker.PgpBoundary qualified as Pgp
 import Prodbox.Bootstrap.Broker.PristineJournal
   ( PristineJournalRefusal (..)
   , classifyPristineJournal
+  , rootInitJournalObservation
   )
 import Prodbox.Bootstrap.Broker.ProductionCryptoParameters
   ( productionPristineStorageProof
@@ -97,17 +108,24 @@ import Prodbox.Bootstrap.Broker.ProductionEngine
   , decideRootAccessorAbsenceProof
   )
 import Prodbox.Bootstrap.Broker.ProductionSecretWorker
-  ( classifyInitializationAmbiguity
+  ( InitializationCallOutcome (..)
+  , InitializationFollowUp (..)
+  , classifyInitializationAmbiguity
+  , classifyInitializationCallOutcome
+  , initializationUnobservedDiagnostic
   )
+import Prodbox.Bootstrap.Broker.ProductionStore qualified as ProductionStore
 import Prodbox.Bootstrap.Broker.Program
 import Prodbox.Bootstrap.Broker.Protocol
 import Prodbox.Bootstrap.Broker.Readiness (BrokerReadinessState (..))
 import Prodbox.Bootstrap.Broker.Request qualified as Request
+import Prodbox.Bootstrap.Broker.ResetEvidence qualified as ResetEvidence
 import Prodbox.Bootstrap.Broker.Routes
 import Prodbox.Bootstrap.Broker.SecretWorker
 import Prodbox.Bootstrap.Broker.Server qualified as Server
 import Prodbox.Bootstrap.Broker.Settings qualified as Settings
 import Prodbox.Bootstrap.Broker.StoreBoundary
+import Prodbox.Bootstrap.Broker.StoreBoundary qualified as Store
 import Prodbox.Bootstrap.Broker.Types
 import Prodbox.Cluster.FederationRegistration
   ( federationRegistrationCompletedIntent
@@ -1312,6 +1330,48 @@ enginePhysicalSuite =
         cause `shouldBe` expected
         initializationAmbiguityCauseName cause `shouldNotContain` secret
 
+    describe "BOOTSTRAP-VAULT-INIT-PREAPPLICATION-REFUSAL-2026-10-22" $ do
+      it "reports the actual pinned Vault refusal recording without its response body" $ do
+        recording <-
+          ByteString.readFile
+            "test/qualification/BOOTSTRAP-VAULT-INIT-PREAPPLICATION-REFUSAL-2026-10-22.json"
+        let status = do
+              value <- eitherDecodeStrict' recording
+              parseEither
+                ( withObject "counterexample" $ \root -> do
+                    law <- root .: "offline_law"
+                    law .: "http_status"
+                )
+                value
+        status `shouldBe` Right (400 :: Int)
+        case status of
+          Left failure -> expectationFailure failure
+          Right code ->
+            initializationUnobservedDiagnostic
+              (InitializationCallHttpStatus code)
+              InitializationStillUninitialized
+              `shouldBe` "Vault initialization failed before application was observed; initialization-cause=http-status-400; follow-up=uninitialized"
+      forM_
+        [ (HttpConnectionFailure "private-error", InitializationCallConnectionFailure)
+        , (HttpTimeout "private-error", InitializationCallTimeout)
+        , (HttpStatus 400 "private-error", InitializationCallHttpStatus 400)
+        , (HttpDecode "private-error", InitializationCallResponseDecodeFailure)
+        ]
+        $ \(failure, cause) ->
+          it ("retains " ++ initializationAmbiguityCauseName cause ++ " across every follow-up") $ do
+            let status initialized = Vault.SealStatus initialized True 3 5 0
+            classifyInitializationCallOutcome failure (Right (status True))
+              `shouldBe` InitializationApplied cause
+            classifyInitializationCallOutcome failure (Right (status False))
+              `shouldBe` InitializationUnobserved cause InitializationStillUninitialized
+            classifyInitializationCallOutcome failure (Left "private-follow-up")
+              `shouldBe` InitializationUnobserved cause InitializationFollowUpUnavailable
+            forM_ [InitializationStillUninitialized, InitializationFollowUpUnavailable] $ \followUp -> do
+              let diagnostic = initializationUnobservedDiagnostic cause followUp
+              diagnostic `shouldContain` ("initialization-cause=" ++ initializationAmbiguityCauseName cause)
+              diagnostic `shouldNotContain` "private-error"
+              diagnostic `shouldNotContain` "private-follow-up"
+
     it "Sprint 2.64 appends classified ambiguity without changing the retained legacy wire" $ do
       LazyByteString.unpack (serialise ambiguousInitializationWorkerResult)
         `shouldBe` [129, 3]
@@ -1380,6 +1440,708 @@ enginePhysicalSuite =
               ( Client.BrokerTransport
                   (HttpStatus 409 "{\"status\":\"state-conflict\"}")
               )
+
+    describe "VAULT-RESET-GENERATION-CAS-LOST-PRODUCER-RECOVERY-2026-10-23" $ do
+      it "retains all nineteen synthetic legacy phase encodings" $
+        withFixture $ \fixture -> do
+          bytes <-
+            ByteString.readFile
+              "test/qualification/VAULT-RESET-GENERATION-CAS-LOST-PRODUCER-RECOVERY-2026-10-23.json"
+          expected <- either fail pure $ do
+            value <- eitherDecodeStrict' bytes
+            parseEither
+              ( withObject "counterexample" $ \root -> do
+                  codecs <- root .: "legacy_phase_codecs"
+                  codecs .: "phase_sha256"
+              )
+              value
+          let phases =
+                [ RootInitPristine (fixturePristine fixture)
+                , RootResetPristine (fixtureResetProof fixture)
+                , RootInitializationAmbiguous (fixtureAmbiguity fixture)
+                ]
+                  ++ [phase fixture | (_, phase, _) <- rootInitializationContinuationCases]
+              actual =
+                Map.fromList
+                  [ (show phase, TextEncoding.decodeUtf8 (hexSha256 (LazyByteString.toStrict (serialise phase))))
+                  | phase <- phases
+                  ]
+          actual `shouldBe` (expected :: Map.Map String Text)
+          Map.size actual `shouldBe` 19
+
+      it "appends a bounded pending phase and forbids generic restart from forgetting it" $
+        withFixture $ \fixture -> do
+          let action = brokerActionDigest (fixtureActions fixture BrokerVaultResetAmbiguousInitialization)
+              ambiguous =
+                (newRootInitState (fixturePristine fixture))
+                  { rootInitStatePhase = RootInitializationAmbiguous (fixtureAmbiguity fixture)
+                  }
+              armed =
+                mustRight
+                  (applyRootInitCommand ambiguous (BeginAmbiguousRootReset (fixtureResetProof fixture) action))
+              encoded = serialise (rootInitStatePhase armed)
+          ByteString.unpack (ByteString.take 2 (LazyByteString.toStrict encoded)) `shouldBe` [131, 19]
+          deserialiseOrFail (serialise armed) `shouldBe` Right armed
+          restartRootInit
+            armed
+            (RootObservedPreparedVaultInitializedWithoutResponse (fixturePrepared fixture))
+            `shouldBe` Left RootInitResetInProgress
+          InitEvidence.rootInitResetFromGeneration (rootInitStatePhase armed)
+            `shouldBe` Just (rootInitStorageGeneration (resetAmbiguousBinding (fixtureResetProof fixture)))
+          InitEvidence.rootInitResetActionDigest (rootInitStatePhase armed) `shouldBe` Just action
+
+      it "keeps the existing reset-binding encoding and refuses foreign PVC or action" $
+        withFixture $ \fixture -> do
+          let action = brokerActionDigest (fixtureActions fixture BrokerVaultResetAmbiguousInitialization)
+              ambiguity = fixtureAmbiguity fixture
+              identity = "vault/data-vault-0/pvc-synthetic-1"
+              commitment =
+                TextEncoding.decodeUtf8
+                  ( hexSha256
+                      ( LazyByteString.toStrict
+                          (serialise ("bootstrap-vault-storage-reset-v1" :: Text, ambiguity, action, identity :: Text))
+                      )
+                  )
+              legacyBinding =
+                RootInitBinding
+                  (mustRight (mkBootstrapTransactionId ("reset-" <> commitment)))
+                  (mustRight (mkVaultStorageGeneration ("vault-reset-" <> commitment)))
+              old = ambiguousInitBinding ambiguity
+              proof =
+                mustRight
+                  ( mkPristineResetProof
+                      ambiguity
+                      (productionPristineStorageProof legacyBinding)
+                      (mkEstablishedStateAbsence old (digestOf 'a'))
+                      (mkDurableInitResponseAbsence old (digestOf 'b'))
+                      (mkBaselineStateAbsence old (digestOf 'c'))
+                  )
+          ResetEvidence.deriveRootResetBinding action ambiguity identity `shouldBe` Right legacyBinding
+          ResetEvidence.rootResetIdentityMatches action proof identity `shouldBe` True
+          ResetEvidence.rootResetIdentityMatches action proof "vault/data-vault-0/pvc-replacement"
+            `shouldBe` False
+          ResetEvidence.rootResetIdentityMatches (digestOf 'd') proof identity `shouldBe` False
+
+      forM_ [False, True] $ \initialized ->
+        it ("withdraws init at both exact pending bindings, initialized=" ++ show initialized) $
+          withFixture $ \fixture -> do
+            let proof = fixtureResetProof fixture
+                action = brokerActionDigest (fixtureActions fixture BrokerVaultResetAmbiguousInitialization)
+                snapshot =
+                  (newRootInitState (fixturePristine fixture)) {rootInitStatePhase = RootResetInFlight proof action}
+            forM_ [resetAmbiguousBinding proof, pristineStorageBinding (resetReplacementPristine proof)] $ \binding ->
+              InitEvidence.classifyRootInitializationEvidence
+                (productionPristineStorageProof binding)
+                initialized
+                (InitEvidence.RootInitJournalPresent (StoreVersion 2) snapshot)
+                `shouldBe` Left InitEvidence.InitEvidenceAmbiguousNeedsReset
+
+      it "makes production binding and admission agree at old and replacement generations" $
+        withFixture $ \fixture -> do
+          let proof = fixtureResetProof fixture
+              action = brokerActionDigest (fixtureActions fixture BrokerVaultResetAmbiguousInitialization)
+              old = resetAmbiguousBinding proof
+              replacement = pristineStorageBinding (resetReplacementPristine proof)
+              pending =
+                (newRootInitState (fixturePristine fixture)) {rootInitStatePhase = RootResetInFlight proof action}
+              requested = rootInitStorageGeneration old
+          forM_ [old, replacement] $ \current -> do
+            ProductionStore.rootInitReadMatches current pending `shouldBe` True
+            ResetEvidence.classifyRootResetEvidence requested action current (Just pending)
+              `shouldBe` Right (ResetEvidence.ResumeAuditedRootReset proof)
+          ProductionStore.rootInitResetReadMatches requested pending `shouldBe` True
+          ProductionStore.rootInitResetReadMatches (rootInitStorageGeneration replacement) pending
+            `shouldBe` False
+          let cancelled =
+                pending
+                  { rootInitStateDisposition =
+                      CustodyCancellationRequested (mustRight (mkCancellationReason "reset safety-tail cancellation"))
+                  }
+          ResetEvidence.classifyRootResetEvidence requested action replacement (Just cancelled)
+            `shouldBe` Right (ResetEvidence.ResumeAuditedRootReset proof)
+          applyRootInitCommand cancelled (ResetAmbiguousRootInitialization proof)
+            `shouldSatisfy` either (const False) rootInitIsResetPhase
+
+      it "refuses missing, changed, cancelled-before-arm and unjournaled legacy state" $
+        withFixture $ \fixture -> do
+          let proof = fixtureResetProof fixture
+              action = brokerActionDigest (fixtureActions fixture BrokerVaultResetAmbiguousInitialization)
+              old = resetAmbiguousBinding proof
+              replacement = pristineStorageBinding (resetReplacementPristine proof)
+              ambiguous =
+                (newRootInitState (fixturePristine fixture))
+                  { rootInitStatePhase = RootInitializationAmbiguous (fixtureAmbiguity fixture)
+                  }
+              pending = ambiguous {rootInitStatePhase = RootResetInFlight proof action}
+              requested = rootInitStorageGeneration old
+              classify = ResetEvidence.classifyRootResetEvidence requested action
+          classify old Nothing `shouldBe` Left ResetEvidence.ResetEvidenceJournalAbsent
+          classify replacement (Just ambiguous)
+            `shouldBe` Left ResetEvidence.ResetEvidenceUnjournaledGenerationAdvance
+          classify
+            old
+            ( Just
+                ambiguous
+                  { rootInitStateDisposition =
+                      CustodyCancellationRequested (mustRight (mkCancellationReason "reset safety-tail cancellation"))
+                  }
+            )
+            `shouldBe` Left ResetEvidence.ResetEvidenceCancelledBeforeArm
+          ResetEvidence.classifyRootResetEvidence requested (digestOf 'e') old (Just pending)
+            `shouldBe` Left ResetEvidence.ResetEvidencePendingActionMismatch
+          classify old (Just pending {rootInitStateBinding = replacement})
+            `shouldBe` Left ResetEvidence.ResetEvidenceJournalInvalid
+
+      it "reconstructs only complete durable request metadata and preserves public error classes" $
+        withFixture $ \fixture -> do
+          let proof = fixtureResetProof fixture
+              old = rootInitStorageGeneration (resetAmbiguousBinding proof)
+              current = rootInitStorageGeneration (pristineStorageBinding (resetReplacementPristine proof))
+              action = brokerActionDigest (fixtureActions fixture BrokerVaultResetAmbiguousInitialization)
+          ResetEvidence.rootResetClientBinding current (Just InitResetInFlight) (Just old) (Just action)
+            `shouldBe` Right (ResetEvidence.ResumeRootResetRequest old action)
+          ResetEvidence.rootResetClientBinding current (Just InitResetInFlight) Nothing (Just action)
+            `shouldBe` Left ResetEvidence.ResetEvidencePendingGenerationAbsent
+          ResetEvidence.rootResetClientBinding current (Just InitResetInFlight) (Just old) Nothing
+            `shouldBe` Left ResetEvidence.ResetEvidencePendingActionAbsent
+          let failure cause = EngineProgramEvidenceRefused (EngineBoundaryRootResetEvidence cause)
+          engineErrorReply (failure (ResetEvidence.ResetEvidenceUnavailable ResetEvidence.ResetJournalRead))
+            `shouldBe` (Server.BrokerReplyServiceUnavailable, "{\"status\":\"boundary-unavailable\"}")
+          engineErrorReply (failure ResetEvidence.ResetEvidencePendingActionMismatch)
+            `shouldBe` (Server.BrokerReplyConflict, "{\"status\":\"boundary-refused\"}")
+          brokerEngineErrorDiagnostic
+            BrokerVaultResetAmbiguousInitialization
+            (failure ResetEvidence.ResetEvidencePendingActionMismatch)
+            `shouldContain` "root-reset-evidence=ResetEvidencePendingActionMismatch"
+
+      it "finishes only the already-armed safety tail after cancellation" $
+        withFixture $ \fixture -> do
+          harness <- newHarness fixture ReturnAppliedWithoutResponse NoCrash
+          initialEngine <- requireProductionResetEngine fixture harness
+          _ <- invokeAdapter fixture (requireSettings 30_451) initialEngine BrokerVaultInitialize
+          modifyIORef' harness (armResetFault CrashAfterResetArmCas)
+          _ <-
+            invokeAdapter fixture (requireSettings 30_451) initialEngine BrokerVaultResetAmbiguousInitialization
+          modifyIORef' harness cancelRootJournalForReset
+          pending <- readIORef harness
+          fresh <- requireProductionResetEngine fixture harness
+          result <- invokeResetFromDurableObservation fixture (requireSettings 30_451) fresh pending
+          result `shouldBeRouteSuccess` BrokerVaultResetAmbiguousInitialization
+          after <- readIORef harness
+          rootInitIsResetPristine fixture after `shouldBe` True
+          assertCleanHarness after
+
+      it "refuses cancellation before proof arming without a physical reset" $
+        withFixture $ \fixture -> do
+          harness <- newHarness fixture ReturnAppliedWithoutResponse NoCrash
+          initialEngine <- requireProductionResetEngine fixture harness
+          _ <- invokeAdapter fixture (requireSettings 30_451) initialEngine BrokerVaultInitialize
+          modifyIORef' harness cancelRootJournalForReset
+          before <- readIORef harness
+          result <-
+            invokeAdapter fixture (requireSettings 30_451) initialEngine BrokerVaultResetAmbiguousInitialization
+          result `shouldSatisfy` isRootResetCancellationRefusal
+          after <- readIORef harness
+          let suffix = drop (length (harnessEvents before)) (harnessEvents after)
+          suffix `shouldSatisfy` notElem (PhysicalMutated BootstrapVaultResetAmbiguousInitialization)
+          suffix `shouldSatisfy` notElem (StoreMutated BootstrapStoreCasRootInitJournal)
+
+      forM_ [ResetReadMissing, ResetReadActionChanges, ResetReadProofChanges] $ \fault ->
+        it ("preserves state when reset evidence changes after admission: " ++ show fault) $
+          withFixture $ \fixture -> do
+            harness <- newHarness fixture ReturnAppliedWithoutResponse NoCrash
+            setup <- requireProductionResetEngine fixture harness
+            _ <- invokeAdapter fixture (requireSettings 30_451) setup BrokerVaultInitialize
+            modifyIORef' harness (armResetFault CrashAfterResetArmCas)
+            _ <- invokeAdapter fixture (requireSettings 30_451) setup BrokerVaultResetAmbiguousInitialization
+            before <- readIORef harness
+            changed <- requireProductionResetEngineWithFault fault fixture harness
+            result <- invokeResetFromDurableObservation fixture (requireSettings 30_451) changed before
+            result `shouldSatisfy` either (const True) (const False)
+            after <- readIORef harness
+            let suffix = drop (length (harnessEvents before)) (harnessEvents after)
+            suffix `shouldSatisfy` notElem (PhysicalMutated BootstrapVaultResetAmbiguousInitialization)
+            suffix `shouldSatisfy` notElem (StoreMutated BootstrapStoreAdvanceVaultStorageGeneration)
+            suffix `shouldSatisfy` notElem (StoreMutated BootstrapStoreCreateRootInitJournal)
+            length [() | InitVaultEffectApplied <- harnessEvents after] `shouldBe` 1
+
+      forM_
+        [ CrashAfterResetArmCas
+        , CrashAfterResetGenerationAdvance
+        , CrashAfterResetPreparationDelete
+        , CrashAfterResetTerminalCas
+        ]
+        $ \fault ->
+          it ("recovers the declared reset from durable evidence after " ++ show fault) $
+            withFixture $ \fixture -> do
+              harness <- newHarness fixture ReturnAppliedWithoutResponse NoCrash
+              firstEngine <- requireProductionResetEngine fixture harness
+              initial <- invokeAdapter fixture (requireSettings 30_451) firstEngine BrokerVaultInitialize
+              initial `shouldSatisfy` isInitializationAmbiguous
+              modifyIORef' harness (armResetFault fault)
+              first <-
+                invokeAdapter fixture (requireSettings 30_451) firstEngine BrokerVaultResetAmbiguousInitialization
+              first `shouldSatisfy` isStoreUnavailable
+              afterFirst <- readIORef harness
+              (rootResetPending afterFirst || rootResetTerminal afterFirst) `shouldBe` True
+              when (fault == CrashAfterResetArmCas) $
+                length [() | PhysicalMutated BootstrapVaultResetAmbiguousInitialization <- harnessEvents afterFirst]
+                  `shouldBe` 0
+              if rootResetTerminal afterFirst
+                then do
+                  snapshot <-
+                    maybe (fail "terminal reset journal absent") pure (storedValue (harnessRootJournal afterFirst))
+                  ProductionStore.rootInitReadMatches (harnessRootBinding afterFirst) snapshot `shouldBe` True
+                  InitEvidence.rootInitResetFromGeneration (rootInitStatePhase snapshot)
+                    `shouldBe` Just (rootInitStorageGeneration (resetAmbiguousBinding (fixtureResetProof fixture)))
+                else do
+                  freshEngine <- requireProductionResetEngine fixture harness
+                  replay <- invokeResetFromDurableObservation fixture (requireSettings 30_451) freshEngine afterFirst
+                  replay `shouldBeRouteSuccess` BrokerVaultResetAmbiguousInitialization
+              completed <- readIORef harness
+              rootInitIsResetPristine fixture completed `shouldBe` True
+              harnessPreparedEnvelope completed `shouldBe` Nothing
+              length [() | InitVaultEffectApplied <- harnessEvents completed] `shouldBe` 1
+              assertCleanHarness completed
+
+    describe "HARNESS-RETAINED-INIT-RECOVERY-2026-10-22 status projection" $ do
+      it "projects reset lineage only from the durable reset-pristine proof" $
+        withFixture $ \fixture -> do
+          let proof = fixtureResetProof fixture
+              oldGeneration = rootInitStorageGeneration (resetAmbiguousBinding proof)
+          InitEvidence.rootInitResetFromGeneration (RootResetPristine proof)
+            `shouldBe` Just oldGeneration
+          InitEvidence.rootInitResetFromGeneration (RootInitPristine (fixturePristine fixture))
+            `shouldBe` Nothing
+          forM_ rootInitializationContinuationCases $ \(_, phase, _) ->
+            InitEvidence.rootInitResetFromGeneration (phase fixture) `shouldBe` Nothing
+      it "carries the reset lineage through the actual public status codec" $
+        withFixture $ \fixture -> do
+          let proof = fixtureResetProof fixture
+              oldGeneration = rootInitStorageGeneration (resetAmbiguousBinding proof)
+              status =
+                BootstrapStatus
+                  { bootstrapStatusStorageGeneration =
+                      rootInitStorageGeneration (pristineStorageBinding (resetReplacementPristine proof))
+                  , bootstrapStatusInitialized = False
+                  , bootstrapStatusSealed = True
+                  , bootstrapStatusRecoveryCustodyDurable = False
+                  , bootstrapStatusInitializationAmbiguous = False
+                  , bootstrapStatusInitializationPhase = Just InitResetPristine
+                  , bootstrapStatusInitializationResetFromGeneration =
+                      InitEvidence.rootInitResetFromGeneration (RootResetPristine proof)
+                  , bootstrapStatusInitializationResetActionDigest = Nothing
+                  , bootstrapStatusRootSessionActive = False
+                  , bootstrapStatusHandoffObserved = False
+                  }
+              encoded = encodeBrokerResponse (BrokerVaultStatusResponse status)
+              decoded = do
+                value <- eitherDecodeStrict' encoded
+                parseEither
+                  (withObject "Broker status" (.: "initialization_reset_from_generation"))
+                  value
+          decoded `shouldBe` Right (renderVaultStorageGeneration oldGeneration)
+
+    describe "VAULT-INIT-AUTHORITATIVE-WORKER-SUPERSEDED-FENCE-2026-10-24" $ do
+      forM_
+        [ ReturnEncryptedInitResponse
+        , ReturnAppliedWithoutResponse
+        , ReturnClassifiedAppliedWithoutResponse (InitializationCallHttpStatus 400)
+        ]
+        $ \mode ->
+          forM_ [CrashAfterInitEffectBeforeWorkerReceipt, CrashAfterInitWorkerReceiptCas] $ \crashPoint ->
+            it ("recovers retained evidence under a fresh fence: " ++ show (mode, crashPoint)) $
+              withFixture $ \fixture -> do
+                harness <- newHarness fixture mode crashPoint
+                firstEngine <- requireEngine fixture harness
+                _ <- invokeAdapter fixture (requireSettings 30_449) firstEngine BrokerVaultInitialize
+                before <- readIORef harness
+                renewPhysicalFence harness
+                engine <- requireProductionAdmissionEngine fixture harness ResumeSnapshotStable
+                result <- invokeSuccessorInitialization fixture engine
+                after <- readIORef harness
+                case (mode, crashPoint) of
+                  (ReturnEncryptedInitResponse, CrashAfterInitWorkerReceiptCas) -> do
+                    result `shouldBeRouteSuccess` BrokerVaultInitialize
+                    rootInitIsDurable fixture after `shouldBe` True
+                  _ -> do
+                    result `shouldSatisfy` isInitializationAmbiguous
+                    physicalRootInitIsAmbiguous fixture after `shouldBe` True
+                    let expectedCause = case (mode, crashPoint) of
+                          (ReturnClassifiedAppliedWithoutResponse cause, CrashAfterInitWorkerReceiptCas) -> cause
+                          _ -> InitializationCauseUnclassified
+                    case result of
+                      Left (EngineInitializationAmbiguous _ cause) -> cause `shouldBe` expectedCause
+                      _ -> expectationFailure "expected exact retained ambiguity cause"
+                let suffix = drop (length (harnessEvents before)) (harnessEvents after)
+                length [() | InitVaultEffectApplied <- harnessEvents after] `shouldBe` 1
+                length [() | WorkerAllocated SecretWorkerInitialize <- suffix] `shouldBe` 0
+                length [() | WorkerExecuted SecretWorkerInitialize <- suffix] `shouldBe` 0
+                length [() | StoreMutated BootstrapStoreCreateRootInitJournal <- suffix] `shouldBe` 0
+                suffix `shouldSatisfy` elem (FenceAcquired 2)
+                suffix `shouldSatisfy` notElem (PhysicalMutated BootstrapVaultResetAmbiguousInitialization)
+                harnessFenceFloor after `shouldBe` 2
+                harnessHeldFence after `shouldBe` Nothing
+                assertCleanHarness after
+
+      it "refuses contradictory positive response and worker evidence without retiring either" $
+        withFixture $ \fixture -> do
+          harness <- newHarness fixture ReturnAppliedWithoutResponse CrashAfterInitWorkerReceiptCas
+          firstEngine <- requireEngine fixture harness
+          _ <- invokeAdapter fixture (requireSettings 30_449) firstEngine BrokerVaultInitialize
+          modifyIORef' harness $ \state ->
+            state
+              { harnessEncryptedResponse =
+                  Just (Versioned (StoreVersion 1) storeDigest (fixtureEncryptedResponse fixture))
+              }
+          before <- readIORef harness
+          renewPhysicalFence harness
+          engine <- requireProductionAdmissionEngine fixture harness ResumeSnapshotStable
+          result <- invokeSuccessorInitialization fixture engine
+          case result of
+            Left failure -> failure `shouldBe` EngineSecretWorkerRefused EngineSecretWorkerAuthoritativeResultMismatch
+            Right _ -> expectationFailure "contradictory positive evidence must refuse"
+          after <- readIORef harness
+          harnessWorkerCheckpoint after `shouldBe` harnessWorkerCheckpoint before
+          harnessEncryptedResponse after `shouldBe` harnessEncryptedResponse before
+          let suffix = drop (length (harnessEvents before)) (harnessEvents after)
+          suffix `shouldSatisfy` notElem (WorkerDiscarded SecretWorkerInitialize)
+          length [() | InitVaultEffectApplied <- harnessEvents after] `shouldBe` 1
+
+      it "refuses foreign binding, schema and recipient metadata in a durable worker response" $
+        withFixture $ \fixture -> do
+          let original = fixturePrepared fixture
+              commitment = preparedInitRecipientCommitment original
+              foreignCommitment =
+                mustRight
+                  ( mkInitRecipientCommitment
+                      (initRecipientShareCount commitment)
+                      (initRecipientThreshold commitment)
+                      (initRecipientRecoveryPublicKeysBase64 commitment)
+                      (initRecipientRecoveryFingerprint commitment)
+                      (initRecipientBurnFingerprint commitment)
+                      (digestOf '0')
+                  )
+              prepared proof schema recipients =
+                mkPreparedInitEnvelope
+                  proof
+                  schema
+                  (preparedInitSealedRecoveryPrivateKey original)
+                  recipients
+                  (preparedInitEnvelopeDigest original)
+              variants =
+                [
+                  ( "binding"
+                  , prepared
+                      (resetReplacementPristine (fixtureResetProof fixture))
+                      (preparedInitSchemaVersion original)
+                      commitment
+                  )
+                , ("schema", prepared (fixturePristine fixture) (mustRight (mkBootstrapSchemaVersion 2)) commitment)
+                ,
+                  ( "recipient"
+                  , prepared (fixturePristine fixture) (preparedInitSchemaVersion original) foreignCommitment
+                  )
+                ]
+              originalReceipt = fixtureEncryptedResponse fixture
+          foreignCommitment `shouldNotBe` commitment
+          forM_ variants $ \(label, foreignPrepared) -> do
+            harness <- newHarness fixture ReturnEncryptedInitResponse CrashAfterInitEffectBeforeWorkerReceipt
+            firstEngine <- requireEngine fixture harness
+            _ <- invokeAdapter fixture (requireSettings 30_449) firstEngine BrokerVaultInitialize
+            request <- requireLastWorkerRequest harness
+            let foreignReceipt =
+                  mustRight
+                    ( mkEncryptedInitResponseReceipt
+                        foreignPrepared
+                        (encryptedResponseShares originalReceipt)
+                        (encryptedResponseBurnToken originalReceipt)
+                        (encryptedResponseReceiptDigest originalReceipt)
+                    )
+                foreignCheckpoint =
+                  mustRight
+                    ( authoritativelyRecoveredWorkerCheckpoint
+                        request
+                        (encryptedInitializationWorkerResult foreignReceipt)
+                    )
+            modifyIORef' harness $ \state ->
+              state
+                { harnessWorkerCheckpoint =
+                    Just (Versioned (StoreVersion 100) storeDigest foreignCheckpoint)
+                }
+            before <- readIORef harness
+            renewPhysicalFence harness
+            engine <- requireProductionAdmissionEngine fixture harness ResumeSnapshotStable
+            result <- invokeSuccessorInitialization fixture engine
+            case result of
+              Left failure -> failure `shouldBe` EngineResponseEvidenceMismatch BrokerVaultInitialize
+              Right _ -> expectationFailure ("foreign worker response admitted: " ++ label)
+            after <- readIORef harness
+            harnessRootJournal after `shouldBe` harnessRootJournal before
+            harnessWorkerCheckpoint after `shouldBe` harnessWorkerCheckpoint before
+            let suffix = drop (length (harnessEvents before)) (harnessEvents after)
+            suffix `shouldSatisfy` notElem (WorkerDiscarded SecretWorkerInitialize)
+            length [() | InitVaultEffectApplied <- harnessEvents after] `shouldBe` 1
+
+      it "preserves unavailable response or worker evidence instead of producing ambiguity" $
+        withFixture $ \fixture -> do
+          harness <- newHarness fixture ReturnAppliedWithoutResponse NoCrash
+          let ordinary = physicalStoreBoundary fixture harness
+              unavailable =
+                [ ordinary {Store.readEncryptedInitResponse = \_ -> pure (Left BootstrapStoreUnavailable)}
+                , ordinary {Store.readSecretWorkerCheckpoint = pure (Left BootstrapStoreUnavailable)}
+                ]
+          forM_ unavailable $ \store -> do
+            result <-
+              InitRecovery.observeRootInitRecoveryEvidence
+                store
+                (pristineStorageBinding (fixturePristine fixture))
+            result `shouldBe` Left BootstrapStoreUnavailable
+
+      it "resumes the authoritative terminal checkpoint after its CAS reply is lost" $
+        withFixture $ \fixture -> do
+          harness <- newHarness fixture ReturnAppliedWithoutResponse CrashAfterInitEffectBeforeWorkerReceipt
+          firstEngine <- requireEngine fixture harness
+          _ <- invokeAdapter fixture (requireSettings 30_449) firstEngine BrokerVaultInitialize
+          before <- readIORef harness
+          modifyIORef' harness $ \state ->
+            state
+              { harnessCrashPoint = CrashAfterAuthoritativeWorkerCheckpointCas
+              , harnessCrashTriggered = False
+              }
+          renewPhysicalFence harness
+          secondEngine <- requireProductionAdmissionEngine fixture harness ResumeSnapshotStable
+          second <- invokeSuccessorInitialization fixture secondEngine
+          case second of
+            Left (EngineSecretWorkerRefused (EngineSecretWorkerStoreRefused BootstrapStoreUnavailable)) -> pure ()
+            _ -> expectationFailure "expected lost authoritative-worker CAS reply"
+          middle <- readIORef harness
+          initWorkerAuthoritativelyComplete middle `shouldBe` True
+          fmap rootInitJournalPhaseForTest (storedValue (harnessRootJournal middle))
+            `shouldBe` Just InitCallInFlight
+          renewPhysicalFence harness
+          thirdEngine <- requireProductionAdmissionEngine fixture harness ResumeSnapshotStable
+          third <- invokeSuccessorInitialization fixture thirdEngine
+          third `shouldSatisfy` isInitializationAmbiguous
+          after <- readIORef harness
+          physicalRootInitIsAmbiguous fixture after `shouldBe` True
+          length [() | InitVaultEffectApplied <- harnessEvents after] `shouldBe` 1
+          let recoveryEvents = drop (length (harnessEvents before)) (harnessEvents after)
+          length [() | WorkerDiscarded SecretWorkerInitialize <- recoveryEvents] `shouldBe` 1
+          harnessFenceFloor after `shouldBe` 3
+
+      it "observes durable ambiguity after the root-journal CAS reply is lost" $
+        withFixture $ \fixture -> do
+          harness <- newHarness fixture ReturnAppliedWithoutResponse CrashAfterInitEffectBeforeWorkerReceipt
+          firstEngine <- requireEngine fixture harness
+          _ <- invokeAdapter fixture (requireSettings 30_449) firstEngine BrokerVaultInitialize
+          before <- readIORef harness
+          modifyIORef' harness $ \state ->
+            state {harnessCrashPoint = CrashAfterRootAmbiguityCas, harnessCrashTriggered = False}
+          renewPhysicalFence harness
+          secondEngine <- requireProductionAdmissionEngine fixture harness ResumeSnapshotStable
+          second <- invokeSuccessorInitialization fixture secondEngine
+          second `shouldSatisfy` isStoreUnavailable
+          middle <- readIORef harness
+          physicalRootInitIsAmbiguous fixture middle `shouldBe` True
+          initWorkerAuthoritativelyComplete middle `shouldBe` True
+          thirdEngine <- requireProductionAdmissionEngine fixture harness ResumeSnapshotStable
+          third <- invokeSuccessorInitialization fixture thirdEngine
+          case third of
+            Left
+              ( EngineProgramEvidenceRefused
+                  (EngineBoundaryRootInitializationEvidence InitEvidence.InitEvidenceAmbiguousNeedsReset)
+                ) -> pure ()
+            _ -> expectationFailure "durable ambiguity must retain the registered reset gate"
+          after <- readIORef harness
+          harnessRootJournal after `shouldBe` harnessRootJournal middle
+          length [() | InitVaultEffectApplied <- harnessEvents after] `shouldBe` 1
+          let recoveryEvents = drop (length (harnessEvents before)) (harnessEvents after)
+          length [() | WorkerDiscarded SecretWorkerInitialize <- recoveryEvents] `shouldBe` 1
+
+    describe "BOOTSTRAP-INITIALIZE-PROGRAM-EVIDENCE-REFUSAL-2026-10-22" $ do
+      it "banks the refusal without claiming the planted journal was observed live" $ do
+        bytes <-
+          LazyByteString.readFile
+            "test/qualification/BOOTSTRAP-INITIALIZE-PROGRAM-EVIDENCE-REFUSAL-2026-10-22.json"
+        value <- either (fail . show) pure (eitherDecodeStrict' (LazyByteString.toStrict bytes))
+        observed <-
+          either fail pure $
+            parseEither
+              ( withObject "recording" $ \root -> do
+                  provider <- root .: "observed_provider_behavior"
+                  (,,)
+                    <$> provider .: "http_status"
+                    <*> provider .: "closed_engine_constructor"
+                    <*> provider .: "live_journal_phase_observed"
+              )
+              value
+        observed `shouldBe` (409 :: Int, "EngineProgramEvidenceRefused" :: Text, False)
+
+      it "separates absent and exact pristine admission from initialized state" $
+        withFixture $ \fixture -> do
+          let proof = productionPristineStorageProof (pristineStorageBinding (fixturePristine fixture))
+              cases =
+                [ InitEvidence.RootInitJournalAbsent
+                , InitEvidence.RootInitJournalPresent (StoreVersion 1) (newRootInitState proof)
+                ]
+          forM_ cases $ \observed -> do
+            InitEvidence.classifyRootInitializationEvidence proof False observed
+              `shouldBe` Right (BeginRootInitialization proof)
+            InitEvidence.classifyRootInitializationEvidence proof True observed
+              `shouldBe` Left (InitEvidence.InitEvidenceVaultStateMismatch InitPristine)
+
+      forM_ rootInitializationContinuationCases $ \(label, makePhase, initialized) ->
+        it ("admits the exact retained continuation: " ++ label) $
+          withFixture $ \fixture -> do
+            let proof = fixturePristine fixture
+                state = (newRootInitState proof) {rootInitStatePhase = makePhase fixture}
+                observation = InitEvidence.RootInitJournalPresent (StoreVersion 4) state
+            rootInitInvariantViolations state `shouldBe` []
+            case InitEvidence.classifyRootInitializationEvidence proof initialized observation of
+              Right (ContinueRootInitialization evidence) -> do
+                InitEvidence.rootInitResumeSnapshot evidence `shouldBe` state
+                InitEvidence.rootInitResumeVersion evidence `shouldBe` StoreVersion 4
+                InitEvidence.rootInitResumePristineCommitment evidence `shouldBe` proof
+              other -> expectationFailure (show other)
+            classifyPristineJournal
+              (pristineStorageBinding proof)
+              (StoreObjectPresent (StoreVersion 4) (digestOf 'd') state)
+              `shouldBe` Left PristineJournalPhaseAdvanced
+            let opposite = InitEvidence.classifyRootInitializationEvidence proof (not initialized) observation
+            if rootInitJournalPhaseForTest state == InitCallInFlight
+              then opposite `shouldSatisfy` isContinuationEvidence
+              else
+                opposite
+                  `shouldBe` Left
+                    (InitEvidence.InitEvidenceVaultStateMismatch (rootInitJournalPhaseForTest state))
+
+      it "refuses foreign, inconsistent and cancelled snapshots" $
+        withFixture $ \fixture -> do
+          let proof = fixturePristine fixture
+              replacement = resetReplacementPristine (fixtureResetProof fixture)
+              state = (newRootInitState proof) {rootInitStatePhase = RootInitCallInFlight (fixturePrepared fixture)}
+              observed value = InitEvidence.RootInitJournalPresent (StoreVersion 4) value
+              classify = InitEvidence.classifyRootInitializationEvidence proof False
+              cancelled =
+                state
+                  { rootInitStateDisposition =
+                      CustodyCancellationRequested
+                        (mustRight (mkCancellationReason "private-cancellation-sentinel"))
+                  }
+          classify (observed (state {rootInitStateBinding = pristineStorageBinding replacement}))
+            `shouldBe` Left (InitEvidence.InitEvidencePristineRefused PristineJournalBindingMismatch)
+          InitEvidence.classifyRootInitializationEvidence
+            replacement
+            False
+            (observed (state {rootInitStateBinding = pristineStorageBinding replacement}))
+            `shouldBe` Left InitEvidence.InitEvidenceJournalInvalid
+          InitEvidence.classifyRootInitializationEvidence
+            (productionPristineStorageProof (pristineStorageBinding proof))
+            False
+            (observed state)
+            `shouldBe` Left (InitEvidence.InitEvidenceOriginalPristineMismatch InitCallInFlight)
+          classify (observed cancelled) `shouldBe` Left InitEvidence.InitEvidenceCancelled
+          InitEvidence.rootInitEvidenceCauseCode InitEvidence.InitEvidenceCancelled
+            `shouldNotContain` "private-cancellation-sentinel"
+
+      it "preserves ambiguity for explicit audited reset" $
+        withFixture $ \fixture -> do
+          let ambiguity = fixtureAmbiguity fixture
+              proof = productionPristineStorageProof (ambiguousInitBinding ambiguity)
+              snapshot = (newRootInitState proof) {rootInitStatePhase = RootInitializationAmbiguous ambiguity}
+          forM_ [False, True] $ \initialized ->
+            InitEvidence.classifyRootInitializationEvidence
+              proof
+              initialized
+              (InitEvidence.RootInitJournalPresent (StoreVersion 4) snapshot)
+              `shouldBe` Left InitEvidence.InitEvidenceAmbiguousNeedsReset
+
+      it "round trips closed phases and refuses unknown phase text" $ do
+        let phases = [minBound .. maxBound] :: [RootInitJournalPhase]
+        map (InitEvidence.parseRootInitJournalPhase . InitEvidence.rootInitJournalPhaseText) phases
+          `shouldBe` map Just phases
+        InitEvidence.parseRootInitJournalPhase "private-unknown-phase" `shouldBe` Nothing
+        map
+          InitEvidence.rootInitializationPending
+          [InitPristine, InitResetPristine, InitCustodyDurable, InitAmbiguous]
+          `shouldBe` replicate 4 False
+        InitEvidence.rootInitializationPending InitCallInFlight `shouldBe` True
+
+      it "keeps refusal replies compatible and diagnoses only closed causes" $ do
+        let failure cause = EngineProgramEvidenceRefused (EngineBoundaryRootInitializationEvidence cause)
+            unavailable = InitEvidence.InitEvidenceUnavailable InitEvidence.InitStatusRead
+            refused = InitEvidence.InitEvidenceVaultStateMismatch InitResponseWritten
+        engineErrorReply (failure unavailable)
+          `shouldBe` (Server.BrokerReplyServiceUnavailable, "{\"status\":\"boundary-unavailable\"}")
+        engineErrorReply (failure refused)
+          `shouldBe` (Server.BrokerReplyConflict, "{\"status\":\"boundary-refused\"}")
+        brokerEngineErrorDiagnostic BrokerVaultInitialize (failure refused)
+          `shouldContain` "InitEvidenceVaultStateMismatch InitResponseWritten"
+
+      forM_ [CrashAfterInitEffectBeforeWorkerReceipt, CrashAfterInitWorkerReceiptCas] $ \crashPoint ->
+        it ("reaches authoritative recovery through production admission after " ++ show crashPoint) $
+          withFixture $ \fixture -> do
+            harness <- newHarness fixture ReturnEncryptedInitResponse crashPoint
+            firstEngine <- requireEngine fixture harness
+            first <- invokeAdapter fixture (requireSettings 30_449) firstEngine BrokerVaultInitialize
+            first `shouldSatisfy` either (const True) (const False)
+            before <- readIORef harness
+            case storedValue (harnessRootJournal before) of
+              Just snapshot -> rootInitJournalPhaseForTest snapshot `shouldBe` InitCallInFlight
+              Nothing -> expectationFailure "the failed schedule must retain its journal"
+            engine <- requireProductionAdmissionEngine fixture harness ResumeSnapshotStable
+            result <- invokeAdapter fixture (requireSettings 30_449) engine BrokerVaultInitialize
+            after <- readIORef harness
+            case crashPoint of
+              CrashAfterInitEffectBeforeWorkerReceipt -> do
+                result `shouldSatisfy` isInitializationAmbiguous
+                physicalRootInitIsAmbiguous fixture after `shouldBe` True
+              _ -> do
+                result `shouldBeRouteSuccess` BrokerVaultInitialize
+                rootInitIsDurable fixture after `shouldBe` True
+                workerCheckpointIsComplete after `shouldBe` True
+            length [() | InitVaultEffectApplied <- harnessEvents after] `shouldBe` 1
+            assertCleanHarness after
+
+      forM_ [CrashAfterInitEffectBeforeWorkerReceipt, CrashAfterInitWorkerReceiptCas] $ \crashPoint ->
+        it
+          ("keeps missing-response recovery ambiguous after " ++ show crashPoint)
+          $ withFixture
+          $ \fixture -> do
+            harness <- newHarness fixture ReturnAppliedWithoutResponse crashPoint
+            firstEngine <- requireEngine fixture harness
+            _ <- invokeAdapter fixture (requireSettings 30_449) firstEngine BrokerVaultInitialize
+            before <- readIORef harness
+            engine <- requireProductionAdmissionEngine fixture harness ResumeSnapshotStable
+            result <- invokeAdapter fixture (requireSettings 30_449) engine BrokerVaultInitialize
+            result `shouldSatisfy` isInitializationAmbiguous
+            after <- readIORef harness
+            physicalRootInitIsAmbiguous fixture after `shouldBe` True
+            length [() | InitVaultEffectApplied <- harnessEvents after] `shouldBe` 1
+            let suffix = drop (length (harnessEvents before)) (harnessEvents after)
+            length [() | StoreMutated BootstrapStoreCreateRootInitJournal <- suffix] `shouldBe` 0
+            suffix `shouldSatisfy` notElem (PhysicalMutated BootstrapVaultResetAmbiguousInitialization)
+            harnessHeldFence after `shouldBe` Nothing
+
+      forM_
+        [ (ResumeSnapshotDisappears, InitEvidence.InitEvidenceResumeAbsent)
+        , (ResumeSnapshotVersionChanges, InitEvidence.InitEvidenceResumeChanged)
+        ]
+        $ \(fault, cause) ->
+          it ("refuses a changed continuation without recreating or repeating init: " ++ show fault) $
+            withFixture $ \fixture -> do
+              harness <- newHarness fixture ReturnEncryptedInitResponse CrashAfterInitWorkerReceiptCas
+              firstEngine <- requireEngine fixture harness
+              _ <- invokeAdapter fixture (requireSettings 30_449) firstEngine BrokerVaultInitialize
+              before <- readIORef harness
+              engine <- requireProductionAdmissionEngine fixture harness fault
+              result <- invokeAdapter fixture (requireSettings 30_449) engine BrokerVaultInitialize
+              result `shouldSatisfy` isRootInitializationEvidenceFailure cause
+              after <- readIORef harness
+              let suffix = drop (length (harnessEvents before)) (harnessEvents after)
+              length [() | StoreMutated BootstrapStoreCreateRootInitJournal <- suffix] `shouldBe` 0
+              length [() | InitVaultEffectApplied <- harnessEvents after] `shouldBe` 1
 
     it "Sprint 2.54 classifies absent, exact retained, foreign, and progressed journals identically" $
       withFixture $ \fixture -> do
@@ -1456,7 +2218,7 @@ enginePhysicalSuite =
         forM_ cases $ \(label, binding, observation, expected) ->
           (label, classifyPristineJournal binding observation)
             `shouldBe` (label, expected)
-    it "Sprint 2.54 keeps both pristine consumers on the shared classifier" $ do
+    it "keeps the strict worker guard and distinct continuation admission wired" $ do
       controller <-
         Text.pack
           <$> readFile "src/Prodbox/Bootstrap/Broker/ProductionEngine.hs"
@@ -1467,7 +2229,7 @@ enginePhysicalSuite =
             fst (Text.breakOn finish (snd (Text.breakOn start source)))
           controllerRegion =
             functionRegion
-              "\npristineEvidence settings store action = do"
+              "\ninitializationEvidence settings store action = do"
               "\nresetEvidence"
               controller
           workerRegion =
@@ -1475,7 +2237,7 @@ enginePhysicalSuite =
               "\nprepareInitialization settings store kubernetes binding request payload = do"
               "\nresumeInitialization"
               worker
-      Text.count "classifyPristineJournal binding observation" controllerRegion
+      Text.count "classifyRootInitializationEvidence" controllerRegion
         `shouldBe` 1
       Text.count "classifyPristineJournal binding observation" workerRegion
         `shouldBe` 1
@@ -1532,7 +2294,7 @@ enginePhysicalSuite =
         assertCleanHarness state
         assertCapabilityEvents fixture BrokerVaultInitialize 2 state
 
-    it "reconciles both init worker-journal loss windows without replay" $
+    it "distinguishes response loss before and after worker-result durability without replay" $
       withFixture $ \fixture ->
         forM_
           [ CrashAfterInitEffectBeforeWorkerReceipt
@@ -1557,9 +2319,15 @@ enginePhysicalSuite =
                 settings
                 secondEngine
                 BrokerVaultInitialize
-            second `shouldBeRouteSuccess` BrokerVaultInitialize
             state <- readIORef harness
-            rootInitIsDurable fixture state `shouldBe` True
+            case crashPoint of
+              CrashAfterInitEffectBeforeWorkerReceipt -> do
+                second `shouldSatisfy` isInitializationAmbiguous
+                physicalRootInitIsAmbiguous fixture state `shouldBe` True
+              _ -> do
+                second `shouldBeRouteSuccess` BrokerVaultInitialize
+                rootInitIsDurable fixture state `shouldBe` True
+                workerCheckpointIsComplete state `shouldBe` True
             length [() | InitVaultEffectApplied <- harnessEvents state]
               `shouldBe` 1
             length
@@ -1567,7 +2335,6 @@ enginePhysicalSuite =
               | WorkerExecuted SecretWorkerInitialize <- harnessEvents state
               ]
               `shouldBe` 1
-            workerCheckpointIsComplete state `shouldBe` True
             assertCleanHarness state
 
     it "latches applied-without-response ambiguity, releases its fence, and performs audited reset" $
@@ -1630,8 +2397,8 @@ enginePhysicalSuite =
         harnessRootBinding afterFirst
           `shouldBe` pristineStorageBinding
             (resetReplacementPristine (fixtureResetProof fixture))
-        physicalRootInitIsAmbiguous fixture afterFirst `shouldBe` True
-        harnessPreparedEnvelope afterFirst `shouldBe` Nothing
+        rootResetPending afterFirst `shouldBe` True
+        harnessPreparedEnvelope afterFirst `shouldSatisfy` maybe False (const True)
         second <-
           invokeAdapter
             fixture
@@ -1655,7 +2422,7 @@ enginePhysicalSuite =
         initialized `shouldSatisfy` isInitializationAmbiguous
         modifyIORef' harness $ \state ->
           state
-            { harnessCrashPoint = CrashAfterRootJournalCas
+            { harnessCrashPoint = CrashAfterResetTerminalCas
             , harnessCrashTriggered = False
             }
         before <- readIORef harness
@@ -1714,7 +2481,7 @@ enginePhysicalSuite =
           `shouldSatisfy` notElem (StoreMutated BootstrapStoreCasRootInitJournal)
         assertCleanHarness state
 
-    it "rejects a mismatched physical reset proof without committing a root-journal CAS" $
+    it "retains only the armed journal after a mismatched physical reset proof" $
       withFixture $ \fixture -> do
         harness <- newHarness fixture ReturnAppliedWithoutResponse NoCrash
         engine <- requireEngine fixture harness
@@ -1736,15 +2503,17 @@ enginePhysicalSuite =
             BrokerVaultResetAmbiguousInitialization
         reset `shouldSatisfy` isResetEvidenceMismatch
         state <- readIORef harness
-        physicalRootInitIsAmbiguous fixture state `shouldBe` True
+        rootResetPending state `shouldBe` True
+        rootInitIsResetPristine fixture state `shouldBe` False
         harnessRootBinding state
           `shouldBe` ambiguousInitBinding (fixtureAmbiguity fixture)
         let resetEvents = drop (length (harnessEvents before)) (harnessEvents state)
         resetEvents
           `shouldSatisfy` elem
             (PhysicalMutated BootstrapVaultResetAmbiguousInitialization)
-        resetEvents
-          `shouldSatisfy` notElem (StoreMutated BootstrapStoreCasRootInitJournal)
+        length [() | StoreMutated BootstrapStoreCasRootInitJournal <- resetEvents] `shouldBe` 1
+        resetEvents `shouldSatisfy` notElem (StoreMutated BootstrapStoreAdvanceVaultStorageGeneration)
+        resetEvents `shouldSatisfy` notElem (StoreMutated BootstrapStoreDeletePreparedInitEnvelope)
         assertCleanHarness state
 
     it "closes unseal and baseline before the separately fenced Authority handoff" $
@@ -2057,6 +2826,272 @@ enginePhysicalSuite =
         physicalAndStoreMutationEvents (harnessEvents state) `shouldBe` []
         harnessPermitViolations state `shouldBe` []
 
+rootInitializationContinuationCases :: [(String, Fixture -> RootInitPhase, Bool)]
+rootInitializationContinuationCases =
+  [ ("prepared write pending", RootPreparedWritePending . fixturePrepared, False)
+  , ("prepared written", RootPreparedWritten . fixturePrepared, False)
+  , ("prepared read back", RootPreparedReadBack . fixturePrepared, False)
+  , ("call pending", RootInitCallPending . fixturePrepared, False)
+  , ("in flight before observed application", RootInitCallInFlight . fixturePrepared, False)
+  , ("in flight after observed application", RootInitCallInFlight . fixturePrepared, True)
+  ,
+    ( "response capture pending"
+    , \f -> RootEncryptedResponseCapturePending (fixturePrepared f) (fixtureEncryptedResponse f)
+    , True
+    )
+  ,
+    ( "response written"
+    , \f -> RootEncryptedResponseWritten (fixturePrepared f) (fixtureEncryptedResponse f)
+    , True
+    )
+  ,
+    ( "response read back"
+    , \f -> RootEncryptedResponseReadBack (fixturePrepared f) (fixtureEncryptedResponse f)
+    , True
+    )
+  ,
+    ( "final promotion pending"
+    , \f ->
+        RootFinalBundlePromotionPending
+          (fixturePrepared f)
+          (fixtureEncryptedResponse f)
+          (fixtureFinalBundle f)
+    , True
+    )
+  ,
+    ( "final promoted"
+    , \f -> RootFinalBundlePromoted (fixturePrepared f) (fixtureEncryptedResponse f) (fixtureFinalBundle f)
+    , True
+    )
+  ,
+    ( "final read back"
+    , \f -> RootFinalBundleReadBack (fixturePrepared f) (fixtureEncryptedResponse f) (fixtureFinalBundle f)
+    , True
+    )
+  ,
+    ( "prepared deletion pending"
+    , \f -> RootPreparedDeletionPending (fixturePrepared f) (fixtureFinalBundle f)
+    , True
+    )
+  , ("prepared deleted", \f -> RootPreparedDeleted (fixturePrepared f) (fixtureFinalBundle f), True)
+  , ("prepared absent", RootPreparedAbsent . fixtureFinalBundle, True)
+  ,
+    ( "custody acknowledgement pending"
+    , RootRecoveryCustodyAcknowledgementPending . fixtureFinalBundle
+    , True
+    )
+  ,
+    ( "custody durable"
+    , \f -> RootRecoveryCustodyDurable (fixtureFinalBundle f) (fixtureRecovery f)
+    , True
+    )
+  ]
+
+rootInitJournalPhaseForTest :: RootInitState -> RootInitJournalPhase
+rootInitJournalPhaseForTest = InitEvidence.rootInitJournalPhase . rootInitStatePhase
+
+isContinuationEvidence
+  :: Either InitEvidence.RootInitializationEvidenceCause RootInitializationEvidence -> Bool
+isContinuationEvidence outcome = case outcome of
+  Right (ContinueRootInitialization _) -> True
+  _ -> False
+
+data InitializationResumeFault
+  = ResumeSnapshotStable
+  | ResumeSnapshotDisappears
+  | ResumeSnapshotVersionChanges
+  deriving (Eq, Show)
+
+isRootInitializationEvidenceFailure
+  :: InitEvidence.RootInitializationEvidenceCause
+  -> Either BrokerEngineError SomeBrokerResponse
+  -> Bool
+isRootInitializationEvidenceFailure expected outcome = case outcome of
+  Left (EngineProgramEvidenceRefused (EngineBoundaryRootInitializationEvidence actual)) -> actual == expected
+  _ -> False
+
+applyInitializationResumeFault :: InitializationResumeFault -> HarnessState -> HarnessState
+applyInitializationResumeFault fault state = case fault of
+  ResumeSnapshotStable -> state
+  ResumeSnapshotDisappears -> state {harnessRootJournal = Nothing}
+  ResumeSnapshotVersionChanges ->
+    state
+      { harnessRootJournal =
+          fmap
+            (\stored -> stored {versionedVersion = nextStoreVersion (versionedVersion stored)})
+            (harnessRootJournal state)
+      }
+
+renewPhysicalFence :: Harness -> IO ()
+renewPhysicalFence harness =
+  modifyIORef' harness $ \state ->
+    let floorValue = case harnessHeldFence state of
+          Nothing -> harnessFenceFloor state
+          Just held -> bootstrapFenceGenerationValue (bootstrapFenceGeneration held)
+     in state
+          { harnessFenceFloor = floorValue
+          , harnessHeldFence = Nothing
+          , harnessFenceOwnerNonce =
+              mustRight (mkOwnerNonce ("physical-successor-owner-" <> Text.pack (show (floorValue + 1))))
+          }
+
+invokeSuccessorInitialization
+  :: Fixture -> BrokerEngine IO -> IO (Either BrokerEngineError SomeBrokerResponse)
+invokeSuccessorInitialization fixture engine =
+  runEngineBrokerRequest
+    engine
+    ( (requestContext fixture)
+        { Server.brokerRequestDeadline =
+            deadlineFromInstant
+              (monotonicInstantFromMicros (deadlineMicros fixtureRequestDeadline + 100))
+        }
+    )
+    BrokerVaultInitialize
+    (requestBody fixture (requireSettings 30_449) BrokerVaultInitialize)
+
+requireProductionAdmissionEngine
+  :: Fixture -> Harness -> InitializationResumeFault -> IO (BrokerEngine IO)
+requireProductionAdmissionEngine fixture harness fault =
+  case mkBrokerEngine (fixtureCapabilityRefs fixture) 128 boundary of
+    Left failure -> fail failure
+    Right engine -> pure engine
+ where
+  base = baseEngineBoundary fixture harness
+  evidence =
+    (evidenceBoundary fixture harness)
+      { resolveRootInitializationEvidence = \_ -> do
+          state <- readIORef harness
+          pure $ case InitEvidence.classifyRootInitializationEvidence
+            (fixturePristine fixture)
+            (InitVaultEffectApplied `elem` harnessEvents state)
+            (rootInitJournalObservation (versionedReadBack (harnessRootJournal state))) of
+            Left cause -> Left (EngineBoundaryRootInitializationEvidence cause)
+            Right admitted -> Right admitted
+      }
+  boundary =
+    base
+      { engineEvidenceBoundary = evidence
+      , engineAcquireMutationFence = \reference route action requestDigest deadline -> do
+          acquired <- engineAcquireMutationFence base reference route action requestDigest deadline
+          case acquired of
+            Left _ -> pure ()
+            Right _ -> modifyIORef' harness (applyInitializationResumeFault fault)
+          pure acquired
+      }
+
+-- This boundary uses the same admission kernel and binding predicates as the
+-- production producer. Only physical identity/absence observation is a fixture.
+requireProductionResetEngine :: Fixture -> Harness -> IO (BrokerEngine IO)
+requireProductionResetEngine = requireProductionResetEngineWithFault ResetReadStable
+
+data ResetReadFault = ResetReadStable | ResetReadMissing | ResetReadActionChanges | ResetReadProofChanges
+  deriving (Eq, Show)
+
+requireProductionResetEngineWithFault
+  :: ResetReadFault -> Fixture -> Harness -> IO (BrokerEngine IO)
+requireProductionResetEngineWithFault fault fixture harness =
+  either fail pure (mkBrokerEngine (fixtureCapabilityRefs fixture) 128 boundary)
+ where
+  base = baseEngineBoundary fixture harness
+  store = engineStoreBoundary base
+  boundary =
+    base
+      { engineEvidenceBoundary =
+          (engineEvidenceBoundary base)
+            { resolveAmbiguousResetEvidence = admit
+            }
+      , engineAcquireMutationFence = \reference route action requestDigest deadline -> do
+          acquired <- engineAcquireMutationFence base reference route action requestDigest deadline
+          case acquired of
+            Left _ -> pure ()
+            Right _ -> modifyIORef' harness (alterResetRead fault fixture)
+          pure acquired
+      }
+  admit action = do
+    current <- observeVaultStorageGeneration store
+    journal <- readRootInitJournalForReset store (brokerActionStorageGeneration action)
+    case (current, journal) of
+      (Left _, _) ->
+        pure
+          ( Left
+              ( EngineBoundaryRootResetEvidence
+                  (ResetEvidence.ResetEvidenceUnavailable ResetEvidence.ResetGenerationRead)
+              )
+          )
+      (_, Left _) ->
+        pure
+          ( Left
+              ( EngineBoundaryRootResetEvidence
+                  (ResetEvidence.ResetEvidenceBindingMismatch ResetEvidence.ResetJournalRead)
+              )
+          )
+      (Right binding, Right observed) -> do
+        let snapshot = case observed of
+              StoreObjectAbsent -> Nothing
+              StoreObjectPresent _ _ value -> Just value
+        case ResetEvidence.classifyRootResetEvidence
+          (brokerActionStorageGeneration action)
+          (brokerActionDigest action)
+          binding
+          snapshot of
+          Left cause -> pure (Left (EngineBoundaryRootResetEvidence cause))
+          Right (ResetEvidence.ResumeAuditedRootReset proof) -> pure (Right (resetAmbiguity proof, proof))
+          Right (ResetEvidence.AuditAmbiguousRootReset ambiguity) -> do
+            prepared <- readPreparedInitEnvelope store (ambiguousInitBinding ambiguity)
+            pure $ case prepared of
+              Right (StoreObjectPresent _ _ envelope)
+                | preparedInitEnvelopeDigest envelope == ambiguousPreparedEnvelopeDigest ambiguity ->
+                    Right (ambiguity, fixtureResetProof fixture)
+              _ -> Left (EngineBoundaryRootResetEvidence ResetEvidence.ResetEvidencePreparedAbsent)
+
+alterResetRead :: ResetReadFault -> Fixture -> HarnessState -> HarnessState
+alterResetRead fault fixture state = case fault of
+  ResetReadStable -> state
+  ResetReadMissing -> state {harnessRootJournal = Nothing}
+  ResetReadActionChanges -> changePending (\proof _ -> RootResetInFlight proof (digestOf 'e'))
+  ResetReadProofChanges -> changePending (\_ action -> RootResetInFlight (fixtureMismatchedResetProof fixture) action)
+ where
+  changePending replace =
+    state
+      { harnessRootJournal = fmap update (harnessRootJournal state)
+      }
+   where
+    update stored = case rootInitStatePhase (versionedValue stored) of
+      RootResetInFlight proof action ->
+        stored
+          { versionedVersion = nextStoreVersion (versionedVersion stored)
+          , versionedValue = (versionedValue stored) {rootInitStatePhase = replace proof action}
+          }
+      _ -> stored
+
+invokeResetFromDurableObservation
+  :: Fixture
+  -> Settings.BootstrapBrokerSettings
+  -> BrokerEngine IO
+  -> HarnessState
+  -> IO (Either BrokerEngineError SomeBrokerResponse)
+invokeResetFromDurableObservation fixture settings engine state = do
+  snapshot <-
+    maybe (fail "reset recovery journal absent") pure (storedValue (harnessRootJournal state))
+  let phase = rootInitStatePhase snapshot
+      requested =
+        mustRight
+          ( ResetEvidence.rootResetRequestGeneration
+              (rootInitStorageGeneration (harnessRootBinding state))
+              (Just (InitEvidence.rootInitJournalPhase phase))
+              (InitEvidence.rootInitResetFromGeneration phase)
+          )
+      original = fixtureActions fixture BrokerVaultResetAmbiguousInitialization
+      reconstructed route
+        | route == BrokerVaultResetAmbiguousInitialization =
+            mkBrokerActionRequest requested (brokerActionDigest original)
+        | otherwise = fixtureActions fixture route
+  invokeAdapter
+    fixture {fixtureActions = reconstructed}
+    settings
+    engine
+    BrokerVaultResetAmbiguousInitialization
+
 withFixture :: (Fixture -> Expectation) -> Expectation
 withFixture assertion = case buildFixture of
   Left failure -> expectationFailure ("invalid physical fixture: " ++ failure)
@@ -2171,6 +3206,64 @@ rootInitIsDurable fixture state = case storedValue (harnessRootJournal state) of
         && receipt == fixtureRecovery fixture
     _ -> False
   Nothing -> False
+
+isRootResetCancellationRefusal :: Either BrokerEngineError SomeBrokerResponse -> Bool
+isRootResetCancellationRefusal result = case result of
+  Left
+    ( EngineProgramEvidenceRefused
+        (EngineBoundaryRootResetEvidence ResetEvidence.ResetEvidenceCancelledBeforeArm)
+      ) -> True
+  _ -> False
+
+cancelRootJournalForReset :: HarnessState -> HarnessState
+cancelRootJournalForReset state = state {harnessRootJournal = fmap cancel (harnessRootJournal state)}
+ where
+  cancel stored =
+    stored
+      { versionedVersion = nextStoreVersion (versionedVersion stored)
+      , versionedValue =
+          mustRight
+            ( applyRootInitCommand
+                (versionedValue stored)
+                (CancelRootInitialization (mustRight (mkCancellationReason "reset safety-tail cancellation")))
+            )
+      }
+
+rootInitIsResetPhase :: RootInitState -> Bool
+rootInitIsResetPhase state = case rootInitStatePhase state of
+  RootResetPristine {} -> True
+  _ -> False
+
+armResetFault :: CrashPoint -> HarnessState -> HarnessState
+armResetFault fault state = state {harnessCrashPoint = fault, harnessCrashTriggered = False}
+
+rootResetPending :: HarnessState -> Bool
+rootResetPending state = case storedValue (harnessRootJournal state) of
+  Just snapshot -> case rootInitStatePhase snapshot of
+    RootResetInFlight {} -> True
+    _ -> False
+  Nothing -> False
+
+rootResetTerminal :: HarnessState -> Bool
+rootResetTerminal state = case storedValue (harnessRootJournal state) of
+  Just snapshot -> case rootInitStatePhase snapshot of
+    RootResetPristine {} -> True
+    _ -> False
+  Nothing -> False
+
+readBoundRootJournal
+  :: Harness
+  -> (RootInitState -> Bool)
+  -> IO (Either StoreBoundaryError (StoreReadBack RootInitState))
+readBoundRootJournal harness matches = do
+  observed <- readSlot "root-init-journal" harnessRootJournal harness
+  pure $ do
+    value <- observed
+    case value of
+      StoreObjectAbsent -> Right StoreObjectAbsent
+      StoreObjectPresent _ _ snapshot
+        | null (rootInitInvariantViolations snapshot) && matches snapshot -> Right value
+        | otherwise -> Left BootstrapStoreBindingMismatch
 
 physicalRootInitIsAmbiguous :: Fixture -> HarnessState -> Bool
 physicalRootInitIsAmbiguous fixture state = case storedValue (harnessRootJournal state) of
@@ -2726,8 +3819,13 @@ data CrashPoint
   = NoCrash
   | CrashAfterRootJournalCas
   | CrashAfterResetGenerationAdvance
+  | CrashAfterResetArmCas
+  | CrashAfterResetTerminalCas
+  | CrashAfterResetPreparationDelete
   | CrashAfterInitEffectBeforeWorkerReceipt
   | CrashAfterInitWorkerReceiptCas
+  | CrashAfterAuthoritativeWorkerCheckpointCas
+  | CrashAfterRootAmbiguityCas
   | CrashAfterRecoveryDeliveryDelete
   | CrashAfterChildConsumeEffect
   | CrashAfterRootScopeCas
@@ -2765,6 +3863,7 @@ data PhysicalEvent
 data HarnessState = HarnessState
   { harnessFenceFloor :: !Natural
   , harnessHeldFence :: !(Maybe BootstrapSessionFence)
+  , harnessFenceOwnerNonce :: !OwnerNonce
   , harnessRootBinding :: !RootInitBinding
   , harnessRootJournal :: !(Maybe (Versioned RootInitState))
   , harnessPreparedEnvelope :: !(Maybe (Versioned PreparedInitEnvelope))
@@ -2816,6 +3915,7 @@ newHarness fixture initMode crashPoint =
     HarnessState
       { harnessFenceFloor = 0
       , harnessHeldFence = Nothing
+      , harnessFenceOwnerNonce = fixtureOwnerNonce
       , harnessRootBinding = pristineStorageBinding (fixturePristine fixture)
       , harnessRootJournal = Nothing
       , harnessPreparedEnvelope = Nothing
@@ -2980,10 +4080,26 @@ consumeCrash harness mutation = do
           mutation == BootstrapStoreCasRootInitJournal
         CrashAfterResetGenerationAdvance ->
           mutation == BootstrapStoreAdvanceVaultStorageGeneration
+        CrashAfterResetArmCas ->
+          mutation == BootstrapStoreCasRootInitJournal && rootResetPending state
+        CrashAfterResetTerminalCas ->
+          mutation == BootstrapStoreCasRootInitJournal && rootResetTerminal state
+        CrashAfterResetPreparationDelete ->
+          mutation == BootstrapStoreDeletePreparedInitEnvelope
         CrashAfterInitEffectBeforeWorkerReceipt -> False
         CrashAfterInitWorkerReceiptCas ->
           mutation == BootstrapStoreCasSecretWorkerCheckpoint
             && initWorkerAwaitingCleanup state
+        CrashAfterAuthoritativeWorkerCheckpointCas ->
+          mutation == BootstrapStoreCasSecretWorkerCheckpoint
+            && initWorkerAuthoritativelyComplete state
+        CrashAfterRootAmbiguityCas ->
+          mutation == BootstrapStoreCasRootInitJournal
+            && case storedValue (harnessRootJournal state) of
+              Just journal -> case rootInitStatePhase journal of
+                RootInitializationAmbiguous _ -> True
+                _ -> False
+              Nothing -> False
         CrashAfterRecoveryDeliveryDelete ->
           mutation == BootstrapStoreDeleteChildRecoveryDelivery
         CrashAfterChildConsumeEffect -> False
@@ -3006,6 +4122,19 @@ consumeCrash harness mutation = do
         current {harnessCrashTriggered = True}
       pure True
     else pure False
+
+initWorkerAuthoritativelyComplete :: HarnessState -> Bool
+initWorkerAuthoritativelyComplete state =
+  case storedValue (harnessWorkerCheckpoint state) of
+    Nothing -> False
+    Just checkpoint -> case secretWorkerCheckpointRequest checkpoint of
+      Left _ -> False
+      Right request
+        | secretWorkerRequestOperation request == SecretWorkerInitialize ->
+            case decideSecretWorkerRecovery request SecretWorkerControllerRestarted checkpoint of
+              SecretWorkerRecoveryAuthoritativeComplete _ -> True
+              _ -> False
+        | otherwise -> False
 
 initWorkerAwaitingCleanup :: HarnessState -> Bool
 initWorkerAwaitingCleanup state =
@@ -3090,7 +4219,9 @@ physicalStoreBoundary fixture harness =
                     then pure (Right replacement)
                     else pure (Left BootstrapStoreBindingMismatch)
     , readRootInitJournal =
-        \_ -> readSlot "root-init-journal" harnessRootJournal harness
+        \binding -> readBoundRootJournal harness (ProductionStore.rootInitReadMatches binding)
+    , readRootInitJournalForReset =
+        \generation -> readBoundRootJournal harness (ProductionStore.rootInitResetReadMatches generation)
     , createRootInitJournal =
         \permit value ->
           createSlot
@@ -3380,8 +4511,8 @@ setWorkerCheckpoint value state = state {harnessWorkerCheckpoint = value}
 evidenceBoundary :: Fixture -> Harness -> BrokerProgramEvidenceBoundary IO
 evidenceBoundary fixture harness =
   BrokerProgramEvidenceBoundary
-    { resolvePristineStorageProof =
-        \_ -> pure (Right (fixturePristine fixture))
+    { resolveRootInitializationEvidence =
+        \_ -> pure (Right (BeginRootInitialization (fixturePristine fixture)))
     , resolveUnsealRecoveryCustody =
         \_ -> pure (Right (fixtureRecovery fixture))
     , resolveUnlockRotationCustody =
@@ -4129,7 +5260,7 @@ acquireMutationFence harness _reference _route action requestDigest deadline = d
   state <- readIORef harness
   case harnessHeldFence state of
     Just held
-      | fenceMatchesRequest action requestDigest deadline held -> do
+      | fenceMatchesRequest (harnessFenceOwnerNonce state) action requestDigest deadline held -> do
           recordEvent
             harness
             ( FenceResumed
@@ -4143,7 +5274,7 @@ acquireMutationFence harness _reference _route action requestDigest deadline = d
           constructed =
             reloadBootstrapSessionFence
               nextGeneration
-              fixtureOwnerNonce
+              (harnessFenceOwnerNonce state)
               (brokerActionDigest action)
               requestDigest
               (brokerActionStorageGeneration action)
@@ -4158,13 +5289,14 @@ acquireMutationFence harness _reference _route action requestDigest deadline = d
           pure (Right fence)
 
 fenceMatchesRequest
-  :: BrokerActionRequest
+  :: OwnerNonce
+  -> BrokerActionRequest
   -> Request.RequestDigest
   -> Deadline
   -> BootstrapSessionFence
   -> Bool
-fenceMatchesRequest action requestDigest deadline fence =
-  bootstrapFenceOwnerNonce fence == fixtureOwnerNonce
+fenceMatchesRequest owner action requestDigest deadline fence =
+  bootstrapFenceOwnerNonce fence == owner
     && bootstrapFenceActionDigest fence == brokerActionDigest action
     && bootstrapFenceRequestDigest fence == requestDigest
     && bootstrapFenceStorageGeneration fence
@@ -4243,6 +5375,9 @@ runPhysicalCall fixture harness call = case call of
         , bootstrapStatusSealed = False
         , bootstrapStatusRecoveryCustodyDurable = True
         , bootstrapStatusInitializationAmbiguous = False
+        , bootstrapStatusInitializationPhase = Just InitCustodyDurable
+        , bootstrapStatusInitializationResetFromGeneration = Nothing
+        , bootstrapStatusInitializationResetActionDigest = Nothing
         , bootstrapStatusRootSessionActive = False
         , bootstrapStatusHandoffObserved = True
         }
@@ -4642,14 +5777,16 @@ runLocalCall
 runLocalCall fixture harness call = case call of
   LocalRecoverRootInitCall binding -> do
     recordEvent harness (LocalExecuted "recover-root-init-call")
-    state <- readIORef harness
     if binding /= pristineStorageBinding (fixturePristine fixture)
       then refused "root init recovery binding mismatch"
-      else pure . Right $ case harnessInitMode state of
-        ReturnEncryptedInitResponse ->
-          RootInitRecoveredResponse (fixtureEncryptedResponse fixture)
-        ReturnAppliedWithoutResponse -> RootInitRecoveredAmbiguity
-        ReturnClassifiedAppliedWithoutResponse _ -> RootInitRecoveredAmbiguity
+      else do
+        observed <-
+          InitRecovery.observeRootInitRecoveryEvidence
+            (physicalStoreBoundary fixture harness)
+            binding
+        pure $ case observed of
+          Left _ -> Left (EngineBoundaryUnavailable "root init recovery store unavailable")
+          Right result -> Right result
   LocalAcknowledgeRecoveryCustody bundle -> do
     recordEvent harness (LocalExecuted "acknowledge-recovery-custody")
     if bundle == fixtureFinalBundle fixture

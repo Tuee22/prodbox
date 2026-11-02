@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "counterexample": "RPC-REGISTRATION-PIN-CONFIG-DEFAULT-RESET-2026-10-25",
+  "owning_sprint": "6.5",
+  "banked_utc": "2026-10-25T05:19:02.876953+00:00",
+  "scope": "Canonical host Tier-0 parameter-authoring boundary and public startup-pin projection. No authenticated birth coordination, physical repair or deployment qualification claim.",
+  "repository_reproducer": {
+    "module": "test/unit/Tier0RpcRegistration.hs",
+    "case": "Existing malformed or old-schema context refuses authoring and retains exact bytes; valid independent context survives parameter repair.",
+    "canonical_validation": "prodbox dev check"
+  },
+  "causal_profile": {
+    "existing_source": "Undecodable public context; the authoring request supplies parameters only.",
+    "old_result": "Canonical writer catches context decoding failure and replaces the source with defaults.",
+    "required_result": "Refuse authoring and retain the exact original bytes; never infer legacy admission from an unavailable context.",
+    "old_to_new_envelope_mapping": "Same authoring input and resource profiles; publication adds bounded public-file locking, descriptor observation, fsync, atomic replacement and exact readback. Runtime resource envelopes and provider topology are unchanged.",
+    "maximum_public_source_bytes": 1048576,
+    "resource_envelopes_increased": false
+  },
+  "frozen": {
+    "full_manifest": "1e954f48934fe0b01eb641cc5eb714b41d136f320a8655009c63ecb39c78e248",
+    "executable_manifest": "6139009e74fdf7ee918f43075365c5aeac1bbf0b0dc3b92084cd6919c79bb388",
+    "source_identity_record": ".build/sprint-6.5/rpc-pin-20261025/frozen-source.log",
+    "binary_sha256": "ca9d9067d7db373177369dc31f7b4d80f6ffdb91e96e38e252b986e1313249c6",
+    "semantic_exit": 1,
+    "wall_seconds": 0.040047372691333294
+  },
+  "replacement": {
+    "full_manifest": "72ff4ba11888dc1ed09244abb440856947581c7215fbb949cc082135ac41f4b2",
+    "executable_manifest": "d9b57af9a0097414579207bca1e62a5d6f439ed9d4693e492bc1d17e9b254329",
+    "source_identity_record": ".build/sprint-6.5/rpc-pin-20261025/banking-source.log",
+    "binary_sha256": "52ed0d5ebc391b22572e994e600886781247c21e31345324f3bdf6cbd4a253d4",
+    "semantic_exit": 0,
+    "wall_seconds": 0.003653491847217083,
+    "focused_primary_cases": 95,
+    "helm_config_only_rollout_cases": 1,
+    "generated_config_binding": "Domain-separated parameter digest plus canonical public registration-pin digest; format-three artifacts attest both, historical format-two reads assert no pin coverage.",
+    "validation_record": ".build/sprint-6.5/rpc-pin-20261025/validation-progress.json"
+  },
+  "production_profile": {
+    "canonical_host_writers_use_same_file_boundary": true,
+    "ordinary_authority_and_gateway_planning_preserve_pin": true,
+    "operational_resource_configuration_changed": false,
+    "physical_birth_or_restore_qualified": false
+  },
+  "deployment_qualification": "pending",
+  "qualified_cycles": 0,
+  "hand_actions": []
+}

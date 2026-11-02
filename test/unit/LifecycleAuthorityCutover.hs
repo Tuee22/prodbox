@@ -23,6 +23,7 @@ import Prodbox.Lifecycle.Authority.Migration
   , MigrationImportDecision (..)
   , MigrationProjection (..)
   , MigrationProjectionImport (ProjectionMissing)
+  , MigrationRefusal (StagedEpochPromotionRequired)
   , MigrationState
   , initialMigrationState
   , migrationAuthorityStatus
@@ -134,7 +135,7 @@ lifecycleAuthorityCutoverSuite =
       readIORef appliedCommands
         `shouldReturn` [RecordProjectionImport LeaseProjection ProjectionMissing]
 
-    it "runs import, stable shadow, suspend, freeze, every binding, activate, and exact readback" $ do
+    it "does not activate from coarse compatibility binding labels" $ do
       shadow <- missingShadowProof
       stateRef <- newIORef initialMigrationState
       logRef <- newIORef ([] :: [String])
@@ -143,11 +144,12 @@ lifecycleAuthorityCutoverSuite =
         runAuthorityCutover
           boundary
           epoch
-      result `shouldBe` Right (AuthorityCutoverActivated epoch (projectionShadowDigest shadow))
+      result
+        `shouldBe` Left (AuthorityCutoverMigrationRefused CutoverActivate StagedEpochPromotionRequired)
       readIORef logRef
         `shouldReturn` expectedCutoverLog
       (migrationAuthorityStatus <$> readIORef stateRef)
-        `shouldReturn` MigrationReplacementWriterActive epoch
+        `shouldReturn` MigrationWritersQuiesced
 
     it "fails closed before durable freeze when the post-suspend shadow digest moves" $ do
       initialShadow <- missingShadowProof
@@ -169,7 +171,7 @@ lifecycleAuthorityCutoverSuite =
       (migrationAuthorityStatus <$> readIORef stateRef)
         `shouldReturn` MigrationLegacyWriterActive
 
-    it "returns from exact active-epoch readback without replaying legacy effects" $ do
+    it "refuses to certify an active compatibility epoch without staged promotion evidence" $ do
       shadow <- missingShadowProof
       active <- activatedState epoch
       stateRef <- newIORef active
@@ -179,7 +181,7 @@ lifecycleAuthorityCutoverSuite =
         runAuthorityCutover
           boundary
           epoch
-      result `shouldBe` Right (AuthorityCutoverAlreadyActive epoch)
+      result `shouldBe` Left AuthorityCutoverStagedPromotionRequired
       readIORef logRef `shouldReturn` ["observe-authority"]
 
 cutoverBoundary
@@ -239,6 +241,8 @@ migrationLogToken command = case command of
   PrepareBinding binding -> "migration:prepare:" ++ show binding
   ActivateReplacement _ -> "migration:activate"
   RequestLegacyRollback -> "migration:rollback"
+  PrepareReplacementEpoch {} -> "migration:prepare-epoch"
+  ApplyPreparedEpochPromotion {} -> "migration:promote-epoch"
 
 missingShadowProof :: IO ProjectionShadowProof
 missingShadowProof =
@@ -315,17 +319,11 @@ activatedState
   -> IO MigrationState
 activatedState targetEpoch = do
   shadow <- missingShadowProof
-  let importCommands =
-        [ RecordProjectionImport projection ProjectionMissing
-        | projection <- requiredCutoverProjections
-        ]
-      imported = foldl applyImportState initialMigrationState importCommands
-      completed = applyImportState imported CompleteProjectionImports
-      digest = projectionShadowDigest shadow
+  let digest = projectionShadowDigest shadow
       migrated =
         foldl
           apply
-          completed
+          initialMigrationState
           ( [VerifyShadow digest, FreezeLegacy digest]
               ++ fmap PrepareBinding requiredCutoverBindings
               ++ [ActivateReplacement targetEpoch]
@@ -333,7 +331,6 @@ activatedState targetEpoch = do
   pure migrated
  where
   apply state command = fst (stepMigration state command)
-  applyImportState state command = fst (stepMigrationImport state command)
 
 expectedCutoverLog :: [String]
 expectedCutoverLog =
@@ -356,9 +353,7 @@ expectedCutoverLog =
           ]
       )
       requiredCutoverBindings
-    ++ [ "migration:activate"
-       , "observe-authority"
-       ]
+    ++ ["migration:activate"]
 
 inMemoryRepository
   :: IORef (Maybe (StoredMigration Word))

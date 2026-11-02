@@ -1,4 +1,7 @@
+{-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 
 -- | Sprint 7.36: the production Kubernetes-scoped execution arm for the
 -- registered DNS01 challenge record family.
@@ -28,6 +31,7 @@
 --     read-back looking for an absence nothing was going to produce.
 module Prodbox.Lifecycle.Teardown.Dns01ChallengeOwnerDeleteInterpreter
   ( productionDns01ChallengeOwnerDeleteBoundary
+  , productionDns01ChallengeOwnerDeleteBoundaryInOperation
   , Dns01ChallengeOwner (..)
   , parseDns01ChallengeOwners
   , dns01ChallengeOwnerRecordName
@@ -36,14 +40,17 @@ module Prodbox.Lifecycle.Teardown.Dns01ChallengeOwnerDeleteInterpreter
   )
 where
 
+import Control.Monad (foldM)
 import Data.List (sort)
 import Data.List.NonEmpty (NonEmpty)
 import Data.List.NonEmpty qualified as NonEmpty
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.ControlPlane.AuthenticatedTransport (AuthenticatedClientTransport)
 import Prodbox.ControlPlane.EksClientAuthClient
   ( EksClientAuthClientError
   , withEksClientAuthProjectionForTeardownExecution
+  , withEksClientAuthProjectionForTeardownExecutionWithTransport
   )
 import Prodbox.ControlPlane.EksClientAuthProjection (EksClientAuthProjection)
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
@@ -60,11 +67,15 @@ import Prodbox.Lifecycle.Teardown.Dns01ChallengeRecordAdapter
   , dns01ChallengeOwnerDeleteResourceKey
   )
 import Prodbox.Lifecycle.Teardown.EphemeralKubectl
-  ( EphemeralKubectl
+  ( EmbeddedHomeKubeconfig
+  , EphemeralKubectl
   , EphemeralKubectlUnavailable (..)
+  , ephemeralKubectlRequestTimeoutArgument
   , runEphemeralKubectl
   , withEphemeralKubectlForProjection
+  , withEphemeralKubectlForProjectionInOperation
   , withHomeCleanupKubectl
+  , withHomeCleanupKubectlInOperation
   )
 import Prodbox.Lifecycle.Teardown.Execution
   ( teardownExecutionIdentity
@@ -85,6 +96,8 @@ import Prodbox.Lifecycle.Teardown.RegisteredTargetResult
   ( RegisteredTargetMutationAttempt (..)
   )
 import Prodbox.Lifecycle.Teardown.Registry (awsEksProvisionedClusterName)
+import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
+import Prodbox.Subprocess (OperationSubprocesses)
 
 -- | One cert-manager @Challenge@ object, as the solver reports it.
 data Dns01ChallengeOwner = Dns01ChallengeOwner
@@ -150,9 +163,17 @@ selectDns01ChallengeOwnersToDelete observedRecords owners =
 -- shortened owner set reads as an orphaned record, which is a different fact
 -- with a different remedy.
 parseDns01ChallengeOwners :: Text -> Either Text [Dns01ChallengeOwner]
-parseDns01ChallengeOwners raw = traverse parseRow rows
+parseDns01ChallengeOwners raw = reverse <$> foldM collect [] (Text.lines raw)
  where
-  rows = filter (not . Text.null) (map Text.strip (Text.lines raw))
+  -- Consume each row before continuing. A pending traversal otherwise retains
+  -- reconstruction for the whole response alongside its decoded owner set.
+  collect owners line =
+    let row = Text.strip line
+     in if Text.null row
+          then Right owners
+          else do
+            !owner <- parseRow row
+            Right (owner : owners)
   parseRow row = case Text.splitOn "|" row of
     [namespace, name, dnsName]
       | not (Text.null namespace)
@@ -178,88 +199,93 @@ productionDns01ChallengeOwnerDeleteBoundary
   -> [(String, String)]
   -> Maybe FilePath
   -> Dns01ChallengeOwnerDeleteBoundary IO
-productionDns01ChallengeOwnerDeleteBoundary
-  caller
-  repoRoot
-  kubectl
-  environment
-  workingDirectory =
-    mkDns01ChallengeOwnerDeleteBoundary
-      ( \context _target authorization ->
-          if dns01ChallengeOwnerDeleteResourceKey authorization == HomeDns01ChallengeRecordKey
-            then
-              Right
-                <$> withHomeCleanupKubectl
-                  kubectl
-                  environment
-                  workingDirectory
-                  (consumeOwnerDeleteClient authorization)
-            else
-              deleteThroughEphemeralClient
-                caller
-                repoRoot
-                kubectl
-                environment
-                workingDirectory
-                (evidenceAwsScope (teardownExecutionObservationScope context))
-                (teardownExecutionIdentity context)
-                authorization
-      )
+productionDns01ChallengeOwnerDeleteBoundary caller repoRoot kubectl environment workingDirectory =
+  productionDns01ChallengeOwnerDeleteBoundaryUsing
+    (withEksClientAuthProjectionForTeardownExecution caller repoRoot)
+    (withEphemeralKubectlForProjection kubectl environment workingDirectory)
+    (withHomeCleanupKubectl kubectl environment workingDirectory)
 
-deleteThroughEphemeralClient
-  :: ExternalLifecycleAuthorityCaller
-  -> FilePath
+-- | Both home and EKS commands retain the captured operation owner. The home
+-- arm consumes its embedded projection rather than resolving another context.
+productionDns01ChallengeOwnerDeleteBoundaryInOperation
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> OperationSubprocesses
+  -> EmbeddedHomeKubeconfig
   -> FilePath
   -> [(String, String)]
   -> Maybe FilePath
+  -> Dns01ChallengeOwnerDeleteBoundary IO
+productionDns01ChallengeOwnerDeleteBoundaryInOperation transport processes home kubectl environment workingDirectory =
+  productionDns01ChallengeOwnerDeleteBoundaryUsing
+    (withEksClientAuthProjectionForTeardownExecutionWithTransport transport)
+    (withEphemeralKubectlForProjectionInOperation processes kubectl environment workingDirectory)
+    (withHomeCleanupKubectlInOperation processes kubectl environment workingDirectory home)
+
+type EksProjectionIssuer =
+  forall value
+   . TeardownExecutionIdentity
+  -> Text
+  -> Text
+  -> Text
+  -> (EksClientAuthProjection -> IO value)
+  -> IO (Either EksClientAuthClientError value)
+
+type ScopedProjectionKubectl =
+  forall value
+   . EksClientAuthProjection
+  -> (Either EphemeralKubectlUnavailable EphemeralKubectl -> IO value)
+  -> IO value
+
+type ScopedHomeKubectl =
+  forall value
+   . (Either EphemeralKubectlUnavailable EphemeralKubectl -> IO value)
+  -> IO value
+
+productionDns01ChallengeOwnerDeleteBoundaryUsing
+  :: EksProjectionIssuer
+  -> ScopedProjectionKubectl
+  -> ScopedHomeKubectl
+  -> Dns01ChallengeOwnerDeleteBoundary IO
+productionDns01ChallengeOwnerDeleteBoundaryUsing issue prepare prepareHome =
+  mkDns01ChallengeOwnerDeleteBoundary $ \context _target authorization ->
+    if dns01ChallengeOwnerDeleteResourceKey authorization == HomeDns01ChallengeRecordKey
+      then Right <$> prepareHome (consumeOwnerDeleteClient authorization)
+      else
+        deleteThroughEphemeralClient
+          issue
+          prepare
+          (evidenceAwsScope (teardownExecutionObservationScope context))
+          (teardownExecutionIdentity context)
+          authorization
+
+deleteThroughEphemeralClient
+  :: EksProjectionIssuer
+  -> ScopedProjectionKubectl
   -> Maybe AwsScope
   -> TeardownExecutionIdentity
   -> ExactDns01ChallengeOwnerDeleteAuthorization
   -> IO (Either err RegisteredTargetMutationAttempt)
-deleteThroughEphemeralClient
-  caller
-  repoRoot
-  kubectl
-  environment
-  workingDirectory
-  maybeAwsScope
-  identity
-  authorization = case maybeAwsScope of
-    Nothing ->
-      pure
-        ( Right
-            ( RegisteredTargetMutationRefused
-                "DNS01 challenge owner delete requires the run's AWS scope"
-            )
-        )
-    Just awsScope -> do
-      let AwsAccountId account = awsScopeAccountId awsScope
-          AwsRegion region = awsScopeRegion awsScope
-      acquired <-
-        withEksClientAuthProjectionForTeardownExecution
-          caller
-          repoRoot
-          identity
-          account
-          region
-          awsEksProvisionedClusterName
-          (withOwnerDeleteClient kubectl environment workingDirectory authorization)
-      pure (Right (either clientAuthAttempt id acquired))
-
-withOwnerDeleteClient
-  :: FilePath
-  -> [(String, String)]
-  -> Maybe FilePath
-  -> ExactDns01ChallengeOwnerDeleteAuthorization
-  -> EksClientAuthProjection
-  -> IO RegisteredTargetMutationAttempt
-withOwnerDeleteClient kubectl environment workingDirectory authorization projection =
-  withEphemeralKubectlForProjection
-    kubectl
-    environment
-    workingDirectory
-    projection
-    (consumeOwnerDeleteClient authorization)
+deleteThroughEphemeralClient issue prepare maybeAwsScope identity authorization = case maybeAwsScope of
+  Nothing ->
+    pure
+      ( Right
+          ( RegisteredTargetMutationRefused
+              "DNS01 challenge owner delete requires the run's AWS scope"
+          )
+      )
+  Just awsScope -> do
+    let AwsAccountId account = awsScopeAccountId awsScope
+        AwsRegion region = awsScopeRegion awsScope
+    acquired <-
+      issue
+        identity
+        account
+        region
+        awsEksProvisionedClusterName
+        useProjection
+    pure (Right (either clientAuthAttempt id acquired))
+ where
+  useProjection projection = prepare projection (consumeOwnerDeleteClient authorization)
 
 consumeOwnerDeleteClient
   :: ExactDns01ChallengeOwnerDeleteAuthorization
@@ -269,8 +295,8 @@ consumeOwnerDeleteClient authorization client = case client of
   Left (EphemeralKubectlUnavailable failure) -> pure (unavailable failure)
   Right ready -> deleteOwners ready authorization
 
--- | An acquisition failure is a refusal rather than a lost response: nothing
--- was submitted, so the cert-manager objects are exactly as they were.
+-- | An acquisition failure submits no Kubernetes owner mutation. Any uncertain
+-- Provider issuance remains owned by its separately admitted operation.
 clientAuthAttempt :: EksClientAuthClientError -> RegisteredTargetMutationAttempt
 clientAuthAttempt err =
   RegisteredTargetMutationRefused
@@ -290,7 +316,7 @@ deleteOwners
   -> ExactDns01ChallengeOwnerDeleteAuthorization
   -> IO RegisteredTargetMutationAttempt
 deleteOwners client authorization = do
-  listed <- runEphemeralKubectl client challengeListingArguments
+  listed <- runDns01Kubectl client challengeListingArguments
   case listed of
     Left failures ->
       pure
@@ -317,13 +343,20 @@ challengeListingArguments =
   , "jsonpath={range .items[*]}{.metadata.namespace}{\"|\"}{.metadata.name}{\"|\"}{.spec.dnsName}{\"\\n\"}{end}"
   ]
 
+-- DNS owner commands share the drain's named per-request timeout. The runner
+-- separately bounds the whole command and its output under its selected owner.
+runDns01Kubectl
+  :: EphemeralKubectl -> [String] -> IO (Either (NonEmpty ObservationFailure) String)
+runDns01Kubectl client arguments =
+  runEphemeralKubectl client (arguments <> [ephemeralKubectlRequestTimeoutArgument])
+
 deleteOwner
   :: EphemeralKubectl
   -> Dns01ChallengeOwner
   -> IO (Either Text ())
 deleteOwner client owner = do
   result <-
-    runEphemeralKubectl
+    runDns01Kubectl
       client
       [ "delete"
       , "challenges.acme.cert-manager.io"

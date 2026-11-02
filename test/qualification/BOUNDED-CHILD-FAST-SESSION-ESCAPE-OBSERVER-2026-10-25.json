@@ -1,0 +1,115 @@
+{
+  "schema_version": 1,
+  "recording": "BOUNDED-CHILD-FAST-SESSION-ESCAPE-OBSERVER-2026-10-25",
+  "owning_sprint": "6.5",
+  "recorded_utc": "2026-10-25T13:07:15.407048+00:00",
+  "previous_record": "test/qualification/BOUNDED-CHILD-FAST-SESSION-ESCAPE-2026-10-25.json",
+  "change": "The current reproducer refuses unreadable or malformed process metadata. Only observed ENOENT or a changed PID/start-time/zombie identity proves the original child stopped. It cannot convert general observation errors into absence.",
+  "repository_reproducer": {
+    "source": "test/qualification/OwnedSubprocessFastSessionEscape.hs",
+    "source_sha256": "87965b42d7f220c0998867f05f3509cedbfee8b903799d868a773ea671fdb6dd",
+    "preserved_source": ".build/sprint-6.5/rpc-coordinator-20261025/OwnedSubprocessFastSessionEscape-87965b42d7f220c0.hs",
+    "build": [
+      "cabal",
+      "exec",
+      "--builddir=.build",
+      "--",
+      "ghc",
+      "-Wall",
+      "-Werror",
+      "-threaded",
+      "-rtsopts",
+      "-package=prodbox",
+      "-outputdir",
+      ".build/sprint-6.5/rpc-coordinator-20261025/fast-session-public-2-objects",
+      "test/qualification/OwnedSubprocessFastSessionEscape.hs",
+      "-o",
+      ".build/sprint-6.5/rpc-coordinator-20261025/fast-session-public-probe-2"
+    ],
+    "run": [
+      ".build/sprint-6.5/rpc-coordinator-20261025/fast-session-public-probe-2"
+    ]
+  },
+  "recorded_run": {
+    "command": [
+      ".build/sprint-6.5/rpc-coordinator-20261025/fast-session-public-probe-2"
+    ],
+    "started_utc": "2026-10-25T13:05:36.850792+00:00",
+    "completed_utc": "2026-10-25T13:05:37.384196+00:00",
+    "exit_code": 1,
+    "wall_seconds": 0.5334207038395107,
+    "binary_sha256": "f0979af313a7a3e6eb97fbea42c9a707b77ee34406077a0d81a4d793bf65f377",
+    "observations": {
+      "cases": [
+        {
+          "case": 1,
+          "elapsed_micros": 66250,
+          "escaped_child_live_after_return": true,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 2,
+          "elapsed_micros": 54035,
+          "escaped_child_live_after_return": true,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 3,
+          "elapsed_micros": 64787,
+          "escaped_child_live_after_return": true,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 4,
+          "elapsed_micros": 58892,
+          "escaped_child_live_after_return": true,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 5,
+          "elapsed_micros": 69749,
+          "escaped_child_live_after_return": true,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 6,
+          "elapsed_micros": 56432,
+          "escaped_child_live_after_return": true,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 7,
+          "elapsed_micros": 58492,
+          "escaped_child_live_after_return": true,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 8,
+          "elapsed_micros": 56275,
+          "escaped_child_live_after_return": true,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        }
+      ],
+      "failed_cases": 8,
+      "fixed_case_count": 8
+    }
+  },
+  "frozen_implementation": "Same unchanged library implementation and causal profile as the previous record.",
+  "status": "Open: current implementation still falsely completes all eight controlled cases. No production repair or qualification is claimed.",
+  "fixture_cleanup": "Every exact fixture PID/start-time cleanup completed before JSON output; observation errors fail the fixture.",
+  "qualification_claim": false,
+  "qualified_cycles_added": 0,
+  "live_attempts": 0,
+  "image_attempts": 0,
+  "resource_envelopes_increased": false,
+  "hand_actions": [],
+  "validation_index": ".build/sprint-6.5/rpc-coordinator-20261025/validation-progress.json"
+}

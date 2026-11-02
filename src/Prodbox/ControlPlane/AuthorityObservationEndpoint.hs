@@ -41,6 +41,7 @@ import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionAggregate
   , AuthorityMigrationMode (..)
+  , activeAuthorityEpoch
   , authorityAggregateAdmission
   , authorityAggregateMigration
   )
@@ -196,9 +197,11 @@ aggregateWriterStatus
   :: AuthorityAdmissionAggregate
   -> Either Text MigrationAuthorityStatus
 aggregateWriterStatus aggregate = case authorityAggregateMigration aggregate of
-  AuthorityMigrationControlled migration -> Right (migrationAuthorityStatus migration)
-  AuthorityCleanInstall -> case authorityAggregateAdmission aggregate of
-    BackupEstablished epoch _ _
+  AuthorityMigrationControlled migration
+    | migrationAuthorityStatus migration == MigrationLegacyWriterActive ->
+        Right MigrationLegacyWriterActive
+  _ -> case activeAuthorityEpoch aggregate of
+    Right epoch
       | authorityEpochValue epoch > fromIntegral (maxBound :: Word) ->
           Left "Authority epoch exceeds the migration observation generation bound"
       | otherwise ->
@@ -206,9 +209,7 @@ aggregateWriterStatus aggregate = case authorityAggregateMigration aggregate of
             (Left "Authority epoch is not a valid migration observation generation")
             (Right . MigrationReplacementWriterActive)
             (mkMigrationEpoch (fromIntegral (authorityEpochValue epoch)))
-    GenesisFrozen -> Right MigrationWritersQuiesced
-    EstablishingBackup _ -> Right MigrationWritersQuiesced
-    BackupRepairFrozen _ _ -> Right MigrationWritersQuiesced
+    Left _ -> Right MigrationWritersQuiesced
 
 authorityObservationHttpStatus :: AuthorityObservationResult -> ReplyStatus
 authorityObservationHttpStatus result = case result of

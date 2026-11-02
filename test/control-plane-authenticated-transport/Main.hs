@@ -6,6 +6,8 @@
 
 module Main (main) where
 
+import AuthenticatedRequestFootprint (authenticatedRequestFootprintTests)
+import AuthenticatedRequestPreflight (authenticatedRequestPreflightTests)
 import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
 import Control.Concurrent.STM (atomically)
 import Data.ByteString (ByteString)
@@ -35,6 +37,10 @@ import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   , AuthorityOperationSubmitResponse (..)
   , authorityOperationResponseMaximumBytes
   )
+import Prodbox.ControlPlane.AuthorityControlProtocol
+  ( AuthorityControlPayload (AuthorityControlObserveEpochPromotion)
+  , isEpochPromotionObservationForRole
+  )
 import Prodbox.ControlPlane.CleanupRunEndpoint
   ( CleanupRunCommand (..)
   , CleanupRunDescriptorCommand (..)
@@ -44,6 +50,7 @@ import Prodbox.ControlPlane.Client
   , ControlPlaneRouteFor
     ( AuthorityBackupCopyRoute
     , AuthorityBackupObserveRoute
+    , LifecycleAuthorityControlRoute
     , LifecycleAwsAdminProvisionerRoute
     , LifecycleCleanupRunRoute
     , LifecycleEksDrainIntentRoute
@@ -225,14 +232,133 @@ tests :: TestTree
 tests =
   testGroup
     "Sprint 4.50 authenticated transport and retained replay"
-    [ replayPureTests
+    [ authenticatedRequestPreflightTests
+    , authenticatedRequestFootprintTests
+    , replayPureTests
     , replayCodecTests
     , durableReplayTests
     , authenticatedTransportTests
     , authenticatedRoleInterpreterTests
+    , verifiedDomainHandlerTests
     , authenticatedRuntimeTests
     , targetMetadataResponseTests
     ]
+
+verifiedDomainHandlerTests :: TestTree
+verifiedDomainHandlerTests =
+  testGroup
+    "verified domain request context"
+    [ testCase "preserves verified deadline, epoch, caller, route and body" $ do
+        frame <- captureAuthenticatedFrame clientProviders body
+        state <- newReplayState (initialRequestReplayProjection verifiedDomainReplayLimits)
+        seen <- newIORef Nothing
+        innerEffects <- newIORef (0 :: Int)
+        let domain verified = do
+              writeIORef
+                seen
+                ( Just
+                    ( verifiedRequestDeadline verified
+                    , verifiedRequestAuthorityEpoch verified
+                    , verifiedRequestCallerPrincipal verified
+                    , verifiedRequestRoute verified
+                    , verifiedRequestBody verified
+                    )
+                )
+              pure (Just (ReplyOk, "verified-domain"))
+            wrapped = verifiedDomainInterpreter (\_ _ _ -> False) domain state (countingInterpreter innerEffects)
+        interpreterHandle wrapped ProviderWorkApply (LazyByteString.toStrict frame)
+          >>= (@?= Just (ReplyOk, "verified-domain"))
+        readIORef seen
+          >>= ( @?=
+                  Just
+                    (deadline, authorityEpochGenesis, CallerService LifecycleAuthorityRuntime, ProviderWorkApply, body)
+              )
+        readIORef innerEffects >>= (@?= 0)
+    , testCase "delegates an unclaimed request to the existing slot handler" $ do
+        frame <- captureAuthenticatedFrame clientProviders body
+        state <- newReplayState (initialRequestReplayProjection verifiedDomainReplayLimits)
+        effects <- newIORef (0 :: Int)
+        let wrapped =
+              verifiedDomainInterpreter
+                (\_ _ _ -> False)
+                (const (pure Nothing))
+                state
+                (countingInterpreter effects)
+        _ <- interpreterHandle wrapped ProviderWorkApply (LazyByteString.toStrict frame)
+        readIORef effects >>= (@?= 1)
+    , testCase "never invokes the domain handler before authentication succeeds" $ do
+        state <- newReplayState (initialRequestReplayProjection verifiedDomainReplayLimits)
+        effects <- newIORef (0 :: Int)
+        let domain _ = modifyIORef' effects (+ 1) >> pure (Just (ReplyOk, "unreachable"))
+            wrapped = verifiedDomainInterpreter (\_ _ _ -> False) domain state (countingInterpreter effects)
+        handledResponse <- interpreterHandle wrapped ProviderWorkApply (ByteString.singleton 0)
+        case handledResponse of
+          Just (status, _) -> assertBool "malformed authentication must refuse" (status /= ReplyOk)
+          Nothing -> assertFailure "authentication refusal lost its response"
+        readIORef effects >>= (@?= 0)
+    , testCase "retains exact response replay without running the domain effect twice" $ do
+        frame <- captureAuthenticatedFrame clientProviders body
+        state <- newReplayState (initialRequestReplayProjection verifiedDomainReplayLimits)
+        effects <- newIORef (0 :: Int)
+        let domain _ = modifyIORef' effects (+ 1) >> pure (Just (ReplyOk, "domain-receipt"))
+            wrapped = verifiedDomainInterpreter (\_ _ _ -> False) domain state (countingInterpreter effects)
+        first <- interpreterHandle wrapped ProviderWorkApply (LazyByteString.toStrict frame)
+        second <- interpreterHandle wrapped ProviderWorkApply (LazyByteString.toStrict frame)
+        first @?= Just (ReplyOk, "domain-receipt")
+        second @?= first
+        readIORef effects >>= (@?= 1)
+    , testCase "fresh-nonce observation policy also wraps the verified domain handler" $ do
+        firstFrame <- captureAuthenticatedFrame clientProviders body
+        nextFrame <-
+          captureAuthenticatedFrame
+            (clientProviders {provideAuthenticatedClientNonce = pure (Right nonceB)})
+            body
+        state <- newReplayState (initialRequestReplayProjection verifiedDomainReplayLimits)
+        effects <- newIORef (0 :: Int)
+        let domain _ = modifyIORef' effects (+ 1) >> pure (Just (ReplyOk, "domain-observation"))
+            policy _ route requestBody = route == ProviderWorkApply && requestBody == body
+            wrapped = verifiedDomainInterpreter policy domain state (countingInterpreter effects)
+        interpreterHandle wrapped ProviderWorkApply (LazyByteString.toStrict firstFrame)
+          >>= (@?= Just (ReplyOk, "domain-observation"))
+        interpreterHandle wrapped ProviderWorkApply (LazyByteString.toStrict firstFrame)
+          >>= (@?= Just (ReplyConflict, "authenticated-read-replay-requires-fresh-nonce\n"))
+        interpreterHandle wrapped ProviderWorkApply (LazyByteString.toStrict nextFrame)
+          >>= (@?= Just (ReplyOk, "domain-observation"))
+        readIORef effects >>= (@?= 2)
+    , testCase "bounds a verified domain response before replay completion" $ do
+        frame <- captureAuthenticatedFrame clientProviders body
+        state <- newReplayState (initialRequestReplayProjection verifiedDomainReplayLimits)
+        effects <- newIORef (0 :: Int)
+        let domain _ = pure (Just (ReplyOk, ByteString.replicate 65 97))
+            wrapped = verifiedDomainInterpreter (\_ _ _ -> False) domain state (countingInterpreter effects)
+        handledResponse <- interpreterHandle wrapped ProviderWorkApply (LazyByteString.toStrict frame)
+        case handledResponse of
+          Just (status, _) -> status @?= ReplyInternalError
+          Nothing -> assertFailure "oversized domain response lost its refusal"
+        readIORef effects >>= (@?= 0)
+    ]
+
+verifiedDomainInterpreter
+  :: (RuntimeRole -> ControlPlaneRoute -> ByteString -> Bool)
+  -> (VerifiedControlPlaneRequest -> IO (Maybe (ReplyStatus, ByteString)))
+  -> IORef FakeReplayState
+  -> RoleInterpreter IO
+  -> RoleInterpreter IO
+verifiedDomainInterpreter policy domain state inner =
+  authenticatedRoleInterpreterWithVerifiedHandler
+    policy
+    domain
+    transportBounds
+    maximumLifetime
+    (AuthenticatedRoleProviders serverProviders (pure (Right attemptA)))
+    ProviderWorkerRuntime
+    casAttempts
+    verifiedDomainReplayLimits
+    (fakeReplayRepository state RequestReplayCasApplied)
+    (contextFreeAuthenticatedRoleHandler inner)
+
+verifiedDomainReplayLimits :: RequestReplayLimits
+verifiedDomainReplayLimits = mustRight (mkRequestReplayLimits 4 64 skew)
 
 targetMetadataResponseTests :: TestTree
 targetMetadataResponseTests =
@@ -1653,6 +1779,36 @@ authenticatedRoleInterpreterTests =
             (ByteString.length (mustRight (encodeRequestReplayProjection 1024 limits projection)) < 1024)
       | request <- [ObservePulumiCheckpoint "aws-eks", ObservePulumiCheckpointPair "aws-eks"]
       ]
+      ++ [ testCase "epoch promotion observation retains only a fresh-nonce refusal" $ do
+             let limits = mustRight (mkRequestReplayLimits 4 ReplayBudget.authorityMetadataResponseMaximumBytes skew)
+                 payload = ByteString.replicate ReplayBudget.authorityMetadataResponseMaximumBytes 99
+                 requestBody = LazyByteString.toStrict (encodeControlPlaneRequest AuthorityControlObserveEpochPromotion)
+             state <- newReplayState (initialRequestReplayProjection limits)
+             effects <- newIORef (0 :: Int)
+             frame <- captureLifecycleFrame clientProviders LifecycleAuthorityControlRoute requestBody
+             freshFrame <-
+               captureLifecycleFrame
+                 (clientProviders {provideAuthenticatedClientNonce = pure (Right nonceB)})
+                 LifecycleAuthorityControlRoute
+                 requestBody
+             let inner =
+                   RoleInterpreter
+                     transportReadyReadinessSource
+                     (\_ _ -> modifyIORef' effects (+ 1) >> pure (Just (ReplyOk, payload)))
+                 wrapped = authorityReadInterpreter limits state inner
+             interpreterHandle wrapped LifecycleAuthorityControl (LazyByteString.toStrict frame)
+               >>= (@?= Just (ReplyOk, payload))
+             interpreterHandle wrapped LifecycleAuthorityControl (LazyByteString.toStrict frame)
+               >>= (@?= Just (ReplyConflict, "authenticated-read-replay-requires-fresh-nonce\n"))
+             readIORef effects >>= (@?= 1)
+             interpreterHandle wrapped LifecycleAuthorityControl (LazyByteString.toStrict freshFrame)
+               >>= (@?= Just (ReplyOk, payload))
+             readIORef effects >>= (@?= 2)
+             projection <- fakeReplayProjection <$> readIORef state
+             assertBool
+               "epoch topology snapshots must not enter retained replay"
+               (ByteString.length (mustRight (encodeRequestReplayProjection 1024 limits projection)) < 1024)
+         ]
       ++ [ testCase ("cleanup observation retains only a fresh-nonce refusal: " <> show request) $ do
              let limits = mustRight (mkRequestReplayLimits 4 (2 * 1024 * 1024) skew)
                  payload = ByteString.replicate (2 * 1024 * 1024) 98
@@ -2231,7 +2387,8 @@ authorityReadInterpreterWithAttempt
   -> RoleInterpreter IO
   -> RoleInterpreter IO
 authorityReadInterpreterWithAttempt attempt limits state inner =
-  authenticatedRoleInterpreter
+  authenticatedRoleInterpreterWithReadPolicy
+    isEpochPromotionObservationForRole
     transportBounds
     maximumLifetime
     ( AuthenticatedRoleProviders
@@ -2313,7 +2470,7 @@ freshProductionAuthorityHandler = do
           transportReadyReadinessSource
           "cluster-a"
           (pure (Right 1000))
-          (const (Right "fixture-authority-envelope"))
+          (const (pure (Right "fixture-authority-envelope")))
           repository
           ConfigAuthorityRepository
             { observeAuthorityConfig = const (pure ConfigObservationMissing)

@@ -18,6 +18,8 @@ module Prodbox.ControlPlane.AuthenticatedRoleInterpreter
   , classifyAuthenticatedRolePlainResponse
   , renderAuthenticatedRolePlainResponseObservation
   , authenticatedRoleInterpreter
+  , authenticatedRoleInterpreterWithReadPolicy
+  , authenticatedRoleInterpreterWithVerifiedHandler
 
     -- * Stable total HTTP projections
   , authenticatedServerErrorResponse
@@ -46,6 +48,7 @@ import Prodbox.ControlPlane.CleanupRunProtocol (isCleanupRunObservationRequest)
 import Prodbox.ControlPlane.PulumiCheckpointProtocol (isPulumiCheckpointObservationRequest)
 import Prodbox.ControlPlane.RequestAuthentication
   ( VerifiedCallerSlot
+  , VerifiedControlPlaneRequest
   )
 import Prodbox.ControlPlane.RequestReplay
   ( ReplayAttemptId
@@ -65,6 +68,7 @@ import Prodbox.ControlPlane.RoleReadiness (RoleReadinessSource)
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (..)
   )
+import Prodbox.ControlPlane.RpcAdmissionBirthWire (rpcBirthResponseMaximumForBody)
 import Prodbox.ControlPlane.Server
   ( RoleInterpreter (RoleInterpreter, interpreterHandle, interpreterReadiness)
   )
@@ -250,7 +254,46 @@ authenticatedRoleInterpreter
   -> RequestReplayRepository m revision
   -> AuthenticatedRoleHandler m
   -> RoleInterpreter m
-authenticatedRoleInterpreter
+authenticatedRoleInterpreter =
+  authenticatedRoleInterpreterWithReadPolicy (\_ _ _ -> False)
+
+-- | Domain-owned read classification enters at the composition boundary. This
+-- layer cannot import lifecycle wire types that depend on authenticated clients.
+authenticatedRoleInterpreterWithReadPolicy
+  :: (Monad m)
+  => (RuntimeRole -> ControlPlaneRoute -> ByteString -> Bool)
+  -> AuthenticatedTransportBounds
+  -> AuthorityDuration
+  -> AuthenticatedRoleProviders m
+  -> RuntimeRole
+  -> ReplayCasAttempts
+  -> RequestReplayLimits
+  -> RequestReplayRepository m revision
+  -> AuthenticatedRoleHandler m
+  -> RoleInterpreter m
+authenticatedRoleInterpreterWithReadPolicy
+  additionalReadPolicy =
+    authenticatedRoleInterpreterWithVerifiedHandler additionalReadPolicy (\_ -> pure Nothing)
+
+-- | The optional domain handler receives only a fully verified request, after
+-- replay admission. The common response validation still bounds its result.
+-- Caller-slot identity remains unchanged for existing durable owners.
+authenticatedRoleInterpreterWithVerifiedHandler
+  :: (Monad m)
+  => (RuntimeRole -> ControlPlaneRoute -> ByteString -> Bool)
+  -> (VerifiedControlPlaneRequest -> m (Maybe (ReplyStatus, ByteString)))
+  -> AuthenticatedTransportBounds
+  -> AuthorityDuration
+  -> AuthenticatedRoleProviders m
+  -> RuntimeRole
+  -> ReplayCasAttempts
+  -> RequestReplayLimits
+  -> RequestReplayRepository m revision
+  -> AuthenticatedRoleHandler m
+  -> RoleInterpreter m
+authenticatedRoleInterpreterWithVerifiedHandler
+  additionalReadPolicy
+  verifiedHandler
   transportBounds
   maximumLifetime
   providers
@@ -296,6 +339,7 @@ authenticatedRoleInterpreter
                   attempt
                   (authenticatedServerVerifiedRequest request)
                   ( runInner
+                      (authenticatedServerVerifiedRequest request)
                       (authenticatedServerCallerSlot request)
                       route
                       (authenticatedServerInnerBody request)
@@ -305,6 +349,7 @@ authenticatedRoleInterpreter
     -- All mutations and unclassified requests retain exact response replay.
     runProtected route body attempts repository now attempt verified effect =
       case (localRole, route) of
+        _ | additionalReadPolicy localRole route body -> readFresh
         (AuthorityBackupRuntime, AuthorityBackupObserve) -> readFresh
         (LifecycleAuthorityRuntime, LifecyclePulumiCheckpoint)
           | isPulumiCheckpointObservationRequest body -> readFresh
@@ -317,8 +362,11 @@ authenticatedRoleInterpreter
          in case mkReplayResponse replayLimits status refusalBody of
               Left err -> pure (ReplayProtectedEffectFailed (AuthenticatedRoleHandlerResponseInvalid err))
               Right refusal -> runReplayProtectedReadRequest refusal attempts repository now attempt verified effect
-    runInner callerSlot route body = do
-      handled <- authenticatedHandlerHandle inner callerSlot route body
+    runInner verified callerSlot route body = do
+      domain <- verifiedHandler verified
+      handled <- case domain of
+        Just response -> pure (Just response)
+        Nothing -> authenticatedHandlerHandle inner callerSlot route body
       pure $ case handled of
         Nothing -> Left AuthenticatedRoleHandlerUnavailable
         Just (status, responseBody)
@@ -336,6 +384,8 @@ authenticatedRoleInterpreter
     -- and replay completion. Oversized replies leave the reservation unresolved;
     -- they never become a smaller successful observation or absence proof.
     routeResponseMaximum route body = case (localRole, route) of
+      (LifecycleAuthorityRuntime, LifecycleMigrationApply) ->
+        rpcBirthResponseMaximumForBody body
       (LifecycleAuthorityRuntime, LifecycleAwsAdminProvisioner) ->
         Just ReplayBudget.awsAdminResponseMaximumBytes
       (LifecycleAuthorityRuntime, LifecycleAuthorityControl) ->

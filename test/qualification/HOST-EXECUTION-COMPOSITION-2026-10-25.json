@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "recorded_utc": "2026-10-26T03:35:11.210765+00:00",
+  "scope": "Offline/native component validation of host budget and physical parent/child/helper placement. This is not a complete canonical gate, full deployed-application capacity proof, Authority operation admission or deployment qualification.",
+  "component_record": {
+    "path": ".build/sprint-6.5/rpc-coordinator-20261025/host-composition-validation-1.json",
+    "sha256": "c62f0b17e93a9f3c48a48cf2ca9ad559aca935bf2c6741e1a25d14aa15892f0b"
+  },
+  "native_record": {
+    "path": ".build/sprint-6.5/rpc-coordinator-20261025/host-composition-progress-2.json",
+    "sha256": "6790de38037f60d3d75eb8a4bbf477e18aaecd975fd9103e895e8c2860efec17"
+  },
+  "sources_and_binary": [
+    {
+      "path": "src/Prodbox/Capacity/HostExecution.hs",
+      "sha256": "9fc06029aef6ea0d508db939620c8929c827697e2a7fe7911e451a8dfc926aa3",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/host-composition-inputs-2/src/Prodbox/Capacity/HostExecution.hs"
+    },
+    {
+      "path": "src/Prodbox/Subprocess.hs",
+      "sha256": "39020ce6b1a50d2659047f9d65c63c8906709919bdde6b1a07b1fa8b39518b3d",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/host-composition-inputs-2/src/Prodbox/Subprocess.hs"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/KernelScope.hs",
+      "sha256": "8c38edd13edaeebca28276bc8fb0f21bbe48dd0979ef83a79c55dccc7a96d5d2",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/host-composition-inputs-2/src/Prodbox/Subprocess/KernelScope.hs"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/ScopeFamily.hs",
+      "sha256": "186e1a9bdf4284fd1d02a323fb929cc366d5280e9a6c4f4bc32b2ceffa930b24",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/host-composition-inputs-2/src/Prodbox/Subprocess/ScopeFamily.hs"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdBus.hs",
+      "sha256": "7b932e54c41541391f1dda3cea6c3ef77736755235740dc41d6e635cc868b60f",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/host-composition-inputs-2/src/Prodbox/Subprocess/SystemdBus.hs"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "sha256": "db2d5f10b81f56144b0d506add04f6f513f39e011816564de0e5e9451177216c",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/host-composition-inputs-2/src/Prodbox/Subprocess/SystemdIdentity.hs"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/host-composition-native-1/Main.hs",
+      "sha256": "db093bede7db49c2ff173d05ae5759dc8c403ff6d253ad44299dd52033350fef",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/host-composition-inputs-2/.build/sprint-6.5/rpc-coordinator-20261025/host-composition-native-1/Main.hs"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/host-composition-native-1/driver",
+      "sha256": "1d5233d7b36dd4f63581d00cc3ff2a433729feae36b28b9074d47641305081b6",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/host-composition-inputs-2/.build/sprint-6.5/rpc-coordinator-20261025/host-composition-native-1/driver"
+    }
+  ],
+  "test_counts": {
+    "new_pure": 17,
+    "selected_unit_with_connect_denied": 56,
+    "legacy_native": 8,
+    "composed_native_controls": 10
+  },
+  "operator_sha256": "6a34069c304c3c98289e8a8896d0119ec1814298312681c3ce47227baaeb2109",
+  "native_profile": {
+    "slice_memory_bytes": 268435456,
+    "parent_memory_bytes": 184549376,
+    "heap_cap_bytes": 16777216,
+    "child_memory_bytes": 67108864,
+    "helper_memory_bytes": 16777216,
+    "slice_cpu_usec_per_sec": 700000,
+    "slice_tasks": 56,
+    "original_outer_nanoseconds": 5000000000,
+    "work_nanoseconds": 2000000000,
+    "hard_nanoseconds": 2150000000,
+    "stop_nanoseconds": 2500000000,
+    "finish_nanoseconds": 3000000000,
+    "note": "Isolated one-redis plan checked against actual host; no full-application fit or production resource change."
+  },
+  "native_controls": [
+    {
+      "mode": "normal",
+      "result_file": "host-composition-native-3-normal.result.json",
+      "exit_code": 0,
+      "wall_seconds": 1.0252351653762162,
+      "worker_result": "Right ()"
+    },
+    {
+      "mode": "wrong-key",
+      "result_file": "host-composition-native-3-wrong-key.result.json",
+      "exit_code": 0,
+      "wall_seconds": 0.06007442995905876,
+      "worker_result": "Left (HostSubprocessPlacementRefused KernelHostParentRefused)"
+    },
+    {
+      "mode": "wrong-heap",
+      "result_file": "host-composition-native-3-wrong-heap.result.json",
+      "exit_code": 0,
+      "wall_seconds": 0.05162315396592021,
+      "worker_result": "Left (HostSubprocessPlacementRefused KernelHostParentRefused)"
+    },
+    {
+      "mode": "wrong-parent-memory",
+      "result_file": "host-composition-native-3-wrong-parent-memory.result.json",
+      "exit_code": 0,
+      "wall_seconds": 0.1248179292306304,
+      "worker_result": "Left (HostSubprocessPlacementRefused KernelScopeResourceMismatch)"
+    },
+    {
+      "mode": "wrong-slice-memory",
+      "result_file": "host-composition-native-3-wrong-slice-memory.result.json",
+      "exit_code": 0,
+      "wall_seconds": 0.051331620663404465,
+      "worker_result": "Left (HostSubprocessPlacementRefused KernelScopeResourceMismatch)"
+    },
+    {
+      "mode": "wrong-parent-cpu",
+      "result_file": "host-composition-native-3-wrong-parent-cpu.result.json",
+      "exit_code": 0,
+      "wall_seconds": 0.2620062427595258,
+      "worker_result": "Left (HostSubprocessPlacementRefused KernelScopeResourceMismatch)"
+    },
+    {
+      "mode": "wrong-stop-window",
+      "result_file": "host-composition-native-3-wrong-stop-window.result.json",
+      "exit_code": 0,
+      "wall_seconds": 0.10269828513264656,
+      "worker_result": "Left (HostSubprocessPlacementRefused KernelHostWindowRefused)"
+    },
+    {
+      "mode": "expired-work",
+      "result_file": "host-composition-native-3-expired-work.result.json",
+      "exit_code": 0,
+      "wall_seconds": 0.11885558720678091,
+      "worker_result": "Left (HostSubprocessPlacementRefused KernelScopeDeadlineReached)"
+    },
+    {
+      "mode": "wrong-child",
+      "result_file": "host-composition-native-3-wrong-child.result.json",
+      "exit_code": 0,
+      "wall_seconds": 0.2893797089345753,
+      "worker_result": "Left (HostSubprocessCommandRefused OwnedSubprocessInvalidLimits)"
+    },
+    {
+      "mode": "two-capabilities",
+      "result_file": "host-composition-native-3-two-capabilities.result.json",
+      "exit_code": 0,
+      "wall_seconds": 0.3026165822520852,
+      "worker_result": "Left (HostSubprocessCommandRefused OwnedSubprocessRuntimeUnsupported)"
+    }
+  ],
+  "closing_observation": "Every control independently waits for exact parent, slice, scope, timer and expiry helper GetUnit ENOENT within the original five-second bound. Refusal controls require no payload marker.",
+  "preserved_diagnostics": {
+    "library_build_1": "Unused legacy helpers/name shadowing before the initial arithmetic/parent observer build.",
+    "library_build_4": "Local helper-reader name shadowing, fixed before library-build-5.",
+    "native_build_1_2": "Explicit package selection ambiguity, fixed before native build.",
+    "native_run_1": "Invalid fixture durable reservations were zero; refused before any managed unit creation. Exact initial driver source/binary remain in host-composition-invalid-fixture-1.",
+    "all_build_1": "New unit assertion operator precedence; fixed before all-build-2."
+  },
+  "remaining": [
+    "current complete canonical gate after physical composition",
+    "Authority admission and closed managed-controller launcher",
+    "unknown-admission/lost-reply and managed parent-death controls",
+    "actual held-chart Helm callback, authenticated running readback and remaining Sprint 6.5 work",
+    "deployment qualification; no phase advancement"
+  ]
+}

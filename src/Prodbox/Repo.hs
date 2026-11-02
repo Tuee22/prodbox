@@ -4,6 +4,7 @@ module Prodbox.Repo
   , canonicalConfigPaths
   , findRepoRoot
   , resolveSiblingConfigPath
+  , siblingConfigPathForExecutable
   , resolveTestTopologyConfigPath
   , resolveTier0ConfigPath
   , testTopologyConfigFileName
@@ -82,8 +83,17 @@ resolveTestTopologyConfigPath = resolveSiblingConfigPath TestTopology
 
 resolveSiblingConfigPath :: SiblingConfigSurface -> FilePath -> IO FilePath
 resolveSiblingConfigPath surface repoRoot = do
-  exeDir <- takeDirectory <$> getExecutablePath
-  pure ((if null exeDir then repoRoot else exeDir) </> siblingConfigFileName surface)
+  executable <- getExecutablePath
+  pure $
+    if null (takeDirectory executable)
+      then repoRoot </> siblingConfigFileName surface
+      else siblingConfigPathForExecutable surface executable
+
+-- The caller may supply a descriptor-pinned executable identity. This is
+-- path metadata only; it neither reloads configuration nor grants a write.
+siblingConfigPathForExecutable :: SiblingConfigSurface -> FilePath -> FilePath
+siblingConfigPathForExecutable surface executable =
+  takeDirectory executable </> siblingConfigFileName surface
 
 siblingConfigFileName :: SiblingConfigSurface -> FilePath
 siblingConfigFileName surface =

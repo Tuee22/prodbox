@@ -1,0 +1,234 @@
+{
+  "observed_utc": "2026-10-22T18:54:42.322359+00:00",
+  "controller": {
+    "apiVersion": "apps/v1",
+    "kind": "StatefulSet",
+    "metadata": {
+      "generation": 1,
+      "labels": {
+        "app.kubernetes.io/instance": "vault",
+        "app.kubernetes.io/managed-by": "Helm",
+        "app.kubernetes.io/name": "prodbox-vault",
+        "prodbox.io/chart-root": "vault"
+      },
+      "name": "vault",
+      "namespace": "vault",
+      "resourceVersion": "1432787",
+      "uid": "recorded-vault-controller-uid"
+    },
+    "spec": {
+      "replicas": 1,
+      "podManagementPolicy": "OrderedReady",
+      "updateStrategy": {
+        "rollingUpdate": {
+          "partition": 0
+        },
+        "type": "RollingUpdate"
+      },
+      "template": {
+        "spec": {
+          "containers": [
+            {
+              "image": "hashicorp/vault:1.18.3",
+              "name": "vault"
+            }
+          ]
+        }
+      }
+    },
+    "status": {
+      "currentRevision": "vault-644c8b9947",
+      "observedGeneration": 1,
+      "readyReplicas": 1,
+      "replicas": 1,
+      "updateRevision": "vault-644c8b9947",
+      "updatedReplicas": 1
+    }
+  },
+  "pod": {
+    "apiVersion": "v1",
+    "kind": "Pod",
+    "metadata": {
+      "generation": 1,
+      "labels": {
+        "app.kubernetes.io/instance": "vault",
+        "app.kubernetes.io/managed-by": "prodbox",
+        "app.kubernetes.io/name": "prodbox-vault",
+        "apps.kubernetes.io/pod-index": "0",
+        "controller-revision-hash": "vault-644c8b9947",
+        "prodbox.io/chart-root": "vault",
+        "statefulset.kubernetes.io/pod-name": "vault-0"
+      },
+      "name": "vault-0",
+      "namespace": "vault",
+      "ownerReferences": [
+        {
+          "apiVersion": "apps/v1",
+          "blockOwnerDeletion": true,
+          "controller": true,
+          "kind": "StatefulSet",
+          "name": "vault",
+          "uid": "recorded-vault-controller-uid"
+        }
+      ],
+      "resourceVersion": "1709269",
+      "uid": "recorded-vault-pod-uid"
+    },
+    "spec": {
+      "nodeName": "bathurst",
+      "containers": [
+        {
+          "image": "hashicorp/vault:1.18.3",
+          "name": "vault",
+          "volumeMounts": [
+            {
+              "mountPath": "/vault/data",
+              "name": "data"
+            }
+          ]
+        }
+      ],
+      "volumes": [
+        {
+          "name": "data",
+          "persistentVolumeClaim": {
+            "claimName": "data-vault-0"
+          }
+        }
+      ]
+    },
+    "status": {
+      "phase": "Running",
+      "conditions": [
+        {
+          "type": "Ready",
+          "status": "True"
+        }
+      ]
+    }
+  },
+  "claim": {
+    "apiVersion": "v1",
+    "kind": "PersistentVolumeClaim",
+    "metadata": {
+      "labels": {
+        "app.kubernetes.io/instance": "vault",
+        "app.kubernetes.io/managed-by": "prodbox",
+        "app.kubernetes.io/name": "prodbox-vault",
+        "prodbox.io/chart-root": "vault"
+      },
+      "name": "data-vault-0",
+      "namespace": "vault",
+      "resourceVersion": "1282",
+      "uid": "recorded-vault-claim-uid"
+    },
+    "spec": {
+      "accessModes": [
+        "ReadWriteOnce"
+      ],
+      "storageClassName": "manual",
+      "volumeMode": "Filesystem",
+      "volumeName": "prodbox-retained-vault-vault-0"
+    },
+    "status": {
+      "phase": "Bound"
+    }
+  },
+  "volume": {
+    "apiVersion": "v1",
+    "kind": "PersistentVolume",
+    "metadata": {
+      "labels": {
+        "prodbox.io/id": "recorded-prodbox-id"
+      },
+      "name": "prodbox-retained-vault-vault-0",
+      "resourceVersion": "1277",
+      "uid": "recorded-vault-volume-uid"
+    },
+    "spec": {
+      "claimRef": {
+        "apiVersion": "v1",
+        "kind": "PersistentVolumeClaim",
+        "name": "data-vault-0",
+        "namespace": "vault",
+        "resourceVersion": "1272",
+        "uid": "recorded-vault-claim-uid"
+      },
+      "hostPath": {
+        "path": "/recorded/manual-root/vault/vault/0",
+        "type": "DirectoryOrCreate"
+      },
+      "nodeAffinity": {
+        "required": {
+          "nodeSelectorTerms": [
+            {
+              "matchExpressions": [
+                {
+                  "key": "kubernetes.io/hostname",
+                  "operator": "In",
+                  "values": [
+                    "bathurst"
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "persistentVolumeReclaimPolicy": "Retain",
+      "storageClassName": "manual"
+    },
+    "status": {
+      "phase": "Bound"
+    }
+  },
+  "host_stat": "2050:3147625:2:41f8",
+  "mounted_stat": "2050:3147619:0:41f8",
+  "vault_status": {
+    "initialized": false,
+    "sealed": true
+  },
+  "vault_status_exit": 2,
+  "scope": "read-only metadata; no fixture, stored keyring, credential or custody contents read",
+  "counterexample": "VAULT-RETAINED-MOUNT-UNLINKED-2026-10-22",
+  "owner": "Sprint 3.48",
+  "normalization": "Opaque UIDs and project id consistently replaced, host path normalized. Only resource/mount/status metadata retained; no stored bytes, fixture or credentials read. Node UID and matching host/node boot UUID are consistently normalized.",
+  "provider_law": {
+    "vault_version": "1.18.3",
+    "unlinked_empty_bind_source_result": {
+      "http_status": 400,
+      "initialized": false,
+      "cause": [
+        "keyring-persistence-failed",
+        "missing-directory"
+      ]
+    },
+    "linked_bind_source_result": {
+      "http_status": 200,
+      "initialized": true
+    },
+    "evidence": ".build/sprint-2.142/{deleted-mount-vault-probe,healthy-file-vault-probe}.json"
+  },
+  "causal_profile": {
+    "rollout_budget_seconds_old_and_new": 300,
+    "replicas_old_and_new": 1,
+    "resource_envelope_change": "none",
+    "retained_root_or_contents_removed_by_repair": false,
+    "background_load_change": "none",
+    "mapping": "Only a verified unlinked and freshly uninitialized Pod may be retired; the replacement must mount the same observed current declared directory."
+  },
+  "node": {
+    "apiVersion": "v1",
+    "kind": "Node",
+    "metadata": {
+      "name": "bathurst",
+      "uid": "recorded-vault-node-uid"
+    },
+    "status": {
+      "nodeInfo": {
+        "bootID": "11111111-2222-4333-8444-555555555555"
+      }
+    }
+  },
+  "host_boot_id": "11111111-2222-4333-8444-555555555555"
+}

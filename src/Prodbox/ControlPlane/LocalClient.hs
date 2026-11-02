@@ -29,6 +29,13 @@ module Prodbox.ControlPlane.LocalClient
   , renderLocalLifecycleAuthorityError
   , withLocalLifecycleAuthorityClient
   , withLocalLifecycleAuthorityAuthenticatedTransport
+  , withOperationLifecycleAuthorityAuthenticatedTransport
+  , OperationLifecycleAuthorityChannel
+  , withOperationLifecycleAuthorityChannel
+  , operationLifecycleAuthorityAuthenticatedTransport
+  , requestOperationLifecycleAuthorityOwnBindingHint
+  , requestOperationLifecycleAuthorityBootstrapRegistry
+  , verifyOperationLifecycleAuthorityChannelBeforeEffect
   , withLocalLifecycleAuthorityProviderAuthenticatedTransport
   , withLocalLifecycleAuthorityRetainedDeliveryAuthenticatedTransport
   , withLocalLifecycleAuthorityTlsWorkflowAuthenticatedTransport
@@ -62,8 +69,20 @@ module Prodbox.ControlPlane.LocalClient
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (IOException, bracket, displayException, try)
+import Control.Concurrent.MVar (MVar, newMVar, withMVar)
+import Control.Exception
+  ( IOException
+  , bracket
+  , displayException
+  , evaluate
+  , try
+  )
+import Control.Monad (join)
+import Data.Bifunctor (first)
+import Data.ByteString.Char8 qualified as Bytes
+import Data.ByteString.Lazy qualified as Lazy
 import Data.Text qualified as Text
+import GHC.Clock (getMonotonicTimeNSec)
 import Network.Socket
   ( Family (AF_INET)
   , SockAddr (SockAddrInet)
@@ -78,11 +97,12 @@ import Network.Socket
   , tupleToHostAddress
   , withSocketsDo
   )
+import Prodbox.Capacity.ControlPlaneReplayBudget qualified as ReplayBudget
 import Prodbox.Capacity.ProviderWorkerBudget qualified as ProviderWorkerBudget
 import Prodbox.Capacity.RetainedMaterialDeliveryBudget qualified as RetainedMaterialDeliveryBudget
 import Prodbox.Capacity.TlsRetentionWorkflowBudget qualified as TlsRetentionWorkflowBudget
 import Prodbox.ControlPlane.AuthenticatedTransport
-  ( AuthenticatedClientProviders
+  ( AuthenticatedClientProviders (..)
   , AuthenticatedClientTransport
   , AuthenticatedTransportBounds
   , mkAuthenticatedClientTransport
@@ -90,6 +110,10 @@ import Prodbox.ControlPlane.AuthenticatedTransport
 import Prodbox.ControlPlane.Client
   ( ControlPlaneClient
   , ControlPlaneClientError
+  , ControlPlaneResponse (..)
+  , ControlPlaneRouteFor (LifecycleMigrationApplyRoute)
+  , callControlPlane
+  , controlPlaneClientWithTransport
   , mkAuthorityBackupEndpoint
   , mkLifecycleAuthorityEndpoint
   , mkProviderWorkerEndpoint
@@ -97,36 +121,93 @@ import Prodbox.ControlPlane.Client
   , mkTlsRetentionEndpoint
   , newControlPlaneClient
   )
-import Prodbox.ControlPlane.ListenPort (controlPlaneListenPort)
+import Prodbox.ControlPlane.Coordinate (AuthorityScope)
+import Prodbox.ControlPlane.HomeEndpoint qualified as Home
+import Prodbox.ControlPlane.OperationUse qualified as Uses
+import Prodbox.ControlPlane.RegisteredRpcSigning (NativeRpcSigningInterpreter)
+import Prodbox.ControlPlane.RequestAuthentication
+  ( RequestNonce
+  , mkRequestSigningCapability
+  , requestSigningCapabilityGeneration
+  , requestSigningCapabilityPrincipal
+  , requestSigningCapabilityPublicKeyBytes
+  , signCanonicalBytesWithRequestCapability
+  )
+import Prodbox.ControlPlane.RpcAdmissionBirth (RpcBirthServingMode)
+import Prodbox.ControlPlane.RpcAdmissionBirthBootstrap
+  ( RpcBirthBootstrapError
+  , observeRpcBirthBootstrapRegistry
+  )
+import Prodbox.ControlPlane.RpcAdmissionBirthEndpoint (rpcBirthRegistryResponseMaximumBytes)
+import Prodbox.ControlPlane.RpcAdmissionBirthExecution (RpcBirthRegistryObservation)
+import Prodbox.ControlPlane.RpcOwnBindingHint
+  ( RpcOwnBindingHint
+  , RpcOwnBindingHintError
+  , RpcOwnBindingQuery
+  , decodeRpcOwnBindingHint
+  , encodeRpcOwnBindingQuery
+  )
 import Prodbox.Error (errorMsg)
 import Prodbox.Http.Client
-  ( HttpConfig (..)
+  ( HttpBoundedError (..)
+  , HttpConfig (..)
+  , HttpError (HttpConnectionFailure, HttpTimeout)
   , defaultHttpConfig
   , httpRequestNoBody
+  , httpRequestRawBounded
   , renderHttpError
   )
 import Prodbox.Infra.MinioBackend (resolveLocalKubeconfig)
+import Prodbox.Lifecycle.Lease (AuthorityTime)
+import Prodbox.Lifecycle.Teardown.EphemeralKubectl
+  ( EmbeddedHomeKubeconfig
+  , forbiddenKubectlEnvironmentKey
+  , writeEmbeddedHomeKubeconfig
+  )
 import Prodbox.Runtime.Role (RuntimeRole (..))
 import Prodbox.Subprocess
   ( BackgroundProcess (..)
+  , OperationSubprocessError
+  , OperationSubprocesses
+  , OperationTransport
   , Subprocess (..)
+  , observeOperationTransportStartup
+  , operationSubprocessRuntimeDirectory
+  , operationTransportWorkEnd
   , startBackgroundProcess
   , stopBackgroundProcess
+  , verifyOperationSubprocessesBeforeEffect
+  , verifyOperationTransportBeforeEffect
+  , withOperationTransportStartup
   )
+import Prodbox.Subprocess.StartupLine qualified as Startup
 import System.Environment (getEnvironment)
+import System.FilePath ((</>))
 import System.IO (hGetLine)
+import System.IO.Temp (createTempDirectory)
 import System.Timeout (timeout)
 
 data LocalLifecycleAuthorityError
-  = LocalLifecycleAuthorityKubeconfigFailed !String
+  = LocalLifecycleAuthorityOperationFailed !OperationSubprocessError
+  | LocalLifecycleAuthorityOperationDeadline
+  | LocalLifecycleAuthorityWorkspaceFailed
+  | LocalLifecycleAuthorityKubeconfigFailed !String
   | LocalLifecycleAuthorityPortReservationFailed !String
   | LocalLifecycleAuthorityProcessStartFailed !String
   | LocalLifecycleAuthorityReadinessFailed !String
   | LocalLifecycleAuthorityClientInvalid !ControlPlaneClientError
+  | LocalLifecycleAuthorityChannelClosed
+  | LocalLifecycleAuthorityRequestRefused !ControlPlaneClientError
+  | LocalLifecycleAuthorityHintRefused !RpcOwnBindingHintError
+  | LocalLifecycleAuthorityHintHttpStatus !Int
+  | LocalLifecycleAuthorityBootstrapRefused !RpcBirthBootstrapError
   deriving stock (Eq, Show)
 
 renderLocalLifecycleAuthorityError :: LocalLifecycleAuthorityError -> String
 renderLocalLifecycleAuthorityError err = case err of
+  LocalLifecycleAuthorityOperationFailed cause -> "owned Lifecycle Authority transport: " ++ show cause
+  LocalLifecycleAuthorityOperationDeadline -> "owned Lifecycle Authority transport reached its original work deadline"
+  LocalLifecycleAuthorityWorkspaceFailed -> "prepare owned Lifecycle Authority kubeconfig workspace"
   LocalLifecycleAuthorityKubeconfigFailed detail ->
     "resolve home Lifecycle Authority kubeconfig: " ++ detail
   LocalLifecycleAuthorityPortReservationFailed detail ->
@@ -137,6 +218,11 @@ renderLocalLifecycleAuthorityError err = case err of
     "Lifecycle Authority Service is not ready: " ++ detail
   LocalLifecycleAuthorityClientInvalid detail ->
     "construct Lifecycle Authority client: " ++ show detail
+  LocalLifecycleAuthorityChannelClosed -> "owned Lifecycle Authority channel is closed"
+  LocalLifecycleAuthorityRequestRefused cause -> "owned Lifecycle Authority request: " ++ show cause
+  LocalLifecycleAuthorityHintRefused cause -> "owned Lifecycle Authority hint: " ++ show cause
+  LocalLifecycleAuthorityHintHttpStatus status -> "owned Lifecycle Authority hint HTTP status: " ++ show status
+  LocalLifecycleAuthorityBootstrapRefused cause -> "owned Lifecycle Authority bootstrap: " ++ show cause
 
 withLocalLifecycleAuthorityClient
   :: (ControlPlaneClient 'LifecycleAuthorityRuntime -> IO value)
@@ -191,6 +277,298 @@ withLocalLifecycleAuthorityAuthenticatedTransport
 withLocalLifecycleAuthorityAuthenticatedTransport bounds providers action =
   withLocalLifecycleAuthorityClient
     (action . mkAuthenticatedClientTransport bounds providers)
+
+-- The operation owns both this persistent child and all concurrent command work.
+-- Only the canonical retained-home Authority mapping is representable here.
+withOperationLifecycleAuthorityAuthenticatedTransport
+  :: OperationSubprocesses
+  -> EmbeddedHomeKubeconfig
+  -> [(String, String)]
+  -> AuthenticatedTransportBounds
+  -> AuthenticatedClientProviders IO
+  -> (AuthenticatedClientTransport 'LifecycleAuthorityRuntime -> IO value)
+  -> IO (Either LocalLifecycleAuthorityError value)
+withOperationLifecycleAuthorityAuthenticatedTransport processes config environment bounds providers action =
+  withOperationLifecycleAuthorityChannelUsingMaximum
+    ReplayBudget.authorityMetadataResponseMaximumBytes
+    processes
+    config
+    environment
+    (action . operationLifecycleAuthorityAuthenticatedTransport bounds providers)
+
+-- The client cannot be selected or extracted by callers. Release joins every
+-- bounded use before closing the lease; escaped uses subsequently refuse.
+-- Neither a channel nor its local lifetime grants Authority admission.
+data OperationLifecycleAuthorityChannel
+  = OperationLifecycleAuthorityChannel
+      !OperationAuthorityChannelScope
+      !(ControlPlaneClient 'LifecycleAuthorityRuntime)
+      !(ControlPlaneClient 'LifecycleAuthorityRuntime)
+
+data OperationAuthorityChannelScope
+  = OperationAuthorityChannelScope !OperationTransport !Uses.OperationUses
+
+withOperationLifecycleAuthorityChannel
+  :: OperationSubprocesses
+  -> EmbeddedHomeKubeconfig
+  -> [(String, String)]
+  -> (OperationLifecycleAuthorityChannel -> IO value)
+  -> IO (Either LocalLifecycleAuthorityError value)
+withOperationLifecycleAuthorityChannel =
+  withOperationLifecycleAuthorityChannelUsingMaximum rpcBirthRegistryResponseMaximumBytes
+
+operationLifecycleAuthorityAuthenticatedTransport
+  :: AuthenticatedTransportBounds
+  -> AuthenticatedClientProviders IO
+  -> OperationLifecycleAuthorityChannel
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+operationLifecycleAuthorityAuthenticatedTransport bounds providers (OperationLifecycleAuthorityChannel scope client _) =
+  mkAuthenticatedClientTransport bounds guarded client
+ where
+  guarded =
+    AuthenticatedClientProviders
+      { provideAuthenticatedClientSigner = do
+          provided <- guardChannelProvider scope (provideAuthenticatedClientSigner providers)
+          pure $ do
+            signer <- provided
+            first (const "owned Authority channel signer invalid") $
+              mkRequestSigningCapability
+                (requestSigningCapabilityPrincipal signer)
+                (requestSigningCapabilityGeneration signer)
+                (requestSigningCapabilityPublicKeyBytes signer)
+                ( \bytes ->
+                    guardChannelProvider
+                      scope
+                      (first (Text.pack . show) <$> signCanonicalBytesWithRequestCapability signer bytes)
+                )
+      , provideAuthenticatedClientScope =
+          guardChannelProvider scope (provideAuthenticatedClientScope providers)
+      , provideAuthenticatedClientEpoch =
+          guardChannelProvider scope (provideAuthenticatedClientEpoch providers)
+      , provideAuthenticatedClientDeadline =
+          guardChannelProvider scope (provideAuthenticatedClientDeadline providers)
+      , provideAuthenticatedClientNonce =
+          guardChannelProvider scope (provideAuthenticatedClientNonce providers)
+      }
+
+guardChannelProvider
+  :: OperationAuthorityChannelScope
+  -> IO (Either Text.Text value)
+  -> IO (Either Text.Text value)
+guardChannelProvider scope action =
+  either (Left . Text.pack . renderLocalLifecycleAuthorityError) id
+    <$> withOperationAuthorityChannelUse scope action
+
+verifyOperationLifecycleAuthorityChannelBeforeEffect
+  :: OperationLifecycleAuthorityChannel -> IO (Either LocalLifecycleAuthorityError ())
+verifyOperationLifecycleAuthorityChannelBeforeEffect (OperationLifecycleAuthorityChannel scope _ _) =
+  withOperationAuthorityChannelUse scope (pure ())
+
+requestOperationLifecycleAuthorityOwnBindingHint
+  :: OperationLifecycleAuthorityChannel
+  -> RpcOwnBindingQuery
+  -> IO (Either LocalLifecycleAuthorityError RpcOwnBindingHint)
+requestOperationLifecycleAuthorityOwnBindingHint (OperationLifecycleAuthorityChannel scope client _) query =
+  fmap join $ withOperationAuthorityChannelUse scope $ do
+    response <- callControlPlane client LifecycleMigrationApplyRoute (encodeRpcOwnBindingQuery query)
+    decoded <- evaluate $ case response of
+      Left cause -> Left (LocalLifecycleAuthorityRequestRefused cause)
+      Right (ControlPlaneResponse status body)
+        | status /= 200 -> Left (LocalLifecycleAuthorityHintHttpStatus status)
+        | otherwise ->
+            either (Left . LocalLifecycleAuthorityHintRefused) Right (decodeRpcOwnBindingHint query body)
+    case decoded of
+      Left cause -> cause `seq` pure (Left cause)
+      Right hint -> hint `seq` pure (Right hint)
+
+-- The complete fixed program, including native origin/public/signing effects,
+-- holds the same joined borrow. Only registry metadata can leave this method.
+requestOperationLifecycleAuthorityBootstrapRegistry
+  :: OperationLifecycleAuthorityChannel
+  -> NativeRpcSigningInterpreter IO
+  -> IO (Either Text.Text AuthorityTime)
+  -> IO (Either Text.Text RequestNonce)
+  -> AuthorityScope
+  -> RpcBirthServingMode
+  -> AuthorityTime
+  -> AuthenticatedTransportBounds
+  -> IO (Either LocalLifecycleAuthorityError RpcBirthRegistryObservation)
+requestOperationLifecycleAuthorityBootstrapRegistry (OperationLifecycleAuthorityChannel scope _ client) native readTime nonce authority mode deadline bounds = do
+  result <-
+    withOperationAuthorityChannelUse scope $
+      observeRpcBirthBootstrapRegistry native readTime nonce authority mode deadline bounds client
+  pure (result >>= first LocalLifecycleAuthorityBootstrapRefused)
+
+-- The shared owner counts nested uses without holding a mutex over effects.
+-- This channel selects its exact persistent transport as the observed source.
+withOperationAuthorityChannelUse
+  :: OperationAuthorityChannelScope
+  -> IO value
+  -> IO (Either LocalLifecycleAuthorityError value)
+withOperationAuthorityChannelUse (OperationAuthorityChannelScope _ uses) action =
+  first classify <$> Uses.withOperationUse uses action
+ where
+  classify cause = case cause of
+    Uses.OperationUseClosed -> LocalLifecycleAuthorityChannelClosed
+    Uses.OperationUseDeadlineReached -> LocalLifecycleAuthorityOperationDeadline
+    Uses.OperationUseProcessRefused failure -> LocalLifecycleAuthorityOperationFailed failure
+
+withOperationLifecycleAuthorityChannelUsingMaximum
+  :: Int
+  -> OperationSubprocesses
+  -> EmbeddedHomeKubeconfig
+  -> [(String, String)]
+  -> (OperationLifecycleAuthorityChannel -> IO value)
+  -> IO (Either LocalLifecycleAuthorityError value)
+withOperationLifecycleAuthorityChannelUsingMaximum maximumBytes processes config environment action = do
+  admitted <- verifyOperationSubprocessesBeforeEffect processes
+  case admitted of
+    Left cause -> pure (Left (LocalLifecycleAuthorityOperationFailed cause))
+    Right () -> do
+      attempted <- tryOperationClientWorkspace $ do
+        directory <-
+          createTempDirectory (operationSubprocessRuntimeDirectory processes) "authority-forward-"
+        use directory
+      pure (either (const (Left LocalLifecycleAuthorityWorkspaceFailed)) id attempted)
+ where
+  use directory = do
+    written <- writeEmbeddedHomeKubeconfig directory config
+    case written of
+      Left _ -> pure (Left LocalLifecycleAuthorityWorkspaceFailed)
+      Right kubeconfig -> do
+        port <- reserveLoopbackPort
+        case port of
+          Left detail -> pure (Left (LocalLifecycleAuthorityPortReservationFailed detail))
+          Right localPort -> do
+            let childEnvironment =
+                  [ ("HOME", directory)
+                  , ("XDG_CACHE_HOME", directory </> "cache")
+                  , ("XDG_CONFIG_HOME", directory </> "config")
+                  , ("XDG_DATA_HOME", directory </> "data")
+                  ]
+                    ++ filter (not . privateEnvironmentKey . fst) environment
+                spec =
+                  Subprocess
+                    { subprocessPath = "kubectl"
+                    , subprocessArguments =
+                        [ "--kubeconfig"
+                        , kubeconfig
+                        , "--cache-dir"
+                        , directory </> "cache"
+                        , "--namespace"
+                        , lifecycleAuthorityNamespace
+                        , "port-forward"
+                        , lifecycleAuthorityForwardTarget
+                        , show localPort ++ ":" ++ show lifecycleAuthorityRemotePort
+                        , "--address"
+                        , "127.0.0.1"
+                        ]
+                    , subprocessEnvironment = Just childEnvironment
+                    , subprocessWorkingDirectory = Just directory
+                    }
+            case Startup.mkStartupLineExpectation
+              (map Bytes.pack (Home.homeControlPlaneForwardStartupLines Home.HomeLifecycleAuthority localPort)) of
+              Left _ -> pure (Left (LocalLifecycleAuthorityReadinessFailed "startup mapping invalid"))
+              Right expected -> do
+                forwarded <- withOperationTransportStartup processes spec expected $ \lease -> do
+                  ready <- waitOperationAuthorityReady lease localPort
+                  case ready of
+                    Left cause -> pure (Left cause)
+                    Right () -> Uses.withOperationTransportUses lease $ \uses -> do
+                      httpGate <- newMVar ()
+                      let scope = OperationAuthorityChannelScope lease uses
+                          clients =
+                            (,)
+                              <$> operationAuthorityChannelClient (min 65536 maximumBytes) scope httpGate localPort
+                              <*> operationAuthorityChannelClient maximumBytes scope httpGate localPort
+                      case clients of
+                        Left cause -> pure (Left (LocalLifecycleAuthorityClientInvalid cause))
+                        Right (ordinary, registry) ->
+                          Right <$> action (OperationLifecycleAuthorityChannel scope ordinary registry)
+                pure (either (Left . LocalLifecycleAuthorityOperationFailed) id forwarded)
+  privateEnvironmentKey key =
+    forbiddenKubectlEnvironmentKey key
+      || key `elem` ["HOME", "XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME"]
+
+operationAuthorityChannelClient
+  :: Int
+  -> OperationAuthorityChannelScope
+  -> MVar ()
+  -> Int
+  -> Either ControlPlaneClientError (ControlPlaneClient 'LifecycleAuthorityRuntime)
+operationAuthorityChannelClient maximumBytes scope@(OperationAuthorityChannelScope lease _) httpGate localPort = do
+  endpoint <- mkLifecycleAuthorityEndpoint (Text.pack (loopbackEndpoint localPort))
+  controlPlaneClientWithTransport maximumBytes endpoint $ \method headers url body ->
+    fmap (either (const refused) id) $
+      withOperationAuthorityChannelUse scope $
+        withMVar httpGate $ \() -> do
+          now <- getMonotonicTimeNSec
+          let ending = operationTransportWorkEnd lease
+          if now >= ending || ending - now < 1000
+            then pure expired
+            else do
+              let micros = fromInteger (min (toInteger (maxBound :: Int)) (toInteger ((ending - now) `div` 1000)))
+                  config = HttpConfig (min micros (httpRequestTimeoutMicros lifecycleAuthorityHttpConfig))
+              httpRequestRawBounded config maximumBytes method headers url (Just (Lazy.fromStrict body))
+ where
+  refused = Left (HttpBoundedTransport (HttpConnectionFailure "owned Authority channel refused"))
+  expired = Left (HttpBoundedTransport (HttpTimeout "owned Authority channel original work deadline"))
+
+tryOperationClientWorkspace :: IO value -> IO (Either IOException value)
+tryOperationClientWorkspace = try
+
+waitOperationAuthorityReady
+  :: OperationTransport -> Int -> IO (Either LocalLifecycleAuthorityError ())
+waitOperationAuthorityReady lease localPort = acknowledge
+ where
+  acknowledge = do
+    observed <- observeOperationTransportStartup lease
+    case observed of
+      Left cause -> pure (Left (LocalLifecycleAuthorityOperationFailed cause))
+      Right Startup.StartupLineAccepted -> loop
+      Right Startup.StartupLinePending -> do
+        now <- getMonotonicTimeNSec
+        if now >= ending || ending - now < 1000
+          then pure (Left LocalLifecycleAuthorityOperationDeadline)
+          else do
+            threadDelay (fromInteger (min 25000 ((toInteger ending - toInteger now) `div` 1000)))
+            acknowledge
+      Right Startup.StartupLineRejected -> refused "startup acknowledgement does not match the compiled loopback mapping"
+      Right Startup.StartupLineIncomplete -> refused "startup acknowledgement ended before a complete matching line"
+      Right Startup.StartupLineReadFailed -> refused "startup acknowledgement unavailable"
+      Right Startup.StartupLineExceeded -> refused "startup stdout exceeded its bound"
+      Right Startup.StartupLineUnconfigured -> refused "startup acknowledgement was not configured"
+  refused = pure . Left . LocalLifecycleAuthorityReadinessFailed
+  ending = operationTransportWorkEnd lease
+  endpoint = loopbackEndpoint localPort ++ localClientStartupProbePath LifecycleAuthorityRuntime
+  loop = do
+    observed <- verifyOperationTransportBeforeEffect lease
+    case observed of
+      Left cause -> pure (Left (LocalLifecycleAuthorityOperationFailed cause))
+      Right () -> do
+        now <- getMonotonicTimeNSec
+        if now >= ending || ending - now < 1000
+          then pure (Left LocalLifecycleAuthorityOperationDeadline)
+          else do
+            let allowance = fromInteger (min 1000000 (toInteger ((ending - now) `div` 1000)))
+            response <-
+              timeout allowance $
+                httpRequestRawBounded (HttpConfig allowance) 4096 "GET" [] endpoint Nothing
+            after <- getMonotonicTimeNSec
+            if after >= ending
+              then pure (Left LocalLifecycleAuthorityOperationDeadline)
+              else case response of
+                Just (Right (status, _)) | status >= 200 && status < 300 -> do
+                  closing <- verifyOperationTransportBeforeEffect lease
+                  pure (either (Left . LocalLifecycleAuthorityOperationFailed) (const (Right ())) closing)
+                Just (Left (HttpBoundedResponseTooLarge _ _)) ->
+                  pure (Left (LocalLifecycleAuthorityReadinessFailed "startup response exceeds its 4096-byte bound"))
+                Just (Left (HttpBoundedResponseHeadersTooLarge {})) ->
+                  pure
+                    (Left (LocalLifecycleAuthorityReadinessFailed "startup response exceeds its retained-header bound"))
+                _ -> do
+                  threadDelay (fromInteger (min 250000 ((toInteger ending - toInteger after) `div` 1000)))
+                  loop
 
 -- | Open the same exact Authority endpoint with only the response budget of
 -- the Provider execution route widened to contain its admitted child schedule.
@@ -528,72 +906,49 @@ withLocalTlsRetentionAuthenticatedTransport bounds providers action =
     (action . mkAuthenticatedClientTransport bounds providers)
 
 lifecycleAuthorityNamespace :: String
-lifecycleAuthorityNamespace = "lifecycle-authority"
-
-lifecycleAuthorityService :: String
-lifecycleAuthorityService = "lifecycle-authority"
+lifecycleAuthorityNamespace = Home.homeControlPlaneNamespace Home.HomeLifecycleAuthority
 
 lifecycleAuthorityForwardTarget :: String
-lifecycleAuthorityForwardTarget = "service/" ++ lifecycleAuthorityService
+lifecycleAuthorityForwardTarget = Home.homeControlPlaneForwardTarget Home.HomeLifecycleAuthority
 
--- | Sprint 3.35: all five per-role ports are the one compiled
--- 'controlPlaneListenPort'. They stay separately named because each is read
--- beside its own namespace/service pair, but they no longer restate the value:
--- a per-role port is not representable in @runControlPlaneServer@, which binds
--- without consulting the role it is given.
 lifecycleAuthorityRemotePort :: Int
-lifecycleAuthorityRemotePort = controlPlaneListenPort
+lifecycleAuthorityRemotePort = Home.homeControlPlaneRemotePort Home.HomeLifecycleAuthority
 
 targetSecretAgentNamespace :: String
-targetSecretAgentNamespace = "target-secret-agent"
-
-targetSecretAgentService :: String
-targetSecretAgentService = "target-secret-agent"
+targetSecretAgentNamespace = Home.homeControlPlaneNamespace Home.HomeTargetSecretAgent
 
 targetSecretAgentForwardTarget :: String
-targetSecretAgentForwardTarget = "service/" ++ targetSecretAgentService
+targetSecretAgentForwardTarget = Home.homeControlPlaneForwardTarget Home.HomeTargetSecretAgent
 
 targetSecretAgentRemotePort :: Int
-targetSecretAgentRemotePort = controlPlaneListenPort
+targetSecretAgentRemotePort = Home.homeControlPlaneRemotePort Home.HomeTargetSecretAgent
 
 providerWorkerNamespace :: String
-providerWorkerNamespace = "provider-worker"
-
-providerWorkerService :: String
-providerWorkerService = "provider-worker"
+providerWorkerNamespace = Home.homeControlPlaneNamespace Home.HomeProviderWorker
 
 providerWorkerForwardTarget :: String
-providerWorkerForwardTarget = "service/" ++ providerWorkerService
+providerWorkerForwardTarget = Home.homeControlPlaneForwardTarget Home.HomeProviderWorker
 
 providerWorkerRemotePort :: Int
-providerWorkerRemotePort = controlPlaneListenPort
+providerWorkerRemotePort = Home.homeControlPlaneRemotePort Home.HomeProviderWorker
 
 authorityBackupNamespace :: String
-authorityBackupNamespace = "authority-backup"
+authorityBackupNamespace = Home.homeControlPlaneNamespace Home.HomeAuthorityBackup
 
-authorityBackupDeployment :: String
-authorityBackupDeployment = "authority-backup"
-
--- Genesis must reach the live process before credential-backed readiness can
--- publish it as a Service endpoint. The chart's Recreate strategy makes the
--- Deployment selector single-generation during this pre-readiness interval.
 authorityBackupForwardTarget :: String
-authorityBackupForwardTarget = "deployment/" ++ authorityBackupDeployment
+authorityBackupForwardTarget = Home.homeControlPlaneForwardTarget Home.HomeAuthorityBackup
 
 authorityBackupRemotePort :: Int
-authorityBackupRemotePort = controlPlaneListenPort
+authorityBackupRemotePort = Home.homeControlPlaneRemotePort Home.HomeAuthorityBackup
 
 tlsRetentionNamespace :: String
-tlsRetentionNamespace = "tls-retention"
-
-tlsRetentionService :: String
-tlsRetentionService = "tls-retention"
+tlsRetentionNamespace = Home.homeControlPlaneNamespace Home.HomeTlsRetention
 
 tlsRetentionForwardTarget :: String
-tlsRetentionForwardTarget = "service/" ++ tlsRetentionService
+tlsRetentionForwardTarget = Home.homeControlPlaneForwardTarget Home.HomeTlsRetention
 
 tlsRetentionRemotePort :: Int
-tlsRetentionRemotePort = controlPlaneListenPort
+tlsRetentionRemotePort = Home.homeControlPlaneRemotePort Home.HomeTlsRetention
 
 readinessAttempts :: Int
 readinessAttempts = 240
@@ -762,11 +1117,7 @@ classifyAuthorityBackupForwardStartup localPort observation =
       | otherwise -> refused "startup acknowledgement did not match the compiled loopback mapping"
  where
   refused = Left . LocalAuthorityBackupLivenessFailed
-  expectedLines =
-    [ "Forwarding from 127.0.0.1:" ++ show localPort ++ mappingSuffix
-    , "Forwarding from [::1]:" ++ show localPort ++ mappingSuffix
-    ]
-  mappingSuffix = " -> " ++ show authorityBackupRemotePort
+  expectedLines = Home.homeControlPlaneForwardStartupLines Home.HomeAuthorityBackup localPort
 
 authorityBackupForwardStartupTimeoutMicros :: Int
 authorityBackupForwardStartupTimeoutMicros = 1000000
@@ -825,11 +1176,11 @@ localClientStartupProbePath :: RuntimeRole -> String
 localClientStartupProbePath role = case role of
   BootstrapBroker -> "/readyz"
   GatewayRuntime -> "/readyz"
-  LifecycleAuthorityRuntime -> "/readyz"
-  ProviderWorkerRuntime -> "/readyz"
-  AuthorityBackupRuntime -> "/healthz"
-  TlsRetentionRuntime -> "/readyz"
-  TargetSecretAgentRuntime -> "/readyz"
+  LifecycleAuthorityRuntime -> Home.homeControlPlaneStartupProbePath Home.HomeLifecycleAuthority
+  ProviderWorkerRuntime -> Home.homeControlPlaneStartupProbePath Home.HomeProviderWorker
+  AuthorityBackupRuntime -> Home.homeControlPlaneStartupProbePath Home.HomeAuthorityBackup
+  TlsRetentionRuntime -> Home.homeControlPlaneStartupProbePath Home.HomeTlsRetention
+  TargetSecretAgentRuntime -> Home.homeControlPlaneStartupProbePath Home.HomeTargetSecretAgent
 
 readinessHttpConfig :: HttpConfig
 readinessHttpConfig =
@@ -840,11 +1191,19 @@ lifecycleAuthorityClient
   -> Either
        ControlPlaneClientError
        (ControlPlaneClient 'LifecycleAuthorityRuntime)
-lifecycleAuthorityClient localPort = do
+lifecycleAuthorityClient = lifecycleAuthorityClientWithResponseMaximum (100 * 1024 * 1024)
+
+-- Birth and peer metadata use their decoder's admitted byte ceiling at the HTTP
+-- read boundary, before any complete response can enter the controller heap.
+lifecycleAuthorityClientWithResponseMaximum
+  :: Int
+  -> Int
+  -> Either ControlPlaneClientError (ControlPlaneClient 'LifecycleAuthorityRuntime)
+lifecycleAuthorityClientWithResponseMaximum maximumBytes localPort = do
   endpoint <- mkLifecycleAuthorityEndpoint (Text.pack (loopbackEndpoint localPort))
   newControlPlaneClient
     lifecycleAuthorityHttpConfig
-    (100 * 1024 * 1024)
+    maximumBytes
     endpoint
 
 lifecycleAuthorityHttpConfig :: HttpConfig

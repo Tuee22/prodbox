@@ -368,12 +368,60 @@ and [cluster_federation_doctrine.md](./cluster_federation_doctrine.md). The unlo
 Tier-1 bootstrap-secret material per [config_doctrine.md §0](./config_doctrine.md), and Tier 1 is
 **root-cluster-only**.)
 
-The controller and the attested initialization worker consume one pure classification of the same
-root-journal read-back. Object absence derives the current generation's pristine proof. A present
-`RootInitPristine` admits only when it carries that exact proof; a present `RootResetPristine`
-admits only when its replacement proof is exact, retaining the reset provenance. Every progressed,
-ambiguous, or foreign-proof journal refuses. Retained state is never deleted or silently lowered to
-absence to make initialization proceed.
+Fresh initialization in the controller and attested worker consumes one strict pure
+classification of the root-journal read-back. Object absence derives the current generation's
+pristine proof. Present `RootInitPristine` or `RootResetPristine` admits only its exact proof,
+while Vault remains uninitialized. The worker never treats advanced state as pristine.
+
+The controller separately admits continuation of a valid advanced journal, binding its exact
+version, snapshot and original pristine commitment. Before-call phases require uninitialized
+Vault; response/custody phases require initialized Vault. In-flight recovery observes the
+existing response or records ambiguity and never repeats `/sys/init`. After acquiring the
+mutation fence, continuation requires the same existing version and snapshot; disappearance
+or change refuses without creating a journal. Ambiguity retains the explicit audited reset
+route, while foreign, inconsistent and cancelled custody remains preserved. Closed producer
+causes distinguish observation failure from refusal without exposing persisted values.
+In-flight observation reads the retained worker result when the separate encrypted-response
+object is absent. Production and physical fixtures share this observer. A worker's encrypted
+response must match the prepared root binding, schema and recipient commitment; classified
+ambiguity keeps its original cause. A response that never reached either durable location
+remains ambiguity, and an unavailable read cannot select that result.
+
+Authoritative settlement preserves the exact worker operation/action/request/storage identity
+and durable result. A strictly older predecessor may differ only on fence generation, owner
+nonce and operation deadline. The currently held fence authorizes cleanup and checkpoint CAS;
+it never authorizes another init by the old worker. Unreceipted retirement requires exact UID
+deletion and positive absence. Receipts retain their complete mandatory cleanup, while an
+already-authoritative terminal checkpoint permits read-only replay. Worker terminalization
+precedes root-journal advancement, so a fresh client can recover either CAS response-loss
+window without recreating the journal, repeating init or discarding a receipt. Contradictory,
+foreign, missing/unbound or unobservable evidence stays preserved for the registered recovery
+or total-decommission disposition.
+
+Broker status projects a closed optional `initialization_phase`; for pending reset and
+reset-pristine, `initialization_reset_from_generation` is the old generation from its durable
+reset proof.
+Pending reset additionally exposes `initialization_reset_action_digest` from its journaled action.
+These fields are metadata projections; the appended pending custody phase owns the durable proof.
+The host continues
+pending custody with the existing password, and Vault-unsealed lifecycle readiness waits for
+its completion. Broker Deployment readiness is a separate dependency/capability projection;
+retained custody alone does not withdraw it. The continuation retains the normal Broker
+Deployment barrier, and only positive closing custody permits the later lifecycle steps. Retained
+state is never deleted or silently lowered to absence to make initialization proceed.
+
+Audited ambiguity reset has its own durable pending stage. Before a physical effect, the
+Broker records and reads back `RootResetInFlight` with the complete audited proof and exact
+action digest. Init and generic custody restart remain withdrawn. The same proof can resume
+at only its old or exact replacement generation, even after preparation has been retired;
+no new audit is fabricated from that absence. The physical interpreter rechecks the current PVC against the same action/ambiguity/identity
+commitment before scale-down or reset-Pod creation; a replacement claim refuses.
+Generation readback precedes preparation retirement, and reset-pristine closes only after all results are observed. Cancellation
+before arming refuses a reset, while an armed reset retains its bounded safety tail.
+Status exposes the old request generation and action digest from that pending record so a
+fresh confirmed client can replay it without process memory. These are metadata, never
+passwords or recovery material. Legacy partial state with no recorded audited proof stays
+preserved and cannot receive a proof retroactively.
 
 The unlock bundle is **not** a Vault-Transit envelope: it is precisely the material that *unseals*
 Vault, so it cannot depend on an unsealed Vault. Instead it is sealed directly under the operator
@@ -567,9 +615,27 @@ deadline as the originating PGP scope. The direct physical interpreter refuses t
 it is never a fallback when worker allocation, attestation, checkpoint read-back, or cleanup is
 unavailable.
 
+The automation harness bootstrap floor first waits for normal Broker Deployment admission
+before its initial status observation, TokenRequest or Service forwarding. This prevents cold
+startup from leaving HTTP retries pointed at an exited forward. After an operation is observed,
+its closing reads and registered audited reset keep their existing recovery transport.
+The reset is selected only after observing ambiguity; the harness supplies no reset target or proof.
+It resumes an advanced init once, then performs at most one audited reset in that invocation.
+Even after a lost reply, continuation requires a newly observed sealed/uninitialized
+reset-pristine generation, different from the old one and carrying that exact old generation
+in its reset lineage. Foreign, missing, pending or unobservable closing evidence fails and
+preserves state. Ordinary operator bootstrap retains its explicit repair gate.
+The entire host sequence shares one 900-second monotonic deadline, equal to the existing
+three normal mutation transport maxima. Before and after connection setup, admission reserves
+both the existing 300-second transport maximum and a full 300-second server request lifetime;
+a late accepted child must still fit inside the parent. No child deadline is extended, and
+cancellation does not prove remote absence. Readback, password ingress, unseal and baseline
+remain inside that same outer scope.
+
 - `vault init` is the operator-facing init-if-empty surface. The host CLI reaches the
   loopback-restricted Bootstrap Broker controller with secret-free metadata; the controller returns
-  success unchanged if already initialized (init-once; §5), otherwise fences and verifies a
+  success unchanged if already initialized with no pending custody (init-once; §5); otherwise
+  resumes its exact retained journal or fences and verifies a
   one-shot initialization worker. The CLI sends the password directly to that Pod over
   authenticated exec/attach stdin. The worker connects to Vault over in-cluster Service DNS and
   runs the prepared-init/encrypted-receipt protocol: the initial token is encrypted to
@@ -587,6 +653,26 @@ unavailable.
   exactly one complete Shamir or recovery dual-encoding family; its canonical hex and base64 arrays
   must decode pointwise to equal encrypted bytes, after which the hex projection is discarded and
   only opaque redacting custody values survive.
+  If a failed initialization call has no observed application, its protected one-shot worker
+  diagnostic retains the same closed primary class and distinguishes a fresh uninitialized
+  observation from an unavailable follow-up. Unavailable never means unapplied. Host attach
+  matching checks operation/action/request/storage bindings before attributing a Failed Pod;
+  an exact failed worker remains a refusal and no payload is attached to it. Foreign bindings
+  remain ordinary attestation refusals. Their protected diagnostic retains the exact closed
+  mismatch field (UID, image, ServiceAccount, session, operation, fence, owner, action, request,
+  storage or deadline), or the closed observation cause. Production Pod reads distinguish
+  unavailable API, numeric HTTP refusal, missing/malformed Pod, missing container/image status,
+  unusable image/annotation, non-Running phase, not-ready/deleting state and invalid binding.
+  Observed identities, provider details and parser bodies never enter the diagnostic; the public
+  conflict response remains generic. A missing observation is never an identity mismatch or proof
+  of absence. Startup polling and exact unreceipted-worker retirement keep their existing bounds.
+  These diagnostics do not grant a reset or storage repair.
+  Before this Broker transaction, home bootstrap verifies the exact retained mount identity.
+  An unlinked mount is rebound only after fresh uninitialized observation and exact owned-Pod
+  retirement, with independent fresh-Pod/root readback under the existing rollout budget.
+  Initialized orphan state and mismatched linked roots remain preserved operator-recovery
+  refusals. The complete storage predicate and root-retirement restrictions are owned by
+  [Retained Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md).
   Child recovery material is generation-CAS delivered to parent Vault KV (§16). Only then does a
   separate PGP-protected short-lived root session establish/read back the baseline and revoke. It
   prints no raw key material.
@@ -597,8 +683,9 @@ unavailable.
   attested fixed reset Pod, observes a new sealed/uninitialized generation, advances the durable
   generation with read-back, and only then marks the root journal reset-pristine. The command
   refuses without `--yes`, outside ambiguity, or on any unobservable/mismatched proof; it never
-  retries `/sys/init` against the ambiguous generation. Because this state deliberately withdraws
-  Broker readiness, this leaf alone uses the recovery connector's authenticated liveness proof;
+  retries `/sys/init` against the ambiguous generation. This registered repair uses
+  the recovery connector's authenticated liveness proof so it can report exact recovery
+  preconditions independently of Deployment rollout;
   every ordinary Vault leaf retains the exact Deployment-rollout barrier. Physical reset failures
   cross the engine boundary as a closed payload-free stage/status algebra: only this route may log
   that rendered stage, numeric HTTP refusal status is the only admitted payload, and the public
@@ -1397,6 +1484,29 @@ TokenRequest parameter validation, TokenRequest authorization denial, API unreac
 unavailability, an unclassified failure, subprocess unavailability, and malformed success remain
 separate closed payload-free causes; only the authorization cause lowers to a Vault-session
 forbidden result.
+
+Kubernetes-auth login replies, retained Authority epoch reads and Authority decommission
+public-key observations are limited to 128 KiB before JSON decoding. The native RPC key
+reads and signatures use that same declared control-plane response ceiling. An oversized
+reply fails without adopting token, epoch or signing material. Large retained replay
+objects keep their own resource model and read path; the small metadata limit does not
+replace that separate budget.
+
+The bounded protocol HTTP primitive returns the first response without following redirects.
+The shared manager also refuses automatic replay after a reused connection loses its reply.
+Vault-session authentication refresh remains an explicit session effect with its own token/login
+allowance; it does not authorize transport-level repetition of an uncertain request.
+The original-envelope redirect/login and received-POST reply-loss counterprogram is preserved in
+`test/qualification/HOST-BOUNDED-HTTP-EXCHANGE-POLICY-2026-10-28.json`.
+
+For one captured registered caller's `n` ordinary signed frames, its native signing construction
+and private registry program charge `16 + 16*n` origin reads, `13 + 14*n` public-key reads and
+`4 + 5*n` signatures. At most `n` epoch reads and one claimed lazy manifest read give
+`E = 34 + 36*n` token-consuming HTTP primitives. The session's single explicit 403 retry and an
+independently bounded `L` login attempts give at most `2*E + L` Vault HTTP requests; each login
+also owns the three managed Kubernetes token stages. This is an upper bound for this caller,
+not the service-side replay projection or a complete qualification program. The manifest result
+slot is claimed before its first I/O and remains shared across cancellation and concurrent readers.
 
 Authority-backup genesis and repair are the only pre-normal backup exceptions. A mode-indexed
 Credential Provisioner accepts only a signed `GenesisBackupPermit`, `GenesisCleanupPermit`,

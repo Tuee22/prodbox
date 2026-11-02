@@ -56,6 +56,12 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
   and the binary generates its portable sibling configuration there. No GHC, Cabal store, project
   source, or compilation output enters the shipped image. Builder caches remain available without
   global Docker build-cache deletion.
+- The final runtime stage installs GnuPG for the Bootstrap Broker's recovery-recipient and
+  encrypted-share operations. A builder-only installation does not satisfy that role. The
+  runtime package step runs `/usr/bin/gpg --batch --no-tty --version` and checks its agent/config
+  helpers before the image can finish. Artifact validation additionally exercises an isolated
+  encryption/decryption round trip in `/dev/shm`; it needs no credential or provider access and
+  leaves no persistent private material. The Broker's existing readiness gate remains unchanged.
 - The build uses **basic `docker` commands only** with the daemon's default builder. There is no
   supported `docker buildx`, no `docker-container`-driver builder, and no multi-arch publication
   (native-host-architecture only). The Dockerfiles carry **no BuildKit-only features**: no
@@ -66,7 +72,52 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
   `pulumi/aws-test/`, and `pulumi/aws-ses/` only and do not introduce a Python runtime
   dependency.
 
+### 1.1 Native Host Provider Processing Contract
+
+The private host-family launch/recovery path recognizes the exact Ubuntu protocol-image profiles
+in `Prodbox.Subprocess.SystemdProviderProfile`, for Linux `x86_64` and `aarch64`:
+
+| Source package | Version | Declared protocol images |
+|----------------|---------|--------------------------|
+| systemd | `255.4-1ubuntu8.18` | manager executable, `libsystemd-core-255.so`, `libsystemd-shared-255.so` |
+| dbus | `1.14.10-4ubuntu4.1` | `dbus-daemon`, `libdbus-1.so.3.32.4` |
+
+The policy reference digests the architecture, exact image paths/hashes and normative processing
+conditions. Ubuntu archive signatures authenticate the binary/source index checksums; package
+checksums authenticate the extracted code images and source metadata. Reviewed upstream bytes and
+the relevant downstream patches establish the same-UID synchronous handler, router FIFO/disconnect
+ordering and manager API-owner change across reexec. This is declared source-version correspondence,
+not a reconstructed reproducible build or attestation of every loaded library.
+
+Runtime qualification holds root-owned image descriptors and matches bytes, file versions and
+actual executable mappings, together with process/domain/security conditions. Unknown, upgraded,
+changed or unreadable images refuse; version strings cannot bypass qualification. A new provider
+profile requires the same publisher/source review and native controls before its policy reference
+can be bound to a submission. The arm64 pins carry archive/source evidence without a native arm64
+execution claim. Review evidence and exact image hashes are indexed in
+`test/qualification/HOST-NATIVE-PROVIDER-PROCESSING-CONTRACT-2026-10-27.json`;
+current validation/qualification status remains in the development-plan ledger.
+
+The physical retirement reader additionally reviews the same pinned manager's job/GC barriers,
+its native `ControlGroup` property and cached user-runtime prefix initialization. `sd_path_lookup`
+resolves from the pinned `libsystemd-shared` image. Fresh native root/mount observations and bounded
+startup-path metadata bind the expected physical anchors to that manager; environment bytes are
+neither exported/logged/hashed nor used for configuration or authentication. The additional public
+source and native evidence is indexed in
+`test/qualification/HOST-OPERATION-RETIREMENT-OBSERVATION-2026-10-27.json`. This is an observation
+contract, with immutable-input mutation/recovery and deployment qualification separately owned.
+
 ## 2. Lock File Policy
+
+Home MinIO source-image adoption also reconciles the existing StatefulSet's Pod. Kubernetes
+`OrderedReady` can retain an obsolete unready Pod after Helm corrects the template. Once the
+verified image is seeded and Helm selects it, the home bootstrap observes the registered
+controller and Pod, confirms the controller again, and gracefully retires only that obsolete
+unready owned Pod with UID/resourceVersion preconditions. One 300-second monotonic deadline
+covers those reads, retirement, rollout and exact ready-replacement readback. A changed
+controller, partial observation or precondition conflict refuses with a retry remedy; this
+operation never force-deletes a Pod or touches its PVC. The AWS bootstrap projection remains
+separately owned by its substrate implementation.
 
 The repository does not rely on Poetry or a Python lockfile on the supported path.
 

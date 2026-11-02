@@ -35,6 +35,7 @@ import Prodbox.Test.Qualification.Evidence
   ( PublicEvidenceDigest
   , hashPublicEvidence
   , mkPublicEvidenceDigest
+  , publicEvidenceDigestText
   )
 import Prodbox.Test.Qualification.SourceIdentity
 import TestSupport (FixtureAwsRegion (..), fixtureAwsRegion)
@@ -91,7 +92,9 @@ fixtureLocal =
     { localExecutableSource =
         sourceIdentityOf ExecutableSurface fixtureHead WorktreeDirty fixtureCandidates
     , localFullSource = sourceIdentityOf FullSurface fixtureHead WorktreeDirty fixtureCandidates
-    , localGeneratedConfig = digestOf 'c'
+    , localGeneratedConfig = generatedConfigDigestFromParts (digestOf 'c') (digestOf 'p')
+    , localInForceConfigDigest = digestOf 'c'
+    , localRpcRegistrationDigest = digestOf 'p'
     , localResourceEnvelope = digestOf 'e'
     , localLoadFault = digestOf 'l'
     }
@@ -138,7 +141,8 @@ fixtureArtifactFields =
     , fieldsComponentImages = fixtureInventory
     , fieldsRunScopedTopologyDigest = Text.replicate 64 "1"
     , fieldsRunScopedWiringDigest = Text.replicate 64 "2"
-    , fieldsInForceConfigDigest = Text.replicate 64 "3"
+    , fieldsInForceConfigDigest = publicEvidenceDigestText (localInForceConfigDigest fixtureLocal)
+    , fieldsRpcRegistrationDigest = localRpcRegistrationDigest fixtureLocal
     , fieldsFrozenLines =
         [ ("superseded_topology_digest", Text.replicate 64 "4")
         , ("fault_external_state", "first")

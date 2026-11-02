@@ -53,6 +53,7 @@ module Prodbox.Lib.ChartPlatform
   , resolveChartSecrets
   , resolvedCustomImageTargetAgentIdentity
   , resolveRuntimeChartImageForSubstrate
+  , customImageTagFromMachineId
   , chartStorageSpecsForRelease
   , chartStorageBindingsForRelease
   , gatewayEmitterJournalStorageSpecs
@@ -68,6 +69,7 @@ module Prodbox.Lib.ChartPlatform
   , valuesForBootstrapBroker
   , controlPlaneRoleChartNames
   , valuesForLifecycleAuthority
+  , valuesForLifecycleAuthorityWithRpcBirth
   , valuesForProviderWorker
   , valuesForAuthorityBackup
   , valuesForTlsRetention
@@ -102,6 +104,7 @@ import Data.Aeson.Key qualified as Key
 import Data.Aeson.KeyMap qualified as KeyMap
 import Data.Aeson.Types (Parser, parseEither)
 import Data.Bifunctor (first)
+import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
 import Data.Char (isDigit, isHexDigit, isSpace, toLower)
@@ -157,7 +160,10 @@ import Prodbox.ControlPlane.AuthenticationRegistry
   , trustedCallersForRoute
   )
 import Prodbox.ControlPlane.CallerPrincipal (callerPrincipalCode)
+import Prodbox.ControlPlane.Coordinate (mkAuthorityScope)
+import Prodbox.ControlPlane.Deadline qualified as DiagnosticDeadline
 import Prodbox.ControlPlane.DedicatedAdapterStore (awsS3EndpointForRegion)
+import Prodbox.ControlPlane.Interpreter (realMonotonicNow)
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator)
   , LifecycleAuthorityAuthenticationError
@@ -173,6 +179,11 @@ import Prodbox.ControlPlane.ListenPort (controlPlaneClusterServiceUrl, controlPl
 import Prodbox.ControlPlane.Route
   ( controlPlaneRoutePath
   , routesForRole
+  )
+import Prodbox.ControlPlane.RpcAdmissionBirthConfig
+  ( RpcBirthConfig (..)
+  , renderRpcBirthConfigDhall
+  , validateRpcBirthConfig
   )
 import Prodbox.ControlPlane.TargetSecretAgentExecution
   ( TargetAgentIdentity
@@ -210,6 +221,7 @@ import Prodbox.Gateway.ChartStatics qualified as ChartStatics
 import Prodbox.Gateway.Emitter.Persistence qualified as EmitterPersistence
 import Prodbox.Gateway.Probe qualified as GatewayProbe
 import Prodbox.Infra.AwsEksTestStack qualified as AwsEks
+import Prodbox.Infra.HelmStartupEvidence qualified as Startup
 import Prodbox.Lib.EksCustomImagePush
   ( EksCustomImagePushConfig (customPushPodNamespace)
   , classifyEksRegistryDigestRecordRead
@@ -305,6 +317,7 @@ import Prodbox.Settings
   , DeploymentSection (..)
   , ValidatedCoordinates (..)
   , ValidatedSettings (..)
+  , deploymentRpcRegistration
   , deploymentVaultAddress
   , requireAwsSubstrateProfile
   , validateAndLoadSettings
@@ -314,8 +327,10 @@ import Prodbox.Settings
 import Prodbox.Settings.AwsSubstrateProfile (awsSubstrateStaticEbsVolumeType)
 import Prodbox.Settings.Coordinate (awsRegionText, s3BucketNameText)
 import Prodbox.Subprocess
-  ( ProcessOutput (..)
+  ( BoundedSubprocessLimits (..)
+  , ProcessOutput (..)
   , Subprocess (..)
+  , captureSubprocessBounded
   , captureSubprocessResult
   )
 import Prodbox.Substrate
@@ -2231,12 +2246,13 @@ resolveGatewayTier0DhallForSubstrate substrate repoRoot settings = do
   let deploymentContext = validatedDeploymentContext settings
       vaultAddress = deploymentVaultAddress deploymentContext
       minioEndpoint = Text.pack minioClusterServiceEndpoint
-  pure
-    ( renderGatewayTier0Dhall (validatedConfig settings)
-        <$> clusterIdResult
-        <*> pure vaultAddress
-        <*> pure minioEndpoint
-    )
+  pure $ do
+    clusterId <- clusterIdResult
+    let registration = deploymentRpcRegistration deploymentContext
+    scope <- first show (mkAuthorityScope clusterId)
+    _ <- first show (validateRpcBirthConfig LifecycleAuthorityRuntime scope registration)
+    pure
+      (renderGatewayTier0Dhall (validatedConfig settings) registration clusterId vaultAddress minioEndpoint)
 
 -- | Resolve the same substrate identity for every standing control-plane role.
 -- It is mounted explicitly in schema-v3 role config; no role guesses identity
@@ -2267,8 +2283,9 @@ resolveParentRegistrationForSubstrate substrate repoRoot =
     -- than borrowing the home cluster's parent reference.
     SubstrateAws -> pure (Right Nothing)
 
-renderGatewayTier0Dhall :: ConfigFile -> Text.Text -> Text.Text -> Text.Text -> String
-renderGatewayTier0Dhall config clusterId vaultAddress minioEndpoint =
+renderGatewayTier0Dhall
+  :: ConfigFile -> RpcBirthConfig -> Text.Text -> Text.Text -> Text.Text -> String
+renderGatewayTier0Dhall config registration clusterId vaultAddress minioEndpoint =
   Text.unpack
     ( Tier0.renderProjectConfigDhall
         Tier0.defaultDaemonProjectConfig
@@ -2278,6 +2295,7 @@ renderGatewayTier0Dhall config clusterId vaultAddress minioEndpoint =
                 { Tier0.cluster_id = clusterId
                 , Tier0.vault_address = vaultAddress
                 , Tier0.minio_endpoint = minioEndpoint
+                , Tier0.rpc_registration = registration
                 }
           }
     )
@@ -2421,8 +2439,19 @@ renderReleaseValuesJson substrate definition namespace rootChart settings chartS
             rootChart
             maybeRuntimeImage
       "lifecycle-authority" ->
-        requireControlPlaneClusterId >>= \clusterId ->
-          valuesForLifecycleAuthority clusterId minioEndpoint namespace rootChart maybeRuntimeImage
+        case (substrate, deploymentRpcRegistration (validatedDeploymentContext settings)) of
+          (SubstrateAws, RpcBirthConfigRegistered _) ->
+            Left
+              "registered Lifecycle Authority remains on retained local RKE2; AWS requires its registered target peer, not an EKS-local Authority"
+          (_, registration) ->
+            requireControlPlaneClusterId >>= \clusterId ->
+              valuesForLifecycleAuthorityWithRpcBirth
+                registration
+                clusterId
+                minioEndpoint
+                namespace
+                rootChart
+                maybeRuntimeImage
       "provider-worker" ->
         requireControlPlaneClusterId >>= \clusterId ->
           valuesForProviderWorker settings clusterId namespace rootChart maybeRuntimeImage
@@ -3034,7 +3063,8 @@ renderBootstrapBrokerConfigDhall clusterId minioEndpoint maybeParent statics =
 -- is intentionally absent here. StatefulSet-specific values (the Lifecycle
 -- Authority journal storage class) come from the chart's @values.yaml@ default.
 valuesForControlPlaneRole
-  :: Text.Text
+  :: RpcBirthConfig
+  -> Text.Text
   -> RuntimeRole
   -> String
   -> Value
@@ -3046,7 +3076,7 @@ valuesForControlPlaneRole
   -> String
   -> Maybe ResolvedCustomImage
   -> Either String Value
-valuesForControlPlaneRole clusterId runtimeRole chartName serviceAccountValue vaultRole livenessPath readinessPath roleStoreDhall namespace rootChart maybeRuntimeImage = do
+valuesForControlPlaneRole birthConfig clusterId runtimeRole chartName serviceAccountValue vaultRole livenessPath readinessPath roleStoreDhall namespace rootChart maybeRuntimeImage = do
   resolvedImage <-
     case maybeRuntimeImage of
       Just imageInfo -> Right imageInfo
@@ -3057,6 +3087,8 @@ valuesForControlPlaneRole clusterId runtimeRole chartName serviceAccountValue va
       Right
       (resolvedCustomImageRolloutToken resolvedImage)
   targetAgentIdentity <- resolvedCustomImageTargetAgentIdentity clusterId resolvedImage
+  scope <- first show (mkAuthorityScope clusterId)
+  _ <- first show (validateRpcBirthConfig runtimeRole scope birthConfig)
   pure
     ( object
         [ "global"
@@ -3088,7 +3120,7 @@ valuesForControlPlaneRole clusterId runtimeRole chartName serviceAccountValue va
         , "config"
             .= object
               [ "roleDhall"
-                  .= ( "{ schema_version = 7, runtime_role = "
+                  .= ( "{ schema_version = 8, runtime_role = "
                          ++ renderDhallText (Text.pack chartName)
                          ++ ", cluster_id = "
                          ++ renderDhallText clusterId
@@ -3106,6 +3138,8 @@ valuesForControlPlaneRole clusterId runtimeRole chartName serviceAccountValue va
                          ++ renderDhallText "/var/run/secrets/kubernetes.io/serviceaccount/token"
                          ++ ", request_authentication = "
                          ++ renderControlPlaneAuthenticationDhall runtimeRole
+                         ++ ", rpc_registration = "
+                         ++ renderRpcBirthConfigDhall birthConfig
                          ++ " }"
                          :: String
                      )
@@ -3175,8 +3209,19 @@ controlPlaneProbeTimingValue =
 
 valuesForLifecycleAuthority
   :: Text.Text -> Text.Text -> String -> String -> Maybe ResolvedCustomImage -> Either String Value
-valuesForLifecycleAuthority clusterId minioEndpoint namespace rootChart maybeRuntimeImage =
+valuesForLifecycleAuthority = valuesForLifecycleAuthorityWithRpcBirth RpcBirthConfigLegacy
+
+valuesForLifecycleAuthorityWithRpcBirth
+  :: RpcBirthConfig
+  -> Text.Text
+  -> Text.Text
+  -> String
+  -> String
+  -> Maybe ResolvedCustomImage
+  -> Either String Value
+valuesForLifecycleAuthorityWithRpcBirth birthConfig clusterId minioEndpoint namespace rootChart maybeRuntimeImage =
   valuesForControlPlaneRole
+    birthConfig
     clusterId
     LifecycleAuthorityRuntime
     "lifecycle-authority"
@@ -3206,6 +3251,7 @@ valuesForProviderWorker settings clusterId namespace rootChart maybeRuntimeImage
     Capacity.runtimeMemoryPlanForProfile (capacity (validatedConfig settings)) "provider-worker"
   base <-
     valuesForControlPlaneRole
+      RpcBirthConfigLegacy
       clusterId
       ProviderWorkerRuntime
       "provider-worker"
@@ -3246,6 +3292,7 @@ valuesForAuthorityBackup settings clusterId namespace rootChart maybeRuntimeImag
   (bucket, region) <- dedicatedAdapterBackend settings
   let prefix = "authority-backup-store/" <> Text.strip clusterId
   valuesForControlPlaneRole
+    RpcBirthConfigLegacy
     clusterId
     AuthorityBackupRuntime
     "authority-backup"
@@ -3280,6 +3327,7 @@ valuesForTlsRetention substrate settings clusterId namespace rootChart maybeRunt
       Right
       (Text.stripPrefix prefixStem prefix)
   valuesForControlPlaneRole
+    RpcBirthConfigLegacy
     clusterId
     TlsRetentionRuntime
     "tls-retention"
@@ -3305,6 +3353,7 @@ valuesForTargetSecretAgent
   :: Text.Text -> String -> String -> Maybe ResolvedCustomImage -> Either String Value
 valuesForTargetSecretAgent clusterId namespace rootChart maybeRuntimeImage =
   valuesForControlPlaneRole
+    RpcBirthConfigLegacy
     clusterId
     TargetSecretAgentRuntime
     "target-secret-agent"
@@ -3927,7 +3976,9 @@ resolveRuntimeChartImageForSubstrate =
 data RuntimeImageObservers = RuntimeImageObservers
   { observeEksRegistryManifestDigest :: IO (Either String (Maybe String))
   , observeHostFixedTagImage
-      :: String -> String -> IO (Either String (Maybe ResolvedCustomImage))
+      :: String
+      -> String
+      -> IO (Either String (Maybe ResolvedCustomImage))
   }
 
 productionRuntimeImageObservers :: RuntimeImageObservers
@@ -4017,12 +4068,10 @@ resolveCustomImageTag repository = do
     then pure (Left ("custom chart image requires machine identity file " ++ machineIdPath))
     else do
       rawMachineId <- readFile machineIdPath
-      let machineId = map toLower (trimWhitespace rawMachineId)
-      if length machineId /= 32 || any (not . isHexDigit) machineId
-        then pure (Left ("Unexpected machine-id format in " ++ machineIdPath ++ ": " ++ show machineId))
-        else do
-          let imageTag = take 63 ("prodbox-" ++ machineId)
-              imageRef = repository ++ ":" ++ imageTag
+      case customImageTagFromMachineId rawMachineId of
+        Left detail -> pure (Left detail)
+        Right imageTag -> do
+          let imageRef = repository ++ ":" ++ imageTag
           maybeRolloutToken <- resolveLocalImageBuildToken imageRef
           maybeManifestDigest <- resolveLocalImageManifestDigest repository imageRef
           pure
@@ -4036,6 +4085,14 @@ resolveCustomImageTag repository = do
                       }
                 )
             )
+
+-- Shared by the ordinary planner and the operation-owned preparation adapter.
+customImageTagFromMachineId :: String -> Either String String
+customImageTagFromMachineId rawMachineId =
+  let machineId = map toLower (trimWhitespace rawMachineId)
+   in if length machineId /= 32 || any (not . isHexDigit) machineId
+        then Left ("Unexpected machine-id format in " ++ machineIdPath ++ ": " ++ show machineId)
+        else Right (take 63 ("prodbox-" ++ machineId))
 
 resolveCustomImageFixedTag :: String -> String -> IO (Either String (Maybe ResolvedCustomImage))
 resolveCustomImageFixedTag repository imageTag = do
@@ -4678,16 +4735,30 @@ parseKubernetesApiEgressCoordinate raw =
        in if null addresses || not (all validIpv4Literal addresses)
             then Left "kubernetes API Endpoints did not report a valid IPv4 address"
             else case nub portWords of
-              [solePort]
-                | all isDigit solePort && not (null solePort) ->
-                    Right
-                      KubernetesApiEgressCoordinate
-                        { kubernetesApiEgressAddresses = addresses
-                        , kubernetesApiEgressPort = read solePort
-                        }
+              [solePort] -> case tcpPort solePort of
+                Just port ->
+                  Right
+                    KubernetesApiEgressCoordinate
+                      { kubernetesApiEgressAddresses = addresses
+                      , kubernetesApiEgressPort = port
+                      }
+                Nothing -> Left "kubernetes API Endpoints did not report a decimal TCP port in 1..65535"
               [] -> Left "kubernetes API Endpoints did not report a port"
               _ -> Left "kubernetes API Endpoints reported more than one distinct port"
     _ -> Left "kubernetes API Endpoints observation was not in the expected form"
+ where
+  -- A Kubernetes numeric port has at most five decimal digits. Enforcing that
+  -- width before accumulation also keeps every intermediate below 100,000.
+  tcpPort :: String -> Maybe Int
+  tcpPort value
+    | null value || length (take 6 value) > 5 = Nothing
+    | otherwise = do
+        port <- foldM decimalDigit 0 value
+        if port >= 1 && port <= 65535 then Just port else Nothing
+  decimalDigit accumulated character
+    | character >= '0' && character <= '9' =
+        Just (accumulated * 10 + fromEnum character - fromEnum '0')
+    | otherwise = Nothing
 
 validIpv4Literal :: String -> Bool
 validIpv4Literal value = case splitOnDot value of
@@ -5444,53 +5515,121 @@ reconcileFailedReleaseAbsent release =
 
 helmUpgradeFailureDiagnostics :: ChartReleasePlan -> IO String
 helmUpgradeFailureDiagnostics release = do
-  let namespace = chartReleasePlanNamespace release
+  now <- realMonotonicNow
+  let deadline = DiagnosticDeadline.deadlineAtOffset now (DiagnosticDeadline.RemainingDuration 30_000_000)
+      namespace = chartReleasePlanNamespace release
       releaseName = chartReleasePlanReleaseName release
       selector = "app.kubernetes.io/instance=" ++ releaseName
+      diagnostic label path arguments = do
+        result <- boundedFailureDiagnostic deadline (128 * 1024) path arguments
+        pure $
+          unlines
+            [ "== " ++ label ++ " =="
+            , either (const "bounded diagnostic observation unavailable") renderProcessOutput result
+            ]
+  -- Startup is observed before ordinary status/describe/events. Raw logs never
+  -- reach renderProcessOutput, a file, or an evidence digest.
+  startup <- case Startup.startupTarget releaseName namespace of
+    Nothing -> pure "startup-evidence/not-an-internal-role"
+    Just target -> do
+      evidence <- Startup.observeStartupEvidence (startupEvidenceEffects deadline) target
+      pure (Startup.renderStartupEvidence evidence)
   outputs <-
     sequence
-      [ diagnosticCommand
-          "helm status"
-          "helm"
-          ["status", releaseName, "--namespace", namespace]
-      , diagnosticCommand
+      [ diagnostic "helm status" "helm" ["status", releaseName, "--namespace", namespace]
+      , diagnostic
           "kubectl get release resources"
           "kubectl"
-          [ "get"
-          , "deployments,pods,svc"
-          , "-n"
-          , namespace
-          , "-l"
-          , selector
-          , "-o"
-          , "wide"
-          ]
-      , diagnosticCommand
+          ["get", "deployments,pods,svc", "-n", namespace, "-l", selector, "-o", "wide"]
+      , diagnostic
           "kubectl describe release pods"
           "kubectl"
           ["describe", "pods", "-n", namespace, "-l", selector]
-      , diagnosticCommand
+      , diagnostic
           "kubectl namespace events"
           "kubectl"
-          [ "get"
-          , "events"
-          , "-n"
-          , namespace
-          , "--sort-by=.lastTimestamp"
-          ]
+          ["get", "events", "-n", namespace, "--sort-by=.lastTimestamp"]
       ]
-  pure ("\nRelease diagnostics before cleanup:\n" ++ concat outputs)
+  pure ("\nRelease diagnostics before cleanup:\n" ++ concat outputs ++ startup ++ "\n")
 
-diagnosticCommand :: String -> FilePath -> [String] -> IO String
-diagnosticCommand label subprocessPath args = do
-  outputResult <- runCaptured label subprocessPath args
-  pure $
-    unlines
-      [ "== " ++ label ++ " =="
-      , case outputResult of
-          Left err -> err
-          Right output -> renderProcessOutput output
-      ]
+startupEvidenceEffects :: DiagnosticDeadline.Deadline -> Startup.StartupEvidenceEffects IO
+startupEvidenceEffects deadline =
+  Startup.StartupEvidenceEffects
+    { Startup.readStartupPodInventory = \target ->
+        readBytes
+          (128 * 1024)
+          [ "get"
+          , "pods"
+          , "--namespace"
+          , Startup.startupTargetNamespace target
+          , "--selector"
+          , "app.kubernetes.io/instance=" ++ Startup.startupTargetRelease target
+          , "--output"
+          , "json"
+          ]
+    , Startup.readStartupPod = \pod ->
+        readBytes
+          (128 * 1024)
+          [ "get"
+          , "pod"
+          , Startup.startupPodName pod
+          , "--namespace"
+          , Startup.startupPodNamespace pod
+          , "--output"
+          , "json"
+          ]
+    , Startup.readStartupLog = \pod kind ->
+        readBytes
+          (64 * 1024)
+          [ "get"
+          , "--raw"
+          , "/api/v1/namespaces/"
+              ++ Startup.startupPodNamespace pod
+              ++ "/pods/"
+              ++ Startup.startupPodName pod
+              ++ "/log?container="
+              ++ Startup.startupPodContainer pod
+              ++ case kind of Startup.CurrentStartupLog -> ""; Startup.PreviousStartupLog -> "&previous=true"
+          ]
+    }
+ where
+  readBytes limit arguments = do
+    result <- boundedFailureDiagnostic deadline limit "kubectl" arguments
+    pure $ case result of
+      Left cause -> Left cause
+      Right output | processExitCode output == ExitSuccess -> Right (BS8.pack (processStdout output))
+      Right _ -> Left Startup.StartupReadUnavailable
+
+boundedFailureDiagnostic
+  :: DiagnosticDeadline.Deadline
+  -> Int
+  -> FilePath
+  -> [String]
+  -> IO (Either Startup.StartupReadFailure ProcessOutput)
+boundedFailureDiagnostic deadline maximumBytes path arguments = do
+  now <- realMonotonicNow
+  case DiagnosticDeadline.deadlineObservation now deadline of
+    DiagnosticDeadline.DeadlineExpired -> pure (Left Startup.StartupReadDeadlineElapsed)
+    DiagnosticDeadline.DeadlineOpen (DiagnosticDeadline.RemainingDuration remaining) -> do
+      result <-
+        captureSubprocessBounded
+          BoundedSubprocessLimits
+            { boundedSubprocessMaximumInputBytes = 1
+            , boundedSubprocessMaximumStdoutBytes = maximumBytes
+            , boundedSubprocessMaximumStderrBytes = 16 * 1024
+            , boundedSubprocessTimeoutMicros = min 3_000_000 (fromIntegral remaining)
+            }
+          Subprocess
+            { subprocessPath = path
+            , subprocessArguments = arguments
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Nothing
+            }
+      completed <- realMonotonicNow
+      pure $
+        if DiagnosticDeadline.deadlineExpired completed deadline
+          then Left Startup.StartupReadDeadlineElapsed
+          else either (const (Left Startup.StartupReadUnavailable)) Right result
 
 renderProcessOutput :: ProcessOutput -> String
 renderProcessOutput output =

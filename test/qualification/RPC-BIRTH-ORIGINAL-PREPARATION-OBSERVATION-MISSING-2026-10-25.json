@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "counterexample": "RPC-BIRTH-ORIGINAL-PREPARATION-OBSERVATION-MISSING-2026-10-25",
+  "owning_sprint": "6.5",
+  "banked_utc": "2026-10-25T07:28:47.011361+00:00",
+  "scope": "Bounded authenticated public birth observation and native read consistency. No physical repair, runtime activation or deployment qualification claim.",
+  "repository_reproducer": {
+    "module": "test/unit/ControlPlaneRpcAdmissionBirth.hs",
+    "case": "returns the original expired key, epoch and deadline without writes or seed reads",
+    "canonical_validation": "prodbox dev check"
+  },
+  "causal_profile": {
+    "old_result": "A verified migration request cannot observe the original public key, epoch and deadline of an existing preparation; the old handler returns no response for this read.",
+    "required_result": "The distinct authenticated descriptor read returns the original expired preparation metadata without native writes or seed/key reads. Old command and status encodings remain unchanged.",
+    "old_to_new_envelope_mapping": "Same retained records, source keys, client profile and configured workload resource envelopes. New observation has only clock/record/marker reads; ordinary admission remains fenced.",
+    "public_descriptor_maximum_bytes": 4096,
+    "public_observation_maximum_bytes": 8192,
+    "outer_response_envelope_unchanged": true,
+    "resource_envelopes_increased": false
+  },
+  "frozen": {
+    "full_manifest": "630202783e1fa879e9a0093cc9ed13b874ab1f90ad39ee8fc7b31f6ecff75644",
+    "executable_manifest": "693438cec5668ce2ec9379b8610b5ece00e92c7bcdac3d18d1bc23b9c4193fb2",
+    "source_identity_record": ".build/sprint-6.5/rpc-observation-20261025/frozen-source.log",
+    "binary_sha256": "9a6e4515f74977af574497ccd9ff9ca28bb342c6b73461a79819cf059dec303b",
+    "fixture_sha256": "33e8cf56d0db13d81d7af64fba26bee436ea70d4d8336f6ff13c4c98e158edac",
+    "provenance_note": "Both probes statically link the unchanged pre-edit Cabal package. Frozen-closing was linked after tracked source edits but before any package rebuild; it exercises the same pre-edit compiled library, not the then-edited source.",
+    "semantic_exit": 1,
+    "wall_seconds": 0.005857126321643591
+  },
+  "replacement": {
+    "full_manifest_at_probe_banking": "0eeb326e57113d97b78af1a642e807bb14a5818ca489474f15f1657629a220ca",
+    "executable_manifest_at_probe_banking": "33f02ff2c3d7b49059d9a8a0390b3e5fa205e67db6045ff1ff443d91584da00d",
+    "source_identity_record": ".build/sprint-6.5/rpc-observation-20261025/banking-source.log",
+    "binary_sha256": "0ba77d381159b47e45547b7035024e231ed68142f3d2ed9242426362d6162b46",
+    "semantic_exit": 0,
+    "wall_seconds": 0.009326969273388386,
+    "focused_cases": 101,
+    "validation_record": ".build/sprint-6.5/rpc-observation-20261025/validation-progress.json"
+  },
+  "deployment_qualification": "pending",
+  "qualified_cycles": 0,
+  "hand_actions": []
+}

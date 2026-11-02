@@ -7,6 +7,10 @@
 module Prodbox.Http.Client
   ( HttpError (..)
   , HttpBoundedError (..)
+  , HttpResponseHeaderLimit (..)
+  , httpBoundedResponseMaximumEarlyHintBlocks
+  , httpBoundedResponseMaximumHeaderFields
+  , httpBoundedResponseMaximumHeaderLineBytes
   , HttpConfig (..)
   , sharedTlsManager
   , defaultHttpConfig
@@ -27,12 +31,18 @@ module Prodbox.Http.Client
   )
 where
 
-import Control.Exception (Exception, SomeException, try)
+import Control.Exception (Exception, SomeException, throwIO, try)
+import Control.Monad (when)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson (FromJSON, ToJSON, eitherDecode, encode)
 import Data.ByteString qualified as BS
+import Data.ByteString.Internal qualified as BSI
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
+import Data.IORef (atomicModifyIORef', newIORef)
+import Foreign.ForeignPtr (withForeignPtr)
+import Foreign.Marshal.Utils (copyBytes)
+import Foreign.Ptr (castPtr, plusPtr)
 import Network.HTTP.Client
   ( BodyReader
   , HttpException (..)
@@ -42,13 +52,19 @@ import Network.HTTP.Client
   , RequestBody (..)
   , Response
   , brRead
+  , earlyHintHeadersReceived
   , httpLbs
+  , managerRetryableException
+  , managerSetMaxHeaderLength
+  , managerSetMaxNumberHeaders
   , method
   , newManager
   , parseRequest
+  , redirectCount
   , requestBody
   , requestHeaders
   , responseBody
+  , responseHeaders
   , responseStatus
   , responseTimeout
   , responseTimeoutMicro
@@ -58,6 +74,8 @@ import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.HTTP.Types.Header (Header)
 import Network.HTTP.Types.Method (Method)
 import Network.HTTP.Types.Status (statusCode)
+import Numeric.Natural (Natural)
+import Prodbox.Http.BodyBufferBudget
 import System.Directory (removeFile)
 import System.IO (Handle, IOMode (WriteMode), withFile)
 import System.IO.Unsafe (unsafePerformIO)
@@ -77,8 +95,65 @@ instance Exception HttpError
 -- bound is distinct and reports the first observed size beyond the ceiling.
 data HttpBoundedError
   = HttpBoundedTransport !HttpError
-  | HttpBoundedResponseTooLarge !Int !Int
+  | HttpBoundedResponseTooLarge !Natural !Int
+  | HttpBoundedResponseHeadersTooLarge !HttpResponseHeaderLimit !Int !Int
   deriving (Eq, Show)
+
+data HttpResponseHeaderLimit
+  = HttpResponseEarlyHintBlocks
+  | HttpResponseRetainedHeaderFields
+  deriving (Eq, Show)
+
+-- Keep the pinned parser's complete final-header domain. Aggregate retained
+-- fields and recursive informational blocks have independent per-call limits.
+-- These protocol limits are not a decoded-heap or complete HTTP memory proof.
+httpBoundedResponseMaximumEarlyHintBlocks
+  , httpBoundedResponseMaximumHeaderFields
+  , httpBoundedResponseMaximumHeaderLineBytes
+    :: Int
+httpBoundedResponseMaximumEarlyHintBlocks = 100
+httpBoundedResponseMaximumHeaderFields = 100
+httpBoundedResponseMaximumHeaderLineBytes = 4096
+
+data HeaderBudgetUsage = HeaderBudgetUsage !Int !Int
+
+data HeaderBlockKind = EarlyHintHeaderBlock | FinalHeaderBlock
+
+data HeaderBudgetException = HeaderBudgetException !HttpResponseHeaderLimit !Int !Int
+  deriving (Show)
+
+instance Exception HeaderBudgetException
+
+consumeHeaderBlock
+  :: HeaderBlockKind
+  -> [Header]
+  -> HeaderBudgetUsage
+  -> (HeaderBudgetUsage, Either HeaderBudgetException ())
+consumeHeaderBlock kind fields previous@(HeaderBudgetUsage blocks count)
+  | nextBlocks > httpBoundedResponseMaximumEarlyHintBlocks =
+      ( previous
+      , Left
+          ( HeaderBudgetException
+              HttpResponseEarlyHintBlocks
+              nextBlocks
+              httpBoundedResponseMaximumEarlyHintBlocks
+          )
+      )
+  | nextCount > httpBoundedResponseMaximumHeaderFields =
+      ( previous
+      , Left
+          ( HeaderBudgetException
+              HttpResponseRetainedHeaderFields
+              nextCount
+              httpBoundedResponseMaximumHeaderFields
+          )
+      )
+  | otherwise = (HeaderBudgetUsage nextBlocks nextCount, Right ())
+ where
+  nextBlocks = case kind of
+    EarlyHintHeaderBlock -> blocks + 1
+    FinalHeaderBlock -> blocks
+  nextCount = count + length fields
 
 -- | Per-call configuration. 'httpRequestTimeoutMicros' is enforced via
 -- 'responseTimeout' on the 'Request' before sending.
@@ -118,7 +193,16 @@ renderHttpError httpErr = case httpErr of
 -- immutable after construction.
 {-# NOINLINE sharedTlsManager #-}
 sharedTlsManager :: Manager
-sharedTlsManager = unsafePerformIO (newManager tlsManagerSettings)
+sharedTlsManager =
+  unsafePerformIO
+    -- A reused connection can fail after the server received the request.
+    -- Its typed caller owns observation and any subsequent retry.
+    ( newManager
+        ( managerSetMaxHeaderLength httpBoundedResponseMaximumHeaderLineBytes $
+            managerSetMaxNumberHeaders httpBoundedResponseMaximumHeaderFields $
+              tlsManagerSettings {managerRetryableException = const False}
+        )
+    )
 
 -- | Run an action against the shared TLS 'Manager'. The TLS manager handles
 -- both @http://@ and @https://@ URLs and reuses connections per host.
@@ -266,7 +350,7 @@ httpRequestRaw = sendRequestRaw
 -- caller-supplied bound holds.  Unlike checking the size after 'httpLbs', this
 -- stops consuming as soon as a chunk crosses the ceiling, so an untrusted peer
 -- cannot force an unbounded lazy response allocation before the typed protocol
--- client gets to validate it.
+-- client gets to validate it. The first response is returned without redirects.
 httpRequestRawBounded
   :: HttpConfig
   -> Int
@@ -278,17 +362,23 @@ httpRequestRawBounded
 httpRequestRawBounded config maximumBytes httpMethod extraHeaders url maybeBody
   | maximumBytes < 0 = pure (Left (HttpBoundedResponseTooLarge 0 maximumBytes))
   | otherwise = do
-      requestResult <- try (parseRequest url) :: IO (Either SomeException Request)
+      requestResult <- try (parseRequest url) :: IO (Either HttpException Request)
       case requestResult of
         Left ex ->
           pure
             (Left (HttpBoundedTransport (HttpConnectionFailure (show ex))))
         Right baseRequest -> do
+          headerUsage <- newIORef (HeaderBudgetUsage 0 0)
+          let consume kind fields = do
+                checked <- atomicModifyIORef' headerUsage (consumeHeaderBlock kind fields)
+                either throwIO pure checked
           let requestWithoutTimeout =
                 baseRequest
                   { method = httpMethod
                   , requestHeaders = extraHeaders
                   , requestBody = maybe (requestBody baseRequest) RequestBodyLBS maybeBody
+                  , redirectCount = 0
+                  , earlyHintHeadersReceived = consume EarlyHintHeaderBlock
                   }
               request =
                 requestWithoutTimeout
@@ -296,38 +386,62 @@ httpRequestRawBounded config maximumBytes httpMethod extraHeaders url maybeBody
                   }
           result <-
             try
-              ( withManager $ \manager ->
-                  withResponse request manager $ \response -> do
-                    boundedBody <- readBoundedBody maximumBytes (responseBody response)
-                    pure (statusCode (responseStatus response), boundedBody)
+              ( try
+                  ( withManager $ \manager ->
+                      withResponse request manager $ \response -> do
+                        consume FinalHeaderBlock (responseHeaders response)
+                        boundedBody <- readBoundedBody maximumBytes (responseBody response)
+                        pure (statusCode (responseStatus response), boundedBody)
+                  )
               )
           pure $ case result of
-            Left (HttpExceptionRequest _ content) ->
+            Left (HeaderBudgetException limit observed maximumAllowed) ->
+              Left (HttpBoundedResponseHeadersTooLarge limit observed maximumAllowed)
+            Right (Left (HttpExceptionRequest _ content)) ->
               Left (HttpBoundedTransport (translateExceptionContent content))
-            Left (InvalidUrlException invalidUrl reason) ->
+            Right (Left (InvalidUrlException invalidUrl reason)) ->
               Left
                 ( HttpBoundedTransport
                     (HttpConnectionFailure ("invalid URL " ++ invalidUrl ++ ": " ++ reason))
                 )
-            Right (_status, Left observedBytes) ->
+            Right (Right (_status, Left observedBytes)) ->
               Left (HttpBoundedResponseTooLarge observedBytes maximumBytes)
-            Right (status, Right body) -> Right (status, body)
+            Right (Right (status, Right body)) -> Right (status, body)
 
 readBoundedBody
   :: Int
   -> BodyReader
-  -> IO (Either Int BS.ByteString)
-readBoundedBody maximumBytes = go 0 []
+  -> IO (Either Natural BS.ByteString)
+readBoundedBody maximumBytes reader = case bodyBufferPlan maximumBytes of
+  Nothing -> pure (Left 0)
+  Just initial -> BSI.mallocByteString 0 >>= go initial
  where
-  go observed chunks reader = do
+  go plan buffer = do
     chunk <- brRead reader
     if BS.null chunk
-      then pure (Right (BS.concat (reverse chunks)))
-      else do
-        let nextObserved = observed + BS.length chunk
-        if nextObserved > maximumBytes
-          then pure (Left nextObserved)
-          else go nextObserved (chunk : chunks) reader
+      then
+        pure $
+          Right $
+            if bodyBufferUsedBytes plan == 0
+              then BS.empty
+              else BSI.fromForeignPtr buffer 0 (bodyBufferUsedBytes plan)
+      else case appendBodyBufferChunk plan (fromIntegral (BS.length chunk)) of
+        BodyBufferExceeded observed -> pure (Left observed)
+        BodyBufferReuse next -> do
+          copyChunk buffer (bodyBufferUsedBytes plan) chunk
+          go next buffer
+        BodyBufferAllocate next -> do
+          replacement <- BSI.mallocByteString (bodyBufferCapacityBytes next)
+          when (bodyBufferUsedBytes plan > 0) $
+            withForeignPtr buffer $ \source ->
+              withForeignPtr replacement $ \destination ->
+                copyBytes destination source (bodyBufferUsedBytes plan)
+          copyChunk replacement (bodyBufferUsedBytes plan) chunk
+          go next replacement
+  copyChunk buffer offset chunk =
+    withForeignPtr buffer $ \destination ->
+      BS.useAsCStringLen chunk $ \(source, count) ->
+        copyBytes (destination `plusPtr` offset) (castPtr source) count
 
 -- | Why a streaming download did not produce a complete, bounded body.
 --

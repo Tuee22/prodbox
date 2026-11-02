@@ -461,7 +461,8 @@ runNativeQualificationResume repoRoot substrate label native = do
                       , contextRunId = cascadeCandidateRunId inputs
                       , contextParts = parts
                       , contextAnnotations = begunAnnotations begun
-                      , contextConfigDigest = partsGeneratedConfig parts
+                      , contextConfigDigest = localInForceConfigDigest local
+                      , contextRpcRegistrationDigest = localRpcRegistrationDigest local
                       , contextRetainedBinding = names
                       , contextFixture = fixture
                       , contextOracle = oracle
@@ -511,7 +512,7 @@ runConnectedLabelledCycle repoRoot environment substrate cycleLabel mode = do
     (_, _, _, _, Just (Left err)) -> pure (Left ("run teardown counterexample oracle: " ++ show err))
     (_, _, _, _, Nothing) -> pure (Left "the teardown counterexample oracle was not constructed")
     (Right settings, Right basics, Right local, Right fixture, Just (Right oracle))
-      | inForceConfigDigest settings /= localGeneratedConfig local ->
+      | inForceConfigDigest settings /= localInForceConfigDigest local ->
           pure (Left bootstrapConfigDisagrees)
       | otherwise -> do
           dnsZoneResult <- qualificationDnsZoneForMode repoRoot substrate cycleLabel mode settings
@@ -540,6 +541,7 @@ runConnectedLabelledCycle repoRoot environment substrate cycleLabel mode = do
                           , contextParts = parts
                           , contextAnnotations = annotations
                           , contextConfigDigest = inForceConfigDigest settings
+                          , contextRpcRegistrationDigest = localRpcRegistrationDigest local
                           , contextRetainedBinding = retainedBinding
                           , contextFixture = fixture
                           , contextOracle = oracle
@@ -680,6 +682,7 @@ data CycleContext = CycleContext
   , contextParts :: !CycleIdentityParts
   , contextAnnotations :: !CycleAnnotations
   , contextConfigDigest :: !PublicEvidenceDigest
+  , contextRpcRegistrationDigest :: !PublicEvidenceDigest
   , contextRetainedBinding :: !RetainedNameBinding
   , contextFixture :: !FrozenTeardownCounterexample
   , contextOracle :: !ReplacementTeardownResult
@@ -1025,6 +1028,7 @@ writeQualificationEvidence context attempt candidateOutcome = do
               cleanupDigestText (cascadeCandidateOutcomeDescriptorDigest candidateOutcome)
           , fieldsInForceConfigDigest =
               publicEvidenceDigestText (contextConfigDigest context)
+          , fieldsRpcRegistrationDigest = contextRpcRegistrationDigest context
           , fieldsFrozenLines =
               frozenFactLines (contextFixture context) (contextOracle context)
                 ++ [("intended_retained_set", Text.pack (show (contextRetainedBinding context)))]

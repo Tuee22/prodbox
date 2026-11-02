@@ -1,6 +1,6 @@
 -- Capacity schema for Sprints 1.55 and 1.60.
 --
--- The Haskell mirror lives in Prodbox.Capacity.Config. This Dhall file owns the
+-- The deployed schema is generated from Prodbox.Capacity.Config. This file owns the
 -- pure capacity algebra operators that authored capacity documents can import:
 -- componentwise budget containment, explicit request/limit resource envelopes,
 -- host/RKE2 reservation containment, the nested runtime-memory accounting
@@ -32,6 +32,7 @@ let ResourcePlan =
       { host_capacity : ResourceVector
       , rke2_reserved : ResourceVector
       , eviction_floor : ResourceVector
+      , platform_scheduler_requests : Optional ResourceVector
       , namespace_quotas : List NamespaceQuota
       , workload_profiles : List WorkloadResourceProfile
       }
@@ -122,6 +123,22 @@ let hostReservationFits =
           (vectorPlus plan.rke2_reserved plan.eviction_floor)
           plan.host_capacity
 
+let completeRequestsFit =
+      \(plan : ResourcePlan) ->
+      \(application_requests : ResourceVector) ->
+        merge
+          { None = False
+          , Some =
+              \(platform_requests : ResourceVector) ->
+                vectorFitsWithin
+                  ( vectorPlus
+                      (vectorPlus plan.rke2_reserved plan.eviction_floor)
+                      (vectorPlus platform_requests application_requests)
+                  )
+                  plan.host_capacity
+          }
+          plan.platform_scheduler_requests
+
 let runtimeHeapRequiredBytes =
       \(profile : RuntimeMemoryProfile) ->
             profile.bounded_application_state_bytes
@@ -197,6 +214,13 @@ let selfPlan =
           , ephemeral_storage_mib = 10240
           , durable_storage_mib = 1024
           }
+      , platform_scheduler_requests =
+          Some
+            { milli_cpu = 1835
+            , memory_mib = 3384
+            , ephemeral_storage_mib = 0
+            , durable_storage_mib = 0
+            }
       , namespace_quotas =
           [ { namespace_name = "prodbox-system"
             , quota =
@@ -231,6 +255,16 @@ let envelopeValidSelf =
 let hostReservationFitsSelf =
       assert : hostReservationFits selfPlan === True
 
+let completeRequestsFitSelf =
+      assert : completeRequestsFit selfPlan selfEnvelope.request === True
+
+let missingPlatformRequestsRefusedSelf =
+      assert
+        : completeRequestsFit
+            (selfPlan with platform_scheduler_requests = None ResourceVector)
+            selfEnvelope.request
+          === False
+
 in  { Budget = Budget
     , ResourceVector = ResourceVector
     , ResourceEnvelope = ResourceEnvelope
@@ -248,6 +282,7 @@ in  { Budget = Budget
     , vectorFitsWithin = vectorFitsWithin
     , envelopeValid = envelopeValid
     , hostReservationFits = hostReservationFits
+    , completeRequestsFit = completeRequestsFit
     , runtimeHeapRequiredBytes = runtimeHeapRequiredBytes
     , runtimeHeapFits = runtimeHeapFits
     , runtimeContainerRequiredBytes = runtimeContainerRequiredBytes

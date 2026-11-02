@@ -140,6 +140,7 @@ RUN apt-get update \
         ca-certificates \
         curl \
         git \
+        gnupg \
         libffi8 \
         libgmp10 \
         libncurses6 \
@@ -149,7 +150,10 @@ RUN apt-get update \
         tini \
         unzip \
         zlib1g \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && /usr/bin/gpg --batch --no-tty --version \
+    && test -x /usr/bin/gpg-agent \
+    && test -x /usr/bin/gpgconf
 
 COPY --from=builder /usr/local/aws-cli /usr/local/aws-cli
 RUN ln -s /usr/local/aws-cli/v2/current/bin/aws /usr/local/bin/aws \

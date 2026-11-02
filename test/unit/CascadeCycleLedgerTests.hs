@@ -251,6 +251,13 @@ judgeCases = do
       (verdictOf [Pass "pre-1" DeploymentA, Pass "pre-2" DeploymentA, Drift "pre-3" DeploymentA])
       `shouldBe` Just (0, Just AttemptSourceDrifted)
 
+  it "qualifies the second deployment only with its matching public config inputs" $ do
+    case verdictOf [Pass "pre-1" DeploymentB, Pass "pre-2" DeploymentB] of
+      Left refusal -> expectationFailure ("expected an attested second deployment, got " ++ show refusal)
+      Right proof -> do
+        proofParts proof `shouldBe` partsOfVariant DeploymentB
+        proofKey proof `shouldNotBe` identityKeyOfParts fixtureParts
+
   it "counts one when only one cycle has run, and none when none has" $ do
     insufficient (verdictOf [Pass "pre-1" DeploymentA]) `shouldBe` Just (1, Nothing)
     verdictOf [] `shouldBe` Left LedgerEmptyOfCycles

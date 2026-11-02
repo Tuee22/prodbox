@@ -126,6 +126,17 @@ provenance, not a parallel status ledger.
   persisted into and restored from, not a backend Pulumi itself addresses — see
   [vault_doctrine.md §10](./vault_doctrine.md#10-pulumi-backend-under-vault), which owns the
   decrypt-to-scratch mechanism and is the single source of truth for it.
+- Home Vault bootstrap independently observes its exact StatefulSet, current Pod, Bound
+  claim/Retain PV, declared host path and mounted `/vault/data` directory identity.
+  Node placement includes the Node UID and a boot UUID equal to this host's kernel boot UUID;
+  device/inode numbers from different kernels cannot be compared as storage identity. Ready
+  deliberately includes uninitialized Vault and does not prove writable storage. A positive
+  zero-link mounted directory plus fresh uninitialized Vault observation may retire only the
+  exact owned Pod with UID/resourceVersion preconditions. The ordinary rollout, bounded
+  reads/delete and fresh-Pod/root readback share one 300-second deadline. This never deletes or
+  resets the PVC, PV, root or stored bytes. An initialized orphan retains the running Pod for
+  operator recovery; different linked roots remain preserved because reconcile cannot choose
+  between them. Their `NukeOnly` dispositions do not bypass §7's operator/capability rules.
 
 ## 2. Scope
 

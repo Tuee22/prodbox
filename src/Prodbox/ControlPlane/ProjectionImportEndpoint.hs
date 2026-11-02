@@ -40,6 +40,7 @@ import Prodbox.ControlPlane.Codec
 import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionCommandRefusal (..)
+  , authorityAdmissionCommandRefusalToken
   )
 import Prodbox.Lifecycle.Authority.Migration
   ( MigrationImportDecision (..)
@@ -369,18 +370,10 @@ authorityRefusalStatus refusal = case refusal of
   AuthorityMigrationAlreadyStarted -> ReplyConflict
   AuthorityMigrationNotStarted -> ReplyConflict
   AuthorityMigrationEpochRegressed {} -> ReplyConflict
+  AuthorityMigrationEpochPredecessorMismatch {} -> ReplyConflict
+  AuthorityMigrationPendingProviderOperations _ -> ReplyConflict
+  AuthorityMigrationEpochNotAdvanced {} -> ReplyConflict
+  AuthorityEpochPromotionObservationRefused _ -> ReplyConflict
 
 authorityRefusalToken :: AuthorityAdmissionCommandRefusal -> Text
-authorityRefusalToken refusal = case refusal of
-  AuthorityProviderGenerationBindingRefused _ -> "provider-generation-binding-refused"
-  AuthorityProviderAdmissionFreezeRefused _ -> "provider-admission-freeze-refused"
-  AuthorityProviderAdmissionRecoveryRefused _ -> "provider-admission-recovery-refused"
-  AuthorityCascadeTerminalAuditRecordRefused _ ->
-    "cascade-terminal-audit-record-refused"
-  AuthorityCascadeCredentialRevokeRefused _ ->
-    "cascade-credential-revoke-refused"
-  AuthorityMigrationBeforeGenesis -> "before-genesis"
-  AuthorityMigrationDuringBackupRepair -> "during-backup-repair"
-  AuthorityMigrationAlreadyStarted -> "already-started"
-  AuthorityMigrationNotStarted -> "not-started"
-  AuthorityMigrationEpochRegressed {} -> "epoch-regressed"
+authorityRefusalToken = authorityAdmissionCommandRefusalToken

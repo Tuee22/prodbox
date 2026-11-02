@@ -9,6 +9,10 @@
 module Prodbox.Bootstrap.Broker.ProductionSecretWorker
   ( runProductionSecretWorker
   , classifyInitializationAmbiguity
+  , InitializationCallOutcome (..)
+  , InitializationFollowUp (..)
+  , classifyInitializationCallOutcome
+  , initializationUnobservedDiagnostic
   )
 where
 
@@ -106,6 +110,7 @@ import Prodbox.Bootstrap.Broker.SecretWorker
   , encryptedInitializationWorkerResult
   , finalizedInitializationWorkerResult
   , generatedRootCiphertextWorkerResult
+  , initializationAmbiguityCauseName
   , preparedInitializationWorkerResult
   , resumedInitializationWorkerResult
   , secretWorkerRequestActionDigest
@@ -395,14 +400,11 @@ initializeVault settings store kubernetes binding request payload = do
                     Left httpFailure -> do
                       after <-
                         authorizedVaultCall BootstrapVaultInitialize (Vault.vaultSealStatus (vaultAddress settings))
-                      pure $ case after of
-                        Right observed
-                          | Vault.sealStatusInitialized observed ->
-                              Right
-                                ( classifiedAmbiguousInitializationWorkerResult
-                                    (classifyInitializationAmbiguity httpFailure)
-                                )
-                        _ -> Left "Vault initialization failed before application was observed"
+                      pure $ case classifyInitializationCallOutcome httpFailure after of
+                        InitializationApplied cause ->
+                          Right (classifiedAmbiguousInitializationWorkerResult cause)
+                        InitializationUnobserved cause followUp ->
+                          Left (initializationUnobservedDiagnostic cause followUp)
  where
   authorizedVaultCall effect action = do
     authorized <- authorizeWorkerVaultEffect store kubernetes request effect
@@ -416,6 +418,38 @@ classifyInitializationAmbiguity httpFailure = case httpFailure of
   HttpTimeout _ -> InitializationCallTimeout
   HttpStatus code _ -> InitializationCallHttpStatus code
   HttpDecode _ -> InitializationCallResponseDecodeFailure
+
+data InitializationFollowUp
+  = InitializationStillUninitialized
+  | InitializationFollowUpUnavailable
+  deriving (Eq, Show)
+
+data InitializationCallOutcome
+  = InitializationApplied !InitializationAmbiguityCause
+  | InitializationUnobserved !InitializationAmbiguityCause !InitializationFollowUp
+  deriving (Eq, Show)
+
+-- A failed status read cannot establish that initialization did not apply.
+-- Both unobserved arms retain the primary class without retaining its body.
+classifyInitializationCallOutcome
+  :: HttpError -> Either String Vault.SealStatus -> InitializationCallOutcome
+classifyInitializationCallOutcome failure observation =
+  let cause = classifyInitializationAmbiguity failure
+   in case observation of
+        Right status
+          | Vault.sealStatusInitialized status -> InitializationApplied cause
+          | otherwise -> InitializationUnobserved cause InitializationStillUninitialized
+        Left _ -> InitializationUnobserved cause InitializationFollowUpUnavailable
+
+initializationUnobservedDiagnostic
+  :: InitializationAmbiguityCause -> InitializationFollowUp -> String
+initializationUnobservedDiagnostic cause followUp =
+  "Vault initialization failed before application was observed; initialization-cause="
+    ++ initializationAmbiguityCauseName cause
+    ++ "; follow-up="
+    ++ case followUp of
+      InitializationStillUninitialized -> "uninitialized"
+      InitializationFollowUpUnavailable -> "unobservable"
 
 finalizeInitialization
   :: BootstrapBrokerSettings

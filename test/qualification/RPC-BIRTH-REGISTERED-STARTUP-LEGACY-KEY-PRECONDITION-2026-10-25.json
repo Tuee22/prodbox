@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "counterexample": "RPC-BIRTH-REGISTERED-STARTUP-LEGACY-KEY-PRECONDITION-2026-10-25",
+  "owning_sprint": "6.5",
+  "banked_utc": "2026-10-25T08:29:11.520385+00:00",
+  "scope": "Actual runControlPlaneRole startup ordering only. Loopback HTTP deliberately makes prerequisites unavailable. Component positive controls do not assert a complete cold runtime, physical backup/repair or deployment qualification.",
+  "repository_reproducer": {
+    "module": "test/unit/ControlPlaneRpcAdmissionBirth.hs",
+    "cases": "Registered cold recovery: retained codec/client profile, native Vault exact-version signing without unrelated keys, logical/native generation separation, missing-state refusal, cancellation and live retirement authentication.",
+    "actual_entrypoint_probe": ".build/sprint-6.5/rpc-cold-start-20261025/ObserveStartupOrder.hs",
+    "canonical_validation": "prodbox dev check"
+  },
+  "causal_profile": {
+    "old_result": "Configured registered startup reads legacy operator and Authority Transit keys before any retained-store prerequisite; fails authentication/trust-read/status-404.",
+    "required_result": "Configured registered startup reads retained-store prerequisites first and refuses missing credentials without any legacy Transit read. Legacy mode retains its original key-read behavior.",
+    "old_to_new_envelope_mapping": "Hold existing role/client/resource bounds fixed. Required registered startup must observe retained state under its independent pin; any startup completion, cold recovery and rotation remain separate positive obligations.",
+    "public_fixture_pin": "Schema8 Registered(scope=home,generation=1,descriptor_digest=64 c characters), no retained state supplied.",
+    "resource_envelopes_increased": false,
+    "outer_store_object_and_client_bounds_unchanged": true
+  },
+  "frozen": {
+    "full_manifest": "d8dc94aa144e066d8ea0c22d4a5a1a5d367b220302113485c60e3a1b9c904d80",
+    "executable_manifest": "75b2a7c64bddcc5ae956c4d9121810a9ca0ea48b904dfa0821a4bc6e3989d01a",
+    "binary_sha256": "15f3cc3c9650599500c7e24a106a2dd16bc73eba0ab1ff1a1aeeda106813cf5d",
+    "probe_source_sha256": "b1e5041ada37adb3f724623dbe39584a19bcbed6364ddae3440c307f0a99b478",
+    "semantic_exit": 1,
+    "wall_seconds": 0.08232012717053294,
+    "source_identity_record": ".build/sprint-6.5/rpc-cold-start-20261025/frozen-source.log"
+  },
+  "replacement": {
+    "full_manifest_at_probe_banking": "6482a965ca417206f3c6b4f841dbe62ebd99d4cd9565d779c899a000f9364a3f",
+    "executable_manifest_at_probe_banking": "43e2ee214e9eb1b46a00101b2ada1b605d9c35db5b31a807947947c6ca100a75",
+    "source_identity_record": ".build/sprint-6.5/rpc-cold-start-20261025/banking-source.log",
+    "binary_sha256": "a89e669b514ebbd31ea1cc8e0e6570fc0d84d265cc483d9f9fbd276ca698875e",
+    "probe_source_sha256": "b1e5041ada37adb3f724623dbe39584a19bcbed6364ddae3440c307f0a99b478",
+    "semantic_exit": 0,
+    "wall_seconds": 0.07966584200039506,
+    "focused_cases": 120,
+    "validation_record": ".build/sprint-6.5/rpc-cold-start-20261025/validation-progress.json",
+    "provenance": "Probe Main was force-recompiled after the final profile/generation fixtures on this unchanged banking tree; library implementation is unchanged since library2. This record is added after that capture."
+  },
+  "remaining": "Positive full runtime startup, durable retired public provenance under native drift, actual coordinator/quiescence/pin/reconcile/complete, exact pair backup/physical repair, pin retirement, other-role/client/origin/remote adapters, replay/rollback and qualification.",
+  "deployment_qualification": "pending",
+  "qualified_cycles": 0,
+  "hand_actions": []
+}

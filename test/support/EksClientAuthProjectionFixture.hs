@@ -9,6 +9,7 @@
 module EksClientAuthProjectionFixture
   ( testEksClientAuthProjection
   , testEksClientAuthProjectionFixture
+  , testEksClientAuthEnvelopeForDestination
   )
 where
 
@@ -91,44 +92,21 @@ testEksClientAuthProjectionFixture
        )
 testEksClientAuthProjectionFixture account region cluster clusterArn endpoint caData bearer expires = do
   (destination, publicKey) <- prepareEksClientAuthDestination
-  senderSecret <- X25519.generateSecretKey
-  nonce <- getRandomBytes aeadNonceBytes
-  let destinationBytes = eksClientAuthPublicKeyBytes publicKey
-      senderBytes = ByteArray.convert (X25519.toPublic senderSecret)
-      aad = envelopeAad destinationBytes senderBytes
-      rawProjection =
-        RawEksClientAuthProjection
-          account
-          region
-          cluster
-          clusterArn
-          endpoint
-          caData
-          bearer
-          expires
-      plaintext = LazyByteString.toStrict (serialise rawProjection)
+  envelope <-
+    testEksClientAuthEnvelopeForDestination
+      (eksClientAuthPublicKeyBytes publicKey)
+      account
+      region
+      cluster
+      clusterArn
+      endpoint
+      caData
+      bearer
+      expires
   pure $ do
-    destinationKey <- case X25519.publicKey destinationBytes of
-      CryptoFailed _ -> Left EksClientAuthPublicKeyInvalid
-      CryptoPassed key -> Right key
-    let key = deriveKey (X25519.dh destinationKey senderSecret) aad
-    ciphertext <-
-      either (const (Left EksClientAuthCipherFailed)) Right (sealAead key nonce aad plaintext)
-    envelope <-
-      decodeEksClientAuthEnvelope
-        ( LazyByteString.toStrict
-            ( serialise
-                ( RawEksClientAuthEnvelope
-                    2
-                    destinationBytes
-                    senderBytes
-                    nonce
-                    ciphertext
-                )
-            )
-        )
-    projection <- openEksClientAuthProjection destination envelope
-    Right (destination, envelope, projection)
+    sealed <- envelope
+    projection <- openEksClientAuthProjection destination sealed
+    Right (destination, sealed, projection)
 
 envelopeAad :: ByteString -> ByteString -> ByteString
 envelopeAad destination sender =
@@ -144,3 +122,37 @@ deriveKey shared aad =
         )
         :: Digest SHA256
     )
+
+-- Unit-only Provider reply for the destination carried by a real issuance request.
+testEksClientAuthEnvelopeForDestination
+  :: ByteString
+  -> Text
+  -> Text
+  -> Text
+  -> Text
+  -> Text
+  -> Text
+  -> Text
+  -> Integer
+  -> IO (Either EksClientAuthProjectionError EksClientAuthEnvelope)
+testEksClientAuthEnvelopeForDestination destinationBytes account region cluster clusterArn endpoint caData bearer expires = do
+  senderSecret <- X25519.generateSecretKey
+  nonce <- getRandomBytes aeadNonceBytes
+  let senderBytes = ByteArray.convert (X25519.toPublic senderSecret)
+      aad = envelopeAad destinationBytes senderBytes
+      plaintext =
+        LazyByteString.toStrict
+          ( serialise
+              (RawEksClientAuthProjection account region cluster clusterArn endpoint caData bearer expires)
+          )
+  pure $ do
+    destinationKey <- case X25519.publicKey destinationBytes of
+      CryptoFailed _ -> Left EksClientAuthPublicKeyInvalid
+      CryptoPassed key -> Right key
+    let key = deriveKey (X25519.dh destinationKey senderSecret) aad
+    ciphertext <-
+      either (const (Left EksClientAuthCipherFailed)) Right (sealAead key nonce aad plaintext)
+    decodeEksClientAuthEnvelope
+      ( LazyByteString.toStrict
+          (serialise (RawEksClientAuthEnvelope 2 destinationBytes senderBytes nonce ciphertext))
+      )

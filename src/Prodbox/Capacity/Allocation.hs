@@ -347,7 +347,7 @@ planAllocatable :: SomeAllocatedPlan -> ResourceVector
 planAllocatable (SomeAllocatedPlan _ plan) =
   clusterBudgetAllocatable (allocatedClusterBudget plan)
 
--- | Total concurrent namespace draw admitted by the proof.
+-- | Total concurrent platform and application draw admitted by the proof.
 planTotalDraw :: SomeAllocatedPlan -> ResourceVector
 planTotalDraw (SomeAllocatedPlan _ plan) =
   clusterBudgetDrawn (allocatedClusterBudget plan)
@@ -463,13 +463,14 @@ compileResourcePlan profiles digestFor now plan = do
   host <- mkHostCapacity (host_capacity plan)
   let reservation = rke2_reserved plan `plusResourceVector` eviction_floor plan
   reserved <- reserveCluster host reservation
-  -- (3) Σ concurrent workload draw ≤ allocatable, threaded so it holds by
+  -- (3) Platform plus concurrent application draw ≤ allocatable, threaded so it holds by
   -- construction.
+  draws <- either (Left . PlanShapeInvalid) Right (Placement.concurrentPlanDraws plan)
   threaded <-
     foldM
       allocate
       reserved
-      (Placement.concurrentPlanDraws plan)
+      draws
   -- (4) prove the standing control-plane envelopes are Guaranteed-QoS.
   forM_ (workload_profiles plan) validateGuaranteedQoS
   -- (5) per-workload certification + allocation.

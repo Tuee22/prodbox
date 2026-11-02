@@ -1,0 +1,586 @@
+{
+  "schema": 1,
+  "scope": "Native submission provider binding and qualified historical method-processing witness only. Independent terminal kernel/alarm/input retirement, production composition and deployment qualification remain separate.",
+  "source_identity_entry": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"48aed0ddebdd19c4d1b2f9f5121a18fb12ce39f4f93d7b58c4b8b7406c6523cb\", sourceManifestEntryCount = 1583},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"c40b0b33a161f72e7e5a9178e53dcccce447e831102a16e35acf31b63ee07d76\", sourceManifestEntryCount = 1520})",
+  "source_identity_exit": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"48aed0ddebdd19c4d1b2f9f5121a18fb12ce39f4f93d7b58c4b8b7406c6523cb\", sourceManifestEntryCount = 1583},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"c40b0b33a161f72e7e5a9178e53dcccce447e831102a16e35acf31b63ee07d76\", sourceManifestEntryCount = 1520})",
+  "native_validation": ".build/sprint-6.5/provider-contract-20261027/native-validation-2.json",
+  "native_validation_sha256": "528c3e88e8d94c347ad495e3e4a8a9e6bbd685052b3aa15219b8367a8be61d39",
+  "source_inputs": [
+    {
+      "path": ".build/sprint-6.5/controller-caller-token-20261026/UnitPolicy.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/.build/sprint-6.5/controller-caller-token-20261026/UnitPolicy.hs",
+      "sha256": "096cdde35453668cf924f61f47d4ec57ea51d789acf49df46b8d6db81a253b60"
+    },
+    {
+      "path": ".build/sprint-6.5/prepared-caller-auth-20261026/PackagedAuthentication.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/.build/sprint-6.5/prepared-caller-auth-20261026/PackagedAuthentication.hs",
+      "sha256": "3bb7c76ba25edb6d05e5b4ea33cf16f4bb7b28f45f90fe4a24b2b90579b1330e"
+    },
+    {
+      "path": ".build/sprint-6.5/registered-caller-selection-20261026/PackagedSigning.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/.build/sprint-6.5/registered-caller-selection-20261026/PackagedSigning.hs",
+      "sha256": "3b71bc33802bbf344f90a256424385b992d43aa0058d3f2aa79058bce8352d17"
+    },
+    {
+      "path": ".build/sprint-6.5/registered-prepared-auth-20261026/PackagedAuthentication.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/.build/sprint-6.5/registered-prepared-auth-20261026/PackagedAuthentication.hs",
+      "sha256": "3bb7c76ba25edb6d05e5b4ea33cf16f4bb7b28f45f90fe4a24b2b90579b1330e"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-registry-observation-20261027/PackagedRegistry.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/.build/sprint-6.5/rpc-registry-observation-20261027/PackagedRegistry.hs",
+      "sha256": "3bb7c76ba25edb6d05e5b4ea33cf16f4bb7b28f45f90fe4a24b2b90579b1330e"
+    },
+    {
+      "path": "DEVELOPMENT_PLAN/README.md",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/DEVELOPMENT_PLAN/README.md",
+      "sha256": "261666e0453b2c7eb195e1356b8e2c290b4442fb2df28f092c00d81e1dfb0526"
+    },
+    {
+      "path": "DEVELOPMENT_PLAN/development_plan_standards.md",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/DEVELOPMENT_PLAN/development_plan_standards.md",
+      "sha256": "d83bd630ff5852141e412b49078fed2297871fcb71251fc7a40342f20760a3e5"
+    },
+    {
+      "path": "DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md",
+      "sha256": "0db19341b0e370780178ab3cac1cc5d9b9b33e7d0b0d47afb6e9cb71e08c19e8"
+    },
+    {
+      "path": "DEVELOPMENT_PLAN/system-components.md",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/DEVELOPMENT_PLAN/system-components.md",
+      "sha256": "743893b4c210dfc7be97173c7d0a815795034020bfc1c25df597e47ed5e0dd03"
+    },
+    {
+      "path": "documents/engineering/dependency_management.md",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/documents/engineering/dependency_management.md",
+      "sha256": "1e0d959475dd0ec3de51953ac9a0970026715ad77c1e2e489fc6d6ca02a02794"
+    },
+    {
+      "path": "documents/engineering/haskell_code_guide.md",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/documents/engineering/haskell_code_guide.md",
+      "sha256": "00b11b663c1477ea5030ac66955d445ff2a6e7b610c2fff2c94efee91461a987"
+    },
+    {
+      "path": "documents/engineering/lifecycle_control_plane_architecture.md",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/documents/engineering/lifecycle_control_plane_architecture.md",
+      "sha256": "d9b1c8b78b71cb4de9cf1970165f8a6a9560a993fd560ae46b20b89f7994eeea"
+    },
+    {
+      "path": "prodbox.cabal",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/prodbox.cabal",
+      "sha256": "f0e8fd2fe8e03be099659ba1f79da40a8fdb1d768f4613aa481583855870544c"
+    },
+    {
+      "path": "src/Prodbox/Capacity/Config.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Capacity/Config.hs",
+      "sha256": "625b25c430d58c0558b091558ebe6a89f8e49bbe4ed85a7d13684b69551b5dbb"
+    },
+    {
+      "path": "src/Prodbox/Capacity/ControlPlaneReplayBudget.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Capacity/ControlPlaneReplayBudget.hs",
+      "sha256": "6f7528e48e4f68b16329bcce947d04884a56600fa0b2acc459320b9ef49634eb"
+    },
+    {
+      "path": "src/Prodbox/Capacity/HostExecution.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Capacity/HostExecution.hs",
+      "sha256": "092ece17fb98e941eb4847e875d0f5b01c9ca458c810d8851207aac9dfba6a8c"
+    },
+    {
+      "path": "src/Prodbox/Capacity/NativeHostProbe.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Capacity/NativeHostProbe.hs",
+      "sha256": "1d095e7dc0bb90e82a2cdc8721d704e3d1d5f84d5249a558f615d4039c4547db"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/AuthenticatedTransport.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/AuthenticatedTransport.hs",
+      "sha256": "194ffd09102af43d4826951f54f84023d994446f9dccd7c9fc3c47ee531ace22"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/AuthenticationRegistry.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/AuthenticationRegistry.hs",
+      "sha256": "0b2e942d0861f3700c4bb3cd9aa679fade9dcaefbaaacc404fe90ab13a7e2130"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/Client.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/Client.hs",
+      "sha256": "2fa38cead508c275a1c0ce750a5fbddad3270066fd19eb3e7a5d425bdc1dfb48"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/Codec.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/Codec.hs",
+      "sha256": "3d0877aaf276e39748816b2545a77bce06b12477322eac008dd562a031c40858"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/LifecycleAuthorityAuthentication.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/LifecycleAuthorityAuthentication.hs",
+      "sha256": "ee149b0dac97c1e3ec2bd0ec846f481d83f2eb5f6095827abc692a84d399a089"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/LocalClient.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/LocalClient.hs",
+      "sha256": "3e85e0bf48700b7fbcce03f9d9c4a2b536bd3f9aa0e488e1f15735ed44abb756"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RegisteredRpcSigning.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/RegisteredRpcSigning.hs",
+      "sha256": "e68deb06df6848d957aff6d48fbcb8b0ab32e10af325929001d3aeee812b4949"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RequestAuthentication.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/RequestAuthentication.hs",
+      "sha256": "c4cb14893b90fda021a97e696f9b7859e83265f3a21e70057ab9eda9d3e4e2e5"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthChart.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/RpcAdmissionBirthChart.hs",
+      "sha256": "3ceb4d8d83d9af0a50d7df6d0a00dadad889d27608b73a1780d0a381e5af06de"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthClock.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/RpcAdmissionBirthClock.hs",
+      "sha256": "bc064db9384e0b30ae7a18f618ec5958bf6cabe51570134e13e77db58ebabb00"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthControllerInputs.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/RpcAdmissionBirthControllerInputs.hs",
+      "sha256": "13a15db80ba4de2772952ed927beb890a7d368ae151fa35d3849e1687c692af3"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthCoordinator.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/RpcAdmissionBirthCoordinator.hs",
+      "sha256": "fd3c88a6f836c2f38cc81c26449e38a62f982616ab579f12097f1dd5471eecec"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthEndpoint.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/RpcAdmissionBirthEndpoint.hs",
+      "sha256": "cbc5dfac8ae1e2005fffaf0462ea79381f32f42f31f9eced2bdb9acb3e9c44fd"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthExecution.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/RpcAdmissionBirthExecution.hs",
+      "sha256": "5e2ac251b1936a23feebafba3b96ddc8eba8a835d15c86e75c0394e6c88adfa9"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthNative.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/RpcAdmissionBirthNative.hs",
+      "sha256": "6e5988c24ea65339af49512fa8ead4c5a7eba83eac8a8c4261d7fb91fdfe766b"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthPayload.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/RpcAdmissionBirthPayload.hs",
+      "sha256": "e55d30503618ed5996cb0d77c6d93eca886857dc6cbd07c372d15c97011cdf19"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRequest.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/RpcAdmissionBirthRequest.hs",
+      "sha256": "b4b1b145502e031841e6b47dee1e68a621274d8d2a6fc7511790c03db2b89591"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+      "sha256": "4fc9483e77d54369c9c94e330fcf4b186632daac2e1470d4a936c908369f2896"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRuntime.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/RpcAdmissionBirthRuntime.hs",
+      "sha256": "381ca175e1f59d03b0f133ed138f82b2d2862e85c49d126555f3f6517c630ca1"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcKeyRegistry.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/RpcKeyRegistry.hs",
+      "sha256": "031264106810dc8353e2962a454a8018cfaa8140a1db44e65d13b13b26ec2544"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/Runtime.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/ControlPlane/Runtime.hs",
+      "sha256": "ffdb331735977c2cb66a702f18f92aece50c8fefd6aa5baf41ce7c7ee88e545f"
+    },
+    {
+      "path": "src/Prodbox/Lib/ChartPlatform.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Lib/ChartPlatform.hs",
+      "sha256": "fe9729544fba35b3f5864262576e87ab831e8351e8fae8c0ba1cce37336ad059"
+    },
+    {
+      "path": "src/Prodbox/Lifecycle/HelmRelease.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Lifecycle/HelmRelease.hs",
+      "sha256": "1e672269740479a589d4a0136cc3f633f510d9e15bcce76a0042f8a4a6c0d299"
+    },
+    {
+      "path": "src/Prodbox/Lifecycle/Teardown/EphemeralKubectl.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Lifecycle/Teardown/EphemeralKubectl.hs",
+      "sha256": "3dd8dd5dbabc5e4a1c557dd3569d45b2fb8aca3f7a0754be03af19fd490d581b"
+    },
+    {
+      "path": "src/Prodbox/Settings.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Settings.hs",
+      "sha256": "7cb9b4aa55fd761c2fd7a899af8ad12a007afce8b7b6acc4ad4bcc5e0b22724f"
+    },
+    {
+      "path": "src/Prodbox/Subprocess.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Subprocess.hs",
+      "sha256": "836bd5e3d6c82feb1fdcf6b1aac6390e1a221a6ebc986faf86b61d85f877af42"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostControllerArguments.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Subprocess/HostControllerArguments.hs",
+      "sha256": "b9f635fcaf7bda5ffa6b1dda5545344b59507ec07beff20c4a2ddcca35494bf4"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostControllerInputs.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Subprocess/HostControllerInputs.hs",
+      "sha256": "56054e66ebcf75f3cc757447e4fd95bd52da637e3bba80b520645cd96730d863"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostControllerPublication.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Subprocess/HostControllerPublication.hs",
+      "sha256": "7902af6c2ccc510926a2a36a37258a09d81881c3869808e6adeb90bdd7119549"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostOperationFamily.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Subprocess/HostOperationFamily.hs",
+      "sha256": "43063af39e421d1f5c47e4e27e6a1dd0d0c00b17c6ca8091d3a1c5a45654a544"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/KernelScope.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Subprocess/KernelScope.hs",
+      "sha256": "61ed8449be7b6864d2933f90f0d76db89137b7d4559ffb7a3e456058f968cf2c"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/OwnedProcessTree.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Subprocess/OwnedProcessTree.hs",
+      "sha256": "b50d4f449526797009c3ce98de7239fc1b211486c6c42f5a2900a41c5ef20fb5"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/ScopeFamily.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Subprocess/ScopeFamily.hs",
+      "sha256": "177ad32ad8639c727c1a8e7dc2ae8be5d77f6ad5146c0353edb38fef176761ab"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdBus.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Subprocess/SystemdBus.hs",
+      "sha256": "b0ed4854ba4047060065c07a32fd45fede28ad09b8eccaa23d6d5f36b65a6d55"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "sha256": "6c5d8917e342686b4ea14481571c4b4d90e5079de82d77c26d67621cb957c3e3"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdProvider.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Subprocess/SystemdProvider.hs",
+      "sha256": "e0782d6c211de82afe5b4963342b76b784f5f620a011869ba5ca51c8685be0c9"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdProviderProfile.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Subprocess/SystemdProviderProfile.hs",
+      "sha256": "1bfd201b565cd7d16f96ba003d71dfad73193767c8ed091dd40b6f00f927b878"
+    },
+    {
+      "path": "src/Prodbox/Vault/Session.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/src/Prodbox/Vault/Session.hs",
+      "sha256": "5aed6b15cc76b55c0b7b9cbcb1d4fc7d96db4df1952c657bd7dae35e3c57c8a2"
+    },
+    {
+      "path": "test/qualification/ControllerInputLoader.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/test/qualification/ControllerInputLoader.hs",
+      "sha256": "6a5b8d6ffcb66f36eb26721c690c41452adca829378c24b298fda0a0f6681ad3"
+    },
+    {
+      "path": "test/qualification/HOST-CONTROLLER-SUBMISSION-PROVENANCE-2026-10-27.json",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/test/qualification/HOST-CONTROLLER-SUBMISSION-PROVENANCE-2026-10-27.json",
+      "sha256": "c5987c8f5b421f9ae01dcf196a8aa110918a1df2c31c8031c34206b93f3ea4bd"
+    },
+    {
+      "path": "test/qualification/HOST-PREPARED-CALLER-AUTHENTICATION-2026-10-26.json",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/test/qualification/HOST-PREPARED-CALLER-AUTHENTICATION-2026-10-26.json",
+      "sha256": "f586804ac6065ebe97c83e643f6a9fe6d9e873b7d3872375e1e3abcf0fd60abd"
+    },
+    {
+      "path": "test/qualification/HOST-REGISTERED-PREPARED-CALLER-AUTHENTICATION-2026-10-27.json",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/test/qualification/HOST-REGISTERED-PREPARED-CALLER-AUTHENTICATION-2026-10-27.json",
+      "sha256": "3337d0af7568368850ac1d25c118a3a9c237991f7537b6bfb53c1b54bc16a37a"
+    },
+    {
+      "path": "test/qualification/HostControllerInputs.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/test/qualification/HostControllerInputs.hs",
+      "sha256": "ed008c500187c9a5b17956f15316aef6493715dd902e02f4b1d432d823e1e7d3"
+    },
+    {
+      "path": "test/qualification/HostControllerSubmission.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/test/qualification/HostControllerSubmission.hs",
+      "sha256": "fc9bea7e49ce67246a305cf5ff31c24ad218ffef524d0fe54af542f05d2737dc"
+    },
+    {
+      "path": "test/qualification/HostOperationFamily.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/test/qualification/HostOperationFamily.hs",
+      "sha256": "050fdff41ba5e2487fd66e9124572448269f507d99ce8ebd3738205fd5c0aecb"
+    },
+    {
+      "path": "test/qualification/HostOperationRpcBirth.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/test/qualification/HostOperationRpcBirth.hs",
+      "sha256": "5b53373177ff0fc4848103083fa32efbd8148c98b315dc8e1666beb7f96c74aa"
+    },
+    {
+      "path": "test/qualification/HostOperationRpcBirthFixture.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/test/qualification/HostOperationRpcBirthFixture.hs",
+      "sha256": "a303e0d7da081f36b9f21fb81e38051c98a472f31ea115c8e405c4d4125b5921"
+    },
+    {
+      "path": "test/qualification/RPC-BIRTH-AUTHENTICATED-REGISTRY-OBSERVATION-2026-10-27.json",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/test/qualification/RPC-BIRTH-AUTHENTICATED-REGISTRY-OBSERVATION-2026-10-27.json",
+      "sha256": "4a2289bd246f5cc16dc122d2400f994dad4039cbc594aa9c50430f91596f3a22"
+    },
+    {
+      "path": "test/qualification/RPC-REGISTERED-CALLER-SELECTION-2026-10-26.json",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/test/qualification/RPC-REGISTERED-CALLER-SELECTION-2026-10-26.json",
+      "sha256": "35542054c62a9dbf238a0e37de86ccd2221a01b42ff0d4b80a595778a27d8974"
+    },
+    {
+      "path": "test/qualification/RpcBirthControllerRequest.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/test/qualification/RpcBirthControllerRequest.hs",
+      "sha256": "1c7f9c1f0be49edbbc57f3b297654fc6e1494b23de22de5f20c5edf263bc7d94"
+    },
+    {
+      "path": "test/qualification/SystemdProviderContract.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/test/qualification/SystemdProviderContract.hs",
+      "sha256": "d3a68c0ac0b4d74522237b54d5a4e40850b24a46023f7b6c1ede5b3e3b338eab"
+    },
+    {
+      "path": "test/qualification/SystemdSubmissionProxy.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/test/qualification/SystemdSubmissionProxy.hs",
+      "sha256": "8fc9be32a7df723b1cadea67b732b2b7a2f91b31fc3b8b08f209e158cca70b20"
+    },
+    {
+      "path": "test/support/TestSupport.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/test/support/TestSupport.hs",
+      "sha256": "156b7f56e11e832f9a410423db795e35a5ae374c01cee09e8a31b1c2a1a7d250"
+    },
+    {
+      "path": "test/support/Tier0Fixture.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/test/support/Tier0Fixture.hs",
+      "sha256": "9b1fcaef3fa7cc4f285ec7e1c276abc3d85293f42a5cdd1359d9aa6ec794821c"
+    },
+    {
+      "path": "test/unit/ControlPlaneRegisteredRpcSigning.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/test/unit/ControlPlaneRegisteredRpcSigning.hs",
+      "sha256": "9c2d4f5b82ab67f9392be87ddaff4ea6c014afe45ce74a6eb1818f594f3e57c0"
+    },
+    {
+      "path": "test/unit/ControlPlaneRpcAdmissionBirth.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/test/unit/ControlPlaneRpcAdmissionBirth.hs",
+      "sha256": "3e1ee69f3d8fe5baf23c6fa894566e4820e7df8be4d469fa624d33d92ada977c"
+    },
+    {
+      "path": "test/unit/ControlPlaneVaultSession.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/test/unit/ControlPlaneVaultSession.hs",
+      "sha256": "06b30aba866c09745d0187852527ddac331a36931baafe337f498463b04b40f0"
+    },
+    {
+      "path": "test/unit/Main.hs",
+      "snapshot": ".build/sprint-6.5/provider-contract-20261027/native-inputs-3/test/unit/Main.hs",
+      "sha256": "4bc359c45c5249b06907925ce6a574182ef1f15a5c0df0d3332fdfadd86c6ee5"
+    }
+  ],
+  "binaries": [
+    {
+      "path": ".build/sprint-6.5/provider-contract-20261027/native-family-4",
+      "sha256": "2efc048c029dc638f0fff5837cda017c38f57d6b1b94eaf5d7ec43b1d272103f"
+    },
+    {
+      "path": ".build/sprint-6.5/provider-contract-20261027/native-metadata-4",
+      "sha256": "7c37b8a43d1c6d360993ab2587d296734c78e9a07dfc4fb47197555aa3abd51b"
+    },
+    {
+      "path": ".build/sprint-6.5/provider-contract-20261027/native-provider-4",
+      "sha256": "f7ef9f87aa206b8370f459a5b9fcd749ac10c54892b95c711dbd16f38f2d7af4"
+    },
+    {
+      "path": ".build/sprint-6.5/provider-contract-20261027/native-facade-4",
+      "sha256": "061c2c861e0b66e146b058a344dc1ce411444091e6a028d4d2515dcd50c57a6f"
+    }
+  ],
+  "provider_review": {
+    "scope": "Archive-authenticated protocol-image binding plus reviewed nonroot same-UID synchronous handler and router FIFO/disconnect conditions. Not a reconstructed reproducible build, arbitrary-library attestation or deployment qualification.",
+    "evidence": [
+      {
+        "path": ".build/sprint-6.5/systemd-causal-review-20261027/archive-authenticated-chain-1.json",
+        "sha256": "05f81b1067147f6d80172267fdc853f40c1ae15c5d3e08cb244f030f13308554"
+      },
+      {
+        "path": ".build/sprint-6.5/systemd-causal-review-20261027/inrelease-verification-1.json",
+        "sha256": "cb12a3bc2862497cd538c11b5395bbbe5bc8e428ab8017684e91379bca18f068"
+      },
+      {
+        "path": ".build/sprint-6.5/systemd-causal-review-20261027/verified-code-images-amd64-1.json",
+        "sha256": "d07b3780109e950565ff536105f8e1af1d6c1a5bf3f3f8e2ab84b0fd5746d92d"
+      },
+      {
+        "path": ".build/sprint-6.5/systemd-causal-review-20261027/verified-code-images-arm64-1.json",
+        "sha256": "e14f779a221b146209ed9d73021482760da5f5b2ed9b1b2437de5247477dad65"
+      },
+      {
+        "path": ".build/sprint-6.5/systemd-causal-review-20261027/ubuntu-relevant-orig-index.json",
+        "sha256": "7354cfc5310341992fb226c244da20d7d647605f377fdc2078b937c3333c312f"
+      },
+      {
+        "path": ".build/sprint-6.5/systemd-causal-review-20261027/ubuntu-relevant-patched-index.json",
+        "sha256": "90e3d51d2ff6c90e04e743b5a2eecfc61fd41cebbd373518b069877e87cbfe74"
+      }
+    ],
+    "normative_conditions": [
+      "Linux x86_64/aarch64, exact five protocol images held and matched to mapped executable inodes",
+      "Caller/manager/router nonroot same four UIDs; zero permitted, effective and ambient capabilities",
+      "Same mount namespace; AppArmor unconfined; SELinuxfs enforce path absent",
+      "Same boot, bus instance, unique manager owner, manager PID/start ticks; same router PID/start ticks and namespace",
+      "Old sender positively absent, same pinned manager read frontier, closing native/provider and sender checks"
+    ],
+    "inheritable_capabilities": "Not an active authorization grant and not read by the reviewed sender privilege decision. The first native attempt over-restricted CapInh and refused the user manager; current contract explicitly requires only Prm/Eff/Amb empty. Reexec is separately fenced by API-owner and process/code observations.",
+    "reviewed_sources": {
+      "privilege": "systemd-ubuntu-relevant-patched/src/libsystemd/sd-bus/bus-convenience.c:688",
+      "transient": "systemd-ubuntu-relevant-patched/src/core/dbus-manager.c",
+      "reexec": "systemd-ubuntu-relevant-patched/src/core/dbus.c:1086",
+      "routing": "dbus-1.14.10 bus/dispatch.c, bus/connection.c and dbus/dbus-connection.c as indexed"
+    },
+    "arm64_native_execution": false,
+    "independent_terminal_kernel_alarm_file_evidence_required": true,
+    "aggregate_qualification": false
+  },
+  "protocol_images": {
+    "amd64": [
+      {
+        "path": "/usr/lib/systemd/systemd",
+        "package": "systemd_255.4-1ubuntu8.18_amd64.deb",
+        "bytes": 100816,
+        "sha256": "9a813714ffd4dadb692afe44384c9c5b334fa323a4ec1dd5157aebdcbbb0667a",
+        "installed_bytes_match": true
+      },
+      {
+        "path": "/usr/lib/x86_64-linux-gnu/systemd/libsystemd-core-255.so",
+        "package": "libsystemd-shared_255.4-1ubuntu8.18_amd64.deb",
+        "bytes": 2144840,
+        "sha256": "83b5487a063ad1d096760c8bbbf73808d59e36777c13e3ddb26cf0c12dd0bc3a",
+        "installed_bytes_match": true
+      },
+      {
+        "path": "/usr/lib/x86_64-linux-gnu/systemd/libsystemd-shared-255.so",
+        "package": "libsystemd-shared_255.4-1ubuntu8.18_amd64.deb",
+        "bytes": 3755032,
+        "sha256": "cdc32d0d168e15bcf35707fb8b35a79a0326337a44c1b9306ae97c9f4cde22b6",
+        "installed_bytes_match": true
+      },
+      {
+        "path": "/usr/bin/dbus-daemon",
+        "package": "dbus-daemon_1.14.10-4ubuntu4.1_amd64.deb",
+        "bytes": 236176,
+        "sha256": "8c479f1fcddfd6693c736ce541da0955f6752834bdeeef4b928e27f5e974c247",
+        "installed_bytes_match": true
+      },
+      {
+        "path": "/usr/lib/x86_64-linux-gnu/libdbus-1.so.3.32.4",
+        "package": "libdbus-1-3_1.14.10-4ubuntu4.1_amd64.deb",
+        "bytes": 317752,
+        "sha256": "a6ae7b4ef48562b40d7b9ba8efd2e49f6528b7cc6364bea382dcee4b473b5413",
+        "installed_bytes_match": true
+      }
+    ],
+    "arm64": [
+      {
+        "path": "/usr/bin/dbus-daemon",
+        "package": "dbus-daemon_1.14.10-4ubuntu4.1_arm64.deb",
+        "bytes": 264592,
+        "sha256": "42f32cef025bf558013890bd28062932c253710c083e8428fc79ae34d7ccf7c2"
+      },
+      {
+        "path": "/usr/lib/aarch64-linux-gnu/libdbus-1.so.3.32.4",
+        "package": "libdbus-1-3_1.14.10-4ubuntu4.1_arm64.deb",
+        "bytes": 395336,
+        "sha256": "9b8d0d8b10bdffc68f6699b03e7be99d4dc40552aca189be43b55c5f84753241"
+      },
+      {
+        "path": "/usr/lib/aarch64-linux-gnu/systemd/libsystemd-core-255.so",
+        "package": "libsystemd-shared_255.4-1ubuntu8.18_arm64.deb",
+        "bytes": 2166800,
+        "sha256": "7700840e7a5c32c2e22c5367554470f76c4c40c8481d3eb0fe50ee88d166702c"
+      },
+      {
+        "path": "/usr/lib/aarch64-linux-gnu/systemd/libsystemd-shared-255.so",
+        "package": "libsystemd-shared_255.4-1ubuntu8.18_arm64.deb",
+        "bytes": 3946080,
+        "sha256": "9fc54a91c42ae9f98e11f94145e5e86837db9ffd6760f5c8b05de304428d0e04"
+      },
+      {
+        "path": "/usr/lib/systemd/systemd",
+        "package": "systemd_255.4-1ubuntu8.18_arm64.deb",
+        "bytes": 133456,
+        "sha256": "4456d1bd9f11cd8c69d26f08f2b1c1dad419c973f6da80c6773904f353fcb3c6"
+      }
+    ]
+  },
+  "metadata_controls": 20,
+  "family_controls": 7,
+  "provider_controls": [
+    "native five-image/process/namespace/security binding",
+    "original and shortened deadline refusal",
+    "escaped/cancelled provider and descriptor retirement",
+    "closed native transport and borrowed view refusal",
+    "canonical binding and unknown reference stays data",
+    "authenticated same-UID fake manager with no method dispatcher refused by code mapping"
+  ],
+  "recovery_controls": [
+    "unqualified v1 history refused with no upgrade",
+    "unknown provider policy refused",
+    "foreign original domain refused",
+    "nested and unknown submission schemas refused",
+    "live sender refused",
+    "actual queued-request and lost-reply successful effects",
+    "actual blind-close schedule without held-kernel/No-Go receipt"
+  ],
+  "processing_witness_is_not_cleanup_or_admission": true,
+  "family_profile": {
+    "memory_mib": 256,
+    "cpu_millicores": 700,
+    "tasks": 56,
+    "window_seconds": [
+      5,
+      2,
+      2.15,
+      2.5,
+      3
+    ]
+  },
+  "qa": {
+    "memory_mib": 176,
+    "heap_mib": 128,
+    "cpu_percent": 30,
+    "tasks": 16,
+    "native_seconds": 20,
+    "facade_seconds": 30
+  },
+  "facade_original_window_seconds": [
+    20,
+    15,
+    16,
+    17,
+    18
+  ],
+  "retained_corrections": [
+    "provider-contract-library-build-1: Word32 namespace type ambiguity, fixed before warning-clean library build 2.",
+    "provider-contract-provider-1/2: callback assertion masking then over-restrictive manager inheritable capability refusal; source-reviewed policy explicitly limits only permitted/effective/ambient sets.",
+    "provider-contract-hlint-1: two source-style hints; corrected and current native checks repeated.",
+    "provider-contract-facade-4: validation scheduling mistake overlapped the shared slice; correct occupied-field refusal, no facade submission. Family cleanup passed.",
+    "provider-contract-facade-5: direct launcher return only; not a terminal receipt. Facade 6 retains full independent original-window observations."
+  ],
+  "arm64_native_execution": false,
+  "all_handles_terminal": true,
+  "hand_actions": [],
+  "no_aws_or_image_actions": true,
+  "complete_scoped_native_validation": true,
+  "aggregate_deployment_qualification": false,
+  "remaining": [
+    "Independent kernel/alarm/input retirement and recovery composition",
+    "Host registry/bootstrap and production controller dispatcher",
+    "Combined canonical/frontend gates for the complete submission/provider batch",
+    "Production resource/load and deployment qualification"
+  ]
+}

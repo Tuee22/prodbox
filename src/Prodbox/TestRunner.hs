@@ -110,6 +110,7 @@ import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   , withHostLifecycleAuthorityAuthentication
   , withTargetSecretAgentAuthenticatedTransport
   )
+import Prodbox.ControlPlane.RpcAdmissionBirthConfig (RpcBirthConfig (..))
 import Prodbox.EffectDAG
   ( fromRootIds
   )
@@ -644,6 +645,7 @@ topologyRunConfig testDataPath runId variant secrets = do
           { contextInputClusterId = runId
           , contextInputVaultAddress = variantVaultAddress variant
           , contextInputMinioEndpoint = variantMinioEndpoint variant
+          , contextInputRpcRegistration = RpcBirthConfigLegacy
           }
       deploymentInput =
         HarnessDeploymentInput

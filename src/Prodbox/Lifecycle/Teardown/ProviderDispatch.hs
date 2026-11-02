@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Stable, Lifecycle-Authority-mediated Provider dispatch for registered
@@ -17,6 +18,7 @@ module Prodbox.Lifecycle.Teardown.ProviderDispatch
   , TeardownProviderBoundaryResult (..)
   , TeardownProviderBoundary (..)
   , productionTeardownProviderBoundary
+  , productionTeardownProviderBoundaryWithTransport
   , providerDispatchKeyCleanupOwner
   , teardownProviderDispatchOwnershipIsTotal
   , dispatchRegisteredProviderObservation
@@ -27,6 +29,7 @@ where
 
 import Codec.Serialise (serialise)
 import Crypto.Hash.SHA256 qualified as SHA256
+import Data.Bifunctor (first)
 import Data.ByteArray.Encoding (Base (Base16), convertToBase)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
@@ -34,9 +37,11 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Word (Word64, Word8)
+import Prodbox.ControlPlane.AuthenticatedTransport (AuthenticatedClientTransport)
 import Prodbox.ControlPlane.AuthorityProviderEndpoint
   ( AuthorityProviderClientError (..)
   , ProviderExecutionOutcome (..)
+  , dispatchAuthorityProviderIntentExecutedOwnedBy
   )
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   ( ExternalLifecycleAuthorityCaller
@@ -74,6 +79,7 @@ import Prodbox.Lifecycle.Teardown.Model (ObservationRevision (..))
 import Prodbox.Lifecycle.Teardown.RegisteredTargetResult
   ( RegisteredTargetMutationAttempt (..)
   )
+import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 
 -- | One graph operation may need a fresh decision observation immediately
 -- before mutation.  These are deterministic sub-identities, not retries with
@@ -233,6 +239,22 @@ productionTeardownProviderBoundary caller repoRoot =
         intent
         (providerDispatchKeyCleanupOwner dispatchKey)
     pure (classifyProviderCallerResult dispatched)
+
+-- | Borrow the closed ordinary program's existing Authority transport. The
+-- stable submission and cleanup owner travel unchanged; result classification
+-- is shared with the legacy constructor. This grants no program admission.
+productionTeardownProviderBoundaryWithTransport
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime -> TeardownProviderBoundary IO
+productionTeardownProviderBoundaryWithTransport transport = TeardownProviderBoundary dispatch
+ where
+  dispatch key intent = do
+    result <-
+      dispatchAuthorityProviderIntentExecutedOwnedBy
+        transport
+        (providerDispatchSubmissionKey key)
+        intent
+        (providerDispatchKeyCleanupOwner key)
+    pure (classifyProviderCallerResult (first ProviderCallerDispatchFailed (snd <$> result)))
 
 -- | The cleanup operation a teardown dispatch belongs to, as the owner the
 -- Authority retains beside the intent.

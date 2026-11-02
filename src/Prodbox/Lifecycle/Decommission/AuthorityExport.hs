@@ -62,7 +62,7 @@ import Prodbox.Lifecycle.Decommission.Verifier
 import Prodbox.Vault.Client
   ( TransitSignature (..)
   , TransitSigningKeyInfo (..)
-  , vaultReadTransitSigningKey
+  , vaultReadTransitSigningKeyBounded
   , vaultTransitSignEd25519
   )
 import Prodbox.Vault.Session
@@ -93,7 +93,7 @@ vaultAuthorityManifestSigner session =
         fmap (first (Text.pack . renderHttpError)) $
           withSessionToken session $ \token -> do
             result <-
-              vaultReadTransitSigningKey
+              vaultReadTransitSigningKeyBounded
                 (sessionAddress session)
                 token
                 authorityDecommissionSigningKeyName

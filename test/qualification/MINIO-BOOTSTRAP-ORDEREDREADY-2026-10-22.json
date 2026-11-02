@@ -1,0 +1,124 @@
+{
+  "counterexample": "MINIO-BOOTSTRAP-ORDEREDREADY-2026-10-22",
+  "observed_utc": "2026-10-22T15:02:15.596682+00:00",
+  "source": "Local RKE2 Kubernetes API, after source-image import and Helm revision 11; see DEVELOPMENT_PLAN phase 6 Sprint 6.5.",
+  "normalization": "Only API identity/revision/image/readiness/strategy fields retained; controller/Pod UIDs and Pod resourceVersion replaced consistently. Container environment, messages, volumes and credentials are neither retained nor hashed.",
+  "controller": {
+    "apiVersion": "apps/v1",
+    "kind": "StatefulSet",
+    "metadata": {
+      "name": "minio",
+      "namespace": "prodbox",
+      "uid": "recorded-minio-controller-uid",
+      "generation": 2
+    },
+    "spec": {
+      "replicas": 1,
+      "podManagementPolicy": "OrderedReady",
+      "updateStrategy": {
+        "rollingUpdate": {
+          "partition": 0
+        },
+        "type": "RollingUpdate"
+      },
+      "template": {
+        "spec": {
+          "containers": [
+            {
+              "name": "minio",
+              "image": "docker.io/prodbox/minio-bootstrap:RELEASE.2024-12-18T13-15-44Z-source-v1"
+            }
+          ]
+        }
+      }
+    },
+    "status": {
+      "observedGeneration": 2,
+      "currentRevision": "minio-66f669767",
+      "updateRevision": "minio-68b8576596"
+    }
+  },
+  "pod": {
+    "apiVersion": "v1",
+    "kind": "Pod",
+    "metadata": {
+      "name": "minio-0",
+      "namespace": "prodbox",
+      "uid": "recorded-obsolete-pod-uid",
+      "resourceVersion": "123",
+      "labels": {
+        "controller-revision-hash": "minio-66f669767"
+      },
+      "ownerReferences": [
+        {
+          "apiVersion": "apps/v1",
+          "kind": "StatefulSet",
+          "name": "minio",
+          "controller": true,
+          "uid": "recorded-minio-controller-uid"
+        }
+      ]
+    },
+    "spec": {
+      "containers": [
+        {
+          "name": "minio",
+          "image": "quay.io/minio/minio:RELEASE.2024-12-18T13-15-44Z"
+        }
+      ]
+    },
+    "status": {
+      "conditions": [
+        {
+          "status": "True",
+          "type": "PodReadyToStartContainers"
+        },
+        {
+          "status": "True",
+          "type": "Initialized"
+        },
+        {
+          "status": "False",
+          "type": "Ready"
+        },
+        {
+          "status": "False",
+          "type": "ContainersReady"
+        },
+        {
+          "status": "True",
+          "type": "PodScheduled"
+        }
+      ],
+      "waitingReasons": [
+        "ImagePullBackOff"
+      ]
+    }
+  },
+  "superseded_result": {
+    "operation": "kubectl rollout status statefulset/minio -n prodbox --timeout=300s",
+    "exit": 1,
+    "result": "timed out waiting for the condition"
+  },
+  "causal_profile": {
+    "rollout_budget_seconds": 300,
+    "replicas": 1,
+    "process_topology_change": false,
+    "resource_envelope_change": false,
+    "persistence_change": false,
+    "load_change": false,
+    "container_resources": {
+      "limits": {
+        "cpu": "500m",
+        "ephemeral-storage": "2Gi",
+        "memory": "1Gi"
+      },
+      "requests": {
+        "cpu": "250m",
+        "ephemeral-storage": "1Gi",
+        "memory": "512Mi"
+      }
+    }
+  },
+  "limitations": "API recording and wait-only offline control; not whole-system qualification or live defect-class closure."
+}

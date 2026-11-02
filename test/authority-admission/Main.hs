@@ -7,6 +7,7 @@ import Control.Monad (void)
 import Data.IORef
 import Data.List (isInfixOf)
 import Data.Text qualified as Text
+import EpochPromotionFixture (epochPromotionCommands)
 import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
 import Prodbox.ControlPlane.Codec
@@ -34,11 +35,12 @@ import Prodbox.Lifecycle.Authority.Genesis
   , GenesisPlan (GenesisPlan)
   , TargetAgentGenerationReceipt (TargetAgentGenerationReceipt)
   , authorityEpochGenesis
+  , authorityEpochValue
+  , establishedEpoch
   , nextAuthorityEpoch
   )
 import Prodbox.Lifecycle.Authority.Migration
-  ( MigrationBinding
-  , MigrationCommand (..)
+  ( MigrationCommand (..)
   , MigrationDecision (MigrationRefused)
   , MigrationDigest
   , MigrationEpoch
@@ -48,6 +50,7 @@ import Prodbox.Lifecycle.Authority.Migration
   , MigrationProjectionImport (ProjectionMissing)
   , MigrationRefusal (ShadowDigestConflict)
   , encodeMigrationCommand
+  , migrationEpochValue
   , mkMigrationDigest
   , mkMigrationEpoch
   )
@@ -671,12 +674,14 @@ activateMigration
   -> AuthorityAdmissionAggregate
   -> AuthorityAdmissionAggregate
 activateMigration epoch aggregate =
-  advance
-    (foldl prepare aggregate ([minBound .. maxBound] :: [MigrationBinding]))
-    (ApplyAuthorityMigration (ActivateReplacement epoch))
+  foldl
+    advance
+    aggregate
+    (map ApplyAuthorityMigration (epochPromotionCommands predecessor (migrationEpochValue epoch)))
  where
-  prepare state binding =
-    advance state (ApplyAuthorityMigration (PrepareBinding binding))
+  predecessor = case establishedEpoch (authorityAggregateAdmission aggregate) of
+    Just current -> fromIntegral (authorityEpochValue current)
+    Nothing -> error "expected established predecessor epoch"
 
 beginImportedMigration
   :: AuthorityAdmissionAggregate

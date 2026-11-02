@@ -13,15 +13,21 @@ where
 import Control.Monad (forM_)
 import Data.Either (isLeft, isRight)
 import Data.Functor.Identity (Identity (..))
+import Data.List (nub)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
+import Prodbox.Bootstrap.Broker.Engine (BrokerEngineError (..))
+import Prodbox.Bootstrap.Broker.EngineAdapter (brokerEngineErrorDiagnostic, engineErrorReply)
+import Prodbox.Bootstrap.Broker.EngineSecretWorker (EngineSecretWorkerError (..))
 import Prodbox.Bootstrap.Broker.Fence
 import Prodbox.Bootstrap.Broker.Program (BootstrapMutationReceipt (..))
 import Prodbox.Bootstrap.Broker.Request
   ( RequestDigest
   , mkRequestDigest
   )
+import Prodbox.Bootstrap.Broker.Routes (BrokerRoute (BrokerVaultInitialize))
 import Prodbox.Bootstrap.Broker.SecretWorker
+import Prodbox.Bootstrap.Broker.Server (BrokerReplyStatus (BrokerReplyConflict))
 import Prodbox.Bootstrap.Broker.Types
   ( ArtifactDigest
   , VaultStorageGeneration
@@ -738,6 +744,76 @@ secretWorkerSuite =
           (SecretWorkerAttestationObserved evidence)
           `shouldSatisfy` isLeft
 
+    describe "Sprint 2.146 closed attestation evidence" $ do
+      let changedFields =
+            [ ("PodUidMismatch", canonicalAttestation {rawWorkerPodUid = alternatePodUid})
+            , ("ImageDigestMismatch", canonicalAttestation {rawWorkerImageDigest = alternateImageDigest})
+            , ("ServiceAccountMismatch", canonicalAttestation {rawWorkerServiceAccount = alternateServiceAccount})
+            , ("SessionIdMismatch", canonicalAttestation {rawWorkerSessionId = alternateSessionId})
+            ,
+              ( "SessionAccessorMismatch"
+              , canonicalAttestation {rawWorkerSessionAccessor = alternateSessionAccessor}
+              )
+            , ("OperationMismatch", canonicalAttestation {rawWorkerOperation = SecretWorkerUnseal})
+            , ("FenceGenerationMismatch", canonicalAttestation {rawWorkerFenceGeneration = generation 2})
+            , ("OwnerNonceMismatch", canonicalAttestation {rawWorkerOwnerNonce = alternateOwner})
+            , ("ActionDigestMismatch", canonicalAttestation {rawWorkerActionDigest = alternateAction})
+            , ("RequestDigestMismatch", canonicalAttestation {rawWorkerRequestDigest = alternateRequest})
+            , ("StorageGenerationMismatch", canonicalAttestation {rawWorkerStorageGeneration = alternateStorage})
+            ,
+              ( "OperationDeadlineMismatch"
+              , canonicalAttestation {rawWorkerOperationDeadline = operationDeadlineFromMicros 1_001}
+              )
+            ]
+          diagnostic failure =
+            brokerEngineErrorDiagnostic
+              BrokerVaultInitialize
+              (EngineSecretWorkerRefused (EngineSecretWorkerAttestationRefused failure))
+      forM_ changedFields $ \(name, evidence) ->
+        it ("retains " ++ name ++ " without the compared identities") $ do
+          case attestSecretWorker canonicalWorkerRequest (SecretWorkerAttestationObserved evidence) of
+            Right _ -> expectationFailure "foreign attestation was admitted"
+            Left refusal -> do
+              let rendered = diagnostic refusal
+              rendered `shouldContain` ("AttestationRefused/" ++ name)
+              forM_
+                [ "pod-uid-a"
+                , "pod-uid-b"
+                , "worker-session-a"
+                , "worker-accessor-a"
+                , "owner-a"
+                , "vault-pv-uid-a"
+                , Text.unpack (Text.replicate 64 "a")
+                ]
+                $ \privateValue -> rendered `shouldNotContain` privateValue
+              engineErrorReply (EngineSecretWorkerRefused (EngineSecretWorkerAttestationRefused refusal))
+                `shouldBe` (BrokerReplyConflict, "{\"status\":\"state-conflict\"}")
+
+      forM_
+        [ ("NotFound", SecretWorkerAttestationNotFound)
+        , ("ObservationUnobservable", SecretWorkerAttestationObservationUnobservable "private-provider-text")
+        ]
+        $ \(name, refusal) ->
+          it ("retains " ++ name ++ " without provider text") $ do
+            diagnostic refusal `shouldContain` ("AttestationRefused/" ++ name)
+            diagnostic refusal `shouldNotContain` "private-provider-text"
+
+      forM_ attestationReadCauseCases $ \(expectedName, cause) ->
+        it ("preserves production observation " ++ expectedName) $ do
+          let observed = SecretWorkerAttestationReadRefused cause
+          attestSecretWorker canonicalWorkerRequest observed
+            `shouldBe` Left (SecretWorkerAttestationObservationRefused cause)
+          diagnostic (SecretWorkerAttestationObservationRefused cause)
+            `shouldContain` ("AttestationRefused/ObservationRefused/" ++ expectedName)
+
+      it "keeps distinct read causes and rejects invalid HTTP status values" $ do
+        let names = map (secretWorkerAttestationReadCauseName . snd) attestationReadCauseCases
+        length (nub names) `shouldBe` length names
+        secretWorkerAttestationReadCauseName (WorkerAttestationHttpStatus (-1))
+          `shouldBe` "HttpStatusInvalid"
+        secretWorkerAttestationReadCauseName (WorkerAttestationHttpStatus 600)
+          `shouldBe` "HttpStatusInvalid"
+
     it "binds a fresh fence permit to every exact worker field" $ do
       let attested = canonicalAttestedWorker
           result =
@@ -1359,3 +1435,29 @@ secretSentinel = "super-secret-worker-password"
 
 mustRight :: (Show error) => Either error value -> value
 mustRight = either (error . show) id
+
+attestationReadCauseCases :: [(String, SecretWorkerAttestationReadCause)]
+attestationReadCauseCases =
+  [ ("ApiUnavailable", WorkerAttestationApiUnavailable)
+  , ("HttpStatus/403", WorkerAttestationHttpStatus 403)
+  , ("HttpStatus/500", WorkerAttestationHttpStatus 500)
+  , ("PodMissing", WorkerAttestationPodMissing)
+  , ("PodUnreadable", WorkerAttestationPodUnreadable)
+  , ("PodIdentityUnexpected", WorkerAttestationPodIdentityUnexpected)
+  , ("ContainerNotSole", WorkerAttestationContainerNotSole)
+  , ("NotStarted", WorkerAttestationNotStarted)
+  , ("ContainerStatusNotSole", WorkerAttestationContainerStatusNotSole)
+  , ("ImageNotResolved", WorkerAttestationImageNotResolved)
+  , ("DeclaredImageUnusable", WorkerAttestationDeclaredImageUnusable)
+  , ("RuntimeImageUnusable", WorkerAttestationRuntimeImageUnusable)
+  , ("DeclaredRuntimeImageDisagree", WorkerAttestationDeclaredRuntimeImageDisagree)
+  , ("AnnotationUnusable", WorkerAttestationAnnotationUnusable)
+  , ("PodNotRunning/Pending", WorkerAttestationPodNotRunning WorkerPodPending)
+  , ("PodNotRunning/Running", WorkerAttestationPodNotRunning WorkerPodRunning)
+  , ("PodNotRunning/Succeeded", WorkerAttestationPodNotRunning WorkerPodSucceeded)
+  , ("PodNotRunning/Failed", WorkerAttestationPodNotRunning WorkerPodFailed)
+  , ("PodNotRunning/Unknown", WorkerAttestationPodNotRunning WorkerPodUnknown)
+  , ("ContainerNotReady", WorkerAttestationContainerNotReady)
+  , ("PodDeleting", WorkerAttestationPodDeleting)
+  , ("BindingUnusable", WorkerAttestationBindingUnusable)
+  ]

@@ -487,8 +487,8 @@ prior prodbox version, remove it once with `docker logout 127.0.0.1:30080` (leav
 
 ### 6.2 A locally built image has two sha256 identities, and only one of them is pullable
 
-An image published by this pipeline is addressable by two different sha256 values, and **they are
-the same sixty-four lower-hex characters**:
+An image published by this pipeline has distinct config and manifest identities, both written
+as **sixty-four lower-hex characters**:
 
 | Identity | What it is good for |
 |----------|---------------------|
@@ -540,6 +540,21 @@ Rules for any prodbox code that renders a Pod `image` field:
    is achieved by comparing observed runtime identities, which is an observation of what actually
    ran rather than a request in a spec
    ([bootstrap_readiness_doctrine.md § 0.4](./bootstrap_readiness_doctrine.md)).
+
+The August reporter measurements above are historical. In the supported containerd runtime,
+Kubernetes publishes CRI `ImageRef`; it can move from a bare config identity to a repository
+reference after manifest registration while the node-local config identity remains constant.
+Two reads taken on opposite sides of that transition cannot satisfy strict worker attestation.
+
+Runtime publication therefore admits the Broker only after a complete positive CRI readback:
+its exact tag, config digest and one expected repository-manifest reference agree. The config
+commitment is read from the exact manifest descriptor after its bytes verify against that
+manifest digest. `.Id` is never used for this config commitment. One exact `ctr content fetch`
+may register a missing reference without unpacking; a separately observed closing state is
+mandatory even after success or a lost reply. Three observations per phase and per-tool ceilings
+share one 80-second deadline before controller deployment. Bootstrap source seeding remains
+config-only because it precedes registry availability. These operations preserve strict equality
+over the worker's actual runtime identity and add no alias-normalization exception.
 
 The Bootstrap Broker implements exactly this split:
 `Prodbox.Bootstrap.Broker.KubernetesWorker.ControllerImageIdentity` carries the runtime digest and

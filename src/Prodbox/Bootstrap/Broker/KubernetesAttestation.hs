@@ -37,9 +37,11 @@ import Prodbox.Bootstrap.Broker.SecretWorker
   ( RawSecretWorkerAttestation (..)
   , SecretFreeWorkerRequest
   , SecretWorkerAttestationObservation (..)
+  , SecretWorkerAttestationReadCause (..)
   , SecretWorkerCleanupBinding
   , SecretWorkerIntent
   , SecretWorkerOperation (..)
+  , SecretWorkerPodPhase (..)
   , attestSecretWorker
   , bindSecretWorkerIntent
   , mkWorkerImageDigest
@@ -149,17 +151,25 @@ attestWorkerPodObservation
   -> RawWorkerPodObservation
   -> SecretWorkerAttestationObservation
 attestWorkerPodObservation request observed
-  | observedWorkerPodName observed /= workerPodNameForRequest request = refused "Pod name mismatch"
-  | observedWorkerPhase observed /= "Running" = refused "Pod is not Running"
-  | not (observedWorkerContainerReady observed) = refused "worker container is not ready"
+  | observedWorkerPodName observed /= workerPodNameForRequest request =
+      refused WorkerAttestationPodIdentityUnexpected
+  | observedWorkerPhase observed /= "Running" =
+      refused (WorkerAttestationPodNotRunning observedPhase)
+  | not (observedWorkerContainerReady observed) = refused WorkerAttestationContainerNotReady
   | maybe False (const True) (observedWorkerDeletionTimestamp observed) =
-      refused "worker Pod is deleting"
+      refused WorkerAttestationPodDeleting
   | otherwise =
       case rawWorkerAttestation observed of
-        Left detail -> refused detail
+        Left _ -> refused WorkerAttestationBindingUnusable
         Right attestation -> SecretWorkerAttestationObserved attestation
  where
-  refused = SecretWorkerAttestationUnobservable
+  refused = SecretWorkerAttestationReadRefused
+  observedPhase = case observedWorkerPhase observed of
+    "Pending" -> WorkerPodPending
+    "Running" -> WorkerPodRunning
+    "Succeeded" -> WorkerPodSucceeded
+    "Failed" -> WorkerPodFailed
+    _ -> WorkerPodUnknown
 
 rawWorkerAttestation
   :: RawWorkerPodObservation -> Either Text RawSecretWorkerAttestation

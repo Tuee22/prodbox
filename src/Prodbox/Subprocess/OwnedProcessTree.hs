@@ -11,6 +11,7 @@ module Prodbox.Subprocess.OwnedProcessTree
   , recordOwnedProcessRoot
   , snapshotOwnedProcessTree
   , stopOwnedProcessDescendants
+  , stopOwnedProcessDescendantsUntil
   )
 where
 
@@ -22,6 +23,7 @@ import Data.Maybe (listToMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.IO qualified as TextIO
+import Data.Word (Word64)
 import GHC.Clock (getMonotonicTimeNSec)
 import System.Directory (listDirectory)
 import System.IO.Error (isDoesNotExistError)
@@ -103,9 +105,15 @@ stopOwnedProcessDescendants
   :: Int -> OwnedProcessRoot -> [OwnedProcessIdentity] -> IO (Either Text ())
 stopOwnedProcessDescendants budget root recorded = do
   now <- getMonotonicTimeNSec
-  loop (now + fromIntegral (max 0 budget) * 1000) recorded
+  stopOwnedProcessDescendantsUntil (now + fromIntegral (max 0 budget) * 1000) root recorded
+
+-- | A caller that reserves cleanup inside its parent budget supplies that
+-- absolute monotonic deadline instead of starting another relative allowance.
+stopOwnedProcessDescendantsUntil
+  :: Word64 -> OwnedProcessRoot -> [OwnedProcessIdentity] -> IO (Either Text ())
+stopOwnedProcessDescendantsUntil deadline root = loop
  where
-  loop deadline known = do
+  loop known = do
     fresh <- snapshotOwnedProcessTree root
     case fresh of
       Left detail -> pure (Left detail)
@@ -124,7 +132,9 @@ stopOwnedProcessDescendants budget root recorded = do
                     now <- getMonotonicTimeNSec
                     if now >= deadline
                       then pure (Left "owned subprocess descendants did not stop within the kill-confirmation bound")
-                      else threadDelay 50000 >> loop deadline identities
+                      else do
+                        threadDelay (min 50000 (fromIntegral ((deadline - now) `div` 1000)))
+                        loop identities
   stopOne identity@(OwnedProcessIdentity pid _) = do
     running <- stillRunning identity
     case running of

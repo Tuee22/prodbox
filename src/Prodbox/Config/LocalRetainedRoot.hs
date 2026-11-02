@@ -16,6 +16,7 @@ module Prodbox.Config.LocalRetainedRoot
   , renderLocalRetainedRootError
   , renderRetainedRootMarkerReconcileOutcome
   , locateBootstrapRetainedRoot
+  , locateBootstrapRetainedRootFromCoordinate
   , locateBootstrapRetainedRootForHostCleanup
   , hostCleanupActiveIntentRelativePath
   , HostCleanupBootstrapRootRegression

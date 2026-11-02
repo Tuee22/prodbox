@@ -91,7 +91,6 @@ import Prodbox.Bootstrap.Broker.Engine
   , RootAccessorRevocationCause (..)
   , RootAccessorRevocationHttpFailure (..)
   , RootAccessorRevocationHttpOperation (..)
-  , RootInitRecoveryObservation (..)
   , mkBrokerEngine
   )
 import Prodbox.Bootstrap.Broker.Fence
@@ -119,6 +118,8 @@ import Prodbox.Bootstrap.Broker.Fence
   , vaultEffectPermitActionDigest
   , vaultEffectPermitDeadline
   )
+import Prodbox.Bootstrap.Broker.InitializationEvidence
+import Prodbox.Bootstrap.Broker.InitializationRecovery qualified as InitRecovery
 import Prodbox.Bootstrap.Broker.KubernetesWorker
   ( ControllerImageObservation (..)
   , ControllerSelfObservationScope (..)
@@ -145,7 +146,7 @@ import Prodbox.Bootstrap.Broker.PgpBoundary
   , generatedRootPublicKeyBase64
   )
 import Prodbox.Bootstrap.Broker.PristineJournal
-  ( classifyPristineJournal
+  ( rootInitJournalObservation
   )
 import Prodbox.Bootstrap.Broker.ProductionCapabilities
   ( ProductionCapabilityRegistry
@@ -196,6 +197,7 @@ import Prodbox.Bootstrap.Broker.Readiness
   , unobservedBrokerReadinessFacts
   )
 import Prodbox.Bootstrap.Broker.Request (RequestDigest)
+import Prodbox.Bootstrap.Broker.ResetEvidence
 import Prodbox.Bootstrap.Broker.Routes (BrokerRoute)
 import Prodbox.Bootstrap.Broker.Settings
   ( BootstrapBrokerSettings
@@ -205,7 +207,7 @@ import Prodbox.Bootstrap.Broker.Settings
   )
 import Prodbox.Bootstrap.Broker.StoreBoundary
   ( BootstrapStoreBoundary (..)
-  , StoreBoundaryError
+  , StoreBoundaryError (..)
   , StoreReadBack (..)
   )
 import Prodbox.Bootstrap.Broker.Types
@@ -221,7 +223,6 @@ import Prodbox.Bootstrap.Broker.Types
   , PostUnsealHandoffReceipt
   , PreparedInitEnvelope
   , PristineResetProof
-  , PristineStorageProof
   , ProvisionerAccessor
   , ProvisionerAccessorAbsenceAttestation
   , ProvisionerLoginReceipt
@@ -240,7 +241,6 @@ import Prodbox.Bootstrap.Broker.Types
   , mkAccessorAbsenceAttestation
   , mkArtifactDigest
   , mkBaselineStateAbsence
-  , mkBootstrapTransactionId
   , mkChildAttestation
   , mkChildEncryptedReceipt
   , mkChildId
@@ -257,17 +257,13 @@ import Prodbox.Bootstrap.Broker.Types
   , mkRootAccessorInventory
   , mkRootPolicyAccessor
   , mkRootSessionId
-  , mkVaultStorageGeneration
   , preparedInitEnvelopeDigest
-  , pristineStorageBinding
   , provisionerLoginAccessor
   , provisionerLoginStorageGeneration
   , renderArtifactDigest
   , renderProvisionerAccessor
   , renderRootPolicyAccessor
   , resetAmbiguity
-  , resetAmbiguousBinding
-  , resetReplacementPristine
   , rootAccessorInventoryAccessors
   , rootAccessorInventoryGeneration
   , rootInitStorageGeneration
@@ -637,7 +633,7 @@ productionEvidence
   -> BrokerProgramEvidenceBoundary IO
 productionEvidence settings store kubernetes =
   BrokerProgramEvidenceBoundary
-    { resolvePristineStorageProof = pristineEvidence settings store
+    { resolveRootInitializationEvidence = initializationEvidence settings store
     , resolveUnsealRecoveryCustody = recoveryEvidence store
     , resolveUnlockRotationCustody = recoveryEvidence store
     , resolveBaselineCustodyAndSession = baselineEvidence store
@@ -707,34 +703,42 @@ childRecoveryObservationEvidence settings store action = do
     (binding, nonce, _) <- resolved
     Right (binding, nonce)
 
-pristineEvidence
+initializationEvidence
   :: BootstrapBrokerSettings
   -> BootstrapStoreBoundary IO
   -> BrokerActionRequest
-  -> IO (Either EngineBoundaryError PristineStorageProof)
-pristineEvidence settings store action = do
+  -> IO (Either EngineBoundaryError RootInitializationEvidence)
+initializationEvidence settings store action = do
   generation <- observeVaultStorageGeneration store
   status <- Vault.vaultSealStatus (Vault.VaultAddress (brokerVaultAddress settings))
   case (generation, status) of
+    (Left failure, _) -> pure (Left (initializationStoreFailure InitGenerationRead failure))
+    (_, Left _) -> refused (InitEvidenceUnavailable InitStatusRead)
     (Right binding, Right observed)
       | rootInitStorageGeneration binding /= brokerActionStorageGeneration action ->
-          boundaryRefused "request storage generation does not match the durable generation"
-      | Vault.sealStatusInitialized observed ->
-          boundaryRefused "Vault is already initialized"
+          refused InitEvidenceRequestGenerationMismatch
       | otherwise -> do
           journal <- readRootInitJournal store binding
           pure $ case journal of
+            Left failure -> Left (initializationStoreFailure InitJournalRead failure)
             Right observation ->
-              case classifyPristineJournal binding observation of
-                Right proof -> Right proof
-                Left _ ->
-                  Left
-                    ( EngineBoundaryRefused
-                        "root initialization journal is not pristine"
-                    )
-            Left failure -> Left (storeBoundaryError failure)
-    (Left failure, _) -> pure (Left (storeBoundaryError failure))
-    (_, Left _) -> boundaryUnavailable "Vault seal-status is unavailable"
+              mapLeft
+                EngineBoundaryRootInitializationEvidence
+                ( classifyRootInitializationEvidence
+                    (productionPristineStorageProof binding)
+                    (Vault.sealStatusInitialized observed)
+                    (rootInitJournalObservation observation)
+                )
+ where
+  refused = pure . Left . EngineBoundaryRootInitializationEvidence
+
+initializationStoreFailure :: RootInitEvidenceStage -> StoreBoundaryError -> EngineBoundaryError
+initializationStoreFailure stage failure = EngineBoundaryRootInitializationEvidence $ case failure of
+  BootstrapStoreUnavailable -> InitEvidenceUnavailable stage
+  BootstrapStoreCorrupt -> InitEvidenceCorrupt stage
+  BootstrapStoreBindingMismatch -> InitEvidenceBindingMismatch stage
+  BootstrapStoreVersionConflict -> InitEvidenceVersionConflict stage
+  BootstrapStoreReadBackMismatch -> InitEvidenceReadBackMismatch stage
 
 resetEvidence
   :: BootstrapBrokerSettings
@@ -743,50 +747,30 @@ resetEvidence
   -> BrokerActionRequest
   -> IO (Either EngineBoundaryError (InitAmbiguity, PristineResetProof))
 resetEvidence settings store kubernetes action = do
-  let oldGeneration = brokerActionStorageGeneration action
-  generationResult <- observeVaultStorageGeneration store
-  journalResult <- readRootInitJournalForReset store oldGeneration
-  case (generationResult, journalResult) of
-    (Left failure, _) -> pure (Left (storeBoundaryError failure))
-    (_, Left failure) -> pure (Left (storeBoundaryError failure))
-    (_, Right StoreObjectAbsent) ->
-      boundaryRefused "ambiguous root-initialization journal is absent"
-    (Right currentBinding, Right (StoreObjectPresent _ _ state)) ->
-      case rootInitStatePhase state of
-        RootResetPristine proof ->
-          pure
-            ( validatePersistedResetEvidence
-                oldGeneration
-                currentBinding
-                proof
-            )
-        RootInitializationAmbiguous ambiguity
-          | rootInitStorageGeneration (ambiguousInitBinding ambiguity)
-              /= oldGeneration ->
-              boundaryRefused "ambiguous root initialization has another storage generation"
-          | otherwise ->
-              auditAmbiguousReset
-                settings
-                store
-                kubernetes
-                action
-                currentBinding
-                ambiguity
-        _ -> boundaryRefused "root initialization is not in an ambiguous phase"
+  let requested = brokerActionStorageGeneration action
+  generation <- observeVaultStorageGeneration store
+  journal <- readRootInitJournalForReset store requested
+  case (generation, journal) of
+    (Left failure, _) -> pure (Left (resetStoreFailure ResetGenerationRead failure))
+    (_, Left failure) -> pure (Left (resetStoreFailure ResetJournalRead failure))
+    (Right current, Right observed) ->
+      case classifyRootResetEvidence requested (brokerActionDigest action) current (resetJournalValue observed) of
+        Left cause -> pure (Left (EngineBoundaryRootResetEvidence cause))
+        Right (ResumeAuditedRootReset proof) -> pure (Right (resetAmbiguity proof, proof))
+        Right (AuditAmbiguousRootReset ambiguity) ->
+          auditAmbiguousReset settings store kubernetes action current ambiguity
+ where
+  resetJournalValue observed = case observed of
+    StoreObjectAbsent -> Nothing
+    StoreObjectPresent _ _ state -> Just state
 
-validatePersistedResetEvidence
-  :: VaultStorageGeneration
-  -> RootInitBinding
-  -> PristineResetProof
-  -> Either EngineBoundaryError (InitAmbiguity, PristineResetProof)
-validatePersistedResetEvidence oldGeneration currentBinding proof
-  | rootInitStorageGeneration (resetAmbiguousBinding proof) /= oldGeneration =
-      Left (EngineBoundaryRefused "persisted reset proof names another old generation")
-  | currentBinding /= resetAmbiguousBinding proof
-      && currentBinding
-        /= pristineStorageBinding (resetReplacementPristine proof) =
-      Left (EngineBoundaryRefused "persisted reset proof does not name the durable generation")
-  | otherwise = Right (resetAmbiguity proof, proof)
+resetStoreFailure :: RootResetEvidenceStage -> StoreBoundaryError -> EngineBoundaryError
+resetStoreFailure stage failure = EngineBoundaryRootResetEvidence $ case failure of
+  BootstrapStoreUnavailable -> ResetEvidenceUnavailable stage
+  BootstrapStoreCorrupt -> ResetEvidenceCorrupt stage
+  BootstrapStoreBindingMismatch -> ResetEvidenceBindingMismatch stage
+  BootstrapStoreVersionConflict -> ResetEvidenceVersionConflict stage
+  BootstrapStoreReadBackMismatch -> ResetEvidenceReadBackMismatch stage
 
 auditAmbiguousReset
   :: BootstrapBrokerSettings
@@ -811,24 +795,24 @@ auditAmbiguousReset settings store kubernetes action currentBinding ambiguity = 
       kubernetes
       (deadlineAtOffset now (RemainingDuration (5 * 1000 * 1000)))
   pure $ do
-    prepared <- mapLeft storeBoundaryError preparedResult
+    prepared <- mapLeft (resetStoreFailure ResetPreparedRead) preparedResult
     requireAmbiguousPreparedEnvelope ambiguity prepared
-    requireResetObjectAbsent "durable init response" responseResult
-    requireResetObjectAbsent "final unlock bundle" bundleResult
-    requireResetObjectAbsent "root session" sessionResult
-    requireResetObjectAbsent "post-unseal handoff" handoffResult
+    requireResetObjectAbsent ResetResponseRead responseResult
+    requireResetObjectAbsent ResetFinalBundleRead bundleResult
+    requireResetObjectAbsent ResetSessionRead sessionResult
+    requireResetObjectAbsent ResetHandoffRead handoffResult
     status <-
       mapLeft
-        (const (EngineBoundaryUnavailable "Vault seal-status is unavailable"))
+        (const (EngineBoundaryRootResetEvidence (ResetEvidenceUnavailable ResetVaultSealRead)))
         statusResult
     identity <-
       mapLeft
-        (const (EngineBoundaryUnavailable "Vault storage identity is unavailable"))
+        (const (EngineBoundaryRootResetEvidence (ResetEvidenceUnavailable ResetStorageIdentityRead)))
         identityResult
     replacement <- resetReplacementBinding action ambiguity identity
     if currentBinding /= oldBinding && currentBinding /= replacement
       then
-        Left (EngineBoundaryRefused "durable storage generation is neither the old nor replacement binding")
+        Left (EngineBoundaryRootResetEvidence ResetEvidenceCurrentBindingMismatch)
       else do
         let replacementProof = productionPristineStorageProof replacement
             identityText = renderVaultStorageIdentity identity
@@ -863,7 +847,7 @@ auditAmbiguousReset settings store kubernetes action currentBinding ambiguity = 
                 )
         proof <-
           mapLeft
-            (EngineBoundaryRefused . Text.pack . show)
+            (const (EngineBoundaryRootResetEvidence ResetEvidenceAuditProofInvalid))
             ( mkPristineResetProof
                 ambiguity
                 replacementProof
@@ -878,28 +862,10 @@ resetReplacementBinding
   -> InitAmbiguity
   -> VaultStorageIdentity
   -> Either EngineBoundaryError RootInitBinding
-resetReplacementBinding action ambiguity identity = do
-  let replacementDigest =
-        digestSerialised
-          ( "bootstrap-vault-storage-reset-v1" :: Text
-          , ambiguity
-          , brokerActionDigest action
-          , renderVaultStorageIdentity identity
-          )
-      suffix = renderArtifactDigest replacementDigest
-  transaction <-
-    mapLeft
-      (EngineBoundaryRefused . Text.pack . show)
-      (mkBootstrapTransactionId ("reset-" <> suffix))
-  generation <-
-    mapLeft
-      (EngineBoundaryRefused . Text.pack . show)
-      (mkVaultStorageGeneration ("vault-reset-" <> suffix))
-  Right
-    RootInitBinding
-      { rootInitTransactionId = transaction
-      , rootInitStorageGeneration = generation
-      }
+resetReplacementBinding action ambiguity identity =
+  mapLeft
+    EngineBoundaryRootResetEvidence
+    (deriveRootResetBinding (brokerActionDigest action) ambiguity (renderVaultStorageIdentity identity))
 
 requireAmbiguousPreparedEnvelope
   :: InitAmbiguity
@@ -907,23 +873,23 @@ requireAmbiguousPreparedEnvelope
   -> Either EngineBoundaryError ()
 requireAmbiguousPreparedEnvelope ambiguity observed = case observed of
   StoreObjectAbsent ->
-    Left (EngineBoundaryRefused "ambiguous prepared envelope is absent")
+    Left (EngineBoundaryRootResetEvidence ResetEvidencePreparedAbsent)
   StoreObjectPresent _ _ prepared
     | preparedInitEnvelopeDigest prepared
         == ambiguousPreparedEnvelopeDigest ambiguity ->
         Right ()
     | otherwise ->
-        Left (EngineBoundaryRefused "ambiguous prepared-envelope digest does not match")
+        Left (EngineBoundaryRootResetEvidence ResetEvidencePreparedMismatch)
 
 requireResetObjectAbsent
-  :: Text
+  :: RootResetEvidenceStage
   -> Either StoreBoundaryError (StoreReadBack value)
   -> Either EngineBoundaryError ()
-requireResetObjectAbsent label observed = case observed of
-  Left failure -> Left (storeBoundaryError failure)
+requireResetObjectAbsent stage observed = case observed of
+  Left failure -> Left (resetStoreFailure stage failure)
   Right StoreObjectAbsent -> Right ()
   Right StoreObjectPresent {} ->
-    Left (EngineBoundaryRefused (label <> " is present"))
+    Left (EngineBoundaryRootResetEvidence (ResetEvidenceExpectedAbsent stage))
 
 recoveryEvidence
   :: BootstrapStoreBoundary IO
@@ -1424,6 +1390,7 @@ resetAmbiguousPhysical settings kubernetes permit ambiguity proof
         kubernetesResetVaultStorage
           kubernetes
           (vaultEffectPermitDeadline permit)
+          (vaultEffectPermitActionDigest permit)
           proof
       case resetResult of
         Left failure ->
@@ -1744,6 +1711,12 @@ classifyRootAccessorAuditorCleanup
 classifyRootAccessorAuditorCleanup failure = case failure of
   EngineBoundaryUnavailable _ -> RootAccessorAuditorCleanupUnavailable
   EngineBoundaryRefused _ -> RootAccessorAuditorCleanupRefused
+  EngineBoundaryRootInitializationEvidence cause
+    | rootInitEvidenceUnavailable cause -> RootAccessorAuditorCleanupUnavailable
+    | otherwise -> RootAccessorAuditorCleanupRefused
+  EngineBoundaryRootResetEvidence cause
+    | rootResetEvidenceUnavailable cause -> RootAccessorAuditorCleanupUnavailable
+    | otherwise -> RootAccessorAuditorCleanupRefused
   EngineBoundaryAmbiguous _ -> RootAccessorAuditorCleanupAmbiguous
   EngineBoundaryRootAccessorAbsenceProof _ -> RootAccessorAuditorCleanupRefused
   EngineBoundaryRootAccessorRevocation _ -> RootAccessorAuditorCleanupRefused
@@ -1965,6 +1938,12 @@ classifyProvisionerAccessorCleanupVisibility
 classifyProvisionerAccessorCleanupVisibility failure = case failure of
   EngineBoundaryUnavailable _ -> ProvisionerAccessorCleanupVisibilityUnavailable
   EngineBoundaryRefused _ -> ProvisionerAccessorCleanupVisibilityRefused
+  EngineBoundaryRootInitializationEvidence cause
+    | rootInitEvidenceUnavailable cause -> ProvisionerAccessorCleanupVisibilityUnavailable
+    | otherwise -> ProvisionerAccessorCleanupVisibilityRefused
+  EngineBoundaryRootResetEvidence cause
+    | rootResetEvidenceUnavailable cause -> ProvisionerAccessorCleanupVisibilityUnavailable
+    | otherwise -> ProvisionerAccessorCleanupVisibilityRefused
   EngineBoundaryAmbiguous _ -> ProvisionerAccessorCleanupVisibilityAmbiguous
   EngineBoundaryRootAccessorAbsenceProof _ -> ProvisionerAccessorCleanupVisibilityRefused
   EngineBoundaryRootAccessorRevocation _ -> ProvisionerAccessorCleanupVisibilityRefused
@@ -3077,11 +3056,10 @@ runLocal
   -> IO (Either EngineBoundaryError result)
 runLocal store clients call = case call of
   LocalRecoverRootInitCall binding -> do
-    observed <- readEncryptedInitResponse store binding
+    observed <- InitRecovery.observeRootInitRecoveryEvidence store binding
     pure $ case observed of
       Left failure -> Left (storeBoundaryError failure)
-      Right StoreObjectAbsent -> Right RootInitRecoveredAmbiguity
-      Right (StoreObjectPresent _ _ receipt) -> Right (RootInitRecoveredResponse receipt)
+      Right result -> Right result
   LocalAcknowledgeRecoveryCustody bundle -> do
     observed <- readFinalUnlockBundle store (finalUnlockBundleBinding bundle)
     pure $ case observed of
@@ -3245,6 +3223,15 @@ observeBootstrapStatus settings store = do
             , bootstrapStatusSealed = Vault.sealStatusSealed vaultStatus
             , bootstrapStatusRecoveryCustodyDurable = recoveryDurable rootState
             , bootstrapStatusInitializationAmbiguous = initializationAmbiguous rootState
+            , bootstrapStatusInitializationPhase = case rootState of
+                StoreObjectAbsent -> Nothing
+                StoreObjectPresent _ _ state -> Just (rootInitJournalPhase (rootInitStatePhase state))
+            , bootstrapStatusInitializationResetFromGeneration = case rootState of
+                StoreObjectAbsent -> Nothing
+                StoreObjectPresent _ _ state -> rootInitResetFromGeneration (rootInitStatePhase state)
+            , bootstrapStatusInitializationResetActionDigest = case rootState of
+                StoreObjectAbsent -> Nothing
+                StoreObjectPresent _ _ state -> rootInitResetActionDigest (rootInitStatePhase state)
             , bootstrapStatusRootSessionActive = rootSessionActive sessionState
             , bootstrapStatusHandoffObserved = handoffObserved handoffState
             }
@@ -3262,6 +3249,7 @@ initializationAmbiguous :: StoreReadBack RootInitState -> Bool
 initializationAmbiguous observed = case observed of
   StoreObjectPresent _ _ state -> case rootInitStatePhase state of
     RootInitializationAmbiguous {} -> True
+    RootResetInFlight {} -> True
     _ -> False
   StoreObjectAbsent -> False
 

@@ -48,7 +48,9 @@ import Prodbox.Bootstrap.Broker.EngineSecretWorker
   , secretWorkerBindingFieldName
   , secretWorkerBindingSiteName
   )
+import Prodbox.Bootstrap.Broker.InitializationEvidence
 import Prodbox.Bootstrap.Broker.PgpBoundary (pgpBoundaryErrorName)
+import Prodbox.Bootstrap.Broker.ResetEvidence (rootResetEvidenceUnavailable)
 import Prodbox.Bootstrap.Broker.Routes
   ( BrokerRoute (..)
   , brokerRouteIsMutation
@@ -57,6 +59,7 @@ import Prodbox.Bootstrap.Broker.Routes
   )
 import Prodbox.Bootstrap.Broker.SecretWorker
   ( initializationAmbiguityCauseName
+  , secretWorkerAttestationRefusalName
   )
 import Prodbox.Bootstrap.Broker.Server
   ( BrokerInterpreter (..)
@@ -209,6 +212,9 @@ brokerEngineErrorDiagnostic route failure =
           "boundary-unavailable; vault-reset=" ++ Text.unpack resetStage
       | otherwise -> "boundary-unavailable"
     EngineBoundaryRefused _ -> "boundary-refused"
+    EngineBoundaryRootInitializationEvidence cause ->
+      "root-init-evidence=" ++ rootInitEvidenceCauseCode cause
+    EngineBoundaryRootResetEvidence cause -> "root-reset-evidence=" ++ show cause
     EngineBoundaryAmbiguous _ -> "boundary-ambiguous"
     EngineBoundaryRootAccessorAbsenceProof cause ->
       rootAccessorAbsenceBoundaryName cause
@@ -300,7 +306,8 @@ engineSecretWorkerErrorName failure = case failure of
   EngineSecretWorkerRecoveryDestroyedAndRefused _ -> "RecoveryDestroyedAndRefused"
   EngineSecretWorkerRecoveryDecisionUnexpected _ -> "RecoveryDecisionUnexpected"
   EngineSecretWorkerRepromptWasNotFresh -> "RepromptWasNotFresh"
-  EngineSecretWorkerAttestationRefused _ -> "AttestationRefused"
+  EngineSecretWorkerAttestationRefused cause ->
+    "AttestationRefused/" ++ secretWorkerAttestationRefusalName cause
   EngineSecretWorkerEffectRefused _ -> "EffectRefused"
   EngineSecretWorkerReceiptRefused _ -> "ReceiptRefused"
   EngineSecretWorkerCleanupRefused _ -> "CleanupRefused"
@@ -409,6 +416,16 @@ boundaryReply failure = case failure of
     (BrokerReplyServiceUnavailable, "{\"status\":\"boundary-unavailable\"}")
   EngineBoundaryRefused _ ->
     (BrokerReplyConflict, "{\"status\":\"boundary-refused\"}")
+  EngineBoundaryRootInitializationEvidence cause
+    | rootInitEvidenceUnavailable cause ->
+        (BrokerReplyServiceUnavailable, "{\"status\":\"boundary-unavailable\"}")
+    | otherwise ->
+        (BrokerReplyConflict, "{\"status\":\"boundary-refused\"}")
+  EngineBoundaryRootResetEvidence cause
+    | rootResetEvidenceUnavailable cause ->
+        (BrokerReplyServiceUnavailable, "{\"status\":\"boundary-unavailable\"}")
+    | otherwise ->
+        (BrokerReplyConflict, "{\"status\":\"boundary-refused\"}")
   EngineBoundaryAmbiguous _ ->
     (BrokerReplyGatewayTimeout, "{\"status\":\"boundary-ambiguous\"}")
   EngineBoundaryRootAccessorAbsenceProof cause ->

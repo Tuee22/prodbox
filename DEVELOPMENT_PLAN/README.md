@@ -29,6 +29,6783 @@ dependency licenses the deviation ([Standard N.2](development_plan_standards.md#
 | 2 | `6.7` | 6 | Parked | — |
 | 3 | `7.47` | 7 | Parked | — |
 
+**Session paused at the operator’s request, 2026-11-01 UTC.**
+The development goal is paused. Sprint `6.5` remains the first open sprint; `6.7` and `7.47` stay
+parked. Do not begin another development producer until the operator resumes. The separate
+operator-requested ephemeral AWS teardown still has **no supported completion receipt**. The
+refreshed admin credential now passes AWS STS. Independent read-only observations on 2026-11-02
+find no resources in the regional families queried below; the supported destroys still refuse the
+missing Authority config. Evidence is under `.build/session-handoff-20261101/`. The operator approved the
+temporary API/WebSocket reductions; both original replica counts are restored after every
+completed maintenance attempt. Vault is now positively observed **unsealed**. Development remains
+paused; no source implementation or phase queue has advanced and no qualification claim is made.
+
+Local recovery restored the exact registry manifest
+`sha256:258adf3c2fe04aefe6ea02f2a5a7d0bb5e0c488e948b899b8f13da284569f1c5`
+for the unchanged cached runtime configuration
+`sha256:2f4194bf54f2dc80c4224c6bfc9027b811f6f3f16be3d28d63618b8fb96c7e2e`.
+The Broker was restarted after repository metadata settled; its new Pod and workers now report the
+same manifest identity. No attestation predicate, expected digest, worker envelope, host-capacity
+assertion, storage object or security fence was weakened/deleted. The safe retry waited for the
+positively observed 300-second Lease expiry, and prodbox itself retired the expired predecessor.
+`vault-unseal-8.log` reports a successful changed unseal; the live Vault health confirms sealed=false.
+The initial restart observer used an incorrect generic label after rollout succeeded; the corrected
+exact-deployment-selector observation proves one Ready Broker. Preserve both diagnostic records.
+
+The 2026-11-01 supported destroys (`destroy-aws-subzone-7.log`, `destroy-eks-7.log`,
+`destroy-test-7.log`) and audits (`audit-eks-7.log`, `audit-test-7.log`) establish **no AWS absence**.
+The Authority reports no committed config; the subzone's first call also encountered a transient
+Authority readiness failure. Both audits are Unobservable (exit 5). The existing Tier-0 proposal's
+missing platform scheduler reservation was populated from the independently observed, unchanged
+platform requests: **1,835 milli-cores / 3,384 MiB**, exactly the pinned minimum. Only that non-secret
+field changed; `platform-reservation-edit-1.json` retains its old/new fragments. The next bootstrap
+dry-run still refuses the full plan's overcommit (500 milli-cores / 1,024 MiB requested with only
+55 milli-cores / 240 MiB remaining); no limits, workload counts, host capacity or reserve floors
+were lowered to force admission. The earlier fresh harness fit also requires 9,045 milli-cores
+against 8,000 observed. Config/physical admission remains a real outstanding recovery dependency.
+
+**Operator-requested AWS destroy retry, 2026-11-02 UTC.** The refreshed
+`aws_admin_for_test_simulation` credential passes STS in account `751103452346`; the operator
+confirms it is the original deployment account. Credential bytes enter only through the existing
+prodbox fixture loader, with no manual secret-file read or ambient/profile discovery. All three
+supported destroys are terminal exit 1 before provider mutation (`destroy-attempts-8.json`), and
+both supported audits are exit 5 Unobservable (`audit-attempts-8.json`): the Authority still has no
+committed config. The new bootstrap dry-run repeats the unchanged full-plan overcommit
+(`cluster-reconcile-plan-3.json`). No capacity assertion, request, workload count or reserve floor
+was weakened, and no local or AWS mutation was reached in this retry.
+
+The configured retained state bucket `prodbox-pulumi-state-long-lived` now returns **Not Found
+(HTTP 404)**. The first refreshed diagnostic stops there; a second explicitly continues independent
+read-only diagnostics without granting a clean verdict. Its **153 regional reads across all 17
+enabled regions succeed and return empty results**: managed-tagged VPCs, nonterminated EC2 instances,
+all EBS volumes, EKS clusters, live/deleting NAT gateways, Elastic IPs, ALB/NLB, classic load
+balancers, and the named EKS log-group prefix. Matching project role/policy lists are empty; the
+operational `prodbox` user returns NoSuchEntity. The only user matching `prodbox` is the new
+operator-owned `prodbox-admin-temp` bootstrap source. The global reads observe only the
+`resolvefintech.com` parent hosted zone and `marketdata-6055ee3f` bucket; neither is deleted.
+`readonly-aws-inventory-4.json` records the exact queries, account and scopes. Its diagnostic reads
+are finished, but its completion/positive-control/cleanup flags remain false. This is no
+empty-account claim, checkpoint retirement, Vault-generation read-back or Provider completion
+receipt. The earlier InvalidClientTokenId and compiler failures remain preserved under their
+original labels.
+
+`handoff-state-6.json` records the unresolved supported cleanup alongside the scoped empty
+observations. `local-recovery-observations-3.json` confirms Vault remains unsealed and API/WebSocket
+remain at their original two replicas. The attempted canonical `dev check` refuses the pre-existing
+noncanonical rendering of the added platform scheduler reservation before its build/test phases;
+its guarded receipt preserves unchanged sources and binaries. Config recovery must resolve the
+real admission failure and use canonical generated formatting before supported teardown/audits can
+close; do not recreate AWS resources merely to make a cleanup positive control pass. No operational
+credential generation is claimed revoked. Retain local RKE2, its durable root, shared SES/TLS/backup
+infrastructure and the operator-owned parent zone. Development and the phase queue remain paused.
+
+**Operator-requested independent AWS cost inspection, 2026-11-02 UTC.** The same official credential
+loader authenticates direct read-only account-wide inspection, without Authority admission or AWS
+mutation. Under `.build/session-handoff-20261101/cost-inspection-1/`, `summary.json` records
+**55 regional resource categories across 17 enabled regions**. All **910 applicable regional
+queries** succeed with empty results, including EC2 instances, all EBS volumes/owned snapshots,
+EKS, NAT gateways, Elastic IPs, load balancers, paid endpoints/hosts/reservations, databases,
+filesystems, logs, images, keys, secrets, backups and the listed managed compute services. Of the
+953 initial reads, 25 fail only at service/region combinations absent from AWS's current Lightsail,
+App Runner and WorkSpaces endpoint tables; `availability-reference.json` preserves those sources
+and the classification. No unexplained query failure or pagination gap remains in this scope.
+
+The remaining observed resources are the public `resolvefintech.com` hosted zone, its registered
+domain (automatic renewal, expiry 2027-08-04), and the `marketdata-6055ee3f` S3 bucket in `us-east-1`.
+A separate fresh paginated metadata read confirms **30,640,146,110 bytes / 28.54 GiB in 12,174
+current STANDARD objects**, no noncurrent versions, and no incomplete multipart uploads. No object
+contents or names are persisted. Cost Explorer's latest seven reported days (2026-10-26 through
+2026-11-01) show S3 storage and Route 53 charges plus tax, with no compute/disk-service charges;
+the recent S3 storage charge is about **USD 0.021/day**, and November's hosted-zone charge is
+**USD 0.50**, with DNS queries additional. Current-month billing remains estimated and may lag.
+`report.json`, `bucket-detail.json` and both execution receipts preserve the exact scopes and
+terminal results. This inspection is independent evidence about the enumerated resources and
+costs, not an exhaustive AWS-service inventory or a supported teardown/credential-retirement
+receipt. The observed bucket/domain/DNS assets remain intact; no local deployment repair or
+development producer is resumed.
+
+Additional lossless compaction clears the recorded disk-pressure condition. **423** historical
+inactive executable paths are preserved in **26** verified gzip/zstd archives; both restore formats
+preserve SHA-256/mode and refuse overwrite. The current operator, canonical libraries/interfaces,
+current request/preparation executables, sources and secrets remain in place. Shared inode groups
+are counted once; unselected aliases remain untouched. Free space reaches **45.4 GiB**. Restore a
+needed historical member with `python3 .build/session-handoff-20261101/restore-inactive-1.py
+<recorded-path>` before rerunning a historical verifier that requires its old expanded path.
+The archive indexes and restore helper remain evidence-preservation dependencies.
+
+**Sprint `6.5` preparation-state draft handed off, 2026-11-01 UTC.**
+The 49-module predecessor plus exact canonical host-plan owner are preserved as a **50-module**
+baseline under `.build/sprint-6.5/ordinary-preparation-state-20261101/`. The **52-module** draft
+changes seven owners and adds two modules. Its quiescent preparation term includes the outer
+record, complete settings/request roots, host plan raw/derived fields, intent metadata/one-shot
+cell, and runtime-filesystem snapshot. It checks the total application partition before intent
+construction and checks the returned preparation before the final original-window clock check.
+Submission uses a direct atomic Bool swap, with no blocking waiter queue or retained update
+selector on cancellation. Executing threads, primitive/GC/validation peaks and other runtime state
+remain separate costs.
+
+The warning-clean **499-module** integration closure plus linking passes. Five new unit cases
+cover accounting, arbitrary-width snapshot metadata, exact-one-winner concurrency and cancellation;
+five preparation controls pass at the original **128-MiB** heap. The default term is **149,632
+bytes**: settings/request **122,240**, host plan **21,496**, intent **2,880**, runtime snapshot
+**2,976**, plus the **40-byte** outer record. Pair-only and one-byte-below declarations refuse
+before intent creation; exact and original **2-MiB** positive controls proceed. A wide synthetic
+snapshot term is **151,768**; its values are fixture metadata, not native filesystem observations.
+
+The **40** still-reachable prior regression cases, **17** unchanged runtime/native/unsent-publisher
+controls and three backing-identity regressions pass. Six older negative fixtures now refuse at
+their upfront construction of a deliberately underfunded preparation; their earlier loader
+assertions are unreachable and are **not** counted as current loader passes. All original fixture
+sources, byte domains, resource windows and production declarations remain preserved.
+
+The preparation graph check is **not complete**. Its first report driver aborts after a missing
+marker; a second driver preserves all eight child diagnostics. Five children refuse the observer’s
+Bool-cell predicate because the pinned heap represents nullary Bool with one nonpointer padding
+word. Three request/observer children pass; no structural underbound is observed before refusal.
+`PreparationGraphProbe2.hs` narrows acceptance to the pinned Bool constructor and permits that
+padding, but its formatter check exits **100** on non-stable guard indentation. Its executable and
+final graph matrix were **not launched**. Do not describe that diagnostic refinement as validated.
+
+`handoff-validation-1.json` verifies **ten** terminal scopes (seven successful, three diagnostic/
+formatter failures), exact selected snapshots, immutable executables, predecessor hashes and
+unchanged public executable/operator identity. The last successful style scope covers **62**
+sources including the first graph fixture. Compiler scratch is reused in place with unchanged
+flags: `ordinary-input-usage-20261101/objects-1` for integration and the predecessor’s
+`ordinary-request-state-20261101/graph-objects-1` for fixture-only heap inspection. No compiler
+cache is cloned. Existing cleanup ownership covers the new aliases; pending remains **81**.
+
+On resumption, normalize and re-check `PreparationGraphProbe2.hs` formatting, build its unused
+`graph-2-spec` target, and run `run-graph-controls-3.py` under a **new** guarded label (the failed
+style record already owns its old label). Preserve all failed inputs/receipts. Then finish retained
+caller/runtime state and compiler environments, transient sizing/decoder/producer/validation/GC
+costs, native/kernel/filesystem/service costs, physical/Authority admission, captured business
+graph execution, routing, epoch retirement, qualification and canonical promotion/removal.
+These staged component results grant none of those remaining proofs. The public canonical operator
+is unchanged; no image/live qualification attempt or cutover accompanies this draft.
+
+**Sprint `6.5` complete immutable request reservation draft validated, 2026-11-01 UTC.**
+The **43-module** predecessor plus four exact canonical owner inputs are preserved as **47**
+baseline modules under `.build/sprint-6.5/ordinary-request-state-20261101/`. The **49-module**
+draft changes 14 modules and adds shared primitive storage terms plus a combined state reservation.
+All ten immutable request roots are covered: wire/input records, runtime-memory proof, protocol/
+replay schedule, caller profile/original binding, helper/stream limits, context and shape counters.
+Private owners export size-only projections; proof constructors stay private. Twelve owners retain
+their complete original declaration bodies; settings primitive arithmetic delegates to the shared
+implementation, and the loader adds the combined denial checks. Numeric widths, raw alternative
+peak lists, nested resource coordinates, text backing capacity and known compact byte-view origins
+remain explicit. Repeated references are charged conservatively rather than claimed disjoint.
+
+The warning-clean **496-module** integration closure plus link and final **58-source** formatting/
+extra-group HLint pass. Seven new pure cases and four fresh loader controls pass at the original
+**128-MiB** heap. In the ordinary fixture, settings reserve **66,800 bytes** and the complete request
+adds **55,440**, giving **122,240**. A declaration covering settings alone refuses cold loading
+after decoding and before preparation; reuse refuses before fresh validation. The original **2-MiB**
+application partition funds both positive controls. The **35** preceding integration cases,
+**17** actual-runtime/native/unsent-publisher controls and three backing-identity regressions pass
+with their original results, byte domains, resource limits, windows and scratch arithmetic.
+
+Eight independent graph-test children pass: an observer check, five primitive objects and six
+complete request scenarios. Each request scenario checks opaque subroots and the unique combined
+settings/request pointer graph after the field traversal and GC. Default request storage observes
+**23,640 bytes** against its **55,440-byte** structural term; the paired graph observes **37,504**
+against **122,264**, including the fixture's 24-byte tuple. Wide raw deadline metadata preserves
+**4,097 bits**. A **1,000,000-byte** text backing, both invite-mail selectors, optional retained-audit
+coordinates and a scoped provider role also fit their terms. These are current-value graph
+observations, with no general compiler-environment, transient, GC or RSS bound.
+
+`progress-validation-1.json` verifies **14** successful/expected-failure scopes, all baseline
+hashes, the exact delta, preserved owner bodies, **864** coherent support inputs, **16** pinned
+representation members and immutable executables. The first compiler invocation refuses a local
+name collision. The second exposes private transport-bound selectors; a size-only owner projection
+corrects that access. The first graph matrix rejects its invalid exact-recipient fixture before
+measurement; the supported `test-<hex>` fixture passes. Failed sources, arguments, snapshots and
+terminal guards remain preserved. The integration cache is reused with unchanged flags. The
+fixture-only heap observer uses its own cold compiler directory for its extra package exposure,
+then reuses that scratch for the corrected fixture; no cache clone or production dependency is
+added. Public executable identity/operator remain unchanged. Existing cleanup ownership covers
+the increment; pending remains **81**.
+
+Preparation, mutable caller/runtime state, compiler closure environments, parser/extraction/
+producer/validation/sizing/GC peaks, native/kernel/filesystem/service costs, physical/Authority
+admission, captured business-graph execution, routing, epoch retirement, qualification and canonical
+promotion/removal remain open. A passing immutable component check grants none of those proofs.
+`6.5` stays Next; later sprints stay parked.
+
+**Sprint `6.5` compact request-byte ownership draft validated, 2026-11-01 UTC.**
+The **43-module** predecessor is preserved under
+`.build/sprint-6.5/ordinary-request-retention-20261101/`. Two modules change. The common request
+validator preserves its original version/program/encoded-byte guards, then compacts the public
+key, scope-binding bytes, nonce and embedded memory profile before typed scope/profile decoding.
+All subsequent semantic checks and wire declarations remain byte-for-byte unchanged. Copied
+payload lengths sum to at most the already checked command length. The scratch floor now reserves
+held sources plus `max(settings normal form, profile normal form + command bytes)` for the two
+serial phases. Buffer/header, other retained and transient whole-program costs remain separate;
+this component term grants no complete funding or admission.
+
+Three correctly guarded frozen controls expose a **32-byte** nonce retaining a planted **8-MiB**
+allocation after construction, canonical capture and revalidation. The frozen executable fails the
+new ownership assertion. All three replacement controls pass, preserving exact values and canonical
+request bytes within each control. Actual ForeignPtr-content identities distinguish allocation
+sharing even at the captured field's nonzero offset. The fixture keeps its planted buffers alive
+on both sides at the original **128-MiB** heap and one capability; this is a field-ownership result,
+with no RSS, native descriptor-reader or complete application-state claim.
+
+The warning-clean **493-module** closure plus linking, final **50-source** formatting/extra-group
+HLint, all **35** budget/reuse/profile/settings/loader cases and all **17** actual-runtime/native/
+unsent-publisher controls pass. The pure phase tests include copy/profile overlap and reservation
+boundaries. Existing large-settings scratch/application refusals and funded controls retain their
+results and exact arithmetic. Accepted byte domains, original windows, installed limits and public
+executable/operator remain unchanged.
+
+`progress-validation-1.json` verifies seven correctly guarded successful/expected-failure scopes,
+every predecessor hash, the exact two-module delta, all immutable executables and five pinned
+bytestring/ForeignPtr/CBOR/Serialise source members. Ten initial attempts used a wrapper whose
+relative base still named the predecessor directory; their producer results are explicitly excluded
+from current-stage validation claims in `invalid-source-scope-1.json`. Original records, the initial
+formatter refusal and the report driver's missing-receipt failure remain preserved there. Fresh
+frozen/replacement builds and every control are rerun with both 43-module fields guarded. The
+corrected wrapper also refuses any explicit Haskell compiler input missing from its declared set.
+Compiler scratch is reused in place with unchanged flags. Existing cleanup ownership covers this
+increment; pending remains **81**.
+
+Complete request/preparation/application state, compiler closure environments, parser/extraction/
+producer/validation/GC peaks, native/kernel/filesystem/service costs, physical/Authority admission,
+captured business-graph execution, routing, epoch retirement, qualification and canonical promotion/
+removal remain open. `6.5` stays Next; later sprints stay parked.
+
+**Sprint `6.5` settings normal-form reservation draft validated, 2026-11-01 UTC.**
+The **41-module** predecessor plus exact canonical runtime-memory input are preserved under
+`.build/sprint-6.5/ordinary-settings-retention-20261101/`. The **43-module** draft changes the
+captured loader and adds an application-only memory getter plus one structural model. It covers
+raw configuration and allocation, coordinate, public-edge, context and resolved-path derivatives
+on the pinned unprofiled 64-bit representation. Generic traversal covers all raw fields, explicit
+selectors cover narrowed derivatives, erased newtypes add no wrapper, arbitrary-width Naturals
+retain their array capacity and text slices charge their complete backing arrays. Repeated
+references are charged conservatively; independent shared roots are not claimed to be disjoint.
+
+The warning-clean **492-module** integration closure plus link, final **50-source** formatting/
+extra-group HLint, **35** budget/reuse/profile/settings/loader cases, **17** actual-runtime/native/
+unsent-publisher controls and six fresh model/observer children pass. The **40,000** accepted empty
+certificate declarations contribute a **2,946,800-byte** settings term in the loader fixture.
+With its syntax scratch funded at **32 MiB**, cold loading refuses the **2-MiB** application
+partition after decoding and before preparation; reuse refuses before fresh validation. Two
+independently authored controls allocate **4 MiB** application state and **32 MiB** scratch inside
+the unchanged **128-MiB** heap and **256-MiB** family declaration and reach preparation. Existing
+**16-MiB** scratch refusals still precede every loader effect. No installed limit increases.
+
+Five independently inspected decoded settings graphs fit their structural terms, including the
+large list, a text slice backed by **100,000 bytes**, and a **4,097-bit Natural**. Exact canonical
+round-trips and reservation/one-byte-below boundaries pass. The fixture-only pointer observer
+counts shared objects once and rejects effectful references; it never enters arrays or arbitrary
+compiler thunks. Earlier attempts to force compiler closures exposed an observer defect and are
+preserved as such, including the timed-out child and termination of its own QA service. They are
+not product memory-failure evidence.
+
+`progress-validation-1.json` verifies **25** successful/expected-failure scopes, all predecessor
+hashes, the exact two changed/one added modules, **864** coherent support inputs, nine pinned
+representation members and all immutable executables. The first structural compiler invocation
+used unavailable private names; public getters/compatibility patterns correct it. The first
+integration style pass's list-expression hint is corrected. A final Haddock-only relocation is
+verified against the tested source; executable declarations are unchanged. Existing cleanup
+ownership covers the increment; pending remains **81**. Compiler scratch is reused in place with
+unchanged flags. Public executable identity and operator remain unchanged.
+
+This closes one structural reservation term. Compiler closure environments, complete transient
+parser/extraction/producer/validation/GC costs, other retained application state, native/kernel/
+filesystem/service costs, physical/Authority admission, captured business-graph execution, routing,
+epoch retirement, qualification and canonical promotion/removal remain open. A passing component
+check grants none of those proofs. `6.5` stays Next; later sprints stay parked.
+
+**Sprint `6.5` cold-controller RTS observation draft validated, 2026-11-01 UTC.**
+The **40-module** predecessor plus exact canonical kernel-owner input are preserved as a
+**41-module** field under `.build/sprint-6.5/ordinary-controller-heap-20261101/`. Three modules
+change. Cold native loading compares its actual RTS heap/capabilities with inspected authored
+metadata before settings decoding. The kernel helper uses the pinned target `BLOCK_SIZE`, refuses
+unlimited or unequal heaps and anything other than one capability, and checks the original work
+end before/after observation. The existing later owner checks remain byte-for-byte unchanged.
+Publisher preparation stays a separate host-process role. Wire/full-request validation, accepted
+byte domains, declared controller profile and original windows remain unchanged.
+
+The warning-clean **491-module** integration closure plus linking and pinned formatting/extra-group
+HLint for **47** source/fixture files pass. All **17** fresh actual-runtime controls pass: six
+policy cases, seven native cold-loader cases and four publisher cases. The declared controller heap
+stays **128 MiB**. Matching controls use that heap and one capability; deliberately wrong actual
+**64/256-MiB**, unlimited and two-capability policies refuse. Expired observation refuses immediately.
+The foreign-scope pair reaches the settings scope refusal under matching RTS policy and the earlier
+heap refusal under mismatch. Publisher controls succeed under matching, smaller, unlimited and
+two-capability host policies, check their exact original keys and obtain typed unsent-input retirement
+receipts. They submit no controller or process role and perform no AWS/Kubernetes mutation.
+
+All **33** preceding budget/reuse/profile/settings/cold-reuse regression cases pass at their
+original **128-MiB** heaps, preserving their accepted/refused results and exact scratch arithmetic.
+`progress-validation-1.json` verifies all four successful scopes, every baseline hash, the exact
+three-module delta, unchanged wire/full-request validation and later kernel-owner checks, **864**
+coherent support inputs, the explicit kernel overlay, six pinned RTS source/header members and the
+immutable executable. The predecessor compiler directory remains mutable regenerable scratch,
+reused in place with unchanged flags. Complete source/artifact guards match. Existing cleanup
+ownership covers this increment; pending remains **81**. Public executable identity and operator
+remain unchanged.
+
+RTS policy is an observed containment setting, not a live-memory, RSS, physical-parent or Authority
+admission proof. Complete retained settings/derived state, parser/extraction/producer/validation/GC
+peaks, native/kernel/filesystem/service costs, captured graph execution, routing, epoch retirement,
+qualification and canonical promotion/removal remain open. `6.5` stays Next; later sprints stay parked.
+
+**Sprint `6.5` captured-input scratch-floor draft validated, 2026-11-01 UTC.**
+The **39-module** predecessor is preserved under
+`.build/sprint-6.5/ordinary-input-budget-20261101/`. The **40-module** draft changes the request
+inspector and captured-input loader and adds one minimum-resource model. Actual held settings and
+command bytes join the larger serial settings/profile normal-form term. Cold loading checks that
+known-input minimum before settings decoding; reuse selects its already checked profile and checks
+before fresh settings validation. Both refuse before intent preparation. The inspection returns
+only a denial-capable check: its untrusted memory declaration grants no actual heap, original
+process parent or Authority admission. Existing wire declarations, byte ceilings and runtime limits
+remain unchanged.
+
+The warning-clean **490-module** integration closure plus linking and final pinned formatting/
+extra-group HLint for **47** source/fixture versions pass. All four arithmetic/boundary cases,
+12 existing reuse cases, six actual profile-decoder and five actual settings-decoder controls pass.
+All six fresh cold/reuse loader controls also pass at the original **128-MiB** heap. The large
+accepted settings value contains **40,000** empty certificate declarations; existing validation
+already ignores those entries, while their encoded/expression structure still consumes resources.
+Its **223,535-byte** settings and **2,166-byte** request derive a **20,254,555-byte** known-input
+minimum. Cold and reuse both refuse the **16-MiB** scratch declaration before any loader effect.
+Two independently authored controls recompile the scratch partition to **32 MiB** inside the same
+**128-MiB** heap and **256-MiB** family declaration and reach preparation. This is component
+reservation evidence, not a larger installed limit, physical family enforcement or complete funding.
+Every loader control also checks foreign-original refusal before effects.
+
+`progress-validation-1.json` verifies **nine** successful/expected-failure scopes, all predecessor
+hashes, the exact two changed/one added modules, unchanged wire/full-request validation, the pinned
+structural basis, **864** coherent support inputs and both immutable executables. The initial
+compiler scopes retain an obsolete fixture-root selection and a missing test-field import; the
+corrected build passes. The first new loader matrix stopped on its fixed expired fixture window;
+the corrected fixture uses the preceding validated **15-second** relative work window, with no
+duration extension. The non-stable first formatter pass, all failed source/argument/terminal
+records and their snapshots remain preserved. Final source/artifact guards match. The predecessor
+compiler directory remains mutable regenerable scratch reused in place with unchanged flags.
+The existing cleanup row owns this increment; its pending count remains **81**. Public executable
+identity and operator remain unchanged.
+
+Complete retained settings/derived state, parser/extraction/producer/validation/GC peaks, native/
+kernel/filesystem/service costs, physical/Authority admission, captured graph execution, routing,
+epoch retirement, qualification and canonical promotion/removal remain open. A passing minimum
+check is insufficient to admit the program. `6.5` stays Next; later sprints stay parked.
+
+**Sprint `6.5` captured-input normal-form footprint draft validated, 2026-11-01 UTC.**
+The **38-module** predecessor is preserved under
+`.build/sprint-6.5/ordinary-input-footprint-20261101/`. The **39-module** draft adds scalar token
+counts to the existing opaque usage measurement and derives separate normal-form expression,
+sequence, map-entry and scalar-storage terms. The checker branches, accepted data language,
+canonical codec, input caps and runtime limits remain unchanged. Pinned Dhall/container/text/CBOR
+and GHC sources justify the unprofiled **64-bit** representation basis; the bank preserves
+**24** dependency members and a separate exact target-word-size header. No runtime closure
+introspection enters the production model.
+
+The warning-clean **486-module** integration closure plus linking and final pinned formatting/
+extra-group HLint for **45** source/fixture files pass. All **68** pure cases pass at the original
+**128-MiB** heap, preserving the preceding 64 cases and adding scalar-count/partition/structure
+checks. Twenty-four fresh serial children independently traverse each fully forced decoded heap
+graph, resolving stable-name hash collisions and counting each reachable closure once. All observed
+graphs fit the derived bound. A **900,007-byte** text input observes **900,104** graph bytes against
+a **900,469-byte** bound; a **65,536-element** Boolean list observes **2,359,312** graph bytes against
+a **25,166,208-byte** bound. The conservative bound follows structure rather than encoded length.
+All six actual profile-decoder and five actual settings-decoder controls pass at **128 MiB**.
+
+`progress-validation-1.json` verifies **nine** successful/expected-failure scopes, all baseline
+hashes, the one changed and one added module, **864** coherent support inputs and both immutable
+executables. The initial two integration invocations refused incorrect fixture arguments before
+running decoder cases; their source/argument/terminal records remain preserved. Corrected invocations
+and complete source/artifact guards pass. The predecessor integration compiler directory remains
+mutable regenerable scratch reused with unchanged flags; no compiler-cache copy is made.
+Public executable identity and operator remain unchanged.
+
+This funds one structural normal-form term only. Captured bytes, parser/extraction/canonical-encoder/
+validation-derivative and GC peaks, other retained state, native/kernel/filesystem/service costs,
+physical/Authority admission, captured graph execution, routing, epoch retirement, qualification and
+canonical promotion/removal remain open. It grants no whole-decoder peak or RSS bound. `6.5` stays
+Next; later sprints stay parked.
+
+**Sprint `6.5` shared captured-input projection validated, 2026-11-01 UTC.**
+The **38-module** input-accounting baseline is preserved under
+`.build/sprint-6.5/ordinary-input-representation-20261101/`. Only two decoder extraction lines
+change: after the closed-schema guard and direct decode to `Expr Void Void`, `renote` widens the
+source-annotation type while sharing the syntax graph. Producer erasure/normalization and general
+expression handling retain their existing behavior. Pinned Dhall **1.42.3** source confirms direct
+expression decoding, strict-map/original-key representation and the widening operation. This path
+has no generic intermediate CBOR term tree. The captured-file reader already uses `createAndTrim`;
+transient read capacity and retained input bytes remain distinct terms in the resource model.
+
+The warning-clean **485-module** integration closure plus linking and final pinned formatting/
+extra-group HLint for **43** source/fixture files pass. All **48** compatibility cases pass, including
+**42** valid-value pairs comparing both extraction projections through canonical re-encoding and
+six malformed-data refusals. All six actual profile-decoder and five actual settings-decoder
+controls pass at the original **128-MiB** heap, preserving the preceding accepted/refused results,
+metadata retention, round-trip and size limits.
+
+Two serial fresh-child diagnostics process the same **30,000-record** fixture at **128 MiB**.
+Stable-name checks confirm a new expression root for `denote` and the original root for `renote`.
+Conversion plus forcing allocates **25,562,120** versus **9,122,272 bytes** in the measured region;
+later encoder verification erases annotations outside that region. The difference is an allocation
+observation, not a retained-heap/RSS bound or a claim that traversal allocates nothing.
+
+`progress-validation-1.json` verifies **eight** successful/expected-failure scopes, all 38 baseline
+hashes, the exact two one-line changes, **864** coherent support inputs, eight pinned dependency
+members and both immutable executables. The predecessor's mutable compiler directory is reused
+with unchanged flags; only changed modules/fixtures rebuild. It is regenerable scratch, not
+immutable evidence. The diagnostic's initial serializer-type compilation failure and its source
+remain preserved; the corrected verification step passes. Complete source/artifact guards match.
+Public executable identity and operator remain unchanged. Complete memory/native/filesystem/
+service funding, admission, captured graph execution, routing, epoch retirement, qualification and
+canonical promotion/removal remain open. `6.5` stays Next; later sprints stay parked.
+
+**Sprint `6.5` captured input-structure accounting validated, 2026-11-01 UTC.**
+The **36-module** ordinary draft plus exact canonical schema-checker/settings-payload inputs are
+preserved as a **38-module** baseline under `.build/sprint-6.5/ordinary-input-usage-20261101/`.
+Three modules change. The existing trusted-schema scan returns strict opaque measurements:
+value/type visits, list elements, record fields, union alternatives, checked containers, scalar
+encoded-token spans and maximum checker depth. Spans include CBOR headers; these counts are not
+general-expression node counts or heap bytes. Results retain no input values. The ordinary request
+retains its checked profile measurement, and actual settings decoding shares the measuring scan.
+The request wire and original input/runtime limits remain unchanged.
+
+The warning-clean **483-module** integration build plus linking and final pinned formatting/
+extra-group HLint for **42** current source/fixture files pass. All **64** pure cases pass at
+**128 MiB**: **48** preceding compatibility cases and **16** structural cases, including equal byte
+lengths with different structure, UTF-8/bignum spans, complete union types, a **10,000-element**
+flat list and refused partial measurements. Six actual profile-decoder controls pass at the same
+heap, preserving the preceding accepted/refused results and checking the request's retained
+measurement. Five actual settings-decoder cases pass canonical round-trip, full-size deep malformed
+inputs, trailing-data refusal and the original byte cap.
+
+`progress-validation-1.json` verifies **twelve** successful/expected-failure scopes, all 38 baseline
+hashes, the exact three changed modules, unchanged wire declarations, **864** coherent support
+inputs, all four test executables and the pinned CBOR byte-offset source. The independent
+**1,012-file** cache is preserved; the integration compile still rebuilds its closure. The initial
+test-expression HLint hint and non-stable first settings formatting pass remain preserved with
+their frozen sources. The corrected test version and final style check pass. Complete source and
+artifact guards match. Public executable identity and operator remain unchanged.
+
+Structural units support the remaining resource derivation; they grant no memory or Authority
+admission. Complete retained/parser/decoded/native/filesystem/service funding, captured graph
+execution, routing, epoch retirement, qualification and canonical promotion/removal remain open.
+`6.5` stays Next; later sprints stay parked.
+
+**Sprint `6.5` embedded memory-profile schema guard validated, 2026-11-01 UTC.**
+The **36-module** command-domain baseline is preserved under
+`.build/sprint-6.5/ordinary-profile-shape-20261101/`. Only the ordinary request module changes:
+its embedded runtime-memory profile now uses the existing closed-schema checker before allocating
+a general Dhall expression. The **64-KiB** profile and **one-MiB** request limits, canonical codec,
+command/resource declarations and runtime limits remain unchanged.
+
+The warning-clean **483-module** build plus linking and pinned formatting/extra-group HLint for
+**37** staged source/fixture files pass. Six actual public-request decoder probes pass both before
+and after in fresh pure children at the same **128-MiB** heap: valid round-trip, tiny invalid record,
+deep record/list inputs at the existing size ceiling, a Natural equal to **2^512** and oversized input.
+All six recorded accepted/refused results match. Both implementations already pass at 128 MiB;
+no production heap failure is demonstrated. Deep-input sampled RTS memory in use falls from
+**6/9 MiB** to **3 MiB**; those samples do not fund the complete program or establish native RSS.
+
+`progress-validation-1.json` verifies **eight** successful/expected-failure scopes, all 36 baseline
+hashes, the exact one-module delta, **864** coherent support inputs and both six-case matrices.
+The independently copied **1,012-file** cache is recorded; changed initial compilation flags caused
+the broader baseline rebuild, while the corrected replacement retains those flags. The initial
+misplaced-import formatting/compiler failures and their frozen sources remain preserved. Final
+source/artifact guards match. Public executable identity and operator remain unchanged.
+Complete retained/parser/decoded/native/filesystem/service funding, admission, captured graph
+execution, routing, epoch retirement, qualification and canonical promotion/removal remain open.
+`6.5` stays Next; later sprints stay parked.
+
+**Sprint `6.5` ordinary command-domain draft validated, 2026-11-01 UTC.**
+The **35-module** compact-output baseline is preserved under
+`.build/sprint-6.5/ordinary-working-set-20261101/`. The **36-module** draft changes four existing
+modules and adds one command-resource model. It derives fixed command domains from the existing
+SDK, five Provisioner phases and local uninstall limits. Request compilation validates the maximum
+**256-KiB** command input with the same physical reserve checker as execution. The parent stderr
+floor now covers the uninstall's **1-MiB** domain. Command buffers stay in their existing reserve;
+they are not charged again to decode scratch. Interpreter command limits and runtime behavior
+are unchanged.
+
+The warning-clean command-budget build and **506-module** native closure pass, as do pinned
+formatting and extra-group HLint for **44** staged source/fixture files. All **five** budget cases
+pass, including an insufficient-input reserve that the stream-only check accepts and exact boundary
+acceptance. Both native healthy/stale credential-retirement/replay controls pass at the original
+**128/256-MiB** heap/family and **300/295/290-second** logical/outer/work limits. They retain the
+preceding raw/Text/legacy/overflow/escaped-client controls, cached authentication, one Job/worker,
+post-tail clock/physical checks, exact six-role absence and typed input retirement. External APIs
+and stores remain synthetic. `progress-validation-1.json` verifies **twelve** successful/expected-
+failure scopes, the 35 baseline hashes, exact source delta, **864** coherent support inputs and
+**ten** public publication/retirement records. The initial unused-import build failure remains
+preserved with matching source/artifact guards; the corrected build and final style check pass.
+
+The initial unbounded restart-Natural allocation hypothesis is disproved: pinned Aeson **2.2.5.0**
+rejects positive exponents above **1,024**. Three actual pure controls at **128 MiB** accept the
+case within that bound and promptly refuse both extreme cases. The unnecessary unvalidated classifier is
+preserved under `withdrawn-restart-classifier-1/` and never promoted. The restored coordinator only
+adds command-limit metadata exports. `restart-hypothesis-withdrawal-1.json` records the pinned
+source/archive and control scope. This establishes a decoder input bound, not a complete heap proof.
+
+Public executable identity and operator remain unchanged. Complete retained/decoded/parser/native/
+filesystem/service funding, admission, captured graph execution, routing, epoch retirement,
+qualification and canonical promotion/removal remain open. `6.5` stays Next; later sprints stay parked.
+
+**Sprint `6.5` compact EKS/DNS output draft validated, 2026-11-01 UTC.**
+The preceding **35-module** ordinary draft is preserved under
+`.build/sprint-6.5/ordinary-compact-output-20261101/`. Only three modules change: the SDK selects a
+closed Text projection over the same owned command, and EKS/DNS consume it directly. Failure
+diagnostics select their existing **4,096-character** prefix before decoding. The legacy String
+API, Char8 mapping, stream ceilings and original client/use/process owners remain unchanged.
+
+The warning-clean build covers **505 modules plus linking**; pinned formatting and extra-group
+HLint pass for **41** staged source/fixture files. Each of two successful native credential controls
+checks **eight** Text-output cases (all bytes, full **2-MiB stdout / 128-KiB stderr**, diagnostic
+boundaries), **two** actual legacy comparisons, **two** unchanged-ceiling refusals and escaped-client
+refusal, alongside the preceding **six** raw-output controls. Healthy retirement/replay succeeds;
+stale-Agent retirement/replay refuses exactly. Both retain one Job/worker, cached Vault login,
+independent Agent reads, post-tail clock/physical checks, exact six-role absence and typed input
+retirement. Original **128/256-MiB** heap/family and **300/295/290-second** logical/outer/work limits
+remain unchanged; external APIs/stores are synthetic.
+
+`progress-validation-1.json` verifies **nine** successful/expected-failure scopes, all 35 baseline
+hashes, the exact three changed modules, **864** coherent support sources, both native check records
+and **ten** public publication/retirement metadata records. The independently copied **1,010-file**
+compiler cache remains recorded; the current-package change triggered the broader rebuild. The
+initial formatter setup errors, corrected dispatch-style hint and two failed native attempts remain
+preserved. The concurrent healthy family refuses the shared ordinary-parent slice before submission; the second reaches the Text
+checks before the fixture reads its not-yet-created event file. Its comparison now follows the
+credential tail. Both failed attempts retain typed retirement and **eight** available public metadata
+records; they supply no independent driver-absence proof. The final two controls run serially.
+Public executable identity and operator remain unchanged. Complete retained/parser/decoded/native/
+filesystem/service funding, captured business-graph execution, admission, supported routing, epoch
+retirement, qualification and canonical promotion/removal remain open. `6.5` stays Next; later
+sprints stay parked.
+
+**Sprint `6.5` canonical credential byte-output integration validated, 2026-11-01 UTC.**
+The **1,653** preceding public inputs, actual operator and unit executable are archived and fully
+read back under `.build/sprint-6.5/credential-byte-output-promotion-20261031/` (**1,655** members).
+The byte-preserving SDK/classifier/coordinator changes are in their three existing canonical
+modules, with seven permanent byte-compatibility cases and raw/escaped-client assertions in the
+existing native carrier. The governed subprocess guide describes both typed result APIs. The
+ordinary draft's phase-count exports remain excluded.
+
+The canonical **875-module** all-target build, five-source formatting/HLint and all **seven**
+permanent compatibility cases pass. The current package snapshot matches every canonical
+object/interface/archive member with zero source overlays; its freshly built native fixture passes
+all **nine** controls at the original limits, with exact absence and typed input retirement for
+five families (**25** public metadata records). The required `prodbox dev check` passes all
+**10,510** cases (**9,540 + 27 + 35 + 908**) in **1,219.30 seconds**, inside the existing
+5-GiB/no-swap QA envelope. `progress-validation-1.json` verifies seven successful canonical scopes,
+the fully read-back archive, current package, exact source delta and complete matching source and
+artifact guards.
+
+Complete program funding/admission, graph execution, routing, epoch retirement and qualification
+remain open. A preparatory three-source compact Text-output draft under `next-compact-output-1/`
+is unvalidated and supplies no canonical or funding claim. `6.5` stays Next; later sprints stay parked.
+
+**Sprint `6.5` ordinary credential byte-output draft validated, 2026-10-31 UTC.**
+The preceding 33-module ordinary draft plus canonical SDK/absence classifier are preserved under
+`.build/sprint-6.5/ordinary-credential-byte-output-20261031/`. Only three of those **35** modules
+change. The owned Provisioner retains captured command bytes through seven JSON/worker-receipt
+decoding sites; its legacy `String` API remains available and host conversion stays demand-driven.
+The byte classifier shares the existing exact probe vocabulary and consumes stderr alone.
+
+The warning-clean **506-module** native build and pinned formatting/extra-group HLint for **42**
+sources pass. All **seven** pure compatibility controls pass across every byte value and probe.
+Both native ordinary controls pass healthy retirement/replay and exact stale-Agent refusals, with
+one Job/worker each, cached Vault authentication, independent Agent reads, escaped-client refusal,
+exact six-role absence and typed payload retirement. Each also checks six output profiles: all byte
+values, full **2-MiB stdout / 1-MiB stderr**, zero/nonzero exits and the legacy API. Their explicit
+64-KiB input and stream requests stay inside the already declared original command lane; the SDK
+convenience default's one-byte input limit is retained. Heap/family limits remain **128/256 MiB**;
+the preceding original **300/295/290-second** logical/outer/work fixture profile is unchanged.
+
+`progress-validation-1.json` verifies **eight** successful/expected-failure scopes, all baseline/
+current/support hashes, the two final controls and **ten** public metadata records. The deliberately
+stopped cold build, initial style hints and corrected fixture limit selection remain recorded.
+External services/stores remain synthetic. Canonical integration, complete retained/parser/decoded/
+native/filesystem funding, captured graph execution, admission, routing, epoch retirement and
+qualification remain open. `6.5` stays Next; later sprints stay parked.
+
+**Sprint `6.5` ordinary credential composition validated, 2026-10-31 UTC.**
+The **33-module** ordinary draft remains unchanged under
+`.build/sprint-6.5/ordinary-credential-composition-20261031/`. Two final native controls compose its
+captured caller, one cached Vault login, actual retained-epoch reads, checked signing, joined
+Authority/Agent HTTP exchanges and native Kubernetes client with the fixed credential-retirement
+coordinator and worker algebra. Healthy retirement and same-slot replay both succeed with one Job,
+one IAM retirement and independent Agent absence. Stale Agent readback refuses both calls: first
+at final confirmation, then at completed-slot resolution. Neither refusal creates another Job.
+Escaped Kubernetes/authentication owners and preparation reuse remain refused.
+
+Each final control independently observes exact six-role absence and performs typed input
+retirement. Post-tail clock/physical checks pass. The warning-clean native closure covers **506
+modules**; pinned formatting and extra-group HLint pass for **43** current/historical sources.
+The component profile derives a **300-second** original logical lifetime and runtime action
+deadline from the canonical authentication constants, places the physical outer end at **295
+seconds** and work at **290 seconds**, and never renews them. Its **128-MiB** heap / **256-MiB**
+family, CPU/task/stream limits and original-owner checks remain unchanged. This is a separate
+component clock profile, not an unchanged-clock causal comparison or complete service-rate proof.
+
+`progress-validation-1.json` verifies **40** successful/expected-failure scopes, unchanged baseline
+hashes, **39** compiled sources, **864** immutable support inputs and **70** public metadata records
+from fourteen typed-retired families. Three successful controls supply separate driver absence
+observations; the earlier healthy binary remains preserved alongside the two final-binary controls.
+The initial short-clock/shared-slice failures, fixture lifetime/KV/trust mismatches, clock-guard
+diagnostics and overly narrow stale-replay assertion remain recorded. Only fixture alignment and
+assertions change; no ordinary module or canonical executable input changes.
+
+External Vault/Authority/Agent/Kubernetes/IAM stores are synthetic. Complete retained-input/parser/
+decoded/native/filesystem funding, captured business-graph execution, physical/Authority admission,
+supported routing, revoked Authority-epoch retirement, qualification and canonical promotion/removal
+remain open. `6.5` stays Next; later sprints stay parked.
+
+**Sprint `6.5` captured-input reuse validated, 2026-10-31 UTC.**
+The preceding **33-module** ordinary draft is preserved under
+`.build/sprint-6.5/ordinary-input-reuse-20261031/`. After matching both published canonical byte
+frames, the publisher now reuses its captured settings/configuration and request wire instead of
+decoding second copies. It still revalidates the typed configuration/context, recompiles every
+request derivative, performs fresh physical preparation and checks the original binding and plan.
+Fresh clock, manager, host-capacity and runtime-storage observations remain mandatory. Initial native
+controller loading retains its normal decoder; no admitted identity or original window changes.
+
+The full warning-clean native build covers all 33 draft modules in a **484-module** closure; the
+publisher/derived-state fixtures compile **485 modules**. Pinned formatting and extra-group HLint
+pass for **38** current draft/fixture sources. All **46** controls pass: **12** new reuse/refusal
+cases, **27** captured-input regressions, **six** publisher controls and one direct native publisher
+check. That final check supplies identically encoded settings with a stale derived allocation plan;
+actual revalidation refuses before the callback and retires the unsent payloads. It does not stand
+in for that mechanism with a successful fake. The existing actual-family control independently
+observes whole-field/every-role absence, preserves active/escaped-owner refusals, performs typed
+payload retirement and metadata-only idempotent recovery, and refuses to renew expired work.
+
+`progress-validation-1.json` verifies **fourteen** successful/expected-failure scopes, all 33 baseline
+module hashes, the exact three changed modules, **864** immutable canonical support inputs, current
+sources/test binaries and **five** public metadata records from the submitted and retired family.
+The initial shadowing warning, non-stable formatter pass and path-order verifier refusal remain
+retained. These changes remove redundant decoding; they supply no complete heap/native/filesystem
+bound or Authority admission. Full program funding, captured graph/credential execution, supported
+routing, epoch retirement, qualification and canonical promotion remain open.
+`6.5` stays Next; later sprints stay parked.
+
+**Sprint `6.5` ordinary native-environment integration validated, 2026-10-31 UTC.**
+The preceding **31-module** ordinary baseline is preserved under
+`.build/sprint-6.5/ordinary-environment-integration-20261031/`. The **33-module** draft carries
+captured native bytes through caller preparation/token commands, the joined home broker and
+home/EKS/DNS clients. Native EKS selector/attempt factories share the existing issuer and closed
+client vocabulary. Its immutable canonical source support comes from the verified **875-module**
+snapshot. The complete draft typechecks warning-clean across **476 modules**; pinned formatting and
+extra-group HLint pass for the 33 ordinary sources and three current fixtures.
+
+The **491-module** native fixture build and actual ordinary-family control pass. The caller retains
+a **1.75-MiB** inherited environment, preserves captured PATH/helper behavior after ambient changes,
+scrubs the shared credential-key inventory, performs one cached native Vault login and signed
+Authority requests, and refuses preparation reuse and an escaped authentication owner. The driver
+independently proves exact six-role absence and retires its exact payloads through the typed owner.
+The Authority/Vault/SDK endpoints are loopback fixtures; this is no captured business-graph or
+server-persistence proof.
+
+The first two native controls retain their failures and typed payload retirement. The fixture-owned
+diagnostic identifies `OwnedSubprocessInvalidLimits`: the borrowed registration carrier's **2-MiB**
+stream reserve could not fund the ordinary **two-/one-MiB** stdout/stderr domains. Both sides of the
+replacement carrier now derive from the already declared ordinary profile, including its **16-MiB**
+decode and **16-MiB** other-heap reserves inside the original **128-MiB** heap / **256-MiB** family.
+It asserts unchanged parent/family memory, CPU/tasks and transport-role limits. Original five-clock
+windows and command/transport lanes remain intact; no runtime envelope is increased.
+
+`progress-validation-1.json` verifies **eleven** successful/expected-failure scopes, the preserved
+baseline, all **864** immutable canonical support inputs, the current sources/binary and **15** public
+metadata records for three typed-retired families. Only the successful third control supplies the
+independent driver-absence marker. Initial string-consumer, compiler-dependency, duration-constructor
+and style refusals remain retained. The draft still needs complete retained-input/parser/decoded/
+native/filesystem funding, physical/Authority admission, captured graph/credential execution,
+supported routing, epoch retirement, qualification and canonical promotion.
+`6.5` stays Next; later sprints stay parked.
+
+**Sprint `6.5` native-environment interpreter validated, 2026-10-31 UTC.**
+The **1,651** preceding public sources, operator and main unit executable are archived and fully
+read back under `.build/sprint-6.5/native-environment-interpreter-20261031/`. The exact **874-module**
+canonical package remains frozen. New native-byte invocations share the existing command/transport
+owner and cleanup path; the string environment contract is preserved. Native home/EKS SDK factories
+share the original use/file scopes and one credential-key inventory.
+
+Warning-clean staged compilation and pinned formatting/HLint pass. Two original-envelope native
+families pass with a **1.75-MiB** synthetic environment at **128-MiB** heap / **256-MiB** family.
+They exercise PATH/helper capture, binary input, output/NUL/deadline refusals, startup and ordinary
+transports, lease closure, SDK credential-key scrubbing and escaped-client refusal. Each independently
+proves exact six-role absence and retires its exact payloads through the typed owner. These are
+component fixtures, not an authenticated Authority/business program or a complete working-set bound.
+
+The interpreter/helper, SDK factories, extended permanent native fixture, semantic fixture and two
+Unicode/raw-key unit cases are in canonical source. The all-target **875-module** build passes with
+complete matching identities and declared guards. Both fixtures are rebuilt against that canonical
+package without source overlays. All **nine** native/carrier controls and both **eleven-control**
+semantic profiles pass. The required `prodbox dev check` passes **10,503 tests**
+(**9,533 + 27 + 35 + 908**) in **1,773.93 seconds** under the unchanged **5-GiB**, no-swap,
+sixty-four-task source-QA envelope. Complete source identities and declared input/artifact guards
+match. `progress-validation-1.json` verifies **22** successful/expected-failure scopes, all
+**1,653** archived member hashes, the retained **874-module** package and the **875-module**
+canonical snapshot, including every current object/interface and zero snapshot source overlays.
+The public metadata of **seven** absent and typed-retired families is preserved (**35** records).
+Initial fixture import/alias, formatting and private-package visibility failures remain retained.
+No image/live AWS attempt, Kubernetes resource mutation, allocation change, phase or class closure
+is added. `6.5` stays Next; later sprints stay parked.
+
+Next is full retained-input/parser/decoded/native/filesystem funding for the complete ordinary
+program. Physical/Authority admission, captured business-graph execution, supported routing,
+runtime-epoch retirement and qualification remain open.
+
+**Sprint `6.5` inherited-environment capture validated, 2026-10-31 UTC.**
+The exact **31-module** ordinary baseline is retained unchanged under
+`.build/sprint-6.5/inherited-environment-20261031/before-src/`. One standalone native-byte environment
+helper is staged alongside controlled probes. It retains inherited entries, supports key filtering
+and filesystem-encoded overlays, reports encoded input usage and refuses an expired capture.
+Its owned-interpreter/SDK integration is recorded above; the complete ordinary caller remains open.
+
+Warning-clean compilation, pinned formatting and extra-group HLint pass. Two **eleven-control**
+semantic profiles pass, including PATH preservation, Unicode, raw non-UTF-8 bytes, duplicate/empty
+keys, entries without a separator, filtering, overlays and invalid authored keys/values. Pinned GHC
+and Unix sources are retained. The convenience POSIX pair API's partial missing-separator handling
+is avoided without narrowing the GHC-accepted inherited entries.
+
+**32** controlled observations cover the original prototype and staged owner at four synthetic
+environment sizes. Both paths pass every **128-MiB** production-heap control. At a **1.75-MiB**
+payload, string capture plus two child encodings uses **97 MiB** RTS memory in use, versus **8 MiB**
+for the compact owner. At the separate **32-MiB** diagnostic, the string path exhausts its heap at
+one and 1.75 MiB; the compact owner passes. These are component measurements, not complete-program
+or cgroup bounds. Runtime envelopes and accepted PATH/helper behavior remain unchanged.
+
+`progress-validation-1.json` checks **ten** successful/expected-failure scopes, both matrices, all
+four source bodies, three binaries and the unchanged baseline. The redundant-import failure and
+one unscoped source-capture refusal remain retained. That refusal occurs while the canonical gate
+relinks its dynamic library, before the component compiler starts; it supplies no complete scope.
+
+Next is compact-environment integration with original owned command/transport and ephemeral SDK
+execution, followed by complete retained-input, parser/decoded/native and filesystem funding.
+Physical/Authority admission, captured graph/credential execution, supported routing, runtime-epoch
+retirement and qualification remain open. No image/live AWS attempt, Kubernetes resource mutation,
+allocation change, phase or class closure is added. `6.5` stays Next; later sprints stay parked.
+
+**Sprint `6.5` captured-settings rejection validated, 2026-10-31 UTC.**
+The preceding **1,649** public sources and operator are archived and read back under
+`.build/sprint-6.5/captured-settings-shape-20261031/`. At the unchanged **one-MiB** input ceiling,
+the original general-expression decoder returns structured results for all four registered cases
+under the production **128-MiB** heap, with up to **104 MiB** RTS memory in use. A schema-first
+replacement returns the same outcomes using up to **10 MiB** for the deeply malformed cases.
+Both also pass a **64-MiB** diagnostic. At the separate **16-MiB** component diagnostic, both deep
+cases exhaust the original heap and the replacement returns structured refusals; production limits
+remain unchanged. Input assembly creates bytes directly, without an expression tree.
+
+The replacement passes **48** canonical-domain controls and the existing complete settings fixture.
+Pinned formatting and extra-group HLint pass after retained style corrections. The helper, payload
+integration and 48 permanent controls are promoted to source; the settings fixture also gains both
+deep malformed inputs. The all-target **874-module** canonical build passes with complete matching
+source/input/artifact guards. Both fixtures are rebuilt against that package without source overlays;
+all four controls pass at **128 / 16 MiB**, and the complete settings fixture passes with both added
+deep inputs. The required `prodbox dev check` passes **10,501 tests**
+(**9,531 + 27 + 35 + 908**) in **1,243.11 seconds**, under the unchanged **5-GiB**, no-swap,
+sixty-four-task source-QA limit. Complete source identities and declared input/artifact guards match.
+
+`progress-validation-1.json` verifies **24** successful/expected-failure scopes, all **1,650**
+archived member hashes, retained predecessor interfaces/generated sources and the coherent current
+package. The **874-module** snapshot under
+`.build/sprint-6.5/settings-shape-current-package-20261031/` matches every canonical object/interface
+and archive member, with **zero** source overlays. It is a frozen canonical snapshot, not a fresh
+private rebuild. The original decoder's diagnostic heap failures and initial hidden-package/style
+failures remain retained. These observations prove no complete-program bound, physical/Authority
+admission or qualification.
+`6.5` stays Next; later sprints stay parked.
+
+**Operator-requested storage cleanup verified, 2026-10-31 UTC.**
+Removing **35** unused, unreferenced untagged Docker images, old unused Docker build cache and
+**342,810,624 bytes** of regenerable Cabal/Dhall/Helm caches increases filesystem available space
+by **24,072,724,480 bytes (22.42 GiB)**. Available space is **24.47 GiB** at closing observation.
+All tagged image references, the current operator and pinned Haskell package remain intact;
+source and validation evidence are retained. The before/after inventory and exact checks are in
+`.build/storage-cleanup-20261031/summary-1.json`. A further unused BuildKit-cache pass frees
+**537,530,368 bytes**, bringing the sum of the two measured cleanup deltas to
+**24,610,254,848 bytes (22.92 GiB)**. It preserves all 48 tagged references, containers, volumes
+and the current operator; its closing available-space observation is **19.42 GiB** at 19:25 UTC,
+after intervening builds. The separate receipt is `summary-2.json` in that directory.
+Removing obsolete prodbox Poetry environments and regenerable Poetry/pip caches recovers a
+further **0.85 GiB**, bringing the sum of measured cleanup deltas to **23.77 GiB**.
+`summary-3.json` records all eight removed paths and verifies unchanged Docker inventory and
+operator bytes. Available space is **18.88 GiB** at that observation after intervening builds;
+the current Haskell dependency store, build outputs and validation evidence remain retained.
+Two subsequent lossless archive passes preserve **213** inactive historical test executables
+and withdraw their expanded copies after full member/hash/mode readback and actual no-overwrite
+restoration controls. Net compaction is **18,015,240,192 bytes (16.78 GiB)**,
+bringing total cache cleanup plus net compaction to **43,541,467,136 bytes (40.55 GiB)**.
+The first 74-member bank and helper remain under
+`.build/sprint-6.5/credential-byte-output-promotion-20261031/extra-inactive-bank-1/` and its parent.
+The additional **139** members occupy **24** verified archive parts under
+`.build/storage-cleanup-20261101/inactive-binaries/`; `restore-inactive-1.py` in the parent
+restores exact member bytes/modes and refuses overwrites. `reclaimed-1.json` records the cumulative
+total and unchanged **1,653** public source inputs/current operator. All current-scope held files,
+running/open executables, multiply-linked candidates, current packages/images, source, secrets and
+original receipts remain retained. Historical raw-path replay restores the archived member first.
+This is local cache cleanup, not a deployment attempt or sprint closure. Workspace-accounting
+evidence is recorded below; full funding remains open.
+
+**Sprint `6.5` ordinary workspace accounting validated, 2026-10-31 UTC.**
+The validated real-SDK driver is retained under
+`.build/sprint-6.5/ordinary-workspace-accounting-20261031/`. Its metadata-only observer anchors
+owned directories, checks device/inode/version stability and stays under the original work end.
+It never opens file contents. Symlinks, hard links, special files and incomplete/expired observations
+refuse; entry/depth ceilings do not become partial successful totals.
+
+Warning-clean compilation, pinned formatting and extra-group HLint pass. All **eight** observer
+controls pass, including an unreadable nonempty file and a FIFO without a writer. The actual SDK
+projection, metadata and warm/cold forwarding run also passes at unchanged limits. Four post-phase
+snapshots record up to **47 files / 85 directories**, **129,890 logical file bytes** and **262,144
+allocated bytes**. These snapshots do not bound a transient peak. The warm and cold forwarding cases
+take **1.41 / 18.31 seconds**, respectively, including cgroup observation but excluding the subsequent
+workspace scan, within the same original **25-second** work window. One sample is no universal
+latency bound or complete-program schedule proof.
+
+`progress-validation-1.json` binds **ten** successful/failed scopes, all source/input/binary guards,
+the snapshots and five public metadata records from the independently absent and typed-retired
+native family. Initial name shadowing, the extra-group `foldM_` hint and an incomplete fixture edit
+remain retained. Only the observer test changes after the SDK run; all five native source bodies
+remain byte-identical and the corrected eight controls are repeated. The **31** ordinary draft
+modules, canonical operator/package, resource envelope and supported routes remain unchanged.
+
+Captured-settings decoder validation is recorded above. Full retained-input, inherited-environment,
+parser/decoded/native and filesystem funding remain open. PATH/helper behavior remains
+intact. Physical/Authority admission, captured graph/credential execution, supported routing,
+runtime-epoch retirement and qualification remain open. No image/live AWS attempt or Kubernetes
+resource mutation, reservation, phase or class closure is added. `6.5` stays Next; later sprints stay parked.
+
+**Sprint `6.5` real SDK forwarding observation validated, 2026-10-31 UTC.**
+The exact validated 31-module ordinary baseline is retained under
+`.build/sprint-6.5/ordinary-native-forwarding-20261031/` and remains unchanged. The actual SDK
+captures a validated private home projection, reads the existing metrics-server Pod metadata and
+completes both warm and private cold-executable forwarding round trips through the original native
+owner. The cold copy has zero resident file pages immediately before launch. Both transports settle
+cleanly at the existing **16 MiB** limit; closing family counters record reclaim pressure and no OOM
+or PID-limit event. Controller **128 MiB** heap, **256 MiB** family, CPU quotas and original
+**25-second** work/**30-second** outer window remain unchanged. No resource repartition is accepted.
+
+Warning-clean compilation, pinned formatting and extra-group HLint pass. `progress-validation-1.json`
+binds **13** build/probe/style scopes and their complete source/input/binary guards. Four native
+families retire their exact input payloads through the canonical typed owner; the final two also
+independently observe all six roles absent on their closing path. Their **20** public metadata
+records are preserved. The initial wrong Pod selector, the cold startup not observed under an ad hoc
+five-second wait, the relative report-path failure and the compiler-caught incomplete path edit remain
+retained. The short-wait failure has no recorded exact startup subtype and is not called an OOM or a
+closed defect class. The full-window run passes after the fixture corrections.
+
+These are read-only Kubernetes operations. Reports exclude raw credentials, configuration and SDK
+output. A **76-byte** HTTP response through the selected port proves a tunnel round trip; it does
+not qualify TLS, Authority authentication or the complete graph. The canonical operator/package
+remain unchanged. Next is full retained-input, parser/decoded/native and filesystem funding, with
+captured Authority/credential/network composition, admission, routing, runtime-epoch retirement
+and original-operation qualification still required. No image/live AWS attempt, Kubernetes resource
+mutation, phase or class closure is added. `6.5` stays Next; later sprints stay parked.
+
+**Sprint `6.5` runtime storage and installed-client observation validated, 2026-10-31 UTC.**
+The excluded ordinary draft is **31** modules under
+`.build/sprint-6.5/ordinary-program-funding-20261031/after-src/`: **25** predecessor modules are
+unchanged, four admission/input modules bind two new runtime-storage modules. The fixed native
+observer reads the owned `/run/user/<effective UID>` directory through a held descriptor, preserves
+the original key/window, checks identity and filesystem geometry, and compares declared bytes with
+current availability. Preparation and input borrowing recheck that binding. The separate node and
+retained-volume observations remain intact; an observation does not reserve space against other writers.
+
+Warning-clean compilation, pinned formatting and extra-group HLint pass. All **90** focused
+controls pass: **22** storage, **25** admission, **27** input/lifecycle and **16** protocol/controller.
+Ten command/transport observations cover cheap controls and the exact installed `kubectl`, including
+private executable copies with zero resident file pages immediately before execution. All succeed at
+the original limits. The cold **16 MiB** transport reaches its memory boundary and shows reclaim
+pressure; this is neither an OOM result nor proof of a complete port-forward working set. Diagnostic
+RSS is not cgroup charge. Runtime envelopes and accepted protocol/SDK domains are unchanged.
+
+`progress-validation-1.json` binds all **18** successful/failed scopes, the exact **1,650**-member
+public/operator baseline archive, the coherent canonical **873**-module package, archived SDK bytes,
+the staged sources and **25** public metadata records from five retired native families. The failed
+lazy fixture hash exhausted its heap before family publication; strict incremental hashing corrects
+the fixture without raising its limit. Initial compile/fixture-selection failures remain retained.
+The read-only home status observes active RKE2, insufficient configured CPU/memory capacity and an
+unreachable Vault endpoint; it adds no deployment attempt.
+
+Next is complete retained-input, HTTP/parser/decoded, native, child and filesystem funding, including
+actual captured forwarding/network execution. The existing frame/response/replay minima and these
+client-only probes do not prove that whole program. Physical/Authority admission, approved prompt
+acquisition/dispatcher integration, original-operation qualification and runtime-epoch retirement
+remain required. No image/live attempt, AWS/Kubernetes mutation or phase/class closure is added.
+`6.5` stays Next; later sprints stay parked.
+
+**Sprint `6.5` bounded native controller input validated, 2026-10-31 UTC.**
+The canonical anonymous-pipe carrier adds an owned operand only to the existing published ordinary
+family. It binds the original key/window, limits raw input to **64 KiB**, offers once and starts
+delivery only after the manager replies. Default input remains null. Expiry and cancellation close
+the writer; the receiver requires an anonymous pipe under the actual original process owner.
+Prompt bytes enter neither persisted request/config payloads nor logs or digests.
+
+The excluded ordinary draft is **29** modules under
+`.build/sprint-6.5/host-controller-stdin-20261030/after-src/`: **26** predecessor modules are unchanged,
+the launcher and controller consume the carrier, and a new private protocol binds a pre-acquired
+credential operand to the original key and public request digest. The native entry borrows its
+actual original parent before reading and validates credential shape/backend region before captured
+caller preparation. Approved prompt-origin acquisition and supported dispatcher integration remain
+separate code work; the fixture's synthetic credentials establish neither.
+
+Warning-clean whole-draft compilation, pinned formatting and extra-group HLint pass. All **24**
+focused controls pass: **8** carrier cases and **16** protocol/controller cases. Seven native
+ordinary families cover all byte values in a full-size frame, null input, blocked-writer expiry,
+cancellation, a valid synthetic credential frame and a foreign request digest. Each proves exact
+six-role absence after original expiry and retires its exact input payloads through the typed owner.
+**35** current public submission/publication/retirement metadata records and **35** predecessor
+records are preserved; original one-shot
+and runtime-epoch fences retain their separate owner.
+
+The current **873**-module QA package is a verified frozen canonical artifact snapshot with no
+source overlay. It is not a fresh private rebuild. The canonical all-target build and required
+`prodbox dev check` pass; exact test counts, timings, source pairs and operator identity are in
+`progress-validation-2.json`. The permanent scoped record is
+`test/qualification/HOST-CONTROLLER-STDIN-2026-10-31.json`. The first canonical compiler heap
+exhaustion, a build whose producer passed but whose post-run observation was interrupted, and the
+initial fixture-formatting refusal and canonical nested-case style refusal remain retained. Named
+helpers satisfy the repository rule; all 24 focused controls are repeated against the refined
+canonical package. The replacement build has complete entry/exit
+guards; the interrupted observation is not reclassified as a successful scope.
+
+Controller **128 MiB** heap/**256 MiB** family and **5 GiB**, no-swap, sixty-four-task source-QA
+limits are unchanged. Compiler-only heap settings do not increase runtime budgets. The exact
+**2,524**-member preceding public/operator/library/interface field is archived and read back.
+Three stopped predecessor test executables are separately losslessly archived with restoration
+and overwrite-refusal checks, reclaiming **313,657,259 bytes**; historical replay restores them first.
+
+A further **22** inactive ordinary-fixture executables, all matching prior validation hashes and
+excluded from the active gate field, are losslessly archived in **11** parts under
+`.build/sprint-6.5/inactive-ordinary-evidence-archive-20261031/`. Every member passes exact archive
+readback, actual restoration and overwrite-refusal checks before raw withdrawal. Read-only
+privileged process metadata closes the normal-user visibility gap; the refused initial preflight
+changed no files. This reclaims **2,439,917,738 bytes** while preserving historical replay through the
+retained restore helper. Executable sources, receipts, the current operator and infrastructure are unchanged.
+
+Complete program funding, physical/Authority admission, prompt-origin/dispatcher integration,
+complete captured-network execution, original-operation qualification and runtime-epoch retirement
+still precede supported routing and prototype removal. The declared native control-plane fixtures
+and harness residency samples prove no full production working-set maximum. No image/live attempt,
+AWS/Kubernetes mutation, qualifying cycle or phase/class closure is added. `6.5` stays Next; later
+sprints stay parked.
+
+**Sprint `6.5` ordinary controller body construction validated, 2026-10-30 UTC.**
+The validated predecessor is **28** modules under
+`.build/sprint-6.5/ordinary-controller-body-20261030/after-src/`; **26** predecessor modules remain
+byte-identical. The fixed body binds pinned inputs and the actual original process owner to
+credential validation, captured caller preparation and the closed graph. It accepts an explicit
+in-memory credential operand, without acquiring or persisting it. The graph now derives its
+credential-retirement parameters after the original Authority AWS-scope proof supplies account and
+region, using that program's IAM/lineage/deadline and the request's fixed image/Agent/context.
+The caller no longer has to prepare retirement against an AWS scope it has not yet verified.
+
+Warning-clean whole-draft compilation, pinned formatting and extra-group HLint pass. All **17**
+focused controls pass: **11** pure credential-preparation cases and **6** native lifecycle cases.
+The pure fixtures exercise both provider-role forms, two accounts and two regions, reject a foreign
+credential region, preserve public context/deadline and keep credentials out of request bytes.
+They use the private verifier as a fixture seam and establish no real Authority observation.
+The native ordinary family enters the actual controller body, rejects invalid and wrong-backend-
+region credentials, and reports a missing caller prerequisite before network work. Calling the body
+outside the original physical parent refuses. The same fixture then runs its bounded command and
+transport, observes six-role absence after original expiry and retires exact payloads.
+
+One thread/**128 MiB** heap, **256 MiB** family and **5 GiB**, no-swap, sixty-four-task source-QA
+limits remain unchanged. The native compiler completes with a compiler-only **1,024 MiB** heap
+after its **512 MiB** heap exhaustion. The initial fixture's wrong epoch import, missing required
+validation-mail binding and shadowed local name remain preserved alongside that compiler failure.
+`progress-validation-1.json` binds all **15** successful/failed scopes, **1,646** public sources,
+operator `f5107b1d…`, the coherent **872**-module library and five public native metadata records.
+The complete-program fixture supplies the required mail binding; the production guard is unchanged.
+
+The native credential values are synthetic and the graph is not executed through its complete
+network program. The declared control-plane-only **7,500m / 15,000Mi / 60,000Mi / 60,000Mi** context
+does not prove the full production projection. Native prompt handoff, complete funding, Authority
+admission, original-operation qualification, runtime-epoch retirement and production dispatch remain
+open. Canonical code, installed profiles and supported routes remain unchanged. `6.5` stays Next;
+later sprints stay parked. No AWS/Kubernetes mutation, image/live attempt, qualifying cycle or
+phase/class closure is added.
+
+**Sprint `6.5` ordinary launch lifecycle adapters validated, 2026-10-30 UTC.**
+The validated predecessor is **27** modules under
+`.build/sprint-6.5/ordinary-launch-lifecycle-20261030/after-src/`; **25** predecessor modules remain
+byte-identical. Its fixed publisher compares captured bytes, settings, request and plan with the
+original preparation, retaining that preparation's one-shot intent. Every submission consumes the
+publisher's native permit. Possibly sent inputs remain available for recovery. Historical recovery
+reads only checked native submission metadata, preserving the original key/window/domain without
+decoding old settings or renewing work. Causal processing, physical/alarm absence and exact payload
+retirement retain separate owners; one-shot/runtime-epoch fences remain.
+
+Warning-clean whole-draft compilation, pinned formatting and extra-group HLint pass. All **119**
+controls pass: **5** native lifecycle cases plus the preceding **27/66/21** input/resource/host
+regressions. The native fixture executes an ordinary-kind six-role family, borrows its actual
+kernel parent, runs a command and transport concurrently, observes all six roles absent after the
+original expiry and retires exact payloads through the native owner. Active physical retirement,
+escaped owners, repeated submission and missing-record recovery refuse. Never-sent cleanup and
+recovery preserve the primary caller exception and original one-shot fence.
+
+These controls retain one thread/**128 MiB** heap, the **256 MiB** family envelope and the unchanged
+**5 GiB**, no-swap, sixty-four-task source-QA cap. A concurrent compiler link was terminated by host
+`earlyoom` at **874 MiB** RSS; sequential completion with a compiler-only **512 MiB** heap and linker
+cache disabled passes. It does not increase the runtime budget. `progress-validation-1.json` binds
+all **16** successful/failed scopes, **1,646** public sources, operator `f5107b1d…`, the coherent
+**872**-module library and five preserved public native metadata records. The initial export error
+and host-pressure termination remain retained.
+
+The running image is a fixture controller in the declared control-plane-only
+**7,500m / 15,000Mi / 60,000Mi / 60,000Mi** context. It executes no complete ordinary business graph
+and supplies no full production funding, Authority admission or deployment qualification. Closed
+production dispatch, complete program funding, Authority admission, original-operation
+qualification and runtime-epoch retirement still precede routing/removal. Canonical code,
+installed profiles and supported routes remain unchanged. `6.5` stays Next; later sprints stay
+parked. No AWS/Kubernetes mutation, image/live attempt, qualifying cycle or phase/class closure is
+added.
+
+**Sprint `6.5` captured ordinary-controller input loading validated, 2026-10-30 UTC.**
+The validated predecessor is **27** modules under
+`.build/sprint-6.5/ordinary-captured-inputs-20261030/after-src/`. Its bounded canonical envelope
+exposes untrusted root/scope coordinates only after matching the supplied original key/window.
+The fixed loader consumes the same held settings/request descriptors, validates import-free
+settings, recompiles the complete request against that value and checks the returned preparation.
+Fresh manager/clock checks and the existing self-PIDFD/invocation/cgroup/executable/input owner
+remain mandatory before borrowing processes. No request contains a loader or IO callback.
+
+Warning-clean whole-draft compilation, pinned formatting and extra-group HLint pass. All **114**
+controls pass: **27** loader/coordinate/native cases, **66** resource/signing regressions and **21**
+host-preparation regressions, retaining one thread/**128 MiB** heap and unchanged **5 GiB**, no-swap,
+sixty-four-task source-QA caps. Native loading prepares an explicitly declared control-plane-only
+fixture (**7,500m / 15,000Mi / 60,000Mi / 60,000Mi**); outside-family process borrowing, escaped
+leases, replaced input inodes/bytes and foreign valid scopes refuse. That fixture is distinct from
+the preserved ten-CPU refusal and the complete production projection. It establishes neither
+running kernel placement nor complete program/Authority admission.
+
+The prior **24** unaffected modules remain byte-identical; request wire declarations and its full
+validation body are unchanged. `progress-validation-1.json` in the loader directory verifies all
+**13** successful/failed scopes, the complete **1,646** public-source pairs, current operator and
+coherent **872**-module library. The unused import, initial formatter refusal, unavailable lint-tool
+path and mistaken slash-scope negative fixture remain preserved. Empty-scope refusal and native
+foreign-valid-scope rejection replace that fixture without changing scope naming policy. The
+internal interpreter stays a test seam and must be hidden/sealed on promotion.
+
+Canonical code, installed profiles and supported routing remain unchanged. Complete program
+funding, independent physical/Authority admission, launcher/recovery/retirement and
+original-operation qualification remain open. `6.5` stays Next; later sprints stay parked. No child/durable operation,
+AWS/Kubernetes mutation, image/live attempt, qualifying cycle or phase/class closure is added.
+
+**Sprint `6.5` namespace UID projection and current-draft compatibility validated, 2026-10-30 UTC.**
+The namespace reader selects the first `metadata`/`uid` keys and validates ignored tokens without
+constructing their value trees. All **848** permanent compatibility/stress cases pass. The native
+SDK-prefix fixture passes four full two-MiB shapes at both **64/128 MiB**. The preserved comparison
+observes dense residency **79,820,304 → 2,111,720** bytes and deep residency
+**93,791,064 → 36,025,600**; these are sampled observations, not universal bounds. The separate
+64-MiB decoder slice exhausts the old helper (exit **251**) and admits projection. All four original
+128-MiB controls pass before and after; the controller heap and installed profiles remain unchanged.
+
+The warning-clean all-target build passes in **294.92 seconds**.
+Required complete `prodbox dev check` passes **10,453** cases (**9,483 + 27 + 35 + 908**) in
+**1158.36 seconds** under the unchanged **5 GiB**, no-swap,
+sixty-four-task source-QA cap. Complete source pairs, **1,703** selected inputs and
+**1,751** binaries match; **878** canonical outputs are separately captured.
+Operator `f5107b1d…` and all **1,646** public sources are bound by
+`canonical-progress-validation-1.json` under
+`.build/sprint-6.5/decoder-working-set-20261030/`. Its **25** retained scopes include the original
+slice exhaustion and the host-pressure build termination. The complete **2,519-member** superseded
+archive preserves all **1,642** prior public sources and the actual operator/library/config/unit/raw
+interfaces. The permanent scoped recording remains
+`test/qualification/KUBERNETES-NAMESPACE-UID-WORKING-SET-2026-10-30.json`.
+
+The refreshed `.build/sprint-6.5/namespace-current-package-20261030/` compatibility vehicle freshly
+compiles all **872** library modules (**803** exposed/**69** hidden), with only the previously scoped,
+non-authorizing retained-root coordinate reader overlay. All source/object/interface/archive
+associations are verified. The first compiler heap exhaustion and the archive producer's transient
+shared-library identity-read failure remain retained; the same source rebuild completes and the
+existing archive passes an independent read-only verification. No archive rebuild or runtime-profile
+change is used. The preceding **25**-module draft in
+`.build/sprint-6.5/ordinary-host-admission-20261030/after-src/` typechecks in
+**2.32 seconds**; current **908/66/21** protocol, resource/signing and host-admission
+controls pass. Resource/signing and host controls retain one thread/**128 MiB** heap.
+`progress-validation-1.json` in the refreshed package directory binds those ten successful/failed
+scopes and the current package. Older private packages retain their earlier code and evidence scope.
+
+Complete program parser/header/chunk/decode/native/filesystem/heap/kernel funding, successful
+physical and Authority admission, provenance/launcher/recovery/retirement and original-operation
+qualification remain open before routing/removal. `6.5` stays Next; later rows stay parked. No
+image/live attempt, route activation, qualifying cycle or phase/class closure is added.
+
+**Sprint `6.5` independent declared-host preparation validated, 2026-10-30 UTC.**
+The validated predecessor is the **25** modules in
+`.build/sprint-6.5/ordinary-host-admission-20261030/after-src/`; the prior **23** modules remain
+byte-identical. Two new modules validate compatible captured deployment context and retained root,
+all three closed roles' real startup lines, original monotonic/Authority clocks, independently read
+manager identity and host capacity, and exact returned intent kind/key/window/plan. They use the
+existing capacity compiler and create no child or durable operation. The fixed native entrypoint
+has no injected clock/host/manager/kind; its test interpreter stays internal and must be sealed
+before canonical promotion. Complete program funding and Authority admission remain independent.
+
+Warning-clean whole-draft typechecking, pinned formatting/extra-group HLint and **21/21** controls
+pass at unchanged one-thread/**128 MiB** heap and **5 GiB**, no-swap source-QA caps. The native case
+independently reads **8,000 milli-CPU**, **15,930 MiB** memory and coincident **238,220 MiB** storage
+devices, then matches the fixed entrypoint against the independent compile result. It refuses the
+fixture's **10,000 milli-CPU** host declaration before intent creation. Evidence covers that
+specified declaration; successful native placement is unproven. Clock expiry/reversal/Authority
+bounds, unknown/changed managers, invalid/expired/too-small host observations, insufficient startup
+bytes and foreign returned intents retain distinct refusal controls. Initial unused-import,
+fixture-defaulting and test-helper lint failures remain preserved. Complete source pairs, all
+**1,642** public sources, operator `84404010…` and selected inputs/binaries are bound by
+`progress-validation-1.json` in the host-admission directory. The pinned parser/reader bundle
+revalidates final-read line overshoot and CString copying without claiming complete HTTP funding.
+
+Finish complete parser/header/chunk/decode/native/filesystem/heap/kernel funding, successful
+physical placement and Authority admission, captured-input provenance, launcher/recovery/retirement
+and original-operation qualification before routing/removal. No canonical code, installed profile,
+supported ordinary route, image/live attempt, qualification or phase closure changes. `6.5` remains
+Next; later rows stay parked.
+
+**Sprint `6.5` protocol-resource minima and claims funding validated, 2026-10-30 UTC.**
+That checkpoint preserves the **23**-module excluded draft in
+`.build/sprint-6.5/ordinary-resource-funding-20261030/claims-after-src-2/`.
+Its resource compiler derives the closed driver/graph/common/registered-caller schedule, per-role
+replay storage and accepted response-body totals. The same opaque body cursor supplies the
+necessary `F + 3*R` payload reserve. Minimum command stdout/stderr preserve the SDK's full
+**2 MiB / 128 KiB** domains; accepted response capacity remains at least **2 MiB**.
+The positive fixture uses **16 MiB** scratch within unchanged **128/256 MiB** heap/outer limits;
+this is a necessary declaration check, not complete heap or physical admission.
+
+The first replay estimate incorrectly bounded retained keys by transport metadata. A real signed
+request instead has **72** metadata bytes and **10,174** canonical claims bytes with a valid wide
+`Natural` epoch. At all **3,004** Authority slots and **106,092,972** response bytes, canonical
+storage needs **136,571,576** bytes against that estimate's **132,240,044**. The same fixture
+passes the replacement, which derives a **19,085-byte** claims limit and **222,293,956-byte**
+Authority estimate within its existing **212 MiB** ceiling. Backup/Target slot counts remain
+**3/7** and their actual complete encodings round-trip too. Claims are checked before private native
+signing, registered signing and the outer checked signer, before nested registry effects.
+The paired codec test retains one thread/**512 MiB** heap; it is a storage comparison, not an
+original-family or production-memory qualification claim. Wide values remain `Natural`.
+
+Warning-clean whole-draft typechecking, pinned formatting/extra-group HLint, and **66/66**
+regression/funding/signing controls pass; the latter retain one thread/**128 MiB** heap.
+Three legal-mutation fixtures now carry their required scratch or full-domain stdout declaration;
+their prior failures, initial compiler refusals, the three erroneous response-size expectations
+and both resource counterexamples remain preserved. All **1,642** public sources, operator
+`84404010…`, complete source pairs and selected inputs/binaries are bound by
+`progress-validation-1.json` in the resource directory. Initial `after-src/` and
+`claims-before-src-1/` are superseded evidence, not the current draft. No canonical code,
+installed profile, ordinary route, image/live attempt, qualification or phase closure changes.
+Complete parser/header/chunk/decode/native/filesystem/heap/kernel funding, independent physical
+and Authority admission, provenance/recovery/retirement and original-operation qualification
+still precede routing/removal. `6.5` remains Next; later rows stay parked.
+
+**Sprint `6.5` fragmented HTTP-body integration validated, 2026-10-30 UTC.**
+A native two-MiB response delivered as one-byte transfer chunks exhausts the preserved helper's
+128-MiB heap (exit 251); the identical fixture passes with the demand-grown collector. Its opaque
+allocation cursor bounds reachable owned payload capacity to `2*R` while resizing and cumulative
+owned payload allocation to `3*R`, for response ceiling `R`. Incoming chunks/CString copies,
+parser/header/status state, decoded values, GC and native/kernel costs remain separate. Exact
+`Natural` overrun counts precede machine-width conversion and pointer arithmetic. The native
+comparison passes **1/1**, allocation laws **73/73**, body/header compatibility **34/34**, and
+canonical focused controls **115/115**. The permanent recording is
+`test/qualification/HTTP-BODY-FRAGMENTATION-2026-10-30.json`.
+The warning-clean all-target build passes in **237.52 seconds** after correcting two existing
+RPC-registry fixture constructors. Required complete `prodbox dev check` passes **9,605** cases
+(**8,635 + 27 + 35 + 908**) in **1,270.16 seconds** under the unchanged **5 GiB**, no-swap,
+sixty-four-task source-QA cap. Complete source pairs and all **1,673** selected inputs/six binaries
+match; **877** canonical outputs are separately captured, including raw on-disk interfaces rather
+than a registered-module count. Operator `84404010…` and all **1,642** current public sources are
+bound by `promotion-progress-validation-1.json` under
+`.build/sprint-6.5/http-body-funding-20261030/`. It reconstructs the exact **1,638**-source
+superseded archive and all thirteen selected code/test/document changes. Failed build/verifier
+scopes and the earlier header fixture's exact formatter adaptation remain preserved.
+
+The separate `.build/sprint-6.5/ordinary-current-package-20261030/` vehicle freshly rebuilds all
+**871** library modules in **625.45 seconds**, including **803** exposed and **68** hidden modules.
+Every object/interface/source and archive member is checked. Only the previously scoped,
+non-authorizing retained-root coordinate reader overlays canonical source; canonical module
+visibility is unchanged. The unchanged **21**-module ordinary composition typechecks in
+**2.48 seconds**; current protocol **908/908** and request **44/44** controls pass. The request
+matrix keeps one thread/**128 MiB** heap. All **2,553** selected inputs/**1,746** binaries match in
+`progress-validation-1.json`; the initial exposed-only module-count refusal remains retained.
+This replaces the superseded HTTP-ABI package as a compatibility vehicle, without activating an
+ordinary route or supplying complete program funding/admission.
+
+Lossless archives recover **8,663,097,500 bytes** from **198** inactive task-owned executables in
+this batch. Every member is read back before raw-copy withdrawal. The 195 earlier RPC-coordinator
+executables have 32 parts under `.build/sprint-6.5/inactive-evidence-archive-20261030/`; the other
+three and their restore helper stay with the body evidence. Actual exact-path restoration checks
+bytes/mode, refuses overwrite, and re-establishes raw-path absence. Historical raw-path replay
+requires restoration first; no source, current selected binary or live state is removed.
+Finish complete ordinary-program funding and independent physical/Authority admission, then
+provenance/recovery/retirement and current original-operation native/captured-network qualification
+before routing/removal and post-removal qualification. No installed profile, image/live attempt,
+qualifying cycle or phase/class closure changes. `6.5` remains Next; later rows stay parked.
+
+**Sprint `6.5` aggregate HTTP-header integration validated, 2026-10-29.**
+The bounded native helper limits each exchange to 100 informational blocks and 100 fields across
+its early/final headers. The singleton manager retains the pinned 4,096-byte line/100-field parser
+settings. Early callbacks debit before further recursion; final fields debit before body collection.
+Nine of the shared **24** native loopback laws fail against the preserved helper; all pass against
+the candidate under identical one-thread/**128 MiB** heap and **5 GiB** source-QA caps. Large valid
+final/combined headers, original parser refusal, `100 Continue`, concurrency, successor reset and
+async cancellation retain controls. This is a logical helper comparison, not a temporal/performance
+or original-family qualification claim. The permanent recording is
+`test/qualification/HTTP-RESPONSE-AGGREGATE-HEADERS-2026-10-29.json`.
+The helper and distinct control-plane/TLS/Target header diagnostics, bounded Vault decode refusal
+and terminal startup refusal are integrated. The warning-clean all-target build passes in
+**560.33 seconds**, and the integrated native/client matrix passes **31/31**. Complete required
+`prodbox dev check` passes **9,521** cases (**8,551 + 27 + 35 + 908**) in **1,162.18 seconds** under
+the unchanged **5 GiB**, no-swap, sixty-four-task source-QA envelope. Complete source pairs and all
+**1,677** selected inputs/seven binaries match; the **875** declared canonical operator/archive/
+configuration/executable/interface outputs are separately captured and verified. The current operator
+is `97651bcd…`. Evidence lives under `.build/sprint-6.5/http-header-funding-20261029/`.
+`promotion-progress-validation-1.json` checks fourteen exact successful/failed scopes, reconstructs
+every **1,636** superseded and **1,638** current public-source entry, validates the sixteen selected
+code/document changes and binds the actual focused unit binary/current canonical outputs. The
+complete executable identity is unchanged between all-target/focused/full-gate stages; only the
+progress README changes between those source captures. The private native fixture and its
+canonical copy have identical tokens/strings; the canonical copy corrects the retained formatter
+layout refusal. Two duplicate thread-flag invocations refuse before any cases run because the
+canonical unit entrypoint already fixes its thread count. Their corrected invocation passes all 31.
+The exact superseded public sources, operator/library/config and raw on-disk interfaces are read
+back from `superseded-source-operator-1.tar.gz`; raw interface count is not a registered-module count.
+Three verified compressed archives preserve nine earlier inactive pure-test binaries at exact
+historical paths/hashes/modes before reclaiming their raw copies, recovering **721,166,965 bytes**.
+The overwrite-refusing restore helper independently verifies every member. Historical receipts keep
+their original references and need restoration before a raw-path replay. No source evidence or live
+state is removed. Initial absent-artifact/pin-discovery, fixture-API, public-setter-import,
+verifier/formatter and CLI invocation refusals remain retained. The pinned decoder-source review in
+`decoder-dependency-observation-1.json` records Aeson's positive-exponent guard of 1,024 for Natural
+parsing; its response-limited coefficient and selected DTO widths still need funding rather than a
+machine-word assumption. Finish parser/transient-header/status/body-copy/decode/kernel and complete
+program/replay/native/filesystem funding, independent physical/Authority admission, provenance/
+launcher/recovery/retirement and current original native/captured-network qualification. Any staged
+retained-root reader/package extension must match the new canonical HTTP/error ABI before a new
+ordinary composition link; the older coherent vehicle retains its older scope. Ordinary-controller
+integration/routing, mutable-copy removal and post-removal qualification remain owed. No installed
+envelope, supported ordinary route, image/live attempt, qualifying cycle or phase/class closure
+changes. `6.5` stays Next; later rows remain parked.
+
+**Sprint `6.5` necessary wire-payload reserve validated, 2026-10-29.**
+The excluded ordinary request constructor and canonical-wire decoder refuse transport/decode
+scratch below `max(authenticated frame ceiling, accepted response ceiling)`. Eleven unchanged-source
+laws fail against the preserved constructor; all **29** replacement controls pass, including
+one-byte shortages and independent untrusted-wire response/frame changes. All **44** request
+regressions pass, and the complete **21**-module staged composition typechecks warning-clean in
+**2.48 seconds** against the complete coherent package. Both matrices retain one thread and
+**128 MiB** heap. The positive fixture changes only its internal scratch declaration from three
+to eight MiB within unchanged **128/256 MiB** heap/outer caps; it supplies no full memory admission
+and changes no installed or original native profile. The actual driver fixture encodes its
+descriptor/create at **48,817/48,853 bytes** and its observe/program/completion requests at
+**33/33/99 bytes**. These four command shapes are measurements, not universal message maxima.
+Pinned formatting/HLint pass. Complete source pairs and all **1,952** selected inputs/**1,749**
+binaries match in `ordinary-wire-scratch-hlint-1-validation.json` under
+`.build/sprint-6.5/ordinary-program-composition-20261028/`.
+`wire-scratch-progress-validation-1.json` audits fourteen exact scopes, every focused compiled source,
+the matched old/new fixture and unchanged public source/operator. The initial hidden-import and
+ambiguous-fixture-number compiler refusals remain retained, as does the first verifier's mistaken
+inclusion of GHC's linking stage in its source count. Verified content-addressed copies share only
+immutable snapshot bytes; historical receipts remain intact and mutable sources never share those
+inodes. The narrower selected-binary set includes actual linked archives/interfaces and current
+operator, rather than unrelated historical binaries; its complete public-source policy is unchanged.
+Pinned `http-client-0.7.19` source is preserved in `wire-http-dependency-source-index-1.json`:
+header defaults bound each block, while repeated `103 Early Hints` parsing resets the block count
+and accumulates early headers. The response's original request explicitly clears its body, so that
+field does not justify charging a retained submitted payload. Plant a bounded native repeated-103
+counterexample and supply an aggregate header bound next, then couple response chunks/copies and
+command-specific encoders/decoders without shrinking the full SDK-output/PVC domains. This necessary
+payload floor leaves complete byte/replay/native/filesystem/body/decode/heap/kernel funding,
+independent physical/Authority admission, provenance/launcher/recovery/retirement and current original
+native/captured-network qualification open. Canonical integration/routing, mutable-copy removal and
+post-removal qualification remain owed. No public code/operator, supported route, image/live attempt,
+qualifying cycle or phase/class closure changes. `6.5` stays Next; later rows remain parked.
+
+**Sprint `6.5` canonical DNS/request-codec integration validated, 2026-10-29.**
+The strict DNS row accumulator and exact request-footprint/pre-sign frame checks are integrated
+into their three canonical modules. Three permanent request-test modules add **840** controls,
+including nine preserved accepted-frame digests; the existing DNS suite adds the full two-MiB
+String/**349,525**-duplicate-owner regression. No benchmark optimization pragma enters supported
+source. Inside `callAuthenticatedControlPlane`, the raw-body check precedes its providers and the
+exact check follows their captured resolution, before request signing/transport. Caller preparation,
+higher-level deadline resolution and provider-private observations/signing retain separate funding.
+The warning-clean library/operator build passes in **224.02 seconds**, and every enabled test target
+builds in **311.48 seconds**. Canonical-package request/DNS controls pass **17/14** cases at unchanged
+one-thread/**128 MiB** heap in **0.13/0.49 seconds**. The complete required `prodbox dev check` passes
+**9,495** cases (**8,525 + 27 + 35 + 908**) in **1,193.45 seconds** under the unchanged **5-GiB**,
+no-swap, sixty-four-task source-QA envelope. The current operator is `1ceb0fc7…`; complete source
+pairs and all **2,864** frozen inputs/**2,689** binaries match in
+`ordinary-wire-canonical-dev-check-3-validation.json` under
+`.build/sprint-6.5/ordinary-program-composition-20261028/`.
+`wire-canonical-promotion-progress-validation-1.json` independently reconstructs every **1,633**
+superseded and **1,636** current public-source entry, checks the nine code changes/three governed
+reports, all actual focused-compiled inputs and their current canonical archive. The complete
+executable manifest has **1,573** entries. The five-line protocol assertion indentation correction
+and single Cabal blank line preserve tokens/strings and package declarations. The fixed-heap
+fixtures and linked library are unchanged by those uncompiled formatting inputs. The complete
+coherent **870**-module candidate rebuild resolves the former partial-archive worker-symbol link
+failure and retains its separate **908**-case scope in `wire-coherent-progress-validation-1.json`.
+The exact superseded operator, complete public manifest, changed source bodies and immutable old
+interface/archive view are banked in `wire-canonical-before-index-2.json`. The stale unregistered
+`OwnedBounded.hi` remains separately preserved; its old package view holds exactly 870 registered
+interfaces. Archive aliases share verified identical bytes only after their writers finish, and
+never share the mutable canonical archive. Initial package-import, DNS harness-arity and
+871-interface checkpoint refusals remain retained. Two entry guards refused before any compiler
+launched while operator publication was outstanding. The first full gate's formatter exit **100**
+and independently recovered terminal/source closeout preserve its lost outer wrapper. The second
+passes formatter/HLint and refuses Cabal format drift; the exact five-indent/one-blank-line
+corrections and matching independent Cabal roundtrip precede the complete green third gate.
+The retained-root reader/factory and ordinary-controller program remain staged. Complete their
+route/message/response/header/replay/native/local-filesystem/body/decode/heap/kernel funding,
+independent physical/Authority admission, descriptor/manager/launcher provenance, original-request
+recovery/attested successors and durable NoFutureAdmission/runtime-epoch/input/program/scope
+retirement. Validate the current full original-operation native/captured-network composition before
+sole-route activation, mutable-copy removal and post-removal qualification. No installed profile,
+supported CLI route, image/live attempt, qualifying cycle or phase/class closure changes. `6.5`
+stays Next; later rows remain parked.
+
+**Sprint `6.5` exact request footprint and pre-sign frame refusal, 2026-10-29.**
+The excluded same-package codec candidate measures claims, metadata, signed-envelope and outer-frame
+bytes through canonical empty-body templates and CBOR header encoding. It neither copies/hashes the
+supplied body nor invokes its request signing capability to measure it. An early body check precedes
+all metadata providers; the exact check follows their one-time resolution and precedes request
+signing/transport. Provider observations and any private signing retain separate cost obligations.
+Seven unchanged-source rejection laws fail against the preserved old package and pass against the
+candidate. All **17** candidate controls pass in **0.06 seconds**; nine accepted frame digests match
+exactly and the server verifies their bodies. All **823** footprint controls pass in **0.15 seconds**,
+covering every route/principal, CBOR body/header transitions, the full two-MiB body, nonce/Natural
+widths, exact budgets/one-byte shortages and allocation-free machine-word size overflow. Both
+matrices retain one thread and **128 MiB** heap. Pinned formatting, extra-group HLint and
+warning-clean **twenty-one-module no-link** compilation pass, the latter in **2.43 seconds**.
+Complete source pairs and all **1,921** inputs/sixty-eight binaries match in
+`ordinary-wire-preflight-footprint-tests-1-validation.json` under
+`.build/sprint-6.5/ordinary-program-composition-20261028/`.
+`wire-preflight-progress-validation-1.json` checks sixteen exact successful/failed scopes, identical
+paired fixture sources, current compiled inputs and unchanged canonical source/operator. The private
+archive replaces two unique objects and preserves all other **868** member bytes/order. The first
+transport compile lacked a separate new-claims-interface binary guard; the authoritative second
+compile includes it. Import/type/unused-import fixture failures remain retained. The broader
+canonical protocol-suite link **fails**: old dependent objects require the superseded compiler
+`$wcallAuthenticatedControlPlane` symbol. This partial archive grants no broad protocol/server/replay
+compatibility; coherently rebuild dependencies before that proof or promotion.
+Complete route/message/response/header/replay, native/local filesystem and body/decode/heap/kernel
+funding, independent admission, descriptor/manager/launcher provenance, original-request recovery/
+retirement and current native/captured-network qualification remain open before canonical
+integration/routing/removal. No public executable/operator, installed profile, image/live attempt,
+qualifying cycle or phase/class closure changes. `6.5` stays Next; later rows remain parked.
+
+**Sprint `6.5` known caller-count derivation and request refusal, 2026-10-29.**
+The excluded caller schedule now derives its **602** ordinary frames from the graph/common
+recipes and the same three typed channels consumed by the ordinary body. Constructor and
+canonical-wire decoding require the declared frame/scope counts to match that compiler; another
+role cannot enter the schedule unfunded. The canonical registered-caller model adds **1,206**
+registry observations, **3,014** total signed frames, **4,220** protocol HTTP requests and **1,812**
+forwards, including the fourth, private signer scope. Native Vault arithmetic retains **21,706**
+primitive calls before its explicit retry bound. At an illustrative fifteen seconds remaining and
+two allowed logins, the known ceilings are **1,872** startup probes, **49,506** host HTTP calls and
+**704,387** host command effects. These componentwise ceilings are not a measured execution,
+latency guarantee, full native-process count, byte/memory funding or admission; nested roles,
+subprocess-internal requests, helpers and local filesystem work retain separate obligations.
+The preserved old decoder accepts the unchanged **100-frame** fixture, failing the new rejection
+law. The candidate passes the same source/profile control with exact
+`OrdinaryRequestCallerTrafficMismatch 602 3 100 3`. Temporary roots vary, so this is a pure matched
+fixture counterexample, not exact original-request or native evidence. The positive codec fixture
+now derives its counts; its physical/stream/heap/clock declarations stay unchanged.
+All **38** caller controls pass in **0.88 seconds**, including two actual 602-signature resolver
+traces, six unchanged local native Vault SDK fixtures over 0/1/2 frames, debit exhaustion, original
+retry rounding and refusal controls. All **44** request controls pass in **0.72 seconds**, including
+typed count mismatches and canonical-wire tampering. Both retain one thread and **128 MiB** heap.
+Pinned formatting, extra-group HLint and warning-clean **twenty-one-module no-link** compilation
+pass; the latter takes **2.41 seconds**. Complete source pairs and all **1,889** inputs/fifty-seven
+binaries match in `ordinary-request-schedule-tests-2-validation.json` under
+`.build/sprint-6.5/ordinary-program-composition-20261028/`.
+`caller-schedule-progress-validation-1.json` checks thirteen exact successful/failed evidence
+scopes, every current caller-compiled source, the copied signer fixture's limited changes and
+unchanged physical declarations. The assertion-precedence compile refusal, formatter's second-pass
+layout refusal and obsolete 101-frame admitted-digest fixture failure remain retained; 101-frame
+cases now require exact typed refusal. Prior full-response controls retain their separate scopes.
+Expand route/message/replay bytes, captured preparation/marker observations, native/local
+filesystem work and complete body/decode/heap/kernel funding, then finish independent admission,
+descriptor/manager/launcher provenance, original-request recovery/retirement and current native/
+captured-network qualification before canonical integration/routing/removal. No public executable/
+operator, installed profile, image/live attempt, qualifying cycle or phase/class closure changes.
+`6.5` stays Next; later rows remain parked.
+
+**Sprint `6.5` captured-settings local composition, 2026-10-29.**
+The excluded caller preparation now retains an opaque public projection of its original
+`ValidatedSettings`: Authority identity, storage coordinate/resolved root and retained-artifact
+inventory/catalog. The ordinary body derives its local composition from that preparation under
+the original physical-owner/clock guards; it no longer accepts a separate local composition.
+The request control directory must still match. A captured-coordinate reader freshly checks the
+canonical repository, layout and marker without evaluating configuration. Both recovery profiles
+remain explicit. This closes the staged same-settings constructor gap, not native launcher,
+descriptor provenance, complete program funding/admission or canonical integration.
+All **519** standalone controls pass in **2.00 seconds** command time at unchanged one-thread/
+128-MiB heap and full response/PVC domains. Twenty-one added temporary-filesystem cases cover
+missing/poisoned config, successor Authority/storage/artifact drift, marker removal after capture,
+resolved-root mismatch, every marker binding, corrupt/oversized/missing/linked state, unsafe
+coordinates and both recovery closures. Pinned formatting and extra-group HLint pass.
+Warning-clean **twenty-module no-link** compilation takes **2.32 seconds**; the package-identity
+retained-root reader separately compiles in **3.17 seconds**. Complete source pairs and all
+**1,871** inputs/fifty-two binaries match in `ordinary-captured-local-tests-2-validation.json` under
+`.build/sprint-6.5/ordinary-program-composition-20261028/`.
+`captured-local-progress-validation-1.json` verifies eight exact evidence scopes, unchanged
+canonical source/operator and the existing retained-root body after removing only the new API.
+The package vehicle replaces the exact object digest among fifty `Internal.o` member names;
+the other **869** members' bytes and order match the preceding DNS replacement. The pinned-format
+reader object is byte-identical to its first build, allowing the two immutable private archive
+paths to share bytes after their writers finish; the interface views retain their exact scopes.
+The first host-Fourmolu 0.15 pass and its failed exact-source comparison remain retained. Required
+Fourmolu 0.19 is applied and the reader, composition and complete matrix are rebuilt before the
+current claims. Two helper creations hit ENOSPC before running; their empty files remain retained.
+Space subsequently became available and no compiler scratch or retained evidence was deleted.
+Fund captured preparation/marker observations and registered-caller metadata/startup/Vault/token/
+manifest work alongside every byte/replay/native/filesystem/body/decode/heap/kernel obligation,
+then finish independent admission, descriptor/manager/launcher provenance, original-request
+recovery/retirement and original-operation native/captured-network qualification before canonical
+integration/routing/removal. No public executable/operator, profile, image/live attempt,
+qualifying cycle or phase/class closure changes. `6.5` stays Next; later rows remain parked.
+
+**Sprint `6.5` outer-program common-call projection, 2026-10-29.**
+The excluded common accountant joins original scope/WAL work, host preparation, sealed credential
+revoke/pending recovery, independent epoch confirmation, two-step host arming, handoff persistence
+and terminal local retirement. Its **28** host frames join the graph's **574**, giving **602 known
+outer-body frames** before captured caller preparation and metadata/startup/Vault/token/manifest
+expansion. These are componentwise ceilings over alternative paths, not one attained execution.
+Terminal reporting RPCs remain charged once in the driver. The sealed revoke path allows at most
+two coordinator invocations, each with six host frames and **210** source-derived native command
+calls; the common native ceiling is **420**. Named command-budget extraction preserves the
+canonical Kubernetes body after normalization, including unchanged sixty/twelve observation limits,
+timeouts and output bounds. Local methods still require filesystem expansion; nested role effects,
+message/replay/body/decode/heap/kernel costs and independent admission remain open.
+All **498** standalone controls pass in **2.30 seconds** command time with unchanged one-thread/
+128-MiB heap and full response/PVC domains. Thirty-four common controls add six actual coordinator/
+client traces over scripted boundaries, fourteen sealed-revoke cases, three pending-recovery cases
+and two real host-runner/readiness-repository arming traces, plus phase/aggregate checks; one added
+control covers the common-only Provisioner endpoint's canonical role. Formatting, extra-group HLint
+and warning-clean **eighteen-module no-link** compilation pass, the latter in **2.56 seconds**.
+Complete source pairs and all **1,840** inputs/forty-two binaries match in
+`ordinary-common-resource-tests-3-validation.json` under
+`.build/sprint-6.5/ordinary-program-composition-20261028/`.
+`common-resource-progress-validation-1.json` verifies seven exact successful/failed evidence scopes,
+unchanged candidate module bodies and normalized native/copy cores. Earlier compile/lint refusals
+and the six incomplete-challenge fixture failures remain retained. The next test's Cabal capture
+hit ENOSPC before launching its producer; direct invocation of the same pinned-package Haskell
+helper yields identical complete source identities and avoids that cache write. The subsequent
+498-case run uses that verified capture path. The first progress verifier's failed assumption that
+failed producer records mark themselves complete is retained; its successor checks each expected
+exit and success flag explicitly. Complete caller/byte/replay/native/filesystem/memory funding,
+provenance/launcher/same-settings capture, recovery/retirement, independent admission and current
+native/live qualification precede integration/routing/removal. No public executable/operator,
+profile, image/live attempt, qualifying cycle or phase/class closure changes. `6.5` stays Next;
+later rows remain parked. The **45 GiB** image/live threshold is free disk space; the configured
+**17.07 GiB** deployment-memory projection is not a measured aggregate working-set minimum.
+
+**Sprint `6.5` graph host-protocol projection, 2026-10-29.**
+The excluded `OrdinaryCascadeProtocolSchedule.hs` now expands all **53** resource-boundary
+constructors, including the common-only execution lease, into role-indexed endpoint requests,
+native commands and local methods. The actual graph uses 52 positive boundary kinds. Its resource
+ceiling is **256** requests across **16** endpoints; the existing driver adds **318**, yielding
+**574 known graph host frames** before common scope/caller/credential/epoch/arming/handoff work.
+Creation selection and exact read-back remain two requests. Report and permit write methods each
+retain a slot read and optional initialize; independent permit observation remains separate.
+The graph's **702,148** command calls and **119** local methods are separate cost obligations,
+alongside the common terminal handoff's two reads/one lease. These counts grant no memory or
+complete-program admission and include no nested Authority/Worker effects.
+All **463** standalone controls pass in **1.82 seconds** command time with unchanged one-thread/
+128-MiB heap and full response/PVC domains. Seventy-eight added controls cover every boundary,
+canonical role ownership, aggregation and five actual packaged checkpoint clients/handlers through
+signed framing over test transport/repository. Each checkpoint method must return its exact typed
+unavailable answer once; unavailable remains unresolved. The initial count-only fixture and its
+green result retain their narrower scope. Formatting, extra-group HLint and warning-clean
+**sixteen-module no-link** compilation pass, the latter in **2.62 seconds**; those sixteen candidate
+module bodies remain identical after the test assertions were strengthened. Complete source pairs
+and all **1,821** inputs/forty binaries match in `ordinary-protocol-resource-tests-2-validation.json`
+under `.build/sprint-6.5/ordinary-program-composition-20261028/`.
+`protocol-resource-progress-validation-1.json` verifies five exact evidence scopes, preserved selected
+inputs, unchanged archives/operator and the checkpoint framing core. Close common original scope,
+host arming/handoff, terminal/error and credential coordinator/epoch costs before deriving complete
+registered-caller metadata/startup/Vault/token/manifest allowances. Route/message bytes, replay,
+nested role work, native/local filesystem and full body/decode/heap/kernel funding remain open,
+followed by independent admission, provenance/launcher/same-settings capture, recovery/retirement,
+original-field native/captured-network qualification and integration/routing/removal. No public
+executable/operator, profile, image/live attempt, qualifying cycle or phase/class closure changes.
+`6.5` stays Next; later rows remain parked.
+
+**Sprint `6.5` complete graph-level resource recipes, 2026-10-29.**
+The excluded resource accountant now gives all **77** operations nonempty library/command/marker
+recipes across **52** boundary kinds. The last six compound recipes are expanded, and the unused
+compound-debt API is removed. The known graph ceiling is **702,499 invocations**, not an RPC or
+memory total; common terminal-handoff reads/lease and the other common work remain separate.
+Recovery establishment retains all eight markers plus service/API commands before the host-observation
+commit; both authenticated recovery read-backs issue one transport request each. Audit, report commit
+and report read-back each repeat the full fenced audit: together **nine** epoch reads, **six** epoch
+submissions, **three** Target-generation reads and up to **33** Provider observations. Stage C replays
+report commit/copy before independent backup observation, permit grant/read and exact Ready persistence.
+All **385** standalone controls pass in **2.09 seconds** command time, retaining the full two-MiB
+response/349,525-owner and 1,024-PVC domains. Seventy added controls cover eleven audit scenarios,
+sixteen retained credential cases, four Stage-C repository/backup traces, 36 recovery fact combinations,
+two actual packaged authenticated recovery clients over traced fake transport and graph aggregation.
+Copied recovery/audit/Stage-C fixtures preserve byte-identical production orchestration segments;
+their boundary simulation and source-reviewed method/native-marker counts grant no captured-network
+or original-operation proof. Formatting, extra-group HLint and warning-clean **fifteen-module no-link**
+compilation pass, the latter in **2.60 seconds**. Complete source pairs and all **1,811** inputs/
+thirty-eight binaries match in `ordinary-control-resource-tests-1-validation.json` under
+`.build/sprint-6.5/ordinary-program-composition-20261028/`.
+`control-resource-progress-validation-1.json` verifies four exact evidence scopes, frozen selected
+inputs, unchanged archives/operator and four identical copied core segments. The first tuple-section
+lint refusal remains retained. Finish each boundary's canonical wire/byte/replay/native/filesystem
+expansion and common scope/caller/credential/epoch/handoff/Vault/token/manifest work, then complete
+body/decode/heap/kernel funding and independent physical/Authority admission. Provenance, original
+manager-domain/launcher/same-settings capture, original-request recovery/retirement, original-field
+native/captured-network execution and qualification-gated integration/routing/removal remain open.
+No public executable/operator, resource profile, image/live attempt, qualifying cycle or phase/class
+closure changes. `6.5` stays Next; later rows remain parked.
+
+**Sprint `6.5` local-terminal resource expansion, 2026-10-29.**
+The excluded resource accountant now expands all four local graph operations through the canonical
+host runner's actual phase sequence. The healthy tail retains **88** marker reads: ten independent
+absence observations over eight markers, plus the uninstall adapter's own pre-command observation.
+It also retains one uninstall command, one completion-journal commit and three receipt reads.
+Source-reviewed intent costs are **eleven** loop/transition reads and **five** transitions; the
+handoff's two initial reads and single run-wide lease remain a separate common recipe. Store methods
+still require their filesystem/byte expansion. The four local outcomes add no driver RPCs.
+All **315** standalone controls pass in **2.10 seconds** command time, including twelve new local
+controls over the canonical runner, staged production local effects, simulated physical markers/
+uninstall and real temporary intent/completion journals. Healthy and lost-uninstall-reply traces
+reach the physical recipe ceiling. Prior absence skips uninstall; command refusal, unreadable
+markers and reappearance at receipt read-back remain unresolved. Complete replay performs fresh
+absence/receipt reads without another mutation. A separate single-phase diagnostic independently
+reads back all five transitions; its per-step leases and fixture reads are not whole-handoff costs.
+The existing full two-MiB DNS/namespace and 1,024-PVC controls remain intact. Formatting, extra-group
+HLint and warning-clean **fifteen-module no-link** compilation pass, the latter in **2.48 seconds**.
+Complete source pairs and all **1,797** inputs/thirty-six binaries match in
+`ordinary-terminal-resource-tests-1-validation.json` under
+`.build/sprint-6.5/ordinary-program-composition-20261028/`.
+`terminal-resource-progress-validation-1.json` checks five scoped records, exact selected-input
+snapshots, unchanged package archives and the retained shadowed-name compile refusal.
+The first documentation-check capture could not save its result during a transient full filesystem;
+that capture and the empty report helper remain retained preparation failures.
+The graph now has **702,425** known library/command/marker invocations, not an RPC or memory total;
+**six** recovery/audit/report compound operations remain. Expand those, every boundary's protocol/
+body/replay/native/filesystem costs and common caller/credential/epoch/handoff work before complete
+funding or independent admission. Provenance, original manager-domain/launcher/same-settings capture,
+original-request recovery/retirement, native/captured-network execution and qualification-gated
+routing/removal remain open. No public executable/operator, resource profile, image/live attempt,
+qualifying cycle or phase/class closure changes. `6.5` stays Next; later rows remain parked.
+
+**Sprint `6.5` package-bound DNS response repair, 2026-10-29.**
+The excluded DNS parser candidate consumes each stripped row through a strict accumulator and
+reverses the accepted owner set once, preserving order, duplicates and first-error behavior.
+The control and candidate home-module builds both pass their **304** cases, including **120**
+row/error comparisons, with and without the packaged library's optimization fingerprint. Their
+green results do not reproduce the recorded failure and cannot close it.
+The subsequent package-preserving control copies the actual **870-member** canonical static
+archive and explicitly imports its `prodbox-0.1.0-inplace` parser. It reproduces
+**ORDINARY-FULL-DNS-STRING-HEAP-EXHAUSTION-2026-10-29**, exiting **251** on the complete two-MiB
+DNS `String` listing. Replacing only that parser object in an isolated package makes all **303**
+cases pass in **0.87 seconds** command time. The other **869** object members' bytes and order
+are identical. Both sides retain one test thread, **128 MiB** heap, the full **349,525-row** accepted
+DNS domain and **1,024-PVC** command controls. The replacement's sampled maximum residency is
+**55,998,744 bytes**; that sample is not an aggregate physical-memory or whole-program floor.
+No limit or supported profile is raised.
+Warning-clean **fifteen-module no-link** compilation, formatting and extra-group HLint pass.
+Complete source pairs and all **1,786** inputs/thirty-four binaries match in
+`ordinary-dns-package-after-tests-1-validation.json` under
+`.build/sprint-6.5/ordinary-program-composition-20261028/`. The unchanged archive control, package
+metadata/identity, explicit import, unchanged-member inventory, matching optimization fingerprints,
+seventeen scoped source snapshots and preparation refusals are checked by
+`dns-parser-progress-validation-1.json`; exact member/source inputs live in
+`dns-package-pair-input-index-1.json`. The earlier failed and withdrawn trials retain their scopes.
+This is a scoped package/codec replacement result. Canonical source/library/operator are unchanged;
+integrate the functional change and permanent tests in the complete ordinary-program batch without
+promoting benchmark-only optimization pragmas. Whole-program protocol/replay/body/heap/kernel
+funding, the ten remaining compound recipes, independent physical/Authority admission,
+provenance/launcher/same-settings capture, original-request recovery/retirement, captured-network/
+original-field native execution and qualification-gated routing/removal remain open. No image/live
+attempt, qualifying cycle or phase/class closure changes. `6.5` stays Next; later rows remain parked.
+
+**Sprint `6.5` EKS/DNS expansion and full-response heap counterexample, 2026-10-28.**
+The excluded resource accountant now expands the four EKS drain operations, present-EKS destroy
+and both DNS owner-delete families. EKS selection uses **six** command effects; mutation,
+independent read-back and fresh destroy validation each retain two UID reads and the full persisted
+**1,024-PVC** domain, yielding **1,029** command effects at the ceiling. Intent/receipt recovery,
+stack-reader, Provider and projection calls remain separately named. The DNS listing bound follows
+the canonical **two-MiB** output and accepted row grammar: at most **349,525** owner rows per family,
+with a separate listing and one delete per selected row. These are library/command invocations,
+not an authenticated RPC or memory budget. **Ten** recovery/audit/report/local-terminal compound
+operations remain unexpanded.
+Warning-clean **fourteen-module no-link** compilation passes in **2.50 seconds**, along with
+formatting and extra-group HLint. The current standalone **303-case** matrix passes its first
+**301** recipe, command and domain controls, including all four context-bearing EKS phases at
+0/1/2/64/1,024 PVCs and oversized-domain refusals. It then exhausts the unchanged **128-MiB** heap
+on the complete DNS `String` response. The fresh-IO DNS case independently fails at the same
+one-thread/heap bounds; the complete two-MiB namespace `String`/JSON case independently passes.
+Bank **ORDINARY-FULL-DNS-STRING-HEAP-EXHAUSTION-2026-10-29** as a standalone composition finding,
+not an original six-unit native or live counterexample. Do not reduce bytes/rows or enlarge a
+preserved comparison to make it pass. Resolve the response lifetime, decode/selection and complete
+heap accounting with matched source/compiler controls before claiming full-response validation.
+An unpromoted row-collector trial passes a different matrix, but both isolated Text-input controls
+pass and the trial allocates more overall. It is archived and withdrawn; canonical parser/operator
+remain unchanged. Serial combined and fresh-IO controls preserve the failure, so parallelism or a
+test-retained pure response alone cannot explain it. The first fixture compile's redundant pattern
+and every intervening result retain exact selected-input snapshots. Complete source pairs and all
+**1,754** inputs/twenty-two binaries match in `ordinary-eks-resource-typecheck-6-validation.json`
+and the failed `ordinary-eks-resource-tests-3-validation.json` under
+`.build/sprint-6.5/ordinary-program-composition-20261028/`.
+`eks-resource-progress-validation-1.json` verifies seventeen evidence records and deliberately
+retains `complete=false` / `full_response_validation_passed=false`. These canonical interpreter
+controls use test capabilities. The current recipe and command-effect controls are preparation,
+not complete funding/admission. Finish the ten compound
+expansions, canonical protocol/replay/native and common caller/credential work, full body/heap/kernel
+funding, provenance/launcher/same-settings capture, recovery/retirement and qualification-gated
+routing/removal. No public executable/operator, physical profile/ceiling, image/live attempt,
+qualifying cycle or phase/class closure changes. `6.5` stays Next; later rows remain parked.
+
+**Sprint `6.5` resource-interpreter boundary recipes, 2026-10-28.**
+The excluded `OrdinaryCascadeResourceSchedule.hs` under
+`.build/sprint-6.5/ordinary-program-composition-20261028/` projects every one of the actual
+compiler's **77** operations into typed library-boundary calls and named compound expansions.
+Registered-target recipes distinguish creation bindings, stack-reader provider/decision reads,
+Provider observation/mutation and DNS owner deletion. Checkpoint recipes retain independent
+operation/read-back calls and the extra pair observation on pending restore/retirement. Stack-reader
+commit includes a fresh pair, ownership manifest and creation binding. The known boundary ceiling
+is **153 invocations**, not an RPC total; creation-binding selection and exact read-back alone
+require separate authenticated calls. **17** compound occurrences remain explicit expansion debts,
+including EKS, both DNS owner deletes, recovery/audit/report and local terminal interpreters.
+All **277** standalone controls pass in **0.16 seconds** command time: **180** checkpoint combinations,
+six pending-result controls that reach the recipe ceiling while remaining unresolved, **90** stack/
+network-family controls and real-graph coverage. These execute canonical interpreters over test
+capabilities; they prove no captured network or original-field native program. Formatting,
+extra-group HLint and warning-clean **fourteen-module no-link** compilation pass, the latter in
+**2.29 seconds**. Complete source pairs and all **1,724** inputs/seventeen binaries match in
+`ordinary-resource-typecheck-3-validation.json` and `ordinary-resource-tests-3-validation.json`.
+`resource-progress-validation-2.json` verifies eight preserved selected-input snapshots and their
+separate scopes. The first compile's missing credential-disposition arms/shadowed names and two
+five-failure subzone runs remain retained. The copied fixtures lacked the synthetic hosted-zone
+coordinate required by the canonical adapter; adding it reaches the intended paths without reducing
+their expected counts or changing production code. These are preparation failures, not native
+production counterexamples. Complete the named compound expansions, canonical protocol/byte/replay
+expansion of each boundary, common scope/credential/epoch/handoff and registered-caller/native work,
+full two-MiB SDK-output/1,024-PVC body/decode/heap/kernel accounting and independent admission.
+Provenance, launcher/same-settings capture, original-request recovery/retirement, native execution
+and qualification-gated routing/removal remain open. No public executable/operator, profile or
+physical ceiling, image/live attempt, qualifying cycle or phase/class closure changes. `6.5` stays
+Next; later rows remain parked.
+
+**Sprint `6.5` real-graph driver accounting, 2026-10-28.**
+The excluded `OrdinaryCascadeDriverSchedule.hs` under
+`.build/sprint-6.5/ordinary-program-composition-20261028/` consumes the actual scope-independent
+compiler: **77** operations, **73** before the four local terminal operations. Every operation
+remains an explicit effect/body/replay funding obligation. Fresh registration, primary attachment
+and lease claim use **5/6/6** RPCs; each remote node uses four, including independent ACK-state reads.
+The healthy driver therefore uses **309** RPCs. Its **318** ceiling also reserves foreign-intent
+and terminal-failure/failed-compaction reads. Full wire snapshots and compact ACKs have separate
+bounds; read-only replay retention is a separate obligation.
+All **9** standalone controls pass in **3.71 seconds** command time, using canonical signed framing,
+cleanup clients/codecs and state transitions over test storage. Lost create/primary replies remove
+one inner read; terminal failure blocks the local tail; a lost compact reply converges through its
+tombstone, while a refused compact remains unresolved and reads the live descriptor. The first
+six-case run's two incorrect equal-count expectations remain failed with exact snapshots. Formatting,
+extra-group HLint and warning-clean **thirteen-module no-link** compilation pass, the latter in
+**3.70 seconds**. Complete source pairs and all **1,705** inputs/fourteen binaries match in
+`ordinary-driver-typecheck-2-validation.json` and `ordinary-driver-tests-3-validation.json`;
+`driver-progress-validation-1.json` checks the scopes and eight retained selected-input snapshots.
+This funds no complete program or resource effect. Close all operation recipes, common scope/
+credential/epoch/handoff work, native caller metadata/startup/Vault/token/manifest traffic and
+body/decode/replay/heap/kernel terms before independent admission or a global profile change. Keep
+full two-MiB Kubernetes SDK output and the **1,024-PVC** domain; the earlier one-MiB command declaration
+fixtures prove neither. No public executable/operator, image/live attempt, route, physical ceiling,
+qualifying cycle or phase/class closure changes. `6.5` remains Next and later rows stay parked.
+
+**Sprint `6.5` immutable ordinary request construction, 2026-10-28.**
+The excluded composition under `.build/sprint-6.5/ordinary-program-composition-20261028/`
+now accepts an opaque bounded public request for the complete declared program. Its canonical codec
+preserves original key/clocks/declared manager domain, caller expectations, public context/pin and
+retained coordinate, cleanup resource bindings, role, leases/retention, image/Agent identities and
+host/caller/channel/stream declarations. Decoding recompiles against the captured validated settings.
+Credentials and SecretRefs stay outside serialized bytes and their digest. The controller derives
+caller, Job subject and image from the request; prepared context/profile, local control directory
+and captured credential public metadata must match. The journal durably publishes the request digest
+before the scope WAL/call and refuses retrospectively assigning a program to a scope-only predecessor.
+Scope and graph still share one captured authentication owner; exact receipt/operation checks,
+no-overwrite/fsync/read-back publication and admission closure before joining I/O are retained.
+Warning-clean **twelve-module no-link** compilation passes in **2.67 seconds**. The separately linked
+request fixture passes **25** cases in **0.72 seconds** command time; the rebuilt preceding journal
+fixture passes **29** cases in **0.48 seconds**. Formatting and extra-group HLint pass. Complete source
+pairs and all **1,692** inputs/eleven binaries match in `ordinary-request-typecheck-6-validation.json`
+and `ordinary-request-tests-3-validation.json`. `request-progress-validation-1.json` checks the
+separate scopes and sixteen preserved selected-input snapshots. Stream-constructor/duration and
+fixture import/indentation failures remain retained. The first request run refused **16/19** cases:
+two one-MiB streams exceeded its two-MiB stream-copy reserve. Nine MiB is now allocated within the
+fixture's unchanged **128-MiB** heap/**256-MiB** family declarations; no native causal comparison,
+installed profile or physical ceiling changes. The **1-MiB** request encoding ceiling retains the
+held-input reader's bound; it is not a funded program/channel profile.
+Complete descriptor-owned executable/config/input provenance, original manager-domain verification
+and launcher preparation remain open, alongside same-settings local capture, owned program/scope
+metadata retirement, whole-graph body/decode/replay/heap/kernel and frame/forward/startup/Vault/token
+funding with full SDK-output expansion, and independent physical/Authority admission. Actual
+original-field native/captured-network execution, attested original-operation/lineage recovery and
+durable NoFutureAdmission/runtime-epoch/input retirement precede qualification-gated routing and
+mutable-copy removal. No public executable/operator, CLI route, image/live attempt, qualifying cycle
+or phase/class closure changes; preceding canonical evidence retains its scope. `6.5` remains Next
+and later rows stay parked.
+
+**Sprint `6.5` owned credential-tail promotion, 2026-10-28.**
+The canonical source contains the bounded stdin primitive, opaque owned home/Provisioner
+clients, fixed-lineage credential tail and permanent native fixtures. Warning-clean all-enabled
+builds pass in **448.09/3.44 seconds**. The excluded native pair banks and corrects a concrete replay error: a completed credential
+receipt previously returned retirement evidence while its exact Job remained after failed cleanup.
+Re-entry now reads the same retained canonical intent and recovers its permit/UIDs through the
+coordinator before confirming evidence. Normal attach and empty-attach/log recovery stay successful
+with one Job and worker; a held Job continues refusing on replay. The held replacement reaches its
+original-work wait guard; no clock or resource profile is enlarged. Worker-only authenticated
+completion is modeled without relaxing the Authority caller policy. Every native family independently
+proves exact six-unit absence before original finish, after closing/escape assertions. The paired
+source/input/binary proof and frozen before sources are in
+`.build/sprint-6.5/ordinary-controller-program-20261028/native-credential-paired-validation-1.json`.
+Unsupported fixture image syntax, missing worker completion, the fixture refusal expectation and
+slot-error wrapper compile failures remain retained. All four canonical-library native controls
+pass without prototype home modules. Same-lineage cleanup succeeds after the test API recovers,
+with one Job/worker and **18** aggregate authenticated fixture frames/three Agent reads; normal
+and log recovery retain **19** frames/four reads. The still-held control deliberately reaches its
+original work end and preserves the negative `KernelScopeDeadlineReached` closing result, with
+no retirement evidence. Its completion marker follows the refusal and closed-borrow assertions;
+it proves fixture completion, not whole-program success. The first canonical native attempt's
+incorrect positive-closing expectation remains failed with its complete **1,633-file** source
+snapshot. Complete source pairs and all **1,678** inputs/three binaries match in
+`native-credential-promoted-validation-2.json` under the same directory. The synchronized operator
+is `cab7172ecb9b14cacb81185c58ec3892774343f77f22cf5a4092a6ee1763da2f`.
+The required canonical gate passes all **8,654** cases (**8,524** primary) in **1,213.53 seconds**
+under the unchanged **5 GiB** cap. Complete source pairs and all **1,679** inputs/seven binaries
+match in `credential-tail-promotion-canonical-1-validation.json`. The complete **1,633-file**
+implementation manifest and twelve changed/new bodies are preserved in
+`promotion-implementation-source-index-1.json`; `promotion-progress-validation-1.json` independently
+checks the manifest, preserved bodies, separate native scopes, original limits and retained failure.
+These are test Kubernetes/IAM/Agent-storage and canonical protocol/
+worker-algebra controls; captured network/Vault, complete ordinary request/program/funding/admission,
+original-request recovery/retirement, routing and qualification remain open. `6.5` stays Next; later
+rows remain parked. No image/live attempt or phase/class closure is added.
+
+**Sprint `6.5` operation-owned terminal preparation, 2026-10-28.**
+The excluded construction under `.build/sprint-6.5/owned-terminal-20261028/` supplies an
+original-operation-owned local terminal adapter and concrete captured Authority/Backup/Agent
+composition, including the local-only arm after authenticated services close. It retains canonical
+no-follow markers, uninstall command/environment, stable operation ID and output ceilings; commands
+can only tighten original work. Whole adapter calls join alongside individual reads/commands, so
+closing cannot leave the final classification outside its lifetime. Closing uncertainty remains
+response loss. The earlier per-marker-only draft is preserved as a code-review finding, not a native
+counterexample; the first incomplete isolated typechecking closure remains failed. Warning-clean
+composition and fixture compilation, formatting and extra-group HLint pass. All **11** existing
+compatibility cases and both actual ordinary-field native controls pass at unchanged limits. Normal
+reads match stable canonical host observations; expiry preserves `KernelScopeDeadlineReached`;
+closed borrows refuse observation/uninstall admission. Completion markers follow closing and escape
+assertions, and each field independently proves six exact unit absences before original finish.
+Complete source pairs and all **1,661** native inputs/four binaries match in
+`native-terminal-validation-2.json`. `preparation-validation-1.json` checks the separate scopes and
+retained source bodies. No RKE2 uninstall or Kubernetes/Authority/AWS mutation is exercised.
+Executable source/operator and the preceding canonical gate retain their scope. Compose and fund the complete closed ordinary
+request/controller, captured caller and durable original-scope recovery/retirement before promotion
+and qualified routing. `6.5` remains Next; later rows stay parked and qualification remains pending.
+
+**Sprint `6.5` operation-owned recovery health, 2026-10-28.**
+The canonical private recovery dispatcher now carries the original operation owner through the
+fenced post-Begin health observation. It retains the same marker paths, systemctl/curl commands,
+closed environment, classifiers and 4-KiB output ceilings. Commands tighten the original work
+window; entry/closing checks prevent an expired or escaped owner from returning a positive state.
+Authority-owned repair and independent Authority read-back retain their existing ownership.
+Warning-clean all-enabled builds pass in **238.15/153.77 seconds**. The native fixture compiles
+warning-clean; all **83** focused cases pass. Both actual ordinary-field native controls pass at the
+original caller/family limits and 20/15/16/17/18-second windows. Each independently proves exact
+six-unit absence before original finish; the expiry case retains `KernelScopeDeadlineReached`,
+and both escaped borrows refuse as closed before the final marker. Complete source pairs and all
+**1,645** native inputs/three binaries match in
+`.build/sprint-6.5/owned-recovery-health-20261028/native-health-validation-1.json`.
+The complete **1,628-file** implementation manifest and eight changed/new bodies are preserved in
+`implementation-source-index-1.json` under that directory. The first empty ENOSPC fixture write,
+HLint hint and two outdated source-guard refusals remain recorded. Historical operator copies are
+deduplicated with original paths/modes/bytes retained; generated private compiler objects are
+recoverably compressed and verified. An additional 53 stopped historical binary copies share
+verified identical bytes while retaining their regular paths, modes and ownership. Required canonical
+validation passes all **8,654** cases (**8,524** primary) in **1,119.51 seconds** under the unchanged
+**5 GiB** cap. Complete source pairs and all **1,636** inputs/four binaries match in
+`owned-recovery-health-canonical-1-validation.json` under that directory. The synchronized operator
+is `20655937fddf0fe6b1879f94e0caa689dcfcb9440618c2d2a5abc21febc492cc`.
+`implementation-progress-validation-1.json` independently checks the complete manifest, preserved
+source bodies, separate validation scopes, native limits/closing fields and recoverable artifacts.
+This is bounded host observation/lifetime evidence; a repaired Healthy wire commit, complete ordinary request/program,
+funding/admission, original-request recovery/retirement and qualification remain open. Native
+Job/Agent/credential-tail validation is still required. The excluded fixture under
+`.build/sprint-6.5/ordinary-controller-program-20261028/credential-native-src/` now compiles
+warning-clean and passes three authenticated frames/two fresh Agent reads through the canonical
+framing, replay and Provisioner/Agent handlers over test repositories. Its separate scope is checked
+in `credential-wire-preparation-validation-1.json` under the recovery-health directory; the naming/
+rename and relative-path collector failures remain retained. This preparation executes no Job,
+credential tail, captured network/Vault or production admission. No CLI cutover, resource-limit
+increase, image/live attempt or phase/class closure is added; `6.5` stays Next and later rows stay parked.
+
+**Sprint `6.5` ordinary caller implementation, 2026-10-27.**
+The compiled home-service identities and joined original-bound operation-use owner are shared.
+The existing Authority channel retains its exact transport verifier and error mapping; an ordinary
+multi-service channel uses the observed parent and serializes exchanges through its single funded
+transport lane. Warning-clean library compilation
+passes in **15.62 seconds**, with formatting and extra-group HLint passing. All **eight** native
+lifetime regressions pass at their original limits: escape/nesting, signer/HTTP join and
+cancellation, callback failure and repeated owner cancellation. Exact six-unit absence, complete
+source identities and frozen inputs/binaries match in
+`.build/sprint-6.5/ordinary-authority-client-20261027/shared-native-validation-1.json`.
+Before service switching, the owned forward's startup acknowledgement exposed a concrete gap.
+The frozen implementation enters the startup HTTP probe and authenticated callback for missing,
+partial and wrong-port child acknowledgements; the matching control also succeeds. All four
+original-bound native records, complete source identities and unchanged inputs/binaries are in
+`startup-before-validation-1.json` under that directory. The exact **1,612-file** admitted source
+snapshot and both probe/helper binaries are retained; `startup-superseded-validation-1.json`
+independently confirms the complete preserved source identity. The first verifier's package-name
+ambiguity is retained; pinned package IDs supply the accepted verification.
+The correction adds a bounded first-line matcher to the existing reader and requires its semantic
+acknowledgement before HTTP. Its fixed state must fit the existing transport stream reserve;
+historical requests remain decodable while current effect preparation checks that funding.
+Warning-clean library/fixture compilation and **11** focused cases pass. All **12** replacement
+startup/lifetime cases pass at their original limits: the three invalid startup cases perform zero
+HTTP/provider effects, and the exact control succeeds. The native request regression preserves old
+data decoding while refusing unfunded current effects, with no application children. Exact source
+pairs and all **43** frozen inputs/five binaries match in `startup-after-validation-3-verified.json`.
+Both actual App/Native controller modes commit with **12/44** signed frames on one forward/session;
+they independently prove six-unit absence before the original finish. Their complete source pair
+and unchanged inputs/binaries are in `dispatcher-after-validation-1.json` under that directory.
+The first outer collector is retained as interrupted: it hit its **128 MiB** limit copying the
+dispatcher image before launch. Source-QA pre-stages identical copies, and the same observer and
+native limits then pass. Public-module registration and redundant-import refusals remain recorded.
+The immutable scoped record is
+`test/qualification/HOST-OWNED-FORWARD-STARTUP-2026-10-27.json`. This closes no live defect class.
+The integrated warning-clean all-enabled build passes in **206.44 seconds**. The synchronized
+operator is `e4b77a8de5600b22691cd249894a52b216f5852da1df3f621b3e13711e98127c`.
+The required canonical gate passes **8,570** cases (**8,440** primary) in **1,095.78 seconds**.
+Complete source identities, all **165** frozen inputs and five native binaries match in
+`integrated-validation-1.json` under that directory. Frontend evidence retains its preceding scope.
+The isolated ordinary home-channel prototype passes warning-clean compilation, formatting and
+extra-group HLint. All **13** native cases pass at the original limits: four compiled home roles
+share one port through nine serial forwards, while startup, escape/nesting, join, callback-failure
+and cancellation cases preserve exact six-unit absence. Provider work remains outside the network
+mutex; no host-direct Provider arm is added. Each calling thread owns its forward/readiness/HTTP/
+cleanup exchange. This is scheduling/lifetime proof in the existing test vehicle, not an independently
+admitted ordinary program. The registration controller retains its separately validated held channel.
+The excluded registered-caller traffic model passes **37** actual signer/bootstrap cases. For `n`
+ordinary signed frames, including their ordinary peer refreshes, it charges `2 + 2*n` private registry
+observations, `5*n + 4` total signed frames and `7*n + 6` protocol HTTP requests per attempt. Each attempt
+retains its own setup cost. Complete source identities and separately frozen inputs/binaries match
+in `home-traffic-prototype-validation-1.json` under that directory; setup/type/style refusals remain
+recorded. The 2,055-frame case is an arithmetic stress input, not an installed production schedule.
+The excluded captured-owner prototype binds the validated context/pin, captured home projection and
+absolute tool path to one cached Vault session and checked registered signer. Its finite counters
+share nonrefundable debits across concurrent copies; startup probes and token logins have separate
+allowances. All **50** focused signer/bootstrap/counter cases pass, including nonce-source failure
+and cancellation. All **16** native cases pass at their original limits. The three actual caller
+controls each use one configuration capture, one login, three token commands, **14** signed frames
+and **10** forwards. They refuse four early invalid inputs, repeated construction and escaped
+owner/transport work, with no additional effects. Canonically validated retired-history responses
+of **86,457** and **72,236** bytes cross the ordinary 64-KiB ceiling while retaining the separate
+registry ceiling and original active trust maximum. This checks the client boundary, not persistence
+of that history on the synthetic service. Each fixed private hint/peer/registry program shares one
+calling-thread-owned forward; ordinary provider work remains outside the network mutex.
+Warning-clean compilation, formatting and extra-group HLint pass. Complete source identities and
+all **187** frozen inputs/five binaries match in `caller-owner-prototype-validation-1.json` under
+that directory. Deadline failures, invalid fixture key reuse, active-trust overflow, linked-exception
+collector gaps and build/style refusals remain recorded. The registration controller is still the
+native test vehicle; these modules are not integrated into the supported ordinary path. The preceding
+canonical gate retains its unchanged executable manifest and operator; its scope is not expanded.
+Five further native controls pass in `caller-state-validation-1.json`, with complete matching source
+identities and **191** frozen inputs/six binaries. Prepared registration, a foreign descriptor pin
+and denied login refuse before the ordinary callback. A one-second lease plus fixed **800-ms**
+startup responses exhausts the two-login allowance after six token commands; failed construction
+cannot be repeated. The healthy control records **104** caller Vault HTTP requests: one login,
+48 origin reads, 41 public-key reads and 14 signatures. Those signing counts exclude epoch and
+manifest observations and failure retries. The original limits and the preceding owner modules stay
+unchanged. The first timing-sensitive refresh assertion remains a failed record.
+The frozen response-budget counterprogram accepts all three valid nominal controls and all three
+replies exceeding the existing 128-KiB ceiling, under the original native envelope and clocks.
+Its complete **1,615-file** admitted source snapshot is independently verified in
+`caller-body-superseded-source-index-1.json`; matching source pairs, **198** frozen inputs/eight
+binaries and exact six-unit absence are in `caller-body-before-validation-1.json`. The source
+correction bounds cached Kubernetes login, retained-epoch and lazy manifest-key replies before
+JSON decoding, while retaining the separately funded large replay reader. Warning-clean all-enabled
+compilation passes in **317.14 seconds**, alongside formatting and extra-group HLint. The same
+frozen counterprogram preserves all three nominal controls and refuses all three oversized replies
+with explicit bound errors. Five current caller state/credential controls also pass; the healthy
+Vault trace remains **104** requests. Complete source identities and all **205** frozen inputs/ten
+binaries match in `caller-body-after-validation-1.json`. The synchronized operator is
+`550bf61fed27dd0ba13a703beee13c9cfe23d451f5af4756a7e391c14fb07957`. The immutable scoped record is
+`test/qualification/HOST-CALLER-VAULT-RESPONSE-BOUNDS-2026-10-27.json`. Publication verification
+confirms its exact source bodies and all unchanged executable inputs in
+`caller-body-publication-validation-3.json`; the first two verifier refusals remain retained.
+On 2026-10-28 the required canonical gate passes **8,570** cases (**8,440** primary) in
+**1,100.37 seconds** under the unchanged **5 GiB** source-QA cap. Complete source identities,
+all **210** frozen inputs and ten binaries match in `caller-body-canonical-validation-1.json`.
+Frontend evidence retains its preceding scope. Five further native cases pass in
+`caller-lifetime-validation-1.json`: actual cached registered signing and authenticated HTTP
+join blocked work, child cancellation propagates, repeated owner cancellation waits for admitted
+work, and the healthy control preserves its **14** frames/**10** forwards. Each retains one login,
+three token commands and independently proves exact six-unit absence. Warning-clean compilation,
+formatting and extra-group HLint pass; complete source identities and all **219** frozen inputs/
+twelve binaries match. The first tuple-section style refusal remains recorded. These extend the
+excluded owner prototype's lifetime proof in its existing native vehicle. Compile the independent closed ordinary
+program with complete body/forwarding/startup/Vault/token/nonce/replay/resource funding.
+The HTTP accounting review banks an independently verified **1,616-file** admitted source snapshot
+and native counterexamples under `.build/sprint-6.5/ordinary-http-policy-20261028/`. The frozen
+helper follows GET/POST and Vault-login redirects, and repeats an already received POST after
+reply loss on a reused connection. All eight expanded controls retain matching complete source
+identities and unchanged declared inputs/binaries in `http-policy-expanded-before-native-1.json`.
+The source correction disables implicit replay on the existing shared manager and redirects on
+bounded protocol requests. Warning-clean all-enabled compilation passes in **172.05 seconds**;
+eight permanent cases, formatting and extra-group HLint pass. All eight replacement native HTTP
+cases pass; a separate isolated observation retains the selected unchanged-envelope causal pair.
+All **eleven** native caller compatibility cases pass, including cancellation, state/credential
+refusals, bounded refresh exhaustion and six small/oversized reply controls. Exact six-unit
+absence, matching complete source identities and **262** frozen inputs/nineteen binaries are in
+`http-policy-after-validation-1.json`. The synchronized operator is
+`b9876643c8670d407f18998e11d5562e2865c5200b568166520a33ab6c1c9e9e`.
+The immutable scoped record is
+`test/qualification/HOST-BOUNDED-HTTP-EXCHANGE-POLICY-2026-10-28.json`. Publication verification
+confirms all **1,618** admitted paths and unchanged executable inputs/nineteen binaries in
+`http-policy-publication-validation-1.json`. The first canonical gate retains matching source
+identities and all **268** inputs/nineteen binaries but refuses a lambda/case in the permanent
+test after **127.34 seconds**. That test extracts its named IPv4 helper; exact refactor verification
+and all eight focused cases pass while production source/operator/nineteen native binaries stay
+unchanged. The second required canonical gate passes **8,578** cases (**8,448** primary) in
+**1,261.20 seconds** under the unchanged **5 GiB** source-QA cap. Complete source identities,
+all **272** frozen inputs and nineteen binaries match in `http-policy-canonical-validation-2.json`
+under that directory. The immutable native record retains its exact pre-refactor test-source
+scope; frontend evidence retains its preceding scope.
+The excluded lazy-manifest counterprogram under
+`.build/sprint-6.5/ordinary-manifest-cache-20261028/` confirms that cancelling the frozen first
+read admits a second HTTP request. Its replacement claims one shared result slot before I/O,
+publishes failure before rethrowing cancellation and preserves cached success/refusal. Three
+before and three paired replacement cases pass at their original limits, each with four private
+signed frames, three forwards and exact six-unit absence. Healthy/cancelled cases retain one
+login/three token commands; denied reads retain the explicit two-login/six-command refresh bound.
+Complete matching source identities and **17** frozen inputs/four binaries per side are in
+`manifest-cache-validation-1.json`. Shared probe/fixture and all three other owner modules match;
+only the authentication owner changes. The first replacement batch remains unpaired after its
+source-capture failure, and the earlier result-commit draft remains excluded. Seven further native
+cases under `.build/sprint-6.5/ordinary-manifest-concurrency-20261028/` cover shared success,
+waiter/producer cancellation, repeated owner cancellation with both readers joined, and all three
+preceding controls. Each retains four private frames/three forwards and exact six-unit absence.
+Complete matching source identities and **19** frozen inputs/five binaries match in
+`manifest-concurrency-validation-1.json`; all four owner modules remain unchanged. Initial
+use-unless and formatter refusals remain recorded.
+The traffic and shared-debit foundation is registered as library code with permanent tests.
+Its checked cost separates private protocol traffic, origin/public/signing/epoch/manifest calls,
+one explicit Vault 403 retry, bounded logins/token stages, configuration capture and serialized
+startup probes. It rejects empty and out-of-width planning inputs before counter allocation.
+The whole ordinary program still requires independent admission and complete body/resource/replay
+funding; these arithmetic/debit values supply no admission and do not change the installed profile.
+The warning-clean all-enabled build passes in **189.15 seconds**, with complete matching source
+identities and unchanged declared inputs/twenty binaries in
+`.build/sprint-6.5/registered-caller-budget-20261028/library-build-validation-1.json`.
+The **38** focused preflight cases and extra-group HLint pass. The first required canonical gate
+retains matching source identities and unchanged inputs/binaries but refuses a lambda/case in the
+new debit helper after **130.80 seconds**. Its state transition is extracted into a named helper;
+the replacement required canonical gate passes **8,616** cases (**8,486** primary) in
+**1,258.82 seconds** under the unchanged **5 GiB** source-QA cap. Complete source identities and
+all **284** frozen inputs/twenty binaries match in `canonical-validation-2.json` under that
+directory. Both built CLI/env entrypoints pass their **105-case** suite in **1,402.87/1,424.06
+seconds**; complete source identities and all **285** frozen inputs/twenty binaries match in
+`frontend-validation-1.json`. The operator remains
+`b9876643c8670d407f18998e11d5562e2865c5200b568166520a33ab6c1c9e9e`.
+The excluded captured Provider adapter under
+`.build/sprint-6.5/ordinary-cascade-program-20261028/` passes warning-clean compilation,
+extra-group HLint and **12** actual authenticated-wire cases. It preserves the stable submission
+key/cleanup owner and distinguishes executed, refused and unresolved results without replaying a
+lost response. This is scoped preflight in `captured-provider-preflight-1.json`, not an admitted
+ordinary program or a full-source-paired native qualification proof. The seven-source composition
+review in `ordinary-cascade-followup-review-1.json` under the budget directory identifies legacy
+authentication, fresh selection identities and ephemeral-command factories that still need to join
+the complete captured program. Prototype integration/removal remains owned here.
+The corresponding existing-transport Provider and creation-read helpers are now registered in
+`ProviderDispatch.hs` and `CloudRuntimeProduction.hs`, with two permanent twelve-case wire suites.
+Provider result classification is shared with the existing constructor. Creation selection retains
+the original scope operation and rechecks all run-invariant identity fields before independent
+provenance read-back. The canonical shared fixture retains its revision-seven create/proof pair;
+the excluded preflight normalizes both to revision one. The warning-clean all-enabled build passes
+in **198.12 seconds**, with matching complete source identities and **318** frozen inputs/twenty-two
+binaries in `library-build-validation-1.json` under the cascade-program directory. All **24**
+permanent wire cases and extra-group HLint pass. The synchronized operator is
+`060f5ff1a57cc2ca870356ad6ed53652b50e1886d09cf29aced8da14149f275e`.
+The first canonical gate retains matching source identities and all 321 inputs/twenty-three binaries
+but refuses the new test's literal region after **27.19 seconds**. The test selects the same value
+through `TestSupport`'s named synthetic-region constructor. The replacement required canonical gate
+passes **8,640** cases (**8,510** primary) in **1,312.68 seconds** under the unchanged **5 GiB**
+source-QA cap. Complete source identities and all **323** frozen inputs/twenty-three binaries match
+in `canonical-validation-2.json` under the cascade-program directory. Frontend evidence retains its
+preceding source/operator scope. Existing ordinary entrypoints and production
+resource/replay profiles are unchanged; the complete independently admitted controller remains open.
+The supplied-transport EKS issuer and original-parent ephemeral Kubernetes runners are now library
+code. The issuer preserves the sealed execution key/cleanup owner and existing encrypted-reply
+validation; the home runner consumes its captured embedded projection. All **38** packaged wire
+cases pass, including **14** new EKS cases. Warning-clean all-enabled builds pass in **359.60** and
+**208.66 seconds**; the second receipt correlation is corrected explicitly in
+`owned-kubectl-build-result-correction-1.json` under the cascade-program directory. Extra-group
+HLint passes after the retained composition-style refusal. The native regression preserves the
+original envelope, proves captured home/EKS file lifetime, escape refusal, parent/client stream
+ceilings, one command lane and four join/cancellation modes. Exact six-unit absence, matching
+complete source identities and **1,824** frozen inputs/twenty-five unique binaries are in
+`owned-kubectl-native-validation-1.json`. Its first driver import refusal remains recorded. This
+uses the existing registration-controller vehicle; independent ordinary admission, complete
+production body/resource funding and adapter/controller composition remain open. The synchronized
+operator is `abc8ac1b02f81ccda07b7ca61b4c82c94858d5b79057f5897937cdbfb61b5856`.
+The required canonical gate passes **8,654** cases (**8,524** primary) in **1,143.03 seconds** under
+the unchanged **5 GiB** cap. Complete source identities and all **1,829** frozen inputs/twenty-six
+binaries match in `owned-kubectl-canonical-validation-1.json`. Native evidence retains its exact
+preceding source identity, and frontend evidence retains its preceding source/operator scope.
+The captured cloud constructor now assembles Provider dispatch, original-scope creation reads,
+EKS selection/attempt and home/AWS DNS deletion through the supplied transport and command owner.
+It shares the private dispatcher assembly and adapter behavior with the retained legacy factories;
+its inputs expose no host caller or repository root. The all-enabled warning-clean build passes in
+**202.35 seconds**, with matching complete source identities and frozen inputs/binaries in
+`.build/sprint-6.5/captured-cloud-runtime-20261028/library-build-validation-1.json`. All **80**
+focused cases and extra-group HLint pass. The original-envelope native controls pass an authored
+one-PVC EKS sequence (**18** commands), denied issuance (**zero** commands) and two original-scope
+creation reads followed by one read-only Provider observation. DNS reaches its exact home/AWS
+owner deletions but exposes the shared vocabulary's missing named request timeout on all **four**
+commands. Exact six-unit absence, complete matching source identities and unchanged inputs/binaries
+are banked in `native-before-validation-3.json`. Complete **1,625-file** source preservation is in
+`dns-timeout-before-index-1.json` under that directory. Driver import/annotation, callback-wrapper,
+command-count and native-family-stub refusals remain retained. The shared DNS command helper appends the existing
+request timeout. The replacement all-enabled warning-clean build passes in **53.18 seconds**, with
+complete matching source identities and all **1,876** frozen inputs/twenty-seven binaries in
+`library-build-validation-2.json`. All four replacement native cases pass at the original limits,
+retaining **18/0/0/4** commands and exact six-unit absence. Complete source identities and all
+**1,884** frozen inputs/twenty-eight binaries match in `native-after-validation-1.json`.
+`paired-composition-validation-1.json` confirms the identical caller/profile/windows and exact DNS
+argument delta. A subsequent named environment-helper extraction fixes the active probe's retained
+HLint refusal; formatting, warning-clean compilation and HLint pass. Its four-command DNS
+compatibility result is scoped in `native-style-compatibility-scope-1.json`; the paired record
+retains its frozen caller and original binaries. The synchronized operator is
+`5672a1a01d697a4907fadc7a6ab35efdc01a6eb3fb4a20661da2f24d3e6228cd`.
+The required canonical gate passes **8,654** cases (**8,524** primary) in **1,176.90 seconds**
+under the unchanged **5 GiB** source-QA cap. Complete source identities and all **1,900** frozen
+inputs/thirty binaries match in `canonical-validation-1.json` under that directory. The subsequent
+three report edits are checked against the complete public-source manifest in
+`plan-report-validation-1.json`; native and frontend evidence retain their own source/operator scopes.
+These are adapter proofs in the existing registration vehicle. Full ordinary program compilation,
+funding, admission, routing, recovery and qualification remain open; prior gates retain their scopes.
+Durable original-request recovery and NoFutureAdmission/runtime-epoch/input retirement remain open.
+Sprint `6.5` owns prototype promotion/removal and qualification; it stays Next and later rows stay
+parked. No image/live attempt, resource-limit increase, global replay/format change or phase/class
+closure is added.
+
+**Sprint `6.5` ordinary controller identity, 2026-10-28.**
+The shared operation owner now carries a closed registration/ordinary-controller kind through
+program selection, the six-role manager field, kernel cgroup paths and retirement. A program-kind
+mismatch refuses before publication or manager submission. Existing registration submission bytes
+retain their codecs; a separate bounded ordinary-kind record preserves the qualified original
+provider, sender, domain, window and input fingerprint for recovery. The registration loader also
+checks the recorded kind. Public routing, the complete ordinary request/program, physical and
+Authority admission, funding and durable recovery/retirement remain open. Source preservation and
+validation are under `.build/sprint-6.5/ordinary-controller-identity-20261028/`.
+The first all-enabled build compiles production code but refuses a unit assertion importing private
+modules; its matching source/input/binary record is retained. The assertion moves to the stronger
+native record/field controls, and the preceding unit file is restored exactly. The retirement
+fixture also derives its workspace from the recovered kind. The replacement warning-clean
+all-enabled build passes in **164.96 seconds**, with matching complete source identities and all
+**1,913** frozen inputs/thirty binaries in `library-build-validation-2.json`. Formatting,
+extra-group HLint and **17** focused registration cases pass. All **22** native submission controls,
+five family scenarios and two retirement scenarios pass at their original limits. Both kinds
+exercise parent/role placement; a mismatched program publishes nothing. Every family independently
+proves exact six-unit absence before its original finish. Complete source identities and all
+**1,657** inputs/four binaries match in `native-validation-1.json`. The first native compile recipe's
+missing private publication modules remains recorded. Two existing qualification entrypoints also
+typecheck warning-clean in **0.43/2.11 seconds** against the canonical unit through an isolated QA
+package database. `typecheck-validation-1.json` independently checks that only its visibility fields
+differ, while production package metadata, the library archive and preceding native inputs/binaries
+remain unchanged; the two earlier private-import refusals are retained. The synchronized operator is
+`4e5538f836d187d33fc24f3ceda8a2eb315a1aee50f95ab58dff38a46a578e9e`.
+The first canonical gate is deliberately stopped after **662.58 seconds** to complete the still
+unbound publisher/retirement boundary. It retains matching complete source identities and all
+**1,667** frozen inputs/five binaries; it supplies no test-pass claim. The actual native counterexample
+and registration control under `.build/sprint-6.5/ordinary-publication-kind-20261028/` both pass
+their expected observations at the existing limits: an ordinary controller borrows the registration
+publisher, then its qualified input retirement reaches that registration namespace. Both exact
+six-unit closing fields are independently observed before original finish. Complete source/input/
+binary checks match in `native-before-validation-1.json`; all **1,625** admitted sources, the
+actual caller, binary and production archive are preserved. Fixture format/type/indentation setup
+refusals remain retained. The correction binds publisher kind, persisted producer metadata and
+input-retirement namespaces, and checks the publisher before submission-record publication.
+The corrected warning-clean all-enabled build passes in **59.40 seconds**, with matching complete
+source identities and all **1,643** frozen inputs/three binaries in `library-build-validation-1.json`.
+The four replacement native scenarios pass at the unchanged limits: each publisher admits its own
+kind, while both mismatches refuse before record/possible-send publication or a controller. Every
+closing field proves exact six-unit absence before original finish. Complete source identities and
+**1,649** inputs/five binaries match in `native-after-validation-1.json`. The paired verifier checks
+the two explicit registration-kind API arguments and unchanged envelopes; its first argument-index
+refusal remains retained. Historical registration bytes, malformed/unknown/nested records,
+wrong-kind possible-send and cold recovery/retirement for both kinds pass in the separately scoped
+`codec-validation-1.json` (**1,656** inputs/six binaries). The two permanent qualification fixtures
+pass warning-clean compilation, formatting and HLint after a retained assertion-style refusal.
+Their shared four-case and codec compatibility runs match preceding outcomes, with complete source
+identities and **1,663/1,666** inputs/six binaries in `native-promoted-validation-1.json` and
+`codec-promoted-validation-1.json`. `promotion-validation-1.json` reconstructs the complete
+**1,627-file** public manifest, proves only two test sources were added after the native pair,
+and checks three warning-clean existing-entrypoint typechecks and isolated QA visibility.
+All **17** focused registration cases pass. The synchronized operator is
+`76c177c809d70c5d7a31bbb982a85afa8a7f3c5b75b1a9800e4ed29dd0a2da66`.
+The first required canonical gate refuses the codec fixture's case-inside-lambda style after
+**112.22 seconds**; complete source identities and all **1,669** inputs/six binaries match in
+`canonical-validation-1.json`. Its disposition callback is extracted to a named helper. Warning-clean
+compilation, HLint and native codec/cold-retirement compatibility pass at unchanged limits in
+`codec-promoted-validation-2.json`. `style-correction-validation-1.json` independently checks the
+one-fixture callback extraction and three report edits, equal native profiles/results, and the
+complete 1,627-source manifests. Required canonical validation then passes all **8,654** cases
+(**8,524** primary) in **1,096.72 seconds** under the unchanged **5 GiB** source-QA cap. Complete
+source identities and all **1,678** frozen inputs/seven binaries match in
+`canonical-validation-2.json`. This is native host-boundary evidence, not an
+independently admitted complete ordinary program. Its request/dispatcher, complete production
+funding, physical/Authority admission, original-request recovery and durable retirement remain open.
+The excluded construction under `.build/sprint-6.5/ordinary-controller-program-20261028/`
+preserves the gate's 1,627 public sources. Its binary-stdin command draft retains the original
+parent/role/Go/exec boundary, reuses the Go pipe after exec, and reads its reduced capacity back as
+one native page. Input bytes consume the command's existing runtime reserve. The three actual
+ordinary-field scenarios pass ten support checks and exact closed-parent refusals at unchanged
+limits. Empty EOF, 256-KiB binary ingress, oversize/unfunded/expired refusal, legacy closed stdin,
+reuse, a blocked reader and cancellation are exercised. The blocked parent's closing result stays
+`KernelScopeDeadlineReached`; absence is not converted into program success. Every fixture writes
+its final marker after the expected closing and escaped-borrow checks. Independent observations
+prove six-unit absence before each original finish. Complete source pairs and all **1,656** inputs/
+three binaries match in `stdin-native-validation-4.json`. Earlier marker-wait, provisional-marker
+and expected-expiry fixture limitations remain retained; the provisional pass proves no final
+parent completion. The captured Kubernetes/credential-tail draft now requires opaque home-only and
+owned Provisioner capabilities, checks their original-operation binding, and retains its fixed
+lineage/deadline with independent Agent read-back. Warning-clean no-link compilation passes in
+**1.38 seconds**, with matching complete source pairs and seven inputs/two binaries in
+`credential-retirement-typecheck-validation-5.json`; formatting and extra-group HLint pass.
+The first collector's empty receipt/closing-capture failure, the ENOSPC script-write failure and
+missing-import refusal remain recorded. QA temporaries/receipts use existing memory-backed scratch
+under the unchanged 5-GiB cap; workspace copies retain the results. `construction-progress-validation-1.json`
+reconstructs the complete public manifest and independently checks those scopes. These are excluded
+preflights. Native credential-tail/Job/Agent validation, the captured post-Begin health observer,
+complete ordinary request/dispatcher/funding/admission and durable recovery/retirement remain open;
+recovery repair stays Authority-owned. The preceding canonical gate retains its public-code scope.
+No selected CLI route, resource-limit increase, global replay/format change, image/live attempt or
+phase/class closure is added; `6.5` stays Next.
+
+**Sprint `6.5` bounded caller/producer integration checkpoint, 2026-10-27.**
+The total caller now shares one opaque signing allowance across ordinary coordination and its
+private registry reader. Initial and registered modes admit at most 12 and 44 nonce generations;
+debit precedes the nonce effect, and failure/cancellation never refunds an uncertain attempt.
+The shared data-only wire module preserves request encodings and byte ceilings. The authenticated
+producer checks those ceilings before delivery/replay completion; overflow leaves an unresolved
+reservation, and unrelated migration requests preserve their existing policy.
+
+The coherent isolated candidate passes warning-clean library compilation in **819.11 seconds**,
+**29** focused cases, formatting and extra-group HLint. Both actual App/Native controller cases
+commit with 12/44 frames on one forward and independently prove six-unit absence before original
+finish at unchanged limits. The paired focused/native/style interval retains complete source
+identities, **1,608** source files, ten validation programs and three binary/package artifacts;
+the earlier-started library build is reported separately. Exact evidence is
+`.build/sprint-6.5/rpc-production-admission-20261027/bounded-candidate-validation-1.json`.
+Those eight source files and two test modules are integrated and registered. The active checkout's
+warning-clean all-enabled build passes in **228.24 seconds**, with complete source identities and
+all **129** frozen inputs unchanged. Targeted formatting and extra-group HLint pass; the initial
+import-order refusal and collector correction remain recorded in `integrated-build-validation-1.json`
+under that directory. The synchronized operator is
+`6a11599c1153a934f1675fa85dcf8178e22c868d07bd336fbe4417b8e05f876f`.
+The required canonical gate passes **8,559** cases in **1,186.48 seconds**, including **8,429**
+primary cases. Complete source identities, all **133** frozen inputs and three binaries match in
+`integrated-canonical-validation-1.json` under the same directory. The preceding frontend gate
+retains its own dispatcher-batch scope; it is not recast as a frontend run of this increment.
+
+The read-only `composition-review-3.json` there records the next production boundary: ordinary
+host authentication still selects native Transit signing, and the qualification root does not
+submit this controller. Registration must be admitted and confirmed before a fresh qualification
+identity is captured, while historical recovery classification still precedes new work. The
+registration pin does not supply its original operation key/window, and the closed one-shot
+registration controller cannot serve as a generic ordinary-command slot. Compile the ordinary
+Authority-client program and its captured-context/session/channel binding with an independent
+admitted identity, then compose exact fresh/committed/recovery registration and derive the complete
+traffic/resource schedule. Existing metadata fences retain their epoch-retirement owner.
+The global replay profile and format remain **4,110 entries / format 19**; the illustrative
+4,198-entry/format-20 drafts remain excluded until that complete schedule is established. Production physical/
+Authority admission, durable epoch/input retirement and deployment qualification remain required.
+`6.5` stays Next and later rows stay parked. No image/live attempt, resource-limit increase,
+activation or phase/class closure is added.
+
+**Sprint `6.5` controller-dispatch implementation checkpoint, 2026-10-27.**
+The registered closed leaf uses the shared nine-pair argument model, pinned input/process owners
+and total caller without an import cycle. Publication resolves from the held executable's
+Repo-owned sibling rule; typed dispatch bypasses repository/schema preparation. The shared path
+codec rejects traversal and normal help includes all nine fields. The generator plans one combined
+write for sections sharing a file, preserving prose and passing its next check.
+
+Warning-clean operator compilation and **619** focused/parser cases pass, including complete
+registry leaf-example coverage. The synchronized operator is
+`07ea90163703f42dafdf45021503f3e1aa9ce17cff36c2c356d58566794d040d`.
+Canonical documentation and CLI goldens are regenerated after adding the required closed-envelope
+example. The warning-clean build of all enabled targets passes in **210.23 seconds**, and its
+operator bytes match. The refreshed initial/registered native pair uses one forward, commits with
+12/44 signed frames and independently retires six units, held group and workspace before the
+original finish. Its source identities, 36 inputs and three binaries match in
+`.build/sprint-6.5/rpc-controller-dispatch-20261027/scope-validation-3.json`. The standalone built-unit
+preflight passes **8,400** cases in **330.59 seconds**, with those same complete source identities
+and inputs unchanged; exact evidence is `unit-preflight-validation-1.json` under that directory.
+The immutable public `test/qualification/HOST-RPC-BIRTH-CONTROLLER-DISPATCH-2026-10-27.json`
+precedes the leaf-example addition and remains historical evidence for its recorded binary.
+
+The first three connected gates retain their complete source pairs and unchanged frozen inputs:
+117 for the lambda/case style refusal, 119 for the fixture's missing language declaration and 121
+for the parser test helper's missing constructor arm. The parser helper now handles the controller
+explicitly and all 619 focused cases pass. Full extra-group HLint before the example addition
+passes with no hints in 594.28 seconds; exact preflight and failed-gate receipts remain under
+`.build/sprint-6.5/rpc-controller-dispatch-20261027/`. The earlier 900-second full CLI run remains
+incomplete. The fourth connected canonical/frontend gate passes: **8,530** canonical cases in
+**1,170.30 seconds**, then both built frontend entrypoints' **105** cases in **1,372.73** and
+**1,347.85 seconds**. Its complete source identities, all **123** frozen inputs and three binaries
+match in `connected-validation-4.json` under that directory. This gate precedes the bounded
+caller/producer integration above; its exact source scope remains retained.
+
+The next-admission scratch prototypes pass **13** tests. Their proposed 4,198-entry two-attempt
+profile encodes to **220,869,068 bytes** under the unchanged **222,298,112-byte** ceiling with wide
+nonce/scope/generation/clock metadata. That global profile is **not integrated production
+admission**. The bounded caller/producer checkpoint above integrates the arithmetic/nonce/wire
+foundation separately. The earlier dependency-cycle review, sizing command and remaining global
+caller/codec integration are in
+`.build/sprint-6.5/rpc-production-admission-20261027/prototype-validation-1.json`.
+The separate `codec-prototype-validation-1.json` there proves the proposed format-20 reader retains
+actual format-19 completed responses, pending ownership and tombstones while refusing profile
+drift. That package-qualified trial also remains unintegrated.
+Production resource/replay admission, durable epoch/input retirement and deployment qualification
+remain required. `6.5` stays Next; later rows stay parked. No image/live attempt, resource-limit
+increase, activation or phase/class closure is added.
+
+**Sprint `6.5` total prepared-caller checkpoint, 2026-10-27.**
+The total entrypoint owns one cached session and one held operation channel through native bootstrap,
+ordinary checked signing and coordination. Its private held execution arm preserves the managed
+command lane. Ordinary reads retain 64 KiB while registry reads select their distinct bound on the
+same forward. Warning-clean library/fixture builds, extra-group HLint, formatting, file/documentation
+lint and **301** focused cases pass. All **18** native cases pass: 14 total-owner cases and four
+existing-owner regressions. Registered callers commit with 18 private metadata reads and 44 signed
+frames on one forward/session; the authored short lease refreshes through the same token program.
+Pin/metadata loss, login refusal, cancellation, original expiry and the ordinary 64-KiB ceiling all
+hold. Every case independently proves six-unit absence before original finish and retires the held
+group/workspace. Original home/chart sources are removed after capture. Full source identities,
+all **27** frozen inputs and the native binary match. The omitted-private-module build remains
+unsuccessful evidence. Exact results are in
+`.build/sprint-6.5/prepared-caller-total-20261027/scope-validation-2.json` and the immutable public
+`test/qualification/HOST-TOTAL-PREPARED-CALLER-2026-10-27.json`. That artifact and its Cabal
+declaration are published after the scoped gate and must enter the next connected source gate.
+Next is canonical controller dispatch; its import-cycle and held-executable publication-path review
+is `.build/sprint-6.5/prepared-caller-total-20261027/dispatcher-composition-review-1.json`.
+The connected canonical/frontend gate, production host resource/replay admission, epoch retirement
+and deployment qualification remain required. `6.5` stays Next; no resource-limit increase,
+image/live attempt, activation or phase/class closure is added.
+
+**Sprint `6.5` private bootstrap-reader checkpoint, 2026-10-27.**
+The native-only signing algebra is shared with ordinary checked signing and cannot read the
+registry. The closed bootstrap program privately attests the public hint, signs only fixed
+peer-context/registry reads, compares the independent descriptor pin and confirms the same highest
+active binding against the complete authenticated registry. Its signer never escapes. `LocalClient`
+encloses the complete read in the existing original-bound channel borrow.
+Warning-clean library compilation and **267** focused signing/birth/bootstrap tests pass, including
+**23** new bootstrap cases: cached native Vault reads for both external callers, native one/logical
+two, forged generation, changed native source, pin mismatch, retirement/rotation, refused/malformed
+hints, six cancellation boundaries and bounded signature cleanup. Formatting, extra-group HLint,
+file-policy and documentation checks pass. Full entry/exit source identities and **16** frozen
+inputs match; exact commands/results and unsuccessful fixture/lint setups remain in
+`.build/sprint-6.5/rpc-bootstrap-reader-20261027/scope-validation-1.json`.
+Next is the total prepared caller owner: one cached session, this private reader, the ordinary
+checked signer and coordination on the same held channel, followed by canonical controller dispatch
+and the connected canonical/frontend gate. Production host admission/replay, epoch retirement and
+deployment qualification remain required. No resource limit, image/live attempt, activation or
+phase/class closure is added; `6.5` stays Next and later rows stay parked.
+
+**Sprint `6.5` joined operation-channel checkpoint, 2026-10-27.**
+The channel is opaque and shares the existing native operation-owned forward. Its scoped counted
+borrows cover providers, signatures, hint decode and serialized HTTP, allowing nested registry
+validation while closing refuses new uses and joins admitted original-bound work. The ordinary
+transport retains its 64-KiB response ceiling; the registry-purpose channel selects the existing
+139,520-byte bound. Bounded URL parsing now catches only HTTP exceptions, preserving cancellation.
+Warning-clean library compilation and extra-group HLint pass. All **16** same-program native
+old/replacement cases pass: escape, nesting, signer/HTTP join, signer/HTTP cancellation, callback
+failure and repeated owner cancellation. The original performs provider work and sends requests
+after release; the replacement performs neither. Its provider/HTTP borrows also finish before
+normal, exceptional or cancelled owner release. All six field units are independently absent
+after each run. Full source identities and eight frozen inputs match; no resource or original-clock
+bound is enlarged. Exact results are in
+`.build/sprint-6.5/rpc-held-bootstrap-20261027/{native-validation-1,native-matrix-validation-1}.json`.
+The immutable public record is `test/qualification/HOST-AUTHORITY-CHANNEL-LIFETIME-2026-10-27.json`.
+The package-selection countercheck caught a driver linked to the intermediate HTTP-only archive;
+the accepted comparison clears the compiler environment and selects the original/current package
+DB explicitly. Its archive, interfaces, source and all setup/compiler refusals remain retained.
+This is scoped native evidence; the connected canonical/frontend gate remains required after the
+private bootstrap reader/session composition and dispatcher. Production host admission/replay,
+epoch retirement and deployment qualification remain open. `6.5` stays Next and later rows stay
+parked. The completed discovery evidence remains below.
+
+**Sprint `6.5` own-binding discovery checkpoint, 2026-10-27.**
+The bounded external-caller query/hint codec is untrusted public data. Exact native origin selection
+is shared with the checked registered signer; logical generation remains distinct from native
+version. Warning-clean library compilation, **104** focused cases, formatting and extra-group HLint
+pass with matching entry/exit source identities and **11** frozen inputs. The omitted-worker refusal
+and duplicate-test-package failures remain recorded in
+`.build/sprint-6.5/rpc-own-binding-20261027/data-validation-2.json`.
+The server wrapper is wired to the retained Authority runtime and passes warning-clean compilation
+and **320** focused registry/signing/birth cases. The query is exact-scope/origin and external-caller
+only; the fixed two-second read window cannot seed or mutate. Ordinary frames and wrong-route hints
+delegate unchanged to authentication. Missing/corrupt/changing provenance, malformed and oversized
+queries, native-matching forged logical generations, cancellation and timeout cleanup are covered.
+Formatting/extra-group HLint pass; full entry/exit identities and **18** frozen inputs match.
+The fixture typing/shadowing failures remain in
+`.build/sprint-6.5/rpc-own-binding-20261027/server-validation-1.json`.
+Canonical `prodbox dev check` passes in **1,418.326 seconds**, including **8,486** gated tests,
+repository policy/style checks and warning-clean enabled all-target compilation. Complete entry/exit
+source identities and **96** frozen inputs match. The operator is
+`0103baf507c31920c2d8b6f972a410bd9f2e3ae95afba02246f6cd2044090c7c`; QA retains
+**3,600 seconds / 5 GiB / no swap / 64 tasks**. Exact results are in
+`.build/sprint-6.5/rpc-own-binding-20261027/canonical-validation-1.json`.
+
+The independent native probe runs this installed Authority and its socket against synthetic Vault/S3
+inside private mount/network namespaces. All **five** pinned phases and **eight** cold-start refusals
+pass, including **10** exact Operator/Harness hints, **20** malformed-query refusals and **10** ordinary
+unsigned-request refusals. Discovery leaves retained ciphertext/versions and replay unchanged;
+ordinary signed descriptor/replay behavior remains covered. The same probe, relative clocks and QA
+limits reproduce HTTP **400** on the previous `66fabcd0…` operator and pass on the replacement.
+Complete source identities, **99** frozen inputs, both operators and the probe binary match. The
+warning-clean, formatted/linted probe source and exact commands/results are retained under
+`.build/sprint-6.5/rpc-own-binding-20261027/native-inputs-1/` and `native-validation-1.json`.
+This is native synthetic-boundary evidence, not physical admission or deployment qualification.
+
+The private reader increment is recorded above. Total prepared-session/signer and same-channel
+coordination, canonical controller dispatch and production host admission/replay accounting remain
+required. The read-only composition review is
+`.build/sprint-6.5/rpc-own-binding-20261027/registered-bootstrap-channel-review-1.json`; it records
+that private metadata signing covers peer-context refresh and registry observation, and cannot
+silently select an unowned command lane or renew the original deadline. All remaining epoch
+retirement, credential/import/rollback/cutover and qualification work stays open. No image/live
+attempt, operational activation or phase/class closure is added; `6.5` remains Next and later rows
+stay parked.
+
+**Sprint `6.5` anonymous publication and cold payload recovery checkpoint, 2026-10-27.**
+The publisher synchronizes anonymous payloads and a versioned birth manifest before fixed links.
+Its native exclusive birth-inode lock spans the complete creator/closing scope; the record binds
+that original inode, key, parent and planned file versions. A one-shot possible-send marker must
+synchronize/read back before IPC. Fresh recovery acquires the same native fence, observes marker
+absence and lends only a scoped cleanup owner. The facade matches the original request key/work end;
+cleanup never renews work or upgrades missing/corrupt history into a grant. Zero-slot unlinked
+closing metadata retains its original parent identity. Ordinary publication failure now stays
+primary if eligible cleanup also throws.
+
+All **15** lifecycle controls, **seven** cold-ownership controls, **eight** partial-publication faults,
+**five** cleanup error/retry pairs, **three** marker-failure dispositions, **24** submitted regressions
+and **six** built-library facade cases pass. The actual submitted controller independently retires
+before original finish and removes payloads after outer expiry. **Six** actual creator-death boundaries
+cover birth/payload/marker links and confirmed directory syncs, with live contenders refused.
+Two frozen/replacement recordings prove anonymous pre-birth payload retention improvement and primary
+error preservation at unchanged authored limits/clocks; their traces and frozen publisher/program
+sources remain in `test/qualification/HOST-CONTROLLER-COLD-PUBLICATION-2026-10-27.json`.
+Complete source identities, **90** frozen inputs and all six current/frozen binaries match.
+Warning-clean library/fixture compilation, formatting, extra-group HLint and file-policy checks pass.
+The build-list, redundant-pattern, receipt-wrapper and fixture-hint refusals remain recorded. Exact
+native results are indexed in
+`.build/sprint-6.5/controller-cold-publication-20261027/native-validation-2.json`.
+
+The complete cold-publication batch now passes canonical `prodbox dev check`: repository policy,
+formatter/extra-group lint, warning-clean enabled all-target compilation and **8,431** gated tests.
+Full entry/exit source identities and all **91** frozen inputs match; the rebuilt operator is
+`66fabcd0cc93ab917cb2cdf23543ee51aa9464a3561af9c820ddad1824811cf7`. The gate retains its
+**3,600-second / 5-GiB / no-swap / 64-task** QA bounds. Exact commands, times and terminal results are
+in `.build/sprint-6.5/controller-cold-publication-20261027/canonical-validation-1.json`.
+The earlier full frontend evidence predates this batch; its next gate belongs with production
+command/dispatcher composition. The read-only ordering review is
+`.build/sprint-6.5/controller-cold-publication-20261027/epoch-retirement-order-review-1.json`;
+it confirms that key derivation excludes the work window and manager epoch, so expiry alone cannot
+authorize deleting one-shot fences. Registered bootstrap/dispatch and durable host admission/no-reuse
+accounting precede that retirement. The bounded same-channel bootstrap design is recorded in
+`.build/sprint-6.5/controller-cold-publication-20261027/registered-bootstrap-protocol-review-2.json`;
+its data/handler increment is recorded above; private metadata reader/channel composition remains
+required. Empty pre-birth namespaces and metadata-fence epoch retirement,
+submitted recovery across changed epochs/unqualified history, host registry/bootstrap, production
+dispatch, resource/replay accounting, rollback/cutover and deployment qualification remain required.
+No image/live attempt, activation, phase/class closure or queue advancement is added; `6.5` stays Next
+and later rows stay parked.
+
+**Sprint `6.5` sealed launch and live never-sent retirement checkpoint, 2026-10-27.** The publisher owns
+an exact-file, scoped submission latch and a distinct post-seal never-sent owner. The facade joins
+its complete bounded submission before input release, and the family marks possible send before
+native IPC; uncertainty cannot reset that latch. A shared journaled file program accepts the live
+never-sent owner under an explicit cleanup bound, and the facade preserves caller failure or
+cancellation after its eligible closing arm. Still-held exclusive file/parent descriptors also own
+eligible partial publication; changed or unowned present objects refuse cleanup. Raw-file submission
+cannot reopen the reserved publisher namespace through an unrelated launch lifetime.
+
+All **13** native lifecycle controls, **five** syscall-error/recovery pairs, **two** partial-publication
+faults, **six** built-library never-sent facade cases and **24** submitted-input regressions pass.
+The actual submitted controller independently retires its manager roles, held cgroup and workspace
+before original finish; post-outer payload retirement still passes. Complete source identities,
+**84** frozen inputs and all three binaries match. Warning-clean library/fixture compilation,
+formatting, extra-group HLint and file-policy lint pass under unchanged QA envelopes and operation
+clocks. A recorded partial-publication fault drove the prefix-owner correction; the fixture key-type
+and stale validation-driver executable refusals remain unsuccessful evidence. Results are indexed in
+`.build/sprint-6.5/controller-launch-seal-20261027/native-validation-3.json` and
+`test/qualification/HOST-CONTROLLER-LAUNCH-SEAL-2026-10-27.json`.
+The complete launch-seal batch now passes canonical `prodbox dev check` with **8,431** gated
+tests and all **103** synchronized built CLI/config cases. Full entry/exit source identities and
+all **85** frozen inputs match. The rebuilt operator remains
+`2e1d81d8b158986cdcd49284c5d5353698cb8268d068e45337c1dcdd24734953` through frontend validation.
+Both gates retain the **3,600-second / 5-GiB / no-swap / 64-task** QA bounds; exact commands,
+times and terminal results are in
+`.build/sprint-6.5/controller-launch-seal-20261027/canonical-validation-1.json`.
+Cold never-sent/partial-publication recovery after live owner loss, changed-epoch disposition and
+metadata-fence retirement remain required, together with host registry/bootstrap, production dispatch,
+accounting and qualification. The read-only cold publication/fence review is
+`.build/sprint-6.5/controller-launch-seal-20261027/cold-publication-protocol-review-2.json`;
+its proposed WAL/native-lock protocol still requires implementation and validation.
+No image/live attempt, phase/class closure or queue advancement is added; `6.5` stays Next.
+
+**Sprint `6.5` journaled submitted-input retirement checkpoint, 2026-10-27.**
+The exact-record physical owner now stays borrowed through the fixed publisher's closed payload
+transaction. A nonblocking directory lock serializes supported callers; anonymous metadata
+publication and confirmed preparation-directory sync precede quarantine/unlink. Recovery reconciles
+original/quarantined/absent states and returns an opaque receipt only after synchronized absence and
+matching journal read-back. It reads no configuration/request contents to decide ownership and
+never reopens/deletes the historical executable. The original submission and bounded public
+preparation/terminal journals remain explicit one-shot fences until runtime-epoch retirement;
+payload absence is not directory absence or Authority admission.
+
+All **24** native ownership/lifetime controls and **six** syscall-error/recovery pairs pass, together
+with **four** crash boundaries, cross-process locking, **two** changed/replaced-quarantine controls
+and a missing-historical-executable control. The real built-library controller independently retires
+all six manager roles, its held cgroup and workspace before original finish. After outer expiry the
+public facade retires both payloads, retains only the three metadata fences and accepts repeated
+cleanup while original work remains expired. Existing native QA envelopes and operation clocks are
+unchanged; the additional cleanup budget is separate and grants no work renewal. Complete source
+identities, **82** frozen inputs and both binaries match.
+
+Native EIO recording exposed a resume that moved a payload before confirming a previously failed
+preparation-directory sync. Its frozen/replacement traces now prove the added barrier under the
+same causal profile. Initial unused-syscall-result warnings and the fixture-only directory rename
+correction remain retained. Exact evidence is
+`.build/sprint-6.5/host-input-retirement-20261027/native-validation-3.json` and
+`test/qualification/HOST-CONTROLLER-INPUT-RETIREMENT-2026-10-27.json`.
+The complete submitted-input batch now passes canonical `prodbox dev check` with **8,431** gated
+tests (**8,301 + 27 + 35 + 68**) and all **103** synchronized built CLI/config cases. Complete
+entry/exit source identities and all **83** frozen inputs match; the rebuilt operator remains
+`ae5175890f61a449adffb6e25f2b319da693d2f7a4b9fcc059078fac587ac088` through frontend validation.
+Both gates retain the existing **3,600-second / 5-GiB / no-swap / 64-task** QA limits. Exact commands,
+times, identities and terminal results are indexed in
+`.build/sprint-6.5/host-input-retirement-20261027/canonical-validation-1.json`.
+Never-sent/partial-publication and changed-epoch disposition, metadata-fence epoch retirement,
+host registry/bootstrap, dispatcher, production resource accounting and deployment qualification
+remain required. No image/live attempt, activation, phase/class closure or queue advancement is
+added. `6.5` stays Next; later rows stay parked.
+
+**Sprint `6.5` sealed launch and never-sent ownership, 2026-10-27, before changes.**
+Seal the complete launch scope against concurrent, duplicate and escaped submissions, joining any
+bounded in-flight native call before input handles close. Mark possible submission before the native
+send boundary and never downgrade an uncertain send into never-sent. Only a distinct live owner of
+the exact fixed publication may use a proven never-sent disposition; missing or corrupt history
+supplies no such grant. Handle partial publication through still-held exclusive file/parent owners,
+preserving foreign or changed objects and the historical executable. Keep cleanup bounds separate
+from work, journal interruption/recovery and retain one-shot fence/epoch ownership. The read-only
+review of the current launch/registration/publisher boundaries is
+`.build/sprint-6.5/host-input-retirement-20261027/remaining-publication-recovery-review-1.json`.
+Host registry/bootstrap, production dispatch and the remaining deployment obligations stay open.
+
+**Sprint `6.5` submission/provider/retirement combined gate checkpoint, 2026-10-27.**
+The frozen submission, native-provider and scoped physical-retirement batch passes canonical
+`prodbox dev check`: complete policy/formatter/linter checks, warning-clean enabled all-target
+compilation and **8,431** gated tests (**8,301 + 27 + 35 + 68**) in **1,159.23 seconds**.
+The synchronized operator passes all **103** built CLI/config cases in **1,319.72 seconds** command
+wall time. Both retain the existing **3,600-second / 5-GiB / no-swap / 64-task** QA limits.
+Complete entry/exit source identities and all **80** frozen inputs match; the operator remains
+`ecdd3b7463c71679ce2ce16e32046b7436a7f17cd95963111433ff5844dbf0b6` through frontend validation.
+
+Attempt one caught a case-in-lambda layout in the fault fixture. Its named assertion extraction
+changes no production code; all seven affected native controls pass again at their original
+limits/clocks. Attempt two was terminated by `SIGTERM` before completion and remains unsuccessful.
+Attempt three traces only the outer operator, leaves test children untraced and completes with no
+termination signal observed. The interruption's sender is unproven; this is no runtime-repair or
+deployment-qualification claim. Exact attempts, source/input/operator identities and commands are in
+`.build/sprint-6.5/submission-provider-retirement-combined-20261027/canonical-validation-3.json`;
+the native assertion regression is `native-style-validation-1.json` in that directory. The two-doc
+publication bridge is indexed in its `publication-validation-1.json`.
+
+Next implement durable exact-file removal/recovery, including never-sent and partial-publication
+dispositions, while preserving executable and foreign/replaced inputs. Host registry/bootstrap,
+production dispatcher and deployment qualification remain open. No image, live campaign,
+activation, class/phase closure or queue advancement is added. `6.5` stays Next; later rows stay parked.
+
+**Sprint `6.5` scoped native family retirement checkpoint, 2026-10-27.**
+`HostOperationRetirement` holds the same qualified provider and anchored directories while joining
+old-method processing with independent exact six-role manager, cgroup2-family and workspace absence.
+The pinned manager's `ControlGroup` matches the shared physical-placement path; bounded startup
+metadata confirms its cached runtime prefix. No environment bytes are exported, logged, hashed or
+used for configuration/authentication. Repeated provider/domain/sender, manager and physical checks
+consume the original fresh read deadline. The scoped owner binds the complete original record;
+closed, cancelled and expired borrows refuse. It performs no stop, unlink or admission operation.
+
+All **seven** native fault/regression controls and **20** metadata controls pass. Each of the three
+historical fault profiles passes retirement/record/deadline, present/non-directory/symlink workspace,
+cancellation, descriptor and wrong-mount controls under unchanged **176 MiB / 128 MiB heap /
+30% CPU / 16-task** QA limits. Family limits and clocks remain unchanged. The actual built-library
+controller proves independent six-role, held-cgroup and workspace absence before its original
+finish; after the original outer end it obtains the retirement observation within a separate
+**one-second** read while expired effect preparation still refuses. Original input versions remain
+unchanged. Warning-clean enabled all-target compilation, HLint, formatting and file-policy lint
+pass. Complete source identities, **78** frozen inputs and four binaries match. Exact results and
+retained root-binding, parser, formatting and archive-link scheduling corrections are indexed in
+`.build/sprint-6.5/host-family-retirement-20261027/native-validation-2.json` and
+`test/qualification/HOST-OPERATION-RETIREMENT-OBSERVATION-2026-10-27.json`.
+The governed-document/catalog bridge is indexed in
+`.build/sprint-6.5/host-family-retirement-20261027/publication-validation-1.json`; it adds no identical
+executable-manifest or new full canonical-gate claim.
+
+Next implement durable exact-file removal/recovery, including never-sent and partial-publication
+dispositions, while preserving executable and foreign/replaced inputs. Host registry/bootstrap,
+production dispatcher, combined canonical/frontend gates and deployment qualification remain open.
+No image, live campaign, activation, class/phase closure or queue advancement is added. `6.5` stays
+Next; later rows stay parked.
+
+**Sprint `6.5` native provider binding and processing witness checkpoint, 2026-10-27.**
+The scoped native owner holds and hashes five archive-authenticated protocol images, matches actual
+manager/router executable mappings and file versions, and checks nonroot same-UID process identities,
+empty permitted/effective/ambient capability sets, mount namespace and security mode under the
+original deadline. Its exact policy/build reference and router/namespace provenance are published
+in submission schema two before `StartTransientUnit`. Schema one remains unqualified historical
+data. Recovery compares that binding and original domain, positively observes the old sender absent,
+reads the pinned manager field, and repeats native/provider/sender checks before producing a private
+method-processing witness. That witness grants no job, kernel, alarm, file-retirement or Authority
+admission receipt. Escaped native connections and provider leases refuse before using released handles.
+
+All **20** metadata controls, **seven** native family/fault controls, native provider lifetime/codec
+controls and an isolated same-UID fake-manager refusal pass. The actual built-library controller
+executes command/transport roles; independent six-role, held-cgroup and workspace absence precedes
+the original finish, with launch-input versions unchanged. Family limits/clocks and separate
+**176 MiB / 128 MiB heap / 30% CPU** QA limits remain unchanged. Warning-clean enabled all-target
+compilation, formatting, HLint and file-policy lint pass. Complete source identities, **75** frozen
+inputs and four binaries match. The overly strict initial inheritable-capability check, two lint
+fixes and the facade's occupied-shared-slice scheduling refusal are retained in
+`.build/sprint-6.5/provider-contract-20261027/native-validation-2.json` and
+`test/qualification/HOST-NATIVE-PROVIDER-PROCESSING-CONTRACT-2026-10-27.json`.
+The governed-document/catalog publication bridge is indexed in
+`.build/sprint-6.5/provider-contract-20261027/publication-validation-1.json`; its catalog change
+does not claim an identical executable manifest or a new full canonical gate.
+The arm64 image profile is archive-authenticated and source-reviewed; native execution here is amd64.
+
+Next compose independent kernel/alarm/input retirement and recovery. Host registry/bootstrap,
+production dispatcher, combined canonical/frontend gates and deployment qualification remain open.
+No image, live campaign, activation, class/phase closure or queue advancement is added. `6.5` stays
+Next; later rows stay parked.
+
+**Sprint `6.5` uncertain-submission native fault checkpoint, 2026-10-27.**
+The same-process, bounded Unix-bus relay preserves the real daemon-assigned sender and UID/PID.
+The queued-effect control observes all six manager roles absent while a real launch frame remains
+held and its sender live. After the awaiting client is cancelled, releasing that frame starts the
+actual controller. The lost-reply control withholds an actual successful manager reply and cancels
+the whole owning connection. Both positive schedules retain the upstream sender until that reply,
+then independently prove exact sender, six-role, held-cgroup and workspace absence.
+
+The separate blind-close control releases the frame and closes without awaiting a reply. This
+host observes no materialized family; closing manager/kernel-path/workspace absence is recorded
+as data, with no No-Go, held-kernel or retirement receipt. The new exact-name `NameHasOwner` read
+returns presence/absence or a structured error only. Inventory absence and name absence remain
+distinct from causal completion. The frozen owner already retained inputs; these controls expose
+an insufficient completion predicate, not a previously supported unsafe cleanup route.
+
+All **seven** controls pass at unchanged **256 MiB / 700m / 56-task** family limits and original
+**5/2/2.15/2.5/3-second** clocks. Their separate QA wrapper remains **176 MiB / 128 MiB heap /
+30% CPU / 16 tasks**. The three fault processes peak at **24,524 / 24,424 / 23,500 KiB RSS**;
+this is not an aggregate production working-set claim. Warning-clean enabled all-target compilation,
+formatting, HLint and file-policy lint pass. Complete source identities, **71** frozen inputs and
+the binary match. Exact schedules, retained setup/compiler/expectation failures and independent
+closing observations are indexed in
+`.build/sprint-6.5/submission-faults-20261027/native-validation-4.json` and
+`test/qualification/HOST-UNCERTAIN-SUBMISSION-NATIVE-FAULTS-2026-10-27.json`.
+
+Next bind and qualify the native provider processing contract before submission, including manager
+re-exec and asynchronous-handler refusal. These observations cannot mint that contract or a private
+recovery/input-retirement capability. Host registry composition, production dispatch and the next
+combined canonical/frontend/deployment gates remain open. No image, live campaign, activation,
+class/phase closure or queue advancement is added. `6.5` stays Next; later rows stay parked.
+
+**Sprint `6.5` durable native submission provenance checkpoint, 2026-10-27.**
+The native sender is read from the exact opened connection and confirmed against this process's
+daemon-reported UID/PID. Before `StartTransientUnit`, exclusive publication binds the original
+key, five clocks, complete manager/boot/bus domain, sender and original public input stat metadata.
+File/directory synchronization, same-descriptor read-back and closing input/domain checks precede
+the call. Existing or partial records refuse; all callback exits preserve records and inputs.
+The strict **64-KiB** codec and fresh bounded historical reader return data only, matching the
+original key/path and, through the controller facade, original window/domain.
+
+All **15** native metadata controls, **six** managed-family controls and the actual built-library
+controller/command/transport fixture pass. They cover independent-lease publication races,
+partial-record refusal, cancellation retention and reads after the original outer end. Exact
+six-role, held-cgroup and workspace absence passes at the unchanged family limits/clocks;
+original input versions stay unchanged in the independent family controls. The metadata fixture
+peaks at **18,416 KiB RSS** under its unchanged **176 MiB / 128 MiB heap / 30% CPU** QA wrapper.
+Warning-clean enabled all-target compilation, formatting, HLint and file-policy lint pass.
+Complete source identities, all **69** frozen inputs and three test binaries match. Exact results
+and the retained QA directory-setup refusal are indexed in
+`.build/sprint-6.5/controller-submission-20261027/native-validation-1.json` and
+`test/qualification/HOST-CONTROLLER-SUBMISSION-PROVENANCE-2026-10-27.json`.
+
+Next bind and qualify the provider processing contract at submission time, including manager
+re-exec and asynchronous-handler refusals; this initial provenance record cannot establish that
+contract retroactively. Exact old-sender retirement, the qualified processing frontier and
+independent kernel/alarm/input retirement/recovery remain open. Host registry bootstrap/observer,
+production dispatch, the next combined canonical/frontend batch and deployment qualification
+remain owed. No image, live campaign, activation or class/phase closure is added. `6.5` stays Next;
+later rows stay parked.
+
+**Sprint `6.5` caller-authentication/registry combined gate, 2026-10-27.**
+The frozen registered-caller selector, prepared cached authentication and authenticated registry-read
+batch passes `prodbox dev check`: full formatting/HLint/doctrine checks, warning-clean enabled
+all-target compilation, and **8,431** gated tests (**8,301 + 27 + 35 + 68**) in
+**1,180.80 seconds**. The synchronized operator passes all **103** built CLI/config cases in
+**1,307.12 seconds** command wall time. Both retain the existing **3,600-second** QA allowance.
+Complete before/after source identities and all **66** frozen inputs match. The synchronized
+operator's SHA-256 is `c1885090d9c8979df03c3f10e1ee79d997e4557400f90dc31a97c383243c3226`
+and remains unchanged through frontend validation. Exact commands, results and identities are in
+`.build/sprint-6.5/caller-auth-registry-combined-20261027/canonical-validation-1.json`.
+This closes only its combined local gates; host observer/bootstrap, production controller,
+causal closure, input retirement/recovery and deployment qualification remain open. `6.5` stays
+Next and later rows stay parked.
+
+**Sprint `6.5` authenticated registry observation packaged checkpoint, 2026-10-27.**
+The exact Operator/Harness read on the migration route shares the runtime's fenced registry
+projection and the existing read-only clock/primary/marker interpreter. Its canonical response
+binds complete public registration/history to the birth descriptor and original home seed;
+it cannot read a native seed, mutate retained state or export inner admission/credential data.
+The client bounds provider resolution, peer refresh, signing, HTTP and decoding by the original
+request deadline. Registry observation has an explicit **139,392-byte payload / 139,520-byte
+HTTP** ceiling over the existing **128-KiB** registry; ordinary metadata remains **64 KiB**.
+A valid retired-history response above 64 KiB passes through the actual retained reader and
+authenticated client, while the ordinary HTTP bound refuses it. Client capacity and active trust
+limits remain unchanged.
+
+The actual built-library birth/runtime/recovery, registered-signing and cached-session suites pass
+**248** cases, including **29** registry controls. Enabled warning-clean all-target compilation,
+formatting, HLint and file-policy lint pass. Complete source identities, all **61** frozen inputs
+and the test binary match. Scoped evidence and retained validation corrections are indexed in
+`.build/sprint-6.5/rpc-registry-observation-20261027/validation-6.json` and
+`test/qualification/RPC-BIRTH-AUTHENTICATED-REGISTRY-OBSERVATION-2026-10-27.json`.
+
+The Authority read boundary is implemented. Host bootstrap/cache/observer composition must still
+bind the response to the independent captured pin and original physical owner. Pinned-controller
+dispatch, causal admission closure, launch-input retirement/recovery, broader composition gates
+and normalized resource/deployment qualification remain open. No image, live campaign, controller
+activation, class/phase closure or queue advancement is added. `6.5` stays Next; later rows stay parked.
+
+**Sprint `6.5` authenticated registry observation, 2026-10-27, before changes.** Add an
+exact Operator/Harness read on the existing migration route. It consumes only the shared bounded
+clock/primary/marker read algebra and the same retained authentication-registry projection as the
+runtime. A canonical bounded response binds the public registry to the exact birth descriptor and
+complete original home seed; it exports no inner admission payload or credential. Missing,
+corrupt, changed, foreign-pinned and expired observations refuse. The client retains original
+parent/provider/peer/signing/HTTP/decode bounds. Its distinct response ceiling covers the existing
+128-KiB registry without changing ordinary metadata limits. Validate strict codec, fresh retained
+reads, caller/route binding, cancellation, response limits and actual authenticated composition.
+This supplies the Authority read boundary; host bootstrap/cache/observer wiring, controller
+dispatch, causal closure, input retirement/recovery and qualification remain open. `6.5` stays
+Next and later rows stay parked.
+
+**Sprint `6.5` registered prepared authentication native checkpoint, 2026-10-27.**
+Eight native controls pass under unchanged **256 MiB / 700m / 56-task** family limits and
+**50/40/42/45/47-second** clocks. The fixture prepares/read-backs its retained birth record and
+publishes/read-backs the exact config pin before operation preparation. Both registered callers
+resume it with **one login / eight signatures / three token stages / seventeen fresh registry
+reads**. The authored one-second lease forces **five logins / eight signatures / fifteen token
+stages**. Server trust and the caller observer derive from the retained pair. Both mode-mismatch
+directions refuse before token/login/signing; unavailable registry refuses before signing. Registry
+loss after one native signature suppresses its result before any coordinator frame. Closed-parent
+reuse refuses before another Vault request. Initial-home regressions remain green.
+
+Every case proves exact six-role absence, held-cgroup retirement and runtime-workspace absence;
+the original kubeconfig and chart source are removed after capture. The actual packaged suites
+pass **219** cases. Warning-clean native/packaged compilation, formatting, HLint and repository
+file-policy lint pass. Complete source identities, all **53** frozen inputs and both test binaries
+match. Evidence, including the retained fixture pin-authoring refusal and dedicated-publisher
+correction, is indexed in
+`.build/sprint-6.5/registered-prepared-auth-20261026/native-validation-2.json` and
+`test/qualification/HOST-REGISTERED-PREPARED-CALLER-AUTHENTICATION-2026-10-27.json`.
+
+These are authored provider boundaries with actual native operation ownership. The host production
+registry adapter, pinned-controller dispatch, causal admission closure, input retirement/recovery,
+broader composition gates and normalized resource/deployment qualification remain open. This adds
+no live campaign, controller activation, class/phase closure or queue advancement. `6.5` stays Next;
+later rows stay parked.
+
+**Sprint `6.5` registered prepared authentication, 2026-10-26, before changes.** Extend
+the existing native owner fixture from initial-home authentication to a matching retained
+prepared registration. The fixture prepares and reads back its actual birth record, captures the
+same public config pin before operation preparation, and uses the production retained-registry
+reader at an explicitly authored provider boundary. Exercise both callers, cached login/refresh,
+both signing-mode mismatch directions, registry unavailability and registry loss during signing.
+Keep original family resources/clocks, physical placement and exact closing absence checks.
+This validates the existing registered authentication branch; it does not provide the missing
+host production registry adapter or activate the controller. Production observation/dispatch,
+causal admission closure, launch-input retirement/recovery and qualification remain sprint-owned.
+`6.5` stays Next and later rows stay parked.
+
+**Sprint `6.5` prepared caller authentication native checkpoint, 2026-10-26.** The
+opaque authentication owner retains the exact preparation and captured home context. It uses the
+owned token program, canonical cached Vault session, explicit caller tuple and matching captured
+legacy/registered mode. Provider and signature work remain bounded by the original physical
+owner and host/Authority clocks. Eight coherent-production-source native controls pass: operator,
+harness, short-lease refresh, in-flight login cancellation, mode mismatch, login denial, transport
+failure and original expiry. Normal flows use **one login / twelve signatures / three token
+stages**. Refresh uses **seven logins / twelve signatures / twenty-one token stages** under the
+authored one-second lease; cancellation propagates `ThreadKilled`, closes the provider connection
+and completes a fresh retry under the same preparation with **two logins / twelve signatures /
+six stages**. Closed-parent reuse refuses before another Vault request. Every case proves exact
+six-role absence, held-cgroup retirement and runtime-workspace absence under unchanged
+**256 MiB / 700m / 56-task** family limits and **50/40/42/45/47-second** clocks.
+
+The actual packaged signing/birth/runtime/session suites pass **219** cases. Warning-clean
+enabled all-target compilation, targeted formatting/HLint and repository-policy lint pass.
+Complete source identities, all 51 frozen inputs and both binaries match; the source capture
+comparison extracts the complete identity independently of Cabal's planner prelude. Evidence is
+indexed in `.build/sprint-6.5/prepared-caller-auth-20261026/native-validation-2.json` and
+`test/qualification/HOST-PREPARED-CALLER-AUTHENTICATION-2026-10-26.json`.
+
+These use authored Kubernetes/Vault/Authority boundaries. Matching registered-source physical
+coordination and its production registry observer remain owed, alongside pinned-controller
+dispatch, causal admission closure, input retirement/recovery, broader composition gates and
+normalized resource/deployment qualification. No live login, image, paid campaign, class/phase
+closure or queue advancement is added. `6.5` stays Next; later rows stay parked.
+
+**Sprint `6.5` prepared caller authentication, 2026-10-26, before changes.** Compose the
+captured home context and owned caller-token program with the canonical cached Kubernetes-auth
+Vault session and caller-bound signing providers. The captured legacy/registered config admits
+only its explicit matching signing source; there is no error-driven mode fallback. Registered
+selection consumes a fresh registry observer and the shared native/logical bridge. An opaque
+authentication result retains the exact preparation. Native login, provider resolution and
+signatures remain inside the original physical owner and host/Authority bound; refresh reuses the
+same token program without config rediscovery or per-request login. Validate real owned command
+roles plus authored Vault/Authority HTTP boundaries, both callers, refusal/cancellation/expiry and
+exact family retirement before claiming this composition. Production registry-observer wiring,
+dispatcher, causal admission closure, file retirement and qualification remain open. `6.5` stays
+Next; later rows stay parked.
+
+**Sprint `6.5` registered caller packaged checkpoint, 2026-10-26.** The runtime now
+delegates its existing exact-origin/highest-active-logical selection to the shared registered
+signing resolver. Explicit operator/harness interpreters use the same policy without another
+caller/origin fallback. Selection metadata still undergoes fresh native and registry validation
+before capability construction and before/after every signature. The actual packaged bridge and
+birth/runtime/recovery suites pass **194** cases, including eight new explicit-caller controls,
+cold native-two/logical-three selection and retirement/drift/cancellation controls. Complete source
+identities, all 15 frozen inputs and the test binary match. Warning-clean library/test compilation,
+formatting and targeted HLint pass. Exact evidence is indexed in
+`.build/sprint-6.5/registered-caller-selection-20261026/validation-1.json` and
+`test/qualification/RPC-REGISTERED-CALLER-SELECTION-2026-10-26.json`.
+
+This is targeted packaged/HTTP-fixture evidence. Compose the owned caller-token program with
+Vault/session/signing and the existing preparation/transport owner next. Broader composition
+gates, causal admission closure, file retirement/recovery, production dispatch and qualification
+remain open; the preceding full canonical/frontend gate retains its own frozen identity.
+`6.5` stays Next and later rows stay parked. No image, live campaign or phase closure is added.
+
+**Sprint `6.5` registered caller selection, 2026-10-26, before changes.** Move the
+runtime's existing active exact-origin key selection into the registered signing interpreter's
+shared resolver. An explicitly caller-bound interpreter selects matching native scope/Vault/key
+origin and the highest active logical generation; it cannot default to another caller or origin.
+Selection data still requires the existing fresh native/registry validation before capability
+construction and every signature. The runtime delegates to that same policy. The isolated
+production-source/HTTP prototype passes 29 cases, including eight operator/harness controls for
+native-one/logical-two, foreign origin, stale selection and retirement during signing. Apply the
+reviewed candidate and validate the actual packaged bridge/runtime before composing owned
+Vault/session authentication. Production dispatch, causal admission closure, file retirement and
+qualification remain open. `6.5` stays Next and later rows stay parked.
+
+**Sprint `6.5` field/domain/token combined gate, 2026-10-26.** The frozen combined
+batch passes `prodbox dev check`: full formatting/HLint/doctrine checks, warning-clean
+compilation with every test target enabled, and **8,394** gated tests
+(**8,264 + 27 + 35 + 68**). The built CLI entrypoint passes its combined
+**103-case** frontend/config suite. Complete source identities and all **45**
+frozen inputs match; the synchronized operator remains identical through frontend validation.
+Exact commands, timings and binary identity are indexed in
+`.build/sprint-6.5/controller-caller-token-20261026/canonical-validation-3.json`.
+
+This closes the combined local gate only. Owned Vault/session/signing, causal admission
+closure, input retirement/recovery, production dispatch and full resource/deployment
+qualification remain open. No image, live campaign, class/phase closure or queue advancement
+is added; `6.5` remains Next and later rows stay parked.
+
+**Sprint `6.5` owned caller-token native checkpoint, 2026-10-26.** The existing
+service-account, self-TokenRequest eligibility and token classifiers now share one closed
+three-stage interpreter. Its operation adapter consumes the opaque preparation's captured home
+kubeconfig/environment, managed command lane and original clocks. The actual packaged policy
+passes **25** tests, including ordered early-refusal controls for both callers. Native controls
+compile the coherent production owner/adapter sources and use authored Kubernetes tools: operator
+and harness success, wrong account, refused eligibility, malformed token and original expiry all
+pass. The original kubeconfig is removed after capture; each stage checks the held credential.
+Refusals stop before later token stages and the authenticated coordinator. Exact six-role absence,
+held-cgroup retirement and workspace absence pass under unchanged **256 MiB / 700m / 56-task**
+family limits and original **50/40/42/45/47-second** clocks. The expiry fixture correction records
+the adapter refusal before the parent independently reports expiry; production code is unchanged
+between its two source sets. Both sets retain matching complete identities and all 40 inputs/two
+binaries within each run; only that fixture differs between sets. Warning-clean library/executable
+and native builds, formatting and targeted HLint pass. Initial build-driver and expiry-fixture
+refusals remain recorded in
+`.build/sprint-6.5/controller-caller-token-20261026/native-validation-final-1.json` and
+`test/qualification/HOST-OPERATION-CALLER-TOKEN-2026-10-26.json`.
+
+No real TokenRequest or Vault login occurs in these controls. A token result grants no signer or
+Authority admission. Owned Vault/session/signing, uncertain admission closure, input retirement,
+production dispatch and normalized resource/deployment qualification remain open. The combined
+field/domain/token canonical/frontend gates follow; previous full-gate evidence retains its prior
+identity. No image, live campaign, phase closure or queue advancement is added.
+
+**Sprint `6.5` owned caller-token composition, 2026-10-26, before changes.** Reuse the
+existing closed service-account, self-TokenRequest eligibility and token classification policy
+through a shared three-stage interpreter. Bind the operation adapter to the opaque preparation's
+captured home kubeconfig, command lane, caller and original host/Authority deadline. No config
+rediscovery, independent subprocess lane or renewed work window is admitted. Validate both callers,
+early refusal without later stages, held-credential use and original-bound refusal through the
+actual packaged adapter. Vault session/signing, production dispatch, recovery/retirement and full
+qualification remain open; `6.5` stays Next and later rows stay parked.
+
+**Sprint `6.5` caller/domain native checkpoint, 2026-10-26.** Schema-two requests require
+an explicit existing operator/harness caller and the native kernel-boot, bus-instance, pinned
+manager owner/UID/PID/start-tick tuple. Preparation and the exact submission/parent connection
+compare fresh domain observations under the original work end. The packaged observer matches an
+independent busctl/procfs reference; both caller round-trips, malformed metadata, all six
+valid-shaped foreign-domain refusals and original-bound controls pass. Loader, publication and
+post-expiry field controls also pass at unchanged **176 MiB / 128 MiB heap / 30% CPU** limits,
+peaking at **41,940 KiB** RSS. The real **256 MiB / 700m / 56-task** family completes concurrent
+command/transport work after an authored submitted-caller exception. Independent six-unit,
+held-cgroup and workspace absence is observed within **16.043 seconds**, before the original
+18-second finish; both input versions remain unchanged. Complete source identities, all 27 frozen
+inputs and both native binaries match. Warning-clean library/native builds and targeted HLint
+pass; the initial style and fixture-shadowing refusals remain recorded in
+`.build/sprint-6.5/controller-domain-binding-20261026/native-validation-1.json` and
+`test/qualification/HOST-CONTROLLER-CALLER-DOMAIN-2026-10-26.json`.
+
+This is scoped native evidence. No real reboot/manager replacement, unknown queued admission,
+file retirement, production credentials/dispatcher or normalized aggregate resource qualification
+is proved. Wider recovery/domain canonical/frontend gates remain owed; the preceding publisher
+identity retains its separate full-gate evidence. No image, live campaign, deployment qualification
+or phase closure is added. Sprint `6.5` remains Next and later rows stay parked.
+
+**Sprint `6.5` caller/domain request binding, 2026-10-26, before changes.** Require an
+explicit existing operator/harness caller and a native host/manager domain in the controller
+request. Bound domain reads to the original work end; compare kernel boot, bus instance, pinned
+manager owner/UID and process identity before preparation and on the exact submission/parent
+connection. Canonical wire decoding is metadata, not an observed grant. Historical field reads
+remain read-only and do not re-admit expired or foreign-domain work. Validate real domain
+read-back, explicit caller round-trips, unsupported/foreign metadata and original-bound refusal
+at unchanged native profiles, then compose the wider recovery/domain gates. Causal admission
+closure, file retirement, credentials, dispatcher, qualification and cutover remain open;
+`6.5` stays Next and later rows stay parked.
+
+**Sprint `6.5` expired-request field native checkpoint, 2026-10-26.** The six-role
+manager field now has a canonical key-only selector, shared with the existing intent observer
+and role-name renderer. The actual packaged facade distinguishes per-role absent/present/
+unobservable states and prioritizes unobservable aggregate results. Native controls observe the
+matching timer and foreign keyed absence, then reconstruct the canonical request after every
+original clock expires. Effect preparation remains refused; a fresh one-second read observes all
+six roles absent in **5.229 ms**, and an expired read budget refuses. The unchanged **176 MiB /
+128 MiB heap / 30% CPU** QA profile peaks at **32,232 KiB** RSS. Complete source identities and
+all 25 frozen inputs/binary match. Evidence is indexed in
+`.build/sprint-6.5/controller-field-observation-20261026/native-validation-1.json` and
+`test/qualification/HOST-CONTROLLER-EXPIRED-FIELD-OBSERVATION-2026-10-26.json`.
+
+Warning-clean library/native compilation and targeted formatting/HLint pass. This is data-only
+observation after expiry, not a renewed grant, crash/restart proof, independent kernel absence,
+file-retirement capability or closure of a possibly queued admission. Input files remain retained.
+Compose causal admission closure, terminal file retirement/recovery, original caller/manager/clock
+domain, owned credentials and production dispatch next. Wider recovery/domain batch canonical/
+frontend gates and full production resource accounting remain owed. The preceding publisher/loader
+identity retains its completed canonical evidence below. No image, live campaign, class closure,
+deployment qualification or phase closure is added; `6.5` remains Next and later rows stay parked.
+
+**Sprint `6.5` expired-request field observation, 2026-10-26, before changes.** Separate
+the canonical six-role manager field from effect-intent construction. A decoded historical
+request can select read-only observations under a fresh bounded read deadline; it cannot renew
+its original work or create resource/Authority admission. Preserve absent, present and unobservable
+results and all existing role names. Validate actual presence followed by post-expiry observation,
+expired effect-preparation refusal and expired read-budget refusal at unchanged native limits.
+Manager inventory alone cannot retire files or close uncertain admission: native terminal proof,
+causal admission closure, caller/domain binding and production composition remain required.
+Sprint `6.5` stays Next; later rows stay parked.
+
+**Sprint `6.5` immutable input native checkpoint, 2026-10-26.** The fixed-root exclusive
+publisher composes the pinned loader and launch facade. Actual canonical byte delivery, private
+directory/`0400` file modes, environment-independent root selection, existing-key refusal, changed
+inode, escaped handle, callback exception/cancellation retention and original expiry pass under
+the unchanged **176 MiB / 128 MiB heap / 30% CPU** wrapper, with **31,460 KiB** peak RSS and zero
+application children. The **256 MiB / 700m / 56-task** managed family finishes after an authored
+caller exception following manager acknowledgement; independent observations prove all six units,
+the held cgroup and manager workspace absent in **16.043 seconds**, before the original finish.
+Independent closing stat versions also match both original published files. This is submitted-caller failure evidence, not a lost
+manager reply, restart proof or terminal file-retirement implementation. All 25 frozen inputs,
+the native binary and complete source identities match. Evidence is indexed in
+`.build/sprint-6.5/controller-input-publication-20261026/native-validation-2.json` and
+`test/qualification/HOST-CONTROLLER-INPUT-PUBLICATION-2026-10-26.json`.
+
+The final named-helper implementation repeats every native control at unchanged limits; the
+earlier passing implementation remains in `native-validation-1.json`. File/documentation lint
+also pass. The production library/native build and targeted HLint pass warning-clean. The native fixture's
+initial name-shadowing refusal remains recorded with its correction. Compose independent
+input-file retirement/recovery, explicit caller/boot-domain binding, production dispatcher,
+Authority credentials/admission and alarm retirement next. Full production resource accounting,
+frontend batch validation, deployment qualification, cutover and legacy removal stay open.
+The full publisher/loader canonical gate passes warning-clean compilation and all **8,393**
+gated tests (**8,263 + 27 + 35 + 68**). Complete source identities match, and all 28 frozen inputs
+remain unchanged. Exact results and the synchronized operator are recorded in
+`.build/sprint-6.5/controller-input-publication-20261026/canonical-validation-1.json`.
+No image, Kubernetes/AWS campaign, live class closure or phase closure is added. Sprint `6.5`
+remains Next and later rows stay parked.
+
+**Sprint `6.5` immutable input publication, 2026-10-26, before changes.** Add the closed
+producer beneath the effective user's fixed runtime directory. Exclusive operation-key creation,
+held no-follow parent/file identities, owner-only permissions, bounded writes, exact read-back and
+original work-end checks precede the existing launch-from-files facade. Callback completion,
+failure, cancellation and uncertain submission preserve files; no scope finalizer deletes them.
+Retirement requires its separate independently observed family owner. Validate actual publication,
+collision/replacement/permission refusal, expiry and callback escape without changing the native
+resource envelope. Production dispatch, explicit caller/boot-domain binding, Authority credentials,
+alarm retirement and recovery remain open. `6.5` stays Next; later rows stay parked.
+
+**Sprint `6.5` pinned controller native checkpoint, 2026-10-26.** The shared strict
+nine-pair arguments, pinned same-descriptor loader and launch-from-files facade pass their actual
+packaged local controls under **176 MiB / 128 MiB heap / 30% CPU**, with **30,784 KiB** peak RSS
+and zero application children. Malformed arguments/payloads, exact publication mismatch, changed
+inputs/permissions, expiry, escaped handles and foreign-parent admission refuse before effects.
+The actual **256 MiB / 700m / 56-task** managed family executes concurrent command/transport
+roles; duplicate submission refuses and descriptor closure preserves both launch files.
+Independent reads prove all six manager roles absent, the held cgroup retired and manager workspace
+absent in **16.050 seconds**, before the original 18-second finish, with no hand cleanup. Complete
+source identities and all 24 frozen inputs/binary match. Evidence is indexed in
+`.build/sprint-6.5/controller-input-loader-20261026/native-validation-1.json` and
+`test/qualification/HOST-CONTROLLER-INPUT-LOADER-2026-10-26.json`.
+
+Warning-clean production library/native builds and four-module HLint pass; the initial redundant
+import, fixture compile refusals and fixture style hints remain recorded with their corrections.
+Broader canonical/frontend validation follows the production batch. Immutable producer/lifetime,
+explicit caller and boot-domain binding, production dispatch, Authority credentials/admission,
+alarm retirement and uncertain/restart recovery remain open. The minimal native allocation is
+not full default deployment admission; no image, Kubernetes/AWS campaign, class closure,
+qualification or phase closure is added. Sprint `6.5` remains Next and later rows stay parked.
+
+**Sprint `6.5` pinned controller loader, 2026-10-26, before changes.** Share the exact
+closed launch-argument renderer/parser with the physical family owner. Open and compare pinned
+input metadata before same-descriptor request/settings decoding; check original key/window/context,
+fresh host resources and current input versions under the original work end. The scoped result
+feeds the existing observed physical parent and declared command/transport stream budgets before
+an effect callback. Exercise exact arguments, input replacement, malformed payloads, expiry,
+scope escape, actual parent admission and independent terminal absence. Baseline inputs are in
+`.build/sprint-6.5/controller-input-loader-20261026/before-1/inputs.json`.
+Immutable launch files cannot belong to a bracket that deletes them after an unknown submission;
+their producer/retirement owner must retain them through independently proved family absence.
+Production activation, owned credentials, alarm retirement and uncertain/restart recovery remain
+open; this composition changes no supported route or qualification claim. `6.5` remains Next.
+
+**Sprint `6.5` request/clock validated checkpoint, 2026-10-26.** Warning-clean all-target
+compilation and full `prodbox dev check` pass. The canonical gate completes in **1,169.258 seconds**
+with **8,263/8,263** main tests and **27/27**, **35/35**, **68/68** auxiliary tests. Both built
+`test integration cli` and `test integration env` entrypoints pass their combined **103/103**
+frontend suite (**1,313.985/1,313.832 seconds** command wall time). Complete source identities,
+all 28 frozen inputs and installed operator
+`c3228e08ae13e2be0adda9b4037dd331a5c6d339f10fd9d7d0049ee8731e2d0e` match throughout. The exact
+current request fixture also passes after the named-helper style correction, with zero
+application children and unchanged limits. The prior style refusal and the CLI supervisor's
+900-second expiry remain recorded; the fresh frontend supervisors use 3,600 seconds without
+changing operation/native deadlines or resource limits. No test case or production check was
+relaxed. Exact results, source/binary and predecessor dispositions are indexed in
+`.build/sprint-6.5/controller-request-20261026/frontend-validation-4.json`; current native evidence
+is in `.build/sprint-6.5/controller-request-20261026/native-validation-5-verified.json`.
+
+This completes local validation for the settings, native observation, closed request and shared
+clock foundations. Resume pinned loading, immutable input publication/lifetime, the production
+caller/dispatcher, physical/Authority admission, owned credentials, alarm retirement and
+unknown/lost-reply/restart recovery. Remaining birth/import/backup/migration/rollback/quiescence,
+qualification, cutover and legacy removal stay open. Sprint `6.5` stays Next and later sprints
+stay parked. No image, Kubernetes/AWS campaign, live class closure or phase closure is added.
+
+**Sprint `6.5` conservative clock native checkpoint, 2026-10-26.** Request preparation
+and rollout share one host/Authority window checker. The retained packaged predecessor accepts
+a host window beyond an independently read Authority remainder after a real one-second delayed
+UTC read. The identical fixture passes against the replacement, which brackets UTC with monotonic
+reads and uses its conservative microsecond upper edge. No clock or resource limit is extended.
+Safe native sampling and **12** boundary laws also pass; source identities and frozen inputs match
+for each run, and process traces show zero application children. Both controls use **176 MiB**
+cgroup/**128 MiB** heap and **30% CPU**; replacement peak RSS is **8,708 KiB**. The complete
+packaged request fixture passes again with the new owner, peaking at **33,452 KiB** with all
+19 inputs/binary unchanged. Evidence is indexed in
+`.build/sprint-6.5/controller-request-20261026/clock-after-validation-1.json`,
+`.build/sprint-6.5/controller-request-20261026/native-validation-4-verified.json` and
+`test/qualification/HOST-WINDOW-CLOCK-SAMPLING-2026-10-26.json`.
+
+The frozen predecessor is a behavior-preserving shared extraction, not a historical deployed
+operator. This proves the local clock correction only; canonical/frontend gates follow. Pinned
+loading, immutable producer/lifetime, production caller/dispatcher, physical/Authority admission,
+credentials, alarm retirement, recovery and the remaining `6.5` obligations stay open. No image,
+live campaign, class closure, phase closure or deployment qualification is added.
+
+**Sprint `6.5` host-window clock review, 2026-10-26, before correction.** The request and
+rollout read UTC before monotonic time; comparing only the later monotonic sample can discard
+clock-read/preemption time from the original Authority bound. Extract the existing behavior into
+one shared adapter, retain its actual packaged delayed-read counterexample, then sample monotonic
+time around UTC and compare conservatively from the earlier sample, including UTC quantization.
+Check safe, expired, reversed, overflowing and exact-boundary siblings without changing resource
+limits or renewing any clock. The request batch's warning-clean all-target build passes in
+**226.400 seconds**, with exact source/input equality recorded in
+`.build/sprint-6.5/controller-request-20261026/full-validation-1.json`. Its coordinator stopped
+before canonical/frontend launch so those gates exercise the corrected owner. This is a code
+review correction, not live class closure; `6.5` remains Next and later sprints stay parked.
+
+**Sprint `6.5` request/resource native checkpoint, 2026-10-26.** The actual packaged
+**1,748-byte** request round-trips with canonical settings and retains the operation key,
+generation/deadline, five original clocks, repository/context and explicit runtime/host/transport/
+helper/stream declarations. A minimal canonical test configuration retaining control-plane and
+platform floors compiles against fresh native observation; the full default allocation refuses
+on this host. The declared **256 MiB / 700m / 56-task** family is inspected as data, not executed
+or qualified. Codec, profile, stream, context, override, fresh-capacity and original-bound controls
+pass under **176 MiB** cgroup/**128 MiB** heap and **30% CPU**, peaking at **28,916 KiB RSS**;
+process traces show zero application children. Complete source identities and all 18 frozen
+inputs/binary match. Two fixture setup failures remain recorded; production checks and limits
+were preserved. Runtime-memory and stream inequalities now each have a shared compiler/checker.
+Exact results are in
+`.build/sprint-6.5/controller-request-20261026/native-validation-3-verified.json` and
+`test/qualification/HOST-CONTROLLER-REQUEST-2026-10-26.json`.
+
+Warning-clean library/native builds pass. Broader current-batch canonical/frontend validation
+follows. Compose pinned input loading, immutable publication/lifetime, the closed production
+caller/dispatcher, physical and Authority admission, owned credentials, alarm retirement and
+unknown/lost-reply/restart recovery next. Remaining birth/import/backup/migration/rollback/
+quiescence, qualification, cutover and legacy removal stay open; `6.5` stays Next and later sprints
+stay parked. No image or live attempt is added.
+
+**Sprint `6.5` closed controller request, 2026-10-26, before changes.** Bind a versioned,
+import-free request to one home-registration program, canonical operation key, original five
+clocks, repository/context and explicit host/runtime/transport/helper/stream declarations. Rebuild
+runtime memory through the shared capacity compiler; compile resources only against fresh native
+host observation and the settings allocation. Neither serialized plans nor these data checks mint
+kernel or Authority admission. Reject a foreign key/window/context and an expired or insufficient
+original bound before child effects. Baseline inputs are retained in
+`.build/sprint-6.5/controller-request-20261026/before-1/inputs.json`. Validate the actual packaged
+codec and native resource path under the existing controller limits before composing the pinned
+loader, immutable producer, production dispatch, credentials, retirement and recovery. No image or
+live attempt is added; `6.5` remains Next and later sprints stay parked.
+
+**Sprint `6.5` native observation checkpoint, 2026-10-26.** Actual packaged host reads pass
+against independent affinity, physical-memory and filesystem references with both same-device and
+separate-device retained roots. Each run uses **176 MiB** cgroup/**128 MiB** heap, **30% CPU**,
+16 tasks and the original work end; peak RSS is **16,076/16,372 KiB**. Process traces show zero
+application children. Present overrides, expired bounds, unsafe roots and malformed metadata
+refuse; 128 repeated observations per profile preserve descriptor count. The identical NUL-root
+fixture fails against the retained real predecessor and passes against the replacement under the
+same limits; all **279** settings-codec controls pass. Complete source identities and all 12
+frozen inputs/two binaries match through validation. The first test's empty-environment setup
+failure and its correction remain recorded. Evidence is indexed in
+`.build/sprint-6.5/host-observation-20261026/native-validation-2-verified.json` and
+`test/qualification/NATIVE-HOST-CAPACITY-2026-10-26.json`.
+
+This closes the local observation/data checks only. Compose the full request/program/window/
+profile/context bindings, immutable producer, production dispatcher, canonical resource and
+Authority admission, owned credentials, alarm retirement and recovery next. Whole current-batch
+canonical/frontend checks and all remaining `6.5` closure stay open. Sprint `6.5` stays Next;
+later sprints stay parked. No image, Kubernetes/AWS attempt or deployment qualification is added.
+
+**Sprint `6.5` native admission observation, 2026-10-26, before changes.** The closed
+controller needs a local host-capacity observation before admitting its first child. Add bounded
+native affinity/procfs/held-filesystem reads under the original work end, with no subprocess or
+accepted test override. Keep canonical resource-plan compilation and Authority admission separate;
+serialized capacity numbers never substitute for observation. Retain typed read/errno/expiry/
+identity-change refusals and stable host geometry. Correct the settings root's missing NUL refusal:
+the actual packaged predecessor accepts it and the new fixture fails against the retained real
+binary. Root/profile limits remain unchanged. Exact baseline inputs are in
+`.build/sprint-6.5/host-observation-20261026/before-1/inputs.json`.
+Validate actual native reads, no-child execution, original-bound refusal, device identity and the
+frozen/replacement root boundary before composing the full request/dispatcher. Production payload
+bindings, producer, resource/Authority admission, credentials, alarm retirement and recovery remain
+open. Sprint `6.5` stays Next; no live attempt, phase closure or qualification is added.
+
+**Sprint `6.5` settings-payload native checkpoint, 2026-10-26.** The actual packaged
+settings/context codec passes **19** semantic boundaries, all **256** single-byte inputs and
+**3** overflowing CBOR length/tag controls under the unchanged **128 MiB** heap/**176 MiB** cgroup.
+The **103,387-byte** synthetic settings/context value round-trips with canonical settings
+revalidation; peak RSS is **33,968 KiB**. Byte/schema/import/canonicality/plaintext/scope/root
+refusals, nested extra fields, invalid context and non-normal values all pass. The encoded owner
+has no Show instance and no raw payload hash or body is produced. Opening/closing complete source
+identities match. Library and all-target builds pass with warnings as errors
+(**20.377/58.898 seconds**); formatting, HLint and documentation lint pass. Exact inputs/binary/results are retained in
+`.build/sprint-6.5/rpc-coordinator-20261025/settings-payload-native-validation-1.json`; the public
+record is `test/qualification/HOST-CONTROLLER-SETTINGS-PAYLOAD-2026-10-26.json`.
+
+This validates the configuration-value component only. The full request's original operation,
+window, program, resource/profile and context bindings, immutable producer, dispatcher, actual
+host/resource and Authority admission, owned credentials, alarm retirement and unknown/lost-reply/
+restart recovery remain open. The byte ceiling grants no decoded-state memory or Authority permit.
+Current whole-batch canonical/frontend validation, remaining birth/import/backup/migration/
+rollback/quiescence, qualification, cutover and legacy removal remain open. Sprint `6.5` stays
+Next and later sprints stay parked; no live attempt or phase closure is added.
+
+**Sprint `6.5` settings-payload integration, 2026-10-26, before changes.** Promote the
+tested import-free versioned settings/context value into a bounded runtime codec. Typed extraction,
+exact canonical re-encoding, byte/schema/scope/root checks, plaintext-reference refusal and the
+canonical settings validator precede any executable result. The opaque encoded owner has no Show
+instance; payload bytes are neither hashed nor logged. The one-MiB input limit remains a rejection
+ceiling, separate from heap/resource or Authority admission. Baseline inputs are retained in
+`.build/sprint-6.5/rpc-coordinator-20261025/settings-payload-before-1/inputs.json`.
+Validate the actual packaged implementation under the existing native heap/cgroup limits.
+The full request's original operation/window/profile/program bindings, immutable producer,
+production dispatcher, actual host/resource/Authority admission, credentials and recovery remain
+open. This changes no supported route and adds no live attempt or qualification claim.
+
+**Sprint `6.5` operation-preparation validated checkpoint, 2026-10-26.** Warning-clean
+all-target compilation and full `prodbox dev check` pass. The canonical gate finishes in
+**1143.755 seconds**, with **8,263/8,263** main tests and **27/27**, **35/35**, **68/68**
+auxiliary tests. Complete source identities, all 26 frozen governed inputs and installed operator
+`f72f89cfb688756b4a5e671f1480c537598bb358c84056e39ec4ce13a7f598b7` remain unchanged through the gate.
+This closes local validation for the **24/24** native preparation/coordinator controls and
+**166/166** focused tests below. Exact inputs and results are indexed in
+`.build/sprint-6.5/rpc-coordinator-20261025/preparation-full-validation-1.json`.
+
+An isolated candidate settings codec also passes **16** controls under the unchanged **128 MiB**
+heap/**176 MiB** cgroup: complete settings/context roundtrip, byte/schema/canonicality/import/
+plaintext/scope/root refusals and canonical settings revalidation. Its **103,387-byte** synthetic
+value peaks at **30,172 KiB RSS**. The candidate remains outside repository runtime and grants no
+schema/admission or production-profile claim. Sources, binary and measurements are retained in
+`.build/sprint-6.5/rpc-coordinator-20261025/settings-payload-prototype-1.json`.
+
+Resume the closed production settings/request schema with original operation key/window/profile
+and context bindings, immutable producer and dispatcher, actual host/resource/Authority admission,
+owned credentials, alarm retirement and unknown/lost-reply/restart recovery. Remaining birth/import,
+backup/migration/rollback/quiescence, owning-batch frontends, current-revision qualification,
+single-writer cutover and legacy removal stay open. Sprint `6.5` remains Next; later sprints remain
+parked. This documentation-only publication receives documentation/source checks. No image,
+Kubernetes/AWS attempt, live class closure, operational activation or phase closure is added.
+
+**Sprint `6.5` operation-preparation gate, 2026-10-26.** Warning-clean all-target
+compilation passes in **63.556 seconds**, after the native **24/24** and focused **166/166**
+checks below. The new operator is atomically installed as
+`f72f89cfb688756b4a5e671f1480c537598bb358c84056e39ec4ce13a7f598b7`.
+Freeze current source/binary inputs and run the full canonical gate under the existing **5 GiB**
+development cap; no full-gate pass is claimed before its terminal result and closing source check.
+Production payload/dispatcher, credentials, admission, alarm retirement, recovery, owning-batch
+frontends and qualification stay open. Sprint `6.5` remains the queue head.
+
+**Sprint `6.5` operation-owned preparation native checkpoint, 2026-10-26.** An opaque
+prepared value binds one admitted operation/request to its single captured home kubeconfig and
+canonical held chart. Docker image ID/repository digests and API Endpoints are read through the
+owned command lane before registration; coordination retains those inputs after the source
+kubeconfig/chart disappear. The ordinary planner and adapter share the machine-tag and exact
+repository-digest policies. Invalid/ambiguous metadata and mismatched admission refuse before
+registration. Private tool state, original clocks and all resource totals remain unchanged.
+
+All **24/24** native controls pass: **9** preparation boundaries and **15** existing coordinator
+faults. Every result independently proves exact six-role absence, held-group retirement and
+workspace removal; opening/closing complete source identities match, and frozen inputs/binary
+remain unchanged. The final collector is repaired to read the intentional controller-death
+observation instead of requiring a dead worker's PASS file; the actual command had already exited
+zero and no native command is rerun. Library and unit builds pass with warnings as errors
+(**58.167/194.296 seconds**), **166/166** focused tests pass (**2.72 seconds**), and formatting and
+HLint pass. The public record is
+`test/qualification/HOST-OPERATION-PREPARATION-2026-10-26.json`; the exact matrix is
+`.build/sprint-6.5/rpc-coordinator-20261025/preparation-native-validation-1.json`.
+
+Current all-target/canonical and owning-batch frontend validation, production payload/dispatcher,
+immutable producer/resource admission, owned credentials, alarm retirement and recovery remain
+open. A separate scratch probe round-trips a **103,115-byte** normalized synthetic settings value
+under a **128 MiB** heap/**176 MiB** cgroup at **21,660 KiB RSS**; incomplete defaults refuse.
+That is only a candidate for the pending closed, versioned payload: no schema, admission or
+production memory claim follows. Its inputs/results are in
+`.build/sprint-6.5/rpc-coordinator-20261025/compact-settings-value-probe-4.json`.
+Sprint `6.5` stays Next and later sprints stay parked. No image, Kubernetes/AWS attempt,
+qualification, class closure or operational cutover is added.
+
+**Sprint `6.5` operation-owned preparation, 2026-10-26, before changes.** Capture the
+home kubeconfig once through the admitted operation command lane. Resolve the canonical machine
+image and exact repository manifest through one bounded Docker metadata read, and observe API
+egress through that same held home projection. Feed these actual observations into the canonical
+opaque chart factory, then carry the prepared chart/configuration into the existing authenticated
+coordination fold without recapturing or reloading them. Preserve original clocks, resource totals,
+private tool state and the independent Authority/runtime readbacks. Validate actual owned child
+execution and refusals under the existing native profile. The baseline is
+`.build/sprint-6.5/rpc-coordinator-20261025/preparation-before-1/inputs.json`.
+Production payload/dispatcher, owned credential preparation, admission, alarm retirement, recovery
+and qualification remain open; later sprints stay parked. No live attempt is added.
+
+**Sprint `3.50` code-owned closure, 2026-10-26.** The API Endpoints parser now requires
+one to five ASCII decimal digits and a TCP port in **1..65,535**, without partial conversion or
+machine-word wrap. The same native fixture passes the full **65,535** positive-port domain and
+**21/21** boundary/sibling controls; the retained actual predecessor fails **8** controls under
+the identical execution profile. Warning-clean all-target build, formatting and targeted HLint pass.
+The installed current operator's full `prodbox dev check` passes in **1127.505 seconds**:
+**8,262/8,262** main tests plus **27/27**, **35/35** and **68/68** auxiliary tests. Opening/closing
+complete source identities, every frozen governed input and operator SHA remain unchanged through
+the gate. Exact sources, binaries, commands and results are indexed in
+`.build/sprint-3.50/api-port-20261026/full-validation-1.json`; the public native comparison is
+`test/qualification/KUBERNETES-API-PORT-DOMAIN-2026-10-26.json`.
+
+Phase `3` recloses independently on its owned parser surface. No image, Kubernetes/AWS attempt,
+current-revision deployment qualification, operational cutover or lifecycle class closure is added.
+Sprint `6.5` resumes as the queue head with production payload/dispatcher, immutable input and
+resource admission, owned credential/image/API preparation, alarm retirement and recovery still
+open; `6.7` and `7.47` remain parked. Closure publication receives documentation/source checks.
+
+**Sprint `3.50` native parser checkpoint, 2026-10-26.** The same repository-owned
+fixture passes all **65,535** positive TCP ports and **21/21** boundary/sibling controls against
+the repaired packaged parser. The retained actual predecessor fails **8** controls: zero, padded
+zero, high ports, machine-word overflow and overlong decimal spelling. Both use the same **128 MiB**
+heap/one-capability/60-second profile inside the **5 GiB** development cap; no resource allowance
+changes. Opening/closing replacement source identities match. The public comparison is
+`test/qualification/KUBERNETES-API-PORT-DOMAIN-2026-10-26.json`. Formatting, targeted HLint and
+warning-clean all-target compilation pass; the current canonical gate and closure publication
+remain open. No live attempt or deployment-qualification claim is added.
+
+**Sprint `3.50` API-coordinate port-domain reopen, 2026-10-26, before changes.**
+Phase `3` reopens its own Endpoints input parser under Standards A/N. Direct execution of the
+current parser accepts **0** and **65,536**, and converts **18,446,744,073,709,551,615** to **-1**.
+It can therefore manufacture an unusable NetworkPolicy port from a successful observation. The
+existing malformed/ambiguous-coordinate tests do not cover numeric bounds or machine-word wrap.
+Bank the actual implementation and reproduce the bad admissions, then require bounded ASCII
+decimal TCP ports **1..65,535** without partial/overflowing numeric conversion. Preserve valid
+post-DNAT addresses, normal/repeated ports, supported routing and resource limits. Validate the
+owned parser independently before returning to `6.5`'s operation-owned preparation. The baseline
+is `.build/sprint-3.50/api-port-20261026/before-1/inputs.json`. No image or Kubernetes/AWS attempt is
+added, and this is not a deployment-qualification claim. Sprint `6.5` records this earlier
+code-owned closure dependency; later sprints remain parked.
+
+**Sprint `6.5` controller-input validated checkpoint, 2026-10-26.** Warning-clean
+all-target build passes in **377.932 seconds**, and full `prodbox dev check` passes in
+**1,079.204 seconds**: **8,259/8,259** main tests plus **27/27** admission, **35/35** authentication
+and **68/68** authenticated-transport tests. Opening/closing complete source identities match,
+every frozen governed input remains unchanged, and the installed operator stays
+`a6bc1653b2132f2d30abaee0f78a32db5b4e7fe7f8937f82267bf58f54d4d234` throughout the gate.
+This validates the scoped input-owner batch, bounded path repair and **72/72** native controls
+recorded below. Source/binary inputs and full results are indexed in
+`.build/sprint-6.5/rpc-coordinator-20261025/host-input-full-validation-1.json`.
+
+Resume the production payload/schema and closed dispatcher, immutable launch-input preparation
+with resource/Authority admission, owned credential/image/API preparation, global-alarm retirement
+and unknown/lost-reply/restart recovery. Remaining birth/import, backup/migration,
+rollback/quiescence, owning-batch CLI/env frontend validation, current-revision qualification and
+single-writer cutover stay open. `6.5` remains Next; `6.7` and `7.47` stay parked. This publication
+changes only the ledger and receives documentation/source checks. No image, Kubernetes or AWS
+attempt, operational cutover or phase closure is added.
+
+**Sprint `6.5` scoped controller-input native checkpoint, 2026-10-26.** The path-only
+program factory is replaced by scoped descriptor ownership, a versioned metadata-only command
+fingerprint, predecode fingerprint checks and bounded same-descriptor reads. Parent admission and
+effects recheck held/linked file and directory identities, ownership, modes, versions and original
+work end. There is no raw payload hash or `Show` instance for input bytes. Configuration/request
+inputs are private regular single-link files; path rejection precedes normalization at **4,096**
+characters, and each serialized input has a **1 MiB** rejection ceiling, without a runtime-memory
+grant. The mutable Tier-0 publication target remains separate from immutable launch inputs.
+
+All **72/72** final native controls pass under matching opening/closing source identities:
+**19** file controls, **38** parent/admission/process controls and **15** composed RPC controls.
+They retain every original clock and aggregate resource total. Closed and changed program
+capabilities refuse before submission and leave the exact six-role field absent. The path-limit
+predecessor reproduces its over-limit-tail `ErrorCall`; the replacement refuses before normalization
+or decoder entry with the same fixture. The initial **69/69** checkpoint and setup failures remain
+retained. Library builds pass with warnings as errors (**379.268 seconds**, followed by the bounded
+path repair **16.568 seconds**); formatting and targeted HLint pass. The public record is
+`test/qualification/HOST-CONTROLLER-INPUTS-2026-10-26.json`; exact final native inputs/results are in
+`.build/sprint-6.5/rpc-coordinator-20261025/host-input-native-validation-2.json`.
+
+Current all-target/canonical validation follows. The production payload/schema and dispatcher,
+immutable input preparation, owned credential/image/API preparation, alarm retirement,
+unknown/lost-reply/restart recovery and remaining `6.5` obligations stay open. This is no supported
+route activation, owning-batch CLI/env frontend or deployment-qualification claim. Later sprints
+remain parked; no image, Kubernetes or AWS attempt is added.
+
+**Sprint `6.5` controller input ownership, 2026-10-26, before changes.** Replace the
+path-only self-program selector with scoped, no-follow executable/configuration/request and parent
+directory descriptors. Bind a versioned fingerprint of public file metadata to the closed manager
+command. The controller must match that launcher fingerprint before decoding its bounded input
+bytes; parent admission/effects recheck scope lifetime, held/linked identities, ownership, permissions,
+versions and original work end. No configuration or request payload is hashed or rendered as an
+error. Keep immutable launch inputs distinct from the mutable Tier-0 publication target. Migrate
+the existing native callers without retaining a path-only submission route. Preserve original
+resource totals/clocks and test substitution, unsafe files, mutation, escaped input capabilities and
+the actual composed client/caller. The baseline is
+`.build/sprint-6.5/rpc-coordinator-20261025/host-input-before-1/inputs.json`.
+Closed production payload/schema/dispatcher, credential/image/API preparation, alarm retirement,
+recovery and remaining `6.5` closure still follow this ownership boundary; later sprints stay parked.
+
+**Sprint `6.5` operation-client validated checkpoint, 2026-10-26.** Warning-clean
+all-target build passes in **309.973 seconds**, and complete `prodbox dev check` passes in
+**1,068.911 seconds**: **8,259/8,259** main tests plus **27/27** admission, **35/35** authentication
+and **68/68** authenticated-transport tests. Opening and closing complete source identities match,
+all frozen governed inputs remain unchanged, and the installed operator stays
+`4a07db81f8d7382d7af5fe0d503787b697df3339d09915617f2e1c539c52d381` throughout the gate.
+The native fifteen-control record below and shared **64 KiB** HTTP-read response bound are included.
+Exact source/binary inputs and results are indexed in
+`.build/sprint-6.5/rpc-coordinator-20261025/operation-client-full-validation-1.json`.
+
+Resume the closed production dispatcher and pinned request inputs, owned credential/image/API
+preparation, global-alarm retirement and unknown/lost-reply/restart recovery. Remaining birth/import,
+backup/migration, rollback/quiescence, owning-batch CLI/env frontend validation, current-revision
+qualification and single-writer cutover stay open. This checkpoint closes none of those obligations;
+`6.5` remains the queue head and later sprints remain parked. No image, Kubernetes or AWS attempt is
+added. The publication changes only this ledger and receives documentation/source identity checks.
+
+**Sprint `6.5` operation client native checkpoint, 2026-10-26.** Fifteen composed
+scenarios pass: healthy/Unicode, pending/failed/unobservable release, apply failure, acknowledgement
+without serving proof, wrong key, Authority-window refusal, oversized/unavailable readiness, early
+transport exit, original apply deadline, metadata-response overflow and parent death. Eleven pass
+in `operation-client-matrix-1.json`; the four tail controls pass in `operation-client-matrix-2.json`
+after the explicit parent-deadline assertion correction. Every production input is byte-identical
+across those runs; both exact fixture identities and the failed assertion remain retained. Each
+passing control proves exact six-role absence, held-group retirement and manager-workspace absence.
+The parent-death control independently holds both live role groups and proves their retirement
+before the original work end while the unchanged original timer and slice remain armed.
+
+The real 65,537-byte response comparison retains the superseded decoder-only rejection and the
+replacement's `ControlPlaneResponseTooLarge 65537 65536` at HTTP read, with the same fixture, original
+clocks and aggregate budgets. No Authority preparation or chart apply follows that refusal.
+Canonical/full frontend validation follows this checkpoint. Production dispatch/input pins, owned
+credential/image/API preparation, global-alarm retirement, recovery, qualification and cutover remain
+open. No phase advances, Kubernetes/AWS campaign or deployment-qualification claim follows.
+
+**Sprint `6.5` native matrix deadline assertion, 2026-10-26, before correction.**
+The expanded operation client matrix stops at unavailable readiness after eleven passing controls.
+Its frozen source/driver is `operation-client-matrix-inputs-1/`; `operation-client-matrix-1.json`
+retains every result. The stopped control reaches the original work end with `BirthLegacy`, zero
+authenticated frames and an explicit outer `KernelScopeDeadlineReached`, then proves exact six-role
+absence, held-group retirement and workspace absence. The fixture expected only an inner client
+deadline; the parent's closing verifier can independently refuse the now-expired capability.
+Extend only that deadline assertion to require the explicit parent deadline, the original elapsed
+work bound, unchanged expected durable phase and no completed chart apply. Keep all other refusals,
+resource totals and clocks unchanged. Resume the four unpassed tail controls; this is no production
+repair, deadline extension, campaign attempt or qualification closure.
+
+**Sprint `6.5` operation HTTP-response bound review, 2026-10-26, before repair.**
+The composed healthy native control passes with twelve original-deadline frames, independent
+applied-pin readback, committed birth, exact six-role absence, held cgroup retirement and manager
+workspace absence (`operation-client-native-healthy-2`). Frozen inputs and driver live in
+`.build/sprint-6.5/rpc-coordinator-20261025/operation-client-native-inputs-2/`.
+The first control correctly rejected a fixture grace accidentally supplied in nanoseconds;
+`500000` microseconds restores the intended half-second grace without changing any original clock
+or budget. Static review then found that the new operation client reused the legacy **100 MiB**
+HTTP response ceiling before its birth-metadata decoder enforced **64 KiB**. Preserve this source
+as the superseded boundary; add a real **65,537-byte** response control and require refusal during
+the bounded HTTP read under the existing metadata-response budget. Hold source/authentication,
+background work, resource totals and original fault/window profile fixed across the comparison.
+This is native host/client evidence only; production dispatch, credential/image/API preparation,
+recovery, full current gates and qualification remain open.
+
+**Sprint `6.5` composed operation-native profile, 2026-10-26, before runtime proof.**
+The repository-owned `HostOperationRpcBirth` fixture runs the actual operation client and rollout
+against the signed Authority/Vault fixture through a real TCP relay. The original serial fixture's
+outer/work/hard/stop/settlement offsets remain **50/40/42/45/47 seconds**, and aggregate
+**256 MiB / 700m / 56 tasks** remain fixed. Memory partitions change from parent/command/helper
+**176/64/16 MiB** to parent/command/transport/helper **176/48/16/16 MiB**; CPU changes from
+**100/500/100m** to **300/200/100/100m**; tasks change from **16/32/8** to **16/24/8/8**.
+The parent heap stays **128 MiB**. The outer fixture observes the real host once and transfers that
+fixed public capacity metadata into the controller; no nested host-probe process escapes admission.
+Require original signed deadlines, independent applied serving-pin readback, retained journal
+checks, exact six-role absence, held cgroup retirement and manager-workspace absence. Initial build
+diagnostics concern package exposure, local/package type identity and one unused fixture import;
+they add no runtime or live campaign attempt. Kubernetes forwarding and deployment qualification
+remain unclaimed. The pre-existing client compile checkpoint is retained below.
+
+**Sprint `6.5` retained-home operation client and caller, 2026-10-26, before changes.**
+Bind the validated supervisor to the closed Lifecycle Authority loopback mapping and birth rollout.
+Capture and validate the embedded home kubeconfig through an owned command, then share that exact
+projection with the owned port-forward and chart commands. Preserve execution-key, original
+Authority/host window, retained journal/storage and independent serving-descriptor checks. Bound
+readiness body/time and every retry by the original work end; process/HTTP liveness alone grants
+no authenticated serving or domain-operation receipt. Keep the serial foundation separate while
+adding the operation-backed interpreter.
+
+The baseline is `.build/sprint-6.5/rpc-coordinator-20261025/operation-client-before-1.json`.
+Validate the actual production client/caller functions with the native authenticated protocol and
+real loopback forwarding process, then current build/style/regression gates. A fixture relay is
+not a Kubernetes port-forward proof. Production dispatcher/input pins, owned credential/image/API
+preparation, global alarm retirement, recovery and remaining `6.5` closure stay open; later sprints
+remain parked and no image or Kubernetes/AWS campaign is added.
+
+**Sprint `6.5` operation client/caller compile checkpoint, 2026-10-26.** The additive
+operation-backed client and rollout interpreter now compile across the library with warnings as
+errors (`operation-client-library-build-2`, **123.968 seconds**, under the existing **5 GiB**
+development-check cap). The first build's swapped bounded-HTTP arguments are corrected; its failed
+result remains retained. The client fixes the Authority service/loopback mapping, uses an explicit
+embedded kubeconfig and private home/cache under the manager-owned workspace, and bounds readiness
+by the original operation work end. The caller shares that projection with its serial command
+role and preserves the execution key, Authority/host clocks, journal and serving-descriptor checks.
+The subsequent style-only pattern repair passes the follow-up library build and targeted HLint
+(`operation-client-library-build-3`, `operation-client-hlint-2`); the first HLint result remains
+retained. This is a compile checkpoint only: composed native client/caller proof and current full regression
+gates remain outstanding. The installed operator and prior supervisor evidence are historical for
+these changed sources. No supported dispatcher, campaign, qualification or phase closure is claimed.
+
+**Sprint `6.5` bounded operation-supervisor checkpoint, 2026-10-26.** The process
+owner now composes the admitted role scopes with trusted fork/Go/exec, fixed bounded readers and
+the shared group/leader stop routine. Commands return raw bounded bytes; transport callbacks
+race exit, stream refusal and original work expiry. Explicit child environments are mandatory.
+Fixed per-role shares fund working/trimmed buffers from the controller's dedicated runtime
+reserve; retained results belong in the caller's bounded application state. Cleanup retains the
+global alarm, attempts exact role settlement before rethrowing cancellation, and masks the
+nonblocking reap/cache transition. Final role readback reuses the bounded held-cgroup observer.
+
+All **36/36** current native controls pass: fourteen supervisor controls plus the existing
+twenty-two role/parent/request controls. They cover raw UTF-8/argv/environment/working-directory
+capture, fragmented exact-byte bounds, overflow/exec/input refusal, early transport failure,
+escaped leases, post-Go cancellation with both roles, deadline tightening, role reuse and
+descendant/pipe-writer cleanup. Original **five-second / 256 MiB / 700m / 56-task** totals and
+clock offsets remain fixed; the previously recorded native-only CPU split is unchanged.
+
+All targets build warning-clean (**53.43 seconds**). The complete daemon suite passes **36/36**
+in **135.94 seconds**, including 2,048 short-child retirements. The required canonical
+`prodbox dev check` passes in **1,087.39 seconds**: primary **8,259/8,259** (**293.50 seconds**),
+admission **27/27**, authentication **35/35** and authenticated transport **68/68**. Native,
+opening and closing full source identities agree; installed operator `6c95c87d282a…` stays
+byte-identical through the batch. Frozen inputs/binaries, exact results and the retained first
+style-gate failure are indexed in
+`.build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-current-native-validation-1.json`
+and `operation-supervisor-full-validation-2.json`. The earlier scoped artifact stays unchanged
+at `test/qualification/HOST-OPERATION-SUPERVISOR-2026-10-26.json`; the successor retains its own
+exact source/binary. This governed-document publication follows the guards and is checked
+separately.
+
+Next bind the supervisor to the actual retained-home authenticated transport/readiness and closed
+birth command caller, including key/window/workspace metadata, owned preparation and original
+Authority bounds. A live process is not an authenticated serving receipt. Production dispatcher/
+descriptor-pinned inputs, global alarm retirement, unknown-admission/lost-reply/restart recovery,
+registration/backup/migration, remaining frontend batch gates and current-revision deployment
+qualification remain open in `6.5`. No image build, Kubernetes/AWS campaign, public activation or
+legacy removal is added; later sprints remain parked.
+
+**Sprint `6.5` operation-supervisor validation checkpoint, 2026-10-26.** All **36/36**
+native supervisor/role/parent/request controls pass, including bounded raw UTF-8 capture, working
+directory/environment preservation, fragmented exact-byte bounds, overflow/exec/input refusal,
+early transport exit, escaped leases, post-Go cancellation and reuse after a tightened command
+deadline. The existing five-second / 256 MiB / 700m / 56-task diagnostic profiles stay fixed.
+The first all-target build passes warning-clean (**250.59 seconds**), and the complete daemon
+suite passes **36/36**, including 2,048 short-child retirements (**136.79 seconds**).
+
+The first canonical gate stops on three direct lambda/case style violations in the role verifier
+and fixture; its exact source/operator and passing build/daemon results are frozen in
+`.build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-style-failure-1.json`.
+Named-helper extraction passes the same 36 native controls. A subsequent static exception audit
+masks nonblocking child reap/cache publication; no runtime failure is claimed for that correction.
+The pre-correction source/binary is retained in `operation-supervisor-status-mask-before-1.json`.
+Current native and complete gates follow this final batch. The earlier scoped native artifact stays
+unchanged at `test/qualification/HOST-OPERATION-SUPERVISOR-2026-10-26.json`.
+
+Production authenticated transport/readiness and caller wiring, dispatch/input pins, preparation,
+global alarm retirement, original-bound recovery and remaining `6.5` closure stay open. No image
+or Kubernetes/AWS campaign is added; later sprints remain parked.
+
+**Sprint `6.5` operation subprocess supervisor, 2026-10-26, before changes.** Compose
+the validated role borrows with the existing trusted fork/Go/exec boundary, original absolute
+clock window, bounded stream readers and independent kernel/leader settlement. Keep one global
+alarm; child cleanup must never retire it while another role is active. Commands return raw
+bounded bytes; persistent transport callbacks race process exit, output refusal and the original
+work deadline. Escaped transport leases refuse. Cancellation attempts bounded cleanup and exact
+role settlement before rethrowing, preserving unresolved ownership rather than granting reuse.
+
+Fund both roles' bounded output buffers from the runtime plan's explicit reserve, with fixed
+per-role shares so separate budget values cannot over-admit concurrent buffers. A caller may
+tighten a command's work deadline but cannot renew any original end. Validate actual capture,
+serial reuse under transport, byte limits, exec/input refusal, early transport exit, cancellation
+and original-bound behavior in the existing five-second / 256 MiB / 700m / 56-task profile.
+The frozen baseline is
+`.build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-before-1.json`.
+Production dispatch/input pins, real authenticated transport/caller wiring, alarm retirement,
+recovery and the remaining `6.5` closure remain open; later sprints stay parked.
+
+**Sprint `6.5` operation process-role checkpoint, 2026-10-26.** The private parent
+now reserves separate persistent-transport and serial-command lanes. Each borrow admits one
+PIDFD-based scope submission with limits derived from the indexed plan and original window.
+Live parent/role identity, kernel limits and exact shutdown dependencies are checked before Go.
+Positive held-kernel terminal evidence, reference release and exact absent/not-found manager
+settlement gate serial reuse. Uncertain admission or unresolved terminal evidence retains an
+unsettled role; escaped borrows/scopes refuse and closing joins both lanes.
+
+All **22/22** native controls pass, including actual overlapping role processes, two serial
+commands under a retained transport role, busy/repeated-create refusals, escaped capabilities,
+self-PIDFD refusal and live-role settlement refusal. Expiry and abrupt controller death include
+descendants whose distinct session-leader identities and exact cgroup membership are independently
+read back. Parent death retires both independently held role cgroups before the original work
+end while the original timer and slice remain armed. All eighteen controller-starting controls
+require held-root retirement, runtime-directory absence and exact six-role absence before the
+original settlement end.
+
+The native-only CPU repartition is parent/command **100m/400m → 300m/200m**; transport/helper stay
+**100m/100m**. Aggregate **700m / 256 MiB / 56 tasks**, all five original clocks and the full
+verification/workload remain fixed. The earlier fourteen controls keep their original mapping.
+This is no deployed-envelope change or measured production profile. The expiry helper now
+directly stops the keyed controller; each actual scope binds to and orders after that controller,
+allowing terminal scope collection without renewing the alarm. Both discovered failures remain
+frozen below; loaded/inactive is never accepted as absence.
+
+Formatting/HLint pass, the library builds warning-clean (**27.95 seconds**) and all targets build
+warning-clean (**206.61 seconds**). After strengthening descendant-session observations, the
+all-target check passes again (**24.28 seconds**) with the same operator `da33f731181d…`.
+Current documentation lint passes (**11.88 seconds**) and **146/146** focused regressions pass
+with network connect syscalls denied (**9.33 seconds** command wall time). Full source guards,
+the frozen operator, native source/binary and positive session observations are retained in
+`.build/sprint-6.5/rpc-coordinator-20261025/operation-roles-session-validation-1.json` and
+`operation-roles-all-validation-2.json`. The earlier scoped artifact remains unchanged at
+`test/qualification/HOST-OPERATION-PROCESS-ROLES-2026-10-26.json`; the stronger successor retains
+its own exact source/binary. This ledger-only publication follows the guards and is checked
+separately.
+
+The fixture uses fixed native commands, not an authenticated network transport. Next compose
+these role borrows with the actual bounded command/transport supervisor, original-deadline
+stream/leader cleanup and positive alarm retirement, then production dispatch/descriptor-pinned
+inputs, preparation, unknown-admission/lost-reply/restart recovery and the remaining registration/
+backup/migration flow. Current complete canonical/frontend gates, deployment qualification,
+activation and legacy removal remain open in `6.5`. No image build, Kubernetes/AWS campaign or
+supported public route is added; later sprints remain parked.
+
+**Sprint `6.5` operation-role terminal-unit diagnosis, 2026-10-26.** The constant-total
+CPU repartition reaches first-command kernel emptiness before the deadline, then waits on a
+terminal scope that stays `loaded`/`inactive` with its original invocation, no job, empty
+`ControlGroup` and no client `Refs`. The helper's direct `Conflicts`/`Before` references retain
+the unit; this is not scope absence and cannot admit serial reuse. Sources/binaries and actual
+manager/closing field observations are frozen in `operation-roles-post-terminal-failure-1.json`
+and `operation-roles-manager-selected-cause-1.json` under the same evidence root.
+
+Repair the dependency direction: the original helper directly conflicts/orders with the keyed
+controller; each actual scope binds to and orders after that controller while requiring the
+original timer. Scope-to-controller references permit idle scope collection. Validate those exact
+edges before Go, plus actual expiry/parent death with both roles, before claiming the repair.
+Keep all resource totals, original clocks and terminal predicates unchanged. Production wiring,
+recovery and qualification remain open and later sprints stay parked.
+
+**Sprint `6.5` operation-role native CPU diagnosis, 2026-10-26.** The first actual
+overlap run and traced successor admit and exec both physical roles, then reach the original work
+deadline during further verification. Their sources/binaries and six-role retirement are frozen
+in `operation-roles-first-failure-1.json` and `operation-roles-trace-failure-1.json` under
+`.build/sprint-6.5/rpc-coordinator-20261025/`. Read-only kernel samples confirm controller
+throttling in every observed period while the aggregate slice is not throttled; the last sample
+records **186,191 µs** usage and **1,821,080 µs** throttled time at the controller.
+
+The selected cause and proposed native-only CPU mapping are retained in
+`operation-roles-cpu-selected-cause-1.json`: parent/command **100m/400m → 300m/200m**;
+transport/helper stay **100m/100m**. The total stays **700m**, memory **256 MiB**, tasks **56**
+and all original deadlines, two serial commands and admission/effect/terminal checks stay fixed.
+The existing fourteen parent/request controls keep their original mapping. This is neither a
+deployed-envelope change nor an independently justified production profile. Replacement validation
+follows; no role checkpoint or qualification is claimed and later sprints remain parked.
+
+**Sprint `6.5` operation process roles, 2026-10-26, before changes.** Add separate
+persistent-transport and serial-command borrows to the validated parent. Derive each scope's
+limits from the indexed plan and retain the original operation timer/helper; no child receives
+a fresh alarm or window. Observe the live direct child before PIDFD-based submission, bind its
+invocation and anchored cgroup before Go, and require positive kernel terminal evidence plus
+exact manager-field settlement before reusing a role. A failed or uncertain admission poisons
+that role instead of allowing another create. Closing invalidates escaped borrows and joins
+both lanes. Existing serial placement keeps its separate typed boundary.
+
+Validate actual overlapping transport/command children, serial reuse and negative borrows in the
+same original five-second / 256 MiB / 700m / 56-task diagnostic profile. The frozen baseline is
+`.build/sprint-6.5/rpc-coordinator-20261025/operation-roles-before-1.json`. This does not
+grant Authority admission or complete production dispatch/input pins, preparation, alarm
+retirement, unknown-admission/restart recovery or deployment qualification. `6.5` remains Next;
+later sprints stay parked and no image or Kubernetes/AWS campaign is added.
+
+**Sprint `6.5` operation-parent checkpoint, 2026-10-26.** The private parent-only
+lease binds the indexed transport plan and closed program to self PIDFD/invocation, referenced
+manager objects, anchored parent/slice cgroups and the keyed private runtime directory. Heap,
+limits, exact process membership, command and original timer/helper declarations are rechecked
+before effects and at close. Escaped leases refuse; absent, declared-not-found and unknown child
+fields remain distinct. Both future scopes are actually observed as declared `not-found`.
+
+All **14/14** native controls pass under the unchanged original **five-second / 256 MiB / 700m /
+56-task** diagnostic envelope: positive parent, escaped lease, wrong key/window/resources/heap,
+plus the existing eight request/expiry controls. The ten controller-starting controls independently
+require complete six-role absence, original held-cgroup retirement and runtime-directory absence
+before the original settlement end. **146/146** focused regressions pass with network connect
+syscalls denied (**8.75 seconds** command wall time). Formatting/HLint pass, the library builds
+warning-clean (**25.22 seconds**), all targets build warning-clean (**246.09 seconds**) and the
+installed operator's documentation gate passes (**12.35 seconds**).
+
+The scoped artifact is `test/qualification/HOST-OPERATION-PARENT-LEASE-2026-10-26.json`;
+matching opening/closing full source identities, native inputs/binary, current operator
+`d88648b061a3…` and exact results are retained in
+`.build/sprint-6.5/rpc-coordinator-20261025/operation-parent-progress-1.json` and
+`operation-parent-all-validation-1.json`. This ledger-only publication follows those guards and
+is checked separately. The frozen first failure and selected EOF cause remain preserved below.
+
+This proves the private parent-only boundary. No actual persistent transport or command scope is
+created. Physical role ownership, independent terminal evidence and early alarm retirement,
+production dispatch/descriptor-pinned inputs, preparation, unknown-admission/restart recovery and
+remaining registration/backup/migration work remain in `6.5`. Current complete canonical/frontend
+gates, deployment qualification, activation and legacy removal stay open. No deployed envelope,
+image build or Kubernetes/AWS campaign is added; later sprints remain parked.
+
+**Sprint `6.5` operation-parent native diagnosis, 2026-10-26.** The first positive
+parent control refused before its callback. Its exact source/binary and independently observed
+six-role retirement are frozen in
+`.build/sprint-6.5/rpc-coordinator-20261025/operation-parent-first-failure-1.json`.
+Typed I/O diagnostics identify EOF while reading the existing slice's empty `cgroup.procs`;
+the selected-cause source/binary and exact field are separately retained in
+`operation-parent-selected-cause-1.json`. A dedicated membership reader now accepts read EOF as
+an empty direct-process set while preserving open failures and all other read errors. It does
+not infer cgroup absence. The controller still requires exactly its own PID.
+
+The replacement positive control passes under the original five-second / 256 MiB / 700m /
+56-task envelope. Both future scopes are observed as declared `not-found`, separately from
+absent or unobservable fields. The complete refusal cohort, current warning-clean build and
+publication checks follow; no complete parent-lease checkpoint is claimed yet. Persistent
+transport/command ownership, production dispatch/input pins, preparation, recovery and remaining
+`6.5` closure stay open. No image or Kubernetes/AWS campaign is added; later sprints stay parked.
+
+**Sprint `6.5` operation-parent lease, 2026-10-26, before changes.** Bind the indexed
+operation intent and closed program to the actual controller self-PIDFD/invocation, anchored
+parent/slice cgroups and keyed private runtime directory. Pin manager objects, verify live/kernel
+limits and exact membership, read back the original timer/helper declarations and controller
+command, and invalidate escaped leases. Preserve absent, declared-not-found and unknown child
+observations separately; no active or foreign role may enter the initial parent-only state.
+The description also binds the RTS heap and maximum child deadline.
+
+The native fixture transfers its already observed host values through explicit fixture data;
+it must not run the subprocess-based host probe inside the managed controller. This is neither
+a production admission receipt nor a measured production profile. Validate the parent lease and
+its refusals under the same original five-second / 256 MiB / 700m / 56-task diagnostic envelope.
+The baseline is `.build/sprint-6.5/rpc-coordinator-20261025/operation-parent-before-1.json`.
+Persistent transport/command ownership, alarm retirement, production dispatch/input pins,
+preparation, recovery and remaining `6.5` closure stay open; later sprints remain parked.
+
+**Sprint `6.5` operation-family build checkpoint, 2026-10-26.** The strengthened
+native cohort passes **8/8**: early controller exit must leave both the timer and the physical
+slice observable before original work expiry. All four controller-starting controls close their
+six-role field and independently retire the held cgroup/workspace before the original settlement
+end. The remaining controls refuse without creating a family. All targets build warning-clean in
+**49.48 seconds**, and documentation lint passes in **11.94 seconds**. The installed operator is
+`cd920059e5fd…`; its digest and matching opening/closing full source identities are
+recorded in `.build/sprint-6.5/rpc-coordinator-20261025/operation-family-all-validation-1.json`.
+The earlier eight-control artifact remains a historical checkpoint; this successor retains the
+stronger fixture source/binary separately. This ledger publication follows the guard; its
+documentation delta is recorded separately.
+
+Next bind the indexed transport plan to the actual controller PIDFD/invocation, anchored slice
+and keyed runtime directory, global timer/helper declaration and separate persistent-transport/
+serial-command slots. Keep expected declared placeholders distinct from absence and unknown
+observations; observe their actual manager shape before admitting a role. Own positive terminal
+evidence and exact alarm retirement under the original window, then wire production dispatch,
+pinned inputs, preparation, unknown-admission/restart recovery and the remaining registration/
+backup/migration flow. The new private request is not a placement or Authority receipt. Full
+current canonical/frontend gates, deployment qualification, activation and legacy removal remain
+open; `6.5` stays Next and later sprints stay parked. No deployed envelope, image build or
+Kubernetes/AWS campaign is added.
+
+**Sprint `6.5` atomic expiry request checkpoint, 2026-10-26.** The private
+`HostOperationFamily` request submits the keyed controller, original absolute timer and bounded
+no-op expiry helper with one physical slice. The timer requires the slice while armed; the helper
+orders the exact controller/command/transport field stopped before executing. A closed self-program
+selector fixes controller mode, explicit input paths, original clocks and RTS limits; there is no
+arbitrary executable/argument callback. One intent admits one submission, and present or unknown
+fields refuse before mutation.
+
+All **8/8** native controls pass under the unchanged original **five-second / 256 MiB / 700m /
+56-task** diagnostic total and **20 ms / 20 ms** helper bounds. They cover absolute expiry,
+delayed-effect refusal, early controller exit/workspace removal, foreign-field refusal, expired
+submission, excessive operation/helper windows and deadline-unobservable inventory. Timer readback
+preserves the original hard end. The four controller-starting controls independently require a
+retired held cgroup descriptor and workspace absence, plus the closing six-role field, before the
+original settlement end. The three extra negative controls and expired submission create no family.
+The library builds warning-clean (**18.21 seconds**), formatting/HLint pass, and opening/closing
+source identities agree. Parser/import/field-name setup failures remain retained. Exact profiles,
+sources, binaries and results are in
+`test/qualification/HOST-OPERATION-ABSOLUTE-EXPIRY-2026-10-26.json` and
+`.build/sprint-6.5/rpc-coordinator-20261025/operation-family-progress-1.json`.
+
+This is native request evidence. The fixture supplies its own controller; it creates no actual
+persistent transport or command scope, and delayed-effect refusal is not a lost-reply injection.
+Production dispatch and descriptor-pinned input loading, kernel parent/transport/command ownership,
+positive terminal evidence, early alarm retirement, unknown-admission/restart recovery and the
+remaining registration/backup/migration work still belong to `6.5`. All-target/documentation checks
+follow publication; current full canonical/frontend gates and deployment qualification remain open.
+No deployed envelope, image build or Kubernetes/AWS campaign is added; later sprints stay parked.
+
+**Sprint `6.5` operation-family request, 2026-10-26, before changes.** Add the private
+atomic manager request for a controller with an original absolute expiry. Controller, command,
+transport, timer, helper and runtime-directory names bind the operation key; the one fixed slice
+remains the physical slot. The timer requires that slice while armed, and its original hard end
+activates the bounded no-op helper only after its exact controller/command/transport field stops.
+A prior operation's alarm must never select a later controller. One intent admits one submission;
+existing or unobservable field observations refuse before mutation.
+
+The executable is the calling installed program and the controller mode/arguments are closed;
+there is no arbitrary-program callback or generic exec CLI. Native controls use a self-contained
+fixture executable under the original five-second / 256 MiB / 700m / 56-task diagnostic total,
+repartitioning command/transport resources explicitly. Prove timer expiry, delayed-effect refusal,
+repeated-submission refusal, early controller death/workspace removal and foreign-field refusal.
+A submitted request is no placement/Authority receipt. Production controller dispatch, pinned
+inputs, transport and command scopes, positive kernel terminal evidence, alarm retirement and
+recovery remain required before wiring or qualification. Baseline identity/sources are frozen in
+`.build/sprint-6.5/rpc-coordinator-20261025/operation-family-before-1.json`. No deployed envelope,
+image/live attempt or phase status changes; `6.5` stays Next and later sprints stay parked.
+
+**Sprint `6.5` transport-budget build checkpoint, 2026-10-26.** All targets build
+warning-clean in **53.11 seconds**; documentation lint passes in **11.81 seconds**. The installed
+operator is `cd920059e5fd…`. Opening/closing full source identities agree, and its
+installed digest matches the build record. Exact identity/results are in
+`.build/sprint-6.5/rpc-coordinator-20261025/transport-budget-all-validation-1.json`, alongside
+the **146/146** connection-denied unit controls and the accepted serial/refused direct and
+coerced-transport compiler controls. This ledger publication follows the source guard; its
+documentation delta is recorded separately.
+
+These component/build checks do not supply a current full canonical/frontend or native family
+claim. The new budget plan remains unusable by serial placement. Next implement the physical
+operation-wide expiry/transport family with exact role placement, lifetime, original bounds and
+measured production allocation, then owned preparation and closed launch/recovery. The remaining
+registration/backup/migration work, current full gates, qualification, activation and legacy
+removal remain in `6.5`. No deployed resource envelope or image/live attempt changes; later
+sprints remain parked.
+
+**Sprint `6.5` typed transport budget checkpoint, 2026-10-26.** The resource compiler
+now distinguishes serial and command-with-transport plans by a nominal type index. Its two
+runtime peaks bind command/helper first and persistent transport second; CPU, tasks and the
+complete memory reserve are charged together. A strict optional pair retains bounded witness
+metadata. The unit repartition preserves **128 MiB / 700m / 56 tasks**, the original five-second
+child limit and both storage draws; it supplies no measured production profile.
+
+Warning-clean library/unit validation passes (**150.71 seconds**), and formatting/HLint pass.
+All **146/146** focused controls pass with `connect` denied, including **35** host-budget and
+**27** runtime-memory cases. The existing gateway runtime-values assertion now uses the canonical
+planner's fixed observation seam and retains all runtime/probe/timing assertions. GHC accepts the
+serial control and refuses both direct and `coerce` use of a transport plan at serial placement.
+Opening/closing source identities agree before publishing this checkpoint. Exact controls,
+profiles, retained failures, sources and binaries are indexed in
+`test/qualification/HOST-EXECUTION-TRANSPORT-BUDGET-2026-10-26.json` and
+`.build/sprint-6.5/rpc-coordinator-20261025/transport-budget-progress-1.json`.
+
+All-target validation follows publication. The last full canonical/daemon evidence remains
+attached to predecessor operator `958782f85245…`; it is not current-source closure. Next is the
+physical operation-wide expiry/transport family, exact role placement/lifetime and measured
+production allocation, then owned preparation and closed launch/recovery. Registration/backup/
+migration completion, full current frontend/canonical gates, qualification, activation and legacy
+removal remain open. No deployed envelope, image/live attempt or phase status changes; `6.5`
+remains Next and later sprints stay parked.
+
+**Sprint `6.5` unit-observation boundary, 2026-10-26, before repair.** The indexed budget
+and runtime/rollout/credential controls run with `connect` denied: **145/146** pass, including all
+new host-budget cases. One existing gateway runtime-values test calls the production AWS image
+observer and reaches Kubernetes. Preserve its failure and replace that test observation with the
+canonical planner's existing fixed-image/API fixture, keeping every runtime/probe/timing assertion.
+The exact failed command, unit binary and source are frozen in
+`.build/sprint-6.5/rpc-coordinator-20261025/transport-budget-unit-observation-counter-1.json`.
+A failed evidence script was corrected by withdrawing the test-only edit before rebuilding and
+verifying the restored full source identity against the failed run before banking its inputs.
+The library/unit build is warning-clean (**161.63 seconds**) and HLint passes; an earlier new-test
+assertion precedence error and projection hints remain retained. Current validation follows the
+unit-boundary repair; no native transport ownership, resource change or qualification is implied.
+
+**Sprint `6.5` persistent transport budget, 2026-10-26, before changes.** The existing
+serial plan funds parent, one command and its expiry helper. Production also needs a concurrent
+persistent authentication transport. Add a distinct type-indexed plan whose validated runtime
+schedule retains both simultaneous peak slots and whose aggregate CPU, memory and tasks include
+that transport. Keep the existing serial plan accepted only by its existing placement boundary;
+the new indexed plan requires its own physical family owner before effects can be admitted.
+
+Validate exact role-peak matching, finite wire bounds, schedule cardinality, host admission and a
+unit-only repartition with identical aggregate draw. This arithmetic control supplies no measured
+production profile and changes no deployed envelope. Baseline sources and identity are frozen in
+`.build/sprint-6.5/rpc-coordinator-20261025/transport-budget-before-1.json`. Operation-wide expiry,
+transport placement/lifetime, owned preparation, closed launch/recovery and the remaining `6.5`
+work still follow; later sprints remain parked.
+
+**Sprint `6.5` alarm-retirement canonical checkpoint, 2026-10-26.** Operator
+`958782f85245…` passes `prodbox dev check` in **1,073.78 seconds**: primary **8,241/8,241**
+(**292.59 seconds**) plus **27/35/68** auxiliary cases. The complete daemon frontend passes
+**36/36** in **135.51 seconds**, including the fixed **2,048-call** regression under its
+original per-command bounds. Opening/closing full source identities agree, and the installed
+operator digest is unchanged. Exact identities, the retained operator and results are indexed in
+`.build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-full-validation-1.json`.
+
+This successor documents only the completed canonical/daemon checks; prior CLI/environment,
+style and local Pulumi frontend evidence remains attached to its older executable identity.
+This entry and the cleanup-reference update occur after the source guard closes; record their
+documentation delta separately. The production review in
+`closed-controller-integration-findings-2.txt` under the same private evidence directory confirms
+three preparation children (two image inspections and one endpoint read), three caller-token
+children and a persistent authentication port-forward. Fund and own that simultaneous transport
+explicitly before wiring the closed controller; the existing serial child/helper draw does not
+cover it. Preserve the operation's original bounds through admission, expiry and recovery.
+Registration/backup/migration completion, complete current frontend gates, deployment
+qualification, activation and legacy removal remain open in `6.5`. No image/live attempt,
+resource increase or phase advancement is added; later sprints remain parked.
+
+**Sprint `6.5` alarm-retirement repair checkpoint, 2026-10-26.** The selected predecessor
+fails on call **345** of the fixed 2,048-call profile. The replacement passes **2,048/2,048** in
+**76.60 seconds**, retaining each original **500 ms** command bound, resource envelope and
+positive kernel-absence predicate. Stop confirmation and alarm retirement share the same held-group
+observer; only transient observation/I/O refusals retry, inside the earlier original bound.
+All **64/64** direct early retirements and the live-group, expired-retirement, unsubmitted-intent,
+fully retired-group and closed-handle controls pass. Live-group observation returns immediately;
+expired observation cannot borrow a new window. Formatting/HLint pass, and all targets build
+warning-clean in **212.50 seconds**. An intermediate qualification-fixture name-shadowing error
+is retained and corrected before the replacement stress run.
+
+Opening/closing source identities agree before publishing the evidence record. Exact frozen
+inputs, commands and results are in
+`test/qualification/OWNED-ALARM-RETIREMENT-2026-10-26.json` and its private progress index. The
+canonical daemon regression now retains the same 2,048-call authored workload. Current complete
+daemon and canonical gates follow this checkpoint; their success is not implied by focused passes.
+Production controller/preparation/transport ownership, recovery, remaining registration/migration,
+qualification, activation and legacy removal remain open. No image or live attempt is added;
+`6.5` remains Next and later sprints remain parked.
+
+**Sprint `6.5` selected alarm-retirement cause, 2026-10-26, before behavior repair.**
+Three unchanged 64-call controls and a direct 64-family retirement control pass. The fixed
+2,048-call actual-owner diagnostic stops at call **345** with
+`OwnedSubprocessAlarmScopeUnobservable`, after **375,367 microseconds** inside the original
+500 ms command envelope. This selects the second held-kernel-group observation at alarm
+retirement; the earlier successful emptiness observation does not make a later refusal terminal
+evidence. Exact diagnostic inputs, binaries, first failure and source identity are frozen in
+`.build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-selected-cause-1.json`.
+
+Share the existing original-bound transient observation retry with alarm retirement. Retain the
+same held group and positive absence predicates; a populated group refuses immediately, and
+closed/expired handles cannot refresh a bound. Preserve expired/unsubmitted refusal controls,
+then validate the fixed stress profile, native family controls, daemon frontend and canonical
+gates. No resource envelope, image/live attempt, qualification claim or phase status changes.
+
+**Sprint `6.5` alarm-retirement follow-up, 2026-10-26, before changes.** Environment
+integration passes **103/103** in **1,270.36 seconds**, and documentation lint passes. The full
+daemon frontend exposes a remaining sibling state: **35/36** pass, but the 64-short-child case
+returns `OwnedSubprocessFamilyUnconfirmed`. Its exact failed run, sources and binaries are frozen
+in `.build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-frontend-counter-1.json`.
+Executable-surface identities still match the successful canonical run; the full identity's
+documentation-only delta is separately recorded. Do not promote earlier focused passes into
+closure of this failure.
+
+Preserve a distinct typed kernel-observation refusal at alarm retirement before changing its
+behavior. Reproduce that boundary under the original 500 ms short-child profile, then share a
+same-held-group/original-bound observation retry between stop confirmation and alarm retirement
+if the evidence selects that cause. A live group must still refuse retirement immediately;
+unknown observations never count as absence, and closed/expired handles cannot renew a window.
+Current full gates follow the repair. Production launcher, bounded preparation/transport helpers,
+recovery and qualification remain in `6.5`; no resource increase or later-sprint work is admitted.
+
+**Sprint `6.5` current canonical validation, 2026-10-26.** The rebuilt operator
+`c266ee846330…` passes `prodbox dev check` in **1,065.94 seconds**: primary **8,241/8,241**
+(**284.40 seconds**) plus **27/35/68** auxiliary cases. Its opening/closing full source identities
+agree, and the installed operator digest is unchanged. Exact validation is in
+`.build/sprint-6.5/rpc-coordinator-20261025/registration-owner-canonical-validation-2.json`.
+The built style frontend also passes **17/17** (**137.65 seconds**), and the local Pulumi
+filesystem harness passes **4/4**. The documented CLI integration entrypoint passes **103/103**
+in **1,253.56 seconds**, including the original 90-second stability windows. Environment integration
+is active under the same executable inputs. Resume the existing batch rather than starting another: its evidence names are
+`registration-owner-integration-cli-1` and `registration-owner-integration-env-1` under the same
+private evidence directory. Full daemon-frontend validation follows that batch; its fixtures invoke
+Cabal builds and must not overlap the integration planner.
+
+This progress entry changes documentation only, after the matching canonical source guard closes.
+Keep executable inputs fixed through the remaining frontend checks and record the documentation
+delta separately at closing, following the approved executable-surface identity policy. The closed
+production controller still must fund/own image and endpoint observations, all three caller-token
+preparation commands and the persistent authentication port-forward, alongside rollout children.
+Admission/recovery, remaining registration/backup/migration work, deployment qualification,
+activation and legacy removal remain open. No image or live attempt is added; `6.5` remains Next,
+and later sprints stay parked.
+
+**Sprint `6.5` shared home-credential owner checkpoint, 2026-10-26.** The existing
+`EphemeralKubectl` owner now validates/projects the embedded home configuration and writes its
+opaque validated value exclusively, without following a pre-placed path, then syncs/read-backs
+the bytes. Rollout retains that value and reuses the owner's ambient credential-environment scrub.
+All targets build warning-clean in **161.25 seconds**; all **101/101** focused cases pass with
+`connect` denied (**8.55 seconds**), including **34** rollout cases and existing shared-owner
+coverage. Formatting/HLint pass; the exact ownership rule that stopped the first canonical run
+now reports no violation. The intermediate missing/redundant import and test precedence failures
+remain retained.
+
+All eleven native controls pass under the unchanged original **50-second / 256 MiB / 700m /
+56-task** diagnostic profile: three healthy commits, Unicode journal path, five exact release/
+runtime refusals, deadline expiry and controller death. The fixture supplies nine synthetic ambient
+identity selections and confirms none reaches kubectl/Helm. The actual credential workspace and
+tool home/cache are absent after healthy, refused, deadline and parent-death outcomes. These are
+native manager/synthetic protocol controls, not a real Authority/Kubernetes rollout proof.
+Opening/closing source identities agree. Exact sources, binaries, commands and observations are in
+`test/qualification/RPC-BIRTH-EMBEDDED-HOME-OWNER-2026-10-26.json` and
+`.build/sprint-6.5/rpc-coordinator-20261025/embedded-home-owner-progress-1.json`.
+The current complete canonical gate follows. Production launcher, bounded preparation and
+authentication helper composition, same-family recovery, remaining registration/migration work,
+qualification, activation and legacy removal remain open. Later sprints stay parked.
+
+**Sprint `6.5` embedded home-credential ownership, 2026-10-26, before changes.** The
+current canonical gate refuses the rollout validator's external credential-field literal outside
+`EphemeralKubectl`, the single credential machinery owner. It stops after **119.48 seconds**;
+opening/closing source identities agree, and the failure is retained in
+`.build/sprint-6.5/rpc-coordinator-20261025/registration-owner-canonical-failure-1.json`.
+Move the complete embedded-certificate home-config validation/projection and its private write
+into that existing owner, retain a typed opaque validated value through rollout, and use the
+owner's exclusive/no-follow/private-mode writer with readback. Preserve the field-refusal policy
+and normalized bytes, add pre-placed regular-file/symlink refusal controls, and rerun affected
+native checks and the canonical gate. No lint exemption, alternate credential route, resource
+increase or phase advancement is admitted.
+
+**Sprint `6.5` registration owner checkpoint, 2026-10-26.** The original short-child
+counter fails on invocation nine; the replacement passes **64/64** in each threaded and
+non-threaded build (**2.41 / 2.40 seconds**). It retries transient observation/I/O refusals on
+the same held group inside the original confirmation end. The kernel observer's positive
+terminal predicates are unchanged, and closed/expired handles still refuse. The canonical native
+suite now retains that regression and passes **9/9** (**4.35 seconds**); **86/86** focused unit
+cases pass with `connect` denied (**8.26 seconds**). All targets build warning-clean in
+**55.52 seconds**, and formatting/HLint pass. Initial HLint and native build/setup failures remain
+banked alongside the original failed controls.
+
+Three composed healthy controls commit with **12 authenticated frames each** under their original
+bounds. A real UTF-8 journal-path control also commits. Exact pending, failed, unobservable,
+apply-failure, missing-runtime-acknowledgement and deadline controls retain `BirthPrepared`; the
+controller-death control independently confirms held-group retirement and workspace absence.
+The **50-second / 256 MiB / 700m / 56-task** diagnostic profile is unchanged. All **12** managed
+host controls pass under the original five-second profile, including runtime-directory permission
+and preservation refusals; each closes its five-role field and leaves no runtime directory.
+These are synthetic protocol/native-command controls, not a running Authority/Kubernetes proof.
+
+Opening/closing source identities agree. Exact inputs, binaries, frozen failures, commands and
+observations are indexed in `test/qualification/OWNED-CGROUP-RETIREMENT-2026-10-26.json` and
+`.build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-progress-1.json`.
+Full canonical validation follows this checkpoint. The closed production launcher, authenticated
+transport/helper resource and original-bound composition, same-family recovery, remaining
+registration/backup/migration work and deployment qualification remain in `6.5`. Later sprints stay
+parked; no image/live attempt, operational cutover or legacy removal is added.
+
+**Sprint `6.5` child-stop observation repair, 2026-10-26, before changes.** Preserving
+the owned-child cause exposes `OwnedSubprocessDescendantStopUnconfirmed`: two controls commit,
+then the third stalls after closing Helm status. Independent snapshots at 25/35 seconds show the
+scope inactive with no control group, while its original expiry alarm still waits; the family
+retires at its original 42-second hard end. A separate direct fully-retired group control passes
+with the expected `ENODEV`, so the kernel observer's positive-absence rules stay unchanged.
+
+The repository-owned `test/qualification/OwnedSubprocessCgroupRetirement.hs` reproduces the
+same failure against the actual public owner: the ninth short child returns that exact refusal
+after **374,910 microseconds** under its original **500,000-microsecond** diagnostic envelope.
+The failing source/binary and result are frozen in
+`.build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-counter-1.json`; the composed
+counter and independent snapshots are in
+`.build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-child-stop-counter-1.json`.
+Retry transient observation/I/O refusals on the same held group until the existing confirmation
+end. Only a positive terminal observation may retire the alarm; closed/expired handles still
+refuse, and no unknown observation counts as absence. Add the short-child control to the canonical
+native suite, then validate the unchanged fixed profiles before completing the physical caller.
+No resource or deadline increase, live attempt, qualification or queue advancement is admitted.
+
+**Sprint `6.5` registration workspace checkpoint, 2026-10-26.** The managed runtime
+directory replacement builds all targets warning-clean in **337.45 seconds**. Formatting and
+HLint pass; **86/86** focused unit cases pass with `connect` denied (**8.40 seconds**), and
+**8/8** existing native owner cases pass (**1.89 seconds**). The controller-death control now
+observes the held child group retired, all five manager roles absent and the actual staged
+workspace absent in **42.04 seconds**, under the unchanged **50-second / 256 MiB / 700m /
+56-task** diagnostic profile. The preceding failure and replacement remain indexed in
+`test/qualification/RPC-BIRTH-CONTROLLER-WORKSPACE-2026-10-26.json` and
+`.build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-runtime-directory-progress-1.json`.
+
+The strict healthy replacement control **fails**: after config capture and the first Helm
+status, it returns `RpcBirthRolloutDeadlineReached` at **42.03 seconds** with `BirthPrepared`
+and six original-bound frames. There is no apply or commit. Opening/closing source identities
+agree; the earlier missing constructor-pattern build failure is retained. Attribute this owned
+child/settlement delay and preserve the child's refusal before any post-call deadline check;
+do not widen the profile or treat the successful death cleanup as complete validation. Native
+Unicode journal-path and runtime-directory refusal controls, the closed production launcher,
+recovery faults, current complete canonical gate and qualification remain open. Operator
+`6a34069c…` is unchanged. No image/live attempt or queue advancement is added.
+
+**Sprint `6.5` registration rollout workspace repair, 2026-10-26, before changes.**
+The composed interpreter builds warning-clean and passes all **30** new pure cases, **86/86**
+unit cases with `connect` denied, and **8/8** existing native owner cases. The strict healthy
+synthetic protocol/native-command control commits with all **12** authenticated frames and
+eight owned child commands under its separately declared **50-second / 256 MiB / 700m /
+56-task** diagnostic profile. The earlier **20-second** profile remains a bounded negative;
+its first apparent pass used an invalid wildcard oracle and is not success evidence.
+
+A controller-death control independently observes the original held child group retired and
+all five manager roles absent, but the actual staged kubeconfig/chart directory survives. The
+strict counter fails in **42.04 seconds** inside the original 50-second window. Exact old inputs,
+binary, source identity and observations are indexed in
+`.build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-rollout-parent-death-counter-1.json`.
+Place staged inputs and tool home/cache directories under the same managed service's private,
+non-preserved runtime directory, attest its manager settings and held filesystem identity at
+admission and before effects, then repeat the same fault profile. Preserve all resource and
+time bounds. Production launcher/recovery, current complete gates and qualification remain open;
+later sprints stay parked, with no image or AWS attempt admitted by these offline results.
+
+**Sprint `6.5` bounded registration rollout, 2026-10-25, before changes.** Connect
+the authenticated coordinator to the physical host slot. Retain a flattened, embedded-credential
+home kubeconfig before preparation, materialize only the held chart revision in a private working
+directory, and reuse the caller's original host window for every status/apply/readback. Bind the
+managed parent's key to scope, generation and operation key; refuse a host cleanup window outside
+the Authority bound. Exact pending/unobservable Helm observations refuse writes, and terminal
+retained revisions require recovery without deleting the Authority. The coordinator's independent
+authenticated running-descriptor read remains mandatory before completion. This increment does
+not introduce a generic execution command, ambient substrate fallback or new resource defaults.
+Closed controller launch/recovery, remaining fault controls and qualification remain in `6.5`.
+
+**Sprint `6.5` composed host placement, 2026-10-25.** The host budget compiler
+charges one parent/child/helper slice against the observed plan's remaining resources. The new
+host subprocess path observes this managed controller's own PIDFD, invocation, finite RTS heap,
+manager/kernel caps and anchored membership, then borrows one serial slot. Before fork it checks
+the caller's exact three-role field; child and helper share the held slice and original absolute
+window. Before Go it rechecks parent and child ownership/resources and the dormant helper's exact
+no-op command, empty hook chains and limits. There is no fresh family key or shutdown clock per call.
+
+All targets build warning-clean in **151.24 seconds**. The **17** new pure cases and **39**
+existing subprocess cases pass with `connect` denied (**56/56**, **8.28 seconds** command wall
+time); all **8/8** existing native owner cases also pass. The composed native profile passes a
+normal two-command serial run, concurrent refusal and **nine** before-payload refusals for key,
+heap, resources, window and runtime mismatches. Every control independently observes parent,
+slice, scope, timer and helper absent inside its original **five seconds**. This is an isolated
+**256 MiB / 700m / 56-task** profile checked against the actual host, not full-application fit or
+a production envelope change. Exact sources, binaries, checks and the preserved initial fixture/
+compiler failures are indexed in
+`test/qualification/HOST-EXECUTION-COMPOSITION-2026-10-25.json` and
+`.build/sprint-6.5/rpc-coordinator-20261025/host-composition-validation-1.json`.
+Opening/closing component identities agree; operator `6a34069c…` is rebuilt. Formatting and HLint
+pass. The current complete canonical gate, managed parent-death/unknown-admission recovery,
+Authority admission and closed launcher, physical held-chart/runtime caller and deployment
+qualification remain open in `6.5`. Later sprints stay parked; no image/live attempt, operational
+activation or legacy removal is added.
+
+**Sprint `6.5` host execution composition, 2026-10-25, before changes.** Compile
+the parent/child/helper draw against the observed host plan's remaining budget and carry one
+serial child schedule. Map the runtime-memory outer ceiling to the shared slice, charging the
+child/helper reserve once and deriving the parent's ceiling from the remainder. Observe and hold
+the managed parent's invocation, absolute end and kernel placement before fork; bind both scope
+and helper to that same bounded slice. Preserve a recoverable family identity and original caller
+bound through retries. The arithmetic plan alone grants no runtime or Authority admission.
+The bounded manager/slice experiment above supplies the native basis; no resource-envelope
+increase, operational fallback, host journal or generic execution command is introduced. Complete
+this composition and the physical caller before qualifying or advancing `6.5`.
+
+**Sprint `6.5` aggregate placement experiment, 2026-10-25.** The actual private
+manager transport can create a bounded service and its aggregate slice in one request. A native
+fixture reads back direct service membership, its non-null invocation alias, and matching manager/
+kernel aggregate memory, swap, PID and CPU limits. Both exact unit names retire within the original
+two-second observation bound; the command finishes in **0.24 seconds**. Exact SDK/probe sources,
+binary and results are in
+`.build/sprint-6.5/rpc-coordinator-20261025/host-slice-probe-progress-1.json`.
+This normal-exit experiment supports the placement implementation; it does not implement funded
+host admission, anchored placement leases, recovery, original-bound fault handling or the physical
+caller. It changes neither production envelopes nor the held-chart counter profile. Those code
+obligations remain in `6.5`; later sprints stay parked.
+
+**Sprint `6.5` retained chart-input replacement, 2026-10-25.** The opaque
+home-Authority template now retains the canonical planner's exact observed image, validated
+endpoint, values/storage bindings and bounded regular chart bytes before preparation fences reads.
+Rendering reuses the canonical role renderer, preserves every other value, and retains the exact
+descriptor; foreign scopes and conflicting pins refuse. It performs no file or cluster observation.
+All targets build warning-clean in **171.51 seconds**; all **12/12** focused cases pass in
+**5.03 seconds** command wall time, including source removal, exact canonical values, three
+generations with legacy/already-matching pins, and unsafe/oversized input refusals. Both paired
+native generations match all **eight Helm objects and rollout checksums** after source removal,
+under the unchanged original diagnostic profile. The provisional source/counter remains frozen.
+Inputs, native results and exact replacement source are indexed in
+`.build/sprint-6.5/rpc-coordinator-20261025/held-authority-chart-progress-1.json`.
+
+The current canonical gate passes in **1,162.03 seconds**: primary **8,190/8,190**
+(**303.36 seconds**) plus **27/35/68** auxiliary cases. All eight test components and the executable
+build; opening/closing source identities agree at full `7f672a8a…` / executable `d97470d8…`
+(**1,525 / 1,462 entries**). Operator `5b80c20f…` remains unchanged. Exact validation is in
+`.build/sprint-6.5/rpc-coordinator-20261025/held-authority-chart-canonical-validation-1.json`.
+Whole-family parent/child/helper
+placement, resources and concurrency, original-deadline/same-family recovery, the physical caller
+and independent runtime confirmation remain open. No resource envelope, image/live attempt,
+deployment qualification or queue advancement is added; later sprints stay parked.
+
+**Sprint `6.5` retained-input checksum review, 2026-10-25.** The provisional
+template passes its twelve semantic/source-retention cases and warning-clean build, but four
+actual owned Helm renders expose a missing idempotence law. For both tested generations, the
+semantic Dhall override changes the ConfigMap text and StatefulSet checksum relative to the
+canonical planner; every other StatefulSet field agrees. Preserve that source/binary and recording
+in `test/qualification/RPC-BIRTH-HELD-CHART-CHECKSUM-DRIFT-2026-10-25.json`. Replace the override
+with the canonical role renderer using the exact held image and endpoint, then require every
+values field and rendered object/checksum to match. The source directory has already been removed
+before each native render. This is an offline development counter, not a deployed regression or
+qualification claim. The original finite diagnostic resource profile stays fixed.
+
+**Sprint `6.5` retained rollout inputs, 2026-10-25, before changes.** Prepare an
+opaque home-Authority chart template through the canonical planner before the registration
+prepare/fence. Retain the selected immutable image, complete values/storage bindings and bounded
+regular chart bytes. A descriptor may change only the typed registration field, for the same
+Authority and a legacy or already-matching source pin. Rendering must not reload settings, chart
+files or cluster observations after publication. This increment supplies retained inputs for the
+physical interpreter; it grants no subprocess/host permit or rollout receipt. Whole-family
+resource/placement/concurrency admission, original-deadline recovery, physical execution and
+independent runtime confirmation remain required before production wiring. Preserve the existing
+seven-client and replay/Authority resource envelopes; later sprints stay parked.
+
+**Sprint `6.5` startup-refusal replacement, 2026-10-25.** The failed-bus path now
+stops and reads back its mandatory child before waiting for output EOF. Under the frozen
+five-second profile, the two runtime builds return the same injected manager refusal in
+**2,722 / 2,370 microseconds**, with no payload effect or remaining child. Unfiltered commands
+still execute successfully. Exact current/frozen controls are indexed in
+`.build/sprint-6.5/rpc-coordinator-20261025/owned-manager-refusal-progress-1.json`.
+
+All targets compile warning-clean in **165.95 seconds**. Eight live-manager assertions now live
+in `test/daemon-lifecycle/SubprocessOwned.hs`, using shared concrete fixtures; the unit suite
+retains every pure validation and before-launch refusal. All **39/39** subprocess unit cases pass
+with `connect` denied; the native missing-service control fails explicitly with its actionable
+prerequisite and never skips. All eight built-frontends pass in **1,433.88 seconds**: primary
+**8,178**, integration **103**, daemon-lifecycle **35**, style **17**, Pulumi **4**, and auxiliary
+**27/35/68**. Opening/closing source identities agree at full `f2065204…` / executable
+`af3d2a4c…`, with operator `5b80c20f…` unchanged. Exact validation is indexed in
+`.build/sprint-6.5/rpc-coordinator-20261025/owned-manager-refusal-frontend-validation-1.json`.
+The first split build's unused import is retained. Current canonical closure follows the
+composed changes. Whole-family host admission, pre-Go/
+unknown-admission recovery, physical caller and deployment qualification remain open. Later
+sprints stay parked; no image/live attempt or resource-envelope increase is added.
+
+**Sprint `6.5` startup-refusal and tier follow-up, 2026-10-25, before changes.**
+The preceding runner revision passes the full canonical gate in **1,111.29 seconds**: primary
+**8,186/8,186** (**289.92 seconds**) plus **27/35/68** auxiliary cases. Opening/closing identities
+agree at full `ed93c550…` / executable `38560610…`; operator `3fefb9fe…` is unchanged. Exact
+validation is in `.build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-canonical-validation-1.json`.
+Six private controls against byte-identical production modules additionally pass natural timeout,
+launcher exit **77** and external PIDFD SIGKILL in both builds. Independent held-group/child and
+pinned-peer three-role absence observations complete inside the original **500 ms**; the detached
+child is observed alive after launcher termination. Exact inputs/results are in
+`.build/sprint-6.5/rpc-coordinator-20261025/owned-api-parent-fault-progress-1.json`.
+
+The follow-up preserves the unit tier's no-live-socket contract. With `connect` denied as `EPERM`,
+eight of its 36 owner cases fail while the other 28 pass. Move those eight cases into the already
+routed daemon-lifecycle suite and keep every assertion. The same injection exposes an actual API
+startup defect: manager refusal takes **4,804,112 microseconds** of a five-second budget because
+the blocked child retains its output pipes; the unfiltered command succeeds in **36,630
+microseconds**. No payload effect occurs on refusal. The frozen before-change recording is
+`test/qualification/OWNED-MANAGER-REFUSAL-JOIN-DELAY-2026-10-25.json`.
+Stop/read back the mandatory child before reader settlement when the bus call fails. Replacement,
+unit-tier isolation, native/full-frontend validation and current gates remain owed. No image/live
+attempt, resource-envelope increase, qualification claim or queue advancement is added.
+
+**Sprint `6.5` actual kernel-owned runner, 2026-10-25.**
+`captureOwnedSubprocess` now forks a trusted original-deadline child, submits its mandatory PIDFD
+and verifies exact scope/kernel admission before Go and exec. Graceful TERM, held-FD kill,
+terminal group confirmation, auxiliary retirement and three-role closing absence precede output
+settlement. Startup pre-encodes filesystem values, uses atomic close-on-exec pipes, preserves
+null stdin and inherited descriptors, and guards parent death plus living pre-Go abandonment.
+One runtime capability is required before fork. Explicit child/helper CPU, memory and PID wire
+bounds grant no host-placement or concurrency admission.
+
+Both runtime builds pass **8/8 original fast-session cases**, returning actual
+`Completed ExitSuccess` with independently stopped detached children inside the original
+**500 ms**. They also pass **12/12 valid paired exec cases**, one explicit invalid-NUL refusal,
+**11/11 scope observations** and **10/10 family controls** each. The threaded two-capability
+control refuses before effect. That is **85 native observations**. Closed stdin and wrong CPU
+limits are covered; invalid NUL is refused rather than inheriting the baseline's truncation.
+The expanded subprocess suite passes **47/47** in **10.18 seconds**, and warning-clean library/
+unit validation passes in **328.50 seconds**. Pinned HLint passes. Initial unused-binding,
+command-option, style and NUL-fixture-model failures remain banked.
+
+Exact sources, binaries, commands and observations are indexed in
+`test/qualification/OWNED-KERNEL-RUNNER-2026-10-25.json` and
+`.build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-progress-1.json`. The earlier immutable
+false-success recording remains available. The full canonical/frontend gate follows this
+component checkpoint. Whole-family parent/child/helper host admission, unknown-admission and
+recovery faults, actual-API crash/pre-Go fault controls and the physical caller remain open.
+No deployment qualification, image/live attempt, activation or queue advancement is added.
+
+**Sprint `6.5` early alarm retirement, 2026-10-25.** The private family owner
+requires observed kernel-group emptiness before stopping its expiry alarm. It pins both auxiliary
+objects, stops the timer through its exact invocation alias, and observes inactivity with no job
+before settling the helper. A helper without an invocation supplies no mutation selector.
+References are released on every return path, and release refusals remain explicit. Closing
+absence of all three family roles is observed after the scope reference is released.
+
+Both runtime builds pass **10/10 family controls**. Live-group, expired-budget and unsubmitted-
+intent refusals independently read back the same active timer invocation and original expiry.
+Early retirement completes before the original **350 ms** alarm; natural expiry, TERM and
+rejected creation controls retain the original **500 ms** total bound. An unrelated child stays
+alive. Warning-clean library validation passes in **20.13 seconds** and pinned HLint passes.
+The first expanded fixture build's shadowed-binding failure is retained. Exact source/binary
+snapshots and results are indexed in
+`test/qualification/SCOPE-FAMILY-RETIREMENT-2026-10-25.json` and
+`.build/sprint-6.5/rpc-coordinator-20261025/scope-retirement-progress-1.json`.
+
+Lost-reply/cancellation recovery, foreign-family races, actual pre-Go/exec/readers, whole-family
+resource/placement admission and the physical caller remain open. The actual public runner is
+still scan-based and its original fast-session counterexample remains open. Current full
+canonical/frontend validation follows that composed runner work. No image/live attempt,
+qualification claim or queue advancement is added.
+
+**Sprint `6.5` fixed scope-family creation, 2026-10-25.** The hidden `ScopeFamily`
+module creates the nonce-bound scope, timer and fixed no-op expiry helper through one PIDFD-only
+request. Its intent permits one create attempt; later recovery observes that same field. The
+request and helper budgets fit inside the original absolute expiry/terminal bound. Invalid child
+descriptors and expired or later-than-expiry creation windows refuse before mutation. Inventory
+distinguishes all three roles' absence, presence and unobservability; a present inactive helper
+with no invocation is never absence or a mutation identifier.
+
+The private owner also sends TERM to its original invocation alias under a narrowed grace budget,
+then retains held-FD kill and confirmation. The SDK's borrowed deadline view cannot renew its
+parent. Both runtime builds pass **6/6 family**, **10/10 observer**, **17/17 transport** and
+**22/22 pure identity guards**. Family cases verify the original **350 ms** expiry and read all
+three units absent inside **500 ms**; TERM, ignored TERM followed by FD kill, duplicate intents,
+invalid deadlines and foreign descriptors are covered. A withheld reply times out at **75 ms**;
+its late arrival cannot complete the next call on the same original **200 ms** connection.
+
+The inactive helper exposes an empty invocation array. Its nullable observation now retains that
+state, while mandatory PIDFD lookup requires exactly 16 bytes and mutation IDs remain non-null.
+Earlier generic delayed-admission refusals still have no recoverable location; stage-specific
+errors preserve future evidence. Failed smoke builds and proxy/auth parsing attempts remain banked.
+The actual warning-clean library build passes in **19.23 seconds**; pinned HLint passes. Exact
+sources, binaries and native results are in
+`test/qualification/SCOPE-FAMILY-CREATION-2026-10-25.json` and
+`.build/sprint-6.5/rpc-coordinator-20261025/scope-family-progress-1.json`.
+
+The earlier canonical pass below covers its recorded preceding source. This increment's full
+canonical/frontend batch follows composed runner work. Explicit early timer/helper retirement,
+idle/job barriers, lost-reply/cancellation recovery, actual pre-Go/exec/reader integration,
+whole-family resource/placement admission and the physical caller remain open. The public runner
+still uses scans; its original fast-session counterexample is not repaired by these component
+proofs. No image/live attempt, qualifying cycle or queue advancement is added.
+
+**Sprint `6.5` kernel observer canonical validation, 2026-10-25.** The complete
+gate passes in **1,220.13 seconds**: primary **8,167/8,167** (**314.15 seconds**), admission
+**27/27**, authentication **35/35** and transport **68/68**. All eight test components and the
+executable build, and the installed package confirms the transport/identity/kernel observer
+modules are hidden. Opening and closing identities agree at full `dcfe6f95…` / executable
+`899efaf0…` (**1,515 / 1,452 entries**); operator `ce5bd808…` remains unchanged. The run uses the
+preserved `0022` mask and **5 GiB / zero-swap** ceiling. The sampled memory events report no OOM
+or kill; cache reclaim at the ceiling is not an increased RAM requirement. Exact results and
+identity comparison are in
+`.build/sprint-6.5/rpc-coordinator-20261025/kernel-observer-canonical-validation-1.json`.
+The current combined frontend, production runner/caller composition and deployment qualification
+remain open.
+
+While that source is fixed, private native startup controls reproduce the previously unverified
+inherited-Go-writer hypothesis. The old blocking stub remains live beyond the original **500 ms**
+total when another child retains the writer, both with a living abandoned launcher and after its
+death. A parent-death signal alone also misses living abandonment. Across both runtime builds,
+**six negative controls reproduce** and **ten positive controls pass**; the combined nonblocking
+original-deadline poll, post-token clock check and parent-death guard handles both shapes.
+Separate actual `System.Process` versus pre-encoded Unix exec comparisons match **11/11 in each
+build**: raw argv, Unicode cwd/environment, parent-PATH search, inherited/close-on-exec descriptor,
+startup failures, shell fallback and signal inheritance. Exact private sources/binaries and native
+observations are banked in
+`.build/sprint-6.5/rpc-coordinator-20261025/private-startup-progress-2.json`.
+These are next-runner design controls; no production process/stub code is changed by them.
+Port the guarded startup together with whole-family ownership/resource admission, then validate
+the actual public success-and-absence counterexample. Later sprints stay parked.
+
+**Sprint `6.5` private kernel scope observation, 2026-10-25.** The actual hidden
+`KernelScope` module binds a duplicated live direct-child PIDFD to the pinned manager's exact
+unit/invocation alias and the child's observed cgroup membership. It retains the manager reference,
+walks every directory component relative to held descriptors without following symlinks, verifies
+that root/events/kill descriptors share the observed cgroup2 mount, and checks manager and kernel
+memory/swap/PID limits. Identity and membership are read again around acquisition. Handle use
+and closure are serialized; expired and closed handles refuse. An earlier manager deadline clamps
+the requested observation budget.
+
+Both native runtime builds pass **8/8 controls** (**16 total**): exact held-FD kill with independent
+child stop, controlled 50 ms delayed admission, wrong limits, a foreign descriptor, invalid unit,
+expiry, cancellation and parent-deadline refusal. Unrelated children remain alive. A deliberately
+escaped handle refuses after its callback closes, and the 200 ms parent-bound control refuses
+despite its later two-second fixture allowance. The two initial native failures are preserved:
+normal Unix EOF requires explicit handling, and `ControlGroup` belongs to the Scope interface.
+Exact sources, binaries, commands and observations are in
+`test/qualification/KERNEL-SCOPE-OBSERVATION-2026-10-25.json` and
+`.build/sprint-6.5/rpc-coordinator-20261025/kernel-scope-progress-1.json`.
+Pinned formatting/HLint and file-policy lint pass. The current canonical/frontend batch follows.
+
+The separate corrected fixture observer passes its four recorded inactive/absent/unobservable/
+expired laws and **30/30 native scope controls** under the original 500 ms total. Updated identity
+fixtures pass **6/6** while preserving lower-level refusals and checking a live own PIDFD before
+waiting on pending admission. These do not identify the first generic refusal's discarded cause.
+The production observer's controlled delayed-admission case supplies the missing pending shape.
+These are local component proofs. The public runner still needs process/Go/exec startup, exact
+expiry-family ownership, graceful stop and reader settlement, whole-family resource/placement
+admission and the physical caller. Its original fast-session counterexample remains open. No
+image/live attempt, deployment qualification or queue advancement is added.
+
+**Sprint `6.5` typed manager identity integration, 2026-10-25.** The actual hidden
+transport now carries opaque non-null invocation IDs and verified invocation aliases, typed
+PIDFD/invocation lookup, object references and invocation-qualified stop. Manager discovery pins
+one unique bus name and checks its Unix user before entering the caller; subsequent manager
+requests address that pinned name. Both runtime builds pass **16/16 transport controls** and
+**17/17 pure identity guards**. The native proxy independently observes unique-name routing,
+foreign-user/invalid-name refusal before caller entry, and socket closure. Warning-clean native
+builds pass. The earlier canonical pass below covers the preceding transport revision; the new
+identity/peer increment still needs its current-source canonical/frontend batch.
+
+The composed native batch remains partial: threaded scope controls pass **15/15**, while the
+non-threaded batch has **13 passes / 1 failure**, then stops before abandonment. In the failure,
+the child and held group are independently terminal at **350,526 microseconds**, but the one-shot
+closing read still sees a loaded inactive scope; exact whole-family retirement is unproven.
+Threaded identity controls pass **3/3**; non-threaded controls pass **2/3**, with an early generic
+reply refusal before PIDFD observation. Traced repetitions do not explain that refusal. A separate
+pre-admission control shows that manager ESRCH can describe an own live child before scope
+admission, so it cannot alone prove process absence. Preserve these failures, distinguish pending
+admission from malformed replies, and observe retirement within the original deadline. Exact
+source/binary banks and results are indexed in
+`.build/sprint-6.5/rpc-coordinator-20261025/typed-systemd-peer-progress-1.json`.
+
+Production `captureOwnedSubprocess` still uses the scan implementation. Kernel ownership,
+startup/unknown-admission recovery, complete command behavior, family resource admission and
+physical composition remain open. No image/live attempt, qualifying cycle or queue advancement
+is added; the two native failures are not rounded up to a passing ownership result.
+
+**Sprint `6.5` manager transport canonical validation, 2026-10-25.** The corrected
+canonical gate passes in **1,237.19 seconds**: primary **8,167/8,167** (**317.31 seconds**),
+admission **27/27**, authentication **35/35** and transport **68/68**. All eight test components
+and the executable build; the installed package confirms that the new transport module is
+hidden. The run preserves the invoking `0022` mask under a **5 GiB / zero-swap** kernel ceiling.
+Opening/closing source identities agree at full `c62283fd…` / executable `a0220924…`; the
+installed operator remains `ce5bd808…`. Commands, results and identity comparison are in
+`.build/sprint-6.5/rpc-coordinator-20261025/systemd-bus-canonical-validation-2.json`.
+The current combined frontend and deployment qualification are not asserted by this gate.
+
+While source is fixed, six independent native identity controls pass (**three in each build**).
+Mandatory-PIDFD lookup returns the exact unit and invocation; invocation lookup returns a distinct
+alias whose `Id` and `InvocationID` agree. A held connection reference keeps the inactive unit
+loaded and refuses same-name recreation. Without it, the name and canonical path can identify a
+new invocation. Stopping an active invocation alias stops its own child; an obsolete alias refuses
+after recreation and preserves the separate child. Dead PIDFD lookup refuses, and released fixture
+units are independently read back absent. Exact sources, binaries, failed alias-path assumptions
+and native results are in
+`.build/sprint-6.5/rpc-coordinator-20261025/unit-reference-identity-1.json`.
+
+These identity operations are a private prototype extension, pending their typed production
+transport/owner integration. Preserve the returned invocation alias and verify its metadata;
+do not equate it with the name path, concatenate an unescaped UUID, or admit a null invocation ID.
+A reference pins the object; invocation identity remains a separate obligation. Production process
+ownership, startup recovery, resource admission and physical composition remain open in `6.5`.
+No image/live attempt, qualifying cycle or later-sprint advancement is added.
+
+**Sprint `6.5` manager transport style validation, 2026-10-25.** The first canonical
+gate refuses two case-in-lambda style violations in **135.03 seconds**, before compilation or
+tests. Extracting named library/bus helpers preserves the transport protocol and cleanup order.
+The corrected source passes repository-wide Haskell style validation in **743.86 seconds** and
+fresh native controls: **14/14 transport** plus **15/15 scope composition** in each non-threaded
+and threaded single-capability build (**58 total**). The added successful-reply proxy also
+independently observes socket closure. Composed scope/timer/helper absence is read back within
+**387 ms** under the original 500 ms fixture total. Exact current source/binary banks, failed
+gate and per-case observations are indexed in
+`.build/sprint-6.5/rpc-coordinator-20261025/systemd-bus-progress-2.json`.
+The immutable earlier recording retains its original source snapshot. A fresh current-source
+canonical gate follows this correction; no full build/unit or frontend pass is inferred from
+the native controls. Production ownership/caller/resource work remains open in `6.5`.
+
+**Sprint `6.5` native manager transport, 2026-10-25.** Package-private
+`Prodbox.Subprocess.SystemdBus` replaces the candidate's synchronous bus primitive with an explicit
+local socket and deadline-aware authentication/reply processing. A frozen read-only control with a
+200 ms method timeout remains stuck until its **750 ms** outer guard: the native synchronous call
+authenticates before starting that timeout. The new transport refuses stalled authentication and
+an authenticated dropped reply at about **200 ms**, including 100 ms spent before authentication.
+It preserves cancellation with independently observed socket closure, structured failures and
+explicit endpoint selection under poisoned ambient bus variables. Both non-threaded and threaded
+single-capability builds pass **13/13 native controls**. A deliberately late callback is refused;
+that case proves no late success, not a hard bound on arbitrary caller IO.
+
+The actual package-private transport also passes the composed scope fixture's **15/15 controls**
+in each build, including Unix-FD transfer, original 500 ms timing, launcher crash/kill and exact
+scope/timer/helper retirement (maximum **382 ms**). Sources, binaries, failed attempts and native
+observations are bound by
+`test/qualification/SYSTEMD-BUS-AUTHENTICATION-BUDGET-2026-10-25.json` and
+`.build/sprint-6.5/rpc-coordinator-20261025/systemd-bus-progress-1.json`.
+Pinned formatting/HLint and warning-clean native builds pass; the current-source canonical gate
+follows this recorded increment. The production process API remains the open scan implementation.
+Exact unit/descriptor identity, startup recovery, complete stream/command behavior, resource
+admission and physical wiring remain in `6.5`; later sprints remain parked. No image/live attempt
+or deployment qualification is added.
+
+**Sprint `6.5` original-budget expiry composition, 2026-10-25.** The private native
+prototype composes mandatory child PIDFD admission, the pre-exec release barrier, held kernel
+handles and an absolute monotonic expiry. Both non-threaded and threaded single-capability builds
+pass **15/15 controls** under the public counterexample's **500 ms total**: eight fast-parent-exit
+shapes, expiry with immediate/delayed admission, abrupt launcher exit, independent PIDFD SIGKILL of
+the launcher, and pre-release abandonment. The six expiry cases independently observe child stop
+around **350–352 ms**. All three objects (scope, timer and expiry service) are independently read
+back absent within **376 ms**, including after a 200 ms admission delay. The original graceful-stop,
+confirmation and reader reservations are retained in the fixture's timing layout; the full parent
+grace and stream interpreter are still unwritten.
+
+Failed controls remain preserved: kernel retirement invalidates an events file without making
+the directory link count zero; the observer now requires anchored deleted-object/relative-absence
+evidence alongside exact child stop. Expiry retirement also needs to accommodate its existing
+manager transaction. A native `/proc` read can return `ESRCH` after opening a process that exits;
+other unreadable observations still refuse. Sources, binaries, observer revisions, failures and
+per-case results are indexed in
+`.build/sprint-6.5/rpc-coordinator-20261025/forked-expiry-composition-1.json`.
+
+The production process API is unchanged and its registered eight false completions remain open.
+Port the candidate only with exact manager/descriptor identity, complete command and stream
+semantics, startup/unknown-admission recovery, and validated placement/resource admission for the
+whole expiry family. Fixture memory/task values are not production requirements. No image/live
+attempt or deployment qualification is added; `6.5` stays first and later sprints remain parked.
+
+**Sprint `6.5` child-before-exec kernel controls, 2026-10-25.** A Haskell child waits on a
+private release pipe while its parent supplies the child's mandatory PIDFD to the manager,
+observes actual membership and opens kernel event/kill handles. Its payload's first observed
+effect is inside that scope. Nine native controls pass in the non-threaded build (**0.189
+seconds**) and threaded single-capability build (**0.227 seconds**): abandonment before release
+executes no payload; eight short-lived-parent/new-session shapes retain populated kernel membership
+after the leader exits, then stop through the held kill handle with independent child-stop evidence.
+The installed `unix` fork contract requires a single capability; a two-capability invocation refuses
+before forking. Exact sources and binaries are preserved in `forked-scope-feasibility-1.json`
+under `.build/sprint-6.5/rpc-coordinator-20261025/`.
+
+These use a **two-second toy fixture budget**, not the public counterexample's 500 ms profile.
+The actual process API is still unchanged. Original-deadline, startup/cancellation/crash, resource
+admission, descriptor-relative identity/recovery and complete command/stream semantics remain open.
+The validated memory planner already supplies child peak, deadline and concurrency witnesses;
+the fixture's 64 MiB/16-task values cannot become production defaults.
+
+Timer controls also reject a misleading shortcut: changing an active scope's runtime limit is
+refused. An expiry tied to the original monotonic time can stop the scope, but its initial TERM
+variant exceeds the 800 ms fixture total (**0.830 seconds**). An immediate-KILL last-resort variant
+stops at **0.601 seconds** despite expiry setup being delayed by 200 ms. A transient target is
+unsupported, so any timer/helper expiry family needs explicit admission and exact retirement.
+The parent still owns its reserved graceful-stop interval. These primitive controls are recorded
+separately; they do not close the production lifetime law or qualify a deployment. No image/live
+attempt is added, and later sprints remain parked.
+
+**Sprint `6.5` kernel-owner feasibility, 2026-10-25.** Sprint `1.98` is independently
+closed; implementation returns to the registered early-exit/new-session child class. Host scope
+admission works under a **64 MiB / 16-task / zero-swap** native fixture profile. Eight candidate
+controls cover literal arguments, cwd, ordinary exit 17, signal exit, the raw environment difference
+and its exact restoration, and a detached child. After the parent exits, kernel membership remains
+populated; stopping the exact fixture scope removes that membership and the independently observed
+child. These are native primitive controls, not the production interpreter.
+
+Fault injection finds a further candidate constraint: `systemd-run --scope` still executes the
+payload when `pidfd_open` is forced to return `EMFILE`, taking its numeric-PID fallback. Its
+generic property parser cannot require `PIDFDs`, and the manager-call CLI cannot transport Unix
+file descriptors. A small Haskell native-message probe builds warning-clean (**2.70 seconds**),
+passes an explicit `PIDFDs` request and observes itself in the resulting scope (**0.013 seconds**).
+Under the same allocation fault it refuses before any manager request (**0.009 seconds**). Its
+source and executable are preserved by hash; exact native observations, fault traces and limits
+are under `.build/sprint-6.5/rpc-coordinator-20261025/mandatory-pidfd-feasibility-1.json` and
+`kernel-scope-semantics-1.json` in that directory.
+
+The actual `captureOwnedSubprocess` remains unchanged, with its eight-case false-completion
+recording still open. Before production wiring, prove child-before-exec admission, the original
+absolute startup/work/cleanup bound, cancellation, mandatory identity without client fallback,
+anchored terminal emptiness, exact owner/recovery and resource-plan admission. The manager backend
+is a separate trusted dependency; a successful native message is not an end-to-end PID-reuse proof.
+The physical chart/caller, replay, backup/restore, retirement, role/origin and qualification work
+remain in `6.5`. No image or live qualification attempt is added; later sprints stay parked.
+
+**Sprint `1.98` code-owned reclosure, 2026-10-25.** The actual file-lint command releases
+each source-reading result before the next corpus while retaining all sixteen checks, predicates,
+findings and ordering. Frozen/replacement memory controls, complete ordered finding comparisons,
+preserved artifact hashes, all-eight warning-clean compilation and the native observer controls
+are verified. The immutable recording is
+`test/qualification/FILE-LINT-LAZY-CORPUS-RESIDENCY-2026-10-25.json`.
+
+The corrected canonical gate passes in **1,145.76 seconds**: primary **8,167/8,167** (**313.09
+seconds**), admission **27/27**, authentication **35/35** and transport **68/68**. The single
+combined CLI/config frontend passes **103/103** in **1,343.52 seconds** (**1,336.56 seconds**
+suite time). Both run with the invoking `0022` mask under a **5 GiB** kernel memory ceiling,
+zero swap and the same installed `ce5bd808…` operator. Their opening/closing identities agree at
+full `d7a10d8d…` / executable `5147121d…`. The failed first gate and both mask controls remain
+preserved; the production file-safety rule is unchanged.
+
+Closure status/docs are checked through `dev lint docs` and `dev lint files` before implementation
+returns to `6.5`; exact results, identity comparisons and the requirement audit are indexed in
+`.build/sprint-1.98/validation.json`. Governed closure edits change full provenance; the executable
+inputs remain bound separately. This closes the independent CLI/quality surface. Sprint `6.5`
+still owns kernel-backed child containment, physical composition and deployment qualification;
+its fast-session counterexample remains open. No image/live attempt or qualifying cycle is added.
+
+**Sprint `1.98` contained-gate context correction, 2026-10-25.** The first full gate
+passes policy, formatting, HLint and the warning-clean build, then exits **1** in **1,168.08
+seconds** with **6 of 8,167** primary cases failing (**332.19 seconds**). Auxiliary suites are
+not reached. Opening/closing source identities agree. The containment service inherited the user
+manager's `0002` permission mask instead of the invoking shell's `0022`; six fixture files became
+group-writable and were correctly refused as unsafe. No production permission rule is relaxed.
+
+A controlled replay of the exact same unit binary and all **37** Tier-0 registration cases
+reproduces those six failures under `0002` (**7.18 seconds**) and passes **37/37** under `0022`
+(**7.68 seconds**), with source fixed and all other service/profile settings equal. The independent
+native regression observer also preserves deliberate exit **17** and refuses signal termination
+(exit **255**); both diagnostic units have been collected. Exact commands, output, identities and
+the context comparison remain under `.build/sprint-1.98/`. Preserve the shell mask explicitly in
+the next contained canonical/frontend commands. Current full gates and reclosure remain owed;
+`1.98` stays first and later sprints stay parked. No image or live attempt is added.
+
+**Sprint `1.98` actual-CLI memory checkpoint, 2026-10-25.** All sixteen source-reading
+doctrine results now pass through the existing complete-payload evaluation boundary. An independent
+delta check confirms no checking expression, predicate, aggregation or order changes. All eight
+test components build warning-clean under a 5 GiB kernel cap (**96.94 seconds**); pinned formatting
+and HLint pass, and the standalone native control compiles warning-clean (**5.29 seconds**).
+
+The identical native **1 GiB heap / 3 GiB cgroup / zero-swap / 64-task** profile makes the frozen
+operator exhaust its heap (**exit 251, 5.64 seconds**). The preserved replacement completes
+(**35.08 seconds**, **523,041,672 bytes** maximum live heap); the installed replacement, with its
+actual sibling Tier-0 config, also completes (**40.05 seconds**, **685,312,056 bytes**). Sampled
+RTS live heap is not RSS. Actual frozen/replacement CLI controls return identical complete ordered
+findings for both synthetic path-shaped corpora; three added workflow/retry violations appear only
+in the negative corpus and in their original order. Incomplete fixture failures remain retained.
+
+The immutable `test/qualification/FILE-LINT-LAZY-CORPUS-RESIDENCY-2026-10-25.json` binds exact
+sources/operators, profiles, runs and limitations. Opening/closing source identities agree. The
+installed operator is `ce5bd808…`, with `9a1430a1…` preserved. Current canonical and complete
+combined frontend gates remain required before `1.98` reclosure; later sprints stay parked. No
+image/live attempt, runtime reservation change or qualification follows from this CLI repair.
+
+**Sprint `1.98` file-lint residency, 2026-10-25, before repair.** Phase `1` reopens on its own
+CLI/quality surface. The file-lint driver retains lazy finding lists from sixteen source-reading
+checks until its final concatenation. An unrestricted invocation reaches **7,130 MiB RSS** and
+is killed during a host OOM event; the host also kills cluster processes. Bounded retries exhaust
+**1/2/4 GiB** heaps rather than bypassing validation. No production reservations are changed.
+The exact operator, checker source, failed attempts and host observation are preserved.
+
+Two isolated diagnostic copies execute the same sixteen checks under the same **1 GiB heap /
+3 GiB cgroup** profile. The original exhausts its heap in **6.82 seconds**. Forcing each check's
+complete finding payload through the existing `forceViolationFindings` boundary completes all
+file-lint phases in **41.75 seconds**, with **521,800,560 bytes** maximum residency. This is
+diagnostic evidence, not yet the production repair. Apply the same boundary without changing any
+predicate, finding, order or failure behavior; prove the actual frozen/replacement operators under
+one bounded profile and run canonical/full frontend gates before reclosure. Numerical execution
+returns here before `6.5`. Its registered child-ownership defect and other remaining work stay open.
+
+The post-OOM read-only status reports RKE2 active, Vault sealed and authored host capacity
+**10,000m / 18,432Mi** above observed **8,000m / 15,930Mi**. Stand up and re-observe the platform
+through supported entrypoints before any later live proof. This status is not a qualification or a
+hardware-change commitment. No image or live qualification attempt is added.
+
+**Sprint `6.5` early-exit child ownership, 2026-10-25, before repair.** The coordinator/child
+batch's canonical gate passes in **1,160.54 seconds**: primary **8,167/8,167** (**307.79
+seconds**) plus **27/35/68** auxiliary cases, with identical opening/closing source identities.
+An additional native probe then finds a missing ownership shape: a parent exits immediately after
+its new-session child records its identity and redirects its streams. The scan loses that child;
+all **8/8** controlled cases report `Completed ExitSuccess` while the exact child remains live.
+The prior test kept its parent alive for 0.2 seconds, giving the scan time to record ancestry.
+Each fixture child is subsequently stopped and read back through its exact PID/start-time identity.
+
+The stable reproducer and immutable recording are
+`test/qualification/OwnedSubprocessFastSessionEscape.hs` and
+`test/qualification/BOUNDED-CHILD-FAST-SESSION-ESCAPE-2026-10-25.json`. The public negative control
+exits **1** in **0.49 seconds**, with its source, binary and superseded implementation preserved.
+A follow-up tightens its observer: unreadable or malformed process metadata refuses rather than
+claiming absence. The unchanged implementation still falsely completes **8/8** cases (**0.53
+seconds**); the observer-specific recording preserves that fresh driver and result separately.
+A separate control-group experiment stops the observed child in **8/8** matching cases; it does
+not yet prove production startup, cancellation, original-deadline composition, environment,
+identity/recovery or resource admission. A first experiment lacked the birth handshake and did not
+count its missing-identity cases as proof. User-manager transport works with an explicit local
+runtime-directory/bus coordinate; an unprivileged PID-namespace probe refuses on this host.
+
+Replace scan-only ownership with a validated kernel membership boundary before the Authority
+Helm slot or production caller uses it. Keep original deadlines, output/PID/resource bounds,
+unrelated processes and command semantics; terminal cleanup needs independent absence evidence.
+The newly found class remains open despite the canonical pass. Full frontend validation follows
+the ownership repair; the remaining chart,
+replay, backup/restore, pin/input disposition, historical/role/origin and qualification work stays
+owned by `6.5`; later sprints remain parked. No image or live attempt is added.
+
+**Sprint `6.5` bounded chart-child execution, 2026-10-25, before changes.** The registration
+coordinator's rollout callback is not yet a physical production interpreter. Add a subprocess
+interpreter with bounded stdout/stderr and one total monotonic budget that includes its reserved
+termination, descendant confirmation and reader-settlement time. Reuse the existing owned-session
+and PID/start-time observation boundary; cancellation and ordinary child exit both require owned
+descendant cleanup. A failed or unconfirmed stop is a structured refusal, not completion. Preserve
+the existing killable API and its historical callers. Native process fixtures must cover normal
+exit, either output ceiling, ignored termination, separately grouped descendants, cancellation,
+retained pipes and foreign-process preservation before the Authority-only chart slot uses it.
+No image, live mutation or qualification follows from this implementation boundary.
+
+**Bounded child implementation checkpoint, 2026-10-25.** The opaque validated limits and
+`captureOwnedSubprocess` now live in the canonical `Prodbox.Subprocess` interpreter. The existing
+killable API is unchanged. A prototype native run passes **28/28** cases in **2.64 seconds**,
+including output ceilings, timeout/cancellation, ignored termination, retained pipes and unrelated
+process preservation. The integrated all-eight-component warning-clean build passes in **444.85
+seconds**, with identical opening/closing source identities. HLint, docs and file-policy checks
+pass (**4.37/24.31/67.60 seconds**). One initial name-shadowing warning was corrected; its failed
+build remains retained. A closing deadline guard also covers reader/handle finalizers. The final
+all-eight-component warning-clean build passes in **45.67 seconds**, and the integrated native
+suite passes **28/28** in **2.65 seconds**, with identical opening/closing source identities. The
+installed operator is synchronized to `c7c89484…`, with its `bf4a0b20…` predecessor preserved.
+The canonical gate exits **1** in **127.17 seconds** before tests: its repository-specific
+lambda/case rule finds five cases in the source observer, publication adapter, native fixture and
+coordinator test. Named-helper extraction addresses those cases; the original published fixture
+and immutable recording remain preserved, and the changed driver is independently revalidated.
+The corrected repository style-policy scan passes (**93.24 seconds**), and all eight components
+build warning-clean (**201.17 seconds**). The related suites pass **202/202** (**5.59 seconds**);
+the changed public fixture passes all **13** actual-role startup/refusal cases (**3.45 seconds**)
+against operator `9a1430a1…`, with its `c7c89484…` predecessor preserved. The immutable follow-up
+`test/qualification/RPC-BIRTH-NATIVE-RUNTIME-STYLE-FOLLOWUP-2026-10-25.json` binds the changed
+driver and fresh run without replacing the original recording. Opening/closing source identities
+agree; these proofs retain their synthetic-provider scope.
+The second canonical attempt exits **102** in **171.85 seconds** at the standalone fixture's
+formatter parse: its imports need an explicit `ImportQualifiedPost` pragma outside a Cabal
+component. Earlier standalone formatter checks supplied GHC2021 manually. The source now declares
+that extension directly; the exact no-extra-language-option formatter check passes (**0.22
+seconds**), and targeted HLint passes (**6.75 seconds**). The standalone warning-clean compile
+passes (**6.17 seconds**) and its fresh **13-case** native run passes. The new immutable
+`test/qualification/RPC-BIRTH-NATIVE-RUNTIME-FORMAT-FOLLOWUP-2026-10-25.json` binds that driver;
+the prior sources and recordings remain preserved. The full canonical gate is rerun before
+frontend validation.
+The current canonical/frontend checks remain pending. This interpreter confirms its observed
+session/PID-start-time ownership; production
+child/tracker/resource admission, the exact retained-Authority Helm slot and caller, replay
+accounting, remaining lifecycle work and deployment qualification stay open. Evidence is under
+`.build/sprint-6.5/rpc-coordinator-20261025/`; no image or live attempt is added.
+
+**Sprint `6.5` registration coordinator, 2026-10-25, before changes.** The authenticated birth
+requests, durable source-pin CAS and native chart executor exist separately; no production caller
+connects prepare, publication, pinned-runtime observation and completion. Compose their control flow
+under one resolved transport deadline. Resume retains the original descriptor/key/epoch/deadline;
+success requires an independent exact descriptor and source-pin readback after completion. A lost
+reply is resolved from those observations, never from the request acknowledgement. Publication or
+rollout failure preserves the fence and pin; the coordinator cannot silently abort, unpin or open
+normal admission. Physical writers must already be quiesced, which the server's prepare checks.
+The chart slot must physically own and bound its subprocess tree before it is wired into production;
+the generic 30-minute Helm wait and ordinary five-minute caller bound do not establish that contract.
+Pair backup/restore, terminal pin/input disposition, historical compatibility disposition and full
+role/origin/qualification composition remain required. Source provenance starts in
+`.build/sprint-6.5/rpc-coordinator-20261025/before-source.log`; no live attempt follows from this entry.
+
+**Coordinator control-fold checkpoint, 2026-10-25.** The new
+`RpcAdmissionBirthCoordinator` composes prepare, durable source confirmation, runtime observation
+and completion without changing existing request/status wires. It preserves original descriptor
+identity and preparation deadline on resume, resolves response loss from independent observations,
+and returns only observed registration metadata. It cannot mint a writer permit or qualification.
+The library builds warning-clean (**13.20 seconds**) and targeted HLint passes. The expanded suite
+passes **160/160** (**0.224 seconds**), including exact failed prefixes, false acknowledgements,
+response loss, cancellation, expiration and late-completion recovery; source/rollout remain explicit
+interpreter fixtures at this checkpoint. Assertion precedence and a test-helper name collision were
+corrected before execution; their failed builds and one refused missing-binary launch are retained.
+The native Tier-0 source adapter now delegates observation/publication to the existing safe
+descriptor/lock/fsync/readback owner. Its five native file controls pass with the complete related
+suites (**197/197**, **4.20 seconds**). Signed client/peer/frame/handler composition then passes
+with actual native Vault HTTP and Tier-0 publication: both parent/provider deadline orderings use
+one provider resolution and one unchanged bound for every signed frame. A provider that never
+returns is bounded, invalid input precedes provider effects, and cancellation propagates. All
+**202/202** related cases pass in **6.08 seconds**; the final library build passes warning-clean
+in **67.64 seconds** and pinned HLint passes. Rollout remains an explicit interpreter fixture.
+The complete warning-clean build, including all eight test components, passes in **215.15 seconds**;
+opening and closing source identities agree. Documentation and file-policy checks pass in
+**21.57/60.45 seconds**. A final formatter check found one test-layout difference, corrected before
+the next validation batch. The physically bounded chart executor, replay/capacity accounting,
+production caller, pair backup/restore, pin/input retirement and remaining
+historical/role/origin/qualification work stay open. No image or live attempt is added.
+
+**Sprint `6.5` durable retirement provenance, 2026-10-25, before changes.** A frozen probe
+of the actual retirement/finish transitions, canonical record reload and cold recovery refuses both
+Retiring and Retired with `RpcBirthSeedChanged` after native latest advances; exit **1**, **0.042
+seconds**. The original signing version is still available. Retirement discarded the retained public
+seed, forcing cold recovery to depend on native latest. Frozen source/binary and exact commands are
+under `.build/sprint-6.5/rpc-retired-provenance-20261025/`. All five schema-one stages are immutable
+synthetic fixtures in `test/qualification/RPC-BIRTH-SCHEMA-ONE-HISTORICAL-2026-10-25.json`.
+
+Add an explicit retained-record schema discriminator and schema-two writer. Keep public provenance
+through Prepared/Armed/Retiring/Retired; Committed retains it in the authoritative RPC registry.
+The candidate accessor remains pending-only. Validate original seed/scope/digest/client projection
+without freezing unrelated inner Authority evolution. Preserve bare legacy bytes, command/status
+indices, exact marker/config binding and all client/resource envelopes. Historical schema-one reads
+and their narrow terminal compatibility writes preserve original meaning and bytes; they never
+invent missing provenance or silently select a new schema. New preparation and source-known
+transitions publish schema two. Sprint `6.5` owns removal of that compatibility after native
+migration, recovery/remedy and historical archival disposition are verified; the cleanup ledger
+carries its exact surface. Cold runtime proof, coordinator, pair backup/restore, verified pin
+retirement, other roles/origins and full current composed qualification remain required. No image,
+live attempt, activation, deletion or qualifying cycle follows from this before-change recording.
+
+**Retirement provenance implementation checkpoint, 2026-10-25.** Current schema-two records
+retain the original complete public source through Retiring and Retired; the pending candidate
+accessor remains pending-only. Version is explicit in the opaque record and wire discriminator.
+Retirement metadata validates scope, original seed digest/completeness and immutable client
+projection while permitting otherwise valid inner Authority evolution. Its encoded footprint is
+unchanged from the already admitted schema-two preparation. Bare legacy bytes, marker, descriptor
+pin and old command/status wire values remain unchanged.
+
+The library compiles warning-clean (**29.87 seconds**, final explicit-case supplement **14.97
+seconds**) and targeted HLint passes. The focused suite passes **137/137** in **0.175 seconds**:
+five exact historical byte roundtrips, two durable cold retirement phases after native drift,
+source-available historical upgrades, explicit seedless historical finish, footprint, profile,
+malformed/unknown schema and all prior controls. The identical frozen cold-restart probe changes
+from exit **1** (**0.042 seconds**) to **0** (**0.048 seconds**); both reloaded phases sign original
+native version one without mutations or unrelated native key reads. Its binaries retain separate
+immutable names. The public record is
+`test/qualification/RPC-BIRTH-RETIREMENT-PUBLIC-SOURCE-DISCARDED-2026-10-25.json`, with exact
+commands and provenance under `.build/sprint-6.5/rpc-retired-provenance-20261025/`.
+
+Historical schema-one decoding/re-encoding remains exact; a pending record with known source
+upgrades on its next controlled transition. A seedless historical retirement can only finish its
+original terminal schema, and historical retired ordinary writes preserve it. That operational
+compatibility still has explicit removal ownership in `6.5`; do not describe historical source loss
+as repaired merely because current records retain metadata. Warning-clean compilation of the
+executable and all eight test components passes in **193.69 seconds**, with matching opening/closing
+source snapshots. Documentation lint passes (**16.62 seconds**); the installed operator is synchronized
+to the current build and its `c9c922e1…` predecessor is preserved. The runtime/retirement batch's canonical gate passes
+in **1,164.40 seconds**: primary **8,117/8,117** (**312.09 seconds**), admission **27/27**,
+authentication **35/35** and transport **68/68**. Opening and closing manifests agree at full
+`75e8b470…` / executable `9949bbab…`. The combined frontend gate passes **103/103** in
+**1,380.77 seconds** (**1,373.87 seconds** suite time), with matching entry/closing full
+`ee7d1272…` and the same executable manifest. Physical coordinator/backup/restore/pin retirement,
+remaining role/origin/client composition, historical disposition and Standard-P qualification remain
+owed. Earlier canonical/frontend passes retain their earlier source identities.
+No image/live attempt, envelope increase, operational activation, deletion or qualifying cycle is
+added; later sprints remain parked.
+
+**Native runtime composition checkpoint, 2026-10-25.** The repository-owned
+`test/qualification/RpcBirthNativeRuntime.hs` starts the installed `prodbox lifecycle-authority start`
+process and listener in all five pinned birth phases. It uses chart-rendered
+schema-eight config, the production **256/1,024** admission bounds, real encrypted object envelopes,
+native S3/Vault HTTP, and the actual signed client/peer-refresh/descriptor-handler path. Native latest
+is version two; original version one remains available and unrelated RPC keys return 404. All five
+startups return their exact retained descriptor, phase and configured pin. Eight missing/corrupt/
+foreign/unobservable/native-key-loss cases refuse startup without initializing or mutating retained
+state. All **13/13** pass in **1.75 seconds**, using installed operator `bf4a0b20…`.
+The admission/marker ciphertext pair stays byte-identical; authenticated observations may update
+only their registered durable replay record. Every operator child is stopped and joined before
+the fixture asserts exact listener-port release.
+The synthetic Kubernetes CA and loopback network exist only in private mount/network namespaces;
+the host, cluster, resources and envelopes are unchanged. The Haskell driver owns setup and drops
+privilege before starting the fixture and operator. This proves native composition against
+explicit HTTP fixtures, not deployed readiness, outbound signing or physical qualification.
+The first fixture refused its absent projected CA; a later draft reused one nonce across two
+requests and was corrected to allocate distinct nonces. Those results and immutable probe binaries
+remain under `.build/sprint-6.5/rpc-native-runtime-20261025/`. The final driver compiles warning-clean,
+passes pinned HLint and has the immutable record
+`test/qualification/RPC-BIRTH-NATIVE-RUNTIME-COMPOSITION-2026-10-25.json`.
+It is a separate explicit fixture profile, with the build/run command in Sprint `6.5`'s Validation;
+it adds no deployment-qualification cycle. Its publication adds only the proof source, recording,
+package source declarations and governed docs after the canonical/frontend runtime batch above.
+Publication validation passes on matching opening/closing full `6a3da0be…` / executable
+`049aab35…`: all eight test components and the executable compile warning-clean (**72.40 seconds**),
+the public fixture compiles (**9.34 seconds**) and passes **13/13** (**2.75 seconds**), formatting
+and pinned HLint pass, and documentation/file policy checks pass (**24.56 / 69.28 seconds**).
+The installed and Cabal-built operator remain identical at `bf4a0b20…`; proof/package inputs account
+for the new executable manifest. Full gate results above retain their runtime-batch identities.
+The next owned work is physical prepare/pin/reconcile/complete coordination, exact pair backup and
+restore, verified pin/input retirement, historical disposition and remaining role/origin composition,
+followed by current-revision qualification. Later sprints remain parked.
+
+**Sprint `6.5` original birth descriptor observation, 2026-10-25.**
+The bounded authenticated read now returns the original preparation key, epoch, deadline,
+revision and seed digest plus the independently configured serving mode. It uses the existing
+migration route and a separate canonical format; all four old command wires and representative
+old successful status wires retain their exact bytes. The read-only effect algebra contains only
+clock, primary-record and marker reads. A fresh observation deadline can expose expired preparation
+metadata without renewing preparation or authorizing ordinary admission. The client retains one
+resolved bound through peer refresh, signing, transport and decoding. The standalone descriptor is
+bounded to **4 KiB** and the observation payload to **8 KiB**, inside the unchanged outer response
+budget; client and workload capacities are unchanged.
+
+The command interpreter and native reader now share primary/marker/primary confirmation. A closing
+unready/unobservable read cannot establish corruption from the first sample. The authored 36-state
+matrix exercises native reads, ordinary authentication/repository boundaries, the old command and
+the new descriptor executor. The focused suite passes **101/101** in **0.14 seconds**, including
+actual signed client/verified handler composition, native Vault HTTP, old wire bytes, scope/pin
+mismatch, invalid/oversized payloads, deadline refusal and cancellation. Missing imports, a shadowed
+fixture identifier and the timeout fixture's real-clock expectation were corrected; their failed
+commands remain recorded rather than discarded.
+
+The frozen verified-handler counterexample exits **1** in **0.006 seconds**; the same probe linked
+to the replacement exits **0** in **0.009 seconds**. The closing-evidence probe changes from **1** in
+**0.003 seconds** to **0** in **0.004 seconds**. Immutable public records are
+`test/qualification/RPC-BIRTH-ORIGINAL-PREPARATION-OBSERVATION-MISSING-2026-10-25.json` and
+`test/qualification/RPC-BIRTH-CLOSING-OBSERVATION-PRIORITY-2026-10-25.json`; exact commands,
+failures, source/binary identities and outcomes are indexed under
+`.build/sprint-6.5/rpc-observation-20261025/validation-progress.json`.
+
+Warning-clean compilation with all eight test components enabled passes in **189.98 seconds**;
+pinned HLint and documentation lint also pass. The installed operator is `720d61a3…`, identical to
+the newly built binary; its `9b7acd64…` predecessor is preserved. The canonical gate passes in
+**1,139.75 seconds**: primary **8,081/8,081** (**306.31 seconds**), admission **27/27**,
+authentication **35/35** and transport **68/68**. Opening and closing manifests agree at full
+`d8dc94aa…` / executable `75b2a7c6…`. The current combined frontend gate remains owed before
+image/live validation; its earlier pin-batch pass retains its earlier identity. This read is a
+required coordinator input, not physical repair or admission.
+Authenticated coordination, backup/restore, retirement, cold startup and qualification remain in
+`6.5`; later sprints stay parked. No image/live attempt, resource-envelope change, operational
+activation, deletion or qualifying cycle is added. The **45 GiB** admission threshold is disk space;
+the configured **17.07 GiB** RAM projection is not a measured aggregate minimum.
+
+**Sprint `6.5` registered cold-start ordering, 2026-10-25, before changes.**
+The actual `runControlPlaneRole` entrypoint still resolves legacy route trust and a native latest
+signer before opening the retained store, deriving its client table and initializing admission
+before observing the birth pair. An isolated schema-eight chart-rendered probe with a registered
+pin reproduces the same native operator-key and Authority-key reads as legacy mode, then exits
+**1** in **0.082 seconds** with `authentication/trust-read/status-404`; no retained-store
+prerequisite was read. The fixture uses only local HTTP and synthetic credentials. It deliberately
+makes prerequisites unavailable, so this is an ordering counterexample, not a successful committed
+store/cold-recovery claim. Frozen source, binary, request paths and exact commands are under
+`.build/sprint-6.5/rpc-cold-start-20261025/`.
+
+Select registered observation from the independent pin before legacy dependencies. Derive clients,
+trust and exact-version signing from validated retained state without dummy capabilities, unrelated
+native latest keys or missing-state initialization. Positive committed and pending/retirement
+recovery under native drift, actual runtime integration, backup and other-role/client composition
+remain required. Keep old inner bytes, origin/slot semantics and physical/client envelopes; an
+unavailable pair preserves the pin and recovery refusal. No product behavior changes or new live
+attempt are included in this ordering probe. The full coordinator and Standard-P qualification
+remain in `6.5`, and later sprints stay parked.
+
+**Registered startup implementation checkpoint, 2026-10-25.** Registered Authority startup
+now selects the retained-store path before the legacy resolver. Its opaque startup value carries
+an observed aggregate/client table, the pin-selected codec and real retained-mapping signing/trust
+providers; legacy initialization remains a separate explicit arm. The pinned reader preserves
+existing wrapper/inner bytes and checks scope, descriptor and reservation profile without requiring
+native-derived legacy clients. Source completion still checks actual native observations against
+the retained candidate. Backup export consumes the selected startup codec.
+
+The library builds warning-clean (**32.50 seconds**) and targeted HLint passes. The initial missing
+imports are corrected and retained. The expanded focused suite passes **120/120** in **0.175 seconds**,
+including a well-formed inner reservation table that contradicts the pinned profile and logical
+generation three selecting native version two. The actual entrypoint ordering probe exits **0**
+in **0.080 seconds**, while its unchanged frozen binary remains **1** in **0.082 seconds**.
+The immutable record is
+`test/qualification/RPC-BIRTH-REGISTERED-STARTUP-LEGACY-KEY-PRECONDITION-2026-10-25.json`.
+Warning-clean compilation of the executable and all eight test components passes in **193.34
+seconds**. A compiler probe then exposed that exporting the new trust-limit record selector allowed
+updates through the opaque type. The read-only getter correction passes the full build in **186.38
+seconds**; the exact update probe now fails type checking, while the getter-read control compiles.
+Final focused controls pass **120/120** (**0.179 seconds**) and the recompiled entrypoint probe passes
+(**0.138 seconds**). The installed operator is synchronized to the new Cabal binary, with its
+`720d61a3…` predecessor preserved. Full current canonical/frontend composition is still owed before
+image/live qualification; the earlier descriptor-batch canonical pass retains its earlier identity.
+Exact commands and failures are under `.build/sprint-6.5/rpc-cold-start-20261025/`.
+
+The intermediate replacement executable from the original banking record was overwritten during
+that final rebuild. Its original command/result/hash remain historical; the original failing binary
+and identical probe source remain intact. The final replacement is now preserved by hash, and
+`test/qualification/RPC-BIRTH-REGISTERED-STARTUP-LEGACY-KEY-PRECONDITION-2026-10-25-final.json`
+records this evidence gap and the final validation independently. The original banked metadata is
+unchanged; no new deployment claim relies on the missing intermediate executable.
+
+Prepared/Armed recovery uses retained public seed metadata and exact old native versions even when
+unrelated native keys are unavailable. A running retirement keeps its authenticated original public
+snapshot tied to the same descriptor; missing state still refuses. Historical retiring/retired
+records lack that seed and currently require a positively matching native public snapshot. Cold
+retirement under source drift, durable provenance/version disposition and complete actual positive
+runtime startup remain explicit work. No image/live roll, resource change, activation, deletion or
+qualifying cycle follows from these component controls. The full physical coordinator, backup/repair,
+other-role/origin/client composition and qualification remain in `6.5`; later sprints stay parked.
+
+**Sprint `6.5` independent registration-pin projection, 2026-10-25, before behavior changes.**
+The ordinary Authority chart projection still selects legacy mode, and the existing operator
+parameter writer replaces undecodable context with defaults. The compiled frozen writer
+counterexample exits **1** as expected in **0.040 seconds**. Add the explicit public registration
+requirement to the existing Tier-0 binary context, carry it through narrowed settings and ordinary
+chart reconciliation, and preserve it across setup, stamping, sync and reinstall. An unavailable
+Authority never supplies a legacy default; malformed or missing required schema fields refuse.
+Parameter authoring preserves the existing pin and refuses a foreign scope. A shared process/file
+lock, bounded non-symlink reads and durable atomic publication/readback protect canonical writers
+from losing a concurrently published pin. Pin publication is a separate compare/readback operation;
+ordinary parameter authoring cannot remove it. Source config is a startup requirement, never a
+second lifecycle state owner. Preserve client/resource envelopes and explicit AWS target scope.
+Authenticated prepare/publication/reconcile/complete coordination, registered repair, other-role
+adapters and current composed validation remain owned by `6.5`; later sprints stay parked.
+Evidence is under `.build/sprint-6.5/rpc-pin-20261025/`. No new live attempt or qualification follows
+from the frozen filesystem counterexample.
+
+**Pin projection qualification binding, before changes.** The generated-config qualification
+digest currently hashes only parameters, so a public registration-pin change alone would reuse
+that component. Bind the canonical public pin and parameter digests in one domain-separated
+generated-config projection while retaining the separate Authority in-force parameter digest.
+New cycle artifacts must attest both inputs; historical format-two artifacts retain their original
+meaning. Pin publication still grants no admission or qualification. No image/live run follows
+from this correction, and the required composed gates remain outstanding.
+
+**Independent pin projection checkpoint, 2026-10-25 05:19 UTC.** The public context pin,
+narrowed settings, ordinary home Authority/gateway projection and shared canonical file writer
+are implemented. Canonical writers preserve readable context during parameter repair, refuse
+malformed/old-schema context and pin replacement/removal, and confirm exact publication/retry.
+Both initial publication and idempotent confirmation sync the file and directory. A syscall trace
+of the applied-publication/lost-reply control confirms the retry syncs without replacing the file.
+The source pin participates in generated-config qualification identity independently of unchanged
+Authority parameters and resource envelopes; format-three artifacts attest both input digests.
+Historical format-two reads carry no pin-coverage claim and have explicit removal ownership.
+
+Warning-clean all-eight-component compilation passes in **180.87 seconds**; the final Helm-fixture
+supplement also passes that build in **9.40 seconds**. The focused primary selection passes
+**95/95** in **10.11 seconds**, including actual bootstrap-seed identity recomputation, parameter
+repair, concurrency, cancellation, unsafe inputs, ordinary planners and artifact disagreement.
+Real Helm rendering passes **1/1** in **0.22 seconds**: a pin change changes the pod-template
+checksum, and the rest of the StatefulSet rendering stays equal. Initial private runner package
+ambiguity, two missing Helm fixture inputs, a hidden-module build failure and a test error-type
+mismatch are corrected and retained. The frozen authoring counterexample exits **1** in
+**0.040 seconds**; its replacement exits **0** in **0.004 seconds**. The immutable public
+recording is `test/qualification/RPC-REGISTRATION-PIN-CONFIG-DEFAULT-RESET-2026-10-25.json`;
+exact commands, failures, source/binary identities and limits are indexed in
+`.build/sprint-6.5/rpc-pin-20261025/validation-progress.json`.
+
+The complete current-source canonical gate and the single combined **103-case** frontend run
+remain owed before any image/live attempt. Earlier canonical/frontend passes retain their earlier
+identities. Authenticated coordination, verified source-pin retirement/terminal disposition,
+backup receipt binding, physical pair repair, cold startup and remaining role/origin composition
+remain open. No image/live attempt, operational activation, legacy deletion or qualifying cycle
+is added; later sprints stay parked. The 45 GiB requirement remains a disk threshold, and the
+configured 17.07 GiB RAM projection remains distinct from a measured aggregate minimum.
+
+The subsequent file-policy check exposes its pre-pin literal witness for the legacy Authority
+helper. Update that checker to require the configured registration-aware helper and both ordinary
+pin projections; the existing source-mutation/planner controls retain the actual behavior proof.
+The failed old-checker transcript is retained. Documentation lint passes. Rebuild the checker before
+the next file-policy/canonical invocation; the earlier installed checker cannot validate this renamed
+projection. Current full canonical/frontend validation remains pending.
+The corrected checker builds warning-clean in **36.22 seconds**, and its file-policy run passes
+in **34.15 seconds**. The installed operator remains `111582ea…`; the newly built checker is
+`46fdb6ad…`. Normal operator synchronization and the complete canonical/frontend batch remain next.
+
+**Pin batch canonical resumption, 2026-10-25 05:31 UTC.** Preserve the previous operator and
+install the warning-clean checker `46fdb6ad…` through the documented binary build/install path.
+Canonical attempt one refuses in **29.37 seconds** because the existing local operator input has
+the exact old context schema, without `rpc_registration`. No fallback is taken. A read-only home
+observation finds schema **7**, scope `prodbox-home`, on ConfigMap UID `8809cd65…`; the exact prior
+invocation-nine Pod `6bef68d2…` remains Pending under the same pre-registration runtime image.
+This observes the authored pre-registration mode, not resource absence or deployed birth/repair.
+An explicit operator-input proposal selects Legacy from that observation and preserves all existing
+parameters, context coordinates and non-generated witnesses. It decodes the exact old context,
+checks the secret-free boundary before rendering, and verifies canonical roundtrip equality.
+Apply it with the canonical locked file boundary after reconfirming the observation, preserving
+the previous input. This is public operator-input authoring; runtime/provider/retained state and
+resource reservations are untouched. The refused gate and input-authoring controls are retained
+under `rpc-pin-20261025/`; complete canonical/frontend validation remains pending.
+The explicit input publication succeeds with exact canonical readback and unchanged parameters;
+the original input is preserved. Canonical attempt two runs on the frozen source and explicit input.
+It reaches Haskell style enforcement and refuses two case-inside-lambda writer callbacks in
+**110.41 seconds**. Extract named helpers without changing either transition, then rerun the full
+gate. The earlier targeted HLint pass did not execute this separate repository style rule.
+Canonical attempt three passes all lint and warning-clean all-eight compilation, then finishes
+the primary suite with **8 failures out of 8,062** (**284.32 seconds**; **1,107.41 seconds** gate
+wall time). Every failure is a cutover fixture whose proof artifact substituted arbitrary generated
+config parts while retaining unrelated parameter/pin inputs; format-three attestation correctly
+reports `ArtifactGeneratedConfigDisagrees`. Keep the binding check. Give cutover fixtures the
+same explicit public config inputs they certify, and give the alternate configured deployment
+matching parameter evidence. Revalidate complete cutover/ledger/receipt compositions, including
+two successful cycles on that alternate deployment, before the next complete gate.
+The corrected composition rebuilds warning-clean in **165.86 seconds** and passes **143/143**
+cutover, qualification, cycle/receipt and pin controls in **6.50 seconds**. The alternate deployment
+now attests matching parameter inputs; arbitrary mismatches still refuse. Canonical attempt four
+and the single combined frontend run follow on fixed source. The installed operator is `9b7acd64…`;
+both `111582ea…` and `46fdb6ad…` predecessors are preserved. No qualifying cycle is added.
+
+**Independent pin composed gates complete, 2026-10-25 UTC.** Canonical attempt four passes
+in **1,076.25 seconds**, including all lint, warning-clean compilation of all eight test components,
+primary **8,063/8,063** (**280.43 seconds**), admission **27/27**, authentication **35/35** and
+transport **68/68**. The single combined built-frontend invocation passes **103/103**
+(**98 CLI + 5 environment**) in **1,347.25 seconds** command wall time (**1,340.68 seconds**
+suite time); its real Helm pin/config-only rollout case passes in **0.13 seconds**. The `env`
+alias is not rerun because it selects the same full suite. Entry, canonical closing and frontend
+closing manifests agree: full `846c6d91…`, executable `693438ce…`. Installed and Cabal operator
+binaries remain identical at `9b7acd64…`. Exact results and all preceding failures are retained
+in `rpc-pin-20261025/validation-progress.json`; the public counterexample's original banking
+identities remain unchanged.
+
+This validates the source-pin projection, canonical public-input writer and parameter-plus-pin
+qualification identity on their owned local surfaces. Sprint `6.5` stays Active. Next expose the
+original public preparation key/deadline through bounded authenticated observation, then compose
+the complete quiescence/publication/reconcile/commit flow without renewing that bound. Pair backup
+receipt binding and physical restore, verified pin retirement/terminal input disposition, cold
+startup without unrelated legacy-key prerequisites, other-role/foreign-origin transport and the
+remaining replay/rollback/qualification work stay open. There is no new image/live attempt,
+activation, operational legacy deletion or qualifying cycle; later sprints remain parked.
+
+**Sprint `6.5` native RPC-birth recovery observations, 2026-10-25, before behavior changes.**
+The frozen native triple-read collapses stable, known primary corruption into
+`RpcBirthObservationUnavailable` instead of `RpcBirthStateInvalid`; the compiled read-only
+counterexample exits **1** as expected in **0.003 seconds**. Preserve the closing native error
+classification without admitting a primary whose revision cannot be confirmed around the marker.
+Keep absence, corruption, endpoint readiness and unavailable observations distinct, and verify
+all primary read pairs plus marker failures through the actual native adapter/repository boundary.
+Evidence is under `.build/sprint-6.5/rpc-birth-recovery-20261025/`. The replacement compiled
+counterexample passes in **0.003 seconds**. The warning-clean library build passes in
+**23.58 seconds**, and composed birth/role-handler/backup/migration/native-signing controls pass
+**174/174** in **3.73 seconds** command wall time. The authored six-by-six primary observation
+matrix and three marker failure cases exercise actual native observation, recovery authentication,
+ordinary repository reads and refused CAS without writes or native-key reads. A test-fixture
+operator-precedence compile failure is corrected and retained. This changes no state codec,
+resource envelope, write permit or client capacity. The complete canonical gate passes in
+**1,315.97 seconds**: all lint, all eight test-component warning-clean builds, primary
+**8,024/8,024** (**303.92 seconds**), admission **27/27**, authentication **35/35** and transport
+**68/68**. Entry/closing full manifest `d76328cd…` and executable manifest `6139009e…` agree.
+Normal canonical sync installs local operator `111582ea…`; predecessor `8f6532ca…` is preserved.
+The immutable public artifact is
+`test/qualification/RPC-BIRTH-NATIVE-CORRUPTION-CLASSIFICATION-2026-10-25.json`; exact results,
+source identities and final-source reproducer are indexed in the ignored evidence directory's
+`validation-progress.json`. This increment's complete frontend rerun belongs to the next composed
+batch before any image/live attempt; the earlier **102/102** proof below retains its earlier
+source identity. No process remains running. Pin reconciliation, physical repair, cold startup
+and the remaining `6.5` composition/qualification obligations remain open; qualification stays
+pending with **zero** cycles added and later sprints parked.
+
+**Sprint `6.5` explicit RPC registration birth/import, validated 2026-10-25 UTC.**
+The Authority runtime uses the bounded admission wrapper and separate retained birth marker,
+with schema-eight mounted configuration selecting an explicit legacy/registered union. Preparation
+fences ordinary admission before marker effects; exact readback and an independently configured
+public descriptor pin gate commit. Pre-commit retirement preserves its monotone generation and
+permits legacy logic through the new reader. Committed birth only moves forward. Missing,
+corrupt or mismatched admitted history never selects a fresh seed. Old encodings, home identities,
+the seven-client profile and all physical bounds remain unchanged.
+
+Authentication uses a separately validated recovery projection while preparation is pending.
+Retained route trust and checked native signing consume the same key mapping; a previously captured
+legacy signer is fenced when preparation appears. Complete home public keys are observed in two
+bounded native snapshots and compared against pinned legacy trust. This is compatibility evidence,
+not independent foreign-origin attestation. Backup export re-observes the exact outer record and
+marker, refuses a changed aggregate and preserves retirement history in its bounded canonical
+bundle. Pre-birth backup bytes remain exact. Bundle decoding does not apply a physical restore,
+and an existing inner backup receipt does not establish coverage of the new record pair.
+
+The canonical `prodbox dev check` passes in **1,187.24 seconds**: all lint, all eight test-component
+builds with warnings treated as errors, primary **7,985/7,985** (**330.54 seconds**), and gated
+admission **27/27**, authentication **35/35** and authenticated transport **68/68**. Additional
+direct daemon lifecycle **27/27** passes in **66.03 seconds**. Focused birth controls pass **44/44**;
+the composed birth/role-handler/backup/migration/native-signing selection passes **135/135**.
+These include real loopback Vault HTTP, logical-three/native-two signing under the unchanged
+seven-client profile, signed peer refresh and native birth CAS/readback over explicit fixtures.
+They do not prove independent physical origin admission or live cutover.
+
+The complete `prodbox test integration cli` frontend passes **102/102** in **1,324.01 seconds**
+command wall time (**98 CLI + 4 environment**, **1,317.48 seconds** suite time). Both the `cli` and
+`env` aliases currently select that same complete frontend. A subsequently started duplicate `env`
+invocation was intentionally interrupted after confirming the completed selection; its exit-one
+transcript is retained as a cancelled duplicate, not a passing invocation or failed test verdict.
+No owned validation process remains running.
+
+Entry and closing full manifest `7b0ea4ac…` and executable manifest `3953c6d6…` agree across the
+successful canonical/frontend batch. Normal canonical synchronization installed local operator
+`8f6532ca…`; predecessor `9ce2c56c…` is preserved. Exact commands, timings, hashes, failed attempts
+and proof limits are indexed in `.build/sprint-6.5/rpc-birth-20261024/validation-progress.json`.
+The immutable public counterexample is
+`test/qualification/RPC-REGISTRATION-BIRTH-CODEC-GAP-2026-10-24.json`. Retained failures include
+compiler/fixture errors, the missing pre-commit publication guard, six named-helper style repairs,
+host-versus-pinned formatter drift, and the two corrected exact diagnostic-vocabulary assertions.
+No gate was weakened. Final documentation outcome updates are validated separately and preserve
+that executable source identity.
+
+**Next in `6.5`:** deliver and preserve the independently mounted pin through ordinary reconcile;
+its default chart helper remains explicitly pre-admission. Bind a new backup receipt to the exact
+birth pair before writer publication and implement repair fetch/apply/readback of both records.
+Remove committed-startup dependencies on legacy native keys, validate cold pending recovery under
+key drift, and preserve known-corruption classification at the native observation boundary.
+Complete other-role/foreign-origin adapters, physical attestation/publication/transport and an
+explicit authored capacity/archival proof for additional origins without silently enlarging the
+seven-client profile or physical envelopes. Coordinator/replay accounting, quiescence, rollback and
+Standard-P qualification remain open. No image/live attempt, writer activation, legacy removal or
+qualifying cycle is added; later sprints stay parked.
+
+**Sprint `6.5` origin-aware operation admission, 2026-10-24, before behavior changes.**
+The frozen retained-client allocator admits the home Agent at logical generation one but refuses
+the independent remote Agent at generation two with a generation mismatch. Evidence is under
+`.build/sprint-6.5/rpc-client-admission-20261024/`. Preserve existing home principal/slot/operation
+identities and legacy encodings. Retain each origin's key generations separately under the existing
+client-capacity ceiling, give independent origins distinct server-owned slots and keep those slots
+stable through rotation. Project admission and retirement from exact retained RPC bindings; no
+caller-provided origin or principal enters submission. Preserve reservations and sequence ownership
+across additions/retirement; never silently re-seed, resurrect or drop history. Validate actual
+signed-client/verified-endpoint submission and observation, codec compatibility, collisions,
+retirement, replay and bounds. Durable Authority registry composition, physical origin attestation,
+publication/networking and qualified cutover remain required; later sprints stay parked.
+
+The versioned client model/projection, coupled Authority aggregate and registered codec/repository
+are implemented. Legacy table/aggregate bytes and home IDs stay exact. The registered runtime codec
+pins scope and client/reservation bounds; the legacy runtime refuses registered state. Birth,
+enrollment and retirement require a serving, quiesced Authority with no live operations. Registered
+state absence and direct initialization refuse. The final warning-clean all-eight-component build
+passes in **163.58 seconds**. Composed admission/registry/native-signing controls pass **115/115**
+in **6.71 seconds** command wall time, including **39** new origin-admission cases. Primary
+**7,939/7,939** passes in **303.03 seconds**; dedicated transport **68/68**, authentication
+**35/35** and admission **27/27** pass. Formatting, targeted HLint, documentation and isolated
+file-policy checks pass. The first full primary run exposed an obsolete assertion that version
+eight was unsupported; its corrected matrix requires unsupported version nine and rejects version
+eight without registered state. That failure, the first candidate, fixture/compiler/style failures
+and every subsequent attempt remain banked.
+
+Final entry/closing full manifest `c94acb67…` and executable manifest `4df53cb0…` agree. Exact
+commands, timing, hashes and proof boundaries are indexed in
+`rpc-client-admission-20261024/validation.json`; the public counterexample stays an immutable banked
+snapshot. The installed operator remains `9ce2c56c…`. No operator/image/live advancement,
+activation, deletion or qualifying cycle is supplied by these fixtures.
+
+Next is explicit durable birth/import: bind a preparation mode to the exact legacy revision,
+retained descriptor and old/new authored client profile, then confirm the coupled state by CAS and
+readback before publishing registered trust/signers. The registered-only codec correctly refuses
+an unbound legacy ledger; this is not permission for startup fallback or an implicit new seed.
+Legacy runtime capacity is derived from its seven trusted submitters; the fixture's sixteen slots
+are not an authorized operational capacity increase. Preserve every old reservation and slot and
+justify the production projection within the unchanged physical envelopes. Physical source
+admission, runtime/config/publication and remote transport, remaining role/credential adapters,
+replay accounting, quiescence/rollback, canonical/frontend batch gates and qualification remain
+open. Home-only physical scope is independently derivable; a declared AWS scope cannot be omitted
+because its transport is unavailable. Later sprints stay parked.
+
+**Sprint `6.5` RPC key-origin registration refinement, 2026-10-24, before behavior changes.**
+The compiled frozen trust registry refuses independent home/AWS keys at native version **1**
+because their principal/generation tuple collides, semantic exit **1** as expected. Banked source
+and executable evidence live under `.build/sprint-6.5/rpc-key-registration-20261024/`. Add an
+Authority-retained logical-generation registry binding exact cluster scope, stable Vault incarnation,
+canonical caller/key reference, native version and public key. An explicit complete home seed
+preserves existing logical identities; subsequent registrations, including home rotations, allocate
+above the retained principal watermark. Retired bindings remain fenced under fixed storage bounds.
+Mapped signing must guard the native version independently from the wire generation, and trust
+projection must consume the same registered binding. Preserve caller-slot semantics, wire indices,
+private-key custody and existing resource limits. A valid metadata constructor is not origin
+attestation: production registration, bootstrap/config/network composition and legacy cutover remain
+required. Later sprints stay parked; this adds no image/live attempt or qualification.
+
+The registry/codec, mapped route-trust projection and native signing bridge are implemented.
+They retain a complete twelve-principal seed, monotone per-principal logical generations,
+native-origin/public-key checks and retired history under **256 bindings / 128 KiB**. The actual
+Vault bridge selects the native version explicitly and checks source, public key and retained
+binding before and after signing. Its new native responses stop at **128 KiB**. Existing caller-slot
+representation and earlier native APIs remain unchanged. A real compiler probe rejects updates of
+the new opaque registry values; exported getters are ordinary functions.
+
+Warning-clean library builds pass in **18.72**, **126.82** and **42.94 seconds**. The **63/63**
+owned cases pass (**3.01 seconds** command wall time), including actual loopback Vault HTTP plus
+mapped signing → authenticated client → server verification → peer-context handler, equal-native-
+version coexistence under the frozen two-key ceiling, retention/overflow/byte limits, source/key
+drift, signature failure, late retirement and cancellation. Vault and registry observations remain
+explicit fixtures; physical origin admission is unproven. Failed fixtures and the first compiler
+probe matcher remain banked. The warning-clean build explicitly enabling all eight test
+components passes in **241.09 seconds**. Primary **7,900/7,900** passes in **318.32 seconds**;
+transport **68/68**, authentication **35/35** and admission **27/27** also pass. Formatting,
+targeted HLint and docs/file-policy checks pass. The first file-policy process ended by SIGTERM
+without a verdict; its separate rerun passes in **40.44 seconds**. Both attempts remain banked.
+Entry/closing full manifest `0e156005…` and executable manifest `842dac60…` agree. Exact commands,
+timings, source and binary identities are indexed in `rpc-key-registration-20261024/validation.json`.
+The operator remains `9ce2c56c…`; no image/live attempt or qualifying cycle is added.
+
+Production Authority-owned registry birth/CAS/readback, physical source admission, bounded history
+archival, local/remote public configuration, runtime signer/trust selection and actual connectivity
+remain open. The coupled origin-aware admission foundation above replaces the model's role-only
+mapping while its operational runtime cutover remains pending. Missing retained registration may
+never trigger native-counter reconstruction.
+Logical retirement does not prove native key/session retirement. The existing native-only path
+remains operational pending qualified replacement. `6.5` also retains the remaining adapters,
+coordinator/replay accounting, quiescence, rollback and qualification; later sprints remain parked.
+
+**Sprint `6.5` peer-context refresh refinement, 2026-10-24, before behavior changes.**
+The actual frozen signed client/server refuses epoch **1** against observed epoch **2** before
+the existing observation handler, semantic exit **1** as expected (**0.003 seconds**). Evidence
+and the immutable executable are under `.build/sprint-6.5/peer-context-20261024/`. Add one
+Authority-owned authenticated metadata route accepting positive historical epochs up to the
+independently observed epoch. Every existing route keeps exact-epoch authentication. The new
+route is read-only, returns scope/current epoch/public issuer metadata, requires a fresh nonce,
+and retains signature, caller, scope, canonical framing and original deadline checks. Its fixed-route
+client must obtain that metadata without first calling the ordinary epoch provider. Recheck public
+epoch/issuer/time around the observation and fail closed on drift. Existing wire indices, caller-slot
+ownership and physical resource limits remain fixed. Complete remote registration/trust/network,
+remaining adapters/coordinator, rollback, batch gates and qualification remain owned here; no live
+attempt, activation or legacy removal is added, and later sprints stay parked.
+
+The read-only effect program, canonical 1 KiB metadata response, fixed-route client and verified
+Authority runtime hook are implemented. The new route alone accepts historical positive epochs;
+all **64** existing routes retain exact-epoch checks. The bounded client samples its effective
+deadline once and physically covers provider resolution, signing, nonce generation, HTTP and
+forced decoding; late responses refuse and cancellation propagates. **113** owned peer cases and
+the complete **308/308** composed controls pass. The first fixture import failure remains banked.
+
+The warning-clean build explicitly enabling all eight test components passes in **352.14 seconds**.
+Primary **7,837/7,837** and transport **68/68** pass in **329.71 seconds** and **9.08 seconds**;
+dedicated authentication **35/35**, admission **27/27** and daemon lifecycle **27/27** also pass.
+Pinned formatting, targeted HLint and docs/file-policy checks pass. Entry/closing full manifest
+`4f1b4c4e…` and executable manifest `51d34a85…` agree. Exact commands, timings, failures, hashes
+and the original banked counterexample snapshot are indexed in
+`peer-context-20261024/validation.json`. The operator remains `9ce2c56c…`; no image or live
+attempt, operational activation, deletion or qualifying cycle is added.
+
+Next is retained remote Agent registration, including independent RPC signing-key origins and
+generation ownership, parent scope and real transport reachability. Public manifest/Target-issuer
+metadata is not RPC key registration or normal-writer admission. Preserve caller-slot semantics;
+equal-numbered independent Vault keys cannot be treated as one identity. AWS's legacy Authority
+cannot substitute for retained home authority. Remaining physical role/credential adapters,
+coordinator/replay-budget accounting, quiescence, rollback, canonical/frontend batch gates and
+native qualification remain open in `6.5`; later rows stay parked.
+
+**Sprint `6.5` capacity clarification, 2026-10-24.** The **45 GiB** next-image/live
+admission threshold is free disk space, not RAM. The complete configured memory projection is
+**11,538 MiB** workload demand + **3,384 MiB** standing platform requests + **1,536 MiB**
+host/RKE2 reservation + **1,024 MiB** eviction headroom = **17,482 MiB (17.07 GiB)**.
+This is an admission/reservation calculation, not a measured aggregate working-set minimum.
+The recorded native failure has a **728 MiB** Authority request and only **606.36 MiB**
+unreserved allocatable memory. A **20 GiB** host is a headroom suggestion, not an established
+minimum or an operator commitment. Do not reduce reservations merely to admit the current host;
+any reduction needs its own workload and failure evidence. Correct the engineering doc's stale
+pre-platform headroom calculation. No resource configuration or infrastructure changes follow
+from this clarification; `6.5` remains the queue head and qualification remains pending.
+
+**Sprint `6.5` physical Target binding refinement, 2026-10-24, before changes.**
+Share the exact nine-target worker authorization inventory with Vault policy generation. Observe
+every row through an explicitly registered substrate/Agent transport, independently check issuer,
+phase, epoch and immutable context, and compare canonical metadata with the retained topology.
+Binding metadata excludes its enclosing topology digest. Carry the verified migration request
+deadline through the Authority readback and nested Agent client; preserve exact aggregate revisions
+and lost-CAS confirmation. Missing/foreign registrations, incomplete rows, expiry and drift refuse.
+The existing runtime has only a home Agent connection: remote registration/connectivity must be
+composed before an AWS binding can be claimed. All remaining role/credential/coordinator/rollback
+and qualification work stays open. Evidence is under `.build/sprint-6.5/target-binding-20261024/`;
+later sprints stay parked and no live attempt is added.
+
+The shared inventory, canonical binding digest, registered-substrate interpreter and verified
+Authority readback hook are implemented. Each Target query takes **two complete nine-row snapshots**
+and independently checks Agent identity, issuer, public epoch, phase and original context. A
+request-local deadline budget narrows from observed preparation and continues through aggregate
+CAS/confirmation; nested signed requests use the earlier provider/parent deadline. The closing
+state distinguishes an observed conflict from an unobservable write, independently of the CAS
+reply. The corrected warning-clean library build passes in **12.29 seconds**, composed
+**195/195** cases in **2.66 seconds** command wall time, and targeted HLint passes. Earlier
+compiler/fixture/style attempts remain retained. The complete warning-clean build, explicitly
+enabling all eight test components, passes in **227.85 seconds**; primary **7,724/7,724** and
+transport **68/68** pass in **300.35 seconds** and **6.02 seconds**. Docs and file-policy checks
+pass. Entry/closing executable keys agree at `3dfba1cf…`, full provenance `97960926…`; exact
+commands, failures and binary identities remain indexed in `target-binding-20261024/validation.json`.
+
+The production runtime registers its configured **home** transport. Both substrate selectors and
+missing/aliased registrations are covered locally, but actual AWS registration/connectivity and
+its retained authentication plumbing remain open. The existing AWS platform still installs a
+legacy Authority; that cannot substitute for the retained-home authority in the target design.
+Remaining adapters, coordinator deadline/replay accounting, quiescence, rollback, canonical/frontend
+batch gates and native qualification remain owned by `6.5`. No operator/image/live attempt,
+activation, legacy deletion or qualifying cycle is added.
+
+**Sprint `6.5` authenticated staging composition, 2026-10-24, before changes.**
+Connect the verified-request executor to the Agent runtime through a bounded canonical staging
+protocol inside the existing trust request. Bank the five existing response encodings and append
+one staging response arm; ordinary clients must explicitly refuse it. Exact observations require
+a fresh nonce. Prepare/promote independently verify the Authority's public Transit issuer
+generation/key as well as published epoch, local Agent, immutable context and deadline. Retirement
+checks its exact context under the current authenticated cleanup request after expiry or rotation.
+Preserve the existing byte/resource bounds and one-row CAS ownership. Test the actual authenticated
+composition and client against corruption, wrong identity, phase races, response loss and expiry.
+Source/wire controls are under `.build/sprint-6.5/target-epoch-trust-20261024/staging-protocol/`.
+Complete topology observations, other physical adapters, coordinator, rollback and qualification
+remain separate open work here; later sprints stay parked.
+
+The runtime now composes the staging handler inside the existing authentication/replay/response
+guards and fresh-observation policy. The typed client verifies exact operation/context readback;
+old clients refuse the appended response arm, and all six banked legacy request/response encodings
+remain unchanged. The warning-clean library build passes in **84.92 seconds**. Expanded owned
+**103/103** cases pass in **2.13 seconds** command wall time, including complete in-process
+authenticated client/handler composition, lost HTTP replies, fresh observations, independent
+issuer rotation and the actual Vault factory's deadline/cancellation wrapper. The HTTP transport
+and retained KV remain fixture boundaries; this is no deployed Vault or topology proof. Targeted
+HLint passes after two fixture style corrections. The first fixture failures remain banked.
+The complete warning-clean build with all eight test components passes in **224.63 seconds**;
+primary **7,680/7,680** and transport **68/68** pass in **298.42 seconds** and **6.51 seconds**.
+Docs and file-policy checks pass. Entry/closing source keys agree at `24468e9d…`, full provenance
+`d7599de6…`. Exact attempts and executable hashes remain in the validation index.
+
+Next are complete per-substrate binding facts over the **nine** worker authorization targets,
+topology digests and independent issuer checks in
+the aggregate readback, then the remaining adapters/coordinator, replay-envelope accounting,
+quiescence and rollback. Canonical/frontend batch validation and native qualification remain
+owed. No image/live attempt, activation, removal or qualifying cycle is added.
+
+**Sprint `6.5` Agent pending-trust refinement, 2026-10-24, before behavior changes.**
+Bank the actual active-install endpoint's behavior before adding preparation. Store active,
+pending and retired-epoch metadata in one versioned Agent-owned row, with a validated active
+projection for existing workers. Preparation never publishes future active trust; promotion
+requires independent committed-epoch observation, and retirement keeps a bounded monotonic
+marker against delayed preparation replay. Ordinary installs must preserve or refuse transition
+metadata. Preserve the old request/response encodings, exact trust paths and existing byte,
+resource and deadline bounds. Add authenticated control operations, canonical bounded codecs,
+server-owned readbacks and fault cases for races, response loss, expiry, restart, corruption and
+greater-epoch recovery. Credential staging and other physical adapters remain separate work
+under this sprint; pending trust cannot authorize an ordinary worker to apply a future credential.
+Evidence is under `.build/sprint-6.5/target-epoch-trust-20261024/`. No activation, legacy deletion,
+live attempt or qualification is added by this increment.
+
+The compiled frozen endpoint changes active trust **1 → 2** while retained admission is frozen
+at **1**, semantic exit **1** as expected (**0.003 seconds**). The first warning-clean library
+build passes in **105.77 seconds**; initial model/codec **32/32** cases pass before effect wiring.
+The existing Vault repository now uses a closed target-keyed read/CAS interpreter, preserves
+structured write outcomes and refuses transition erasure. The actual worker reader validates
+canonical state and its active projection. The second library build passes in **116.90 seconds**;
+**41/41** model/worker/boundary cases pass. A subsequent refinement keeps predecessor authority
+internally but withholds `accepted_authority` during preparation/retirement, closing fresh trust
+reads in both old and new workers. The complete warning-clean build, explicitly enabling all
+eight test components, passes in **265.20 seconds**. The refined **41/41** cases and full primary
+**7,618/7,618** pass (**7.54 seconds** command wall time and **311.15 seconds** respectively).
+Full-primary entry/closing source keys agree at `45c5152c…`, full provenance `01e9fe14…`.
+Targeted HLint passes after its optional-value traversal correction; no rule is relaxed.
+
+The authenticated interpreter now supports a verified-request handler inside its existing
+authentication, replay and response bounds, preserving durable caller-slot identity. Its **6/6**
+new cases and complete **68/68** transport cases pass. The new request-bounded epoch executor
+owns public-epoch, clock and exact-row effects; its Vault interpreter bounds each effect by the
+original request/preparation deadline. One CAS is followed by exact readback and fresh epoch/time
+checks, including after a lost response. The library builds warning-clean in **17.91 seconds**;
+**64/64** model, worker, row-boundary and execution cases pass (**2.46 seconds** command wall
+time), covering expiry after CAS, epoch changes, positive absence, cancellation and cleanup after
+preparation expiry. Targeted HLint passes. The complete warning-clean build with all eight test
+components enabled passes in **215.18 seconds**; primary **7,641/7,641** and transport **68/68**
+pass in **365.18 seconds** and **10.52 seconds** command wall time. Entry/closing source keys
+agree at `bdcd97a2…`, full provenance `695dc241…`; docs and repository-file checks pass.
+These local results do not supply a deployed endpoint.
+
+Authenticated staging protocol/client and runtime composition, complete physical binding
+observations, coordinator, quiescence and rollback remain open. Binding metadata cannot hash its
+enclosing topology digest. Every failed fixture/format/lint attempt remains beside
+`validation.json`. Canonical/frontend validation of the complete physical-adapter batch remains
+owed. No operator or image is advanced from `9ce2c56c…`, and no live attempt,
+qualifying cycle or class closure is added.
+
+**Sprint `6.5` retained Target signing local validation, 2026-10-24 16:58 UTC.**
+The canonical gate passes **7,577/7,577** primary tests plus **27/35/62** dedicated cases, exit
+**0** in **1297.28 seconds**. The complete frontend suite passes **102/102**, exit **0** in
+**1346.00 seconds**, covering both CLI and environment cases. Entry, intermediate and closing
+readbacks retain executable manifest `a95a2a4b…`, full provenance `550f5cc8…` and operator
+`9ce2c56c…`. Owned **164/164** and composed **637/637** controls also pass; the frozen issuer
+signs under a closed aggregate, while the replacement refuses before signing or trust
+installation. The final replacement control exits **0** in **0.007 seconds**.
+
+Production admission owns the exact retained aggregate, canonical prepared outbox and genesis
+journal reads. It preserves only exact backup-store genesis/repair permits while ordinary
+admission is closed; both signing arms recheck the original request, purpose, writer/epoch and
+deadline. Legacy metadata alone proves no exceptional purpose. The existing authenticated
+prepared-target producer can upgrade an exactly matching legacy outbox. Synthetic region and
+formatter corrections preserve the rules; all failed builds/gates remain indexed under
+`.build/sprint-6.5/target-epoch-issuance-20261024/validation.json`.
+
+Next is physical Agent pending-trust preparation, followed by the remaining role/credential
+adapters, coordinator, quiescence and rollback. Read-only review records active-only trust
+storage, exact ACL/wire seams, late preparation replay and greater-epoch recovery laws beside
+that evidence. Host capacity remains **8 CPUs / 15,930Mi**, below the complete configured
+projection. No image/live attempt, qualifying cycle, activation, deletion or class closure is
+added. Sprint `6.5` remains Active; later sprints remain parked.
+
+**Sprint `6.5` purpose-bound Target recovery refinement, 2026-10-24, before changes.**
+Composition review traces the existing genesis and backup-repair credential deliveries through
+the same Target issuer. Closing ordinary admission must preserve those explicit permits; the
+first guard would otherwise block establishing its own backup. Refine admission by exact request
+and canonical retained outbox purpose, with the current first-reconcile plan/member for genesis
+and retained repair permit for repair. Only the registered Authority-backup-store target may use
+these paths. Legacy metadata without the permit purpose, foreign identities, changed plan/epoch,
+ordinary material and prepared/frozen cutover states still refuse. The production interpreter
+owns the exact retained reads, and every signing recheck repeats that scope. No wire, resource or
+deadline budget is widened. Add positive bootstrap/repair and adversarial composition cases before
+the canonical retry; prior ordinary-only controls retain their scope. Physical Agent preparation
+and the rest of `6.5` remain open, with no live attempt or activation.
+
+**Sprint `6.5` Target-issuance controls and canonical correction, 2026-10-24.**
+The complete warning-clean build, with all eight test components explicitly enabled, passes in
+**153.83 seconds** after the retained fixture/type and name-shadowing corrections. Owned
+**135/135** and composed migration/worker/registry **608/608** pass (**0.27 seconds** and
+**18.59 seconds** command wall time). Local operator `a8b048e0…` is built and installed; no image
+is rolled. The first canonical gate exits **1** in **135.56 seconds**, finding three case-in-lambda
+style violations in the earlier readback module. Named helpers correct them without weakening a
+rule. A wiring review additionally makes the production Target factory take the retained
+repository directly, owning its admission source. The complete corrected rebuild is running;
+focused checks and canonical validation remain owed. Exact attempts are under
+`.build/sprint-6.5/target-epoch-issuance-20261024/validation.json`. Physical Agent preparation,
+other adapters/coordinator, quiescence, rollback and qualification remain open. No live attempt,
+qualifying cycle, activation, deletion or class closure is added; later sprints stay parked.
+
+**Sprint `6.5` Target-issuance implementation, 2026-10-24.** The warning-clean
+library build passes in **318.77 seconds**. The actual frozen issuer signs and installs trust while
+its aggregate is frozen, semantic control exit **1** as expected (**0.008 seconds**). The
+replacement's production retained-admission reader refuses the same causal fixture before either
+action, exit **0** (**0.008 seconds**); the public authentication epoch is still **2**. No physical
+resource or deadline budget changes. The shared refusal declaration preserves constructor order;
+ordinary and attested-worker signatures use the same sampled writer/epoch with original-deadline
+checks. The legacy signing interval is marked, covered and owned by the deletion ledger.
+Targeted HLint passes. The first `all` build covers library/executable only; the next explicitly
+enables all eight test components and catches incorrect typed session arguments in the new fixture.
+Those arguments are corrected, and the complete rebuild is running. No test pass is inferred.
+Frozen harness package/identity fixture errors and every build attempt remain indexed under
+`.build/sprint-6.5/target-epoch-issuance-20261024/validation.json`. Pending Agent trust, physical
+adapters/coordinator, quiescence and rollback remain open. No image/live attempt, qualifying cycle,
+activation, deletion or class closure is added; host sizing remains pending and later sprints parked.
+
+**Sprint `6.5` Target-issuance freeze refinement, 2026-10-24, before behavior changes.**
+Physical Agent preparation requires the ordinary signed-intent and execution-permit issuer to
+honor the retained writer freeze. The shipping Target issuer currently reads the public
+authentication epoch, which intentionally remains available during that freeze. Bank its compiled
+frozen-aggregate counterexample before replacing that source with the retained mutation gate.
+Preserve the existing pre-cutover writer's admitted compatibility interval, close preparation/
+frozen/repair/decommission states, and recheck admission around signing and trust publication.
+The execution-permit arm must use the same gate. This is existing `6.5` physical composition work;
+Agent pending-trust preparation follows it. No operational activation, live retry or resource
+budget change is authorized by this increment. Evidence lives under
+`.build/sprint-6.5/target-epoch-issuance-20261024/`.
+
+**Sprint `6.5` physical-readback full-primary pass, 2026-10-24 14:43 UTC.** All
+**7,413/7,413** primary tests pass, exit **0** in **299.28 seconds** (**299.00 seconds** test
+time). Entry/closing executable key `d03fde63…` is unchanged; full closing provenance is
+`70f4b1b9…`. The **420/420** composed cases and frozen/replacement endpoint controls
+remain separately retained. This validates the authentication binding's server-owned observation
+and exact-revision recording, with all other physical adapters still refusing. Remaining role
+adapters, coordinator, rollback, canonical/frontend gates and native qualification are owned here.
+A fresh read-only host observation still reports **8 CPUs / 15,930Mi**; node Ready and
+`DiskPressure=False`, filesystem available **50,161,774,592 bytes**. No image/live attempt,
+activation, deletion, qualifying cycle or class closure is added. Exact records remain in
+`.build/sprint-6.5/cutover-admission-20261024/validation.json`; later sprints stay parked.
+
+**Sprint `6.5` physical-readback local pass, 2026-10-24 14:36 UTC.** The
+warning-clean affected build passes in **228.35 seconds**. Owned **48/48** and the composed
+**420/420** cases pass (**0.22 seconds** and **18.39 seconds** command wall time). The frozen
+actual endpoint records an echoed digest with zero physical observations; its semantic control
+exits **1** as expected (**0.003 seconds**). The replacement independently reads the public epoch
+and refuses that same echo, exit **0** (**0.043 seconds**). The new program is installed by the
+shipping runtime composition; all other physical adapters currently refuse. This does not claim
+complete topology promotion. Lost CAS replies require exact readback, and a concurrent phase
+cannot consume an earlier observation. Targeted HLint and documentation lint pass. The first
+parallel files-lint process terminates with **143** without output; its separately captured retry
+passes in **45.47 seconds**, and diff checking passes. A full primary run with source identities
+is in progress. Records remain under
+`.build/sprint-6.5/cutover-admission-20261024/validation.json`; canonical/frontend gates,
+remaining adapters/coordinator, rollback and qualification are owed. No image/live attempt,
+activation, deletion, qualifying cycle or class closure is added; host sizing stays pending.
+
+**Sprint `6.5` physical-readback boundary refinement, 2026-10-24.** Before further
+behavior changes, bank the actual migration endpoint's acceptance of an echoed binding digest.
+The shipping composition must independently observe a physical binding before recording its
+readback, against the same retained revision used for that observation. Begin with the existing
+Vault authentication-epoch coordinate and the aggregate's real normal-admission gate. Unsupported
+physical bindings refuse until their exact adapters are composed; caller-supplied digests are not
+physical evidence. Preparation and promotion remain distinct, CAS loss requires re-observation,
+and readbacks introduce no new effect permit or resource budget. This is an increment of the
+existing `6.5` cutover work, with local validation owed and no activation or live retry.
+
+**Sprint `6.5` observer full-primary pass, 2026-10-24 14:12 UTC.** The warning-clean
+observer build passes in **408.04 seconds**. Focused **372/372**, admission **27/27**, actual
+authenticated transport **62/62** and full primary **7,365/7,365** pass. Full primary exits
+**0** in **291.77 seconds** (**290.25 seconds** test time), with unchanged executable key
+`83ec6a70…` and full provenance `7298e9ea…`. The extended **33**-binding fixture's **106**
+prefixes peak at **3,965 bytes** under the unchanged **4 KiB** profile; a **256**-binding snapshot
+encodes to **50,080 bytes** under the existing **64 KiB** Authority response bound. No resource
+budget grows. Legacy wire indices, one-read/no-CAS observation, forged/unobservable refusals and
+fresh-nonce replay pass. Records and all earlier failures remain under
+`.build/sprint-6.5/cutover-admission-20261024/validation.json`. Next is the physical
+prepared/promoted binding interpreter and its real metadata producers, followed by coordinator,
+rollback and full canonical/frontend gates. The public writer, validated operator and runtime image
+remain at their earlier identities; zero qualifying cycles, activation, legacy deletion or class
+closure is added. Host sizing remains pending, and later sprints stay parked.
+
+**Sprint `6.5` observer composition correction, 2026-10-24.** The observer's first
+build finds a dependency cycle through the low-level replay layer. The exact canonical classifier
+now enters through the existing runtime composition root; original installers retain their
+established defaults, and the shared wire declaration remains single. The next build reaches
+the backup reconciler and catches its missing closed observation case; that role now explicitly
+refuses the foreign command. Both failed builds remain retained. Targeted HLint passes.
+Affected build `9`, including the authenticated-transport suite, is running; no new test pass is
+inferred. The existing **64 KiB** response bound, exact old wire indices, producer/client matrix
+and actual fresh-nonce replay tests remain the validation contract. Evidence is indexed in
+`.build/sprint-6.5/cutover-admission-20261024/validation.json`; physical adapters/coordinator,
+rollback, full gates and native qualification remain open. No image/live attempt or qualifying
+cycle is added, and later sprints remain parked.
+
+**Sprint `6.5` restart-observer increment, 2026-10-24.** The physical topology now
+explicitly names Authority controller, primary-store credential/issuer and retained authentication
+epoch metadata. New constructors append to their wire inventories. A non-mutating observer on
+the existing authenticated control route returns the complete declared topology and phase/context,
+within the existing **64 KiB** Authority metadata response budget; transient progress sets remain
+retained. Only its exact canonical request uses fresh-nonce read replay. The control payload's
+single declaration moves to a shared protocol module with its old facade and constructor order
+preserved. The pure authentication epoch projection has one aggregate-owned implementation;
+the existing Vault publisher keeps its API. Producer/client, maximum-inventory, forged-input,
+legacy-wire and actual authenticated-replay tests are added. Warning-clean affected build `7`
+is running; the earlier **7,328**-case pass belongs only to its recorded `61a53d16…` source.
+Records remain in `.build/sprint-6.5/cutover-admission-20261024/validation.json`.
+Physical fact producers, coordinator/adapters and rollback remain open, with no image/live attempt,
+qualification, activation or legacy deletion. Host sizing remains pending; later sprints stay parked.
+
+**Sprint `6.5` full primary pass, 2026-10-24 13:04 UTC.** All **7,328** primary
+unit cases pass, exit **0** in **306.77 seconds** (**303.83 seconds** test time).
+Entry/closing readback confirms unchanged executable key `61a53d16…`; full closing provenance
+is `47bbe2ad…`. The **319/319** composed selection, **27/27** admission cases, original compiled
+counterexample comparison, targeted HLint, documentation and repository-policy checks also pass.
+This validates the staged aggregate increment; canonical/frontend gates and physical composition
+remain owed. Read-only review confirms the shipping runtime uses the aggregate handler and
+`authorityAdmissionWithRetainedEpoch` already publishes/read-backs the authentication epoch
+after a frozen aggregate CAS. Physical composition must consume that mechanism and refresh
+control-client epochs. Explicit Authority controller/primary-store/authentication metadata,
+bounded restart observations, legacy quiescence, adapters and rollback remain to compose;
+the physical review is retained beside `validation.json`. No operator/image/live identity is
+advanced, no receipt-only activation is performed, and no qualifying cycle or class closure is
+added. Host sizing remains pending and later sprints remain parked.
+
+**Sprint `6.5` composed epoch controls, 2026-10-24.** The warning-clean affected
+build passes in **275.97 seconds**, followed by **319/319** expanded cases (**12.77 seconds**)
+and all **27/27** retained-admission cases. This includes the correctly selected observation
+group, legacy import, backup-repair and Provider-admission siblings. The initial selector's final
+observation substring matched no group; those earlier **244/244** results retain their actual
+scope. Exact Provider intents settle before preparation/commit/open; generic reservations remain
+separate from effects. Backup repair cannot authorize a stale prepared epoch: complete prepared
+retirement precedes a fresh higher target, and committed recovery advances beyond the actual
+retained epoch. Historical incomplete imports refuse before invalid state can be persisted.
+The same compiled early-admission law returns **1** on its frozen implementation (**0.005s**)
+and **0** on the replacement (**0.002s**), without live effects or changed causal inputs.
+The full primary unit suite is running with entry/closing executable-source checks. Records,
+all attempts and remaining physical/controller/rollback work are indexed in
+`.build/sprint-6.5/cutover-admission-20261024/validation.json`. Canonical and complete frontend
+gates remain owed after that composition; operator/image/live identities are not advanced.
+Host sizing remains pending; later sprints stay parked, with zero qualifying cycles.
+
+**Sprint `6.5` staged-epoch local controls, 2026-10-24 12:35 UTC.** The corrected
+warning-clean build passes in **186.15 seconds**, followed by **244/244** focused cases
+(**0.84 seconds**) and all **27/27** retained-admission cases. The initial matrix found one
+forward-replay defect and one superseded assertion; their failures and the renderer's corrected
+name-shadowing build failure remain indexed. All **92** durable prefixes round-trip within the
+unchanged **4 KiB** codec, peaking at **3,637 bytes**; forged readback digests refuse during
+decode. The current operator remains the validated Sprint-`1.97` artifact; no new runtime image
+is built or deployed. Next, compose independently advanced backup-repair epochs, pending-work
+quiescence and historical incomplete-import refusal with the staged fold, then the physical
+coordinator/adapters and rollback. Full local gates follow that batch. Exact records are in
+`.build/sprint-6.5/cutover-admission-20261024/validation.json`. Host sizing remains pending;
+no qualifying cycle, class closure, activation, legacy deletion or AWS absence is added.
+
+**Sprint `6.5` staged-epoch implementation, 2026-10-24 12:16 UTC.** The actual
+frozen aggregate opens admission with **zero** physical promotion readbacks; its compiled control
+exits **1** as expected in **0.005 seconds**, with source/operator retained. New closed topology
+and promotion folds are embedded in the production aggregate and existing authenticated migration
+endpoint. Preparation retains the old epoch; frozen commit advances it with admission closed;
+the final open requires every promotion and fresh old-writer rejection readback. Legacy coarse
+activation cannot grant normal admission, and aggregate observation uses that same gate.
+The first warning-clean library build passes in **311.36 seconds**. The expanded unit/admission
+build and fault matrix are in progress under
+`.build/sprint-6.5/cutover-admission-20261024/validation.json`. Semantic prefix validation,
+precommit prepared-binding retirement and greater-epoch recovery are included. Physical
+coordinator/adapters, complete rollback composition and full local gates remain open; this
+increment supplies no operational cutover, live retry, class closure or qualifying cycle.
+
+**Sprint `6.5` offline cutover resumption, 2026-10-24 11:55 UTC.** Before behavior
+changes, refine the already-owned architecture-§12 composition: retain the current aggregate/
+migration/kernel source and bank the actual aggregate's early-admission control. Introduce
+durable preparation, frozen epoch commit, exact topology-bound promotion/readback and final
+admission-open transitions, including interrupted/lost-reply recovery and pre/post-commit rollback
+distinctions. Production aggregate/endpoints must consume those transitions; an isolated kernel
+or receipt is insufficient. This work supplies no activation permission. The public legacy
+writer remains sole supported until two current-key qualifying preactivation cycles and the
+physical single-writer cutover succeed. Evidence is under
+`.build/sprint-6.5/cutover-admission-20261024/`. Host sizing remains pending; later sprints stay
+parked, with no image/live attempt or qualification claim.
+
+**Phase `1` reclosed, 2026-10-24 11:52 UTC.** Sprint `1.97` is Done on its capacity,
+schema and admission surface. The complete projection charges standing platform requests exactly
+once and refuses the frozen undersized host without reducing workload envelopes. Exact legacy
+decoding preserves a non-authorizing missing declaration; native file-origin controls cover spaces,
+quoted paths, relative imports, comments and cancellation. Warning-clean builds, owned **34/34**,
+related **50/50**, installed controls and full **102/102** frontend cases pass. Final canonical
+`prodbox dev check` exits **0** in **1118.71 seconds**, with **7,119 + 27/35/61** tests, on
+unchanged operator `a1fcecae…` and executable key `904e4676…`; full closing provenance is
+`ee1bc2b6…`. The frontend's earlier `df84c9cb…` key differs only by the three documented
+unit/golden fixture corrections; runtime/operator/frontend inputs are unchanged. Exact identities,
+comparisons, every failed attempt and final closure checks are indexed in
+`.build/sprint-1.97/validation.json`. Execution returns to `6.5`; later rows remain parked.
+The fresh host observation remains **8,000m / 15,930Mi**, below **9,045m / 17,482Mi** required;
+the host-sizing question stays pending while independent offline cutover work continues. Disk
+remains above the **45 GiB** image/live threshold. No live retry, qualifying cycle, class closure,
+activation, legacy deletion or AWS absence is supplied by this code-owned closure.
+
+**Sprint `1.97` canonical restart, 2026-10-24 11:33 UTC.** The warning-clean unit
+rebuild passes in **166.57 seconds**. The Provider historical-budget case and both updated plan
+goldens pass; the plan selection also passes its related bootstrap-planning case. The first
+selector matched only the Provider test, and the later wrapper's expected-count assertion was
+too narrow; both selections' actual tests pass and their complete records remain retained.
+Canonical `prodbox dev check` restarts at **11:32:40 UTC** on unchanged operator `a1fcecae…`,
+new executable key `904e4676…`, full entry provenance `befdafcd…`. The key change contains only
+the admitted unit/golden corrections; runtime and frontend inputs remain unchanged, so the
+**102/102** frontend result is retained for that artifact with its original `df84c9cb…`
+provenance. No same-key deployment claim is inferred. Canonical and closure checks remain
+owed; progress is `.build/sprint-1.97/gate-status.json`. Later work remains parked.
+
+**Sprint `1.97` canonical fixture correction, 2026-10-24 11:31 UTC.** The corrected
+canonical run exits **1** after **1133.44 seconds**: **3/7,119** primary tests fail.
+Two current reconcile-plan goldens still name the superseded portable host/allocatable dimensions;
+only those CPU/memory rows are updated. The frozen Provider memory law inherited current defaults;
+it now explicitly retains its original **8,000m / 15,872Mi** host and zero additional baseline,
+with every historical expected total unchanged. No runtime or frontend source changes. The
+warning-clean fixture rebuild and three focused cases precede a fresh canonical gate. Full
+**102/102** frontend results remain evidence for the unchanged operator `a1fcecae…` and frontend
+inputs; the admitted unit/golden inputs receive a new source key, not a qualification claim.
+Exact differences and all failed attempts are indexed under `.build/sprint-1.97/`. Sprint
+`1.97` remains Active and later work stays parked.
+
+**Sprint `1.97` frontend pass, 2026-10-24 11:22 UTC.** The complete CLI selection
+passes **98/98**, exit **0** in **1360.73 seconds** (**1360.71 seconds** test time), and
+the disjoint environment selection passes **4/4**, exit **0** in **17.95 seconds**.
+Together all **102/102** frontend cases pass on operator `a1fcecae…`; closing source identity
+confirms unchanged executable key `df84c9cb…`, full closing provenance `8d2c025a…`.
+No admitted executable input changed during these selections; only governed documentation and
+ignored evidence changed. The canonical gate remains running. Exact combined coverage and
+identities are in `.build/sprint-1.97/complete-frontend.result.json`. Canonical success and
+closure documentation/source checks remain owed; later work stays parked, with no live retry
+or deployment claim.
+
+**Sprint `1.97` corrected full gates, 2026-10-24 11:06 UTC.** Warning-clean
+all-target build, expanded **34/34** owned cases and **50/50** related cases pass. Native
+Dhall file loading now preserves spaces, quoted directory components, relative imports and
+trailing comments; the public settings loader exercises the same context projection. Corrected
+allocator/generator comparisons pass without changing the causal host or workload envelopes.
+The complete CLI suite is running under its sole top-level group; the disjoint environment
+suite passes. These two selections cover the frontend tree without duplicating the aliases.
+Canonical `prodbox dev check` restarts at **11:05:56 UTC** on operator `a1fcecae…`, executable
+source `df84c9cb…` (**1,378** entries), full entry provenance `507cb16c…`.
+Source and binary stability are checked before closure. Progress and the interrupted first
+attempt remain indexed in `.build/sprint-1.97/validation.json`. Sprint `1.97` stays Active;
+all later work stays parked. No live retry, class closure or qualification is supplied.
+
+**Sprint `1.97` reader review, 2026-10-24 10:47 UTC.** Review reproduces an
+introduced file-path regression: the original Dhall file reader accepts a directory containing
+spaces, while passing that path as expression text does not. The first canonical run is
+deliberately interrupted before further source edits; its terminal **−15** result and unit-child
+cancellation are retained, and frontend validation never starts. That run supplies no pass.
+File loading now keeps filesystem paths separate from expression text and preserves source name,
+relative-import directory and comment boundaries. Both parameter and context readers use that
+origin. Expanded cases cover spaces, quoted directory names, current/legacy relative imports and
+trailing comments. The first rebuild catches a redundant import, now removed; the corrected
+build and focused matrix are running. Evidence and every attempt remain under
+`.build/sprint-1.97/`. Restart both full gates on the corrected source before closure; later work
+stays parked, with no image/live attempt or infrastructure repair.
+
+**Sprint `1.97` full gates, 2026-10-24 10:22 UTC.** Canonical `prodbox dev check`
+starts at **10:21:42 UTC** on unchanged operator `67a6e288…`, executable source
+`2416af20…`, full entry provenance `38aafe59…`. The driver verifies source-key/binary stability
+and starts complete frontend/environment validation only after a canonical pass. Progress is
+`.build/sprint-1.97/gate-status.json`; source/command/result records and all earlier attempts
+remain indexed in `.build/sprint-1.97/validation.json`. Both full gates and closure checks remain
+owed. The host still exposes **8,000m / 15,930Mi**; no new live attempt, class closure or
+qualification is admitted. Later work remains parked.
+
+**Sprint `1.97` final validation, 2026-10-24 10:16 UTC.** The explicit standing
+platform baseline, shared complete fit, generated assertion and exact non-authorizing legacy
+decode are integrated. Final warning-clean all-target build passes in **41.25 seconds** on
+operator `67a6e288…`. Owned **31/31**, broader **50/50** and installed **3/3** cases pass;
+the frozen and replacement allocator/generator comparisons retain unchanged causal inputs.
+The replacement refuses the undersized profile before config is written. Schema assertions,
+HLint, docs and repository policy pass. Canonical re-encoding preserves all existing harness
+parameters/context and leaves its demand explicitly missing, so production admission still
+refuses; no resource is repaired by hand. A fresh read-only host probe observes **8,000m /
+15,930Mi**, below the complete requirement. Full canonical and frontend/environment gates
+follow on the frozen source; progress is `.build/sprint-1.97/validation.json` and its gate
+records. Sprint `1.97` remains Active; later work stays parked. No new image/live attempt,
+qualifying cycle, class closure, activation, legacy deletion or AWS absence is claimed.
+
+**Sprint `6.5` invocation-nine terminal, 2026-10-24 09:43 UTC.** The supported
+invocation exits **1** at **09:43:04 UTC**, after **3365.79 seconds**. Exact Authority Pod
+`6bef68d2-15eb-4088-b55d-43e6741a6aca` remains Pending, unbound and without container
+status, at **150m / 728Mi / 256Mi** requests/limits. The new startup report correctly names
+`StartupContainerNotStarted`; no runtime startup cause is asserted. The canonical Helm timeout
+path preserves the release and its retained state. Publication admission succeeds; no secret
+workers run, candidate ledger is absent, and there is no qualifying cycle or AWS absence.
+No hand repair occurs. Exact result and closing metadata are `pre-9.result.json` and
+`pre-9.closing-observation.json`. The frozen installed generator also returns **0** and emits
+the undersized config, independently reproducing the missing accounting; its semantic control
+fails as expected. Sprint `1.97` now integrates and independently validates the correction.
+The host-sizing question remains pending; a required answer is never inferred from elapsed time.
+
+**Phase `1` own-surface reopen, 2026-10-24 09:26 UTC.** Register Sprint `1.97`
+before behavior changes for `LOCAL-PLATFORM-SCHEDULER-BASELINE-OMITTED-2026-10-24`.
+The frozen production allocator admits the authored **8,000m / 15,872Mi** host while
+omitting the real standing platform request baseline, **1,835m / 3,384Mi**. The complete
+unchanged projection, including the existing host reservation and proof-level eviction floor,
+requires **9,045m / 17,482Mi**. Its immutable compiled control exits **1** as expected in
+**0.003 seconds**; no host or workload envelope changes. The native scheduler independently
+refuses the Authority's **728Mi** request. Frozen source/operator, provider recording and runtime
+archive are under `.build/sprint-6.5/authority-scheduler-memory-20261024/` and `pre-9.*`.
+The existing invocation remains running and must reach its own terminal handling; product inputs
+and operator binary remain unchanged while it runs. Validate the capacity-accounting correction
+independently before returning to `6.5`. More host RAM has been requested while offline work
+continues; the complete projection also exceeds the current CPU budget. No qualification,
+class closure, activation, legacy deletion or AWS absence is claimed.
+
+**Sprint `6.5` invocation-nine observation, 2026-10-24 09:17 UTC.** The new runtime
+is published as config `2f4194bf…` / manifest `258adf3c…`; exact Broker Pod
+`dd9da34d-914c-48d6-8d4f-2a8de63df012` is Ready with zero restarts on that manifest.
+The newly created Authority ordinal, UID `6bef68d2-15eb-4088-b55d-43e6741a6aca`, is
+Pending and has no container identity. Its scheduler event positively names insufficient
+memory: the independent request projection observes **14,019,833,856 bytes** allocatable,
+**13,384,024,064 bytes** already bound and **763,363,328 bytes** requested by Authority.
+No startup cause or resource remedy is inferred from that scheduling observation. Read-only
+evidence is `pre-9.capacity-observation.json`, `pre-9.scheduling-observation.json` and
+`pre-9.runtime-observation.json`. The supported invocation remains running and owns its
+terminal handling; do not launch a retry or repair resources by hand.
+
+**Sprint `6.5` invocation nine, 2026-10-24 08:47 UTC.** The supported home candidate
+invocation starts at **08:46:58 UTC**:
+`PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE=pre-20261022-1 prodbox test integration cascade-qualification --substrate home-local`.
+Fresh admission observes **56,242,896,896 bytes** free against **48,318,382,080** required,
+Ready node `bathurst`, `DiskPressure=False`, matching kernel and regular owned **600**
+fixture; admission reads/hashes no fixture contents. The candidate ledger is absent and the
+fresh metadata conjunction holds. Sprint `3.49` closure checks pass on operator `bdcbc10f…`,
+executable source `4b6950d9…` (**1,374** entries), full entry provenance `527e4748…`.
+The validated batch adds bounded closed startup observation to all prior bootstrap/publication
+repairs. Read-only exact-worker and fixed-Authority-ordinal watches attach before the command;
+raw Authority evidence is protected, bounded, and never printed/hashed. The required
+three-boundary review is filed in the owning sprint block. Evidence is `pre-9.*` under
+`.build/sprint-6.5/resume-20261022/`. Drive this invocation to its terminal result.
+No candidate result, qualifying cycle, class closure, activation, legacy deletion or AWS absence
+follows from launch.
+
+**Phase `3` reclosed, 2026-10-24 08:42 UTC.** Sprint `3.49` is Done on its
+failed-release observation surface. Exact immutable attribution surrounds current and eligible
+previous reads; only the producer-owned closed startup vocabulary reaches the report. Raw
+startup bytes remain private bounded memory, with no persistence, hashing, new store or change
+to cleanup/timeout/resource semantics. Frozen helper failure, replacement pass, five real-tool
+controls, focused **158/158**, installed CLI **1/1**, canonical **7,085 + 27/35/61**, and
+complete frontend/environment **101/101** pass. Canonical exits **0** in **1127.23 seconds**;
+frontend exits **0** in **1333.45 seconds** (**1326.64 seconds** test time), on unchanged
+operator `bdcbc10f…` and executable source `4b6950d9…` (**1,374** entries). All corrected
+attempts remain in `.build/sprint-3.49/validation.json`. Closure documentation/source checks
+precede fresh disk/node/fixture/lineage admission. Execution returns to Sprint `6.5`; `6.7`
+and `7.47` remain parked. Native Authority startup cause, semantic repair, class closure,
+qualification, activation and legacy deletion remain unobserved or incomplete. No live retry
+or AWS absence is supplied by this diagnostic closure.
+
+**Sprint `3.49` canonical pass, 2026-10-24 08:19 UTC.** Canonical
+`prodbox dev check` passes, exit **0** in **1127.23 seconds**: **7,085** primary cases
+(**284.09 seconds**) plus **27/35/61** auxiliary cases. Complete frontend/environment
+validation starts at **08:19:20 UTC**, including all **101** cases, on unchanged operator
+`bdcbc10f…` and executable source `4b6950d9…` (**1,374** entries). Source readback confirms
+the frozen executable key. The full frontend result and final closure documentation/source
+checks remain owed. Progress is `.build/sprint-3.49/gate-status.json`; all later work stays
+parked. No live retry, class closure or qualification is added, and the native Authority
+startup cause remains unobserved.
+
+**Sprint `3.49` final gates, 2026-10-24 08:00 UTC.** Final warning-clean all-target
+build passes in **168.34 seconds**; focused **158/158** pass again on the frozen snapshot.
+Operator `bdcbc10f…` and executable source `4b6950d9…` (**1374** entries) identify
+the replacement. Canonical `prodbox dev check` starts at **08:00:31 UTC**, followed by all
+**101** frontend/environment cases on that same operator. Executable inputs remain frozen;
+progress is `.build/sprint-3.49/gate-status.json`. Both full gates and closure documentation/
+source readback remain owed. No live retry, class closure or qualification is added; later
+sprints stay parked and the native Authority startup cause remains unobserved.
+
+**Sprint `3.49` local controls, 2026-10-24 07:55 UTC.** The exact frozen helper
+fails the startup-evidence law; the replacement passes with two current/previous reads and
+closed cause retention. Focused **158/158** pass. Real runtime `kubectl` **v1.35.5** controls
+pass for normal capture, changed UID, denied read, oversized output and timeout under the
+same **500m / 768Mi / zero-swap** fixture, independently confirmed absent afterward.
+The installed CLI case passes in **97.08 seconds**, proving observation precedes canonical
+uninstall and raw startup text stays out of the report. Its first attempt used a positional
+Helm fixture match and never planted failure; that failed trace and all build/style corrections
+are retained. HLint and whitespace pass. Startup bytes remain private bounded memory only;
+no diagnostic plaintext is persisted or hashed. One **30-second** deadline, three-second
+child ceilings and fixed byte bounds cover the selected release's exact scope and ordinary
+diagnostics. The final all-target build, canonical and complete **101**-case frontend gates
+remain owed. Progress and every attempt are indexed in `.build/sprint-3.49/validation.json`.
+Sprint `3.49` stays Active; all later work stays parked. No live retry, class closure or
+qualification is added, and the native Authority startup cause remains unobserved.
+
+**Phase `3` failed-release evidence reopen, 2026-10-24 07:14 UTC.** Register Sprint
+`3.49` before behavior changes for
+`INTERNAL-HELM-FAILED-RELEASE-STARTUP-LOGS-MISSING-2026-10-24`. Invocation eight exits **1**
+in **1495.48 seconds**, before candidate registration, at the Lifecycle Authority Helm release.
+The new Broker is Ready on manifest `d9510786…`, Pod `ae24039d…`, zero restarts. Independent
+CRI tag/config/manifest and descriptor-byte readback pass; seven exact watched workers succeed
+and retire on that manifest through generated-root completion, without annotation changes.
+The failed Authority ordinal `lifecycle-authority-0`, UID `c94eaa99…`, instead runs prior
+manifest `2f2bdfeb…`, exit **1**, with **480** recorded restarts. Frozen source already supplies
+an image rollout annotation: a missing token or a specific OrderedReady/startup cause is not
+asserted. Canonical Helm diagnostics capture status/describe/events but no container logs,
+then the supported cleanup uninstalls the failed release and observes absence. Exact CRI/log
+lookup afterward cannot recover the startup cause. Bank this phase-owned observation gap,
+then preserve bounded private startup evidence before cleanup and render only safe metadata.
+Validate `3.49` independently before returning to `6.5`. The Standard-Q review of the three
+new boundaries is filed in the owning `6.5` block. Operator `85cf0ceb…`, source `427dc110…`
+and the **504,479,312-byte** published runtime archive are frozen under
+`.build/sprint-6.5/authority-startup-20261024/`; `pre-8.*` retains native observations.
+No hand repair, qualifying cycle, class closure, activation, legacy deletion or AWS absence is claimed.
+
+**Invocation-eight image readback, 2026-10-24 06:55 UTC.** The runtime builds and
+publishes config `c4077b452312ca928509ee35d63f2c7142f35928e301977f21dd542f2b2f954f`
+and registry manifest `d95107866c9f2fc7fa6fcb3c099edb9ebf6b015fa94dc5e4b490a9cd2ead2a7c`.
+Independent Docker readback confirms both. The Deployment-owned Ready Pod remains on the
+previous manifest while import/rollout proceeds; the new CRI closing gate and replacement
+readiness have not yet been observed. Requests/limits remain **100m CPU / 128Mi memory /
+256Mi ephemeral storage**. Node `bathurst` remains Ready with `DiskPressure=False` and more
+than **50 GiB** free. The read-only exact-worker watch is still attached, with no events yet.
+Timestamped metadata is in `pre-8.runtime-observations.jsonl` and `pre-8.build-samples.jsonl`.
+Publication supplies no candidate result, qualifying cycle, class closure or AWS absence.
+
+**Sprint `6.5` invocation eight, 2026-10-24 06:33 UTC.** The supported home candidate
+invocation starts at **06:32:32 UTC**:
+`PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE=pre-20261022-1 prodbox test integration cascade-qualification --substrate home-local`.
+Fresh admission observes **60,817,723,392 bytes** free against **48,318,382,080** required,
+Ready node `bathurst`, `DiskPressure=False`, matching kernel and a regular owned **600**
+fixture; no fixture contents are read/hashed by admission. The candidate ledger is absent;
+independent read-only metadata confirms the allowed missing establishment marker with no
+matching snapshot/history. Final closure documentation/source checks pass on operator
+`85cf0ceb…` and executable source `427dc110…` (**1,371** entries); full entry provenance is
+`bb515aa6…`. The component batch includes the independently closed `2.146` diagnostics and
+locally validated exact CRI publication gate, with all prior bootstrap/reset/recovery fixes.
+The bounded read-only exact-worker watch starts before the command. Exact evidence, private
+transcript and ongoing progress are `pre-8.*` under
+`.build/sprint-6.5/resume-20261022/`. Drive this invocation to its terminal result.
+No qualifying cycle, class closure, activation, legacy deletion or AWS absence follows from launch.
+
+**Sprint `6.5` publication local validation, 2026-10-24 06:31 UTC.** The
+runtime-reference correction passes its final warning-clean build, **42/42** focused cases,
+both installed call-site checks, four native private-provider controls, canonical
+**6,927 + 27/35/61**, and complete frontend/environment **100/100**. Canonical exits **0**
+in **1024.70 seconds**; frontend exits **0** in **1270.73 seconds** (**1264.86 seconds**
+test time). Operator `85cf0ceb…` and executable source `427dc110…` (**1,371** entries)
+remain unchanged throughout. All attempts, including the corrected digest assertion and
+initial archive-permission cleanup refusal, remain indexed under
+`.build/sprint-6.5/runtime-reference-publication-20261024/`. The private fixture is absent;
+its exact tagged archive and explicit non-secret artifact manifest are retained. The read-only
+resume observer confirms the allowed missing establishment marker plus no matching snapshot
+or cycle history. Final closure documentation/source checks and fresh disk/node/fixture/lineage
+admission precede the next supported batched native invocation. Sprint `6.5` stays Active;
+`6.7` and `7.47` stay parked. This supplies no live class closure, qualifying cycle,
+activation, legacy deletion or AWS absence.
+
+**Sprint `6.5` publication canonical pass, 2026-10-24 06:10 UTC.** Canonical
+`prodbox dev check` passes, exit **0** in **1024.70 seconds**: **6,927** primary cases
+(**267.38 seconds**) plus **27/35/61** auxiliary cases. Complete frontend/environment
+validation starts at **06:09:39 UTC**, including all **100** cases, on unchanged operator
+`85cf0ceb…` and executable source `427dc110…` (**1,371** entries). Source readback confirms
+the frozen executable key; governed documentation changes only full provenance. The full
+frontend result and final closure documentation/source checks remain owed. Progress is
+`.build/sprint-6.5/runtime-reference-publication-20261024/gate-status.json`.
+No image/live attempt, class closure, qualifying cycle, activation or legacy deletion is added.
+
+**Sprint `6.5` publication final gates, 2026-10-24 05:53 UTC.** Final warning-clean
+build, **42/42** focused cases and both installed call-site checks pass. Installed validation
+exits **0** in **197.01 seconds**; documentation lint and whitespace also pass. Canonical
+`prodbox dev check` starts at **05:52:32 UTC**, followed by all **100** frontend/environment
+cases on frozen operator `85cf0ceb…` and executable source `427dc110…` (**1,371** entries).
+The private native provider fixture is independently absent and its tagged archive is
+compressed/verified; only task-owned duplicate scratch is reclaimed. Full gates remain owed,
+with progress in `.build/sprint-6.5/runtime-reference-publication-20261024/gate-status.json`.
+No image/live attempt, class closure, qualifying cycle, activation or legacy deletion is added.
+
+**Sprint `6.5` publication correction, 2026-10-24 05:49 UTC.** The bounded
+runtime-publication gate is implemented without changing strict worker attestation or
+pre-registry MinIO seeding. The expected config commitment comes from hash-verified published
+manifest bytes. Four native private-containerd controls pass: registration, current reuse,
+lost fetch reply with positive closing proof, and acknowledged fetch without effect refusing.
+The provider keeps **500m / 768Mi / zero swap** throughout. The final warning-clean build
+and focused **42/42** pass; installed positive/negative call-site checks are running before
+canonical and complete frontend gates. The earlier positive assertion used a stale placeholder
+digest; its failed attempt is retained and the assertion now follows the shared fixture descriptor.
+Evidence and all attempts are in
+`.build/sprint-6.5/runtime-reference-publication-20261024/validation.json`; the stable recording
+is `test/qualification/HOME-RUNTIME-CRI-REFERENCE-PUBLICATION-2026-10-24.json`.
+No component roll, live/candidate attempt, class closure, qualification or activation is added.
+
+**Sprint `6.5` publication law banked, 2026-10-24.** Before behavior changes,
+`HOME-RUNTIME-CRI-REFERENCE-PUBLICATION-2026-10-24` records the exact tagged Docker archive
+in an isolated pinned containerd **v2.3.4-k3s1** fixture at **500m / 768Mi**, zero swap.
+Tag import exits **0** in **154.15 seconds**; CRI reports the expected config digest and
+an empty repository-digest list. The actual frozen final host admission helper returns
+**0** / already-current against that state (**0.112 seconds**), so its required stable-reference
+postcondition fails. Fetching the exact already-published manifest registers its repository
+reference in **9.99 seconds** while preserving the config digest. Independent descriptor-byte
+hash and config-pointer checks bind both forms to the same image. The frozen strict validator
+rejects config-to-manifest as `ImageDigestMismatch`; equal-config and prepared-manifest
+controls pass. This is an offline publication/attestation composition law, not an attribution
+of pre-7's missing subtype. The initial image-ID archive lacked a tag and remains setup-only.
+Exact evidence is `.build/sprint-6.5/runtime-reference-publication-20261024/`.
+Implement a bounded runtime-publication closing gate before Broker admission, with independent
+CRI config/tag/repository readback and at most one exact manifest fetch. Keep strict worker
+attestation and pre-registry bootstrap image seeding unchanged. Bank sibling/refusal controls
+and run all local gates before another component roll. Operator `5948f80c…` and source
+`75261303…` are frozen as this predecessor. No live/candidate run, hand repair, qualification,
+activation or class closure is added.
+
+**Phase `2` reclosed, 2026-10-24 04:30 UTC.** Sprint `2.146` is Done on the
+attestation-diagnostic surface. Exact mismatch fields and closed production Pod/API causes
+survive without compared identities, provider details or parser bodies; admission, polling,
+retirement and durable encodings keep their prior semantics. Three frozen controls retain
+failure and three same-input replacements pass. Focused **63/63**, broader installed
+**559/559**, canonical **6,885 + 27/35/61** and complete frontend/environment **99/99** pass
+on unchanged operator `5948f80c…` and executable source `75261303…` (**1,368** entries).
+Canonical exits **0** in **1026.89 seconds**; frontend exits **0** in **1164.92 seconds**
+(**1158.97 seconds** test time). All attempts remain indexed in
+`.build/sprint-2.146/validation.json`, including the corrected edit/build refusals. Final
+closure documentation/source checks precede later work. Execution returns to Sprint `6.5`,
+which must bank and validate the recorded publication/identity shape before another image
+roll. The native pre-7 attestation subtype and semantic repair remain unobserved. No new live
+attempt, class closure, qualifying cycle, activation, legacy deletion or AWS absence is supplied
+by this diagnostic closure; `6.7` and `7.47` remain parked.
+
+**Sprint `2.146` canonical pass, 2026-10-24 04:10 UTC.** Canonical
+`prodbox dev check` passes, exit **0** in **1026.89 seconds**: **6,885** primary tests
+(**272.31 seconds**) plus **27/35/61** auxiliary cases. Complete frontend/environment
+validation starts at **04:10:26 UTC** on unchanged operator `5948f80c…` and executable
+source `75261303…` (**1,368** entries). All **99** frontend cases remain included. Source
+readback confirms the frozen executable key; governed documentation updates only the full
+provenance manifest. The complete frontend result and closure documentation/source checks
+remain owed; Sprint `2.146` stays Active. No image/live attempt, class closure, qualification
+or activation is added. Progress and all results remain under `.build/sprint-2.146/`.
+
+**Sprint `2.146` final gates, 2026-10-24 03:53 UTC.** All three frozen diagnostic
+controls retain failure; all three same-input replacement controls pass. The focused matrix
+passes **63/63**, and the historical broader Broker regression selection **559/559**. The
+focused set also includes the new production-boundary cases outside that broader selection.
+Final warning-clean all-target build passes, exit **0** in **20.09 seconds**, with unchanged
+operator `5948f80c…`. Documentation lint, formatting and HLint pass. Canonical
+`prodbox dev check` starts at **03:53:17 UTC**, followed by the complete frontend/environment suite on that
+same operator. Executable inputs are frozen at `75261303…` (**1,368** entries); current
+progress is `.build/sprint-2.146/gate-status.json`, with all attempts indexed in
+`validation.json`. The diagnostic repair changes no admission, startup/cleanup budget or
+durable encoding. The native attestation subtype and semantic repair remain unobserved.
+Sprint `2.146` stays Active; later work remains parked. No image/live attempt, class closure,
+qualification or activation is added.
+
+**Read-only publication follow-up, 2026-10-24 04:02 UTC.** The same physical
+Broker container has API-cached config identity `acee4221…` and independently observed CRI
+repository reference `2f2bdfeb…`; its CRI config identity is still `acee4221…`. Upstream
+Kubernetes' API projection uses the CRI image reference. This records a real same-image
+identity shape, not the missing pre-7 worker subtype. After `2.146` independently closes,
+Sprint `6.5` must bank the frozen publication/attestation controls and check a stable immutable
+repository-reference admission before another image roll. Any proven composition repair joins
+the batch and keeps existing budgets and exact attestation. Review and read-only metadata are
+under `.build/sprint-6.5/runtime-reference-publication-20261024/` and `pre-7.*`.
+No executable edit, image/live attempt, semantic repair or qualification is added by this review.
+
+**Phase `2` attestation-diagnostic reopen, 2026-10-24 03:39 UTC.** Register Sprint
+`2.146` before behavior changes for
+`BROKER-WORKER-ATTESTATION-CAUSE-COLLAPSE-2026-10-24`. Invocation seven exits **1** in
+**1571.44 seconds**, before candidate registration. The new Broker is Ready on config
+`acee4221…` / manifest `2f2bdfeb…`, Pod `0510285b-9a74-4fd7-9c55-0368d4a6524e`,
+with zero restarts and unchanged resource limits. Retained continuation reaches positive
+ambiguity and the registered audited reset succeeds. Supported read-only status confirms
+`reset-pristine`, uninitialized/sealed Vault and exact old-to-new generation lineage.
+The following fresh worker is refused as `EngineSecretWorkerRefused/AttestationRefused`;
+the adapter omits its actual subtype. Exact worker events show creation/start followed by
+retirement, and its Pod is absent. Its final attestation fields were not captured, so no
+image mismatch, startup race or other subtype is asserted. Production already polls startup
+under its existing bound. Freeze the operator/source/runtime and bank the diagnostic collapse
+before adding exhaustive value-free attestation causes and sibling controls. Evidence is
+`pre-7.*` and `.build/sprint-2.146/`. Work and independently validate `2.146` before returning
+to `6.5`. No hand repair, qualifying cycle, class closure, activation, legacy deletion or AWS
+absence is claimed.
+
+**Sprint `6.5` invocation seven, 2026-10-24 03:05 UTC.** The supported home candidate
+invocation starts at **03:04:37 UTC**:
+`PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE=pre-20261022-1 prodbox test integration cascade-qualification --substrate home-local`.
+Fresh admission observes **66,329,755,648 bytes** free against **48,318,382,080** required,
+Ready node `bathurst`, `DiskPressure=False`, matching kernel and a regular owned **600**
+fixture; admission reads/hashes no fixture contents. The candidate ledger is absent.
+Sprint `2.145` closure documentation and final source readback pass; the validated operator
+remains `d3758e23…` and executable source `576295c6…` (**1,367** entries). The batch
+includes exact successor-fence worker settlement and shared retained-result recovery, with
+earlier validated initialization/reset/startup composition. Exact source, admission, command
+and ongoing private transcript are `pre-7.*` under `.build/sprint-6.5/resume-20261022/`.
+Drive this invocation to its terminal result. No qualifying cycle, class closure, activation,
+legacy deletion or AWS absence is inferred from launch.
+
+**Invocation-seven image readback, 03:29 UTC.** The runtime publishes config
+`acee4221e7dde8640a2c05880093e8f1517d475aec7c50fb572b85fd00bdac66`
+and registry manifest `2f2bdfebec980a9eb1a01461623345f4d9ec02143150a067014e091fd2acfb24`.
+Independent Docker readback confirms both. The Deployment-owned Ready Pod still runs the
+previous manifest while import/rollout proceeds; replacement readiness and retained-init
+recovery are not yet observed. Requests/limits remain **100m CPU / 128Mi memory / 256Mi
+ephemeral storage**. The node remains Ready without disk pressure, with more than **56 GiB**
+free. Exact observations are `pre-7.runtime-observations.jsonl` and
+`pre-7.build-samples.jsonl`. Publication supplies no candidate or qualification result.
+
+**Phase `2` reclosed, 2026-10-24 03:00 UTC.** Sprint `2.145` is Done on its
+worker-recovery surface. A strictly older fence may renew only exclusion fields; immutable
+identity, exact quiescence, receipt cleanup and durable result checks remain mandatory.
+The shared production/physical observer preserves a durable worker response or classified
+ambiguity before separate publication. Four frozen controls retain failure and four
+replacement controls pass. Final focused tests pass **56/56**, owned suites **168/168**,
+installed broader regressions **514/514**, canonical **6,822 + 27/35/61** and complete
+frontend/environment **99/99**. Canonical exits **0** in **1166.75 seconds**; frontend exits
+**0** in **1170.42 seconds** (**1163.75 seconds** test time), all on unchanged operator
+`d3758e23…` and executable source `576295c6…` (**1,367** entries). Failed builds and the
+corrected **53/55** assertion attempt remain indexed in `.build/sprint-2.145/validation.json`.
+Closure documentation and final source readback precede fresh live admission. Execution
+returns to Sprint `6.5`; `6.7` and `7.47` stay parked. The next supported batched native
+invocation must recheck disk, node, private fixture and candidate lineage. No new live/image
+attempt, class closure, qualification, activation or legacy deletion is added by this closure.
+
+**Sprint `2.145` canonical pass, 2026-10-24 02:41 UTC.** Canonical
+`prodbox dev check` passes, exit **0** in **1166.75 seconds**: **6,822** primary
+tests (**312.56 seconds**) plus **27/35/61** auxiliary cases. Complete
+frontend/environment validation starts at **02:40:17 UTC** on unchanged operator
+`d3758e23…`, with all **99** cases included. Executable source remains frozen at
+`576295c6…` (**1,367** entries). Implementation documentation lint also passes.
+The complete frontend result and final closure documentation/source checks remain owed;
+Sprint `2.145` stays Active and later work stays parked. No image/live attempt, class
+closure, qualification or activation is added.
+
+**Sprint `2.145` canonical gate, 2026-10-24 02:21 UTC.** The all-target warning-clean
+build passes, exit **0** in **179.82 seconds**. Installed focused validation passes
+**56/56**, and broader Broker regressions pass **514/514** (**2.86 seconds** test time).
+The replacement operator is frozen as `d3758e23…`; executable source is `576295c6…`
+(**1,367** entries). Canonical `prodbox dev check` starts at **02:20:50 UTC**, followed by
+the complete **99**-case frontend/environment suite on the same operator. Executable inputs
+remain frozen through these gates. Evidence is `.build/sprint-2.145/validation.json`, with
+live driver progress in `gate-status.json`. Sprint `2.145` remains Active. No image/live
+attempt, class closure, qualification or later-phase work is added.
+
+**Sprint `2.145` final-gate admission, 2026-10-24 02:17 UTC.** All four frozen
+controls retain their expected failures; all four same-input replacement controls pass.
+The final matrix passes **56/56**, and both owned suites **168/168**, through a separately
+compiled entrypoint over the real suite modules. The final metadata checks include foreign
+root binding, schema and recipient commitment. The physical observer now shares production's
+retained response/worker-result observer; it cannot recover an unpersisted response from its
+remembered mode. Initial import/selector build refusals and the **53/55** suffix-count
+assertion failure remain recorded. Corrected cases, pinned formatting, HLint and whitespace
+checks pass. Freeze executable inputs before the final all-target build, installed regressions,
+canonical and complete frontend/environment gates. Evidence is
+`.build/sprint-2.145/validation.json`. Sprint `2.145` remains Active; later work stays parked.
+No new image/live attempt, class closure or qualification is claimed.
+
+**Phase `2` worker-recovery reopen, 2026-10-24 01:30 UTC.** Register Sprint `2.145`
+before behavior changes for
+`VAULT-INIT-AUTHORITATIVE-WORKER-SUPERSEDED-FENCE-2026-10-24`. Invocation six exits **1**
+in **1526.61 seconds**, before candidate registration. The new Broker is Ready on runtime
+config `a268cf23…` / manifest `d9d36604…`, with zero restarts and unchanged resource
+limits. Normal startup admission reaches the retained initialization call, which returns
+HTTP **409** `state-conflict`; the harness preserves state with `HarnessInitResumeUnresolved`.
+Supported read-only status still observes `init-call-in-flight`, uninitialized/sealed Vault,
+no ambiguity or custody, and unchanged storage generation. The whitelisted Broker diagnostic
+is `EngineSecretWorkerRefused/StoredRequestBindingMismatch`, site
+`authoritative-stored-request`, fields **fence-generation / owner-nonce / operation-deadline**.
+No compared values or protected raw logs are published or hashed. This is the generic
+authoritative worker-recovery guard, not a new harness reset authorization. Freeze the exact
+operator, source, worker driver and runtime archive before an old/new law and sibling matrix.
+Current evidence is `.build/sprint-6.5/retained-init-state-conflict-20261024/` and `pre-6.*`.
+Work `2.145` and validate it independently before returning to `6.5`. No hand repair,
+qualifying cycle, class closure, activation, legacy deletion or AWS absence is claimed.
+
+**Sprint `6.5` invocation-six runtime publication, 2026-10-24 01:23 UTC.** The batched
+runtime builds and publishes config `a268cf23…` / registry manifest `d9d36604…`.
+Independent Docker readback confirms both. The read-only Deployment-owned Pod snapshot still
+observes the prior Ready image while import/rollout proceeds; replacement readiness and
+bootstrap recovery are not yet observed. Requests/limits remain **100m CPU / 128Mi memory /
+256Mi ephemeral storage**. Node `bathurst` remains Ready with `DiskPressure=False` and
+more than **61 GiB** free after export. Exact timestamped image, Pod and resource observations
+are `pre-6.runtime-observations.jsonl` and `pre-6.build-samples.jsonl` under the invocation
+evidence directory. The invocation remains running. No candidate cycle, qualification,
+class closure or AWS absence is inferred from publication.
+
+**Sprint `6.5` invocation six, 2026-10-24 00:59 UTC.** The supported home candidate
+invocation starts at **00:58:40 UTC**:
+`PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE=pre-20261022-1 prodbox test integration cascade-qualification --substrate home-local`.
+Fresh admission observes **71,005,954,048 bytes** free against **48,318,382,080** required,
+Ready node `bathurst`, `DiskPressure=False`, matching kernel and a regular owned **600**
+fixture; admission reads/hashes no fixture contents. The candidate ledger is absent. The
+operator remains `996a5c8c…`; final warning-clean rebuild reproduces that exact artifact,
+documentation lint and `git diff --check` pass, and the corrected executable source reads
+back as `172de983…` (**1,365** entries). Canonical **6,766 + 27/35/61** and full frontend
+**99/99** results cover unchanged code; the evidence attribution correction is independently
+checked. The batch includes retained initialization, durable reset, bounded harness recovery
+and normal first-observation startup admission. Exact source, admission, command and ongoing
+private transcript are `pre-6.*` under `.build/sprint-6.5/resume-20261022/`. Drive this
+invocation to its terminal result. Launch supplies no qualifying cycle, class closure,
+activation, legacy deletion or AWS absence evidence.
+
+**Sprint `6.5` complete startup validation, 2026-10-24 00:57 UTC.** The full installed
+frontend/environment suite passes **99/99**, exit **0** in **1163.98 seconds**
+(**1157.71 seconds** test time), on unchanged operator `996a5c8c…`. All **23** warm/cold
+startup/recovery cases now pass jointly. Canonical validation passes **6,766 + 27/35/61**.
+The subsequent recording correction changes only artifact attribution; consistency checks
+verify the actual frozen files, original live operator and unchanged control outcomes.
+The corrected executable manifest is `172de983…` (**1,365** entries). The code gates retain
+their recorded scope; final warning-clean artifact readback, documentation and source checks
+precede fresh disk/node/private-fixture admission. No image/live attempt or qualifying cycle
+is added. Sprint `6.5` remains Active for its native qualification, single-writer activation,
+legacy removal and post-deletion qualification; later sprints stay parked.
+
+**Sprint `6.5` frozen-artifact attribution correction, 2026-10-24 00:46 UTC.** A direct
+artifact readback finds the counterexample recording conflated live operator `e8cca41a…`
+with the temporary control's installed same-source rebuild `c9de7e4c…`. Its actual frozen
+controller is independently identified as `c50f014c…`, the exact earlier passed frontend
+artifact, and directly executes the harness function. Correct the recording to distinguish
+all three roles; retain the original recording and correction under the startup evidence
+directory. No frozen artifact, runtime code, test code, fault schedule or control outcome is
+changed. The canonical pass remains evidence for that unchanged code; the complete frontend
+run continues on `996a5c8c…`. Final evidence consistency, documentation and source readback
+must bind the corrected recording before fresh live admission. Its executable-manifest key
+changes because the recording participates in the allowlist; no qualifying count is carried
+across the edit. No image/live attempt is added.
+
+**Sprint `6.5` canonical startup pass, 2026-10-24 00:38 UTC.** Canonical
+`prodbox dev check` passes, exit **0** in **1130.83 seconds**: **6,766** primary
+tests (**290.12 seconds**) plus **27/35/61** auxiliary cases. The unchanged operator
+`996a5c8c…` now runs the complete **99**-case frontend/environment suite, started at
+**00:37:16 UTC**. Executable inputs remain frozen at `14b67427…` (**1,365** entries).
+Evidence is under `.build/sprint-6.5/bootstrap-transport-20261023/`; the initial assertion-
+path failure remains recorded. The complete frontend result and final documentation/source
+checks precede fresh live admission. No new image/live attempt, qualifying cycle, activation
+or class closure is claimed.
+
+**Sprint `6.5` canonical startup gate, 2026-10-24 00:19 UTC.** The corrected admission-
+refusal case passes, exit **0** in **15.91 seconds**; it proves no credential mint or forward
+begins after failed startup admission. The other **22** warm/cold cases passed in the prior
+joint run; complete current-source joint validation remains owed. Canonical `prodbox dev check`
+starts at **00:18:24 UTC** on unchanged replacement `996a5c8c…`, with executable source
+`14b67427…` (**1,365** entries). Full frontend/environment validation follows
+on that operator and includes all **99** cases. Source is frozen through these gates. No new
+image/live attempt or qualification evidence is added.
+
+**Sprint `6.5` replacement startup controls, 2026-10-24 00:17 UTC.** Warning-clean
+all-target build passes in **41.92 seconds**, installed regressions **458/458**, and the two
+same-input replacement controls exit **0** in **9.00/9.00 seconds**. The independent backend
+is ready before forwarding, normal admission is observed, and the exact continuation/reset
+requests match. The first native matrix is **22/23**: its last assertion names a nonexistent
+fixture log instead of `kubectl.txt`. Only that test path is corrected; the retained failure
+supplies no pass for that assertion. Its focused rerun precedes canonical and complete
+frontend/environment gates on replacement operator `996a5c8c…`. No live/image attempt is added.
+
+**Sprint `6.5` independent startup controls, 2026-10-24 00:13 UTC.** Both frozen
+controllers fail with independently advancing backend readiness, exit **1** in
+**67.77/64.31 seconds**. The backend becomes ready two seconds after the first Kubernetes
+interaction regardless of client behavior; each old forward has already exited, no Deployment
+admission occurs, and no init is sent. The initial admission-coupled controls remain ordering-only
+evidence. Pinned formatting and HLint pass. The first harness observation now uses the existing
+normal Deployment barrier; continuation/reset policies and budgets are unchanged. Warning-clean
+build, same-input replacement controls, **23** native warm/cold cases, canonical and complete
+frontend gates follow. No new image/live attempt or class closure is added.
+
+**Sprint `6.5` cold-start law banked, 2026-10-24 00:03 UTC.** Both frozen actual host
+controllers fail the same cold-forward schedule, exit **1** in **66.53/64.36 seconds**:
+no Deployment admission, one early forward exit and no init request. Real read-only controls
+with kubectl **v1.35.9** and **v1.36.5+rke2r1** independently show a local bind followed by
+exit **1** when the remote port refuses. The precise live child reason remains uncaptured.
+The named recording and superseded runtime archive are retained. The correction now uses
+normal Broker Deployment admission for the harness's first observation. No deadline, resource,
+persistence or state-bound reset policy changes. Seven cold-start/admission siblings and the
+existing warm matrix are being validated before full canonical/frontend gates and another
+batched image/live invocation. Earlier phases remain closed; no qualifying cycle is claimed.
+
+**Sprint `6.5` startup control registered, 2026-10-23 23:56 UTC.** Before changing the
+harness, bank `BROKER-HARNESS-COLD-START-FORWARD-REFUSED-2026-10-23`. A read-only probe on
+the existing Ready Broker proves the installed kubectl **v1.36.5+rke2r1** binds locally,
+then exits **1** on a proven unbound remote port in **0.134 seconds**. No resource is changed.
+This confirms the tool's forward-exit behavior; the exact live child exit remains uncaptured.
+The new harness's initial recovery connection bypasses the ordinary startup barrier already
+used by the normal client. Freeze the actual validated host/controller artifacts and exercise
+a cold backend that exits forwarding until that barrier is observed. The intended correction
+uses normal Deployment admission for the first status observation; retained continuation stays
+normal, while closing observations and registered reset keep their existing recovery transport.
+Keep the 900-second parent and existing child budgets. Sprint `6.5` owns the call-site
+composition; earlier phases remain closed. Frozen controls, siblings and full gates precede
+another image/live attempt. No qualifying cycle or class closure is added.
+
+**Sprint `6.5` invocation five failed, 2026-10-23 23:47 UTC.** The command exits **1**
+in **1604.80 seconds** during the harness's initial Broker connection, before init or
+candidate registration. Runtime config `eb57857e…` / registry manifest `961cfb18…` builds,
+publishes and runs in Ready Broker Pod `0f2744d3…` with zero restarts. The closed host error
+is TCP connection refused. At **23:47:18 UTC**, the supported read-only `prodbox vault status`
+succeeds and positively observes `init-call-in-flight`, uninitialized/sealed Vault, no custody
+and no ambiguity. The failure is in startup transport admission, not evidence that the new
+initialization factory refused. Bank the actual kubectl forwarding behavior and frozen
+harness control before another attempt. The harness prefix selects recovery transport for
+its first observation even though the fresh Broker Deployment has not been admitted ready;
+its retained continuation already uses the normal barrier. Sprint `6.5` owns this composition
+correction. The actual child exit/reason was not captured in the live failure, so the startup
+forward-exit mechanism remains an attribution to verify offline. No hand repair, qualifying
+cycle, activation, deletion or AWS absence is claimed. Evidence remains `pre-5.*` under
+`.build/sprint-6.5/resume-20261022/`; the earlier invalid pending-readiness hypothesis is not used.
+
+**Sprint `6.5` live resumption, 2026-10-23 23:20 UTC.** Invocation five is running:
+`PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE=pre-20261022-1 prodbox test integration cascade-qualification --substrate home-local`.
+It starts at **23:20:14 UTC** on the preserved validated operator `e8cca41a…` and unchanged
+executable source `41735422…`. Fresh admission records **75,576,999,936 bytes** free against
+**48,318,382,080** required, Ready node `bathurst`, `DiskPressure=False`, matching host/node
+kernel and a regular owned private **600** fixture; its contents are neither read nor hashed
+by admission. The candidate ledger is absent, so the stable label still names no registered
+cycle. The batch carries validated initialization admission, durable reset and bounded harness
+composition. The discarded readiness hypothesis contributes no evidence or runtime change.
+Exact source, admission, command and ongoing transcript are `pre-5.*` under
+`.build/sprint-6.5/resume-20261022/`. Drive the invocation to its terminal result. No qualifying
+cycle, class closure, activation, legacy deletion or AWS absence is inferred from launch.
+
+**Sprint `6.5` readiness hypothesis discarded, 2026-10-23 23:13 UTC.** Production-source
+review refutes `HARNESS-PENDING-INIT-READINESS-BARRIER-2026-10-23`. The Broker's observer
+checks six capability/dependency facts and does not read root-init state; pending custody
+withholds the separate Vault-unsealed lifecycle target. The planted rollout refusal therefore
+was not a production counterexample. Both frozen controls did execute their injected schedule,
+but have **invalid causal profiles** and supply no class or qualification evidence. The
+unneeded transport bypass, strict fixture and repository recording are reverted/retired;
+the experiment, compiler refusals and interrupted build remain under
+`.build/sprint-6.5/harness-init-recovery-20261022/pending-readiness/`. Documentation now
+separates the two readiness contracts. Source and final documentation checks precede the next
+batched live invocation carrying validated `2.143`/`2.144` and the harness recovery prefix.
+No image/live attempt has been added; activation and legacy removal remain pending.
+
+**Phase `2` reclosed, 2026-10-23 02:12 UTC.** Sprint `2.144` is Done on its audited-reset
+surface. The complete proof/action is durably armed before physical effects; exact pending
+old/replacement bindings and fresh-client generation/action replay survive response loss.
+Init remains withdrawn, cancellation preserves only the armed safety tail, and the physical
+interpreter refuses a changed PVC before scale-down. All **19** previous phase encodings are
+unchanged. Focused reset cases pass **17/17**, installed regressions **458/458**, and native
+client controls **16/16**. Canonical validation passes **6,766 + 27/35/61**, exit **0** in
+**1127.19 seconds**. Complete frontend/environment validation passes **92/92**, exit **0**
+in **1144.37 seconds** (**1137.52 seconds** test time), on unchanged operator `e8cca41a…`.
+All attempts remain in `.build/sprint-2.144/validation.json`. Closure documentation lint and
+`git diff --check` pass; final executable source readback remains `41735422…` (**1,364**
+entries). Execution resumes on Sprint
+`6.5`, whose first task is the already registered pending-init readiness-barrier control and
+bounded recovery transport. Native class closure, qualifying cycles, activation and legacy
+removal remain pending; `6.7` and `7.47` stay parked. No image/live attempt is added.
+
+**Readiness hypothesis received then refuted, 2026-10-23.** The initial review at **01:58 UTC**
+conflated Vault lifecycle readiness with Broker Deployment readiness. The production observer
+review above supersedes that received hypothesis. It does not reopen Sprint `2.144` or license
+a new runtime exception, and its planted refusal is not counted as a production failure.
+
+**Sprint `2.144` canonical pass, 2026-10-23 01:53 UTC.** Canonical `prodbox dev check`
+passes, exit **0** in **1127.19 seconds**: **6,766** primary cases (**290.76 seconds**)
+plus **27/35/61** auxiliary cases. The complete installed frontend/environment suite starts
+at **01:52:45 UTC** on unchanged operator `e8cca41a…`; both aliases run that same complete
+suite, so no duplicate environment run is owed. Closure documentation and final source
+readback follow its terminal result. Sprint `2.144` remains Active until those checks pass.
+No image/live attempt or class closure is added, and the later queue remains parked.
+
+**Sprint `2.144` native-client pass, 2026-10-23 01:34 UTC.** All **16/16** actual
+host-controller transport cases pass, exit **0** in **67.78 seconds**. They cover fresh
+harness and confirmed-client recovery using a stored action different from the newly computed
+one, lost replies, healthy sealed custody, terminal reset restart, missing metadata, foreign
+lineage/generation and the ordinary operator gate. These are local boundary fixtures, not
+live reset proof. Canonical `prodbox dev check` starts at **01:33:58 UTC** on unchanged
+operator `e8cca41a…`; the complete frontend/environment suite follows. Sprint `2.144`
+remains Active and the later queue stays parked. No image/live attempt is added.
+
+**Sprint `2.144` installed regression pass, 2026-10-23 01:33 UTC.** The all-target
+warning-clean build passes in **169.42 seconds**. Installed Broker, custody and harness
+regressions pass **458/458** (**2.74 seconds** command wall time). Pinned HLint and
+documentation lint pass. The replacement operator is frozen as `e8cca41a…`; its executable
+manifest is `41735422…` (**1,364** entries). The **16** native client cases are running,
+followed by canonical and combined frontend gates on the same operator. No code-owned
+closure, image roll or live attempt is added; Sprint `6.5` remains parked.
+
+**Sprint `2.144` renewed final gates, 2026-10-23 01:30 UTC.** The retained-PVC guard
+uses the unchanged replacement-binding derivation at the actual Kubernetes mutation boundary.
+The expanded focused matrix passes **17/17**, including matching PVC, replacement PVC and
+changed action. Warning-clean library build and pinned formatting pass. Two test-only type
+corrections are retained; neither supplies a semantic pass. Final all-target build, installed
+Broker/custody/harness cases, **16** native client cases, canonical check and combined frontend
+suite are running sequentially on one replacement operator. No new image/live attempt or
+code-owned closure is claimed; Sprint `6.5` stays parked.
+
+**Sprint `2.144` retained-identity checkpoint, 2026-10-23 01:26 UTC.** Before further
+behavior changes, extend the reset matrix to the retained PVC identity. Source review finds
+that physical reset observes a current PVC but does not compare it to the PVC commitment in
+the recorded replacement binding. A resumed proof must not authorize a replacement claim.
+Freeze the preceding physical source, share the existing binding derivation, and require its
+exact action/proof/current-PVC equality before scale-down or reset-Pod creation. Keep the
+existing budgets. The local gate driver is intentionally interrupted before any pass claim;
+renew it after this known sibling is covered. This is an offline finding, not a live reset.
+No image or live attempt is added and Sprint `6.5` stays parked.
+
+**Sprint `2.144` reset matrix, 2026-10-23 01:21 UTC.** Warning-clean library and
+integration builds pass. All **16** focused physical/predicate cases pass, including the
+**19** frozen legacy encodings, four write-ahead/generation/preparation/final CAS loss points,
+changed or missing evidence and cancellation on both sides of proof arming. Fresh clients
+require both the stored old generation and exact action; neither is guessed. The broader
+custody/harness and native-client matrices and final gates remain owed. Initial formatting
+check finds wrapping drift; its correction is being checked. No image/live attempt or
+code-owned closure is added; Sprint `6.5` remains parked.
+
+**Sprint `2.144` write-ahead repair, 2026-10-23 00:51 UTC.** The frozen physical/predicate
+control fails as expected, exit **1** (**3.51 seconds**); the compiled frozen control also
+fails with all causal markers. A repository-owned recording banks the planted schedule and
+**19** synthetic legacy phase-codec fingerprints. This is explicitly not a live reset or
+full frozen Broker replay. The replacement appends a pending-reset phase containing the
+audited proof and exact action digest, read back before effects. Production binding/admission
+can recover it at only its old or exact replacement generation; a fresh client obtains the
+old request generation from that durable proof. Typed payload-free reset causes preserve
+existing public reply classes. Initial build syntax/import refusals and a redundant-import
+refusal are retained/corrected; library build is running. Fault, compatibility and consumer
+matrices and final gates remain owed. Sprint `6.5` stays parked and no live attempt is added.
+
+**Phase `2` reset-journal reopen, 2026-10-23 00:33 UTC.** Register Sprint `2.144` before
+changing the reset protocol. Offline review identifies a producer/driver gap in the existing
+reset response-loss tests: the driver can advance the storage generation, remove the prepared
+envelope and lose its final journal transition, while the production observer still requires
+the old binding and the producer still requires that envelope. Replaying a remembered request
+in a permissive fake does not prove fresh-process recovery. Bank a frozen failing composition
+case, then persist/read back the audited reset proof before effects and make exact old/new
+binding recovery observable. Keep existing tags readable and refuse foreign proof/generation.
+Sprint `2.143` remains Done on initialization admission. Sprint `6.5`'s harness foundation is
+checkpointed and parked; no additional image/live attempt is added. A separate host intent
+would not repair the refused producer, so recovery metadata stays with the Broker's durable
+reset operation. Current evidence belongs under `.build/sprint-2.144/`.
+
+**Sprint `6.5` composed controls, 2026-10-23 00:18 UTC.** Warning-clean library/integration
+builds pass. The finite matrix passes **43/43**; actual host-controller transport controls
+pass **9/9** in **49.43 seconds**, including saved/missing response, lost reset reply,
+refused reset, foreign lineage/generation, unobservable closing state and ordinary operator
+repair refusal. Requests are checked by generation, including the sole new init after
+positive audited reset. These use local HTTP/kubectl fixtures and do not claim live repair.
+Pinned formatting and initial HLint pass. Status-codec/lineage controls and an additional
+ordinary missing-response refusal are being validated before the final local gates. No image
+roll or live attempt is added; the evidence index retains all compiler refusals/corrections.
+
+**Sprint `6.5` harness implementation, 2026-10-23 00:08 UTC.** The finite recovery planner
+and harness-floor-only wiring are implemented, with ordinary operator policy preserved.
+Closing reset proof now also requires its durable reset-from generation, rejecting a foreign
+lineage; the additive status projection changes no persisted encoding. One **900-second**
+parent budget retains the normal three-request total; every call reserves the unchanged
+**300-second** transport plus **300-second** Broker maximum after connection setup. The
+finite matrix is implemented and awaits execution. Two compiler refusals (explicit rank-n
+helper types and an unused wrapper) are retained and corrected; library build is running.
+No image roll, live attempt or qualification evidence is added. Evidence is under
+`.build/sprint-6.5/harness-init-recovery-20261022/`.
+
+**Sprint `6.5` harness recovery composition, 2026-10-22 23:59 UTC.** The earlier `2.143`
+closure and its documentation/source checks pass before this work resumes. Before behavior
+changes, refine the registered harness-only continuation/reset composition: recover the
+retained init, observe its closing phase, and admit at most one registered audited reset.
+A lost reply advances only on exact positive generation/phase readback. Preserve the ordinary
+operator repair gate and all rendered resource/persistence limits. Add one total host deadline
+with per-call admission against the existing Broker maximum; never give a child fresh budget
+past it. Validate the finite healthy/pending/ambiguous/foreign/unobservable/response-loss
+matrix and canonical/combined frontend gates before any image build or live attempt. No new
+attempt, candidate registration or qualifying cycle is claimed.
+
+**Phase `2` reclosed, 2026-10-22 23:52 UTC.** Sprint `2.143` is Done on its initialization
+admission surface. Fresh initialization keeps the strict pristine guard; a distinct sealed
+continuation binds the original commitment and exact journal version/state, rechecked after
+fencing. It cannot recreate a missing journal or repeat an in-flight init. Both missing-response
+crash windows remain explicit audited-reset ambiguity. Consistent same-input producer controls
+exit **1/0**; installed focused controls pass **45/45**. Canonical validation passes
+**6,701 + 27/35/61**, exit **0** in **1133.20 seconds**. Full frontend validation passes
+**76/76**, including all four environment cases, exit **0** in **1061.73 seconds**
+(**1055.99 seconds** test time), on unchanged operator `c9016a94…`.
+The separate `env` alias was discovered to repeat that complete suite and intentionally
+cancelled, exit **130**; it supplies no additional pass and does not replace the completed gate.
+All attempts and limitations remain in `.build/sprint-2.143/validation.json`.
+Closure documentation lint and `git diff --check` pass; the closing executable manifest
+remains `76835321…` (**1,360** entries). Execution resumes on Sprint `6.5`.
+That sprint first owns the already-registered bounded harness continuation/audited-reset
+composition; validate it and batch it with this repair before any new image/live invocation.
+Native class closure, two audit-clean cycles, activation and legacy deletion remain pending.
+Sprints `6.7` and `7.47` remain parked.
+
+**Sprint `2.143` frontend pass, 2026-10-22 23:50 UTC.** Full frontend CLI validation exits
+**0**, **76/76** cases, in **1061.73 seconds** (**1055.99 seconds** test time),
+on unchanged operator `c9016a94…`. Environment validation is running. Bootstrap readiness
+doctrine now agrees with the separate fresh/continuation factory and current production
+capability boundary. Closure documentation lint and final source read-back remain owed;
+no live attempt is added and the later queue remains parked.
+
+**Sprint `2.143` canonical pass, 2026-10-22 23:31 UTC.** Canonical validation exits **0** in
+**1133.20 seconds**: **6,701** primary cases (**270.33 seconds**) plus
+**27/35/61** auxiliary cases. Full frontend CLI validation starts at **23:31:24 UTC** on
+unchanged operator `c9016a9419183684bb5ae4665f3e59a19fa0e8f8a762a5570b35064f45911c39`.
+Environment validation follows. Sprint `2.143` remains Active until those gates and closure
+documentation validation pass. No new image roll or live attempt is added.
+
+**Sprint `2.143` renewed canonical gate, 2026-10-22 23:13 UTC.** The corrected helpers pass
+pinned formatting/HLint. Renewed warning-clean build and **45/45** installed focused tests
+pass; canonical validation restarts at **23:12:30 UTC** on unchanged operator `c9016a94…`.
+The new source identity is recorded in `replacement-source-identity-2.log`; the earlier style
+failure remains in `canonical-final.log`. Full frontend/environment gates are queued. No
+live attempt or phase closure is added.
+
+**Sprint `2.143` style correction, 2026-10-22 23:09 UTC.** Canonical validation stops at
+repository-specific style enforcement, exit **1** in **121.36 seconds**: two new test lambdas
+contain case expressions. Both now use named typed helpers. No production behavior changes;
+the failed transcript is retained. Focused tests previously passed **45/45**. Formatting/lint
+and the canonical gate are being renewed before frontend validation; the queue stays parked.
+
+**Sprint `2.143` canonical gate, 2026-10-22 23:07 UTC.** The final warning-clean build passes,
+followed by all installed focused continuation/readiness controls. The replacement operator
+and both source manifests are frozen under `.build/sprint-2.143/`. Canonical validation is
+running; full frontend CLI and environment gates remain queued on that same binary. No
+new image roll, live attempt or code-owned closure is claimed.
+
+**Sprint `2.143` final gates, 2026-10-22 23:03 UTC.** All-target build exits **0**; the
+shadowing warning found during that build is corrected. Pinned formatting and HLint pass
+after retained test-expression corrections, and documentation lint exits **0**. The final
+warning-clean build is running, followed sequentially by the installed focused controls,
+canonical gate, full frontend CLI and environment validation on one frozen replacement
+operator. The same executable digest is checked across gates. Evidence is under
+`.build/sprint-2.143/`; code-owned closure remains pending and the later queue stays parked.
+
+**Sprint `2.143` continuation controls, 2026-10-22 22:56 UTC.** The original-commitment-consistent
+same-input producer control exits **1/0** for superseded/replacement admission. The first
+fixture established structural reachability only; its different commitment is retained as
+an invalid causal-profile attempt. The expanded physical suite passes **72/72**, followed by
+**29/29** focused cases including both missing-response crash windows. Continuation preserves
+those windows as ambiguity, releases the fence and never repeats init or resets storage.
+The actual public status decoder now has compatibility, pending-phase and unknown-phase
+controls. All-target build and final canonical/frontend gates remain owed/in progress.
+Evidence is indexed in `.build/sprint-2.143/validation.json`; no new image or live run is added.
+
+**Sprint `2.143` offline composition, 2026-10-22 22:33 UTC.** The frozen producer/driver control
+exits **1** as expected (**3.72 seconds**): a structurally valid planted `RootInitCallInFlight` journal has
+a recovery plan, while production's pristine-only gate rejects it. The later consistent-input
+control above supersedes this fixture for the causal profile. This is a planted
+composition case tied to the failed-worker schedule, not a decoded live journal or full frozen
+Broker replay. Its recording is repository-owned. The repair introduces separate fresh and
+exact-snapshot continuation admissions, a closed phase/status projection and payload-free
+producer causes. Continuation cannot recreate a missing journal or turn an in-flight call into
+a new Vault POST. Initial build import refusal is retained and corrected; all-target build,
+sibling tests and canonical/frontend gates remain in progress/owed. Evidence is indexed in
+`.build/sprint-2.143/validation.json`. No new image roll or live attempt is added.
+
+**Phase `2` own-surface reopen, 2026-10-22 22:00 UTC.** Register Sprint `2.143` before behavior
+changes for `BOOTSTRAP-INITIALIZE-PROGRAM-EVIDENCE-REFUSAL-2026-10-22`. Invocation four exits
+**1** in **1490.21 seconds**, before candidate registration, with HTTP **409**
+`boundary-refused`. The protected Broker diagnostic narrows it to
+`EngineProgramEvidenceRefused` plus the closed `boundary-refused` class; its underlying cause
+is still unobserved. Fresh Ready Broker Pod `72882342…` runs exact image config `9d370c2a…`
+with zero restarts. Vault remains uninitialized and sealed. The Phase-`3` native remount
+step stays observed and Sprint `3.48` stays Done on its owned surface. Attribute the program
+evidence refusal offline, retain a named recording and frozen control, and repair/validate
+this earlier surface before another batched live invocation. No hand action, qualifying cycle,
+activation, legacy deletion or AWS absence proof is claimed. Evidence is `pre-4.*` under
+`.build/sprint-6.5/resume-20261022/`; protected log contents are neither printed nor hashed.
+The later queue is parked.
+
+**Sprint `6.5` batched image, 2026-10-22 21:54 UTC.** The supported invocation builds
+runtime config `sha256:9d370c2a…` and publishes immutable registry manifest `sha256:d0ce5b01…`.
+The image carries both the validated initialization diagnostic and retained-mount repairs.
+Its dependency and project builds complete; exact identities are recorded in
+`pre-4.runtime-image.json`. The executable manifest remains `9e808bd6…` after documentation
+maintenance. The latest ongoing-build observation has **83,402,293,248 bytes** available;
+the earlier node sample is Ready with `DiskPressure=False`. The native remount is observed,
+while deployed-image readback, real initialization, candidate registration and qualification
+remain pending. No new invocation or hand action is added.
+
+**Sprint `6.5` native mount step, 2026-10-22 21:33 UTC.** The supported invocation
+crosses the new repair. Fresh Ready Vault Pod `6544ab71…` replaces `889b3523…`; controller,
+claim and PV UIDs remain unchanged. Independent host and mounted reads both observe
+**2050:3147625:2**, preserving the declared directory identity while repairing only the Pod
+binding. Vault is still uninitialized and sealed, so real initialization and the enclosing
+qualification remain pending. No hand mutation is used. The invocation continues; exact
+readback is `vault-mount-canary-remount.json` under the current evidence directory. No
+class closure or qualifying cycle is counted by this intermediate step.
+
+**Sprint `6.5` live resumption, 2026-10-22 21:31 UTC.** Final closure documentation
+and source checks pass for `3.48`; its executable manifest remains `9e808bd6…` after the
+closure edits. The next supported invocation is running:
+`PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE=pre-20261022-1 prodbox test integration cascade-qualification --substrate home-local`.
+This is invocation four, after the filed Standard-Q review, actual-tool counterexample law
+and batched `2.142`/`3.48` validation. Admission records **84,829,024,256 bytes** free against
+**48,318,382,080** required, Ready node `bathurst`, `DiskPressure=False`, matching host/node
+kernel and a regular owned private **600** fixture without reading or hashing its contents.
+The fresh read-only canary baseline still observes old Vault Pod `889b3523…`, mounted root
+**2050:3147619:0**, declared root **2050:3147625:2**, and uninitialized state. No state was
+repaired by hand. The cycle ledger is absent, so no prior candidate registration or qualifying
+cycle is counted. Operator is `4c62d7f5…`; exact source, admission, baseline and live transcript
+are `pre-4.*` and `vault-mount-canary-before.json` under
+`.build/sprint-6.5/resume-20261022/`. Drive this invocation to its terminal result. Activation,
+legacy deletion and class closure remain pending; `6.7` and `7.47` stay parked.
+
+**Phase `3` reclosed, 2026-10-22 21:28 UTC.** Sprint `3.48` is Done on its retained-mount
+surface. Home bootstrap observes exact controller/Pod/claim/PV and same-kernel identities,
+retires only a positively unlinked, freshly uninitialized Pod, and requires fresh Ready
+replacement/root readback under the original **300-second** deadline. Initialized or conflicting
+linked roots remain preserved refusals. Focused controls pass **55/55**, installed guardrails
+**1/1**, and real-tool negative/positive controls **1/0**, with unchanged independently read-back
+**500m / 768Mi**, zero-swap limits. Canonical validation passes **6,668** primary plus
+**27/35/61** auxiliary cases, exit **0** in **1110.81 seconds**; full frontend validation passes
+**76/76**, exit **0** in **1079.73 seconds** (**1073.61 seconds** test time), on unchanged
+operator `4c62d7f5f1dd6b8905c1dc1ddf809dbf6adf8863120722327899e488e957d2f1`.
+The failed formatting and stale-assertion attempts remain retained alongside their corrections
+in `.build/sprint-3.48/validation.json`. Closure documentation lint and `git diff --check`
+pass before Sprint `6.5` resumes. Its next work is one batched live projection of `2.142`/`3.48`,
+then the canary and two qualifying cycles. No live class closure, activation, legacy deletion
+or AWS absence proof is claimed. Sprints `6.7` and `7.47` remain parked.
+
+**Sprint `3.48` renewed canonical gate, 2026-10-22 21:09 UTC.** After the single test
+expectation correction, canonical validation again exits **0**, in **1110.81 seconds**:
+**6,668** primary cases (**291.40 seconds**) plus **27/35/61** auxiliary cases. Full frontend
+validation starts at 21:09:09 UTC on the unchanged `4c62d7f5…` operator. The phase remains
+Active until that suite and closure documentation validation pass; no image roll or live
+attempt is added. The current executable manifest is `9e808bd6…` (**1,358** entries), recorded
+with the full source identity in `.build/sprint-3.48/replacement-source-identity-after-assertion.log`.
+
+**Sprint `3.48` assertion correction, 2026-10-22 20:48 UTC.** The full frontend suite
+terminates **75/76**, exit **1** in **1093.79 seconds** (**1087.59 seconds** test time).
+Its only failure is the already-attributed argument-order literal. That expectation is
+corrected without changing production code, and pinned formatting passes. The affected
+installed case passes **1/1** (**108.49 seconds**). The canonical gate restarts at 20:50 UTC,
+with full frontend validation queued after success, on the unchanged `4c62d7f5…` operator. Evidence and the failed full transcript remain under
+`.build/sprint-3.48/`. The phase stays open and the later queue stays parked.
+
+**Sprint `3.48` frontend assertion, 2026-10-22 20:41 UTC.** The running full frontend
+suite exposes one stale literal at `test/integration/CliSuite.hs:1909`: it expects Vault rollout
+arguments in the old order, while the successful native command now places the bounded timeout
+before the namespace. The test's native reconcile and local delete have both succeeded. Let this
+suite reach its terminal result to collect sibling failures, then correct the assertion and
+revalidate before closing the phase. No live attempt is admitted by the earlier canonical pass.
+
+**Sprint `3.48` canonical gate, 2026-10-22 20:29 UTC.** After the retained formatting
+correction, canonical validation exits **0** in **1260.55 seconds**, with **6,668** primary
+cases (**294.14 seconds**) plus **27/35/61** auxiliary cases. The full frontend suite starts
+at 20:28:56 UTC on unchanged operator
+`4c62d7f5f1dd6b8905c1dc1ddf809dbf6adf8863120722327899e488e957d2f1`.
+Sprint `3.48` remains Active until that gate and closure documentation validation pass.
+No live attempt or qualifying cycle is added; the later queue remains parked. Evidence is
+indexed in `.build/sprint-3.48/validation.json`.
+
+**Sprint `3.48` binding review, 2026-10-22 19:49 UTC.** Before rollout, review identifies
+that device/inode equality alone is meaningful only inside one kernel. The repair now also
+observes the exact Pod's Node UID and boot UUID and compares it with this host's bounded
+`/proc/sys/kernel/random/boot_id` read before any inode comparison or retirement. Read-only
+live observation confirms the current node/host match. Different, absent and malformed kernel
+identities become negative controls. The first canonical run is deliberately interrupted to
+validate this stronger binding in one final batch; no test failure is claimed and its frontend
+run never starts. Earlier **48/48**, **1/1** and physical-control results remain evidence for
+their pre-refinement identity. The final warning-clean build and pinned HLint pass, as do
+**55/55** focused controls (**0.13 seconds**) and **1/1** installed controls (**106.97 seconds**).
+The final physical negative exits **1** as expected, and the compiled replacement exits **0**
+(**4.15 seconds**) with one retirement, init **400→200** and identical independently read-back
+kernel CPU/memory/zero-swap limits. Documentation lint passes; no fixture container remains.
+The 20:00 UTC canonical attempt exits **100** at formatting of the new malformed-boot test
+table, before tests. The pinned formatter applies the correction and its full-source check
+passes. Canonical validation restarts on unchanged operator
+`4c62d7f5f1dd6b8905c1dc1ddf809dbf6adf8863120722327899e488e957d2f1`, with full frontend
+validation queued after success. Those two final gates remain owed.
+Evidence is indexed in `.build/sprint-3.48/validation.json`. No image roll or live attempt is
+added, and the later queue remains parked.
+
+**Sprint `3.48` source checkpoint, 2026-10-22 19:18 UTC.** The home Vault bootstrap
+replaces its wait-only rollout step with exact controller/Pod/Bound-claim/PV/path observation
+and kernel directory identities, sharing the original **300-second** rollout budget. Only a
+positively unlinked mount plus fresh uninitialized Vault state may retire the exact Pod with
+UID/resourceVersion API preconditions. Linked roots with different identities and initialized
+orphaned mounts remain preserved refusals with operator recovery/decommission dispositions.
+Closing readback requires a fresh ready Pod on the same observed declared directory; storage
+is never reset. The real recording is repository-owned at
+`test/qualification/VAULT-RETAINED-MOUNT-UNLINKED-2026-10-22.json`. Pure and boundary controls
+cover malformed/foreign bindings, unobservable state, races, graceful termination, temporary
+absence, lost replies, unchanged UIDs, deadline exhaustion and false closing evidence.
+Initial type-default, test syntax and test-import warnings are retained and corrected;
+warning-clean all-target build and focused lint pass. Focused controls pass **48/48**
+(**0.12 seconds**), and the installed resource-guardrail case passes **1/1**
+(**106.10 seconds** test time). The canonical gate is running, with full frontend validation
+queued after its success. The physical composition control now passes: the Ready wait-only
+contract still produces **HTTP 400** against the actual unlinked Vault file backend, while the
+compiled repair retires its owned fixture Pod once, independently reads the remounted kernel
+identity and reaches **HTTP 200** initialization. The old-contract negative exits **1** and
+replacement exits **0** (**3.99 seconds**). This replays the wait contract, not the whole frozen
+operator. Kubernetes metadata/preconditions are recorded-model boundaries; the Vault process,
+mounts and retirement/replacement are physical isolated fixtures. Independent kernel readbacks
+match at **500m / 768Mi**, zero swap, and no fixture container remains. Evidence is indexed in
+`.build/sprint-3.48/validation.json`; native canary and class closure remain owed.
+No image roll or fourth live
+attempt has started; `6.5`, `6.7` and `7.47` remain parked.
+
+**Phase `2` reclosed, 2026-10-22 18:52 UTC.** Sprint `2.142` is Done on its diagnostic
+surface. It preserves the primary initialization failure class and separates fresh uninitialized
+state from unavailable follow-up, while matching exact worker bindings before attributing a
+terminal failure. The real pinned-tool deleted-mount recording, recorded old-diagnostic failure
+and current production diagnostic pass are retained. Expanded focus passes **10/10**; canonical
+validation passes **6,613** primary plus **27/35/61** auxiliary cases, exit **0** in
+**1138.62 seconds**. The full built-frontend CLI/config suite passes **76/76**, exit **0** in
+**1074.15 seconds** command wall time (**1068.20 seconds** test time), on the unchanged
+`f9e46cef805d5ab4e5f2ae1848477cfa309558a23f546c81ab36242d8df40b16` operator.
+Evidence is indexed in `.build/sprint-2.142/validation.json`. Final closure documentation lint
+passes. Sprint `3.48` now owns the actual home Vault mount repair;
+the initialized-orphan sibling must retain the running Pod and refuse. Both fixes are batched
+before an image roll. No further live attempt, qualifying cycle, class closure, activation,
+legacy deletion or AWS absence proof is claimed. Sprints `6.5`, `6.7` and `7.47` stay parked.
+
+**Third boundary attributed offline, 2026-10-22 18:04 UTC.** Vault's protected server
+log classifies the failure as keyring persistence into a missing directory. Read-only stat
+observes the mounted Vault root at inode **3147619**, link count **0**, while its declared host
+path is inode **3147625**, link count **2**. The exact pinned Vault **1.18.3** binary and shipped
+GnuPG reproduce HTTP **400**, still-uninitialized, keyring-persistence/missing-directory in a
+network-isolated fixture after unlink/recreate of its empty bind source. The healthy fixture
+accepts the public-recipient request. No retained live state was changed by these diagnostics.
+Sprint `2.142` retains the lost primary/follow-up classes and distinguishes a matching failed
+worker from foreign operation bindings; its build, expanded **10/10** focused cases, pinned HLint
+and corrected documentation lint pass. The recorded-output negative control exits **1** and
+the current production diagnostic control exits **0**. The canonical gate passes **6,613**
+primary plus **27/35/61** auxiliary cases, exit **0** in **1138.62 seconds** on operator
+`f9e46cef805d5ab4e5f2ae1848477cfa309558a23f546c81ab36242d8df40b16`.
+Full frontend validation subsequently passes **76/76**; the closure checkpoint above governs
+resumption.
+Sprint `3.48` is registered before implementation for the home Vault retained-mount correction.
+Validate and close `2.142`, then `3.48`, before one batched image roll and Sprint `6.5` resumption.
+
+**Own-surface reopen, 2026-10-22 17:53 UTC.** Sprint `2.142` owns
+`BOOTSTRAP-VAULT-INIT-PREAPPLICATION-REFUSAL-2026-10-22`. The third supported invocation
+exits **1** after **399.13 seconds**, before credential preparation or candidate registration.
+The repaired Broker is Ready on manifest `4c428cb5…`; the exact one-shot `initialize` worker
+then exits **1** and reports `Vault initialization failed before application was observed`.
+The host reports only an attestation phase mismatch for its four expected operations. Vault
+remains uninitialized. This is Phase `2`'s encrypted initialization/diagnostic surface, so its
+reproducer, exact attribution and repair precede campaign resumption in numerical order.
+The three-new-boundary review is filed in Sprint `6.5`; no fourth live attempt is admitted
+until its offline reproducer and sibling controls pass. The runtime GPG canary has crossed,
+but no audit-clean cycle, class closure, activation, legacy deletion or AWS absence proof exists.
+Evidence is `pre-3.*` and `broker-repaired-*` under `.build/sprint-6.5/resume-20261022/`.
+
+**Sprint `6.5` candidate resumed, 2026-10-22 17:44 UTC.** Sprint `1.96`'s closure
+documentation lint passes. The third supported invocation is running under the unchanged
+candidate label `pre-20261022-1`; neither prior invocation registered a candidate cycle.
+Fresh admission observes **89,361,666,048 bytes** free, `DiskPressure=False`, the validated
+`8791fb6cd32574f1ec1ef33e932e4a5c5155b4fc11594f6ff04ad88e734bda8b` operator and a regular,
+owned, private fixture without reading or hashing its contents. The native image build selects
+the repaired `b80df094…` runtime through cached layers, then publishes its immutable manifest
+`sha256:4c428cb55b231bed3c174c4a936d32ebcdc335a165c2cf3733cf083ba6c0bb66`.
+Evidence is `pre-3.*` under `.build/sprint-6.5/resume-20261022/`. Drive this invocation to
+its terminal result. If it ends at a third new boundary, perform Standard Q's required
+class/sibling review before another live attempt. No qualifying cycle, live class closure,
+activation, legacy deletion or AWS absence proof is claimed. Sprints `6.7` and `7.47` stay parked.
+
+**Phase `1` reclosed, 2026-10-22 17:41 UTC.** Sprint `1.96` is Done on its runtime-packaging
+surface. Its repaired runtime artifact
+passes its build (**65.11 seconds**) and real RSA-2048 generation/encryption/decryption
+probe (**3.26 seconds**). Its config digest is
+`sha256:b80df0945e2d185260e415ac331b8ddd70ccb6214cd3a274481f8aacdf63d237`.
+The old image still fails the prerequisite; both probes independently read identical kernel
+CPU/memory limits and zero swap allowance. Other runtime tools and compiler/store/source
+isolation pass; no probe container remains. The canonical gate is already at **0** with
+**6,606 + 27/35/61** cases (**1107.27 seconds**). Full frontend validation passes **76/76**,
+exit **0** in **1134.26 seconds** command wall time (**1127.37 seconds** test time), on the
+same `8791fb6cd32574f1ec1ef33e932e4a5c5155b4fc11594f6ff04ad88e734bda8b` operator.
+The prior space question is resolved by actual observation: build admission at 17:33 UTC saw
+**82,248,343,552 bytes** free and `DiskPressure=False`. No shared cache was pruned by this work.
+The artifact build uses the existing ephemeral Docker pull-auth boundary, and neither publishes
+to the cluster registry nor deploys a workload. Runtime projection and Standard Q class closure
+remain with the subsequent `6.5` campaign. Evidence is indexed in `.build/sprint-1.96/validation.json`.
+After final documentation lint and fresh disk admission, resume candidate label
+`pre-20261022-1`; both prior invocations ended before candidate registration. Sprints `6.7`
+and `7.47` stay parked. No live class closure, public activation or legacy deletion is claimed.
+
+**Own-surface reopen registered before repair, 2026-10-22.** Sprint `1.96` owns
+`BOOTSTRAP-BROKER-RUNTIME-GPG-MISSING-2026-10-22`: the final runtime stage lacks `gpg`,
+although the builder installs GnuPG. Phase `1` owns this container-packaging surface through
+Sprints `1.45`/`1.94`, so its repair precedes `6.5` in numerical order. The second supported
+invocation exits **1** in **1990.68 seconds** before credential preparation/candidate execution.
+The Broker runs the new image but returns `dependency-unavailable: openpgp-boundary` from
+`/readyz`; exact executable lookup finds `gpgv` and no `gpg`. Its image/configuration and
+value-free readiness recording are retained under `.build/sprint-6.5/resume-20261022/`.
+The MinIO canary crossed without a hand action; no qualifying cycle or AWS absence proof is
+supplied. Repair the final-stage tool projection, check sibling runtime prerequisites, retain
+the old-image failure and validate the resulting image and canonical gates before resuming.
+The current image's manifest is
+`sha256:a0a298391f2973c78455779a295f6d6dc24cee9d33879f10a3895f846b507533`.
+Free space is **32,562,929,664 bytes**, below the **45 GiB** next image-build/live-admission
+floor after cold restoration. The operator has been asked to free **20 GiB** or designate
+scratch space while independent source and local validation continue. No new live invocation
+is admitted on the current disk observation. The two resumed invocations have reached two
+different bootstrap boundaries; neither reached AWS-spending credential preparation.
+
+**Sprint `1.96` source checkpoint.** The final stage now installs GnuPG and executes its
+version check plus agent/config-helper checks during the build. Its real-image negative
+control exits **1** as expected; sibling tools and compiler/store/source isolation pass on
+the frozen image. The archive's config digest matches the exercised image, and its full source
+identities are captured before the behavior change. The repository-owned recording is
+`test/qualification/BOOTSTRAP-BROKER-RUNTIME-GPG-MISSING-2026-10-22.json`.
+Focused packaging/scaffold checks pass **28/28** (**27.72 seconds** command wall time), and
+documentation lint passes. The canonical gate is running; the final image build, isolated
+crypto proof and full frontend suite remain owed. Evidence is indexed in
+`.build/sprint-1.96/validation.json`. Free space remains below the image-admission floor;
+the resource question is pending, and no new image build or live invocation has started.
+
+**Sprint `1.96` canonical checkpoint, 2026-10-22 17:19 UTC.** The canonical gate passes
+**6,606** primary plus **27/35/61** auxiliary tests, exit **0** in **1107.27 seconds**.
+The operator remains `8791fb6cd32574f1ec1ef33e932e4a5c5155b4fc11594f6ff04ad88e734bda8b`.
+Full frontend validation is running. Artifact build/crypto validation still requires disk
+admission: **31,863,173,120 bytes** are free, below **45 GiB**, while the node reports
+`DiskPressure=False`. A read-only cache inventory identifies only **3,061,295,732 bytes** of
+unused, unshared records naming `exe:prodbox`, insufficient to close the deficit. None is pruned;
+the cached rebuild remains available. The operator's space/designated-scratch question remains
+pending. This follows the manual check retained by
+[decision D11](phase-0-planning-documentation.md#decision-register); no shared-host cleanup,
+new image build or new live invocation is inferred from a green local gate.
+
+**Phase `1` reclosed, 2026-10-22 14:37 UTC.** Sprint `1.95` is Done on its configuration
+generation/recognition surface. The canonical gate passes **6,581** primary plus **27/35/61**
+auxiliary tests, exit **0** in **1482.29 seconds**. Both focused installed cases pass **2/2**
+(**22.00 seconds**); the complete built-frontend CLI/config suite passes **76/76**, exit **0**
+in **1082.32 seconds** command wall time (**1076.21 seconds** test time). The operator binary
+remains `43b459df5c186c81f94e9bee4cf99231e1bd1a8ac0c2cffe25365db00affdcdd` throughout these
+final gates. Exact commands, failures and limitations are in `.build/sprint-1.95/validation.json`.
+The final queue/documentation lint follows this closure update before Sprint `6.5` resumes.
+Its next work is the current-identity home candidate campaign and qualification-gated cutover;
+`6.7` and `7.47` remain parked. No image roll, live attempt, activation or legacy deletion has
+occurred during this own-surface repair. Free space before resumption is **50,089,644,032 bytes**,
+above the **45 GiB** image-build admission floor; it is re-observed at live admission.
+
+**Sprint `6.5` live resumption, 2026-10-22 14:39 UTC.** Closure documentation lint for `1.95`
+passes. The first read-only audits of `eks` and `test` each exit **5**: the unauthored generated
+floor has no cluster identity, so neither audit reaches an Authority inventory or proves
+absence. The supported home candidate invocation is running with
+`PRODBOX_TEST_CASCADE_QUALIFICATION_CYCLE=pre-20261022-1`; it owns fixture-based config
+authoring and bootstrap preparation. Its transcript, timestamps and terminal status are under
+`.build/sprint-6.5/resume-20261022/`. Admission observed **50,082,852,864 bytes** free,
+above **45 GiB**. No qualifying cycle is counted from invocation, and no activation or
+legacy deletion is licensed without the required exact terminal evidence. Standard Q governs
+any subsequent paid attempt.
+
+**Sprint `6.5` bootstrap counterexample, 2026-10-22 14:49 UTC.** Invocation
+`pre-20261022-1` exits **1** after **599.51 seconds**, before Credential Provisioner or
+candidate execution. Both pinned source images build, load and import successfully. Helm
+updates `prodbox/minio` to the source-built image, but its `OrderedReady` StatefulSet keeps
+the old public-image Pod in `ImagePullBackOff`; the bounded rollout wait expires. The observed
+StatefulSet and Pod revisions differ, with the Pod still owned by the same StatefulSet UID.
+This is the documented StatefulSet blocked-rollout case, registered before repair as
+`MINIO-BOOTSTRAP-ORDEREDREADY-2026-10-22`. This invocation supplies no qualifying cycle or AWS
+absence proof. The repair belongs to `6.5`'s home source-bootstrap integration: an exact,
+UID-preconditioned graceful retirement of an obsolete unready MinIO Pod after observing the
+desired seeded image and controller revision, within one unchanged rollout budget. PVCs and
+the retained root remain outside that operation. Offline recording, sibling-state controls
+and complete gates precede any retry. About **43 GiB** remains free; the operator has been
+asked to free/designate space to satisfy the **45 GiB** next-build admission rule.
+
+**MinIO repair validation checkpoint, 2026-10-22 15:33 UTC.** The registered home-only
+repair passes **25/25** focused cases, including fresh-controller startup, old healthy/current
+Pods, foreign ownership, generation drift, UID/resourceVersion conflict, lost applied-delete
+reply and false rollout success. The installed resource-guardrail flow passes **1/1**
+(**104.23 seconds** test time, **132.06 seconds** command wall time). Its first run exposed a
+fixture JSON/jsonpath matcher collision; the corrected fixture preserves both query shapes
+and the failed transcript remains retained. Full canonical validation is running; full frontend
+validation is still owed before retry. Exact commands, source identity, normalized recording,
+limits and failures are indexed in
+`.build/sprint-6.5/resume-20261022/minio-repair-progress.json`. The previous fakes reported
+readiness after Helm and did not retain an obsolete unready Pod, which is why they missed the
+live boundary. The new controls preserve the same topology, envelopes, persistence and
+300-second rollout budget. No live class closure or activation is claimed. About **44 GiB**
+is free, with no large inactive project scratch candidate found; the space question remains
+pending before the next image build/live invocation.
+
+**MinIO canonical checkpoint, 2026-10-22 15:46 UTC.** The repair passes the complete
+canonical gate: **6,606** primary plus **27/35/61** auxiliary cases, exit **0** in
+**1077.38 seconds**. The full CLI/configuration frontend suite is running on
+`8791fb6cd32574f1ec1ef33e932e4a5c5155b4fc11594f6ff04ad88e734bda8b`.
+The evidence index above records exact commands and terminal results. There is no second
+live invocation, qualifying cycle, activation or legacy removal. Free space is
+**46,649,204,736 bytes** (about **43.4 GiB**), below the next image-build/live-admission
+floor of **45 GiB**; the operator's resource-input question remains pending. Current source
+stays frozen for the full frontend run.
+
+**MinIO repair gates complete, 2026-10-22 16:16 UTC.** Full frontend validation passes
+**76/76**, exit **0** in **1079.74 seconds** command wall time (**1073.80 seconds** test
+time), on the same `8791fb6cd32574f1ec1ef33e932e4a5c5155b4fc11594f6ff04ad88e734bda8b`
+operator. The code-local repair is validated; live projection and class closure remain pending.
+The space question is resolved by reversible task-owned cache housekeeping: all **47,682**
+inactive public Go compiler/module-cache files were archived and every member verified before
+reclamation. Retained bootstrap binaries, image inputs and receipts are unchanged. The archive,
+manifest and overwrite-refusing `restore-compiler-caches.py` are retained in the same evidence
+directory; restore with `python3 .build/sprint-6.5/resume-20261022/restore-compiler-caches.py`
+when compiler-cache restoration is needed. Free space is **48,504,213,504 bytes**, above
+**45 GiB**, and is re-observed immediately before the next supported invocation. No live state
+was repaired by this housekeeping. After final documentation lint, resume candidate label
+`pre-20261022-1`; the earlier attempt never began a candidate cycle or reached AWS spend.
+
+**Supported retry admitted, 2026-10-22 16:16 UTC.** The validated operator resumes that label
+with **48,503,693,312 bytes** free, above **45 GiB**. Transcript `pre-2.log` and its
+admission, timestamps, timing and terminal status are retained in the evidence directory above.
+The same registered counterexample and sibling matrix precede this retry. No terminal result
+or qualifying count is inferred while it runs; the public legacy writer remains sole.
+
+**MinIO live canary crossed, 2026-10-22 16:26 UTC.** The same invocation observes new Pod
+UID `87036386-f517-40e2-89d5-23f2d4937603`, Ready `True`, at controller revision
+`minio-68b8576596`; the observed controller UID/generation remain the admitted values and both
+current/update revisions match. Exact non-secret fields are retained in
+`minio-live-readback.txt`. The registry rollout and platform-image mirroring then pass, and the
+current runtime image is building, including cold Haskell dependencies. This crosses the former
+MinIO boundary without a hand action; Standard Q class closure still requires two audit-clean
+cycles. The invocation has not yet returned, and candidate qualification remains pending.
+
+**Own-surface reopen, 2026-10-22.** Phase `1` reopens on Sprint `1.95` before implementation.
+On this clean checkout, `prodbox config generate` succeeds with a host-fitted template,
+then `prodbox dev lint files` refuses its unauthored machine identity. Both the lint gate and
+harness recognize only the exact portable default. The retained reproducer transcripts are
+`/tmp/prodbox-resume-config-generate.log` and `/tmp/prodbox-resume-files.log`. This is a
+Phase-`1` generation/recognition defect, so it precedes `6.5` in numerical order. Recognition
+must admit only the canonical unauthored template with a typed host-capacity projection;
+partially authored, malformed and edited files must continue to refuse. Later phases retain
+their owned closures; no live qualification is supplied by this repair.
+
+**Fixture restored, 2026-10-22.** The operator restored `test-secrets.dhall`. It is a regular
+file owned by the effective user; its initial mode `644` was tightened to `600` before any
+credential read. Its contents have not been printed or hashed. Sprint `1.95`'s shared recognizer
+and focused/installed regression cases are implemented and awaiting the canonical gates.
+The synthetic private-key-header fixture correction preserves the scanner and runtime test
+payload. No live campaign starts before the earlier code-owned validation completes.
+
+**Sprint `1.95` validation checkpoint, 2026-10-22 14:17 UTC.** The canonical gate passes
+warning-clean all-target compilation, **6,581** primary plus **27/35/61** auxiliary cases,
+exit **0** in **1482.29 seconds** on the cold checkout. All eight template controls pass.
+The installed generation/preflight cases pass **2/2** (**22.00 seconds**). The full frontend
+suite is running; the sprint remains Active until it finishes. Commands, results and limitations
+are indexed in `.build/sprint-1.95/validation.json`.
+The old template-refusal controls and stale-bootstrap-snapshot refusal remain retained.
+The public legacy writer is still sole; no image rollout or live attempt has occurred.
+
+**Execution resumed, 2026-10-22 13:36 UTC.** The operator again requested completion and
+validation in numerical order. Sprint `6.5` remains the queue head; `6.7` and `7.47` stay
+parked until its owned work is validated. The cleaned checkout has no operator binary,
+binary-sibling configuration, `test-secrets.dhall`, or retained development evidence. All
+**104** preserved implementation files are already present and match the external backup's
+manifest; the overwrite-refusing restore verified them and wrote zero files. A fresh canonical
+bootstrap build is running, with its transcript at `/tmp/prodbox-resume-bootstrap-build.log`.
+The preserved operator executable is copied to `.build/prodbox` for bootstrap diagnostics;
+it is not a newly built or qualified artifact. Host free space is **61 GiB**, above the
+recorded **45 GiB** admission floor before this build. The operator has been asked to restore
+the missing secret fixture locally with current admin credentials and mode `600`; no secret
+was recovered from a backup. Local validation continues independently. No phase advancement,
+runtime image roll, AWS-spending attempt, activation, or legacy removal is claimed.
+
 **Current checkpoint, 2026-10-21 17:35 UTC.** Sprint `6.5` remains Active. The complete
 credential-recovery/replay increment passes warning-clean canonical validation: **6,573** primary
 plus **27/35/61** auxiliary cases, exit **0** in **1066.95 seconds**. Full built-CLI/configuration
@@ -15140,7 +21917,7 @@ dated table are retained for audit history; neither is a current-status ledger. 
 | 0 | ✅ Closed | Existing MISU/Pure-FP governance is sufficient; no new general doctrine primitive |
 | 1 | ✅ Closed | Existing typed capability/config foundations are sufficient |
 | 2 | ✅ Closed | No Gateway or Bootstrap Broker runtime change is assigned here |
-| 3 | ✅ Closed | `3.41` closed 2026-08-17: recovery topology/observation, the recovery-only repair renderer, the versioned retained artifact authority, and the deletion-survivor projection are landed; artifact byte retention moved to `4.86` |
+| 3 | ✅ Closed | `3.50` reclosed 2026-10-26: bounded positive TCP-domain parsing, actual frozen/replacement proof and all local gates pass; deployment qualification remains separately pending. Previous closure: `3.41` closed 2026-08-17: recovery topology/observation, the recovery-only repair renderer, the versioned retained artifact authority, and the deletion-survivor projection are landed; artifact byte retention moved to `4.86` |
 | 4 | ✅ Closed | Exact keyed algebra, durable kernel, recovery candidate, custody disposition, and terminal proof inputs are complete; public cutover remains Phase 6 ownership |
 | 5 | 🔄 Active | `5.35` code-local oracle is green; `5.36` has the descriptor-bound client but not the `TestRunner`/legacy-executor cutover |
 | 6 | ⏸️ Blocked | `6.5`, blocked by `5.36` + `7.38`, owns public generic/home sole-writer cutover |
@@ -15175,7 +21952,7 @@ clean-room deployment qualification remains a distinct, pending Standards O/P ax
 | 0 | Planning and Documentation Topology for Haskell Rewrite | ✅ **Reclosed on Sprint `0.17`** after adopting the Foundation Epoch and the Standard P interim escape-path guard (previously reclosed on Sprint `0.16` for the physical control-plane SSoT and deployment-qualification governance). Governance Sprint `0.18` adds the certificate-scope policy adoption as an additional governance sprint on the same documentation surface (no further reclose event). Governance Sprints `0.19` and `0.20` (2026-08-03) likewise add repository secret hygiene and then repository value hygiene on the same surface, with no further reclose event: every committed value that stands in for real-world data is officially synthetic, unmistakably synthetic, or declared real in place. Governance Sprint `0.21` (2026-08-05) adds governed-document metadata reconciliation on the same surface, again with no reclose event: the `**Status**:` value set and cited-source-path existence become machine gates, and the `**Referenced by**:` field is struck repository-wide as derived data that measured 7% complete and 8% wrong. Governance Sprints `0.23` and `0.24` (2026-08-07) continue on the same surface with no reclose event: `0.23` corrects three false governed-document claims about the Tier-0 config surface against source — the "no human Dhall authoring surface" defense of Ring 1, the "zero version-controlled `.dhall`" inventory, and a `prodbox-config-types.dhall` guard entry that named a registry the file is not in — and states plainly what decoding does and does not validate; `0.24` ✅ **Done (2026-08-07)** lands the Tier-0 drift gate, which cannot reuse the tracked-generated-path registry because that machinery is scoped to version-controlled content and the file is git-ignored, so it reads the binary-sibling path directly and compares the canonical re-render of the decoded record. Its bound is recorded rather than implied, because the first mutation exercise proved it: the gate catches representational drift — including a hand-edited resource plan whose emitted `concurrentDraws` list, the Ring-1 `assert`'s own input, goes stale — and cannot catch a primitive edit that round-trips, which is registered as an unowned Standard-P-touching follow-up rather than absorbed. Governance Sprint `0.26` ✅ **Done (2026-08-10)** continues on the same surface with no reclose event, appending [chaos_hardening_doctrine.md § 24](../documents/engineering/chaos_hardening_doctrine.md) — *an observation has a layer* — after a live failure showed § 23's one-derived-encoder rule is satisfiable by a value that is still wrong: `apiEgress` derives its NetworkPolicy from a live observation of `service/kubernetes` and is wrong in both coordinates, because policy is evaluated post-DNAT against the endpoint. It also corrects in place, per Standard C, the probe/route single-source claim, which reads as a property of every chart while the lint covers seven charts on hand-listed filenames and no gate reads a `networkpolicy.yaml` for content. Governance Sprint `0.25` ✅ **Done (2026-08-08)** continues on the same surface with no reclose event, and corrects the doctrine where it failed rather than where it was missing: closing a § 21 class-D gap (Sprint `1.80`'s closed union) broke twenty integration cases because three of four hand-written Tier-0 encoders were outside the typed region, and the resulting decode failure was converted into an exception and then into a socket closed with zero bytes. `chaos_hardening_doctrine.md` gains **§ 23, "Conversions — where the moves stop"**; § 22 gains a fourth honest consequence; § 21's "Neither needs new doctrine" is corrected in place; and `resource_scaling_doctrine.md` § 2C — the owner of the ring vocabulary — gains **"The region of Ring 2"**, recording that `dev check`'s `cabal build … all` compiles `lib` and `exe:prodbox` and no test suite, so every Ring-2 claim about `test/` was made over a region that excluded it. | Documentation topology, certificate-scope governance, repository value hygiene, governed-document metadata gates, conversion boundaries and gate regions, and Standard P |
 | 1 | Haskell Runtime, CLI, Config, and Pulumi Foundations | ✅ **Reclosed 2026-08-13 on Sprint `1.89` (Standard A/N)** — **Sprint `1.89` ✅** gave the Tier-0 coordinates a retained parse, closing the per-field remainder `1.88` split off and with it the ledger's last unowned row. `ValidatedCoordinates` on `ValidatedSettings` is built by `validateConfig` from nine smart-constructed types in the new `Prodbox.Settings.Coordinate`; every rule that already existed is moved character-for-character, **the Dhall wire format is byte-identical**, and so no Standard-P generated-config identity change occurs. **The row described one defect and there are two.** Nine fields were *decided and discarded* — `validateLocalConfig` refused a malformed value and returned `()`, the Provenance class Sprint `1.83` closed for the public edge and no further. Five were **never decided at all**, and two of those are not obscure: `route53.zone_id`, the zone every home DNS write uses, was checked only for emptiness while the structurally identical `aws_substrate.hosted_zone_id` had been shape-checked since Sprint `1.81`; and `pulumi_state_backend.region` had no rule anywhere while both siblings in its three-field section had one, and it is read straight into an S3 client. 35 coordinate reads across 11 modules and 5 served-host reads across 4 now read the projection, and **seven use-site re-decisions are deleted rather than moved** because an `AwsRegion` and a `Route53ZoneId` have no empty inhabitant. `acmeClusterIssuerSpec` takes the parsed account and region, which is Sprint `1.87`'s finding applied where it still held. **Two drafts were refused by the repository itself.** The both-or-neither ACME rule refuses `prodbox config generate`'s own output, because `defaultConfigFile` ships the ZeroSSL directory with an empty contact — the halves are not symmetric. And `checkTier0CoordinateReads`'s first run flagged a *correct* read, because one module bound `config` to both a validated and an unvalidated config; the binding was renamed rather than the rule weakened. **Bounds stated**: shape, not reachability; a compiled rule over a source region, not a property of the type; unvalidated-`ConfigFile` reads deliberately unregistered; the empty-string tolerance surviving at exactly two no-error-channel renderers, both named in Haddock. Two residuals recorded rather than absorbed. Evidence: `dev check` 0, `dev docs check` 0, `dev lint docs` 0, `test unit` 0 at 3430 + 27 + 33 + 27. Prior reclose on Sprints `1.87` and `1.88` (2026-08-13) — **Sprint `1.88` ✅** gave `ValidatedSettings` one production constructor. Its row read as though the exported constructor were a diffuse risk; there were exactly **three** applications tree-wide — `validateConfig`, one production forge, and one test fixture. The forge (`defaultResourceStatusSettings`) built a record no validation had produced so it could call a function reading two of its four fields, and got its plan by `error`-ing; it is **deleted rather than guarded** by narrowing `resourceStatusLines`, taking two production `error` calls with it, and `checkValidatedSettingsMinter` keeps the seam closed — keying on field *assignment*, so a record update is caught by the same rule. **The bound is stated**: a compiled rule over a source region, not a property of the type, because the unit suite builds fixture settings purely at 40 sites and `validateConfig` is `IO`. All three of the row's counts were restatements and all three were wrong (30/40/74 recorded, 27/18/56 measured); the per-field remainder is **re-scoped in place**, with the newly-recorded fact that retyping in Dhall would be a Standard-P generated-config identity change and the non-cascading shape is Sprint `1.83`'s parsed projection. **Sprint `1.87` ✅** — an own-surface reopen closing the re-scoped successor Sprint `1.84` registered against itself, and with it the last Phase-`1` `Pending Removal` row on the public-edge surface. `substratePublicRouteUrl` rendered `https:///path` for a substrate declaring no served host; its row prescribed handing the pure renderer a resolved `String`, which would have left `""` a well-typed inhabitant and the refusal in caller discipline — the property `1.84` already had and recorded as insufficient. The renderers now take the `ValidatedServedHost` that `validateConfig` already builds, whose `Fqdn` is minted only by `mkFqdn`, so the empty rendering is **unconstructible** rather than refused; `substratePublicFqdn` is **deleted** and `requireSubstrateServedHost` is the sole accessor. **The row's premise was wrong and that is the finding**: it called the 16 sites "pure renderers reached from IO callers", true of the renderers and false of the frames calling them — all 16 resolve at **eight** points that already held a `failWith` or a `Left`, and nine functions stopped taking `ValidatedSettings`/`Substrate` entirely because they carried the config only to re-derive a host their caller had resolved. Mutation-proven, and the mutation corrected the sprint in turn: deleting `mkFqdn`'s empty check still refuses an empty name via the `< 2 labels` rule, so the guarantee has two anchors rather than one. The unit case asserts `mkFqdn "" == Left EmptyName` rather than the absence of `https:///` in a rendering, because per `unit_testing_policy.md` statements 10 and 11 the latter is an absence no input could produce. Evidence: `dev check` 0, `test unit` 0 (3399 + 27 + 33 + 27), `test integration cli` 57/57, `env` 0. Prior reclose on Sprints `1.84`, `1.85`, and `1.86` (2026-08-12)** — **Sprint `1.86` ✅** made decode the smart constructor: `MachineId`, `Machine`, and `ClusterTopology` were exported abstractly to force `mkMachineId`/`mkMachine` **and** derived `FromDhall`, so `Dhall.auto` was a second unchecked constructor and the opacity stopped at the decode seam. Six types now carry hand-written instances that read the wire shape through `record`/`field`/`union` and narrow through the constructor owning the invariant. Its row prescribed a `Raw*` DTO; that was measured and declined, because it cascades into `ProdboxParameters` and `ConfigFile` — and the validating decoder is stronger anyway, leaving no window in which the unchecked value exists. `ToDhall` untouched, so every generated `prodbox.dhall` is byte-identical. — **Sprint `1.85` ✅** closed two rows whose shape is a description contradicting what it describes: `certDnsNamesForServedHost`'s Haddock implied a production role Sprint `1.83` had removed (kept and made load-bearing — it now pins the carried cert scope set against its own derivation, the only place that agreement is stated; the row said "the two contract cases" where there are five, three carrying the same comment verbatim three times), and `--yes` on the four stack-destroy verbs still read "Skip confirmation prompts" where Sprint `4.77` had made the flag *be* the confirmation on a command with no prompt (fixed through a named constant both the parser and the typed registry read, leaving the shared `yesSwitchParser` and the three genuinely-prompting `prune-corrupt-checkpoint` verbs untouched). **Sprint `1.84` ✅** — an own-surface reopen (Standard A) closing the residual Sprint `1.83` registered against itself. `substratePublicFqdn` answered `""` where its own projection says "this substrate declares no served host"; all six direct call sites now resolve through `requireSubstratePublicFqdn` and refuse, the two genuinely pure renderers take a resolved host from an IO caller that resolves and refuses, and the accessor is **unexported** so the empty-string answer cannot acquire a new caller. Deletion is deliberately deferred: it would require converting `substratePublicRouteUrl`'s ~10 sites in the same change, the coupled-big-bang shape Sprints `4.74` and `1.83` each declined, and that is now its own re-scoped row with a measured count. The row's estimate was wrong in both directions — "roughly a dozen pure renderers with no error channel" against six direct sites of which four already had one, with the real cascade behind a different function. Prior reclose on Sprint `1.83` (2026-08-09) — an own-surface reopen (Standard A) working this phase's share of the unowned `Pending Removal` backlog; both sprints are Done and Phase `1` has no open sprints. Sprint `1.82` ✅ **Done (2026-08-09)** makes the Tier-0 secret-free guard total and load-bearing: `tier0CarriesNoSecretValues` was exported, documented as the guard that rejects a literal credential, and had **zero production call sites**, so it guarded nothing — the defect class Sprints `1.78` and `4.57` removed. It is now the last step of `decodeProjectConfigDhall`, the one Tier-0 decode gate, and its enumerator is a **positional** pattern over `ProdboxParameters`, so a new section carrying a `SecretRef` is a compile error at the one place that must decide (mutation-proven: *should have 13 arguments, but has been given 12*). The refusal names the dotted fields and never their values. **The overlap the ledger estimated is now measured**: `validateAwsCredentialsRef` runs over the decoded `parameters` inside `validateConfig` and never over this record, so `loadDaemonBinaryContext` and the Sprint `0.24` drift gate both reached a full Tier-0 record with no check at all, and `acme.eab_*` had no local-tier check on any path. Sprint `1.83` ✅ **Done (2026-08-09)** carries the parsed public edge instead of re-deriving it: `validateConfiguredCertScope` built a `CertScopeSet`, bound it to `_`, and returned `()`, and eight production sites rebuilt it from raw `Text`. `ValidatedSettings` now carries `validatedPublicEdge` — the home served host and its scope set plus **`Maybe`** the AWS pair — so the empty-string AWS hostname Sprint `1.81` recorded as its own residual is gone from every caller with an error channel, and `resolveRootPublicFqdn` reduces to the shared accessor. The unit case **compares the carried scope set against the derivation it replaced** on both substrates, so this is a provenance change and not a behaviour change. Two residuals are registered rather than absorbed, one of them correcting an estimate by measurement: narrowing `substratePublicFqdn` to the `Maybe` its projection carries cascades through roughly a dozen pure manifest renderers with no error channel — established by attempting it — so it is a separate call-site sprint (Standard L). Prior reclose on Sprint `1.81` (2026-08-07) — every sprint of the 2026-08-05 own-surface reopen (`1.76`, `1.77`) and of the 2026-08-07 Tier-0 config audit (`1.79`, `1.80`, `1.81`) is Done and validated on its code-owned surface, so the reopen closes. Prior reclose on Sprints `1.72`/`1.73`** (own-surface reopen, Standard A/N). The Ring-1 `assertPlanValid` Dhall over-commit shim is built (`renderProjectConfigDhall` lean-emit; an over-committed `prodbox.dhall` fails to load) and `config generate` derives a host-fitting `host_capacity` from the observed host (fail-fast when too small; `--portable` for host-agnostic generation) via the shared `Capacity.HostProbe` reader. Prior reclose on `1.71`: `Prodbox.Capacity.Derivation` is the sole workload-envelope builder; raw workload envelopes no longer decode. Evidence: `Tier0PlanAssert` 3/3, parser round-trip, live host-fit generate/validate, and `dev check` exit 0. Own-surface reopen on Sprint `1.74` (2026-08-03) declares the served public hostname (`Prodbox.Settings.supportedPublicHostname`) a real value rather than leaving it indistinguishable from the synthetic hostnames beside it (`vault_doctrine.md` §20.1); it recurs in ~260 places and must be real. Own-surface reopen on Sprint `1.75` (2026-08-04) implements the `vault_doctrine.md` §20.5 mechanical outer ring in `dev check`: a tracked file carrying a scanned provider credential shape outside the scanner's own exclusions now fails the gate, scoped to the version-control index so the git-ignored `test-secrets.dhall` stays out of reach. This closes the first of the three `dev check` policies Sprint `0.19` registered and `0.20` recorded as unclosed. **Own-surface reopen 2026-08-05 (Sprint `0.21` topology sweep): 🔄 Active.** Sprint `1.76` ✅ **Done (2026-08-07)** makes readiness evidence provenance-carrying: `RoundTripWitness` was forgeable from a string literal and is now opaque behind a `dev check`-enforced minting allowlist, the deep readiness slot has its own result type so a shallow probe no longer inhabits it, and the witness carries the instant the write landed so the freshness window bounds the proof rather than the question. It also lands the real gateway CAS lane the sprint budgeted for — the store-returned conditional-put version, discarded at every call site, is threaded through to the daemon, which projects it as `last_backend_round_trip`; the gateway deep probe no longer reads a constant-time `/readyz` latch as proof of a backend write. Sprint `1.77` ✅ **Done (2026-08-07)** closes the retry surface: retryability becomes a property of the (operation, error) pair rather than of the error alone — `serviceErrorDisposition` is three-valued and the retrier that repeats an *indeterminate* outcome requires a hidden-constructor idempotence witness, so the unsafe combination does not type-check — and jitter now exists, where before it existed nowhere in the tree and every retrier shared one deterministic schedule. `RetryPolicy` gains a hidden constructor and a validating `mkRetryPolicy`, and a new `dev check` rule fails any production module that reaches the un-jittered schedule or re-exports the constructor, which is Sprint `1.13` item 2 restated as something that can fail. **Phase `1` has no open sprints on this reopen; Sprints `1.79`–`1.81` are ✅ Done on the config surface.** **Sprints `1.79`–`1.81` ✅ Done 2026-08-07**, registered and closed the same day by the Tier-0 config audit, all on this phase's config surface: `1.79` ✅ **Done (2026-08-07)** derives the in-force config payload instead of hand-writing it — the hand-written renderer omitted `components`, so record completion silently substituted the default graph in the canonical in-force config while the Tier-0 file path preserved it; the round-trip assertion meant to protect this could not fail until its fixture stopped using the default graph, and varying it produced three real failures before the fix landed; `1.80` ✅ **Done (2026-08-07)** makes `public_edge_advertisement_mode` a union rather than a two-value enum carried as free `Text` — the one field on this surface where the illegal state was closable in Dhall rather than merely detectable in Haskell, so a misspelling now fails the type check instead of reaching a string comparison; the three comparison sites are gone and the cross-field `bgp ⇒ peers` rule stays in Haskell, where it can be decided; `1.81` ✅ **Done (2026-08-07)** makes `validateLocalConfig` total over the record so an added field cannot be skipped silently — as a **positional** pattern, because the field-named form the sprint proposed turned out not to be a forcing function at all (the mutation exercise objected only at an unrelated construction site). Five sections that had no coverage now have it, the component graph is validated at decode rather than at bring-up, and both `PublicEdge.hs` crashes are gone: one became an AWS-tier decode refusal, the other was deleted along with the zero-caller renderer that needed it. **Phase `1` now has no open sprints on this reopen.** No prior closure on this phase was falsified. Prior reclosures stand. | Operation-indexed capabilities, exact graph requirements, absolute deadlines, service-capacity algebra, derived workload-resource contracts, resource-envelope over-commitment proof and decode gate, the Ring-1 Dhall over-commit shim and host-fitting generation, native object-store and managed Vault-session boundaries, conformance tier and legacy escape registry, measured calibration certification, and substrate-neutral prerequisite topology |
 | 2 | Haskell Gateway Runtime and DNS Ownership | ✅ **Stays closed; Sprints `2.48` and `2.50` closed 2026-08-14, and Sprint `2.51` 🔄 opened when `2.50`'s live proof let the bring-up reach a defect nothing had yet seen — a worker Pod image pinned to a **config** digest where a registry can only resolve a **manifest** digest, both being the same sixty-four hex characters and separable by no smart constructor over the text. Registered with its reproduction and its cause both taken, which is the direct dividend of `2.46`–`2.50`: four of the five refusals between the operator and it now name themselves.** Sprint `2.50`'s proof passed on the arm it changed, evidenced by the durable object — the checkpoint stuck since 17:39 at store version 2 / fence generation 7 was rewritten to version 4 / generation 13, which is `driveSecretWorker` rolling a superseded pre-receipt checkpoint and nothing else in the tree writes it. Sprint `2.50` ✅ closes the durable-checkpoint wedge that was the last blocker on the bring-up path, and **both halves of this plan's own description of that object were refuted by decoding it**: it is not Vault-enveloped (the bootstrap store's `StoredEnvelope` is canonical CBOR over a type named `SecretFreeWorkerRequest`, readable with no Vault session on a host whose Vault is uninitialized), and it is **three** compared fields that cannot repeat across invocations rather than two — the operation deadline is `acceptedAt + budget`. The remedy is narrower than any of the three options registered, and the bound that scoped the sprint chose it rather than being argued across: a checkpoint is a *result* record, but that is a statement about checkpoints which **carry** a result, and the stuck one is `InternalNoWorkerReceipt`. So the roll arm widened, bounded three ways — pre-receipt only, a **strictly older** fence generation only, and the predecessor's worker **destroyed** by a UID-preconditioned delete rather than observed absent, which is stronger than Sprint `2.47`'s absence observation because it causes absence instead of inferring it. Exactly one of the seven cases in the pre-existing exhaustive mismatch table changes behaviour, and receipted checkpoints stay refused on every binding. The **fifth** instance of the payload-free-refusal collapse closed with it, and it is the first whose cost is demonstrable rather than argued: the wrong field count above is what a five-site payload-free constructor cost. Sprint `2.48` ✅ closes both items it carried — the 300-second Lease coupling is **declared** rather than removed by renewing, because renewal is *adversarial* to Sprint `2.47` (retirement needs a positively expired Lease, so a renewer outliving a wedged bring-up would restore the permanent wedge `2.47` closed), and the acquisition-path fence leak now compensates through an exact-value CAS back to vacant. That row closed **with its owning sprint** rather than outliving it, which is the orphan shape this plan has caught three times. Evidence: `dev check` 0, `test unit` 0 (**3468** + 27 + 33 + 27), `test integration cli` **57/57**, `test integration env` **57/57**. Prior status — **Sprint `2.47` ✅ Done 2026-08-14.** The ledger's oldest row is closed: a failed bring-up left a durable `bootstrap-session-fence` that no supported command cleared, and `--cascade` preserves `.data/` by design, so the host could never complete `prodbox vault init` again. **The remedy was already in the tree, had zero production callers, and could not be called** — `decideBootstrapFenceRetire` requires three independent facts and refuses closed on ambiguity in each, stricter than all three options the row proposed, with its store half fully wired; what kept it unwired was that the cleanup observation it consumes was bound to a seven-field worker binding and a durable fence carries **three** of those seven. Closed by observing worker absence **by fence generation**, the one identity the fence does carry, with the scope checked in both directions so an answer about another generation is unobservable rather than absence. `acquireFence` now runs acquire → retire → re-acquire, the second pass bounded **structurally** — a separate function with no path back into retirement — rather than by a counter. **What it does not claim is stated at the wiring site**: Pod absence is not Vault-session absence, and it need not be, because every Vault effect re-reads the exact fence immediately before acting, so retiring the fence *is* the revocation and a survivor fails closed at `BootstrapFenceUseFenceStale`. **Seven prescribed remedies were refuted by measurement across the row's life** — two the row's, two the sprint's own, three found while closing it, including one that would have made the fix *worse* (the label it proposed to select on also matches the Broker's own controller Pod) and one where "every construction site including the fakes" was reduced by a single grep to one field, one site, and no fakes. Sprint `2.48` 🔄 takes the second, distinct Lease blocker the row had recorded but never owned; **its first defect was the record itself**, and `2.47` already fixed it — `ensureLease` narrated one fixed string for all six `BootstrapLeaseRefusal` constructors, the exact collapse Sprint `2.46` fixed one level up and this function was missed by, so the next reproduction names the arm instead of describing it. Registering a Planned sprint is not a reopen, so this phase stays ✅. Evidence: `dev check` 0, `test unit` 0 (**3453** + 27 + 33 + 27), `test integration cli` **57/57**. Both sprints carry 🧪 Standard-O live proofs that gate nothing. A Standard-C header correction landed with them: this phase's document still led with the 2026-08-10 reopen while every sprint in it read ✅ and this table had recorded the `2.45` reclose since 2026-08-13 — the precise failure that header was corrected for on 2026-08-08, recurred. Prior reclose — ✅ **2026-08-13 on Sprint `2.45` (Standard A/N)** — an own-surface reopen on the Bootstrap Broker durable-store boundary this phase owns through Sprints `2.33`, `2.36`, and `2.42`. `validValue _ = True` was the validity predicate on every durable read and CAS, so `BootstrapStoreCorrupt` — the store's own refusal constructor — was **unreachable** for the payloads passing through it. **The row was wrong about scope in the direction that matters**: it listed eleven surfaces and called them "nine payload types", but six already had real predicates and it **missed** the seventh undefended one entirely — the durable storage-generation binding every other payload's binding is checked against (measured: 7 types, 20 sites). That correction made the fix one rule rather than seven inventions: these records are read back through `Serialise`, which reconstructs fields positionally and bypasses every smart constructor they are otherwise built through ([chaos_hardening_doctrine.md § 23](../documents/engineering/chaos_hardening_doctrine.md), the seam Sprint `1.86` closed for Dhall), so each predicate re-runs exactly those, plus the Shamir arithmetic `mkInitRecipientCommitment` enforces at the mint site and a non-empty share list on the two share-carrying receipts. The checkpoint predicate sits **beside its type**, which is what lets it stay exported abstractly. The CBOR bypass is reproduced in a unit case rather than assumed; mutation-proven by restoring one accept-anything predicate. **Two bounds stated**: the predicates do not verify a carried digest is the digest *of* its record, and the checkpoint predicate constrains one of nine arms deliberately. **Moves a Standard-P persistence-protocol surface** (both rows already `pending`). Evidence: `dev check` 0, `test unit` 0 (3407 + 27 + 33 + 27). Prior reclose 2026-08-12 on Sprint `2.44` (Standard A/N)** — an own-surface reopen closing the fold defect Sprint `5.33` found and deliberately did not absorb (Standard M keeps runtime and suite-content ownership apart). `gatewayRuntimeSampleExit` mapped both `StableObserved` and `NotStableYet` to a silent `ExitSuccess`, while the gate ten lines above honoured the same constructor by retrying and failing. The row's stated remedy — make it fail — was measured and declined: the function is a sampler invoked at ten points across a suite run, and failing it would abort every run before the gate that owns the verdict was reached. The decision is now a pure total `GatewayRuntimeSampleOutcome`; each arm names what it saw; the not-yet-stable arm states it is not an observation of stability; and a unit case asserts the deliberate sampler/gate disagreement. Prior reclose 2026-08-11 on Sprints `2.42` and `2.43` (Standard A/N) — **Sprint `2.43` ✅ Done (2026-08-11)** closes the three defects Sprint `3.34` uncovered by fixing the NetworkPolicy: the self-observation selector authored `app.kubernetes.io/name=bootstrap-broker` while every chart renders the `prodbox-<component>` form (the only unprefixed occurrence in the repository); `PodWire` required the `apiVersion`/`kind` Kubernetes omits on `PodList` items, so every non-empty list decode failed; and the controller-image check required a `:latest` suffix that `resolveCustomImageTag` overrides on both substrates, so it could never pass. Each was reachable only once its predecessor was fixed. Evidence: the selector is asserted against the chart's rendered label rather than a restated copy, a `PodList` payload shaped as the API returns one is observed, all three substrate tag forms validate against the compiled repository owner, `dev check` 0, `test unit` 0 (3332 + 27 + 33 + 27). Prior: **Sprint `2.42` (Standard A/N)** — the own-surface reopen on the Bootstrap Broker readiness contract this phase already owns through Sprints `2.39` and `2.40` is closed, and Phase `2` has no open sprints. `kubernetesObserveBootstrapLease` discarded its typed transport failure with a wildcard, so a dropped packet, a `403`, and a `404` all reached the operator as `Kubernetes Lease observation unavailable` while `/healthz` answered 200 — [chaos_hardening_doctrine.md § 23](../documents/engineering/chaos_hardening_doctrine.md) corollary 2 at the broker's Kubernetes boundary. **Sprint `2.42` ✅ Done (2026-08-11)**: all six discarding sites in `productionKubernetesWorkerBoundary` compose through `unobservableReason`, and `requestKubernetes` — which collapsed every exception to a bare `"Kubernetes API request failed"`, so fixing the call sites alone would have appended a prefix and no information — now classifies through `kubernetesTransportFailureLabel`. That function matches every `HttpExceptionContent` constructor of `http-client` 0.7.19 plus `InvalidUrlException` onto fixed, payload-free labels with no wildcard arm, so a new upstream constructor is a compile error rather than a silent collapse; the `Request` is matched as `_` and never inspected, because it carries an `Authorization: Bearer` header and a readiness body is operator-visible. Evidence: 25 new cases in `test/unit/BootstrapBrokerProductionBoundary.hs` asserting exact strings, mutual distinctness, the absence of a bare site phrase, and that a planted bearer token reaches no rendered reason; `prodbox dev check` exit 0; `prodbox test unit` exit 0 (3319 + 27 + 33 + 27). A Phase-`3` chart defect caused the outage that exposed this, and `2.42` does not fix that cause — it makes the next such outage name itself. No rendered manifest and no readiness verdict changes. Prior reclose on Sprint `2.41` (2026-08-07) — ✅ **Reclosed on Sprint `2.41` (2026-08-07)** — Sprints `2.39`, `2.40`, and `2.41` are all Done on their code-owned surfaces, so the reopen closes; the live reproducer and the deployed-path readiness change remain 🧪 Standard-O and do not prevent closure. Sprint `2.39` ✅ **Done (2026-08-07)** on its code-owned surface: its third deliverable, the conformance gate, is landed — `checkBrokerReadinessProjection` enforces the constant-time contract structurally (the projection module may import only pure modules, and the request path draws from an exact token allowlist, so a *new* backend call fails the gate, not merely a previously-seen one). Its live reproducer stays 🧪 Standard-O. Sprint `2.40` ✅ **Done (2026-08-07)**: the readiness staleness bound is now *derived* from the observer period and the per-pass budget by a hidden-constructor `ObservationSchedule`, so a bound the observer cannot meet is not constructible. The authored `3 * period` = 15 s was unsound — the observer stamps after a pass, so its inter-stamp interval reaches `period + budget` = 10 s and one missed pass needs 20 s — which meant a broker whose dependencies were all ready projected `Starting` for most of every cycle and was removed by `failureThreshold: 6` after 60 s. Sprint `2.41` ✅ **Done (2026-08-07)**: the emitter's readiness and the runtime that asserts it are now one value, so `Ready` with no runtime — reachable on the *deployed* path, because five sites cleared the continuity runtime and touched readiness on none of them — is unrepresentable; and the monotone `WorkersStatus` flag, written once before any worker existed, is replaced by a heartbeat-bounded `WorkerRoster` with `withSupervisedWorkers` as the only way to run a worker, enforced by a `dev check` rule that raw `withAsync` is not in scope in the daemon. **Phase `2` has no open sprints on this reopen**; its live reproducer and the readiness behaviour change remain 🧪 Standard-O. Prior status (2026-08-04) — a live cold home bring-up surfaced a Phase-2-owned defect blocking every home reconcile: the broker's `/readyz` violates the constant-time contract its own chart comment asserts, performing a MinIO round trip, a Vault call, and two 5-second-deadline Kubernetes reads inline in the probed path. Measured live: `/healthz` 0.19 ms vs `/readyz` **5.003 s** against a 1-second probe budget, so the Deployment never reports available and `cluster reconcile` exits 1 before Vault is initialized. Diagnosed, evidenced, not patched. Prior reclose on Sprint `2.38` (2026-08-04) — own-surface reopen (Standard A) correcting the Sprint `2.36` shutdown postcondition, which demanded an *empty* idempotency map. That is unreachable once any request has completed (completed bindings are retained for replay), so a graceful broker drain wedged permanently — and because the proving transaction never read the phase, a following force-drain could not wake it. The postcondition now asks what it meant to ask: no **running** entry, restoring agreement with the Sprint `5.23` shutdown model. Standard-P lifecycle-orchestration surface; both rows already `pending`. Prior reclose on Sprint `2.37` (2026-07-30) — own-surface reopen (Standard A) making the emitter retained-assertion (unacked-suffix) leak class non-constructible with a failed-checkpoint recompaction liveness fix; byte-compatible, code-owned, `dev check` 0. Prior reclose on Sprint `2.36` (2026-07-27): terminal shutdown is proof-carrying; timeout is explicitly incomplete and cannot publish `BrokerStopped`. | Single-writer emitter actor/journal, non-constructible retained-assertion retention, Bootstrap Broker extraction and proof-carrying shutdown, gateway scope reduction, compiled service boundary and latched readiness, configurable certificate-scope algebra |
-| 3 | Haskell Chart Platform and Public Workload Delivery | ✅ **Reclosed 2026-08-15 on Sprint `3.40` (Standard A/N)** — the pre-Vault Broker graph gate observes the requested Deployment revision without demanding availability that Vault lifecycle must create; the changed arm crossed admission live and entered Vault initialization. Prior: ✅ **Reclosed 2026-08-13 on Sprints `3.36` and `3.37` (Standard A/N)** — **Sprints `3.36` ✅ and `3.37` ✅**, both found by the **first live Standard-P qualification run** — the first time this plan has gained work from running the system rather than reading it. `prodbox test all --substrate home-local` failed deterministically, twice, at the cert-manager mirror. **`3.36`**: `mirrorHostArchitectureTarget` passed no platform to `docker pull`/`docker push`, so under the containerd image store it published the whole manifest **index**; for a multi-architecture upstream that index names platforms whose blobs were never fetched. Invisible until now because **every one of the 17 mirror targets that had published before it presents a single platform locally** (the registry carries 24 entries in total). The asymmetry is the finding: the custom-image *build* path beside it has always resolved `supportedHostArchitecture`, and the mirror path — named for it — never consulted it. The sprint **records that it has no successful-publish proof**, because the working mirrors were already in the registry and were skipped. **`3.37`** is a sprint whose entire content is a measurement that exonerates this repository: five hypotheses tested and discarded before a pin moved — stale local content (purged, re-pulled, still fails), multi-arch in general (`alpine:3.20`, identical index shape, fine), quay.io (`v1.16.1` same repo, fine), cert-manager (`v1.16.3/4/5`, `v1.17.1`, all fine), controller-only (all five `v1.16.2` images fail). A specific upstream release is unpublishable and no harness work would have fixed it; the pin moves to `v1.17.1`, which **invalidates any prior component-image identity** since `certManagerChartVersion` is derived from the controller tag. One unowned residual recorded: cert-manager is the only mirrored platform component with **no fallback source**, and `3.37` is the proof that this matters. Prior reclose on Sprint `3.35` (2026-08-13) — an own-surface reopen closing the Haskell half Sprint `3.34` registered and deliberately did not absorb. The control-plane listen port had **no compiled owner** — 14 occurrences across 9 modules, five of them separately-named per-role constants — and the row's own open question (are the five roles *required* to share one port?) is answered by measurement: `runControlPlaneServer` receives the role and binds without consulting it, so a per-role port is not representable and the five constants could never have diverged. The row's count was also low in a way that mattered: it counted the port and missed that the `http://<svc>.<ns>.svc.cluster.local:<port>` URL *shape* was authored at 9 sites. Both now have one owner in the new `Prodbox.ControlPlane.ListenPort`, the `Text` URL projection **derived from** the `String` one. `checkControlPlaneListenPortOwner` fails any `src/` module outside the owner, mutation-proven against the binder — and **named a real restatement on its first run, this sprint's own correction comment**, reworded rather than exempted. `ChartStatics.hs`, which called the port operator-chosen deployment configuration while the binder hardcoded it, is corrected under Standard C. Rendered output is byte-identical. Evidence: `dev check` 0, `test unit` 0 (3410 + 27 + 33 + 27). Prior reclose 2026-08-11 on Sprint `3.34` (Standard A/N)** — **Sprint `3.34` ✅ Done (2026-08-11)**: the Kubernetes API egress coordinate has one compiled owner, `KubernetesApiEgressCoordinate`, observed once from `endpoints/kubernetes` so the post-DNAT address and port arrive together; `apiEgress` renders one `ipBlock` per observed address, and the `bootstrap-broker` and `target-secret-agent` templates bind `.Values.kubernetesApiEgress.*`. The sibling lint `chartTemplatePortLiteralViolations` widens the chart-lint region to every repo-owned template under a closed port-key set, with no allowlist — named ports and `{{ .Values… }}` fall out of the predicate. Its first run named **77** findings, reconciling exactly with the 79 measured on 2026-08-10 less the two the owner had already migrated; all are now bindings. Evidence: `dev check` 0, `test unit` 0 (3325 + 27 + 33 + 27), two-region mutation restored byte-exactly, and both deletion anchors exercised by mutation. Standard-P: this **does** edit a live production rendering path, so the next qualification run must exercise the post-`3.34` rendering. Validation 5 (a broker that reaches ready) stays 🧪 Standard-O pending on Sprint `2.43`, which this sprint does not own. Prior state — 🔄 **Reopened 2026-08-10 on Sprint `3.34` (Standard A/N)** — an own-surface reopen on the chart platform and chart lint this phase owns. A live `prodbox test all --substrate aws` run failed at the `bootstrap-broker` Helm release eight consecutive times: the chart permits Kubernetes API egress on TCP `443`, kube-proxy DNATs the API Service to its endpoint on `6443` before the CNI evaluates egress, and the rule matches nothing. The coordinate has **no compiled owner** — `grep -rn "6443" src/` returns one hit, a kubeconfig string-match — so three sites each author their own, and `apiEgress`, the one place the rule is generated from a live observation, is wrong in **both** coordinates because it observes the Service (pre-DNAT) while policy is evaluated post-DNAT. Sprint `3.34` derives the coordinate from `endpoints/kubernetes` (one observation, both post-DNAT halves) and widens the chart lint's region to every repo-owned template, closing a region gap in which **no gate reads a `networkpolicy.yaml` for content** and 79 numeric port literals across 13 charts sit un-gated. The doctrine it implements is [chaos_hardening_doctrine.md § 24](../documents/engineering/chaos_hardening_doctrine.md) (Sprint `0.26`). **This edits a live production rendering path**, so the next qualification run must exercise the post-`3.34` rendering; both rows were already `pending`. The lint closes drift, not correctness, and is not credited with catching the outage. A **Standard-C correction (2026-08-10)** also landed on the phase header, which still asserted its reclose on Sprint `3.32` and had never recorded `3.33`. Prior reclose — ✅ **Reclosed on Sprint `3.33` (2026-08-09)** — an own-surface reopen (Standard A) closing this phase's one unowned `Pending Removal` row, on the condition that row itself set. Sprint `3.33` ✅ **Done (2026-08-09)** gives `EnsureDnsRecord` the same `DnsOwnerAuthority` `DestroyDnsRecord` has required since `3.32`: an ensure is a mutation against the same coordinate and is the same *Direction* class, and the asymmetry was deliberate scoping rather than a judgement that an ensure is safe. `runEnsure` refuses `DnsProgramOwnerUnauthorized` **before its first observation** — the refusal case asserts an empty boundary call log, so an unauthorized writer never reaches Route 53 rather than reaching it and failing read-back — and the gateway daemon **mints** its authority from `RuntimeRole` × `Substrate` instead of naming an owner beside the coordinate. **Unlike `3.32` this edits a live production write path**, so the no-behaviour-change claim is argued rather than asserted: `DestroyDnsRecord` had zero production construction sites, `EnsureDnsRecord` has exactly one, and the owner it mints is `HomeGatewayDnsOwner` — precisely what `homeDnsProgramInputs` already builds the coordinate with — so the new guard cannot fire on the supported path. The Sprint `3.32` bound is unchanged and not narrowed by this: a ring-2 gate bounds a process, not a protocol, and the two untyped Route 53 writers in `ProviderProduction.hs` remain outside both sprints. Prior reclose on Sprint `3.32` (2026-08-07) — the 2026-08-05 own-surface reopen closes: `3.31` and `3.32` are both Done on their code-owned surfaces and Phase `3` has no open sprints. Sprint `3.32` ✅ **Done (2026-08-07)** makes a typed DNS destroy consume the `DnsOwnerAuthority` the running process holds — opaque, minted only by a total `RuntimeRole × Substrate` table whose range excludes **both** cert-manager owners, so the sprint's named scenario (a home process deleting an AWS cert-manager `_acme-challenge` record by naming that owner on both sides) is unconstructible rather than refused; enforced by a `dev check` boundary in the `RoundTripWitness`/`TargetSinkVersion` idiom and proved by a mutation exercise that reproduced the defect and restored byte-exactly. It changes no live behaviour — `DestroyDnsRecord` has zero production construction sites — and the sprint records that rather than claiming otherwise. Its documentation half **corrected the sprint's own premise a second time**: the Objective said Percona PGO owns the `pguser` password and the sync must run Secret → Vault; source says the reverse (prodbox generates all three Patroni passwords into Vault KV), and the 2026-08-07 correction's replacement claim that "no process copies the value" was also false — exactly one mirror exists, chart-local rather than Haskell, running Vault → Secret with no reverse path. Recorded with citations in `secret_derivation_doctrine.md` § 5.1. Prior status: 🔄 Active (own-surface reopen 2026-08-05) — previously ✅ Reclosed on Sprint `3.30` (2026-08-03)** — own-surface reopen declaring the RFC 6455 WebSocket handshake GUID a real, required constant and pointing the MinIO chart credential default at its actual registration in `vault_doctrine.md` §6.1; comment-only, rendered output byte-identical. Prior reclose on Sprint `3.26` (2026-07-25), which closes the independently validated chart/identity/capacity/graph surface; Phase-4 interpreters and cutovers compose it without backward-blocking Phase 3. Sprint `3.27` derives separate scheduler-request and containment-limit admission axes; Sprints `3.28`/`3.29` remain Done. **Own-surface reopen 2026-08-05 (Sprint `0.21` topology sweep): 🔄 Active.** Sprint `3.31` ✅ **Done (2026-08-07)**: all eight Helm statuses now decode to distinct constructors from `.info.status` (which `--output json` was already requesting and the classifier discarding), an unrecognised status fails closed, and a mutating helper requires a `HelmWritePermit` whose producer refuses a concurrently-held release — so the concurrency error resolves to a typed refusal that cannot be answered by a destroy, where before it deleted the release another writer was mid-install on. Sprint `3.32` remains 🔄 Active with its **scope corrected against source (2026-08-07, Standard C)**: both stated premises are false. There is no `pguser` mirror helper to constrain — every use of the three secret-name helpers is a rendered chart value naming the Secret, so the chart-local materializer reads the operator-owned Secret directly and no process copies the value (Sprint `3.13` removed the mismatch state structurally); the direction rule is satisfied by absence of a mirror, which is stronger than a class with an incomplete instance set. And the DNS owner witness *is* consumed at the delete site — `runDestroy` guards on `ownerMatches` — but it compares two values the same caller supplies, so it proves self-consistency rather than that the running process is the owner. The corrected deliverable is a caller-bound owner witness; it is registered, not landed. Prior reclosures stand. | Separate broker/authority/agent workloads, identities, policies, probes, retained journals, topology-derived resource contracts, one shared resource renderer, single-sourced PVC storage, and derived namespace admission |
+| 3 | Haskell Chart Platform and Public Workload Delivery | ✅ **Reclosed on Sprint `3.50` (2026-10-26): bounded positive TCP-domain parsing, actual frozen/replacement controls and all local gates pass; deployment qualification remains separately pending.** Prior closures remain historical: ✅ **Reclosed 2026-08-15 on Sprint `3.40` (Standard A/N)** — the pre-Vault Broker graph gate observes the requested Deployment revision without demanding availability that Vault lifecycle must create; the changed arm crossed admission live and entered Vault initialization. Prior: ✅ **Reclosed 2026-08-13 on Sprints `3.36` and `3.37` (Standard A/N)** — **Sprints `3.36` ✅ and `3.37` ✅**, both found by the **first live Standard-P qualification run** — the first time this plan has gained work from running the system rather than reading it. `prodbox test all --substrate home-local` failed deterministically, twice, at the cert-manager mirror. **`3.36`**: `mirrorHostArchitectureTarget` passed no platform to `docker pull`/`docker push`, so under the containerd image store it published the whole manifest **index**; for a multi-architecture upstream that index names platforms whose blobs were never fetched. Invisible until now because **every one of the 17 mirror targets that had published before it presents a single platform locally** (the registry carries 24 entries in total). The asymmetry is the finding: the custom-image *build* path beside it has always resolved `supportedHostArchitecture`, and the mirror path — named for it — never consulted it. The sprint **records that it has no successful-publish proof**, because the working mirrors were already in the registry and were skipped. **`3.37`** is a sprint whose entire content is a measurement that exonerates this repository: five hypotheses tested and discarded before a pin moved — stale local content (purged, re-pulled, still fails), multi-arch in general (`alpine:3.20`, identical index shape, fine), quay.io (`v1.16.1` same repo, fine), cert-manager (`v1.16.3/4/5`, `v1.17.1`, all fine), controller-only (all five `v1.16.2` images fail). A specific upstream release is unpublishable and no harness work would have fixed it; the pin moves to `v1.17.1`, which **invalidates any prior component-image identity** since `certManagerChartVersion` is derived from the controller tag. One unowned residual recorded: cert-manager is the only mirrored platform component with **no fallback source**, and `3.37` is the proof that this matters. Prior reclose on Sprint `3.35` (2026-08-13) — an own-surface reopen closing the Haskell half Sprint `3.34` registered and deliberately did not absorb. The control-plane listen port had **no compiled owner** — 14 occurrences across 9 modules, five of them separately-named per-role constants — and the row's own open question (are the five roles *required* to share one port?) is answered by measurement: `runControlPlaneServer` receives the role and binds without consulting it, so a per-role port is not representable and the five constants could never have diverged. The row's count was also low in a way that mattered: it counted the port and missed that the `http://<svc>.<ns>.svc.cluster.local:<port>` URL *shape* was authored at 9 sites. Both now have one owner in the new `Prodbox.ControlPlane.ListenPort`, the `Text` URL projection **derived from** the `String` one. `checkControlPlaneListenPortOwner` fails any `src/` module outside the owner, mutation-proven against the binder — and **named a real restatement on its first run, this sprint's own correction comment**, reworded rather than exempted. `ChartStatics.hs`, which called the port operator-chosen deployment configuration while the binder hardcoded it, is corrected under Standard C. Rendered output is byte-identical. Evidence: `dev check` 0, `test unit` 0 (3410 + 27 + 33 + 27). Prior reclose 2026-08-11 on Sprint `3.34` (Standard A/N)** — **Sprint `3.34` ✅ Done (2026-08-11)**: the Kubernetes API egress coordinate has one compiled owner, `KubernetesApiEgressCoordinate`, observed once from `endpoints/kubernetes` so the post-DNAT address and port arrive together; `apiEgress` renders one `ipBlock` per observed address, and the `bootstrap-broker` and `target-secret-agent` templates bind `.Values.kubernetesApiEgress.*`. The sibling lint `chartTemplatePortLiteralViolations` widens the chart-lint region to every repo-owned template under a closed port-key set, with no allowlist — named ports and `{{ .Values… }}` fall out of the predicate. Its first run named **77** findings, reconciling exactly with the 79 measured on 2026-08-10 less the two the owner had already migrated; all are now bindings. Evidence: `dev check` 0, `test unit` 0 (3325 + 27 + 33 + 27), two-region mutation restored byte-exactly, and both deletion anchors exercised by mutation. Standard-P: this **does** edit a live production rendering path, so the next qualification run must exercise the post-`3.34` rendering. Validation 5 (a broker that reaches ready) stays 🧪 Standard-O pending on Sprint `2.43`, which this sprint does not own. Prior state — 🔄 **Reopened 2026-08-10 on Sprint `3.34` (Standard A/N)** — an own-surface reopen on the chart platform and chart lint this phase owns. A live `prodbox test all --substrate aws` run failed at the `bootstrap-broker` Helm release eight consecutive times: the chart permits Kubernetes API egress on TCP `443`, kube-proxy DNATs the API Service to its endpoint on `6443` before the CNI evaluates egress, and the rule matches nothing. The coordinate has **no compiled owner** — `grep -rn "6443" src/` returns one hit, a kubeconfig string-match — so three sites each author their own, and `apiEgress`, the one place the rule is generated from a live observation, is wrong in **both** coordinates because it observes the Service (pre-DNAT) while policy is evaluated post-DNAT. Sprint `3.34` derives the coordinate from `endpoints/kubernetes` (one observation, both post-DNAT halves) and widens the chart lint's region to every repo-owned template, closing a region gap in which **no gate reads a `networkpolicy.yaml` for content** and 79 numeric port literals across 13 charts sit un-gated. The doctrine it implements is [chaos_hardening_doctrine.md § 24](../documents/engineering/chaos_hardening_doctrine.md) (Sprint `0.26`). **This edits a live production rendering path**, so the next qualification run must exercise the post-`3.34` rendering; both rows were already `pending`. The lint closes drift, not correctness, and is not credited with catching the outage. A **Standard-C correction (2026-08-10)** also landed on the phase header, which still asserted its reclose on Sprint `3.32` and had never recorded `3.33`. Prior reclose — ✅ **Reclosed on Sprint `3.33` (2026-08-09)** — an own-surface reopen (Standard A) closing this phase's one unowned `Pending Removal` row, on the condition that row itself set. Sprint `3.33` ✅ **Done (2026-08-09)** gives `EnsureDnsRecord` the same `DnsOwnerAuthority` `DestroyDnsRecord` has required since `3.32`: an ensure is a mutation against the same coordinate and is the same *Direction* class, and the asymmetry was deliberate scoping rather than a judgement that an ensure is safe. `runEnsure` refuses `DnsProgramOwnerUnauthorized` **before its first observation** — the refusal case asserts an empty boundary call log, so an unauthorized writer never reaches Route 53 rather than reaching it and failing read-back — and the gateway daemon **mints** its authority from `RuntimeRole` × `Substrate` instead of naming an owner beside the coordinate. **Unlike `3.32` this edits a live production write path**, so the no-behaviour-change claim is argued rather than asserted: `DestroyDnsRecord` had zero production construction sites, `EnsureDnsRecord` has exactly one, and the owner it mints is `HomeGatewayDnsOwner` — precisely what `homeDnsProgramInputs` already builds the coordinate with — so the new guard cannot fire on the supported path. The Sprint `3.32` bound is unchanged and not narrowed by this: a ring-2 gate bounds a process, not a protocol, and the two untyped Route 53 writers in `ProviderProduction.hs` remain outside both sprints. Prior reclose on Sprint `3.32` (2026-08-07) — the 2026-08-05 own-surface reopen closes: `3.31` and `3.32` are both Done on their code-owned surfaces and Phase `3` has no open sprints. Sprint `3.32` ✅ **Done (2026-08-07)** makes a typed DNS destroy consume the `DnsOwnerAuthority` the running process holds — opaque, minted only by a total `RuntimeRole × Substrate` table whose range excludes **both** cert-manager owners, so the sprint's named scenario (a home process deleting an AWS cert-manager `_acme-challenge` record by naming that owner on both sides) is unconstructible rather than refused; enforced by a `dev check` boundary in the `RoundTripWitness`/`TargetSinkVersion` idiom and proved by a mutation exercise that reproduced the defect and restored byte-exactly. It changes no live behaviour — `DestroyDnsRecord` has zero production construction sites — and the sprint records that rather than claiming otherwise. Its documentation half **corrected the sprint's own premise a second time**: the Objective said Percona PGO owns the `pguser` password and the sync must run Secret → Vault; source says the reverse (prodbox generates all three Patroni passwords into Vault KV), and the 2026-08-07 correction's replacement claim that "no process copies the value" was also false — exactly one mirror exists, chart-local rather than Haskell, running Vault → Secret with no reverse path. Recorded with citations in `secret_derivation_doctrine.md` § 5.1. Prior status: 🔄 Active (own-surface reopen 2026-08-05) — previously ✅ Reclosed on Sprint `3.30` (2026-08-03)** — own-surface reopen declaring the RFC 6455 WebSocket handshake GUID a real, required constant and pointing the MinIO chart credential default at its actual registration in `vault_doctrine.md` §6.1; comment-only, rendered output byte-identical. Prior reclose on Sprint `3.26` (2026-07-25), which closes the independently validated chart/identity/capacity/graph surface; Phase-4 interpreters and cutovers compose it without backward-blocking Phase 3. Sprint `3.27` derives separate scheduler-request and containment-limit admission axes; Sprints `3.28`/`3.29` remain Done. **Own-surface reopen 2026-08-05 (Sprint `0.21` topology sweep): 🔄 Active.** Sprint `3.31` ✅ **Done (2026-08-07)**: all eight Helm statuses now decode to distinct constructors from `.info.status` (which `--output json` was already requesting and the classifier discarding), an unrecognised status fails closed, and a mutating helper requires a `HelmWritePermit` whose producer refuses a concurrently-held release — so the concurrency error resolves to a typed refusal that cannot be answered by a destroy, where before it deleted the release another writer was mid-install on. Sprint `3.32` remains 🔄 Active with its **scope corrected against source (2026-08-07, Standard C)**: both stated premises are false. There is no `pguser` mirror helper to constrain — every use of the three secret-name helpers is a rendered chart value naming the Secret, so the chart-local materializer reads the operator-owned Secret directly and no process copies the value (Sprint `3.13` removed the mismatch state structurally); the direction rule is satisfied by absence of a mirror, which is stronger than a class with an incomplete instance set. And the DNS owner witness *is* consumed at the delete site — `runDestroy` guards on `ownerMatches` — but it compares two values the same caller supplies, so it proves self-consistency rather than that the running process is the owner. The corrected deliverable is a caller-bound owner witness; it is registered, not landed. Prior reclosures stand. | Separate broker/authority/agent workloads, identities, policies, probes, retained journals, topology-derived resource contracts, one shared resource renderer, single-sourced PVC storage, and derived namespace admission |
 | 4 | Lifecycle Hardening, Pulumi Decoupling, and Python Removal | ✅ **Reclosed 2026-08-14 on Sprints `4.81` ✅ and `4.82` ✅ (Standards A/N)** — an own-surface reopen on the residue-observation and destructive-cleanup paths this phase owns, opened by a **doctrine gap rather than a failure**, and closed the same day. [chaos_hardening_doctrine.md § 24](../documents/engineering/chaos_hardening_doctrine.md) (*an observation has a layer*, Sprint `0.26`) requires a derived value to be enforced at the layer its source object is authoritative for; `ResidueStatus` is the common target of **nineteen** producers — reading the Pulumi checkpoint store, AWS resource presence, AWS IAM, AWS EBS, config text, a Pulsar topic, a Vault gate, an object-store listing, SES consumer quiescence, and public-edge TLS — and has no field in which to name one (the layers are enumerated rather than counted; the producer figure is a signature grep, a layer numeral would be a bucketing judgement). [Standard L](development_plan_standards.md#l-cli-doctrine-alignment) makes scheduling it mandatory rather than optional. The defining module already documents two of those layers as "deliberately independent … separate external facts" and then joins them into the same flat type. **`4.81` ✅** made the layer sayable and its minting restricted — a field, **not** a type index, because § 21 names *residue* explicitly in its prohibition on indexing an observed value — with a class-A opaque minter plus a **mutation-proven** `checkResidueObservationMinter` boundary in the `RoundTripWitness`/`TargetSinkVersion` idiom, and it retired `ResidueBackendMinioUnreachable` as the label for authentication failures against a service that was never contacted, and withdrew `residueAbsent` — an exported alias with **no production caller** whose only test asserted it equalled the constructor. **`4.82` ✅** made the cascade consume the layer it actually needs, using the admin credential `runCascadePostflightTagSweep` already loads in the same run; its acceptance criterion is the **inverse** of Sprint `4.76`'s live run — identical host state, exit 0, narration naming AWS — plus a second run proving the refusal arm still refuses. **Both move Standard-P destructive-cleanup surfaces**; both substrate rows stay `pending` and no qualification identity captured before them survives. The consequence they exist to remove has been in this document's own prose since 2026-08-11 with no owner. Prior reclose — ✅ **2026-08-13 on Sprints `4.78`, `4.79`, and `4.80` (Standards A/N)** — the own-surface reopen on the observation-producer and destructive-cleanup surfaces closed, taking this phase's last three unowned `Pending Removal` rows. **Sprint `4.78` ✅** replaced nine prose classifiers (the row said seven) with one anchored, probe-keyed owner copied from `classifyAwsSesPresenceOutput`: bare `404`/`409`/`412` substrings become forms a request id cannot satisfy, four kubectl variants stop matching **stdout**, and three credential arms are **deleted** rather than re-worded. **Its worked example was measured unreachable** — the sole producer of that `Either` is a constant `Left` carrying neither marker word — which is what made deleting arms on a fail-closed teardown gate behaviour-preserving. A test that asserted the defect as an invariant is inverted under Standard C. **Sprint `4.79` ✅** gave two destroy paths opposite remedies for the same shape, decided rather than defaulted: `completeDestroy` **reports** its surviving Pulumi stack entry (the AWS destroy had already succeeded, so refusing would fail a teardown that removed every resource), while the two `head-bucket` arms **refuse**, because an expired credential made `nuke` answer "already gone" about the bucket holding every encrypted checkpoint. **Sprint `4.80` ✅** answered the policy question Sprint `4.76` left open without adding a requirement: the cascade already computes `inferCascadeSubstrate` eight lines earlier and needs no credential to do it, so a missing sweep credential is cannot-confirm exactly when this lifecycle had AWS state in scope — the AWS-free host still exits 0. **All three move Standard-P destructive-cleanup surfaces**; both rows already `pending`. Evidence: `dev check` 0, `test unit` 0 (~~3420~~ + 27 + 33 + 27 — **corrected 2026-08-14**: this figure and Sprint `4.80`'s own `3419` disagreed, and the pre-`4.81` tree measures **3430**), `test integration cli` 57/57. Prior reclose 2026-08-11 on Sprints `4.76`/`4.77` (Standards A/N)** — the own-surface reopen on the destructive lifecycle paths this phase owns closes, and the phase has no open sprints. **Sprint `4.76` ✅ Done (2026-08-11)** is the one to read, because the reported defect was the smallest of four that composed. A `--cascade` run narrated three `unreachable` per-run statuses as "no live per-run residue" and exited 0; underneath, `inferCascadeSubstrate` tested `isResiduePresent`, so an unreadable backend inferred `SubstrateHomeLocal` — precisely the branch on which a skipped drain is success; `clusterReachable :: IO Bool` returned `False` for **every** non-zero `kubectl` exit, so a refused credential was indistinguishable from a departed cluster; and the postflight sweep returned `IO ()`, so nothing it found could reach the exit code. Each is now three-valued with the **uncertain arm as the default**: `ClusterProbe` yields `ClusterAbsent` only on a recognised connection-establishment phrase, and a unit case asserts the closed property that no evidence phrase names an authentication or authorization refusal, because being told `Unauthorized` proves a server answered. `reconcileAbsent` returns an outcome carrying observed-absent and unobserved separately, and `absentReconcileExitCode` fails on a non-empty unobserved set even when every destroy succeeded; the cascade folds six phase outcomes and runs every phase (§ 5c makes drain→destroy an attempt edge, not a barrier). `prodbox nuke` gains the terminal sweep § 5/§ 6b have always assigned it — **and a unit case had pinned its absence**, listing `discoverClusterTaggedAwsResources` among tokens forbidden in `Nuke.hs`, so the gap was an asserted invariant rather than an omission. Its row was also wrong in one place: the `"Per-run Pulumi destroys"` narration is shared with `prodbox aws teardown`'s **`Operational`** batch, so every operator who tore down the IAM user was told "Per-run" about it; the label is now derived from the batch's own `LifecycleClass`. One residual is registered rather than absorbed with a stated reason: the sweep's credential-absent arm stays a skip, because refusing would fail `--cascade` on every host that has never provisioned an AWS substrate — the arm no longer lies, so what is open is policy, not honesty. **Sprint `4.77` ✅ Done (2026-08-11)** closed two defects where its row named one: the AWS CLI parses list-valued options with `store` so a repeated `--tag-filters` sent only the second, and the Tagging API **ANDs** `TagFilters` so even both-sent would have asked for resources carrying *both* tags where the sweep wants either — it is now one query per filter set, unioned by ARN, with any constituent failure failing the whole discovery. The EBS reaper gained a client-side re-filter through `partitionEbsTagRows`, which had **no production caller**, the enforcing-nothing shape Sprints `4.68` and `4.72` also found; `parseTagSweepPayload` stopped returning `Right []` for every payload shape it did not recognise. `--yes` was resolved by **gating rather than removal**, because it is the documented automation entrypoint in `CLAUDE.md` and the `resourceDestroyCommand` string the registry prints in teardown refusals — removing it would have narrowed the automation contract below the doctrine — and confirmation was split from the quietness selector it had silently doubled as. **Both sprints move Standard-P destructive-cleanup and lifecycle-orchestration surfaces**; both rows were already `pending`. Prior state — ✅ **Reclosed 2026-08-10 on Sprints `4.73`-`4.75`**, ending the own-surface reopen on the condition it existed to remove: no `Pending Removal` row on a Phase-`4` surface is unowned. **Sprint `4.74` ✅ Done (2026-08-10)** is the one to read, because its row was wrong in the flattering direction: it said Vault CAS callers could not distinguish a lost race from a transport failure, and measurement found **four callers already classifying and all four wrong the same way** — `HttpStatus 400 -> "conflict"` plus a `409` arm Vault never returns for a KV CAS. Vault answers a version mismatch and a malformed or cas-required request with the same `400`, so `reconcileRetainedAuthorityEpoch` spent an authority-epoch CAS retry on a refused request and then called it a lost race, and `vaultRequestReplayRepository` reported a write that never happened as a replay conflict. The row also named three files against a measured **eleven call sites across ten modules**, the eleventh found by this sprint's own `dev check` rule on its first run rather than by reading. `VaultCasOutcome` now names applied/conflict/refused/unobservable, `classifyVaultCasOutcome` is the one total reading, and a `dev check` rule fails the build for any module writing a CAS without it — stated as what it is, a compiled rule over a source region rather than a property of the type, because the transport result stays `Either HttpError` for the Vault session wrapper's single relogin (§ 22). Retyping the primitive across eleven critical-path sites was declined as the coupled-big-bang shape that required reverting Sprint `4.51`. **This moves a Standard-P persistence-protocol surface.** **Sprint `4.73` ✅ Done (2026-08-10)** routes the SES DNS writer through the typed `DnsRecordProgram`, answering all three obstacles Sprint `4.72` measured: `DnsRecordType` gains CNAME and MX with canonical value forms and `ownerAcceptsType` becomes total over the whole 5 x 4 matrix; the five lanes submit in one burst and discharge propagation afterwards, keeping the batch's single window rather than five in series; and `ensureSesDnsInputs` still runs first so the ensure begins from a conclusive observation. **Its own finding is one the row did not state**: the lane needs its own owner, because sharing `AwsLifecycleProviderDnsOwner` would have made `dnsRecordLifecycleClass` assert `PerRun` about records in the operator's retained parent zone and handed the public A-record writer TXT/CNAME/MX authority over the same zone. **Sprint `4.75` ✅ Done (2026-08-10)** owns the one row that cannot be closed by code and says why in measurements — `dhall/capacity/measured/` holds only `Schema.dhall`, so no profile exists for any lane — while correcting the haddock that called the authored control-plane service time measured. Sprints `4.67`-`4.72` are ✅ **Done** and closed five of the six rows the phase carried into the prior pass. **Sprint `4.68` ✅ Done (2026-08-10)** is the one to read: the accept path was `forever { accept; forkFinally }` — a thread per accepted connection, nothing counting them, no deadline on the read or the interpreter — and the machine that fixes it **already existed with no production consumer**, since `Prodbox.ControlPlane.Capacity` has held an opaque `ServiceCapacityPlan` and a pure decide/evolve `AdmissionQueue` since Sprint `1.62`. The kernel backlog (`listen … 32`) bounds pending connections, not accepted ones, and that distinction is the finding. The deadline is enforced **inside** the response obligation rather than around it, because a `timeout` outside delivers an async exception the obligation answers with its cancellation refusal — the caller would read `503 shutting-down`, naming the wrong cause, and a second write would be a second reply. **Testing the path then found a defect reasoning about it had not**: `close` on a socket with unread bytes sends RST and discards the reply, and the `429` and `408` are exactly the two replies produced without reading, so a bounded drain now precedes the close. Mutation-proven: `rawWorkerCount = 1` fails `dev check` with `ServiceCapacityOverCommitted 2400000`. **This moves Standard-P queueing/admission and deadline-composition surfaces.** **Sprint `4.72` ✅ Done (2026-08-10)** measured the same enforcing-nothing shape on DNS: before it, `runDnsRecordProgram`, `EnsureDnsRecord`, and `DestroyDnsRecord` appeared **only in two unit suites**, so the typed program bounded no running code at all. The public A-record writer now runs `EnsureDnsRecord` against an exact coordinate whose account is observed from `sts get-caller-identity` and whose ownership epoch comes from the retained Authority epoch — observed rather than carried, so a request cannot claim an account and no durable wire format changes. The SES writer is **narrowed into its own row with a measured reason** (three record types against two defined; five records in one batched change with a single propagation wait; desired values that may require creating the SES identity first), which is a redesign rather than a rerouting — and Sprint `4.73` above is the sprint that performed it. **Sprint `4.71` ✅ Done (2026-08-10)** deletes the unconditional `vaultKvWriteV2`, and the audit its row called "its own sprint" found **three real lost-update races**, the worst being a federation child-index read-modify-write where two concurrent registrations silently erased one child; the gateway continuity marker becomes create-only because its own contract already said a latch that can be overwritten is not a latch. **This moves a Standard-P persistence-protocol surface.** **Sprint `4.70` ✅ Done (2026-08-10)** makes a target-sink CAS request unassemblable from raw data, and narrowing the export surface **exposed dead code the `(..)` imports had masked** — seven unused imports and an orphan binding left by Sprint `4.59`. **Sprint `4.69` ✅ Done (2026-08-10)** makes the reconcile run thread its admissions through a fold, so the `fst <$>` that dropped the final slice's set is not expressible. **Sprint `4.67` ✅ Done (2026-08-09)** migrates **56 status projections across 34 files** to the closed `ReplyStatus`, correcting its row's namespace-scoped count of 51, deleting a verbatim second copy of a server's status table in `TlsRetentionAuthorityClient`, and replacing the replay projection's `100..599` range test with a decode refusal. The three rows that pass left — the SES DNS writer, the authored control-plane service time, and the Vault CAS conflict — are closed or owned by Sprints `4.73`-`4.75` above. Prior status: 🔄 Active (2026-08-09) on the unowned `Pending Removal` rows this phase owns; Sprints `4.62`-`4.66` are ✅ **Done** and the reopen stays open because rows this phase owns remain. **Sprint `4.66` ✅ Done (2026-08-09)** is the one to read: `httpReasonPhrase` mapped six statuses while the interpreters emit ten, so the control plane was writing `HTTP/1.1 403 Status` on the wire for every authorization refusal, authentication failure, replay expiry, and cleanup tombstone. The ledger row understated it three ways and each count is corrected by measurement - the unmapped set is `{401, 403, 408, 410}` not `{401, 403}`, 17 sites across 11 files not nine, and 338 producer literals and 75 type sites across 37 files not 47 and 17. `Prodbox.Http.ReplyStatus` holds the closed set with both projections total and `replyStatusFromCode` **derived from** `replyStatusCode` rather than restated, and a `dev check` rule fails the build on drift - proven at repository scale by deleting `ReplyForbidden`, which names 11 real production files. The gate's own first run produced two false positives and both are recorded rather than patched away (`CallerPrincipal`'s `100`-`103` principal tags share the `-> NNN` shape, so the exemption is by path and named; `LocalClient.hs`'s `(127, 0, 0, 1)` matched the reply-tuple shape). **The row is narrowed, not closed**: the producers still answer a raw `Int`, and that measured migration stays open. **Sprint `4.65` ✅ Done (2026-08-09)** gives a refusal back its structured reason, and its row's evidence was false twice over - it prescribed importing `Prodbox.Logging`, a module that has never existed on any branch, and calling `hPutStrLn stderr`, which `dev check` forbids in every `src/Prodbox/**.hs` outside three exempt paths, so following the row as written would have failed the build; it was also filed against a file that never sees the exception. The observation seam is a **positional** argument of `mkResponseObligation`, because a defaulted field would have made observation opt-in and the defect is that nobody opted in. **Sprint `4.64` ✅ Done (2026-08-09)** makes the admission reset Sprint `4.61` fixed by hand **unnameable** - `noAdmissions` is package-internal, `runFirstAnchoredStepOrder` is the sole entry point that starts empty, and the *existing* allowlist bars the way around it rather than a new lint being written; the bound is stated rather than implied, since it stops an accidental reset and not a deliberate one. **Sprint `4.63` ✅ Done (2026-08-09)** decides the global target-intent ledger's CAS verdict at all four sites its row said was one, with the disposition **decided rather than copied** from `4.62`: only `ModelBCasRefusedCorrupt` refuses, because every producer of it refuses before the object store, while `ModelBCasUnobservable` stays deliberately on the read-back path as the applied-but-response-lost case. A second defect fell out - a refusal consumed a compaction retry and surfaced as `TargetCommitCompactionOverBound`, a capacity bound named as the cause of a refusal. Sprint `4.62` ✅ **Done (2026-08-09)** binds the target-sink CAS verdict that was discarded with `_ <-`, and **its ledger row understated the defect**: the mutation exercise shows the pre-fix interpreter returning `TargetCommitRunCommitted { targetCommitRunSinkCasAttempted = True }` for a write the sink store explicitly refused — a false commit record for a target secret, reachable whenever the sink holds the expected bytes for any other reason. `TargetSinkCasRefused` is now the distinct `TargetCommitSinkCasRefused`, because what the sink *said at the time* and what it *looks like afterwards* are different facts and collapsing them is how the refusal became a success; `Applied` / `Conflict` / `Unobservable` stay on the read-back path, the last deliberately, since it is the applied-but-response-lost case. The row's second named location was also stale — `TargetSecretAgentExecution.hs` has zero occurrences since Sprint `4.59` deleted that lane. A co-defect of the same shape on the **global** ledger CAS was found on the same call path and registered rather than absorbed, because the guarded Model-B arms need their own disposition rather than a copied `case`. **Remaining on this reopen**: six unowned rows - the unbounded control-plane accept loop with no per-request or read deadline (the one that moves a Standard-P queueing/admission surface), the producer-side `ReplyStatus` migration Sprint `4.66` narrowed, the two untyped Route 53 writers in `ProviderProduction.hs`, the `TargetSinkCasRequest`/`TargetSinkRecord` constructor exports, the non-CAS `vaultKvWriteV2` export, and the discarded final-slice admission set Sprint `4.64` found while measuring itself. Prior reclose 2026-08-08 on Sprint `4.61` — a second own-surface reopen the same day, closed the same day. Phase 5's Sprint `5.31` made a discarded refusal speak, and the sentence it produced named a Phase-4 defect: `runAnchoredStepOrder` reset its admission set at every phase boundary, so a component whose readiness step is anchored in an earlier phase than its dependant's mutation step was refused unconditionally — "never observed ready in this run" said of a component observed ready earlier in that same run. `applyNativeInstallPlan` now threads admissions bootstrap → transition → steady, and the two interstitial readiness observations record their evidence instead of discarding it. Staleness is untouched: an admission aged past its bound still expires and re-observes, so what widened is which evidence counts, not how long it lasts. A gate holding the threading is owed and registered rather than claimed. Prior status: ✅ **Reclosed 2026-08-08 on Sprint `4.60`**, which gave the control-plane server a response obligation. `runControlPlaneServer` used to discard `forkFinally`'s `Either SomeException ()` with `const`, so any throw from the request read, the readiness resolver, or `interpreterHandle` closed the socket with zero bytes and no `500` — indistinguishable on the wire from a network fault, and the *Distinguishability* class committed at a conversion boundary ([chaos_hardening_doctrine.md § 23](../documents/engineering/chaos_hardening_doctrine.md)). The Bootstrap Broker had held the standard since `2.33`; `Prodbox.Http.ResponseObligation` is now the single implementation both it and the integration fixture server route through, and the only module in the governed set permitted to import `Network.Socket.ByteString` — enforced by a `dev check` rule with a positive anchor. The handler's type is `IO reply`, not `IO ()`, so "handled the connection without answering" does not type-check, and the fallback is a total function of a closed refusal rather than a constant, because production must not put an exception's text on the wire while a fixture server must. `SomeAsyncException` is answered best-effort and re-raised unchanged, since `System.Timeout.Timeout` is asynchronous and converting it to a `500` would silently defeat every enclosing deadline. It moves no Standard-P surface: no process, thread, pool, deadline, or admission decision changes, only which bytes an already-accepted connection receives before the same `close`. Prior status: ✅ **Reclosed on Sprint `4.59` (2026-08-08)** — the 2026-08-05 own-surface reopen closes: Sprints `4.55`, `4.56`, and `4.59` are all Done and Phase `4` has no open sprints. Sprint `4.55` ✅ **Done (2026-08-08)** moves every control-plane role's readiness off the kubelet request path — the seam carries `STM`-typed cached facts instead of an `m Bool`, so backend I/O behind readiness no longer type-checks; the four-valued observation keeps an identity rejection distinct from not-yet-ready; N layers resolve from one snapshot in one transaction, replacing six non-short-circuiting `&&` compositions; and the old seam is deleted. Its **counts were wrong for all five roles** and are corrected against source: the Lifecycle Authority ran five signed S3 LISTs (one store reached from five layers), the two dedicated adapters one each, and the Provider Worker and Target Secret Agent **zero** — the Provider Worker instead shelled out to `aws sts get-caller-identity`, and the Agent ran up to 32 sequential Vault KV reads through an `allM` that short-circuits only on failure, making the healthy path the slowest. Sprint `4.56` ✅ **Done (2026-08-08)** stops the repository minting the right proof and discarding it: `classifyObservation`'s admission ticket now becomes a `DependencyAdmission`, the executor threads an admission set, and a mutating step takes a `MutationAdmission` it cannot be invoked without, re-validated against a bound **read from the graph** — with the honest limitation recorded that every edge derives the same number today, because `componentRequirementSpec` returns one literal. An expired admission re-observes once rather than failing the reconcile, decided explicitly. Sprint `4.59` ✅ **Done (2026-08-08)** deletes the superseded in-controller Target Agent write lane and the `TrustedTargetSink` CAS half it existed to serve; **two clauses of its implementation list were false** and were not executed — `TargetCommitInterpreter.hs` has two registered-suite importers (this plan's own ledger already said the Authority-side call site survives), and the CAS vocabulary is minted by `decideTargetSinkWrite`, so it was never orphaned. Prior status: 🔄 Active (own-surface reopen 2026-08-05) — previously ✅ Reclosed on Sprints `4.50`/`4.53` (2026-08-01).** The retained Authority and five-role runtime, encrypted EKS client-auth, exact TLS retention, Provider-native SES/Route53 reconciliation, decommission protocol, legacy transport deletion, and authenticated S3 endpoint witness are code-owned and independently validated. Current-revision live exercise remains Standard O/P evidence. Own-surface reopen on Sprint `4.54` (2026-08-04) repairs this phase's own validation evidence: Sprint `4.53` rested its Independent Validation on a test module Sprint `4.50` had deleted, and its three endpoint-readiness classifier cases were committed in no revision, so the production-live phrase-to-constructor mapping had only a constructor-name presence scan over it. Coverage is restored on the surviving `ModelBCasTransport` seam (19/19) with a mutation exercise proving it fails closed. **Own-surface reopen 2026-08-05 (Sprint `0.21` topology sweep): 🔄 Active** on Sprints `4.55` (five control-plane roles run six signed S3 LISTs on a `timeoutSeconds: 1` probe path — the Sprint `2.39` defect, unmigrated) and `4.56` (the admission ticket is minted and discarded one line later). Prior reclosures stand. Sprint `4.58` (2026-08-06) closes the target-sink expected-version surface and corrects its own prior account of the defect; Sprint `4.59` is registered 📋 Planned to delete the superseded in-controller Target Agent write lane, which has zero production callers. | Durable Lifecycle Authority, immutable checkpoints, operation journal/outbox, target delivery, authority-epoch cutover, removal of gateway/host-direct authority, crash-safe decommission, durability-indexed retained storage, observed-host over-commit rejection, and typed endpoint-readiness |
 | 5 | Canonical Test Suite | ✅ **Reclosed 2026-08-13 on Sprint `5.34` (Standards A/N)** — an own-surface reopen closing this phase's two remaining unowned rows, and **the pass's sharpest finding is that one of them prescribed a check the repository forbids**. The symmetric credential guard — require `access_key_id` to *have* the AWS id shape — refuses this repository's own integration fixtures, and those fixtures cannot carry a valid id because Sprint `1.75`'s `scannedCredentialViolations` fails the build for any **tracked** file with that shape. Two rules in direct opposition; the scanner wins, and the guard keeps the half that matters — a transposition of **real** credentials is refused, placeholders go unremarked. The all-empty-fixture half is closed by **argument** rather than code: `defaultTestSecrets` *is* all-empty, it is what the generated schema's `default` carries, so a decoder refusing empty would refuse the schema's own default. The Tier-0 write gate widened from one line to **one hop within one top-level definition**, and Sprint `5.30` was right that widening risks an unstated bound — two drafts produced false positives before the third was correct, and all are recorded. It found one true escape (`withBinarySiblingTier0`, now typed `Tier0Fixture -> IO a -> IO a`) plus a Standard-C correction: `tier0FixturePath` claimed the sibling filename appears once in the test tree; measured, six files and 109 occurrences. Evidence: `dev check` 0, `test unit` 0 (3420 + 27 + 33 + 27), `test integration cli` 57/57 — load-bearing, because the symmetric draft broke two integration cases and that is how the conflict surfaced. Prior reclose 2026-08-11 on Sprints `5.32`/`5.33` (Standards A/N)** — the own-surface reopen on the suite content this phase owns (Standard M) closes, and the phase has no open sprints. **Sprint `5.32` ✅ Done (2026-08-11)** is the one that changes what the plan may claim: the `LCPC-2026-07-11` reproducer Standard P depends on discarded its `FrozenCounterexampleTrace` to a `_` wildcard and returned a constant that the validation then checked against itself, so `complete` was `True` for every input. The trace now carries per-mechanism dispositions read from `test/qualification/LCPC-2026-07-11.dispositions` — parsed totally over `CounterexampleMechanism`, so a missing or misspelled row refuses rather than silently shrinking coverage — and bound into the trace digest; a committed mutation fixture beside it makes `prodbox test integration control-plane-counterexample` exit non-zero. Two design decisions are recorded rather than glossed: the mutation fixture is deliberately **not** trace-digest-pinned, because pinning it would make the digest gate fire first and the disposition consumption — the thing under test — would never run; and the closure check now runs **before** the evidence artifact, because `mkQualificationEvidence` refuses the same class and, built first, would have left the validation's own fold in exactly the cannot-fail shape this sprint removes. Both Deployment Qualification rows were already `pending`, so **nothing is retracted** — what lifts is the prohibition: the Counterexample column may now be filled by a qualification run, where before it could not be filled by anything. **Sprint `5.33` ✅ Done (2026-08-11)**: `daemon-bootstrap`'s unset arm — byte-identical to its `"pass"` fixture arm one line below — now probes the Bootstrap Broker's route surface with read-only `GET`s and refuses, naming the absent daemon and the address probed, when nothing answers; the audit block declares `AUDIT_PROVENANCE=`. `gateway-partition` renders its values from the composition and **left the integration surface entirely** for the unit suite, which reduces the canonical suite's node count and reduces no coverage — the node declared `-> []` prerequisites and could not fail on any input, while the unit suite additionally pins that its emitted lines change when its composition changes. The eight Phase-`2` sprints citing it, and Sprints `5.14`, `5.19`, and `8.12`, carry Standard-C corrections; no code deliverable is withdrawn. Prior state — ✅ **Reclosed on Sprint `5.31` (2026-08-09).** The installed `cli` and `env` integration suites pass **55/55**, and canonical `prodbox test unit` exits 0 with the main Hspec inventory at **3255/3255**. The final four failures were corrected as fixture drift: the fake cluster's three gateway Pods violated the typed exact-cardinality projection of two; the transient primary image push retries and succeeds without using the fallback; config setup is asserted through the derived Dhall union constructor and structural decode; and the AWS-IAM teardown fixture supplies a valid fixture subzone so it reaches the intended unavailable-Credential-Provisioner refusal. Prior reclosures and their code-owned evidence stand. Clean-room deployment qualification remains `pending` under Standards O/P. | Capability-bound preparation, cleanup-DAG fault tables, temporal CPU/queue/deadline oracle, measured-profile recording, exact peer-SAN validation, and typed three-valued readiness |
 | 6 | Final Clean-Room Rerun and Zero-Python Handoff | ✅ **Reclosed on Sprint `6.4` (2026-08-02).** The versioned exact-prefix handoff, rollback refusal, installed-binary plan, and retired-transport absence scan are independently validated; destructive home aggregates remain Standard-P qualification. | Home clean-room cutover/rollback composition, installed-binary migration fixtures, repository absence guards, and zero-residue prerequisite evidence |

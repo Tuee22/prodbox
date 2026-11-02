@@ -16,9 +16,9 @@
 -- directly.  It never reconstructs the PVC set from surviving PVs.
 --
 -- The production client is continuation-scoped.  Its bearer is written only
--- to a private FIFO inside a private temporary directory; the ephemeral
--- kubeconfig and FIFO are removed before the continuation returns and cannot
--- escape through the phantom client token.
+-- beside its kubeconfig in a private temporary directory. Operation-owned
+-- factories close command admission and join uses before removing the files;
+-- selectors expose only durable-safe results through the phantom client token.
 module Prodbox.Lifecycle.Teardown.EksDrainInterpreter
   ( EksDrainInventoryResult (..)
   , EksDrainKubernetesUidObservation (..)
@@ -34,9 +34,11 @@ module Prodbox.Lifecycle.Teardown.EksDrainInterpreter
   , EksDrainCommitSelectionBoundary
   , mkEksDrainCommitSelectionBoundary
   , productionEksDrainCommitSelectionBoundary
+  , productionEksDrainCommitSelectionBoundaryInOperation
   , EksDrainAttemptBoundary
   , mkEksDrainAttemptBoundary
   , productionEksDrainAttemptBoundary
+  , productionEksDrainAttemptBoundaryInOperation
   , EksDrainCommitSelectionError (..)
   , EksDrainDestroyAdmissionError (..)
   , EksDrainInvocationBinding (..)
@@ -60,18 +62,17 @@ module Prodbox.Lifecycle.Teardown.EksDrainInterpreter
   )
 where
 
-import Data.Aeson qualified as Aeson
-import Data.Aeson.KeyMap qualified as AesonKeyMap
 import Data.Kind (Type)
 import Data.List (group, sort)
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.List.NonEmpty qualified as NonEmpty
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Data.Text.Encoding qualified as TextEncoding
+import Prodbox.ControlPlane.AuthenticatedTransport (AuthenticatedClientTransport)
 import Prodbox.ControlPlane.EksClientAuthClient
   ( EksClientAuthClientError (..)
   , withEksClientAuthProjectionForTeardownExecution
+  , withEksClientAuthProjectionForTeardownExecutionWithTransport
   )
 import Prodbox.ControlPlane.EksClientAuthProjection (EksClientAuthProjection)
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
@@ -107,6 +108,7 @@ import Prodbox.Lifecycle.Teardown.EphemeralKubectl
   , ephemeralKubectlRequestTimeoutArgument
   , runEphemeralKubectl
   , withEphemeralKubectlForProjection
+  , withEphemeralKubectlForProjectionInOperation
   )
 import Prodbox.Lifecycle.Teardown.Execution
   ( TeardownExecutionContext
@@ -122,6 +124,7 @@ import Prodbox.Lifecycle.Teardown.ExecutionIdentity
   ( TeardownExecutionIdentity
   )
 import Prodbox.Lifecycle.Teardown.Model
+import Prodbox.Lifecycle.Teardown.NamespaceUidDecoder qualified as NamespaceUid
 import Prodbox.Lifecycle.Teardown.Observation
 import Prodbox.Lifecycle.Teardown.Program
   ( RegisteredTargetBinding
@@ -144,6 +147,9 @@ import Prodbox.Lifecycle.Teardown.Registry
   , registeredIdentityKind
   , registeredIdentityLifecycleClass
   )
+
+import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
+import Prodbox.Subprocess (OperationSubprocesses)
 
 -- | A complete list is positive evidence about the whole queried class.
 -- Partial and unobservable results are intentionally distinct and can never
@@ -1770,10 +1776,9 @@ combineObservationFailures label failures =
 
 -- Production ephemeral client ------------------------------------------------
 
--- | Production commit-time boundary.  Provider issuance is keyed by the
--- current sealed commit execution identity.  The projection is then consumed
--- by the same private FIFO/kubeconfig machinery as mutation/read-back, and
--- cannot outlive the rank-2 continuation.
+-- | Production commit-time boundary. Provider issuance is keyed by the
+-- current sealed commit execution identity. The selector returns durable-safe
+-- data while the private projection/client files remain scoped here.
 productionEksDrainCommitSelectionBoundary
   :: ExternalLifecycleAuthorityCaller
   -> FilePath
@@ -1782,36 +1787,29 @@ productionEksDrainCommitSelectionBoundary
   -> Maybe FilePath
   -> EksDrainCommitSelectionBoundary IO
 productionEksDrainCommitSelectionBoundary caller repoRoot kubectl environment workingDirectory =
-  mkEksDrainCommitSelectionBoundary $ \execution request consume -> do
-    acquired <-
-      withEksClientAuthProjectionForTeardownExecution
-        caller
-        repoRoot
-        execution
-        (eksDrainProjectionAccountId request)
-        (eksDrainProjectionRegion request)
-        (eksDrainProjectionClusterName request)
-        ( \projection ->
-            withProductionEksDrainClientProjection
-              kubectl
-              environment
-              workingDirectory
-              projection
-              ( \created ->
-                  consume
-                    ( fmap
-                        (projection,)
-                        created
-                    )
-              )
-        )
-    case acquired of
-      Left err -> consume (Left (eksClientAuthAccessFailure err))
-      Right result -> pure result
+  mkEksDrainCommitSelectionBoundary
+    ( withProductionEksDrainExecutionProjection
+        (withEksClientAuthProjectionForTeardownExecution caller repoRoot)
+        (withEphemeralKubectlForProjection kubectl environment workingDirectory)
+    )
 
--- | Production effect/read-back boundary.  Provider issuance is keyed by the
--- current sealed node and fenced attempt, and the projection is consumed by
--- the hermetic client before the continuation returns.
+-- | The same selector over the captured Authority channel and observed parent.
+-- Its Kubernetes calls borrow the original command lane and joined file owner.
+productionEksDrainCommitSelectionBoundaryInOperation
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> OperationSubprocesses
+  -> FilePath
+  -> [(String, String)]
+  -> Maybe FilePath
+  -> EksDrainCommitSelectionBoundary IO
+productionEksDrainCommitSelectionBoundaryInOperation transport processes kubectl environment workingDirectory =
+  mkEksDrainCommitSelectionBoundary
+    ( withProductionEksDrainExecutionProjection
+        (withEksClientAuthProjectionForTeardownExecutionWithTransport transport)
+        (withEphemeralKubectlForProjectionInOperation processes kubectl environment workingDirectory)
+    )
+
+-- | Production effect/read-back boundary under its own sealed node/attempt.
 productionEksDrainAttemptBoundary
   :: ExternalLifecycleAuthorityCaller
   -> FilePath
@@ -1820,32 +1818,67 @@ productionEksDrainAttemptBoundary
   -> Maybe FilePath
   -> EksDrainAttemptBoundary IO
 productionEksDrainAttemptBoundary caller repoRoot kubectl environment workingDirectory =
-  mkEksDrainAttemptBoundary $ \execution request consume -> do
-    acquired <-
-      withEksClientAuthProjectionForTeardownExecution
-        caller
-        repoRoot
-        execution
-        (eksDrainProjectionAccountId request)
-        (eksDrainProjectionRegion request)
-        (eksDrainProjectionClusterName request)
-        ( \projection ->
-            withProductionEksDrainClientProjection
-              kubectl
-              environment
-              workingDirectory
-              projection
-              ( \created ->
-                  consume
-                    ( fmap
-                        (projection,)
-                        created
-                    )
-              )
-        )
-    case acquired of
-      Left err -> consume (Left (eksClientAuthAccessFailure err))
-      Right result -> pure result
+  mkEksDrainAttemptBoundary
+    ( withProductionEksDrainExecutionProjection
+        (withEksClientAuthProjectionForTeardownExecution caller repoRoot)
+        (withEphemeralKubectlForProjection kubectl environment workingDirectory)
+    )
+
+productionEksDrainAttemptBoundaryInOperation
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> OperationSubprocesses
+  -> FilePath
+  -> [(String, String)]
+  -> Maybe FilePath
+  -> EksDrainAttemptBoundary IO
+productionEksDrainAttemptBoundaryInOperation transport processes kubectl environment workingDirectory =
+  mkEksDrainAttemptBoundary
+    ( withProductionEksDrainExecutionProjection
+        (withEksClientAuthProjectionForTeardownExecutionWithTransport transport)
+        (withEphemeralKubectlForProjectionInOperation processes kubectl environment workingDirectory)
+    )
+
+type EksProjectionIssuer =
+  forall value
+   . TeardownExecutionIdentity
+  -> Text
+  -> Text
+  -> Text
+  -> (EksClientAuthProjection -> IO value)
+  -> IO (Either EksClientAuthClientError value)
+
+type ScopedProjectionKubectl =
+  forall value
+   . EksClientAuthProjection
+  -> (Either EphemeralKubectlUnavailable EphemeralKubectl -> IO value)
+  -> IO value
+
+-- Both production ownership routes share projection/error classification and
+-- the same closed Kubernetes vocabulary. Only their effect owners differ.
+withProductionEksDrainExecutionProjection
+  :: EksProjectionIssuer
+  -> ScopedProjectionKubectl
+  -> TeardownExecutionIdentity
+  -> EksDrainProjectionRequest
+  -> (Either EksDrainClientAccessFailure (EksClientAuthProjection, EksDrainClientEffects IO) -> IO value)
+  -> IO value
+withProductionEksDrainExecutionProjection issue prepare execution request consume = do
+  acquired <-
+    issue
+      execution
+      (eksDrainProjectionAccountId request)
+      (eksDrainProjectionRegion request)
+      (eksDrainProjectionClusterName request)
+      useProjection
+  case acquired of
+    Left err -> consume (Left (eksClientAuthAccessFailure err))
+    Right value -> pure value
+ where
+  useProjection projection =
+    withProductionEksDrainClientUsing
+      prepare
+      projection
+      (consume . fmap (projection,))
 
 -- | Production kubectl boundary with an explicit executable, environment,
 -- and working directory.  Ambient Kubernetes and AWS credential variables
@@ -1868,7 +1901,7 @@ productionEksDrainClientBoundary kubectl environment workingDirectory =
 
 -- | The drain's Kubernetes effects, over the shared ephemeral client.
 --
--- Sprint 7.36 moved the private-kubeconfig, FIFO-token, and
+-- Sprint 7.36 moved the private-kubeconfig, bearer-file, and
 -- ambient-credential-scrub machinery to
 -- "Prodbox.Lifecycle.Teardown.EphemeralKubectl" when the DNS01 challenge family
 -- became the second teardown path that reaches Kubernetes.  What stays here is
@@ -1881,18 +1914,21 @@ withProductionEksDrainClientProjection
   -> EksClientAuthProjection
   -> (Either EksDrainClientAccessFailure (EksDrainClientEffects IO) -> IO result)
   -> IO result
-withProductionEksDrainClientProjection kubectl environment workingDirectory projection consume =
-  withEphemeralKubectlForProjection
-    kubectl
-    environment
-    workingDirectory
-    projection
-    ( \acquired ->
-        consume $ case acquired of
-          Left (EphemeralKubectlUnavailable failure) ->
-            Left (EksDrainClientAccessUnobservable failure)
-          Right client -> Right (productionClientEffects client)
-    )
+withProductionEksDrainClientProjection kubectl environment workingDirectory =
+  withProductionEksDrainClientUsing
+    (withEphemeralKubectlForProjection kubectl environment workingDirectory)
+
+withProductionEksDrainClientUsing
+  :: ScopedProjectionKubectl
+  -> EksClientAuthProjection
+  -> (Either EksDrainClientAccessFailure (EksDrainClientEffects IO) -> IO value)
+  -> IO value
+withProductionEksDrainClientUsing prepare projection consume =
+  prepare projection (consume . classifyClient)
+ where
+  classifyClient acquired = case acquired of
+    Left (EphemeralKubectlUnavailable failure) -> Left (EksDrainClientAccessUnobservable failure)
+    Right client -> Right (productionClientEffects client)
 
 eksClientAuthAccessFailure
   :: EksClientAuthClientError -> EksDrainClientAccessFailure
@@ -2062,21 +2098,7 @@ observeProductionUid client = do
 -- expression, so the response shape is the API's own and a missing, empty, or
 -- non-object body is a closed refusal rather than a silently absent UID.
 parseKubernetesNamespaceUid :: Text -> Either ObservationFailure Text
-parseKubernetesNamespaceUid raw =
-  case Aeson.eitherDecodeStrict (TextEncoding.encodeUtf8 raw) of
-    Left detail ->
-      Left
-        ( ObservationFailure
-            ("Kubernetes namespace document did not parse: " <> Text.pack detail)
-        )
-    Right value -> case value of
-      Aeson.Object document -> case AesonKeyMap.lookup "metadata" document of
-        Just (Aeson.Object metadata) -> case AesonKeyMap.lookup "uid" metadata of
-          Just (Aeson.String uid)
-            | not (Text.null uid) -> Right uid
-          _ -> Left (ObservationFailure "Kubernetes namespace document carried no UID")
-        _ -> Left (ObservationFailure "Kubernetes namespace document carried no metadata")
-      _ -> Left (ObservationFailure "Kubernetes namespace document was not an object")
+parseKubernetesNamespaceUid = NamespaceUid.parseNamespaceUid
 
 observeNamespacedClass
   :: EphemeralKubectl

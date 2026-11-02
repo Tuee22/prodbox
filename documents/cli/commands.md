@@ -98,6 +98,7 @@ owning implementation change updates `CommandSpec` and regenerates this section.
 | `prodbox host info` | Display host diagnostics |
 | `prodbox host firewall gateway-restrict` | Restrict the gateway NodePort to 127.0.0.1 |
 | `prodbox host firewall gateway-unrestrict` | Remove the gateway NodePort loopback restriction |
+| `prodbox internal-rpc-birth-controller` | Run the pinned operation-owned RPC birth controller |
 | `prodbox nuke` | Total teardown of every prodbox-owned AWS resource (operator-only) |
 | `prodbox test init` | Create prodbox.test.dhall |
 | `prodbox test run` | Run a topology-declared suite |

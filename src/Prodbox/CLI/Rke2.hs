@@ -220,6 +220,7 @@ import Prodbox.CLI.Vault
   ( BrokerVaultSealStatus (..)
   , gatewayEndpointFromEnv
   , observeBrokerVaultSealStatus
+  , runHarnessVaultBootstrapViaBroker
   , runPostUnsealHandoffViaBroker
   , runVaultBootstrapViaBroker
   )
@@ -303,6 +304,7 @@ import Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
   )
 import Prodbox.ControlPlane.CapabilityRequirement (requirementCoordinate')
 import Prodbox.ControlPlane.Coordinate (coordGeneration)
+import Prodbox.ControlPlane.Deadline qualified as PublicationDeadline
 import Prodbox.ControlPlane.ExternalMaterialIngressClient
   ( externalMaterialIngressClient
   , observeCurrentExternalMaterialIngress
@@ -317,6 +319,7 @@ import Prodbox.ControlPlane.ExternalMaterialIngressWorkflow
   , kubernetesExternalMaterialJobBoundary
   , runExternalMaterialIngressWorkflowWithDelivery
   )
+import Prodbox.ControlPlane.Interpreter (realMonotonicNow)
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   ( ExternalLifecycleAuthorityCaller (LifecycleAuthorityOperator)
   , externalCallerKubernetesSubject
@@ -374,6 +377,9 @@ import Prodbox.Infra.BootstrapImageSeed qualified as BootstrapImageSeed
 import Prodbox.Infra.BootstrapImageSourceNative qualified as BootstrapImageSourceNative
 import Prodbox.Infra.LongLivedPulumiBackend (loadAdminAwsCredentials)
 import Prodbox.Infra.MinioBackend (resolveHomeClusterKubeconfig)
+import Prodbox.Infra.MinioRollout qualified as MinioRollout
+import Prodbox.Infra.RuntimeImagePublication qualified as RuntimePublication
+import Prodbox.Infra.VaultRetainedMount qualified as VaultRetainedMount
 import Prodbox.Lib.ChartPlatform
   ( ChartDeploymentPlan (..)
   , ChartReleasePlan (..)
@@ -2250,6 +2256,7 @@ applyNativeInstallPlanAfterPredecessor mode repoRoot bootstrapSettings payload =
     Right bootstrapAdmissions -> do
       vaultLifecycleResult <-
         ensureFederatedVaultLifecycleDetailed
+          mode
           repoRoot
           (validatedDeploymentContext bootstrapSettings)
       case vaultLifecycleExitCode vaultLifecycleResult of
@@ -3213,6 +3220,8 @@ classifyBrokerVaultUnsealedStatus observed = case observed of
   Right status
     | brokerVaultStatusInitializationAmbiguous status ->
         Left "Bootstrap Broker reports ambiguous Vault initialization"
+    | brokerVaultStatusInitializationPending status ->
+        Right (ReadinessProbePending "Bootstrap Broker reports initialization recovery pending")
     | not (brokerVaultStatusInitialized status) ->
         Right (ReadinessProbePending "Bootstrap Broker reports Vault uninitialized")
     | brokerVaultStatusSealed status ->
@@ -5561,7 +5570,7 @@ ensureVaultRuntime repoRoot settings =
         Right lifecycle ->
           case lifecycle of
             RootVaultLifecycle _ _ ->
-              applyVaultRuntime repoRoot storageSize lifecycle
+              applyVaultRuntime repoRoot settings storageSize lifecycle
             ChildVaultLifecycle _ _ parent -> do
               parentReadiness <- probeParentVaultReadiness parent
               case renderParentReadinessBlock parent parentReadiness of
@@ -5570,10 +5579,11 @@ ensureVaultRuntime repoRoot settings =
                   tokenResult <- childTransitSealTokenPresent repoRoot
                   case tokenResult of
                     Left err -> failWith err
-                    Right () -> applyVaultRuntime repoRoot storageSize lifecycle
+                    Right () -> applyVaultRuntime repoRoot settings storageSize lifecycle
 
-applyVaultRuntime :: FilePath -> String -> FederatedVaultLifecycle -> IO ExitCode
-applyVaultRuntime repoRoot storageSize lifecycle =
+applyVaultRuntime
+  :: FilePath -> ValidatedSettings -> String -> FederatedVaultLifecycle -> IO ExitCode
+applyVaultRuntime repoRoot settings storageSize lifecycle =
   runSequentially
     [ runHelmCommandWithRetries
         repoRoot
@@ -5590,20 +5600,12 @@ applyVaultRuntime repoRoot storageSize lifecycle =
                , "storage.size=" ++ storageSize
                ]
         )
-    , runCommand
-        Subprocess
-          { subprocessPath = "kubectl"
-          , subprocessArguments =
-              [ "rollout"
-              , "status"
-              , "statefulset/vault"
-              , "-n"
-              , vaultNamespace
-              , "--timeout=300s"
-              ]
-          , subprocessEnvironment = Nothing
-          , subprocessWorkingDirectory = Just repoRoot
-          }
+    , do
+        result <-
+          VaultRetainedMount.reconcileHomeVaultMount
+            repoRoot
+            (resolvedManualPvHostRoot settings </> vaultNamespace </> "vault" </> "0")
+        either (failWith . VaultRetainedMount.renderVaultMountError) (const (pure ExitSuccess)) result
     ]
 
 probeParentVaultReadiness :: ParentRef -> IO ParentVaultReadiness
@@ -5656,7 +5658,11 @@ ensureRootVaultLifecycle repoRoot context = do
 
 ensureRootVaultLifecycleDetailed
   :: FilePath -> ValidatedDeploymentContext -> IO VaultLifecycleResult
-ensureRootVaultLifecycleDetailed repoRoot context = do
+ensureRootVaultLifecycleDetailed = ensureRootVaultLifecycleDetailedWithMode NativeInstallFull
+
+ensureRootVaultLifecycleDetailedWithMode
+  :: NativeInstallMode -> FilePath -> ValidatedDeploymentContext -> IO VaultLifecycleResult
+ensureRootVaultLifecycleDetailedWithMode mode repoRoot context = do
   testLifecycle <- lookupEnv "PRODBOX_TEST_ROOT_VAULT_LIFECYCLE"
   case testLifecycle of
     Just "ready" -> do
@@ -5667,7 +5673,10 @@ ensureRootVaultLifecycleDetailed repoRoot context = do
     Nothing -> continue
  where
   continue = do
-    bootstrapExit <- runVaultBootstrapViaBroker repoRoot
+    bootstrapExit <- case mode of
+      NativeInstallHarnessBootstrapFloor -> runHarnessVaultBootstrapViaBroker repoRoot
+      NativeInstallHarnessProviderReadiness -> runVaultBootstrapViaBroker repoRoot
+      NativeInstallFull -> runVaultBootstrapViaBroker repoRoot
     case bootstrapExit of
       ExitFailure _ -> pure (lifecycleFailure bootstrapExit)
       ExitSuccess -> do
@@ -5681,14 +5690,15 @@ ensureRootVaultLifecycleDetailed repoRoot context = do
           Right () -> pure (VaultLifecycleResult ExitSuccess)
 
 ensureFederatedVaultLifecycleDetailed
-  :: FilePath
+  :: NativeInstallMode
+  -> FilePath
   -> ValidatedDeploymentContext
   -> IO VaultLifecycleResult
-ensureFederatedVaultLifecycleDetailed repoRoot context = do
+ensureFederatedVaultLifecycleDetailed mode repoRoot context = do
   lifecycleResult <- resolveVaultLifecycle repoRoot context
   case lifecycleResult of
     Left err -> lifecycleFailure <$> failWith err
-    Right (RootVaultLifecycle _ _) -> ensureRootVaultLifecycleDetailed repoRoot context
+    Right (RootVaultLifecycle _ _) -> ensureRootVaultLifecycleDetailedWithMode mode repoRoot context
     Right (ChildVaultLifecycle childId _ parent) ->
       ensureChildVaultLifecycleDetailed repoRoot childId parent
 
@@ -5808,21 +5818,31 @@ ensureMinioRuntime repoRoot settings substrate imageSource =
               ]
                 ++ renderMinioChartArgs substrate imageSource storageSize
             )
-        , runCommand
-            Subprocess
-              { subprocessPath = "kubectl"
-              , subprocessArguments =
-                  [ "rollout"
-                  , "status"
-                  , "statefulset/minio"
-                  , "-n"
-                  , minioNamespace
-                  , "--timeout=300s"
-                  ]
-              , subprocessEnvironment = Nothing
-              , subprocessWorkingDirectory = Just repoRoot
-              }
+        , waitForMinioRuntime repoRoot substrate
         ]
+
+waitForMinioRuntime :: FilePath -> Substrate -> IO ExitCode
+waitForMinioRuntime repoRoot SubstrateHomeLocal = do
+  result <- MinioRollout.reconcileHomeMinioRollout repoRoot
+  either
+    ( \cause ->
+        failWith
+          ( "MinIO rollout refused: "
+              <> show cause
+              <> ". Retry `prodbox cluster reconcile`; preserve the retained volume."
+          )
+    )
+    (const (pure ExitSuccess))
+    result
+waitForMinioRuntime repoRoot SubstrateAws =
+  runCommand
+    Subprocess
+      { subprocessPath = "kubectl"
+      , subprocessArguments =
+          ["rollout", "status", "statefulset/minio", "-n", minioNamespace, "--timeout=300s"]
+      , subprocessEnvironment = Nothing
+      , subprocessWorkingDirectory = Just repoRoot
+      }
 
 -- | Pure render of @--set@ flag pairs for the prodbox-owned @charts/minio@
 -- install. MinIO always uses the PUBLIC (bootstrap-exception) image regardless of
@@ -9870,7 +9890,193 @@ ensureCustomImageVariantsHomeLocal repoRoot imageBuildPlan taggedRefs importRef 
             pullExit <- runCommand =<< dockerSubprocessFor repoRoot ["pull", importRef]
             case pullExit of
               ExitFailure _ -> pure pullExit
-              ExitSuccess -> importImageIntoRke2Containerd repoRoot importRef
+              ExitSuccess -> do
+                imported <- importImageIntoRke2Containerd repoRoot importRef
+                case imported of
+                  ExitFailure _ -> pure imported
+                  ExitSuccess -> admitRuntimeImageReference repoRoot importRef
+
+-- | The registry is available here. Source-built MinIO seeding deliberately
+-- keeps its earlier config-only import and never enters this postcondition.
+-- All reads, the one fetch and closing retries share one 80-second deadline;
+-- each subprocess also has a smaller ceiling. Broker request/worker budgets
+-- are unchanged because this gate precedes controller deployment.
+admitRuntimeImageReference :: FilePath -> String -> IO ExitCode
+admitRuntimeImageReference repoRoot imageRef = do
+  now <- realMonotonicNow
+  let deadline = PublicationDeadline.deadlineAtOffset now (PublicationDeadline.RemainingDuration 80_000_000)
+      command budget path arguments =
+        captureRuntimeReferenceCommand repoRoot deadline budget path arguments
+      reject failure =
+        failWith
+          ( "Runtime image publication refused: "
+              ++ RuntimePublication.renderRuntimePublicationError failure
+              ++ ". Restore the exact image observation and rerun `prodbox cluster reconcile`."
+          )
+  references <-
+    command 5_000_000 "docker" ["image", "inspect", "--format", "{{json .RepoDigests}}", imageRef]
+  let successfulOutput failure observed = case observed of
+        Right output | processExitCode output == ExitSuccess -> Right (processStdout output)
+        _ -> Left (RuntimePublication.RuntimeExpectationRefused failure)
+      registryReference = do
+        referenceOutput <-
+          successfulOutput RuntimePublication.RuntimeManifestObservationUnavailable references
+        either
+          (Left . RuntimePublication.RuntimeExpectationRefused)
+          Right
+          (RuntimePublication.decodeRuntimeRegistryReference imageRef referenceOutput)
+  manifest <- case registryReference of
+    Left _ -> pure (Left RuntimePublication.RuntimeCRIUnavailable)
+    Right pinned ->
+      command
+        5_000_000
+        "curl"
+        [ "--fail"
+        , "--silent"
+        , "--show-error"
+        , "--max-time"
+        , "5"
+        , "--header"
+        , "Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"
+        , RuntimePublication.runtimeRegistryManifestUrl pinned
+        ]
+  let expectation = do
+        platform <-
+          either
+            ( const
+                ( Left
+                    (RuntimePublication.RuntimeExpectationRefused RuntimePublication.RuntimeHostPlatformUnsupported)
+                )
+            )
+            (Right . renderHostArchitecture)
+            supportedHostArchitecture
+        _ <- registryReference
+        manifestBody <- successfulOutput RuntimePublication.RuntimeManifestBodyUnavailable manifest
+        referenceOutput <-
+          successfulOutput RuntimePublication.RuntimeManifestObservationUnavailable references
+        expected <-
+          either
+            (Left . RuntimePublication.RuntimeExpectationRefused)
+            Right
+            (RuntimePublication.decodeRuntimeImageExpectation imageRef referenceOutput (BS8.pack manifestBody))
+        pure (expected, platform)
+  case expectation of
+    Left failure -> reject failure
+    Right (expected, platform) -> do
+      socket <- resolveContainerdSocket
+      case socket of
+        Left _ ->
+          reject
+            ( RuntimePublication.RuntimeObservationRefused
+                RuntimePublication.BeforeManifestRegistration
+                RuntimePublication.RuntimeCRIUnavailable
+            )
+        Right socketPath -> do
+          let effects =
+                RuntimePublication.RuntimePublicationEffects
+                  { RuntimePublication.observeRuntimeImage = \_ -> do
+                      observed <-
+                        command
+                          5_000_000
+                          "sudo"
+                          [ "-n"
+                          , "/var/lib/rancher/rke2/bin/crictl"
+                          , "--runtime-endpoint"
+                          , "unix://" ++ socketPath
+                          , "--image-endpoint"
+                          , "unix://" ++ socketPath
+                          , "--timeout"
+                          , "5s"
+                          , "inspecti"
+                          , imageRef
+                          ]
+                      pure $ case observed of
+                        Left cause -> Left cause
+                        Right output
+                          | processExitCode output == ExitSuccess ->
+                              RuntimePublication.decodeRuntimeImageObservation
+                                (BS8.pack (processStdout output))
+                          | otherwise -> Left RuntimePublication.RuntimeCRIUnavailable
+                  , RuntimePublication.fetchRuntimeManifest = \pinned -> do
+                      fetched <-
+                        command
+                          30_000_000
+                          "sudo"
+                          [ "-n"
+                          , "ctr"
+                          , "--address"
+                          , socketPath
+                          , "--namespace"
+                          , "k8s.io"
+                          , "--timeout"
+                          , "30s"
+                          , "content"
+                          , "fetch"
+                          , "--plain-http"
+                          , "--platform"
+                          , platform
+                          , RuntimePublication.runtimeImageManifestReference pinned
+                          ]
+                      pure $ case fetched of
+                        Left _ -> RuntimePublication.RuntimeManifestFetchUnobservable
+                        Right output -> case processExitCode output of
+                          ExitSuccess -> RuntimePublication.RuntimeManifestFetched
+                          ExitFailure code -> RuntimePublication.RuntimeManifestFetchExited code
+                  , RuntimePublication.waitBeforeRuntimeReadRetry = do
+                      observedAt <- realMonotonicNow
+                      case PublicationDeadline.deadlineObservation observedAt deadline of
+                        PublicationDeadline.DeadlineExpired -> pure ()
+                        PublicationDeadline.DeadlineOpen (PublicationDeadline.RemainingDuration remaining) ->
+                          threadDelay (fromIntegral (min 1_000_000 remaining))
+                  }
+          result <- RuntimePublication.reconcileRuntimeImageReference effects expected
+          case result of
+            Left failure -> reject failure
+            Right _ -> do
+              admittedAt <- realMonotonicNow
+              if PublicationDeadline.deadlineExpired admittedAt deadline
+                then
+                  reject
+                    ( RuntimePublication.RuntimeObservationRefused
+                        RuntimePublication.AfterManifestRegistration
+                        RuntimePublication.RuntimeCRIDeadlineElapsed
+                    )
+                else do
+                  writeOutputLine
+                    ("Runtime image publication: exact CRI repository reference verified for " ++ imageRef)
+                  pure ExitSuccess
+
+captureRuntimeReferenceCommand
+  :: FilePath
+  -> PublicationDeadline.Deadline
+  -> Int
+  -> FilePath
+  -> [String]
+  -> IO (Either RuntimePublication.RuntimeReadFailure ProcessOutput)
+captureRuntimeReferenceCommand repoRoot deadline commandMaximum path arguments = do
+  now <- realMonotonicNow
+  case PublicationDeadline.deadlineObservation now deadline of
+    PublicationDeadline.DeadlineExpired -> pure (Left RuntimePublication.RuntimeCRIDeadlineElapsed)
+    PublicationDeadline.DeadlineOpen (PublicationDeadline.RemainingDuration remaining) -> do
+      result <-
+        captureSubprocessBounded
+          BoundedSubprocessLimits
+            { boundedSubprocessMaximumInputBytes = 1
+            , boundedSubprocessMaximumStdoutBytes = 128 * 1024
+            , boundedSubprocessMaximumStderrBytes = 32 * 1024
+            , boundedSubprocessTimeoutMicros = min commandMaximum (fromIntegral remaining)
+            }
+          Subprocess
+            { subprocessPath = path
+            , subprocessArguments = arguments
+            , subprocessEnvironment = Nothing
+            , subprocessWorkingDirectory = Just repoRoot
+            }
+      completed <- realMonotonicNow
+      pure $
+        if PublicationDeadline.deadlineExpired completed deadline
+          then Left RuntimePublication.RuntimeCRIDeadlineElapsed
+          else either (const (Left RuntimePublication.RuntimeCRIUnavailable)) Right result
 
 -- | AWS-substrate custom-image publication path. Builds the image on
 -- the operator host via @docker build@ (which is available locally),

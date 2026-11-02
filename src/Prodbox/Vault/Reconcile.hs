@@ -76,11 +76,11 @@ import Prodbox.ControlPlane.RetainedAuthentication
   , controlPlaneRequestReplayPath
   )
 import Prodbox.ControlPlane.TargetMaterialRegistry
-  ( AwsCredentialIdentity (..)
-  , TargetSecretId (..)
-  , allTargetMaterialIds
+  ( allTargetMaterialIds
   , targetSecretIdToken
   , targetSecretIdVaultLogicalPath
+  , targetWorkerAuthorizationIds
+  , targetWorkerTargetIds
   )
 import Prodbox.Http.Client (HttpError (..), renderHttpError)
 import Prodbox.Runtime.Role (RuntimeRole (..))
@@ -1811,24 +1811,6 @@ targetSecretWorkerAuditorPolicy :: Text
 targetSecretWorkerAuditorPolicy =
   tokenAccessorAuditorPolicy
     <> serviceSessionJournalPolicy targetSecretWorkerVaultRole
-
-targetWorkerTargetIds :: [TargetSecretId]
-targetWorkerTargetIds =
-  [ TargetSesSmtp
-  , TargetAcmeEab
-  ]
-    <> [ TargetAwsCredential identity
-       | identity <- [minBound .. maxBound]
-       , identity /= AwsRunCertManagerDns01
-       ]
-
--- | Every signed intent coordinate the one-shot worker may authenticate.
--- Operation coordinates receive trust-record access and their own exact
--- capabilities above, but no synthetic KV target authority.
-targetWorkerAuthorizationIds :: [TargetSecretId]
-targetWorkerAuthorizationIds =
-  targetWorkerTargetIds
-    <> [TargetPublicEdgeTls, TargetFederationCustody]
 
 -- Gateway is a client of Lifecycle Authority observation/submission routes but
 -- owns no authenticated server route, so it receives no replay-object access

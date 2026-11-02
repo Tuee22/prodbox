@@ -77,6 +77,10 @@ module Prodbox.Bootstrap.Broker.SecretWorker
   , RawSecretWorkerAttestation (..)
   , projectObservedSecretFreeWorkerRequest
   , SecretWorkerAttestationObservation (..)
+  , SecretWorkerAttestationReadCause (..)
+  , SecretWorkerPodPhase (..)
+  , secretWorkerAttestationReadCauseName
+  , secretWorkerAttestationRefusalName
   , AttestedSecretWorker
   , attestedSecretWorkerRequest
   , attestedSecretWorkerEvidence
@@ -562,10 +566,69 @@ projectObservedSecretFreeWorkerRequest raw =
     , internalWorkerRequestOperationDeadline = rawWorkerOperationDeadline raw
     }
 
+-- | Closed production observations. Provider/parser text never participates in
+-- diagnostics; the legacy unobservable constructor remains private-detail only.
+data SecretWorkerAttestationReadCause
+  = WorkerAttestationApiUnavailable
+  | WorkerAttestationHttpStatus !Int
+  | WorkerAttestationPodMissing
+  | WorkerAttestationPodUnreadable
+  | WorkerAttestationPodIdentityUnexpected
+  | WorkerAttestationContainerNotSole
+  | WorkerAttestationNotStarted
+  | WorkerAttestationContainerStatusNotSole
+  | WorkerAttestationImageNotResolved
+  | WorkerAttestationDeclaredImageUnusable
+  | WorkerAttestationRuntimeImageUnusable
+  | WorkerAttestationDeclaredRuntimeImageDisagree
+  | WorkerAttestationAnnotationUnusable
+  | WorkerAttestationPodNotRunning !SecretWorkerPodPhase
+  | WorkerAttestationContainerNotReady
+  | WorkerAttestationPodDeleting
+  | WorkerAttestationBindingUnusable
+  deriving stock (Eq, Show)
+
+data SecretWorkerPodPhase
+  = WorkerPodPending
+  | WorkerPodRunning
+  | WorkerPodSucceeded
+  | WorkerPodFailed
+  | WorkerPodUnknown
+  deriving stock (Eq, Show, Enum, Bounded)
+
+secretWorkerAttestationReadCauseName :: SecretWorkerAttestationReadCause -> String
+secretWorkerAttestationReadCauseName cause = case cause of
+  WorkerAttestationApiUnavailable -> "ApiUnavailable"
+  WorkerAttestationHttpStatus status
+    | status >= 100 && status <= 599 -> "HttpStatus/" ++ show status
+    | otherwise -> "HttpStatusInvalid"
+  WorkerAttestationPodMissing -> "PodMissing"
+  WorkerAttestationPodUnreadable -> "PodUnreadable"
+  WorkerAttestationPodIdentityUnexpected -> "PodIdentityUnexpected"
+  WorkerAttestationContainerNotSole -> "ContainerNotSole"
+  WorkerAttestationNotStarted -> "NotStarted"
+  WorkerAttestationContainerStatusNotSole -> "ContainerStatusNotSole"
+  WorkerAttestationImageNotResolved -> "ImageNotResolved"
+  WorkerAttestationDeclaredImageUnusable -> "DeclaredImageUnusable"
+  WorkerAttestationRuntimeImageUnusable -> "RuntimeImageUnusable"
+  WorkerAttestationDeclaredRuntimeImageDisagree -> "DeclaredRuntimeImageDisagree"
+  WorkerAttestationAnnotationUnusable -> "AnnotationUnusable"
+  WorkerAttestationPodNotRunning phase ->
+    "PodNotRunning/" ++ case phase of
+      WorkerPodPending -> "Pending"
+      WorkerPodRunning -> "Running"
+      WorkerPodSucceeded -> "Succeeded"
+      WorkerPodFailed -> "Failed"
+      WorkerPodUnknown -> "Unknown"
+  WorkerAttestationContainerNotReady -> "ContainerNotReady"
+  WorkerAttestationPodDeleting -> "PodDeleting"
+  WorkerAttestationBindingUnusable -> "BindingUnusable"
+
 data SecretWorkerAttestationObservation
   = SecretWorkerAttestationMissing
   | SecretWorkerAttestationObserved !RawSecretWorkerAttestation
   | SecretWorkerAttestationUnobservable !Text
+  | SecretWorkerAttestationReadRefused !SecretWorkerAttestationReadCause
   deriving stock (Eq, Show)
 
 data AttestedSecretWorker = AttestedSecretWorker
@@ -584,6 +647,7 @@ attestedSecretWorkerEvidence = internalAttestedEvidence
 data SecretWorkerAttestationRefusal
   = SecretWorkerAttestationNotFound
   | SecretWorkerAttestationObservationUnobservable !Text
+  | SecretWorkerAttestationObservationRefused !SecretWorkerAttestationReadCause
   | SecretWorkerPodUidMismatch !WorkerPodUid !WorkerPodUid
   | SecretWorkerImageDigestMismatch !WorkerImageDigest !WorkerImageDigest
   | SecretWorkerServiceAccountMismatch
@@ -608,6 +672,27 @@ data SecretWorkerAttestationRefusal
       !OperationDeadline
   deriving stock (Eq, Show)
 
+-- | Constructor names only. Every compared identity and unstructured detail
+-- stays private, including an unobservable producer's arbitrary text.
+secretWorkerAttestationRefusalName :: SecretWorkerAttestationRefusal -> String
+secretWorkerAttestationRefusalName refusal = case refusal of
+  SecretWorkerAttestationNotFound -> "NotFound"
+  SecretWorkerAttestationObservationUnobservable _ -> "ObservationUnobservable"
+  SecretWorkerAttestationObservationRefused cause ->
+    "ObservationRefused/" ++ secretWorkerAttestationReadCauseName cause
+  SecretWorkerPodUidMismatch _ _ -> "PodUidMismatch"
+  SecretWorkerImageDigestMismatch _ _ -> "ImageDigestMismatch"
+  SecretWorkerServiceAccountMismatch _ _ -> "ServiceAccountMismatch"
+  SecretWorkerSessionIdMismatch _ _ -> "SessionIdMismatch"
+  SecretWorkerSessionAccessorMismatch _ _ -> "SessionAccessorMismatch"
+  SecretWorkerOperationMismatch _ _ -> "OperationMismatch"
+  SecretWorkerFenceGenerationMismatch _ _ -> "FenceGenerationMismatch"
+  SecretWorkerOwnerNonceMismatch _ _ -> "OwnerNonceMismatch"
+  SecretWorkerActionDigestMismatch _ _ -> "ActionDigestMismatch"
+  SecretWorkerRequestDigestMismatch _ _ -> "RequestDigestMismatch"
+  SecretWorkerStorageGenerationMismatch _ _ -> "StorageGenerationMismatch"
+  SecretWorkerOperationDeadlineMismatch _ _ -> "OperationDeadlineMismatch"
+
 attestSecretWorker
   :: SecretFreeWorkerRequest
   -> SecretWorkerAttestationObservation
@@ -616,6 +701,8 @@ attestSecretWorker request observation = case observation of
   SecretWorkerAttestationMissing -> Left SecretWorkerAttestationNotFound
   SecretWorkerAttestationUnobservable detail ->
     Left (SecretWorkerAttestationObservationUnobservable detail)
+  SecretWorkerAttestationReadRefused cause ->
+    Left (SecretWorkerAttestationObservationRefused cause)
   SecretWorkerAttestationObserved evidence -> do
     requireEqual
       SecretWorkerPodUidMismatch

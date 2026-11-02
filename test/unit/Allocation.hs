@@ -72,6 +72,7 @@ miniPlan =
     { C.host_capacity = C.ResourceVector 8000 8192 100_000 100_000
     , C.rke2_reserved = C.ResourceVector 1000 1024 1024 1024
     , C.eviction_floor = C.ResourceVector 500 512 1024 1024
+    , C.platform_scheduler_requests = Just (C.ResourceVector 0 0 0 0)
     , C.workload_profiles =
         [ C.WorkloadResourceProfile
             { C.profile_id = "gateway"
@@ -242,7 +243,7 @@ allocationSuite =
           []
           (const "")
           0
-          C.defaultResourcePlan {C.rke2_reserved = C.ResourceVector 8000 2048 10_240 1024}
+          C.defaultResourcePlan {C.rke2_reserved = C.ResourceVector 10000 2048 10_240 1024}
           `shouldSatisfy` isClusterOverReserved
 
       it "rejects concurrent workload draws that over-commit the cluster" $
@@ -332,7 +333,12 @@ allocationSuite =
           controlPlaneIds
 
       it "BOOTSTRAP-SECRET-WORKER-ABSENT-FROM-CAPACITY-PLAN-2026-09-02" $ do
-        let profiles = C.workload_profiles C.defaultResourcePlan
+        let causalReplacement =
+              C.defaultResourcePlan
+                { C.host_capacity = C.ResourceVector 8000 15872 100000 180000
+                , C.platform_scheduler_requests = Just (C.ResourceVector 0 0 0 0)
+                }
+            profiles = C.workload_profiles causalReplacement
             profile profileId =
               case [candidate | candidate <- profiles, C.profile_id candidate == profileId] of
                 candidate : _ -> candidate
@@ -344,13 +350,13 @@ allocationSuite =
               , "credential-provisioner-secret-workers"
               ]
             supersededPlan =
-              C.defaultResourcePlan
+              causalReplacement
                 { C.rke2_reserved = C.ResourceVector 1000 2048 10240 1024
                 , C.eviction_floor = C.ResourceVector 500 1024 10240 1024
                 , C.workload_profiles =
                     filter
                       ((`notElem` workerProfileIds) . C.profile_id)
-                      (C.workload_profiles C.defaultResourcePlan)
+                      (C.workload_profiles causalReplacement)
                 }
             compiled plan =
               either (error . renderCompileError) id (compileResourcePlanUncertified plan)
@@ -375,8 +381,8 @@ allocationSuite =
         C.validateOneShotSecretWorkerCapacity supersededPlan
           `shouldBe` Left
             "capacity.resource_plan must carry the exact one-shot worker profile `bootstrap-secret-worker`"
-        C.host_capacity C.defaultResourcePlan `shouldBe` C.host_capacity supersededPlan
-        causalTotal C.defaultResourcePlan `shouldBe` causalTotal supersededPlan
+        C.host_capacity causalReplacement `shouldBe` C.host_capacity supersededPlan
+        causalTotal causalReplacement `shouldBe` causalTotal supersededPlan
         (frozenScheduledRequestMilliCpu + bootstrapWorkerMilliCpu)
           `shouldSatisfy` (> supersededNodeAllocatableMilliCpu)
         ( frozenScheduledRequestMilliCpu
@@ -592,7 +598,7 @@ allocationSuite =
         let compiled = compileDefaultPlan
             observed =
               observedRoot
-                (C.ResourceVector 8000 15872 100000 180000)
+                (C.host_capacity C.defaultResourcePlan)
                 "kubelet-device"
                 "retained-device"
         compileResourcePlanAgainstObserved observed compiled `shouldBe` Right compiled
@@ -601,22 +607,30 @@ allocationSuite =
         let compiled = compileDefaultPlan
             observed =
               observedRoot
-                (C.ResourceVector 7999 15872 100000 180000)
+                ((C.host_capacity C.defaultResourcePlan) {C.milli_cpu = 9999})
                 "kubelet-device"
                 "retained-device"
         compileResourcePlanAgainstObserved observed compiled
-          `shouldBe` Left (ObservedHostDimensionInsufficient "milli_cpu" 7999 8000)
+          `shouldBe` Left (ObservedHostDimensionInsufficient "milli_cpu" 9999 10000)
 
       it "uses one joint storage budget when both paths resolve to one device" $ do
         let compiled = compileDefaultPlan
             insufficient =
               observedRoot
-                (C.ResourceVector 8000 15872 200000 200000)
+                ( (C.host_capacity C.defaultResourcePlan)
+                    { C.ephemeral_storage_mib = 200000
+                    , C.durable_storage_mib = 200000
+                    }
+                )
                 "shared-device"
                 "shared-device"
             sufficient =
               observedRoot
-                (C.ResourceVector 8000 15872 280000 280000)
+                ( (C.host_capacity C.defaultResourcePlan)
+                    { C.ephemeral_storage_mib = 280000
+                    , C.durable_storage_mib = 280000
+                    }
+                )
                 "shared-device"
                 "shared-device"
         compileResourcePlanAgainstObserved insufficient compiled

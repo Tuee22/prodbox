@@ -1,0 +1,574 @@
+{
+  "schema_version": 1,
+  "name": "HOST-CONTROLLER-INPUT-PUBLICATION-2026-10-26",
+  "scope": "Actual packaged native fixed-root exclusive input publisher composed with pinned settings/request loading, one managed-family submission, observed physical parent and concurrent command/transport. Scoped native evidence only. Input files intentionally remain retained; terminal file retirement/recovery, explicit caller/boot-domain binding, production dispatch, Authority credentials/admission and full resource accounting/qualification remain open. No input payload bytes/hashes are recorded.",
+  "source_identity_entry": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"54c1b6d3e81bc57320a1791194eca810c852a90c3acd9fd4b686b7bbc6cf517c\", sourceManifestEntryCount = 1569},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"9f407aca5a0d91d26d19b17e7068583c1fb366644d1560489c81d01b8134a931\", sourceManifestEntryCount = 1506})",
+  "source_identity_exit": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"54c1b6d3e81bc57320a1791194eca810c852a90c3acd9fd4b686b7bbc6cf517c\", sourceManifestEntryCount = 1569},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"9f407aca5a0d91d26d19b17e7068583c1fb366644d1560489c81d01b8134a931\", sourceManifestEntryCount = 1506})",
+  "source_identity_equal": true,
+  "all_25_inputs_and_binary_unchanged": true,
+  "inputs_index": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/inputs.json",
+  "inputs": [
+    {
+      "path": "src/Prodbox/Capacity/Config.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/src/Prodbox/Capacity/Config.hs",
+      "sha256": "625b25c430d58c0558b091558ebe6a89f8e49bbe4ed85a7d13684b69551b5dbb"
+    },
+    {
+      "path": "src/Prodbox/Capacity/HostExecution.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/src/Prodbox/Capacity/HostExecution.hs",
+      "sha256": "092ece17fb98e941eb4847e875d0f5b01c9ca458c810d8851207aac9dfba6a8c"
+    },
+    {
+      "path": "src/Prodbox/Capacity/NativeHostProbe.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/src/Prodbox/Capacity/NativeHostProbe.hs",
+      "sha256": "1d095e7dc0bb90e82a2cdc8721d704e3d1d5f84d5249a558f615d4039c4547db"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthPayload.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/src/Prodbox/ControlPlane/RpcAdmissionBirthPayload.hs",
+      "sha256": "e55d30503618ed5996cb0d77c6d93eca886857dc6cbd07c372d15c97011cdf19"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+      "sha256": "a2723311e4ea014fd6948f7b4702153480e632d6dc1241823f14e3d7791bb2c0"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthCoordinator.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/src/Prodbox/ControlPlane/RpcAdmissionBirthCoordinator.hs",
+      "sha256": "fd3c88a6f836c2f38cc81c26449e38a62f982616ab579f12097f1dd5471eecec"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostOperationFamily.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/src/Prodbox/Subprocess/HostOperationFamily.hs",
+      "sha256": "6956776b7ce0ff7476f5c10b0111b797df9936b0f22effa94c40852d1f697f19"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostControllerInputs.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/src/Prodbox/Subprocess/HostControllerInputs.hs",
+      "sha256": "17fcfd173d39b908a65671cef3a559979482b8c280c40b946b7d001a353f7919"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "sha256": "83b53baf0446afe195c9c6d4efcea8a7e16b00448f1210dfb155a608d1e13630"
+    },
+    {
+      "path": "src/Prodbox/Settings.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/src/Prodbox/Settings.hs",
+      "sha256": "7cb9b4aa55fd761c2fd7a899af8ad12a007afce8b7b6acc4ad4bcc5e0b22724f"
+    },
+    {
+      "path": "prodbox.cabal",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/prodbox.cabal",
+      "sha256": "0d227dc273cacb39c6be91819521002d5529ce4b18602e918b267649f109a181"
+    },
+    {
+      "path": "DEVELOPMENT_PLAN/README.md",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/DEVELOPMENT_PLAN/README.md",
+      "sha256": "fbc3ee85816011bc114a5547867c88d33f5322b296d7f79b94331823199c3556"
+    },
+    {
+      "path": "DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md",
+      "sha256": "b7ee4206ceb860336b58701f2b7f1116e34d58ba9d59a3ad64c108eb52132314"
+    },
+    {
+      "path": "documents/engineering/haskell_code_guide.md",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/documents/engineering/haskell_code_guide.md",
+      "sha256": "b60355dcb1bb3c18e25fd90212ad8db7365a403f6092e763815c020cce40637d"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRequest.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/src/Prodbox/ControlPlane/RpcAdmissionBirthRequest.hs",
+      "sha256": "be4452d1113cacfa53e1c7a3f8325c99fd8124ce8c12fd88ce622bdc0fe454b7"
+    },
+    {
+      "path": "test/qualification/RpcBirthControllerRequest.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/test/qualification/RpcBirthControllerRequest.hs",
+      "sha256": "8fe10420f237a2a48f8f25427ade901396e7e71d57456102516b6d0bd0cb6857"
+    },
+    {
+      "path": "src/Prodbox/Subprocess.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/src/Prodbox/Subprocess.hs",
+      "sha256": "836bd5e3d6c82feb1fdcf6b1aac6390e1a221a6ebc986faf86b61d85f877af42"
+    },
+    {
+      "path": "test/support/TestSupport.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/test/support/TestSupport.hs",
+      "sha256": "156b7f56e11e832f9a410423db795e35a5ae374c01cee09e8a31b1c2a1a7d250"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthClock.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/src/Prodbox/ControlPlane/RpcAdmissionBirthClock.hs",
+      "sha256": "bc064db9384e0b30ae7a18f618ec5958bf6cabe51570134e13e77db58ebabb00"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/KernelScope.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/src/Prodbox/Subprocess/KernelScope.hs",
+      "sha256": "61ed8449be7b6864d2933f90f0d76db89137b7d4559ffb7a3e456058f968cf2c"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdBus.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/src/Prodbox/Subprocess/SystemdBus.hs",
+      "sha256": "db79600b1ca63104d6841a877aa9f6a0b5168f11b495911445e1c4bc1a004df2"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostControllerArguments.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/src/Prodbox/Subprocess/HostControllerArguments.hs",
+      "sha256": "b9f635fcaf7bda5ffa6b1dda5545344b59507ec07beff20c4a2ddcca35494bf4"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthControllerInputs.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/src/Prodbox/ControlPlane/RpcAdmissionBirthControllerInputs.hs",
+      "sha256": "1b0eeecd2e7e49b13d7676a6bde7a26a0a63ab8728e60a7efa4d9f30aa22e6a3"
+    },
+    {
+      "path": "test/qualification/ControllerInputLoader.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/test/qualification/ControllerInputLoader.hs",
+      "sha256": "185893070db224e246ad3ef2c8b637f1c2b15c36d86d4be465ce387cb4376208"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostControllerPublication.hs",
+      "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/src/Prodbox/Subprocess/HostControllerPublication.hs",
+      "sha256": "7902af6c2ccc510926a2a36a37258a09d81881c3869808e6adeb90bdd7119549"
+    }
+  ],
+  "binary": {
+    "path": ".build/sprint-6.5/controller-input-publication-20261026/native-publication-3",
+    "snapshot": ".build/sprint-6.5/controller-input-publication-20261026/native-inputs-2/driver",
+    "sha256": "9cd1ff1fd37630404312636cf6fb7d56c9ef878dbeef525dd9b5003c428009a6"
+  },
+  "complete": true,
+  "local_result": {
+    "command": [
+      "env",
+      "XDG_RUNTIME_DIR=/run/user/1000",
+      "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+      "systemd-run",
+      "--user",
+      "--quiet",
+      "--wait",
+      "--pipe",
+      "--collect",
+      "--service-type=oneshot",
+      "--expand-environment=no",
+      "--unit=prodbox-controller-publication-native-local-2-20261026",
+      "--working-directory=/home/matthewnowak/prodbox",
+      "--property=MemoryMax=176M",
+      "--property=MemorySwapMax=0",
+      "--property=CPUQuota=30%",
+      "--property=OOMPolicy=kill",
+      "--property=OOMScoreAdjust=1000",
+      "--property=TasksMax=16",
+      "--property=TimeoutStartSec=30s",
+      "--property=TimeoutStopSec=2s",
+      "--",
+      "/usr/bin/time",
+      "-v",
+      "/usr/bin/strace",
+      "-f",
+      "-qq",
+      "-s",
+      "256",
+      "-e",
+      "trace=process",
+      "-o",
+      "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-input-publication-20261026/native-publication-2.trace",
+      ".build/sprint-6.5/controller-input-publication-20261026/native-publication-3",
+      "publication",
+      "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-input-publication-20261026/case-local-2",
+      "+RTS",
+      "-M134217728b",
+      "-N1",
+      "-RTS"
+    ],
+    "started_utc": "2026-10-26T23:46:17.980738+00:00",
+    "completed_utc": "2026-10-26T23:46:33.285171+00:00",
+    "exit_code": 0,
+    "wall_seconds": 15.304453439079225
+  },
+  "local_peak_rss_kib": 31460,
+  "local_application_children": 0,
+  "local_controls": [
+    "PASS actual fixed-root publication, canonical byte delivery, private modes, escaped lease and exclusive collision",
+    "PASS callback failure/cancellation propagate and retain the exact launch inputs",
+    "PASS published inode replacement invalidates the same launch capability",
+    "PASS original work expiry refuses before creating an operation directory"
+  ],
+  "physical_result": {
+    "command": [
+      "python3",
+      "/home/matthewnowak/prodbox/.build/sprint-6.5/rpc-coordinator-20261025/run-check.py",
+      "controller-publication-native-physical-2",
+      "env",
+      "XDG_RUNTIME_DIR=/run/user/1000",
+      "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+      "systemd-run",
+      "--user",
+      "--quiet",
+      "--wait",
+      "--pipe",
+      "--collect",
+      "--service-type=oneshot",
+      "--expand-environment=no",
+      "--unit=prodbox-controller-publication-native-physical-2-20261026",
+      "--working-directory=/home/matthewnowak/prodbox",
+      "--property=MemoryMax=176M",
+      "--property=MemorySwapMax=0",
+      "--property=CPUQuota=30%",
+      "--property=OOMPolicy=kill",
+      "--property=OOMScoreAdjust=1000",
+      "--property=TasksMax=16",
+      "--property=TimeoutStartSec=30s",
+      "--property=TimeoutStopSec=2s",
+      "--",
+      "/usr/bin/time",
+      "-v",
+      "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-input-publication-20261026/native-publication-3",
+      "published-physical",
+      "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-input-publication-20261026/case-physical-2",
+      "+RTS",
+      "-M134217728b",
+      "-N1",
+      "-RTS"
+    ],
+    "complete": true,
+    "hand_actions": [],
+    "field": {
+      "config_path": "/run/user/1000/prodbox-rpc-birth-inputs-e608bdf5134816264bdbb46d5b3fa6aa88cca36d1625733432842c8162539eac/settings.cbor",
+      "finish_ns": 2325259085667011,
+      "hard_ns": 2325257085667011,
+      "request_path": "/run/user/1000/prodbox-rpc-birth-inputs-e608bdf5134816264bdbb46d5b3fa6aa88cca36d1625733432842c8162539eac/request.cbor",
+      "started_ns": 2325241085667011,
+      "units": [
+        "prodbox-rpc-birth-controller-e608bdf5134816264bdbb46d5b3fa6aa88cca36d1625733432842c8162539eac.service",
+        "prodboxrpcbirth.slice",
+        "prodbox-rpc-birth-e608bdf5134816264bdbb46d5b3fa6aa88cca36d1625733432842c8162539eac-expiry.timer",
+        "prodbox-rpc-birth-e608bdf5134816264bdbb46d5b3fa6aa88cca36d1625733432842c8162539eac-expiry.service",
+        "prodbox-owned-e608bdf5134816264bdbb46d5b3fa6aa88cca36d1625733432842c8162539eac.scope",
+        "prodbox-transport-e608bdf5134816264bdbb46d5b3fa6aa88cca36d1625733432842c8162539eac.scope"
+      ]
+    },
+    "input_versions_before": {
+      "config_path": {
+        "st_dev": 1048785,
+        "st_ino": 48821,
+        "st_mode": 33024,
+        "st_uid": 1000,
+        "st_nlink": 1,
+        "st_size": 91847,
+        "st_mtime_ns": 1793058450326698193,
+        "st_ctime_ns": 1793058450326698193
+      },
+      "request_path": {
+        "st_dev": 1048785,
+        "st_ino": 48822,
+        "st_mode": 33024,
+        "st_uid": 1000,
+        "st_nlink": 1,
+        "st_size": 1748,
+        "st_mtime_ns": 1793058450326698193,
+        "st_ctime_ns": 1793058450326698193
+      }
+    },
+    "held_cgroup_identity": {
+      "device": 31,
+      "inode": 3754111
+    },
+    "held_group_retired_ns": 2325257101997839,
+    "launcher_exit": 0,
+    "independent_unit_observations": [
+      {
+        "unit": "prodbox-rpc-birth-controller-e608bdf5134816264bdbb46d5b3fa6aa88cca36d1625733432842c8162539eac.service",
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-controller-e608bdf5134816264bdbb46d5b3fa6aa88cca36d1625733432842c8162539eac.service not loaded.\n",
+        "absent": true,
+        "observed_ns": 2325257106493250
+      },
+      {
+        "unit": "prodboxrpcbirth.slice",
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodboxrpcbirth.slice not loaded.\n",
+        "absent": true,
+        "observed_ns": 2325257111059992
+      },
+      {
+        "unit": "prodbox-rpc-birth-e608bdf5134816264bdbb46d5b3fa6aa88cca36d1625733432842c8162539eac-expiry.timer",
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-e608bdf5134816264bdbb46d5b3fa6aa88cca36d1625733432842c8162539eac-expiry.timer not loaded.\n",
+        "absent": true,
+        "observed_ns": 2325257115141937
+      },
+      {
+        "unit": "prodbox-rpc-birth-e608bdf5134816264bdbb46d5b3fa6aa88cca36d1625733432842c8162539eac-expiry.service",
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-e608bdf5134816264bdbb46d5b3fa6aa88cca36d1625733432842c8162539eac-expiry.service not loaded.\n",
+        "absent": true,
+        "observed_ns": 2325257119338633
+      },
+      {
+        "unit": "prodbox-owned-e608bdf5134816264bdbb46d5b3fa6aa88cca36d1625733432842c8162539eac.scope",
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-owned-e608bdf5134816264bdbb46d5b3fa6aa88cca36d1625733432842c8162539eac.scope not loaded.\n",
+        "absent": true,
+        "observed_ns": 2325257123804351
+      },
+      {
+        "unit": "prodbox-transport-e608bdf5134816264bdbb46d5b3fa6aa88cca36d1625733432842c8162539eac.scope",
+        "exit_code": 1,
+        "stdout": "",
+        "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-transport-e608bdf5134816264bdbb46d5b3fa6aa88cca36d1625733432842c8162539eac.scope not loaded.\n",
+        "absent": true,
+        "observed_ns": 2325257128235202
+      }
+    ],
+    "workspace_absent": true,
+    "input_versions_after": {
+      "config_path": {
+        "st_dev": 1048785,
+        "st_ino": 48821,
+        "st_mode": 33024,
+        "st_uid": 1000,
+        "st_nlink": 1,
+        "st_size": 91847,
+        "st_mtime_ns": 1793058450326698193,
+        "st_ctime_ns": 1793058450326698193
+      },
+      "request_path": {
+        "st_dev": 1048785,
+        "st_ino": 48822,
+        "st_mode": 33024,
+        "st_uid": 1000,
+        "st_nlink": 1,
+        "st_size": 1748,
+        "st_mtime_ns": 1793058450326698193,
+        "st_ctime_ns": 1793058450326698193
+      }
+    },
+    "inputs_retained": true,
+    "controller_pass": true,
+    "launcher_pass": true,
+    "within_original_finish": true,
+    "controller-result": "PASS pinned loader, observed parent and concurrent command/transport\n",
+    "launcher-result": "PASS submitted caller failed and exact input files survived\n"
+  },
+  "local_profile": {
+    "memory_max_mib": 176,
+    "heap_mib": 128,
+    "cpu_percent": 30,
+    "tasks_max": 16,
+    "swap_bytes": 0,
+    "supervisor_seconds": 30
+  },
+  "physical_profile": {
+    "family_memory_max_mib": 256,
+    "family_cpu_millicores": 700,
+    "family_tasks_max": 56,
+    "work_seconds": 15,
+    "hard_seconds": 16,
+    "stop_seconds": 17,
+    "finish_seconds": 18,
+    "outer_seconds": 20
+  },
+  "limitations": [
+    "An authored exception follows manager acknowledgement. This proves retention after submitted-caller failure; it is not a lost manager reply or crash/restart recovery proof.",
+    "Input directories and canonical files intentionally remain in the native runtime root. Callback/scope exit never supplies retirement authority, including partial publication failure.",
+    "Launcher and managed-family resource caps are separate. Minimal canonical fixture admission does not qualify full default deployment resources or the complete production publisher/controller topology.",
+    "Full canonical/frontend batch gates and deployment qualification remain pending; production dispatch is not activated."
+  ],
+  "validation_results": {
+    "controller-publication-library-build-2": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-controller-publication-library-build-2-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=600s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "cabal",
+        "build",
+        "--builddir=.build",
+        "lib:prodbox",
+        "--ghc-options=-Werror"
+      ],
+      "started_utc": "2026-10-26T23:44:29.177171+00:00",
+      "completed_utc": "2026-10-26T23:44:48.595313+00:00",
+      "exit_code": 0,
+      "wall_seconds": 19.418161652982235
+    },
+    "controller-publication-native-build-3": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-controller-publication-native-build-3-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=600s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "ghc",
+        "-Wall",
+        "-Werror",
+        "-threaded",
+        "-rtsopts",
+        "-with-rtsopts=-N1",
+        "-hide-all-packages",
+        "-package-db",
+        "/home/matthewnowak/.cabal/store/ghc-9.12.4-5301/package.db",
+        "-package-id",
+        "base-4.21.2.0-60b9",
+        "-package-id",
+        "bytestring-0.11.5.4-76e2bb591efe928d842f8288364e9ef294891f67ce13cd0bc014a1e2fe5df0a0",
+        "-package-id",
+        "unix-2.8.8.0-9ce6978edc33076465fb56791d9ca017d405aa7230adf2653b2f7564cc3925f1",
+        "-package-id",
+        "text-2.0.2-8761414bfd4c61d83bb4a76313f5b7a899dddb96b90269a6e5d997a8bbbd6375",
+        "-package-id",
+        "aeson-2.2.5.0-e2e37fe6bc5aa07f45e066f8f61685fa5ad0b1eb18e2b2c128ef1ea752061e01",
+        "-package-id",
+        "async-2.2.6-8960f1dd21f4a009a29b1fe1a67c9a2a4a2c68697b93dd8f3fb173222380a50f",
+        "-package-id",
+        "crypton-1.0.6-020d21e85cd9683b83d7321e840b655ed76b478e58a637e86a778a7747ac3db7",
+        "-package",
+        "transformers",
+        "-package-id",
+        "process-1.6.30.0-6aaf8422fc072a0cd1390edbfe1125150c6bb2a95b2d3b42b9a9405f80b31cbd",
+        "-package-id",
+        "directory-1.3.10.1-d489a9b04bec59f8c3e0a56d9fa8c6036df06a729b2423829770f25fc263c55c",
+        "-package-id",
+        "filepath-1.4.301.0-55cfbc3f4dce88b4ce1658f6770d9ccbeb279efb5b93e8a3764f29b7dd69dd22",
+        "-package-id",
+        "temporary-1.3-fe250c7fcb6a9acbff484a742781194f9c09a4d7a37988cf39693cbaba0c5ac0",
+        "-package-id",
+        "typed-process-0.2.13.0-abd82bbc92edf3e4773c3dd817737de05db408f2ea5066648e8179fa7a8622cb",
+        "-package=prodbox",
+        "-package-id",
+        "network-3.1.4.0-1d8b779673bab29fa4d91c4b2077c7ccec77e8e8a1bd66b2b95ba4d224d64964",
+        "-package-id",
+        "dhall-1.42.3-f71713b7c542a7fcbde0a2e97ae07b9d32dfe03857095a90c6de6bb24d591cc1",
+        "-package-id",
+        "serialise-0.2.6.1-9fc9b98f7836b30172e1529223fb34de84f444ed67c191e32cd41daa2e1d73d0",
+        "-package-id",
+        "containers-0.6.8-9c73fa12219fb7e1c1121c78e2c1b0cf30923838f9754d37bac0134beb603c6c",
+        "-package-id",
+        "base64-bytestring-1.2.1.0-91628ae01012ed5bf73c3c97373488475dbd88cfd669a49aac9f7c995e8cca71",
+        "-package-id",
+        "cryptohash-sha256-0.11.102.1-6df39dbe01efd710a9783bb4456b0bac4b2e3444a6d321ab62b36f3ff9e6abe0",
+        "-itest/unit",
+        "-itest/support",
+        "-itest/qualification",
+        "-package-id",
+        "tasty-1.5.4-87b0b7a84b66321512246f51e4b2c73d419854c91e61f316f028599d02b6fb57",
+        "-package-id",
+        "tasty-golden-2.3.6-c4e6fa5b2abb4144c1889fed74ad6616bd7562f8ed7b77a0ea745194aaf5174f",
+        "-package-id",
+        "tasty-hunit-0.10.2-e92057303da32999a32a585f0581b8a8de1247905fe41fbc341e8c9d27161051",
+        "-package-id",
+        "tasty-quickcheck-0.11.1-83845e3e87c84d6edafadc8089f429f07dd0911031b48027f788998114a79ea2",
+        "-outputdir",
+        ".build/sprint-6.5/controller-input-publication-20261026/native-publication-3-objects",
+        "-o",
+        ".build/sprint-6.5/controller-input-publication-20261026/native-publication-3",
+        "-XImportQualifiedPost",
+        "-package-db",
+        ".build/packagedb/ghc-9.12.4",
+        "-package-id",
+        "vector-0.13.2.0-56506683abbe5d505d9873d57f93e5ce8e2a9d1cbb2f2f719e5690d437baa472",
+        "-package-id",
+        "stm-2.5.3.1-a1f2",
+        "-package-id",
+        "time-1.12.2-79f6471dcc18660545ae6f423af96c288f6ea95ac7a0b62e890dc9daf5b1fce7",
+        "-package-id",
+        "scientific-0.3.8.1-7c3c80dbb45676207dcbea10819661eeea2761483c16ed54c917301d2397d4d4",
+        "test/qualification/ControllerInputLoader.hs",
+        "src/Prodbox/Subprocess/HostControllerInputs.hs"
+      ],
+      "started_utc": "2026-10-26T23:45:35.719817+00:00",
+      "completed_utc": "2026-10-26T23:45:42.295496+00:00",
+      "exit_code": 0,
+      "wall_seconds": 6.575692432932556
+    },
+    "controller-publication-hlint-4": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-controller-publication-hlint-4-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=180s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        ".build/prodbox-style-tools/bin/hlint",
+        "--hint=.hlint.yaml",
+        "--with-group=default",
+        "--with-group=extra",
+        "src/Prodbox/Subprocess/HostControllerPublication.hs",
+        "src/Prodbox/ControlPlane/RpcAdmissionBirthControllerInputs.hs",
+        "test/qualification/ControllerInputLoader.hs"
+      ],
+      "started_utc": "2026-10-26T23:44:29.174023+00:00",
+      "completed_utc": "2026-10-26T23:44:31.268501+00:00",
+      "exit_code": 0,
+      "wall_seconds": 2.0944955931045115
+    }
+  },
+  "predecessor_dispositions": {
+    "controller-publication-native-build-1": "Fixture name-shadowing warning became an error; renamed the local mismatch result. Build 2 passes without relaxing checks.",
+    "controller-publication-source-before-1": "Capture overlapped the before-change ledger publication; source-before-2 is the frozen post-ledger baseline before implementation."
+  },
+  "earlier_native_record": ".build/sprint-6.5/controller-input-publication-20261026/native-validation-1.json",
+  "readability_refinement": "Named publication/write/read-back helpers replace the initial nested error cases. Both actual packaged versions pass the same native controls with identical original limits. The final independent observer also compares all public input stat-version fields before submission and after family absence."
+}

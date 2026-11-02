@@ -54,11 +54,12 @@ controlPlaneLocalRke2HostObservationRepositorySuite =
       implementation <-
         readFile
           "src/Prodbox/ControlPlane/LocalRke2HostObservationRepository/Internal.hs"
-      let body = dropAt "observeLocalRke2HealthyAfterEstablishBeginInternal bound" implementation
+      let body = dropAt "observeLocalRke2HealthyAfterEstablishBeginUsingInternal owner bound" implementation
       body `shouldContain` "withDescriptorBoundRecoveryPlaneEstablishBindingInternal"
-      body `shouldContain` "observed <- observeLocalRke2RecoveryState"
+      body `shouldContain` "Nothing -> observeLocalRke2RecoveryState"
+      body `shouldContain` "Just owned -> observeLocalRke2RecoveryStateInOperation owned"
       indexOf "withDescriptorBoundRecoveryPlaneEstablishBindingInternal" body
-        `shouldSatisfy` (< indexOf "observed <- observeLocalRke2RecoveryState" body)
+        `shouldSatisfy` (< indexOf "observed <- case owner of" body)
       implementation
         `shouldContain` "local-rke2-host-observation-coordinate/v1"
       implementation
@@ -117,6 +118,7 @@ controlPlaneLocalRke2HostObservationRepositorySuite =
       sort localStateInternalImporters
         `shouldBe` sort
           [ "src/Prodbox/Config/LocalRke2RecoveryState.hs"
+          , "src/Prodbox/ControlPlane/LocalRke2HostObservationRepository/Internal.hs"
           , "src/Prodbox/Lifecycle/Teardown/LocalRke2HostObservation/Internal.hs"
           ]
 

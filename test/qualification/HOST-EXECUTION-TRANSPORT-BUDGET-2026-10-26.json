@@ -1,0 +1,226 @@
+{
+  "schema_version": 1,
+  "name": "HOST-EXECUTION-TRANSPORT-BUDGET-2026-10-26",
+  "status": "typed budget and unit boundary validated; physical composition and full gates pending",
+  "scope": "Unit-validated typed transport budget only. Physical operation-wide expiry/transport ownership, preparation, closed launcher/recovery, full gates and qualification remain open.",
+  "private_evidence": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-progress-1.json",
+  "source_identity_before_publication": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"434f927347ff7c5302c01698faea8cf2f8b875e38464510c2f7a482de8323587\", sourceManifestEntryCount = 1535},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"1c0d86cf76c8fd02be5779356921b5f3b1f0611896c17a0f964792f333906828\", sourceManifestEntryCount = 1472})",
+  "source_identity_equal": true,
+  "inputs": [
+    {
+      "path": "src/Prodbox/Capacity/HostExecution.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-inputs-1/src/Prodbox/Capacity/HostExecution.hs",
+      "sha256": "092ece17fb98e941eb4847e875d0f5b01c9ca458c810d8851207aac9dfba6a8c"
+    },
+    {
+      "path": "src/Prodbox/Capacity/RuntimeMemory.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-inputs-1/src/Prodbox/Capacity/RuntimeMemory.hs",
+      "sha256": "18dd89fdedf4c9f2ad6aeaf03289dd90791c90991e227aaede22c54fb0171fe3"
+    },
+    {
+      "path": "test/unit/CapacityHostExecution.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-inputs-1/test/unit/CapacityHostExecution.hs",
+      "sha256": "2ea47b71bc23e308b194324d2e385cfa87063d049af949c4495c834c94f08752"
+    },
+    {
+      "path": "test/unit/Main.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-inputs-1/test/unit/Main.hs",
+      "sha256": "9d29fe81a2a7076154f45f7354f8772fdbc53f8869b621a624e7e5134f389b39"
+    },
+    {
+      "path": "documents/engineering/haskell_code_guide.md",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-inputs-1/documents/engineering/haskell_code_guide.md",
+      "sha256": "94175c4375246b0d16689df448789ef4bd9ea9df05c034e7cf9d417adc72ac23"
+    },
+    {
+      "path": "DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-inputs-1/DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md",
+      "sha256": "dc6f6306bb385df0de907bde7567eaf90f254e66be7af87f3357b78056146e2b"
+    },
+    {
+      "path": "DEVELOPMENT_PLAN/system-components.md",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-inputs-1/DEVELOPMENT_PLAN/system-components.md",
+      "sha256": "912781c7b0ec211e40400811e217a5a3d3676576c84c8c26c464e0c6cff0fe8a"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-type-boundary-1/serial.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-inputs-1/.build/sprint-6.5/rpc-coordinator-20261025/transport-budget-type-boundary-1/serial.hs",
+      "sha256": "5b532a42d06b3f16c75c0d8cd92a682dc51bcb92c4f01fcc08a62af5fd6d4da0"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-type-boundary-1/transport.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-inputs-1/.build/sprint-6.5/rpc-coordinator-20261025/transport-budget-type-boundary-1/transport.hs",
+      "sha256": "05956ffee51a34926e1df9ab27539e9b2d63f9c4a5438f99eb009d333d3d4aa2"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-type-boundary-1/coerced-transport.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-inputs-1/.build/sprint-6.5/rpc-coordinator-20261025/transport-budget-type-boundary-1/coerced-transport.hs",
+      "sha256": "3ba201563b5b9c261626149a4a35ef1417860f104fba8a027c371f8739e10b76"
+    },
+    {
+      "path": ".build/build/x86_64-linux/ghc-9.12.4/prodbox-0.1.0/t/prodbox-unit/build/prodbox-unit/prodbox-unit",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-inputs-1/.build/build/x86_64-linux/ghc-9.12.4/prodbox-0.1.0/t/prodbox-unit/build/prodbox-unit/prodbox-unit",
+      "sha256": "24d005c8b5b5661a30eb99c46847a200e3d5a2525f792e3002852d9572d1c83c"
+    }
+  ],
+  "arithmetic_profile": {
+    "purpose": "Unit arithmetic only, not measured process peaks or a production profile.",
+    "before": {
+      "memory_mib": {
+        "parent": 48,
+        "command": 64,
+        "helper": 16,
+        "transport": 0
+      },
+      "cpu_usec_per_second": {
+        "parent": 100000,
+        "command": 500000,
+        "helper": 100000,
+        "transport": 0
+      },
+      "tasks": {
+        "parent": 16,
+        "command": 32,
+        "helper": 8,
+        "transport": 0
+      },
+      "runtime_child_peaks_mib": [
+        80
+      ],
+      "runtime_permits": 1
+    },
+    "after": {
+      "memory_mib": {
+        "parent": 48,
+        "command": 48,
+        "helper": 16,
+        "transport": 16
+      },
+      "cpu_usec_per_second": {
+        "parent": 100000,
+        "command": 400000,
+        "helper": 100000,
+        "transport": 100000
+      },
+      "tasks": {
+        "parent": 16,
+        "command": 24,
+        "helper": 8,
+        "transport": 8
+      },
+      "runtime_child_peaks_mib": [
+        64,
+        16
+      ],
+      "runtime_permits": 2
+    },
+    "aggregate_unchanged": {
+      "memory_mib": 128,
+      "milli_cpu": 700,
+      "tasks": 56,
+      "ephemeral_storage_mib": 1,
+      "durable_storage_mib": 0,
+      "maximum_child_us": 5000000
+    }
+  },
+  "tests": {
+    "no_connect_passed": 146,
+    "host_budget_cases": 35,
+    "runtime_memory_cases": 27
+  },
+  "type_boundary": {
+    "serial_expected_exit": 0,
+    "direct_transport_expected_exit": 1,
+    "coerced_transport_expected_exit": 1,
+    "nominal_index_prevents_coercion": true
+  },
+  "unit_observation_counter": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-unit-observation-counter-1.json",
+  "retained_failures": [
+    "HLint projection hints in transport-budget-hlint-1",
+    "test assertion precedence in transport-budget-library-unit-build-1",
+    "existing production AWS image observation in unit test under connect denial; 145/146 pass before observer fix",
+    "initial evidence-capture syntax error; restored full identity verified against failed run before banking inputs"
+  ],
+  "results": {
+    "transport-budget-format-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.2135481839068234,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-format-1.result.json"
+    },
+    "transport-budget-format-2": {
+      "exit_code": 0,
+      "wall_seconds": 0.19931662222370505,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-format-2.result.json"
+    },
+    "transport-budget-format-3": {
+      "exit_code": 0,
+      "wall_seconds": 0.15971140377223492,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-format-3.result.json"
+    },
+    "transport-budget-format-4": {
+      "exit_code": 0,
+      "wall_seconds": 9.566134463995695,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-format-4.result.json"
+    },
+    "transport-budget-format-5": {
+      "exit_code": 0,
+      "wall_seconds": 9.280741599854082,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-format-5.result.json"
+    },
+    "transport-budget-hlint-1": {
+      "exit_code": 1,
+      "wall_seconds": 1.0643901932053268,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-hlint-1.result.json"
+    },
+    "transport-budget-hlint-2": {
+      "exit_code": 0,
+      "wall_seconds": 0.9321670550853014,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-hlint-2.result.json"
+    },
+    "transport-budget-hlint-3": {
+      "exit_code": 0,
+      "wall_seconds": 53.9872553027235,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-hlint-3.result.json"
+    },
+    "transport-budget-library-unit-build-1": {
+      "exit_code": 1,
+      "wall_seconds": 113.18822370609269,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-library-unit-build-1.result.json"
+    },
+    "transport-budget-library-unit-build-2": {
+      "exit_code": 0,
+      "wall_seconds": 161.63311755796894,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-library-unit-build-2.result.json"
+    },
+    "transport-budget-library-unit-build-3": {
+      "exit_code": 0,
+      "wall_seconds": 150.71230297116563,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-library-unit-build-3.result.json"
+    },
+    "transport-budget-unit-no-connect-1": {
+      "exit_code": 1,
+      "wall_seconds": 8.940872878301889,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-unit-no-connect-1.result.json"
+    },
+    "transport-budget-unit-no-connect-2": {
+      "exit_code": 0,
+      "wall_seconds": 8.894018543884158,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-unit-no-connect-2.result.json"
+    },
+    "transport-budget-serial-type-boundary-1": {
+      "exit_code": 0,
+      "wall_seconds": 3.348092333879322,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-serial-type-boundary-1.result.json"
+    },
+    "transport-budget-transport-type-boundary-1": {
+      "exit_code": 1,
+      "wall_seconds": 0.46326698223128915,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-transport-type-boundary-1.result.json"
+    },
+    "transport-budget-coerced-transport-type-boundary-1": {
+      "exit_code": 1,
+      "wall_seconds": 0.4608526420779526,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/transport-budget-coerced-transport-type-boundary-1.result.json"
+    }
+  }
+}

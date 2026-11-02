@@ -169,6 +169,7 @@ decodeTargetAuthorityTrustClientResponse (ControlPlaneResponse status body) = do
       Left (TargetAuthorityTrustClientRefused detail)
     TargetAuthorityTrustUnavailableResponse detail ->
       Left (TargetAuthorityTrustClientUnavailable detail)
+    TargetAuthorityEpochResponse _ -> Left TargetAuthorityTrustClientReadBackInvalid
  where
   success bytes
     | status /= 200 = Left (TargetAuthorityTrustClientHttpStatus status)

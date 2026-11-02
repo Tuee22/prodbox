@@ -75,6 +75,7 @@ usable by developers or externally invoked automation; it does not authorize a r
 | `gateway` | Group | Gateway daemon operations |
 | `help` | Command | Render help for a command path |
 | `host` | Group | Host prerequisite checks |
+| `internal-rpc-birth-controller` | Command | Run the pinned operation-owned RPC birth controller |
 | `nuke` | Command | Total teardown of every prodbox-owned AWS resource (operator-only) |
 | `test` | Group | Named test suites |
 | `users` | Group | Operator-invited user management |
@@ -358,6 +359,12 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox host info` | none | none |
 | `prodbox host firewall gateway-restrict` | none | `--port` |
 | `prodbox host firewall gateway-unrestrict` | none | `--port` |
+
+### `prodbox internal-rpc-birth-controller`
+
+| Command | Arguments | Options |
+|---------|-----------|---------|
+| `prodbox internal-rpc-birth-controller` | none | `--config`, `--request`, `--input-fingerprint`, `--operation-key`, `--outer-ns`, `--work-ns`, `--hard-ns`, `--stop-ns`, `--finish-ns` |
 
 ### `prodbox nuke`
 

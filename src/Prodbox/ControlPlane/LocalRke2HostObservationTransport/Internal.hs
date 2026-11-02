@@ -10,6 +10,7 @@
 module Prodbox.ControlPlane.LocalRke2HostObservationTransport.Internal
   ( LocalRke2HostObservationTransportError (..)
   , localRke2HostObservationEstablishBoundaryInternal
+  , localRke2HostObservationEstablishBoundaryInOperationInternal
   , commitObservedLocalRke2HostObservationRemoteInternal
   )
 where
@@ -42,7 +43,8 @@ import Prodbox.ControlPlane.LocalRke2HostObservationRepository
   , LocalRke2HostObservationRepositoryError (..)
   )
 import Prodbox.ControlPlane.LocalRke2HostObservationRepository.Internal
-  ( observeLocalRke2HealthyAfterEstablishBeginInternal
+  ( observeLocalRke2HealthyAfterEstablishBeginInOperationInternal
+  , observeLocalRke2HealthyAfterEstablishBeginInternal
   )
 import Prodbox.Http.ReplyStatus (replyStatusCode)
 import Prodbox.Lifecycle.Teardown.Execution (TeardownExecutionContext)
@@ -52,6 +54,7 @@ import Prodbox.Lifecycle.Teardown.RecoveryPlaneInterpreter.Internal
   , RecoveryPlaneEstablishResult (..)
   )
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
+import Prodbox.Subprocess (OperationSubprocesses)
 
 data LocalRke2HostObservationTransportError
   = LocalRke2HostObservationTransportObservationFailed
@@ -69,10 +72,25 @@ data LocalRke2HostObservationTransportError
 localRke2HostObservationEstablishBoundaryInternal
   :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
   -> RecoveryPlaneEstablishBoundary IO
-localRke2HostObservationEstablishBoundaryInternal transport =
+localRke2HostObservationEstablishBoundaryInternal =
+  localRke2HostObservationEstablishBoundaryUsingInternal Nothing
+
+localRke2HostObservationEstablishBoundaryInOperationInternal
+  :: OperationSubprocesses
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> RecoveryPlaneEstablishBoundary IO
+localRke2HostObservationEstablishBoundaryInOperationInternal owned =
+  localRke2HostObservationEstablishBoundaryUsingInternal (Just owned)
+
+localRke2HostObservationEstablishBoundaryUsingInternal
+  :: Maybe OperationSubprocesses
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> RecoveryPlaneEstablishBoundary IO
+localRke2HostObservationEstablishBoundaryUsingInternal owner transport =
   RecoveryPlaneEstablishBoundary $ \bound witness context _ _ -> do
     attempted <-
-      commitObservedLocalRke2HostObservationRemoteInternal
+      commitObservedLocalRke2HostObservationRemoteUsingInternal
+        owner
         transport
         bound
         witness
@@ -91,8 +109,24 @@ commitObservedLocalRke2HostObservationRemoteInternal
            LocalRke2HostObservationTransportError
            LocalRke2HostObservationCommitResult
        )
-commitObservedLocalRke2HostObservationRemoteInternal transport bound witness context = do
-  observed <- observeLocalRke2HealthyAfterEstablishBeginInternal bound witness context
+commitObservedLocalRke2HostObservationRemoteInternal =
+  commitObservedLocalRke2HostObservationRemoteUsingInternal Nothing
+
+commitObservedLocalRke2HostObservationRemoteUsingInternal
+  :: Maybe OperationSubprocesses
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> DescriptorBoundCleanupRun
+  -> RecoverySurfaceWitness surface
+  -> TeardownExecutionContext surface
+  -> IO
+       ( Either
+           LocalRke2HostObservationTransportError
+           LocalRke2HostObservationCommitResult
+       )
+commitObservedLocalRke2HostObservationRemoteUsingInternal owner transport bound witness context = do
+  observed <- case owner of
+    Nothing -> observeLocalRke2HealthyAfterEstablishBeginInternal bound witness context
+    Just owned -> observeLocalRke2HealthyAfterEstablishBeginInOperationInternal owned bound witness context
   case first LocalRke2HostObservationTransportObservationFailed observed of
     Left err -> pure (Left err)
     Right candidate -> do

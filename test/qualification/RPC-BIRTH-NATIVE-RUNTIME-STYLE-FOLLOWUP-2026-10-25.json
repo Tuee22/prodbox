@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "recording": "RPC-BIRTH-NATIVE-RUNTIME-STYLE-FOLLOWUP-2026-10-25",
+  "owning_sprint": "6.5",
+  "recorded_utc": "2026-10-25T12:12:28.082005+00:00",
+  "previous_record": "test/qualification/RPC-BIRTH-NATIVE-RUNTIME-COMPOSITION-2026-10-25.json",
+  "scope": "Style-only named-helper extraction in the native fixture, revalidated through the current installed operator against the same explicitly synthetic HTTP boundaries.",
+  "previous_source": {
+    "sha256": "42f71b53daf5541edbcff9d1dfbd8d64eed0b7b8ea0f9d8eb92d496b6de923ca",
+    "preserved": ".build/sprint-6.5/rpc-coordinator-20261025/RpcBirthNativeRuntime-before-style.hs",
+    "original_record_unchanged": true
+  },
+  "repository_reproducer": {
+    "source": "test/qualification/RpcBirthNativeRuntime.hs",
+    "source_sha256": "9c8ebc5694df7bf423a733e889df9619ed31027861443576371d68447c4b84fe",
+    "preserved_source": ".build/sprint-6.5/rpc-coordinator-20261025/RpcBirthNativeRuntime-style-9c8ebc5694df7bf4.hs",
+    "build": [
+      "cabal",
+      "exec",
+      "--builddir=.build",
+      "--",
+      "ghc",
+      "-Wall",
+      "-Werror",
+      "-threaded",
+      "-rtsopts",
+      "-package=prodbox",
+      "-outputdir",
+      ".build/sprint-6.5/rpc-coordinator-20261025/native-style-2-objects",
+      "test/qualification/RpcBirthNativeRuntime.hs",
+      "-o",
+      ".build/sprint-6.5/rpc-coordinator-20261025/native-runtime-style-probe-2"
+    ],
+    "run": [
+      ".build/sprint-6.5/rpc-coordinator-20261025/native-runtime-style-probe-2",
+      "--operator",
+      ".build/prodbox"
+    ]
+  },
+  "source_identity_before_followup_publication": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"0506a700a26683d43e7401110b45b0d2dc942d7ed0d67408a1005841bafd23a8\", sourceManifestEntryCount = 1501},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"650d254c5c61f69595681aef9fe15122665d43a001936930b83d887faa450c8e\", sourceManifestEntryCount = 1438})",
+  "recorded_run": {
+    "command": [
+      ".build/sprint-6.5/rpc-coordinator-20261025/native-runtime-style-probe-2",
+      "--operator",
+      ".build/prodbox"
+    ],
+    "started_utc": "2026-10-25T12:11:32.722646+00:00",
+    "completed_utc": "2026-10-25T12:11:36.177586+00:00",
+    "exit_code": 0,
+    "wall_seconds": 3.4549632030539215,
+    "binary_sha256": "7f7ba8c20ec775a177ffa4ef95c69ed660e9ed47d12d4943289c770d29920c93",
+    "operator_sha256": "9a1430a11b7f4ac95f5a5d4eb02fc89a7deb9dc99e79812ae02cb910f99183e2",
+    "source_sha256": "9c8ebc5694df7bf423a733e889df9619ed31027861443576371d68447c4b84fe"
+  },
+  "positive_cases": 5,
+  "startup_refusal_cases": 8,
+  "postconditions": "All five exact pinned birth stages and eight startup refusals retain the original fixture postconditions, including retained-domain nonmutation and joined process/listener cleanup.",
+  "boundaries_and_exclusions": "Identical to the previous record: actual installed role startup/native clients and signed requests with synthetic Vault/S3 providers; no deployed readiness, real provider policy, outbound signing, resource sufficiency, backup/restore, pin retirement or lifecycle qualification claim.",
+  "qualification_claim": false,
+  "qualified_cycles_added": 0,
+  "image_attempts": 0,
+  "live_attempts": 0,
+  "resource_envelopes_increased": false,
+  "hand_actions": [],
+  "validation_index": ".build/sprint-6.5/rpc-coordinator-20261025/validation-progress.json"
+}

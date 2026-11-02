@@ -4,6 +4,7 @@ module Prodbox.Capacity.Placement
   ( WorkloadConcurrency (..)
   , renderedNamespace
   , concurrentPlanDraws
+  , concurrentWorkloadDraws
   , planNamespaceQuota
   , planNamespaceAdmission
   , planNamespaceLimits
@@ -24,6 +25,7 @@ import Prodbox.Capacity.Config
   , resourceVectorScale
   , resources
   )
+import Prodbox.Capacity.PlatformSchedulerBudget qualified as PlatformScheduler
 import Prodbox.Substrate (Substrate, gatewayEmitterJournalMiB, gatewayNodeIdsForSubstrate)
 
 -- | The namespace a profile's workloads are installed into. The Keycloak
@@ -122,8 +124,20 @@ gatewayEmitterCount = fromIntegral . length . gatewayNodeIdsForSubstrate
 -- | Draws that may coexist at cluster scope. Steady workloads are independent
 -- allocations; mutually exclusive named windows contribute their componentwise
 -- peak, so workloads within one window coexist while distinct windows do not.
-concurrentPlanDraws :: ResourcePlan -> [ResourceVector]
+concurrentPlanDraws :: ResourcePlan -> Either String [ResourceVector]
 concurrentPlanDraws plan =
+  do
+    baseline <-
+      either
+        (Left . PlatformScheduler.renderPlatformSchedulerDemandError)
+        Right
+        (PlatformScheduler.declaredPlatformSchedulerRequests (platform_scheduler_requests plan))
+    Right (baseline : concurrentWorkloadDraws plan)
+
+-- Platform demand is cluster-scoped and never enters a namespace/container
+-- projection. Application concurrency keeps its existing scheduling units.
+concurrentWorkloadDraws :: ResourcePlan -> [ResourceVector]
+concurrentWorkloadDraws plan =
   steadyDraws ++ Map.elems windowDraws
  where
   (steadyDraws, windowDraws) =

@@ -1,0 +1,252 @@
+{
+  "schema_version": 1,
+  "recording": "BOUNDED-CHILD-FAST-SESSION-ESCAPE-2026-10-25",
+  "owning_sprint": "6.5",
+  "recorded_utc": "2026-10-25T13:00:25.059358+00:00",
+  "status": "Open: frozen offline counterexample; production repair and qualification pending.",
+  "scope": "New bounded-output subprocess ownership before retained-Authority Helm wiring; no AWS or Kubernetes changes.",
+  "repository_reproducer": {
+    "source": "test/qualification/OwnedSubprocessFastSessionEscape.hs",
+    "source_sha256": "e63867735073d325e4242bb0c52a139716e4aa608568527589747cde13a5d9c8",
+    "preserved_source": ".build/sprint-6.5/rpc-coordinator-20261025/OwnedSubprocessFastSessionEscape-e63867735073d325.hs",
+    "build": [
+      "cabal",
+      "exec",
+      "--builddir=.build",
+      "--",
+      "ghc",
+      "-Wall",
+      "-Werror",
+      "-threaded",
+      "-rtsopts",
+      "-package=prodbox",
+      "-outputdir",
+      ".build/sprint-6.5/rpc-coordinator-20261025/fast-session-public-1-objects",
+      "test/qualification/OwnedSubprocessFastSessionEscape.hs",
+      "-o",
+      ".build/sprint-6.5/rpc-coordinator-20261025/fast-session-public-probe-1"
+    ],
+    "run": [
+      ".build/sprint-6.5/rpc-coordinator-20261025/fast-session-public-probe-1"
+    ],
+    "expected_before_repair": "exit1 with successful parent exit and its exact separately-sessioned child still live",
+    "expected_after_repair": "exit0 only after actual command success and exact observed child absence"
+  },
+  "frozen_implementation": {
+    "source_identity_at_library_build": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"380ed37a6da1b7a4950f7ca4514c4af3627ca9553203ae6fd479818dbfc734a1\", sourceManifestEntryCount = 1503},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"412b5b408408a9b8458e08d241ae249674d692f4349e1b755a05f08ffbccd93f\", sourceManifestEntryCount = 1440})",
+    "implementation_artifacts": [
+      {
+        "original": "src/Prodbox/Subprocess.hs",
+        "preserved": ".build/sprint-6.5/rpc-coordinator-20261025/frozen-fast-session-Subprocess.hs-62235416b2a02991",
+        "sha256": "62235416b2a02991f792d86bb4df12eb7c33ec38d96c679437e3decc98a6427e"
+      },
+      {
+        "original": "src/Prodbox/Subprocess/OwnedProcessTree.hs",
+        "preserved": ".build/sprint-6.5/rpc-coordinator-20261025/frozen-fast-session-OwnedProcessTree.hs-b50d4f4495267970",
+        "sha256": "b50d4f449526797009c3ce98de7239fc1b211486c6c42f5a2900a41c5ef20fb5"
+      },
+      {
+        "original": ".build/sprint-6.5/rpc-coordinator-20261025/ProbeFastSessionEscape.hs",
+        "preserved": ".build/sprint-6.5/rpc-coordinator-20261025/frozen-fast-session-ProbeFastSessionEscape.hs-7066b5187ca26e83",
+        "sha256": "7066b5187ca26e8300586347e88aded3c4fb43babde67b8e10e15d175fd062c8"
+      },
+      {
+        "original": ".build/sprint-6.5/rpc-coordinator-20261025/fast-session-probe-1",
+        "preserved": ".build/sprint-6.5/rpc-coordinator-20261025/frozen-fast-session-fast-session-probe-1-0bee82d7ca9ba110",
+        "sha256": "0bee82d7ca9ba110565a22ede8a75b99a6cd1aee07fae059cfe8f5cab9d1ce0d"
+      }
+    ],
+    "operator_sha256": "9a1430a11b7f4ac95f5a5d4eb02fc89a7deb9dc99e79812ae02cb910f99183e2"
+  },
+  "recorded_run": {
+    "command": [
+      ".build/sprint-6.5/rpc-coordinator-20261025/fast-session-public-probe-1"
+    ],
+    "started_utc": "2026-10-25T12:57:48.952064+00:00",
+    "completed_utc": "2026-10-25T12:57:49.441493+00:00",
+    "exit_code": 1,
+    "wall_seconds": 0.4894466199912131,
+    "binary_sha256": "b60b49cc1b2a021e52854ffc4a698a73b4e0947e846d3435fc60cf1d579f03b9",
+    "observations": {
+      "cases": [
+        {
+          "case": 1,
+          "elapsed_micros": 57550,
+          "escaped_child_live_after_return": true,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 2,
+          "elapsed_micros": 58925,
+          "escaped_child_live_after_return": true,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 3,
+          "elapsed_micros": 52540,
+          "escaped_child_live_after_return": true,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 4,
+          "elapsed_micros": 53240,
+          "escaped_child_live_after_return": true,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 5,
+          "elapsed_micros": 53134,
+          "escaped_child_live_after_return": true,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 6,
+          "elapsed_micros": 55953,
+          "escaped_child_live_after_return": true,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 7,
+          "elapsed_micros": 56677,
+          "escaped_child_live_after_return": true,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 8,
+          "elapsed_micros": 53767,
+          "escaped_child_live_after_return": true,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        }
+      ],
+      "failed_cases": 8,
+      "fixed_case_count": 8
+    }
+  },
+  "causal_profile": {
+    "cases": 8,
+    "child": "one setsid shell records PID/start-time, redirects all streams and execs sleep20",
+    "parent": "exits immediately after nonempty child identity-file handshake",
+    "total_microseconds": 500000,
+    "grace_microseconds": 50000,
+    "confirmation_microseconds": 100000,
+    "reader_settlement_microseconds": 50000,
+    "stdout_bytes": 128,
+    "stderr_bytes": 128
+  },
+  "why_existing_tests_missed_it": "The earlier native child-holder case sleeps0.2s in its parent, allowing ancestry observation before exit. The new producer handshake makes child birth observable without waiting for a scan.",
+  "fixture_cleanup": "Finally checks exact original PID/start-time, kills only that live fixture child and confirms stopped. All eight cleanups completed before the failing JSON result was emitted.",
+  "kernel_experiment": {
+    "production_implementation": false,
+    "result": {
+      "command": [
+        ".build/sprint-6.5/rpc-coordinator-20261025/systemd-session-probe-2"
+      ],
+      "started_utc": "2026-10-25T12:50:41.063730+00:00",
+      "completed_utc": "2026-10-25T12:50:41.746740+00:00",
+      "exit_code": 0,
+      "wall_seconds": 0.6830340847373009
+    },
+    "observations": {
+      "cases": [
+        {
+          "case": 1,
+          "elapsed_micros": 64595,
+          "escaped_child_live_after_return": false,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 2,
+          "elapsed_micros": 88462,
+          "escaped_child_live_after_return": false,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 3,
+          "elapsed_micros": 92475,
+          "escaped_child_live_after_return": false,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 4,
+          "elapsed_micros": 91571,
+          "escaped_child_live_after_return": false,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 5,
+          "elapsed_micros": 87565,
+          "escaped_child_live_after_return": false,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 6,
+          "elapsed_micros": 75613,
+          "escaped_child_live_after_return": false,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 7,
+          "elapsed_micros": 95430,
+          "escaped_child_live_after_return": false,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        },
+        {
+          "case": 8,
+          "elapsed_micros": 79008,
+          "escaped_child_live_after_return": false,
+          "observed_child_identity": true,
+          "outcome": "Completed ExitSuccess"
+        }
+      ],
+      "failed_cases": 0,
+      "fixed_case_count": 8
+    },
+    "source_sha256": "643f99c6f062b94207d966ed5aa06b9af261e6302368116b93efe63ffcacc0f2",
+    "binary_sha256": "a58d864bc08f3e3366bfa051487521633984e772ca301936d86d1edc9abbc3f7",
+    "unit_properties": [
+      "KillMode=control-group",
+      "TimeoutStopSec=100ms",
+      "RuntimeMaxSec=2s",
+      "TasksMax=16",
+      "MemoryMax=64M",
+      "MemorySwapMax=0",
+      "NoNewPrivileges=yes"
+    ],
+    "limits": "Normal-exit experiment only. Its service environment, queued admission, cancellation, original absolute deadline, exact unit identity, recovery and resource admission are not production-proven.",
+    "terminal_unit_inventory": "Exact fixture-prefix systemctl list-units returned empty after the run."
+  },
+  "required_repair": [
+    "Own kernel membership before admitting the child effect; survive session changes/reparenting and early parent exit",
+    "Carry original deadline through startup, cancellation, descendant stop, output drain and closing absence readback",
+    "Preserve declared command environment/cwd/stdio/exit semantics, bounded PID/memory/output profile and unrelated processes",
+    "Bind exact local owner identity and unresolved recovery; no arbitrary PID or unit-name deletion",
+    "Run full sibling matrix and current canonical/frontend validation before production Helm wiring"
+  ],
+  "primary_references": [
+    "https://www.freedesktop.org/software/systemd/man/255/systemd-run.html",
+    "https://www.freedesktop.org/software/systemd/man/255/systemd.scope.html",
+    "https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html"
+  ],
+  "qualification_claim": false,
+  "qualified_cycles_added": 0,
+  "live_attempts": 0,
+  "image_attempts": 0,
+  "resource_envelopes_increased": false,
+  "hand_actions": [],
+  "validation_index": ".build/sprint-6.5/rpc-coordinator-20261025/validation-progress.json"
+}

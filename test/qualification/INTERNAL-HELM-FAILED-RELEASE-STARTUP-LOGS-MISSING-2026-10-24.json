@@ -1,0 +1,241 @@
+{
+  "schema_version": 1,
+  "counterexample": "INTERNAL-HELM-FAILED-RELEASE-STARTUP-LOGS-MISSING-2026-10-24",
+  "banked_utc": "2026-10-24T07:22:24.159896+00:00",
+  "live_recording": {
+    "command": [
+      "./.build/prodbox",
+      "test",
+      "integration",
+      "cascade-qualification",
+      "--substrate",
+      "home-local"
+    ],
+    "cycle_label": "pre-20261022-1",
+    "exit": 1,
+    "started_utc": "2026-10-24T06:32:32.813062+00:00",
+    "completed_utc": "2026-10-24T06:57:28.397300+00:00",
+    "wall_seconds": 1495.483,
+    "operator_binary_sha256": "85cf0cebd8f007c0e16dfd9b8e83e4bcff82ca40da0bc8093d3afba168ed0410",
+    "source_identity_record": "pre-8.source-identity.log",
+    "admission_record": "pre-8.admission.json",
+    "hand_actions": []
+  },
+  "actual_provider_tool": "helm v4.3.0+gbec5b06; Kubernetes v1.36.5+rke2r1",
+  "failed_release": {
+    "namespace": "lifecycle-authority",
+    "release": "lifecycle-authority",
+    "helm_revision": 10,
+    "pod_name": "lifecycle-authority-0",
+    "pod_uid": "c94eaa99-173d-41b0-9fad-73492bb558ef",
+    "exit_code": 1,
+    "restart_count": 480,
+    "runtime_manifest": "sha256:2f2bdfebec980a9eb1a01461623345f4d9ec02143150a067014e091fd2acfb24",
+    "underlying_startup_cause_observed": false,
+    "diagnostics_requested": [
+      "helm status",
+      "kubectl get release resources",
+      "kubectl describe release pods",
+      "kubectl namespace events"
+    ],
+    "startup_logs_requested": false,
+    "canonical_uninstall_and_absence_observed": true,
+    "exact_post_cleanup_cri_lookup_exit": 1,
+    "post_cleanup_log_inventory_exit": 1
+  },
+  "independent_publication_worker_canary": {
+    "broker_uid": "ae24039d-ffa1-4a7c-b17c-df4e58b5706f",
+    "broker_ready": true,
+    "broker_restarts": 0,
+    "workers_succeeded_and_deleted": 7,
+    "runtime_manifest": "sha256:d95107866c9f2fc7fa6fcb3c099edb9ebf6b015fa94dc5e4b490a9cd2ead2a7c",
+    "exact_cri_tag_config_manifest_and_descriptor_hash_verified": true,
+    "qualifying_cycles": 0
+  },
+  "superseded_identity": {
+    "source_git_head": "b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6",
+    "worktree": "dirty",
+    "operator_sha256": "85cf0cebd8f007c0e16dfd9b8e83e4bcff82ca40da0bc8093d3afba168ed0410",
+    "full_source_manifest": "8dba23bb950b859dac1c97dceabc2ce2e28885d59559a799d18020f8f75133fa",
+    "executable_source_manifest": "427dc11018b429f529b7bdf06d22d6b54b59d77397a95c23f078c6038f4d2326",
+    "full_policy": {
+      "identifier": "prodbox-source-manifest",
+      "version": 1,
+      "digest": "4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae"
+    },
+    "executable_policy": {
+      "identifier": "prodbox-source-manifest-executable",
+      "version": 1,
+      "digest": "2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b"
+    },
+    "identity_record": ".build/sprint-6.5/authority-startup-20261024/superseded-source-identity.log",
+    "published_runtime_config": "sha256:c4077b452312ca928509ee35d63f2c7142f35928e301977f21dd542f2b2f954f",
+    "published_runtime_manifest": "sha256:d95107866c9f2fc7fa6fcb3c099edb9ebf6b015fa94dc5e4b490a9cd2ead2a7c",
+    "actual_failed_runtime_archive": "../../sprint-2.146/superseded-runtime.tar.gz"
+  },
+  "causal_profile": {
+    "authored_load": "one serialized failed-release diagnostic observation; no lifecycle repair or writer",
+    "fault_schedule": "Helm failure and exact crashing Pod are observable; selected current/previous startup logs contain a producer-owned closed cause plus private unrelated text",
+    "old_to_new_resource_mapping": "same host diagnostic/tool profile; no extra daemon or journal writer; the component CPU/memory/ephemeral/persistence budgets are unchanged",
+    "observed_authority_requests_and_limits": {
+      "cpu": "150m",
+      "memory": "128Mi",
+      "ephemeral_storage": "256Mi"
+    },
+    "observed_broker_requests_and_limits": {
+      "cpu": "100m",
+      "memory": "128Mi",
+      "ephemeral_storage": "256Mi"
+    },
+    "full_deployment_replayed": false
+  },
+  "frozen_control": {
+    "completed_utc": "2026-10-24T07:22:24.046373+00:00",
+    "exit": 1,
+    "expected_exit": 1,
+    "wall_seconds": 0.006,
+    "control_sha256": "faae7c10bdecacdc2c2ab65a52ea032af645bcfe95846e1fa54eca1e4194e784",
+    "adapter": "exact superseded ChartPlatform module; module name and private exports only",
+    "logs_requested": false,
+    "raw_text_rendered": false,
+    "live_mutation": false
+  },
+  "required_replacement": "Bound selected release Pod/container reads, check exact immutable attribution, observe current/eligible previous startup output before cleanup, and report only producer-owned closed startup labels and explicit observation outcomes. Raw child output is private, never printed, persisted or hashed. Preserve cleanup, timeout, attestation and resource semantics.",
+  "non_claims": [
+    "No missing rollout annotation is claimed; frozen source supplies it.",
+    "No specific OrderedReady or startup cause is attributed.",
+    "No class closure, deployment qualification, AWS absence or hand recovery is claimed."
+  ],
+  "replacement_and_gates": "focused and helper/tool controls pass; installed and full final gates pending at banking",
+  "evidence_root": ".build/sprint-3.49",
+  "hand_actions": [],
+  "secret_material_recorded_or_hashed": false,
+  "actual_helper_comparison": [
+    {
+      "control": "frozen-failure-evidence-control-v2",
+      "completed_utc": "2026-10-24T07:39:16.531852+00:00",
+      "exit": 1,
+      "expected_exit": 1,
+      "wall_seconds": 0.007,
+      "controller_sha256": "46b56a75219197f6c28fbee76ed506741a6b9d343cdce7c7e80e8f776482933b",
+      "log_reads": 0,
+      "private_text_rendered": false,
+      "live_mutation": false
+    },
+    {
+      "control": "replacement-failure-evidence-control",
+      "completed_utc": "2026-10-24T07:39:16.679486+00:00",
+      "exit": 0,
+      "expected_exit": 0,
+      "wall_seconds": 0.018,
+      "controller_sha256": "d5987662811d11c9884909354fc089a257550ad66d10d10a0f09f1c50775ab9a",
+      "log_reads": 2,
+      "private_text_rendered": false,
+      "live_mutation": false
+    }
+  ],
+  "real_tool_canary": {
+    "completed_utc": "2026-10-24T07:47:22.513985+00:00",
+    "controls": [
+      {
+        "fault": "normal",
+        "started_utc": "2026-10-24T07:47:08.788261+00:00",
+        "completed_utc": "2026-10-24T07:47:09.856272+00:00",
+        "exit": 0,
+        "wall_seconds": 1.068,
+        "tool": "v1.35.5",
+        "budget": {
+          "NanoCpus": 500000000,
+          "Memory": 805306368,
+          "MemorySwap": 805306368
+        },
+        "log_requests": 2,
+        "private_output_rendered": false,
+        "live_cluster_mutated": false
+      },
+      {
+        "fault": "uid-changed",
+        "started_utc": "2026-10-24T07:47:09.856563+00:00",
+        "completed_utc": "2026-10-24T07:47:10.570996+00:00",
+        "exit": 0,
+        "wall_seconds": 0.714,
+        "tool": "v1.35.5",
+        "budget": {
+          "NanoCpus": 500000000,
+          "Memory": 805306368,
+          "MemorySwap": 805306368
+        },
+        "log_requests": 1,
+        "private_output_rendered": false,
+        "live_cluster_mutated": false
+      },
+      {
+        "fault": "denied",
+        "started_utc": "2026-10-24T07:47:10.571198+00:00",
+        "completed_utc": "2026-10-24T07:47:11.280315+00:00",
+        "exit": 0,
+        "wall_seconds": 0.709,
+        "tool": "v1.35.5",
+        "budget": {
+          "NanoCpus": 500000000,
+          "Memory": 805306368,
+          "MemorySwap": 805306368
+        },
+        "log_requests": 2,
+        "private_output_rendered": false,
+        "live_cluster_mutated": false
+      },
+      {
+        "fault": "oversized",
+        "started_utc": "2026-10-24T07:47:11.280507+00:00",
+        "completed_utc": "2026-10-24T07:47:11.937211+00:00",
+        "exit": 0,
+        "wall_seconds": 0.657,
+        "tool": "v1.35.5",
+        "budget": {
+          "NanoCpus": 500000000,
+          "Memory": 805306368,
+          "MemorySwap": 805306368
+        },
+        "log_requests": 2,
+        "private_output_rendered": false,
+        "live_cluster_mutated": false
+      },
+      {
+        "fault": "timeout",
+        "started_utc": "2026-10-24T07:47:11.937518+00:00",
+        "completed_utc": "2026-10-24T07:47:16.583133+00:00",
+        "exit": 0,
+        "wall_seconds": 4.646,
+        "tool": "v1.35.5",
+        "budget": {
+          "NanoCpus": 500000000,
+          "Memory": 805306368,
+          "MemorySwap": 805306368
+        },
+        "log_requests": 2,
+        "private_output_rendered": false,
+        "live_cluster_mutated": false
+      }
+    ],
+    "container_id": "d826567903d1128b8516a913b1d1ef97213986666f119a756409a97d4e7cd7a1",
+    "container_retired": true,
+    "scope": "real pinned kubectl against private HTTP API fixture; read requests only; no real kubeconfig, JWT, AWS credential or live namespace mounted",
+    "qualification": "pending; no live class closure",
+    "container_absence_readback_exit": 1,
+    "container_absent_verified": true
+  },
+  "local_matrix_cases": 158,
+  "replacement_contract": {
+    "exact_scope": "one selected internal release Pod, its validated namespace/label/UID/container and stable restart identity before/after each successful log read",
+    "classifier": "existing producer-owned Authority, Target Agent and TLS Retention startup event/role/cause tuples; other or unknown output is explicitly unclassified",
+    "previous_log": "only a positively observed restart permits the previous read",
+    "aggregate_deadline_micros": 30000000,
+    "child_maximum_micros": 3000000,
+    "inventory_stdout_limit_bytes": 131072,
+    "startup_stdout_limit_bytes": 65536,
+    "stderr_limit_bytes": 16384,
+    "raw_bytes": "private bounded memory only; never rendered, persisted or hashed",
+    "ordinary_helm_cleanup": "unchanged; observation supplies no recovery or mutation authority"
+  }
+}

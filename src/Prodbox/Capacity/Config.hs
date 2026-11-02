@@ -32,6 +32,7 @@ module Prodbox.Capacity.Config
   , resourceVectorScale
   , resourceVectorSubtractChecked
   , runtimeMemoryPlanForProfile
+  , runtimeMemoryPlanForLimit
   , storageFitsWithin
   , plusBudget
   , validateCapacitySection
@@ -63,6 +64,7 @@ import Prodbox.Capacity.Derivation
   ( deriveResourceEnvelope
   , derivedResourceEnvelope
   )
+import Prodbox.Capacity.PlatformSchedulerBudget qualified as PlatformScheduler
 import Prodbox.Capacity.ProviderWorkerBudget qualified as ProviderWorkerBudget
 import Prodbox.Capacity.RuntimeMemory qualified as RuntimeMemory
 import Prodbox.Capacity.Types
@@ -111,6 +113,8 @@ data ResourcePlan = ResourcePlan
   { host_capacity :: ResourceVector
   , rke2_reserved :: ResourceVector
   , eviction_floor :: ResourceVector
+  , -- A legacy omission stays explicit and cannot mint an allocation proof.
+    platform_scheduler_requests :: Maybe ResourceVector
   , workload_profiles :: [WorkloadResourceProfile]
   }
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
@@ -128,8 +132,9 @@ data ChildProcessBudgetConfig = ChildProcessBudgetConfig
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
 
 -- | Raw Tier-0 inputs for a validated runtime-memory plan. The profile id is
--- also the id of the matching 'WorkloadResourceProfile'; its container limit
--- is derived from that profile rather than authored a second time.
+-- also the id of the matching 'WorkloadResourceProfile' on the workload path;
+-- its container limit is derived from that profile. Host-operation requests
+-- carry their own explicit outer envelope into the same nested compiler.
 data RuntimeMemoryProfile = RuntimeMemoryProfile
   { runtime_profile_id :: Text
   , bounded_application_state_bytes :: Natural
@@ -215,12 +220,15 @@ defaultRuntimeMemoryProfiles =
 defaultResourcePlan :: ResourcePlan
 defaultResourcePlan =
   ResourcePlan
-    { host_capacity = ResourceVector 8000 15872 100000 180000
+    { -- Portable declaration; host fitting must prove the complete draw
+      -- against the observed machine before deployment.
+      host_capacity = ResourceVector 10000 18432 100000 180000
     , -- The scheduled RKE2 system Pods already account for their CPU through
       -- requests. Keep the host-only kubelet reservation distinct so those
       -- requests are not charged twice in the single-node envelope.
       rke2_reserved = ResourceVector 250 1536 9728 1024
     , eviction_floor = ResourceVector 750 1024 10240 1024
+    , platform_scheduler_requests = Just PlatformScheduler.minimumPlatformSchedulerRequests
     , workload_profiles =
         [ workload "keycloak" "keycloak" 1 (ResourceVector 500 1024 1024 1) (ResourceVector 600 1280 2048 1)
         , workload
@@ -554,6 +562,13 @@ validateCapacitySection section = do
     (node_budget section)
     (region_quota section)
   validateRawResourcePlanShape (resource_plan section)
+  _ <-
+    either
+      (Left . PlatformScheduler.renderPlatformSchedulerDemandError)
+      Right
+      ( PlatformScheduler.validatePlatformSchedulerRequests
+          (platform_scheduler_requests (resource_plan section))
+      )
   validateRetainedReplayMemory (resource_plan section)
   _ <- validateRuntimeMemoryProfiles section
   validateProviderWorkerTransportBudget section
@@ -639,11 +654,6 @@ compileRuntimeMemoryProfile
   -> Either String (Text, RuntimeMemory.RuntimeMemoryPlan)
 compileRuntimeMemoryProfile plan profile = do
   let profileId = Text.strip (runtime_profile_id profile)
-      label fieldName =
-        "capacity.runtime_memory_profiles["
-          ++ Text.unpack profileId
-          ++ "]."
-          ++ fieldName
   unless
     (not (Text.null profileId))
     (Left "capacity.runtime_memory_profiles[].runtime_profile_id must not be empty")
@@ -656,6 +666,21 @@ compileRuntimeMemoryProfile plan profile = do
               ++ Text.unpack profileId
               ++ "] references unknown workload profile"
           )
+  compiled <-
+    runtimeMemoryPlanForLimit (memory_mib (limit (resources workloadProfile)) * 1024 * 1024) profile
+  Right (profileId, compiled)
+
+-- Host operations supply their separately admitted outer envelope. All nested
+-- memory terms use the same compiler as workload profiles.
+runtimeMemoryPlanForLimit
+  :: Natural -> RuntimeMemoryProfile -> Either String RuntimeMemory.RuntimeMemoryPlan
+runtimeMemoryPlanForLimit containerLimitBytes profile = do
+  let profileId = Text.strip (runtime_profile_id profile)
+      label fieldName =
+        "capacity.runtime_memory_profiles[" ++ Text.unpack profileId ++ "]." ++ fieldName
+  unless
+    (not (Text.null profileId))
+    (Left "capacity.runtime_memory_profiles[].runtime_profile_id must not be empty")
   applicationState <-
     positiveBytes
       (label "bounded_application_state_bytes")
@@ -694,7 +719,7 @@ compileRuntimeMemoryProfile plan profile = do
     positiveBytes
       (label "container_memory_limit")
       RuntimeMemory.ContainerMemoryLimit
-      (memory_mib (limit (resources workloadProfile)) * 1024 * 1024)
+      containerLimitBytes
   let childConfig = child_process_budget profile
       childSchedule =
         case permit_capacity childConfig of
@@ -719,12 +744,10 @@ compileRuntimeMemoryProfile plan profile = do
           , RuntimeMemory.runtimeSafetyMargin = margin
           , RuntimeMemory.runtimeContainerMemoryLimit = containerLimit
           }
-  compiled <-
-    either
-      (\err -> Left (label "validation" ++ ": " ++ show err))
-      Right
-      (RuntimeMemory.validateRuntimeMemoryPlan inputs)
-  Right (profileId, compiled)
+  either
+    (\err -> Left (label "validation" ++ ": " ++ show err))
+    Right
+    (RuntimeMemory.validateRuntimeMemoryPlan inputs)
 
 positiveBytes
   :: String
@@ -745,6 +768,11 @@ validateRawResourcePlanShape plan = do
   validatePositiveResourceVector "capacity.resource_plan.host_capacity" (host_capacity plan)
   validatePositiveResourceVector "capacity.resource_plan.rke2_reserved" (rke2_reserved plan)
   validatePositiveResourceVector "capacity.resource_plan.eviction_floor" (eviction_floor plan)
+  _ <-
+    either
+      (Left . PlatformScheduler.renderPlatformSchedulerDemandError)
+      Right
+      (PlatformScheduler.declaredPlatformSchedulerRequests (platform_scheduler_requests plan))
   unless
     (not (null (workload_profiles plan)))
     (Left "capacity.resource_plan.workload_profiles must not be empty")

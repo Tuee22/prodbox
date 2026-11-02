@@ -70,6 +70,9 @@ data EscapeCategory
   | -- | The bespoke cascade executor that orchestrates destruction outside the
     -- lifecycle-owned desired-absence program.
     BespokeCascadeExecutor
+  | -- | The retained pre-cutover writer's Target signing interval. It ends at
+    -- the same durable freeze and is removed with the qualified writer cutover.
+    LegacyTargetIntentAdmission
   deriving (Eq, Ord, Show, Enum, Bounded)
 
 -- | A single registered legacy-escape seam.
@@ -96,6 +99,7 @@ escapeCategoryLabel category =
       "generic Tier-0 aws.* Lifecycle-provider credential aggregate/reader"
     HostDirectMinioTransport -> "host-direct MinIO transport"
     BespokeCascadeExecutor -> "bespoke cascade executor"
+    LegacyTargetIntentAdmission -> "pre-cutover Target intent admission"
 
 -- | The authoritative registry. Exactly one surviving marked call site per
 -- entry; the bijection check ('escapeRegistryViolations') enforces both
@@ -176,6 +180,16 @@ registeredLegacyEscapeSites =
       , escapeSiteDeletionCondition =
           "Sprint 6.5 completes the qualified single-writer cutover to the "
             ++ "descriptor-bound cleanup runner."
+      }
+  , LegacyEscapeSite
+      { escapeSiteMarker = "legacy-target-intent-admission"
+      , escapeSiteCategory = LegacyTargetIntentAdmission
+      , escapeSiteFile = "src/Prodbox/ControlPlane/TargetIntentAdmission.hs"
+      , escapeSiteDescription =
+          "The existing pre-cutover writer may issue Target intents only before the retained writer freeze."
+      , escapeSiteRemovalOwner = "6.5"
+      , escapeSiteDeletionCondition =
+          "Qualified physical activation makes the replacement the sole writer; delete the legacy admission branch."
       }
   ]
 
@@ -267,6 +281,12 @@ escapeCoverageRules =
       , coverageRuleSymbol = "runCascadeDrainResult"
       , coverageRuleSites = ["src/Prodbox/CLI/Rke2.hs"]
       , coverageRuleLedgerRow = "bespoke cascade executor"
+      }
+  , EscapeCoverageRule
+      { coverageRuleCategory = LegacyTargetIntentAdmission
+      , coverageRuleSymbol = "legacyTargetIntentAdmission"
+      , coverageRuleSites = ["src/Prodbox/ControlPlane/TargetIntentAdmission.hs"]
+      , coverageRuleLedgerRow = "pre-cutover Target intent admission"
       }
   ]
 

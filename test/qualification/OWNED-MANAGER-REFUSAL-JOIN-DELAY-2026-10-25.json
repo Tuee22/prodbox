@@ -1,0 +1,175 @@
+{
+  "schema_version": 1,
+  "id": "OWNED-MANAGER-REFUSAL-JOIN-DELAY-2026-10-25",
+  "recorded_utc": "2026-10-25T23:27:26.672760+00:00",
+  "scope": "Frozen actual-API startup-refusal counterexample, recorded before cleanup-order changes. No deployment qualification claim.",
+  "input_fence": "five seconds total; explicit child64MiB/tasks16/1CPU, helper16MiB/tasks8/1CPU/start30ms/stop30ms; stdout/stderr128 bytes",
+  "expected": "With connect refused as EPERM, return OwnedSubprocessManagerRefused and no payload effect within one second, with no owned children after return.",
+  "frozen_inputs": {
+    "recorded_utc": "2026-10-25T23:17:05.184207+00:00",
+    "sources": [
+      {
+        "path": ".build/sprint-6.5/rpc-coordinator-20261025/owned-manager-refusal-1/Main.hs",
+        "sha256": "cd3604717c539c22b2903e90d70f0d7b505479fe02167ba8414d6b9736dfa6e8",
+        "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/owned-manager-refusal-before-source-Main.hs-cd3604717c539c22"
+      },
+      {
+        "path": "src/Prodbox/Error.hs",
+        "sha256": "721bd758d1e1a45e3d9fcb2816feb222d08d514be8bb300b9466ba8b115ad94a",
+        "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/owned-manager-refusal-before-source-Error.hs-721bd758d1e1a45e"
+      },
+      {
+        "path": "src/Prodbox/Result.hs",
+        "sha256": "5e5628c4e3100197d13122b53356f76403c663b49442de5cb592d8169cb46272",
+        "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/owned-manager-refusal-before-source-Result.hs-5e5628c4e3100197"
+      },
+      {
+        "path": "src/Prodbox/Subprocess/OwnedProcessTree.hs",
+        "sha256": "b50d4f449526797009c3ce98de7239fc1b211486c6c42f5a2900a41c5ef20fb5",
+        "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/owned-manager-refusal-before-source-OwnedProcessTree.hs-b50d4f4495267970"
+      },
+      {
+        "path": "src/Prodbox/Subprocess.hs",
+        "sha256": "f7ea1b0f5040d06ce6c6b96e4529454494186aefdabcfc9cd3543e92f53b7d87",
+        "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/owned-manager-refusal-before-source-Subprocess.hs-f7ea1b0f5040d06c"
+      },
+      {
+        "path": "src/Prodbox/Subprocess/ScopeFamily.hs",
+        "sha256": "ebcd77861ec71d77384d6f567b9e079f14c3040485665954f56da064b0185367",
+        "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/owned-manager-refusal-before-source-ScopeFamily.hs-ebcd77861ec71d77"
+      },
+      {
+        "path": "src/Prodbox/Subprocess/KernelScope.hs",
+        "sha256": "26497eea211e646eada035e46b976d36f5b3d28a6d93f9e511f080a3e21b4cc8",
+        "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/owned-manager-refusal-before-source-KernelScope.hs-26497eea211e646e"
+      },
+      {
+        "path": "src/Prodbox/Subprocess/SystemdBus.hs",
+        "sha256": "2acd2873132f07ae412cb182ecff2ff047eee43de95967905c7e50b8f2dc01b9",
+        "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/owned-manager-refusal-before-source-SystemdBus.hs-2acd2873132f07ae"
+      },
+      {
+        "path": "src/Prodbox/Subprocess/SystemdIdentity.hs",
+        "sha256": "ebbae68005102b59afc01ef3e302f9b54067369c3d790e4bf12221002ab51337",
+        "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/owned-manager-refusal-before-source-SystemdIdentity.hs-ebbae68005102b59"
+      }
+    ]
+  },
+  "frozen_binary": {
+    "path": ".build/sprint-6.5/rpc-coordinator-20261025/owned-manager-refusal-before-1",
+    "sha256": "8735c722ec4f5340d31585765a1bafef54d390f5c8a0373c186dbbd6a7264b67"
+  },
+  "unfiltered_positive": {
+    "result_record": "owned-manager-refusal-before-allowed-2.result.json",
+    "result": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=30s",
+        "--property=TimeoutStopSec=2s",
+        "--property=NoNewPrivileges=yes",
+        "--property=LimitCORE=0",
+        "--property=SystemCallErrorNumber=EPERM",
+        "--unit=prodbox-owned-manager-refusal-before-allowed-2",
+        "--",
+        "/home/matthewnowak/prodbox/.build/sprint-6.5/rpc-coordinator-20261025/owned-manager-refusal-before-1",
+        "allowed"
+      ],
+      "started_utc": "2026-10-25T23:26:04.631395+00:00",
+      "completed_utc": "2026-10-25T23:26:04.689550+00:00",
+      "exit_code": 0,
+      "wall_seconds": 0.05817336915060878
+    },
+    "observation": {
+      "effect_observed": true,
+      "elapsed_micros": 36630,
+      "live_child_list": [],
+      "mode": "allowed",
+      "outcome": "Right (ProcessOutput {processExitCode = ExitSuccess, processStdout = \"\", processStderr = \"\"})",
+      "passed": true
+    }
+  },
+  "filtered_counterexample": {
+    "result_record": "owned-manager-refusal-before-refused-2.result.json",
+    "result": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=30s",
+        "--property=TimeoutStopSec=2s",
+        "--property=NoNewPrivileges=yes",
+        "--property=LimitCORE=0",
+        "--unit=prodbox-owned-manager-refusal-before-refused-2",
+        "--property=SystemCallFilter=~connect",
+        "--property=SystemCallErrorNumber=EPERM",
+        "--",
+        "/home/matthewnowak/prodbox/.build/sprint-6.5/rpc-coordinator-20261025/owned-manager-refusal-before-1",
+        "refused"
+      ],
+      "started_utc": "2026-10-25T23:22:44.124292+00:00",
+      "completed_utc": "2026-10-25T23:22:48.950421+00:00",
+      "exit_code": 1,
+      "wall_seconds": 4.826147822197527
+    },
+    "observation": {
+      "effect_observed": false,
+      "elapsed_micros": 4804112,
+      "live_child_list": [],
+      "mode": "refused",
+      "outcome": "Left OwnedSubprocessManagerRefused",
+      "passed": false
+    }
+  },
+  "injection": "The same 5GiB/zero-swap/64-task/UMask0022/no-new-privileges/no-core profile; the refusal control adds SystemCallFilter=~connect with SystemCallErrorNumber=EPERM.",
+  "unit_tier_counterexample": {
+    "frozen_binary": ".build/sprint-6.5/rpc-coordinator-20261025/owned-kernel-unit-before-native-split-1",
+    "sha256": "5e39ac1ad95833f0161c7041178e15cce1b435ca9f162cf29b59be59a6b7f4f4",
+    "result_record": "owned-kernel-unit-denied-connect-before-2.result.json",
+    "observed": "8 out of 36 owner tests fail with connect denied; the 28 remaining cases pass. Move those eight live-manager cases to the already routed daemon-lifecycle suite and retain all cases.",
+    "missing_service_is_not_success": true
+  },
+  "excluded_setup_attempts": [
+    {
+      "record": "owned-manager-refusal-before-refused-1.result.json",
+      "reason": "No structured application observation; excluded from API counterexample evidence."
+    },
+    {
+      "record": "owned-kernel-unit-denied-connect-before-1.result.json",
+      "reason": "Saved binary had mode0644; repaired to0755 before the valid control."
+    }
+  ]
+}

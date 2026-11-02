@@ -1,0 +1,305 @@
+{
+  "schema_version": 1,
+  "name": "HOST-WINDOW-CLOCK-SAMPLING-2026-10-26",
+  "scope": "Actual packaged shared host/Authority clock adapter used by request preparation and rollout. Code-local delayed-read repair only; no physical family, authenticated production dispatcher, live class closure or deployment qualification claim.",
+  "predecessor_scope": "Behavior-preserving shared extraction of the reviewed UTC-then-monotonic comparison, including its typed observation seam. This is the retained packaged adapter predecessor, not a historical deployed operator. The fixture performs real UTC/monotonic reads and introduces a one-second delay after obtaining UTC.",
+  "counterexample": "The predecessor accepts an original host window whose remaining duration exceeds a separately observed Authority remainder. The replacement samples monotonic time before and after UTC and uses its conservative microsecond upper edge. No end is renewed.",
+  "fixture_before": {
+    "path": "test/qualification/RpcBirthHostClock.hs",
+    "snapshot": ".build/sprint-6.5/controller-request-20261026/clock-before-1/test/qualification/RpcBirthHostClock.hs",
+    "sha256": "41e6138b46f1b3b374b857c5de6ec40a7683e9e5ec779ebcd15c330dbb9975ba"
+  },
+  "fixture_after": {
+    "path": "test/qualification/RpcBirthHostClock.hs",
+    "snapshot": ".build/sprint-6.5/controller-request-20261026/clock-after-1/test/qualification/RpcBirthHostClock.hs",
+    "sha256": "41e6138b46f1b3b374b857c5de6ec40a7683e9e5ec779ebcd15c330dbb9975ba"
+  },
+  "identical_fixture": true,
+  "before": {
+    "source_identity_entry": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"446b350aa6626d820deeeb7e077f60dc7e1638828bd5e45f8fe0b84df811520e\", sourceManifestEntryCount = 1562},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"3cc95145060ca23f78eaa49a976cbbcdcb12d1f8e97b62cfc13ee185b076bf15\", sourceManifestEntryCount = 1499})",
+    "source_identity_exit": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"446b350aa6626d820deeeb7e077f60dc7e1638828bd5e45f8fe0b84df811520e\", sourceManifestEntryCount = 1562},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"3cc95145060ca23f78eaa49a976cbbcdcb12d1f8e97b62cfc13ee185b076bf15\", sourceManifestEntryCount = 1499})",
+    "source_identity_equal": true,
+    "inputs": ".build/sprint-6.5/controller-request-20261026/clock-before-1/inputs.json",
+    "result": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-controller-clock-before-1-control-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--property=MemoryMax=176M",
+        "--property=MemorySwapMax=0",
+        "--property=CPUQuota=30%",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=16",
+        "--property=TimeoutStartSec=30s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "/usr/bin/time",
+        "-v",
+        "/usr/bin/strace",
+        "-f",
+        "-qq",
+        "-s",
+        "256",
+        "-e",
+        "trace=process",
+        "-o",
+        "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-request-20261026/clock-before-1/process.trace",
+        ".build/sprint-6.5/controller-request-20261026/native-clock-before-1",
+        "+RTS",
+        "-M134217728b",
+        "-N1",
+        "-RTS"
+      ],
+      "started_utc": "2026-10-26T21:06:10.285328+00:00",
+      "completed_utc": "2026-10-26T21:06:11.401448+00:00",
+      "exit_code": 1,
+      "wall_seconds": 1.1161373448558152
+    },
+    "expected_exit_code": 1,
+    "peak_rss_kib": 8988,
+    "process_trace_verified": {
+      "initial_execs": 1,
+      "application_child_processes": 0,
+      "runtime_threads_only": true
+    },
+    "all_inputs_and_binary_unchanged": true
+  },
+  "after": {
+    "source_identity_entry": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"c60a2927810d791db85e73f0b79af3ce700028170f5d6b83e70c11e763cc08ac\", sourceManifestEntryCount = 1562},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"77c98b604f6d6839d566006cfa49b4a90a06f62e297bc214fc7ae4a387e5af56\", sourceManifestEntryCount = 1499})",
+    "source_identity_exit": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"c60a2927810d791db85e73f0b79af3ce700028170f5d6b83e70c11e763cc08ac\", sourceManifestEntryCount = 1562},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"77c98b604f6d6839d566006cfa49b4a90a06f62e297bc214fc7ae4a387e5af56\", sourceManifestEntryCount = 1499})",
+    "source_identity_equal": true,
+    "inputs": ".build/sprint-6.5/controller-request-20261026/clock-after-1/inputs.json",
+    "result": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-controller-clock-after-1-control-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--property=MemoryMax=176M",
+        "--property=MemorySwapMax=0",
+        "--property=CPUQuota=30%",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=16",
+        "--property=TimeoutStartSec=30s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "/usr/bin/time",
+        "-v",
+        "/usr/bin/strace",
+        "-f",
+        "-qq",
+        "-s",
+        "256",
+        "-e",
+        "trace=process",
+        "-o",
+        "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-request-20261026/clock-after-1/process.trace",
+        ".build/sprint-6.5/controller-request-20261026/native-clock-after-1",
+        "+RTS",
+        "-M134217728b",
+        "-N1",
+        "-RTS"
+      ],
+      "started_utc": "2026-10-26T21:08:28.335276+00:00",
+      "completed_utc": "2026-10-26T21:08:29.379893+00:00",
+      "exit_code": 0,
+      "wall_seconds": 1.044638466089964
+    },
+    "expected_exit_code": 0,
+    "peak_rss_kib": 8708,
+    "process_trace_verified": {
+      "initial_execs": 1,
+      "application_child_processes": 0,
+      "runtime_threads_only": true
+    },
+    "all_inputs_and_binary_unchanged": true
+  },
+  "profile": {
+    "heap_bytes": 134217728,
+    "memory_max_bytes": 184549376,
+    "swap_max_bytes": 0,
+    "cpu_quota_percent": 30,
+    "tasks_max": 16,
+    "capabilities": 1,
+    "timeout_seconds": 30
+  },
+  "controls": [
+    "Actual one-second delayed UTC read refuses an original host window outside its Authority bound",
+    "Safe real clock pair returns original remaining work",
+    "12 pure laws cover inclusive safe boundary, one nanosecond outside, read latency, UTC uncertainty, elapsed/passed UTC and work ends, reversed sample, invalid window, Int64 conversion overflow and the Word64 ceiling"
+  ],
+  "current_request_revalidation": {
+    "source_identity_entry": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"c60a2927810d791db85e73f0b79af3ce700028170f5d6b83e70c11e763cc08ac\", sourceManifestEntryCount = 1562},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"77c98b604f6d6839d566006cfa49b4a90a06f62e297bc214fc7ae4a387e5af56\", sourceManifestEntryCount = 1499})",
+    "source_identity_exit": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"c60a2927810d791db85e73f0b79af3ce700028170f5d6b83e70c11e763cc08ac\", sourceManifestEntryCount = 1562},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"77c98b604f6d6839d566006cfa49b4a90a06f62e297bc214fc7ae4a387e5af56\", sourceManifestEntryCount = 1499})",
+    "source_identity_equal": true,
+    "all_19_inputs_and_binary_unchanged": true,
+    "inputs_index": ".build/sprint-6.5/controller-request-20261026/native-inputs-4/inputs.json",
+    "native_index": ".build/sprint-6.5/controller-request-20261026/native-validation-4.json",
+    "native_result": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-controller-request-native-control-4-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--property=MemoryMax=176M",
+        "--property=MemorySwapMax=0",
+        "--property=CPUQuota=30%",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=16",
+        "--property=TimeoutStartSec=30s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "/usr/bin/time",
+        "-v",
+        "/usr/bin/strace",
+        "-f",
+        "-qq",
+        "-s",
+        "256",
+        "-e",
+        "trace=process",
+        "-o",
+        "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-request-20261026/native-request-4.trace",
+        ".build/sprint-6.5/controller-request-20261026/native-request-7",
+        "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-request-20261026/case-native-4",
+        "+RTS",
+        "-M134217728b",
+        "-N1",
+        "-RTS"
+      ],
+      "started_utc": "2026-10-26T21:09:46.304880+00:00",
+      "completed_utc": "2026-10-26T21:09:46.417380+00:00",
+      "exit_code": 0,
+      "wall_seconds": 0.11251616291701794
+    },
+    "complete": true,
+    "peak_rss_kib": 33452,
+    "process_trace_verified": {
+      "initial_execs": 1,
+      "application_child_processes": 0,
+      "runtime_threads_only": true
+    }
+  },
+  "source_inputs_before": {
+    "source_identity": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"446b350aa6626d820deeeb7e077f60dc7e1638828bd5e45f8fe0b84df811520e\", sourceManifestEntryCount = 1562},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"3cc95145060ca23f78eaa49a976cbbcdcb12d1f8e97b62cfc13ee185b076bf15\", sourceManifestEntryCount = 1499})",
+    "inputs": [
+      {
+        "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthClock.hs",
+        "snapshot": ".build/sprint-6.5/controller-request-20261026/clock-before-1/src/Prodbox/ControlPlane/RpcAdmissionBirthClock.hs",
+        "sha256": "ac2262a5fe2299febd6e60e74c81537f58bd1eb044117dc4a16bf52d66f5ce8e"
+      },
+      {
+        "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRequest.hs",
+        "snapshot": ".build/sprint-6.5/controller-request-20261026/clock-before-1/src/Prodbox/ControlPlane/RpcAdmissionBirthRequest.hs",
+        "sha256": "04296dbea63be0c34b9754b6fdda00ca616c07e5c9c8d5b308f65d87f95abe3e"
+      },
+      {
+        "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+        "snapshot": ".build/sprint-6.5/controller-request-20261026/clock-before-1/src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+        "sha256": "a2723311e4ea014fd6948f7b4702153480e632d6dc1241823f14e3d7791bb2c0"
+      },
+      {
+        "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthNative.hs",
+        "snapshot": ".build/sprint-6.5/controller-request-20261026/clock-before-1/src/Prodbox/ControlPlane/RpcAdmissionBirthNative.hs",
+        "sha256": "6e5988c24ea65339af49512fa8ead4c5a7eba83eac8a8c4261d7fb91fdfe766b"
+      },
+      {
+        "path": "test/qualification/RpcBirthHostClock.hs",
+        "snapshot": ".build/sprint-6.5/controller-request-20261026/clock-before-1/test/qualification/RpcBirthHostClock.hs",
+        "sha256": "41e6138b46f1b3b374b857c5de6ec40a7683e9e5ec779ebcd15c330dbb9975ba"
+      },
+      {
+        "path": "prodbox.cabal",
+        "snapshot": ".build/sprint-6.5/controller-request-20261026/clock-before-1/prodbox.cabal",
+        "sha256": "343669c8a073fdcdcd00339b8b6c4d0b1d73783216eb9d5d5a1d8268b05d25c6"
+      },
+      {
+        "path": "DEVELOPMENT_PLAN/README.md",
+        "snapshot": ".build/sprint-6.5/controller-request-20261026/clock-before-1/DEVELOPMENT_PLAN/README.md",
+        "sha256": "f255203783229665d9ff8ef8311702a52885a7757725cf4b593412a77dfc31d1"
+      }
+    ],
+    "binary": {
+      "path": ".build/sprint-6.5/controller-request-20261026/native-clock-before-1",
+      "snapshot": ".build/sprint-6.5/controller-request-20261026/clock-before-1/driver",
+      "sha256": "41555e256e63269d666463e3a807411d27bf79159780c1129efe453b3f7f553b"
+    }
+  },
+  "source_inputs_after": {
+    "source_identity": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"c60a2927810d791db85e73f0b79af3ce700028170f5d6b83e70c11e763cc08ac\", sourceManifestEntryCount = 1562},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"77c98b604f6d6839d566006cfa49b4a90a06f62e297bc214fc7ae4a387e5af56\", sourceManifestEntryCount = 1499})",
+    "inputs": [
+      {
+        "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthClock.hs",
+        "snapshot": ".build/sprint-6.5/controller-request-20261026/clock-after-1/src/Prodbox/ControlPlane/RpcAdmissionBirthClock.hs",
+        "sha256": "bc064db9384e0b30ae7a18f618ec5958bf6cabe51570134e13e77db58ebabb00"
+      },
+      {
+        "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRequest.hs",
+        "snapshot": ".build/sprint-6.5/controller-request-20261026/clock-after-1/src/Prodbox/ControlPlane/RpcAdmissionBirthRequest.hs",
+        "sha256": "04296dbea63be0c34b9754b6fdda00ca616c07e5c9c8d5b308f65d87f95abe3e"
+      },
+      {
+        "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+        "snapshot": ".build/sprint-6.5/controller-request-20261026/clock-after-1/src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+        "sha256": "a2723311e4ea014fd6948f7b4702153480e632d6dc1241823f14e3d7791bb2c0"
+      },
+      {
+        "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthNative.hs",
+        "snapshot": ".build/sprint-6.5/controller-request-20261026/clock-after-1/src/Prodbox/ControlPlane/RpcAdmissionBirthNative.hs",
+        "sha256": "6e5988c24ea65339af49512fa8ead4c5a7eba83eac8a8c4261d7fb91fdfe766b"
+      },
+      {
+        "path": "test/qualification/RpcBirthHostClock.hs",
+        "snapshot": ".build/sprint-6.5/controller-request-20261026/clock-after-1/test/qualification/RpcBirthHostClock.hs",
+        "sha256": "41e6138b46f1b3b374b857c5de6ec40a7683e9e5ec779ebcd15c330dbb9975ba"
+      },
+      {
+        "path": "prodbox.cabal",
+        "snapshot": ".build/sprint-6.5/controller-request-20261026/clock-after-1/prodbox.cabal",
+        "sha256": "343669c8a073fdcdcd00339b8b6c4d0b1d73783216eb9d5d5a1d8268b05d25c6"
+      },
+      {
+        "path": "DEVELOPMENT_PLAN/README.md",
+        "snapshot": ".build/sprint-6.5/controller-request-20261026/clock-after-1/DEVELOPMENT_PLAN/README.md",
+        "sha256": "f255203783229665d9ff8ef8311702a52885a7757725cf4b593412a77dfc31d1"
+      }
+    ],
+    "binary": {
+      "path": ".build/sprint-6.5/controller-request-20261026/native-clock-after-1",
+      "snapshot": ".build/sprint-6.5/controller-request-20261026/clock-after-1/driver",
+      "sha256": "027f995bc754c1292c1a71b1c80c514894ea6d1522b6d0be741c92548a7206d7"
+    }
+  },
+  "remaining": "Pinned production loading, immutable producer/lifetime, production caller/dispatcher, physical/Authority admission, bounded credentials, alarm retirement and uncertain/restart recovery remain open. Current complete canonical/frontend gates follow. No image or live attempt."
+}

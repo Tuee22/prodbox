@@ -101,6 +101,7 @@ import Prodbox.Subprocess
   , terminateBackgroundProcess
   , waitBackgroundProcess
   )
+import SubprocessOwned (ownedSubprocessLifecycleSuite)
 import System.Directory (getCurrentDirectory, removeFile)
 import System.Environment
   ( lookupEnv
@@ -136,6 +137,7 @@ removedGatewayControlPlanePaths =
 
 main :: IO ()
 main = mainWithSuite "prodbox-daemon-lifecycle" $ do
+  ownedSubprocessLifecycleSuite
   describe "daemon lifecycle suite scaffold" $ do
     it "keeps the gateway daemon runtime in the repository" $ do
       repoRoot <- getCurrentDirectory

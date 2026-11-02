@@ -56,6 +56,7 @@ import Prodbox.Config.SchemaDhall
   , writeSchemaFiles
   )
 import Prodbox.Config.Tier0 (writeOperatorParametersToTier0)
+import Prodbox.ControlPlane.RpcAdmissionBirthController (runRpcBirthController)
 import Prodbox.ControlPlane.Runtime (runControlPlaneRole)
 import Prodbox.ControlPlane.TargetSecretWorkerRuntime (runTargetSecretWorker)
 import Prodbox.Dns (runDnsCommand)
@@ -173,6 +174,15 @@ runNonRuntimeCommand repoRoot command =
       gatewayCommand `seq` runtimeProjectionInvariantViolation
     NativeGateway gatewayCommand -> runGatewayCommand repoRoot gatewayCommand
     NativeHost hostCommand -> runHostCommand repoRoot hostCommand
+    NativeRpcBirthController arguments -> do
+      result <- runRpcBirthController arguments
+      case result of
+        Left cause -> do
+          writeError (fatalError (Text.pack (show cause)))
+          pure (ExitFailure 1)
+        Right _ -> do
+          writeOutput "RPC birth commitment observed.\n"
+          pure ExitSuccess
     NativeK8s k8sCommand -> runK8sCommand repoRoot k8sCommand
     NativeLint lintCommand -> runLintCommand repoRoot lintCommand
     NativeNuke nukeOptions -> runNukeCommand repoRoot nukeOptions
@@ -237,6 +247,7 @@ commandPrerequisites command =
     -- Host checks + firewall + `edge status` report state; they self-handle
     -- absence rather than gating.
     NativeHost _ -> []
+    NativeRpcBirthController _ -> []
     -- `cluster health/wait/workload-logs` operate on a reachable cluster.
     NativeK8s _ -> [K8sClusterReachable]
     NativeLint _ -> []

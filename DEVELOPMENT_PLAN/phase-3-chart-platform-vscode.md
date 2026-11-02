@@ -10,6 +10,46 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-10-26 on Sprint `3.50` (Standards A/N/O).** The owned API Endpoints
+parser bounds ASCII decimal spelling and the positive TCP domain before conversion. The same
+native fixture fails the retained predecessor and passes the replacement; warning-clean builds,
+formatting, HLint and the full canonical gate pass with matching source identities. No later
+controller or live infrastructure is needed for this closure. Deployment qualification remains
+separate, and current execution remains solely in Resume Here.
+
+🔄 **Reopened 2026-10-26 on Sprint `3.50` (Standards A/N).** The existing API Endpoints
+parser admits port zero, ports above 65,535 and decimal values that wrap to a negative machine
+integer. This is Phase `3`'s own coordinate-validation surface. The sprint is independently
+validated with the actual frozen/replacement parser, complete boundary laws and canonical checks;
+it does not depend on a later controller or live cluster. Prior chart/storage closures retain
+their evidence; current execution order remains solely in Resume Here.
+
+✅ **Reclosed 2026-10-24 on Sprint `3.49` (Standards A/N/O).** Failed-release
+observations preserve exact, closed startup causes under bounded reads without exposing or
+persisting raw output. Frozen/replacement, real-tool, focused, installed, canonical and complete
+frontend validation pass. Native semantic investigation and qualification remain Sprint `6.5`
+work; current execution remains solely in Resume Here.
+
+🔄 **Reopened 2026-10-24 on Sprint `3.49` (Standards A/N/P).** The chart platform
+collects no container startup logs before removing a terminal failed Helm release. The
+Authority Pod's exit survives but its underlying cause is lost. This is Phase `3`'s own
+failed-release observation surface; earlier chart/storage closures retain their evidence.
+Current execution remains solely in Resume Here.
+
+✅ **Reclosed 2026-10-22 on Sprint `3.48` (Standards A/N/O).** Home Vault bootstrap
+repairs only a positively unlinked, freshly uninitialized mount through exact Pod retirement
+and fresh replacement/root readback on the same kernel. Retained storage remains untouched;
+initialized or conflicting linked roots retain their explicit recovery refusals. Focused,
+real-tool, canonical and full frontend validation pass. Sprint `6.5` owns live projection,
+the native canary and two-cycle class closure; current execution remains in Resume Here.
+
+🔄 **Reopened 2026-10-22 on Sprint `3.48` (Standards A/N/P).** The ready home Vault Pod
+still mounts an unlinked host directory after its declared pathname was recreated. Its file
+backend therefore refuses keyring persistence. Phase `3` owns the Vault StatefulSet and retained
+storage integration; add exact deleted-mount recovery without deleting/resetting storage.
+Sprint `2.142`'s diagnostic closure is discharged before implementation, in numerical order. Current status
+and execution remain solely in Resume Here.
+
 ✅ **Reclosed 2026-08-28 on Sprint `3.46` (Standards A/N/P).** Generation 61 reconciles the frozen
 failed Lifecycle Authority release to observed absence before upgrade, creates one fresh exact-image
 Pod, reaches Ready, and crosses the post-unseal handoff. The later Authority Backup authentication
@@ -4738,6 +4778,213 @@ over.
 No sprint-owned work remains. The `vscode` and MinIO `SecurityPolicy` OIDC providers already name the public issuer
 and the in-cluster token endpoint; whether Envoy's OIDC filter checks the ID token's issuer was not established, so
 the repair is expected to change nothing for them, and a regression there would be found by `charts-vscode`.
+
+## Sprint 3.48: Home Vault Rebinds An Unlinked Retained Mount [✅ Done]
+
+**Status**: Done (2026-10-22), independently validated on its code-owned surface after Sprint `2.142`.
+**Counterexample**: `VAULT-RETAINED-MOUNT-UNLINKED-2026-10-22`, attributed from
+`BOOTSTRAP-VAULT-INIT-PREAPPLICATION-REFUSAL-2026-10-22`.
+**Implementation**: `src/Prodbox/CLI/Rke2.hs`, `src/Prodbox/Infra/VaultRetainedMount.hs`,
+`test/unit/VaultRetainedMount.hs`, and recording-backed installed/actual-tool controls.
+**Live-proof**: pending; Sprint `6.5` owns native projection and class closure.
+**Deployment qualification**: pending; no public cutover or live class closure is supplied by
+this code-owned repair.
+**Independent Validation**: frozen wait-only behavior against the real deleted-mount recording;
+equal-budget isolated pinned Vault file-backend control; exact owner/Pod/claim/PV/path checks,
+healthy/deleted/mismatched/unobservable/raced states, bounded graceful retirement and closing
+mount readback; canonical and full frontend gates.
+**Docs to update**: `documents/engineering/storage_lifecycle_doctrine.md`,
+`documents/engineering/vault_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`, and this phase file.
+
+### Objective and Counterexample
+
+The ready Vault Pod `889b3523-5c0d-447b-9f81-e987a70b7ce0` mounts `/vault/data` at
+device/inode **2050:3147619**, link count **0**. Its Bound PV declares the recreated host path
+at **2050:3147625**, link count **2**. Vault **1.18.3** refuses to persist its initial keyring
+because the mounted directory no longer exists; readiness intentionally admits uninitialized
+Vault and therefore cannot establish storage usability. The isolated real-tool fixture
+reproduces HTTP **400** with the same class by unlinking/recreating only its empty bind source.
+Its network is disabled and retained live state is never mounted or changed.
+
+### Deliverables and Validation
+
+1. Preserve the exact API/mount recording, superseded source identity and artifact. Bank the
+   real file-backend failure plus a healthy control at identical resource/persistence budgets.
+2. In home bootstrap, observe the exact managed Vault StatefulSet, Pod and Bound claim/PV.
+   Admit repair only for its positively unlinked mount, freshly observed uninitialized Vault
+   and validated declared retained path. An initialized orphaned mount retains the running Pod
+   and refuses with an explicit recovery/decommission disposition rather than discarding
+   possibly recoverable process state.
+   A different live root, changed owner/generation, missing identity or unobservable stat refuses.
+3. Retire only that exact Pod gracefully with API UID preconditions under one bounded deadline;
+   never delete/reset the PVC, PV, root or contents. Re-observe the controller before mutation,
+   and require a fresh ready Pod bound to the current declared directory before proceeding.
+4. Validate healthy/current, missing/starting, deleting, foreign owner/path, lost reply,
+   generation change, deadline and closing-readback siblings. Run canonical/full frontend gates
+   before the batched live image roll with Sprint `2.142`.
+
+### Cleanup Ownership
+
+Only task-owned isolated fixtures are removed. The repair preserves every retained directory
+and byte; no generic host-path deletion/reset, forced Pod removal, EKS change or legacy-route
+removal is admitted. Sprint `6.5` retains the canary and two-cycle class-closure obligations.
+
+### Source Checkpoint and Remedies
+
+The implementation is `src/Prodbox/Infra/VaultRetainedMount.hs`, called by the home Vault
+bootstrap in `Prodbox.CLI.Rke2`. It replaces the original 300-second rollout wait rather than
+appending another budget. Every read, graceful delete, pause and closing observation consumes
+the remaining time from one monotonic deadline. Identity comparisons cover exact current
+revision/image, single controller owner, Pod UID/resourceVersion, data mount/claim, Bound
+Retain/manual PV and claim UID, node placement, declared path and kernel device/inode/link/type.
+Numeric mode bits avoid locale-dependent file-kind text. Only the Pod is a mutation target.
+The Node's exact boot UUID must match the operator host's kernel boot UUID before filesystem
+device/inode equality is meaningful; Node UID and boot identity are revalidated alongside the
+other bindings. A same-named node in another cluster/kernel cannot authorize local root repair.
+The installed fixture now returns complete independent Vault DTOs and the declared host path
+selected by the native storage preparation; readiness alone is not synthetic storage proof.
+
+| Observed cause | Registered disposition |
+|----------------|------------------------|
+| Exact unlinked mount, live declared directory, fresh uninitialized Vault | Bounded self-heal through `prodbox cluster reconcile`; exact preconditioned Pod delete and fresh closing readback. |
+| Initialized Vault on an unlinked mount | `NukeOnly`: retain the running Pod for operator recovery/decommission; ordinary reconcile must not discard its process state. |
+| Two linked roots with different identities | `NukeOnly`: retain both roots for operator recovery/decommission; ordinary reconcile cannot choose between their contents. |
+| Invalid/unavailable observations, changed binding/root, deadline or delete conflict/lost reply | Retry `prodbox cluster reconcile`; it re-observes/adopts an already healthy replacement and never resets storage or repeats a completed retirement. |
+
+`NukeOnly` is a refusal classification, not permission for an agent to invoke `nuke` or retire
+a root. The operator-only TTY command and positive capability-disposition rule in Retained
+Storage Lifecycle Doctrine §7 still apply.
+
+### Validation Results
+
+The final same-kernel recording-backed matrix passes **55/55** (**0.13 seconds**); installed
+resource guardrails pass **1/1** (**106.97 seconds**), and the corrected native reconcile/delete
+assertion passes **1/1** (**108.49 seconds**). The actual-tool wait-contract negative exits **1**
+with Ready Vault returning init **HTTP 400**. The compiled repair exits **0** (**4.15 seconds**),
+retires its owned fixture once, independently observes the remounted directory and reaches
+init **HTTP 200**. Kubernetes metadata/preconditions are recorded-model boundaries; the pinned
+Vault file backend, Docker fixture lifecycle and kernel mounts are physical. This control does
+not replay the whole frozen operator. Both kernel profiles independently read **500m / 768Mi**,
+zero swap, and all fixture containers are absent afterward. Retained live roots and AWS state
+are untouched by these controls.
+
+Warning-clean all-target build and pinned formatter/HLint pass. Final canonical validation
+exits **0** in **1110.81 seconds**, passing **6,668** primary cases (**291.40 seconds**) plus
+**27/35/61** auxiliary cases. Full frontend validation exits **0** in **1079.73 seconds**,
+passing **76/76** (**1073.61 seconds** test time), on the unchanged operator
+`4c62d7f5f1dd6b8905c1dc1ddf809dbf6adf8863120722327899e488e957d2f1`. The earlier interrupted
+pre-kernel gate, build/style failures, formatting refusal and stale argument-order assertion
+remain retained with their corrections. Exact evidence is indexed in
+`.build/sprint-3.48/validation.json`.
+
+### Remaining Work
+
+No sprint-owned code work remains. Sprint `6.5` owns the supported native canary and two
+consecutive audit-clean cycles; this sprint's isolated physical control supplies neither
+live class closure nor deployment qualification.
+
+## Sprint 3.49: Failed Helm Releases Preserve Private Startup Evidence [✅ Done]
+
+**Status**: Done (2026-10-24; registered before behavior changes).
+**Implementation**: `src/Prodbox/Lib/ChartPlatform.hs`, `src/Prodbox/Infra/HelmStartupEvidence.hs`, and owned unit/integration fixtures.
+**Live-proof**: pending.
+**Deployment qualification**: pending.
+**Independent Validation**: Run the actual frozen/replacement diagnostic helpers against bounded fake subprocess and real local tool fixtures; no running Vault, AWS or later phase is required.
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`, `system-components.md`, `00-overview.md`, `README.md`.
+
+### Objective
+
+Preserve bounded private startup evidence before terminal failed-release cleanup, while
+ordinary output reports only safe observation metadata. The startup cause behind the received
+Authority exit remains unobserved; this sprint does not invent a semantic recovery.
+
+### Deliverables
+
+- Bank `INTERNAL-HELM-FAILED-RELEASE-STARTUP-LOGS-MISSING-2026-10-24` from invocation eight,
+  with frozen operator/source/runtime provenance and the actual failed-release diagnostic path.
+- Read only the selected release's exact Pod/container identities. Capture current and eligible
+  previous startup evidence under finite subprocess, byte and aggregate deadlines before cleanup.
+  Keep raw text in bounded private memory, never print/hash/persist it, and report only
+  producer-owned closed startup labels plus missing/unavailable/truncated/unclassified outcomes.
+  Create no new lifecycle store or retained plaintext diagnostic artifact.
+- Preserve existing cleanup ownership, timeout preservation, image attestation, resource limits,
+  durable encodings and supported command routing. A diagnostic neither retries nor repairs.
+- Cover absent/multiple/foreign/replaced Pods, changed UIDs, failed/empty/unavailable reads,
+  response loss, bounded output, permission failure, cancellation and private-detail redaction.
+
+### Validation
+
+1. The frozen actual helper fails the stable evidence-retention law; replacements pass on the
+   same inputs, with a recording of the native Helm/Pod behavior and a local real-tool control.
+2. Meaningful focused and installed checks prove finite capture, exact attribution and cleanup
+   order, and that raw startup text is neither rendered, persisted nor hashed.
+3. Warning-clean build, canonical `prodbox dev check`, full unit and complete frontend/environment
+   validation pass on one frozen replacement operator.
+
+### Remaining Work
+
+1. ~~Freeze/bank the actual diagnostic collapse before implementation.~~ Done: native Helm/Pod
+   metadata, original operator/source/runtime and actual helper failure are retained.
+2. ~~Implement bounded private observation and the complete sibling/refusal matrix.~~ Local
+   controls pass **158/158**; the actual-helper replacement, five real `kubectl` controls at
+   **500m / 768Mi / zero swap**, and installed CLI check (**97.08 seconds**) pass. The fixture
+   is independently absent. Raw startup bytes stay private/ephemeral and are never printed,
+   persisted or hashed. Exact scope is rechecked around each successful read, and expiry stops
+   further reads. HLint and whitespace pass. All corrected edit/build/style/fixture attempts
+   remain indexed in `.build/sprint-3.49/validation.json`.
+3. ~~Validate the final snapshot with all-target, canonical and complete frontend gates.~~
+   Done: final warning-clean build **168.34s**, focused **158/158**, canonical
+   **7,085 + 27/35/61** in **1127.23s**, and complete frontend/environment **101/101** in
+   **1333.45s** (**1326.64s** test time), on unchanged operator `bdcbc10f…` and executable
+   source `4b6950d9…` (**1,374** entries). Every failed edit/build/style/fixture attempt remains
+   indexed. No sprint-owned code work remains. Native semantic investigation, class closure
+   and cutover remain Sprint `6.5` work.
+
+## Sprint 3.50: API Endpoints Ports Stay Inside the TCP Domain [✅ Done]
+
+**Status**: Done (2026-10-26; independently validated code-owned surface).
+**Implementation**: `src/Prodbox/Lib/ChartPlatform.hs`, `test/unit/Main.hs`, and the repository-owned parser qualification fixture.
+**Live-proof**: pending.
+**Deployment qualification**: pending.
+**Independent Validation**: Exercise the actual frozen/replacement parser and complete positive port range with bounded native fixtures, then the warning-clean build and canonical gate. No later phase, running cluster or cloud credential is required.
+**Docs to update**: `documents/engineering/helm_chart_platform_doctrine.md`, `README.md`, `00-overview.md`.
+
+### Objective
+
+Keep every successful Kubernetes API Endpoints observation inside the positive TCP port domain,
+without a partial conversion or machine-word wrap, before it becomes chart egress policy.
+
+### Deliverables
+
+- Freeze and reproduce the actual parser's zero, high-port and overflow admissions.
+- Validate a finite ASCII decimal spelling and the range 1..65,535 in the canonical parser.
+  Preserve existing valid post-DNAT address and repeated-port observations.
+- Cover lower/upper boundaries, the complete valid range, high and overflowing integers,
+  malformed/non-decimal values, missing/ambiguous observations and existing chart bindings.
+- Keep supported commands, identities, lifecycle ownership, deadlines and resource envelopes intact.
+
+### Validation
+
+1. The same repository-owned fixture rejects the frozen parser's bad admissions and passes the
+   replacement; both actual binaries/source identities and results remain recorded.
+2. Boundary/table and complete-domain unit checks pass without infrastructure.
+3. Formatting, HLint, warning-clean all-target build and `prodbox dev check` pass. Documentation
+   names the input contract and the separate qualification boundary.
+
+### Completion Evidence
+
+The retained actual predecessor fails eight boundary controls while the replacement passes all
+65,535 positive TCP ports and 21 boundary/sibling controls under the same native profile. The
+public comparison is `test/qualification/KUBERNETES-API-PORT-DOMAIN-2026-10-26.json`.
+Warning-clean all-target builds, formatting and HLint pass. Full `prodbox dev check` passes in
+1127.505 seconds with 8,262 main and 27/35/68 auxiliary tests. Complete opening/closing source
+identities, frozen governed inputs and the installed operator remain unchanged through the gate.
+Exact artifacts and results are indexed in
+`.build/sprint-3.50/api-port-20261026/full-validation-1.json`.
+
+No sprint-owned code work remains. Current-revision deployment qualification and production
+controller composition remain separate Sprint `6.5` work; this closure adds no live attempt.
 
 ## Related Documents
 

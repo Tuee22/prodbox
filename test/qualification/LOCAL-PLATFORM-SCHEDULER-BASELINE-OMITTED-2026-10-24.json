@@ -1,0 +1,1335 @@
+{
+  "schema_version": 1,
+  "counterexample": "LOCAL-PLATFORM-SCHEDULER-BASELINE-OMITTED-2026-10-24",
+  "banked_utc": "2026-10-24T09:44:37.088571+00:00",
+  "live_recording": {
+    "command": [
+      "./.build/prodbox",
+      "test",
+      "integration",
+      "cascade-qualification",
+      "--substrate",
+      "home-local"
+    ],
+    "cycle_label": "pre-20261022-1",
+    "exit": 1,
+    "started_utc": "2026-10-24T08:46:58.860916+00:00",
+    "completed_utc": "2026-10-24T09:43:04.748464+00:00",
+    "wall_seconds": 3365.786,
+    "operator_binary_sha256": "bdcbc10f2c1e7858f091654c14735199c3cdf120ea33696217cd097d9ccf2f37",
+    "source_identity_record": "pre-9.source-identity.log",
+    "admission_record": "pre-9.admission.json",
+    "hand_actions": []
+  },
+  "actual_provider_tool": "Kubernetes v1.36.5+rke2r1; helm v4.3.0+gbec5b06",
+  "native_closing": {
+    "observed_utc": "2026-10-24T09:43:33.262208+00:00",
+    "terminal": {
+      "command": [
+        "./.build/prodbox",
+        "test",
+        "integration",
+        "cascade-qualification",
+        "--substrate",
+        "home-local"
+      ],
+      "cycle_label": "pre-20261022-1",
+      "exit": 1,
+      "started_utc": "2026-10-24T08:46:58.860916+00:00",
+      "completed_utc": "2026-10-24T09:43:04.748464+00:00",
+      "wall_seconds": 3365.786,
+      "operator_binary_sha256": "bdcbc10f2c1e7858f091654c14735199c3cdf120ea33696217cd097d9ccf2f37",
+      "source_identity_record": "pre-9.source-identity.log",
+      "admission_record": "pre-9.admission.json",
+      "hand_actions": []
+    },
+    "authority_read_exit": 0,
+    "publication_marker_observed": true,
+    "helm_readiness_timeout_observed": true,
+    "canonical_timeout_preservation_observed": true,
+    "candidate_ledger_present": false,
+    "worker_events": 0,
+    "raw_logs_printed_or_hashed": false,
+    "hand_actions": [],
+    "authority": {
+      "uid": "6bef68d2-15eb-4088-b55d-43e6741a6aca",
+      "phase": "Pending",
+      "node": null,
+      "containers": [
+        {
+          "name": "lifecycle-authority",
+          "declared_image": "127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-3349a232b3454fb3be77b2f68919904f",
+          "resources": {
+            "limits": {
+              "cpu": "150m",
+              "ephemeral-storage": "256Mi",
+              "memory": "728Mi"
+            },
+            "requests": {
+              "cpu": "150m",
+              "ephemeral-storage": "256Mi",
+              "memory": "728Mi"
+            }
+          }
+        }
+      ],
+      "container_statuses": []
+    },
+    "startup_report": [
+      "startup-evidence/inventory/StartupContainerNotStarted"
+    ]
+  },
+  "recorded_scheduler_capacity": {
+    "observed_utc": "2026-10-24T09:17:03.070973+00:00",
+    "allocatable_memory_bytes": 14019833856,
+    "bound_request_bytes": 13384024064,
+    "unallocated_request_bytes": 635809792,
+    "pending_authority_request_bytes": 763363328,
+    "pods": [
+      {
+        "namespace": "api",
+        "name": "api-849d656d7-6q5b5",
+        "uid": "8a27c9d2-67d4-4bda-8d94-9cc0f72f42d4",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 268435456
+      },
+      {
+        "namespace": "api",
+        "name": "api-849d656d7-vm25c",
+        "uid": "01e80095-fce0-4ed0-a28c-6a45094fd661",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 268435456
+      },
+      {
+        "namespace": "authority-backup",
+        "name": "authority-backup-788cb6b78-nghzl",
+        "uid": "c9e1a266-9ce2-4af4-be84-e9956b7a2ab8",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 150994944
+      },
+      {
+        "namespace": "bootstrap-broker",
+        "name": "bootstrap-broker-78df74b7d7-fbmb6",
+        "uid": "dd9da34d-914c-48d6-8d4f-2a8de63df012",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 134217728
+      },
+      {
+        "namespace": "cert-manager",
+        "name": "cert-manager-7df5f69bd7-2dgkq",
+        "uid": "f4eea507-4852-464a-a172-9ea8700c693f",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 67108864
+      },
+      {
+        "namespace": "cert-manager",
+        "name": "cert-manager-cainjector-557d947c4f-2hpc2",
+        "uid": "d2a89381-4148-4752-a061-03d1c40ae2af",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 0
+      },
+      {
+        "namespace": "cert-manager",
+        "name": "cert-manager-webhook-5767d9746f-4kckw",
+        "uid": "e9c6ec1b-d5e3-4e5b-9443-71524f6edfc8",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 0
+      },
+      {
+        "namespace": "envoy-gateway-system",
+        "name": "envoy-gateway-85c77d9b4c-72254",
+        "uid": "38123818-60b2-4455-87fb-475fb89be807",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 268435456
+      },
+      {
+        "namespace": "envoy-gateway-system",
+        "name": "envoy-vscode-public-edge-26c1371d-5d66b9df74-6t8dc",
+        "uid": "c3a8b6b1-6d37-4e5a-a53f-75bb30802afe",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 570425344
+      },
+      {
+        "namespace": "gateway",
+        "name": "gateway-node-a-0",
+        "uid": "70b3ce98-7931-48df-a501-ca1e58cb23c5",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 268435456
+      },
+      {
+        "namespace": "gateway",
+        "name": "gateway-node-b-0",
+        "uid": "dd87fb51-e948-4593-9d0b-aef6d8fbcf10",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 268435456
+      },
+      {
+        "namespace": "gateway",
+        "name": "pulsar-0",
+        "uid": "4946412e-a463-4988-9eed-3a4df76631b2",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 1073741824
+      },
+      {
+        "namespace": "harbor",
+        "name": "registry-6c595f8955-5jzwl",
+        "uid": "9f910789-90ae-4d7e-a575-505d61966551",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 0
+      },
+      {
+        "namespace": "kube-system",
+        "name": "cloud-controller-manager-bathurst",
+        "uid": "dc97142f-b0b2-4cb2-b7ed-10eb84e378e8",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 134217728
+      },
+      {
+        "namespace": "kube-system",
+        "name": "etcd-bathurst",
+        "uid": "39f9f405-6798-437b-898b-eb9de0c2830c",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 536870912
+      },
+      {
+        "namespace": "kube-system",
+        "name": "kube-apiserver-bathurst",
+        "uid": "aec40186-4fc3-4f89-8671-669b6c594ac1",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 1073741824
+      },
+      {
+        "namespace": "kube-system",
+        "name": "kube-controller-manager-bathurst",
+        "uid": "8813b7c9-9d2a-457a-9077-116ddbc19fbc",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 268435456
+      },
+      {
+        "namespace": "kube-system",
+        "name": "kube-proxy-bathurst",
+        "uid": "68558c7f-9f7e-4079-92e6-938aea361254",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 134217728
+      },
+      {
+        "namespace": "kube-system",
+        "name": "kube-scheduler-bathurst",
+        "uid": "c0d85c46-6795-45c8-b80c-b7947cd3c10d",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 134217728
+      },
+      {
+        "namespace": "kube-system",
+        "name": "rke2-canal-chvvp",
+        "uid": "cc3d8afb-1839-4297-83b2-04e918113f05",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 0
+      },
+      {
+        "namespace": "kube-system",
+        "name": "rke2-coredns-rke2-coredns-747b86f67b-5f74b",
+        "uid": "c12bb13b-db12-4bc9-9155-8bebc29b933d",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 134217728
+      },
+      {
+        "namespace": "kube-system",
+        "name": "rke2-coredns-rke2-coredns-autoscaler-878589fc9-8l64p",
+        "uid": "5f103234-487a-4bf2-9610-add5b408d164",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 16777216
+      },
+      {
+        "namespace": "kube-system",
+        "name": "rke2-metrics-server-956b4b7f5-82wmv",
+        "uid": "86e13baa-b6e5-42cc-8df0-4a532884cd74",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 209715200
+      },
+      {
+        "namespace": "kube-system",
+        "name": "rke2-snapshot-controller-5574cc88bf-s4nzc",
+        "uid": "d98ca1ad-e32f-4722-b05e-aa6580134c00",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 0
+      },
+      {
+        "namespace": "lifecycle-authority",
+        "name": "lifecycle-authority-0",
+        "uid": "6bef68d2-15eb-4088-b55d-43e6741a6aca",
+        "node": null,
+        "phase": "Pending",
+        "request_bytes": 763363328
+      },
+      {
+        "namespace": "metallb-system",
+        "name": "metallb-controller-6bfb8574cb-phmd9",
+        "uid": "b824bba0-12ae-4ec4-bf9c-a6134a1bbe54",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 0
+      },
+      {
+        "namespace": "metallb-system",
+        "name": "metallb-speaker-zgr9l",
+        "uid": "eb5394d4-f3af-4285-9599-5175dbaf4543",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 0
+      },
+      {
+        "namespace": "postgres-operator",
+        "name": "postgres-operator-6c8bd5cd97-rp74n",
+        "uid": "149b55f5-6994-4989-939b-746b66cddfa2",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 20971520
+      },
+      {
+        "namespace": "prodbox",
+        "name": "minio-0",
+        "uid": "87036386-f517-40e2-89d5-23f2d4937603",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 536870912
+      },
+      {
+        "namespace": "provider-worker",
+        "name": "provider-worker-7889bcd8fb-88kz9",
+        "uid": "02f873e4-03fc-486c-8a3f-47ae67942aef",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 1174405120
+      },
+      {
+        "namespace": "target-secret-agent",
+        "name": "target-secret-agent-58f886cfcb-w8q55",
+        "uid": "c6cd14dd-063e-4834-ab43-9d72fec48c8d",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 704643072
+      },
+      {
+        "namespace": "tls-retention",
+        "name": "tls-retention-5f8cf57c44-bljcb",
+        "uid": "3927a89b-cecb-4f1c-8451-31323156de0c",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 83886080
+      },
+      {
+        "namespace": "vault",
+        "name": "vault-0",
+        "uid": "6d7b525c-8022-4702-9ad3-a97d34fec5e8",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 268435456
+      },
+      {
+        "namespace": "vscode",
+        "name": "keycloak-854c6f4bfc-9f5nc",
+        "uid": "754db202-8cd1-4ac4-a1cb-277a938d8a79",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 1073741824
+      },
+      {
+        "namespace": "vscode",
+        "name": "prodbox-vscode-pg-instance1-h2cz-0",
+        "uid": "6ffc6331-d6f3-445d-bc82-3709fd746122",
+        "node": "bathurst",
+        "phase": "Pending",
+        "request_bytes": 553648128
+      },
+      {
+        "namespace": "vscode",
+        "name": "prodbox-vscode-pg-instance1-l2s6-0",
+        "uid": "ef93b50a-2b12-4204-a244-1140437d117e",
+        "node": "bathurst",
+        "phase": "Pending",
+        "request_bytes": 553648128
+      },
+      {
+        "namespace": "vscode",
+        "name": "prodbox-vscode-pg-instance1-qthb-0",
+        "uid": "40237e1b-26e4-4273-97a8-a902e2af1cad",
+        "node": "bathurst",
+        "phase": "Pending",
+        "request_bytes": 553648128
+      },
+      {
+        "namespace": "vscode",
+        "name": "vscode-0",
+        "uid": "363390b7-5ee3-452d-b9f9-30c40631aa22",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 1073741824
+      },
+      {
+        "namespace": "websocket",
+        "name": "redis-855c559f49-lb8hl",
+        "uid": "d9a14e63-b1b9-4911-9d67-1d83049e7b4a",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 268435456
+      },
+      {
+        "namespace": "websocket",
+        "name": "websocket-5498bbd8f5-5hpmg",
+        "uid": "a50f8a2e-66d0-4e9d-8b38-8719102f18d0",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 268435456
+      },
+      {
+        "namespace": "websocket",
+        "name": "websocket-5498bbd8f5-z8p26",
+        "uid": "28adb1d1-c7ca-417c-ba55-aaea835e748e",
+        "node": "bathurst",
+        "phase": "Running",
+        "request_bytes": 268435456
+      }
+    ],
+    "read_only": true,
+    "raw_specs_included": false
+  },
+  "recorded_scheduler_request_vectors": {
+    "observed_utc": "2026-10-24T09:21:42.722383+00:00",
+    "read_only": true,
+    "pod_requests": [
+      {
+        "namespace": "api",
+        "name": "api-849d656d7-6q5b5",
+        "uid": "8a27c9d2-67d4-4bda-8d94-9cc0f72f42d4",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 250,
+          "memory": 268435456,
+          "ephemeral-storage": 536870912
+        }
+      },
+      {
+        "namespace": "api",
+        "name": "api-849d656d7-vm25c",
+        "uid": "01e80095-fce0-4ed0-a28c-6a45094fd661",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 250,
+          "memory": 268435456,
+          "ephemeral-storage": 536870912
+        }
+      },
+      {
+        "namespace": "authority-backup",
+        "name": "authority-backup-788cb6b78-nghzl",
+        "uid": "c9e1a266-9ce2-4af4-be84-e9956b7a2ab8",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 60,
+          "memory": 150994944,
+          "ephemeral-storage": 268435456
+        }
+      },
+      {
+        "namespace": "bootstrap-broker",
+        "name": "bootstrap-broker-78df74b7d7-fbmb6",
+        "uid": "dd9da34d-914c-48d6-8d4f-2a8de63df012",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 100,
+          "memory": 134217728,
+          "ephemeral-storage": 268435456
+        }
+      },
+      {
+        "namespace": "cert-manager",
+        "name": "cert-manager-7df5f69bd7-2dgkq",
+        "uid": "f4eea507-4852-464a-a172-9ea8700c693f",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 50,
+          "memory": 67108864,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "cert-manager",
+        "name": "cert-manager-cainjector-557d947c4f-2hpc2",
+        "uid": "d2a89381-4148-4752-a061-03d1c40ae2af",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 0,
+          "memory": 0,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "cert-manager",
+        "name": "cert-manager-webhook-5767d9746f-4kckw",
+        "uid": "e9c6ec1b-d5e3-4e5b-9443-71524f6edfc8",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 0,
+          "memory": 0,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "envoy-gateway-system",
+        "name": "envoy-gateway-85c77d9b4c-72254",
+        "uid": "38123818-60b2-4455-87fb-475fb89be807",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 100,
+          "memory": 268435456,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "envoy-gateway-system",
+        "name": "envoy-vscode-public-edge-26c1371d-5d66b9df74-6t8dc",
+        "uid": "c3a8b6b1-6d37-4e5a-a53f-75bb30802afe",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 110,
+          "memory": 570425344,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "gateway",
+        "name": "gateway-node-a-0",
+        "uid": "70b3ce98-7931-48df-a501-ca1e58cb23c5",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 750,
+          "memory": 268435456,
+          "ephemeral-storage": 536870912
+        }
+      },
+      {
+        "namespace": "gateway",
+        "name": "gateway-node-b-0",
+        "uid": "dd87fb51-e948-4593-9d0b-aef6d8fbcf10",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 750,
+          "memory": 268435456,
+          "ephemeral-storage": 536870912
+        }
+      },
+      {
+        "namespace": "gateway",
+        "name": "pulsar-0",
+        "uid": "4946412e-a463-4988-9eed-3a4df76631b2",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 250,
+          "memory": 1073741824,
+          "ephemeral-storage": 1073741824
+        }
+      },
+      {
+        "namespace": "harbor",
+        "name": "registry-6c595f8955-5jzwl",
+        "uid": "9f910789-90ae-4d7e-a575-505d61966551",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 0,
+          "memory": 0,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "cloud-controller-manager-bathurst",
+        "uid": "dc97142f-b0b2-4cb2-b7ed-10eb84e378e8",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 100,
+          "memory": 134217728,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "etcd-bathurst",
+        "uid": "39f9f405-6798-437b-898b-eb9de0c2830c",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 200,
+          "memory": 536870912,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "kube-apiserver-bathurst",
+        "uid": "aec40186-4fc3-4f89-8671-669b6c594ac1",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 250,
+          "memory": 1073741824,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "kube-controller-manager-bathurst",
+        "uid": "8813b7c9-9d2a-457a-9077-116ddbc19fbc",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 200,
+          "memory": 268435456,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "kube-proxy-bathurst",
+        "uid": "68558c7f-9f7e-4079-92e6-938aea361254",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 250,
+          "memory": 134217728,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "kube-scheduler-bathurst",
+        "uid": "c0d85c46-6795-45c8-b80c-b7947cd3c10d",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 100,
+          "memory": 134217728,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "rke2-canal-chvvp",
+        "uid": "cc3d8afb-1839-4297-83b2-04e918113f05",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 250,
+          "memory": 0,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "rke2-coredns-rke2-coredns-747b86f67b-5f74b",
+        "uid": "c12bb13b-db12-4bc9-9155-8bebc29b933d",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 100,
+          "memory": 134217728,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "rke2-coredns-rke2-coredns-autoscaler-878589fc9-8l64p",
+        "uid": "5f103234-487a-4bf2-9610-add5b408d164",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 25,
+          "memory": 16777216,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "rke2-metrics-server-956b4b7f5-82wmv",
+        "uid": "86e13baa-b6e5-42cc-8df0-4a532884cd74",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 100,
+          "memory": 209715200,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "rke2-snapshot-controller-5574cc88bf-s4nzc",
+        "uid": "d98ca1ad-e32f-4722-b05e-aa6580134c00",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 0,
+          "memory": 0,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "lifecycle-authority",
+        "name": "lifecycle-authority-0",
+        "uid": "6bef68d2-15eb-4088-b55d-43e6741a6aca",
+        "node": null,
+        "phase": "Pending",
+        "requests": {
+          "cpu": 150,
+          "memory": 763363328,
+          "ephemeral-storage": 268435456
+        }
+      },
+      {
+        "namespace": "metallb-system",
+        "name": "metallb-controller-6bfb8574cb-phmd9",
+        "uid": "b824bba0-12ae-4ec4-bf9c-a6134a1bbe54",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 0,
+          "memory": 0,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "metallb-system",
+        "name": "metallb-speaker-zgr9l",
+        "uid": "eb5394d4-f3af-4285-9599-5175dbaf4543",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 0,
+          "memory": 0,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "postgres-operator",
+        "name": "postgres-operator-6c8bd5cd97-rp74n",
+        "uid": "149b55f5-6994-4989-939b-746b66cddfa2",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 100,
+          "memory": 20971520,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "prodbox",
+        "name": "minio-0",
+        "uid": "87036386-f517-40e2-89d5-23f2d4937603",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 250,
+          "memory": 536870912,
+          "ephemeral-storage": 1073741824
+        }
+      },
+      {
+        "namespace": "provider-worker",
+        "name": "provider-worker-7889bcd8fb-88kz9",
+        "uid": "02f873e4-03fc-486c-8a3f-47ae67942aef",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 100,
+          "memory": 1174405120,
+          "ephemeral-storage": 268435456
+        }
+      },
+      {
+        "namespace": "target-secret-agent",
+        "name": "target-secret-agent-58f886cfcb-w8q55",
+        "uid": "c6cd14dd-063e-4834-ab43-9d72fec48c8d",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 60,
+          "memory": 704643072,
+          "ephemeral-storage": 268435456
+        }
+      },
+      {
+        "namespace": "tls-retention",
+        "name": "tls-retention-5f8cf57c44-bljcb",
+        "uid": "3927a89b-cecb-4f1c-8451-31323156de0c",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 60,
+          "memory": 83886080,
+          "ephemeral-storage": 268435456
+        }
+      },
+      {
+        "namespace": "vault",
+        "name": "vault-0",
+        "uid": "6d7b525c-8022-4702-9ad3-a97d34fec5e8",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 200,
+          "memory": 268435456,
+          "ephemeral-storage": 1073741824
+        }
+      },
+      {
+        "namespace": "vscode",
+        "name": "keycloak-854c6f4bfc-9f5nc",
+        "uid": "754db202-8cd1-4ac4-a1cb-277a938d8a79",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 500,
+          "memory": 1073741824,
+          "ephemeral-storage": 1073741824
+        }
+      },
+      {
+        "namespace": "vscode",
+        "name": "prodbox-vscode-pg-instance1-h2cz-0",
+        "uid": "6ffc6331-d6f3-445d-bc82-3709fd746122",
+        "node": "bathurst",
+        "phase": "Pending",
+        "requests": {
+          "cpu": 260,
+          "memory": 553648128,
+          "ephemeral-storage": 1107296256
+        }
+      },
+      {
+        "namespace": "vscode",
+        "name": "prodbox-vscode-pg-instance1-l2s6-0",
+        "uid": "ef93b50a-2b12-4204-a244-1140437d117e",
+        "node": "bathurst",
+        "phase": "Pending",
+        "requests": {
+          "cpu": 260,
+          "memory": 553648128,
+          "ephemeral-storage": 1107296256
+        }
+      },
+      {
+        "namespace": "vscode",
+        "name": "prodbox-vscode-pg-instance1-qthb-0",
+        "uid": "40237e1b-26e4-4273-97a8-a902e2af1cad",
+        "node": "bathurst",
+        "phase": "Pending",
+        "requests": {
+          "cpu": 260,
+          "memory": 553648128,
+          "ephemeral-storage": 1107296256
+        }
+      },
+      {
+        "namespace": "vscode",
+        "name": "vscode-0",
+        "uid": "363390b7-5ee3-452d-b9f9-30c40631aa22",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 500,
+          "memory": 1073741824,
+          "ephemeral-storage": 1073741824
+        }
+      },
+      {
+        "namespace": "websocket",
+        "name": "redis-855c559f49-lb8hl",
+        "uid": "d9a14e63-b1b9-4911-9d67-1d83049e7b4a",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 100,
+          "memory": 268435456,
+          "ephemeral-storage": 536870912
+        }
+      },
+      {
+        "namespace": "websocket",
+        "name": "websocket-5498bbd8f5-5hpmg",
+        "uid": "a50f8a2e-66d0-4e9d-8b38-8719102f18d0",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 100,
+          "memory": 268435456,
+          "ephemeral-storage": 536870912
+        }
+      },
+      {
+        "namespace": "websocket",
+        "name": "websocket-5498bbd8f5-z8p26",
+        "uid": "28adb1d1-c7ca-417c-ba55-aaea835e748e",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 100,
+          "memory": 268435456,
+          "ephemeral-storage": 536870912
+        }
+      }
+    ],
+    "platform_baseline": [
+      {
+        "namespace": "cert-manager",
+        "name": "cert-manager-7df5f69bd7-2dgkq",
+        "uid": "f4eea507-4852-464a-a172-9ea8700c693f",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 50,
+          "memory": 67108864,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "cert-manager",
+        "name": "cert-manager-cainjector-557d947c4f-2hpc2",
+        "uid": "d2a89381-4148-4752-a061-03d1c40ae2af",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 0,
+          "memory": 0,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "cert-manager",
+        "name": "cert-manager-webhook-5767d9746f-4kckw",
+        "uid": "e9c6ec1b-d5e3-4e5b-9443-71524f6edfc8",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 0,
+          "memory": 0,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "envoy-gateway-system",
+        "name": "envoy-gateway-85c77d9b4c-72254",
+        "uid": "38123818-60b2-4455-87fb-475fb89be807",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 100,
+          "memory": 268435456,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "envoy-gateway-system",
+        "name": "envoy-vscode-public-edge-26c1371d-5d66b9df74-6t8dc",
+        "uid": "c3a8b6b1-6d37-4e5a-a53f-75bb30802afe",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 110,
+          "memory": 570425344,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "cloud-controller-manager-bathurst",
+        "uid": "dc97142f-b0b2-4cb2-b7ed-10eb84e378e8",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 100,
+          "memory": 134217728,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "etcd-bathurst",
+        "uid": "39f9f405-6798-437b-898b-eb9de0c2830c",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 200,
+          "memory": 536870912,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "kube-apiserver-bathurst",
+        "uid": "aec40186-4fc3-4f89-8671-669b6c594ac1",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 250,
+          "memory": 1073741824,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "kube-controller-manager-bathurst",
+        "uid": "8813b7c9-9d2a-457a-9077-116ddbc19fbc",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 200,
+          "memory": 268435456,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "kube-proxy-bathurst",
+        "uid": "68558c7f-9f7e-4079-92e6-938aea361254",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 250,
+          "memory": 134217728,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "kube-scheduler-bathurst",
+        "uid": "c0d85c46-6795-45c8-b80c-b7947cd3c10d",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 100,
+          "memory": 134217728,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "rke2-canal-chvvp",
+        "uid": "cc3d8afb-1839-4297-83b2-04e918113f05",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 250,
+          "memory": 0,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "rke2-coredns-rke2-coredns-747b86f67b-5f74b",
+        "uid": "c12bb13b-db12-4bc9-9155-8bebc29b933d",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 100,
+          "memory": 134217728,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "rke2-coredns-rke2-coredns-autoscaler-878589fc9-8l64p",
+        "uid": "5f103234-487a-4bf2-9610-add5b408d164",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 25,
+          "memory": 16777216,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "rke2-metrics-server-956b4b7f5-82wmv",
+        "uid": "86e13baa-b6e5-42cc-8df0-4a532884cd74",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 100,
+          "memory": 209715200,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "kube-system",
+        "name": "rke2-snapshot-controller-5574cc88bf-s4nzc",
+        "uid": "d98ca1ad-e32f-4722-b05e-aa6580134c00",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 0,
+          "memory": 0,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "metallb-system",
+        "name": "metallb-controller-6bfb8574cb-phmd9",
+        "uid": "b824bba0-12ae-4ec4-bf9c-a6134a1bbe54",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 0,
+          "memory": 0,
+          "ephemeral-storage": 0
+        }
+      },
+      {
+        "namespace": "metallb-system",
+        "name": "metallb-speaker-zgr9l",
+        "uid": "eb5394d4-f3af-4285-9599-5175dbaf4543",
+        "node": "bathurst",
+        "phase": "Running",
+        "requests": {
+          "cpu": 0,
+          "memory": 0,
+          "ephemeral-storage": 0
+        }
+      }
+    ],
+    "baseline_totals": {
+      "cpu": 1835,
+      "memory": 3548381184,
+      "ephemeral-storage": 0
+    },
+    "bound_totals": {
+      "cpu": 7095,
+      "memory": 13384024064,
+      "ephemeral-storage": 13790871552
+    }
+  },
+  "scheduler_event": {
+    "observed_utc": "2026-10-24T09:16:21.892183+00:00",
+    "pod_uid": "6bef68d2-15eb-4088-b55d-43e6741a6aca",
+    "read_exit": 0,
+    "events": [
+      {
+        "reason": "FailedScheduling",
+        "closed_causes": [
+          "insufficient-memory"
+        ]
+      }
+    ],
+    "raw_messages_printed_or_hashed": false
+  },
+  "superseded_identity": {
+    "source_git_head": "b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6",
+    "worktree": "dirty",
+    "operator_sha256": "bdcbc10f2c1e7858f091654c14735199c3cdf120ea33696217cd097d9ccf2f37",
+    "full_source_manifest": "527e47485879978684f2cd3d99a5dac63b83caac60f062b6f9d3244a2fe64456",
+    "executable_source_manifest": "4b6950d9cd8fc06089c7cbaf41a39d26f14a5d7026a5e74669f9d889a81696dd",
+    "full_policy": {
+      "identifier": "prodbox-source-manifest",
+      "version": 1,
+      "digest": "4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae"
+    },
+    "executable_policy": {
+      "identifier": "prodbox-source-manifest-executable",
+      "version": 1,
+      "digest": "2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b"
+    },
+    "identity_record": ".build/sprint-6.5/authority-scheduler-memory-20261024/superseded-source-identity.log",
+    "published_runtime_config": "sha256:2f4194bf54f2dc80c4224c6bfc9027b811f6f3f16be3d28d63618b8fb96c7e2e",
+    "published_runtime_manifest": "sha256:258adf3c2fe04aefe6ea02f2a5a7d0bb5e0c488e948b899b8f13da284569f1c5",
+    "authority_runtime_started": false,
+    "runtime_archive": ".build/sprint-6.5/authority-scheduler-memory-20261024/published-runtime.tar.gz"
+  },
+  "causal_profile": {
+    "physical_host_vector": [
+      8000,
+      15872,
+      100000,
+      180000
+    ],
+    "unchanged_application_request_draw": [
+      6210,
+      11538,
+      15456,
+      155648
+    ],
+    "omitted_standing_platform_requests": [
+      1835,
+      3384,
+      0,
+      0
+    ],
+    "complete_existing_requests_and_reservations": [
+      9045,
+      17482,
+      35424,
+      157696
+    ],
+    "fault_schedule": "No injected fault; the exact standing topology and unchanged scheduler requests exceed the physical host; no hand mutation",
+    "old_to_new_mapping": "same physical host, background, topology and all workload/reservation/eviction envelopes; change accounting only; replacement must refuse undersized host",
+    "new_sufficient_host_is_separate_production_profile": true,
+    "profile_kind": "independent frozen portable declaration supplied as a simulated observed host; native provider node quantities are recorded separately"
+  },
+  "frozen_compiled_allocator_control": {
+    "observed_utc": "2026-10-24T09:25:10.458369+00:00",
+    "command": [
+      ".build/sprint-6.5/authority-scheduler-memory-20261024/frozen-admission-control"
+    ],
+    "exit": 1,
+    "expected_counterexample_exit": 1,
+    "wall_seconds": 0.003,
+    "executable_sha256": "80e287df80d48682b71168121899d5d487497e3686c7805838a328d237dca4ab",
+    "frozen_source_record": "superseded-source-identity.log",
+    "real_tool_recording": "../resume-20261022/pre-9.scheduler-vectors.json",
+    "actual_scheduler_event": "../resume-20261022/pre-9.scheduling-observation.json",
+    "host_and_workload_envelopes_changed": false,
+    "result": "production compiler admits the incomplete projection; full physical topology does not fit"
+  },
+  "frozen_installed_generator_control": {
+    "observed_utc": "2026-10-24T09:42:02.216678+00:00",
+    "program_exit": 0,
+    "expected_program_exit": 0,
+    "semantic_counterexample_exit": 1,
+    "wall_seconds": 0.114,
+    "config_generated": true,
+    "physical_host_vector": [
+      8000,
+      15872,
+      100000,
+      180000
+    ],
+    "operator_sha256": "bdcbc10f2c1e7858f091654c14735199c3cdf120ea33696217cd097d9ccf2f37",
+    "live_infrastructure_touched": false,
+    "fixture_contents_read_or_hashed": false,
+    "scratch": ".build/sprint-1.97/frozen-generator"
+  },
+  "required_replacement": "Declare scheduled platform requests separately, count exactly once across allocation, host fitting and generated assertions, reject omitted or underdeclared production demand, and preserve exact legacy/owned-config handling without writing during decode. Preserve all existing sufficiency envelopes.",
+  "replacement_and_gates": "private compatibility prototype passes 9/9; production integration and full gates pending at banking",
+  "hand_actions": [],
+  "qualified_cycles": 0,
+  "deployment_qualification": "pending",
+  "evidence_root": ".build/sprint-1.97",
+  "secret_material_recorded_or_hashed": false,
+  "replacement_control_identity": {
+    "source_git_head": "b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6",
+    "worktree": "dirty",
+    "full_source_manifest": "6bab205f7058c4c7b627609d393fffd7ac705f8f4801e4994d8c347482ca07c7",
+    "executable_source_manifest": "ff32b0653b4eeb4d54e98280c4bd4d950a326ec8548f41cd5cc92009952959fd",
+    "full_policy": {
+      "identifier": "prodbox-source-manifest",
+      "version": 1,
+      "digest": "4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae"
+    },
+    "executable_policy": {
+      "identifier": "prodbox-source-manifest-executable",
+      "version": 1,
+      "digest": "2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b"
+    },
+    "operator_sha256": "67a6e2883d924a58cabc235c580e7202ca7cfe153fd89fed73a5598ce749ba65",
+    "identity_record": ".build/sprint-1.97/replacement-control-source-identity.log",
+    "recording_at_control_time": ".build/sprint-1.97/recording-banked-initial.json"
+  },
+  "replacement_compiled_control": {
+    "completed_utc": "2026-10-24T10:14:17.350534+00:00",
+    "exit": 0,
+    "expected_exit": 0,
+    "wall_seconds": 0.002,
+    "controller_sha256": "611fa681c281d5f082b793724570a53b9f6f6639345598579bbc4e5f130ddc13",
+    "unchanged_causal_host": [
+      8000,
+      15872,
+      100000,
+      180000
+    ],
+    "complete_unchanged_demand": [
+      9045,
+      17482,
+      35424,
+      157696
+    ],
+    "profile": "same frozen portable declaration supplied as a simulated observed host; actual provider node quantities are separately recorded",
+    "live_mutation": false
+  },
+  "replacement_installed_generator_control": {
+    "completed_utc": "2026-10-24T10:14:05.159919+00:00",
+    "program_exit": 1,
+    "expected_program_exit": 1,
+    "semantic_control_exit": 0,
+    "wall_seconds": 0.064,
+    "config_generated": false,
+    "simulated_observed_host_vector": [
+      8000,
+      15872,
+      100000,
+      180000
+    ],
+    "operator_sha256": "67a6e2883d924a58cabc235c580e7202ca7cfe153fd89fed73a5598ce749ba65",
+    "live_infrastructure_touched": false,
+    "secret_fixture_touched": false
+  },
+  "actual_host_readback": {
+    "observed_utc": "2026-10-24T10:14:05+00:00",
+    "test_override_absent": true,
+    "host_vector": [
+      8000,
+      15930,
+      238221,
+      238221
+    ],
+    "storage_devices_coincide": true,
+    "host_fitting_result": "Left: CPU 8000 below required 9045",
+    "native_cluster_mutated": false
+  },
+  "production_profile": {
+    "portable_declared_host": [
+      10000,
+      18432,
+      100000,
+      180000
+    ],
+    "existing_workload_reservation_and_eviction_envelopes_changed": false,
+    "rendered_profile_native_qualification": "pending",
+    "physical_host_upgrade_observed": false
+  },
+  "controls_appended_utc": "2026-10-24T10:18:15.365312+00:00"
+}

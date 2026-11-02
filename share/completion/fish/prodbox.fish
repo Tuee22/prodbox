@@ -18,6 +18,7 @@ complete -c prodbox -f -n '__fish_use_subcommand' -a 'edge' -d 'Public DNS + TLS
 complete -c prodbox -f -n '__fish_use_subcommand' -a 'gateway' -d 'Gateway daemon operations'
 complete -c prodbox -f -n '__fish_use_subcommand' -a 'help' -d 'Render help for a command path'
 complete -c prodbox -f -n '__fish_use_subcommand' -a 'host' -d 'Host prerequisite checks'
+complete -c prodbox -f -n '__fish_use_subcommand' -a 'internal-rpc-birth-controller' -d 'Run the pinned operation-owned RPC birth controller'
 complete -c prodbox -f -n '__fish_use_subcommand' -a 'nuke' -d 'Total teardown of every prodbox-owned AWS resource (operator-only)'
 complete -c prodbox -f -n '__fish_use_subcommand' -a 'test' -d 'Named test suites'
 complete -c prodbox -f -n '__fish_use_subcommand' -a 'users' -d 'Operator-invited user management'

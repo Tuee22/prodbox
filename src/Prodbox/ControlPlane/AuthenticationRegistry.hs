@@ -180,6 +180,7 @@ externalControlPlaneCallerServiceAccounts =
 controlPlaneRouteCallerTopology :: [(ControlPlaneRoute, [CallerPrincipal])]
 controlPlaneRouteCallerTopology =
   [ row LifecycleAuthorityControl []
+  , row LifecycleAuthorityPeerObserve [targetAgent]
   , row LifecycleMigrationApply []
   , row LifecycleProjectionImport []
   , row LifecycleAuthorityObserve standingConsumers

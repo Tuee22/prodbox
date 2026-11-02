@@ -1,0 +1,69 @@
+{
+  "format_version": 1,
+  "scope": "Code-local native loopback aggregate HTTP response-header counterexample. No full ordinary-program/HTTP decoded-heap funding, original controller-family/native/captured-network admission, live-provider class closure or deployment qualification.",
+  "counterexample_id": "HTTP-RESPONSE-AGGREGATE-HEADERS-2026-10-29",
+  "law_recording": "The exact pinned client accepts 101/256 empty 103 blocks and aggregate early/final header fields beyond the declared 100-field ceiling despite a two-byte response-body bound. Nine of the shared 24 laws fail against the preserved helper and all pass against the candidate. Positive controls retain the pinned complete final-header field/line domain, combined wide fields, 100 Continue, original parser refusal, concurrent/per-call reset and async cancellation.",
+  "comparison_profile": {
+    "heap_bytes": 134217728,
+    "source_qa_memory_bytes": 5368709120,
+    "source_qa_swap_bytes": 0,
+    "source_qa_tasks": 64,
+    "test_threads": 1,
+    "rts_capabilities": 1,
+    "response_body_maximum_bytes": 2,
+    "http_timeout_micros": 2000000,
+    "mapping": "Identical fixture source, package IDs, loopback fault schedule and physical limits; only the selected HTTP helper source changes. This is a scoped HTTP-helper comparison, not the original admitted ordinary controller."
+  },
+  "dependency": {
+    "package_id": "http-client-0.7.19-0b0d4eebf2c5c721eea79d4bc7e419d06be40c0d7ae30e95017bd513a201bdc7",
+    "archive_sha256": "a02c1be082e8f48c959ac7150a48a405f8d4383e0942639481e84b220f29ad61",
+    "source_files": [
+      {
+        "file": "http-client-0.7.19/Network/HTTP/Client/Manager.hs",
+        "sha256": "dffb7a67b0c1b7ea863b4d2e01fb42c2281b8e6a9b9b5ae9cc94b1df505547fc"
+      },
+      {
+        "file": "http-client-0.7.19/Network/HTTP/Client/Response.hs",
+        "sha256": "b94f4ee50fddabbec1c7c6cf7e0a92b6c0808329df7625416c72a69b4a04a751"
+      },
+      {
+        "file": "http-client-0.7.19/Network/HTTP/Client/Headers.hs",
+        "sha256": "0f72621b3e82fd2de69b462db34dde9a25379e316e3a9f20bbf806f1c604d937"
+      },
+      {
+        "file": "http-client-0.7.19/Network/HTTP/Client/Connection.hs",
+        "sha256": "c85a8f92e8ce4ee2a5f231e4a036da84e55b54be36b17b185c6ce13e11669635"
+      },
+      {
+        "file": "http-client-0.7.19/Network/HTTP/Client/Body.hs",
+        "sha256": "a73a5d5687945d7c6dedc2fa3cefeb78c36058361ebdadad43e7c7b4a65cadb7"
+      }
+    ]
+  },
+  "selected_sources": {
+    "shared_fixture_sha256": "740ec1c471e9e034f76cfcf87fc208ddcb1f81500a63de147d30c09f08c08b8d",
+    "before_helper_sha256": "ae4cb695a9ce018d6ee7aa1eaf5d42c32c5e90f7fc0774ee5f6c0683ecb390a9",
+    "candidate_helper_sha256": "a8df40c0a2db279f389f328f10a547271f4daff53c14ca12b674c12751f4ef96",
+    "shared_main_sha256": "88e5f699141e7b3fb519ced026bd0ad8a714e8aa08b25d7df58abc95d889841a"
+  },
+  "preserved_public_source_identity": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"51477e442ece6e2412a0a7c7c95802b9061a781b39b8e8ac3751a58c775951ce\", sourceManifestEntryCount = 1636},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"9b5dff6b63585aa8c265a6c3bdefd5587f1bf56e35181f6469e58d935b980d4b\", sourceManifestEntryCount = 1573})",
+  "source_identity_scope": "The complete public-source pair identifies the unchanged public baseline for these excluded vehicles; each exact actual helper and fixture is identified separately above and in the complete selected-input receipts. This is not a replacement deployment identity.",
+  "evidence": {
+    "directory": ".build/sprint-6.5/http-header-funding-20261029",
+    "before": "http-header-before-tests-1-validation.json",
+    "after": "http-header-after-tests-1-validation.json",
+    "progress": "prototype-progress-validation-1.json",
+    "superseded_source_operator": "superseded-input-index-1.json",
+    "before_exit": 1,
+    "after_exit": 0,
+    "old_failed_cases": 9,
+    "candidate_passed_cases": 24
+  },
+  "retained_header_policy": {
+    "maximum_early_hint_blocks": 100,
+    "maximum_aggregate_early_and_final_fields": 100,
+    "maximum_parser_header_line_bytes": 4096,
+    "parser_header_field_limit": 100,
+    "notes": "Aggregate callbacks refuse before the next recursive parse, and final fields are charged before body collection. The parser may materialize its current bounded block before the aggregate check; limits do not constitute a decoded-heap/HTTP memory proof."
+  }
+}

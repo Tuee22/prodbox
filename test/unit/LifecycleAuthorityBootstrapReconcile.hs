@@ -208,6 +208,7 @@ applyCommand state command = case command of
   FreezeProviderAdmissionAtGeneration _ _ -> state
   ObserveProviderAdmissionRecovery _ -> state
   ObserveProviderBootstrapPredecessor -> state
+  ObserveAuthorityEpochPromotion -> state
   RecordCascadeTerminalAuditReceipt _ _ -> state
   RevokeCascadeProviderCredential _ _ -> state
 

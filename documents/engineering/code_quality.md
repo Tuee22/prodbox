@@ -97,6 +97,21 @@ prodbox test all
 
 ## 3. Guard Coverage
 
+File-lint drivers evaluate each source-reading check's complete finding payload before starting
+the next check. `forceViolationFindings` establishes that boundary for doctrine-alignment and
+Haskell-style collectors: retaining a lazy empty result can otherwise retain its entire input
+corpus. Evaluation preserves every predicate, finding and ordering; checks are never omitted to
+fit a memory budget. The native `test/qualification/FileLintResidency.hs` control runs the actual
+operator under a fixed 1 GiB heap and 3 GiB kernel memory ceiling, with swap disabled and a bounded
+task count. It reports the real command result and RTS statistics; signal, OOM, timeout and early
+refusal do not count as completion. This is a CLI regression, independent of runtime resource
+reservations or deployment qualification.
+
+A containment wrapper around full quality/test suites preserves the invoking permission mask and
+the declared tool path. A service manager's different default mask can create group-writable fixture
+inputs that the production file-safety boundary correctly refuses. Record the invocation context
+and verify a suspected context difference with the same binary and source before retrying a gate.
+
 Current enforced quality surfaces:
 
 - repository-owned workflow and hook policy surfaces forbidden by
@@ -144,7 +159,10 @@ Current enforced quality surfaces:
   Three dispositions are deliberately distinct: **absent** is not a finding (a fresh worktree has
   no sibling config until `config generate` runs), **malformed** is a finding that says the file
   does not decode, and **drifted** is a finding naming the record field whose canonical rendering
-  the file does not carry. The bound is stated rather than implied: the gate detects divergence
+  the file does not carry. The exact unauthored template is also accepted in portable or
+  host-fitted form through the shared Tier-0 recognizer: only its typed host-capacity vector
+  varies, and complete text plus witness must equal the canonical rendering. Runtime decoding
+  still rejects its empty machine identity. The bound is stated rather than implied: the gate detects divergence
   from the generator's *output* — a hand edit that changes the emitted text, a file left by an
   older schema, or a stale emitted `concurrentDraws` witness whose Ring-1 `assert` is consequently
   proving the wrong draws. Sprint `0.29` added the generator-stamped witness over `parameters` and
@@ -289,15 +307,15 @@ Four further check families join the canonical quality gate under the Foundation
   literal would have become a binding, and if the compiled owner still said `443` the cluster would
   break identically — only a live run proves `6443`. The gate is not credited with catching the
   outage that registered the sprint.
-- the **legacy escape registry bijection check**: the current machine-readable registry
-  `src/Prodbox/Legacy/EscapeRegistry.hs` contains exactly one surviving entry, the `aws` CLI
-  subprocess object-store site in `src/Prodbox/Minio/ObjectStore.hs`. A source-marker scan must
-  match that registry bijectively: an unregistered marker fails the build, and a registry entry
-  with no surviving marker fails the build. This proves agreement only over the declared one-entry
-  set. Known Pending shared-credential, host-direct MinIO, and bespoke-cascade compatibility seams
-  are not registered, so the current check is not comprehensive Standard-P legacy-absence evidence;
-  Sprint `4.84` and the deletion ledger own that correction. Removed Gateway/operator-secret seams
-  remain forbidden and cannot be reintroduced as compatibility options
+- the **legacy escape registry bijection and coverage check**: the compiled inventory in
+  `src/Prodbox/Legacy/EscapeRegistry.hs` binds every declared surviving site to its source marker,
+  removal owner and deletion condition. Coverage rules additionally name the exact identifiers
+  and complete allowed source files for the declared object-store, shared-credential, host-direct
+  MinIO, bespoke-cascade and pre-cutover Target-signing seams. An unknown marker, vanished site,
+  missing identifier or unregistered identifier use fails the gate. This proves agreement over the
+  declared inventory; semantic legacy absence and qualified operational deletion remain separate
+  obligations owned by the development plan and deletion ledger. Removed Gateway/operator-secret
+  seams remain forbidden and cannot be reintroduced as compatibility options
   ([development_plan_standards.md](../../DEVELOPMENT_PLAN/development_plan_standards.md)).
 - the **Gateway control-plane absence check** (Sprint `4.50`, folded into the Broker/Gateway
   isolation conformance family): every Gateway source module is scanned for the deleted bootstrap,

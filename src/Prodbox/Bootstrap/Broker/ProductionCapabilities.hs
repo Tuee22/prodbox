@@ -304,7 +304,7 @@ localCapabilityBinding call = case call of
 registerEvidenceBoundary
   :: BrokerProgramEvidenceBoundary m -> [ProductionCapabilityBinding]
 registerEvidenceBoundary boundary =
-  resolvePristineStorageProof boundary `seq`
+  resolveRootInitializationEvidence boundary `seq`
     resolveUnsealRecoveryCustody boundary `seq`
       resolveUnlockRotationCustody boundary `seq`
         resolveBaselineCustodyAndSession boundary `seq`

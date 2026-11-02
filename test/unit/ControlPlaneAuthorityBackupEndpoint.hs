@@ -380,7 +380,7 @@ controlPlaneAuthorityBackupEndpointSuite =
       exported <-
         serveAuthorityBackupExportRequest
           4096
-          (const (Right "canonical-retained-aggregate"))
+          (const (pure (Right "canonical-retained-aggregate")))
           repository
           (request (ExportGenesisAggregate "genesis-plan-digest"))
       authorityBackupExportHttpStatus exported `shouldBe` ReplyOk
@@ -397,7 +397,7 @@ controlPlaneAuthorityBackupEndpointSuite =
       mismatched <-
         serveAuthorityBackupExportRequest
           4096
-          (const (Right "must-not-export"))
+          (const (pure (Right "must-not-export")))
           repository
           (request (ExportGenesisAggregate "different-plan"))
       mismatched `shouldBe` AuthorityBackupExportPurposeMismatch

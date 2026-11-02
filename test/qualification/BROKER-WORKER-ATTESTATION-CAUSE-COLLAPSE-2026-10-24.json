@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "counterexample": "BROKER-WORKER-ATTESTATION-CAUSE-COLLAPSE-2026-10-24",
+  "live_recording": {
+    "invocation": "pre-7",
+    "started_utc": "2026-10-24T03:04:37.453396+00:00",
+    "completed_utc": "2026-10-24T03:30:48.889431+00:00",
+    "exit": 1,
+    "wall_seconds": 1571.436,
+    "engine_cause": "EngineSecretWorkerRefused",
+    "worker_cause": "AttestationRefused",
+    "underlying_attestation_subtype_observed": false,
+    "audited_ambiguity_reset_observed": true,
+    "closing_phase": "reset-pristine",
+    "vault_initialized": false,
+    "vault_sealed": true,
+    "worker_uid": "8d199ede-b03f-4ae6-974f-8314cb844ee6",
+    "worker_events": [
+      "Scheduled",
+      "Pulled",
+      "Created",
+      "Started",
+      "Killing"
+    ],
+    "worker_pod_absent_on_readback": true,
+    "candidate_cycles": 0,
+    "hand_actions": []
+  },
+  "superseded_identity": {
+    "operator_sha256": "d3758e235e2dc9a42793eb30dc214d5b7b299310774d8fb846cb3a2510f31888",
+    "source_git_head": "b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6",
+    "worktree": "dirty",
+    "full_source_manifest": "08fc6c3e947fba4221a2ecf98be68e4b1181415fb973ef86d1b2cb7c2fc15b82",
+    "executable_source_manifest": "576295c6529c22a8ecf40378b8b086bb0b4eaf0f505825b2bd0cde6009bafa4d",
+    "complete_source_identity_record": ".build/sprint-2.146/superseded-source-identity.log",
+    "runtime_config_digest": "sha256:acee4221e7dde8640a2c05880093e8f1517d475aec7c50fb572b85fd00bdac66",
+    "runtime_registry_manifest": "sha256:2f2bdfebec980a9eb1a01461623345f4d9ec02143150a067014e091fd2acfb24"
+  },
+  "causal_profile": {
+    "authored_load": "one serialized diagnostic projection over the same concrete typed refusal values",
+    "fault_schedule": "present missing/unobservable/image-mismatch refusal to the actual Broker adapter; assert exact closed subtype and private-detail redaction",
+    "old_to_new_resource_mapping": "same host control and unchanged component CPU/memory/ephemeral/persistence envelopes; no extra worker or owner",
+    "broker_requests_and_limits": {
+      "cpu": "100m",
+      "memory": "128Mi",
+      "ephemeral_storage": "256Mi"
+    },
+    "startup_budget_micros": 120000000,
+    "cleanup_budget_micros": 30000000,
+    "full_deployment_replayed_by_fixture": false,
+    "secret_values_recorded_or_hashed": false
+  },
+  "superseded_controls": {
+    "completed_utc": "2026-10-24T03:40:58.812653+00:00",
+    "control_sha256": "c33002e7fae286d3088c5827cbfcc85c652022ff8bf867497850725eeecc72d4",
+    "operator_sha256": "d3758e235e2dc9a42793eb30dc214d5b7b299310774d8fb846cb3a2510f31888",
+    "actual_installed_adapter": true,
+    "controls": [
+      {
+        "profile": "not-found",
+        "exit": 1,
+        "seconds": 0.003,
+        "expected_failure": true,
+        "closed_cause_lost": true,
+        "private_detail_redacted": true
+      },
+      {
+        "profile": "unobservable",
+        "exit": 1,
+        "seconds": 0.002,
+        "expected_failure": true,
+        "closed_cause_lost": true,
+        "private_detail_redacted": true
+      },
+      {
+        "profile": "image",
+        "exit": 1,
+        "seconds": 0.002,
+        "expected_failure": true,
+        "closed_cause_lost": true,
+        "private_detail_redacted": true
+      }
+    ],
+    "live_subtype_not_inferred": true
+  },
+  "replacement_controls": {
+    "completed_utc": "2026-10-24T03:47:48.156446+00:00",
+    "control_sha256": "80722dad02a25cf3821d97b3b68fd3084c56cad47e69306a987c228a2054fdf8",
+    "actual_current_adapter": true,
+    "controls": [
+      {
+        "profile": "not-found",
+        "exit": 0,
+        "seconds": 0.003,
+        "closed_subcause_retained": true,
+        "private_detail_redacted": true
+      },
+      {
+        "profile": "unobservable",
+        "exit": 0,
+        "seconds": 0.002,
+        "closed_subcause_retained": true,
+        "private_detail_redacted": true
+      },
+      {
+        "profile": "image",
+        "exit": 0,
+        "seconds": 0.002,
+        "closed_subcause_retained": true,
+        "private_detail_redacted": true
+      }
+    ],
+    "live_subtype_not_inferred": true
+  },
+  "required_replacement": "Render exhaustive value-free attestation refusal fields and closed production Pod/API observations. Keep exact admission, startup polling, durable codecs, no-ingress-on-refusal and UID-preconditioned cleanup unchanged. Do not infer a semantic repair or the missing live subtype.",
+  "qualification": "pending; diagnostic closure alone supplies no class closure",
+  "regression_scope": {
+    "matrix": "all typed mismatch and closed observation classes; real JSON/lifecycle projections; no secret ingress after refusal",
+    "canonical_and_frontend": "pending",
+    "focused_cases": 63,
+    "broader_installed_cases": 559,
+    "full_deployment_replayed": false
+  }
+}

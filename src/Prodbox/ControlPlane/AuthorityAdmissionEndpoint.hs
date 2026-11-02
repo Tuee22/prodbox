@@ -27,7 +27,9 @@ module Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   , authorityAdmissionMaximumEncodedBytes
   , authorityAdmissionStateCodec
   , authorityAdmissionStateCodecWithRegisteredClients
+  , authorityAdmissionStateCodecWithRegisteredRpc
   , modelBAuthorityAdmissionRepository
+  , modelBExistingAuthorityAdmissionRepository
 
     -- * Transition endpoint
   , AuthorityTransitionResult (..)
@@ -72,22 +74,27 @@ import Data.Text.Encoding qualified as TextEncoding
 import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.Capacity.ControlPlaneReplayBudget qualified as ReplayBudget
+import Prodbox.ControlPlane.AuthorityControlProtocol (AuthorityControlPayload (..))
 import Prodbox.ControlPlane.Codec
   ( ControlPlaneRequestCodecError
   , controlPlaneRequestCodecToken
   , decodeControlPlaneRequest
   , encodeControlPlaneResponse
   )
+import Prodbox.ControlPlane.Coordinate (AuthorityScope)
 import Prodbox.ControlPlane.RequestAuthentication
   ( VerifiedCallerSlot
   , signingKeyGenerationValue
   , verifiedCallerSlotKeyGeneration
   , verifiedCallerSlotPrincipal
   )
+import Prodbox.ControlPlane.RpcKeyRegistry (rpcKeyRegistryScope)
 import Prodbox.Http.ReplyStatus (ReplyStatus (..))
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionAggregate
   , AuthorityAdmissionCommand (..)
+  , AuthorityAdmissionCommandRefusal (AuthorityEpochPromotionObservationRefused)
   , AuthorityAdmissionDecision (..)
   , AuthorityAdmissionInvariantError
   , AuthorityControlRoute (..)
@@ -104,6 +111,7 @@ import Prodbox.Lifecycle.Authority.Admission
   , authorityAggregatePulumiCheckpoints
   , authorityAggregateRegisteredClients
   , authorityAggregateRetainedCapacity
+  , authorityAggregateRpcKeyRegistry
   , authorityAggregateSubmissionEpochBindings
   , authorityAggregateSubmissionLedger
   , decideRegisteredAuthoritySubmission
@@ -113,10 +121,7 @@ import Prodbox.Lifecycle.Authority.Admission
   , validateAuthorityAdmissionAggregate
   , validateAuthorityAdmissionAggregateWithRegisteredClients
   )
-import Prodbox.Lifecycle.Authority.BackupRepair
-  ( BackupRepairCommand
-  , BackupRepairDecision (..)
-  )
+import Prodbox.Lifecycle.Authority.BackupRepair (BackupRepairDecision (..))
 import Prodbox.Lifecycle.Authority.ClientRegistry
   ( ClientSubmissionKey
   , ClientSubmissionKeyError (..)
@@ -126,17 +131,19 @@ import Prodbox.Lifecycle.Authority.ClientRegistry
   , RegisteredSubmissionObservation (..)
   , mkClientSubmissionKey
   , mkRegisteredClientGeneration
+  , registeredClientMaximumReservations
+  , registeredClientTableCapacity
+  , registeredClientTableSpecifications
   )
 import Prodbox.Lifecycle.Authority.Config (ConfigState)
+import Prodbox.Lifecycle.Authority.EpochPromotionObservation (renderEpochPromotionObservationError)
 import Prodbox.Lifecycle.Authority.Genesis
   ( AuthorityAdmissionState
   , AuthorityEpoch
-  , AuthorityGenesisCommand
   , GenesisDecision (..)
   )
 import Prodbox.Lifecycle.Authority.Migration
   ( MigrationDecision (..)
-  , MigrationForwardCommand
   , MigrationForwardDecision (..)
   , MigrationImportDecision (..)
   , decideMigrationImport
@@ -148,11 +155,6 @@ import Prodbox.Lifecycle.Authority.ProjectionImport
   ( MigrationImportApplicationError (..)
   , MigrationImportCommandApplicator
   , mkMigrationImportCommandApplicator
-  )
-import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch
-  ( CascadeAuditFreezeBinding
-  , CascadeTerminalAuditReceipt
-  , ProviderCredentialRevocationReceipt
   )
 import Prodbox.Lifecycle.Authority.PulumiCheckpointRegistry
   ( AuthorityPulumiCheckpoints
@@ -181,43 +183,6 @@ import Prodbox.Lifecycle.CheckpointAuthority
 -- evidence is deliberately absent: only the Authority's importer may derive
 -- and commit it after source and target read-back.  Ordinary migration commands
 -- likewise retain their dedicated route and codec.
-data AuthorityControlPayload
-  = AuthorityControlGenesis !AuthorityGenesisCommand
-  | AuthorityControlBackupRepair !BackupRepairCommand
-  | AuthorityControlBeginMigration
-  | AuthorityControlForwardMigration !MigrationForwardCommand
-  | -- | Sprint 4.85: bind the serving Lifecycle-provider generation. Appended
-    -- so every earlier constructor keeps its @Serialise@ index and no
-    -- historical request re-decodes as a different payload.
-    AuthorityControlBindProviderGeneration !Natural
-  | -- | Sprint 4.85: fence fresh Provider submissions and reserve the terminal
-    -- audit's own submission. This is the route whose absence
-    -- @GlobalProviderAdmissionFreezeUnavailable@ named: the transition and the
-    -- reservation-honouring gate landed first, and until this constructor
-    -- existed no authenticated caller could reach either.
-    AuthorityControlFreezeProviderAdmissionForCascadeAudit
-      !CascadeAuditFreezeBinding
-  | -- | Sprint 7.36: make the terminal audit's verdict durable against the
-    -- reservation that admitted it. Appended for the same reason as the two
-    -- constructors above: every earlier one keeps its @Serialise@ index.
-    AuthorityControlRecordCascadeTerminalAuditReceipt
-      !CascadeAuditFreezeBinding
-      !CascadeTerminalAuditReceipt
-  | -- | Sprint 7.36: end the cascade's Provider credential. Appended for the
-    -- same reason as every constructor above it.
-    AuthorityControlRevokeCascadeProviderCredential
-      !CascadeAuditFreezeBinding
-      !ProviderCredentialRevocationReceipt
-  | -- | Bind and freeze in the same aggregate CAS; no partial serving bind
-    -- survives a refused reservation. Earlier constructor indices stay fixed.
-    AuthorityControlFreezeProviderAdmissionAtGeneration
-      !Natural
-      !CascadeAuditFreezeBinding
-  | -- | Read the durable phase and original reservation attempt without CAS.
-    AuthorityControlObserveProviderAdmissionRecovery !CascadeAuditFreezeBinding
-  | AuthorityControlObserveProviderBootstrapPredecessor
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (Serialise)
 
 -- | Total projection onto the closed route vocabulary the Authority owns.
 --
@@ -245,6 +210,7 @@ authorityControlPayloadRoute payload = case payload of
   AuthorityControlObserveProviderAdmissionRecovery _ ->
     AuthorityControlProviderRecoveryObservationRoute
   AuthorityControlObserveProviderBootstrapPredecessor -> AuthorityControlProviderBootstrapPredecessorRoute
+  AuthorityControlObserveEpochPromotion -> AuthorityControlEpochPromotionObservationRoute
 
 -- | The aggregate command one externally admissible payload issues.
 authorityControlPayloadCommand
@@ -268,6 +234,7 @@ authorityControlPayloadCommand payload = case payload of
   AuthorityControlObserveProviderAdmissionRecovery binding ->
     ObserveProviderAdmissionRecovery binding
   AuthorityControlObserveProviderBootstrapPredecessor -> ObserveProviderBootstrapPredecessor
+  AuthorityControlObserveEpochPromotion -> ObserveAuthorityEpochPromotion
 
 data AuthorityOperationSubmitPayload = AuthorityOperationSubmitPayload
   { authorityOperationSubmitKey :: !Text
@@ -360,6 +327,9 @@ authorityAdmissionMaximumEncodedBytes = 512 * 1024
 authorityAdmissionCodecVersion :: Word16
 authorityAdmissionCodecVersion = 7
 
+authorityAdmissionRegisteredRpcCodecVersion :: Word16
+authorityAdmissionRegisteredRpcCodecVersion = 8
+
 authorityAdmissionLegacyCodecVersion :: Word16
 authorityAdmissionLegacyCodecVersion = 6
 
@@ -395,6 +365,41 @@ authorityAdmissionStateCodecWithRegisteredClients
       expectedLive
       expectedRetained
       (Just expectedRegisteredClients)
+
+-- | Candidate runtime codec: independently pins root scope and authored
+-- client bounds while generations evolve in the same retained aggregate.
+authorityAdmissionStateCodecWithRegisteredRpc
+  :: Int
+  -> Natural
+  -> Natural
+  -> AuthorityScope
+  -> Natural
+  -> Natural
+  -> ModelBCodec AuthorityAdmissionAggregate
+authorityAdmissionStateCodecWithRegisteredRpc maximumBytes expectedLive expectedRetained expectedScope expectedClients expectedReservations =
+  ModelBCodec
+    { encodeModelBValue = \aggregate -> check aggregate >> encodeModelBValue base aggregate
+    , decodeModelBValue = \bytes -> do
+        aggregate <- decodeModelBValue base bytes
+        check aggregate
+        pure aggregate
+    }
+ where
+  base = authorityAdmissionStateCodec maximumBytes expectedLive expectedRetained
+  check aggregate = case authorityAggregateRpcKeyRegistry aggregate of
+    Nothing -> Left "retained RPC registration is missing; restore its verified Authority backup"
+    Just registry
+      | rpcKeyRegistryScope registry /= expectedScope ->
+          Left "retained RPC registration has a different Authority scope"
+      | registeredClientTableCapacity clients /= expectedClients ->
+          Left "retained RPC client capacity differs from the authored profile"
+      | any
+          ((/= expectedReservations) . registeredClientMaximumReservations)
+          (registeredClientTableSpecifications clients) ->
+          Left "retained RPC reservation capacity differs from the authored profile"
+      | otherwise -> Right ()
+     where
+      clients = authorityAggregateRegisteredClients aggregate
 
 authorityAdmissionStateCodecFor
   :: Int
@@ -450,7 +455,9 @@ encodeAuthorityAdmission
           LazyByteString.toStrict
             ( serialise
                 AuthorityAdmissionEnvelope
-                  { authorityAdmissionEnvelopeVersion = authorityAdmissionCodecVersion
+                  { authorityAdmissionEnvelopeVersion = case authorityAggregateRpcKeyRegistry aggregate of
+                      Nothing -> authorityAdmissionCodecVersion
+                      Just _ -> authorityAdmissionRegisteredRpcCodecVersion
                   , authorityAdmissionEnvelopeState = aggregate
                   }
             )
@@ -481,9 +488,15 @@ decodeAuthorityAdmission
           version
             | version == authorityAdmissionCodecVersion -> Right ()
             | version == authorityAdmissionLegacyCodecVersion -> Right ()
+            | version == authorityAdmissionRegisteredRpcCodecVersion -> Right ()
             | otherwise ->
                 Left (AuthorityAdmissionUnsupportedVersion version)
         let aggregate = authorityAdmissionEnvelopeState envelope
+            registered = case authorityAggregateRpcKeyRegistry aggregate of Nothing -> False; Just _ -> True
+        if (authorityAdmissionEnvelopeVersion envelope == authorityAdmissionRegisteredRpcCodecVersion)
+          == registered
+          then Right ()
+          else Left AuthorityAdmissionInvalid
         either
           (Left . AuthorityAdmissionInvariant)
           Right
@@ -563,17 +576,45 @@ modelBAuthorityAdmissionRepository
   -> ModelBCasAdapter 'ClusterRetained m AuthorityAdmissionAggregate
   -> ModelBObjectCoordinate 'ClusterRetained
   -> AuthorityAdmissionRepository m (Maybe ModelBObjectVersion)
-modelBAuthorityAdmissionRepository initial adapter coordinate =
+modelBAuthorityAdmissionRepository initial =
+  modelBAuthorityAdmissionRepositoryForMissing (Right initial)
+
+-- | Registered runtime never interprets a missing admitted object as a new
+-- seed. Explicit birth is a separate compare-and-swap/readback operation.
+modelBExistingAuthorityAdmissionRepository
+  :: (Monad m)
+  => ModelBCasAdapter 'ClusterRetained m AuthorityAdmissionAggregate
+  -> ModelBObjectCoordinate 'ClusterRetained
+  -> AuthorityAdmissionRepository m (Maybe ModelBObjectVersion)
+modelBExistingAuthorityAdmissionRepository adapter coordinate =
+  repository
+    { compareAndSwapAuthorityAdmission = refuseInitialization
+    }
+ where
+  refuseInitialization expected aggregate = case expected of
+    Nothing ->
+      pure
+        (Left "registered Authority state requires explicit durable birth; initialization is refused here")
+    Just _ -> compareAndSwapAuthorityAdmission repository expected aggregate
+  repository =
+    modelBAuthorityAdmissionRepositoryForMissing
+      (Left "retained Authority admission is missing; restore its verified backup before resuming")
+      adapter
+      coordinate
+
+modelBAuthorityAdmissionRepositoryForMissing
+  :: (Monad m)
+  => Either Text AuthorityAdmissionAggregate
+  -> ModelBCasAdapter 'ClusterRetained m AuthorityAdmissionAggregate
+  -> ModelBObjectCoordinate 'ClusterRetained
+  -> AuthorityAdmissionRepository m (Maybe ModelBObjectVersion)
+modelBAuthorityAdmissionRepositoryForMissing missing adapter coordinate =
   AuthorityAdmissionRepository
     { readAuthorityAdmission = do
         observation <- modelBObserve adapter coordinate
         pure $ case observation of
           ModelBMissing ->
-            Right
-              AuthorityAdmissionSnapshot
-                { authorityAdmissionRevision = Nothing
-                , authorityAdmissionSnapshotState = initial
-                }
+            (\initial -> AuthorityAdmissionSnapshot Nothing initial) <$> missing
           ModelBObserved revision aggregate ->
             Right
               AuthorityAdmissionSnapshot
@@ -771,6 +812,20 @@ serveAuthorityControlRequest maximumBytes repository body =
                     ObserveProviderBootstrapPredecessor
                 )
             )
+    Right AuthorityControlObserveEpochPromotion -> do
+      observed <- readAuthorityAdmission repository
+      pure $ case observed of
+        Left detail -> AuthorityTransitionReadFailed detail
+        Right snapshot ->
+          let result =
+                AuthorityTransitionDecided
+                  ( fst
+                      (stepAuthorityAdmission (authorityAdmissionSnapshotState snapshot) ObserveAuthorityEpochPromotion)
+                  )
+           in if LazyByteString.length (authorityTransitionResponseBody result)
+                > fromIntegral ReplayBudget.authorityMetadataResponseMaximumBytes
+                then AuthorityTransitionReadFailed "epoch promotion metadata response exceeds its bound"
+                else result
     Right payload ->
       serveAuthorityTransition repository (authorityControlPayloadCommand payload)
 
@@ -798,6 +853,7 @@ authorityTransitionHttpStatus result = case result of
     AuthorityAdmissionCommandRefused _ -> ReplyConflict
     AuthorityProviderAdmissionRecoveryObserved _ -> ReplyOk
     AuthorityProviderBootstrapPredecessorObserved _ -> ReplyOk
+    AuthorityEpochPromotionObserved _ -> ReplyOk
 
 authorityTransitionSummary :: AuthorityTransitionResult -> Text
 authorityTransitionSummary result = case result of
@@ -841,9 +897,12 @@ authorityTransitionSummary result = case result of
       "authority-cascade-terminal-audit-receipt-recorded"
     AuthorityCascadeProviderCredentialRevoked ->
       "authority-cascade-provider-credential-revoked"
+    AuthorityAdmissionCommandRefused (AuthorityEpochPromotionObservationRefused observationError) ->
+      "authority-epoch-observation-refused:" <> renderEpochPromotionObservationError observationError
     AuthorityAdmissionCommandRefused _ -> "authority-transition-refused"
     AuthorityProviderAdmissionRecoveryObserved _ -> "authority-provider-admission-recovery-observed"
     AuthorityProviderBootstrapPredecessorObserved _ -> "authority-provider-bootstrap-predecessor-observed"
+    AuthorityEpochPromotionObserved _ -> "authority-epoch-promotion-observed"
 
 -- | Existing control replies preserve their exact text envelope. Only the new
 -- recovery observation carries its typed, request-bound metadata projection.
@@ -853,6 +912,7 @@ authorityTransitionResponseBody result = case result of
     encodeControlPlaneResponse observation
   AuthorityTransitionDecided (AuthorityProviderBootstrapPredecessorObserved binding) ->
     encodeControlPlaneResponse binding
+  AuthorityTransitionDecided (AuthorityEpochPromotionObserved observation) -> encodeControlPlaneResponse observation
   _ -> LazyByteString.fromStrict (TextEncoding.encodeUtf8 (authorityTransitionSummary result))
 
 data AuthorityOperationSubmitResult

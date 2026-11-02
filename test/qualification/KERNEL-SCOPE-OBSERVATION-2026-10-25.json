@@ -1,0 +1,385 @@
+{
+  "id": "KERNEL-SCOPE-OBSERVATION-2026-10-25",
+  "recorded_utc": "2026-10-25T20:14:35.059272+00:00",
+  "scope": "Actual package-private direct-child scope observer, not public subprocess lifecycle completion or deployment qualification.",
+  "sources": [
+    {
+      "path": "src/Prodbox/Subprocess/KernelScope.hs",
+      "sha256": "9b22de6d4a3be8a94f292301cdae3c217ef0d43e258c2989dfb86033608dad59",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-observer-source-KernelScope.hs-9b22de6d4a3be8a9"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdBus.hs",
+      "sha256": "ce3d5e87eecac1110c7e4ba671ba1f5678ed3d9431aec5cc88e6f63081b5b040",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-observer-source-SystemdBus.hs-ce3d5e87eecac111"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "sha256": "d1c6ae582eb922b297f0100bf880ee9bf17110210c4947b6a55130040a36b44d",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-observer-source-SystemdIdentity.hs-d1c6ae582eb922b2"
+    },
+    {
+      "path": "test/qualification/KernelScopeObservation.hs",
+      "sha256": "fb3f014b9f4c17dd2e6058072040d7edb462fef17e38e4d641a0638b98c30dfe",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-observer-source-KernelScopeObservation.hs-fb3f014b9f4c17dd"
+    },
+    {
+      "path": "prodbox.cabal",
+      "sha256": "8c0a391deeba9bbc1ebbe33dfa4393f6c0d95b7023a0e0ae3415af4719283113",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-observer-source-prodbox.cabal-8c0a391deeba9bbc"
+    }
+  ],
+  "binaries": [
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-scope-native-threaded-3",
+      "sha256": "64128611fea79426618a1ff4f31c242af6be7e0f5bfca6d5d577d76bdbe3ba69"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-scope-native-nonthreaded-1",
+      "sha256": "a8e9f2fbfe3a91281af38873384c5f8daf9a411975f6f5332ed44842a5010531"
+    }
+  ],
+  "cases": [
+    {
+      "family": "threaded",
+      "mode": "kill",
+      "command_result": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-scope-threaded-kill-3.result.json",
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 17850,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "kill",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": false,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "family": "threaded",
+      "mode": "delayed-admission",
+      "command_result": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-scope-threaded-delayed-admission-3.result.json",
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 68952,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "delayed-admission",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": false,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "family": "threaded",
+      "mode": "wrong-limits",
+      "command_result": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-scope-threaded-wrong-limits-3.result.json",
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 21280,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "wrong-limits",
+        "native_bus_result": "Right (Left KernelScopeResourceMismatch)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeResourceMismatch",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "family": "threaded",
+      "mode": "foreign-descriptor",
+      "command_result": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-scope-threaded-foreign-descriptor-3.result.json",
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 14059,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "foreign-descriptor",
+        "native_bus_result": "Right (Left KernelScopeChildRefused)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeChildRefused",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "family": "threaded",
+      "mode": "invalid-unit",
+      "command_result": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-scope-threaded-invalid-unit-3.result.json",
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 12856,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "invalid-unit",
+        "native_bus_result": "Right (Left KernelScopeInvalidInput)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeInvalidInput",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "family": "threaded",
+      "mode": "expired",
+      "command_result": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-scope-threaded-expired-3.result.json",
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 8900,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "expired",
+        "native_bus_result": "Right (Left KernelScopeDeadlineReached)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeDeadlineReached",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "family": "threaded",
+      "mode": "cancel",
+      "command_result": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-scope-threaded-cancel-3.result.json",
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 20484,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "cancel",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "family": "threaded",
+      "mode": "parent-deadline",
+      "command_result": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-scope-threaded-parent-deadline-3.result.json",
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 223429,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Just (Left KernelScopeDeadlineReached)",
+        "mode": "parent-deadline",
+        "native_bus_result": "Left (BusDeadlineReached BusRelease)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "family": "nonthreaded",
+      "mode": "kill",
+      "command_result": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-scope-nonthreaded-kill-1.result.json",
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 23003,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "kill",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": false,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "family": "nonthreaded",
+      "mode": "delayed-admission",
+      "command_result": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-scope-nonthreaded-delayed-admission-1.result.json",
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 70659,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "delayed-admission",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": false,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "family": "nonthreaded",
+      "mode": "wrong-limits",
+      "command_result": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-scope-nonthreaded-wrong-limits-1.result.json",
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 21148,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "wrong-limits",
+        "native_bus_result": "Right (Left KernelScopeResourceMismatch)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeResourceMismatch",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "family": "nonthreaded",
+      "mode": "foreign-descriptor",
+      "command_result": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-scope-nonthreaded-foreign-descriptor-1.result.json",
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 11284,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "foreign-descriptor",
+        "native_bus_result": "Right (Left KernelScopeChildRefused)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeChildRefused",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "family": "nonthreaded",
+      "mode": "invalid-unit",
+      "command_result": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-scope-nonthreaded-invalid-unit-1.result.json",
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 10836,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "invalid-unit",
+        "native_bus_result": "Right (Left KernelScopeInvalidInput)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeInvalidInput",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "family": "nonthreaded",
+      "mode": "expired",
+      "command_result": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-scope-nonthreaded-expired-1.result.json",
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 11306,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "expired",
+        "native_bus_result": "Right (Left KernelScopeDeadlineReached)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeDeadlineReached",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "family": "nonthreaded",
+      "mode": "cancel",
+      "command_result": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-scope-nonthreaded-cancel-1.result.json",
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 22931,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "cancel",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "family": "nonthreaded",
+      "mode": "parent-deadline",
+      "command_result": ".build/sprint-6.5/rpc-coordinator-20261025/kernel-scope-nonthreaded-parent-deadline-1.result.json",
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 223960,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Just (Left KernelScopeDeadlineReached)",
+        "mode": "parent-deadline",
+        "native_bus_result": "Left (BusDeadlineReached BusRelease)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    }
+  ],
+  "passed": 16,
+  "per_build": 8,
+  "fixture_limits": {
+    "scope_memory_bytes": 67108864,
+    "scope_swap_bytes": 0,
+    "scope_tasks": 16,
+    "scope_runtime_max_us": 500000,
+    "scope_timeout_stop_us": 50000,
+    "fixture_total_us": 2000000,
+    "parent_deadline_control_us": 200000,
+    "note": "Explicit diagnostic limits, not production defaults, host admission, or the separate original-500ms family proof."
+  },
+  "failure_history": [
+    "kernel-scope-compile-1.result.json",
+    "kernel-scope-compile-2.result.json",
+    "kernel-scope-native-threaded-kill-1.result.json",
+    "kernel-scope-threaded-kill-2.result.json"
+  ],
+  "corrections": [
+    "Compile with the project-selected bytestring/unix package instances; default direct GHC exposure selected incompatible bytestring instances.",
+    "Use a non-shadowing byte-bound parameter.",
+    "The installed unix fdRead raises EOF at end of input; treat only EOF as normal completion of a bounded multi-read.",
+    "Read ControlGroup through org.freedesktop.systemd1.Scope, as the installed interface XML specifies."
+  ],
+  "separate_fixture_followup": {
+    "retirement_observer_law": "native-retirement-observer-law-1.json",
+    "scope_controls_passed": 30,
+    "scope_record_glob": "typed-peer-retirement-*.json",
+    "identity_controls_passed": 6,
+    "identity_record_glob": "typed-peer-pending-*.result.json",
+    "limits": "Those fixture binaries retain their own source banks. The first generic identity refusal is not pinpointed by later passes; the new controlled 50ms delayed-admission case proves the replacement pending path."
+  },
+  "outstanding": [
+    "Production captureOwnedSubprocess remains scan-only; its registered fast-session false success is open.",
+    "No process creation, Go/exec barrier, startup recovery, expiry-family ownership, graceful termination/reader settlement, whole-family CPU/memory/PID/placement permit, physical caller, or deployment qualification follows from this observer.",
+    "Current-source canonical/frontend validation remains pending."
+  ]
+}

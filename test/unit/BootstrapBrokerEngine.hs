@@ -24,6 +24,9 @@ import Prodbox.Bootstrap.Broker.Fence
   , BootstrapLeaseObservation (..)
   , reloadBootstrapSessionFence
   )
+import Prodbox.Bootstrap.Broker.InitializationEvidence
+  ( RootInitializationEvidence (..)
+  )
 import Prodbox.Bootstrap.Broker.Program
   ( BrokerCapabilityRefs
   , mkBrokerCapabilityRefs
@@ -378,7 +381,7 @@ fixtureEngine fixture admissionLog executionBoundary =
 evidenceBoundary :: Fixture -> BrokerProgramEvidenceBoundary IO
 evidenceBoundary fixture =
   BrokerProgramEvidenceBoundary
-    { resolvePristineStorageProof = \_ -> pure (Right (fixturePristine fixture))
+    { resolveRootInitializationEvidence = \_ -> pure (Right (BeginRootInitialization (fixturePristine fixture)))
     , resolveUnsealRecoveryCustody = \_ -> pure (Right (fixtureRecovery fixture))
     , resolveUnlockRotationCustody = \_ -> pure (Right (fixtureRecovery fixture))
     , resolveBaselineCustodyAndSession =

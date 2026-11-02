@@ -501,7 +501,7 @@ freshAggregateLifecycleInterpreter ready = do
           (if ready then fixtureReadyRoleReadinessSource else fixtureUnreadyRoleReadinessSource)
           "cluster-a"
           (pure (Right 123456))
-          (const (Right "fixture-authority-envelope"))
+          (const (pure (Right "fixture-authority-envelope")))
           repository
           (unavailableProjectionImportHandler "fixture registration absent")
           (resolvingRetainedSesLeaseHandler (pure (Left "fixture lease registration absent")))

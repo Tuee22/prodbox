@@ -20,6 +20,8 @@ module Prodbox.ControlPlane.TargetMaterialRegistry
   , TargetSecretPayload (..)
   , allTargetSecretIds
   , allTargetMaterialIds
+  , targetWorkerTargetIds
+  , targetWorkerAuthorizationIds
   , targetSecretPayloadId
   , targetSecretIdToken
   , targetSecretIdVaultLogicalPath
@@ -108,6 +110,19 @@ data TargetSecretId
   | TargetFederationHmac
   deriving stock (Eq, Ord, Show, Generic)
   deriving anyclass (Serialise)
+
+-- | Exact KV material and operation coordinates authenticated by one-shot
+-- workers. Vault policy and cutover observations share this inventory.
+targetWorkerTargetIds :: [TargetSecretId]
+targetWorkerTargetIds =
+  [TargetSesSmtp, TargetAcmeEab]
+    <> [ TargetAwsCredential identity
+       | identity <- [minBound .. maxBound]
+       , identity /= AwsRunCertManagerDns01
+       ]
+
+targetWorkerAuthorizationIds :: [TargetSecretId]
+targetWorkerAuthorizationIds = targetWorkerTargetIds <> [TargetPublicEdgeTls, TargetFederationCustody]
 
 -- | Closed schema-indexed material.  Constructor choice determines the exact
 -- 'TargetSecretId' and exact physical field names.  The type deliberately has

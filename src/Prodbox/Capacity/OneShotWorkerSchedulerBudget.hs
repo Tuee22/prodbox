@@ -31,7 +31,7 @@ import Prodbox.Capacity.Config
   , plusResourceVector
   , resources
   )
-import Prodbox.Capacity.Placement (concurrentPlanDraws)
+import Prodbox.Capacity.Placement (concurrentWorkloadDraws)
 
 data OneShotWorkerSchedulerTopology
   = OneCredentialProvisionerParentOneTargetMaterializer
@@ -116,7 +116,9 @@ frozenOneShotWorkerSchedulerCounterexample =
 frozenSchedulerResourcePlan :: ResourcePlan
 frozenSchedulerResourcePlan =
   defaultResourcePlan
-    { workload_profiles = map freezeReplayMemory (workload_profiles defaultResourcePlan)
+    { host_capacity = expectedHost
+    , platform_scheduler_requests = Just zeroVector
+    , workload_profiles = map freezeReplayMemory (workload_profiles defaultResourcePlan)
     }
  where
   freezeReplayMemory profile = case originalMemory (profile_id profile) of
@@ -198,6 +200,8 @@ plansHaveExpectedShape :: ResourcePlan -> ResourcePlan -> Bool
 plansHaveExpectedShape superseded replacement =
   host_capacity superseded == expectedHost
     && host_capacity replacement == expectedHost
+    && platform_scheduler_requests superseded == Just zeroVector
+    && platform_scheduler_requests replacement == Just zeroVector
     && workload_profiles superseded == workload_profiles replacement
     && workload_profiles replacement == workload_profiles frozenSchedulerResourcePlan
     && rke2_reserved superseded == supersededRke2Reservation
@@ -241,7 +245,7 @@ topologyNormalizedTotal plan =
 
 planDraw :: ResourcePlan -> ResourceVector
 planDraw =
-  foldl' plusResourceVector zeroVector . concurrentPlanDraws
+  foldl' plusResourceVector zeroVector . concurrentWorkloadDraws
 
 systemdCpuBudget :: ResourcePlan -> Natural
 systemdCpuBudget plan =

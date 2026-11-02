@@ -12,6 +12,12 @@ import Data.Maybe (fromJust)
 import Data.Set qualified as Set
 import Data.Text qualified as Text
 import Data.Word (Word8)
+import EpochPromotionFixture
+  ( epochPromotionCommands
+  , epochRequest
+  , epochTopologyFixture
+  , preparedEpochCommands
+  )
 import Prodbox.ControlPlane.AuthenticatedTransport (mkRouteTrustRegistry)
 import Prodbox.ControlPlane.AuthenticationRegistry
   ( controlPlaneSigningKeyName
@@ -30,6 +36,7 @@ import Prodbox.ControlPlane.RequestAuthentication
   , mkTrustedRequestKey
   )
 import Prodbox.ControlPlane.Route (controlPlaneRoutePath, routesForRole)
+import Prodbox.ControlPlane.RpcAdmissionBirthConfig (RpcBirthConfig (..))
 import Prodbox.ControlPlane.Runtime
   ( AuthorityBackupStoreWire (..)
   , ControlPlaneAuthenticationWire (..)
@@ -47,6 +54,7 @@ import Prodbox.Lifecycle.Authority.ClientRegistry
   , registeredClientReservationCount
   , registeredClientTableSize
   )
+import Prodbox.Lifecycle.Authority.EpochPromotion (EpochPromotionAction (CommitFrozenEpoch))
 import Prodbox.Lifecycle.Authority.Migration
 import Prodbox.Lifecycle.Authority.MigrationInterpreter
 import Prodbox.Lifecycle.CheckpointAuthority qualified as Checkpoint
@@ -107,14 +115,12 @@ lifecycleAuthorityMigrationSuite =
         `shouldBe` MigrationImportRefused (MigrationImportConflict SmtpProjection)
     it "keeps one writer through imported cutover and forward epoch recovery" $ do
       let importedReady = foldl applyImport initialMigrationState projectionImportCommands
-          firstStates = scanl apply importedReady migrationCommands
+          firstStates = scanl apply importedReady importedCutoverCommands
           firstActive = last firstStates
           begin = BeginForwardMigration digest nextEpoch
           (forwardShadow, beginDecision) = stepForwardMigration firstActive begin
           forwardCommands =
-            [FreezeLegacy digest]
-              ++ fmap PrepareBinding [minBound .. maxBound]
-              ++ [ActivateReplacement nextEpoch]
+            FreezeLegacy digest : epochPromotionCommands 2 3
           forwardStates = scanl apply forwardShadow forwardCommands
           nextActive = last forwardStates
       fmap activeWriter firstStates
@@ -134,7 +140,7 @@ lifecycleAuthorityMigrationSuite =
         `shouldBe` (nextActive, MigrationRefused LegacyRollbackForbidden)
     it "projects the exact active Lifecycle Authority epoch for external writers" $ do
       let importedReady = foldl applyImport initialMigrationState projectionImportCommands
-          firstActive = foldl apply importedReady migrationCommands
+          firstActive = foldl apply importedReady importedCutoverCommands
           (forwardShadow, _) =
             stepForwardMigration firstActive (BeginForwardMigration digest nextEpoch)
           forwardFrozen = apply forwardShadow (FreezeLegacy digest)
@@ -142,7 +148,7 @@ lifecycleAuthorityMigrationSuite =
             foldl
               apply
               forwardFrozen
-              (fmap PrepareBinding [minBound .. maxBound] ++ [ActivateReplacement nextEpoch])
+              (epochPromotionCommands 2 3)
       migrationAuthorityStatus initialMigrationState `shouldBe` MigrationLegacyWriterActive
       migrationAuthorityStatus firstActive
         `shouldBe` MigrationReplacementWriterActive epoch
@@ -153,22 +159,22 @@ lifecycleAuthorityMigrationSuite =
       migrationAuthorityStatus nextActive
         `shouldBe` MigrationReplacementWriterActive nextEpoch
     it "requires a declared forward target strictly above the released predecessor" $ do
-      let firstActive = foldl apply initialMigrationState migrationCommands
+      let importedReady = foldl applyImport initialMigrationState projectionImportCommands
+          firstActive = foldl apply importedReady importedCutoverCommands
           sameEpoch = BeginForwardMigration digest epoch
           (forwardShadow, _) = stepForwardMigration firstActive (BeginForwardMigration digest nextEpoch)
           frozen = apply forwardShadow (FreezeLegacy digest)
-          prepared = foldl apply frozen (fmap PrepareBinding [minBound .. maxBound])
       stepForwardMigration firstActive sameEpoch
         `shouldBe` (firstActive, ForwardMigrationRefused ForwardMigrationEpochMustAdvance)
       snd (stepForwardMigration firstActive (BeginForwardMigration otherDigest predecessorEpoch))
         `shouldBe` ForwardMigrationRefused ForwardMigrationEpochMustAdvance
       snd (stepMigration firstActive (ActivateReplacement nextEpoch))
-        `shouldBe` MigrationRefused ActivationBeforeFreeze
-      snd (stepMigration prepared (ActivateReplacement epoch))
+        `shouldBe` MigrationRefused StagedEpochPromotionRequired
+      snd (stepMigration frozen (PrepareReplacementEpoch epoch epoch epochTopologyFixture))
         `shouldBe` MigrationRefused EpochMustAdvance
-      snd (stepMigration prepared (ActivateReplacement futureEpoch))
+      snd (stepMigration frozen (PrepareReplacementEpoch epoch futureEpoch epochTopologyFixture))
         `shouldBe` MigrationRefused EpochMustAdvance
-      snd (stepMigration prepared (ActivateReplacement nextEpoch))
+      snd (stepMigration frozen (PrepareReplacementEpoch epoch nextEpoch epochTopologyFixture))
         `shouldSatisfy` isMigrationAcceptedDecision
       decodeMigrationForwardCommand
         4096
@@ -181,7 +187,7 @@ lifecycleAuthorityMigrationSuite =
       decodeMigrationState 1 encoded `shouldBe` Left MigrationEnvelopeTooLarge
       decodeMigrationState 4096 (LazyByteString.pack [255])
         `shouldBe` Left MigrationEnvelopeInvalid
-    it "decodes the frozen v1 missing-state fixture and emits v2 on the next write" $ do
+    it "decodes the frozen v1 missing-state fixture and emits the current version on write" $ do
       let v1Missing = LazyByteString.pack [131, 0, 1, 129, 0]
       decodeMigrationState 4096 v1Missing `shouldBe` Right initialMigrationState
       encodeMigrationState initialMigrationState `shouldSatisfy` (/= v1Missing)
@@ -276,7 +282,7 @@ lifecycleAuthorityMigrationSuite =
               apply
               importedReady
               ( [VerifyShadow digest, FreezeLegacy digest]
-                  ++ fmap PrepareBinding [minBound .. maxBound]
+                  ++ preparedEpochCommands 1 2
               )
           stored revision = Just (StoredMigration revision (encodeMigrationState prepared))
       beforeStateRef <- newIORef (stored (10 :: Word))
@@ -284,10 +290,10 @@ lifecycleAuthorityMigrationSuite =
       beforeFailureRef <- newIORef True
       let beforeRepository =
             interruptBeforeWriteRepository beforeStateRef beforeRevisionRef beforeFailureRef
-      interruptedBefore <- applyMigrationCommand 4096 beforeRepository (ActivateReplacement epoch)
+      interruptedBefore <- applyMigrationCommand 65536 beforeRepository (epochRequest 2 CommitFrozenEpoch)
       interruptedBefore `shouldBe` Left (MigrationWriteFailed "interrupted-before-epoch")
       readIORef beforeRevisionRef `shouldReturn` 10
-      resumedBefore <- applyMigrationCommand 4096 beforeRepository (ActivateReplacement epoch)
+      resumedBefore <- applyMigrationCommand 65536 beforeRepository (epochRequest 2 CommitFrozenEpoch)
       resumedBefore `shouldSatisfy` isAccepted
       readIORef beforeRevisionRef `shouldReturn` 11
 
@@ -296,10 +302,10 @@ lifecycleAuthorityMigrationSuite =
       afterFailureRef <- newIORef True
       let afterRepository =
             interruptAfterWriteRepository afterStateRef afterRevisionRef afterFailureRef
-      interruptedAfter <- applyMigrationCommand 4096 afterRepository (ActivateReplacement epoch)
+      interruptedAfter <- applyMigrationCommand 65536 afterRepository (epochRequest 2 CommitFrozenEpoch)
       interruptedAfter `shouldBe` Left (MigrationWriteFailed "interrupted-after-epoch")
       readIORef afterRevisionRef `shouldReturn` 21
-      resumedAfter <- applyMigrationCommand 4096 afterRepository (ActivateReplacement epoch)
+      resumedAfter <- applyMigrationCommand 65536 afterRepository (epochRequest 2 CommitFrozenEpoch)
       resumedAfter `shouldSatisfy` isAlreadyApplied
       readIORef afterRevisionRef `shouldReturn` 21
     it "binds migration persistence to the retained Model-B coordinate" $ do
@@ -330,48 +336,52 @@ lifecycleAuthorityMigrationSuite =
       Checkpoint.decodeModelBValue codec encoded `shouldBe` Right final
       Checkpoint.decodeModelBValue (migrationStateCodec 1) encoded
         `shouldBe` Left "MigrationEnvelopeTooLarge"
-    it "validates schema-v7 closed role stores and rejects cross-role substitution" $ do
+    it "validates schema-v8 closed role stores and rejects cross-role substitution" $ do
       let validConfigs =
             [
               ( LifecycleAuthorityRuntime
-              , configFor LifecycleAuthorityRuntime 7 (RoleStorePrimary primaryStore)
+              , configFor LifecycleAuthorityRuntime 8 (RoleStorePrimary primaryStore)
               )
-            , (ProviderWorkerRuntime, configFor ProviderWorkerRuntime 7 RoleStoreProviderWorker)
+            , (ProviderWorkerRuntime, configFor ProviderWorkerRuntime 8 RoleStoreProviderWorker)
             ,
               ( AuthorityBackupRuntime
-              , configFor AuthorityBackupRuntime 7 (RoleStoreAuthorityBackup backupStore)
+              , configFor AuthorityBackupRuntime 8 (RoleStoreAuthorityBackup backupStore)
               )
             ,
               ( TlsRetentionRuntime
-              , configFor TlsRetentionRuntime 7 (RoleStoreTlsRetention tlsStore)
+              , configFor TlsRetentionRuntime 8 (RoleStoreTlsRetention tlsStore)
               )
-            , (TargetSecretAgentRuntime, configFor TargetSecretAgentRuntime 7 RoleStoreTargetSecretAgent)
+            , (TargetSecretAgentRuntime, configFor TargetSecretAgentRuntime 8 RoleStoreTargetSecretAgent)
             ]
       mapM_
         (\(role, config) -> validateControlPlaneConfig role config `shouldSatisfy` isRight)
         validConfigs
       validateControlPlaneConfig
         AuthorityBackupRuntime
-        (configFor AuthorityBackupRuntime 7 (RoleStoreTlsRetention tlsStore))
+        (configFor AuthorityBackupRuntime 8 (RoleStoreTlsRetention tlsStore))
         `shouldFailWith` ControlPlaneConfigStoreRoleMismatch
       validateControlPlaneConfig
         TlsRetentionRuntime
-        (configFor TlsRetentionRuntime 7 (RoleStoreAuthorityBackup backupStore))
+        (configFor TlsRetentionRuntime 8 (RoleStoreAuthorityBackup backupStore))
         `shouldFailWith` ControlPlaneConfigStoreRoleMismatch
+      mapM_
+        ( \unsupportedVersion ->
+            validateControlPlaneConfig
+              LifecycleAuthorityRuntime
+              (configFor LifecycleAuthorityRuntime unsupportedVersion (RoleStorePrimary primaryStore))
+              `shouldFailWith` ControlPlaneConfigVersionUnsupported
+        )
+        [3, 7, 9]
       validateControlPlaneConfig
         LifecycleAuthorityRuntime
-        (configFor LifecycleAuthorityRuntime 3 (RoleStorePrimary primaryStore))
-        `shouldFailWith` ControlPlaneConfigVersionUnsupported
-      validateControlPlaneConfig
-        LifecycleAuthorityRuntime
-        ( (configFor LifecycleAuthorityRuntime 7 (RoleStorePrimary primaryStore))
+        ( (configFor LifecycleAuthorityRuntime 8 (RoleStorePrimary primaryStore))
             { runtime_role = "gateway-runtime"
             }
         )
         `shouldFailWith` ControlPlaneConfigRoleMismatch
       validateControlPlaneConfig
         LifecycleAuthorityRuntime
-        ( (configFor LifecycleAuthorityRuntime 7 (RoleStorePrimary primaryStore))
+        ( (configFor LifecycleAuthorityRuntime 8 (RoleStorePrimary primaryStore))
             { cluster_id = ""
             }
         )
@@ -434,6 +444,7 @@ lifecycleAuthorityMigrationSuite =
       , target_agent_identity =
           "home@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
       , role_store = store
+      , rpc_registration = RpcBirthConfigLegacy
       , request_authentication =
           ControlPlaneAuthenticationWire
             { maximum_trusted_callers_per_route =
@@ -476,6 +487,7 @@ lifecycleAuthorityMigrationSuite =
     [VerifyShadow digest, FreezeLegacy digest]
       ++ fmap PrepareBinding [minBound .. maxBound]
       ++ [ActivateReplacement epoch]
+  importedCutoverCommands = [VerifyShadow digest, FreezeLegacy digest] ++ epochPromotionCommands 1 2
   apply state command = fst (stepMigration state command)
   applyImport state command = fst (stepMigrationImport state command)
 

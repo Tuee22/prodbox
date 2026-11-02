@@ -94,6 +94,7 @@ localRke2RecoveryStateSuite = do
       sort importers
         `shouldBe` sort
           [ "src/Prodbox/Config/LocalRke2RecoveryState.hs"
+          , "src/Prodbox/ControlPlane/LocalRke2HostObservationRepository/Internal.hs"
           , "src/Prodbox/Lifecycle/Teardown/LocalRke2HostObservation/Internal.hs"
           ]
 

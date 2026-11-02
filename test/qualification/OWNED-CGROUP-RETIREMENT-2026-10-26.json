@@ -1,0 +1,154 @@
+{
+  "schema_version": 1,
+  "name": "OWNED-CGROUP-RETIREMENT-2026-10-26",
+  "status": "component validated; production composition and qualification pending",
+  "private_evidence": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-progress-1.json",
+  "frozen_counters": [
+    ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-counter-1.json",
+    ".build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-child-stop-counter-1.json",
+    ".build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-rollout-parent-death-counter-1.json"
+  ],
+  "source_identity_equal": true,
+  "inputs": [
+    {
+      "path": "src/Prodbox/Subprocess.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-inputs-1/src/Prodbox/Subprocess.hs",
+      "sha256": "5cfb8762107795166a082dcf4084bdcda8add80129724c9b32ac9401a02ba20b"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/KernelScope.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-inputs-1/src/Prodbox/Subprocess/KernelScope.hs",
+      "sha256": "867c19448c6882b3da62a6d735cb5265f33f7243e2ecf71dcb3f1aff2769630f"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/ScopeFamily.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-inputs-1/src/Prodbox/Subprocess/ScopeFamily.hs",
+      "sha256": "186e1a9bdf4284fd1d02a323fb929cc366d5280e9a6c4f4bc32b2ceffa930b24"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdBus.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-inputs-1/src/Prodbox/Subprocess/SystemdBus.hs",
+      "sha256": "5dd80095b063a73e59482bbae224dceb4314f4e642083a9c830bea97a1666013"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-inputs-1/src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "sha256": "83b53baf0446afe195c9c6d4efcea8a7e16b00448f1210dfb155a608d1e13630"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-inputs-1/src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+      "sha256": "841bbec6f827e9bac8caef1a38238c26c421184f7b05aedd048f8f6a8a5a99ec"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthChart.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-inputs-1/src/Prodbox/ControlPlane/RpcAdmissionBirthChart.hs",
+      "sha256": "f3fa5f0217e29edba6249d7e8aec8560351180a2e91b8df870193abfa79ea106"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthCoordinator.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-inputs-1/src/Prodbox/ControlPlane/RpcAdmissionBirthCoordinator.hs",
+      "sha256": "fd3c88a6f836c2f38cc81c26449e38a62f982616ab579f12097f1dd5471eecec"
+    },
+    {
+      "path": "test/daemon-lifecycle/SubprocessOwned.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-inputs-1/test/daemon-lifecycle/SubprocessOwned.hs",
+      "sha256": "97354e46a2db24c8d01f81df2340dc8819d7c7e5b2190512e2cafd8ba6d499d9"
+    },
+    {
+      "path": "test/qualification/KernelScopeObservation.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-inputs-1/test/qualification/KernelScopeObservation.hs",
+      "sha256": "a85974dcbe4b87a753c842271151ca63f46fffc297fd566ac9083569ef104891"
+    },
+    {
+      "path": "test/qualification/OwnedSubprocessCgroupRetirement.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-inputs-1/test/qualification/OwnedSubprocessCgroupRetirement.hs",
+      "sha256": "37dd7b0215cd9accbfdcb63dcb1c6cf52409193f42340ce86618535536a8e40d"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-after-1",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-inputs-1/.build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-after-1",
+      "sha256": "bdae4f4d2d0f251f144d89c1d9564aa11600ab9302b43bcb03864b084169cdd9"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-nonthreaded-1",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-inputs-1/.build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-nonthreaded-1",
+      "sha256": "419f4d79eb0266e7f458f67157b2b1f49171133ac4087effd9fec83dde803f11"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-rollout-native-1/Main.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-inputs-1/.build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-rollout-native-1/Main.hs",
+      "sha256": "e9e5465bcc3982659ef7ee942421e9a81b887d9b3e90348f974d208a40583b2b"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-rollout-native-1/HostFixture.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-inputs-1/.build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-rollout-native-1/HostFixture.hs",
+      "sha256": "5071f449678340c12981f882b9e8a643ba40d2cfb113c63697713b1e3ec1ac6c"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-rollout-native-1/driver",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-inputs-1/.build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-rollout-native-1/driver",
+      "sha256": "300ae24d365221d5e515e414fb4020629a3b3c1602d4151fd4375d6fa17d124b"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/host-composition-native-1/Main.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-inputs-1/.build/sprint-6.5/rpc-coordinator-20261025/host-composition-native-1/Main.hs",
+      "sha256": "a48d6fc9e97eaa9930dc169ade3e3f48ee60f7f510037b32ef87fe4047f7c6cb"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/host-runtime-directory-native-1/driver",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-inputs-1/.build/sprint-6.5/rpc-coordinator-20261025/host-runtime-directory-native-1/driver",
+      "sha256": "92c27aa95ca0f0d8fa5007c4fd08f3916e4e3ad3716f33bb323bc3aa49da9721"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/run-observed-birth-controls.py",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/short-child-retirement-inputs-1/.build/sprint-6.5/rpc-coordinator-20261025/run-observed-birth-controls.py",
+      "sha256": "2c78ad2a8fe1c549777a921e2deaea50bd325558eddf2d8199854df4a5ace8d3"
+    }
+  ],
+  "fixed_profiles": {
+    "short_child_owner": {
+      "total_us": 500000,
+      "grace_us": 50000,
+      "confirmation_us": 100000,
+      "settlement_us": 50000,
+      "child_memory_bytes": 67108864,
+      "helper_memory_bytes": 16777216,
+      "child_tasks": 16,
+      "helper_tasks": 8,
+      "child_cpu_usec_per_sec": 1000000,
+      "helper_cpu_usec_per_sec": 1000000,
+      "iterations": 64
+    },
+    "composed_diagnostic": {
+      "outer_seconds": 50,
+      "work_seconds": 40,
+      "hard_seconds": 42,
+      "stop_seconds": 45,
+      "finish_seconds": 47,
+      "slice_mib": 256,
+      "parent_mib": 176,
+      "heap_mib": 128,
+      "child_mib": 64,
+      "helper_mib": 16,
+      "cpu_milli": 700,
+      "tasks": 56
+    },
+    "host_controls": "Original five-second/256 MiB/700m/56-task isolated profile, no envelope increase."
+  },
+  "results": {
+    "frozen_short_child": "iteration 9 fails with DescendantStopUnconfirmed after 374910 us",
+    "replacement_short_child": "64/64 each in threaded and non-threaded builds",
+    "canonical_native_suite": "9/9, including 64 short children",
+    "unit_no_connect": "86/86",
+    "composed_healthy": "3/3 committed; each 12 authenticated frames and all original bounds",
+    "unicode_journal_path": "committed; 12 frames, actual UTF-8 path selected",
+    "release_protocol_and_fault_controls": "pending/failed/unobservable/apply-failure/runtime-ack-only/deadline/parent-death all pass exact oracles; workspace absence verified",
+    "host_controls": "12/12; each manager family and runtime directory absent inside original five seconds"
+  },
+  "remaining": [
+    "Current complete canonical gate.",
+    "Closed production controller launcher/Authority admission, bounded authenticated transport/port-forward composition, same-family unknown-admission recovery.",
+    "Remaining registration/backup/restore/schema migration and cleanup work, real deployment qualification, operational cutover and legacy removal."
+  ]
+}

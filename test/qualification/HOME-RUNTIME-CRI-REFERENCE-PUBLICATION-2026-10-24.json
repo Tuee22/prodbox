@@ -1,0 +1,291 @@
+{
+  "schema_version": 1,
+  "counterexample": "HOME-RUNTIME-CRI-REFERENCE-PUBLICATION-2026-10-24",
+  "banked_utc": "2026-10-24T05:47:47.660350+00:00",
+  "finding_scope": "Offline publication/attestation composition law over real containerd behavior; the missing pre-7 attestation subtype remains unobserved.",
+  "superseded_identity": {
+    "source_git_head": "b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6",
+    "worktree": "dirty",
+    "full_policy": {
+      "identifier": "prodbox-source-manifest",
+      "version": 1,
+      "digest": "4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae"
+    },
+    "executable_policy": {
+      "identifier": "prodbox-source-manifest-executable",
+      "version": 1,
+      "digest": "2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b"
+    },
+    "frozen_utc": "2026-10-24T04:43:09.351331+00:00",
+    "operator_sha256": "5948f80c082ac8390c518c5946e45d4119835ade519e1d4a527139a9caf6b2b1",
+    "executable_manifest_digest": "75261303d2ba2d8ff23862b27c9b2298489336d940bc89cd544f5fde22af63c7",
+    "complete_source_identity_record": ".build/sprint-2.146/closure-final-source.log",
+    "full_manifest_digest": "1623109154f547fa11aad17a96f5082258d78e2eed39e9a8eb679dfd80db4baf",
+    "private_copy_adapter": "module renamed and only the existing import helper exported; no function body changed",
+    "first_native_probe": "untagged archived image-ID export; setup only, not the actual publisher control",
+    "actual_tagged_export_record": "tagged-export.result.json",
+    "production_source_edited": false
+  },
+  "provider": {
+    "version": "containerd v2.3.4-k3s1; Kubernetes v1.36.5+rke2r1",
+    "revision": "7f3710923bfb9ca8f437c7cf1c55c74037018168",
+    "source": [
+      {
+        "url": "https://raw.githubusercontent.com/kubernetes/kubernetes/v1.36.5/pkg/kubelet/kubelet_pods.go",
+        "function": "convertToAPIContainerStatuses",
+        "fact": "The public ContainerStatus.ImageID is copied from the internal ImageRef."
+      },
+      {
+        "url": "https://raw.githubusercontent.com/containerd/containerd/v2.2.3/internal/cri/server/container_status.go",
+        "function": "ContainerStatus",
+        "fact": "ImageRef starts as the node-local image reference and is replaced by a repository digest when one is observed. This inspected upstream version supports the mechanism; the actual runtime metadata is separately recorded."
+      },
+      {
+        "url": "https://raw.githubusercontent.com/k3s-io/containerd/v2.3.4-k3s1/internal/cri/server/container_status.go",
+        "installed_revision": "7f3710923bfb9ca8f437c7cf1c55c74037018168",
+        "fact": "Exact installed runtime source preserves config ImageId while ContainerStatus.ImageRef becomes repoDigests[0] when repository metadata exists."
+      }
+    ]
+  },
+  "causal_profile": {
+    "authored_load": "one serialized publication controller; existing verified blobs and exact tagged Docker archive; no existing repository digest",
+    "fault_schedule": "config-only tagged import, normal fetch, repeated admission, lost fetch reply, acknowledged fetch without effect",
+    "old_to_new_resource_mapping": "same private containerd provider at 500m CPU / 768Mi memory / zero swap; unchanged persistence, worker count and production component envelopes",
+    "private_provider_budget": {
+      "nano_cpus": 500000000,
+      "memory_bytes": 805306368,
+      "memory_swap_bytes": 805306368
+    },
+    "broker_requests_and_limits": {
+      "cpu": "100m",
+      "memory": "128Mi",
+      "ephemeral_storage": "256Mi"
+    },
+    "full_deployment_replayed": false,
+    "live_cluster_mutated": false
+  },
+  "actual_tagged_import": {
+    "scope": "exact tagged Docker export, existing verified blobs but no tagged image/CRI repository reference; isolated store only",
+    "started_utc": "2026-10-24T04:41:33.842116+00:00",
+    "completed_utc": "2026-10-24T04:44:07.992335+00:00",
+    "exit": 0,
+    "wall_seconds": 154.15
+  },
+  "config_only_readback": {
+    "observed_utc": "2026-10-24T04:44:56.496499+00:00",
+    "config_id": "sha256:acee4221e7dde8640a2c05880093e8f1517d475aec7c50fb572b85fd00bdac66",
+    "repo_tags": [
+      "127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-3349a232b3454fb3be77b2f68919904f"
+    ],
+    "repo_digests": []
+  },
+  "frozen_admission": {
+    "started_utc": "2026-10-24T04:45:37.497655+00:00",
+    "completed_utc": "2026-10-24T04:45:37.609223+00:00",
+    "actual_helper_exit": 0,
+    "wall_seconds": 0.112,
+    "config_only_precondition_observed": true,
+    "reported_already_current": true,
+    "stable_repository_reference_present": false,
+    "expected_counterexample_verdict": 1,
+    "actual_frozen_helper": true,
+    "private_exports_only": true,
+    "controller_sha256": "dec7917296286e7de327a436c9e536ce8b9489a506efa38b703c2207303d6e13",
+    "live_cluster_mutated": false
+  },
+  "manifest_config_binding": {
+    "observed_utc": "2026-10-24T04:47:40.405973+00:00",
+    "manifest_digest": "sha256:2f2bdfebec980a9eb1a01461623345f4d9ec02143150a067014e091fd2acfb24",
+    "body_hash_verified": true,
+    "config_digest": "sha256:acee4221e7dde8640a2c05880093e8f1517d475aec7c50fb572b85fd00bdac66",
+    "scope": "read-only non-secret public image descriptor; no configuration blob or fixture secret read"
+  },
+  "native_reference_fetch": {
+    "scope": "isolated content fetch of the exact already-published registry manifest, no live node mutation",
+    "started_utc": "2026-10-24T04:46:43.662824+00:00",
+    "completed_utc": "2026-10-24T04:46:53.649176+00:00",
+    "exit": 0,
+    "wall_seconds": 9.986
+  },
+  "registered_readback": {
+    "observed_utc": "2026-10-24T04:47:55.943658+00:00",
+    "config_id": "sha256:acee4221e7dde8640a2c05880093e8f1517d475aec7c50fb572b85fd00bdac66",
+    "repo_tags": [
+      "127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-3349a232b3454fb3be77b2f68919904f"
+    ],
+    "repo_digests": [
+      "127.0.0.1:30080/prodbox/prodbox-runtime@sha256:2f2bdfebec980a9eb1a01461623345f4d9ec02143150a067014e091fd2acfb24"
+    ],
+    "read_exit": 0
+  },
+  "strict_attestation_controls": {
+    "frozen_controller_sha256": "af3ad36b515b49234e77e897347e5c4d163275549cff5005cbe59e4266c32a56",
+    "results": [
+      {
+        "profile": "old-config-to-manifest",
+        "exit": 1,
+        "expected_exit": 1,
+        "closed_result": "ATTESTATION_REFUSED=ImageDigestMismatch"
+      },
+      {
+        "profile": "healthy-config",
+        "exit": 0,
+        "expected_exit": 0,
+        "closed_result": "ATTESTATION_ACCEPTED=True"
+      },
+      {
+        "profile": "prepared-manifest",
+        "exit": 0,
+        "expected_exit": 0,
+        "closed_result": "ATTESTATION_ACCEPTED=True"
+      }
+    ],
+    "same_image_config_proven_by_manifest": true,
+    "no_full_deployment_replay": true
+  },
+  "replacement_native_controls": {
+    "controls": [
+      {
+        "profile": "prepare-reference",
+        "fault": "none",
+        "started_utc": "2026-10-24T05:47:05.704652+00:00",
+        "completed_utc": "2026-10-24T05:47:06.261228+00:00",
+        "exit": 0,
+        "expected_exit": 0,
+        "wall_seconds": 0.557,
+        "before": {
+          "config_id": "sha256:acee4221e7dde8640a2c05880093e8f1517d475aec7c50fb572b85fd00bdac66",
+          "repo_tags": [
+            "127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-3349a232b3454fb3be77b2f68919904f"
+          ],
+          "repo_digests": []
+        },
+        "after": {
+          "config_id": "sha256:acee4221e7dde8640a2c05880093e8f1517d475aec7c50fb572b85fd00bdac66",
+          "repo_tags": [
+            "127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-3349a232b3454fb3be77b2f68919904f"
+          ],
+          "repo_digests": [
+            "127.0.0.1:30080/prodbox/prodbox-runtime@sha256:2f2bdfebec980a9eb1a01461623345f4d9ec02143150a067014e091fd2acfb24"
+          ]
+        },
+        "fetches": 1,
+        "expected_fetches": 1,
+        "live_cluster_mutated": false
+      },
+      {
+        "profile": "already-current",
+        "fault": "none",
+        "started_utc": "2026-10-24T05:47:06.331484+00:00",
+        "completed_utc": "2026-10-24T05:47:06.518046+00:00",
+        "exit": 0,
+        "expected_exit": 0,
+        "wall_seconds": 0.187,
+        "before": {
+          "config_id": "sha256:acee4221e7dde8640a2c05880093e8f1517d475aec7c50fb572b85fd00bdac66",
+          "repo_tags": [
+            "127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-3349a232b3454fb3be77b2f68919904f"
+          ],
+          "repo_digests": [
+            "127.0.0.1:30080/prodbox/prodbox-runtime@sha256:2f2bdfebec980a9eb1a01461623345f4d9ec02143150a067014e091fd2acfb24"
+          ]
+        },
+        "after": {
+          "config_id": "sha256:acee4221e7dde8640a2c05880093e8f1517d475aec7c50fb572b85fd00bdac66",
+          "repo_tags": [
+            "127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-3349a232b3454fb3be77b2f68919904f"
+          ],
+          "repo_digests": [
+            "127.0.0.1:30080/prodbox/prodbox-runtime@sha256:2f2bdfebec980a9eb1a01461623345f4d9ec02143150a067014e091fd2acfb24"
+          ]
+        },
+        "fetches": 0,
+        "expected_fetches": 0,
+        "live_cluster_mutated": false
+      },
+      {
+        "profile": "lost-fetch-reply",
+        "fault": "lost-fetch-reply",
+        "started_utc": "2026-10-24T05:47:06.689019+00:00",
+        "completed_utc": "2026-10-24T05:47:07.127087+00:00",
+        "exit": 0,
+        "expected_exit": 0,
+        "wall_seconds": 0.438,
+        "before": {
+          "config_id": "sha256:acee4221e7dde8640a2c05880093e8f1517d475aec7c50fb572b85fd00bdac66",
+          "repo_tags": [
+            "127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-3349a232b3454fb3be77b2f68919904f"
+          ],
+          "repo_digests": []
+        },
+        "after": {
+          "config_id": "sha256:acee4221e7dde8640a2c05880093e8f1517d475aec7c50fb572b85fd00bdac66",
+          "repo_tags": [
+            "127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-3349a232b3454fb3be77b2f68919904f"
+          ],
+          "repo_digests": [
+            "127.0.0.1:30080/prodbox/prodbox-runtime@sha256:2f2bdfebec980a9eb1a01461623345f4d9ec02143150a067014e091fd2acfb24"
+          ]
+        },
+        "fetches": 1,
+        "expected_fetches": 1,
+        "live_cluster_mutated": false
+      },
+      {
+        "profile": "acknowledged-without-effect",
+        "fault": "ack-no-effect",
+        "started_utc": "2026-10-24T05:47:07.294551+00:00",
+        "completed_utc": "2026-10-24T05:47:09.707771+00:00",
+        "exit": 1,
+        "expected_exit": 1,
+        "wall_seconds": 2.413,
+        "before": {
+          "config_id": "sha256:acee4221e7dde8640a2c05880093e8f1517d475aec7c50fb572b85fd00bdac66",
+          "repo_tags": [
+            "127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-3349a232b3454fb3be77b2f68919904f"
+          ],
+          "repo_digests": []
+        },
+        "after": {
+          "config_id": "sha256:acee4221e7dde8640a2c05880093e8f1517d475aec7c50fb572b85fd00bdac66",
+          "repo_tags": [
+            "127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-3349a232b3454fb3be77b2f68919904f"
+          ],
+          "repo_digests": []
+        },
+        "fetches": 1,
+        "expected_fetches": 1,
+        "live_cluster_mutated": false
+      }
+    ],
+    "controller_sha256": "28c2867a494c5d999fa7e1a9d765ec97ef9c0d05f5387679a9b25bf0e511e60c",
+    "adapter": "current exact Rke2 helper; private export/module name only; SDK operations redirected exclusively to the private provider fixture",
+    "scope": "real provider metadata law; no full deployment replay or live qualification",
+    "budget": {
+      "nano_cpus": 500000000,
+      "memory_bytes": 805306368,
+      "memory_swap_bytes": 805306368
+    }
+  },
+  "replacement_contract": {
+    "scope": "custom home runtime image publication after registry readiness only; pre-registry MinIO import and strict worker comparison unchanged",
+    "descriptor": "exact published SHA256 descriptor and canonical config pointer; Docker .Id is not a config commitment",
+    "deadline_micros": 80000000,
+    "metadata_command_maximum_micros": 5000000,
+    "fetch_maximum_micros": 30000000,
+    "reads_per_phase": 3,
+    "maximum_retry_delay_micros": 1000000,
+    "maximum_fetches": 1,
+    "closing_proof": "exact config, tag and unique repository manifest; mandatory fresh monotonic-clock check",
+    "refusal_output": "closed causes only; no provider/parser bodies"
+  },
+  "regression_scope": {
+    "focused_cases": 42,
+    "installed_cases": "positive exact-reference gate and unavailable-CRI prevents Broker deployment",
+    "canonical_and_full_frontend": "pending at banking"
+  },
+  "evidence_root": ".build/sprint-6.5/runtime-reference-publication-20261024",
+  "qualification": "pending; native publication controls supply no deployment qualification or class closure",
+  "hand_actions": [],
+  "secret_values_recorded_or_hashed": false
+}

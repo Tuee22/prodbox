@@ -27,6 +27,9 @@ current-revision deployment evidence are owned only by the
    are forbidden.
 5. Every durable external transition is tested as `observe -> decide -> commit/effect ->
    re-observe`, including conflict, cancellation, restart, and applied-but-response-lost paths.
+   Encrypted Vault initialization includes real pinned-tool refusal recordings and independent
+   applied, still-uninitialized and unobservable follow-up rows. Terminal worker attribution
+   retains exact operation/request/storage matching and never authorizes another secret attach.
 6. One monotonic absolute deadline covers queue wait, auth refresh, external I/O, read-back,
    persistence, response, retry delay, and cancellation.
 7. Memory-only stability is insufficient. Deployment qualification includes CPU throttling,
@@ -121,6 +124,36 @@ tracks its supervisor's bound — thirty seconds under a thirty-second bound, fo
 not slow, it never completes. Any case exercising a bounded subprocess asserts that it finished in a
 small fraction of that bound.
 
+The registration chart-child boundary additionally tests a total budget that includes shutdown.
+Real children cover exact and overflowing stdout/stderr ceilings, ignored termination, cancellation,
+and a separately grouped pipe holder surviving its parent's normal exit. The tests confirm owned
+process stop, preserve an unrelated process, and assert elapsed time including cleanup. These local
+process fixtures do not prove deployed chart readiness, replay capacity or a production cgroup.
+The early-exit ownership law uses a child-birth handshake followed immediately by parent exit,
+with the child already in another session and its output redirected away. Keeping the parent alive
+for a fixed sleep can hide ancestry loss. Success requires actual command completion and observed
+child absence, with exact fixture cleanup and unrelated-process preservation. A missing child
+identity cannot count as evidence that a child was created and stopped. The stable native law is
+`test/qualification/OwnedSubprocessFastSessionEscape.hs`; its recorded superseded failure remains
+separate from whole-system qualification. `test/qualification/OwnedSubprocessExecSemantics.hs`
+compares valid command behavior with `System.Process`, including closed stdin and inherited
+file descriptors. Invalid NUL input has its own explicit refusal expectation. The threaded
+multiple-capability control requires refusal before effect. Explicit fixture CPU, memory and
+PID limits do not establish production host-placement or concurrency admission.
+The live-manager process cases are in `test/daemon-lifecycle/SubprocessOwned.hs` and run through
+the already routed native lifecycle suite. Constructor/resource/deadline refusal tables remain
+in `test/unit/SubprocessKillable.hs`; the canonical unit scope must not require the user bus.
+Shared concrete process fixtures live in `test/support/SubprocessFixtures.hs`. A missing native
+user socket, manager or delegated cgroup fails with an actionable error and never skips a case.
+
+The package-private manager transport additionally exercises stalled authentication, a delayed
+authentication followed by a dropped reply, cancellation during each stage, independent socket
+closure, exact method errors, explicit endpoint selection, unsafe socket refusal and late-result
+refusal. `test/qualification/SystemdBusDeadline.hs` compiles with the exact private transport
+source. Native socket/proxy controls and composed Unix-FD scope tests run in both non-threaded
+and threaded single-capability builds. They prove the named transport and fixture boundaries;
+they do not attest production unit ownership, resource admission or deployment readiness.
+
 **Sprint `5.44` landed the vocabulary (2026-09-11).** `withElapsedMicros` and `sleepMicros` in
 `test/support/TestSupport.hs` read a monotonic clock from `GHC.Clock`, which is in `base` and
 therefore compiles under all five suites that share that module — two of them depend on neither
@@ -171,6 +204,17 @@ substrate coverage are defined by `TestPlan` and
 [DEVELOPMENT_PLAN/substrates.md](../../DEVELOPMENT_PLAN/substrates.md), not duplicated here.
 
 ## The Conformance Tier
+
+Quality-command memory regressions use the actual built operator against the same repository
+input and one fixed heap/cgroup profile. `test/qualification/FileLintResidency.hs` runs
+`dev lint files` with a 1 GiB heap, 3 GiB memory ceiling, zero swap and 64-task bound. Its native
+oneshot service treats signals as failures and bounds startup/execution and termination. Frozen
+and replacement results retain exit status, elapsed time and RTS statistics. Diagnostic checker
+copies can identify retention, but cannot substitute for this actual-CLI control. Existing
+positive/negative finding controls and the canonical gate still prove policy coverage.
+Contained full-suite runs preserve the invoking permission mask; a fixture created under a
+different manager default is a different input. Controlled diagnosis keeps source, binary and
+resource limits fixed and records both outcomes without relaxing production file-safety checks.
 
 The conformance tier is the pre-cluster, seconds-fast suite family that proves cross-artifact
 agreement. A contract that crosses a compilation or serialization boundary — an HTTP route path, a
@@ -411,6 +455,55 @@ Vault/EBS without remint or re-prompt.
 
 A fake `aws`, `kubectl`, or HTTP trace proves only frontend mapping. It cannot be cited as evidence
 that the production native client, port binding, Vault policy, or cgroup service capacity works.
+
+Peer-context refresh composition uses the actual signed client, frame verifier, durable replay
+algorithm and verified handler, with HTTP and retained metadata interpreters as explicit fixture
+boundaries. It exercises stale/current/future epochs, exact-epoch refusal on every existing route,
+unchanged caller-slot ownership, fresh nonces, original nested deadlines and changing public facts.
+The Vault adapter's expired, blocked and cancelled reads are separate boundary controls. These
+cases prove neither a deployed remote Agent registration nor cross-substrate key/network trust.
+The bounded peer client also plants a blocked deadline provider and HTTP transport, distinguishes
+the earlier provider deadline from its later parent, rejects late success and preserves cancellation.
+
+RPC origin tests preserve the frozen two-key causal ceiling while separating equal native versions
+into distinct retained logical generations. Full topology projection retains its existing per-route
+ceiling. Registry controls cover complete legacy seed, watermarks/history, retirement replay,
+count/encoded-byte exhaustion and canonical corruption. Compiler probes test the public opaque API.
+The native bridge uses the actual Vault HTTP client against a loopback fixture and the actual
+authenticated client/verifier/peer handler against a root transport fixture. Native version one must
+sign a logical-generation-two request; wrong source/public/version/signature, retirement during
+signing, oversized valid JSON and cancellation refuse. This does not attest a live origin, persist
+an Authority registry or prove production key/session retirement.
+
+Origin-aware admission tests hold the frozen two-client capacity, four reservations and four live
+operations constant. Actual signed clients pass through frame verification and the submission/
+observation endpoints with codec-backed repository fixtures. Equal submission keys remain isolated
+across origins; rotations preserve slots and older reservations; retirement and Vault recreation
+cannot recycle ownership. Counts include retired generations. Golden legacy table/aggregate bytes
+come from the banked pre-change executable. Registered version/scope/profile mismatches, missing
+state, forbidden initialization, CAS conflict, lost reply and unavailable readback refuse or recover
+only from exact retained evidence. This proves no physical source admission, native key/session
+retirement or deployed registration publication.
+
+The explicit `test/qualification/RpcBirthNativeRuntime.hs` profile starts the installed Authority
+process with chart-rendered schema-eight config and the production admission capacities. It drives
+the real socket, encrypted retained-store clients and authenticated peer/descriptor path against
+synthetic native HTTP services. Private mount/network namespaces contain its projected CA and
+listeners; privilege is dropped before execution. Startup and refusal cases preserve the exact
+admission/marker ciphertext pair. Authenticated reads may write only their registered replay record.
+Cleanup joins each operator and every fixture worker before asserting listener release. This profile
+requires Linux namespace tools and noninteractive sudo, and remains separate from the ordinary
+unit/frontend suites. It supplies no real-provider policy, deployed readiness, resource-envelope or
+qualification evidence; the [plan ledger](../../DEVELOPMENT_PLAN/README.md#resume-here) owns results.
+
+RPC-birth coordinator controls compose the actual request/descriptor interpreters, signed client,
+peer refresh and frame verifier with native Vault HTTP and canonical Tier-0 file publication.
+Parent/provider orderings preserve one resolved deadline on every frame. Response-loss, false-ACK,
+expired-preparation, cancellation and exact failed-prefix cases preserve the pending fence; an
+already committed operation uses fresh observation without repeating deployment. Source tests keep
+scope/pin identity and file bytes exact, retain context readability with invalid parameters, and
+refuse unsafe or expired publication. The rollout slot remains an explicit interpreter fixture;
+these controls do not prove physical chart execution, replay-envelope sufficiency or qualification.
 
 ### 5.1 Recorded laws for AWS dependency behaviour
 

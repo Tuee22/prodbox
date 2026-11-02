@@ -2,8 +2,8 @@
 Mounted Dhall for the `lifecycle-authority` runtime role. The empty default lets
 generic `helm template`/lint invocations omit the body; the supported
 ChartPlatform render supplies the complete, non-secret authority config.
-Directory mount (see statefulset.yaml) so a ConfigMap update fires the
-authority's file-watch.
+The StatefulSet's role-config checksum replaces the process when this startup
+configuration changes; the directory mount keeps the projected file together.
 */ -}}
 apiVersion: v1
 kind: ConfigMap

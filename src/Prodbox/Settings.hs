@@ -34,6 +34,7 @@ module Prodbox.Settings
   , deploymentVaultAddress
   , deploymentMinioEndpoint
   , deploymentMachineIds
+  , deploymentRpcRegistration
   , ValidatedSettings (..)
   , ValidatedCoordinates (..)
   , AcmeAccount (..)
@@ -110,7 +111,6 @@ import Dhall
   , defaultInterpretOptions
   , genericAutoWith
   , genericToDhallWith
-  , input
   , inputFile
   )
 import Dhall qualified
@@ -131,6 +131,7 @@ import Prodbox.Capacity.Config
   , validateGatewayEmitterCapacity
   , validateOneShotSecretWorkerCapacity
   )
+import Prodbox.Capacity.LegacyDhall qualified as LegacyCapacity
 import Prodbox.Cluster.Topology
   ( ClusterTopology
   , ClusterType (..)
@@ -171,12 +172,14 @@ import Prodbox.ControlPlane.ConfigEndpoint
   , ConfigProposeCasRequest (..)
   , ConfigProposeCasResponse (..)
   )
+import Prodbox.ControlPlane.Coordinate (mkAuthorityScope)
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   ( ExternalLifecycleAuthorityCaller (..)
   , renderLifecycleAuthorityAuthenticationError
   , withHostLifecycleAuthorityAuthentication
   , withLifecycleAuthorityAuthenticatedTransport
   )
+import Prodbox.ControlPlane.RpcAdmissionBirthConfig (RpcBirthConfig (..), validateRpcBirthConfig)
 import Prodbox.ControlPlane.TargetMaterialRegistry
   ( AwsCredentialIdentity (..)
   , TargetSecretId (TargetAwsCredential)
@@ -192,6 +195,7 @@ import Prodbox.Repo
   , resolveTestTopologyConfigPath
   , resolveTier0ConfigPath
   )
+import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 import Prodbox.Settings.AwsSubstrateProfile
   ( AwsSubstrateProfile
   )
@@ -491,6 +495,7 @@ data DeploymentContextInput = DeploymentContextInput
   { contextInputClusterId :: Text
   , contextInputVaultAddress :: Text
   , contextInputMinioEndpoint :: Text
+  , contextInputRpcRegistration :: RpcBirthConfig
   }
   deriving (Eq, Show, Generic)
 
@@ -520,6 +525,7 @@ data ValidatedDeploymentContext = ValidatedDeploymentContext
   , deploymentVaultAddress :: !Text
   , deploymentMinioEndpoint :: !Text
   , deploymentMachineIds :: ![MachineId]
+  , deploymentRpcRegistration :: !RpcBirthConfig
   }
   deriving (Eq, Show)
 
@@ -945,6 +951,8 @@ renderSettingsDisplay settings =
         ++ renderResourceVector (rke2_reserved plan)
     , "capacity.resource_plan.eviction_floor="
         ++ renderResourceVector (eviction_floor plan)
+    , "capacity.resource_plan.platform_scheduler_requests="
+        ++ maybe "undeclared" renderResourceVector (platform_scheduler_requests plan)
     , "capacity.resource_plan.cluster_allocatable="
         ++ renderResourceVector (Allocation.planAllocatable (validatedAllocatedPlan settings))
     , "capacity.resource_plan.workload_profiles="
@@ -975,7 +983,11 @@ decodeConfigFileAtPath configPath = do
   if not configExists
     then pure (Left (missingConfigMessage configPath))
     else do
-      result <- try (inputFile auto configPath)
+      result <-
+        LegacyCapacity.decodeDhallFileWithLegacyPlatformDemand
+          auto
+          LegacyCapacity.StandaloneParameters
+          configPath
       pure $ case result of
         Left (e :: SomeException) ->
           Left
@@ -1043,9 +1055,7 @@ loadConfigFileAtPath tier0Path = do
   if not tier0Exists
     then pure (Left (missingConfigMessage tier0Path))
     else do
-      absPath <- makeAbsolute tier0Path
-      let expr = "( " <> Text.pack absPath <> " ).parameters"
-      result <- try (input auto expr)
+      result <- LegacyCapacity.decodeProjectParametersFileWithLegacyPlatformDemand auto tier0Path
       pure $ case result of
         Left (e :: SomeException) ->
           Left
@@ -1066,12 +1076,7 @@ loadDeploymentContextInputAtPath tier0Path = do
   if not tier0Exists
     then pure (Left (missingConfigMessage tier0Path))
     else do
-      absPath <- makeAbsolute tier0Path
-      let expr =
-            "let context = ( "
-              <> Text.pack absPath
-              <> " ).context in context.{ cluster_id, vault_address, minio_endpoint }"
-      result <- try (input auto expr)
+      result <- LegacyCapacity.decodeDhallFileProjection auto LegacyCapacity.ContextCoordinates tier0Path
       pure $ case result of
         Left (e :: SomeException) ->
           Left
@@ -1176,6 +1181,18 @@ validatedDeploymentContextFor contextInput topologyInput = do
   clusterIdentity <- contextField "context.cluster_id" (contextInputClusterId contextInput)
   vaultEndpoint <- httpEndpointField "context.vault_address" (contextInputVaultAddress contextInput)
   minioEndpoint <- httpEndpointField "context.minio_endpoint" (contextInputMinioEndpoint contextInput)
+  case contextInputRpcRegistration contextInput of
+    RpcBirthConfigLegacy -> pure ()
+    registered@(RpcBirthConfigRegistered _) -> do
+      scope <-
+        mapLeft
+          (const "context.rpc_registration has an invalid Authority scope")
+          (mkAuthorityScope clusterIdentity)
+      _ <-
+        mapLeft
+          (("context.rpc_registration: " ++) . show)
+          (validateRpcBirthConfig LifecycleAuthorityRuntime scope registered)
+      pure ()
   let machineIds = map machine_id (clusterTopologyMachines topologyInput)
   case (clusterType topologyInput, machineIds) of
     (ClusterTypeEks, []) -> pure ()
@@ -1187,6 +1204,7 @@ validatedDeploymentContextFor contextInput topologyInput = do
       , deploymentVaultAddress = vaultEndpoint
       , deploymentMinioEndpoint = minioEndpoint
       , deploymentMachineIds = machineIds
+      , deploymentRpcRegistration = contextInputRpcRegistration contextInput
       }
 
 contextField :: String -> Text -> Either String Text

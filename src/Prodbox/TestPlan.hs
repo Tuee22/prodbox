@@ -286,13 +286,7 @@ testExecutionPlan substrate scope =
                 True
                 True
             )
-        IntegrationCli ->
-          nativeIntegrationPlan
-            "integration cli"
-            integrationScopeHaskellSuites
-            "integration-cli"
-            []
-            False
+        IntegrationCli -> frontendIntegrationPlan "integration cli" "integration-cli"
         IntegrationAwsIam ->
           nativeNamedSuite
             "integration aws-iam"
@@ -323,13 +317,7 @@ testExecutionPlan substrate scope =
             "integration-aws-eks"
             [ValidationAwsEks]
             True
-        IntegrationEnv ->
-          nativeIntegrationPlan
-            "integration env"
-            integrationScopeHaskellSuites
-            "integration-env"
-            []
-            False
+        IntegrationEnv -> frontendIntegrationPlan "integration env" "integration-env"
         IntegrationGatewayDaemon ->
           nativeNamedSuite
             "integration gateway-daemon"
@@ -530,6 +518,17 @@ testExecutionPlan substrate scope =
       , nativeRequiresSupportedRuntimePostflight = False
       , nativeSubstrate = substrate
       }
+
+  -- Both public frontend aliases select the complete integration executable,
+  -- including its real Helm configuration-rollout proof.
+  frontendIntegrationPlan label suiteId =
+    nativeExecutionPlan
+      label
+      integrationScopeHaskellSuites
+      ( (canonicalSuitePlan suiteId [] False False False)
+          { nativeInitialIntegrationGatePrerequisites = [ToolHelm]
+          }
+      )
 
   nativeIntegrationPlan label haskellSuites suiteId validations requiresRunbook =
     nativeExecutionPlan

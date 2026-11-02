@@ -23,9 +23,9 @@
 --   * The subprocess environment is scrubbed of @KUBECONFIG@ and every ambient
 --     AWS credential variable, so the only reachable identity is the projection
 --     this client was built from.
---   * The client is universally quantified by the continuation it is handed to,
---     so it cannot outlive the temporary directory that backs it, and the
---     credential dies with that directory.
+--   * Operation-owned clients close command admission and join admitted uses
+--     before removing the private directory. An escaped client refuses work.
+--     The legacy constructors retain their continuation-scoped file lifetime.
 --
 -- __Sprint 7.39: why the credential is a file, measured rather than assumed.__
 -- It was a FIFO, on the argument that a credential should have no on-disk
@@ -52,11 +52,27 @@
 -- rather than a free win — what it buys is an EKS teardown path that
 -- authenticates at all.
 module Prodbox.Lifecycle.Teardown.EphemeralKubectl
-  ( EphemeralKubectl
+  ( EmbeddedHomeKubeconfig
+  , EmbeddedHomeKubeconfigError (..)
+  , prepareEmbeddedHomeKubeconfig
+  , embeddedHomeKubeconfigBytes
+  , writeEmbeddedHomeKubeconfig
+  , EphemeralKubectl
   , runEphemeralKubectl
+  , OperationHomeKubectl
+  , withOperationHomeKubectl
+  , withNativeOperationHomeKubectl
+  , operationHomeKubectlMatches
+  , runOperationHomeKubectlWithInput
+  , runOperationHomeKubectlBytesWithInput
+  , pauseOperationHomeKubectl
   , EphemeralKubectlUnavailable (..)
   , withEphemeralKubectlForProjection
+  , withEphemeralKubectlForProjectionInOperation
+  , withNativeEphemeralKubectlForProjectionInOperation
   , withHomeCleanupKubectl
+  , withHomeCleanupKubectlInOperation
+  , withNativeHomeCleanupKubectlInOperation
   , withEphemeralKubeconfigPath
   , replaceEphemeralBearer
   , ephemeralKubectlLimits
@@ -65,25 +81,41 @@ module Prodbox.Lifecycle.Teardown.EphemeralKubectl
   , ephemeralKubectlWallClockSeconds
   , ephemeralKubectlRequestTimeoutArgument
   , forbiddenKubectlEnvironmentKey
+  , forbiddenKubectlEnvironmentKeyBytes
   , ephemeralKubeconfig
   , writePrivateFile
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (IOException, try)
-import Data.Aeson (Value, encode, object, (.=))
+import Control.Monad (unless, (>=>))
+import Data.Aeson (Value (..), eitherDecodeStrict', encode, object, (.=))
+import Data.Aeson.Key qualified as Key
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
+import Data.ByteString.Char8 qualified as ByteStringChar8
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.List.NonEmpty (NonEmpty (..))
+import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Data.Vector qualified as Vector
+import Data.Word (Word64)
+import GHC.Clock (getMonotonicTimeNSec)
 import Prodbox.ControlPlane.EksClientAuthProjection
   ( EksClientAuthProjection
   , eksClientAuthBearerToken
   , eksClientAuthCertificateAuthorityData
   , eksClientAuthClusterName
   , eksClientAuthEndpoint
+  )
+import Prodbox.ControlPlane.OperationUse
+  ( OperationUses
+  , withOperationParentUses
+  , withOperationUse
   )
 import Prodbox.Infra.EphemeralKubeconfigPath
   ( ephemeralKubeconfigFileName
@@ -93,14 +125,31 @@ import Prodbox.Infra.MinioBackend (resolveLocalKubeconfig)
 import Prodbox.Lifecycle.Teardown.Model (ObservationFailure (..))
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
+  , NativeSubprocess (..)
+  , OperationProcessOutput
+  , OperationSubprocessError
+  , OperationSubprocesses
   , ProcessOutput (..)
   , Subprocess (..)
+  , captureOperationCommandWithCeilingsBefore
+  , captureOperationCommandWithInputBefore
+  , captureOperationNativeCommandWithCeilingsBefore
+  , captureOperationNativeCommandWithInputBefore
   , captureSubprocessBounded
+  , operationProcessExitCode
+  , operationProcessStderr
+  , operationProcessStdout
+  , operationSubprocessExecutionKey
+  , operationSubprocessRuntimeDirectory
+  , operationSubprocessWindow
+  , verifyOperationSubprocessesBeforeEffect
   )
+import Prodbox.Subprocess.ProcessEnvironment qualified as Environment
+import Prodbox.Subprocess.SystemdIdentity (hostExecutionWorkEnd)
 import System.Directory (removeFile, renameFile)
 import System.Exit (ExitCode (..))
-import System.FilePath (takeDirectory, takeFileName, (</>))
-import System.IO.Temp (withSystemTempDirectory)
+import System.FilePath (isAbsolute, takeDirectory, takeFileName, (</>))
+import System.IO.Temp (withSystemTempDirectory, withTempDirectory)
 import System.Posix.Files
   ( ownerReadMode
   , ownerWriteMode
@@ -117,15 +166,287 @@ import System.Posix.IO.ByteString qualified as PosixByteString
 import System.Posix.Types (Fd)
 import System.Posix.Unistd (fileSynchronise)
 
+-- A validated, closed embedded-certificate projection. No Show instance can
+-- accidentally put the retained client key into an error or log.
+newtype EmbeddedHomeKubeconfig = EmbeddedHomeKubeconfig ByteString
+
+data EmbeddedHomeKubeconfigError = EmbeddedHomeKubeconfigInvalid
+  deriving (Eq, Show)
+
+prepareEmbeddedHomeKubeconfig
+  :: ByteString -> Either EmbeddedHomeKubeconfigError EmbeddedHomeKubeconfig
+prepareEmbeddedHomeKubeconfig bytes = EmbeddedHomeKubeconfig <$> normalizeEmbeddedHomeKubeconfig bytes
+
+embeddedHomeKubeconfigBytes :: EmbeddedHomeKubeconfig -> ByteString
+embeddedHomeKubeconfigBytes (EmbeddedHomeKubeconfig bytes) = bytes
+
+-- The caller owns this private directory's lifecycle. File creation and
+-- readback remain with the same credential owner as projected bearer clients.
+writeEmbeddedHomeKubeconfig
+  :: FilePath -> EmbeddedHomeKubeconfig -> IO (Either EphemeralKubectlUnavailable FilePath)
+writeEmbeddedHomeKubeconfig directory (EmbeddedHomeKubeconfig bytes) = do
+  let path = directory </> "kubeconfig.json"
+  attempted <- try (writePrivateFile path bytes >> ByteString.readFile path)
+  pure $ case attempted :: Either IOException ByteString of
+    Right observed | observed == bytes -> Right path
+    _ ->
+      Left
+        ( EphemeralKubectlUnavailable
+            (ObservationFailure "embedded home kubeconfig private write/readback refused")
+        )
+
+-- A minified, flattened home configuration may not acquire an exec/auth-provider
+-- child or reload a credential/CA file after preparation. Explicit loopback
+-- selection also prevents an ambient EKS context from becoming the control plane.
+normalizeEmbeddedHomeKubeconfig :: ByteString -> Either EmbeddedHomeKubeconfigError ByteString
+normalizeEmbeddedHomeKubeconfig bytes = do
+  unless (ByteString.length bytes <= 64 * 1024) invalid
+  value <- first (const EmbeddedHomeKubeconfigInvalid) (eitherDecodeStrict' bytes)
+  cluster <- singletonAt "clusters" value
+  context <- singletonAt "contexts" value
+  user <- singletonAt "users" value
+  clusterConfig <- embeddedConfigObjectAt ["cluster"] cluster
+  contextConfig <- embeddedConfigObjectAt ["context"] context
+  userConfig <- embeddedConfigObjectAt ["user"] user
+  current <- embeddedConfigTextAt ["current-context"] value
+  clusterName <- embeddedConfigTextAt ["name"] cluster
+  contextName <- embeddedConfigTextAt ["name"] context
+  userName <- embeddedConfigTextAt ["name"] user
+  unless
+    ( current == contextName
+        && embeddedConfigField ["cluster"] contextConfig == Just (String clusterName)
+        && embeddedConfigField ["user"] contextConfig == Just (String userName)
+        && embeddedConfigField ["server"] clusterConfig == Just (String "https://127.0.0.1:6443")
+        && embeddedConfigField ["insecure-skip-tls-verify"] clusterConfig `elem` [Nothing, Just (Bool False)]
+        && all
+          (\name -> embeddedConfigField [name] clusterConfig == Nothing)
+          ["certificate-authority", "proxy-url", "tls-server-name"]
+        && all
+          (\name -> embeddedConfigField [name] userConfig == Nothing)
+          ["exec", "auth-provider", "tokenFile", "client-certificate", "client-key"]
+    )
+    invalid
+  mapM_ (requireText clusterConfig) ["certificate-authority-data"]
+  mapM_ (requireText userConfig) ["client-certificate-data", "client-key-data"]
+  -- Only the selected embedded certificate identity is handed to the tools.
+  -- Unrelated preferences or future user fields cannot add another mechanism.
+  certificate <- embeddedConfigTextAt ["certificate-authority-data"] clusterConfig
+  clientCertificate <- embeddedConfigTextAt ["client-certificate-data"] userConfig
+  clientKey <- embeddedConfigTextAt ["client-key-data"] userConfig
+  pure $
+    LazyByteString.toStrict $
+      encode $
+        object
+          [ "apiVersion" .= ("v1" :: Text)
+          , "kind" .= ("Config" :: Text)
+          , "current-context" .= current
+          , "clusters"
+              .= [ object
+                     [ "name" .= clusterName
+                     , "cluster"
+                         .= object ["server" .= ("https://127.0.0.1:6443" :: Text), "certificate-authority-data" .= certificate]
+                     ]
+                 ]
+          , "contexts"
+              .= [object ["name" .= contextName, "context" .= object ["cluster" .= clusterName, "user" .= userName]]]
+          , "users"
+              .= [ object
+                     [ "name" .= userName
+                     , "user" .= object ["client-certificate-data" .= clientCertificate, "client-key-data" .= clientKey]
+                     ]
+                 ]
+          ]
+ where
+  invalid :: Either EmbeddedHomeKubeconfigError result
+  invalid = Left EmbeddedHomeKubeconfigInvalid
+  singletonAt name value = case embeddedConfigField [name] value of
+    Just (Array entries) -> case Vector.toList entries of
+      [entry] -> Right entry
+      _ -> invalid
+    _ -> invalid
+  requireText value name = do
+    actual <- embeddedConfigTextAt [name] value
+    unless (not (Text.null actual)) invalid
+
+embeddedConfigField :: [Text.Text] -> Value -> Maybe Value
+embeddedConfigField path value = case path of
+  [] -> Just value
+  name : rest -> case value of
+    Object fields -> KeyMap.lookup (Key.fromText name) fields >>= embeddedConfigField rest
+    _ -> Nothing
+
+embeddedConfigTextAt :: [Text.Text] -> Value -> Either EmbeddedHomeKubeconfigError Text.Text
+embeddedConfigTextAt path value = case embeddedConfigField path value of
+  Just (String text) -> Right text
+  _ -> Left EmbeddedHomeKubeconfigInvalid
+
+embeddedConfigObjectAt :: [Text.Text] -> Value -> Either EmbeddedHomeKubeconfigError Value
+embeddedConfigObjectAt path value = case embeddedConfigField path value of
+  Just jsonObject@(Object _) -> Right jsonObject
+  _ -> Left EmbeddedHomeKubeconfigInvalid
+
 -- | One bounded @kubectl@ invocation against the ephemeral kubeconfig.
 --
--- Deliberately a record of one function rather than an exported runner: the
--- kubeconfig path, environment, and working directory are captured when the
--- client is created and cannot be substituted by a caller afterwards.
-newtype EphemeralKubectl = EphemeralKubectl
-  { runEphemeralKubectl
-      :: [String] -> IO (Either (NonEmpty ObservationFailure) String)
-  }
+-- The owned form retains the captured projection and joined original parent.
+-- The legacy form has no stdin or owned-wait capability.
+data EphemeralKubectl
+  = EphemeralKubectl !([String] -> IO (Either (NonEmpty ObservationFailure) String))
+  | OperationEphemeralKubectl
+      !OperationSubprocesses
+      !OperationUses
+      !FilePath
+      !OperationKubectlEnvironment
+      !(Maybe FilePath)
+      !FilePath
+
+data OperationKubectlEnvironment
+  = OperationKubectlStrings ![(String, String)]
+  | OperationKubectlNative !Environment.ProcessEnvironment
+
+-- Only the embedded-home constructor below can make this capability. An EKS
+-- projection and a legacy client cannot be supplied to the Provisioner path.
+newtype OperationHomeKubectl = OperationHomeKubectl EphemeralKubectl
+
+withOperationHomeKubectl
+  :: OperationSubprocesses
+  -> FilePath
+  -> [(String, String)]
+  -> Maybe FilePath
+  -> EmbeddedHomeKubeconfig
+  -> (Either EphemeralKubectlUnavailable OperationHomeKubectl -> IO result)
+  -> IO result
+withOperationHomeKubectl processes kubectl environment directory projection consume =
+  withHomeCleanupKubectlInOperation
+    processes
+    kubectl
+    environment
+    directory
+    projection
+    (consume . fmap OperationHomeKubectl)
+
+withNativeOperationHomeKubectl
+  :: OperationSubprocesses
+  -> FilePath
+  -> Environment.ProcessEnvironment
+  -> Maybe FilePath
+  -> EmbeddedHomeKubeconfig
+  -> (Either EphemeralKubectlUnavailable OperationHomeKubectl -> IO result)
+  -> IO result
+withNativeOperationHomeKubectl processes kubectl environment directory projection consume =
+  withNativeHomeCleanupKubectlInOperation
+    processes
+    kubectl
+    environment
+    directory
+    projection
+    (consume . fmap OperationHomeKubectl)
+
+operationHomeKubectlMatches :: OperationSubprocesses -> OperationHomeKubectl -> Bool
+operationHomeKubectlMatches original (OperationHomeKubectl client) = case client of
+  EphemeralKubectl _ -> False
+  OperationEphemeralKubectl held _ _ _ _ _ ->
+    operationSubprocessExecutionKey original == operationSubprocessExecutionKey held
+      && operationSubprocessWindow original == operationSubprocessWindow held
+      && operationSubprocessRuntimeDirectory original == operationSubprocessRuntimeDirectory held
+
+runOperationHomeKubectlWithInput
+  :: OperationHomeKubectl
+  -> BoundedSubprocessLimits
+  -> ByteString
+  -> [String]
+  -> IO (Either (NonEmpty ObservationFailure) ProcessOutput)
+runOperationHomeKubectlWithInput (OperationHomeKubectl client) = runEphemeralKubectlWithInput client
+
+-- The coordinator consumes captured bytes directly. This borrows the same
+-- original client/use/command owner as the compatibility String API.
+runOperationHomeKubectlBytesWithInput
+  :: OperationHomeKubectl
+  -> BoundedSubprocessLimits
+  -> ByteString
+  -> [String]
+  -> IO (Either (NonEmpty ObservationFailure) OperationProcessOutput)
+runOperationHomeKubectlBytesWithInput (OperationHomeKubectl client) = runEphemeralKubectlBytesWithInput client
+
+pauseOperationHomeKubectl
+  :: OperationHomeKubectl -> Int -> IO (Either (NonEmpty ObservationFailure) ())
+pauseOperationHomeKubectl (OperationHomeKubectl client) = pauseEphemeralKubectl client
+
+runEphemeralKubectl
+  :: EphemeralKubectl -> [String] -> IO (Either (NonEmpty ObservationFailure) String)
+runEphemeralKubectl client = case client of
+  EphemeralKubectl run -> run
+  OperationEphemeralKubectl processes uses kubectl environment directory configuration ->
+    runOperationKubectl processes uses kubectl environment directory configuration
+
+-- Provisioner ingress preserves raw binary stdin and the exit/status streams.
+-- The legacy path cannot be selected as a fallback for an owned invocation.
+runEphemeralKubectlWithInput
+  :: EphemeralKubectl
+  -> BoundedSubprocessLimits
+  -> ByteString
+  -> [String]
+  -> IO (Either (NonEmpty ObservationFailure) ProcessOutput)
+runEphemeralKubectlWithInput client limits input arguments =
+  fmap compatibilityOutput <$> runEphemeralKubectlBytesWithInput client limits input arguments
+ where
+  compatibilityOutput captured =
+    ProcessOutput
+      (operationProcessExitCode captured)
+      (ByteStringChar8.unpack (operationProcessStdout captured))
+      (ByteStringChar8.unpack (operationProcessStderr captured))
+
+runEphemeralKubectlBytesWithInput
+  :: EphemeralKubectl
+  -> BoundedSubprocessLimits
+  -> ByteString
+  -> [String]
+  -> IO (Either (NonEmpty ObservationFailure) OperationProcessOutput)
+runEphemeralKubectlBytesWithInput client limits input arguments = case client of
+  EphemeralKubectl _ -> pure (Left (operationFailure "binary ingress requires an operation-owned client"))
+  OperationEphemeralKubectl processes uses kubectl environment directory configuration -> do
+    attempted <- withOperationUse uses $ do
+      now <- getMonotonicTimeNSec
+      let micros = boundedSubprocessTimeoutMicros limits
+          requested = fromInteger (min (toInteger (maxBound :: Word64)) (toInteger now + toInteger micros * 1000))
+      if micros <= 0
+        then pure (Left (operationFailure "command time must be positive"))
+        else do
+          output <-
+            captureOperationKubectlCommandBefore
+              limits
+              requested
+              processes
+              kubectl
+              environment
+              directory
+              (["--kubeconfig", configuration] <> arguments)
+              (Just input)
+          pure (first (operationFailure . Text.pack . show) output)
+    pure (either (Left . operationFailure . Text.pack . show) id attempted)
+
+-- A wait must fit entirely before the original work end. It grants no next
+-- effect; both the wake and the next command independently recheck the owner.
+pauseEphemeralKubectl :: EphemeralKubectl -> Int -> IO (Either (NonEmpty ObservationFailure) ())
+pauseEphemeralKubectl client micros = case client of
+  EphemeralKubectl _ -> pure (Left (operationFailure "owned wait requires an operation-owned client"))
+  OperationEphemeralKubectl processes uses _ _ _ _ -> do
+    attempted <- withOperationUse uses $ do
+      now <- getMonotonicTimeNSec
+      let ending = hostExecutionWorkEnd (operationSubprocessWindow processes)
+      if micros < 0 || toInteger now + toInteger micros * 1000 >= toInteger ending
+        then pure (Left (operationFailure "owned wait exceeds original work"))
+        else do
+          before <- verifyOperationSubprocessesBeforeEffect processes
+          case before of
+            Left cause -> pure (Left (operationFailure (Text.pack (show cause))))
+            Right () -> do
+              threadDelay micros
+              closing <- verifyOperationSubprocessesBeforeEffect processes
+              pure (either (Left . operationFailure . Text.pack . show) Right closing)
+    pure (either (Left . operationFailure . Text.pack . show) id attempted)
+
+operationFailure :: Text -> NonEmpty ObservationFailure
+operationFailure detail = ObservationFailure ("operation kubectl refused: " <> detail) :| []
 
 -- | The client could not be created at all, which is never evidence about the
 -- cluster.
@@ -159,6 +480,111 @@ withEphemeralKubectlForProjection kubectl environment workingDirectory projectio
  where
   safeEnvironment = filter (not . forbiddenKubectlEnvironmentKey . fst) environment
 
+-- The supplied observed parent owns every command. Preparation uses its private
+-- runtime directory, and joined uses end before the credential files disappear.
+withEphemeralKubectlForProjectionInOperation
+  :: OperationSubprocesses
+  -> FilePath
+  -> [(String, String)]
+  -> Maybe FilePath
+  -> EksClientAuthProjection
+  -> (Either EphemeralKubectlUnavailable EphemeralKubectl -> IO result)
+  -> IO result
+withEphemeralKubectlForProjectionInOperation processes kubectl environment workingDirectory projection =
+  withOperationKubectl
+    processes
+    kubectl
+    (OperationKubectlStrings environment)
+    workingDirectory
+    (prepareEphemeralKubeconfigPath projection)
+
+withNativeEphemeralKubectlForProjectionInOperation
+  :: OperationSubprocesses
+  -> FilePath
+  -> Environment.ProcessEnvironment
+  -> Maybe FilePath
+  -> EksClientAuthProjection
+  -> (Either EphemeralKubectlUnavailable EphemeralKubectl -> IO result)
+  -> IO result
+withNativeEphemeralKubectlForProjectionInOperation processes kubectl environment workingDirectory projection =
+  withOperationKubectl
+    processes
+    kubectl
+    (OperationKubectlNative environment)
+    workingDirectory
+    (prepareEphemeralKubeconfigPath projection)
+
+-- Home cleanup consumes the already captured embedded projection. It cannot
+-- resolve another host context or add an exec/auth-provider credential child.
+withHomeCleanupKubectlInOperation
+  :: OperationSubprocesses
+  -> FilePath
+  -> [(String, String)]
+  -> Maybe FilePath
+  -> EmbeddedHomeKubeconfig
+  -> (Either EphemeralKubectlUnavailable EphemeralKubectl -> IO result)
+  -> IO result
+withHomeCleanupKubectlInOperation processes kubectl environment workingDirectory projection =
+  withOperationKubectl
+    processes
+    kubectl
+    (OperationKubectlStrings environment)
+    workingDirectory
+    (`writeEmbeddedHomeKubeconfig` projection)
+
+withNativeHomeCleanupKubectlInOperation
+  :: OperationSubprocesses
+  -> FilePath
+  -> Environment.ProcessEnvironment
+  -> Maybe FilePath
+  -> EmbeddedHomeKubeconfig
+  -> (Either EphemeralKubectlUnavailable EphemeralKubectl -> IO result)
+  -> IO result
+withNativeHomeCleanupKubectlInOperation processes kubectl environment workingDirectory projection =
+  withOperationKubectl
+    processes
+    kubectl
+    (OperationKubectlNative environment)
+    workingDirectory
+    (`writeEmbeddedHomeKubeconfig` projection)
+
+withOperationKubectl
+  :: OperationSubprocesses
+  -> FilePath
+  -> OperationKubectlEnvironment
+  -> Maybe FilePath
+  -> (FilePath -> IO (Either EphemeralKubectlUnavailable FilePath))
+  -> (Either EphemeralKubectlUnavailable EphemeralKubectl -> IO result)
+  -> IO result
+withOperationKubectl processes kubectl environment workingDirectory prepare consume
+  | not (isAbsolute kubectl) =
+      consume (Left (operationClientUnavailable "kubectl path must be absolute"))
+  | otherwise = do
+      verified <- verifyOperationSubprocessesBeforeEffect processes
+      case verified of
+        Left cause -> consume (Left (operationClientUnavailable (Text.pack (show cause))))
+        Right () ->
+          withTempDirectory (operationSubprocessRuntimeDirectory processes) ephemeralKubectlDirectoryPrefix $ \directory ->
+            withOperationParentUses processes $ \uses -> do
+              prepared <- withOperationUse uses (prepare directory)
+              consume $ case prepared of
+                Left cause -> Left (operationClientUnavailable (Text.pack (show cause)))
+                Right path ->
+                  fmap
+                    (OperationEphemeralKubectl processes uses kubectl safeEnvironment workingDirectory)
+                    path
+ where
+  safeEnvironment = case environment of
+    OperationKubectlStrings inherited ->
+      OperationKubectlStrings (filter (not . forbiddenKubectlEnvironmentKey . fst) inherited)
+    OperationKubectlNative inherited ->
+      OperationKubectlNative
+        (Environment.filterProcessEnvironment (not . forbiddenKubectlEnvironmentKeyBytes) inherited)
+
+operationClientUnavailable :: Text -> EphemeralKubectlUnavailable
+operationClientUnavailable detail =
+  EphemeralKubectlUnavailable (ObservationFailure ("operation Kubernetes client refused: " <> detail))
+
 -- | Sprint 7.40: the same preparation, for a caller that needs the kubeconfig
 -- __path__ rather than a bounded runner.
 --
@@ -180,42 +606,48 @@ withEphemeralKubeconfigPath
   -> (Either EphemeralKubectlUnavailable FilePath -> IO result)
   -> IO result
 withEphemeralKubeconfigPath projection consume =
-  withSystemTempDirectory ephemeralKubectlDirectoryPrefix $ \directory -> do
-    let kubeconfigPath = directory </> ephemeralKubeconfigFileName
-        tokenPath = directory </> ephemeralBearerFileName
-        tokenBytes = TextEncoding.encodeUtf8 (eksClientAuthBearerToken projection)
-    prepared <-
-      try
-        ( do
-            writePrivateFile tokenPath tokenBytes
-            writePrivateFile
-              kubeconfigPath
-              ( LazyByteString.toStrict
-                  (encode (ephemeralKubeconfig projection tokenPath))
-              )
-            -- The credential is read back before the caller receives anything,
-            -- so "kubeconfig handed out, credential unreadable" is not a state a
-            -- caller can reach. The FIFO this replaces had exactly that state
-            -- and nothing could observe it.
-            readBack <- ByteString.readFile tokenPath
-            if readBack == tokenBytes
-              then pure ()
-              else ioError (userError "ephemeral bearer credential did not read back")
+  withSystemTempDirectory
+    ephemeralKubectlDirectoryPrefix
+    (prepareEphemeralKubeconfigPath projection >=> consume)
+
+prepareEphemeralKubeconfigPath
+  :: EksClientAuthProjection
+  -> FilePath
+  -> IO (Either EphemeralKubectlUnavailable FilePath)
+prepareEphemeralKubeconfigPath projection directory = do
+  let kubeconfigPath = directory </> ephemeralKubeconfigFileName
+      tokenPath = directory </> ephemeralBearerFileName
+      tokenBytes = TextEncoding.encodeUtf8 (eksClientAuthBearerToken projection)
+  prepared <-
+    try
+      ( do
+          writePrivateFile tokenPath tokenBytes
+          writePrivateFile
+            kubeconfigPath
+            ( LazyByteString.toStrict
+                (encode (ephemeralKubeconfig projection tokenPath))
+            )
+          -- The credential is read back before the caller receives anything,
+          -- so "kubeconfig handed out, credential unreadable" is not a state a
+          -- caller can reach. The FIFO this replaces had exactly that state
+          -- and nothing could observe it.
+          readBack <- ByteString.readFile tokenPath
+          if readBack == tokenBytes
+            then pure ()
+            else ioError (userError "ephemeral bearer credential did not read back")
+      )
+      :: IO (Either IOException ())
+  pure $ case prepared of
+    Left err ->
+      Left
+        ( EphemeralKubectlUnavailable
+            ( ObservationFailure
+                ( "could not prepare ephemeral Kubernetes client: "
+                    <> Text.pack (show err)
+                )
+            )
         )
-        :: IO (Either IOException ())
-    case prepared of
-      Left err ->
-        consume
-          ( Left
-              ( EphemeralKubectlUnavailable
-                  ( ObservationFailure
-                      ( "could not prepare ephemeral Kubernetes client: "
-                          <> Text.pack (show err)
-                      )
-                  )
-              )
-          )
-      Right () -> consume (Right kubeconfigPath)
+    Right () -> Right kubeconfigPath
 
 -- | The credential's name inside an ephemeral directory, shared by the creator
 -- and the replacer so the two cannot disagree about where the credential lives.
@@ -300,21 +732,116 @@ runBoundedKubectl kubectl environment workingDirectory kubeconfigPath arguments 
             ("failed to execute bounded kubectl: " <> Text.pack (show err))
             :| []
         )
-    Right output -> case processExitCode output of
-      ExitSuccess -> Right (processStdout output)
-      ExitFailure code ->
-        Left
-          ( ObservationFailure
-              ( Text.take
-                  4096
-                  ( "bounded kubectl exited with code "
-                      <> Text.pack (show code)
-                      <> ": "
-                      <> Text.pack (processStderr output <> processStdout output)
-                  )
-              )
-              :| []
+    Right output -> classifyKubectlOutput output
+
+runOperationKubectl
+  :: OperationSubprocesses
+  -> OperationUses
+  -> FilePath
+  -> OperationKubectlEnvironment
+  -> Maybe FilePath
+  -> FilePath
+  -> [String]
+  -> IO (Either (NonEmpty ObservationFailure) String)
+runOperationKubectl processes uses kubectl environment workingDirectory kubeconfigPath arguments = do
+  attempted <- withOperationUse uses $ do
+    now <- getMonotonicTimeNSec
+    let requestedEnd =
+          fromInteger
+            ( min
+                (toInteger (maxBound :: Word64))
+                (toInteger now + toInteger ephemeralKubectlWallClockSeconds * 1000000000)
+            )
+    result <-
+      captureOperationKubectlCommandBefore
+        ephemeralKubectlLimits
+        requestedEnd
+        processes
+        kubectl
+        environment
+        workingDirectory
+        (["--kubeconfig", kubeconfigPath] <> arguments)
+        Nothing
+    pure $ case result of
+      Left cause -> Left (failure (Text.pack (show cause)))
+      Right output ->
+        classifyKubectlOutput
+          ( ProcessOutput
+              (operationProcessExitCode output)
+              (ByteStringChar8.unpack (operationProcessStdout output))
+              (ByteStringChar8.unpack (operationProcessStderr output))
           )
+  pure $ case attempted of
+    Left cause -> Left (failure (Text.pack (show cause)))
+    Right result -> result
+ where
+  failure detail = ObservationFailure ("operation kubectl refused: " <> detail) :| []
+
+captureOperationKubectlCommandBefore
+  :: BoundedSubprocessLimits
+  -> Word64
+  -> OperationSubprocesses
+  -> FilePath
+  -> OperationKubectlEnvironment
+  -> Maybe FilePath
+  -> [String]
+  -> Maybe ByteString
+  -> IO (Either OperationSubprocessError OperationProcessOutput)
+captureOperationKubectlCommandBefore limits requested processes kubectl environment directory arguments input =
+  case (environment, input) of
+    (OperationKubectlStrings inherited, Nothing) ->
+      captureOperationCommandWithCeilingsBefore
+        out
+        err
+        requested
+        processes
+        (Subprocess kubectl arguments (Just inherited) directory)
+    (OperationKubectlStrings inherited, Just bytes) ->
+      captureOperationCommandWithInputBefore
+        maximumInput
+        out
+        err
+        requested
+        processes
+        bytes
+        (Subprocess kubectl arguments (Just inherited) directory)
+    (OperationKubectlNative inherited, Nothing) ->
+      captureOperationNativeCommandWithCeilingsBefore
+        out
+        err
+        requested
+        processes
+        (NativeSubprocess kubectl arguments inherited directory)
+    (OperationKubectlNative inherited, Just bytes) ->
+      captureOperationNativeCommandWithInputBefore
+        maximumInput
+        out
+        err
+        requested
+        processes
+        bytes
+        (NativeSubprocess kubectl arguments inherited directory)
+ where
+  out = boundedSubprocessMaximumStdoutBytes limits
+  err = boundedSubprocessMaximumStderrBytes limits
+  maximumInput = boundedSubprocessMaximumInputBytes limits
+
+classifyKubectlOutput :: ProcessOutput -> Either (NonEmpty ObservationFailure) String
+classifyKubectlOutput output = case processExitCode output of
+  ExitSuccess -> Right (processStdout output)
+  ExitFailure code ->
+    Left
+      ( ObservationFailure
+          ( Text.take
+              4096
+              ( "bounded kubectl exited with code "
+                  <> Text.pack (show code)
+                  <> ": "
+                  <> Text.pack (processStderr output <> processStdout output)
+              )
+          )
+          :| []
+      )
 
 -- | Sprint 6.5: the per-request bound every ephemeral @kubectl@ call carries.
 --
@@ -380,14 +907,22 @@ ephemeralKubectlLimits =
 -- the value discoverable in the child's environment.
 forbiddenKubectlEnvironmentKey :: String -> Bool
 forbiddenKubectlEnvironmentKey key =
-  key == "KUBECONFIG"
-    || key == "AWS_ACCESS_KEY_ID"
-    || key == "AWS_SECRET_ACCESS_KEY"
-    || key == "AWS_SESSION_TOKEN"
-    || key == "AWS_PROFILE"
-    || key == "AWS_DEFAULT_PROFILE"
-    || key == "AWS_SHARED_CREDENTIALS_FILE"
-    || key == "AWS_CONFIG_FILE"
+  any ((== key) . ByteStringChar8.unpack) forbiddenKubectlEnvironmentKeys
+
+forbiddenKubectlEnvironmentKeyBytes :: ByteString -> Bool
+forbiddenKubectlEnvironmentKeyBytes key = key `elem` forbiddenKubectlEnvironmentKeys
+
+forbiddenKubectlEnvironmentKeys :: [ByteString]
+forbiddenKubectlEnvironmentKeys =
+  [ "KUBECONFIG"
+  , "AWS_ACCESS_KEY_ID"
+  , "AWS_SECRET_ACCESS_KEY"
+  , "AWS_SESSION_TOKEN"
+  , "AWS_PROFILE"
+  , "AWS_DEFAULT_PROFILE"
+  , "AWS_SHARED_CREDENTIALS_FILE"
+  , "AWS_CONFIG_FILE"
+  ]
 
 -- | The kubeconfig document.  The bearer token is referenced by path through
 -- @tokenFile@ and never appears in this document, so the rendered kubeconfig

@@ -1,17 +1,28 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 module EnvSuite
   ( integrationEnvSuite
   )
 where
 
 import CliSuite (runInstalledWithFakeAuthority)
+import Data.Aeson (Value (..), eitherDecodeStrict', encode, object, (.=))
+import Data.Aeson.KeyMap qualified as KeyMap
+import Data.ByteString.Lazy qualified as Lazy
+import Data.Char (isSpace)
+import Data.List (find, isPrefixOf)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.BuildSupport
   ( addBuildSupportEnvironment
   , canonicalOperatorBinaryPath
   , syncBuiltOperatorBinary
   )
 import Prodbox.Capacity.Config qualified as Capacity
+import Prodbox.Capacity.Render qualified as CapacityRender
+import Prodbox.ControlPlane.RpcAdmissionBirthConfig
+import Prodbox.Lib.ChartPlatform (ResolvedCustomImage (..), valuesForLifecycleAuthorityWithRpcBirth)
 import Prodbox.Settings qualified as Settings
 import Prodbox.Settings.SecretRef
   ( SecretRef (SecretRefVault)
@@ -20,6 +31,7 @@ import Prodbox.Settings.SecretRef
 import System.Directory
   ( createDirectoryIfMissing
   , doesFileExist
+  , findExecutable
   , getCurrentDirectory
   )
 import System.Environment (getEnvironment)
@@ -37,6 +49,96 @@ import Tier0Fixture (tier0FixtureWithParameters, writeTier0Fixture)
 integrationEnvSuite :: SuiteBuilder ()
 integrationEnvSuite = do
   describe "native Haskell env integration suite" $ do
+    it "renders an Authority registration pin change as one config-only StatefulSet rollout" $
+      withSystemTempDirectory "prodbox-role-config-rollout" $ \tmpDir -> do
+        repoRoot <- getCurrentDirectory
+        helm <-
+          findExecutable "helm"
+            >>= maybe (fail "helm is required for the declared host-toolchain chart proof") pure
+        profile <-
+          maybe (fail "the canonical Authority resource profile is missing") pure $
+            find
+              ((== "lifecycle-authority") . Capacity.profile_id)
+              (Capacity.workload_profiles Capacity.defaultResourcePlan)
+        let scope = "pin-render-root"
+            pin = RpcBirthConfigRegistered (RpcBirthConfigPin scope 1 (Text.replicate 64 "a"))
+            image =
+              ResolvedCustomImage
+                "harbor.test/prodbox/runtime"
+                "pin-render"
+                (Just ("sha256:" ++ replicate 64 'a'))
+                (Just ("sha256:" ++ replicate 64 'b'))
+            envelope = Capacity.resources profile
+            resources =
+              object
+                [ "lifecycleAuthority"
+                    .= object
+                      [ "requests" .= CapacityRender.resourceVectorRuntimeValue (Capacity.request envelope)
+                      , "limits" .= CapacityRender.resourceVectorRuntimeValue (Capacity.limit envelope)
+                      ]
+                ]
+            values config = do
+              roleValues <-
+                either
+                  fail
+                  pure
+                  ( valuesForLifecycleAuthorityWithRpcBirth
+                      config
+                      scope
+                      "http://minio.fixture:9000"
+                      "pin-render"
+                      "pin-render"
+                      (Just image)
+                  )
+              case roleValues of
+                Object entries ->
+                  pure
+                    ( Object
+                        ( KeyMap.insert
+                            "storage"
+                            ( object
+                                ["size" .= CapacityRender.memoryQuantity (Capacity.durable_storage_mib (Capacity.request envelope))]
+                            )
+                            ( KeyMap.insert
+                                "kubernetesApiEgress"
+                                (object ["addresses" .= (["10.0.0.1"] :: [Text]), "port" .= (6443 :: Int)])
+                                (KeyMap.insert "resources" resources entries)
+                            )
+                        )
+                    )
+                _ -> fail "the canonical Authority values must be an object"
+            render filename config = do
+              payload <- values config
+              let path = tmpDir </> filename
+              Lazy.writeFile path (encode (payload :: Value))
+              (code, output, errors) <-
+                readCreateProcessWithExitCode
+                  ( proc
+                      helm
+                      [ "template"
+                      , "pin-render"
+                      , repoRoot </> "charts" </> "lifecycle-authority"
+                      , "--values"
+                      , path
+                      , "--show-only"
+                      , "templates/statefulset.yaml"
+                      ]
+                  )
+                  ""
+              if code == ExitSuccess then pure output else fail errors
+        legacy <- render "legacy.json" RpcBirthConfigLegacy
+        registered <- render "registered.json" pin
+        retried <- render "retried.json" pin
+        oldDigest <- roleConfigChecksum legacy
+        newDigest <- roleConfigChecksum registered
+        retryDigest <- roleConfigChecksum retried
+        newDigest `shouldNotBe` oldDigest
+        retryDigest `shouldBe` newDigest
+        withoutRoleConfigChecksum legacy `shouldBe` withoutRoleConfigChecksum registered
+        scalarLine "kind" registered `shouldBe` ["StatefulSet"]
+        scalarLine "replicas" registered `shouldBe` ["1"]
+        registered `shouldContain` "    type: RollingUpdate"
+
     it "shows masked settings without materializing JSON from the operator-facing binary" $
       withSystemTempDirectory "prodbox-hs-env" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
@@ -114,6 +216,30 @@ resolveBinaryPath = do
     Right binaryPath -> do
       binaryPath `shouldBe` canonicalOperatorBinaryPath repoRoot
       pure binaryPath
+
+-- Helm validates the complete YAML. Only this one public scalar is projected;
+-- comparing the remaining canonical rendering also pins image/resources and
+-- every other pod-template property across the same causal input profile.
+roleConfigChecksum :: String -> IO Text
+roleConfigChecksum rendered = case scalarLine "checksum/role-config" rendered of
+  [quoted] -> case eitherDecodeStrict' (TextEncoding.encodeUtf8 (Text.pack quoted)) of
+    Right digest
+      | Text.length digest == 64 && Text.all (`elem` ("0123456789abcdef" :: String)) digest -> pure digest
+    _ -> fail "Helm omitted the canonical public role-config checksum"
+  _ -> fail "Helm must render exactly one role-config checksum"
+
+scalarLine :: String -> String -> [String]
+scalarLine key rendered =
+  [ dropWhile isSpace (drop (length prefix) trimmed)
+  | line <- lines rendered
+  , let trimmed = dropWhile isSpace line
+  , prefix `isPrefixOf` trimmed
+  ]
+ where
+  prefix = key <> ":"
+
+withoutRoleConfigChecksum :: String -> [String]
+withoutRoleConfigChecksum = filter (not . isPrefixOf "checksum/role-config:" . dropWhile isSpace) . lines
 
 writeRepoMarkers :: FilePath -> IO ()
 writeRepoMarkers repoRoot = do

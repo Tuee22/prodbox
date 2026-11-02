@@ -98,9 +98,13 @@ import Prodbox.Bootstrap.Broker.SecretIngress
   )
 import Prodbox.Bootstrap.Broker.SecretWorker
   ( SecretFreeWorkerRequest
+  , SecretWorkerAttestationObservation (..)
+  , SecretWorkerAttestationReadCause (..)
+  , SecretWorkerAttestationRefusal (..)
   , SecretWorkerCleanupBinding (..)
   , SecretWorkerLifecycleObservation (..)
   , SecretWorkerOperation (..)
+  , SecretWorkerPodPhase (..)
   , attestSecretWorker
   , mkSecretFreeWorkerRequest
   , mkWorkerImageDigest
@@ -208,6 +212,107 @@ bootstrapBrokerProductionBoundarySuite = do
         canonicalFence
         (observeBootstrapLease canonicalLeaseObservation)
         `shouldSatisfy` isLeft
+
+  describe "Sprint 2.146 native attestation observation causes" $ do
+    let rawCases =
+          [
+            ( "foreign name"
+            , canonicalPodObservation {observedWorkerPodName = "private-foreign-name"}
+            , WorkerAttestationPodIdentityUnexpected
+            )
+          ,
+            ( "Pending"
+            , canonicalPodObservation {observedWorkerPhase = "Pending"}
+            , WorkerAttestationPodNotRunning WorkerPodPending
+            )
+          ,
+            ( "Succeeded"
+            , canonicalPodObservation {observedWorkerPhase = "Succeeded"}
+            , WorkerAttestationPodNotRunning WorkerPodSucceeded
+            )
+          ,
+            ( "Failed"
+            , canonicalPodObservation {observedWorkerPhase = "Failed"}
+            , WorkerAttestationPodNotRunning WorkerPodFailed
+            )
+          ,
+            ( "unknown phase"
+            , canonicalPodObservation {observedWorkerPhase = "private-unknown-phase"}
+            , WorkerAttestationPodNotRunning WorkerPodUnknown
+            )
+          ,
+            ( "not ready"
+            , canonicalPodObservation {observedWorkerContainerReady = False}
+            , WorkerAttestationContainerNotReady
+            )
+          ,
+            ( "deleting"
+            , canonicalPodObservation {observedWorkerDeletionTimestamp = Just "private-timestamp"}
+            , WorkerAttestationPodDeleting
+            )
+          ,
+            ( "invalid binding"
+            , canonicalPodObservation {observedWorkerPodUid = ""}
+            , WorkerAttestationBindingUnusable
+            )
+          ]
+        bodyWith declared runtime observedAnnotations =
+          runningWorkerPodBodyWith
+            canonicalWorkerRequest
+            "worker-pod-uid"
+            declared
+            runtime
+            observedAnnotations
+        annotations = workerPodAnnotationsForRequest canonicalWorkerRequest
+        apiCases =
+          [ ("missing", 404, "private-body", WorkerAttestationPodMissing)
+          , ("forbidden", 403, "private-body", WorkerAttestationHttpStatus 403)
+          , ("server error", 500, "private-body", WorkerAttestationHttpStatus 500)
+          , ("unreadable", 200, "private-body", WorkerAttestationPodUnreadable)
+          , ("not started", 200, notStartedWorkerPodBody, WorkerAttestationNotStarted)
+          , ("image unresolved", 200, unresolvedImageWorkerPodBody, WorkerAttestationImageNotResolved)
+          ,
+            ( "foreign repository"
+            , 200
+            , bodyWith "private.invalid/foreign:tag" (sha256 'a') annotations
+            , WorkerAttestationDeclaredImageUnusable
+            )
+          ,
+            ( "invalid runtime"
+            , 200
+            , bodyWith (workerTagReference "tag") "private-runtime" annotations
+            , WorkerAttestationRuntimeImageUnusable
+            )
+          ,
+            ( "different runtime"
+            , 200
+            , bodyWith (workerDigestReference (sha256 'a')) (sha256 'b') annotations
+            , WorkerAttestationDeclaredRuntimeImageDisagree
+            )
+          ,
+            ( "annotation missing"
+            , 200
+            , bodyWith
+                (workerTagReference "tag")
+                (sha256 'a')
+                (Map.delete "bootstrap.prodbox.dev/owner-nonce" annotations)
+            , WorkerAttestationAnnotationUnusable
+            )
+          ]
+    forM_ rawCases $ \(name, observed, cause) ->
+      it ("classifies " ++ name ++ " without its values") $ do
+        let evidence = attestWorkerPodObservation canonicalWorkerRequest observed
+        evidence `shouldBe` SecretWorkerAttestationReadRefused cause
+        attestSecretWorker canonicalWorkerRequest evidence
+          `shouldBe` Left (SecretWorkerAttestationObservationRefused cause)
+        show evidence `shouldNotContain` "private-"
+    forM_ apiCases $ \(name, status, body, cause) ->
+      it ("preserves API " ++ name ++ " without its body") $ do
+        let evidence = workerAttestationFromResponse namespace canonicalWorkerRequest status body
+        evidence `shouldBe` SecretWorkerAttestationReadRefused cause
+        attestSecretWorker canonicalWorkerRequest evidence
+          `shouldBe` Left (SecretWorkerAttestationObservationRefused cause)
+        show evidence `shouldNotContain` "private-"
 
   describe "Bootstrap Broker native Kubernetes cleanup boundary" $ do
     it "decodes only the exact named, digest-pinned worker Pod" $ do
@@ -563,6 +668,23 @@ bootstrapBrokerProductionBoundarySuite = do
     it "distinguishes an empty expectation list from a Pod that matched nothing" $
       firstAttestedRequest [] attestableWorkerPodBody
         `shouldBe` Left "no expected closed worker operation was supplied"
+
+    it
+      "BOOTSTRAP-VAULT-INIT-PREAPPLICATION-REFUSAL-2026-10-22 attributes only the matching failed worker"
+      $ do
+        let body = attestableWorkerPodBodyWithPhase "Failed" False
+        firstAttestedRequest [expectationFor SecretWorkerInitialize] body
+          `shouldBe` Left
+            "worker Pod does not match any expected closed operation: initialize -> matching worker terminated unsuccessfully; inspect its protected worker diagnostic"
+        firstAttestedRequest [expectationFor SecretWorkerUnseal] body
+          `shouldBe` Left "worker Pod does not match any expected closed operation: unseal -> worker operation mismatch"
+
+    it "retains refusal for successful, pending and unready workers rather than attaching" $
+      forM_ [("Succeeded", False), ("Pending", False), ("Running", False)] $ \(phase, ready) ->
+        firstAttestedRequest
+          [expectationFor SecretWorkerInitialize]
+          (attestableWorkerPodBodyWithPhase phase ready)
+          `shouldSatisfy` isLeft
 
   describe "Bootstrap Broker one-shot secret ingress" $ do
     it "round-trips one canonical exact-bound frame without printable plaintext" $ do
@@ -1729,7 +1851,10 @@ fenceGenerationAnnotation = "bootstrap.prodbox.dev/fence-generation"
 -- compiled worker ServiceAccount; the shared `workerPodBody` fixture uses
 -- neither, which is what the first run of these cases measured.
 attestableWorkerPodBody :: ByteString.ByteString
-attestableWorkerPodBody =
+attestableWorkerPodBody = attestableWorkerPodBodyWithPhase "Running" True
+
+attestableWorkerPodBodyWithPhase :: Text.Text -> Bool -> ByteString.ByteString
+attestableWorkerPodBodyWithPhase phase ready =
   LazyByteString.toStrict . encode $
     object
       [ "apiVersion" .= ("v1" :: Text.Text)
@@ -1753,12 +1878,12 @@ attestableWorkerPodBody =
             ]
       , "status"
           .= object
-            [ "phase" .= ("Running" :: Text.Text)
+            [ "phase" .= phase
             , "containerStatuses"
                 .= [ object
                        [ "name" .= workerContainerName
                        , "imageID" .= ("containerd://" <> sha256 'a')
-                       , "ready" .= True
+                       , "ready" .= ready
                        , "state" .= object ["running" .= object []]
                        ]
                    ]

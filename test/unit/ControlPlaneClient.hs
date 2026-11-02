@@ -3,14 +3,16 @@
 
 module ControlPlaneClient (controlPlaneClientSuite) where
 
+import Control.Monad (forM_)
 import Data.ByteString qualified as ByteString
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Network.HTTP.Types.Header (Header)
 import Network.HTTP.Types.Method (Method)
 import Prodbox.ControlPlane.Client
 import Prodbox.Http.Client
-  ( HttpBoundedError (HttpBoundedTransport)
+  ( HttpBoundedError (HttpBoundedResponseHeadersTooLarge, HttpBoundedTransport)
   , HttpError (HttpTimeout)
+  , HttpResponseHeaderLimit (..)
   )
 import TestSupport
 
@@ -90,6 +92,19 @@ controlPlaneClientSuite =
           )
       callControlPlane failed AuthorityBackupCopyRoute "copy"
         `shouldReturn` Left (ControlPlaneTransportFailed (HttpTimeout "deadline"))
+
+    forM_ [HttpResponseEarlyHintBlocks, HttpResponseRetainedHeaderFields] $ \limit ->
+      it ("preserves the structured header refusal: " <> show limit) $ do
+        endpoint <- accepted (mkAuthorityBackupEndpoint "http://authority-backup:8600")
+        client <-
+          accepted
+            ( controlPlaneClientWithTransport
+                64
+                endpoint
+                (constantTransport (Left (HttpBoundedResponseHeadersTooLarge limit 101 100)))
+            )
+        callControlPlane client AuthorityBackupObserveRoute ""
+          `shouldReturn` Left (ControlPlaneResponseHeadersTooLarge limit 101 100)
 
     it "rejects malformed endpoints and non-positive response bounds" $ do
       mkTlsRetentionEndpoint "tls-retention:8600"

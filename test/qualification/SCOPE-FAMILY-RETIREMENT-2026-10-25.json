@@ -1,0 +1,632 @@
+{
+  "id": "SCOPE-FAMILY-RETIREMENT-2026-10-25",
+  "recorded_utc": "2026-10-25T21:59:10.237248+00:00",
+  "scope": "Actual private early timer/helper retirement and exact three-role closing absence after reference release. No production process-lifecycle, host-admission or deployment qualification claim.",
+  "sources": [
+    {
+      "path": "src/Prodbox/Subprocess/ScopeFamily.hs",
+      "sha256": "a94559fd2c07cd6b74fc3b3ffec68780932c065faa356868089b054b39b4e91a",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/scope-retirement-source-ScopeFamily.hs-a94559fd2c07cd6b"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/KernelScope.hs",
+      "sha256": "d952403c16277c6f7bcb4608f398141ea211f97962292d3f3671facf97ca63e6",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/scope-retirement-source-KernelScope.hs-d952403c16277c6f"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdBus.hs",
+      "sha256": "2acd2873132f07ae412cb182ecff2ff047eee43de95967905c7e50b8f2dc01b9",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/scope-retirement-source-SystemdBus.hs-2acd2873132f07ae"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "sha256": "ebbae68005102b59afc01ef3e302f9b54067369c3d790e4bf12221002ab51337",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/scope-retirement-source-SystemdIdentity.hs-ebbae68005102b59"
+    },
+    {
+      "path": "test/qualification/KernelScopeObservation.hs",
+      "sha256": "378e64f4a98a1ce3f647456eba19dc8cea47d4976be13110fbc9f165e3d0bdd3",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/scope-retirement-source-KernelScopeObservation.hs-378e64f4a98a1ce3"
+    },
+    {
+      "path": "prodbox.cabal",
+      "sha256": "28f49f01f875c287010566e77439432d29b632d80721a48cbf2dc2d765fbb5f3",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/scope-retirement-source-prodbox.cabal-28f49f01f875c287"
+    }
+  ],
+  "binaries": [
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/scope-retirement-native-threaded-4",
+      "sha256": "71020a85e02a00159d82831a8fae2c7f181721fa65a3534cf5f88ecc24d830cc"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/scope-retirement-native-nonthreaded-4",
+      "sha256": "6f03b3310e55c36699e136b90bf7a0ac68889468d77ce269200228dfa41f5b36"
+    }
+  ],
+  "family_cases": [
+    {
+      "record": "scope-retirement-threaded-retire-4.result.json",
+      "style": "threaded",
+      "observation": {
+        "early_retirement": true,
+        "elapsed_micros": 30201,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-7275c1fb2e06b14cf66264013bb6ba87.scope",
+          "prodbox-owned-7275c1fb2e06b14cf66264013bb6ba87-expiry.timer",
+          "prodbox-owned-7275c1fb2e06b14cf66264013bb6ba87-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "retire",
+        "negative_request": false,
+        "observed_terminal_ns": 2232239277599699,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "record": "scope-retirement-threaded-reject-live-retire-4.result.json",
+      "style": "threaded",
+      "observation": {
+        "early_retirement": true,
+        "elapsed_micros": 27339,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-b293ce021ea0696373fb2217025a5c42.scope",
+          "prodbox-owned-b293ce021ea0696373fb2217025a5c42-expiry.timer",
+          "prodbox-owned-b293ce021ea0696373fb2217025a5c42-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "reject-live-retire",
+        "negative_request": false,
+        "observed_terminal_ns": 2232239340199251,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": true
+      }
+    },
+    {
+      "record": "scope-retirement-threaded-expired-retire-4.result.json",
+      "style": "threaded",
+      "observation": {
+        "early_retirement": true,
+        "elapsed_micros": 31120,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-4f16ef2917113c1462adcf86d94bf3c9.scope",
+          "prodbox-owned-4f16ef2917113c1462adcf86d94bf3c9-expiry.timer",
+          "prodbox-owned-4f16ef2917113c1462adcf86d94bf3c9-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "expired-retire",
+        "negative_request": false,
+        "observed_terminal_ns": 2232239406492430,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": true
+      }
+    },
+    {
+      "record": "scope-retirement-threaded-unsubmitted-retire-4.result.json",
+      "style": "threaded",
+      "observation": {
+        "early_retirement": true,
+        "elapsed_micros": 30541,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-b42d380fb2284aa41e96220dab5e73b3.scope",
+          "prodbox-owned-b42d380fb2284aa41e96220dab5e73b3-expiry.timer",
+          "prodbox-owned-b42d380fb2284aa41e96220dab5e73b3-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "unsubmitted-retire",
+        "negative_request": false,
+        "observed_terminal_ns": 2232239479367271,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": true
+      }
+    },
+    {
+      "record": "scope-retirement-threaded-expiry-4.result.json",
+      "style": "threaded",
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 361685,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-0a4fc926a783352d5bc8757de7702b9a.scope",
+          "prodbox-owned-0a4fc926a783352d5bc8757de7702b9a-expiry.timer",
+          "prodbox-owned-0a4fc926a783352d5bc8757de7702b9a-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "expiry",
+        "negative_request": false,
+        "observed_terminal_ns": 2232239873808926,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "record": "scope-retirement-threaded-term-4.result.json",
+      "style": "threaded",
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 359826,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-2a63ecf2de627b027a858d9689f3d5bf.scope",
+          "prodbox-owned-2a63ecf2de627b027a858d9689f3d5bf-expiry.timer",
+          "prodbox-owned-2a63ecf2de627b027a858d9689f3d5bf-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "term",
+        "negative_request": false,
+        "observed_terminal_ns": 2232239939953866,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "record": "scope-retirement-threaded-duplicate-4.result.json",
+      "style": "threaded",
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 362003,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-8f7d71fd746e7891957d094ca7ea48c0.scope",
+          "prodbox-owned-8f7d71fd746e7891957d094ca7ea48c0-expiry.timer",
+          "prodbox-owned-8f7d71fd746e7891957d094ca7ea48c0-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "duplicate",
+        "negative_request": false,
+        "observed_terminal_ns": 2232240666465911,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "record": "scope-retirement-threaded-expired-create-4.result.json",
+      "style": "threaded",
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 2750,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-eb7ed3036ef631df1c6c489658093728.scope",
+          "prodbox-owned-eb7ed3036ef631df1c6c489658093728-expiry.timer",
+          "prodbox-owned-eb7ed3036ef631df1c6c489658093728-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "expired-create",
+        "negative_request": true,
+        "observed_terminal_ns": null,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "record": "scope-retirement-threaded-future-create-4.result.json",
+      "style": "threaded",
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 2539,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-f029687824816bfb135873ffb5fa1786.scope",
+          "prodbox-owned-f029687824816bfb135873ffb5fa1786-expiry.timer",
+          "prodbox-owned-f029687824816bfb135873ffb5fa1786-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "future-create",
+        "negative_request": true,
+        "observed_terminal_ns": null,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "record": "scope-retirement-threaded-foreign-descriptor-4.result.json",
+      "style": "threaded",
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 2806,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-5703e342e32790ec33c931b431f63286.scope",
+          "prodbox-owned-5703e342e32790ec33c931b431f63286-expiry.timer",
+          "prodbox-owned-5703e342e32790ec33c931b431f63286-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "foreign-descriptor",
+        "negative_request": true,
+        "observed_terminal_ns": null,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "record": "scope-retirement-nonthreaded-retire-4.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "early_retirement": true,
+        "elapsed_micros": 26718,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-6ad7dffac1ab1dd81052f79ffd5303cf.scope",
+          "prodbox-owned-6ad7dffac1ab1dd81052f79ffd5303cf-expiry.timer",
+          "prodbox-owned-6ad7dffac1ab1dd81052f79ffd5303cf-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "retire",
+        "negative_request": false,
+        "observed_terminal_ns": 2232240863822829,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "record": "scope-retirement-nonthreaded-reject-live-retire-4.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "early_retirement": true,
+        "elapsed_micros": 29154,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-2e554ccc5a3cde2c6f5c0c9c32e614ee.scope",
+          "prodbox-owned-2e554ccc5a3cde2c6f5c0c9c32e614ee-expiry.timer",
+          "prodbox-owned-2e554ccc5a3cde2c6f5c0c9c32e614ee-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "reject-live-retire",
+        "negative_request": false,
+        "observed_terminal_ns": 2232240937015569,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": true
+      }
+    },
+    {
+      "record": "scope-retirement-nonthreaded-expired-retire-4.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "early_retirement": true,
+        "elapsed_micros": 30435,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-34fa279ec6032773e19c3af550e01796.scope",
+          "prodbox-owned-34fa279ec6032773e19c3af550e01796-expiry.timer",
+          "prodbox-owned-34fa279ec6032773e19c3af550e01796-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "expired-retire",
+        "negative_request": false,
+        "observed_terminal_ns": 2232241000969993,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": true
+      }
+    },
+    {
+      "record": "scope-retirement-nonthreaded-unsubmitted-retire-4.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "early_retirement": true,
+        "elapsed_micros": 30777,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-4ae3edd6a010cb911e16303005beb6c9.scope",
+          "prodbox-owned-4ae3edd6a010cb911e16303005beb6c9-expiry.timer",
+          "prodbox-owned-4ae3edd6a010cb911e16303005beb6c9-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "unsubmitted-retire",
+        "negative_request": false,
+        "observed_terminal_ns": 2232241068826450,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": true
+      }
+    },
+    {
+      "record": "scope-retirement-nonthreaded-expiry-4.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 369020,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-5c34934aa692befa5061e52a14951add.scope",
+          "prodbox-owned-5c34934aa692befa5061e52a14951add-expiry.timer",
+          "prodbox-owned-5c34934aa692befa5061e52a14951add-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "expiry",
+        "negative_request": false,
+        "observed_terminal_ns": 2232241472387267,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "record": "scope-retirement-nonthreaded-term-4.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 361800,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-3c747f3efbc9f84e615d677782da14c8.scope",
+          "prodbox-owned-3c747f3efbc9f84e615d677782da14c8-expiry.timer",
+          "prodbox-owned-3c747f3efbc9f84e615d677782da14c8-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "term",
+        "negative_request": false,
+        "observed_terminal_ns": 2232241536208230,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "record": "scope-retirement-nonthreaded-duplicate-4.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 361513,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-f09875512e4c92fe4bf98b8a6de228f3.scope",
+          "prodbox-owned-f09875512e4c92fe4bf98b8a6de228f3-expiry.timer",
+          "prodbox-owned-f09875512e4c92fe4bf98b8a6de228f3-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "duplicate",
+        "negative_request": false,
+        "observed_terminal_ns": 2232242267034101,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "record": "scope-retirement-nonthreaded-expired-create-4.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 2986,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-8a9d493a2a91892c221478644c75c893.scope",
+          "prodbox-owned-8a9d493a2a91892c221478644c75c893-expiry.timer",
+          "prodbox-owned-8a9d493a2a91892c221478644c75c893-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "expired-create",
+        "negative_request": true,
+        "observed_terminal_ns": null,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "record": "scope-retirement-nonthreaded-future-create-4.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 2660,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-9740926ea279ba092c54ddf3b8b96dd2.scope",
+          "prodbox-owned-9740926ea279ba092c54ddf3b8b96dd2-expiry.timer",
+          "prodbox-owned-9740926ea279ba092c54ddf3b8b96dd2-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "future-create",
+        "negative_request": true,
+        "observed_terminal_ns": null,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    },
+    {
+      "record": "scope-retirement-nonthreaded-foreign-descriptor-4.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "early_retirement": false,
+        "elapsed_micros": 2626,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-f3239812cfce55599945d14190df6c70.scope",
+          "prodbox-owned-f3239812cfce55599945d14190df6c70-expiry.timer",
+          "prodbox-owned-f3239812cfce55599945d14190df6c70-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "foreign-descriptor",
+        "negative_request": true,
+        "observed_terminal_ns": null,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "refusal_alarm_readback": false
+      }
+    }
+  ],
+  "checks": [
+    {
+      "record": "scope-retirement-library-build-1.result.json",
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-scope-retirement-library-20261025-1",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=600s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "cabal",
+        "build",
+        "--builddir=.build",
+        "lib:prodbox",
+        "--ghc-options=-Werror"
+      ],
+      "started_utc": "2026-10-25T21:57:22.884929+00:00",
+      "completed_utc": "2026-10-25T21:57:43.019204+00:00",
+      "exit_code": 0,
+      "wall_seconds": 20.13429131684825
+    },
+    {
+      "record": "scope-retirement-target-hlint-1.result.json",
+      "command": [
+        ".build/prodbox-style-tools/bin/hlint",
+        "--hint=.hlint.yaml",
+        "--with-group=default",
+        "--with-group=extra",
+        "src/Prodbox/Subprocess/ScopeFamily.hs",
+        "src/Prodbox/Subprocess/KernelScope.hs",
+        "src/Prodbox/Subprocess/SystemdBus.hs",
+        "src/Prodbox/Subprocess/SystemdIdentity.hs",
+        "test/qualification/KernelScopeObservation.hs",
+        "test/qualification/SystemdBusDeadline.hs"
+      ],
+      "started_utc": "2026-10-25T21:57:22.885009+00:00",
+      "completed_utc": "2026-10-25T21:57:27.717088+00:00",
+      "exit_code": 0,
+      "wall_seconds": 4.832096255850047
+    },
+    {
+      "record": "scope-retirement-native-build-threaded-4.result.json",
+      "command": [
+        "ghc",
+        "-Wall",
+        "-Werror",
+        "-threaded",
+        "-rtsopts",
+        "-with-rtsopts=-N1",
+        "-hide-all-packages",
+        "-package-db",
+        "/home/matthewnowak/.cabal/store/ghc-9.12.4-5301/package.db",
+        "-package-db",
+        ".build/packagedb/ghc-9.12.4",
+        "-package-id",
+        "prodbox-0.1.0-inplace",
+        "-package-id",
+        "base-4.21.2.0-60b9",
+        "-package-id",
+        "bytestring-0.11.5.4-76e2bb591efe928d842f8288364e9ef294891f67ce13cd0bc014a1e2fe5df0a0",
+        "-package-id",
+        "unix-2.8.8.0-9ce6978edc33076465fb56791d9ca017d405aa7230adf2653b2f7564cc3925f1",
+        "-package-id",
+        "text-2.0.2-8761414bfd4c61d83bb4a76313f5b7a899dddb96b90269a6e5d997a8bbbd6375",
+        "-package-id",
+        "aeson-2.2.5.0-e2e37fe6bc5aa07f45e066f8f61685fa5ad0b1eb18e2b2c128ef1ea752061e01",
+        "-package-id",
+        "async-2.2.6-8960f1dd21f4a009a29b1fe1a67c9a2a4a2c68697b93dd8f3fb173222380a50f",
+        "-package-id",
+        "crypton-1.0.6-020d21e85cd9683b83d7321e840b655ed76b478e58a637e86a778a7747ac3db7",
+        "-package",
+        "transformers",
+        "-outputdir",
+        ".build/sprint-6.5/rpc-coordinator-20261025/scope-retirement-native-threaded-4-objects",
+        "test/qualification/KernelScopeObservation.hs",
+        "src/Prodbox/Subprocess/ScopeFamily.hs",
+        "src/Prodbox/Subprocess/KernelScope.hs",
+        "src/Prodbox/Subprocess/SystemdBus.hs",
+        "src/Prodbox/Subprocess/SystemdIdentity.hs",
+        "-o",
+        ".build/sprint-6.5/rpc-coordinator-20261025/scope-retirement-native-threaded-4"
+      ],
+      "started_utc": "2026-10-25T21:57:07.610779+00:00",
+      "completed_utc": "2026-10-25T21:57:11.405285+00:00",
+      "exit_code": 0,
+      "wall_seconds": 3.7945244000293314
+    },
+    {
+      "record": "scope-retirement-native-build-nonthreaded-4.result.json",
+      "command": [
+        "ghc",
+        "-Wall",
+        "-Werror",
+        "-rtsopts",
+        "-hide-all-packages",
+        "-package-db",
+        "/home/matthewnowak/.cabal/store/ghc-9.12.4-5301/package.db",
+        "-package-db",
+        ".build/packagedb/ghc-9.12.4",
+        "-package-id",
+        "prodbox-0.1.0-inplace",
+        "-package-id",
+        "base-4.21.2.0-60b9",
+        "-package-id",
+        "bytestring-0.11.5.4-76e2bb591efe928d842f8288364e9ef294891f67ce13cd0bc014a1e2fe5df0a0",
+        "-package-id",
+        "unix-2.8.8.0-9ce6978edc33076465fb56791d9ca017d405aa7230adf2653b2f7564cc3925f1",
+        "-package-id",
+        "text-2.0.2-8761414bfd4c61d83bb4a76313f5b7a899dddb96b90269a6e5d997a8bbbd6375",
+        "-package-id",
+        "aeson-2.2.5.0-e2e37fe6bc5aa07f45e066f8f61685fa5ad0b1eb18e2b2c128ef1ea752061e01",
+        "-package-id",
+        "async-2.2.6-8960f1dd21f4a009a29b1fe1a67c9a2a4a2c68697b93dd8f3fb173222380a50f",
+        "-package-id",
+        "crypton-1.0.6-020d21e85cd9683b83d7321e840b655ed76b478e58a637e86a778a7747ac3db7",
+        "-package",
+        "transformers",
+        "-outputdir",
+        ".build/sprint-6.5/rpc-coordinator-20261025/scope-retirement-native-nonthreaded-4-objects",
+        "test/qualification/KernelScopeObservation.hs",
+        "src/Prodbox/Subprocess/ScopeFamily.hs",
+        "src/Prodbox/Subprocess/KernelScope.hs",
+        "src/Prodbox/Subprocess/SystemdBus.hs",
+        "src/Prodbox/Subprocess/SystemdIdentity.hs",
+        "-o",
+        ".build/sprint-6.5/rpc-coordinator-20261025/scope-retirement-native-nonthreaded-4"
+      ],
+      "started_utc": "2026-10-25T21:57:11.436139+00:00",
+      "completed_utc": "2026-10-25T21:57:15.222890+00:00",
+      "exit_code": 0,
+      "wall_seconds": 3.7867745850235224
+    }
+  ],
+  "build_metadata_note": "The library/fixture Haskell sources match these snapshots. The subsequent Cabal edit adds only this evidence file to extra-source-files; the library build used the preceding d51a6d3d46376f0c8a52e42758cd1c69e15feb7d3614f6ce8fd4b0e8fd103308 package metadata.",
+  "preserved_failures": [
+    "scope-retirement-native-build-threaded-3.result.json"
+  ],
+  "prior_controls": "test/qualification/SCOPE-FAMILY-CREATION-2026-10-25.json",
+  "remaining": [
+    "lost-reply and cancellation recovery",
+    "foreign-family races",
+    "actual canonical process/pre-Go/exec/reader integration",
+    "whole-family CPU/memory/PID/placement/concurrency admission",
+    "actual public fast-session success and independent absence proof",
+    "physical coordinator caller and current canonical/frontend/deployment qualification"
+  ]
+}

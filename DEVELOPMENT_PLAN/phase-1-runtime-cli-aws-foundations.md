@@ -11,6 +11,50 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-10-25 on Sprint `1.98` (Standards A/N).** The CLI's file-lint driver
+evaluates each complete source-check finding payload before loading the next corpus. All checks,
+predicates and finding order remain intact. Frozen and replacement actual operators establish the
+bounded-memory law; ordered finding controls, warning-clean builds, the full canonical gate and
+complete combined frontend pass. This closes Phase `1`'s own quality-command evaluation surface.
+Native composition and deployment qualification remain separate; execution lives in Resume Here.
+
+✅ **Reclosed 2026-10-24 on Sprint `1.97` (Standards A/N/O).** One complete
+capacity projection charges scheduled platform demand exactly once across allocation, generated
+assertions, fitting and admission. Exact legacy decode preserves missing demand without
+authorizing it, and file-origin loading retains ordinary Dhall path/import semantics. Frozen
+counterexample, owned, installed, canonical and complete frontend gates pass. Physical host
+expansion and composed deployment qualification remain separate; execution returns to Sprint
+`6.5` in Resume Here.
+
+🔄 **Reopened 2026-10-24 on Sprint `1.97` (Standards A/N).** The resource compiler
+and host-fitting generator omit scheduled Kubernetes/platform requests from their fit proof.
+The native scheduler refuses the Authority while the frozen allocator admits the incomplete
+projection. This expands Phase `1`'s own capacity/schema/admission surface. Earlier closures
+retain their evidence; current execution order remains solely in Resume Here.
+
+✅ **Reclosed 2026-10-22 on Sprint `1.96` (Standards A/N).** The final runtime stage
+installs and checks GnuPG. The frozen image fails its prerequisite control, while the repaired
+image passes real key generation/encryption/decryption under the same kernel resource limits.
+Packaging invariants, canonical validation and all 76 frontend cases pass. Composed live
+projection remains Sprint `6.5`'s pending qualification work; no operational cutover is implied.
+
+🔄 **Reopened 2026-10-22 on Sprint `1.96` (Standards A/N).** Sprint `6.5`'s first
+current-runtime roll exposes a missing final-stage `gpg`. The builder has GnuPG, while the
+shipped Broker fails its OpenPGP readiness gate. This is the container-packaging surface
+Sprints `1.45`/`1.94` own. The new sprint is registered before repair; earlier closures
+retain their evidence, and the numerical queue pauses `6.5` for this own-surface correction.
+
+✅ **Reclosed 2026-10-22 on Sprint `1.95` (Standards A/N).** The drift gate and harness
+share exact canonical recognition of portable and host-fitted unauthored templates. Eight
+boundary controls, installed generation/preflight checks, the canonical gate and the full
+CLI/config integration suite pass. Runtime decoding still requires an authored identity;
+this closure supplies no deployment qualification or operational cutover.
+
+🔄 **Reopened 2026-10-22 on Sprint `1.95` (Standards A/N).** A clean-checkout
+`config generate` produces a host-fitted unauthored template that the drift gate and harness
+do not recognize. This phase owns the generator and its exact template-recognition boundary.
+Earlier closures retain their evidence; this reopen supplies no deployment qualification.
+
 ✅ **Reclosed 2026-10-19 on Sprint `1.94` (Standards A/N).** The runtime image separates
 manifest preparation, dependency/project compilation, and shipped runtime. Source and module-list
 changes preserve the dependency cache, and the runtime carries the executable, tools, programs, and
@@ -7185,6 +7229,301 @@ operator decision D11 recorded in Sprint `0.36`; free space is checked manually 
   [00-overview.md](00-overview.md); add the validated deployment-context component to
   [system-components.md](system-components.md); register every surviving fallback or false field in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+## Sprint 1.95: Recognize Host-Fitted Unauthored Configuration [✅ Done]
+
+**Status**: Done (2026-10-22; registered before behavior changes).
+**Implementation**: `src/Prodbox/Config/Tier0.hs`, `src/Prodbox/CheckCode.hs`,
+`src/Prodbox/Aws.hs`, `test/unit/Main.hs`, and the built-frontend configuration tests.
+**Doctrine**: [Config Doctrine § 3](../documents/engineering/config_doctrine.md#3-canonical-paths)
+and [Code Quality Doctrine § 3](../documents/engineering/code_quality.md#3-guard-coverage).
+**Deployment qualification**: pending; this repair changes unauthored bootstrap recognition,
+not an admitted deployment's topology or resource envelopes.
+**Independent Validation**: generated portable and fitted template recognition, negative
+controls for authored/malformed/edited files, installed CLI checks, and `prodbox dev check`;
+no cluster or AWS credentials are required.
+**Docs to update**: `documents/engineering/config_doctrine.md`,
+`documents/engineering/code_quality.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+The drift gate and harness recognize the actual host-fitted output of `config generate`
+as an unauthored template, while runtime configuration decoding still requires a nonempty
+machine identity. One shared recognizer compares complete canonical text after extracting
+only the typed host-capacity vector.
+
+### Deliverables
+
+- One recognizer used by both the drift gate and harness regeneration.
+- Exact portable and fitted templates are eligible; changes to any other field, stale
+  witnesses, malformed expressions and noncanonical text remain ineligible.
+- Generated configuration stays non-secret and grants no deployment admission.
+
+### Validation
+
+1. Retain the clean-checkout generation/lint failure as the old-behavior control.
+2. Test portable/fitted templates and the negative controls at the shared boundary.
+3. Run installed generation, file lint and harness preflight; with the fixture absent,
+   preflight reaches the explicit missing-fixture refusal instead of a topology decode error.
+4. Pass `prodbox dev check` and built-frontend CLI/config integration before closure.
+
+### Remaining Work
+
+None on the owned surface. The shared recognizer, both consumers and governed docs are aligned.
+The canonical gate passes **6,581** primary plus **27/35/61** auxiliary cases, exit **0** in
+**1482.29 seconds**, including all eight new controls. Focused installed cases pass **2/2**
+(**22.00 seconds**), and full CLI/config integration passes **76/76**, exit **0** in
+**1082.32 seconds** command wall time (**1076.21 seconds** test time). Both full gates use
+operator binary `43b459df5c186c81f94e9bee4cf99231e1bd1a8ac0c2cffe25365db00affdcdd`.
+Commands and results are indexed in `.build/sprint-1.95/validation.json`.
+
+The old fitted-template refusal, stale bootstrap snapshot, unsupported focused-run option,
+and early missing-build diagnostics remain retained and are not counted as feature tests.
+The existing credential-rejection fixture now assembles the identical synthetic private-key
+header from fragments, preserving both its runtime assertion and the source-secret scanner.
+The two earlier style failures remain retained. No deployment-qualified claim, live image
+roll, AWS mutation, activation or legacy removal is part of this closure.
+
+## Sprint 1.96: Ship the Bootstrap Broker's OpenPGP Runtime Prerequisite [✅ Done]
+
+**Status**: Done (2026-10-22; registered before behavior changes).
+**Implementation**: `docker/prodbox.Dockerfile`, the frontend scaffold image invariants and
+the runtime-image artifact validation.
+**Doctrine**: [Dependency Management § 1](../documents/engineering/dependency_management.md#1-current-toolchain-split)
+and [Bootstrap Readiness Doctrine](../documents/engineering/bootstrap_readiness_doctrine.md).
+**Deployment qualification**: pending; the runtime component image changes. This does not
+activate the replacement cascade or retire operational legacy.
+**Independent Validation**: offline old-image prerequisite failure, final-stage package and
+executable checks, runtime artifact smoke, sibling tool checks, and `prodbox dev check`.
+**Docs to update**: `documents/engineering/dependency_management.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+The final runtime image carries the GnuPG executable and helpers required by the Bootstrap
+Broker's existing custody boundary. The builder's package list cannot stand in for the runtime's
+prerequisites, and missing tools are detected while validating the artifact before a live roll.
+
+### Deliverables
+
+- Retain stable counterexample `BOOTSTRAP-BROKER-RUNTIME-GPG-MISSING-2026-10-22`, its real
+  readiness response, frozen image identity and missing-executable negative control.
+- Install GnuPG in the final runtime stage and execute an actual final-stage prerequisite check.
+  Keep the same process topology, resource envelopes, persistence and readiness timeouts.
+- Check the other role-required runtime tools and preserve the compiler/store/source isolation.
+
+### Validation
+
+1. The frozen superseded image fails the same OpenPGP prerequisite that its running Broker
+   reports unavailable; no secret, credential or live provider access is needed.
+2. The repaired final image passes the executable check and a bounded, disposable GnuPG
+   operation under memory-backed temporary custody, with no persistent private material.
+3. Sibling runtime tools remain present, and GHC/Cabal/source stores remain absent.
+4. Pass focused packaging invariants, `prodbox dev check` and built-frontend CLI/config checks.
+
+### Remaining Work
+
+The final-stage package and build-time executable checks are implemented. The frozen-image
+prerequisite probe fails as expected; its other registered tools and compiler/store/source
+isolation pass. The image archive's config digest matches the exercised image, and the full
+and executable source identities were captured before the behavior change. The recording is
+`test/qualification/BOOTSTRAP-BROKER-RUNTIME-GPG-MISSING-2026-10-22.json`.
+Focused packaging/scaffold checks pass **28/28** (**27.72 seconds** command wall time);
+documentation lint and the canonical gate pass. The latter exits **0** in **1107.27 seconds**,
+with **6,606** primary plus **27/35/61** auxiliary tests on the unchanged operator binary.
+Full frontend validation passes **76/76**, exit **0** in **1134.26 seconds** command wall
+time (**1127.37 seconds** test time). Final artifact build passes in **65.11 seconds**;
+RSA-2048 generation/encryption/decryption passes in **3.26 seconds** in the actual repaired
+image. Both frozen and replacement probes read identical kernel CPU/memory limits and zero
+swap allowance. Runtime tools and compiler/store/source isolation pass; the probe container
+is absent afterward. The replacement config digest is
+`sha256:b80df0945e2d185260e415ac331b8ddd70ccb6214cd3a274481f8aacdf63d237`.
+Evidence is indexed in `.build/sprint-1.96/validation.json`. No new unit case mirrors the package line:
+the regression control executes the actual frozen image, and the final-stage check executes
+the shipped tool. Earlier stage-isolation and host-side crypto tests missed the missing runtime
+projection because they did not execute GnuPG inside the shipped image.
+
+The supported home retry exits **1** after **1990.68 seconds**,
+before credential preparation or candidate execution. Its transcript and value-free readiness
+response are retained under `.build/sprint-6.5/resume-20261022/`. Runtime image build admission
+clears with **82,248,343,552 bytes** free and `DiskPressure=False`; no shared cache is pruned
+by this work. Neither an installed package nor one smoke passes Standard Q class closure;
+the later composed campaign remains pending under `6.5`.
+
+None remains on the owned packaging surface. The operator binary remains
+`8791fb6cd32574f1ec1ef33e932e4a5c5155b4fc11594f6ff04ad88e734bda8b` throughout the final
+gates. Image publication to the cluster, live Broker readiness, class closure and cascade
+qualification are separate, pending claims owned by `6.5`.
+
+## Sprint 1.97: Count the Scheduled Platform Before Proving a Host Fits [✅ Done]
+
+**Status**: Done (2026-10-24; registered before behavior changes and independently validated).
+**Implementation**: `src/Prodbox/Capacity/{Config,Allocation,Placement,HostProbe,PlatformSchedulerBudget,LegacyDhall}.hs`,
+the Tier-0 capacity schema/generator and settings admission, and their owned validation surfaces.
+**Doctrine**: [Resource Scaling Doctrine § 2B](../documents/engineering/resource_scaling_doctrine.md#2b-host-rke2-cluster-namespace-and-pod-lemmas).
+**Deployment qualification**: pending; this correction proves capacity accounting and refusal,
+not physical host expansion, resource sufficiency under load or operational cutover.
+**Independent Validation**: frozen compiled allocator control against the recorded scheduler
+request vectors, pure fitting/admission and round-trip cases, installed fake-host generation,
+canonical validation and complete frontend/environment checks. No live cluster or later phase
+is required for the owned proof.
+**Docs to update**: `documents/engineering/resource_scaling_doctrine.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Count scheduled platform demand separately from the host-only reservation and application
+workloads. One shared projection must govern allocation, generated Dhall assertions, host fitting
+and reconcile admission, so a host that cannot hold the complete declared topology is refused
+before image builds or deployment. Preserve existing workload sufficiency envelopes and expose
+an actionable sizing result instead of manufacturing capacity.
+
+### Deliverables
+
+- Retain stable counterexample `LOCAL-PLATFORM-SCHEDULER-BASELINE-OMITTED-2026-10-24`,
+  frozen source/operator/runtime identities, the real scheduler event and per-Pod request vectors,
+  and the actual compiled allocator's false admission under the unchanged physical profile.
+- Represent scheduled platform request demand explicitly, count it exactly once in every fit
+  surface, and keep namespace/container containment projections separate from that baseline.
+  Missing, invalid, underdeclared or unobservable required demand must not become zero.
+- Check CPU, memory, ephemeral and retained-storage axes, exact boundary fits and overflow,
+  generator/decoder agreement, hand-edited config, and stale harness-owned versus operator-owned
+  configuration. Keep frozen historical counterexample profiles unchanged.
+- Record causal old-to-new accounting under the same physical host, topology and workload
+  envelopes. The corrected result must refuse that undersized profile. A separately declared
+  sufficient production host may pass; that does not qualify a native deployment.
+
+### Validation
+
+1. The frozen compiled allocator admits the incomplete projection; the same recorded physical
+   topology does not fit. The replacement refuses that host without reducing workload demand.
+2. Complete declared demand fits only a sufficient observed host, on every axis. Baseline demand
+   is charged exactly once, never rendered as an application container or namespace quota.
+3. Generated schema/config, settings decode, fitting and reconcile admission share the same
+   accounting. Missing or reduced required baseline cannot bypass the proof.
+4. Pass focused owned controls, installed generation/refusal checks, `prodbox dev check` and
+   complete built-frontend CLI/config integration before closure.
+
+### Validation Evidence
+
+The actual frozen production allocator control exits **1** as expected in **0.003 seconds**.
+Its plan admits **8,000m / 15,872Mi** after omitting standing platform demand of **1,835m /
+3,384Mi**; the complete existing workload/reservation projection needs **9,045m / 17,482Mi**.
+The native Authority is independently Pending on `Insufficient memory`, with no container
+identity or startup cause. Frozen operator/source and the **505,489,711-byte** verified runtime
+archive are retained under `.build/sprint-6.5/authority-scheduler-memory-20261024/`.
+The private, warning-clean compatibility prototype passes **9/9** synthetic controls in
+**0.615 seconds**, including malformed/present/extra declarations, exact legacy omission and
+propagation of `UserInterrupt`. An exact legacy record gains an explicit non-authorizing missing
+value in memory; current declarations are preserved. Prototype modules pass pinned style checks
+after supplying the standalone formatter's `ImportQualifiedPost` option. Initial private fixture
+annotation/import/deriving and formatter failures remain indexed in
+`.build/sprint-1.97/validation.json`. These controls are not production integration or closure.
+The supported invocation subsequently exits **1** after **3365.79 seconds**, preserving its
+timed-out release. The exact Authority remains Pending with no container status, and the new
+startup report names `StartupContainerNotStarted`. The frozen installed generator returns **0**
+and emits the undersized config in **0.114 seconds**; its semantic counterexample exits **1**.
+The explicit baseline and exact legacy decoder are integrated. The final warning-clean
+all-target build passes in **41.25 seconds**, following the initial **325.02-second** build
+and the retained/fixed test-fixture compilation errors. Owned **31/31**, broader **50/50**
+and installed **3/3** cases pass. The compiled replacement control exits **0** in **0.002
+seconds** under the unchanged causal declaration; the installed replacement generator refuses
+before writing in **0.064 seconds**, while the frozen generator incorrectly emits config.
+The schema's own assertions, pinned HLint, docs and repository-policy checks pass. The old
+harness config is canonically re-encoded through the shared non-secret writer with parameters
+and context unchanged; its demand remains explicitly missing and runtime validation refuses.
+No infrastructure state is repaired by that authoring step. The public recording distinguishes
+simulated causal input from the native provider's observed quantities.
+
+Reader review catches and corrects an introduced spaced-path regression before closure. File
+contents retain their source name and relative-import directory rather than using a path as
+expression text. Both parameter/context readers preserve quoted paths, imports and trailing
+comments. Expanded owned **34/34** and related **50/50** cases pass; the corrected compiled
+control exits **0** in **0.003 seconds**, and the installed generator refuses before writing in
+**0.214 seconds**. The complete disjoint frontend selections pass **98 + 4 = 102/102** on
+operator `a1fcecae…`, with original executable key `df84c9cb…` retained.
+
+The first complete corrected canonical run finds three stale fixtures: two current plan
+goldens retain old portable CPU/memory, and a historical Provider law inherits changed defaults.
+Only the goldens' host/allocatable CPU/memory rows change; the historical law now explicitly
+freezes its original host and baseline, preserving all expected totals. Warning-clean rebuild
+and focused selections pass. Final `prodbox dev check` exits **0** in **1118.71 seconds**:
+**7,119** primary cases (**294.50 seconds**) plus **27/35/61** auxiliary cases. Operator
+`a1fcecae…` remains unchanged; executable key `904e4676…` is stable during the gate, with
+full closing provenance `ee1bc2b6…`. The frontend key differs only by those unit/golden inputs;
+runtime and frontend source remain unchanged. This is independent local validation, with no
+same-key deployment claim. Exact identities, all attempts, fixture differences and closure
+checks are indexed in `.build/sprint-1.97/validation.json`.
+
+### Remaining Work
+
+None on the code-owned surface. Physical host expansion, the native canary, two audit-clean
+cycles and composed qualification remain Sprint `6.5` work. Current execution and native
+evidence live only in [README.md → Resume Here](README.md#resume-here).
+
+## Sprint 1.98: Release Each File-Lint Corpus Before the Next Check [✅ Done]
+
+**Status**: Done
+**Implementation**: `src/Prodbox/CheckCode.hs`, `test/qualification/FileLintResidency.hs`
+**Independent Validation**: Native read-only quality commands and owned diagnostic/fixture controls
+run under one explicit heap/cgroup profile; no cluster, Vault, AWS or later-phase completion is
+required. Canonical and complete CLI/config frontend gates exercise the installed replacement.
+**Docs to update**: `documents/engineering/code_quality.md`,
+`documents/engineering/unit_testing_policy.md`, `DEVELOPMENT_PLAN/system-components.md`
+
+### Objective
+
+The canonical file-lint command evaluates each complete finding payload before collecting the
+next source corpus. All existing predicates, finding order, command behavior and failure coverage
+remain intact. Quality commands do not depend on an unbounded heap to inspect the repository.
+
+### Deliverables
+
+- ✅ Preserve the unrestricted OOM observation, exact frozen operator/checker source and bounded
+  heap-exhaustion controls before repair; no operational secret bytes enter the recording.
+- ✅ Apply the existing `forceViolationFindings` boundary to every source-reading result collected
+  by the doctrine-alignment driver. Preserve every check and its complete finding payload.
+- ✅ Keep a stable native memory regression that invokes the actual CLI under one fixed heap and
+  kernel memory/PID profile. An early refusal, signal or omitted check cannot substitute for a pass.
+- ✅ Retain diagnostic copies as diagnostic evidence only; production validation uses rebuilt,
+  installed operators. Keep production resource reservations and all other phases' scope unchanged.
+
+### Validation
+
+1. ✅ The frozen operator fails the bounded profile; the replacement completes the same file-lint
+   command against the same public repository input under that profile.
+2. ✅ Existing positive and negative policy controls preserve their finding sets and ordering;
+   no registry, source path or checker is excluded to fit memory.
+3. ✅ The actual installed file check completes with bounded residency; failure and observation
+   remain explicit. Source identities remain fixed throughout each validation.
+4. ✅ Pass warning-clean builds, `prodbox dev check`, and the complete combined CLI/config frontend
+   suite before code-owned reclosure. Native lifecycle qualification remains outside this scope.
+
+### Closure Evidence
+
+The identical 1 GiB heap / 3 GiB kernel memory / zero-swap / 64-task native profile exhausts the
+frozen operator's heap (exit 251). The preserved replacement completes with 523,041,672 bytes
+maximum live heap; the installed replacement with its real sibling config completes with
+685,312,056 bytes. Sampled live heap is distinct from RSS. Both synthetic path-shaped corpora
+retain byte-identical old/new ordered finding output; the full policy suite covers existing
+positive and negative controls. Ordinary exit 17 and signal termination remain failures in the
+native observer. Exact source/operator hashes and the immutable recording are retained.
+
+All eight components build warning-clean. The full canonical gate passes with 8,167 primary
+and 27/35/68 auxiliary cases; the single complete combined frontend passes 103/103. Both gates
+use identical opening/closing source identities. Full-suite containment preserves the invoking
+permission mask after the recorded manager-default mismatch is isolated with the same binary and
+37-case suite. Governed closure docs are checked separately, and their changed full provenance
+does not imply deployment qualification. Exact results and closure checks are indexed in
+`.build/sprint-1.98/validation.json`; the public memory recording remains immutable.
+
+### Remaining Work
+
+None on the code-owned surface. Native lifecycle composition and qualification remain Sprint
+`6.5` work. Current execution and evidence live only in
+[README.md → Resume Here](README.md#resume-here).
 
 ## Related Documents
 

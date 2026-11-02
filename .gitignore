@@ -60,6 +60,7 @@ dmypy.json
 
 # Cabal
 .build/
+.build-cabal/
 dist-newstyle/
 cabal.project.local
 

@@ -1,0 +1,2573 @@
+{
+  "scope": "Three authored native uncertain-submission faults and four family regressions, plus exact-name read-only bus ownership data. No production causal-closure, input-retirement, activation, phase-closure or deployment-qualification claim.",
+  "before_implementation": {
+    "source_identity": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"80ccb0b3a064d3f8b61e1135c33844685ab7b0448db8b31fb83e8e1923c856cd\", sourceManifestEntryCount = 1578},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"be3763c9ff3974b91fc5a7df6d9f32ef6defed141d57d1dca921a8f33c5d21e3\", sourceManifestEntryCount = 1515})",
+    "inputs": [
+      {
+        "path": "src/Prodbox/Subprocess/SystemdBus.hs",
+        "snapshot": ".build/sprint-6.5/submission-faults-20261027/before-1/src/Prodbox/Subprocess/SystemdBus.hs",
+        "sha256": "6e9f5b6dd8402dba3263ad439c47c416e984f3735ba2ea0f9eb2f95fd0be5243"
+      },
+      {
+        "path": "src/Prodbox/Subprocess/SystemdIdentity.hs",
+        "snapshot": ".build/sprint-6.5/submission-faults-20261027/before-1/src/Prodbox/Subprocess/SystemdIdentity.hs",
+        "sha256": "6c5d8917e342686b4ea14481571c4b4d90e5079de82d77c26d67621cb957c3e3"
+      },
+      {
+        "path": "src/Prodbox/Subprocess/HostOperationFamily.hs",
+        "snapshot": ".build/sprint-6.5/submission-faults-20261027/before-1/src/Prodbox/Subprocess/HostOperationFamily.hs",
+        "sha256": "6f85e35bbbbb4af0932643a2777afcaba546aba55a7e0e87eca13b7f000b1d9c"
+      },
+      {
+        "path": "src/Prodbox/Subprocess/HostControllerInputs.hs",
+        "snapshot": ".build/sprint-6.5/submission-faults-20261027/before-1/src/Prodbox/Subprocess/HostControllerInputs.hs",
+        "sha256": "13e6b631f06a1c576b9bf1182ce6570bfda4dedd550285aadc771caf38eadc03"
+      },
+      {
+        "path": "test/qualification/HostOperationFamily.hs",
+        "snapshot": ".build/sprint-6.5/submission-faults-20261027/before-1/test/qualification/HostOperationFamily.hs",
+        "sha256": "1bcd4b83eeb253826db8d5f7e7d8e87782d6303e88dab849cdc3326e9f512653"
+      },
+      {
+        "path": "prodbox.cabal",
+        "snapshot": ".build/sprint-6.5/submission-faults-20261027/before-1/prodbox.cabal",
+        "sha256": "83a27534d3d0ed2306dc4370a950b7162461c441a7dd34f44de839a0fbba92e3"
+      },
+      {
+        "path": "DEVELOPMENT_PLAN/README.md",
+        "snapshot": ".build/sprint-6.5/submission-faults-20261027/before-1/DEVELOPMENT_PLAN/README.md",
+        "sha256": "b68c35681915d44b8e27a71039a25e46fbe7a1977d9616407f4a5faef0cf8216"
+      },
+      {
+        "path": "DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md",
+        "snapshot": ".build/sprint-6.5/submission-faults-20261027/before-1/DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md",
+        "sha256": "b559229ea5e9f0da9e577b9c9a32a4ce090be886f3934bf2339ec2bc20867f09"
+      },
+      {
+        "path": "documents/engineering/haskell_code_guide.md",
+        "snapshot": ".build/sprint-6.5/submission-faults-20261027/before-1/documents/engineering/haskell_code_guide.md",
+        "sha256": "3d069d3361195dd52f33f9f94ec32714253e77d411af289d7ec005461f57965b"
+      },
+      {
+        "path": "DEVELOPMENT_PLAN/system-components.md",
+        "snapshot": ".build/sprint-6.5/submission-faults-20261027/before-1/DEVELOPMENT_PLAN/system-components.md",
+        "sha256": "6b6af26c5559beb25dbbf16d759b99be0d2e5ac3dbc838aa269c9b8e3ed30152"
+      }
+    ]
+  },
+  "source_identity_entry": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"e94b15f284b7ed72d4c31bf09f7fa7feb7eba6583fe09cd9944651fa7018d57e\", sourceManifestEntryCount = 1579},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"d96437b45579e9a952ee9e70d3f411a36d14bad69df56815b00858b954ef9bce\", sourceManifestEntryCount = 1516})",
+  "source_identity_exit": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"e94b15f284b7ed72d4c31bf09f7fa7feb7eba6583fe09cd9944651fa7018d57e\", sourceManifestEntryCount = 1579},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"d96437b45579e9a952ee9e70d3f411a36d14bad69df56815b00858b954ef9bce\", sourceManifestEntryCount = 1516})",
+  "complete_source_identities_equal": true,
+  "inputs": [
+    {
+      "path": "DEVELOPMENT_PLAN/README.md",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/DEVELOPMENT_PLAN/README.md",
+      "sha256": "b68c35681915d44b8e27a71039a25e46fbe7a1977d9616407f4a5faef0cf8216"
+    },
+    {
+      "path": "DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md",
+      "sha256": "b559229ea5e9f0da9e577b9c9a32a4ce090be886f3934bf2339ec2bc20867f09"
+    },
+    {
+      "path": "documents/engineering/haskell_code_guide.md",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/documents/engineering/haskell_code_guide.md",
+      "sha256": "3d069d3361195dd52f33f9f94ec32714253e77d411af289d7ec005461f57965b"
+    },
+    {
+      "path": "prodbox.cabal",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/prodbox.cabal",
+      "sha256": "2850f550fda4a1cabdb55a3e92c44b4a6c1af61cd867d699308624d447b4bf10"
+    },
+    {
+      "path": "src/Prodbox/Capacity/HostExecution.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/Capacity/HostExecution.hs",
+      "sha256": "092ece17fb98e941eb4847e875d0f5b01c9ca458c810d8851207aac9dfba6a8c"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/LocalClient.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/LocalClient.hs",
+      "sha256": "3e85e0bf48700b7fbcce03f9d9c4a2b536bd3f9aa0e488e1f15735ed44abb756"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthChart.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/RpcAdmissionBirthChart.hs",
+      "sha256": "3ceb4d8d83d9af0a50d7df6d0a00dadad889d27608b73a1780d0a381e5af06de"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthCoordinator.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/RpcAdmissionBirthCoordinator.hs",
+      "sha256": "fd3c88a6f836c2f38cc81c26449e38a62f982616ab579f12097f1dd5471eecec"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+      "sha256": "4fc9483e77d54369c9c94e330fcf4b186632daac2e1470d4a936c908369f2896"
+    },
+    {
+      "path": "src/Prodbox/Lib/ChartPlatform.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/Lib/ChartPlatform.hs",
+      "sha256": "fe9729544fba35b3f5864262576e87ab831e8351e8fae8c0ba1cce37336ad059"
+    },
+    {
+      "path": "src/Prodbox/Lifecycle/HelmRelease.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/Lifecycle/HelmRelease.hs",
+      "sha256": "1e672269740479a589d4a0136cc3f633f510d9e15bcce76a0042f8a4a6c0d299"
+    },
+    {
+      "path": "src/Prodbox/Lifecycle/Teardown/EphemeralKubectl.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/Lifecycle/Teardown/EphemeralKubectl.hs",
+      "sha256": "3dd8dd5dbabc5e4a1c557dd3569d45b2fb8aca3f7a0754be03af19fd490d581b"
+    },
+    {
+      "path": "src/Prodbox/Subprocess.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/Subprocess.hs",
+      "sha256": "836bd5e3d6c82feb1fdcf6b1aac6390e1a221a6ebc986faf86b61d85f877af42"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostControllerInputs.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/Subprocess/HostControllerInputs.hs",
+      "sha256": "13e6b631f06a1c576b9bf1182ce6570bfda4dedd550285aadc771caf38eadc03"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostOperationFamily.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/Subprocess/HostOperationFamily.hs",
+      "sha256": "6f85e35bbbbb4af0932643a2777afcaba546aba55a7e0e87eca13b7f000b1d9c"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/KernelScope.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/Subprocess/KernelScope.hs",
+      "sha256": "61ed8449be7b6864d2933f90f0d76db89137b7d4559ffb7a3e456058f968cf2c"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/ScopeFamily.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/Subprocess/ScopeFamily.hs",
+      "sha256": "177ad32ad8639c727c1a8e7dc2ae8be5d77f6ad5146c0353edb38fef176761ab"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdBus.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/Subprocess/SystemdBus.hs",
+      "sha256": "7bc1c3b99a5c2cf2be8ba3c37731c116cdf5b17817705f5f3e56d9663ffd7b99"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "sha256": "6c5d8917e342686b4ea14481571c4b4d90e5079de82d77c26d67621cb957c3e3"
+    },
+    {
+      "path": "test/qualification/HostOperationRpcBirth.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/test/qualification/HostOperationRpcBirth.hs",
+      "sha256": "5b53373177ff0fc4848103083fa32efbd8148c98b315dc8e1666beb7f96c74aa"
+    },
+    {
+      "path": "test/qualification/HostOperationRpcBirthFixture.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/test/qualification/HostOperationRpcBirthFixture.hs",
+      "sha256": "a303e0d7da081f36b9f21fb81e38051c98a472f31ea115c8e405c4d4125b5921"
+    },
+    {
+      "path": "test/support/TestSupport.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/test/support/TestSupport.hs",
+      "sha256": "156b7f56e11e832f9a410423db795e35a5ae374c01cee09e8a31b1c2a1a7d250"
+    },
+    {
+      "path": "test/support/Tier0Fixture.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/test/support/Tier0Fixture.hs",
+      "sha256": "9b1fcaef3fa7cc4f285ec7e1c276abc3d85293f42a5cdd1359d9aa6ec794821c"
+    },
+    {
+      "path": "test/unit/ControlPlaneRpcAdmissionBirth.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/test/unit/ControlPlaneRpcAdmissionBirth.hs",
+      "sha256": "3e1ee69f3d8fe5baf23c6fa894566e4820e7df8be4d469fa624d33d92ada977c"
+    },
+    {
+      "path": "test/unit/Main.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/test/unit/Main.hs",
+      "sha256": "4bc359c45c5249b06907925ce6a574182ef1f15a5c0df0d3332fdfadd86c6ee5"
+    },
+    {
+      "path": "src/Prodbox/Capacity/Config.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/Capacity/Config.hs",
+      "sha256": "625b25c430d58c0558b091558ebe6a89f8e49bbe4ed85a7d13684b69551b5dbb"
+    },
+    {
+      "path": "src/Prodbox/Capacity/NativeHostProbe.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/Capacity/NativeHostProbe.hs",
+      "sha256": "1d095e7dc0bb90e82a2cdc8721d704e3d1d5f84d5249a558f615d4039c4547db"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthPayload.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/RpcAdmissionBirthPayload.hs",
+      "sha256": "e55d30503618ed5996cb0d77c6d93eca886857dc6cbd07c372d15c97011cdf19"
+    },
+    {
+      "path": "src/Prodbox/Settings.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/Settings.hs",
+      "sha256": "7cb9b4aa55fd761c2fd7a899af8ad12a007afce8b7b6acc4ad4bcc5e0b22724f"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRequest.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/RpcAdmissionBirthRequest.hs",
+      "sha256": "b4b1b145502e031841e6b47dee1e68a621274d8d2a6fc7511790c03db2b89591"
+    },
+    {
+      "path": "test/qualification/RpcBirthControllerRequest.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/test/qualification/RpcBirthControllerRequest.hs",
+      "sha256": "1c7f9c1f0be49edbbc57f3b297654fc6e1494b23de22de5f20c5edf263bc7d94"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthClock.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/RpcAdmissionBirthClock.hs",
+      "sha256": "bc064db9384e0b30ae7a18f618ec5958bf6cabe51570134e13e77db58ebabb00"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostControllerArguments.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/Subprocess/HostControllerArguments.hs",
+      "sha256": "b9f635fcaf7bda5ffa6b1dda5545344b59507ec07beff20c4a2ddcca35494bf4"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthControllerInputs.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/RpcAdmissionBirthControllerInputs.hs",
+      "sha256": "ead308abf99f8309ffccaee38a97c82a121d4a704b374f9387722c97749f43fd"
+    },
+    {
+      "path": "test/qualification/ControllerInputLoader.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/test/qualification/ControllerInputLoader.hs",
+      "sha256": "6a5b8d6ffcb66f36eb26721c690c41452adca829378c24b298fda0a0f6681ad3"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostControllerPublication.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/Subprocess/HostControllerPublication.hs",
+      "sha256": "7902af6c2ccc510926a2a36a37258a09d81881c3869808e6adeb90bdd7119549"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/OwnedProcessTree.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/Subprocess/OwnedProcessTree.hs",
+      "sha256": "b50d4f449526797009c3ce98de7239fc1b211486c6c42f5a2900a41c5ef20fb5"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/LifecycleAuthorityAuthentication.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/LifecycleAuthorityAuthentication.hs",
+      "sha256": "ee149b0dac97c1e3ec2bd0ec846f481d83f2eb5f6095827abc692a84d399a089"
+    },
+    {
+      "path": "test/unit/ControlPlaneVaultSession.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/test/unit/ControlPlaneVaultSession.hs",
+      "sha256": "06b30aba866c09745d0187852527ddac331a36931baafe337f498463b04b40f0"
+    },
+    {
+      "path": ".build/sprint-6.5/controller-caller-token-20261026/UnitPolicy.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/.build/sprint-6.5/controller-caller-token-20261026/UnitPolicy.hs",
+      "sha256": "096cdde35453668cf924f61f47d4ec57ea51d789acf49df46b8d6db81a253b60"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RegisteredRpcSigning.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/RegisteredRpcSigning.hs",
+      "sha256": "e68deb06df6848d957aff6d48fbcb8b0ab32e10af325929001d3aeee812b4949"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRuntime.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/RpcAdmissionBirthRuntime.hs",
+      "sha256": "381ca175e1f59d03b0f133ed138f82b2d2862e85c49d126555f3f6517c630ca1"
+    },
+    {
+      "path": "test/unit/ControlPlaneRegisteredRpcSigning.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/test/unit/ControlPlaneRegisteredRpcSigning.hs",
+      "sha256": "9c2d4f5b82ab67f9392be87ddaff4ea6c014afe45ce74a6eb1818f594f3e57c0"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcKeyRegistry.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/RpcKeyRegistry.hs",
+      "sha256": "031264106810dc8353e2962a454a8018cfaa8140a1db44e65d13b13b26ec2544"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthNative.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/RpcAdmissionBirthNative.hs",
+      "sha256": "6e5988c24ea65339af49512fa8ead4c5a7eba83eac8a8c4261d7fb91fdfe766b"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthExecution.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/RpcAdmissionBirthExecution.hs",
+      "sha256": "5e2ac251b1936a23feebafba3b96ddc8eba8a835d15c86e75c0394e6c88adfa9"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RequestAuthentication.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/RequestAuthentication.hs",
+      "sha256": "c4cb14893b90fda021a97e696f9b7859e83265f3a21e70057ab9eda9d3e4e2e5"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/AuthenticationRegistry.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/AuthenticationRegistry.hs",
+      "sha256": "0b2e942d0861f3700c4bb3cd9aa679fade9dcaefbaaacc404fe90ab13a7e2130"
+    },
+    {
+      "path": ".build/sprint-6.5/registered-caller-selection-20261026/PackagedSigning.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/.build/sprint-6.5/registered-caller-selection-20261026/PackagedSigning.hs",
+      "sha256": "3b71bc33802bbf344f90a256424385b992d43aa0058d3f2aa79058bce8352d17"
+    },
+    {
+      "path": "src/Prodbox/Vault/Session.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/Vault/Session.hs",
+      "sha256": "5aed6b15cc76b55c0b7b9cbcb1d4fc7d96db4df1952c657bd7dae35e3c57c8a2"
+    },
+    {
+      "path": ".build/sprint-6.5/prepared-caller-auth-20261026/PackagedAuthentication.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/.build/sprint-6.5/prepared-caller-auth-20261026/PackagedAuthentication.hs",
+      "sha256": "3bb7c76ba25edb6d05e5b4ea33cf16f4bb7b28f45f90fe4a24b2b90579b1330e"
+    },
+    {
+      "path": ".build/sprint-6.5/registered-prepared-auth-20261026/PackagedAuthentication.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/.build/sprint-6.5/registered-prepared-auth-20261026/PackagedAuthentication.hs",
+      "sha256": "3bb7c76ba25edb6d05e5b4ea33cf16f4bb7b28f45f90fe4a24b2b90579b1330e"
+    },
+    {
+      "path": "DEVELOPMENT_PLAN/development_plan_standards.md",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/DEVELOPMENT_PLAN/development_plan_standards.md",
+      "sha256": "d83bd630ff5852141e412b49078fed2297871fcb71251fc7a40342f20760a3e5"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthEndpoint.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/RpcAdmissionBirthEndpoint.hs",
+      "sha256": "cbc5dfac8ae1e2005fffaf0462ea79381f32f42f31f9eced2bdb9acb3e9c44fd"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/Runtime.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/Runtime.hs",
+      "sha256": "ffdb331735977c2cb66a702f18f92aece50c8fefd6aa5baf41ce7c7ee88e545f"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/AuthenticatedTransport.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/AuthenticatedTransport.hs",
+      "sha256": "194ffd09102af43d4826951f54f84023d994446f9dccd7c9fc3c47ee531ace22"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/Client.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/Client.hs",
+      "sha256": "2fa38cead508c275a1c0ce750a5fbddad3270066fd19eb3e7a5d425bdc1dfb48"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/Codec.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/ControlPlane/Codec.hs",
+      "sha256": "3d0877aaf276e39748816b2545a77bce06b12477322eac008dd562a031c40858"
+    },
+    {
+      "path": "src/Prodbox/Capacity/ControlPlaneReplayBudget.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/src/Prodbox/Capacity/ControlPlaneReplayBudget.hs",
+      "sha256": "6f7528e48e4f68b16329bcce947d04884a56600fa0b2acc459320b9ef49634eb"
+    },
+    {
+      "path": "documents/engineering/lifecycle_control_plane_architecture.md",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/documents/engineering/lifecycle_control_plane_architecture.md",
+      "sha256": "d9b1c8b78b71cb4de9cf1970165f8a6a9560a993fd560ae46b20b89f7994eeea"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-registry-observation-20261027/PackagedRegistry.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/.build/sprint-6.5/rpc-registry-observation-20261027/PackagedRegistry.hs",
+      "sha256": "3bb7c76ba25edb6d05e5b4ea33cf16f4bb7b28f45f90fe4a24b2b90579b1330e"
+    },
+    {
+      "path": "DEVELOPMENT_PLAN/system-components.md",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/DEVELOPMENT_PLAN/system-components.md",
+      "sha256": "6b6af26c5559beb25dbbf16d759b99be0d2e5ac3dbc838aa269c9b8e3ed30152"
+    },
+    {
+      "path": "test/qualification/RPC-REGISTERED-CALLER-SELECTION-2026-10-26.json",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/test/qualification/RPC-REGISTERED-CALLER-SELECTION-2026-10-26.json",
+      "sha256": "35542054c62a9dbf238a0e37de86ccd2221a01b42ff0d4b80a595778a27d8974"
+    },
+    {
+      "path": "test/qualification/HOST-PREPARED-CALLER-AUTHENTICATION-2026-10-26.json",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/test/qualification/HOST-PREPARED-CALLER-AUTHENTICATION-2026-10-26.json",
+      "sha256": "f586804ac6065ebe97c83e643f6a9fe6d9e873b7d3872375e1e3abcf0fd60abd"
+    },
+    {
+      "path": "test/qualification/HOST-REGISTERED-PREPARED-CALLER-AUTHENTICATION-2026-10-27.json",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/test/qualification/HOST-REGISTERED-PREPARED-CALLER-AUTHENTICATION-2026-10-27.json",
+      "sha256": "3337d0af7568368850ac1d25c118a3a9c237991f7537b6bfb53c1b54bc16a37a"
+    },
+    {
+      "path": "test/qualification/RPC-BIRTH-AUTHENTICATED-REGISTRY-OBSERVATION-2026-10-27.json",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/test/qualification/RPC-BIRTH-AUTHENTICATED-REGISTRY-OBSERVATION-2026-10-27.json",
+      "sha256": "4a2289bd246f5cc16dc122d2400f994dad4039cbc594aa9c50430f91596f3a22"
+    },
+    {
+      "path": "test/qualification/HostOperationFamily.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/test/qualification/HostOperationFamily.hs",
+      "sha256": "998e11ce1ba1ac1eaf66f2bf0ab756cf1adc6bc941e6bf745298982af4e57718"
+    },
+    {
+      "path": "test/qualification/HostControllerInputs.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/test/qualification/HostControllerInputs.hs",
+      "sha256": "ed008c500187c9a5b17956f15316aef6493715dd902e02f4b1d432d823e1e7d3"
+    },
+    {
+      "path": "test/qualification/HostControllerSubmission.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/test/qualification/HostControllerSubmission.hs",
+      "sha256": "411ec33bfef53d296a6ac3926ffae642463dca7d20e136042142db4638e1504e"
+    },
+    {
+      "path": "test/qualification/SystemdSubmissionProxy.hs",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/test/qualification/SystemdSubmissionProxy.hs",
+      "sha256": "8fc9be32a7df723b1cadea67b732b2b7a2f91b31fc3b8b08f209e158cca70b20"
+    },
+    {
+      "path": "test/qualification/HOST-CONTROLLER-SUBMISSION-PROVENANCE-2026-10-27.json",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/test/qualification/HOST-CONTROLLER-SUBMISSION-PROVENANCE-2026-10-27.json",
+      "sha256": "c5987c8f5b421f9ae01dcf196a8aa110918a1df2c31c8031c34206b93f3ea4bd"
+    }
+  ],
+  "binaries": [
+    {
+      "path": ".build/sprint-6.5/submission-faults-20261027/native-family-fault-8",
+      "snapshot": ".build/sprint-6.5/submission-faults-20261027/native-inputs-4/native-family-fault-8",
+      "sha256": "2c500640a437873e673d69841a0a3e8a1ea96eb6860aa13960ea63db805e1fc6"
+    }
+  ],
+  "all_71_inputs_and_binary_unchanged": true,
+  "results": {
+    "submission-fault-native-build-8": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-submission-fault-native-build-8-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=600s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "ghc",
+        "-Wall",
+        "-Werror",
+        "-threaded",
+        "-rtsopts",
+        "-with-rtsopts=-N1",
+        "-hide-all-packages",
+        "-package-db",
+        "/home/matthewnowak/.cabal/store/ghc-9.12.4-5301/package.db",
+        "-package-db",
+        ".build/packagedb/ghc-9.12.4",
+        "-package-id",
+        "prodbox-0.1.0-inplace",
+        "-package-id",
+        "base-4.21.2.0-60b9",
+        "-package-id",
+        "bytestring-0.11.5.4-76e2bb591efe928d842f8288364e9ef294891f67ce13cd0bc014a1e2fe5df0a0",
+        "-package-id",
+        "unix-2.8.8.0-9ce6978edc33076465fb56791d9ca017d405aa7230adf2653b2f7564cc3925f1",
+        "-package-id",
+        "text-2.0.2-8761414bfd4c61d83bb4a76313f5b7a899dddb96b90269a6e5d997a8bbbd6375",
+        "-package-id",
+        "aeson-2.2.5.0-e2e37fe6bc5aa07f45e066f8f61685fa5ad0b1eb18e2b2c128ef1ea752061e01",
+        "-package-id",
+        "async-2.2.6-8960f1dd21f4a009a29b1fe1a67c9a2a4a2c68697b93dd8f3fb173222380a50f",
+        "-package-id",
+        "crypton-1.0.6-020d21e85cd9683b83d7321e840b655ed76b478e58a637e86a778a7747ac3db7",
+        "-package",
+        "transformers",
+        "-package-id",
+        "directory-1.3.10.1-d489a9b04bec59f8c3e0a56d9fa8c6036df06a729b2423829770f25fc263c55c",
+        "-package-id",
+        "filepath-1.4.301.0-55cfbc3f4dce88b4ce1658f6770d9ccbeb279efb5b93e8a3764f29b7dd69dd22",
+        "-outputdir",
+        "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/native-family-fault-8-objects",
+        "-o",
+        "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/native-family-fault-8",
+        "-package-id",
+        "process-1.6.30.0-6aaf8422fc072a0cd1390edbfe1125150c6bb2a95b2d3b42b9a9405f80b31cbd",
+        "-package-id",
+        "typed-process-0.2.13.0-abd82bbc92edf3e4773c3dd817737de05db408f2ea5066648e8179fa7a8622cb",
+        "-XImportQualifiedPost",
+        "-package-id",
+        "serialise-0.2.6.1-9fc9b98f7836b30172e1529223fb34de84f444ed67c191e32cd41daa2e1d73d0",
+        "-package-id",
+        "cryptohash-sha256-0.11.102.1-6df39dbe01efd710a9783bb4456b0bac4b2e3444a6d321ab62b36f3ff9e6abe0",
+        "test/qualification/HostOperationFamily.hs",
+        "src/Prodbox/Subprocess/HostOperationFamily.hs",
+        "src/Prodbox/Subprocess/SystemdBus.hs",
+        "src/Prodbox/Subprocess/SystemdIdentity.hs",
+        "src/Prodbox/Subprocess/KernelScope.hs",
+        "src/Prodbox/Subprocess.hs",
+        "src/Prodbox/Subprocess/ScopeFamily.hs",
+        "src/Prodbox/Subprocess/HostControllerInputs.hs",
+        "src/Prodbox/Subprocess/HostControllerArguments.hs",
+        "test/qualification/SystemdSubmissionProxy.hs",
+        "-package-id",
+        "network-3.1.4.0-1d8b779673bab29fa4d91c4b2077c7ccec77e8e8a1bd66b2b95ba4d224d64964"
+      ],
+      "started_utc": "2026-10-27T07:01:34.439765+00:00",
+      "completed_utc": "2026-10-27T07:01:42.177340+00:00",
+      "exit_code": 0,
+      "wall_seconds": 7.737594599369913
+    },
+    "submission-fault-all-build-1": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-submission-fault-all-build-1-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=900s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "cabal",
+        "build",
+        "--builddir=.build",
+        "all",
+        "--enable-tests",
+        "--ghc-options=-Werror"
+      ],
+      "started_utc": "2026-10-27T07:05:41.764461+00:00",
+      "completed_utc": "2026-10-27T07:06:53.375259+00:00",
+      "exit_code": 0,
+      "wall_seconds": 71.61082871537656
+    },
+    "submission-fault-hlint-2": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-submission-fault-hlint-2-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=180s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        ".build/prodbox-style-tools/bin/hlint",
+        "--hint=.hlint.yaml",
+        "--with-group=default",
+        "--with-group=extra",
+        "src/Prodbox/Subprocess/SystemdBus.hs",
+        "test/qualification/HostOperationFamily.hs",
+        "test/qualification/SystemdSubmissionProxy.hs"
+      ],
+      "started_utc": "2026-10-27T07:05:41.755920+00:00",
+      "completed_utc": "2026-10-27T07:05:47.387257+00:00",
+      "exit_code": 0,
+      "wall_seconds": 5.631359679624438
+    },
+    "submission-fault-format-1": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-submission-fault-format-1-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=180s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        ".build/prodbox-style-tools/bin/fourmolu",
+        "--mode",
+        "check",
+        "--ghc-opt=-XImportQualifiedPost",
+        "src/Prodbox/Subprocess/SystemdBus.hs",
+        "test/qualification/HostOperationFamily.hs",
+        "test/qualification/SystemdSubmissionProxy.hs"
+      ],
+      "started_utc": "2026-10-27T07:05:41.768600+00:00",
+      "completed_utc": "2026-10-27T07:05:42.496223+00:00",
+      "exit_code": 0,
+      "wall_seconds": 0.7276558429002762
+    },
+    "submission-fault-files-lint-1": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-submission-fault-files-lint-1-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=180s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "./.build/prodbox",
+        "dev",
+        "lint",
+        "files"
+      ],
+      "started_utc": "2026-10-27T07:05:41.760307+00:00",
+      "completed_utc": "2026-10-27T07:06:19.676583+00:00",
+      "exit_code": 0,
+      "wall_seconds": 37.916302672121674
+    },
+    "submission-fault-source-entry-4": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-submission-fault-source-entry-4-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=180s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "cabal",
+        "exec",
+        "--builddir=.build",
+        "--",
+        "runghc",
+        "-package=prodbox",
+        ".build/sprint-6.5/resume-20261022/CaptureSource.hs"
+      ],
+      "started_utc": "2026-10-27T07:03:54.420779+00:00",
+      "completed_utc": "2026-10-27T07:03:55.525688+00:00",
+      "exit_code": 0,
+      "wall_seconds": 1.1049267849884927
+    },
+    "submission-fault-source-exit-4": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-submission-fault-source-exit-4-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=180s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "cabal",
+        "exec",
+        "--builddir=.build",
+        "--",
+        "runghc",
+        "-package=prodbox",
+        ".build/sprint-6.5/resume-20261022/CaptureSource.hs"
+      ],
+      "started_utc": "2026-10-27T07:09:22.663617+00:00",
+      "completed_utc": "2026-10-27T07:09:27.048536+00:00",
+      "exit_code": 0,
+      "wall_seconds": 4.384938132017851
+    }
+  },
+  "family_controls": {
+    "scope": "Real queued-submission and applied-reply-loss faults plus regressions, under unchanged native family envelopes; no production causal-closure or input-retirement capability.",
+    "cases": [
+      {
+        "mode": "queued-submission",
+        "command": [
+          "python3",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/rpc-coordinator-20261025/run-check.py",
+          "submission-fault-family-queued-submission-4",
+          "env",
+          "XDG_RUNTIME_DIR=/run/user/1000",
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+          "systemd-run",
+          "--user",
+          "--quiet",
+          "--wait",
+          "--pipe",
+          "--collect",
+          "--service-type=oneshot",
+          "--expand-environment=no",
+          "--unit=prodbox-submission-fault-family-queued-submission-4-20261027",
+          "--working-directory=/home/matthewnowak/prodbox",
+          "--property=MemoryMax=176M",
+          "--property=MemorySwapMax=0",
+          "--property=CPUQuota=30%",
+          "--property=OOMPolicy=kill",
+          "--property=OOMScoreAdjust=1000",
+          "--property=TasksMax=16",
+          "--property=TimeoutStartSec=20s",
+          "--property=TimeoutStopSec=2s",
+          "--",
+          "/usr/bin/time",
+          "-v",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/native-family-fault-8",
+          "queued-submission",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/case-family-queued-submission-4",
+          "+RTS",
+          "-M134217728b",
+          "-N1",
+          "-RTS"
+        ],
+        "complete": true,
+        "field": {
+          "finish_ns": 2351461161224542,
+          "hard_ns": 2351460311224542,
+          "key": "9ac2c18ce5109df6902a9c27e17b69b78ee6c6a0e759024a29ea6ce35c2a4890",
+          "outer_ns": 2351463161224542,
+          "roles": [
+            "prodbox-rpc-birth-controller-9ac2c18ce5109df6902a9c27e17b69b78ee6c6a0e759024a29ea6ce35c2a4890.service",
+            "prodboxrpcbirth.slice",
+            "prodbox-rpc-birth-9ac2c18ce5109df6902a9c27e17b69b78ee6c6a0e759024a29ea6ce35c2a4890-expiry.timer",
+            "prodbox-rpc-birth-9ac2c18ce5109df6902a9c27e17b69b78ee6c6a0e759024a29ea6ce35c2a4890-expiry.service",
+            "prodbox-owned-9ac2c18ce5109df6902a9c27e17b69b78ee6c6a0e759024a29ea6ce35c2a4890.scope",
+            "prodbox-transport-9ac2c18ce5109df6902a9c27e17b69b78ee6c6a0e759024a29ea6ce35c2a4890.scope"
+          ],
+          "stop_ns": 2351460661224542,
+          "work_ns": 2351460161224542
+        },
+        "input_versions_before": {
+          "config.dhall": {
+            "st_dev": 2050,
+            "st_ino": 3573239,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 157,
+            "st_mtime_ns": 1793084667394388654,
+            "st_ctime_ns": 1793084667394388654
+          },
+          "request": {
+            "st_dev": 2050,
+            "st_ino": 3573240,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 17,
+            "st_mtime_ns": 1793084667390555911,
+            "st_ctime_ns": 1793084667390613203
+          }
+        },
+        "exit_code": 0,
+        "held_cgroup_identity": {
+          "device": 31,
+          "inode": 3863674
+        },
+        "held_cgroup_link": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/prodboxrpcbirth.slice (deleted)",
+        "held_cgroup_events_absent": true,
+        "held_cgroup_retired": true,
+        "independent_unit_observations": [
+          {
+            "unit": "prodbox-rpc-birth-controller-9ac2c18ce5109df6902a9c27e17b69b78ee6c6a0e759024a29ea6ce35c2a4890.service",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-controller-9ac2c18ce5109df6902a9c27e17b69b78ee6c6a0e759024a29ea6ce35c2a4890.service not loaded.\n",
+            "observed_ns": 2351460343870169,
+            "absent": true
+          },
+          {
+            "unit": "prodboxrpcbirth.slice",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodboxrpcbirth.slice not loaded.\n",
+            "observed_ns": 2351460348191434,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-rpc-birth-9ac2c18ce5109df6902a9c27e17b69b78ee6c6a0e759024a29ea6ce35c2a4890-expiry.timer",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-9ac2c18ce5109df6902a9c27e17b69b78ee6c6a0e759024a29ea6ce35c2a4890-expiry.timer not loaded.\n",
+            "observed_ns": 2351460352420742,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-rpc-birth-9ac2c18ce5109df6902a9c27e17b69b78ee6c6a0e759024a29ea6ce35c2a4890-expiry.service",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-9ac2c18ce5109df6902a9c27e17b69b78ee6c6a0e759024a29ea6ce35c2a4890-expiry.service not loaded.\n",
+            "observed_ns": 2351460356858580,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-owned-9ac2c18ce5109df6902a9c27e17b69b78ee6c6a0e759024a29ea6ce35c2a4890.scope",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-owned-9ac2c18ce5109df6902a9c27e17b69b78ee6c6a0e759024a29ea6ce35c2a4890.scope not loaded.\n",
+            "observed_ns": 2351460361223156,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-transport-9ac2c18ce5109df6902a9c27e17b69b78ee6c6a0e759024a29ea6ce35c2a4890.scope",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-transport-9ac2c18ce5109df6902a9c27e17b69b78ee6c6a0e759024a29ea6ce35c2a4890.scope not loaded.\n",
+            "observed_ns": 2351460365239450,
+            "absent": true
+          }
+        ],
+        "within_original_finish": true,
+        "workspace_absent": true,
+        "input_versions_after": {
+          "config.dhall": {
+            "st_dev": 2050,
+            "st_ino": 3573239,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 157,
+            "st_mtime_ns": 1793084667394388654,
+            "st_ctime_ns": 1793084667394388654
+          },
+          "request": {
+            "st_dev": 2050,
+            "st_ino": 3573240,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 17,
+            "st_mtime_ns": 1793084667390555911,
+            "st_ctime_ns": 1793084667390613203
+          }
+        },
+        "input_versions_unchanged": true,
+        "submission_retained": true,
+        "submission_mode": "0o400",
+        "submission_size": 796,
+        "controller_observed_record": true,
+        "fault_detail": {
+          "before_manager_absent": true,
+          "before_sender_present": true,
+          "blind_close_does_not_prove_no_go": false,
+          "blind_close_without_reply_wait": false,
+          "caller_cancelled": true,
+          "closing_six_role_absence": true,
+          "closure_waited_for_manager_reply": true,
+          "complete_six_role_and_held_cgroup_absence": true,
+          "controller_started": true,
+          "exact_sender_absent_before_manager_frontier": true,
+          "fixed_kernel_path_absent": true,
+          "frontier_observed_materialized_family": true,
+          "mode": "queued-submission",
+          "original_sender": ":1.1136081",
+          "production_causal_closure_capability": false,
+          "provenance_retained_exactly": true,
+          "request_serial": 24,
+          "sender_still_present_after_cancellation": true,
+          "workspace_absent": true
+        },
+        "relay_socket_absent": true
+      },
+      {
+        "mode": "lost-submission-reply",
+        "command": [
+          "python3",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/rpc-coordinator-20261025/run-check.py",
+          "submission-fault-family-lost-submission-reply-4",
+          "env",
+          "XDG_RUNTIME_DIR=/run/user/1000",
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+          "systemd-run",
+          "--user",
+          "--quiet",
+          "--wait",
+          "--pipe",
+          "--collect",
+          "--service-type=oneshot",
+          "--expand-environment=no",
+          "--unit=prodbox-submission-fault-family-lost-submission-reply-4-20261027",
+          "--working-directory=/home/matthewnowak/prodbox",
+          "--property=MemoryMax=176M",
+          "--property=MemorySwapMax=0",
+          "--property=CPUQuota=30%",
+          "--property=OOMPolicy=kill",
+          "--property=OOMScoreAdjust=1000",
+          "--property=TasksMax=16",
+          "--property=TimeoutStartSec=20s",
+          "--property=TimeoutStopSec=2s",
+          "--",
+          "/usr/bin/time",
+          "-v",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/native-family-fault-8",
+          "lost-submission-reply",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/case-family-lost-submission-reply-4",
+          "+RTS",
+          "-M134217728b",
+          "-N1",
+          "-RTS"
+        ],
+        "complete": true,
+        "field": {
+          "finish_ns": 2351463418727072,
+          "hard_ns": 2351462568727072,
+          "key": "b90674913f57c9c247d92e60c0ff9cdabe36e94d82bb186a9f51640f956d3cdf",
+          "outer_ns": 2351465418727072,
+          "roles": [
+            "prodbox-rpc-birth-controller-b90674913f57c9c247d92e60c0ff9cdabe36e94d82bb186a9f51640f956d3cdf.service",
+            "prodboxrpcbirth.slice",
+            "prodbox-rpc-birth-b90674913f57c9c247d92e60c0ff9cdabe36e94d82bb186a9f51640f956d3cdf-expiry.timer",
+            "prodbox-rpc-birth-b90674913f57c9c247d92e60c0ff9cdabe36e94d82bb186a9f51640f956d3cdf-expiry.service",
+            "prodbox-owned-b90674913f57c9c247d92e60c0ff9cdabe36e94d82bb186a9f51640f956d3cdf.scope",
+            "prodbox-transport-b90674913f57c9c247d92e60c0ff9cdabe36e94d82bb186a9f51640f956d3cdf.scope"
+          ],
+          "stop_ns": 2351462918727072,
+          "work_ns": 2351462418727072
+        },
+        "input_versions_before": {
+          "config.dhall": {
+            "st_dev": 2050,
+            "st_ino": 3573251,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 157,
+            "st_mtime_ns": 1793084669652806695,
+            "st_ctime_ns": 1793084669652806695
+          },
+          "request": {
+            "st_dev": 2050,
+            "st_ino": 3573252,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 21,
+            "st_mtime_ns": 1793084669648695970,
+            "st_ctime_ns": 1793084669648746809
+          }
+        },
+        "exit_code": 0,
+        "held_cgroup_identity": {
+          "device": 31,
+          "inode": 3863899
+        },
+        "held_cgroup_link": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/prodboxrpcbirth.slice (deleted)",
+        "held_cgroup_events_absent": true,
+        "held_cgroup_retired": true,
+        "independent_unit_observations": [
+          {
+            "unit": "prodbox-rpc-birth-controller-b90674913f57c9c247d92e60c0ff9cdabe36e94d82bb186a9f51640f956d3cdf.service",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-controller-b90674913f57c9c247d92e60c0ff9cdabe36e94d82bb186a9f51640f956d3cdf.service not loaded.\n",
+            "observed_ns": 2351462598626488,
+            "absent": true
+          },
+          {
+            "unit": "prodboxrpcbirth.slice",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodboxrpcbirth.slice not loaded.\n",
+            "observed_ns": 2351462602640210,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-rpc-birth-b90674913f57c9c247d92e60c0ff9cdabe36e94d82bb186a9f51640f956d3cdf-expiry.timer",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-b90674913f57c9c247d92e60c0ff9cdabe36e94d82bb186a9f51640f956d3cdf-expiry.timer not loaded.\n",
+            "observed_ns": 2351462606987375,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-rpc-birth-b90674913f57c9c247d92e60c0ff9cdabe36e94d82bb186a9f51640f956d3cdf-expiry.service",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-b90674913f57c9c247d92e60c0ff9cdabe36e94d82bb186a9f51640f956d3cdf-expiry.service not loaded.\n",
+            "observed_ns": 2351462611177671,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-owned-b90674913f57c9c247d92e60c0ff9cdabe36e94d82bb186a9f51640f956d3cdf.scope",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-owned-b90674913f57c9c247d92e60c0ff9cdabe36e94d82bb186a9f51640f956d3cdf.scope not loaded.\n",
+            "observed_ns": 2351462615122793,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-transport-b90674913f57c9c247d92e60c0ff9cdabe36e94d82bb186a9f51640f956d3cdf.scope",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-transport-b90674913f57c9c247d92e60c0ff9cdabe36e94d82bb186a9f51640f956d3cdf.scope not loaded.\n",
+            "observed_ns": 2351462619196735,
+            "absent": true
+          }
+        ],
+        "within_original_finish": true,
+        "workspace_absent": true,
+        "input_versions_after": {
+          "config.dhall": {
+            "st_dev": 2050,
+            "st_ino": 3573251,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 157,
+            "st_mtime_ns": 1793084669652806695,
+            "st_ctime_ns": 1793084669652806695
+          },
+          "request": {
+            "st_dev": 2050,
+            "st_ino": 3573252,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 21,
+            "st_mtime_ns": 1793084669648695970,
+            "st_ctime_ns": 1793084669648746809
+          }
+        },
+        "input_versions_unchanged": true,
+        "submission_retained": true,
+        "submission_mode": "0o400",
+        "submission_size": 804,
+        "controller_observed_record": true,
+        "fault_detail": {
+          "before_manager_absent": false,
+          "before_sender_present": true,
+          "blind_close_does_not_prove_no_go": false,
+          "blind_close_without_reply_wait": false,
+          "caller_cancelled": true,
+          "closing_six_role_absence": true,
+          "closure_waited_for_manager_reply": true,
+          "complete_six_role_and_held_cgroup_absence": true,
+          "controller_started": true,
+          "exact_sender_absent_before_manager_frontier": true,
+          "fixed_kernel_path_absent": true,
+          "frontier_observed_materialized_family": true,
+          "mode": "lost-submission-reply",
+          "original_sender": ":1.1136090",
+          "production_causal_closure_capability": false,
+          "provenance_retained_exactly": true,
+          "request_serial": 24,
+          "sender_still_present_after_cancellation": true,
+          "workspace_absent": true
+        },
+        "relay_socket_absent": true
+      },
+      {
+        "mode": "queued-sender-close",
+        "command": [
+          "python3",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/rpc-coordinator-20261025/run-check.py",
+          "submission-fault-family-queued-sender-close-4",
+          "env",
+          "XDG_RUNTIME_DIR=/run/user/1000",
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+          "systemd-run",
+          "--user",
+          "--quiet",
+          "--wait",
+          "--pipe",
+          "--collect",
+          "--service-type=oneshot",
+          "--expand-environment=no",
+          "--unit=prodbox-submission-fault-family-queued-sender-close-4-20261027",
+          "--working-directory=/home/matthewnowak/prodbox",
+          "--property=MemoryMax=176M",
+          "--property=MemorySwapMax=0",
+          "--property=CPUQuota=30%",
+          "--property=OOMPolicy=kill",
+          "--property=OOMScoreAdjust=1000",
+          "--property=TasksMax=16",
+          "--property=TimeoutStartSec=20s",
+          "--property=TimeoutStopSec=2s",
+          "--",
+          "/usr/bin/time",
+          "-v",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/native-family-fault-8",
+          "queued-sender-close",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/case-family-queued-sender-close-4",
+          "+RTS",
+          "-M134217728b",
+          "-N1",
+          "-RTS"
+        ],
+        "complete": true,
+        "field": {
+          "finish_ns": 2351465673935864,
+          "hard_ns": 2351464823935864,
+          "key": "b5365756ef40cc04a0bf562b0fd6c9cb8889b810ac11cc55afdfb9fb1eddbf43",
+          "outer_ns": 2351467673935864,
+          "roles": [
+            "prodbox-rpc-birth-controller-b5365756ef40cc04a0bf562b0fd6c9cb8889b810ac11cc55afdfb9fb1eddbf43.service",
+            "prodboxrpcbirth.slice",
+            "prodbox-rpc-birth-b5365756ef40cc04a0bf562b0fd6c9cb8889b810ac11cc55afdfb9fb1eddbf43-expiry.timer",
+            "prodbox-rpc-birth-b5365756ef40cc04a0bf562b0fd6c9cb8889b810ac11cc55afdfb9fb1eddbf43-expiry.service",
+            "prodbox-owned-b5365756ef40cc04a0bf562b0fd6c9cb8889b810ac11cc55afdfb9fb1eddbf43.scope",
+            "prodbox-transport-b5365756ef40cc04a0bf562b0fd6c9cb8889b810ac11cc55afdfb9fb1eddbf43.scope"
+          ],
+          "stop_ns": 2351465173935864,
+          "work_ns": 2351464673935864
+        },
+        "input_versions_before": {
+          "config.dhall": {
+            "st_dev": 2050,
+            "st_ino": 3573262,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 157,
+            "st_mtime_ns": 1793084671907934716,
+            "st_ctime_ns": 1793084671907934716
+          },
+          "request": {
+            "st_dev": 2050,
+            "st_ino": 3573263,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 19,
+            "st_mtime_ns": 1793084671896950124,
+            "st_ctime_ns": 1793084671897000172
+          }
+        },
+        "exit_code": 0,
+        "independent_unit_observations": [
+          {
+            "unit": "prodbox-rpc-birth-controller-b5365756ef40cc04a0bf562b0fd6c9cb8889b810ac11cc55afdfb9fb1eddbf43.service",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-controller-b5365756ef40cc04a0bf562b0fd6c9cb8889b810ac11cc55afdfb9fb1eddbf43.service not loaded.\n",
+            "observed_ns": 2351464896838118,
+            "absent": true
+          },
+          {
+            "unit": "prodboxrpcbirth.slice",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodboxrpcbirth.slice not loaded.\n",
+            "observed_ns": 2351464900789376,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-rpc-birth-b5365756ef40cc04a0bf562b0fd6c9cb8889b810ac11cc55afdfb9fb1eddbf43-expiry.timer",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-b5365756ef40cc04a0bf562b0fd6c9cb8889b810ac11cc55afdfb9fb1eddbf43-expiry.timer not loaded.\n",
+            "observed_ns": 2351464904910417,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-rpc-birth-b5365756ef40cc04a0bf562b0fd6c9cb8889b810ac11cc55afdfb9fb1eddbf43-expiry.service",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-b5365756ef40cc04a0bf562b0fd6c9cb8889b810ac11cc55afdfb9fb1eddbf43-expiry.service not loaded.\n",
+            "observed_ns": 2351464909038317,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-owned-b5365756ef40cc04a0bf562b0fd6c9cb8889b810ac11cc55afdfb9fb1eddbf43.scope",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-owned-b5365756ef40cc04a0bf562b0fd6c9cb8889b810ac11cc55afdfb9fb1eddbf43.scope not loaded.\n",
+            "observed_ns": 2351464912899777,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-transport-b5365756ef40cc04a0bf562b0fd6c9cb8889b810ac11cc55afdfb9fb1eddbf43.scope",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-transport-b5365756ef40cc04a0bf562b0fd6c9cb8889b810ac11cc55afdfb9fb1eddbf43.scope not loaded.\n",
+            "observed_ns": 2351464916872560,
+            "absent": true
+          }
+        ],
+        "within_original_finish": true,
+        "workspace_absent": true,
+        "input_versions_after": {
+          "config.dhall": {
+            "st_dev": 2050,
+            "st_ino": 3573262,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 157,
+            "st_mtime_ns": 1793084671907934716,
+            "st_ctime_ns": 1793084671907934716
+          },
+          "request": {
+            "st_dev": 2050,
+            "st_ino": 3573263,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 19,
+            "st_mtime_ns": 1793084671896950124,
+            "st_ctime_ns": 1793084671897000172
+          }
+        },
+        "input_versions_unchanged": true,
+        "submission_retained": true,
+        "submission_mode": "0o400",
+        "submission_size": 800,
+        "controller_observed_record": false,
+        "fault_detail": {
+          "before_manager_absent": true,
+          "before_sender_present": true,
+          "blind_close_does_not_prove_no_go": true,
+          "blind_close_without_reply_wait": true,
+          "caller_cancelled": true,
+          "closing_six_role_absence": true,
+          "closure_waited_for_manager_reply": false,
+          "complete_six_role_and_held_cgroup_absence": false,
+          "controller_started": false,
+          "exact_sender_absent_before_manager_frontier": true,
+          "fixed_kernel_path_absent": true,
+          "frontier_observed_materialized_family": false,
+          "mode": "queued-sender-close",
+          "original_sender": ":1.1136099",
+          "production_causal_closure_capability": false,
+          "provenance_retained_exactly": true,
+          "request_serial": 24,
+          "sender_still_present_after_cancellation": true,
+          "workspace_absent": true
+        },
+        "relay_socket_absent": true
+      },
+      {
+        "mode": "expiry",
+        "command": [
+          "python3",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/rpc-coordinator-20261025/run-check.py",
+          "submission-fault-family-expiry-4",
+          "env",
+          "XDG_RUNTIME_DIR=/run/user/1000",
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+          "systemd-run",
+          "--user",
+          "--quiet",
+          "--wait",
+          "--pipe",
+          "--collect",
+          "--service-type=oneshot",
+          "--expand-environment=no",
+          "--unit=prodbox-submission-fault-family-expiry-4-20261027",
+          "--working-directory=/home/matthewnowak/prodbox",
+          "--property=MemoryMax=176M",
+          "--property=MemorySwapMax=0",
+          "--property=CPUQuota=30%",
+          "--property=OOMPolicy=kill",
+          "--property=OOMScoreAdjust=1000",
+          "--property=TasksMax=16",
+          "--property=TimeoutStartSec=20s",
+          "--property=TimeoutStopSec=2s",
+          "--",
+          "/usr/bin/time",
+          "-v",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/native-family-fault-8",
+          "expiry",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/case-family-expiry-4",
+          "+RTS",
+          "-M134217728b",
+          "-N1",
+          "-RTS"
+        ],
+        "complete": true,
+        "field": {
+          "finish_ns": 2351467965235723,
+          "hard_ns": 2351467115235723,
+          "key": "7cc5236ebe110262d87c0f30aa7adaaca9b43ba81007a3e0c53d9566dea5bd1b",
+          "outer_ns": 2351469965235723,
+          "roles": [
+            "prodbox-rpc-birth-controller-7cc5236ebe110262d87c0f30aa7adaaca9b43ba81007a3e0c53d9566dea5bd1b.service",
+            "prodboxrpcbirth.slice",
+            "prodbox-rpc-birth-7cc5236ebe110262d87c0f30aa7adaaca9b43ba81007a3e0c53d9566dea5bd1b-expiry.timer",
+            "prodbox-rpc-birth-7cc5236ebe110262d87c0f30aa7adaaca9b43ba81007a3e0c53d9566dea5bd1b-expiry.service",
+            "prodbox-owned-7cc5236ebe110262d87c0f30aa7adaaca9b43ba81007a3e0c53d9566dea5bd1b.scope",
+            "prodbox-transport-7cc5236ebe110262d87c0f30aa7adaaca9b43ba81007a3e0c53d9566dea5bd1b.scope"
+          ],
+          "stop_ns": 2351467465235723,
+          "work_ns": 2351466965235723
+        },
+        "input_versions_before": {
+          "config.dhall": {
+            "st_dev": 2050,
+            "st_ino": 3573271,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 157,
+            "st_mtime_ns": 1793084674198305342,
+            "st_ctime_ns": 1793084674198305342
+          },
+          "request": {
+            "st_dev": 2050,
+            "st_ino": 3573272,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 6,
+            "st_mtime_ns": 1793084674194947586,
+            "st_ctime_ns": 1793084674194994706
+          }
+        },
+        "exit_code": 0,
+        "held_cgroup_identity": {
+          "device": 31,
+          "inode": 3864196
+        },
+        "held_cgroup_link": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/prodboxrpcbirth.slice (deleted)",
+        "held_cgroup_events_absent": true,
+        "held_cgroup_retired": true,
+        "independent_unit_observations": [
+          {
+            "unit": "prodbox-rpc-birth-controller-7cc5236ebe110262d87c0f30aa7adaaca9b43ba81007a3e0c53d9566dea5bd1b.service",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-controller-7cc5236ebe110262d87c0f30aa7adaaca9b43ba81007a3e0c53d9566dea5bd1b.service not loaded.\n",
+            "observed_ns": 2351467149879252,
+            "absent": true
+          },
+          {
+            "unit": "prodboxrpcbirth.slice",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodboxrpcbirth.slice not loaded.\n",
+            "observed_ns": 2351467153902583,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-rpc-birth-7cc5236ebe110262d87c0f30aa7adaaca9b43ba81007a3e0c53d9566dea5bd1b-expiry.timer",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-7cc5236ebe110262d87c0f30aa7adaaca9b43ba81007a3e0c53d9566dea5bd1b-expiry.timer not loaded.\n",
+            "observed_ns": 2351467158640156,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-rpc-birth-7cc5236ebe110262d87c0f30aa7adaaca9b43ba81007a3e0c53d9566dea5bd1b-expiry.service",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-7cc5236ebe110262d87c0f30aa7adaaca9b43ba81007a3e0c53d9566dea5bd1b-expiry.service not loaded.\n",
+            "observed_ns": 2351467162987167,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-owned-7cc5236ebe110262d87c0f30aa7adaaca9b43ba81007a3e0c53d9566dea5bd1b.scope",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-owned-7cc5236ebe110262d87c0f30aa7adaaca9b43ba81007a3e0c53d9566dea5bd1b.scope not loaded.\n",
+            "observed_ns": 2351467167745228,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-transport-7cc5236ebe110262d87c0f30aa7adaaca9b43ba81007a3e0c53d9566dea5bd1b.scope",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-transport-7cc5236ebe110262d87c0f30aa7adaaca9b43ba81007a3e0c53d9566dea5bd1b.scope not loaded.\n",
+            "observed_ns": 2351467172774400,
+            "absent": true
+          }
+        ],
+        "within_original_finish": true,
+        "workspace_absent": true,
+        "input_versions_after": {
+          "config.dhall": {
+            "st_dev": 2050,
+            "st_ino": 3573271,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 157,
+            "st_mtime_ns": 1793084674198305342,
+            "st_ctime_ns": 1793084674198305342
+          },
+          "request": {
+            "st_dev": 2050,
+            "st_ino": 3573272,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 6,
+            "st_mtime_ns": 1793084674194947586,
+            "st_ctime_ns": 1793084674194994706
+          }
+        },
+        "input_versions_unchanged": true,
+        "submission_retained": true,
+        "submission_mode": "0o400",
+        "submission_size": 774,
+        "controller_observed_record": true
+      },
+      {
+        "mode": "roles",
+        "command": [
+          "python3",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/rpc-coordinator-20261025/run-check.py",
+          "submission-fault-family-roles-4",
+          "env",
+          "XDG_RUNTIME_DIR=/run/user/1000",
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+          "systemd-run",
+          "--user",
+          "--quiet",
+          "--wait",
+          "--pipe",
+          "--collect",
+          "--service-type=oneshot",
+          "--expand-environment=no",
+          "--unit=prodbox-submission-fault-family-roles-4-20261027",
+          "--working-directory=/home/matthewnowak/prodbox",
+          "--property=MemoryMax=176M",
+          "--property=MemorySwapMax=0",
+          "--property=CPUQuota=30%",
+          "--property=OOMPolicy=kill",
+          "--property=OOMScoreAdjust=1000",
+          "--property=TasksMax=16",
+          "--property=TimeoutStartSec=20s",
+          "--property=TimeoutStopSec=2s",
+          "--",
+          "/usr/bin/time",
+          "-v",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/native-family-fault-8",
+          "roles",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/case-family-roles-4",
+          "+RTS",
+          "-M134217728b",
+          "-N1",
+          "-RTS"
+        ],
+        "complete": true,
+        "field": {
+          "finish_ns": 2351470224131147,
+          "hard_ns": 2351469374131147,
+          "key": "a6b2d64beb1ca2afc68c74cd6a3643ad9e10d25e4278dcb924befd5f434db43b",
+          "outer_ns": 2351472224131147,
+          "roles": [
+            "prodbox-rpc-birth-controller-a6b2d64beb1ca2afc68c74cd6a3643ad9e10d25e4278dcb924befd5f434db43b.service",
+            "prodboxrpcbirth.slice",
+            "prodbox-rpc-birth-a6b2d64beb1ca2afc68c74cd6a3643ad9e10d25e4278dcb924befd5f434db43b-expiry.timer",
+            "prodbox-rpc-birth-a6b2d64beb1ca2afc68c74cd6a3643ad9e10d25e4278dcb924befd5f434db43b-expiry.service",
+            "prodbox-owned-a6b2d64beb1ca2afc68c74cd6a3643ad9e10d25e4278dcb924befd5f434db43b.scope",
+            "prodbox-transport-a6b2d64beb1ca2afc68c74cd6a3643ad9e10d25e4278dcb924befd5f434db43b.scope"
+          ],
+          "stop_ns": 2351469724131147,
+          "work_ns": 2351469224131147
+        },
+        "input_versions_before": {
+          "config.dhall": {
+            "st_dev": 2050,
+            "st_ino": 3573281,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 157,
+            "st_mtime_ns": 1793084676458188130,
+            "st_ctime_ns": 1793084676458188130
+          },
+          "request": {
+            "st_dev": 2050,
+            "st_ino": 3573282,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 5,
+            "st_mtime_ns": 1793084676453940418,
+            "st_ctime_ns": 1793084676453983556
+          }
+        },
+        "exit_code": 0,
+        "held_cgroup_identity": {
+          "device": 31,
+          "inode": 3864421
+        },
+        "held_cgroup_link": "/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/prodboxrpcbirth.slice (deleted)",
+        "held_cgroup_events_absent": true,
+        "held_cgroup_retired": true,
+        "independent_unit_observations": [
+          {
+            "unit": "prodbox-rpc-birth-controller-a6b2d64beb1ca2afc68c74cd6a3643ad9e10d25e4278dcb924befd5f434db43b.service",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-controller-a6b2d64beb1ca2afc68c74cd6a3643ad9e10d25e4278dcb924befd5f434db43b.service not loaded.\n",
+            "observed_ns": 2351469402928810,
+            "absent": true
+          },
+          {
+            "unit": "prodboxrpcbirth.slice",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodboxrpcbirth.slice not loaded.\n",
+            "observed_ns": 2351469407038792,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-rpc-birth-a6b2d64beb1ca2afc68c74cd6a3643ad9e10d25e4278dcb924befd5f434db43b-expiry.timer",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-a6b2d64beb1ca2afc68c74cd6a3643ad9e10d25e4278dcb924befd5f434db43b-expiry.timer not loaded.\n",
+            "observed_ns": 2351469411235115,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-rpc-birth-a6b2d64beb1ca2afc68c74cd6a3643ad9e10d25e4278dcb924befd5f434db43b-expiry.service",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-a6b2d64beb1ca2afc68c74cd6a3643ad9e10d25e4278dcb924befd5f434db43b-expiry.service not loaded.\n",
+            "observed_ns": 2351469415306700,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-owned-a6b2d64beb1ca2afc68c74cd6a3643ad9e10d25e4278dcb924befd5f434db43b.scope",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-owned-a6b2d64beb1ca2afc68c74cd6a3643ad9e10d25e4278dcb924befd5f434db43b.scope not loaded.\n",
+            "observed_ns": 2351469419204633,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-transport-a6b2d64beb1ca2afc68c74cd6a3643ad9e10d25e4278dcb924befd5f434db43b.scope",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-transport-a6b2d64beb1ca2afc68c74cd6a3643ad9e10d25e4278dcb924befd5f434db43b.scope not loaded.\n",
+            "observed_ns": 2351469423177908,
+            "absent": true
+          }
+        ],
+        "within_original_finish": true,
+        "workspace_absent": true,
+        "input_versions_after": {
+          "config.dhall": {
+            "st_dev": 2050,
+            "st_ino": 3573281,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 157,
+            "st_mtime_ns": 1793084676458188130,
+            "st_ctime_ns": 1793084676458188130
+          },
+          "request": {
+            "st_dev": 2050,
+            "st_ino": 3573282,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 5,
+            "st_mtime_ns": 1793084676453940418,
+            "st_ctime_ns": 1793084676453983556
+          }
+        },
+        "input_versions_unchanged": true,
+        "submission_retained": true,
+        "submission_mode": "0o400",
+        "submission_size": 772,
+        "controller_observed_record": true
+      },
+      {
+        "mode": "submission-existing",
+        "command": [
+          "python3",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/rpc-coordinator-20261025/run-check.py",
+          "submission-fault-family-submission-existing-4",
+          "env",
+          "XDG_RUNTIME_DIR=/run/user/1000",
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+          "systemd-run",
+          "--user",
+          "--quiet",
+          "--wait",
+          "--pipe",
+          "--collect",
+          "--service-type=oneshot",
+          "--expand-environment=no",
+          "--unit=prodbox-submission-fault-family-submission-existing-4-20261027",
+          "--working-directory=/home/matthewnowak/prodbox",
+          "--property=MemoryMax=176M",
+          "--property=MemorySwapMax=0",
+          "--property=CPUQuota=30%",
+          "--property=OOMPolicy=kill",
+          "--property=OOMScoreAdjust=1000",
+          "--property=TasksMax=16",
+          "--property=TimeoutStartSec=20s",
+          "--property=TimeoutStopSec=2s",
+          "--",
+          "/usr/bin/time",
+          "-v",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/native-family-fault-8",
+          "submission-existing",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/case-family-submission-existing-4",
+          "+RTS",
+          "-M134217728b",
+          "-N1",
+          "-RTS"
+        ],
+        "complete": true,
+        "field": {
+          "finish_ns": 2351472473075837,
+          "hard_ns": 2351471623075837,
+          "key": "b5d64801d2558ed4b35726a206885ed3d6c390a3419455b833be128b3d99fd79",
+          "outer_ns": 2351474473075837,
+          "roles": [
+            "prodbox-rpc-birth-controller-b5d64801d2558ed4b35726a206885ed3d6c390a3419455b833be128b3d99fd79.service",
+            "prodboxrpcbirth.slice",
+            "prodbox-rpc-birth-b5d64801d2558ed4b35726a206885ed3d6c390a3419455b833be128b3d99fd79-expiry.timer",
+            "prodbox-rpc-birth-b5d64801d2558ed4b35726a206885ed3d6c390a3419455b833be128b3d99fd79-expiry.service",
+            "prodbox-owned-b5d64801d2558ed4b35726a206885ed3d6c390a3419455b833be128b3d99fd79.scope",
+            "prodbox-transport-b5d64801d2558ed4b35726a206885ed3d6c390a3419455b833be128b3d99fd79.scope"
+          ],
+          "stop_ns": 2351471973075837,
+          "work_ns": 2351471473075837
+        },
+        "input_versions_before": {
+          "config.dhall": {
+            "st_dev": 2050,
+            "st_ino": 3573296,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 157,
+            "st_mtime_ns": 1793084678707133287,
+            "st_ctime_ns": 1793084678707133287
+          },
+          "request": {
+            "st_dev": 2050,
+            "st_ino": 3573297,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 19,
+            "st_mtime_ns": 1793084678703232835,
+            "st_ctime_ns": 1793084678703285104
+          }
+        },
+        "exit_code": 0,
+        "independent_unit_observations": [
+          {
+            "unit": "prodbox-rpc-birth-controller-b5d64801d2558ed4b35726a206885ed3d6c390a3419455b833be128b3d99fd79.service",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-controller-b5d64801d2558ed4b35726a206885ed3d6c390a3419455b833be128b3d99fd79.service not loaded.\n",
+            "observed_ns": 2351469511904292,
+            "absent": true
+          },
+          {
+            "unit": "prodboxrpcbirth.slice",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodboxrpcbirth.slice not loaded.\n",
+            "observed_ns": 2351469516154502,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-rpc-birth-b5d64801d2558ed4b35726a206885ed3d6c390a3419455b833be128b3d99fd79-expiry.timer",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-b5d64801d2558ed4b35726a206885ed3d6c390a3419455b833be128b3d99fd79-expiry.timer not loaded.\n",
+            "observed_ns": 2351469520148941,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-rpc-birth-b5d64801d2558ed4b35726a206885ed3d6c390a3419455b833be128b3d99fd79-expiry.service",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-b5d64801d2558ed4b35726a206885ed3d6c390a3419455b833be128b3d99fd79-expiry.service not loaded.\n",
+            "observed_ns": 2351469524297721,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-owned-b5d64801d2558ed4b35726a206885ed3d6c390a3419455b833be128b3d99fd79.scope",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-owned-b5d64801d2558ed4b35726a206885ed3d6c390a3419455b833be128b3d99fd79.scope not loaded.\n",
+            "observed_ns": 2351469528774013,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-transport-b5d64801d2558ed4b35726a206885ed3d6c390a3419455b833be128b3d99fd79.scope",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-transport-b5d64801d2558ed4b35726a206885ed3d6c390a3419455b833be128b3d99fd79.scope not loaded.\n",
+            "observed_ns": 2351469532997765,
+            "absent": true
+          }
+        ],
+        "within_original_finish": true,
+        "workspace_absent": true,
+        "input_versions_after": {
+          "config.dhall": {
+            "st_dev": 2050,
+            "st_ino": 3573296,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 157,
+            "st_mtime_ns": 1793084678707133287,
+            "st_ctime_ns": 1793084678707133287
+          },
+          "request": {
+            "st_dev": 2050,
+            "st_ino": 3573297,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 19,
+            "st_mtime_ns": 1793084678703232835,
+            "st_ctime_ns": 1793084678703285104
+          }
+        },
+        "input_versions_unchanged": true,
+        "submission_retained": true,
+        "submission_mode": "0o400",
+        "submission_size": 800,
+        "controller_observed_record": false
+      },
+      {
+        "mode": "expired-submit",
+        "command": [
+          "python3",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/rpc-coordinator-20261025/run-check.py",
+          "submission-fault-family-expired-submit-4",
+          "env",
+          "XDG_RUNTIME_DIR=/run/user/1000",
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+          "systemd-run",
+          "--user",
+          "--quiet",
+          "--wait",
+          "--pipe",
+          "--collect",
+          "--service-type=oneshot",
+          "--expand-environment=no",
+          "--unit=prodbox-submission-fault-family-expired-submit-4-20261027",
+          "--working-directory=/home/matthewnowak/prodbox",
+          "--property=MemoryMax=176M",
+          "--property=MemorySwapMax=0",
+          "--property=CPUQuota=30%",
+          "--property=OOMPolicy=kill",
+          "--property=OOMScoreAdjust=1000",
+          "--property=TasksMax=16",
+          "--property=TimeoutStartSec=20s",
+          "--property=TimeoutStopSec=2s",
+          "--",
+          "/usr/bin/time",
+          "-v",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/native-family-fault-8",
+          "expired-submit",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/case-family-expired-submit-4",
+          "+RTS",
+          "-M134217728b",
+          "-N1",
+          "-RTS"
+        ],
+        "complete": true,
+        "field": {
+          "finish_ns": 2351472583976463,
+          "hard_ns": 2351471733976463,
+          "key": "d6e498bde1877a1f59f012ba8532f03a84254fb87a705b09224eaa9bcd8d76d0",
+          "outer_ns": 2351474583976463,
+          "roles": [
+            "prodbox-rpc-birth-controller-d6e498bde1877a1f59f012ba8532f03a84254fb87a705b09224eaa9bcd8d76d0.service",
+            "prodboxrpcbirth.slice",
+            "prodbox-rpc-birth-d6e498bde1877a1f59f012ba8532f03a84254fb87a705b09224eaa9bcd8d76d0-expiry.timer",
+            "prodbox-rpc-birth-d6e498bde1877a1f59f012ba8532f03a84254fb87a705b09224eaa9bcd8d76d0-expiry.service",
+            "prodbox-owned-d6e498bde1877a1f59f012ba8532f03a84254fb87a705b09224eaa9bcd8d76d0.scope",
+            "prodbox-transport-d6e498bde1877a1f59f012ba8532f03a84254fb87a705b09224eaa9bcd8d76d0.scope"
+          ],
+          "stop_ns": 2351472083976463,
+          "work_ns": 2351469613976463
+        },
+        "input_versions_before": {
+          "config.dhall": {
+            "st_dev": 2050,
+            "st_ino": 3573304,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 157,
+            "st_mtime_ns": 1793084678818050910,
+            "st_ctime_ns": 1793084678818050910
+          },
+          "request": {
+            "st_dev": 2050,
+            "st_ino": 3573305,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 14,
+            "st_mtime_ns": 1793084678813861432,
+            "st_ctime_ns": 1793084678813909307
+          }
+        },
+        "exit_code": 0,
+        "independent_unit_observations": [
+          {
+            "unit": "prodbox-rpc-birth-controller-d6e498bde1877a1f59f012ba8532f03a84254fb87a705b09224eaa9bcd8d76d0.service",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-controller-d6e498bde1877a1f59f012ba8532f03a84254fb87a705b09224eaa9bcd8d76d0.service not loaded.\n",
+            "observed_ns": 2351469649960237,
+            "absent": true
+          },
+          {
+            "unit": "prodboxrpcbirth.slice",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodboxrpcbirth.slice not loaded.\n",
+            "observed_ns": 2351469654126772,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-rpc-birth-d6e498bde1877a1f59f012ba8532f03a84254fb87a705b09224eaa9bcd8d76d0-expiry.timer",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-d6e498bde1877a1f59f012ba8532f03a84254fb87a705b09224eaa9bcd8d76d0-expiry.timer not loaded.\n",
+            "observed_ns": 2351469658319240,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-rpc-birth-d6e498bde1877a1f59f012ba8532f03a84254fb87a705b09224eaa9bcd8d76d0-expiry.service",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-d6e498bde1877a1f59f012ba8532f03a84254fb87a705b09224eaa9bcd8d76d0-expiry.service not loaded.\n",
+            "observed_ns": 2351469662438213,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-owned-d6e498bde1877a1f59f012ba8532f03a84254fb87a705b09224eaa9bcd8d76d0.scope",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-owned-d6e498bde1877a1f59f012ba8532f03a84254fb87a705b09224eaa9bcd8d76d0.scope not loaded.\n",
+            "observed_ns": 2351469666620839,
+            "absent": true
+          },
+          {
+            "unit": "prodbox-transport-d6e498bde1877a1f59f012ba8532f03a84254fb87a705b09224eaa9bcd8d76d0.scope",
+            "exit_code": 1,
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-transport-d6e498bde1877a1f59f012ba8532f03a84254fb87a705b09224eaa9bcd8d76d0.scope not loaded.\n",
+            "observed_ns": 2351469670480992,
+            "absent": true
+          }
+        ],
+        "within_original_finish": true,
+        "workspace_absent": true,
+        "input_versions_after": {
+          "config.dhall": {
+            "st_dev": 2050,
+            "st_ino": 3573304,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 157,
+            "st_mtime_ns": 1793084678818050910,
+            "st_ctime_ns": 1793084678818050910
+          },
+          "request": {
+            "st_dev": 2050,
+            "st_ino": 3573305,
+            "st_mode": 33152,
+            "st_uid": 1000,
+            "st_nlink": 1,
+            "st_size": 14,
+            "st_mtime_ns": 1793084678813861432,
+            "st_ctime_ns": 1793084678813909307
+          }
+        },
+        "input_versions_unchanged": true,
+        "submission_retained": false,
+        "controller_observed_record": false
+      }
+    ],
+    "complete": true,
+    "hand_actions": []
+  },
+  "fault_peak_qa_rss_kib": {
+    "queued-submission": 24524,
+    "lost-submission-reply": 24424,
+    "queued-sender-close": 23500
+  },
+  "envelopes": {
+    "managed_family": {
+      "memory_mib": 256,
+      "milli_cpu": 700,
+      "tasks": 56,
+      "original_seconds": {
+        "outer": 5,
+        "work": 2,
+        "hard": 2.15,
+        "stop": 2.5,
+        "finish": 3
+      }
+    },
+    "separate_qa_wrapper": {
+      "memory_mib": 176,
+      "heap_mib": 128,
+      "cpu_percent": 30,
+      "tasks": 16,
+      "timeout_seconds": 20
+    },
+    "relay_rejection_bounds": {
+      "authentication_line_bytes": 8192,
+      "binary_frame_bytes": 131072
+    },
+    "mapping": "Same authored family/QA envelopes and original clocks as the retained family fixture. No aggregate deployment or measured production working-set claim."
+  },
+  "counterexample_predicate": {
+    "expression": "hostOperationAbsent on the exact keyed six-role field",
+    "observed_true_while_sender_live_and_frame_held": true,
+    "actual_later_controller_start_after_client_cancellation": true,
+    "limit": "This proves that inventory absence alone is insufficient. The existing frozen owner already treated it as data and retained inputs; this is not a failing previously supported cleanup route."
+  },
+  "retained_validation_history": {
+    "failed_builds": {
+      "submission-fault-native-build-1": {
+        "command": [
+          "env",
+          "XDG_RUNTIME_DIR=/run/user/1000",
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+          "systemd-run",
+          "--user",
+          "--quiet",
+          "--wait",
+          "--pipe",
+          "--collect",
+          "--service-type=oneshot",
+          "--expand-environment=no",
+          "--unit=prodbox-submission-fault-native-build-1-20261026",
+          "--working-directory=/home/matthewnowak/prodbox",
+          "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+          "--property=UMask=0022",
+          "--property=MemoryMax=5G",
+          "--property=MemorySwapMax=0",
+          "--property=OOMPolicy=kill",
+          "--property=OOMScoreAdjust=1000",
+          "--property=TasksMax=64",
+          "--property=TimeoutStartSec=600s",
+          "--property=TimeoutStopSec=2s",
+          "--",
+          "ghc",
+          "-Wall",
+          "-Werror",
+          "-threaded",
+          "-rtsopts",
+          "-with-rtsopts=-N1",
+          "-hide-all-packages",
+          "-package-db",
+          "/home/matthewnowak/.cabal/store/ghc-9.12.4-5301/package.db",
+          "-package-db",
+          ".build/packagedb/ghc-9.12.4",
+          "-package-id",
+          "prodbox-0.1.0-inplace",
+          "-package-id",
+          "base-4.21.2.0-60b9",
+          "-package-id",
+          "bytestring-0.11.5.4-76e2bb591efe928d842f8288364e9ef294891f67ce13cd0bc014a1e2fe5df0a0",
+          "-package-id",
+          "unix-2.8.8.0-9ce6978edc33076465fb56791d9ca017d405aa7230adf2653b2f7564cc3925f1",
+          "-package-id",
+          "text-2.0.2-8761414bfd4c61d83bb4a76313f5b7a899dddb96b90269a6e5d997a8bbbd6375",
+          "-package-id",
+          "aeson-2.2.5.0-e2e37fe6bc5aa07f45e066f8f61685fa5ad0b1eb18e2b2c128ef1ea752061e01",
+          "-package-id",
+          "async-2.2.6-8960f1dd21f4a009a29b1fe1a67c9a2a4a2c68697b93dd8f3fb173222380a50f",
+          "-package-id",
+          "crypton-1.0.6-020d21e85cd9683b83d7321e840b655ed76b478e58a637e86a778a7747ac3db7",
+          "-package",
+          "transformers",
+          "-package-id",
+          "directory-1.3.10.1-d489a9b04bec59f8c3e0a56d9fa8c6036df06a729b2423829770f25fc263c55c",
+          "-package-id",
+          "filepath-1.4.301.0-55cfbc3f4dce88b4ce1658f6770d9ccbeb279efb5b93e8a3764f29b7dd69dd22",
+          "-outputdir",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/native-family-fault-1-objects",
+          "-o",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/native-family-fault-1",
+          "-package-id",
+          "process-1.6.30.0-6aaf8422fc072a0cd1390edbfe1125150c6bb2a95b2d3b42b9a9405f80b31cbd",
+          "-package-id",
+          "typed-process-0.2.13.0-abd82bbc92edf3e4773c3dd817737de05db408f2ea5066648e8179fa7a8622cb",
+          "-XImportQualifiedPost",
+          "-package-id",
+          "serialise-0.2.6.1-9fc9b98f7836b30172e1529223fb34de84f444ed67c191e32cd41daa2e1d73d0",
+          "-package-id",
+          "cryptohash-sha256-0.11.102.1-6df39dbe01efd710a9783bb4456b0bac4b2e3444a6d321ab62b36f3ff9e6abe0",
+          "test/qualification/HostOperationFamily.hs",
+          "src/Prodbox/Subprocess/HostOperationFamily.hs",
+          "src/Prodbox/Subprocess/SystemdBus.hs",
+          "src/Prodbox/Subprocess/SystemdIdentity.hs",
+          "src/Prodbox/Subprocess/KernelScope.hs",
+          "src/Prodbox/Subprocess.hs",
+          "src/Prodbox/Subprocess/ScopeFamily.hs",
+          "src/Prodbox/Subprocess/HostControllerInputs.hs",
+          "src/Prodbox/Subprocess/HostControllerArguments.hs",
+          "test/qualification/SystemdSubmissionProxy.hs",
+          "-package",
+          "network"
+        ],
+        "started_utc": "2026-10-27T06:32:00.569132+00:00",
+        "completed_utc": "2026-10-27T06:32:05.094412+00:00",
+        "exit_code": 1,
+        "wall_seconds": 4.525295428931713
+      },
+      "submission-fault-native-build-2": {
+        "command": [
+          "env",
+          "XDG_RUNTIME_DIR=/run/user/1000",
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+          "systemd-run",
+          "--user",
+          "--quiet",
+          "--wait",
+          "--pipe",
+          "--collect",
+          "--service-type=oneshot",
+          "--expand-environment=no",
+          "--unit=prodbox-submission-fault-native-build-2-20261026",
+          "--working-directory=/home/matthewnowak/prodbox",
+          "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+          "--property=UMask=0022",
+          "--property=MemoryMax=5G",
+          "--property=MemorySwapMax=0",
+          "--property=OOMPolicy=kill",
+          "--property=OOMScoreAdjust=1000",
+          "--property=TasksMax=64",
+          "--property=TimeoutStartSec=600s",
+          "--property=TimeoutStopSec=2s",
+          "--",
+          "ghc",
+          "-Wall",
+          "-Werror",
+          "-threaded",
+          "-rtsopts",
+          "-with-rtsopts=-N1",
+          "-hide-all-packages",
+          "-package-db",
+          "/home/matthewnowak/.cabal/store/ghc-9.12.4-5301/package.db",
+          "-package-db",
+          ".build/packagedb/ghc-9.12.4",
+          "-package-id",
+          "prodbox-0.1.0-inplace",
+          "-package-id",
+          "base-4.21.2.0-60b9",
+          "-package-id",
+          "bytestring-0.11.5.4-76e2bb591efe928d842f8288364e9ef294891f67ce13cd0bc014a1e2fe5df0a0",
+          "-package-id",
+          "unix-2.8.8.0-9ce6978edc33076465fb56791d9ca017d405aa7230adf2653b2f7564cc3925f1",
+          "-package-id",
+          "text-2.0.2-8761414bfd4c61d83bb4a76313f5b7a899dddb96b90269a6e5d997a8bbbd6375",
+          "-package-id",
+          "aeson-2.2.5.0-e2e37fe6bc5aa07f45e066f8f61685fa5ad0b1eb18e2b2c128ef1ea752061e01",
+          "-package-id",
+          "async-2.2.6-8960f1dd21f4a009a29b1fe1a67c9a2a4a2c68697b93dd8f3fb173222380a50f",
+          "-package-id",
+          "crypton-1.0.6-020d21e85cd9683b83d7321e840b655ed76b478e58a637e86a778a7747ac3db7",
+          "-package",
+          "transformers",
+          "-package-id",
+          "directory-1.3.10.1-d489a9b04bec59f8c3e0a56d9fa8c6036df06a729b2423829770f25fc263c55c",
+          "-package-id",
+          "filepath-1.4.301.0-55cfbc3f4dce88b4ce1658f6770d9ccbeb279efb5b93e8a3764f29b7dd69dd22",
+          "-outputdir",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/native-family-fault-2-objects",
+          "-o",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/native-family-fault-2",
+          "-package-id",
+          "process-1.6.30.0-6aaf8422fc072a0cd1390edbfe1125150c6bb2a95b2d3b42b9a9405f80b31cbd",
+          "-package-id",
+          "typed-process-0.2.13.0-abd82bbc92edf3e4773c3dd817737de05db408f2ea5066648e8179fa7a8622cb",
+          "-XImportQualifiedPost",
+          "-package-id",
+          "serialise-0.2.6.1-9fc9b98f7836b30172e1529223fb34de84f444ed67c191e32cd41daa2e1d73d0",
+          "-package-id",
+          "cryptohash-sha256-0.11.102.1-6df39dbe01efd710a9783bb4456b0bac4b2e3444a6d321ab62b36f3ff9e6abe0",
+          "test/qualification/HostOperationFamily.hs",
+          "src/Prodbox/Subprocess/HostOperationFamily.hs",
+          "src/Prodbox/Subprocess/SystemdBus.hs",
+          "src/Prodbox/Subprocess/SystemdIdentity.hs",
+          "src/Prodbox/Subprocess/KernelScope.hs",
+          "src/Prodbox/Subprocess.hs",
+          "src/Prodbox/Subprocess/ScopeFamily.hs",
+          "src/Prodbox/Subprocess/HostControllerInputs.hs",
+          "src/Prodbox/Subprocess/HostControllerArguments.hs",
+          "test/qualification/SystemdSubmissionProxy.hs",
+          "-package-id",
+          "network-3.1.4.0-1d8b779673bab29fa4d91c4b2077c7ccec77e8e8a1bd66b2b95ba4d224d64964"
+        ],
+        "started_utc": "2026-10-27T06:32:53.415507+00:00",
+        "completed_utc": "2026-10-27T06:32:58.080348+00:00",
+        "exit_code": 1,
+        "wall_seconds": 4.6648573242127895
+      },
+      "submission-fault-native-build-6": {
+        "command": [
+          "env",
+          "XDG_RUNTIME_DIR=/run/user/1000",
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+          "systemd-run",
+          "--user",
+          "--quiet",
+          "--wait",
+          "--pipe",
+          "--collect",
+          "--service-type=oneshot",
+          "--expand-environment=no",
+          "--unit=prodbox-submission-fault-native-build-6-20261026",
+          "--working-directory=/home/matthewnowak/prodbox",
+          "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+          "--property=UMask=0022",
+          "--property=MemoryMax=5G",
+          "--property=MemorySwapMax=0",
+          "--property=OOMPolicy=kill",
+          "--property=OOMScoreAdjust=1000",
+          "--property=TasksMax=64",
+          "--property=TimeoutStartSec=600s",
+          "--property=TimeoutStopSec=2s",
+          "--",
+          "ghc",
+          "-Wall",
+          "-Werror",
+          "-threaded",
+          "-rtsopts",
+          "-with-rtsopts=-N1",
+          "-hide-all-packages",
+          "-package-db",
+          "/home/matthewnowak/.cabal/store/ghc-9.12.4-5301/package.db",
+          "-package-db",
+          ".build/packagedb/ghc-9.12.4",
+          "-package-id",
+          "prodbox-0.1.0-inplace",
+          "-package-id",
+          "base-4.21.2.0-60b9",
+          "-package-id",
+          "bytestring-0.11.5.4-76e2bb591efe928d842f8288364e9ef294891f67ce13cd0bc014a1e2fe5df0a0",
+          "-package-id",
+          "unix-2.8.8.0-9ce6978edc33076465fb56791d9ca017d405aa7230adf2653b2f7564cc3925f1",
+          "-package-id",
+          "text-2.0.2-8761414bfd4c61d83bb4a76313f5b7a899dddb96b90269a6e5d997a8bbbd6375",
+          "-package-id",
+          "aeson-2.2.5.0-e2e37fe6bc5aa07f45e066f8f61685fa5ad0b1eb18e2b2c128ef1ea752061e01",
+          "-package-id",
+          "async-2.2.6-8960f1dd21f4a009a29b1fe1a67c9a2a4a2c68697b93dd8f3fb173222380a50f",
+          "-package-id",
+          "crypton-1.0.6-020d21e85cd9683b83d7321e840b655ed76b478e58a637e86a778a7747ac3db7",
+          "-package",
+          "transformers",
+          "-package-id",
+          "directory-1.3.10.1-d489a9b04bec59f8c3e0a56d9fa8c6036df06a729b2423829770f25fc263c55c",
+          "-package-id",
+          "filepath-1.4.301.0-55cfbc3f4dce88b4ce1658f6770d9ccbeb279efb5b93e8a3764f29b7dd69dd22",
+          "-outputdir",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/native-family-fault-6-objects",
+          "-o",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/native-family-fault-6",
+          "-package-id",
+          "process-1.6.30.0-6aaf8422fc072a0cd1390edbfe1125150c6bb2a95b2d3b42b9a9405f80b31cbd",
+          "-package-id",
+          "typed-process-0.2.13.0-abd82bbc92edf3e4773c3dd817737de05db408f2ea5066648e8179fa7a8622cb",
+          "-XImportQualifiedPost",
+          "-package-id",
+          "serialise-0.2.6.1-9fc9b98f7836b30172e1529223fb34de84f444ed67c191e32cd41daa2e1d73d0",
+          "-package-id",
+          "cryptohash-sha256-0.11.102.1-6df39dbe01efd710a9783bb4456b0bac4b2e3444a6d321ab62b36f3ff9e6abe0",
+          "test/qualification/HostOperationFamily.hs",
+          "src/Prodbox/Subprocess/HostOperationFamily.hs",
+          "src/Prodbox/Subprocess/SystemdBus.hs",
+          "src/Prodbox/Subprocess/SystemdIdentity.hs",
+          "src/Prodbox/Subprocess/KernelScope.hs",
+          "src/Prodbox/Subprocess.hs",
+          "src/Prodbox/Subprocess/ScopeFamily.hs",
+          "src/Prodbox/Subprocess/HostControllerInputs.hs",
+          "src/Prodbox/Subprocess/HostControllerArguments.hs",
+          "test/qualification/SystemdSubmissionProxy.hs",
+          "-package-id",
+          "network-3.1.4.0-1d8b779673bab29fa4d91c4b2077c7ccec77e8e8a1bd66b2b95ba4d224d64964"
+        ],
+        "started_utc": "2026-10-27T06:57:16.687899+00:00",
+        "completed_utc": "2026-10-27T06:57:21.569092+00:00",
+        "exit_code": 1,
+        "wall_seconds": 4.881209068931639
+      }
+    },
+    "failed_fault_schedules": [
+      {
+        "scope": "Real queued-submission and applied-reply-loss faults plus regressions, under unchanged native family envelopes; no production causal-closure or input-retirement capability.",
+        "cases": [
+          {
+            "mode": "queued-submission",
+            "command": [
+              "python3",
+              "/home/matthewnowak/prodbox/.build/sprint-6.5/rpc-coordinator-20261025/run-check.py",
+              "submission-fault-family-queued-submission-1",
+              "env",
+              "XDG_RUNTIME_DIR=/run/user/1000",
+              "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+              "systemd-run",
+              "--user",
+              "--quiet",
+              "--wait",
+              "--pipe",
+              "--collect",
+              "--service-type=oneshot",
+              "--expand-environment=no",
+              "--unit=prodbox-submission-fault-family-queued-submission-1-20261027",
+              "--working-directory=/home/matthewnowak/prodbox",
+              "--property=MemoryMax=176M",
+              "--property=MemorySwapMax=0",
+              "--property=CPUQuota=30%",
+              "--property=OOMPolicy=kill",
+              "--property=OOMScoreAdjust=1000",
+              "--property=TasksMax=16",
+              "--property=TimeoutStartSec=20s",
+              "--property=TimeoutStopSec=2s",
+              "--",
+              "/usr/bin/time",
+              "-v",
+              "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/native-family-fault-3",
+              "queued-submission",
+              "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/case-family-queued-submission-1",
+              "+RTS",
+              "-M134217728b",
+              "-N1",
+              "-RTS"
+            ],
+            "complete": false,
+            "field": {
+              "finish_ns": 2349858179790338,
+              "hard_ns": 2349857329790338,
+              "key": "7e203a891b4b43b9fb0e98af16b3b3ec2f0b88ff3c363f4785a6f7f9afc7570e",
+              "outer_ns": 2349860179790338,
+              "roles": [
+                "prodbox-rpc-birth-controller-7e203a891b4b43b9fb0e98af16b3b3ec2f0b88ff3c363f4785a6f7f9afc7570e.service",
+                "prodboxrpcbirth.slice",
+                "prodbox-rpc-birth-7e203a891b4b43b9fb0e98af16b3b3ec2f0b88ff3c363f4785a6f7f9afc7570e-expiry.timer",
+                "prodbox-rpc-birth-7e203a891b4b43b9fb0e98af16b3b3ec2f0b88ff3c363f4785a6f7f9afc7570e-expiry.service",
+                "prodbox-owned-7e203a891b4b43b9fb0e98af16b3b3ec2f0b88ff3c363f4785a6f7f9afc7570e.scope",
+                "prodbox-transport-7e203a891b4b43b9fb0e98af16b3b3ec2f0b88ff3c363f4785a6f7f9afc7570e.scope"
+              ],
+              "stop_ns": 2349857679790338,
+              "work_ns": 2349857179790338
+            },
+            "input_versions_before": {
+              "config.dhall": {
+                "st_dev": 2050,
+                "st_ino": 3572708,
+                "st_mode": 33152,
+                "st_uid": 1000,
+                "st_nlink": 1,
+                "st_size": 157,
+                "st_mtime_ns": 1793083064413853547,
+                "st_ctime_ns": 1793083064413853547
+              },
+              "request": {
+                "st_dev": 2050,
+                "st_ino": 3572709,
+                "st_mode": 33152,
+                "st_uid": 1000,
+                "st_nlink": 1,
+                "st_size": 17,
+                "st_mtime_ns": 1793083064409266420,
+                "st_ctime_ns": 1793083064409312710
+              }
+            },
+            "exit_code": 1,
+            "exception": "never observed cgroup"
+          }
+        ],
+        "complete": false,
+        "hand_actions": []
+      },
+      {
+        "scope": "Real queued-submission and applied-reply-loss faults plus regressions, under unchanged native family envelopes; no production causal-closure or input-retirement capability.",
+        "cases": [
+          {
+            "mode": "queued-submission",
+            "command": [
+              "python3",
+              "/home/matthewnowak/prodbox/.build/sprint-6.5/rpc-coordinator-20261025/run-check.py",
+              "submission-fault-family-queued-submission-2",
+              "env",
+              "XDG_RUNTIME_DIR=/run/user/1000",
+              "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+              "systemd-run",
+              "--user",
+              "--quiet",
+              "--wait",
+              "--pipe",
+              "--collect",
+              "--service-type=oneshot",
+              "--expand-environment=no",
+              "--unit=prodbox-submission-fault-family-queued-submission-2-20261027",
+              "--working-directory=/home/matthewnowak/prodbox",
+              "--property=MemoryMax=176M",
+              "--property=MemorySwapMax=0",
+              "--property=CPUQuota=30%",
+              "--property=OOMPolicy=kill",
+              "--property=OOMScoreAdjust=1000",
+              "--property=TasksMax=16",
+              "--property=TimeoutStartSec=20s",
+              "--property=TimeoutStopSec=2s",
+              "--",
+              "/usr/bin/time",
+              "-v",
+              "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/native-family-fault-4",
+              "queued-submission",
+              "/home/matthewnowak/prodbox/.build/sprint-6.5/submission-faults-20261027/case-family-queued-submission-2",
+              "+RTS",
+              "-M134217728b",
+              "-N1",
+              "-RTS"
+            ],
+            "complete": false,
+            "field": {
+              "finish_ns": 2350211479057040,
+              "hard_ns": 2350210629057040,
+              "key": "b3753a40fb89ce1e55c8436a8286d97a7a2e10f917b7ed18e4b80f21817050d8",
+              "outer_ns": 2350213479057040,
+              "roles": [
+                "prodbox-rpc-birth-controller-b3753a40fb89ce1e55c8436a8286d97a7a2e10f917b7ed18e4b80f21817050d8.service",
+                "prodboxrpcbirth.slice",
+                "prodbox-rpc-birth-b3753a40fb89ce1e55c8436a8286d97a7a2e10f917b7ed18e4b80f21817050d8-expiry.timer",
+                "prodbox-rpc-birth-b3753a40fb89ce1e55c8436a8286d97a7a2e10f917b7ed18e4b80f21817050d8-expiry.service",
+                "prodbox-owned-b3753a40fb89ce1e55c8436a8286d97a7a2e10f917b7ed18e4b80f21817050d8.scope",
+                "prodbox-transport-b3753a40fb89ce1e55c8436a8286d97a7a2e10f917b7ed18e4b80f21817050d8.scope"
+              ],
+              "stop_ns": 2350210979057040,
+              "work_ns": 2350210479057040
+            },
+            "input_versions_before": {
+              "config.dhall": {
+                "st_dev": 2050,
+                "st_ino": 3572847,
+                "st_mode": 33152,
+                "st_uid": 1000,
+                "st_nlink": 1,
+                "st_size": 157,
+                "st_mtime_ns": 1793083417713120379,
+                "st_ctime_ns": 1793083417713120379
+              },
+              "request": {
+                "st_dev": 2050,
+                "st_ino": 3572848,
+                "st_mode": 33152,
+                "st_uid": 1000,
+                "st_nlink": 1,
+                "st_size": 17,
+                "st_mtime_ns": 1793083417708988890,
+                "st_ctime_ns": 1793083417709043833
+              }
+            },
+            "exit_code": 1,
+            "exception": "never observed cgroup"
+          }
+        ],
+        "complete": false,
+        "hand_actions": []
+      }
+    ],
+    "failed_schedule_residue_audits": [
+      {
+        "scope": "Fresh read-only residue audit after the failed queued fault fixture; not original-deadline or qualification evidence.",
+        "observations": [
+          {
+            "unit": "prodbox-rpc-birth-controller-7e203a891b4b43b9fb0e98af16b3b3ec2f0b88ff3c363f4785a6f7f9afc7570e.service",
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-controller-7e203a891b4b43b9fb0e98af16b3b3ec2f0b88ff3c363f4785a6f7f9afc7570e.service not loaded.\n",
+            "exit_code": 1,
+            "absent": true,
+            "observed_ns": 2349991535974506
+          },
+          {
+            "unit": "prodboxrpcbirth.slice",
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodboxrpcbirth.slice not loaded.\n",
+            "exit_code": 1,
+            "absent": true,
+            "observed_ns": 2349991540063177
+          },
+          {
+            "unit": "prodbox-rpc-birth-7e203a891b4b43b9fb0e98af16b3b3ec2f0b88ff3c363f4785a6f7f9afc7570e-expiry.timer",
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-7e203a891b4b43b9fb0e98af16b3b3ec2f0b88ff3c363f4785a6f7f9afc7570e-expiry.timer not loaded.\n",
+            "exit_code": 1,
+            "absent": true,
+            "observed_ns": 2349991544017550
+          },
+          {
+            "unit": "prodbox-rpc-birth-7e203a891b4b43b9fb0e98af16b3b3ec2f0b88ff3c363f4785a6f7f9afc7570e-expiry.service",
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-7e203a891b4b43b9fb0e98af16b3b3ec2f0b88ff3c363f4785a6f7f9afc7570e-expiry.service not loaded.\n",
+            "exit_code": 1,
+            "absent": true,
+            "observed_ns": 2349991547985282
+          },
+          {
+            "unit": "prodbox-owned-7e203a891b4b43b9fb0e98af16b3b3ec2f0b88ff3c363f4785a6f7f9afc7570e.scope",
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-owned-7e203a891b4b43b9fb0e98af16b3b3ec2f0b88ff3c363f4785a6f7f9afc7570e.scope not loaded.\n",
+            "exit_code": 1,
+            "absent": true,
+            "observed_ns": 2349991551996833
+          },
+          {
+            "unit": "prodbox-transport-7e203a891b4b43b9fb0e98af16b3b3ec2f0b88ff3c363f4785a6f7f9afc7570e.scope",
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-transport-7e203a891b4b43b9fb0e98af16b3b3ec2f0b88ff3c363f4785a6f7f9afc7570e.scope not loaded.\n",
+            "exit_code": 1,
+            "absent": true,
+            "observed_ns": 2349991555962008
+          }
+        ],
+        "all_six_absent": true,
+        "workspace_absent": true,
+        "hand_actions": []
+      },
+      {
+        "scope": "Fresh read-only residue audit after failed queued fixture 2; no original-deadline or causal qualification claim.",
+        "observations": [
+          {
+            "unit": "prodbox-rpc-birth-controller-b3753a40fb89ce1e55c8436a8286d97a7a2e10f917b7ed18e4b80f21817050d8.service",
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-controller-b3753a40fb89ce1e55c8436a8286d97a7a2e10f917b7ed18e4b80f21817050d8.service not loaded.\n",
+            "exit_code": 1,
+            "absent": true,
+            "observed_ns": 2350374227801927
+          },
+          {
+            "unit": "prodboxrpcbirth.slice",
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodboxrpcbirth.slice not loaded.\n",
+            "exit_code": 1,
+            "absent": true,
+            "observed_ns": 2350374231847768
+          },
+          {
+            "unit": "prodbox-rpc-birth-b3753a40fb89ce1e55c8436a8286d97a7a2e10f917b7ed18e4b80f21817050d8-expiry.timer",
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-b3753a40fb89ce1e55c8436a8286d97a7a2e10f917b7ed18e4b80f21817050d8-expiry.timer not loaded.\n",
+            "exit_code": 1,
+            "absent": true,
+            "observed_ns": 2350374235976579
+          },
+          {
+            "unit": "prodbox-rpc-birth-b3753a40fb89ce1e55c8436a8286d97a7a2e10f917b7ed18e4b80f21817050d8-expiry.service",
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-rpc-birth-b3753a40fb89ce1e55c8436a8286d97a7a2e10f917b7ed18e4b80f21817050d8-expiry.service not loaded.\n",
+            "exit_code": 1,
+            "absent": true,
+            "observed_ns": 2350374240097932
+          },
+          {
+            "unit": "prodbox-owned-b3753a40fb89ce1e55c8436a8286d97a7a2e10f917b7ed18e4b80f21817050d8.scope",
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-owned-b3753a40fb89ce1e55c8436a8286d97a7a2e10f917b7ed18e4b80f21817050d8.scope not loaded.\n",
+            "exit_code": 1,
+            "absent": true,
+            "observed_ns": 2350374244185576
+          },
+          {
+            "unit": "prodbox-transport-b3753a40fb89ce1e55c8436a8286d97a7a2e10f917b7ed18e4b80f21817050d8.scope",
+            "stdout": "",
+            "stderr": "Error: GDBus.Error:org.freedesktop.systemd1.NoSuchUnit: Unit prodbox-transport-b3753a40fb89ce1e55c8436a8286d97a7a2e10f917b7ed18e4b80f21817050d8.scope not loaded.\n",
+            "exit_code": 1,
+            "absent": true,
+            "observed_ns": 2350374248247949
+          }
+        ],
+        "all_six_absent": true,
+        "workspace_absent": true,
+        "hand_actions": []
+      }
+    ],
+    "source_proof_for_failed_schedule_2": {
+      "source_identity_entry": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"c43d23fd8bde5ea278e5118762655e12041a4d3433d30627c58de28bcd8e4f2d\", sourceManifestEntryCount = 1579},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"2ec7ec4991ccd9df85a2996be580883830409bd5b6ddbe79964d48263c4cbdb5\", sourceManifestEntryCount = 1516})",
+      "source_identity_exit": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"c43d23fd8bde5ea278e5118762655e12041a4d3433d30627c58de28bcd8e4f2d\", sourceManifestEntryCount = 1579},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"2ec7ec4991ccd9df85a2996be580883830409bd5b6ddbe79964d48263c4cbdb5\", sourceManifestEntryCount = 1516})",
+      "all_71_inputs_and_binary_unchanged": true,
+      "claim": "Source proof for a failed authored fault schedule, not a passing validation or production counterexample.",
+      "complete": true
+    },
+    "earlier_six_control_source_proof": {
+      "source_identity_entry": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"64dfb09479195102da138bca07f76c6e6240e495ef0328869a7853a61c4b1418\", sourceManifestEntryCount = 1579},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"91451d655c181dbfffea92c89db9d2f10a3654ce51f253f3b6f43974d96a579c\", sourceManifestEntryCount = 1516})",
+      "source_identity_exit": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"64dfb09479195102da138bca07f76c6e6240e495ef0328869a7853a61c4b1418\", sourceManifestEntryCount = 1579},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"91451d655c181dbfffea92c89db9d2f10a3654ce51f253f3b6f43974d96a579c\", sourceManifestEntryCount = 1516})",
+      "all_71_inputs_and_binary_unchanged": true,
+      "six_controls_pass": true,
+      "limit": "Both positive mutation schedules retain the sender until an actual manager reply. They do not cover blind source closure or grant a production receipt.",
+      "complete": true
+    },
+    "corrections": [
+      "Standalone build 1 selected a network package linked against a different ByteString version. The replacement uses the exact repository network-3.1.4.0 package ID.",
+      "Build 2 found a shadowed fixture variable; build 6 found a missing fixture import. Warning-clean final build 8 retains both corrections.",
+      "Fault schedule 1 lost its assertion detail through the enclosing BusIoRefused wrapper. The fixture now captures/rethrows its test exception outside that wrapper and links relay failures.",
+      "The earlier queued frame was followed immediately by upstream closure and no controller startup was observed. The positive-effect schedule now retains the sender until a real manager reply; a separate blind-close control preserves the no-reply-wait case without claiming No-Go or a held-kernel receipt. These are distinct authored fault schedules, not an old/new production comparison."
+    ]
+  },
+  "remaining": [
+    "Bind and qualify the provider processing contract before submission, including manager re-exec and unsupported asynchronous-handler paths.",
+    "Compose exact sender retirement and a qualified processing frontier into private recovery evidence; the new ownership read alone returns data.",
+    "Complete independent kernel/alarm/input retirement and restart/crash recovery. The blind-close observations never supply a No-Go or held-kernel receipt.",
+    "Complete host registry bootstrap/observer and production dispatcher, then combined canonical/frontend and deployment qualification."
+  ],
+  "live_cluster_aws_or_image_attempts": 0,
+  "complete": true
+}

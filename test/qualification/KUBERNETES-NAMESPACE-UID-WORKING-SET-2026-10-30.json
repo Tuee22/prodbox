@@ -1,0 +1,45 @@
+{
+  "format_version": 1,
+  "counterexample_id": "KUBERNETES-NAMESPACE-UID-WORKING-SET-2026-10-30",
+  "scope": "Synthetic full-domain namespace decoder comparison. A separately allocated 64-MiB decoder slice exhausts the old Value-tree decoder and admits projection; the original 128-MiB controls pass before and after. No original-family, whole-program funding, successful placement, live-provider class closure or deployment qualification claim.",
+  "law_recording": "The pinned Aeson conversion constructs ignored array/object values. Projection selects the first metadata/uid keys, matching that decoder, and drains every ignored token and all trailing data without constructing those value trees.",
+  "comparison_profile": {
+    "sdk_output_bytes": 2097152,
+    "rts_capabilities": 1,
+    "source_qa_memory_bytes": 5368709120,
+    "source_qa_swap_bytes": 0,
+    "source_qa_tasks": 64,
+    "producer_timeout_seconds": 30,
+    "decoder_slice_heap_bytes": 67108864,
+    "controller_heap_control_bytes": 134217728,
+    "mapping": "Identical shared input generator, package IDs, optimization, clocks and one capability within each old/new pair. The 64-MiB slice is a distinct component profile; the original 128-MiB profile remains unchanged."
+  },
+  "selected_sources": {
+    "shared_probe_sha256": "e36e1201be7382f1b5d3bafc6b075214bb2bb8fa575c49b979ef1cbaf4980008",
+    "before_adapter_sha256": "28ce88116f9506e78df9f88c91069ad26c81d977ed3dcfb5988399f3f0ffee8c",
+    "candidate_sha256": "0cf3103611a926266c77a3296c8289c413bc200029f2f2c503b2f44efeee16a3"
+  },
+  "preserved_public_source_identity": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"342517b8a913f8c38b4c8ac767578250e4758de18efca369ab26964ac38337d8\", sourceManifestEntryCount = 1642},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"0500fcda271314231c565505f81b80ff17a93748adbfaae0f3d56fe23ae3096d\", sourceManifestEntryCount = 1579})",
+  "identity_scope": "The complete public baseline identifies frozen canonical code. Excluded candidate/fixture inputs are bound separately; canonical promotion is separately validated. Canonical refinement represents UID selection by one ADT instead of a Boolean/Maybe pair; final native and semantic controls bind that refinement separately.",
+  "behavior_contract": [
+    "First duplicate metadata/uid keys win, including invalid or empty first values.",
+    "Malformed ignored values and trailing garbage retain refusal precedence.",
+    "Unicode/escaped keys and strings preserve pinned decoder results.",
+    "Ignored flat containers are streamed; arbitrary nesting still retains lexer/continuation state."
+  ],
+  "evidence": {
+    "directory": ".build/sprint-6.5/decoder-working-set-20261030",
+    "superseded_index": "superseded-input-index-1.json",
+    "component_before": "decoder-slice-deep-before-1-validation.json",
+    "component_after": "decoder-slice-deep-after-1-validation.json",
+    "component_old_exit": 251,
+    "component_new_exit": 0,
+    "original_128_mib_before_and_after": "All four full-size shapes pass on both implementations.",
+    "compatibility_cases": 848
+  },
+  "limitations": [
+    "No complete HTTP/native/decoded-heap bound is inferred from wire bytes alone.",
+    "RTS residency is an observed sample, not a universal working-set maximum.",
+    "The component comparison neither widens nor qualifies installed/controller profiles."
+  ]
+}

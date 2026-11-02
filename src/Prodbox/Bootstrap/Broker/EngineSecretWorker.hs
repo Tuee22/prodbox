@@ -374,7 +374,7 @@ reconcileAuthoritativeSecretWorkerResult boundary interruption operation fence a
               pure (Left (EngineSecretWorkerRecoveryRefused refusal))
             Right request
               | mismatched <- requestBindingMismatch operation fence request
-              , not (null mismatched) ->
+              , not (authoritativeBindingMatches fence request mismatched) ->
                   pure
                     ( Left
                         ( EngineSecretWorkerStoredRequestBindingMismatch
@@ -435,6 +435,31 @@ reconcileAuthoritativeSecretWorkerResult boundary interruption operation fence a
             pure (void cleaned)
       (Just _, Nothing) ->
         pure (Left EngineSecretWorkerCheckpointResultMissing)
+
+-- The held fence authorizes cleanup, while the retained request identifies
+-- its predecessor. Only renewed exclusion fields may differ across a strictly
+-- older fence; every immutable request and authoritative result stays exact.
+authoritativeBindingMatches
+  :: BootstrapSessionFence
+  -> SecretFreeWorkerRequest
+  -> [SecretWorkerBindingField]
+  -> Bool
+authoritativeBindingMatches fence request mismatched =
+  null mismatched
+    || ( bootstrapFenceGenerationValue (secretWorkerRequestFenceGeneration request)
+           < bootstrapFenceGenerationValue (bootstrapFenceGeneration fence)
+           && all renewedFenceField mismatched
+       )
+ where
+  renewedFenceField field = case field of
+    BindingOperation -> False
+    BindingFenceGeneration -> True
+    BindingOwnerNonce -> True
+    BindingActionDigest -> False
+    BindingRequestDigest -> False
+    BindingStorageGeneration -> False
+    BindingOperationDeadline -> True
+    BindingWorkloadIdentity -> False
 
 recoverStoredWorker
   :: (Monad m)

@@ -4027,6 +4027,358 @@ The migration is an explicit Plan/Apply operation:
 12. delete gateway control-plane routes, direct Route 53 calls, compatibility adapters,
     shared-credential paths, and host-direct fallbacks.
 
+Preparation, frozen epoch commit and final admission share the retained submission aggregate.
+The durable projection binds the predecessor and target epochs, the canonical non-secret topology
+digest, every expected binding's metadata digest, prepared bindings, old-writer rejection
+readbacks, promotions, and post-commit rejection readbacks. A coarse compatibility activation or
+writer label grants no normal admission. The observation endpoint projects the same admission
+gate as submission. External readbacks remain flat observations supplied by the physical adapter;
+a topology digest or a recorded set is not independently proof that a backend changed.
+
+Restart observation uses the authenticated Authority control route and its existing metadata
+response ceiling. One atomic snapshot carries the retained authentication epoch, actual normal
+admission epoch when present, and the prepared topology/context; transient prepared/promoted sets
+stay in the aggregate. Producer and client enforce the bound, and client decoding revalidates
+epochs, scope and topology digest. Only the exact canonical observer is classified for
+fresh-nonce read replay by the domain-owned runtime composition. A repeated nonce cannot recover
+an old topology snapshot; other control requests keep their existing replay semantics. The
+snapshot grants no effect permit: the coordinator still submits exact transitions against the
+retained aggregate and independently observes each physical binding.
+
+Ordinary Target intent issuance and the later attested-worker execution-permit signature consume
+the retained writer-admission projection, not the public authentication epoch. The pre-cutover
+legacy writer retains its existing signing interval only until the durable writer freeze; that
+single compatibility branch is marked and covered by the legacy-removal registry. Prepared and
+frozen replacement epochs, backup repair, genesis establishment and decommission admit no new
+ordinary signature. The clean installation and fully opened replacement use the Authority writer.
+
+Genesis establishment and frozen backup repair retain narrowly scoped issuance for their
+registered backup-store target. The Authority reads the canonical prepared outbox and matches
+its operation, selected Agent, generation and receipt to the request. Genesis also requires the
+current compiled first-reconcile journal at member zero and the exact retained genesis plan;
+repair requires its retained permit and epoch. Ordinary backup-store permits and legacy outboxes
+without canonical purpose cannot use either exception. Prepared or frozen migration states
+continue to fence recovery issuance. Missing or unobservable evidence refuses without creating
+a journal or changing retained state.
+
+The issuer samples the admitted writer, epoch and original request and re-observes that same decision before
+signing, before trust publication and before releasing the result. The worker execution permit is
+a second signature with its own before/after checks against the initial issuance's admission.
+Recovery checks repeat the exact purpose observations at those boundaries.
+Elapsed time is charged to the original outbox deadline at those boundaries. An unreadable or
+changed observation never falls back to authentication availability. These sampled checks are
+not an atomic cross-service freeze or proof that already admitted work is quiescent: exact outbox,
+worker, credential and renewable-session retirement remain required before epoch preparation.
+
+Target Agent trust preparation keeps active, pending and retired-epoch metadata in one versioned
+KV row. The existing `accepted_authority` field is a checked active projection; a present malformed
+transition field never falls back to that projection. Preparation retains the predecessor internally
+and withholds its worker-facing field, so neither old nor pending authority admits a worker.
+Promotion independently observes the committed epoch, and retirement retains a bounded monotonic
+epoch marker. Delayed preparation cannot recreate a retired binding. Ordinary active CAS preserves
+the row and refuses pending/retired transitions. Workers consume active authority only. Complete
+physical observations and coordinator composition remain owned by the cutover
+program; a canonical row alone is no proof that the deployed topology is prepared or promoted.
+
+Staged epoch execution consumes the full verified request inside the authenticated interpreter's
+replay and response guards. Durable caller-slot identity remains principal plus key generation.
+Each effect uses the earlier of the verified request deadline and immutable preparation deadline;
+retirement may use a fresh authenticated cleanup deadline without reviving expired preparation.
+One CAS is followed by an exact row observation and fresh published-epoch/time checks. An applied
+write or lost reply cannot grant success after either applicable deadline or epoch has changed.
+Preparation/promotion also independently read the current public Transit issuer generation/key
+around mutation; exact cleanup remains possible after that issuer rotates. Staging uses a distinct
+bounded canonical prefix inside the existing trust request and an appended response arm, preserving
+all legacy wire indices. Ordinary clients explicitly refuse staging responses. Observation uses a
+fresh nonce so a cached mutation receipt cannot masquerade as a current physical binding fact.
+
+Physical Target binding observations cover the shared complete worker authorization inventory,
+including operation-only coordinates. An explicit substrate/Agent registration selects each
+authenticated transport; an unavailable registration cannot select a different substrate. Two
+equal complete row snapshots, independent issuer/epoch barriers and exact Agent/context/phase
+validation derive the binding fact. Its canonical metadata binds predecessor, target, original
+deadline and public accepted-authority coordinates, excluding enclosing topology, row versions and
+transition progress. This permits the topology to contain its binding digest without self-hashing.
+The verified request owns a minimum deadline budget that narrows from live preparation contexts
+and also bounds the aggregate CAS/closing read. Nested signed requests cannot renew that budget.
+Snapshots are observations, not an atomic distributed freeze or proof of worker/session quiescence.
+
+Remote peers refresh Authority context through the signed read-only metadata route
+`/v1/authority/peer/observe`. Its verifier
+accepts positive historical epochs no greater than the independently observed current epoch;
+all existing routes keep exact-epoch verification. The verifier's special constructor fixes both
+route and callee, and the client exposes only that route when bypassing its ordinary epoch provider.
+Caller, trusted signing generation/key, Authority scope, signature, body digest, canonical framing,
+nonce and original deadline checks remain mandatory. The retained Authority owns the handler and
+fresh-nonce replay policy. Two public epoch/issuer samples and fresh clock checks must agree within
+the request deadline; unavailable or changed facts refuse. A 1 KiB canonical response carries only
+scope, committed epoch and public issuer generation/key. Neither private keys nor mutation effects
+enter this program. The metadata route supplies no remote registration, key-origin equivalence,
+endpoint authenticity or network reachability proof by itself.
+The returned issuer is the manifest/Target-intent signer; RPC signing-key registration is separate.
+The public authentication epoch is not normal-writer admission: ordinary Target issuance still
+requires the independently retained mutation gate.
+
+RPC signing generations are Authority-owned logical identities, distinct from Vault's local native
+versions. A retained registry binds cluster scope, stable Vault incarnation UUID, canonical caller/
+key reference, native version and public bytes. One explicit complete home seed preserves every
+existing caller slot. Later registration, including later home rotation, advances that principal's
+watermark; it never borrows another Vault's native counter. Retired records remain in contiguous
+history and cannot be re-enrolled. The bounded canonical ledger has at most 256 bindings and 128 KiB;
+retirement alone does not free that capacity. Verified caller-slot equality, ordering and rendering
+remain unchanged. Public key reuse, changed bytes at the same native coordinate, native regression
+and missing history refuse. Opaque values expose ordinary getters, not mutable record selectors.
+
+The mapped signer checks native incarnation, exact public version and the retained active binding
+before and after each signature. Its native signature version is checked against the registered
+native version; the authenticated envelope carries the logical generation. Native metadata/signature
+responses are consumed under a 128-KiB bound. Exact selection uses Vault's documented
+[`key_version`](https://developer.hashicorp.com/vault/api-docs/secret/transit#sign-data), while
+incarnation metadata comes from root-namespace
+[`sys/health`](https://developer.hashicorp.com/vault/api-docs/system/health).
+Neither public health metadata nor a valid registration value attests a Kubernetes origin or
+proves a non-cloned Vault. The Authority's physical admission interpreter must supply those facts.
+
+Registry birth must be durably owned before publication. A missing/corrupt registry after admission
+never licenses reconstruction from native counters or an implicit legacy seed. Authoritative
+CAS/readback and public configuration bind the same retained record; a stale echo is not current
+membership. Retiring registry membership is separate from native key/session retirement and the
+credential adapter's quiescence proof. Fenced history archival must preserve generation ownership
+before releasing capacity. Physical registration, publication, recovery and removal evidence follow
+the cutover contract; isolated model/native-client results cannot activate a writer.
+Ordinary operation admission resolves the authenticated role and logical generation through the
+same server-owned origin registration to its registered-client identity. Independent origins of
+one role have independent client slots and generation ownership; rotating one origin must not
+retire another origin's admission. Existing home identities remain stable. A caller supplies
+neither that origin mapping nor a new principal claim, and successful RPC authentication alone
+does not establish submission admission.
+The registered-client table retains a separate state for each origin principal and logical key
+generation. Existing home principal text and numeric slots stay unchanged; other principals use the
+canonical role plus `/rpc-origin/` and that origin's first retained logical generation. The Authority
+allocates foreign slots outside the complete home slot inventory and preserves each origin's slot
+through rotation. Every historical generation remains charged to the authored table capacity.
+Retirement fences submission/observation but retains reservations, sequence cursors and operation
+IDs. Append-only reconciliation refuses changed definitions, dropped history and retirement rollback.
+
+RPC history and registered-client states live in the same Authority admission CAS as submissions.
+Pure seed/enroll/retire transitions require a serving, quiesced Authority and no live operations;
+initial birth requires the complete explicit home seed. These guards do not attest physical source
+custody. The registered envelope uses version 8 and the client table's versioned shape; legacy
+aggregates/tables retain their exact earlier encodings. Runtime decoding independently pins root
+scope, client capacity and per-generation reservation ceilings. The legacy runtime codec refuses
+registered state. The registered repository refuses missing state and initialization: explicit
+durable birth and restoration are separate operations. Its model/native counterpart cannot be
+substituted for origin attestation, publication or physical key/session retirement.
+The bounded peer client covers deadline-provider resolution under its parent's original deadline,
+then physically bounds signing, nonce generation, HTTP and forced decoding by the earlier sampled
+provider/parent deadline. That sampled transport signs the same immutable deadline. Closing clock
+checks reject late success and asynchronous cancellation propagates.
+
+The authenticated migration composition intercepts physical-readback commands before the generic
+transition dispatcher. A caller's metadata digest is a claim to compare with an independently
+observed result. The operation/result-indexed observation program separates prepared bindings,
+promoted bindings, old-writer rejection and prepared-binding absence. Observation and recording use
+one retained revision; a CAS conflict cannot carry a pre-commit observation into a post-commit
+readback set. A lost write response succeeds only after a fresh read confirms the exact next
+aggregate. Unsupported binding interpreters refuse instead of delegating to caller evidence.
+
+For the authentication-epoch binding, the physical reader observes the existing public Vault epoch
+coordinate. Its metadata digest covers that coordinate and the prepared target epoch, never a
+signing key or credential. Preparation names the pending target only in the aggregate; promotion
+requires its actual publication and agreement with the aggregate's authentication epoch. Old-writer
+rejection checks the aggregate's actual mutation-admission gate, while old-epoch control recovery
+may remain authenticated before commit. Before commit this binding has no separately installed
+pending Vault object: retirement observes that the target is not published, without restoring a
+predecessor credential or enabling a writer. Other bindings retain their own physical predicates.
+
+The topology inventory has a hard metadata ceiling of 256 bindings. The existing request and
+aggregate codec limits still apply and may refuse a smaller inventory; neither limit grows to
+make a cutover fit. Declared substrates, exact committed TLS scope refs and managed DNS coordinates
+are retained separately from observed rows, so an unreadable row cannot silently shrink the
+expected inventory. Missing, foreign, wrong-epoch, wrong-generation or changed-topology observations
+preserve the freeze. Pre-commit retirement checks every declared prepared binding, including one
+whose creation reply was lost, rather than only bindings with recorded successful preparation.
+
+The aggregate checks retained Provider intents at preparation, frozen commit and final open;
+submission reservations alone are not evidence of an active effect. The physical quiescence
+boundary separately observes the other role journals and renewable sessions. Existing exact
+Provider operations may settle while fresh admission is frozen, preserving their original IDs.
+An independently completed backup repair may advance the retained epoch. The frozen CAS must
+still advance strictly beyond that epoch; it cannot overwrite the repair by reusing the target
+that was prepared earlier. A pre-commit retry first retires/read-backs the complete prepared
+inventory, then binds a fresh greater target to the current retained epoch. A committed cutover
+recovers through a strictly greater forward migration, including when backup repair advanced
+the retained epoch again.
+
+RPC registration birth imports an observed, writer-quiesced legacy ledger. Preparation writes
+and reads back a fence at the existing admission coordinate before creating its separate marker.
+The exact marker arms commit; a public scope/generation/descriptor pin from mounted role config
+must already match. Commit/readback precedes marker publication. Pending records deny ordinary
+admission while retaining authentication for recovery. Pre-commit retirement retains its generation
+and marker; it never restores an old binary's decoder. A committed record cannot retire and may
+finish an interrupted marker confirmation under a fresh deadline without re-reading source keys.
+The current retained record schema keeps the original complete public source through precommit
+retirement so a cold restart can authenticate the same exact native versions even after native
+latest advances. This is public recovery provenance, not a new registration or a renewed deadline.
+The pending candidate projection remains pending-only; committed provenance comes from the RPC
+registry. Every retained public seed matches the descriptor scope/digest and immutable client
+projection. Retirement preserves inner state and may not require unrelated inner Authority state
+to remain permanently frozen. Historical schemas retain their own exact interpretation until their
+explicit migration and archival disposition; decoding alone never upgrades or guesses provenance.
+
+Both records and the independent config pin belong to backup/restore and startup composition;
+losing them never licenses native-counter reconstruction or fresh initialization.
+
+The native pair reader confirms the primary revision around its marker read. A closing corrupt,
+endpoint-unready or unobservable primary retains that exact classification and fences admission;
+a successful closing read requires confirmed absence or the same opaque observed revision. An
+unconfirmed success reports a changed snapshot. Native observation never converts known corruption
+into absence, and error classification alone never authorizes a write or a fresh seed.
+The migration interpreter consumes the same closing-evidence confirmation rule.
+
+A distinct authenticated descriptor observation uses the existing migration route and its exact
+Operator/Harness caller boundary. Its read-only algebra has only clock, primary and marker reads;
+it cannot invoke native RPC seed observation or CAS. The old command and status encodings remain
+byte-identical. The canonical public descriptor is bounded at 4 KiB and its observation payload at
+8 KiB, within the existing metadata response envelope. It returns the original preparation key,
+epoch, deadline, predecessor revision, public seed digest and unchanged client profile, alongside
+the independently configured serving-mode observation. No admission payload or native key is
+exported. Expired preparation metadata remains readable under a fresh observation deadline so it
+can be retired safely; observation never renews the original preparation. The client bounds
+deadline-provider resolution, peer refresh, signing, HTTP and canonical decoding by one resolved
+request deadline. A coordinator retains the original descriptor deadline across later effects.
+
+The distinct authenticated registry observation uses the same migration route and exact
+Operator/Harness boundary. It consumes only that read algebra and shares the runtime's fenced
+registry projection. Its canonical versioned response carries the public birth observation and
+complete public registry, including retired history; it validates scope and the original home
+seed digest against the descriptor. No inner admission payload, private key or credential enters
+this response. Missing or seedless provenance cannot trigger a native seed read or initialization.
+The existing 128-KiB registry and 8-KiB birth-observation ceilings derive a 139,392-byte observation
+ceiling and a 139,520-byte enclosing HTTP ceiling. This is a distinct purpose bound: ordinary
+metadata keeps 64 KiB, and neither limit certifies heap or host capacity. Provider resolution,
+peer refresh, signing, HTTP, decoding and closing checks remain inside one original request
+deadline. A host consumer independently matches the descriptor to its captured requirement before
+using the data for registered signing; ordinary admission and physical source/placement proofs
+remain separate. A fresh registry read neither renews preparation nor retires native keys/sessions.
+
+The external registered bootstrap starts with one untrusted own-binding hint, not an unauthenticated
+full-registry read. Only the exact canonical versioned query on the migration route is recognized
+before ordinary frame authentication. It binds the configured Authority scope and one exact native
+origin with an Operator/Harness key reference; service and worker references refuse. All ordinary
+observation and mutation frames retain their existing authentication and replay boundaries. The
+20-KiB query and 21-KiB response ceilings cover the existing maximum Unicode scope fields. Under a
+fixed server-owned two-second window, the read-only birth algebra confirms the same primary/marker
+projection and independent registered pin before selecting one active binding for that origin.
+Legacy, missing, corrupt, unobservable or changed provenance cannot initialize a seed or supply a
+fallback binding. The result is public data, with no full registry, inner admission or credential.
+Native origin/public-version attestation and a normally authenticated, independently pinned registry
+read remain mandatory before ordinary checked signing. The hint itself grants no capability,
+admission, renewed preparation or retirement receipt.
+
+The host coordination fold owns submission order, while the Authority owns all birth transitions.
+Preparation is read back before source publication. An idempotent publication confirms file and
+directory durability even when the desired pin is already visible; source readability alone cannot
+prove a completed fsync after an interrupted rename. The selected runtime must independently serve
+the exact original descriptor under its configured pin before completion is submitted. Closing
+descriptor and source observations establish the returned registration metadata. A request
+acknowledgement, including a successful completion response, cannot substitute for those reads.
+Pending resume shortens the current caller bound by the original preparation deadline; a fresh
+bound may observe a commitment already completed after a lost reply, without renewing preparation.
+Failure or cancellation preserves the fence and published pin. This result is not a normal-writer
+permit, backup receipt or deployment qualification. Native source observation/publication shares
+the canonical Tier-0 opened snapshot, lock and fsync/readback owner. The chart executor is a separate
+physical boundary: it must own and stop its whole child tree under the same bound. A generic Helm
+wait or asynchronous wrapper alone does not establish that contract.
+
+The first home import preserves the old client profile and native/logical identities. Two complete
+bounded observations of Vault incarnation and public keys must agree with pinned legacy trust.
+That proves compatibility with the observed home source, not independent-origin attestation.
+The Authority runtime reads its normal repository through the birth fence. A separate validated
+projection provides recovery epoch/trust while pending. Signing consumes the retained mapping and
+native public/version/source checks; an existing legacy capability refuses when registration
+preparation becomes visible. Exact committed state under legacy mode and missing state under a
+required pin both refuse. The native signer chooses an active binding at the observed local Vault
+origin and signs its exact native version independently of the logical wire generation.
+
+Startup selects the independently configured mode before resolving legacy authentication.
+Registered startup observes the exact retained pair and derives its client table, trust and
+native-version signer from validated retained metadata. Unrelated latest native keys are not a
+prerequisite, and missing/unobservable registered state cannot initialize a replacement ledger or
+select legacy admission. Pending and retirement recovery preserve the explicit public source
+identity needed to authenticate under native-version drift. The ordinary legacy-resolution arm
+retains its own dependencies. All modes preserve the authored client and resource bounds.
+
+Schema-eight role config carries the explicit legacy/registered union. The registered arm binds
+public scope, generation and descriptor digest and is admitted by the retained Authority only;
+other roles require their own adapters before admitting that arm. The chart projector validates and
+renders this same union. Reconciliation must preserve an admitted pin, never regenerate legacy
+mode when the Authority is unavailable. Backup export re-observes the exact pair and expected
+aggregate before encoding both records; a canonical pre-birth export retains its old bytes.
+The bounded bundle decoder preserves retirement history and checks the independent configured
+pin. Decoding alone cannot apply a restore: the repair interpreter owns applying and reading back
+both records before recovery admission. Pin delivery/preservation, that restore composition and
+physical qualification remain Sprint `6.5` obligations.
+
+The operator's public Tier-0 context retains the same independent requirement and carries it through
+narrowed settings and ordinary Authority/gateway projection. Canonical parameter writers preserve
+that context while repairing parameters. The source-file publisher serializes canonical writers,
+confirms the previous opened snapshot, fsyncs atomic publication and reads the exact bytes back.
+Missing registration schema or undecodable context never selects a legacy default. Publication is
+an independent configuration constraint, with verified pin retirement and terminal input disposition
+owned by the migration/decommission program. A role-config checksum replaces the single Authority
+process when its startup configuration changes; a ConfigMap update alone supplies no reload proof.
+Registered mode refuses EKS-local Authority placement. This preserves declared AWS target scope;
+its registered remote peer/adapters and the remaining physical placement proof remain required.
+
+| Closed refusal | Required remedy |
+|----------------|-----------------|
+| `Tier0FileBusy`, `Tier0FileUnsafe`, `Tier0FileTooLarge`, `Tier0FileChanged`, `Tier0FileWriteUnconfirmed`, `Tier0FileRejected` or `Tier0FileIoFailed` | Re-observe the exact public source and retained descriptor. Restore valid owned input/permissions or retry the canonical operation under its remaining deadline. Preserve the existing pin; stale or unreadable input cannot select legacy mode. A lost publication result requires exact readback, not replacement. |
+| `RpcBirthConfigRoleUnsupported`, `RpcBirthConfigScopeInvalid`, `RpcBirthConfigScopeMismatch`, `RpcBirthConfigPinInvalid` or `ControlPlaneConfigRpcBirthInvalid` | Regenerate/validate mounted schema-eight configuration through the role chart projector against the exact retained Authority descriptor. The registered arm is Authority-only until another role has its registered adapter. Do not remove an admitted pin or use environment/default legacy mode to bypass refusal. |
+| `rpc-birth/configuration`, `rpc-birth/signer` or `rpc-birth/legacy-signer-fenced` | Observe and resume the exact retained birth phase and configured pin. Restore native/retained key observation or restart the correctly pinned runtime after the matching transition. An old captured signer cannot bypass a pending or committed registration. |
+| `RpcBirthDescriptorInvalid`, `RpcBirthScopeMismatch`, `RpcBirthProfileMismatch`, `RpcBirthSeedInvalid`, `RpcBirthRequestInvalid` or `RpcBirthRequestContextInvalid` | Correct the canonical request/config against the retained Authority scope, public descriptor and unchanged client profile. Only an authenticated Operator/Harness request can drive birth. |
+| `RpcBirthLegacyStateRequired`, `RpcBirthWrongPhase`, `RpcBirthGenerationMismatch` or `RpcBirthAlreadyCommitted` | Observe the retained phase/generation and resume that exact operation. Settle and quiesce legacy writers before preparation. Retire/read back a pre-commit prefix before a higher generation; a committed birth requires forward recovery. |
+| `RpcBirthPublicationRequired` | Publish the exact public descriptor pin through mounted role configuration before completing the armed birth. Retain the preparation deadline; a request body cannot supply the serving pin. |
+| `RpcBirthRegisteredStateUnbound`, `RpcBirthMarkerMismatch`, `RpcBirthMarkerMissing`, `RpcBirthAdmissionMissing` or `RpcBirthStateInvalid` | Restore and read back the exact retained wrapper, marker and matching independent config pin from a verified backup. Preserve all watermarks and reservations. Missing history cannot select legacy bootstrap; irrecoverable admitted history is `NukeOnly`, never an agent-run reset. |
+| `RpcBirthObservationUnavailable`, `RpcBirthWriteUnconfirmed` or `RpcBirthNativeSourceUnavailable` | Restore canonical retained-store/Vault observation, then read back and resume the same operation. A CAS receipt, missing reply or unavailable read is not completion or permission to create a replacement. |
+| `RpcBirthSeedChanged`, `RpcBirthNativeSourceChanged` or `RpcBirthNativeCompatibilityMismatch` | Preserve the fence and re-observe the exact source. Retire the complete pre-commit preparation before replacement. Never relabel another origin or native version as the predecessor. |
+| `RpcBirthDeadlineReached`, `RpcBirthClockUnavailable` or `RpcBirthEffectTimedOut` | Restore the local clock/transport and observe the retained result. A preparation keeps its original deadline; expired pre-commit work requires bounded retirement. Fresh requests may confirm committed publication or retire a preparation without renewing it. |
+| `RpcBirthStateTooLarge` | Preserve the existing byte/resource limits and retained history. Correct the bounded plan/profile or use its registered archival/recovery path; do not raise a limit or discard history to make import fit. |
+| `RpcBirthClientTransport`, `RpcBirthClientPeer`, `RpcBirthClientClockUnavailable`, `RpcBirthClientDeadlineReached`, `RpcBirthClientTimedOut`, `RpcBirthClientResponseInvalid`, `RpcBirthClientRejected` or `RpcBirthClientHttpStatus` | Restore the exact authenticated Authority endpoint/public peer context and observe the durable phase with a fresh nonce under the caller's remaining budget. Follow the retained server refusal above; client refresh never grants ordinary admission or resets a deadline. |
+| `PeerContextRequestInvalid` or `PeerContextBindingInvalid` | Use the typed peer-context client against the exact registered Authority scope and route; the observation cannot authorize a mutation or another callee. |
+| `PeerContextClockUnavailable`, `PeerContextEpochUnavailable` or `PeerContextIssuerUnavailable` | Restore the retained Authority/Vault observation through canonical reconcile/recovery, then retry with a fresh nonce. Missing public metadata grants no authority. |
+| `PeerContextDeadlineReached`, `PeerContextEffectTimedOut`, `PeerContextFactsChanged` or `PeerContextRequestEpochAhead` | Obtain a fresh bounded peer observation after the current retained operation settles. Preserve the original request deadline and never relabel an old mutation with the refreshed epoch. |
+| `PeerContextResponseInvalid` | Preserve retained state and correct the bounded metadata producer or canonical client. Do not increase byte/resource limits or accept incomplete scope/key metadata. |
+| `PeerContextClientClockUnavailable`, `PeerContextClientDeadlineReached` or `PeerContextClientTimedOut` | Restore clock observation or retry the read with a fresh nonce under the caller's existing overall budget. An expired parent requires a new enclosing operation; neither provider refresh nor HTTP retry renews it. |
+| `RpcVaultIncarnationInvalid`, `RpcNativeVersionInvalid`, `RpcPublicKeyInvalid`, `RpcKeyReferenceInvalid`, `RpcLegacySeedIncomplete` or `RpcLegacySeedOriginInvalid` | Re-observe the exact registered source and correct the canonical request/complete home seed before retrying. A caller claim, copied key or partial inventory cannot stand in for physical admission. |
+| `RpcKeyOriginAliased`, `RpcPublicKeyReused`, `RpcNativeVersionRegressed`, `RpcKeyAlreadyRetired` or `RpcKeyBindingMissing` | Preserve history and re-observe the exact retained binding. Resume the registered replacement/recovery operation with its fresh source/version; never re-label a retired key or reuse a logical slot. |
+| `RpcLogicalGenerationInvalid`, `RpcKeyRegistryCapacityReached` or `RpcKeyRegistryTooLarge` | Preserve all fences. `NukeOnly` for a permanently exhausted, uncompactable ledger: no safe generation rollover or history deletion exists. Sprint `6.5` owns registered fenced-history archival before operational use; a model refusal is not permission for an agent-run nuke. |
+| `RpcKeyRegistryWireInvalid`, `RpcKeyRegistryNonCanonical` or `RpcKeyRegistryInvariantInvalid` | Restore the exact ledger from a verified retained Authority backup. `NukeOnly` if complete history is irrecoverable: independent native counters cannot reconstruct logical ownership. Never silently reseed. |
+| `RpcCallerWithoutActiveKey` or `RpcRouteTrustInvalid` | Complete the exact permitted caller registration/publication under the unchanged route/key ceiling. Missing callers cannot be omitted and a limit cannot be raised to admit them. |
+| `registered-rpc-signing/*` | Preserve the pinned binding. Restore its exact native/retained observation or resume its registered replacement after re-observation; source/version/binding mismatch never selects another key automatically. Native retirement and admission remain separate operations. |
+| `AuthorityRpcRegistrationNotQuiesced`, `AuthorityRpcRegistrationLiveOperations` or `AuthorityRpcRegistrationDecommissioned` | Resume the registered migration preparation and settle retained operations before changing membership. Decommission never admits new registration. Do not clear gates or abandon in-flight work to retry. |
+| `AuthorityRpcRegistrationUnbound`, `AuthorityRpcRegistrationAlreadyBound`, `AuthorityRpcRegistrationSeedRequired`, `AuthorityRpcRegistrationScopeMismatch` or `AuthorityRpcRegistrationRuntimeMismatch` | Use the exact retained Authority scope and registered runtime. Complete only the explicit first-birth operation; an admitted missing ledger requires verified backup restoration, never a new seed. `NukeOnly` if its admitted history is irrecoverable. |
+| `AuthorityRpcRegistrationMissing`, `AuthorityRpcRegistrationInvariant`, `AuthorityRpcRegistryInvalid`, `AuthorityRpcClientProjectionInvalid`, `AuthorityRpcClientRegistrationInvalid` or `RpcClientProjectionMismatch` | Restore/re-observe the exact coupled Authority ledger and resume its registered recovery. Preserve RPC watermarks, origin slots, reservations and retirement. `NukeOnly` if the coupled history is irrecoverable; reconstructing counters from native keys cannot recover operation ownership. |
+| `RpcClientSlotExhausted`, `RegisteredClientTableOverCapacity` or `RegisteredClientCapacityChanged` | Preserve the authored envelope and all fences. Use a registered fenced history archive before admitting more generations. `NukeOnly` for permanently exhausted, uncompactable history; retirement never creates free capacity. |
+| `RegisteredClientGenerationDuplicated`, `RegisteredClientPrincipalSlotChanged`, `RegisteredClientCallerGenerationDuplicated`, `RegisteredClientPrincipalDefinitionInvalid`, `RegisteredClientRetirementMissing`, `RegisteredClientDefinitionChanged` or `RegisteredClientRetirementRegressed` | Correct the canonical server-owned projection and restore its exact prior definitions before resuming the same registration. Preserve all slots/cursors and retired membership; `NukeOnly` if no verified copy of that history survives. |
+| `RpcClientPrincipalInvalid`, `RpcClientGenerationInvalid`, `RpcClientSlotInvalid`, `RpcClientSpecInvalid` or `RpcClientTableInvalid` | Correct the bounded canonical projection from the retained RPC history; these constructors cannot authorize a caller-provided origin or a new capacity. Underlying capacity/history failures follow the corresponding rows above. |
+| Pending Provider operations | Resume the exact retained operations to terminal observations while fresh admission stays frozen, then retry the same cutover. |
+| Missing preparation, promotion or old-writer rejection readbacks | Re-observe every missing exact binding through its assigned adapter; resume the same epoch/topology operation. |
+| Epoch, topology, binding or predecessor mismatch | Preserve the freeze and re-observe the retained aggregate and physical binding. A pre-commit replacement requires complete prepared-binding retirement; a committed replacement requires greater-epoch forward recovery. |
+| Target epoch did not advance | Retire/read back a pre-commit prepared inventory before binding a higher target to the current retained epoch; after commit use a greater-epoch forward migration. |
+| Prepared-binding absence readbacks missing | Resume exact prepared-binding retirement and positively read back every declared binding, including a lost creation response. |
+| Incomplete legacy projection imports or coarse compatibility activation | Complete the frozen import/topology program and use staged promotion; compatibility labels cannot open admission. |
+| Invalid or oversized topology/request/retained state | Preserve state and correct the bounded canonical plan or use its registered retained-state recovery; never shrink required scope or increase a limit to admit it. |
+| `epoch-binding-readback/unsupported-binding` | Preserve the freeze; compose and validate the exact role-owned physical adapter before resuming this binding. A caller echo cannot bypass it. |
+| `epoch-binding-readback/authority-unobservable` or `authentication-epoch-unobservable` | Restore the existing retained-store observation and retry the same request. No missing or unreadable result is absence. |
+| `epoch-binding-readback/retained-epoch-mismatch`, `context-mismatch`, `wrong-phase` or `binding-digest-mismatch` | Re-observe the exact aggregate and physical coordinate, then resume the matching epoch/topology and phase. Stale prepared targets require the declared retirement or greater-epoch recovery. |
+| `epoch-binding-readback/old-writer-admitted` | Preserve the freeze and finish the declared writer quiescence before retrying its rejection readback. |
+| `epoch-binding-readback/write-unobservable` or `concurrent-state` | Re-observe the aggregate and retry the exact operation with a fresh authenticated request. Only a newly observed binding can be recorded against a new revision. |
+| `authority-mutation-admission-closed/*` on Target issuance | Preserve the freeze and drive the exact registered genesis, repair, cutover or decommission operation through its control/recovery surface. Ordinary Target issuance resumes only when its retained writer is admitted; permanent stop never reopens. |
+| `authority-mutation-admission-changed` | Re-observe the retained operation and admitted writer/epoch. Resume its registered recovery; a prior execution-permit request must still match the exact initial signed intent and cannot silently adopt a new epoch. |
+| `authority-admission-unavailable` or `authority-admission-invalid` | Preserve retained state and restore/validate the Authority observation through the canonical reconcile/recovery path. Never substitute the readable authentication epoch; an invalid producer remains refused until corrected. |
+| `trust-observation-unavailable/epoch-transition-frozen` | Preserve the Agent row. Resume its exact retained cutover context through the staging control program: pre-commit retirement retains the replay fence, while a committed epoch requires greater-epoch forward recovery. Compose and validate that control program before deploying a caller that can create pending rows; ordinary install cannot clear the fence. |
+
 Rollback before the `AuthorityEpoch` CAS revokes any prepared new credentials/bindings, reads back
 their absence, re-mints an old-epoch credential if revocation consumed the former one, then clears
 the freeze and re-enables only the freeze-aware old writer. After the epoch CAS—even before
@@ -4046,6 +4398,11 @@ the digests derived from the source. Git head, the dirty bit, the whole-tree dig
 are recorded beside each cycle and not keyed, so an operator commit of byte-identical content does not
 reset a count of consecutive cycles. One codec writes and reads the cycle artifact, so a writer and a
 reader cannot disagree about a line; its self-digest detects accident and edit and is not authentication.
+The generated-config component binds the canonical public RPC-registration requirement and the
+Authority-held parameter digest with a versioned, domain-separated hash. A public-pin change resets
+the qualification key even when parameters and resource envelopes stay equal. Format-three artifacts
+record both input digests and attest their composite; the in-force-config field continues to mean only
+the parameters held by the Authority. Historical format-two reads supply no registration-pin claim.
 
 The typed cutover state is indexed by an identity that cannot be recomputed once the activating edit has
 landed, because the source it names is the source that edit changes. The cycle ledger therefore records

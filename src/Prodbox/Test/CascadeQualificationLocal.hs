@@ -23,10 +23,13 @@ import Data.ByteString qualified as ByteString
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric (showHex)
+import Prodbox.ControlPlane.RpcAdmissionBirthConfig (renderRpcBirthConfigDhall)
 import Prodbox.Settings
-  ( renderConfigDhall
+  ( deploymentRpcRegistration
+  , renderConfigDhall
   , validateAndLoadBootstrapSettings
   , validatedConfig
+  , validatedDeploymentContext
   , validatedResourcePlan
   )
 import Prodbox.Test.Qualification.CascadeCycleIdentity
@@ -35,6 +38,7 @@ import Prodbox.Test.Qualification.CascadeCycleIdentity
   , IdentityKey
   , RecomputedLocalParts (..)
   , canonicalKeyPolicy
+  , generatedConfigDigestFromParts
   , identityComponentName
   , identityKeyOfParts
   , refreshSourceParts
@@ -65,8 +69,8 @@ renderLocalRecomputeError (LocalRecomputeUnavailable component detail) =
     ++ Text.unpack detail
 
 -- | Recompute the source, the generated config, the resource envelope and the
--- load and fault digest. The formulas are the ones the version-1 writer used
--- inline, so a digest here equals what a cycle has always recorded.
+-- load and fault digest. Generated config covers both the Authority-held
+-- parameters and its independent public startup pin.
 recomputeLocalParts :: FilePath -> IO (Either LocalRecomputeError RecomputedLocalParts)
 recomputeLocalParts repoRoot = do
   sourceResult <- captureSourceIdentityPair repoRoot []
@@ -85,12 +89,19 @@ recomputeLocalParts repoRoot = do
       first
         (LocalRecomputeUnavailable ComponentLoadFault . Text.pack . show)
         fixtureResult
+    let parameters = hashPublicEvidence (Text.pack (renderConfigDhall (validatedConfig settings)))
+        registration =
+          hashPublicEvidence
+            ( Text.pack
+                (renderRpcBirthConfigDhall (deploymentRpcRegistration (validatedDeploymentContext settings)))
+            )
     Right
       RecomputedLocalParts
         { localExecutableSource = executableSource
         , localFullSource = fullSource
-        , localGeneratedConfig =
-            hashPublicEvidence (Text.pack (renderConfigDhall (validatedConfig settings)))
+        , localGeneratedConfig = generatedConfigDigestFromParts parameters registration
+        , localInForceConfigDigest = parameters
+        , localRpcRegistrationDigest = registration
         , localResourceEnvelope = digestShown (validatedResourcePlan settings)
         , localLoadFault =
             digestShown

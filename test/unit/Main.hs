@@ -62,7 +62,11 @@ import BootstrapImageSeed (bootstrapImageSeedSuite)
 import BootstrapImageSource (bootstrapImageSourceSuite)
 import BootstrapImageSourceNative (bootstrapImageSourceNativeSuite)
 import BrokerChartStatics (brokerChartStaticsSuite)
+import CanonicalDhallValueShape (canonicalDhallValueShapeSuite)
 import CapabilityReadinessBarrierSuite (capabilityReadinessBarrierSuite)
+import CapacityHostExecution (capacityHostExecutionSuite)
+import CapacityRegisteredCallerTraffic (capacityRegisteredCallerTrafficSuite)
+import CapacityRpcBirthTraffic (capacityRpcBirthTrafficSuite)
 import CascadeCycleArtifactTests (cascadeCycleArtifactSuite)
 import CascadeCycleIdentityTests (cascadeCycleIdentitySuite)
 import CascadeCycleLedgerTests (cascadeCycleLedgerSuite)
@@ -78,13 +82,14 @@ import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (concurrently_)
 import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Exception (AsyncException (UserInterrupt), SomeException, finally, throwIO, try)
-import Control.Monad (forM_, unless, when)
+import Control.Monad (forM_, unless, void, when)
 import ControlPlaneAdminActionAuthorityExecutionEndpoint
   ( controlPlaneAdminActionAuthorityExecutionEndpointSuite
   )
 import ControlPlaneAuthorityBackupEndpoint (controlPlaneAuthorityBackupEndpointSuite)
 import ControlPlaneAuthorityClock (controlPlaneAuthorityClockSuite)
 import ControlPlaneAuthorityObservation (controlPlaneAuthorityObservationSuite)
+import ControlPlaneAuthorityPeerContext (authorityPeerContextSuite)
 import ControlPlaneAuthorityProviderDispatchLane
   ( controlPlaneAuthorityProviderDispatchLaneSuite
   )
@@ -156,6 +161,7 @@ import ControlPlaneRecoveryPlaneEndpoint
 import ControlPlaneRecoveryPlaneRepository
   ( controlPlaneRecoveryPlaneRepositorySuite
   )
+import ControlPlaneRegisteredRpcSigning (registeredRpcSigningSuite)
 import ControlPlaneRegisteredStackCreationSubmitter
   ( controlPlaneRegisteredStackCreationSubmitterSuite
   )
@@ -165,7 +171,17 @@ import ControlPlaneRetainedMaterialWorker
 import ControlPlaneRetainedSesLease (controlPlaneRetainedSesLeaseSuite)
 import ControlPlaneRoleInterpreters (controlPlaneRoleInterpretersSuite)
 import ControlPlaneRoute (controlPlaneRouteSuite)
+import ControlPlaneRpcAdmissionBirth (rpcAdmissionBirthSuite, rpcBirthChartDescriptorFixture)
+import ControlPlaneRpcBirthBootstrap (rpcBirthBootstrapSuite)
+import ControlPlaneRpcBirthController (rpcBirthControllerSuite)
+import ControlPlaneRpcBirthRollout (rpcBirthRolloutSuite)
+import ControlPlaneRpcBirthWire (controlPlaneRpcBirthWireSuite)
+import ControlPlaneRpcClientRegistration (rpcClientRegistrationSuite)
+import ControlPlaneRpcKeyRegistry (rpcKeyRegistrySuite)
 import ControlPlaneServer (controlPlaneServerSuite)
+import ControlPlaneTargetAuthorityBinding (controlPlaneTargetAuthorityBindingSuite)
+import ControlPlaneTargetAuthorityEpoch (controlPlaneTargetAuthorityEpochSuite)
+import ControlPlaneTargetIntentAdmission (controlPlaneTargetIntentAdmissionSuite)
 import ControlPlaneTargetSecretWorker (controlPlaneTargetSecretWorkerSuite)
 import ControlPlaneTlsRetentionEndpoint (controlPlaneTlsRetentionEndpointSuite)
 import ControlPlaneVaultSession (controlPlaneVaultSessionSuite)
@@ -187,6 +203,7 @@ import CredentialSuccessor (credentialSuccessorSuite)
 import Data.Aeson
   ( Value (..)
   , eitherDecode
+  , eitherDecodeStrict'
   , encode
   , object
   , (.=)
@@ -197,8 +214,8 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy qualified as BL
 import Data.ByteString.Lazy.Char8 qualified as BL8
-import Data.Char (isDigit, toLower)
-import Data.Either (isLeft, isRight)
+import Data.Char (isDigit, toLower, toUpper)
+import Data.Either (fromLeft, isLeft, isRight)
 import Data.IORef
   ( IORef
   , modifyIORef'
@@ -271,13 +288,20 @@ import GatewayProbe (gatewayProbeSuite)
 import GatewayReadiness (gatewayReadinessSuite)
 import GatewayRoutes (gatewayRoutesSuite)
 import GatewayRuntimeStability (gatewayRuntimeStabilitySuite)
+import GeneratedArtifactSections (generatedArtifactSectionsSuite)
+import HarnessInitRecovery (harnessInitRecoverySuite)
 import HarnessSesSmtp (harnessSesSmtpSuite)
 import HelmRelease (helmReleaseSuite)
+import HelmStartupEvidence (helmStartupEvidenceSuite)
 import HostCleanupCompositionRoot (hostCleanupCompositionRootSuite)
 import HostCleanupHistoryReconcile (hostCleanupHistoryReconcileSuite)
 import HostCleanupIntent (hostCleanupIntentSuite)
 import HostCleanupRke2 (hostCleanupRke2Suite)
 import HostCleanupRunner (hostCleanupRunnerSuite)
+import HttpBodyBufferBudget (httpBodyBufferBudgetCases)
+import HttpClientBodyBuffer (httpClientBodyBufferCases)
+import HttpClientExchangePolicy (httpClientExchangePolicySuite)
+import HttpClientHeaderBudget (httpClientHeaderBudgetCases)
 import InviteQualification (inviteQualificationSuite)
 import KeycloakConsumerScript (keycloakConsumerScriptSuite)
 import KeycloakPublicIssuer (keycloakPublicIssuerSuite)
@@ -287,6 +311,9 @@ import LifecycleAuthorityBootstrapReconcile (lifecycleAuthorityBootstrapReconcil
 import LifecycleAuthorityClientRegistry (lifecycleAuthorityClientRegistrySuite)
 import LifecycleAuthorityConfig (lifecycleAuthorityConfigSuite)
 import LifecycleAuthorityCutover (lifecycleAuthorityCutoverSuite)
+import LifecycleAuthorityEpochObservation (lifecycleAuthorityEpochObservationSuite)
+import LifecycleAuthorityEpochPromotion (lifecycleAuthorityEpochPromotionSuite)
+import LifecycleAuthorityEpochReadback (lifecycleAuthorityEpochReadbackSuite)
 import LifecycleAuthorityGenesis (lifecycleAuthorityGenesisSuite)
 import LifecycleAuthorityMigration (lifecycleAuthorityMigrationSuite)
 import LifecycleAuthorityOperation (lifecycleAuthorityOperationSuite)
@@ -365,6 +392,9 @@ import LifecycleTeardownAwsStackReaderInterpreter
 import LifecycleTeardownCapabilityCustody
   ( lifecycleTeardownCapabilityCustodySuite
   )
+import LifecycleTeardownCapturedCreationBinding (lifecycleTeardownCapturedCreationBindingSuite)
+import LifecycleTeardownCapturedEksAuth (lifecycleTeardownCapturedEksAuthSuite)
+import LifecycleTeardownCapturedProviderDispatch (lifecycleTeardownCapturedProviderDispatchSuite)
 import LifecycleTeardownCascadeCandidate
   ( lifecycleTeardownCascadeCandidateSuite
   )
@@ -417,6 +447,7 @@ import LifecycleTeardownLegacyAdoptionObserver
 import LifecycleTeardownLegacyAdoptionPlan
   ( lifecycleTeardownLegacyAdoptionPlanSuite
   )
+import LifecycleTeardownNamespaceUidDecoder (namespaceUidDecoderSuite)
 import LifecycleTeardownOperationalCredentialInventory
   ( lifecycleTeardownOperationalCredentialInventorySuite
   )
@@ -482,6 +513,7 @@ import LocalRetainedRoot (localRetainedRootSuite)
 import LocalRke2RecoveryState (localRke2RecoveryStateSuite)
 import LongLivedDecommission (longLivedDecommissionSuite)
 import MeasuredProfile (measuredProfileSuite)
+import MinioRollout (minioRolloutSuite)
 import ModelBCasTransportAdapter (modelBCasTransportAdapterSuite)
 import Numeric.Natural (Natural)
 import ObjectStoreNative (objectStoreNativeSuite)
@@ -495,6 +527,7 @@ import Options.Applicative
 import OrdinaryTeardownRecovery (ordinaryTeardownRecoverySuite)
 import OrdinaryTeardownRepair (ordinaryTeardownRepairSuite)
 import Parser (parserSuite)
+import PlatformSchedulerCapacity (platformSchedulerCapacitySuite)
 import Prodbox.App
   ( Env (..)
   , askEnv
@@ -736,6 +769,7 @@ import Prodbox.CLI.Spec
 import Prodbox.CLI.Tree (renderCommandTree)
 import Prodbox.CLI.Vault
   ( BrokerVaultSealStatus (..)
+  , decodeBrokerVaultSealStatus
   , lifecycleProviderAwsVaultFields
   , validateLifecycleProviderAwsRegion
   )
@@ -971,6 +1005,7 @@ import Prodbox.ControlPlane.Codec
   ( ControlPlaneRequestCodecError (ControlPlaneRequestInvalid)
   , encodeControlPlaneResponse
   )
+import Prodbox.ControlPlane.Coordinate qualified as ChartAuthority
 import Prodbox.ControlPlane.DedicatedAdapterStore
   ( DedicatedAdapterStoreError (..)
   )
@@ -1020,6 +1055,9 @@ import Prodbox.ControlPlane.Observation.Internal (mintRoundTripWitness)
 import Prodbox.ControlPlane.ProviderProduction qualified as ProviderProduction
 import Prodbox.ControlPlane.ProviderPulumiConfigProjection qualified as ProviderPulumiConfigProjection
 import Prodbox.ControlPlane.RoleReadiness qualified as RoleReadiness
+import Prodbox.ControlPlane.RpcAdmissionBirth qualified as RpcBirth
+import Prodbox.ControlPlane.RpcAdmissionBirthChart qualified as BirthChart
+import Prodbox.ControlPlane.RpcAdmissionBirthConfig qualified as RpcBirthConfig
 import Prodbox.ControlPlane.Runtime qualified as ControlPlaneRuntime
 import Prodbox.ControlPlane.TargetMaterialEndpoint qualified as TargetMaterial
 import Prodbox.ControlPlane.TargetMaterialFixture
@@ -1200,6 +1238,7 @@ import Prodbox.Lib.ChartPlatform
   , classifyPublicEdgePreserve
   , classifyPublicEdgeTlsNamespaceObservation
   , classifyPublicEdgeTlsRestoreSlotCreate
+  , customImageTagFromMachineId
   , deploymentConditionReportsTrue
   , helmUpgradeFailureDisposition
   , helmUpgradeWaitArguments
@@ -1224,6 +1263,7 @@ import Prodbox.Lib.ChartPlatform
   , valuesForAuthorityBackup
   , valuesForBootstrapBroker
   , valuesForLifecycleAuthority
+  , valuesForLifecycleAuthorityWithRpcBirth
   , valuesForTlsRetention
   , withRegistryManifestDigest
   )
@@ -1361,6 +1401,7 @@ import Prodbox.Observation.AbsenceMarker
   ( AbsenceProbe (..)
   , absenceProbeMarkers
   , reportsAbsence
+  , reportsAbsenceBytes
   )
 import Prodbox.PostgresPlatform
   ( patroniPersistentVolumeClaimName
@@ -1556,9 +1597,11 @@ import Prodbox.Substrate
   , fixedScalingPolicyBySubstrate
   , gatewayNodeIdsForSubstrate
   )
+import Prodbox.Test.CascadeQualificationLocal qualified as QualificationLocal
 import Prodbox.Test.GatewayRuntimeStability
   ( GatewayRuntimeStabilityReport (NotStableYet, StableObserved)
   )
+import Prodbox.Test.Qualification.CascadeCycleIdentity qualified as CycleIdentity
 import Prodbox.TestPlan
   ( NativeSuitePlan (..)
   , NativeValidation (..)
@@ -1801,6 +1844,7 @@ import QualificationSourceIdentity (qualificationSourceIdentitySuite)
 import QualificationTeardownCounterexample
   ( qualificationTeardownCounterexampleSuite
   )
+import RegisteredCallerNativeTraffic (registeredCallerNativeTrafficSuite)
 import RegisteredStackCreationOwnership (registeredStackCreationOwnershipSuite)
 import RegistryProbe (registryProbeSuite)
 import ResponseObligationSuite (responseObligationSuite)
@@ -1809,6 +1853,7 @@ import RetainedDeliveryRefusalLog (retainedDeliveryRefusalLogSuite)
 import RetainedSesPreparation (retainedSesPreparationSuite)
 import RetainedSesTargetRecovery (retainedSesTargetRecoverySuite)
 import RoleReadinessSuite (roleReadinessSuite)
+import RuntimeImagePublication (runtimeImagePublicationSuite)
 import ScopeCodecProperties (scopeCodecPropertiesSuite)
 import ScopeCodecWitness (scopeCodecWitnessSuite)
 import SealedConstructors (sealedConstructorsSuite)
@@ -1821,6 +1866,7 @@ import SmtpKeyRepairInterpreter (smtpKeyRepairInterpreterSuite)
 import StoreLifetimeWitness (storeLifetimeWitnessSuite)
 import StsIdentity (stsIdentitySuite)
 import SubprocessKillable (subprocessKillableSuite)
+import SubprocessStartupLine (subprocessStartupLineSuite)
 import SupervisionWitness (supervisionWitnessSuite)
 import System.Directory
   ( Permissions (..)
@@ -1831,6 +1877,8 @@ import System.Directory
   , getCurrentDirectory
   , getPermissions
   , getTemporaryDirectory
+  , listDirectory
+  , removeDirectoryRecursive
   , removeFile
   , setPermissions
   )
@@ -1847,7 +1895,7 @@ import System.FilePath (takeDirectory, (</>))
 import System.IO (readFile')
 import System.IO.Temp (withSystemTempDirectory)
 import System.IO.Unsafe (unsafePerformIO)
-import System.Posix.Files (setFileMode)
+import System.Posix.Files (createNamedPipe, createSymbolicLink, setFileMode)
 import TargetCommitSmtp (targetCommitSmtpSuite)
 import TemporalQualification (temporalQualificationSuite)
 import TestSecretsSecurity (testSecretsSecuritySuite)
@@ -1864,7 +1912,9 @@ import Tier0Fixture
   )
 import Tier0FixtureSuite (tier0FixtureSuite)
 import Tier0PlanAssert (tier0PlanAssertSuite)
+import Tier0RpcRegistration (runTier0PublicationHelper, tier0RpcRegistrationSuite)
 import TypedGuardConsumption (typedGuardConsumptionSuite)
+import VaultRetainedMount (vaultRetainedMountSuite)
 import VaultSession (vaultSessionSuite)
 import VaultSessionSafety (vaultSessionSafetySuite)
 import WireFidelity (wireFidelitySuite)
@@ -2134,6 +2184,7 @@ deploymentContextForTier0 projectConfig =
           { contextInputClusterId = cluster_id tier0Context
           , contextInputVaultAddress = vault_address tier0Context
           , contextInputMinioEndpoint = minio_endpoint tier0Context
+          , contextInputRpcRegistration = Tier0.rpc_registration tier0Context
           }
         (cluster_topology testValidatedConfigFile)
     )
@@ -2423,6 +2474,8 @@ targetSecretAgentStartupDiagnosticSuite =
                    , "interpreter/initial-admission/clean-install"
                    , "interpreter/initial-admission/migration"
                    , "interpreter/authority-scope"
+                   , "interpreter/rpc-birth/configuration"
+                   , "interpreter/rpc-birth/signer"
                    , "interpreter/transport-bounds"
                    , "interpreter/authentication-lifetime"
                    , "interpreter/replay-clock-skew"
@@ -2490,6 +2543,8 @@ targetSecretAgentStartupDiagnosticSuite =
                    , "initial-admission/clean-install"
                    , "initial-admission/migration"
                    , "authority-scope"
+                   , "rpc-birth/configuration"
+                   , "rpc-birth/signer"
                    , "transport-bounds"
                    , "authentication-lifetime"
                    , "replay-clock-skew"
@@ -2963,9 +3018,25 @@ main = do
   journalHelperHandled <- runGatewayEmitterJournalHelper arguments
   credentialHelperHandled <-
     if journalHelperHandled then pure False else runCredentialDeliveryHelper arguments
+  pinHelperHandled <-
+    if journalHelperHandled || credentialHelperHandled
+      then pure False
+      else runTier0PublicationHelper arguments
   unless
-    (journalHelperHandled || credentialHelperHandled)
+    (journalHelperHandled || credentialHelperHandled || pinHelperHandled)
     (withArgs ("--num-threads=1" : arguments) (mainWithSuite "prodbox-unit" unitSuite))
+
+byteFailureCases :: [String]
+byteFailureCases =
+  [ ""
+  , "An error occurred (AccessDenied) when calling GetObject"
+  , "An error occurred (ExpiredToken) when calling GetObject"
+  , "permission denied: token is missing the required policy"
+  , "request id 1409f timed out"
+  , "read 40412 bytes before connection reset"
+  , "notfound.example.invalid denied the request"
+  , "Kubernetes Error from server (NotFound): secret fixture not found"
+  ]
 
 unitSuite :: SuiteBuilder ()
 unitSuite = do
@@ -3011,6 +3082,17 @@ unitSuite = do
   awsSesDecommissionSuite
   longLivedDecommissionSuite
   allocationSuite
+  canonicalDhallValueShapeSuite
+  capacityHostExecutionSuite
+  capacityRpcBirthTrafficSuite
+  capacityRegisteredCallerTrafficSuite
+  registeredCallerNativeTrafficSuite
+  httpClientExchangePolicySuite
+  describe "body allocation cursor" $ forM_ httpBodyBufferBudgetCases (uncurry it)
+  describe "bounded HTTP body buffer" $ forM_ httpClientBodyBufferCases (uncurry it)
+  describe "bounded HTTP aggregate headers" $
+    forM_ httpClientHeaderBudgetCases (uncurry it)
+  subprocessStartupLineSuite
   capabilityReadinessBarrierSuite
   certScopeSuite
   controlPlaneAuthorityClockSuite
@@ -3055,6 +3137,12 @@ unitSuite = do
   bootstrapImageArchiveSuite
   bootstrapImageSourceSuite
   bootstrapImageSourceNativeSuite
+  harnessInitRecoverySuite
+  minioRolloutSuite
+  runtimeImagePublicationSuite
+  helmStartupEvidenceSuite
+  platformSchedulerCapacitySuite
+  vaultRetainedMountSuite
   bootstrapImageSeedSuite
   ebsEnsureSuite
   testSecretsSecuritySuite
@@ -3082,6 +3170,9 @@ unitSuite = do
   lifecycleAuthorityCutoverSuite
   lifecycleAuthorityGenesisSuite
   lifecycleAuthorityMigrationSuite
+  lifecycleAuthorityEpochPromotionSuite
+  lifecycleAuthorityEpochReadbackSuite
+  lifecycleAuthorityEpochObservationSuite
   lifecycleAuthorityProjectionImportSuite
   lifecycleAuthorityProviderAdmissionEpochSuite
   lifecycleAuthorityPulumiCheckpointRegistrySuite
@@ -3109,6 +3200,19 @@ unitSuite = do
   controlPlaneServerSuite
   controlPlaneRoleInterpretersSuite
   controlPlaneTargetSecretWorkerSuite
+  controlPlaneTargetAuthorityEpochSuite
+  controlPlaneTargetAuthorityBindingSuite
+  authorityPeerContextSuite
+  rpcKeyRegistrySuite
+  rpcClientRegistrationSuite
+  rpcAdmissionBirthSuite
+  rpcBirthBootstrapSuite
+  rpcBirthControllerSuite
+  controlPlaneRpcBirthWireSuite
+  generatedArtifactSectionsSuite
+  rpcBirthRolloutSuite
+  registeredRpcSigningSuite
+  controlPlaneTargetIntentAdmissionSuite
   controlPlaneTlsRetentionEndpointSuite
   decommissionCommitSuite
   decommissionAuthorityExportSuite
@@ -3232,9 +3336,13 @@ unitSuite = do
   lifecycleTeardownCheckpointAuthoritySuite
   providerAwsScopeAdapterSuite
   lifecycleTeardownProviderDispatchSuite
+  lifecycleTeardownCapturedProviderDispatchSuite
+  lifecycleTeardownCapturedCreationBindingSuite
+  lifecycleTeardownCapturedEksAuthSuite
   lifecycleTeardownOperationalCredentialInventorySuite
   lifecycleTeardownEksDrainAttemptRecoverySuite
   lifecycleTeardownEksDrainInterpreterSuite
+  namespaceUidDecoderSuite
   lifecycleTeardownEksDrainIntentSuite
   lifecycleTeardownEksTeardownExecutorSuite
   lifecycleTeardownEksDrainSessionSuite
@@ -3270,6 +3378,7 @@ unitSuite = do
   targetCommitSmtpSuite
   tier0PlanAssertSuite
   tier0FixtureSuite
+  tier0RpcRegistrationSuite
   vaultSessionSuite
   describe "vault unlock bundle (Sprint 1.36)" $ do
     it "round-trips through encrypt/decrypt with the same password" $ do
@@ -5001,14 +5110,38 @@ unitSuite = do
           [(ComponentChartApi, requireAt OpManagedObserve "svc" "sc" "e1")]
           `shouldSatisfy` isRight
   describe "component readiness observation seam (Sprint 1.59)" $ do
+    let brokerStatus phase =
+          object
+            ( [ "storage_generation" .= ("vault-status-generation" :: Text.Text)
+              , "initialized" .= True
+              , "sealed" .= False
+              , "initialization_ambiguous" .= False
+              ]
+                ++ maybe [] (\value -> ["initialization_phase" .= (value :: Text.Text)]) phase
+            )
+    it "decodes older Broker status without a phase as having no pending continuation" $
+      decodeBrokerVaultSealStatus (brokerStatus Nothing)
+        `shouldBe` Right (BrokerVaultSealStatus True False False False)
+    it "decodes a retained in-flight phase as pending initialization custody" $
+      decodeBrokerVaultSealStatus (brokerStatus (Just "init-call-in-flight"))
+        `shouldBe` Right (BrokerVaultSealStatus True False False True)
+    it "refuses an unknown phase without reflecting its value" $ do
+      let result = decodeBrokerVaultSealStatus (brokerStatus (Just "private-unknown-phase"))
+      result `shouldSatisfy` isLeft
+      fromLeft "unexpected success" result
+        `shouldSatisfy` (not . isInfixOf "private-unknown-phase")
     it "classifies an initialized unsealed Broker observation as ready" $
       classifyBrokerVaultUnsealedStatus
-        (Right (BrokerVaultSealStatus True False False))
+        (Right (BrokerVaultSealStatus True False False False))
         `shouldBe` Right ReadinessProbeReady
     it "classifies a sealed Broker observation as pending" $
       classifyBrokerVaultUnsealedStatus
-        (Right (BrokerVaultSealStatus True True False))
+        (Right (BrokerVaultSealStatus True True False False))
         `shouldBe` Right (ReadinessProbePending "Bootstrap Broker reports Vault sealed")
+    it "keeps an unsealed Vault pending while initialization custody recovery remains" $
+      classifyBrokerVaultUnsealedStatus
+        (Right (BrokerVaultSealStatus True False False True))
+        `shouldBe` Right (ReadinessProbePending "Bootstrap Broker reports initialization recovery pending")
     it "classifies an unreachable authenticated Broker observation as unreachable" $
       classifyBrokerVaultUnsealedStatus (Left "TokenRequest failed")
         `shouldBe` Left "TokenRequest failed"
@@ -5681,6 +5814,48 @@ unitSuite = do
         case decoded of
           Right _ -> expectationFailure "expected the unauthored machine identity to be refused"
           Left err -> show err `shouldContain` "machine_id"
+
+    describe "Sprint 1.95 canonical unauthored templates" $ do
+      let defaults = parameters defaultProjectConfig
+          defaultCapacity = Tier0.capacity defaults
+          fitted =
+            defaultProjectConfig
+              { parameters =
+                  defaults
+                    { Tier0.capacity =
+                        defaultCapacity
+                          { Capacity.resource_plan =
+                              (Capacity.resource_plan defaultCapacity)
+                                { Capacity.host_capacity = Capacity.ResourceVector 10000 20480 200000 200000
+                                }
+                          }
+                    }
+              }
+          fittedText = renderProjectConfigDhall fitted
+          partlyAuthored =
+            fitted
+              { parameters =
+                  (parameters fitted)
+                    { Tier0.domain = (Tier0.domain defaults) {Settings.demo_ttl = 61}
+                    }
+              }
+      forM_
+        [ ("portable", renderProjectConfigDhall defaultProjectConfig, True)
+        , ("host-fitted", fittedText, True)
+        , ("partly authored with a fresh witness", renderProjectConfigDhall partlyAuthored, False)
+        , ("stale witness", Text.replace "prodbox-tier0-witness-v1:" "stale-witness:" fittedText, False)
+        , ("noncanonical text", fittedText <> "\n-- edited\n", False)
+        , ("malformed expression", "{ parameters =", False)
+        ,
+          ( "missing template fields"
+          , "{ parameters.capacity.resource_plan.host_capacity = { milli_cpu = 8000, memory_mib = 15930, ephemeral_storage_mib = 200000, durable_storage_mib = 200000 } }"
+          , False
+          )
+        , ("authored deployment", renderProjectConfigDhall syntheticProjectConfig, False)
+        ]
+        $ \(label, document, expected) ->
+          it label $
+            Tier0.isCanonicalUnauthoredProjectConfigDhall document `shouldReturn` expected
 
     describe "Sprint 0.29 Tier-0 generator-stamped witness" $ do
       it "stamping is idempotent, because the digest excludes the witness" $ do
@@ -7690,6 +7865,7 @@ unitSuite = do
               { contextInputClusterId = "second-cluster"
               , contextInputVaultAddress = "https://vault.second.test"
               , contextInputMinioEndpoint = "https://minio.second.test"
+              , contextInputRpcRegistration = RpcBirthConfig.RpcBirthConfigLegacy
               }
           secondTopology =
             either
@@ -7737,11 +7913,13 @@ unitSuite = do
                 "harness-cluster-a"
                 "http://vault-a.fixture:8200"
                 "http://minio-a.fixture:9000"
+                RpcBirthConfig.RpcBirthConfigLegacy
             contextB =
               DeploymentContextInput
                 "harness-cluster-b"
                 "https://vault-b.fixture"
                 "https://minio-b.fixture"
+                RpcBirthConfig.RpcBirthConfigLegacy
             secretsA = populatedHarnessTestSecrets
             secretsB =
               populatedHarnessTestSecrets
@@ -7829,6 +8007,7 @@ unitSuite = do
                 "harness-cluster"
                 "http://vault.fixture:8200"
                 "http://minio.fixture:9000"
+                RpcBirthConfig.RpcBirthConfigLegacy
             deploymentInput = HarnessDeploymentInput context topology "/tmp/prodbox-harness"
             credentials = configSetupAdminCredentialsInput sampleConfigSetupInput
             build secrets input =
@@ -7931,6 +8110,7 @@ unitSuite = do
                 "operator-cluster"
                 "http://operator-vault.fixture:8200"
                 "http://operator-minio.fixture:9000"
+                RpcBirthConfig.RpcBirthConfigLegacy
             deploymentInput = HarnessDeploymentInput context topology ".test-data/operator-data"
             credentials = configSetupAdminCredentialsInput sampleConfigSetupInput
             generated = do
@@ -7975,6 +8155,7 @@ unitSuite = do
                 "capacity-harness-cluster"
                 "http://capacity-vault.fixture:8200"
                 "http://capacity-minio.fixture:9000"
+                RpcBirthConfig.RpcBirthConfigLegacy
             deploymentInput = HarnessDeploymentInput context topology ".test-data/capacity"
             credentials = configSetupAdminCredentialsInput sampleConfigSetupInput
             generated = do
@@ -7997,19 +8178,39 @@ unitSuite = do
                             { Capacity.resource_plan = stalePlan
                             }
                       }
-              Right (input, stale)
+              Right (input, current, stale)
         case generated of
           Left err -> expectationFailure err
-          Right (input, stale) -> do
-            capacity (harnessGeneratedConfig stale populatedHarnessTestSecrets input)
-              `shouldBe` capacity Settings.defaultConfigFile
+          Right (input, current, stale) -> do
+            let omitted =
+                  current
+                    { capacity =
+                        (capacity current)
+                          { Capacity.resource_plan =
+                              (Capacity.resource_plan (capacity current))
+                                { Capacity.platform_scheduler_requests = Nothing
+                                }
+                          }
+                    }
+                operator =
+                  omitted {storage = (storage omitted) {manual_pv_host_root = "/srv/operator-retained"}}
+            forM_ [stale, omitted] $ \owned -> do
+              capacity (harnessGeneratedConfig owned populatedHarnessTestSecrets input)
+                `shouldBe` capacity Settings.defaultConfigFile
+              existingHarnessConfigDisposition
+                tmpDir
+                owned
+                (harnessProjectConfig owned context)
+                True
+                SubstrateHomeLocal
+                `shouldReturn` Right False
             existingHarnessConfigDisposition
               tmpDir
-              stale
-              (harnessProjectConfig stale context)
+              operator
+              (harnessProjectConfig operator context)
               True
               SubstrateHomeLocal
-              `shouldReturn` Right False
+              >>= (`shouldSatisfy` leftContains "platform-scheduler-baseline/missing")
 
     it "refreshes only a stale harness-owned config when the requested substrate changes" $
       withSystemTempDirectory "prodbox-harness-stale-owned-config" $ \tmpDir -> do
@@ -8023,6 +8224,7 @@ unitSuite = do
                 "stale-harness-cluster"
                 "http://stale-vault.fixture:8200"
                 "http://stale-minio.fixture:9000"
+                RpcBirthConfig.RpcBirthConfigLegacy
             staleHarnessConfig =
               syntheticConfigFile
                 { aws_substrate =
@@ -8396,7 +8598,7 @@ unitSuite = do
 
     it "parses observed host capacity and refuses hosts below the authored capacity" $ do
       let observedText =
-            "milli_cpu=8000,memory_mib=15872,ephemeral_storage_mib=100000,durable_storage_mib=180000"
+            "milli_cpu=10000,memory_mib=18432,ephemeral_storage_mib=100000,durable_storage_mib=180000"
           smallText =
             "milli_cpu=7000,memory_mib=15872,ephemeral_storage_mib=100000,durable_storage_mib=180000"
           defaultAllocatedPlan =
@@ -8408,7 +8610,7 @@ unitSuite = do
         Left err -> expectationFailure err
         Right observed -> do
           renderResourceVectorRuntime (ObservedHost.observedHostVector observed)
-            `shouldBe` "cpu=8000m,memory=15872Mi,ephemeral-storage=100000Mi,durable-storage=180000Mi"
+            `shouldBe` "cpu=10000m,memory=18432Mi,ephemeral-storage=100000Mi,durable-storage=180000Mi"
           Allocation.compileResourcePlanAgainstObserved
             observed
             defaultAllocatedPlan
@@ -10917,7 +11119,7 @@ unitSuite = do
             NativeSuite suitePlan -> do
               nativeSuiteId suitePlan `shouldBe` "integration-cli"
               nativeValidations suitePlan `shouldBe` []
-              nativeInitialIntegrationGatePrerequisites suitePlan `shouldBe` []
+              nativeInitialIntegrationGatePrerequisites suitePlan `shouldBe` [ToolHelm]
               nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
               nativeRequiresIntegrationRunbook suitePlan `shouldBe` False
             DelegatedSuite _ -> expectationFailure "expected native integration-cli plan"
@@ -10930,7 +11132,7 @@ unitSuite = do
             NativeSuite suitePlan -> do
               nativeSuiteId suitePlan `shouldBe` "integration-env"
               nativeValidations suitePlan `shouldBe` []
-              nativeInitialIntegrationGatePrerequisites suitePlan `shouldBe` []
+              nativeInitialIntegrationGatePrerequisites suitePlan `shouldBe` [ToolHelm]
               nativeDeferredIntegrationGatePrerequisites suitePlan `shouldBe` []
               nativeRequiresIntegrationRunbook suitePlan `shouldBe` False
             DelegatedSuite _ -> expectationFailure "expected native integration-env plan"
@@ -10959,6 +11161,35 @@ unitSuite = do
     it "accepts the repeated port a multi-endpoint subset reports" $
       fmap kubernetesApiEgressPort (parseKubernetesApiEgressCoordinate "10.0.0.1 10.0.0.2|6443 6443")
         `shouldBe` Right 6443
+
+    it "Sprint 3.50 accepts the complete positive TCP port domain" $
+      forM_ [1 .. 65535 :: Int] $ \port ->
+        fmap kubernetesApiEgressPort (parseKubernetesApiEgressCoordinate ("10.0.0.1|" ++ show port))
+          `shouldBe` Right port
+
+    it "Sprint 3.50 preserves bounded decimal padding and whitespace" $ do
+      fmap kubernetesApiEgressPort (parseKubernetesApiEgressCoordinate "10.0.0.1|00001")
+        `shouldBe` Right 1
+      fmap kubernetesApiEgressPort (parseKubernetesApiEgressCoordinate "10.0.0.1| \t65535 65535\n")
+        `shouldBe` Right 65535
+
+    it "Sprint 3.50 refuses zero, high, overflowing and non-decimal ports"
+      $ forM_
+        [ "0"
+        , "00000"
+        , "65536"
+        , "99999"
+        , "-1"
+        , "+6443"
+        , "0x192b"
+        , "6.443e3"
+        , "18446744073709551615"
+        , "18446744073709551617"
+        , replicate 4096 '9'
+        , "000001"
+        , "\1633"
+        ]
+      $ \port -> parseKubernetesApiEgressCoordinate ("10.0.0.1|" ++ port) `shouldSatisfy` isLeft
 
     it "refuses an unobservable, malformed, or ambiguous coordinate" $ do
       parseKubernetesApiEgressCoordinate "" `shouldSatisfy` isLeft
@@ -12193,6 +12424,258 @@ unitSuite = do
         bucketsA `shouldBe` replicate 2 (Text.pack defaultObjectStoreBucket)
         bucketsB `shouldBe` bucketsA
 
+    it "preserves an independently configured registration pin through ordinary Authority planning" $ do
+      let rootScope = Tier0.cluster_id (Tier0.context sampleTier0Root)
+          registration =
+            RpcBirthConfig.RpcBirthConfigRegistered
+              (RpcBirthConfig.RpcBirthConfigPin rootScope 1 (Text.replicate 64 "a"))
+          source =
+            sampleTier0Root
+              { Tier0.context = (Tier0.context sampleTier0Root) {Tier0.rpc_registration = registration}
+              }
+          settings =
+            (testValidatedSettings "/tmp/prodbox/.data")
+              { validatedDeploymentContext = deploymentContextForTier0 source
+              }
+          runtimeImage =
+            ResolvedCustomImage
+              "harbor.test/prodbox/runtime"
+              "pin-test"
+              (Just ("sha256:" ++ replicate 64 'a'))
+              (Just ("sha256:" ++ replicate 64 'b'))
+          observers = fixtureChartPlanObservers (const (pure (Right (Just runtimeImage))))
+      withBinarySiblingTier0 (tier0Fixture source) $ do
+        planned <-
+          buildChartDeploymentPlanForSubstrateWithObservers
+            observers
+            SubstrateHomeLocal
+            "/tmp/prodbox"
+            settings
+            "lifecycle-authority"
+            testChartSecrets
+            Map.empty
+        plan <- expectRightTest planned
+        values <- expectRightTest (chartReleaseValuesFromPlan "lifecycle-authority" plan)
+        roleDhall <- expectRightTest (chartTextAtPath ["config", "roleDhall"] values)
+        role <- Dhall.input Dhall.auto roleDhall
+        ControlPlaneRuntime.rpc_registration role `shouldBe` registration
+        gatewayResult <-
+          buildChartDeploymentPlanForSubstrateWithObservers
+            observers
+            SubstrateHomeLocal
+            "/tmp/prodbox"
+            settings
+            "gateway"
+            testChartSecrets
+            Map.empty
+        gatewayPlan <- expectRightTest gatewayResult
+        gatewayDhall <- expectRightTest (gatewayTier0DhallFromPlan gatewayPlan)
+        gatewayContext <- Dhall.input Dhall.auto (Text.pack gatewayDhall)
+        Tier0.rpc_registration (Tier0.context gatewayContext) `shouldBe` registration
+
+    forM_ [(generation, matching) | generation <- [1, 2, 3], matching <- [False, True]] $ \(generation, matching) ->
+      it
+        ( "holds Authority registration chart inputs for generation "
+            ++ show generation
+            ++ " with matching source "
+            ++ show matching
+        )
+        $ do
+          scope <-
+            expectBirthChartRight
+              (ChartAuthority.mkAuthorityScope (Tier0.cluster_id (Tier0.context sampleTier0Root)))
+          let descriptor = rpcBirthChartDescriptorFixture scope generation
+              desired =
+                RpcBirthConfig.RpcBirthConfigRegistered
+                  ( RpcBirthConfig.RpcBirthConfigPin
+                      (ChartAuthority.authorityScopeText scope)
+                      generation
+                      (RpcBirth.rpcBirthDescriptorDigest descriptor)
+                  )
+              original = if matching then desired else RpcBirthConfig.RpcBirthConfigLegacy
+          withRpcBirthChartFixture original $ \repoRoot settings source image -> do
+            observations <- newIORef (0 :: Int)
+            available <- newIORef True
+            let imageObservation _ = do
+                  modifyIORef' observations (+ 1)
+                  ready <- readIORef available
+                  pure (if ready then Right (Just image) else Left "fixture observations closed")
+                observers = fixtureChartPlanObservers imageObservation
+                desiredSource = source {Tier0.context = (Tier0.context source) {Tier0.rpc_registration = desired}}
+                desiredSettings = settings {validatedDeploymentContext = deploymentContextForTier0 desiredSource}
+            template <-
+              BirthChart.prepareRpcBirthChartWithObservers observers scope repoRoot settings
+                >>= expectBirthChartRight
+            expectedPlan <-
+              buildChartDeploymentPlanForSubstrateWithObservers
+                observers
+                SubstrateHomeLocal
+                repoRoot
+                desiredSettings
+                "lifecycle-authority"
+                Map.empty
+                Map.empty
+                >>= expectBirthChartRight
+            expectedValues <-
+              expectBirthChartRight (chartReleaseValuesFromPlan "lifecycle-authority" expectedPlan)
+            let chartRoot = repoRoot </> "charts" </> "lifecycle-authority"
+            names <- listDirectory (chartRoot </> "templates")
+            expectedFiles <-
+              mapM
+                (\name -> do bytes <- BS.readFile (chartRoot </> name); pure (name, bytes))
+                (["Chart.yaml", "values.yaml"] ++ map ("templates" </>) names)
+            readsBefore <- readIORef observations
+            writeIORef available False
+            removeDirectoryRecursive (repoRoot </> "charts")
+            executable <- getExecutablePath
+            writeTier0Fixture (takeDirectory executable) (tier0Fixture sampleTier0Child)
+            revision <- expectBirthChartRight (BirthChart.pinRpcBirthChart template descriptor)
+            BirthChart.rpcBirthChartDescriptor revision `shouldBe` descriptor
+            actualValues <-
+              expectBirthChartRight (eitherDecodeStrict' (BirthChart.rpcBirthChartValues revision))
+            actualRole <- expectBirthChartRight (chartTextAtPath ["config", "roleDhall"] actualValues)
+            actualValues `shouldBe` expectedValues
+            actualConfig <- Dhall.input Dhall.auto actualRole
+            ControlPlaneRuntime.rpc_registration actualConfig `shouldBe` desired
+            ControlPlaneRuntime.validateControlPlaneConfig LifecycleAuthorityRuntime actualConfig
+              `shouldSatisfy` isRight
+            Map.fromList (BirthChart.rpcBirthChartFiles revision) `shouldBe` Map.fromList expectedFiles
+            BirthChart.rpcBirthChartStorageBindings revision
+              `shouldBe` concatMap
+                chartReleasePlanStorageBindings
+                ( filter
+                    ((== "lifecycle-authority") . chartReleasePlanReleaseName)
+                    (chartDeploymentPlanReleases expectedPlan)
+                )
+            readIORef observations `shouldReturn` readsBefore
+            let otherDescriptor = rpcBirthChartDescriptorFixture scope (generation + 1)
+            when matching $
+              void (BirthChart.pinRpcBirthChart template otherDescriptor)
+                `shouldBe` Left BirthChart.RpcBirthChartSourcePinConflict
+            otherScope <- expectBirthChartRight (ChartAuthority.mkAuthorityScope "foreign")
+            void (BirthChart.pinRpcBirthChart template (rpcBirthChartDescriptorFixture otherScope generation))
+              `shouldBe` Left BirthChart.RpcBirthChartIdentityMismatch
+
+    it "refuses a foreign Authority before reading held chart files" $
+      withRpcBirthChartFixture RpcBirthConfig.RpcBirthConfigLegacy $ \repoRoot settings _ image -> do
+        foreignScope <- expectBirthChartRight (ChartAuthority.mkAuthorityScope "foreign")
+        removeDirectoryRecursive (repoRoot </> "charts")
+        result <-
+          BirthChart.prepareRpcBirthChartWithObservers
+            (fixtureChartPlanObservers (const (pure (Right (Just image)))))
+            foreignScope
+            repoRoot
+            settings
+        void result `shouldBe` Left BirthChart.RpcBirthChartIdentityMismatch
+
+    forM_
+      [
+        ( "symlink"
+        , \root -> createSymbolicLink (root </> "values.yaml") (root </> "templates" </> "extra.tpl")
+        , BirthChart.RpcBirthChartSourceUnsafe
+        )
+      ,
+        ( "fifo"
+        , \root -> createNamedPipe (root </> "templates" </> "extra.tpl") 0o600
+        , BirthChart.RpcBirthChartSourceUnsafe
+        )
+      ,
+        ( "oversized"
+        , \root ->
+            BS.writeFile
+              (root </> "templates" </> "extra.tpl")
+              (BS.replicate BirthChart.rpcBirthChartMaximumInputBytes 32)
+        , BirthChart.RpcBirthChartInputTooLarge
+        )
+      ,
+        ( "too-many"
+        , \root ->
+            forM_
+              [1 .. 65 :: Int]
+              (\index -> BS.writeFile (root </> "templates" </> show index ++ ".tpl") "fixture")
+        , BirthChart.RpcBirthChartInputTooLarge
+        )
+      ,
+        ( "unregistered"
+        , \root -> BS.writeFile (root </> "local-input.json") "fixture"
+        , BirthChart.RpcBirthChartSourceUnsafe
+        )
+      ]
+      $ \(shape, mutate, expected) ->
+        it ("refuses " ++ shape ++ " Authority registration chart inputs") $
+          withRpcBirthChartFixture RpcBirthConfig.RpcBirthConfigLegacy $ \repoRoot settings _ image -> do
+            scope <-
+              expectBirthChartRight
+                (ChartAuthority.mkAuthorityScope (Tier0.cluster_id (Tier0.context sampleTier0Root)))
+            let chartRoot = repoRoot </> "charts" </> "lifecycle-authority"
+            mutate chartRoot
+            result <-
+              BirthChart.prepareRpcBirthChartWithObservers
+                (fixtureChartPlanObservers (const (pure (Right (Just image)))))
+                scope
+                repoRoot
+                settings
+            void result `shouldBe` Left expected
+
+    it "recomputes qualification identity from the actual independent registration pin" $ do
+      repoRoot <- getCurrentDirectory
+      let rootScope = Tier0.cluster_id (Tier0.context sampleTier0Root)
+          pinned =
+            sampleTier0Root
+              { Tier0.context =
+                  (Tier0.context sampleTier0Root)
+                    { Tier0.rpc_registration =
+                        RpcBirthConfig.RpcBirthConfigRegistered
+                          (RpcBirthConfig.RpcBirthConfigPin rootScope 1 (Text.replicate 64 "a"))
+                    }
+              }
+          recompute source =
+            withBinarySiblingTier0 (tier0Fixture source) $
+              QualificationLocal.recomputeLocalParts repoRoot
+                >>= either (fail . QualificationLocal.renderLocalRecomputeError) pure
+      legacy <- recompute sampleTier0Root
+      registered <- recompute pinned
+      retried <- recompute pinned
+      CycleIdentity.localInForceConfigDigest legacy
+        `shouldBe` CycleIdentity.localInForceConfigDigest registered
+      CycleIdentity.localGeneratedConfig legacy
+        `shouldNotBe` CycleIdentity.localGeneratedConfig registered
+      CycleIdentity.localGeneratedConfig registered
+        `shouldBe` CycleIdentity.localGeneratedConfig retried
+      CycleIdentity.localResourceEnvelope legacy
+        `shouldBe` CycleIdentity.localResourceEnvelope registered
+
+    it "refuses to move a registered home Authority onto the AWS target" $ do
+      let rootScope = Tier0.cluster_id (Tier0.context sampleTier0Root)
+          registration =
+            RpcBirthConfig.RpcBirthConfigRegistered
+              (RpcBirthConfig.RpcBirthConfigPin rootScope 1 (Text.replicate 64 "a"))
+          source =
+            sampleTier0Root
+              { Tier0.context = (Tier0.context sampleTier0Root) {Tier0.rpc_registration = registration}
+              }
+          settings =
+            (testValidatedSettings "/tmp/prodbox/.data")
+              { validatedDeploymentContext = deploymentContextForTier0 source
+              }
+          runtimeImage =
+            ResolvedCustomImage
+              "harbor.test/prodbox/runtime"
+              "pin-test"
+              (Just ("sha256:" ++ replicate 64 'a'))
+              (Just ("sha256:" ++ replicate 64 'b'))
+          observers = fixtureChartPlanObservers (const (pure (Right (Just runtimeImage))))
+      planned <-
+        buildChartDeploymentPlanForSubstrateWithObservers
+          observers
+          SubstrateAws
+          "/tmp/prodbox"
+          settings
+          "lifecycle-authority"
+          testChartSecrets
+          Map.empty
+      planned `shouldSatisfy` leftContains "retained local RKE2"
+
     it "Sprint 3.42: changes every public-host chart projection with the validated served host" $ do
       let hostA = "edge-a.example.test"
           hostB = "edge-b.example.test"
@@ -12478,7 +12961,7 @@ unitSuite = do
         Nothing
         `shouldBe` Left "bootstrap-broker chart requires a resolved image reference"
 
-    it "renders schema-v7 role-specific durable stores without generic S3 fields or secrets" $ do
+    it "renders schema-v8 role-specific durable stores without generic S3 fields or secrets" $ do
       let settings = testValidatedSettings "/tmp/prodbox/.data"
           image =
             ResolvedCustomImage
@@ -12517,14 +13000,32 @@ unitSuite = do
             (Just image)
       backupDhall <- expectRight (extractRoleDhall backupValues)
       tlsDhall <- expectRight (extractRoleDhall tlsValues)
+      let birthPin =
+            RpcBirthConfig.RpcBirthConfigRegistered
+              (RpcBirthConfig.RpcBirthConfigPin "home" 1 (Text.replicate 64 "c"))
+      authorityValues <-
+        expectRight $
+          valuesForLifecycleAuthorityWithRpcBirth
+            birthPin
+            "home"
+            "http://minio.test:9000"
+            "lifecycle-authority"
+            "lifecycle-authority"
+            (Just image)
+      authorityDhall <- expectRight (extractRoleDhall authorityValues)
+      authorityConfig <-
+        Dhall.input Dhall.auto authorityDhall :: IO ControlPlaneRuntime.ControlPlaneConfig
+      ControlPlaneRuntime.rpc_registration authorityConfig `shouldBe` birthPin
+      ControlPlaneRuntime.validateControlPlaneConfig LifecycleAuthorityRuntime authorityConfig
+        `shouldSatisfy` either (const False) (const True)
       Text.unpack backupDhall `shouldNotContain` "object_store_endpoint"
       Text.unpack backupDhall `shouldNotContain` "access_key_id"
       Text.unpack tlsDhall `shouldNotContain` "object_store_bucket"
       Text.unpack tlsDhall `shouldNotContain` "secret_access_key"
       backupConfig <- Dhall.input Dhall.auto backupDhall :: IO ControlPlaneRuntime.ControlPlaneConfig
       tlsConfig <- Dhall.input Dhall.auto tlsDhall :: IO ControlPlaneRuntime.ControlPlaneConfig
-      ControlPlaneRuntime.schema_version backupConfig `shouldBe` 7
-      ControlPlaneRuntime.schema_version tlsConfig `shouldBe` 7
+      ControlPlaneRuntime.schema_version backupConfig `shouldBe` 8
+      ControlPlaneRuntime.schema_version tlsConfig `shouldBe` 8
       case ControlPlaneRuntime.role_store backupConfig of
         ControlPlaneRuntime.RoleStoreAuthorityBackup wire -> do
           ControlPlaneRuntime.authority_backup_endpoint wire
@@ -18445,6 +18946,12 @@ unitSuite = do
           resolveRuntimeChartImageForSubstrateWith (observers (Left "connection refused")) SubstrateAws
         unreadable `shouldSatisfy` either (isInfixOf "connection refused") (const False)
 
+    it "shares the canonical host-image tag across ordinary and operation-owned preparation" $ do
+      customImageTagFromMachineId "0123456789ABCDEF0123456789ABCDEF\n"
+        `shouldBe` Right "prodbox-0123456789abcdef0123456789abcdef"
+      forM_ ["", replicate 31 'a', replicate 33 'a', replicate 31 'a' ++ "g", replicate 32 '\1633'] $ \input ->
+        customImageTagFromMachineId input `shouldSatisfy` isLeft
+
     it "selects one exact repository manifest digest without accepting config-shaped substitutes" $ do
       let repository = "127.0.0.1:30080/prodbox/prodbox-runtime"
           manifestDigest = "sha256:" ++ replicate 64 'a'
@@ -22866,6 +23373,21 @@ unitSuite = do
           )
           [minBound .. maxBound :: AbsenceProbe]
 
+    describe "owned raw command output" $ do
+      forM_ [minBound .. maxBound :: AbsenceProbe] $ \probe ->
+        it (show probe <> " preserves the String classifier for every byte") $
+          forM_ (absenceProbeMarkers probe <> byteFailureCases) $ \message -> do
+            let original = BS8.pack message
+            forM_ [original, BS8.map toUpper original] $ \body -> do
+              reportsAbsenceBytes probe body `shouldBe` reportsAbsence probe (BS8.unpack body)
+              forM_ [0 .. 255] $ \byte -> do
+                let framed = BS.cons byte (BS.snoc body byte)
+                reportsAbsenceBytes probe framed
+                  `shouldBe` reportsAbsence probe (BS8.unpack framed)
+      it "preserves the existing diagnostic character mapping for all bytes" $ do
+        let bytes = BS.pack [0 .. 255]
+        TextEncoding.decodeLatin1 bytes `shouldBe` Text.pack (BS8.unpack bytes)
+
     describe "Provider session duration owner" $ do
       it "refuses a number assigned to a session duration in the governed modules" $ do
         -- Red on 0268f5d: the Provider module spelled the STS floor as a
@@ -23302,11 +23824,13 @@ unitSuite = do
               "lifecycle-a"
               "http://vault-a.fixture:8200"
               "http://minio-a.fixture:9000"
+              RpcBirthConfig.RpcBirthConfigLegacy
           inputB =
             DeploymentContextInput
               "lifecycle-b"
               "https://vault-b.fixture"
               "https://minio-b.fixture"
+              RpcBirthConfig.RpcBirthConfigLegacy
           contextA = either error id (validatedDeploymentContextFor inputA topology)
           contextB = either error id (validatedDeploymentContextFor inputB topology)
           lifecycleA = RootVaultLifecycle "lifecycle-a" "http://vault-a.fixture:8200"
@@ -24869,6 +25393,11 @@ unitSuite = do
 
     it "freezes the packaged AWS schema OOM and transfers only declared idle headroom" $ do
       let counterexample = ProviderWorkerBudget.frozenProviderWorkerSchemaMemoryCounterexample
+          frozenCapacityPlan =
+            Capacity.defaultResourcePlan
+              { Capacity.host_capacity = Capacity.ResourceVector 8000 15872 100000 180000
+              , Capacity.platform_scheduler_requests = Just (Capacity.ResourceVector 0 0 0 0)
+              }
           supersededPartition =
             ProviderWorkerBudget.providerWorkerSchemaCounterexampleSupersededPartition counterexample
           replacementPartition =
@@ -24901,13 +25430,13 @@ unitSuite = do
         `shouldBe` Nothing
       ProviderWorkerBudget.validateProviderWorkerSchemaMemoryCounterexample counterexample
         `shouldBe` Right ProviderWorkerBudget.ProviderWorkerSchemaMemoryPendingLiveReplacement
-      case Allocation.compileResourcePlanUncertified Capacity.defaultResourcePlan of
+      case Allocation.compileResourcePlanUncertified frozenCapacityPlan of
         Left err -> expectationFailure (show err)
         Right allocatedPlan -> do
           Allocation.planAllocatable allocatedPlan
             `shouldBe` Capacity.ResourceVector 7000 13312 80032 177952
-          -- Current replay owners use their independently derived memory
-          -- floors; the frozen Provider/idle partition above stays unchanged.
+          -- Retain the pre-baseline host/accounting profile and the existing
+          -- replay-owner floors; the frozen Provider/idle partition is unchanged.
           Allocation.planTotalDraw allocatedPlan
             `shouldBe` Capacity.ResourceVector 6210 11538 15456 155648
           lookup "provider-worker" (Allocation.planWorkloadDraws allocatedPlan)
@@ -25254,8 +25783,16 @@ unitSuite = do
     it
       "injects generated runtime, lifecycle-probe, and pre-cutover timing values into the gateway chart plan"
       $ do
+        let runtimeImage =
+              ResolvedCustomImage
+                { resolvedCustomImageRepository = "harbor.test/prodbox/runtime"
+                , resolvedCustomImageTag = "gateway-memory-test"
+                , resolvedCustomImageRolloutToken = Nothing
+                , resolvedCustomImageManifestDigest = Just ("sha256:" ++ replicate 64 'b')
+                }
         result <-
-          buildChartDeploymentPlanForSubstrate
+          buildChartDeploymentPlanForSubstrateWithObservers
+            (fixtureChartPlanObservers (const (pure (Right (Just runtimeImage)))))
             SubstrateAws
             "/tmp/prodbox"
             (testValidatedSettings "/tmp/prodbox/.data")
@@ -25379,8 +25916,18 @@ unitSuite = do
               (error . ClusterTopology.renderTopologyError)
               id
               (ClusterTopology.mkSingleMachineRke2Topology "machine-b")
-          inputA = DeploymentContextInput "cluster-a" "http://vault-a.test:8200" "https://minio-a.test"
-          inputB = DeploymentContextInput "cluster-b" "https://vault-b.test" "http://minio-b.test:9000"
+          inputA =
+            DeploymentContextInput
+              "cluster-a"
+              "http://vault-a.test:8200"
+              "https://minio-a.test"
+              RpcBirthConfig.RpcBirthConfigLegacy
+          inputB =
+            DeploymentContextInput
+              "cluster-b"
+              "https://vault-b.test"
+              "http://minio-b.test:9000"
+              RpcBirthConfig.RpcBirthConfigLegacy
       let contextA = either error id (validatedDeploymentContextFor inputA topologyA)
           contextB = either error id (validatedDeploymentContextFor inputB topologyB)
       deploymentClusterId contextA `shouldBe` "cluster-a"
@@ -25766,7 +26313,7 @@ unitSuite = do
           tooSmallLimit = Capacity.ResourceVector 100 512 1024 1
           overReservedPlan =
             Capacity.defaultResourcePlan
-              { Capacity.rke2_reserved = Capacity.ResourceVector 8000 2048 10240 1024
+              { Capacity.rke2_reserved = Capacity.ResourceVector 10000 2048 10240 1024
               }
           overCommittedPlan =
             Capacity.defaultResourcePlan
@@ -26338,6 +26885,7 @@ harnessProjectConfig config input =
           { Tier0.cluster_id = contextInputClusterId input
           , Tier0.vault_address = contextInputVaultAddress input
           , Tier0.minio_endpoint = contextInputMinioEndpoint input
+          , Tier0.rpc_registration = contextInputRpcRegistration input
           }
     }
 
@@ -26352,6 +26900,7 @@ sealedVaultAuditProjectConfig manualPvRoot =
         "sealed-vault-audit-cluster"
         "http://vault.fixture:8200"
         "http://minio.fixture:9000"
+        RpcBirthConfig.RpcBirthConfigLegacy
     )
 
 testTopologyDhallDocument :: FilePath -> String
@@ -26767,6 +27316,7 @@ testDeploymentContextInput =
     { contextInputClusterId = "test-cluster"
     , contextInputVaultAddress = "http://127.0.0.1:31820"
     , contextInputMinioEndpoint = "http://127.0.0.1:39000"
+    , contextInputRpcRegistration = RpcBirthConfig.RpcBirthConfigLegacy
     }
 
 -- | Sprint 1.91: the capture bucket the printed-grant assertions thread. It is
@@ -27144,6 +27694,38 @@ fixtureChartPlanObservers imageResolver =
                 }
           )
     }
+
+expectBirthChartRight :: (Show e) => Either e a -> IO a
+expectBirthChartRight = either (fail . show) pure
+
+withRpcBirthChartFixture
+  :: RpcBirthConfig.RpcBirthConfig
+  -> (FilePath -> ValidatedSettings -> ProdboxProjectConfig -> ResolvedCustomImage -> IO a)
+  -> IO a
+withRpcBirthChartFixture registration action = do
+  repository <- getCurrentDirectory
+  let source =
+        sampleTier0Root
+          { Tier0.context = (Tier0.context sampleTier0Root) {Tier0.rpc_registration = registration}
+          }
+      image =
+        ResolvedCustomImage
+          "harbor.test/prodbox/runtime"
+          "held-chart"
+          (Just ("sha256:" ++ replicate 64 'a'))
+          (Just ("sha256:" ++ replicate 64 'b'))
+  withSystemTempDirectory "prodbox-held-authority-chart" $ \root -> do
+    let sourceChart = repository </> "charts" </> "lifecycle-authority"
+        targetChart = root </> "charts" </> "lifecycle-authority"
+    createDirectoryIfMissing True (targetChart </> "templates")
+    names <- listDirectory (sourceChart </> "templates")
+    forM_ (["Chart.yaml", "values.yaml"] ++ map ("templates" </>) names) $ \name ->
+      copyFile (sourceChart </> name) (targetChart </> name)
+    let settings =
+          (testValidatedSettings (root </> "data"))
+            { validatedDeploymentContext = deploymentContextForTier0 source
+            }
+    withBinarySiblingTier0 (tier0Fixture source) (action root settings source image)
 
 testChartSecrets :: Map.Map String String
 testChartSecrets =

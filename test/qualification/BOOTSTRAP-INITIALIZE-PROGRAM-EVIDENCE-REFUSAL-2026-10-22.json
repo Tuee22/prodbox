@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "counterexample": "BOOTSTRAP-INITIALIZE-PROGRAM-EVIDENCE-REFUSAL-2026-10-22",
+  "recorded_utc": "2026-10-22T21:56:06Z",
+  "observed_provider_behavior": {
+    "command": "prodbox test integration cascade-qualification --substrate home-local",
+    "http_status": 409,
+    "wire_status": "boundary-refused",
+    "closed_engine_constructor": "EngineProgramEvidenceRefused",
+    "vault_initialized": false,
+    "vault_sealed": true,
+    "recovery_custody_durable": false,
+    "initialization_ambiguous": false,
+    "root_session_active": false,
+    "handoff_observed": false,
+    "broker_ready": true,
+    "broker_restart_count": 0,
+    "broker_image_config_digest": "sha256:9d370c2a2bd31936e9842f1f9ff1580f11098384a533be6eb9b681455315b8df",
+    "live_journal_phase_observed": false
+  },
+  "antecedent_real_tool_recording": "BOOTSTRAP-VAULT-INIT-PREAPPLICATION-REFUSAL-2026-10-22.json",
+  "planted_composition_case": {
+    "journal_phase": "RootInitCallInFlight",
+    "state_invariants_valid": true,
+    "driver_plan": "RootPlanAwaitVaultInitResponse",
+    "superseded_entry_refusal": "PristineJournalPhaseAdvanced",
+    "provenance": "The state is planted from the journal-before-call/failed-worker schedule; it is not a decoded observation of the live journal.",
+    "full_frozen_broker_replayed": false
+  },
+  "causal_profile": {
+    "role_resources": {
+      "bootstrap-broker": {
+        "superseded": {
+          "limits": {
+            "cpu": "100m",
+            "ephemeral-storage": "256Mi",
+            "memory": "128Mi"
+          },
+          "requests": {
+            "cpu": "100m",
+            "ephemeral-storage": "256Mi",
+            "memory": "128Mi"
+          }
+        },
+        "replacement": {
+          "limits": {
+            "cpu": "100m",
+            "ephemeral-storage": "256Mi",
+            "memory": "128Mi"
+          },
+          "requests": {
+            "cpu": "100m",
+            "ephemeral-storage": "256Mi",
+            "memory": "128Mi"
+          }
+        }
+      },
+      "bootstrap-secret-worker": {
+        "superseded": {
+          "limits": {
+            "cpu": "250m",
+            "ephemeral-storage": "256Mi",
+            "memory": "256Mi"
+          },
+          "requests": {
+            "cpu": "250m",
+            "ephemeral-storage": "256Mi",
+            "memory": "256Mi"
+          }
+        },
+        "replacement": {
+          "limits": {
+            "cpu": "250m",
+            "ephemeral-storage": "256Mi",
+            "memory": "256Mi"
+          },
+          "requests": {
+            "cpu": "250m",
+            "ephemeral-storage": "256Mi",
+            "memory": "256Mi"
+          }
+        }
+      },
+      "vault": {
+        "superseded": {
+          "limits": {
+            "cpu": "250m",
+            "ephemeral-storage": "1Gi",
+            "memory": "512Mi"
+          },
+          "requests": {
+            "cpu": "200m",
+            "ephemeral-storage": "1Gi",
+            "memory": "256Mi"
+          }
+        },
+        "replacement": {
+          "limits": {
+            "cpu": "250m",
+            "ephemeral-storage": "1Gi",
+            "memory": "512Mi"
+          },
+          "requests": {
+            "cpu": "200m",
+            "ephemeral-storage": "1Gi",
+            "memory": "256Mi"
+          }
+        }
+      }
+    },
+    "background_load": "one retained journal; no concurrent writer; no fault change between old and replacement controls",
+    "budgets_increased": false,
+    "persistence_format_changed": false,
+    "new_inflight_vault_init_post_permitted": false
+  },
+  "closure": {
+    "native_initialization_canary": "pending",
+    "qualified_cycles": 0,
+    "class_closed": false,
+    "owner": "Sprint 6.5"
+  }
+}

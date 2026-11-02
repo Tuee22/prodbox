@@ -37,8 +37,10 @@ import Prodbox.Lifecycle.Authority.Admission
   , AuthorityAdmissionCommandRefusal
   , AuthorityAdmissionDecision (..)
   , AuthorityMigrationMode (..)
+  , authorityAdmissionCommandRefusalToken
   , authorityAggregateMigration
   )
+import Prodbox.Lifecycle.Authority.EpochPromotion (renderEpochPromotionRefusal)
 import Prodbox.Lifecycle.Authority.Migration
   ( MigrationCodecError (..)
   , MigrationDecision (..)
@@ -174,7 +176,7 @@ migrationEndpointSummary result = case result of
   MigrationEndpointDecodeFailed err -> "migration-state-corrupt:" <> codecToken err
   MigrationEndpointWriteFailed _ -> "migration-write-failed"
   MigrationEndpointConcurrentWrite -> "migration-concurrent-write"
-  MigrationEndpointAdmissionRefused _ -> "migration-admission-refused"
+  MigrationEndpointAdmissionRefused admissionRefusal -> "migration-admission-refused:" <> authorityAdmissionCommandRefusalToken admissionRefusal
   MigrationEndpointAggregateMismatch -> "migration-aggregate-mismatch"
 
 codecToken :: MigrationCodecError -> Text
@@ -194,3 +196,7 @@ refusalToken refusal = case refusal of
   ActivationBindingsMissing _ -> "activation-bindings-missing"
   EpochMustAdvance -> "epoch-must-advance"
   LegacyRollbackForbidden -> "legacy-rollback-forbidden"
+  StagedEpochPromotionRequired -> "staged-epoch-promotion-required"
+  EpochPromotionNotPrepared -> "epoch-promotion-not-prepared"
+  EpochPromotionImportsIncomplete _ -> "epoch-promotion-imports-incomplete"
+  EpochPromotionProtocolRefused protocolRefusal -> "epoch-promotion-refused:" <> renderEpochPromotionRefusal protocolRefusal

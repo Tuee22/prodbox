@@ -1,0 +1,271 @@
+{
+  "schema_version": 1,
+  "name": "HOST-OPERATION-PROCESS-ROLES-2026-10-26",
+  "scope": "Actual private PIDFD operation process roles under original absolute expiry, with fixed native fixture programs. No authenticated network transport or production subprocess supervisor is supplied.",
+  "status": "22 native role/parent/request controls validated; production wiring, recovery, complete current gates and deployment qualification remain open",
+  "source_identity_equal": true,
+  "source_identity_before_publication": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"7c206860f54cfb6a8dd9d2c1642c418c76b08e0732c5fa625f4f62936009dc0d\", sourceManifestEntryCount = 1540},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"0d011179ba0acdfdd6063a56140806447b4a600ec1bd9ccdc94ce1cbafba4ba6\", sourceManifestEntryCount = 1477})",
+  "inputs": [
+    {
+      "path": "src/Prodbox/Subprocess/KernelScope.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-inputs-1/src/Prodbox/Subprocess/KernelScope.hs",
+      "sha256": "17dfeed7f76c31f1eb62395bca5f283ad1f7b32822a998c2c7bacf7ec8581589"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostOperationFamily.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-inputs-1/src/Prodbox/Subprocess/HostOperationFamily.hs",
+      "sha256": "ff1b9d827c474e921fd56a6a857e65b55d8e7bb0c05b4e46d384eaed375e07c9"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdBus.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-inputs-1/src/Prodbox/Subprocess/SystemdBus.hs",
+      "sha256": "db79600b1ca63104d6841a877aa9f6a0b5168f11b495911445e1c4bc1a004df2"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-inputs-1/src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "sha256": "83b53baf0446afe195c9c6d4efcea8a7e16b00448f1210dfb155a608d1e13630"
+    },
+    {
+      "path": "src/Prodbox/Capacity/HostExecution.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-inputs-1/src/Prodbox/Capacity/HostExecution.hs",
+      "sha256": "092ece17fb98e941eb4847e875d0f5b01c9ca458c810d8851207aac9dfba6a8c"
+    },
+    {
+      "path": "test/qualification/HostOperationFamily.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-inputs-1/test/qualification/HostOperationFamily.hs",
+      "sha256": "a2b8300f4b2acc13055d746c5e71ea89cdf7aad6de6bbe4a79e12ad548319e8d"
+    },
+    {
+      "path": "prodbox.cabal",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-inputs-1/prodbox.cabal",
+      "sha256": "02cf5fcc88b5b6059fe8fbd4c333bf50f2530dbf1930ced0f8f4c1701b240b15"
+    }
+  ],
+  "native_driver_snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-inputs-1/native-driver",
+  "native_driver_sha256": "54ef523700248270d311cbd62022625e33b9d51ab58986e7668c827e1f62829e",
+  "profile": {
+    "original_offsets_ns": {
+      "work": 2000000000,
+      "hard": 2150000000,
+      "stop": 2500000000,
+      "finish": 3000000000,
+      "outer": 5000000000
+    },
+    "aggregate": {
+      "memory_MiB": 256,
+      "cpu_milli": 700,
+      "tasks": 56,
+      "ephemeral_MiB": 1,
+      "durable_MiB": 0
+    },
+    "memory_MiB": {
+      "parent": 176,
+      "command": 48,
+      "transport": 16,
+      "helper": 16
+    },
+    "tasks": {
+      "parent": 16,
+      "command": 24,
+      "transport": 8,
+      "helper": 8
+    },
+    "original_and_parent_request_control_cpu_milli": {
+      "parent": 100,
+      "command": 400,
+      "transport": 100,
+      "helper": 100
+    },
+    "role_control_cpu_milli": {
+      "parent": 300,
+      "command": 200,
+      "transport": 100,
+      "helper": 100
+    },
+    "helper_start_us": 20000,
+    "helper_stop_us": 20000,
+    "heap_MiB": 16
+  },
+  "controls": [
+    "operation-roles-final-roles-1",
+    "operation-roles-final-roles-busy-1",
+    "operation-roles-final-roles-escape-1",
+    "operation-roles-final-roles-expiry-1",
+    "operation-roles-final-roles-parent-death-1",
+    "operation-roles-final-roles-repeat-1",
+    "operation-roles-final-roles-unsettled-1",
+    "operation-roles-final-roles-wrong-child-1",
+    "operation-roles-final-parent-1",
+    "operation-roles-final-parent-escape-1",
+    "operation-roles-final-parent-wrong-key-1",
+    "operation-roles-final-parent-wrong-window-1",
+    "operation-roles-final-parent-wrong-resources-1",
+    "operation-roles-final-parent-wrong-heap-1",
+    "operation-roles-final-expiry-1",
+    "operation-roles-final-late-effect-1",
+    "operation-roles-final-early-exit-1",
+    "operation-roles-final-foreign-field-1",
+    "operation-roles-final-expired-submit-1",
+    "operation-roles-final-invalid-window-1",
+    "operation-roles-final-oversized-helper-1",
+    "operation-roles-final-expired-observation-1"
+  ],
+  "results": {
+    "operation-roles-final-roles-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.189481073990464,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-roles-1.result.json"
+    },
+    "operation-roles-final-roles-busy-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1899619991891086,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-roles-busy-1.result.json"
+    },
+    "operation-roles-final-roles-escape-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1907898001372814,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-roles-escape-1.result.json"
+    },
+    "operation-roles-final-roles-expiry-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.19250614894554,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-roles-expiry-1.result.json"
+    },
+    "operation-roles-final-roles-parent-death-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1940199099481106,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-roles-parent-death-1.result.json"
+    },
+    "operation-roles-final-roles-repeat-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1916814758442342,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-roles-repeat-1.result.json"
+    },
+    "operation-roles-final-roles-unsettled-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.192629654891789,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-roles-unsettled-1.result.json"
+    },
+    "operation-roles-final-roles-wrong-child-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.191141152754426,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-roles-wrong-child-1.result.json"
+    },
+    "operation-roles-final-parent-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.2008530986495316,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-parent-1.result.json"
+    },
+    "operation-roles-final-parent-escape-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1905164499767125,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-parent-escape-1.result.json"
+    },
+    "operation-roles-final-parent-wrong-key-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.189104457385838,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-parent-wrong-key-1.result.json"
+    },
+    "operation-roles-final-parent-wrong-window-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1946141961961985,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-parent-wrong-window-1.result.json"
+    },
+    "operation-roles-final-parent-wrong-resources-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.194261724129319,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-parent-wrong-resources-1.result.json"
+    },
+    "operation-roles-final-parent-wrong-heap-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1933207106776536,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-parent-wrong-heap-1.result.json"
+    },
+    "operation-roles-final-expiry-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.188304467126727,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-expiry-1.result.json"
+    },
+    "operation-roles-final-late-effect-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1859984528273344,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-late-effect-1.result.json"
+    },
+    "operation-roles-final-early-exit-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.188299946952611,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-early-exit-1.result.json"
+    },
+    "operation-roles-final-foreign-field-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.189183203969151,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-foreign-field-1.result.json"
+    },
+    "operation-roles-final-expired-submit-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.06753036985173821,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-expired-submit-1.result.json"
+    },
+    "operation-roles-final-invalid-window-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.028681854251772165,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-invalid-window-1.result.json"
+    },
+    "operation-roles-final-oversized-helper-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.02597080497071147,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-oversized-helper-1.result.json"
+    },
+    "operation-roles-final-expired-observation-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.026041051372885704,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-expired-observation-1.result.json"
+    },
+    "operation-roles-library-build-1": {
+      "exit_code": 0,
+      "wall_seconds": 27.951532136183232,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-library-build-1.result.json"
+    },
+    "operation-roles-hlint-2": {
+      "exit_code": 0,
+      "wall_seconds": 4.501300065778196,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-hlint-2.result.json"
+    },
+    "operation-roles-final-native-build-1": {
+      "exit_code": 0,
+      "wall_seconds": 3.1257889471016824,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-native-build-1.result.json"
+    },
+    "operation-roles-final-format-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.2778832702897489,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-final-format-1.result.json"
+    }
+  },
+  "retained_failures": {
+    "first_overlap": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-first-failure-1.json",
+    "traced_failure": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-trace-failure-1.json",
+    "cpu_cause_and_mapping": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-cpu-selected-cause-1.json",
+    "retained_terminal_scope": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-post-terminal-failure-1.json",
+    "manager_cause": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-manager-selected-cause-1.json",
+    "setup_compile_1": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-compile-failure-1.json",
+    "setup_compile_2": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-compile-failure-2.json",
+    "fixture_lint": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-hlint-1.result.json"
+  },
+  "evidence_limits": [
+    "Both physical role processes execute fixed sleep programs; expiry and parent death additionally have session-escaped descendants. This is not an actual kubectl port-forward or Authority network proof.",
+    "All 18 controller-starting controls independently require held-root retirement, workspace absence and exact six-role absence before the original settlement end.",
+    "Parent-death control independently holds both role cgroups, observes their retirement before work end and confirms the original timer/slice remain armed.",
+    "The live-role negative deliberately leaves an unsettled capability after its fixture leader is stopped; no automatic recovery or new admission is claimed.",
+    "No actual lost manager reply, cancellation or manager restart is injected.",
+    "The CPU repartition is native-only and establishes no deployed production resource profile.",
+    "Alarm retirement, production dispatch/pinned inputs, real supervisor/caller wiring, preparation and original-bound recovery remain open."
+  ],
+  "primary_sources": [
+    "https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html#BindsTo=",
+    "https://www.freedesktop.org/software/systemd/man/latest/systemd.unit.html#Unit%20Garbage%20Collection",
+    "https://github.com/systemd/systemd/blob/v255/src/core/dbus-manager.c"
+  ],
+  "private_evidence": ".build/sprint-6.5/rpc-coordinator-20261025/operation-roles-progress-1.json"
+}

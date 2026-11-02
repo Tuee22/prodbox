@@ -27,6 +27,7 @@ import Prodbox.CLI.Command
 import Prodbox.CLI.Spec
   ( commandRequestParser
   )
+import Prodbox.Subprocess.HostControllerArguments (parseHostControllerArguments)
 
 data Options = Options
   { optVerbose :: Bool
@@ -45,9 +46,17 @@ parserInfo =
 
 validateCommandArgv :: [String] -> Either String ()
 validateCommandArgv argv =
-  case forbiddenArgvMessage argv of
-    Just message -> Left message
-    Nothing -> Right ()
+  case argv of
+    ["internal-rpc-birth-controller", "--help"] -> Right ()
+    ["internal-rpc-birth-controller", "-h"] -> Right ()
+    "internal-rpc-birth-controller" : arguments ->
+      either
+        (Left . ("Internal RPC birth argument envelope refused: " ++) . show)
+        (const (Right ()))
+        (parseHostControllerArguments arguments)
+    _ -> case forbiddenArgvMessage argv of
+      Just message -> Left message
+      Nothing -> Right ()
 
 optionsParser :: Parser Options
 optionsParser =

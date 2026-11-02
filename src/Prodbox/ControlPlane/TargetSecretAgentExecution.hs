@@ -51,6 +51,8 @@ module Prodbox.ControlPlane.TargetSecretAgentExecution
   , AcceptedTargetAuthority
   , AcceptedTargetAuthorityError (..)
   , mkAcceptedTargetAuthority
+  , AcceptedTargetAuthorityAdvanceError (..)
+  , validateAcceptedTargetAuthorityAdvance
   , acceptedTargetIssuerGeneration
   , acceptedTargetIssuerIdentity
   , acceptedTargetIssuerPublicKey
@@ -350,6 +352,43 @@ mkAcceptedTargetAuthority issuerGeneration issuerIdentity publicKey epoch fenceF
       , acceptedTargetAgentIdentity = agentIdentity
       , acceptedTargetId = target
       }
+
+-- | Shared by active installation and staged epoch preparation. A same-cluster
+-- rollout may advance, while issuer identity, key generation, epoch and fence
+-- retain their existing monotonic rules.
+data AcceptedTargetAuthorityAdvanceError
+  = AuthorityAdvanceTargetChanged
+  | AuthorityAdvanceAgentClusterChanged
+  | AuthorityAdvanceIssuerChanged
+  | AuthorityAdvanceIssuerGenerationRegressed
+  | AuthorityAdvanceIssuerKeyConflict
+  | AuthorityAdvanceEpochRegressed
+  | AuthorityAdvanceFenceRegressed
+  deriving stock (Eq, Show)
+
+validateAcceptedTargetAuthorityAdvance
+  :: AcceptedTargetAuthority
+  -> AcceptedTargetAuthority
+  -> Either AcceptedTargetAuthorityAdvanceError ()
+validateAcceptedTargetAuthorityAdvance current desired
+  | acceptedTargetId current /= acceptedTargetId desired = Left AuthorityAdvanceTargetChanged
+  | targetAgentClusterIdentity (acceptedTargetAgentIdentity current)
+      /= targetAgentClusterIdentity (acceptedTargetAgentIdentity desired) =
+      Left AuthorityAdvanceAgentClusterChanged
+  | acceptedTargetIssuerIdentity current /= acceptedTargetIssuerIdentity desired =
+      Left AuthorityAdvanceIssuerChanged
+  | acceptedTargetIssuerGeneration desired < acceptedTargetIssuerGeneration current =
+      Left AuthorityAdvanceIssuerGenerationRegressed
+  | acceptedTargetIssuerGeneration desired == acceptedTargetIssuerGeneration current
+      && acceptedTargetIssuerPublicKey current /= acceptedTargetIssuerPublicKey desired =
+      Left AuthorityAdvanceIssuerKeyConflict
+  | acceptedTargetAuthorityEpoch desired < acceptedTargetAuthorityEpoch current =
+      Left AuthorityAdvanceEpochRegressed
+  | acceptedTargetAuthorityEpoch desired == acceptedTargetAuthorityEpoch current
+      && fencingTokenValue (acceptedTargetFenceFloor desired)
+        < fencingTokenValue (acceptedTargetFenceFloor current) =
+      Left AuthorityAdvanceFenceRegressed
+  | otherwise = Right ()
 
 data WireAcceptedTargetAuthority = WireAcceptedTargetAuthority
   { wireAcceptedVersion :: !Word16

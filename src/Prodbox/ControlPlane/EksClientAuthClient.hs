@@ -1,3 +1,4 @@
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -9,11 +10,13 @@ module Prodbox.ControlPlane.EksClientAuthClient
   , withEksClientAuthProjection
   , withEksClientAuthProjectionForExecution
   , withEksClientAuthProjectionForTeardownExecution
+  , withEksClientAuthProjectionForTeardownExecutionWithTransport
   , eksClientAuthExecutionSubmissionKey
   , eksClientAuthTeardownExecutionSubmissionKey
   )
 where
 
+import Data.Bifunctor (first)
 import Data.ByteString.Base64 qualified as Base64
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -21,6 +24,8 @@ import Data.Text.Encoding qualified as TextEncoding
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.Aws.StsIdentity (parseStsIdentityEvidence, stsIdentityAccount)
+import Prodbox.ControlPlane.AuthenticatedTransport (AuthenticatedClientTransport)
+import Prodbox.ControlPlane.AuthorityProviderEndpoint (dispatchAuthorityProviderIntentOwnedBy)
 import Prodbox.ControlPlane.EksClientAuthProjection
   ( EksClientAuthEnvelope
   , EksClientAuthProjection
@@ -38,10 +43,14 @@ import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   ( ExternalLifecycleAuthorityCaller
   )
 import Prodbox.ControlPlane.ProviderCaller
-  ( ProviderCallerError
+  ( ProviderCallerError (..)
   , dispatchHostProviderIntent
   , dispatchHostProviderIntentFresh
   )
+import Prodbox.Lifecycle.Authority.Admission
+  ( ProviderOperationCleanupOwner (ProviderOperationOwnedByCleanupOperation)
+  )
+import Prodbox.Lifecycle.Authority.ClientRegistry (mkClientSubmissionKey)
 import Prodbox.Lifecycle.CleanupRun
   ( cleanupAttemptIdText
   , cleanupDigestText
@@ -68,6 +77,7 @@ import Prodbox.Lifecycle.Teardown.ExecutionIdentity
   , teardownExecutionIdentityOperationId
   , teardownExecutionIdentityRunId
   )
+import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 
 data EksClientAuthClientError
   = EksClientAuthIdentityDispatchFailed !ProviderCallerError
@@ -177,6 +187,33 @@ withEksClientAuthProjectionForTeardownExecution caller repoRoot execution accoun
     requestedRegion
     requestedCluster
     action
+
+-- | Borrow the closed ordinary program's existing Authority transport and
+-- preserve the sealed execution's deterministic submission key. The exact
+-- cleanup operation owns issuance; no host authentication or new run identity
+-- is constructed. Unknown completion still requires durable attempt recovery,
+-- not another ephemeral destination under the same admitted attempt.
+withEksClientAuthProjectionForTeardownExecutionWithTransport
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> TeardownExecutionIdentity
+  -> Text
+  -> Text
+  -> Text
+  -> (EksClientAuthProjection -> IO value)
+  -> IO (Either EksClientAuthClientError value)
+withEksClientAuthProjectionForTeardownExecutionWithTransport transport execution account region cluster action =
+  case mkClientSubmissionKey (eksClientAuthTeardownExecutionSubmissionKey execution) of
+    Left cause -> pure (Left (EksClientAuthDispatchFailed (ProviderCallerSubmissionKeyInvalid cause)))
+    Right key -> issueProjection (dispatch key) account region cluster action
+ where
+  dispatch key intent = do
+    result <-
+      dispatchAuthorityProviderIntentOwnedBy
+        transport
+        key
+        intent
+        (ProviderOperationOwnedByCleanupOperation (teardownExecutionIdentityOperationId execution))
+    pure (first ProviderCallerDispatchFailed (snd <$> result))
 
 -- | Collision-resistant Provider submission identity for a compiled
 -- teardown node.  The constructor of 'TeardownExecutionContext' is private,

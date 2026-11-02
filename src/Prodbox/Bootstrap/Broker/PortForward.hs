@@ -73,7 +73,8 @@ data BrokerHostConnection = BrokerHostConnection
   deriving stock (Eq, Show)
 
 data BrokerHostConnectionError
-  = BrokerHostDeploymentNotReady !String
+  = BrokerHostDeadlineInfeasible
+  | BrokerHostDeploymentNotReady !String
   | BrokerHostPortReservationFailed !String
   | BrokerHostEndpointInvalid !String
   | BrokerHostCredentialFailed !BrokerClientContextError
@@ -83,6 +84,8 @@ data BrokerHostConnectionError
 
 renderBrokerHostConnectionError :: BrokerHostConnectionError -> String
 renderBrokerHostConnectionError err = case err of
+  BrokerHostDeadlineInfeasible ->
+    "Bootstrap Broker call does not fit the remaining harness deadline"
   BrokerHostDeploymentNotReady detail ->
     "wait for Bootstrap Broker Deployment rollout: " ++ detail
   BrokerHostPortReservationFailed detail ->

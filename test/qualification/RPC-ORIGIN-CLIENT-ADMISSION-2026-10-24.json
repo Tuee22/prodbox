@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "counterexample": "RPC-ORIGIN-CLIENT-ADMISSION-2026-10-24",
+  "owning_sprint": "6.5",
+  "banked_utc": "2026-10-24T23:07:55.392291+00:00",
+  "scope": "Frozen actual retained-client allocator and replacement retained model plus actual signed client/verified endpoint composition with explicit repository fixtures. No deployed source attestation or runtime publication proof.",
+  "causal_profile": {
+    "caller": "service/target-secret-agent",
+    "logical_generations": [
+      1,
+      2
+    ],
+    "client_capacity_old": 2,
+    "client_capacity_replacement": 2,
+    "reservations_per_generation": 4,
+    "live_submission_capacity": 4,
+    "fault_schedule": "none",
+    "old_to_new_mapping": "Keep home principal and slot7/generation1. Retain the independently registered origin in its own server-owned principal and slot at logical generation2. The normalized two-client model uses foreign slot1; the full configured registration projection excludes every home slot and allocates slot8. Neither slot number changes capacity. Prior generations retain their exact reservations and IDs.",
+    "resource_envelopes_increased": false
+  },
+  "frozen": {
+    "full_manifest": "e650ef22fea29066aaba113f086d1888c552b4e567f437c6f5ecb8e9656c9a0d",
+    "executable_manifest": "842dac603fb15729b74aac673a9d450e198156b7baff04bb59bf38e7376da548",
+    "source_identity_record": ".build/sprint-6.5/rpc-client-admission-20261024/frozen-source.log",
+    "allocator_binary_sha256": "863c3909a8906fa2446e154101c93ec441ef216c0c0cce265f6fd3b6ef40723c",
+    "semantic_exit": 1,
+    "expected_exit": 1,
+    "wall_seconds": 0.00221090205013752,
+    "legacy_codec_binary_sha256": "02cff1cd62adc2fb9c4a28b0427f2f0d8feb67403fcf768a3d1be03af199967f",
+    "legacy_synthetic_bytes": {
+      "legacy-empty.cbor": "159e7dc9fc1602b13865d98bbdcf916031d427468c0a282b957a789e7486c249",
+      "legacy-reserved.cbor": "8ef9bae6c3d5e21f19d475b7ef3ff24e5753a527277b99ef6bfeec9051e4ecb1",
+      "legacy-aggregate.cbor": "6ae1284ee67ac980e4f1e09ca8799b3fe732231c58420a001bd7c51062da2105"
+    }
+  },
+  "replacement": {
+    "implementation": "Versioned retained clients, origin projection and coupled Authority admission/RPC registration; bounded scope/profile-pinned codec and existing-state repository. Detailed current validation is indexed separately.",
+    "owned_origin_cases": 39,
+    "legacy_client_controls": 13,
+    "validation_record": ".build/sprint-6.5/rpc-client-admission-20261024/validation.json",
+    "repository": "explicit codec-backed fixture boundary",
+    "physical_origin_admission": false,
+    "durable_first_birth_descriptor_and_publication": false,
+    "native_key_or_session_retirement": false
+  },
+  "production_profile": {
+    "client_capacity": "authored and immutable during reconciliation; fixture16 is independent of the two-client causal control",
+    "existing_hard_client_ceiling": 1024,
+    "rpc_binding_ceiling": 256,
+    "rpc_encoded_byte_ceiling": 131072,
+    "default_admission_encoded_byte_ceiling": 524288,
+    "operational_resource_configuration_changed": false,
+    "physical_profile_qualified": false
+  },
+  "deployment_qualification": "pending",
+  "qualified_cycles": 0,
+  "hand_actions": []
+}

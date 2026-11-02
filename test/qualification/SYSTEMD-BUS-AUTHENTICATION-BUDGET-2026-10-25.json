@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "recording": "SYSTEMD-BUS-AUTHENTICATION-BUDGET-2026-10-25",
+  "owning_sprint": "6.5",
+  "recorded_utc": "2026-10-25T18:20:28.214421+00:00",
+  "status": "Native transport boundary validated; production owned-process repair and qualification remain open.",
+  "scope": "Package-private local manager transport foundation; actual captureOwnedSubprocess is unchanged and remains the open scan-based implementation.",
+  "source": {
+    "path": "src/Prodbox/Subprocess/SystemdBus.hs",
+    "sha256": "e2cd48cbfbcb711393bc9269c25d7789e4ffffc7d5f4b515b4f98ec35a71d0ca",
+    "preserved": ".build/sprint-6.5/rpc-coordinator-20261025/frozen-bus-SystemdBus.hs-e2cd48cbfbcb7113"
+  },
+  "driver": {
+    "path": "test/qualification/SystemdBusDeadline.hs",
+    "sha256": "2e6732eb2c7327e1c20166a94c8c2a7a8e146190f13660f5da1c1dcbc7609a61",
+    "preserved": ".build/sprint-6.5/rpc-coordinator-20261025/frozen-bus-SystemdBusDeadline.hs-2e6732eb2c7327e1"
+  },
+  "counterexample": {
+    "boundary": "sd_bus_call invokes bus_ensure_running before starting its method timeout.",
+    "method_timeout_micros": 200000,
+    "independent_outer_guard_seconds": 0.75,
+    "observed_outer_guard_exit": 124,
+    "observed_wall_seconds": 0.7526357169263065,
+    "fixture_socket_accepted_and_closed": true,
+    "source_snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/systemd-v255-sd-bus.c",
+    "source_url": "https://raw.githubusercontent.com/systemd/systemd/v255/src/libsystemd/sd-bus/sd-bus.c",
+    "preserved_control": [
+      {
+        "path": ".build/sprint-6.5/rpc-coordinator-20261025/prior-bus-authentication/Main.hs",
+        "sha256": "9ec59f184b6d9b551c640436ec686c000c13c5382419a647bd4ba0ff8b88d87c",
+        "preserved": ".build/sprint-6.5/rpc-coordinator-20261025/frozen-bus-Main.hs-9ec59f184b6d9b55"
+      },
+      {
+        "path": ".build/sprint-6.5/rpc-coordinator-20261025/prior-bus-authentication/ScopeNativeProbe.hs",
+        "sha256": "9a50c197524011776fce5c0e64ede645a4bfd1c443be0182830fbf5caaea9eae",
+        "preserved": ".build/sprint-6.5/rpc-coordinator-20261025/frozen-bus-ScopeNativeProbe.hs-9a50c19752401177"
+      },
+      {
+        "path": ".build/sprint-6.5/rpc-coordinator-20261025/prior-bus-authentication-2",
+        "sha256": "d0da386f25b8a1d77d01f270802aa4a4c7e79fcce0ac3347da17b7e40087b4ae",
+        "preserved": ".build/sprint-6.5/rpc-coordinator-20261025/frozen-bus-prior-bus-authentication-2-d0da386f25b8a1d7"
+      }
+    ]
+  },
+  "replacement": {
+    "implementation": "Package-private explicit local Unix-socket connection; authentication and asynchronous manager reply loops consume one original monotonic deadline, with cancellation-aware bounded native polls and bracketed connection/message/slot/callback cleanup.",
+    "native_controls": [
+      {
+        "family": "nonthreaded-final",
+        "passed": 13,
+        "records": [
+          "systemd-bus-nonthreaded-final-lookup-1.json",
+          "systemd-bus-nonthreaded-final-missing-1.json",
+          "systemd-bus-nonthreaded-final-authentication-stall-1.json",
+          "systemd-bus-nonthreaded-final-reply-stall-1.json",
+          "systemd-bus-nonthreaded-final-cancel-1.json",
+          "systemd-bus-nonthreaded-final-cancel-reply-1.json",
+          "systemd-bus-nonthreaded-final-expired-1.json",
+          "systemd-bus-nonthreaded-final-invalid-1.json",
+          "systemd-bus-nonthreaded-final-invalid-symlink-1.json",
+          "systemd-bus-nonthreaded-final-environment-1.json",
+          "systemd-bus-nonthreaded-final-continuation-refusal-1.json",
+          "systemd-bus-nonthreaded-final-continuation-io-1.json",
+          "systemd-bus-nonthreaded-final-late-continuation-1.json"
+        ],
+        "authentication_refusal_micros": 200302,
+        "reply_refusal_micros": 200320,
+        "cancellation_micros": [
+          32040,
+          31428
+        ]
+      },
+      {
+        "family": "threaded-current",
+        "passed": 13,
+        "records": [
+          "systemd-bus-threaded-current-lookup-1.json",
+          "systemd-bus-threaded-current-missing-1.json",
+          "systemd-bus-threaded-current-authentication-stall-1.json",
+          "systemd-bus-threaded-current-reply-stall-1.json",
+          "systemd-bus-threaded-current-cancel-1.json",
+          "systemd-bus-threaded-current-cancel-reply-1.json",
+          "systemd-bus-threaded-current-expired-1.json",
+          "systemd-bus-threaded-current-invalid-1.json",
+          "systemd-bus-threaded-current-invalid-symlink-1.json",
+          "systemd-bus-threaded-current-environment-1.json",
+          "systemd-bus-threaded-current-continuation-refusal-1.json",
+          "systemd-bus-threaded-current-continuation-io-1.json",
+          "systemd-bus-threaded-current-late-continuation-1.json"
+        ],
+        "authentication_refusal_micros": 200359,
+        "reply_refusal_micros": 200319,
+        "cancellation_micros": [
+          21290,
+          21971
+        ]
+      }
+    ],
+    "scope_composition_controls": [
+      {
+        "family": "threaded",
+        "passed": 15,
+        "records": [
+          "bounded-bus-expiry-threaded-fast-1.json",
+          "bounded-bus-expiry-threaded-fast-2.json",
+          "bounded-bus-expiry-threaded-fast-3.json",
+          "bounded-bus-expiry-threaded-fast-4.json",
+          "bounded-bus-expiry-threaded-fast-5.json",
+          "bounded-bus-expiry-threaded-fast-6.json",
+          "bounded-bus-expiry-threaded-fast-7.json",
+          "bounded-bus-expiry-threaded-fast-8.json",
+          "bounded-bus-expiry-threaded-expiry-1.json",
+          "bounded-bus-expiry-threaded-delayed-expiry-1.json",
+          "bounded-bus-expiry-threaded-crash-1.json",
+          "bounded-bus-expiry-threaded-delayed-crash-1.json",
+          "bounded-bus-expiry-threaded-external-kill-1.json",
+          "bounded-bus-expiry-threaded-delayed-external-kill-1.json",
+          "bounded-bus-expiry-threaded-abandon-1.json"
+        ],
+        "max_family_readback_elapsed_micros": 381243
+      },
+      {
+        "family": "nonthreaded",
+        "passed": 15,
+        "records": [
+          "bounded-bus-expiry-nonthreaded-fast-1.json",
+          "bounded-bus-expiry-nonthreaded-fast-2.json",
+          "bounded-bus-expiry-nonthreaded-fast-3.json",
+          "bounded-bus-expiry-nonthreaded-fast-4.json",
+          "bounded-bus-expiry-nonthreaded-fast-5.json",
+          "bounded-bus-expiry-nonthreaded-fast-6.json",
+          "bounded-bus-expiry-nonthreaded-fast-7.json",
+          "bounded-bus-expiry-nonthreaded-fast-8.json",
+          "bounded-bus-expiry-nonthreaded-expiry-1.json",
+          "bounded-bus-expiry-nonthreaded-delayed-expiry-1.json",
+          "bounded-bus-expiry-nonthreaded-crash-1.json",
+          "bounded-bus-expiry-nonthreaded-delayed-crash-1.json",
+          "bounded-bus-expiry-nonthreaded-external-kill-1.json",
+          "bounded-bus-expiry-nonthreaded-delayed-external-kill-1.json",
+          "bounded-bus-expiry-nonthreaded-abandon-1.json"
+        ],
+        "max_family_readback_elapsed_micros": 379617
+      }
+    ],
+    "late_success_control": "A deliberate continuation beyond the original deadline returns BusDeadlineReached BusRelease. This is not a hard bound on arbitrary callback IO.",
+    "fixture_resources": "Scope64MiB/swap0/16tasks, helper16MiB/swap0/8tasks are explicit toy controls, not production defaults."
+  },
+  "private_evidence_index": ".build/sprint-6.5/rpc-coordinator-20261025/systemd-bus-progress-1.json",
+  "limitations": [
+    "Transport connection and owned socket path do not establish manager/unit/PID authority. Exact manager InvocationID/cgroup/filesystem identity, role/host resource admission and startup/lost-reply recovery remain required.",
+    "Scope composition fixture retains toy64MiB/16-task and expiry helper16MiB/8-task resources. It is not production placement/admission proof.",
+    "A deliberate250ms continuation under200ms is rejected at release; this control proves no late success, not a hard bound on arbitrary caller IO callbacks.",
+    "No original process API change, production physical chart caller or registered ownership-class closure.",
+    "No image/live attempt, AWS mutation or deployment qualification."
+  ],
+  "full_canonical_gate": "Tracked in DEVELOPMENT_PLAN/README.md; not asserted by this immutable native recording.",
+  "production_api_changed": false,
+  "deployment_qualified": false,
+  "image_attempts": 0,
+  "live_qualification_attempts": 0
+}

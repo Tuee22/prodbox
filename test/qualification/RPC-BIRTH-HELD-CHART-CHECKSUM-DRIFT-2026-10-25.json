@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "recording": "RPC-BIRTH-HELD-CHART-CHECKSUM-DRIFT-2026-10-25",
+  "scope": "Offline provisional held-chart implementation, never a deployed regression or deployment qualification. Equivalent Dhall alone is insufficient for an idempotent Helm rollout.",
+  "frozen_source_identity": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"65babb8610f454bd380effe319aa7c9b04bf6a3a6d5435da9c925d960ecbc210\", sourceManifestEntryCount = 1524},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"7bb68f2b417a5fcf8dfdcd8192e1b7fa7ac9c8a16963c852ee71b47f97c17913\", sourceManifestEntryCount = 1461})",
+  "frozen_driver_sha256": "84874eb1faa1839a9b10adf68f6996b6948b041ab5cc45bcf92c8e8bee6bc866",
+  "frozen_artifact_index": ".build/sprint-6.5/rpc-coordinator-20261025/held-authority-chart-checksum-frozen-1.json",
+  "counter": {
+    "scope": "Offline provisional template counter: equivalent registration produces different raw config and unnecessary StatefulSet rollout checksum. Four actual owned Helm renders; not a deployed regression or qualification claim.",
+    "native_result": "held-authority-chart-native-before-2.result.json",
+    "records": [
+      {
+        "generation": 1,
+        "object_count": 8,
+        "differing_objects": [
+          [
+            "ConfigMap",
+            "lifecycle-authority",
+            "lifecycle-authority-config"
+          ],
+          [
+            "StatefulSet",
+            "lifecycle-authority",
+            "lifecycle-authority"
+          ]
+        ],
+        "held_role_config_checksum": "e1da977186ba7a97a8872f440c4710ff3c8a57622c9c4d3d54e8407fadb5b9d2",
+        "canonical_role_config_checksum": "11028d70b84a1fe2d854b52dbefbbd6eb4251fe7bcff76a7b0b678955645316f",
+        "all_other_statefulset_fields_equal": true
+      },
+      {
+        "generation": 2,
+        "object_count": 8,
+        "differing_objects": [
+          [
+            "ConfigMap",
+            "lifecycle-authority",
+            "lifecycle-authority-config"
+          ],
+          [
+            "StatefulSet",
+            "lifecycle-authority",
+            "lifecycle-authority"
+          ]
+        ],
+        "held_role_config_checksum": "cbb82202041121edc99f9bf59f9166bfb104e214b3df56b2f33f2645d088d51c",
+        "canonical_role_config_checksum": "d065c3f916ec1636e37039f2988d609ee20faee21f994a0cde028fb08d828bd5",
+        "all_other_statefulset_fields_equal": true
+      }
+    ]
+  },
+  "expected_replacement": "Retain the exact canonical renderer inputs and render the desired role through that renderer; match every canonical values field and all actual Helm objects/checksums without reloading inputs.",
+  "unchanged_profile": {
+    "parent_memory_max_bytes": 5368709120,
+    "parent_swap_max_bytes": 0,
+    "parent_tasks_max": 64,
+    "child_memory_max_bytes": 67108864,
+    "child_tasks_max": 32,
+    "child_cpu_usec_per_sec": 1000000,
+    "helper_memory_max_bytes": 16777216,
+    "helper_tasks_max": 8,
+    "helper_cpu_usec_per_sec": 1000000,
+    "helper_start_stop_usec": [
+      30000,
+      30000
+    ],
+    "total_usec": 1000000,
+    "grace_usec": 50000,
+    "confirmation_usec": 150000,
+    "settlement_usec": 50000,
+    "stdout_stderr_bytes": [
+      65536,
+      65536
+    ]
+  },
+  "boundary": "Explicit diagnostic wire limits do not establish host placement/concurrency admission or a production resource envelope."
+}

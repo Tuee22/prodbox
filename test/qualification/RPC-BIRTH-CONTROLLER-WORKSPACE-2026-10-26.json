@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "name": "RPC-BIRTH-CONTROLLER-WORKSPACE-2026-10-26",
+  "status": "partial; healthy control fails",
+  "private_evidence": ".build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-runtime-directory-progress-1.json",
+  "frozen_counter": ".build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-rollout-parent-death-counter-1.json",
+  "fixed_diagnostic_profile": {
+    "outer_seconds": 50,
+    "work_seconds": 40,
+    "hard_seconds": 42,
+    "stop_seconds": 45,
+    "finish_seconds": 47,
+    "slice_mib": 256,
+    "parent_mib": 176,
+    "heap_mib": 128,
+    "child_mib": 64,
+    "helper_mib": 16,
+    "cpu_milli": 700,
+    "tasks": 56
+  },
+  "result": {
+    "frozen_controller_death": "fails: actual staged credential/chart workspace survives terminal process family",
+    "replacement_controller_death": "passes: held child group retired, all five manager roles absent, actual workspace absent in 42.04 seconds",
+    "replacement_healthy": "fails: deadline after first Helm status; BirthPrepared, six frames, no apply/commit"
+  },
+  "inputs": [
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-runtime-directory-inputs-1/src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+      "sha256": "b81984d8f1381654fa02d445780bdcab575325a118106baff2bad9b23f88df77"
+    },
+    {
+      "path": "src/Prodbox/Subprocess.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-runtime-directory-inputs-1/src/Prodbox/Subprocess.hs",
+      "sha256": "9ed578f0c4e017d4a3d5666771a60f88f9b5f775ef49c8cd02fa41e7c1c3b291"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/KernelScope.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-runtime-directory-inputs-1/src/Prodbox/Subprocess/KernelScope.hs",
+      "sha256": "867c19448c6882b3da62a6d735cb5265f33f7243e2ecf71dcb3f1aff2769630f"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdBus.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-runtime-directory-inputs-1/src/Prodbox/Subprocess/SystemdBus.hs",
+      "sha256": "5dd80095b063a73e59482bbae224dceb4314f4e642083a9c830bea97a1666013"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-runtime-directory-inputs-1/src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "sha256": "83b53baf0446afe195c9c6d4efcea8a7e16b00448f1210dfb155a608d1e13630"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-rollout-native-1/Main.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-runtime-directory-inputs-1/.build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-rollout-native-1/Main.hs",
+      "sha256": "a3d4395dbc5c08b433a0b84202ff0c11aec2dee017070980a7b1fcb96fb68f5c"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-rollout-native-1/HostFixture.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-runtime-directory-inputs-1/.build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-rollout-native-1/HostFixture.hs",
+      "sha256": "5071f449678340c12981f882b9e8a643ba40d2cfb113c63697713b1e3ec1ac6c"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-rollout-native-1/driver",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-runtime-directory-inputs-1/.build/sprint-6.5/rpc-coordinator-20261025/rpc-birth-rollout-native-1/driver",
+      "sha256": "ed18d5ad7b28e891f9e316da39cab7fecbd5c184ca6bd5e6203e0906bac57f9b"
+    }
+  ],
+  "open": [
+    "Healthy control stalls after first Helm status and returns RpcBirthRolloutDeadlineReached at 42.03 seconds with BirthPrepared and six original-bound frames; no apply/commit.",
+    "Preserve the owned-child cause when remainingWork is rechecked after a refusal; attribute the settlement delay before changing the fixed profile.",
+    "Unicode output conversion change requires an actual native non-ASCII journal-path control.",
+    "Runtime-directory mode/preservation refusal controls and original five-second host controls remain owed.",
+    "Closed production launcher, recovery, remaining faults, complete canonical gate, current identity qualification."
+  ]
+}

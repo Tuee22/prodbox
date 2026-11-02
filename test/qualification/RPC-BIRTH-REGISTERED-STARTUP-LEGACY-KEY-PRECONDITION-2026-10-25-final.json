@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "counterexample": "RPC-BIRTH-REGISTERED-STARTUP-LEGACY-KEY-PRECONDITION-2026-10-25",
+  "owning_sprint": "6.5",
+  "recorded_utc": "2026-10-25T08:43:37.845143+00:00",
+  "scope": "Final getter-corrected local implementation validation. No successful full cold runtime, physical backup/restore or deployment claim.",
+  "original_banking_record": "RPC-BIRTH-REGISTERED-STARTUP-LEGACY-KEY-PRECONDITION-2026-10-25.json",
+  "evidence_correction": "The intermediate replacement executable referenced by the original banking record was overwritten during a final getter-only rebuild. Its original command/result and hash remain historical; that exact replacement executable is not retained. The original failing executable and identical probe source remain intact. This follow-up records the final replacement independently and does not edit or relabel the original banking metadata.",
+  "frozen_binary_sha256": "15f3cc3c9650599500c7e24a106a2dd16bc73eba0ab1ff1a1aeeda106813cf5d",
+  "replacement": {
+    "preserved_binary": ".build/sprint-6.5/rpc-cold-start-20261025/replacement-startup-order-ba52cff604753658",
+    "binary_sha256": "ba52cff6047536586ee4ad5cae2cd79a3658df5c49c663a0c2d2fa834af79e93",
+    "probe_source_sha256": "b1e5041ada37adb3f724623dbe39584a19bcbed6364ddae3440c307f0a99b478",
+    "full_manifest": "a2ff301492a7df3fad5e50cee4eff41de8fcad80b8f4d62743512c361f0b7bd5",
+    "executable_manifest": "1e9776c7577a251cd968faa09c9c4dc478c3c6796f47a259899de17194dd9350",
+    "source_capture_note": "Captured while all-target2 ran and again after it completed; source remained fixed.",
+    "semantic_exit": 0,
+    "wall_seconds": 0.13808501604944468,
+    "focused_cases": 120
+  },
+  "validation": {
+    "warning_clean_all_test_targets_exit": 0,
+    "warning_clean_wall_seconds": 186.38169171614572,
+    "trust_limit_record_update_before_compile_exit": 0,
+    "trust_limit_record_update_after_compile_exit": 1,
+    "trust_limit_getter_read_compile_exit": 0,
+    "record": ".build/sprint-6.5/rpc-cold-start-20261025/validation-progress.json"
+  },
+  "deployment_qualification": "pending",
+  "qualified_cycles": 0,
+  "hand_actions": []
+}

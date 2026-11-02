@@ -14,6 +14,7 @@ module Prodbox.Config.LocalRke2RecoveryState.Internal
   , withObservedLocalRke2RecoveryHealthyInternal
   , renderLocalRke2RecoveryStateError
   , observeLocalRke2RecoveryState
+  , observeLocalRke2RecoveryStateInOperation
   , LocalRke2RecoveryStateFixtureRegression
   , fixedLocalRke2RecoveryStateFixtureRegression
   , localRke2RecoveryFixtureAcceptedViews
@@ -29,12 +30,14 @@ module Prodbox.Config.LocalRke2RecoveryState.Internal
 where
 
 import Control.Exception (IOException, try)
+import Data.ByteString.Char8 qualified as ByteStringChar8
 import Data.Char (digitToInt, isDigit)
 import Data.List.NonEmpty (NonEmpty)
 import Data.List.NonEmpty qualified as NonEmpty
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
+import GHC.Clock (getMonotonicTimeNSec)
 import Prodbox.Error (AppError, errorMsg, fatalError)
 import Prodbox.Lifecycle.HostCleanupRke2
   ( LocalRke2InstallMarker
@@ -43,10 +46,19 @@ import Prodbox.Lifecycle.HostCleanupRke2
   )
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
+  , OperationSubprocessError
+  , OperationSubprocesses
   , ProcessOutput (..)
   , Subprocess (..)
+  , captureOperationCommandWithCeilingsBefore
   , captureSubprocessBounded
+  , operationProcessExitCode
+  , operationProcessStderr
+  , operationProcessStdout
+  , operationSubprocessWindow
+  , verifyOperationSubprocessesBeforeEffect
   )
+import Prodbox.Subprocess.SystemdIdentity (hostExecutionWorkEnd)
 import System.Exit (ExitCode (..))
 import System.IO.Error (isDoesNotExistError)
 import System.Posix.Files (FileStatus, getSymbolicLinkStatus)
@@ -96,6 +108,7 @@ data LocalRke2RecoveryStateError
   = LocalRke2RecoveryStateUnobservable
       !(NonEmpty LocalRke2RecoveryObservationFailure)
   | LocalRke2RecoveryStateContradictory !LocalRke2RecoveryContradiction
+  | LocalRke2RecoveryStateOperationRefused !OperationSubprocessError
   deriving (Eq, Show)
 
 localRke2RecoveryStateView
@@ -124,6 +137,8 @@ renderLocalRke2RecoveryStateError err = case err of
   LocalRke2RecoveryStateContradictory contradiction ->
     "local RKE2 recovery observations contradict one another: "
       <> renderContradiction contradiction
+  LocalRke2RecoveryStateOperationRefused cause ->
+    "local RKE2 recovery operation refused: " <> boundedDetail (Text.pack (show cause))
 
 renderObservationFailure :: LocalRke2RecoveryObservationFailure -> Text
 renderObservationFailure failure =
@@ -202,6 +217,59 @@ observeLocalRke2RecoveryState
   :: IO (Either LocalRke2RecoveryStateError LocalRke2RecoveryState)
 observeLocalRke2RecoveryState =
   observeWithBoundary productionObservationBoundary
+
+-- | The same closed host observation under the original operation. Both
+-- commands borrow its one command lane and may only tighten its work deadline.
+-- The closing check prevents marker reads from yielding a positive state after
+-- the original owner has expired or closed.
+observeLocalRke2RecoveryStateInOperation
+  :: OperationSubprocesses
+  -> IO (Either LocalRke2RecoveryStateError LocalRke2RecoveryState)
+observeLocalRke2RecoveryStateInOperation owned = do
+  admitted <- verifyOperationSubprocessesBeforeEffect owned
+  case admitted of
+    Left cause -> pure (Left (LocalRke2RecoveryStateOperationRefused cause))
+    Right () -> do
+      observed <- observeWithBoundary (operationObservationBoundary owned)
+      closing <- verifyOperationSubprocessesBeforeEffect owned
+      pure $ case closing of
+        Left cause -> Left (LocalRke2RecoveryStateOperationRefused cause)
+        Right () -> observed
+
+operationObservationBoundary
+  :: OperationSubprocesses -> LocalRke2RecoveryObservationBoundary IO
+operationObservationBoundary owned =
+  LocalRke2RecoveryObservationBoundary
+    { observeInstallFact = observeProductionInstall
+    , observeServiceFact =
+        classifyServiceProcess <$> captureOperationObservation owned serviceObservationProcess
+    , observeApiFact =
+        classifyApiProcess <$> captureOperationObservation owned apiObservationProcess
+    }
+
+captureOperationObservation
+  :: OperationSubprocesses -> Subprocess -> IO (Either AppError ProcessOutput)
+captureOperationObservation owned process = do
+  now <- getMonotonicTimeNSec
+  let originalEnd = hostExecutionWorkEnd (operationSubprocessWindow owned)
+      timeoutNs = toInteger (boundedSubprocessTimeoutMicros observationLimits) * 1000
+      end = fromInteger (min (toInteger originalEnd) (toInteger now + timeoutNs))
+  attempted <-
+    captureOperationCommandWithCeilingsBefore
+      (boundedSubprocessMaximumStdoutBytes observationLimits)
+      (boundedSubprocessMaximumStderrBytes observationLimits)
+      end
+      owned
+      process
+  pure $ case attempted of
+    Left cause -> Left (fatalError (Text.pack (show cause)))
+    Right output ->
+      Right
+        ProcessOutput
+          { processExitCode = operationProcessExitCode output
+          , processStdout = ByteStringChar8.unpack (operationProcessStdout output)
+          , processStderr = ByteStringChar8.unpack (operationProcessStderr output)
+          }
 
 productionObservationBoundary :: LocalRke2RecoveryObservationBoundary IO
 productionObservationBoundary =

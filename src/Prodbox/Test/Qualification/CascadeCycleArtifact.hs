@@ -36,6 +36,7 @@ import Prodbox.Test.Qualification.CascadeCycleIdentity
   ( CycleAnnotations (..)
   , CycleIdentityParts (..)
   , IdentityKey
+  , generatedConfigDigestFromParts
   , identityKeyOfParts
   , identityKeyText
   , imageSetDigest
@@ -88,7 +89,7 @@ cycleLabelText (CycleLabel value) = value
 -- Fields and facts ------------------------------------------------------------------
 
 cascadeArtifactFormatVersion :: Text
-cascadeArtifactFormatVersion = "2"
+cascadeArtifactFormatVersion = "3"
 
 -- | Everything a writer supplies. The frozen lines are the superseded-side and
 -- counterexample facts, which the cycle runner owns; the codec carries them in
@@ -111,6 +112,7 @@ data CascadeArtifactFields = CascadeArtifactFields
   -- ^ Provenance of this run's own plan. They name the run, so they differ
   -- between cycles and are never part of the identity.
   , fieldsInForceConfigDigest :: !Text
+  , fieldsRpcRegistrationDigest :: !PublicEvidenceDigest
   , fieldsFrozenLines :: ![(Text, Text)]
   , fieldsAggregateSucceeded :: !Bool
   , fieldsResidueAbsent :: !Bool
@@ -141,6 +143,8 @@ data ArtifactFact = ArtifactFact
   , factRunScopedTopologyDigest :: !Text
   , factRunScopedWiringDigest :: !Text
   , factInForceConfigDigest :: !Text
+  , factRpcRegistrationDigest :: !(Maybe PublicEvidenceDigest)
+  -- ^ Historical format-two artifacts did not cover the independent pin.
   , factSucceeded :: !Bool
   -- ^ The three success flags, which agree.
   , factLifecycleResult :: !Text
@@ -159,6 +163,7 @@ data ArtifactDefect
   | ArtifactImageInventoryMismatch
   | ArtifactIdentityUnparsable !Text
   | ArtifactIdentityKeyDisagrees
+  | ArtifactGeneratedConfigDisagrees
   deriving stock (Eq, Show)
 
 -- | One file per label. The name is a function of the label alone, so a later
@@ -222,6 +227,7 @@ renderCascadeArtifact fields = do
     , line "run_scoped_topology_digest" (fieldsRunScopedTopologyDigest fields)
     , line "run_scoped_wiring_digest" (fieldsRunScopedWiringDigest fields)
     , line "in_force_config_digest" (fieldsInForceConfigDigest fields)
+    , digestLine "rpc_registration_config_digest" (fieldsRpcRegistrationDigest fields)
     , line "annotation_git_head" (annotationGitHead annotations)
     , line "annotation_worktree" (renderWorktree (annotationWorktree annotations))
     , line "annotation_full_manifest_digest" (annotationFullManifestDigest annotations)
@@ -266,7 +272,7 @@ attestCascadeArtifact text = do
         raw <- single key
         maybe (unparsable key) Right (readNatural raw)
   version <- single "format_version"
-  if version == cascadeArtifactFormatVersion
+  if version == cascadeArtifactFormatVersion || version == "2"
     then Right ()
     else Left (ArtifactFormatUnsupported version)
   labelText <- single "cycle"
@@ -282,6 +288,17 @@ attestCascadeArtifact text = do
   provenanceRaw <- single "replacement_git_provenance"
   provenance <- parseProvenance provenanceRaw
   generatedConfig <- digestAt "replacement_generated_config_digest"
+  registration <-
+    if version == cascadeArtifactFormatVersion
+      then do
+        pin <- digestAt "rpc_registration_config_digest"
+        parameters <- digestAt "in_force_config_digest"
+        if generatedConfigDigestFromParts parameters pin == generatedConfig
+          then Right (Just pin)
+          else Left ArtifactGeneratedConfigDisagrees
+      else case [value | (name, value) <- pairs, name == "rpc_registration_config_digest"] of
+        [] -> Right Nothing
+        _ -> Left (ArtifactLineMalformed "rpc_registration_config_digest")
   topologyWiring <- digestAt "replacement_topology_wiring_shape_digest"
   resourceEnvelope <- digestAt "replacement_resource_envelope_digest"
   loadFault <- digestAt "replacement_load_fault_digest"
@@ -363,6 +380,7 @@ attestCascadeArtifact text = do
       , factRunScopedTopologyDigest = topologyRun
       , factRunScopedWiringDigest = wiringRun
       , factInForceConfigDigest = inForce
+      , factRpcRegistrationDigest = registration
       , factSucceeded = succeeded
       , factLifecycleResult = lifecycleResult
       , factFrozenLines = [pair | pair@(name, _) <- pairs, name `notElem` codecOwnedKeys]
@@ -436,6 +454,7 @@ codecOwnedKeys =
   , "run_scoped_topology_digest"
   , "run_scoped_wiring_digest"
   , "in_force_config_digest"
+  , "rpc_registration_config_digest"
   , "annotation_git_head"
   , "annotation_worktree"
   , "annotation_full_manifest_digest"

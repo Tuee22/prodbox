@@ -24,10 +24,16 @@ module Prodbox.Lifecycle.Authority.Admission
   , initialCleanInstallAuthorityWithRegisteredClients
   , initialMigratingAuthorityWithRegisteredClients
   , authorityAggregateAdmission
+  , authorityAggregateAuthenticationEpoch
   , authorityAggregateMigration
   , authorityAggregateSubmissionLedger
   , authorityAggregateRetainedCapacity
   , authorityAggregateRegisteredClients
+  , authorityAggregateRpcKeyRegistry
+  , AuthorityRpcRegistrationError (..)
+  , seedAuthorityRpcKeyRegistry
+  , enrollAuthorityRpcKey
+  , retireAuthorityRpcKey
   , authorityAggregatePulumiCheckpoints
   , authorityAggregateConfig
   , authorityAggregateDecommission
@@ -71,6 +77,7 @@ module Prodbox.Lifecycle.Authority.Admission
   , authorityControlRouteTag
   , authorityControlRouteIssuedCommandTag
   , authorityControlRoutesIssueCascadeAuditFreeze
+  , authorityAdmissionCommandRefusalToken
 
     -- * Operation submission
   , AuthoritySubmissionDecision (..)
@@ -126,6 +133,23 @@ import Numeric.Natural (Natural)
 import Prodbox.Ses.InviteEvidence (retiredInviteMailEvidence)
 
 import Prodbox.ControlPlane.CallerPrincipal (CallerPrincipal)
+import Prodbox.ControlPlane.Coordinate (AuthorityScope)
+import Prodbox.ControlPlane.RequestAuthentication (SigningKeyGeneration)
+import Prodbox.ControlPlane.RpcClientRegistration
+  ( RpcClientRegistrationError
+  , projectRpcRegisteredClients
+  , rpcClientRegistryIsCompleteSeed
+  , validateRpcRegisteredClients
+  )
+import Prodbox.ControlPlane.RpcKeyRegistry
+  ( RpcKeyRegistry
+  , RpcKeyRegistryError
+  , RpcObservedKey
+  , registerRpcKey
+  , retireRpcKey
+  , rpcKeyRegistryScope
+  )
+import Prodbox.Lifecycle.Authority.AdmissionGate (AuthoritySubmissionGateRefusal (..))
 import Prodbox.Lifecycle.Authority.BackupRepair
   ( BackupRepairCommand
   , BackupRepairDecision
@@ -144,9 +168,12 @@ import Prodbox.Lifecycle.Authority.ClientRegistry
   , mkRegisteredClientTable
   , observeRegisteredSubmission
   , registeredClientIdForCaller
+  , registeredClientMaximumReservations
   , registeredClientReservationBindings
   , registeredClientReservationEntries
   , registeredClientTableConfigurationMatches
+  , registeredClientTableRequiresRpcRegistry
+  , registeredClientTableSpecifications
   , reserveRegisteredSubmission
   , validateRegisteredClientTable
   )
@@ -164,31 +191,48 @@ import Prodbox.Lifecycle.Authority.Config
   , stepConfigPropose
   , validateConfigState
   )
+import Prodbox.Lifecycle.Authority.EpochPromotion
+  ( epochPromotionPredecessorEpoch
+  , epochPromotionTargetEpoch
+  )
+import Prodbox.Lifecycle.Authority.EpochPromotionObservation
+  ( EpochPromotionObservation
+  , EpochPromotionObservationError
+  , observeEpochPromotion
+  , renderEpochPromotionObservationError
+  )
 import Prodbox.Lifecycle.Authority.Genesis
   ( AuthorityAdmissionState (..)
   , AuthorityEpoch
   , AuthorityGenesisCommand
   , GenesisDecision
   , authorityEpochFromValue
+  , authorityEpochGenesis
   , authorityEpochValue
   , initialGenesisState
   , stepGenesis
   )
 import Prodbox.Lifecycle.Authority.Migration
   ( MigrationAuthorityStatus (..)
+  , MigrationCodecError
   , MigrationCommand
   , MigrationDecision (..)
-  , MigrationForwardCommand
-  , MigrationForwardDecision
+  , MigrationForwardCommand (..)
+  , MigrationForwardDecision (..)
+  , MigrationForwardRefusal (ForwardMigrationEpochMustAdvance)
   , MigrationImportCommand
   , MigrationImportDecision
   , MigrationState
   , initialImportingMigrationState
   , migrationAuthorityStatus
+  , migrationCommittedEpoch
+  , migrationEpochPromotion
   , migrationEpochValue
+  , migrationNormalAdmissionEpoch
   , stepForwardMigration
   , stepMigration
   , stepMigrationImport
+  , validateMigrationState
   )
 import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch
   ( ProviderAdmissionEpochView
@@ -456,6 +500,7 @@ data AuthorityAdmissionAggregate = AuthorityAdmissionAggregate
   , authorityAggregatePulumiCheckpoints :: !AuthorityPulumiCheckpoints
   , authorityAggregateConfig :: !ConfigState
   , authorityAggregateDecommission :: !AuthorityDecommissionState
+  , internalAuthorityAggregateRpcKeyRegistry :: !(Maybe RpcKeyRegistry)
   , internalAuthorityAggregateProviderAdmissionEpoch
       :: !ProviderAdmissionEpoch
   }
@@ -465,10 +510,12 @@ data AuthorityAdmissionAggregate = AuthorityAdmissionAggregate
 -- encodes a single-constructor product as a constructor tag followed by its
 -- fields, so v6 has list length 11 and v7 has list length 12.  The missing
 -- v6 field is never guessed as generation one: it becomes the explicit
--- fail-closed legacy-unbound state.
+-- fail-closed legacy-unbound state. Registered RPC state appends one field
+-- (list length 13); unregistered aggregates keep their original bytes.
 instance Serialise AuthorityAdmissionAggregate where
   encode aggregate =
-    Cbor.encodeListLen 12
+    Cbor.encodeListLen
+      (case internalAuthorityAggregateRpcKeyRegistry aggregate of Nothing -> 12; Just _ -> 13)
       <> Cbor.encodeWord 0
       <> encode (authorityAggregateAdmission aggregate)
       <> encode (authorityAggregateMigration aggregate)
@@ -481,11 +528,14 @@ instance Serialise AuthorityAdmissionAggregate where
       <> encode (authorityAggregateConfig aggregate)
       <> encode (authorityAggregateDecommission aggregate)
       <> encode (internalAuthorityAggregateProviderAdmissionEpoch aggregate)
+      <> case internalAuthorityAggregateRpcKeyRegistry aggregate of
+        Nothing -> mempty
+        Just registry -> encode registry
 
   decode = do
     encodedFields <- Cbor.decodeListLen
-    unless (encodedFields == 11 || encodedFields == 12) $
-      fail "AuthorityAdmissionAggregate: expected v6 or v7 field count"
+    unless (encodedFields == 11 || encodedFields == 12 || encodedFields == 13) $
+      fail "AuthorityAdmissionAggregate: expected v6, v7 or registered RPC field count"
     constructorTag <- Cbor.decodeWord
     unless (constructorTag == (0 :: Word)) $
       fail "AuthorityAdmissionAggregate: unknown constructor tag"
@@ -503,6 +553,9 @@ instance Serialise AuthorityAdmissionAggregate where
       if encodedFields == 11
         then pure initialLegacyProviderAdmissionEpochInternal
         else decode
+    rpcKeyRegistry <- case encodedFields of
+      13 -> Just <$> decode
+      _ -> pure Nothing
     pure
       AuthorityAdmissionAggregate
         { authorityAggregateAdmission = admission
@@ -515,6 +568,7 @@ instance Serialise AuthorityAdmissionAggregate where
         , authorityAggregatePulumiCheckpoints = checkpoints
         , authorityAggregateConfig = config
         , authorityAggregateDecommission = decommission
+        , internalAuthorityAggregateRpcKeyRegistry = rpcKeyRegistry
         , internalAuthorityAggregateProviderAdmissionEpoch =
             providerAdmissionEpoch
         }
@@ -542,6 +596,10 @@ data AuthorityAdmissionInvariantError
   | AuthorityDecommissionBindingDigestInvalid
   | AuthorityProviderAdmissionEpochInvalid !ProviderAdmissionEpochError
   | AuthorityProviderOperationReservationMissing !ClientId !ClientSequence
+  | AuthorityRpcRegistrationMissing
+  | AuthorityRpcRegistrationRuntimeMismatch
+  | AuthorityRpcClientRegistrationInvalid !RpcClientRegistrationError
+  | AuthorityMigrationInvariant !MigrationCodecError
   deriving stock (Eq, Show)
 
 initialCleanInstallAuthority
@@ -616,9 +674,117 @@ initialAuthorityWithRegisteredClients migration liveCapacity retainedCapacity re
               initialAuthorityPulumiCheckpoints
           , authorityAggregateConfig = initialConfigState
           , authorityAggregateDecommission = AuthorityServing
+          , internalAuthorityAggregateRpcKeyRegistry = Nothing
           , internalAuthorityAggregateProviderAdmissionEpoch =
               initialLegacyProviderAdmissionEpochInternal
           }
+
+authorityAggregateRpcKeyRegistry :: AuthorityAdmissionAggregate -> Maybe RpcKeyRegistry
+authorityAggregateRpcKeyRegistry = internalAuthorityAggregateRpcKeyRegistry
+
+data AuthorityRpcRegistrationError
+  = AuthorityRpcRegistrationInvariant !AuthorityAdmissionInvariantError
+  | AuthorityRpcRegistryInvalid !RpcKeyRegistryError
+  | AuthorityRpcClientProjectionInvalid !RpcClientRegistrationError
+  | AuthorityRpcRegistrationAlreadyBound
+  | AuthorityRpcRegistrationUnbound
+  | AuthorityRpcRegistrationSeedRequired
+  | AuthorityRpcRegistrationScopeMismatch
+  | AuthorityRpcRegistrationNotQuiesced
+  | AuthorityRpcRegistrationLiveOperations
+  | AuthorityRpcRegistrationDecommissioned
+  deriving stock (Eq, Show)
+
+-- These pure transitions are not an origin attestation or a public registration
+-- route. Physical admission must observe source custody before submitting CAS.
+seedAuthorityRpcKeyRegistry
+  :: AuthorityScope
+  -> RpcKeyRegistry
+  -> AuthorityAdmissionAggregate
+  -> Either AuthorityRpcRegistrationError AuthorityAdmissionAggregate
+seedAuthorityRpcKeyRegistry expectedScope registry aggregate = do
+  requireRpcRegistrationQuiescence aggregate
+  unless (rpcKeyRegistryScope registry == expectedScope) (Left AuthorityRpcRegistrationScopeMismatch)
+  unless (rpcClientRegistryIsCompleteSeed registry) (Left AuthorityRpcRegistrationSeedRequired)
+  case internalAuthorityAggregateRpcKeyRegistry aggregate of
+    Just existing
+      | existing == registry -> Right aggregate
+      | otherwise -> Left AuthorityRpcRegistrationAlreadyBound
+    Nothing -> installRpcRegistry registry aggregate
+
+enrollAuthorityRpcKey
+  :: RpcObservedKey
+  -> AuthorityAdmissionAggregate
+  -> Either AuthorityRpcRegistrationError AuthorityAdmissionAggregate
+enrollAuthorityRpcKey observed aggregate = do
+  requireRpcRegistrationQuiescence aggregate
+  previous <-
+    maybe
+      (Left AuthorityRpcRegistrationUnbound)
+      Right
+      (internalAuthorityAggregateRpcKeyRegistry aggregate)
+  (_, registry) <- first AuthorityRpcRegistryInvalid (registerRpcKey observed previous)
+  installRpcRegistry registry aggregate
+
+retireAuthorityRpcKey
+  :: CallerPrincipal
+  -> SigningKeyGeneration
+  -> AuthorityAdmissionAggregate
+  -> Either AuthorityRpcRegistrationError AuthorityAdmissionAggregate
+retireAuthorityRpcKey caller generation aggregate = do
+  requireRpcRegistrationQuiescence aggregate
+  previous <-
+    maybe
+      (Left AuthorityRpcRegistrationUnbound)
+      Right
+      (internalAuthorityAggregateRpcKeyRegistry aggregate)
+  registry <- first AuthorityRpcRegistryInvalid (retireRpcKey caller generation previous)
+  installRpcRegistry registry aggregate
+
+requireRpcRegistrationQuiescence
+  :: AuthorityAdmissionAggregate -> Either AuthorityRpcRegistrationError ()
+requireRpcRegistrationQuiescence aggregate = do
+  first AuthorityRpcRegistrationInvariant (validateCurrentAggregate aggregate)
+  unless
+    (authorityAggregateDecommission aggregate == AuthorityServing)
+    (Left AuthorityRpcRegistrationDecommissioned)
+  case authorityAggregateMigration aggregate of
+    AuthorityCleanInstall -> case authorityAggregateAdmission aggregate of
+      GenesisFrozen -> Right ()
+      EstablishingBackup _ -> Left AuthorityRpcRegistrationNotQuiesced
+      BackupEstablished {} -> Left AuthorityRpcRegistrationNotQuiesced
+      BackupRepairFrozen {} -> Left AuthorityRpcRegistrationNotQuiesced
+    AuthorityMigrationControlled migration ->
+      unless
+        (migrationAuthorityStatus migration == MigrationWritersQuiesced)
+        (Left AuthorityRpcRegistrationNotQuiesced)
+  unless
+    (liveSubmissionCount (authorityAggregateSubmissionLedger aggregate) == 0)
+    (Left AuthorityRpcRegistrationLiveOperations)
+
+installRpcRegistry
+  :: RpcKeyRegistry
+  -> AuthorityAdmissionAggregate
+  -> Either AuthorityRpcRegistrationError AuthorityAdmissionAggregate
+installRpcRegistry registry aggregate = do
+  maximumReservations <- case registeredClientTableSpecifications (authorityAggregateRegisteredClients aggregate) of
+    [] -> Left AuthorityRpcRegistrationSeedRequired
+    spec : _ -> Right (registeredClientMaximumReservations spec)
+  clients <-
+    first
+      AuthorityRpcClientProjectionInvalid
+      ( projectRpcRegisteredClients
+          maximumReservations
+          registry
+          (authorityAggregateRegisteredClients aggregate)
+      )
+  let next =
+        aggregate
+          { internalAuthorityAggregateRpcKeyRegistry = Just registry
+          , authorityAggregateRegisteredClients = clients
+          }
+  first AuthorityRpcRegistrationInvariant (validateCurrentAggregate next)
+  pure next
 
 authorityAggregateSubmissionEpoch
   :: ClientId
@@ -851,6 +1017,15 @@ validateAuthorityAdmissionAggregate expectedLive expectedRetained aggregate
         (Left . AuthorityRegisteredClientInvariant)
         Right
         (validateRegisteredClientTable ledger (authorityAggregateRegisteredClients aggregate))
+      case internalAuthorityAggregateRpcKeyRegistry aggregate of
+        Nothing ->
+          unless
+            (not (registeredClientTableRequiresRpcRegistry (authorityAggregateRegisteredClients aggregate)))
+            (Left AuthorityRpcRegistrationMissing)
+        Just registry ->
+          first
+            AuthorityRpcClientRegistrationInvalid
+            (validateRpcRegisteredClients registry (authorityAggregateRegisteredClients aggregate))
       traverse_ validateRegisteredBinding registeredBindings
       either
         (Left . AuthorityPulumiCheckpointInvariant)
@@ -863,6 +1038,10 @@ validateAuthorityAdmissionAggregate expectedLive expectedRetained aggregate
         Right
         (validateConfigState (authorityAggregateConfig aggregate))
       validateDecommissionBinding (authorityAggregateDecommission aggregate)
+      case authorityAggregateMigration aggregate of
+        AuthorityCleanInstall -> Right ()
+        AuthorityMigrationControlled migration ->
+          either (Left . AuthorityMigrationInvariant) Right (validateMigrationState migration)
       either
         (Left . AuthorityProviderAdmissionEpochInvalid)
         Right
@@ -924,6 +1103,9 @@ validateAuthorityAdmissionAggregateWithRegisteredClients
   expectedRegisteredClients
   aggregate = do
     validateAuthorityAdmissionAggregate expectedLive expectedRetained aggregate
+    unless
+      (internalAuthorityAggregateRpcKeyRegistry aggregate == Nothing)
+      (Left AuthorityRpcRegistrationRuntimeMismatch)
     if registeredClientTableConfigurationMatches
       expectedRegisteredClients
       (authorityAggregateRegisteredClients aggregate)
@@ -937,20 +1119,6 @@ submissionKeySet ledger =
     | (client, submissions) <- Map.toList (submissionClients ledger)
     , seqNo <- Map.keys (clientRecords submissions)
     ]
-
-data AuthoritySubmissionGateRefusal
-  = AuthorityGenesisFrozen
-  | AuthorityGenesisEstablishing
-  | AuthorityBackupRepairFrozen
-  | AuthorityDecommissionAdmissionFrozen
-  | AuthorityDecommissionPermanentlyStopped
-  | AuthorityLegacyWriterActive
-  | AuthorityMigrationWritersQuiesced
-  | AuthorityProviderAdmissionCascadeFrozen
-  | AuthorityProviderAdmissionCredentialRevoked
-  | AuthorityProviderAdmissionCredentialMutationPending
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (Serialise)
 
 -- | The epoch that may admit a fresh operation.  It comes only from the
 -- retained genesis/repair state.  Migration is a writer gate, never a second
@@ -973,7 +1141,11 @@ activeAuthorityEpoch aggregate =
             case migrationAuthorityStatus migration of
               MigrationLegacyWriterActive -> Left AuthorityLegacyWriterActive
               MigrationWritersQuiesced -> Left AuthorityMigrationWritersQuiesced
-              MigrationReplacementWriterActive _ -> Right epoch
+              MigrationReplacementWriterActive _ ->
+                case migrationNormalAdmissionEpoch migration of
+                  Just admitted
+                    | fromIntegral (migrationEpochValue admitted) == authorityEpochValue epoch -> Right epoch
+                  _ -> Left AuthorityMigrationWritersQuiesced
 
 -- | A config proposal shares the exact admission gate and retained revision
 -- with operation submission.  The epoch is intentionally not copied into the
@@ -1094,6 +1266,7 @@ data AuthorityAdmissionCommand
       !CascadeAuditFreezeBinding
   | ObserveProviderAdmissionRecovery !CascadeAuditFreezeBinding
   | ObserveProviderBootstrapPredecessor
+  | ObserveAuthorityEpochPromotion
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -1117,6 +1290,7 @@ data AuthorityAdmissionCommandTag
   | FreezeProviderAdmissionAtGenerationTag
   | ObserveProviderAdmissionRecoveryTag
   | ObserveProviderBootstrapPredecessorTag
+  | ObserveAuthorityEpochPromotionTag
   deriving stock (Bounded, Enum, Eq, Ord, Show)
 
 -- | Total over the closed command universe, so a new command is an
@@ -1142,6 +1316,7 @@ authorityAdmissionCommandTag command = case command of
   ObserveProviderAdmissionRecovery _ ->
     ObserveProviderAdmissionRecoveryTag
   ObserveProviderBootstrapPredecessor -> ObserveProviderBootstrapPredecessorTag
+  ObserveAuthorityEpochPromotion -> ObserveAuthorityEpochPromotionTag
 
 -- | Sprint 4.85: the closed vocabulary of control transitions an authenticated
 -- caller may issue, as data.
@@ -1167,6 +1342,7 @@ data AuthorityControlRoute
   | AuthorityControlCascadeGenerationFreezeRoute
   | AuthorityControlProviderRecoveryObservationRoute
   | AuthorityControlProviderBootstrapPredecessorRoute
+  | AuthorityControlEpochPromotionObservationRoute
   deriving stock (Bounded, Enum, Eq, Ord, Show)
 
 authorityControlRouteTag :: AuthorityControlRoute -> Text
@@ -1189,6 +1365,7 @@ authorityControlRouteTag route = case route of
     "authority-control/observe-provider-admission-recovery"
   AuthorityControlProviderBootstrapPredecessorRoute ->
     "authority-control/observe-provider-bootstrap-predecessor"
+  AuthorityControlEpochPromotionObservationRoute -> "authority-control/observe-epoch-promotion"
 
 -- | Which aggregate command one externally admissible route issues.
 authorityControlRouteIssuedCommandTag
@@ -1211,6 +1388,7 @@ authorityControlRouteIssuedCommandTag route = case route of
   AuthorityControlProviderRecoveryObservationRoute ->
     ObserveProviderAdmissionRecoveryTag
   AuthorityControlProviderBootstrapPredecessorRoute -> ObserveProviderBootstrapPredecessorTag
+  AuthorityControlEpochPromotionObservationRoute -> ObserveAuthorityEpochPromotionTag
 
 -- | Does any externally admissible control route issue the Cascade-audit
 -- freeze?
@@ -1234,8 +1412,29 @@ data AuthorityAdmissionCommandRefusal
   | AuthorityMigrationBeforeGenesis
   | AuthorityMigrationDuringBackupRepair
   | AuthorityMigrationEpochRegressed !AuthorityEpoch !AuthorityEpoch
+  | AuthorityMigrationEpochPredecessorMismatch !AuthorityEpoch !Word
   | AuthorityProviderAdmissionRecoveryRefused !ProviderAdmissionRecoveryRefusal
+  | AuthorityMigrationPendingProviderOperations !Int
+  | AuthorityMigrationEpochNotAdvanced !AuthorityEpoch !AuthorityEpoch
+  | AuthorityEpochPromotionObservationRefused !EpochPromotionObservationError
   deriving stock (Eq, Show)
+
+authorityAdmissionCommandRefusalToken :: AuthorityAdmissionCommandRefusal -> Text
+authorityAdmissionCommandRefusalToken refusal = case refusal of
+  AuthorityProviderGenerationBindingRefused _ -> "provider-generation-binding-refused"
+  AuthorityProviderAdmissionFreezeRefused _ -> "provider-admission-freeze-refused"
+  AuthorityProviderAdmissionRecoveryRefused _ -> "provider-admission-recovery-refused"
+  AuthorityCascadeTerminalAuditRecordRefused _ -> "cascade-terminal-audit-record-refused"
+  AuthorityCascadeCredentialRevokeRefused _ -> "cascade-credential-revoke-refused"
+  AuthorityMigrationBeforeGenesis -> "before-genesis"
+  AuthorityMigrationDuringBackupRepair -> "during-backup-repair"
+  AuthorityMigrationAlreadyStarted -> "already-started"
+  AuthorityMigrationNotStarted -> "not-started"
+  AuthorityMigrationEpochRegressed {} -> "epoch-regressed"
+  AuthorityMigrationEpochPredecessorMismatch {} -> "epoch-predecessor-mismatch"
+  AuthorityMigrationPendingProviderOperations _ -> "pending-provider-operations"
+  AuthorityMigrationEpochNotAdvanced {} -> "epoch-not-advanced"
+  AuthorityEpochPromotionObservationRefused observationError -> "epoch-observation:" <> renderEpochPromotionObservationError observationError
 
 data AuthorityAdmissionDecision
   = AuthorityProviderGenerationBound !Natural
@@ -1251,11 +1450,12 @@ data AuthorityAdmissionDecision
   | AuthorityAdmissionCommandRefused !AuthorityAdmissionCommandRefusal
   | AuthorityProviderAdmissionRecoveryObserved !ProviderAdmissionRecoveryObservation
   | AuthorityProviderBootstrapPredecessorObserved !(Maybe ProviderBootstrapPredecessor)
+  | AuthorityEpochPromotionObserved !EpochPromotionObservation
   deriving stock (Eq, Show)
 
 -- | Apply one control transition to the same object used by submission.  A
--- migration activation advances the retained admission epoch in that same CAS;
--- before activation the migration writer gate remains closed.
+-- frozen epoch commit advances the retained epoch in that same CAS. Normal
+-- admission stays closed until the separate final promotion/open transition.
 stepAuthorityAdmission
   :: AuthorityAdmissionAggregate
   -> AuthorityAdmissionCommand
@@ -1301,12 +1501,16 @@ stepAuthorityAdmission aggregate command = case command of
           let (next, decision) = stepMigrationImport state migrationCommand
            in (AuthorityMigrationImportDecided decision, next)
       )
-  ApplyAuthorityForwardMigration migrationCommand ->
+  ApplyAuthorityForwardMigration migrationCommand@(BeginForwardMigration _ target) ->
     applyMigrationTransition
       aggregate
       ( \state ->
           let (next, decision) = stepForwardMigration state migrationCommand
-           in (AuthorityForwardMigrationDecided decision, next)
+           in case (decision, authorityAggregateAdmission aggregate) of
+                (ForwardMigrationAccepted, BackupEstablished currentEpoch _ _)
+                  | fromIntegral (migrationEpochValue target) <= authorityEpochValue currentEpoch ->
+                      (AuthorityForwardMigrationDecided (ForwardMigrationRefused ForwardMigrationEpochMustAdvance), state)
+                _ -> (AuthorityForwardMigrationDecided decision, next)
       )
   BindProviderAdmissionGeneration generation ->
     case bindProviderAdmissionServingGenerationInternal
@@ -1357,6 +1561,16 @@ stepAuthorityAdmission aggregate command = case command of
         )
     , aggregate
     )
+  ObserveAuthorityEpochPromotion ->
+    case observeEpochPromotion
+      (authorityAggregateAuthenticationEpoch aggregate)
+      (either (const Nothing) Just (activeAuthorityEpoch aggregate))
+      ( case authorityAggregateMigration aggregate of
+          AuthorityCleanInstall -> Nothing
+          AuthorityMigrationControlled migration -> migrationEpochPromotion migration
+      ) of
+      Left observationError -> refuse (AuthorityEpochPromotionObservationRefused observationError)
+      Right observation -> (AuthorityEpochPromotionObserved observation, aggregate)
   RecordCascadeTerminalAuditReceipt binding receipt ->
     case recordCascadeTerminalAuditReceiptInternal
       (internalAuthorityAggregateProviderAdmissionEpoch aggregate)
@@ -1383,6 +1597,15 @@ stepAuthorityAdmission aggregate command = case command of
         )
  where
   refuse refusal = (AuthorityAdmissionCommandRefused refusal, aggregate)
+
+-- | Authentication/control recovery remains available while mutation admission
+-- is frozen. The retained Vault projection consumes this same pure epoch.
+authorityAggregateAuthenticationEpoch :: AuthorityAdmissionAggregate -> AuthorityEpoch
+authorityAggregateAuthenticationEpoch aggregate = case authorityAggregateAdmission aggregate of
+  GenesisFrozen -> authorityEpochGenesis
+  EstablishingBackup _ -> authorityEpochGenesis
+  BackupEstablished epoch _ _ -> epoch
+  BackupRepairFrozen epoch _ -> epoch
 
 -- | Pending Provider work in this aggregate, projected in the same read the
 -- freeze decides from.
@@ -1417,37 +1640,77 @@ applyMigrationTransition aggregate transition =
         AuthorityCleanInstall -> refuse AuthorityMigrationNotStarted
         AuthorityMigrationControlled currentMigration ->
           let (decision, nextMigration) = transition currentMigration
-           in case activatedAuthorityEpoch currentMigration nextMigration of
-                Just nextEpoch
-                  | nextEpoch < currentEpoch ->
-                      refuse (AuthorityMigrationEpochRegressed currentEpoch nextEpoch)
-                  | otherwise ->
-                      ( decision
-                      , aggregate
-                          { authorityAggregateAdmission =
-                              BackupEstablished nextEpoch targetReceipt backupReceipt
-                          , authorityAggregateMigration =
-                              AuthorityMigrationControlled nextMigration
-                          }
-                      )
-                Nothing ->
-                  ( decision
-                  , aggregate
-                      { authorityAggregateMigration =
-                          AuthorityMigrationControlled nextMigration
-                      }
-                  )
+           in case newlyPreparedPredecessor currentMigration nextMigration of
+                Just predecessor
+                  | fromIntegral predecessor /= authorityEpochValue currentEpoch ->
+                      refuse (AuthorityMigrationEpochPredecessorMismatch currentEpoch predecessor)
+                _
+                  | requiresMigrationQuiescence currentMigration nextMigration
+                  , Just refusal <- migrationQuiescenceRefusal aggregate ->
+                      refuse refusal
+                _ ->
+                  applyEpochTransition
+                    currentEpoch
+                    targetReceipt
+                    backupReceipt
+                    decision
+                    currentMigration
+                    nextMigration
  where
+  applyEpochTransition currentEpoch targetReceipt backupReceipt decision currentMigration nextMigration =
+    case activatedAuthorityEpoch currentMigration nextMigration of
+      Just nextEpoch
+        | nextEpoch < currentEpoch ->
+            refuse (AuthorityMigrationEpochRegressed currentEpoch nextEpoch)
+        | nextEpoch == currentEpoch ->
+            refuse (AuthorityMigrationEpochNotAdvanced currentEpoch nextEpoch)
+        | otherwise ->
+            ( decision
+            , aggregate
+                { authorityAggregateAdmission =
+                    BackupEstablished nextEpoch targetReceipt backupReceipt
+                , authorityAggregateMigration =
+                    AuthorityMigrationControlled nextMigration
+                }
+            )
+      Nothing ->
+        ( decision
+        , aggregate
+            { authorityAggregateMigration =
+                AuthorityMigrationControlled nextMigration
+            }
+        )
   refuse refusal = (AuthorityAdmissionCommandRefused refusal, aggregate)
+
+newlyPreparedPredecessor :: MigrationState -> MigrationState -> Maybe Word
+newlyPreparedPredecessor current next = case (migrationEpochPromotion current, migrationEpochPromotion next) of
+  (previous, Just promotion)
+    | maybe True (\old -> epochPromotionTargetEpoch old /= epochPromotionTargetEpoch promotion) previous ->
+        Just (epochPromotionPredecessorEpoch promotion)
+  _ -> Nothing
+
+requiresMigrationQuiescence :: MigrationState -> MigrationState -> Bool
+requiresMigrationQuiescence current next =
+  newlyPreparedPredecessor current next /= Nothing
+    || activatedAuthorityEpoch current next /= Nothing
+    || ( migrationNormalAdmissionEpoch current /= migrationNormalAdmissionEpoch next
+           && migrationNormalAdmissionEpoch next /= Nothing
+       )
+
+migrationQuiescenceRefusal :: AuthorityAdmissionAggregate -> Maybe AuthorityAdmissionCommandRefusal
+-- Submission reservations alone are not in-flight effect evidence. Other
+-- role journals belong to the physical quiescence observation.
+migrationQuiescenceRefusal aggregate = case aggregatePendingProviderWork aggregate of
+  PendingProviderWork count -> Just (AuthorityMigrationPendingProviderOperations count)
+  NoPendingProviderWork -> Nothing
 
 activatedAuthorityEpoch :: MigrationState -> MigrationState -> Maybe AuthorityEpoch
 activatedAuthorityEpoch current next =
-  case (migrationAuthorityStatus current, migrationAuthorityStatus next) of
-    (MigrationReplacementWriterActive _, MigrationReplacementWriterActive _) -> Nothing
-    (_, MigrationReplacementWriterActive epoch) ->
-      authorityEpochFromValue (fromIntegral (migrationEpochValue epoch))
-    (_, MigrationLegacyWriterActive) -> Nothing
-    (_, MigrationWritersQuiesced) -> Nothing
+  case migrationCommittedEpoch next of
+    Just epoch
+      | migrationCommittedEpoch current /= Just epoch ->
+          authorityEpochFromValue (fromIntegral (migrationEpochValue epoch))
+    _ -> Nothing
 
 data AuthoritySubmissionDecision
   = AuthoritySubmissionDecided !SubmitDecision

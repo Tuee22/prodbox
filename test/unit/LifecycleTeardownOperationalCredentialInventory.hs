@@ -329,6 +329,7 @@ lifecycleTeardownOperationalCredentialInventorySuite =
                    , FreezeProviderAdmissionAtGenerationTag
                    , ObserveProviderAdmissionRecoveryTag
                    , ObserveProviderBootstrapPredecessorTag
+                   , ObserveAuthorityEpochPromotionTag
                    ]
 
     it "keeps the pre-cutover identity distinct and names what supersedes it" $ do

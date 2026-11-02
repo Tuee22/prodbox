@@ -1,0 +1,131 @@
+{
+  "schema_version": 1,
+  "recording": "FILE-LINT-LAZY-CORPUS-RESIDENCY-2026-10-25",
+  "owning_sprint": "1.98",
+  "recorded_utc": "2026-10-25T14:18:16.890487+00:00",
+  "problem": "The doctrine-alignment collector retained sixteen lazy result scans until final concatenation, keeping their source corpora live. The unrestricted operator reached 7130 MiB RSS during a host OOM; bounded controls exhaust their heaps.",
+  "unrestricted_observation": ".build/sprint-6.5/rpc-coordinator-20261025/counter-files-oom-observation.json",
+  "frozen_checker": {
+    "path": ".build/sprint-1.98/CheckCode-before-residency.hs",
+    "sha256": "396bc364b26429d007f96a74f741b4bb76b9d089e052272a59fe7d5235173662"
+  },
+  "replacement_checker": {
+    "path": "src/Prodbox/CheckCode.hs",
+    "sha256": "76e2b28637bcb0c6037fa494c3db982260acf6123907a3403e53eaec8bf24623"
+  },
+  "change": "Force each complete finding payload with the existing forceViolationFindings before the next IO check. All sixteen checking expressions, predicates, aggregation and order remain unchanged.",
+  "production_delta": {
+    "sixteen_force_boundaries_only": true,
+    "check_expressions_and_order_unchanged": true,
+    "finding_aggregation_unchanged": true,
+    "before_sha256": "396bc364b26429d007f96a74f741b4bb76b9d089e052272a59fe7d5235173662",
+    "after_sha256": "76e2b28637bcb0c6037fa494c3db982260acf6123907a3403e53eaec8bf24623"
+  },
+  "native_reproducer": {
+    "source": "test/qualification/FileLintResidency.hs",
+    "source_sha256": "72a9be49a09ed434e5180cf80fe00cd5d1cf4c0cbb19a4ba1804288031822040",
+    "preserved_source": ".build/sprint-1.98/FileLintResidency.hs-72a9be49a09ed434",
+    "binary": ".build/sprint-1.98/file-lint-residency-1",
+    "binary_sha256": "3498905d970327fdf809f2d89667a8e16c35e62ff33e8fd25d1a8b4ff4b02118",
+    "build_result": ".build/sprint-1.98/native-driver-build-1.result.json",
+    "service_semantics": "Type=oneshot; signals, timeouts and OOM fail; complete native CLI result is returned. No cluster/AWS prerequisite."
+  },
+  "actual_cli_runs": [
+    {
+      "name": "actual-frozen-1",
+      "command": [
+        ".build/sprint-1.98/file-lint-residency-1",
+        ".",
+        ".build/sprint-1.98/operator-before-residency"
+      ],
+      "started_utc": "2026-10-25T14:14:23.594317+00:00",
+      "completed_utc": "2026-10-25T14:14:29.238812+00:00",
+      "exit_code": 251,
+      "wall_seconds": 5.644511973951012,
+      "maximum_live_heap_bytes": 1047709816,
+      "operator_sha256": "9a1430a11b7f4ac95f5a5d4eb02fc89a7deb9dc99e79812ae02cb910f99183e2",
+      "profile": {
+        "heap_limit_bytes": 1073741824,
+        "cgroup_memory_limit_bytes": 3221225472,
+        "swap_limit_bytes": 0,
+        "task_limit": 64
+      },
+      "observation": ".build/sprint-1.98/actual-frozen-1.log"
+    },
+    {
+      "name": "actual-replacement-1",
+      "command": [
+        ".build/sprint-1.98/file-lint-residency-1",
+        ".",
+        ".build/sprint-1.98/operator-ce5bd8084164f33a"
+      ],
+      "started_utc": "2026-10-25T14:14:53.238790+00:00",
+      "completed_utc": "2026-10-25T14:15:28.314267+00:00",
+      "exit_code": 0,
+      "wall_seconds": 35.07549493107945,
+      "maximum_live_heap_bytes": 523041672,
+      "operator_sha256": "ce5bd8084164f33aa45b12bd41c07a58535103e0e77beddff3174876c69b3183",
+      "profile": {
+        "heap_limit_bytes": 1073741824,
+        "cgroup_memory_limit_bytes": 3221225472,
+        "swap_limit_bytes": 0,
+        "task_limit": 64
+      },
+      "observation": ".build/sprint-1.98/actual-replacement-1.log"
+    },
+    {
+      "name": "actual-installed-1",
+      "command": [
+        ".build/sprint-1.98/file-lint-residency-1",
+        ".",
+        ".build/prodbox"
+      ],
+      "started_utc": "2026-10-25T14:15:57.845740+00:00",
+      "completed_utc": "2026-10-25T14:16:37.890981+00:00",
+      "exit_code": 0,
+      "wall_seconds": 40.04525854205713,
+      "maximum_live_heap_bytes": 685312056,
+      "operator_sha256": "ce5bd8084164f33aa45b12bd41c07a58535103e0e77beddff3174876c69b3183",
+      "profile": {
+        "heap_limit_bytes": 1073741824,
+        "cgroup_memory_limit_bytes": 3221225472,
+        "swap_limit_bytes": 0,
+        "task_limit": 64
+      },
+      "observation": ".build/sprint-1.98/actual-installed-1.log"
+    }
+  ],
+  "finding_equivalence": {
+    "cases": [
+      {
+        "case": "clean-source",
+        "identical_exit_and_complete_ordered_stdout_stderr": true,
+        "exit_code": 1,
+        "output_bytes": 38685,
+        "finding_output_sha256": "b523de90b0a20cfc52bbd3a80a9cd0fafec4af286c3573e9283ff87f19db65f1"
+      },
+      {
+        "case": "multiple-findings",
+        "identical_exit_and_complete_ordered_stdout_stderr": true,
+        "exit_code": 1,
+        "output_bytes": 39301,
+        "finding_output_sha256": "741e1afeaa817ff018349b8c96307508ce306098a51636ded711419f8f33c0cd"
+      }
+    ],
+    "scope": "Actual CLI equality on public-path-shaped synthetic corpora with empty repository projections. Baseline missing-projection findings remain failures; the additional three policy findings are observed in order only in multiple-findings. Prior incomplete fixtures failed before policy checks and remain retained; the first final assertion incorrectly expected a slash after .github and is corrected by inspecting the original unchanged output."
+  },
+  "source_identity_comparison": {
+    "match": true,
+    "entry": "replacement-entry-source-1.log",
+    "closing": "replacement-closing-source-1.log",
+    "identity": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"eb2098d91b1672f4c67b3f5b9b3eb0c82163c44b4598fbdc3d125838e1a7474f\", sourceManifestEntryCount = 1507},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"ffbb91e42d69ef53b65e4b8bffc02f300b792fef3412d6ecae26e070663625cd\", sourceManifestEntryCount = 1444})"
+  },
+  "limits": [
+    "RTS maximum residency is sampled maximum live heap, not process RSS. The kernel cap bounds the entire native command group.",
+    "Frozen and preserved replacement run beside each other with no sibling Tier-0 config. The installed replacement additionally passes with its actual sibling config.",
+    "The isolated diagnostic-copy pass identified the cause; these records use actual built operators.",
+    "Canonical and combined frontend gates remain required after publishing this record. No lifecycle deployment, resource reservation change or qualification is claimed."
+  ],
+  "image_attempts": 0,
+  "live_attempts": 0
+}

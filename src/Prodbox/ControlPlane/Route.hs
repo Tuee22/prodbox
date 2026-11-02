@@ -97,6 +97,7 @@ data ControlPlaneRoute
   | LifecycleTlsRetentionLegacyRecoveryStage
   | LifecycleTlsRetentionUnopenableSuccessorStage
   | TargetAwsAdminCredentialRevoke
+  | LifecycleAuthorityPeerObserve
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 allControlPlaneRoutes :: [ControlPlaneRoute]
@@ -104,6 +105,7 @@ allControlPlaneRoutes = [minBound .. maxBound]
 
 controlPlaneRouteMethod :: ControlPlaneRoute -> ControlPlaneMethod
 controlPlaneRouteMethod route = case route of
+  LifecycleAuthorityPeerObserve -> ControlPlanePost
   LifecycleAuthorityControl -> ControlPlanePost
   LifecycleMigrationApply -> ControlPlanePost
   LifecycleProjectionImport -> ControlPlanePost
@@ -171,6 +173,7 @@ controlPlaneRouteMethod route = case route of
 
 controlPlaneRoutePath :: ControlPlaneRoute -> String
 controlPlaneRoutePath route = case route of
+  LifecycleAuthorityPeerObserve -> "/v1/authority/peer/observe"
   LifecycleAuthorityControl -> "/v1/authority/control"
   LifecycleMigrationApply -> "/v1/migration/apply"
   LifecycleProjectionImport -> "/v1/migration/import"
@@ -246,6 +249,7 @@ controlPlaneRoutePath route = case route of
 
 controlPlaneRouteRole :: ControlPlaneRoute -> RuntimeRole
 controlPlaneRouteRole route = case route of
+  LifecycleAuthorityPeerObserve -> LifecycleAuthorityRuntime
   LifecycleAuthorityControl -> LifecycleAuthorityRuntime
   LifecycleMigrationApply -> LifecycleAuthorityRuntime
   LifecycleProjectionImport -> LifecycleAuthorityRuntime

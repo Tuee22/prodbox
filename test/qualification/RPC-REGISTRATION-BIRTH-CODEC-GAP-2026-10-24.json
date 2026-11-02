@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "counterexample": "RPC-REGISTRATION-BIRTH-CODEC-GAP-2026-10-24",
+  "owning_sprint": "6.5",
+  "banked_utc": "2026-10-25T01:11:00.816216+00:00",
+  "scope": "Frozen actual legacy/registered codecs refuse the opposite state; the legacy runtime has no explicit retained birth handoff. Replacement components and retained Authority runtime wiring, with codec-backed Model-B fixtures and actual loopback Vault HTTP. No physical MinIO, independent-origin attestation or deployed cutover proof.",
+  "causal_profile": {
+    "root_scope": "home",
+    "home_signers": 12,
+    "client_capacity_old": 7,
+    "client_capacity_replacement": 7,
+    "reservations_per_client": 4,
+    "live_submission_capacity": 4,
+    "retained_submission_capacity": 8,
+    "admission_byte_ceiling": 524288,
+    "fault_schedule": "None for frozen codec gap; replacement durable-prefix interruption, lost reply, missing primary/marker, expiry, source drift, sealed/oversized Vault response, config pin mismatch, retirement and logical/native version separation are separate controls.",
+    "old_to_new_mapping": "Preserve old legacy bytes, identities, client slots, reservations and exact codec refusal. Add an explicit quiesced write-ahead wrapper and read-back marker; independently mounted public pin gates commit. A committed record uses registered trust/signing; pending recovery remains authenticated without normal writer admission.",
+    "resource_envelopes_increased": false
+  },
+  "frozen": {
+    "full_manifest": "45b55c54ca8611b3a30db696210eaa09a2f655599d76cedbb9266f073f0ce8f0",
+    "executable_manifest": "4df53cb0d52edf4d6ea51b8a2c369086d3a8fa1a5675b7815e2605406eb1be4d",
+    "source_identity_record": ".build/sprint-6.5/rpc-birth-20261024/frozen-source.log",
+    "binary_sha256": "2836f74457281cecc95de90a769a0daa55c60f8fded2b9fb1714a77b81f04991",
+    "semantic_exit": 1,
+    "expected_exit": 1,
+    "wall_seconds": 0.0031919199973344803
+  },
+  "replacement": {
+    "owned_cases_at_banking": 44,
+    "validation_record": ".build/sprint-6.5/rpc-birth-20261024/validation-progress.json",
+    "runtime_mode": "Mounted schema-eight closed legacy/registered union; registered scope/generation/descriptor pin supported by retained Authority only.",
+    "retained_store": "Explicit codec-backed Model-B fixture; production factory and Authority runtime hook implemented.",
+    "native_vault": "Actual loopback public-key/incarnation/exact-version signing HTTP adapters.",
+    "physical_origin_attestation": false,
+    "reconcile_pin_delivery_and_preservation": false,
+    "backup_wrapper_and_marker_codec": true,
+    "repair_interpreter_restore_of_both_records": false,
+    "native_key_or_session_retirement": false
+  },
+  "production_profile": {
+    "authored_client_capacity": 7,
+    "route_trust_maximum": "Derived from the existing mounted topology, unchanged",
+    "rpc_binding_ceiling": 256,
+    "rpc_byte_ceiling": 131072,
+    "admission_byte_ceiling": 524288,
+    "marker_byte_ceiling": 16384,
+    "backup_response_byte_ceiling": 1048576,
+    "operational_resource_configuration_changed": false,
+    "physical_profile_qualified": false
+  },
+  "deployment_qualification": "pending",
+  "qualified_cycles": 0,
+  "hand_actions": []
+}

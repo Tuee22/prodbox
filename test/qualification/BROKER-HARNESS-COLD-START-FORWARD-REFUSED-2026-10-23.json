@@ -1,0 +1,107 @@
+{
+  "schema_version": 1,
+  "counterexample": "BROKER-HARNESS-COLD-START-FORWARD-REFUSED-2026-10-23",
+  "live_recording": {
+    "invocation": "pre-5",
+    "exit": 1,
+    "wall_seconds": 1604.803,
+    "boundary": "initial harness Broker connection refused before init/candidate registration",
+    "actual_forward_child_exit_captured": false,
+    "later_ordinary_status_exit": 0,
+    "later_observed_phase": "init-call-in-flight",
+    "operator_sha256": "e8cca41a222fae0751f9d3ef5f3806369675ad304e7e5626679152820b51974c"
+  },
+  "mechanism_scope": "Cold forwarding can exit before a backend accepts connections; the harness first status used the closed recovery connector and skipped existing Deployment startup admission. The exact live child exit is not claimed as observed.",
+  "real_tool_controls": [
+    {
+      "observed_utc": "2026-10-23T23:54:21.416554+00:00",
+      "started_utc": "2026-10-23T23:54:21.282250+00:00",
+      "tool_version": "v1.36.5+rke2r1",
+      "target_pod_uid": "0f2744d3-607a-4fb5-acc8-d4b2bbec4ba2",
+      "remote_port": 65534,
+      "remote_port_proven_unbound": true,
+      "local_forward_bound": true,
+      "exit": 1,
+      "wall_seconds": 0.134,
+      "connection_refused_reported": true,
+      "lost_pod_connection_reported": true,
+      "resource_mutations": false,
+      "scope": "real kubectl read-only stream to a proven closed port on the existing Ready Broker Pod; no Pod or resource was changed",
+      "live_child_exit_observed": false
+    },
+    {
+      "observed_utc": "2026-10-24T00:02:36.402575+00:00",
+      "client_path": "/usr/bin/kubectl",
+      "tool_version": "v1.35.9",
+      "remote_port": 65534,
+      "exit": 1,
+      "wall_seconds": 0.135,
+      "local_forward_bound": true,
+      "connection_refused_reported": true,
+      "lost_pod_connection_reported": true,
+      "resource_mutations": false,
+      "actual_live_child_executable_captured": false
+    }
+  ],
+  "superseded_controls": {
+    "CapturedResponse": {
+      "exit": 1,
+      "wall_seconds": 67.765,
+      "semantic_control_executed": true,
+      "causal_profile_valid": true,
+      "deployment_admitted": false,
+      "independent_backend_became_ready": true,
+      "forward_trace": [
+        "early-exit"
+      ],
+      "mutation_requests": []
+    },
+    "MissingResponse": {
+      "exit": 1,
+      "wall_seconds": 64.314,
+      "semantic_control_executed": true,
+      "causal_profile_valid": true,
+      "deployment_admitted": false,
+      "independent_backend_became_ready": true,
+      "forward_trace": [
+        "early-exit"
+      ],
+      "mutation_requests": []
+    }
+  },
+  "frozen_operator_sha256": "c9de7e4cdec407bf781bf113498b14feb67baa42e5db8ab29385e216e1443801",
+  "frozen_integration_sha256": "c50f014cb7b5d3bc897a77dec1e37be603cd0d78671c8658f0288e872ef79cda",
+  "superseded_runtime_config_digest": "sha256:eb57857e00253e432dc8c14579ccfac1ccac3b415bcf0e43fc81c8f3ed333287",
+  "causal_profile": {
+    "authored_load": "one serialized bootstrap client; unchanged cold backend/forward-exit schedule; no other writer",
+    "parent_deadline_micros": {
+      "superseded": 900000000,
+      "replacement": 900000000
+    },
+    "transport_maximum_micros": {
+      "superseded": 300000000,
+      "replacement": 300000000
+    },
+    "broker_maximum_micros": {
+      "superseded": 300000000,
+      "replacement": 300000000
+    },
+    "existing_normal_deployment_timeout_seconds": 60,
+    "resource_envelopes_changed": false,
+    "persistence_format_changed": false,
+    "budgets_increased": false,
+    "full_deployment_replayed_by_fixture": false,
+    "backend_ready_delay_after_first_kubernetes_call_micros": 2000000,
+    "backend_transition_owner": "independent fixture thread; readiness observer only waits/read-backs, never writes backend readiness"
+  },
+  "required_replacement": "First harness observation uses existing normal Deployment admission before TokenRequest and forwarding; retained continuation stays normal; state-bound closing/reset recovery remains unchanged",
+  "qualification": "pending; no class closure from offline controls",
+  "superseded_controls_state": "independently timed controls passed their expected failure",
+  "ordering_only_control_scope": "Initial admission-coupled fixture results are retained under .build; final causal controls use an independently advancing backend.",
+  "frozen_artifact_roles": {
+    "controller": "superseded-integration directly invokes runHarnessVaultBootstrapViaBroker; exact artifact from the passed Sprint 2.144 frontend gate",
+    "installed_operator": "superseded-prodbox occupies the temporary fixture operator slot; preserved same-source rebuild c9de7e4c, not the e8cca41a binary used live",
+    "source_manifest": "417354229739977387d0999ae3b68226b2d8a32b3c71805160fdecd432b09b29",
+    "provenance_correction": "The original recording conflated the live operator e8cca41a with the installed control artifact c9de7e4c. Frozen files, controller, schedules and control outcomes are unchanged."
+  }
+}

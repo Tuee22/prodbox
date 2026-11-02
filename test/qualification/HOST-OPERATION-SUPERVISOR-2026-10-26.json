@@ -1,0 +1,353 @@
+{
+  "schema_version": 1,
+  "name": "HOST-OPERATION-SUPERVISOR-2026-10-26",
+  "status": "36 native supervisor/role/parent/request controls pass; current full gates follow; production caller/dispatch and qualification remain open",
+  "scope": "Actual bounded command capture and persistent process-role callbacks through the trusted fork/Go/exec owner. Process/stream evidence only; no authenticated network transport or Authority permit is created.",
+  "source_identity_equal": true,
+  "source_identity_before_publication": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"a55dc466da2ad74072fb03b2124ac58f32564728fcb107daaba5030bf4fcb938\", sourceManifestEntryCount = 1541},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"c7cfdb199007b7e071635e7b2df6b195fd56d8de60d8a7ae762ce3c873855868\", sourceManifestEntryCount = 1478})",
+  "inputs": [
+    {
+      "path": "src/Prodbox/Subprocess.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-inputs-1/src/Prodbox/Subprocess.hs",
+      "sha256": "139515c900818789d34194e8ffe394ef6b90d830ad3393308a03bfb22eba92f1"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/KernelScope.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-inputs-1/src/Prodbox/Subprocess/KernelScope.hs",
+      "sha256": "2cd835add639e850a93876e310b7e8f387f6c446acb0d9a29c6cfe5380dfaf7d"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/ScopeFamily.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-inputs-1/src/Prodbox/Subprocess/ScopeFamily.hs",
+      "sha256": "177ad32ad8639c727c1a8e7dc2ae8be5d77f6ad5146c0353edb38fef176761ab"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostOperationFamily.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-inputs-1/src/Prodbox/Subprocess/HostOperationFamily.hs",
+      "sha256": "ff1b9d827c474e921fd56a6a857e65b55d8e7bb0c05b4e46d384eaed375e07c9"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdBus.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-inputs-1/src/Prodbox/Subprocess/SystemdBus.hs",
+      "sha256": "db79600b1ca63104d6841a877aa9f6a0b5168f11b495911445e1c4bc1a004df2"
+    },
+    {
+      "path": "src/Prodbox/Capacity/RuntimeMemory.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-inputs-1/src/Prodbox/Capacity/RuntimeMemory.hs",
+      "sha256": "ebb550db154003d2f0a9b8331aeef2af328430818ba54114ef5024be4b867aa5"
+    },
+    {
+      "path": "test/qualification/HostOperationFamily.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-inputs-1/test/qualification/HostOperationFamily.hs",
+      "sha256": "366636d92d50759da0d3699bac3a375ddcb392296087dfb573b16fb8b891f6ca"
+    },
+    {
+      "path": "prodbox.cabal",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-inputs-1/prodbox.cabal",
+      "sha256": "9ccf70f8acc56f628b1226df9e70ba25848b6e978083582131b2416afbd5a300"
+    }
+  ],
+  "native_snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-inputs-1/native-driver",
+  "native_sha256": "f20c479553281600d7d1b74f9da846fb5fb6ad9e213399b33d8a3f7544425624",
+  "profile": {
+    "original_offsets_ns": {
+      "work": 2000000000,
+      "hard": 2150000000,
+      "stop": 2500000000,
+      "finish": 3000000000,
+      "outer": 5000000000
+    },
+    "aggregate": {
+      "memory_MiB": 256,
+      "cpu_milli": 700,
+      "tasks": 56,
+      "ephemeral_MiB": 1,
+      "durable_MiB": 0
+    },
+    "memory_MiB": {
+      "parent": 176,
+      "command": 48,
+      "transport": 16,
+      "helper": 16
+    },
+    "tasks": {
+      "parent": 16,
+      "command": 24,
+      "transport": 8,
+      "helper": 8
+    },
+    "original_and_parent_request_control_cpu_milli": {
+      "parent": 100,
+      "command": 400,
+      "transport": 100,
+      "helper": 100
+    },
+    "role_control_cpu_milli": {
+      "parent": 300,
+      "command": 200,
+      "transport": 100,
+      "helper": 100
+    },
+    "helper_start_us": 20000,
+    "helper_stop_us": 20000,
+    "heap_MiB": 16
+  },
+  "buffer_budget": {
+    "role_reserve": "each role receives at most half of runtime OtherHeapReserve",
+    "working_and_trimmed_peak_per_role": "2 * (stdout_cap + stderr_cap + 2) bytes",
+    "fixture_OtherHeapReserve_MiB": 2,
+    "default_stream_ceiling_bytes": 4096,
+    "grace_us": 10000,
+    "finite_input": "positive Int bounds strictly below maxBound; explicit environment and no NULs"
+  },
+  "native_controls": [
+    "operation-supervisor-observer-supervisor-capture-1",
+    "operation-supervisor-observer-supervisor-stdout-1",
+    "operation-supervisor-observer-supervisor-stderr-1",
+    "operation-supervisor-observer-supervisor-exec-1",
+    "operation-supervisor-observer-supervisor-nul-1",
+    "operation-supervisor-observer-supervisor-environment-1",
+    "operation-supervisor-observer-supervisor-transport-exit-1",
+    "operation-supervisor-observer-supervisor-transport-overflow-1",
+    "operation-supervisor-observer-supervisor-cancel-1",
+    "operation-supervisor-observer-supervisor-deadline-1",
+    "operation-supervisor-observer-supervisor-budgets-1",
+    "operation-supervisor-observer-supervisor-escape-1",
+    "operation-supervisor-observer-supervisor-descendants-1",
+    "operation-supervisor-observer-supervisor-fragmented-1",
+    "operation-supervisor-observer-roles-1",
+    "operation-supervisor-observer-roles-busy-1",
+    "operation-supervisor-observer-roles-escape-1",
+    "operation-supervisor-observer-roles-expiry-1",
+    "operation-supervisor-observer-roles-parent-death-1",
+    "operation-supervisor-observer-roles-repeat-1",
+    "operation-supervisor-observer-roles-unsettled-1",
+    "operation-supervisor-observer-roles-wrong-child-1",
+    "operation-supervisor-observer-parent-1",
+    "operation-supervisor-observer-parent-escape-1",
+    "operation-supervisor-observer-parent-wrong-key-1",
+    "operation-supervisor-observer-parent-wrong-window-1",
+    "operation-supervisor-observer-parent-wrong-resources-1",
+    "operation-supervisor-observer-parent-wrong-heap-1",
+    "operation-supervisor-observer-expiry-1",
+    "operation-supervisor-observer-late-effect-1",
+    "operation-supervisor-observer-early-exit-1",
+    "operation-supervisor-observer-foreign-field-1",
+    "operation-supervisor-observer-expired-submit-1",
+    "operation-supervisor-observer-invalid-window-1",
+    "operation-supervisor-observer-oversized-helper-1",
+    "operation-supervisor-observer-expired-observation-1"
+  ],
+  "results": {
+    "operation-supervisor-observer-supervisor-capture-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1943052019923925,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-supervisor-capture-1.result.json"
+    },
+    "operation-supervisor-observer-supervisor-stdout-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.187821420840919,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-supervisor-stdout-1.result.json"
+    },
+    "operation-supervisor-observer-supervisor-stderr-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.188069709111005,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-supervisor-stderr-1.result.json"
+    },
+    "operation-supervisor-observer-supervisor-exec-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.198714533355087,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-supervisor-exec-1.result.json"
+    },
+    "operation-supervisor-observer-supervisor-nul-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.194278582930565,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-supervisor-nul-1.result.json"
+    },
+    "operation-supervisor-observer-supervisor-environment-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.184177463874221,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-supervisor-environment-1.result.json"
+    },
+    "operation-supervisor-observer-supervisor-transport-exit-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.197293988894671,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-supervisor-transport-exit-1.result.json"
+    },
+    "operation-supervisor-observer-supervisor-transport-overflow-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1950356541201472,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-supervisor-transport-overflow-1.result.json"
+    },
+    "operation-supervisor-observer-supervisor-cancel-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.195277103688568,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-supervisor-cancel-1.result.json"
+    },
+    "operation-supervisor-observer-supervisor-deadline-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1918082400225103,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-supervisor-deadline-1.result.json"
+    },
+    "operation-supervisor-observer-supervisor-budgets-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.192513862159103,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-supervisor-budgets-1.result.json"
+    },
+    "operation-supervisor-observer-supervisor-escape-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.191816204227507,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-supervisor-escape-1.result.json"
+    },
+    "operation-supervisor-observer-supervisor-descendants-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1936759930104017,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-supervisor-descendants-1.result.json"
+    },
+    "operation-supervisor-observer-supervisor-fragmented-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1900293841026723,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-supervisor-fragmented-1.result.json"
+    },
+    "operation-supervisor-observer-roles-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.191787914838642,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-roles-1.result.json"
+    },
+    "operation-supervisor-observer-roles-busy-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.186460257973522,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-roles-busy-1.result.json"
+    },
+    "operation-supervisor-observer-roles-escape-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1876795957796276,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-roles-escape-1.result.json"
+    },
+    "operation-supervisor-observer-roles-expiry-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1918521020561457,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-roles-expiry-1.result.json"
+    },
+    "operation-supervisor-observer-roles-parent-death-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1970160217024386,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-roles-parent-death-1.result.json"
+    },
+    "operation-supervisor-observer-roles-repeat-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1870627528987825,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-roles-repeat-1.result.json"
+    },
+    "operation-supervisor-observer-roles-unsettled-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.185698749963194,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-roles-unsettled-1.result.json"
+    },
+    "operation-supervisor-observer-roles-wrong-child-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.189034126698971,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-roles-wrong-child-1.result.json"
+    },
+    "operation-supervisor-observer-parent-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1901009059511125,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-parent-1.result.json"
+    },
+    "operation-supervisor-observer-parent-escape-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1903163590468466,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-parent-escape-1.result.json"
+    },
+    "operation-supervisor-observer-parent-wrong-key-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.187303489074111,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-parent-wrong-key-1.result.json"
+    },
+    "operation-supervisor-observer-parent-wrong-window-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1952928681857884,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-parent-wrong-window-1.result.json"
+    },
+    "operation-supervisor-observer-parent-wrong-resources-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1930338609963655,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-parent-wrong-resources-1.result.json"
+    },
+    "operation-supervisor-observer-parent-wrong-heap-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1886474252678454,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-parent-wrong-heap-1.result.json"
+    },
+    "operation-supervisor-observer-expiry-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.190740301273763,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-expiry-1.result.json"
+    },
+    "operation-supervisor-observer-late-effect-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1899849716573954,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-late-effect-1.result.json"
+    },
+    "operation-supervisor-observer-early-exit-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1893868041224778,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-early-exit-1.result.json"
+    },
+    "operation-supervisor-observer-foreign-field-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1897492269054055,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-foreign-field-1.result.json"
+    },
+    "operation-supervisor-observer-expired-submit-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.06480299914255738,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-expired-submit-1.result.json"
+    },
+    "operation-supervisor-observer-invalid-window-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.025105985812842846,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-invalid-window-1.result.json"
+    },
+    "operation-supervisor-observer-oversized-helper-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.030948021914809942,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-oversized-helper-1.result.json"
+    },
+    "operation-supervisor-observer-expired-observation-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.024741908069700003,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-expired-observation-1.result.json"
+    },
+    "operation-supervisor-hlint-2": {
+      "exit_code": 0,
+      "wall_seconds": 6.496539773885161,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-hlint-2.result.json"
+    },
+    "operation-supervisor-observer-native-build-1": {
+      "exit_code": 0,
+      "wall_seconds": 3.77423524716869,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-native-build-1.result.json"
+    },
+    "operation-supervisor-observer-format-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.4548276807181537,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-observer-format-1.result.json"
+    }
+  },
+  "retained_predecessors": {
+    "before": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-before-1.json",
+    "initial_13": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-initial-validation-1.json",
+    "before_bounded_observer_36": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-before-observer-validation-1.json",
+    "existing_retirement_cause": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-selected-cause-1.json"
+  },
+  "evidence_limits": [
+    "Transport fixture executes fixed commands; real authenticated transport/readiness and caller wiring remain unproven.",
+    "Cancellation control cancels after both actual roles have passed Go. No lost manager reply, cancellation during uncertain admission, or manager restart is injected.",
+    "Command deadline control tightens work by 350 ms; all original global ends stay unchanged. It does not prove a domain mutation after an Authority deadline is rejected.",
+    "The existing low-level expiry and parent-death controls retain actual session-ID/cgroup observations for descendants.",
+    "Output-buffer funding requires the controller to dedicate its OtherHeapReserve to these bounded buffers; native validation establishes no production resource minimum.",
+    "Global alarm retirement, production dispatcher/descriptor-pinned inputs, preparation and original-bound recovery remain open."
+  ],
+  "private_evidence": ".build/sprint-6.5/rpc-coordinator-20261025/operation-supervisor-progress-1.json"
+}

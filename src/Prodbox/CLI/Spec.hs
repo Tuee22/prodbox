@@ -14,7 +14,7 @@ module Prodbox.CLI.Spec
   )
 where
 
-import Control.Applicative ((<|>))
+import Control.Applicative (empty, (<|>))
 import Data.List (find)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
@@ -153,6 +153,7 @@ import Prodbox.Runtime.Role
   , runtimeRoleConfigIdentity
   , runtimeRoleName
   )
+import Prodbox.Subprocess.HostControllerArguments (parseHostControllerArguments)
 import Prodbox.Substrate
   ( Substrate
   , defaultSubstrate
@@ -228,6 +229,7 @@ commandRegistry =
         , gatewayGroup
         , helpLeaf
         , hostGroup
+        , internalRpcBirthControllerLeaf
         , nukeLeaf
         , testGroupSpec
         , usersGroup
@@ -294,6 +296,7 @@ renderCommandRequestParser prefix spec =
 parserForPath :: [String] -> Maybe (Parser CommandRequest)
 parserForPath path =
   case path of
+    ["internal-rpc-birth-controller"] -> Just internalRpcBirthControllerParser
     ["admin-action", "run"] ->
       Just (RunNative . NativeAdminAction <$> adminActionRunParser)
     ["aws", "policy"] ->
@@ -713,6 +716,71 @@ parserForPath path =
     ["workload", "start"] ->
       Just (fmap (RunNative . NativeWorkload . WorkloadStart) workloadOptionsParser)
     _ -> Nothing
+
+internalRpcBirthControllerPrefix :: [(String, String, String)]
+internalRpcBirthControllerPrefix =
+  [ ("config", "PATH", "Exact pinned import-free controller settings file")
+  , ("request", "PATH", "Exact pinned original controller request file")
+  , ("input-fingerprint", "SHA256", "Published executable/settings/request fingerprint")
+  , ("operation-key", "SHA256", "Original operation execution key")
+  , ("outer-ns", "NANOSECONDS", "Original monotonic outer deadline")
+  , ("work-ns", "NANOSECONDS", "Original monotonic work deadline")
+  , ("hard-ns", "NANOSECONDS", "Original monotonic hard deadline")
+  , ("stop-ns", "NANOSECONDS", "Original monotonic stop deadline")
+  ]
+
+internalRpcBirthControllerFinish :: (String, String, String)
+internalRpcBirthControllerFinish =
+  ("finish-ns", "NANOSECONDS", "Original monotonic finish deadline")
+
+internalRpcBirthControllerLeaf :: CommandSpec
+internalRpcBirthControllerLeaf =
+  leaf
+    "internal-rpc-birth-controller"
+    "Run the pinned operation-owned RPC birth controller"
+    "Internal closed program submitted by the owned host family. Exact pinned files and an observed original process owner are required; arguments alone grant no admission."
+    [ requiredOption flag Nothing placeholder detail
+    | (flag, placeholder, detail) <-
+        internalRpcBirthControllerPrefix ++ [internalRpcBirthControllerFinish]
+    ]
+    [ example
+        [ "internal-rpc-birth-controller"
+        , "--config"
+        , "/run/prodbox/controller/settings.cbor"
+        , "--request"
+        , "/run/prodbox/controller/request.cbor"
+        , "--input-fingerprint"
+        , replicate 64 'a'
+        , "--operation-key"
+        , replicate 64 'b'
+        , "--outer-ns"
+        , "50000000000"
+        , "--work-ns"
+        , "40000000000"
+        , "--hard-ns"
+        , "42000000000"
+        , "--stop-ns"
+        , "45000000000"
+        , "--finish-ns"
+        , "47000000000"
+        ]
+        "Closed envelope supplied by the operation publisher"
+    ]
+
+internalRpcBirthControllerParser :: Parser CommandRequest
+internalRpcBirthControllerParser =
+  BindP
+    (concat <$> traverse field (internalRpcBirthControllerPrefix ++ [internalRpcBirthControllerFinish]))
+    parse
+ where
+  parse arguments = case parseHostControllerArguments arguments of
+    Left _ -> empty
+    Right parsed -> pure (RunNative (NativeRpcBirthController parsed))
+  -- The argv validator reports codec errors. All nine options stay in the
+  -- initial applicative so normal help includes the complete closed envelope.
+  field (flag, placeholder, detail) =
+    (\raw -> ["--" ++ flag, raw])
+      <$> strOption (long flag <> metavar placeholder <> help detail)
 
 commandsTreeParser :: Parser CommandRequest
 commandsTreeParser =

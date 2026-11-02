@@ -1,0 +1,39 @@
+.TH PRODBOX_internal_rpc_birth_controller 1
+.SH NAME
+prodbox-internal-rpc-birth-controller \- Run the pinned operation-owned RPC birth controller
+.SH SYNOPSIS
+.B prodbox internal-rpc-birth-controller
+.SH DESCRIPTION
+Internal closed program submitted by the owned host family. Exact pinned files and an observed original process owner are required; arguments alone grant no admission.
+.SH OPTIONS
+.TP
+\fB--config\fR <PATH>
+Exact pinned import-free controller settings file
+.TP
+\fB--request\fR <PATH>
+Exact pinned original controller request file
+.TP
+\fB--input-fingerprint\fR <SHA256>
+Published executable/settings/request fingerprint
+.TP
+\fB--operation-key\fR <SHA256>
+Original operation execution key
+.TP
+\fB--outer-ns\fR <NANOSECONDS>
+Original monotonic outer deadline
+.TP
+\fB--work-ns\fR <NANOSECONDS>
+Original monotonic work deadline
+.TP
+\fB--hard-ns\fR <NANOSECONDS>
+Original monotonic hard deadline
+.TP
+\fB--stop-ns\fR <NANOSECONDS>
+Original monotonic stop deadline
+.TP
+\fB--finish-ns\fR <NANOSECONDS>
+Original monotonic finish deadline
+.SH EXAMPLES
+.TP
+\fBprodbox internal-rpc-birth-controller --config /run/prodbox/controller/settings.cbor --request /run/prodbox/controller/request.cbor --input-fingerprint aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --operation-key bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --outer-ns 50000000000 --work-ns 40000000000 --hard-ns 42000000000 --stop-ns 45000000000 --finish-ns 47000000000\fR
+Closed envelope supplied by the operation publisher

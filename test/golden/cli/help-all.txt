@@ -842,6 +842,24 @@ Examples:
 - prodbox host firewall gateway-unrestrict  # Remove the loopback-only restriction on the default NodePort.
 - prodbox host firewall gateway-unrestrict --port 30443  # Remove the restriction on an explicit NodePort.
 
+## prodbox internal-rpc-birth-controller
+prodbox internal-rpc-birth-controller - Run the pinned operation-owned RPC birth controller
+
+Internal closed program submitted by the owned host family. Exact pinned files and an observed original process owner are required; arguments alone grant no admission.
+Options:
+- --config <PATH> - Exact pinned import-free controller settings file
+- --request <PATH> - Exact pinned original controller request file
+- --input-fingerprint <SHA256> - Published executable/settings/request fingerprint
+- --operation-key <SHA256> - Original operation execution key
+- --outer-ns <NANOSECONDS> - Original monotonic outer deadline
+- --work-ns <NANOSECONDS> - Original monotonic work deadline
+- --hard-ns <NANOSECONDS> - Original monotonic hard deadline
+- --stop-ns <NANOSECONDS> - Original monotonic stop deadline
+- --finish-ns <NANOSECONDS> - Original monotonic finish deadline
+
+Examples:
+- prodbox internal-rpc-birth-controller --config /run/prodbox/controller/settings.cbor --request /run/prodbox/controller/request.cbor --input-fingerprint aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --operation-key bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb --outer-ns 50000000000 --work-ns 40000000000 --hard-ns 42000000000 --stop-ns 45000000000 --finish-ns 47000000000  # Closed envelope supplied by the operation publisher
+
 ## prodbox nuke
 prodbox nuke - Total teardown of every prodbox-owned AWS resource (operator-only)
 

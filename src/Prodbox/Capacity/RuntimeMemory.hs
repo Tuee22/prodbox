@@ -29,6 +29,7 @@ module Prodbox.Capacity.RuntimeMemory
   , childProcessPermitCount
   , childProcessDeadlineMicros
   , childProcessReservedPeakBytes
+  , childProcessConcurrentPair
 
     -- * Runtime-memory plan
   , RuntimeMemoryInputs (..)
@@ -36,6 +37,7 @@ module Prodbox.Capacity.RuntimeMemory
   , validateRuntimeMemoryPlan
   , runtimeMemoryRetainedHeapBytes
   , runtimeMemoryScratchBytes
+  , runtimeMemoryOtherHeapReserveBytes
   , runtimeMemoryHeapRequiredBytes
   , runtimeMemoryHeapCapBytes
   , runtimeMemoryChildBudget
@@ -112,6 +114,7 @@ data ChildProcessBudget = ChildProcessBudget
   { validatedChildPermitCount :: Natural
   , validatedChildDeadlineMicros :: Natural
   , validatedChildReservedPeakBytes :: PositiveBytes
+  , validatedChildConcurrentPair :: !(Maybe (PositiveBytes, PositiveBytes))
   }
   deriving (Eq, Show)
 
@@ -130,6 +133,9 @@ validateChildSchedule rawSchedule =
           { validatedChildPermitCount = permitCount
           , validatedChildDeadlineMicros = deadline
           , validatedChildReservedPeakBytes = reservedPeak
+          , validatedChildConcurrentPair = case (permitCount, validatedPeaks) of
+              (2, [firstPeak, secondPeak]) -> Just (firstPeak, secondPeak)
+              _ -> Nothing
           }
 
 -- | The maximum number of children admitted simultaneously.
@@ -143,6 +149,11 @@ childProcessDeadlineMicros = validatedChildDeadlineMicros
 -- | The maximum child memory reserved by the validated schedule.
 childProcessReservedPeakBytes :: ChildProcessBudget -> PositiveBytes
 childProcessReservedPeakBytes = validatedChildReservedPeakBytes
+
+-- | Retain exactly two concurrent slots for an owner that binds both roles.
+-- The strict optional pair cannot retain an unbounded alternative-peak list.
+childProcessConcurrentPair :: ChildProcessBudget -> Maybe (PositiveBytes, PositiveBytes)
+childProcessConcurrentPair = validatedChildConcurrentPair
 
 -- | Raw positive inputs to the nested runtime-memory proof.  The child
 -- schedule deliberately remains raw here: 'validateRuntimeMemoryPlan' is the
@@ -241,6 +252,9 @@ runtimeMemoryRetainedHeapBytes = validatedRuntimeRetainedHeapBytes
 runtimeMemoryScratchBytes :: RuntimeMemoryPlan -> PositiveBytes
 runtimeMemoryScratchBytes =
   runtimeInHeapTransportDecodeScratch . validatedRuntimeInputs
+
+runtimeMemoryOtherHeapReserveBytes :: RuntimeMemoryPlan -> PositiveBytes
+runtimeMemoryOtherHeapReserveBytes = runtimeOtherHeapReserve . validatedRuntimeInputs
 
 -- | The complete inner sum checked against the heap cap.
 runtimeMemoryHeapRequiredBytes :: RuntimeMemoryPlan -> PositiveBytes

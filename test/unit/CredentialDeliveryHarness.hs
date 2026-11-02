@@ -46,7 +46,7 @@ where
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (IOException, finally, try)
-import Control.Monad (unless)
+import Control.Monad (forM_, unless)
 import Data.Aeson (Value, decodeFileStrict', encode, object, (.=))
 import Data.Aeson.Types (Parser, parseEither, withObject, (.:))
 import Data.ByteString qualified as ByteString
@@ -70,6 +70,8 @@ import Prodbox.Lifecycle.Teardown.EphemeralKubectl
   , EphemeralKubectlUnavailable
   , ephemeralKubeconfig
   , ephemeralKubectlWallClockSeconds
+  , forbiddenKubectlEnvironmentKey
+  , forbiddenKubectlEnvironmentKeyBytes
   , replaceEphemeralBearer
   , runEphemeralKubectl
   , withEphemeralKubeconfigPath
@@ -360,6 +362,24 @@ isWallClockRefusal outcome = case outcome of
 ephemeralKubectlCredentialSuite :: SuiteBuilder ()
 ephemeralKubectlCredentialSuite =
   describe "Sprint 7.39 ephemeral Kubernetes client credential" $ do
+    it "preserves Unicode key lookalikes in both environment representations"
+      $ forM_
+        [ ("AWS_PROFILE", True)
+        , ("KUBECONFIG", True)
+        , ("\x0141\&WS_PROFILE", False)
+        , ("AWS_\x0150\&ROFILE", False)
+        , ("PATH", False)
+        ]
+      $ \(key, expected) -> do
+        forbiddenKubectlEnvironmentKey key `shouldBe` expected
+        forbiddenKubectlEnvironmentKeyBytes (TextEncoding.encodeUtf8 (Text.pack key))
+          `shouldBe` expected
+
+    it "preserves raw key bytes instead of decoding them into credential names" $ do
+      forbiddenKubectlEnvironmentKeyBytes (ByteString.cons 255 "AWS_PROFILE") `shouldBe` False
+      forbiddenKubectlEnvironmentKeyBytes ("AWS_PROFILE" <> ByteString.singleton 255) `shouldBe` False
+      forbiddenKubectlEnvironmentKeyBytes "AWS_SECRET_ACCESS_KEY" `shouldBe` True
+
     it "delivers the byte-exact bearer credential to a real child" $ do
       executable <- getExecutablePath
       environment <- helperEnvironment

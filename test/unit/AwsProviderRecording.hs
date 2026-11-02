@@ -86,7 +86,7 @@ awsProviderRecordingSuite = describe "Sprint 5.59 provider recording promotion" 
     , "AWS_SESSION_TOKEN=value"
     , "x-amz-security-token: value"
     , "Authorization: AWS4-HMAC-SHA256 value"
-    , "-----BEGIN PRIVATE KEY-----"
+    , "-----" <> "BEGIN PRIVATE KEY-----"
     , "AKIA" <> Text.replicate 16 "A"
     , "ASIA" <> Text.replicate 16 "B"
     ]

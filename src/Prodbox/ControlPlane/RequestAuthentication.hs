@@ -60,10 +60,16 @@ module Prodbox.ControlPlane.RequestAuthentication
   , signControlPlaneRequest
   , signControlPlaneRequestWith
   , encodeSignedControlPlaneRequest
+  , RequestSigningFootprint
+  , requestSigningFootprint
+  , requestSigningClaimsEncodedBytes
+  , requestSigningEnvelopeEncodedBytes
+  , cborByteStringEncodedBytes
 
     -- * Verification
   , RequestVerificationContext
   , mkRequestVerificationContext
+  , mkPeerObservationVerificationContext
   , RequestAuthenticationError (..)
   , VerifiedControlPlaneRequest
   , decodeAndVerifyControlPlaneRequest
@@ -84,6 +90,8 @@ module Prodbox.ControlPlane.RequestAuthentication
   )
 where
 
+import Codec.CBOR.Encoding qualified as CborEncoding
+import Codec.CBOR.Write qualified as CborWrite
 import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
 import Crypto.Error (CryptoFailable (CryptoFailed, CryptoPassed))
 import Crypto.Hash.SHA256 qualified as SHA256
@@ -528,17 +536,75 @@ claimsToWire claims =
 canonicalRequestClaims :: RequestClaims -> ByteString
 canonicalRequestClaims = LazyByteString.toStrict . serialise . claimsToWire
 
+-- | Sizes only. The placeholder digest/signature have the protocol's fixed
+-- widths and never become a signed request or invoke the signing capability.
+-- Empty-body codecs retain the canonical schema without copying body bytes.
+data RequestSigningFootprint = RequestSigningFootprint
+  { requestSigningClaimsEncodedBytes :: !Natural
+  , requestSigningEnvelopeEncodedBytes :: !Natural
+  }
+  deriving stock (Eq, Show)
+
+requestSigningFootprint
+  :: RequestSigningCapability m
+  -> ControlPlaneRoute
+  -> RuntimeRole
+  -> AuthorityScope
+  -> AuthorityEpoch
+  -> AuthorityTime
+  -> RequestNonce
+  -> Word
+  -> Either RequestBindingError RequestSigningFootprint
+requestSigningFootprint capability route callee scope epoch deadline nonce bodyBytes
+  | controlPlaneRouteRole route /= callee =
+      Left (RequestRouteCalleeMismatch route callee (controlPlaneRouteRole route))
+  | otherwise = Right (RequestSigningFootprint claimsBytes envelopeBytes)
+ where
+  claims =
+    claimsToWire
+      RequestClaims
+        { requestClaimsRoute = route
+        , requestClaimsCallerPrincipal = requestSigningCapabilityPrincipal capability
+        , requestClaimsCalleeRole = callee
+        , requestClaimsAuthorityScope = scope
+        , requestClaimsAuthorityEpoch = epoch
+        , requestClaimsDeadline = deadline
+        , requestClaimsNonce = nonce
+        , requestClaimsSigningKeyGeneration = requestSigningCapabilityGeneration capability
+        , requestClaimsBodyDigest = SHA256.hash ByteString.empty
+        }
+  claimsBytes = fromIntegral (LazyByteString.length (serialise claims))
+  emptyEnvelope =
+    SignedControlPlaneRequestWire
+      claims
+      ByteString.empty
+      (ByteString.replicate Ed25519.signatureSize 0)
+  envelopeBytes =
+    fromIntegral (LazyByteString.length (serialise emptyEnvelope))
+      - cborByteStringEncodedBytes 0
+      + cborByteStringEncodedBytes bodyBytes
+
+-- CBOR byte strings and definite lists share their argument-width encoding.
+-- Asking the codec for a list header measures that width without a body buffer.
+cborByteStringEncodedBytes :: Word -> Natural
+cborByteStringEncodedBytes count =
+  fromIntegral count
+    + fromIntegral (LazyByteString.length (CborWrite.toLazyByteString (CborEncoding.encodeListLen count)))
+
 data RequestVerificationContext = RequestVerificationContext
   { verificationTrustedKey :: !TrustedRequestKey
   , verificationExpectedRoute :: !ControlPlaneRoute
   , verificationExpectedCalleeRole :: !RuntimeRole
   , verificationExpectedAuthorityScope :: !AuthorityScope
   , verificationExpectedAuthorityEpoch :: !AuthorityEpoch
+  , verificationEpochPolicy :: !RequestEpochPolicy
   , verificationExpectedDeadline :: !AuthorityTime
   , verificationExpectedNonce :: !RequestNonce
   , verificationAuthorityNow :: !AuthorityTime
   , verificationMaximumLifetime :: !AuthorityDuration
   }
+
+data RequestEpochPolicy = ExactRequestEpoch | HistoricalPeerObservationEpoch
 
 mkRequestVerificationContext
   :: TrustedRequestKey
@@ -567,11 +633,37 @@ mkRequestVerificationContext trustedKey route callee scope epoch deadline nonce 
           , verificationExpectedCalleeRole = callee
           , verificationExpectedAuthorityScope = scope
           , verificationExpectedAuthorityEpoch = epoch
+          , verificationEpochPolicy = ExactRequestEpoch
           , verificationExpectedDeadline = deadline
           , verificationExpectedNonce = nonce
           , verificationAuthorityNow = now
           , verificationMaximumLifetime = maximumLifetime
           }
+
+-- | Only this fixed, read-only route can refresh a stale authenticated peer.
+-- Neither the route nor the callee is a caller-selectable policy parameter.
+mkPeerObservationVerificationContext
+  :: TrustedRequestKey
+  -> AuthorityScope
+  -> AuthorityEpoch
+  -> AuthorityTime
+  -> RequestNonce
+  -> AuthorityTime
+  -> AuthorityDuration
+  -> RequestVerificationContext
+mkPeerObservationVerificationContext trusted scope epoch deadline nonce now lifetime =
+  RequestVerificationContext
+    { verificationTrustedKey = trusted
+    , verificationExpectedRoute = LifecycleAuthorityPeerObserve
+    , verificationExpectedCalleeRole = LifecycleAuthorityRuntime
+    , verificationExpectedAuthorityScope = scope
+    , verificationExpectedAuthorityEpoch = epoch
+    , verificationEpochPolicy = HistoricalPeerObservationEpoch
+    , verificationExpectedDeadline = deadline
+    , verificationExpectedNonce = nonce
+    , verificationAuthorityNow = now
+    , verificationMaximumLifetime = lifetime
+    }
 
 data RequestAuthenticationError
   = RequestEnvelopeTooLarge
@@ -755,10 +847,14 @@ verifyRequest context request = do
     RequestAuthorityScopeMismatch
     (verificationExpectedAuthorityScope context)
     (requestClaimsAuthorityScope claims)
-  expectEqual
-    RequestAuthorityEpochMismatch
-    (verificationExpectedAuthorityEpoch context)
-    (requestClaimsAuthorityEpoch claims)
+  let expectedEpoch = verificationExpectedAuthorityEpoch context
+      actualEpoch = requestClaimsAuthorityEpoch claims
+      epochAdmitted = case verificationEpochPolicy context of
+        ExactRequestEpoch -> actualEpoch == expectedEpoch
+        HistoricalPeerObservationEpoch -> actualEpoch <= expectedEpoch
+  if epochAdmitted
+    then pure ()
+    else Left (RequestAuthorityEpochMismatch expectedEpoch actualEpoch)
   expectEqual
     RequestDeadlineMismatch
     (verificationExpectedDeadline context)
@@ -939,6 +1035,7 @@ routeCode route = case route of
   TlsRetentionRestore -> 11
   TargetMaterialObserve -> 12
   TargetAwsAdminCredentialRevoke -> 65
+  LifecycleAuthorityPeerObserve -> 66
 
 routeFromCode :: Word -> Maybe ControlPlaneRoute
 routeFromCode code = case code of
@@ -1007,4 +1104,5 @@ routeFromCode code = case code of
   63 -> Just LifecycleTlsRetentionLegacyRecoveryStage
   64 -> Just LifecycleTlsRetentionUnopenableSuccessorStage
   65 -> Just TargetAwsAdminCredentialRevoke
+  66 -> Just LifecycleAuthorityPeerObserve
   _ -> Nothing

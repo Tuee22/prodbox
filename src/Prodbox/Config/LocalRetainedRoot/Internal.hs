@@ -23,6 +23,7 @@ module Prodbox.Config.LocalRetainedRoot.Internal
   , renderLocalRetainedRootError
   , renderRetainedRootMarkerReconcileOutcome
   , locateBootstrapRetainedRoot
+  , locateBootstrapRetainedRootFromCoordinate
   , locateBootstrapRetainedRootForHostCleanup
   , hostCleanupActiveIntentRelativePath
   , HostCleanupBootstrapRootRegression
@@ -401,6 +402,18 @@ locateBootstrapRetainedRoot suppliedRepository = do
       case coordinateResult of
         Left err -> pure (Left err)
         Right coordinate -> locateBootstrapRetainedRootAtCoordinate repository coordinate
+
+-- | Observe the canonical marker/layout at an already captured storage
+-- coordinate. This remains non-authorizing and evaluates no configuration.
+locateBootstrapRetainedRootFromCoordinate
+  :: FilePath -> Text -> IO (Either LocalRetainedRootError BootstrapRetainedRootLocator)
+locateBootstrapRetainedRootFromCoordinate suppliedRepository raw = do
+  repositoryResult <- validateRepository suppliedRepository
+  case repositoryResult of
+    Left cause -> pure (Left cause)
+    Right repository -> case validateStorageCoordinate raw of
+      Left cause -> pure (Left cause)
+      Right coordinate -> locateBootstrapRetainedRootAtCoordinate repository coordinate
 
 locateBootstrapRetainedRootAtCoordinate
   :: FilePath -> Text -> IO (Either LocalRetainedRootError BootstrapRetainedRootLocator)

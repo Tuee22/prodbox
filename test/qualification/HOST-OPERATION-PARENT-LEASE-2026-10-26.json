@@ -1,0 +1,187 @@
+{
+  "scope": "Private operation parent-only lease and unchanged atomic expiry request; actual native manager/kernel/RTS/runtime-directory readback. No child process role or Authority permit is admitted.",
+  "source_identity_equal": true,
+  "source_identity": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"4a32227bf37ff2e63a24a0b2bbb9baca2c9ee882a83c870f8e84e326a520888d\", sourceManifestEntryCount = 1539},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"f68765caeb0559eb8a78ae0207d9437cb82c16f08b2e99b7c6b022c40ab2c756\", sourceManifestEntryCount = 1476})",
+  "inputs": [
+    {
+      "path": "src/Prodbox/Subprocess/KernelScope.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-inputs-1/src/Prodbox/Subprocess/KernelScope.hs",
+      "sha256": "dbd8ecab76fd991609a23730408acf29743fb49ec980745aa32026ca7a3c1d2f"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdBus.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-inputs-1/src/Prodbox/Subprocess/SystemdBus.hs",
+      "sha256": "db79600b1ca63104d6841a877aa9f6a0b5168f11b495911445e1c4bc1a004df2"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-inputs-1/src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "sha256": "83b53baf0446afe195c9c6d4efcea8a7e16b00448f1210dfb155a608d1e13630"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostOperationFamily.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-inputs-1/src/Prodbox/Subprocess/HostOperationFamily.hs",
+      "sha256": "9fec428e87b6665da7feca524c220388d94017dc211ab1d9de457c096b9a6b46"
+    },
+    {
+      "path": "src/Prodbox/Capacity/HostExecution.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-inputs-1/src/Prodbox/Capacity/HostExecution.hs",
+      "sha256": "092ece17fb98e941eb4847e875d0f5b01c9ca458c810d8851207aac9dfba6a8c"
+    },
+    {
+      "path": "test/qualification/HostOperationFamily.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-inputs-1/test/qualification/HostOperationFamily.hs",
+      "sha256": "64d74b218c394f983f7ad4d825caf7c2173e8b4e42e41a8d8d23bba110a9f146"
+    },
+    {
+      "path": "prodbox.cabal",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-inputs-1/prodbox.cabal",
+      "sha256": "f27c00239dc3bfd6a6a15bb115ab992ab911fe951f3fc7bbdc117fba4dfb7272"
+    }
+  ],
+  "native_driver_snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-inputs-1/native-driver",
+  "native_driver_sha256": "086966f518bd672a7bd100a93340a0563e2a849559a0b338380d928c05e93070",
+  "profile": {
+    "original_offsets_ns": {
+      "work": 2000000000,
+      "hard": 2150000000,
+      "stop": 2500000000,
+      "finish": 3000000000,
+      "outer": 5000000000
+    },
+    "memory_MiB": 256,
+    "cpu_milli": 700,
+    "tasks": 56,
+    "helper_start_us": 20000,
+    "helper_stop_us": 20000,
+    "heap_MiB": 16
+  },
+  "first_failure": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-first-failure-1.json",
+  "diagnostic_failure": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-diagnostic-1.json",
+  "selected_cause": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-selected-cause-1.json",
+  "observed_child_declarations": "(OperationChildNotFound,OperationChildNotFound)",
+  "controls": [
+    "operation-parent-cohort-parent-1",
+    "operation-parent-cohort-parent-escape-1",
+    "operation-parent-cohort-parent-wrong-key-1",
+    "operation-parent-cohort-parent-wrong-window-1",
+    "operation-parent-cohort-parent-wrong-resources-1",
+    "operation-parent-cohort-parent-wrong-heap-1",
+    "operation-parent-cohort-expiry-1",
+    "operation-parent-cohort-late-effect-1",
+    "operation-parent-cohort-early-exit-1",
+    "operation-parent-cohort-foreign-field-1",
+    "operation-parent-cohort-expired-submit-1",
+    "operation-parent-cohort-invalid-window-1",
+    "operation-parent-cohort-oversized-helper-1",
+    "operation-parent-cohort-expired-observation-1"
+  ],
+  "results": {
+    "operation-parent-library-build-2": {
+      "exit_code": 0,
+      "wall_seconds": 25.2245849003084,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-library-build-2.result.json"
+    },
+    "operation-parent-hlint-3": {
+      "exit_code": 0,
+      "wall_seconds": 5.648494481109083,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-hlint-3.result.json"
+    },
+    "operation-parent-docs-1": {
+      "exit_code": 0,
+      "wall_seconds": 13.589280315674841,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-docs-1.result.json"
+    },
+    "operation-parent-eof-format-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.37657420709729195,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-eof-format-1.result.json"
+    },
+    "operation-parent-eof-native-build-1": {
+      "exit_code": 0,
+      "wall_seconds": 3.584162747953087,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-eof-native-build-1.result.json"
+    },
+    "operation-parent-cohort-parent-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1902888771146536,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-cohort-parent-1.result.json"
+    },
+    "operation-parent-cohort-parent-escape-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1961746430024505,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-cohort-parent-escape-1.result.json"
+    },
+    "operation-parent-cohort-parent-wrong-key-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.191569176968187,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-cohort-parent-wrong-key-1.result.json"
+    },
+    "operation-parent-cohort-parent-wrong-window-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.191956932656467,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-cohort-parent-wrong-window-1.result.json"
+    },
+    "operation-parent-cohort-parent-wrong-resources-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.188696949277073,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-cohort-parent-wrong-resources-1.result.json"
+    },
+    "operation-parent-cohort-parent-wrong-heap-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1886526201851666,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-cohort-parent-wrong-heap-1.result.json"
+    },
+    "operation-parent-cohort-expiry-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.187126109842211,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-cohort-expiry-1.result.json"
+    },
+    "operation-parent-cohort-late-effect-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1919415001757443,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-cohort-late-effect-1.result.json"
+    },
+    "operation-parent-cohort-early-exit-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.186151808127761,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-cohort-early-exit-1.result.json"
+    },
+    "operation-parent-cohort-foreign-field-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.1902869171462953,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-cohort-foreign-field-1.result.json"
+    },
+    "operation-parent-cohort-expired-submit-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.0692291846498847,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-cohort-expired-submit-1.result.json"
+    },
+    "operation-parent-cohort-invalid-window-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.025341149885207415,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-cohort-invalid-window-1.result.json"
+    },
+    "operation-parent-cohort-oversized-helper-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.031659253872931004,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-cohort-oversized-helper-1.result.json"
+    },
+    "operation-parent-cohort-expired-observation-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.0299717141315341,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-cohort-expired-observation-1.result.json"
+    }
+  },
+  "evidence_limits": [
+    "Fixture controller only; production dispatch and descriptor-pinned inputs are absent.",
+    "No actual command or persistent transport scope is created.",
+    "Parent-only manager/kernel admission is not an Authority operation receipt.",
+    "Closing six-role absence, original cgroup retirement and workspace absence are independently required for the ten controller-starting controls.",
+    "Full current canonical/frontend gates, recovery and deployment qualification remain open."
+  ],
+  "schema_version": 1,
+  "name": "HOST-OPERATION-PARENT-LEASE-2026-10-26",
+  "status": "fourteen native parent/request controls validated; complete physical family and production wiring remain open",
+  "private_evidence": ".build/sprint-6.5/rpc-coordinator-20261025/operation-parent-progress-1.json"
+}

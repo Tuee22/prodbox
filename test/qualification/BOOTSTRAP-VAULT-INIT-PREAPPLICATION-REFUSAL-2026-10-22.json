@@ -1,0 +1,144 @@
+{
+  "counterexample": "BOOTSTRAP-VAULT-INIT-PREAPPLICATION-REFUSAL-2026-10-22",
+  "owner": "Sprint 2.142",
+  "underlying_storage_owner": "Sprint 3.48",
+  "recorded_utc": "2026-10-22T18:06:40.231790+00:00",
+  "live": {
+    "invocation": "pre-3, pre-20261022-1",
+    "exit": 1,
+    "wall_seconds": 399.13,
+    "worker": {
+      "observed_utc": "2026-10-22T17:57:42.446350+00:00",
+      "uid": "fa827857-552e-4f43-99f4-ffb2bfb2714f",
+      "phase": "Failed",
+      "image": "127.0.0.1:30080/prodbox/prodbox-runtime:prodbox-3349a232b3454fb3be77b2f68919904f",
+      "args": [
+        "bootstrap-broker",
+        "secret-worker",
+        "--operation",
+        "initialize",
+        "--config",
+        "/etc/bootstrap-broker/config/config.dhall"
+      ],
+      "resources": {
+        "limits": {
+          "cpu": "250m",
+          "ephemeral-storage": "256Mi",
+          "memory": "256Mi"
+        },
+        "requests": {
+          "cpu": "250m",
+          "ephemeral-storage": "256Mi",
+          "memory": "256Mi"
+        }
+      },
+      "termination": [
+        {
+          "name": "bootstrap-secret-worker",
+          "state": {
+            "terminated": {
+              "containerID": "containerd://708f5f8c39eac0eaf7517fc152c7290a6dc23f5d458d0a641d0d1b5dc4515f65",
+              "exitCode": 1,
+              "finishedAt": "2026-10-22T17:49:40Z",
+              "reason": "Error",
+              "startedAt": "2026-10-22T17:49:39Z"
+            }
+          },
+          "image_id": "127.0.0.1:30080/prodbox/prodbox-runtime@sha256:4c428cb55b231bed3c174c4a936d32ebcdc335a165c2cf3733cf083ba6c0bb66"
+        }
+      ],
+      "credential_preparation_reached": false,
+      "candidate_registered": false,
+      "diagnostic": "Vault initialization failed before application was observed",
+      "public_host_failure": "worker phase mismatch for every admitted initialization operation",
+      "hand_repair": false
+    },
+    "barrier_failure_classes": [
+      "keyring-persistence-failed",
+      "missing-directory"
+    ],
+    "mounted_root": {
+      "device": 2050,
+      "inode": 3147619,
+      "links": 0
+    },
+    "declared_root": {
+      "device": 2050,
+      "inode": 3147625,
+      "links": 2
+    },
+    "operator_secret_fixture_or_plaintext_custody_read_or_hashed": false
+  },
+  "superseded_source_identity": {
+    "git_head": "b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6",
+    "worktree": "dirty",
+    "policies": [
+      {
+        "identifier": "prodbox-source-manifest",
+        "version": 1,
+        "policy_digest": "4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae",
+        "manifest_digest": "fb1b3138a5ffe36a515a3cd88c6951794cf40e7594ca26374293eb126cb76d72",
+        "entries": 1417
+      },
+      {
+        "identifier": "prodbox-source-manifest-executable",
+        "version": 1,
+        "policy_digest": "2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b",
+        "manifest_digest": "71484721578854b39286b20f984457dbbe6331bedd89ff5b90e9b6c349166509",
+        "entries": 1354
+      }
+    ]
+  },
+  "frozen_image_config_digest": "sha256:b80df0945e2d185260e415ac331b8ddd70ccb6214cd3a274481f8aacdf63d237",
+  "offline_law": {
+    "fixture": "network-isolated Vault 1.18.3, file backend; remove/recreate only the empty fixture bind source after the uninitialized observation",
+    "http_status": 400,
+    "after_initialized": false,
+    "provider_error_classes": [
+      "keyring-persistence-failed",
+      "missing-directory"
+    ],
+    "response_body_retained_or_hashed": false,
+    "old_diagnostic": "Vault initialization failed before application was observed",
+    "old_host_refusal": "worker phase mismatch for every expected operation",
+    "expected_primary_class": "http-status-400",
+    "expected_follow_up": "uninitialized",
+    "unit_law": "BOOTSTRAP-VAULT-INIT-PREAPPLICATION-REFUSAL-2026-10-22 in BootstrapBrokerEnginePhysical and BootstrapBrokerProductionBoundary",
+    "healthy_file_control": {
+      "http_status": 200,
+      "after_initialized": true,
+      "same_cpu_memory_swap_backend_and_tmpfs_budgets": true,
+      "response_body_retained_or_hashed": false
+    }
+  },
+  "causal_profile": {
+    "live_worker": {
+      "cpu": "250m",
+      "memory": "256Mi",
+      "ephemeral_storage": "256Mi"
+    },
+    "live_vault": {
+      "cpu_limit": "250m",
+      "memory_limit": "512Mi",
+      "ephemeral_storage": "1Gi"
+    },
+    "isolated_total_cpu_millicores_old_and_new": 500,
+    "isolated_total_memory_bytes_old_and_new": 805306368,
+    "isolated_swap_bytes_old_and_new": 0,
+    "isolated_backend": "file on a disposable bind mount",
+    "request_keys": "same rsa2048 encryption-only public recovery key repeated for five shares, threshold three, and compiled pinned public burn recipient",
+    "background_load_change": "none",
+    "envelope_change": "none",
+    "persistence_protocol_change_in_diagnostic_repair": "none"
+  },
+  "primary_sources": [
+    "https://developer.hashicorp.com/vault/api-docs/v1.18.x/system/init",
+    "https://github.com/hashicorp/vault/blob/v1.18.3/http/sys_init.go",
+    "https://github.com/hashicorp/vault/blob/v1.18.3/vault/barrier_aes_gcm.go"
+  ],
+  "limitations": [
+    "Diagnostics alone do not restore storage usability.",
+    "No live class closure, qualifying cycle, AWS absence proof or activation is supplied.",
+    "The public request shape was accepted by the healthy isolated Vault; no retained private custody or credentials were inspected."
+  ]
+}

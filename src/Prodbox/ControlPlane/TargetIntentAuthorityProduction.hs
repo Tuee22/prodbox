@@ -2,6 +2,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Production, read-only binding from retained Authority outboxes to the
@@ -29,7 +30,10 @@ import Data.Word (Word16)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.Capacity.TargetWorkerBudget qualified as TargetWorkerBudget
-import Prodbox.ControlPlane.Coordinate (AuthorityEpoch)
+import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
+  ( AuthorityAdmissionRepository (..)
+  , AuthorityAdmissionSnapshot (..)
+  )
 import Prodbox.ControlPlane.InClusterAuthorityStore
   ( InClusterAuthorityStore
   , inClusterAuthorityModelBCasAdapter
@@ -44,6 +48,12 @@ import Prodbox.ControlPlane.TargetAuthorityTrustClient
   ( TargetAuthorityTrustClient
   , classifyTargetAuthorityTrustClientError
   , installAcceptedTargetAuthority
+  )
+import Prodbox.ControlPlane.TargetIntentAdmission
+  ( TargetIntentAdmissionInterpreter (..)
+  , TargetIntentAdmissionProgram (..)
+  , readTargetIntentIssuanceAdmissionForRequest
+  , targetIntentRequestMatchesPreparedOutbox
   )
 import Prodbox.ControlPlane.TargetIntentAuthority
   ( AuthorizedPreparedTargetIntent
@@ -103,6 +113,10 @@ import Prodbox.Lifecycle.CredentialProvisioner.ExternalIngress
   , externalMaterialTargetReceiptPermitId
   , externalMaterialTargetReceiptSourceReceipt
   )
+import Prodbox.Lifecycle.CredentialProvisioner.FirstReconcileJournal
+  ( FirstReconcileJournal
+  , firstReconcileJournalCodec
+  )
 import Prodbox.Lifecycle.CredentialProvisioner.OperatorMaterial
   ( operatorMaterialPermitIdText
   )
@@ -155,15 +169,17 @@ productionTargetIntentIssuerBoundary
   :: InClusterAuthorityStore
   -> LongLivedCheckpointAuthority
   -> TargetAgentIdentity
-  -> IO (Either Text AuthorityEpoch)
+  -> AuthorityAdmissionRepository IO revision
+  -> ModelBObjectCoordinate 'ClusterRetained
   -> IO (Either Text AuthorityTime)
   -> AuthorityManifestSigner IO
   -> Text
   -> TargetAuthorityTrustClient IO
   -> TargetIntentIssuerBoundary IO
-productionTargetIntentIssuerBoundary store authority registeredAgentIdentity readEpoch readTime signer issuerIdentity trustClient =
+productionTargetIntentIssuerBoundary store authority registeredAgentIdentity admissionRepository journalCoordinate readTime signer issuerIdentity trustClient =
   TargetIntentIssuerBoundary
-    { readTargetIntentAuthorityEpoch = readEpoch
+    { readTargetIntentAuthorityAdmission =
+        readTargetIntentIssuanceAdmissionForRequest (TargetIntentAdmissionInterpreter interpretAdmission)
     , readTargetIntentAuthorityTime = readTime
     , readAuthorizedPreparedTargetIntent = readPreparedIntent
     , targetIntentAuthoritySigner = signer
@@ -181,6 +197,33 @@ productionTargetIntentIssuerBoundary store authority registeredAgentIdentity rea
             (installAcceptedTargetAuthority trustClient accepted)
     }
  where
+  interpretAdmission :: TargetIntentAdmissionProgram result -> IO (Either Text result)
+  interpretAdmission program = case program of
+    ReadTargetWriterAdmission -> do
+      observed <- readAuthorityAdmission admissionRepository
+      pure (authorityAdmissionSnapshotState <$> observed)
+    ReadGenesisTargetIssuanceEvidence request -> do
+      outbox <- observeAwsAdminOutbox request
+      case outbox of
+        Left detail -> pure (Left detail)
+        Right prepared -> do
+          journal <- observeFirstJournal
+          pure ((prepared,) <$> journal)
+    ReadRepairTargetIssuanceEvidence request -> observeAwsAdminOutbox request
+
+  observeFirstJournal :: IO (Either Text FirstReconcileJournal)
+  observeFirstJournal = do
+    observed <-
+      modelBObserve
+        (inClusterAuthorityModelBCasAdapter store authority firstReconcileJournalCodec)
+        journalCoordinate
+    pure $ case observed of
+      ModelBObserved _ journal -> Right journal
+      ModelBMissing -> Left "Target recovery first-reconcile journal is absent"
+      ModelBCorrupt _ -> Left "Target recovery first-reconcile journal is corrupt"
+      ModelBEndpointUnready _ -> Left "Target recovery first-reconcile journal is not ready"
+      ModelBUnobservable _ -> Left "Target recovery first-reconcile journal is unobservable"
+
   readPreparedIntent request = case targetIntentIssueTarget request of
     TargetSesSmtp -> observeRetainedSesSmtpPrepared request
     TargetAcmeEab -> observeExternalAcmeEab request
@@ -219,7 +262,11 @@ productionTargetIntentIssuerBoundary store authority registeredAgentIdentity rea
           Right (Just permitOperation) ->
             observeAwsAdminPrepared request {targetIntentIssueOperationId = permitOperation}
 
-  observeAwsAdminPrepared request =
+  observeAwsAdminPrepared request = do
+    observed <- observeAwsAdminOutbox request
+    pure (observed >>= awsAdminPreparedFromOutbox request)
+
+  observeAwsAdminOutbox request =
     case awsAdminPreparedCoordinate authority request of
       Left detail -> pure (Left detail)
       Right coordinate -> do
@@ -231,7 +278,7 @@ productionTargetIntentIssuerBoundary store authority registeredAgentIdentity rea
                 preparedCredentialTargetOutboxCodec
             )
             coordinate
-        pure (awsAdminPreparedFromObservation request observed)
+        pure (preparedOutboxFromObservation observed)
 
   observeOrCommitOperationAuthorization request =
     if targetIntentIssueExpectedAgentIdentity request /= registeredAgentIdentity
@@ -493,28 +540,26 @@ awsAdminPreparedCoordinate authority request = do
         )
     )
 
-awsAdminPreparedFromObservation
+preparedOutboxFromObservation
+  :: ModelBObservation PreparedCredentialTargetOutbox
+  -> Either Text PreparedCredentialTargetOutbox
+preparedOutboxFromObservation observation = case observation of
+  ModelBMissing -> Left "AWS-admin prepared-target outbox is absent"
+  ModelBCorrupt detail -> Left ("AWS-admin prepared-target outbox is corrupt: " <> detail)
+  ModelBEndpointUnready detail ->
+    Left ("AWS-admin prepared-target outbox is not ready: " <> detail)
+  ModelBUnobservable detail ->
+    Left ("AWS-admin prepared-target outbox is unobservable: " <> detail)
+  ModelBObserved _ value -> Right value
+
+awsAdminPreparedFromOutbox
   :: TargetIntentIssueRequest
-  -> ModelBObservation PreparedCredentialTargetOutbox
+  -> PreparedCredentialTargetOutbox
   -> Either Text AuthorizedPreparedTargetIntent
-awsAdminPreparedFromObservation request observation = do
-  prepared <- case observation of
-    ModelBMissing -> Left "AWS-admin prepared-target outbox is absent"
-    ModelBCorrupt detail -> Left ("AWS-admin prepared-target outbox is corrupt: " <> detail)
-    ModelBEndpointUnready detail ->
-      Left ("AWS-admin prepared-target outbox is not ready: " <> detail)
-    ModelBUnobservable detail ->
-      Left ("AWS-admin prepared-target outbox is unobservable: " <> detail)
-    ModelBObserved _ value -> Right (preparedCredentialTargetOutboxObservation value)
+awsAdminPreparedFromOutbox request outbox = do
+  let prepared = preparedCredentialTargetOutboxObservation outbox
   unless
-    ( preparedCredentialTargetId prepared == targetIntentIssueTarget request
-        && preparedCredentialTargetSelectedAgent prepared
-          == targetIntentIssueExpectedAgentIdentity request
-        && preparedCredentialTargetGeneration prepared
-          == targetIntentIssueExpectedGeneration request
-        && preparedCredentialTargetReceiptDigest prepared
-          == targetIntentIssueExpectedReceiptDigest request
-    )
+    (targetIntentRequestMatchesPreparedOutbox request outbox)
     (Left "AWS-admin prepared-target request differs from retained outbox")
   owner <- mapLeftShow (mkOwnerNonce (preparedCredentialTargetOwnerNonce prepared))
   fence <- mapLeftShow (mkFencingToken (preparedCredentialTargetFence prepared))

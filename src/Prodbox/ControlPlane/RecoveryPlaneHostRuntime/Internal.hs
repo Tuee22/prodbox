@@ -11,6 +11,7 @@
 module Prodbox.ControlPlane.RecoveryPlaneHostRuntime.Internal
   ( RecoveryPlaneHostRuntimeError (..)
   , recoveryPlaneHostDescriptorBoundNodeActionInternal
+  , recoveryPlaneHostDescriptorBoundNodeActionInOperationInternal
   , RecoveryPlaneHostRuntimeRegression
   , fixedRecoveryPlaneHostRuntimeRegression
   , recoveryPlaneHostRuntimeClosedOperationsExact
@@ -31,7 +32,8 @@ import Prodbox.ControlPlane.CleanupRunClient
   , descriptorBoundCleanupRunId
   )
 import Prodbox.ControlPlane.LocalRke2HostObservationTransport.Internal
-  ( localRke2HostObservationEstablishBoundaryInternal
+  ( localRke2HostObservationEstablishBoundaryInOperationInternal
+  , localRke2HostObservationEstablishBoundaryInternal
   )
 import Prodbox.ControlPlane.RecoveryPlaneEndpoint
   ( RecoveryPlaneEndpointResponseError (..)
@@ -79,6 +81,7 @@ import Prodbox.Lifecycle.Teardown.RecoveryPlaneInterpreter.Internal
 import Prodbox.Runtime.Role
   ( RuntimeRole (LifecycleAuthorityRuntime)
   )
+import Prodbox.Subprocess (OperationSubprocesses)
 
 data RecoveryPlaneHostRuntimeError
   = RecoveryPlaneHostRuntimeContextMismatch !Text
@@ -103,17 +106,25 @@ recoveryPlaneHostDescriptorBoundNodeActionInternal
   :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
   -> DescriptorBoundCleanupNodeExecutionAction
 recoveryPlaneHostDescriptorBoundNodeActionInternal transport =
-  descriptorBoundCleanupNodeAction (dispatchRecoveryPlaneHostNode transport)
+  descriptorBoundCleanupNodeAction (dispatchRecoveryPlaneHostNode Nothing transport)
+
+recoveryPlaneHostDescriptorBoundNodeActionInOperationInternal
+  :: OperationSubprocesses
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> DescriptorBoundCleanupNodeExecutionAction
+recoveryPlaneHostDescriptorBoundNodeActionInOperationInternal owned transport =
+  descriptorBoundCleanupNodeAction (dispatchRecoveryPlaneHostNode (Just owned) transport)
 
 dispatchRecoveryPlaneHostNode
-  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  :: Maybe OperationSubprocesses
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
   -> DescriptorBoundCleanupRun
   -> CleanupSurfaceWitness surface
   -> CompiledDesiredAbsenceProgram surface
   -> CleanupNodeExecutionContext
   -> CleanupNodePlan
   -> IO CleanupNodeOutcome
-dispatchRecoveryPlaneHostNode transport running _ compiled context plan =
+dispatchRecoveryPlaneHostNode owner transport running _ compiled context plan =
   case validateContext running context plan of
     Left err -> pure (refusalOutcome err)
     Right () -> case operationForPlan compiled plan of
@@ -149,7 +160,10 @@ dispatchRecoveryPlaneHostNode transport running _ compiled context plan =
   authorityClient = lifecycleAuthorityRecoveryPlaneAuthenticatedClient transport
   establishInterpreter =
     recoveryPlaneHostEstablishInterpreterInternal
-      (localRke2HostObservationEstablishBoundaryInternal transport)
+      ( case owner of
+          Nothing -> localRke2HostObservationEstablishBoundaryInternal transport
+          Just owned -> localRke2HostObservationEstablishBoundaryInOperationInternal owned transport
+      )
 
 validateContext
   :: DescriptorBoundCleanupRun

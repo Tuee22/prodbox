@@ -25,6 +25,7 @@ module Prodbox.ControlPlane.LocalRke2HostObservationRepository.Internal
   , localRke2HostObservationModelBCodecInternal
   , localRke2HostObservationLogicalNameInternal
   , observeLocalRke2HealthyAfterEstablishBeginInternal
+  , observeLocalRke2HealthyAfterEstablishBeginInOperationInternal
   , commitLocalRke2HostObservationAttemptInternal
   , commitEncodedLocalRke2HostObservationAttemptInternal
   , independentlyReadBackLocalRke2HostObservationAfterEstablishBeginInternal
@@ -58,9 +59,10 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Prodbox.Aws.SigV4 (hexSha256)
-import Prodbox.Config.LocalRke2RecoveryState
+import Prodbox.Config.LocalRke2RecoveryState.Internal
   ( LocalRke2RecoveryStateError
   , observeLocalRke2RecoveryState
+  , observeLocalRke2RecoveryStateInOperation
   )
 import Prodbox.ControlPlane.CleanupRunClient
   ( DescriptorBoundCleanupRun
@@ -138,6 +140,7 @@ import Prodbox.Lifecycle.Teardown.RecoveryPlane
 import Prodbox.Lifecycle.Teardown.RecoveryPlane.Internal
   ( RecoveryPlaneAttemptBinding
   )
+import Prodbox.Subprocess (OperationSubprocesses)
 
 data LocalRke2HostObservationRepositoryClient m
   = LocalRke2HostObservationRepositoryClient
@@ -267,7 +270,33 @@ observeLocalRke2HealthyAfterEstablishBeginInternal
            LocalRke2HostObservationRepositoryError
            (LocalRke2HostObservationCandidate surface)
        )
-observeLocalRke2HealthyAfterEstablishBeginInternal bound witness context =
+observeLocalRke2HealthyAfterEstablishBeginInternal =
+  observeLocalRke2HealthyAfterEstablishBeginUsingInternal Nothing
+
+observeLocalRke2HealthyAfterEstablishBeginInOperationInternal
+  :: OperationSubprocesses
+  -> DescriptorBoundCleanupRun
+  -> RecoverySurfaceWitness surface
+  -> TeardownExecutionContext surface
+  -> IO
+       ( Either
+           LocalRke2HostObservationRepositoryError
+           (LocalRke2HostObservationCandidate surface)
+       )
+observeLocalRke2HealthyAfterEstablishBeginInOperationInternal owned =
+  observeLocalRke2HealthyAfterEstablishBeginUsingInternal (Just owned)
+
+observeLocalRke2HealthyAfterEstablishBeginUsingInternal
+  :: Maybe OperationSubprocesses
+  -> DescriptorBoundCleanupRun
+  -> RecoverySurfaceWitness surface
+  -> TeardownExecutionContext surface
+  -> IO
+       ( Either
+           LocalRke2HostObservationRepositoryError
+           (LocalRke2HostObservationCandidate surface)
+       )
+observeLocalRke2HealthyAfterEstablishBeginUsingInternal owner bound witness context =
   case withDescriptorBoundRecoveryPlaneEstablishBindingInternal
     bound
     witness
@@ -279,7 +308,9 @@ observeLocalRke2HealthyAfterEstablishBeginInternal bound witness context =
             (LocalRke2HostObservationRepositoryEstablishBindingInvalid err)
         )
     Right (identity, binding) -> do
-      observed <- observeLocalRke2RecoveryState
+      observed <- case owner of
+        Nothing -> observeLocalRke2RecoveryState
+        Just owned -> observeLocalRke2RecoveryStateInOperation owned
       pure $ case observed of
         Left err ->
           Left (LocalRke2HostObservationRepositoryStateUnobservable err)

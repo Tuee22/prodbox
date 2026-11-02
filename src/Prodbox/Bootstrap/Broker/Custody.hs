@@ -147,6 +147,7 @@ data RootInitPhase
   | RootRecoveryCustodyAcknowledgementPending !FinalUnlockBundle
   | RootRecoveryCustodyDurable !FinalUnlockBundle !RecoveryCustodyReceipt
   | RootInitializationAmbiguous !InitAmbiguity
+  | RootResetInFlight !PristineResetProof !ArtifactDigest
   deriving stock (Eq)
 
 instance Show RootInitPhase where
@@ -189,6 +190,7 @@ data RootInitCommand
   | MarkRootInitAppliedWithoutDurableResponse
   | CancelRootInitialization !CancellationReason
   | ResetAmbiguousRootInitialization !PristineResetProof
+  | BeginAmbiguousRootReset !PristineResetProof !ArtifactDigest
   deriving stock (Eq)
 
 instance Show RootInitCommand where
@@ -214,6 +216,7 @@ data RootInitEvent
   | RootInitializationMarkedAmbiguous
   | RootInitializationCancellationLatched !CancellationReason
   | RootInitializationResetToPristine !PristineResetProof
+  | RootAmbiguousResetArmed !PristineResetProof !ArtifactDigest
   deriving stock (Eq)
 
 instance Show RootInitEvent where
@@ -312,6 +315,8 @@ data RootInitError
   | RootInitEstablishedGenerationResetRefused
   | RootInitObservationRegression !Natural !Natural
   | RootInitInvariantFailure ![RootInitInvariantViolation]
+  | RootInitResetInProgress
+  | RootInitResetNotArmed
   deriving stock (Eq, Show)
 
 data RootInitInvariantViolation
@@ -325,6 +330,7 @@ data RootInitInvariantViolation
   | RootResponseFinalShareCountDiffers !Natural !Natural
   | RootFinalCustodyBindingDiffers
   | RootFinalCustodyDigestDiffers
+  | RootResetReplacementDidNotAdvance
   deriving stock (Eq, Show)
 
 newRootInitState :: PristineStorageProof -> RootInitState
@@ -388,6 +394,8 @@ planRootInit state
         RootRecoveryCustodyDurable _ receipt -> RootPlanComplete receipt
         RootInitializationAmbiguous ambiguity ->
           RootPlanAmbiguityRequiresPristineReset ambiguity
+        RootResetInFlight proof _ ->
+          RootPlanAmbiguityRequiresPristineReset (resetAmbiguity proof)
 
 resumeRootInitFromObservation
   :: RootInitDurableObservation -> Either RootInitError RootInitState
@@ -404,6 +412,9 @@ restartRootInit
   -> RootInitDurableObservation
   -> Either RootInitError RootInitState
 restartRootInit current observation = do
+  case rootInitStatePhase current of
+    RootResetInFlight {} -> Left RootInitResetInProgress
+    _ -> Right ()
   requireSameRootBinding
     (rootInitStateBinding current)
     (rootObservationBinding observation)
@@ -435,6 +446,7 @@ rootInitIsAmbiguous :: RootInitState -> Bool
 rootInitIsAmbiguous state =
   case rootInitStatePhase state of
     RootInitializationAmbiguous _ -> True
+    RootResetInFlight {} -> True
     _ -> False
 
 rootInitEventForCommand :: RootInitCommand -> Either RootInitError RootInitEvent
@@ -461,6 +473,7 @@ rootInitEventForCommand command =
     MarkRootInitAppliedWithoutDurableResponse -> RootInitializationMarkedAmbiguous
     CancelRootInitialization reason -> RootInitializationCancellationLatched reason
     ResetAmbiguousRootInitialization proof -> RootInitializationResetToPristine proof
+    BeginAmbiguousRootReset proof action -> RootAmbiguousResetArmed proof action
 
 evolveRootInitPhase
   :: RootInitState -> RootInitEvent -> Either RootInitError RootInitState
@@ -518,23 +531,27 @@ evolveRootInitPhase state event =
         Just prepared -> withPhase state (RootInitializationAmbiguous (mkInitAmbiguity prepared))
     (_, RootInitializationCancellationLatched reason) ->
       Right state {rootInitStateDisposition = CustodyCancellationRequested reason}
-    (RootInitializationAmbiguous ambiguity, RootInitializationResetToPristine proof) -> do
-      if resetAmbiguousBinding proof /= ambiguousInitBinding ambiguity
+    (RootInitializationAmbiguous ambiguity, RootAmbiguousResetArmed proof action) -> do
+      if resetAmbiguity proof /= ambiguity
         then Left RootInitResetProofMismatch
         else
-          if pristineStorageBinding (resetReplacementPristine proof) == ambiguousInitBinding ambiguity
+          if rootInitStorageGeneration (pristineStorageBinding (resetReplacementPristine proof))
+            == rootInitStorageGeneration (ambiguousInitBinding ambiguity)
             then Left RootInitResetDidNotAdvanceBinding
-            else
-              Right
-                RootInitState
-                  { rootInitStateBinding =
-                      pristineStorageBinding (resetReplacementPristine proof)
-                  , rootInitStateDisposition = CustodyRunning
-                  , rootInitStatePhase = RootResetPristine proof
-                  }
+            else withPhase state (RootResetInFlight proof action)
+    (RootResetInFlight recorded _, RootInitializationResetToPristine proof)
+      | recorded == proof ->
+          Right
+            RootInitState
+              { rootInitStateBinding = pristineStorageBinding (resetReplacementPristine proof)
+              , rootInitStateDisposition = CustodyRunning
+              , rootInitStatePhase = RootResetPristine proof
+              }
+      | otherwise -> Left RootInitResetProofMismatch
+    (_, RootAmbiguousResetArmed _ _) -> Left RootInitResetOnlyFromAmbiguity
     (RootRecoveryCustodyDurable _ _, RootInitializationResetToPristine _) ->
       Left RootInitEstablishedGenerationResetRefused
-    (_, RootInitializationResetToPristine _) -> Left RootInitResetOnlyFromAmbiguity
+    (_, RootInitializationResetToPristine _) -> Left RootInitResetNotArmed
     (phase, _) -> phaseRefusal phase event
 
 withPhase :: RootInitState -> RootInitPhase -> Either RootInitError RootInitState
@@ -570,7 +587,8 @@ rootEventIsSafetyTail event =
     RootRecoveryCustodyConfirmed _ -> True
     RootInitializationMarkedAmbiguous -> True
     RootInitializationCancellationLatched _ -> True
-    RootInitializationResetToPristine _ -> False
+    RootInitializationResetToPristine _ -> True
+    RootAmbiguousResetArmed _ _ -> False
     RootInitEnvelopePrepared _ -> False
     RootPreparedInitWriteRecorded -> False
     RootPreparedInitReadBackConfirmed _ -> False
@@ -590,6 +608,7 @@ cancellationStopsNewInit state =
         RootPreparedReadBack _ -> True
         RootInitCallPending _ -> True
         RootInitializationAmbiguous _ -> True
+        RootResetInFlight {} -> True
         _ -> False
 
 preparedForAmbiguity :: RootInitPhase -> Maybe PreparedInitEnvelope
@@ -637,6 +656,8 @@ requireFinalCustodyMatch bundle receipt =
 phaseRelationshipViolations :: RootInitPhase -> [RootInitInvariantViolation]
 phaseRelationshipViolations phase =
   case phase of
+    RootResetPristine proof -> resetProofAdvanceViolations proof
+    RootResetInFlight proof _ -> resetProofAdvanceViolations proof
     RootEncryptedResponseCapturePending prepared receipt ->
       preparedResponseViolations prepared receipt
     RootEncryptedResponseWritten prepared receipt ->
@@ -659,6 +680,13 @@ phaseRelationshipViolations phase =
     RootRecoveryCustodyDurable bundle receipt ->
       finalCustodyViolations bundle receipt
     _ -> []
+
+resetProofAdvanceViolations :: PristineResetProof -> [RootInitInvariantViolation]
+resetProofAdvanceViolations proof =
+  [ RootResetReplacementDidNotAdvance
+  | rootInitStorageGeneration (resetAmbiguousBinding proof)
+      == rootInitStorageGeneration (pristineStorageBinding (resetReplacementPristine proof))
+  ]
 
 preparedResponseViolations
   :: PreparedInitEnvelope
@@ -738,6 +766,7 @@ rootPhaseBinding phase =
     RootRecoveryCustodyAcknowledgementPending bundle -> finalUnlockBundleBinding bundle
     RootRecoveryCustodyDurable bundle _ -> finalUnlockBundleBinding bundle
     RootInitializationAmbiguous ambiguity -> ambiguousInitBinding ambiguity
+    RootResetInFlight proof _ -> resetAmbiguousBinding proof
 
 rootCommittedRank :: RootInitPhase -> Natural
 rootCommittedRank phase =
@@ -761,6 +790,7 @@ rootCommittedRank phase =
     RootRecoveryCustodyAcknowledgementPending _ -> 4
     RootRecoveryCustodyDurable _ _ -> 5
     RootInitializationAmbiguous _ -> 1
+    RootResetInFlight {} -> 1
 
 rootObservationBinding :: RootInitDurableObservation -> RootInitBinding
 rootObservationBinding observation =
@@ -822,6 +852,7 @@ rootInitPhaseName phase =
       "RootRecoveryCustodyAcknowledgementPending"
     RootRecoveryCustodyDurable _ _ -> "RootRecoveryCustodyDurable"
     RootInitializationAmbiguous _ -> "RootInitializationAmbiguous"
+    RootResetInFlight {} -> "RootResetInFlight"
 
 rootInitCommandName :: RootInitCommand -> String
 rootInitCommandName command =
@@ -847,6 +878,7 @@ rootInitCommandName command =
       "MarkRootInitAppliedWithoutDurableResponse"
     CancelRootInitialization _ -> "CancelRootInitialization <redacted>"
     ResetAmbiguousRootInitialization _ -> "ResetAmbiguousRootInitialization"
+    BeginAmbiguousRootReset _ _ -> "BeginAmbiguousRootReset"
 
 rootInitEventName :: RootInitEvent -> String
 rootInitEventName event =
@@ -874,6 +906,7 @@ rootInitEventName event =
     RootInitializationCancellationLatched _ ->
       "RootInitializationCancellationLatched"
     RootInitializationResetToPristine _ -> "RootInitializationResetToPristine"
+    RootAmbiguousResetArmed _ _ -> "RootAmbiguousResetArmed"
 
 -- Child initialization custody ---------------------------------------------
 

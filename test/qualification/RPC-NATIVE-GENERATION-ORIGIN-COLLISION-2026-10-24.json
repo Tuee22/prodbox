@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "counterexample": "RPC-NATIVE-GENERATION-ORIGIN-COLLISION-2026-10-24",
+  "owning_sprint": "6.5",
+  "banked_utc": "2026-10-24T22:18:12.981459+00:00",
+  "scope": "Actual frozen route-trust constructor with independent synthetic public keys; replacement registry/trust/native-HTTP/authenticated-client composition has explicit Vault and retained-store fixture boundaries. No deployed origin or production registration proof.",
+  "causal_profile": {
+    "caller": "service/target-secret-agent",
+    "native_generations": [
+      1,
+      1
+    ],
+    "public_sources": "distinct home and AWS keys",
+    "route_key_ceiling_old": 2,
+    "route_key_ceiling_replacement_causal": 2,
+    "old_to_new_mapping": "Keep principal and existing home logical generation one. Bind the independent native-one key to retained logical generation two. Later home/native rotations allocate above the same principal watermark. Preserve all existing caller-slot and wire identities.",
+    "fault_schedule": "none",
+    "physical_process_or_resource_envelopes_increased": false,
+    "native_enforcement_claim": false
+  },
+  "production_profile": {
+    "existing_per_route_hard_ceiling": 16,
+    "registry_binding_ceiling": 256,
+    "registry_encoded_byte_ceiling": 131072,
+    "new_native_response_byte_ceiling": 131072,
+    "complete_home_seed_principals": 12,
+    "physical_profile_qualified": false
+  },
+  "frozen": {
+    "source_identity_record": ".build/sprint-6.5/rpc-key-registration-20261024/frozen-source.log",
+    "git_head": "b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6",
+    "worktree": "dirty",
+    "full_manifest": "b64af3a97c052559c08652ddbd2553d1cb1e0cfda2642781ed6b85a6420ba4bd",
+    "executable_manifest": "51d34a8575e8b2976aaad50a8009ce41f105148cec7b5b4fa363fd9af2972c14",
+    "source_policy_identifier": "prodbox-source-manifest",
+    "source_policy_version": 1,
+    "source_policy_digest": "4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae",
+    "executable_policy_identifier": "prodbox-source-manifest-executable",
+    "executable_policy_version": 1,
+    "executable_policy_digest": "2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b",
+    "control_binary_sha256": "d695c7248fd022e108cd7c58ee430c2e4a8e3dd805a322785494e2c59b12ca92",
+    "semantic_exit": 1,
+    "expected_exit": 1,
+    "wall_seconds": 0.0026557408273220062
+  },
+  "replacement": {
+    "implementation": "Retained registry/codec, mapped trust projection and actual native-version signing bridge; detailed proof results are indexed separately from this banked artifact",
+    "owned_model_http_and_authenticated_cases": 63,
+    "validation_record": ".build/sprint-6.5/rpc-key-registration-20261024/validation.json",
+    "actual_vault_http": "loopback fixture only",
+    "production_registry_birth_and_origin_admission": false,
+    "complete_remote_registration": false,
+    "native_key_or_session_retirement_proved": false
+  },
+  "primary_specifications": [
+    "https://developer.hashicorp.com/vault/api-docs/secret/transit#sign-data",
+    "https://developer.hashicorp.com/vault/api-docs/system/health"
+  ],
+  "deployment_qualification": "pending",
+  "qualified_cycles": 0,
+  "hand_actions": []
+}

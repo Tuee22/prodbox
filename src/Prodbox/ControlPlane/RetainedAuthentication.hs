@@ -37,13 +37,11 @@ import Prodbox.ControlPlane.RequestReplay
 import Prodbox.Http.Client (HttpError (..), renderHttpError)
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionAggregate
-  , authorityAggregateAdmission
+  , authorityAggregateAuthenticationEpoch
   )
 import Prodbox.Lifecycle.Authority.Genesis
-  ( AuthorityAdmissionState (..)
-  , AuthorityEpoch
+  ( AuthorityEpoch
   , authorityEpochFromValue
-  , authorityEpochGenesis
   , authorityEpochValue
   )
 import Prodbox.Runtime.Role (RuntimeRole, runtimeRoleName)
@@ -55,6 +53,7 @@ import Prodbox.Vault.Client
   , renderVaultCasOutcome
   , vaultKvCasWriteV2
   , vaultKvReadVersionedV2
+  , vaultKvReadVersionedV2Bounded
   )
 import Prodbox.Vault.Session
   ( VaultSession
@@ -80,17 +79,17 @@ requestReplayField = "projection_base64"
 -- epoch being repaired.  Opening a repair advances this value atomically with
 -- the retained Authority aggregate, after which the projection is repaired.
 authorityAuthenticationEpoch :: AuthorityAdmissionAggregate -> AuthorityEpoch
-authorityAuthenticationEpoch aggregate =
-  case authorityAggregateAdmission aggregate of
-    GenesisFrozen -> authorityEpochGenesis
-    EstablishingBackup _ -> authorityEpochGenesis
-    BackupEstablished epoch _ _ -> epoch
-    BackupRepairFrozen epoch _ -> epoch
+authorityAuthenticationEpoch = authorityAggregateAuthenticationEpoch
 
 readRetainedAuthorityEpoch
   :: VaultSession -> IO (Either Text AuthorityEpoch)
 readRetainedAuthorityEpoch session = do
-  result <- readVersioned session controlPlaneAuthorityEpochPath
+  result <- withSessionToken session $ \token ->
+    vaultKvReadVersionedV2Bounded
+      (sessionAddress session)
+      token
+      "secret"
+      controlPlaneAuthorityEpochPath
   pure $ do
     versioned <- mapLeft renderVaultError result
     decodeEpochFields (kvV2VersionedSecretData versioned)

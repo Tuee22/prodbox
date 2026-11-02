@@ -67,7 +67,11 @@ data Variant
 partsOfVariant :: Variant -> CycleIdentityParts
 partsOfVariant variant = case variant of
   DeploymentA -> fixtureParts
-  DeploymentB -> fixtureParts {partsGeneratedConfig = digestOf 'Z'}
+  DeploymentB ->
+    fixtureParts
+      { partsGeneratedConfig =
+          generatedConfigDigestFromParts (digestOf 'Z') (localRpcRegistrationDigest fixtureLocal)
+      }
   DeploymentAfterDeletion ->
     fixtureParts
       { partsSourceManifestDigest = Text.replicate 64 "d"
@@ -91,9 +95,16 @@ artifactFor label variant attempt =
       { fieldsParts = partsOfVariant variant
       , fieldsAttempt = attempt
       , fieldsComponentImages = inventoryFor (partsComponentImages (partsOfVariant variant))
+      , fieldsInForceConfigDigest = publicEvidenceDigestText (parameterDigest variant)
       } of
     Right pair -> pair
     Left err -> error (show err)
+ where
+  -- Custom source/image parts keep the same fixture config. An arbitrary
+  -- replacement digest without matching inputs must fail artifact attestation.
+  parameterDigest active = case active of
+    DeploymentB -> digestOf 'Z'
+    _ -> localInForceConfigDigest fixtureLocal
 
 beginRecord :: Text -> Variant -> Int -> LedgerRecord
 beginRecord label variant attempt = RecordCycleBegun (beganFor label variant attempt)

@@ -33,9 +33,13 @@ module Prodbox.Observation.AbsenceMarker
   ( AbsenceProbe (..)
   , absenceProbeMarkers
   , reportsAbsence
+  , reportsAbsenceBytes
   )
 where
 
+import Data.ByteString (ByteString)
+import Data.ByteString qualified as ByteString
+import Data.ByteString.Char8 qualified as ByteString8
 import Data.Char (toLower)
 import Data.List (isInfixOf)
 
@@ -116,3 +120,11 @@ reportsAbsence probe rawDetail =
   any (`isInfixOf` normalized) (absenceProbeMarkers probe)
  where
   normalized = map toLower rawDetail
+
+-- The byte API retains the same Char8 domain as the subprocess String API.
+-- Classification remains keyed by probe and stderr is selected by the caller.
+reportsAbsenceBytes :: AbsenceProbe -> ByteString -> Bool
+reportsAbsenceBytes probe rawDetail =
+  any ((`ByteString.isInfixOf` normalized) . ByteString8.pack) (absenceProbeMarkers probe)
+ where
+  normalized = ByteString8.map toLower rawDetail

@@ -720,6 +720,8 @@ controlPayload command = case command of
     Left "backup reconciler cannot observe a cascade Provider admission reservation"
   ObserveProviderBootstrapPredecessor ->
     Left "backup reconciler cannot discover a bootstrap predecessor"
+  ObserveAuthorityEpochPromotion ->
+    Left "backup reconciler cannot observe epoch promotion"
   RecordCascadeTerminalAuditReceipt _ _ ->
     Left "backup reconciler cannot record the Cascade terminal-audit receipt"
   RevokeCascadeProviderCredential _ _ ->

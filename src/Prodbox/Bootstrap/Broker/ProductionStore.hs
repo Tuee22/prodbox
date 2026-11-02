@@ -36,6 +36,9 @@ module Prodbox.Bootstrap.Broker.ProductionStore
   , validFinalUnlockBundle
   , validUnlockShareThreshold
   , validSecretWorkerCheckpoint
+  , rootInitReadMatches
+  , rootInitResetReadMatches
+  , rootInitJournalMutationGeneration
   )
 where
 
@@ -143,11 +146,13 @@ import Prodbox.Bootstrap.Broker.Types
   , preparedInitBinding
   , preparedInitEnvelopeDigest
   , preparedInitPristineObservationDigest
+  , pristineStorageBinding
   , renderArtifactDigest
   , renderBootstrapTransactionId
   , renderDeliveryNonce
   , renderVaultStorageGeneration
   , resetAmbiguousBinding
+  , resetReplacementPristine
   , rootInitStorageGeneration
   )
 import Prodbox.CLI.Output (writeDiagnosticLine)
@@ -977,6 +982,9 @@ rootInitReadMatches requested state =
   rootInitStateBinding state == requested
     || case rootInitStatePhase state of
       RootResetPristine proof -> resetAmbiguousBinding proof == requested
+      RootResetInFlight proof _ ->
+        resetAmbiguousBinding proof == requested
+          || pristineStorageBinding (resetReplacementPristine proof) == requested
       _ -> False
 
 -- | Reset recovery is the one root-journal lookup whose action names the old
@@ -988,6 +996,8 @@ rootInitResetReadMatches requested state =
   rootInitStorageGeneration (rootInitStateBinding state) == requested
     || case rootInitStatePhase state of
       RootResetPristine proof ->
+        rootInitStorageGeneration (resetAmbiguousBinding proof) == requested
+      RootResetInFlight proof _ ->
         rootInitStorageGeneration (resetAmbiguousBinding proof) == requested
       _ -> False
 

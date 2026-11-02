@@ -309,6 +309,7 @@ renderTransportError transportError = case transportError of
   ControlPlaneTransportFailed httpError ->
     "http/" <> renderTransportHttpError httpError
   ControlPlaneResponseTooLarge _ _ -> "response-too-large"
+  ControlPlaneResponseHeadersTooLarge {} -> "response-headers-too-large"
 
 renderTransportHttpError :: HttpError -> Text
 renderTransportHttpError httpError = case httpError of

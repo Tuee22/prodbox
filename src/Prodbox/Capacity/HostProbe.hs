@@ -10,7 +10,7 @@
 --
 -- 'deriveHostFittingCapacity' turns an observed host plus a resource plan into a
 -- @host_capacity@ vector that (a) covers the plan's demand — @rke2_reserved +
--- eviction_floor + Σ concurrent draws@ — so the Haskell over-commit proof (Ring
+-- eviction_floor + platform scheduler requests + Σ concurrent application draws@ — so the Haskell over-commit proof (Ring
 -- 2) admits it, and (b) fits the real device so the reconcile-time observed-host
 -- check (Ring 3, @compileResourcePlanAgainstObserved@) admits it, failing fast
 -- when the host is too small. See resource_scaling_doctrine.md §2B.
@@ -95,12 +95,13 @@ observeHostCapacityFromHost repoRoot retainedRoot = do
 -- when the host cannot cover the plan.
 deriveHostFittingCapacity :: ObservedHostRoot -> ResourcePlan -> Either String ResourceVector
 deriveHostFittingCapacity observed plan = do
-  -- The shape check makes 'concurrentPlanDraws' total (its request projection
-  -- would otherwise be partial on an invalid workload demand).
+  -- Validate application request projections before folding. An omitted
+  -- platform declaration remains an explicit refusal.
   validateRawResourcePlanShape plan
+  draws <- concurrentPlanDraws plan
   let observedVector = observedHostVector observed
       reservation = plusResourceVector (rke2_reserved plan) (eviction_floor plan)
-      totalDraw = foldl' plusResourceVector zeroVector (concurrentPlanDraws plan)
+      totalDraw = foldl' plusResourceVector zeroVector draws
       demand = plusResourceVector reservation totalDraw
   cpu <- fitAxis "CPU (milli-cores)" (milli_cpu observedVector) (milli_cpu demand)
   memory <- fitAxis "memory (MiB)" (memory_mib observedVector) (memory_mib demand)

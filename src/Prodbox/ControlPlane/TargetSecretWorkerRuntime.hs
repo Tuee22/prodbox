@@ -19,6 +19,7 @@ module Prodbox.ControlPlane.TargetSecretWorkerRuntime
   , classifyTlsHomeRewrapWorkerResult
   , targetSecretWorkerCommitmentKey
   , targetSecretWorkerTrustPath
+  , decodeTargetWorkerAcceptedAuthority
   , targetWorkerServiceLoginAccepted
   , TargetWorkerAuditorRecoveryBoundary (..)
   , acquireTargetWorkerAuditorWith
@@ -41,7 +42,6 @@ import Control.Exception
 import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
-import Data.ByteString.Base64 qualified as Base64
 import Data.ByteString.Builder qualified as ByteStringBuilder
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Char (isControl, isSpace)
@@ -49,7 +49,6 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Data.Text.Encoding qualified as TextEncoding
 import Data.Text.IO qualified as TextIO
 import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import Numeric.Natural (Natural)
@@ -75,6 +74,8 @@ import Prodbox.ControlPlane.RoleReadiness (noRoleReadinessContribution)
 import Prodbox.ControlPlane.ServiceSessionJournal
   ( serviceSessionBindingFence
   )
+import Prodbox.ControlPlane.TargetAuthorityEpoch (targetEpochWorkerAuthority)
+import Prodbox.ControlPlane.TargetAuthorityEpochCodec (decodeTargetAuthorityEpochFields)
 import Prodbox.ControlPlane.TargetMaterialRegistry
   ( TargetSecretId
   , TargetSecretPayload
@@ -84,8 +85,6 @@ import Prodbox.ControlPlane.TargetMaterialRegistry
 import Prodbox.ControlPlane.TargetSecretAgentExecution
   ( AcceptedTargetAuthority
   , TargetAgentIdentity
-  , acceptedTargetAuthorityMaximumEncodedBytes
-  , decodeAcceptedTargetAuthority
   , targetAgentIdentityText
   )
 import Prodbox.ControlPlane.TargetSecretWorker
@@ -910,15 +909,16 @@ readAcceptedAuthority session target = do
         (targetSecretWorkerTrustPath target)
   pure $ do
     fields <- first (const TargetSecretWorkerTrustUnavailable) result
-    encodedText <-
-      maybe (Left TargetSecretWorkerTrustUnavailable) Right (Map.lookup "accepted_authority" fields)
-    encoded <-
-      first
-        (const TargetSecretWorkerTrustUnavailable)
-        (Base64.decode (TextEncoding.encodeUtf8 encodedText))
-    first
-      (const TargetSecretWorkerTrustUnavailable)
-      (decodeAcceptedTargetAuthority acceptedTargetAuthorityMaximumEncodedBytes encoded)
+    decodeTargetWorkerAcceptedAuthority target fields
+
+decodeTargetWorkerAcceptedAuthority
+  :: TargetSecretId
+  -> Map.Map Text Text
+  -> Either TargetSecretWorkerRuntimeError AcceptedTargetAuthority
+decodeTargetWorkerAcceptedAuthority target fields = do
+  record <-
+    first (const TargetSecretWorkerTrustUnavailable) (decodeTargetAuthorityEpochFields target fields)
+  maybe (Left TargetSecretWorkerTrustUnavailable) Right (targetEpochWorkerAuthority record)
 
 vaultTargetWorkerBoundary :: VaultSession -> TargetWorkerVaultBoundary IO
 vaultTargetWorkerBoundary session =

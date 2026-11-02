@@ -195,6 +195,7 @@ framingRequestRoute headerSection = do
 
 controlPlaneRouteMaximumBodyBytes :: ControlPlaneRoute -> Int
 controlPlaneRouteMaximumBodyBytes route = case route of
+  LifecycleAuthorityPeerObserve -> controlPlaneMaximumBodyBytes
   LifecyclePulumiCheckpoint -> controlPlaneMaximumLargeBodyBytes
   AuthorityBackupCopy -> controlPlaneMaximumLargeBodyBytes
   LifecycleConfigProposeCas -> controlPlaneMaximumLargeBodyBytes

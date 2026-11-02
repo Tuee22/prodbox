@@ -57,6 +57,7 @@
 module Prodbox.Lifecycle.Teardown.CloudRuntimeProduction
   ( -- * What the caller supplies
     ProductionCloudRuntimeInputs (..)
+  , OperationCloudRuntimeInputs (..)
 
     -- * The bounded drain lease
   , EksDrainLeaseSeconds
@@ -71,9 +72,16 @@ module Prodbox.Lifecycle.Teardown.CloudRuntimeProduction
 
     -- * The runtime
   , productionCloudRuntime
+  , productionCloudRuntimeInOperation
+
+    -- * Exact creation reads over an already owned Authority transport
+  , ProviderCreationBindingReadError (..)
+  , readProviderCreationBindingWithTransport
   )
 where
 
+import Control.Monad (unless)
+import Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE)
 import Data.Bifunctor (first)
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -85,13 +93,15 @@ import Prodbox.ControlPlane.AuthorityOperationClient
   ( lifecycleAuthorityOperationClientAuthenticated
   )
 import Prodbox.ControlPlane.AwsStackCreationBindingRepository
-  ( committedAwsStackCreationConfig
+  ( AwsStackCreationBindingError
+  , committedAwsStackCreationConfig
   , committedAwsStackCreationOperationId
   , committedAwsStackCreationRevision
   , readBackCommittedAwsStackCreationBindingForCreationScope
   )
 import Prodbox.ControlPlane.AwsStackCreationBindingTransportClient
   ( lifecycleAuthorityAwsStackCreationBindingAuthenticatedClient
+  , selectRegisteredStackGenerationOverTransport
   )
 import Prodbox.ControlPlane.AwsStackReaderRepository
   ( AwsStackReaderClient
@@ -126,6 +136,7 @@ import Prodbox.ControlPlane.RegisteredStackCreationSubmitter
   ( renderRegisteredStackCleanupSelectError
   , selectRegisteredStackGenerationForCleanup
   )
+import Prodbox.Lifecycle.Authority.Submission (OperationId)
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupDigest
   , CleanupOperationId
@@ -147,7 +158,9 @@ import Prodbox.Lifecycle.Teardown.AwsEksRegisteredTargetDestroyInterpreter
   )
 import Prodbox.Lifecycle.Teardown.AwsRegisteredTargetInterpreter
   ( AwsRegisteredTargetInterpreter (..)
+  , AwsRegisteredTargetInterpreterError
   , AwsStackProviderBinding
+  , Dns01ChallengeOwnerDeleteBoundary
   , mkAwsStackProviderBinding
   )
 import Prodbox.Lifecycle.Teardown.AwsStackReaderInterpreter
@@ -160,12 +173,17 @@ import Prodbox.Lifecycle.Teardown.CloudRuntime
   )
 import Prodbox.Lifecycle.Teardown.Dns01ChallengeOwnerDeleteInterpreter
   ( productionDns01ChallengeOwnerDeleteBoundary
+  , productionDns01ChallengeOwnerDeleteBoundaryInOperation
   )
 import Prodbox.Lifecycle.Teardown.EksDrainInterpreter
-  ( eksDrainCommitSelectionInvocations
+  ( EksDrainAttemptBoundary
+  , EksDrainCommitSelectionBoundary
+  , eksDrainCommitSelectionInvocations
   , mkEksDrainInterpreter
   , productionEksDrainAttemptBoundary
+  , productionEksDrainAttemptBoundaryInOperation
   , productionEksDrainCommitSelectionBoundary
+  , productionEksDrainCommitSelectionBoundaryInOperation
   )
 import Prodbox.Lifecycle.Teardown.EksDrainSession
   ( maximumEksDrainLifetimeSeconds
@@ -175,7 +193,8 @@ import Prodbox.Lifecycle.Teardown.EksTeardownExecutor
   , EksTeardownExecutor (..)
   )
 import Prodbox.Lifecycle.Teardown.EphemeralKubectl
-  ( ephemeralKubectlWallClockSeconds
+  ( EmbeddedHomeKubeconfig
+  , ephemeralKubectlWallClockSeconds
   )
 import Prodbox.Lifecycle.Teardown.Execution
   ( TeardownExecutionContext
@@ -190,7 +209,11 @@ import Prodbox.Lifecycle.Teardown.Model
   , ObservationEvidenceScope
   , ObservationRevision
   , RegisteredResourceKey
+  , evidenceAwsScope
   , evidenceCleanupSurface
+  , evidenceDurableRunScope
+  , evidenceLinuxRke2Foundation
+  , evidenceRegistryRevision
   , mkObservationEvidenceScope
   )
 import Prodbox.Lifecycle.Teardown.Observation (CheckpointPairObservation)
@@ -206,21 +229,32 @@ import Prodbox.Lifecycle.Teardown.ProviderDispatch
       ( ProviderAbsenceReadBack
       , ProviderDecisionObservation
       )
+  , TeardownProviderBoundary
   , mkProviderDispatchKey
   , observationRevisionForProviderDispatchKey
   , productionTeardownProviderBoundary
+  , productionTeardownProviderBoundaryWithTransport
+  )
+import Prodbox.Lifecycle.Teardown.Registry
+  ( lookupRegisteredIdentity
+  , registeredIdentityCoordinateDigest
   )
 import Prodbox.Lifecycle.Teardown.StackGeneration
-  ( registeredStackGenerationAdmittedOperationId
+  ( StackGenerationError
+  , StackGenerationSelector (..)
+  , registeredStackGenerationAdmittedOperationId
   , registeredStackGenerationCreatingRunScope
   , registeredStackGenerationCreatingSurface
   , registeredStackGenerationKey
   , registeredStackGenerationProviderRevision
+  , selectRegisteredStackGeneration
   , stackGenerationKeyAwsScope
   , stackGenerationKeyFoundation
+  , stackGenerationKeyOrdinal
   , stackGenerationKeyRegistryRevision
   )
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
+import Prodbox.Subprocess (OperationSubprocesses)
 
 -- ---------------------------------------------------------------------------
 -- What the caller supplies
@@ -242,6 +276,35 @@ data ProductionCloudRuntimeInputs = ProductionCloudRuntimeInputs
   -- forgetting to.
   , productionCloudKubectlWorkingDirectory :: !(Maybe FilePath)
   , productionCloudDrainLease :: !EksDrainLeaseSeconds
+  }
+
+-- | Captured inputs for the ordinary program's cloud interpreter. No host
+-- caller or repository root is available for rebuilding authentication, and no
+-- kubeconfig resolver or independent subprocess owner is selectable here.
+-- These values alone grant no Authority or physical operation admission.
+data OperationCloudRuntimeInputs = OperationCloudRuntimeInputs
+  { operationCloudSubprocesses :: !OperationSubprocesses
+  , operationCloudProviderScopeOperation :: !OperationId
+  , operationCloudHomeKubeconfig :: !EmbeddedHomeKubeconfig
+  , operationCloudKubectlPath :: !FilePath
+  , operationCloudKubectlEnvironment :: ![(String, String)]
+  , operationCloudKubectlWorkingDirectory :: !(Maybe FilePath)
+  , operationCloudDrainLease :: !EksDrainLeaseSeconds
+  }
+
+-- Only the two closed production constructors below build this private
+-- composition. Every Provider observer and reader shares one selected route.
+data CloudRuntimeProductionAccess = CloudRuntimeProductionAccess
+  { cloudRuntimeProviderBoundary :: !(TeardownProviderBoundary IO)
+  , cloudRuntimeReadCreation
+      :: CleanupOperationId
+      -> RegisteredResourceKey
+      -> ObservationEvidenceScope
+      -> IO (Either Text AwsStackProviderBinding)
+  , cloudRuntimeCommitSelection :: !(EksDrainCommitSelectionBoundary IO)
+  , cloudRuntimeAttempt :: !(EksDrainAttemptBoundary IO)
+  , cloudRuntimeDns01Delete :: !(Dns01ChallengeOwnerDeleteBoundary IO)
+  , cloudRuntimeDrainLease :: !EksDrainLeaseSeconds
   }
 
 -- ---------------------------------------------------------------------------
@@ -348,7 +411,99 @@ productionCloudRuntime
   -> CleanupRunId
   -> CleanupDigest
   -> Either ProductionCloudRuntimeError (CloudRuntime IO)
-productionCloudRuntime inputs transport runId graphDigest = do
+productionCloudRuntime inputs transport runId graphDigest =
+  assembleCloudRuntime
+    CloudRuntimeProductionAccess
+      { cloudRuntimeProviderBoundary =
+          productionTeardownProviderBoundary
+            (productionCloudCaller inputs)
+            (productionCloudRepositoryRoot inputs)
+      , cloudRuntimeReadCreation = readProviderCreationBindingAt inputs transport
+      , cloudRuntimeCommitSelection =
+          productionEksDrainCommitSelectionBoundary
+            (productionCloudCaller inputs)
+            (productionCloudRepositoryRoot inputs)
+            (productionCloudKubectlPath inputs)
+            (productionCloudKubectlEnvironment inputs)
+            (productionCloudKubectlWorkingDirectory inputs)
+      , cloudRuntimeAttempt =
+          productionEksDrainAttemptBoundary
+            (productionCloudCaller inputs)
+            (productionCloudRepositoryRoot inputs)
+            (productionCloudKubectlPath inputs)
+            (productionCloudKubectlEnvironment inputs)
+            (productionCloudKubectlWorkingDirectory inputs)
+      , cloudRuntimeDns01Delete =
+          productionDns01ChallengeOwnerDeleteBoundary
+            (productionCloudCaller inputs)
+            (productionCloudRepositoryRoot inputs)
+            (productionCloudKubectlPath inputs)
+            (productionCloudKubectlEnvironment inputs)
+            (productionCloudKubectlWorkingDirectory inputs)
+      , cloudRuntimeDrainLease = productionCloudDrainLease inputs
+      }
+    transport
+    runId
+    graphDigest
+
+-- | The same closed cloud dispatcher over the captured ordinary operation.
+-- Durable readers, Provider dispatch and EKS issuance borrow one Authority
+-- transport; both Kubernetes targets borrow one observed command lane. Stack
+-- generation selection retains the original confirmed scope operation.
+productionCloudRuntimeInOperation
+  :: OperationCloudRuntimeInputs
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> CleanupRunId
+  -> CleanupDigest
+  -> Either ProductionCloudRuntimeError (CloudRuntime IO)
+productionCloudRuntimeInOperation inputs transport runId graphDigest =
+  assembleCloudRuntime
+    CloudRuntimeProductionAccess
+      { cloudRuntimeProviderBoundary = productionTeardownProviderBoundaryWithTransport transport
+      , cloudRuntimeReadCreation =
+          \operationId key scope ->
+            first renderBounded
+              <$> readProviderCreationBindingWithTransport
+                transport
+                (operationCloudProviderScopeOperation inputs)
+                operationId
+                key
+                scope
+      , cloudRuntimeCommitSelection =
+          productionEksDrainCommitSelectionBoundaryInOperation
+            transport
+            (operationCloudSubprocesses inputs)
+            (operationCloudKubectlPath inputs)
+            (operationCloudKubectlEnvironment inputs)
+            (operationCloudKubectlWorkingDirectory inputs)
+      , cloudRuntimeAttempt =
+          productionEksDrainAttemptBoundaryInOperation
+            transport
+            (operationCloudSubprocesses inputs)
+            (operationCloudKubectlPath inputs)
+            (operationCloudKubectlEnvironment inputs)
+            (operationCloudKubectlWorkingDirectory inputs)
+      , cloudRuntimeDns01Delete =
+          productionDns01ChallengeOwnerDeleteBoundaryInOperation
+            transport
+            (operationCloudSubprocesses inputs)
+            (operationCloudHomeKubeconfig inputs)
+            (operationCloudKubectlPath inputs)
+            (operationCloudKubectlEnvironment inputs)
+            (operationCloudKubectlWorkingDirectory inputs)
+      , cloudRuntimeDrainLease = operationCloudDrainLease inputs
+      }
+    transport
+    runId
+    graphDigest
+
+assembleCloudRuntime
+  :: CloudRuntimeProductionAccess
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> CleanupRunId
+  -> CleanupDigest
+  -> Either ProductionCloudRuntimeError (CloudRuntime IO)
+assembleCloudRuntime access transport runId graphDigest = do
   eks <- checkpointAuthority "aws-eks"
   subzone <- checkpointAuthority "aws-eks-subzone"
   testStack <- checkpointAuthority "aws-test"
@@ -373,7 +528,7 @@ productionCloudRuntime inputs transport runId graphDigest = do
         AwsRegisteredTargetInterpreter
           { awsRegisteredTargetProviderBoundary = providerBoundary
           , awsRegisteredTargetReadStackCreationBinding =
-              readProviderCreationBindingAt inputs transport
+              cloudRuntimeReadCreation access
           , awsRegisteredTargetReadStackDecisionInputs =
               readBackAwsStackDecisionInputs stackReaderClient
           , awsRegisteredTargetReadStackProviderBinding =
@@ -400,7 +555,7 @@ productionCloudRuntime inputs transport runId graphDigest = do
               mkAwsStackReaderInputReaders
                 (readPostRecoveryCheckpointPair checkpoint)
                 (readCompleteOwnershipManifest transport)
-                (readProviderCreationBinding inputs transport)
+                (readProviderCreationBindingInContext access)
           }
 
       eksExecutor =
@@ -428,34 +583,10 @@ productionCloudRuntime inputs transport runId graphDigest = do
 
   drainInterpreter = mkEksDrainInterpreter currentEpochSeconds
 
-  providerBoundary =
-    productionTeardownProviderBoundary
-      (productionCloudCaller inputs)
-      (productionCloudRepositoryRoot inputs)
-
-  commitSelectionBoundary =
-    productionEksDrainCommitSelectionBoundary
-      (productionCloudCaller inputs)
-      (productionCloudRepositoryRoot inputs)
-      (productionCloudKubectlPath inputs)
-      (productionCloudKubectlEnvironment inputs)
-      (productionCloudKubectlWorkingDirectory inputs)
-
-  dns01ChallengeOwnerDeleteBoundary =
-    productionDns01ChallengeOwnerDeleteBoundary
-      (productionCloudCaller inputs)
-      (productionCloudRepositoryRoot inputs)
-      (productionCloudKubectlPath inputs)
-      (productionCloudKubectlEnvironment inputs)
-      (productionCloudKubectlWorkingDirectory inputs)
-
-  attemptBoundary =
-    productionEksDrainAttemptBoundary
-      (productionCloudCaller inputs)
-      (productionCloudRepositoryRoot inputs)
-      (productionCloudKubectlPath inputs)
-      (productionCloudKubectlEnvironment inputs)
-      (productionCloudKubectlWorkingDirectory inputs)
+  providerBoundary = cloudRuntimeProviderBoundary access
+  commitSelectionBoundary = cloudRuntimeCommitSelection access
+  dns01ChallengeOwnerDeleteBoundary = cloudRuntimeDns01Delete access
+  attemptBoundary = cloudRuntimeAttempt access
 
   checkpointAuthority
     :: Text -> Either ProductionCloudRuntimeError (PulumiCheckpointAuthority IO)
@@ -470,7 +601,7 @@ productionCloudRuntime inputs transport runId graphDigest = do
   drainDeadline :: IO Integer
   drainDeadline = do
     now <- currentEpochSeconds
-    pure (now + eksDrainLeaseSecondsValue (productionCloudDrainLease inputs))
+    pure (now + eksDrainLeaseSecondsValue (cloudRuntimeDrainLease access))
 
   selectionParameters
     :: TeardownExecutionIdentity
@@ -486,6 +617,84 @@ productionCloudRuntime inputs transport runId graphDigest = do
           , eksDrainSelectionInventoryRevision = inventoryRevision
           , eksDrainSelectionDeadlineEpochSeconds = deadline
           }
+
+-- | Select against the original program scope, then independently read its
+-- exact creation provenance. Both calls borrow one supplied transport; no
+-- settings, scope identity, clock window or authentication owner is recreated.
+data ProviderCreationBindingReadError
+  = ProviderCreationAwsScopeMissing
+  | ProviderCreationResourceUnknown
+  | ProviderCreationSelectRefused !AwsStackCreationBindingError
+  | ProviderCreationSelectedIdentityRefused !StackGenerationError
+  | ProviderCreationReadBackRefused !AwsStackCreationBindingError
+  | ProviderCreationOperationMismatch
+  | ProviderCreationRevisionMismatch
+  | ProviderCreationBindingRefused !AwsRegisteredTargetInterpreterError
+  deriving (Eq, Show)
+
+readProviderCreationBindingWithTransport
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> OperationId
+  -> CleanupOperationId
+  -> RegisteredResourceKey
+  -> ObservationEvidenceScope
+  -> IO (Either ProviderCreationBindingReadError AwsStackProviderBinding)
+readProviderCreationBindingWithTransport transport scopeOperation operationId key cleanupScope = runExceptT $ do
+  awsScope <- maybe (throwE ProviderCreationAwsScopeMissing) pure (evidenceAwsScope cleanupScope)
+  identity <- maybe (throwE ProviderCreationResourceUnknown) pure (lookupRegisteredIdentity key)
+  generation <-
+    ExceptT
+      ( first ProviderCreationSelectRefused
+          <$> selectRegisteredStackGenerationOverTransport transport key scopeOperation cleanupScope
+      )
+  let generationKey = registeredStackGenerationKey generation
+      selector =
+        StackGenerationSelector
+          { selectorResourceKey = key
+          , selectorCoordinateDigest = registeredIdentityCoordinateDigest identity
+          , selectorRegistryRevision = evidenceRegistryRevision cleanupScope
+          , selectorFoundation = evidenceLinuxRke2Foundation cleanupScope
+          , selectorAwsScope = awsScope
+          , -- The confirmed Authority selection owns the current ordinal. The
+            -- other run-invariant fields must independently match our program.
+            selectorOrdinal = stackGenerationKeyOrdinal generationKey
+          , selectorRunScope = evidenceDurableRunScope cleanupScope
+          , selectorSurface = evidenceCleanupSurface cleanupScope
+          }
+      creationScope =
+        mkObservationEvidenceScope
+          (registeredStackGenerationCreatingSurface generation)
+          (stackGenerationKeyRegistryRevision generationKey)
+          (registeredStackGenerationCreatingRunScope generation)
+          (stackGenerationKeyFoundation generationKey)
+          (Just (stackGenerationKeyAwsScope generationKey))
+          ReconcileDesiredPresent
+  case selectRegisteredStackGeneration selector generation of
+    Left cause -> throwE (ProviderCreationSelectedIdentityRefused cause)
+    Right _ -> pure ()
+  committed <-
+    ExceptT
+      ( first ProviderCreationReadBackRefused
+          <$> readBackCommittedAwsStackCreationBindingForCreationScope
+            (lifecycleAuthorityAwsStackCreationBindingAuthenticatedClient transport)
+            key
+            creationScope
+      )
+  unless
+    ( committedAwsStackCreationOperationId committed
+        == registeredStackGenerationAdmittedOperationId generation
+    )
+    (throwE ProviderCreationOperationMismatch)
+  unless
+    (committedAwsStackCreationRevision committed == registeredStackGenerationProviderRevision generation)
+    (throwE ProviderCreationRevisionMismatch)
+  either (throwE . ProviderCreationBindingRefused) pure $
+    mkAwsStackProviderBinding
+      operationId
+      key
+      cleanupScope
+      (committedAwsStackCreationRevision committed)
+      (committedAwsStackCreationConfig committed)
 
 -- | The post-recovery checkpoint pair, read again rather than remembered from
 -- the recovery node that preceded this commit.
@@ -517,17 +726,15 @@ readCompleteOwnershipManifest transport context target =
 -- operation identity comes from the executing node.  Rebuilding the binding
 -- through 'mkAwsStackProviderBinding' rather than returning the durable value
 -- directly is what re-checks the configuration against the stack the key names.
-readProviderCreationBinding
-  :: ProductionCloudRuntimeInputs
-  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+readProviderCreationBindingInContext
+  :: CloudRuntimeProductionAccess
   -> TeardownExecutionContext surface
   -> RegisteredTargetBinding
   -> CleanupOperationId
   -> IO (Either Text AwsStackProviderBinding)
-readProviderCreationBinding inputs transport context target operationId = do
-  readProviderCreationBindingAt
-    inputs
-    transport
+readProviderCreationBindingInContext access context target operationId =
+  cloudRuntimeReadCreation
+    access
     operationId
     (registeredTargetKey target)
     (teardownExecutionObservationScope context)

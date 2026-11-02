@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 
 -- | Host controller for the closed Bootstrap Broker Vault surface. Every
 -- lifecycle request uses a fresh custom-audience ServiceAccount credential and
@@ -10,9 +11,11 @@ module Prodbox.CLI.Vault
   , validateLifecycleProviderAwsRegion
   , gatewayEndpointFromEnv
   , runVaultBootstrapViaBroker
+  , runHarnessVaultBootstrapViaBroker
   , runPostUnsealHandoffViaBroker
   , BrokerVaultSealStatus (..)
   , observeBrokerVaultSealStatus
+  , decodeBrokerVaultSealStatus
   , brokerHostConnection
   , freshVaultIdempotencyKey
   )
@@ -26,6 +29,7 @@ import Data.Aeson
   , object
   , withObject
   , (.:)
+  , (.:?)
   , (.=)
   )
 import Data.Aeson.Types (parseEither)
@@ -62,9 +66,14 @@ import Prodbox.Bootstrap.Broker.HostSecretWorker
   , mkHostSecretWorkerExpectation
   , renderHostSecretWorkerError
   )
+import Prodbox.Bootstrap.Broker.InitializationEvidence
+  ( RootInitJournalPhase
+  , parseRootInitJournalPhase
+  , rootInitializationPending
+  )
 import Prodbox.Bootstrap.Broker.PortForward
   ( BrokerHostConnection (..)
-  , BrokerHostConnectionError
+  , BrokerHostConnectionError (..)
   , renderBrokerHostConnectionError
   , withBrokerHostConnection
   , withBrokerHostRecoveryConnection
@@ -82,6 +91,7 @@ import Prodbox.Bootstrap.Broker.Request
   , renderRequestDigest
   , requestDigestForBytes
   )
+import Prodbox.Bootstrap.Broker.ResetEvidence (RootResetClientBinding (..), rootResetClientBinding)
 import Prodbox.Bootstrap.Broker.Routes
   ( BrokerRoute (..)
   , brokerRoutePath
@@ -97,8 +107,17 @@ import Prodbox.Bootstrap.Broker.Types
   , mkArtifactDigest
   , mkVaultStorageGeneration
   )
+import Prodbox.Bootstrap.HarnessInitRecovery
 import Prodbox.CLI.Command (VaultCommand (..))
 import Prodbox.CLI.Output (writeOutput)
+import Prodbox.ControlPlane.Deadline
+  ( Deadline
+  , DeadlineObservation (..)
+  , RemainingDuration (..)
+  , deadlineAtOffset
+  , deadlineObservation
+  )
+import Prodbox.ControlPlane.Interpreter (realMonotonicNow)
 import Prodbox.Gateway.Client qualified as GatewayClient
 import Prodbox.Gateway.Types (PeerEndpoint)
 import Prodbox.Host (defaultGatewayNodePort)
@@ -113,6 +132,7 @@ import Prodbox.Vault.Host
   )
 import System.Environment (lookupEnv)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
+import System.Timeout (timeout)
 
 gatewayEndpointFromEnv :: IO PeerEndpoint
 gatewayEndpointFromEnv = do
@@ -143,8 +163,139 @@ runVaultCommand repoRoot command =
     VaultPkiIssueTestCert -> runBrokerVaultPkiIssueTestCert repoRoot
 
 runVaultBootstrapViaBroker :: FilePath -> IO ExitCode
-runVaultBootstrapViaBroker repoRoot = do
-  initial <- queryObservedBrokerStatus repoRoot
+runVaultBootstrapViaBroker repoRoot =
+  runVaultBootstrapViaBrokerWith
+    repoRoot
+    (withBrokerHostConnection (brokerHostConnection repoRoot))
+
+-- | Automation-only recovery of a retained initialization. The ordinary
+-- operator route never selects this policy. A reset has one call site and
+-- cannot loop: its positive closing observation enters ordinary bootstrap.
+runHarnessVaultBootstrapViaBroker :: FilePath -> IO ExitCode
+runHarnessVaultBootstrapViaBroker repoRoot = do
+  started <- realMonotonicNow
+  let deadline = deadlineAtOffset started (RemainingDuration harnessBootstrapBudgetMicros)
+  now <- realMonotonicNow
+  case deadlineObservation now deadline of
+    DeadlineExpired -> expired
+    DeadlineOpen (RemainingDuration remaining) -> do
+      result <- timeout (fromIntegral remaining) (recover deadline)
+      completed <- realMonotonicNow
+      case deadlineObservation completed deadline of
+        DeadlineExpired -> expired
+        DeadlineOpen _ -> maybe expired pure result
+ where
+  expired =
+    failBrokerCommand
+      "Harness Vault bootstrap"
+      "the total bootstrap deadline expired; retained operations require recovery"
+
+  recover :: Deadline -> IO ExitCode
+  recover deadline = do
+    let ordinary = budgetedBrokerConnector deadline (withBrokerHostConnection (brokerHostConnection repoRoot))
+        recovery =
+          budgetedBrokerConnector deadline (withBrokerHostRecoveryConnection (brokerHostConnection repoRoot))
+    -- A freshly deployed Broker must pass normal startup admission before
+    -- its first forward. Recovery transport remains scoped to observations
+    -- and repair after the retained operation has been observed.
+    observed <- queryObservedBrokerStatusWith ordinary
+    case observed of
+      Left failure -> failBrokerCommand "Harness Vault bootstrap observation" failure
+      Right status -> case decideHarnessInitRecovery (harnessInitObservation status) of
+        HarnessContinueBootstrap -> runVaultBootstrapViaBrokerWith repoRoot ordinary
+        HarnessResumeInitialization -> resume ordinary recovery status
+        HarnessResetAmbiguousInitialization -> reset ordinary recovery status
+        HarnessInitializationRefused cause -> refused cause
+
+  resume :: BrokerConnector -> BrokerConnector -> ObservedBrokerStatus -> IO ExitCode
+  resume ordinary recovery status = do
+    acquired <- operatorPasswordPayload repoRoot
+    case acquired of
+      Left failure -> failBrokerCommand "Harness Vault initialization recovery" failure
+      Right Nothing -> failBrokerCommand "Harness Vault initialization recovery" "operator password was not acquired"
+      Right (Just payload) -> do
+        _ <- runBrokerVaultInitializeWithConnect ordinary repoRoot status payload
+        observed <- queryObservedBrokerStatusWith recovery
+        case observed of
+          Left failure -> failBrokerCommand "Harness Vault initialization closing observation" failure
+          Right after -> case decideHarnessInitAfterResume (harnessInitObservation status) (harnessInitObservation after) of
+            HarnessContinueBootstrap -> runVaultBootstrapViaBrokerWith repoRoot ordinary
+            HarnessResetAmbiguousInitialization -> reset ordinary recovery after
+            HarnessResumeInitialization -> refused HarnessInitResumeUnresolved
+            HarnessInitializationRefused cause -> refused cause
+
+  reset :: BrokerConnector -> BrokerConnector -> ObservedBrokerStatus -> IO ExitCode
+  reset ordinary recovery status =
+    case observedResetAction status of
+      Left cause -> failBrokerCommand "Harness Vault reset binding" cause
+      Right action -> do
+        _ <-
+          runBrokerMutationActionWith
+            recovery
+            "Harness Vault audited ambiguous-initialization reset"
+            action
+            resetAmbiguousVaultInitialization
+        observed <- queryObservedBrokerStatusWith recovery
+        case observed of
+          Left failure -> failBrokerCommand "Harness Vault reset closing observation" failure
+          Right after -> case decideHarnessInitAfterReset (harnessInitObservation status) (harnessInitObservation after) of
+            HarnessContinueBootstrap -> runVaultBootstrapViaBrokerWith repoRoot ordinary
+            HarnessInitializationRefused cause -> refused cause
+            HarnessResumeInitialization -> refused HarnessInitResetNotPristine
+            HarnessResetAmbiguousInitialization -> refused HarnessInitResetNotPristine
+
+  refused = failBrokerCommand "Harness Vault initialization recovery" . show
+
+observedResetAction :: ObservedBrokerStatus -> Either String BrokerActionRequest
+observedResetAction status = do
+  binding <-
+    firstShow
+      ( rootResetClientBinding
+          (observedStorageGeneration status)
+          (observedInitializationPhase status)
+          (observedInitializationResetFrom status)
+          (observedInitializationResetAction status)
+      )
+  case binding of
+    BeginRootResetRequest generation -> do
+      (action, _, _) <-
+        prepareBrokerAction
+          BrokerVaultResetAmbiguousInitialization
+          generation
+          "reset-ambiguous-initialization"
+      Right action
+    ResumeRootResetRequest generation action -> Right (mkBrokerActionRequest generation action)
+
+harnessInitObservation :: ObservedBrokerStatus -> HarnessInitObservation
+harnessInitObservation status =
+  HarnessInitObservation
+    { harnessInitGeneration = observedStorageGeneration status
+    , harnessInitInitialized = observedInitialized status
+    , harnessInitSealed = observedSealed status
+    , harnessInitAmbiguous = observedInitializationAmbiguous status
+    , harnessInitPhase = observedInitializationPhase status
+    , harnessInitResetFrom = observedInitializationResetFrom status
+    }
+
+-- Connection setup remains bounded by the single outer scope. Immediately
+-- before the request, reserve its unchanged HTTP and server maxima. Thus a
+-- late accepted request cannot outlive the parent's remaining interval.
+budgetedBrokerConnector :: Deadline -> BrokerConnector -> BrokerConnector
+budgetedBrokerConnector deadline connect key action = do
+  beforeConnection <- realMonotonicNow
+  if not (harnessBrokerCallFits beforeConnection deadline)
+    then pure (Left BrokerHostDeadlineInfeasible)
+    else do
+      connected <- connect key $ \endpoint context -> do
+        now <- realMonotonicNow
+        if harnessBrokerCallFits now deadline
+          then Right <$> action endpoint context
+          else pure (Left BrokerHostDeadlineInfeasible)
+      pure (connected >>= id)
+
+runVaultBootstrapViaBrokerWith :: FilePath -> BrokerConnector -> IO ExitCode
+runVaultBootstrapViaBrokerWith repoRoot connect = do
+  initial <- queryObservedBrokerStatusWith connect
   case initial of
     Left err -> failBrokerCommand "Vault bootstrap" err
     Right status
@@ -154,40 +305,46 @@ runVaultBootstrapViaBroker repoRoot = do
             "Broker reports an ambiguous initialization; use the typed reset/recovery workflow before retrying"
       | otherwise -> do
           payloadResult <-
-            if not (observedInitialized status)
-              then newOperatorPasswordPayload repoRoot
+            if observedInitializationPending status
+              then operatorPasswordPayload repoRoot
               else
-                if observedSealed status
-                  then operatorPasswordPayload repoRoot
-                  else pure (Right Nothing)
+                if not (observedInitialized status)
+                  then newOperatorPasswordPayload repoRoot
+                  else
+                    if observedSealed status
+                      then operatorPasswordPayload repoRoot
+                      else pure (Right Nothing)
           case payloadResult of
             Left err -> failBrokerCommand "Vault bootstrap" err
             Right maybePayload -> do
               initialized <-
-                if observedInitialized status
+                if observedInitialized status && not (observedInitializationPending status)
                   then pure ExitSuccess
                   else case maybePayload of
                     Nothing -> failBrokerCommand "Vault initialize" "operator password was not acquired"
-                    Just payload -> runBrokerVaultInitializeWith repoRoot status payload
+                    Just payload -> runBrokerVaultInitializeWithConnect connect repoRoot status payload
               case initialized of
                 ExitFailure _ -> pure initialized
                 ExitSuccess -> do
-                  afterInit <- queryObservedBrokerStatus repoRoot
+                  afterInit <- queryObservedBrokerStatusWith connect
                   case afterInit of
                     Left err -> failBrokerCommand "Vault bootstrap" err
-                    Right current -> do
-                      unsealed <-
-                        if observedSealed current
-                          then case maybePayload of
-                            Nothing -> failBrokerCommand "Vault unseal" "operator password was not acquired"
-                            Just payload -> runBrokerVaultUnsealWith repoRoot current payload
-                          else pure ExitSuccess
-                      case unsealed of
-                        ExitFailure _ -> pure unsealed
-                        ExitSuccess -> case maybePayload of
-                          Just payload ->
-                            runBrokerVaultBaselineReconcileWith repoRoot current payload
-                          Nothing -> runBrokerVaultBaselineReconcile repoRoot
+                    Right current
+                      | observedInitializationPending current ->
+                          failBrokerCommand "Vault bootstrap" "initialization recovery remains pending"
+                      | otherwise -> do
+                          unsealed <-
+                            if observedSealed current
+                              then case maybePayload of
+                                Nothing -> failBrokerCommand "Vault unseal" "operator password was not acquired"
+                                Just payload -> runBrokerVaultUnsealWithConnect connect repoRoot current payload
+                              else pure ExitSuccess
+                          case unsealed of
+                            ExitFailure _ -> pure unsealed
+                            ExitSuccess -> case maybePayload of
+                              Just payload ->
+                                runBrokerVaultBaselineReconcileWithConnect connect repoRoot current payload
+                              Nothing -> runBrokerVaultBaselineReconcileUsing connect repoRoot
 
 runBrokerVaultStatus :: FilePath -> IO ExitCode
 runBrokerVaultStatus repoRoot = do
@@ -202,13 +359,16 @@ runBrokerVaultInitialize repoRoot = do
   case observed of
     Left err -> failBrokerCommand "Vault initialize" err
     Right status
-      | observedInitialized status -> do
+      | observedInitialized status && not (observedInitializationPending status) -> do
           writeOutput "Vault already initialized."
           pure ExitSuccess
       | observedInitializationAmbiguous status ->
           failBrokerCommand "Vault initialize" "Broker reports an ambiguous initialization"
       | otherwise -> do
-          payloadResult <- newOperatorPasswordPayload repoRoot
+          payloadResult <-
+            if observedInitializationPending status
+              then operatorPasswordPayload repoRoot
+              else newOperatorPasswordPayload repoRoot
           case payloadResult of
             Left err -> failBrokerCommand "Vault initialize" err
             Right Nothing -> failBrokerCommand "Vault initialize" "operator password was not acquired"
@@ -216,8 +376,16 @@ runBrokerVaultInitialize repoRoot = do
 
 runBrokerVaultInitializeWith
   :: FilePath -> ObservedBrokerStatus -> SecretPayload -> IO ExitCode
-runBrokerVaultInitializeWith repoRoot status payload =
-  runSecretBrokerMutation
+runBrokerVaultInitializeWith repoRoot =
+  runBrokerVaultInitializeWithConnect
+    (withBrokerHostConnection (brokerHostConnection repoRoot))
+    repoRoot
+
+runBrokerVaultInitializeWithConnect
+  :: BrokerConnector -> FilePath -> ObservedBrokerStatus -> SecretPayload -> IO ExitCode
+runBrokerVaultInitializeWithConnect connect repoRoot status payload =
+  runSecretBrokerMutationWith
+    connect
     repoRoot
     BrokerVaultInitialize
     (observedStorageGeneration status)
@@ -247,14 +415,14 @@ runBrokerVaultResetAmbiguousInitialization repoRoot confirmed
               failBrokerCommand
                 "Vault ambiguous-initialization reset"
                 "Broker does not report an ambiguous initialization"
-          | otherwise ->
-              runBrokerMutationWith
-                connect
-                "Vault ambiguous-initialization reset"
-                BrokerVaultResetAmbiguousInitialization
-                (observedStorageGeneration status)
-                "reset-ambiguous-initialization"
-                resetAmbiguousVaultInitialization
+          | otherwise -> case observedResetAction status of
+              Left cause -> failBrokerCommand "Vault reset binding" cause
+              Right action ->
+                runBrokerMutationActionWith
+                  connect
+                  "Vault ambiguous-initialization reset"
+                  action
+                  resetAmbiguousVaultInitialization
 
 runBrokerVaultUnseal :: FilePath -> IO ExitCode
 runBrokerVaultUnseal repoRoot = do
@@ -276,8 +444,16 @@ runBrokerVaultUnseal repoRoot = do
 
 runBrokerVaultUnsealWith
   :: FilePath -> ObservedBrokerStatus -> SecretPayload -> IO ExitCode
-runBrokerVaultUnsealWith repoRoot status payload =
-  runSecretBrokerMutation
+runBrokerVaultUnsealWith repoRoot =
+  runBrokerVaultUnsealWithConnect
+    (withBrokerHostConnection (brokerHostConnection repoRoot))
+    repoRoot
+
+runBrokerVaultUnsealWithConnect
+  :: BrokerConnector -> FilePath -> ObservedBrokerStatus -> SecretPayload -> IO ExitCode
+runBrokerVaultUnsealWithConnect connect repoRoot status payload =
+  runSecretBrokerMutationWith
+    connect
     repoRoot
     BrokerVaultUnseal
     (observedStorageGeneration status)
@@ -287,8 +463,14 @@ runBrokerVaultUnsealWith repoRoot status payload =
     unsealVault
 
 runBrokerVaultBaselineReconcile :: FilePath -> IO ExitCode
-runBrokerVaultBaselineReconcile repoRoot = do
-  observed <- queryObservedBrokerStatus repoRoot
+runBrokerVaultBaselineReconcile repoRoot =
+  runBrokerVaultBaselineReconcileUsing
+    (withBrokerHostConnection (brokerHostConnection repoRoot))
+    repoRoot
+
+runBrokerVaultBaselineReconcileUsing :: BrokerConnector -> FilePath -> IO ExitCode
+runBrokerVaultBaselineReconcileUsing connect repoRoot = do
+  observed <- queryObservedBrokerStatusWith connect
   case observed of
     Left err -> failBrokerCommand "Vault baseline reconcile" err
     Right status -> do
@@ -300,12 +482,13 @@ runBrokerVaultBaselineReconcile repoRoot = do
             "Vault baseline reconcile"
             "operator password was not acquired"
         Right (Just payload) ->
-          runBrokerVaultBaselineReconcileWith repoRoot status payload
+          runBrokerVaultBaselineReconcileWithConnect connect repoRoot status payload
 
-runBrokerVaultBaselineReconcileWith
-  :: FilePath -> ObservedBrokerStatus -> SecretPayload -> IO ExitCode
-runBrokerVaultBaselineReconcileWith repoRoot status payload =
-  runSecretBrokerMutation
+runBrokerVaultBaselineReconcileWithConnect
+  :: BrokerConnector -> FilePath -> ObservedBrokerStatus -> SecretPayload -> IO ExitCode
+runBrokerVaultBaselineReconcileWithConnect connect repoRoot status payload =
+  runSecretBrokerMutationWith
+    connect
     repoRoot
     BrokerVaultBaselineReconcile
     (observedStorageGeneration status)
@@ -409,6 +592,9 @@ data ObservedBrokerStatus = ObservedBrokerStatus
   , observedInitialized :: !Bool
   , observedSealed :: !Bool
   , observedInitializationAmbiguous :: !Bool
+  , observedInitializationPhase :: !(Maybe RootInitJournalPhase)
+  , observedInitializationResetFrom :: !(Maybe VaultStorageGeneration)
+  , observedInitializationResetAction :: !(Maybe ArtifactDigest)
   }
 
 -- | Secret-free status projection used by lifecycle readiness gates. Storage
@@ -418,6 +604,7 @@ data BrokerVaultSealStatus = BrokerVaultSealStatus
   { brokerVaultStatusInitialized :: !Bool
   , brokerVaultStatusSealed :: !Bool
   , brokerVaultStatusInitializationAmbiguous :: !Bool
+  , brokerVaultStatusInitializationPending :: !Bool
   }
   deriving (Eq, Show)
 
@@ -426,10 +613,25 @@ decodeObservedBrokerStatus =
   parseEither $ withObject "Bootstrap Broker Vault status" $ \fields -> do
     rawGeneration <- fields .: "storage_generation"
     generation <- either fail pure (firstShow (mkVaultStorageGeneration rawGeneration))
+    rawPhase <- fields .:? "initialization_phase"
+    phase <-
+      traverse
+        (\value -> maybe (fail "unknown initialization phase") pure (parseRootInitJournalPhase value))
+        rawPhase
+    rawResetFrom <- fields .:? "initialization_reset_from_generation"
+    resetFrom <- traverse (either fail pure . firstShow . mkVaultStorageGeneration) rawResetFrom
+    rawResetAction <- fields .:? "initialization_reset_action_digest"
+    resetAction <- traverse (either fail pure . firstShow . mkArtifactDigest) rawResetAction
     ObservedBrokerStatus generation
       <$> fields .: "initialized"
       <*> fields .: "sealed"
       <*> fields .: "initialization_ambiguous"
+      <*> pure phase
+      <*> pure resetFrom
+      <*> pure resetAction
+
+observedInitializationPending :: ObservedBrokerStatus -> Bool
+observedInitializationPending = maybe False rootInitializationPending . observedInitializationPhase
 
 queryObservedBrokerStatus :: FilePath -> IO (Either String ObservedBrokerStatus)
 queryObservedBrokerStatus repoRoot =
@@ -437,15 +639,19 @@ queryObservedBrokerStatus repoRoot =
     (withBrokerHostConnection (brokerHostConnection repoRoot))
 
 queryObservedBrokerStatusWith
-  :: BrokerValueConnector
+  :: BrokerConnector
   -> IO (Either String ObservedBrokerStatus)
 queryObservedBrokerStatusWith connect = do
   result <- brokerQueryWith connect queryVaultStatus
   pure (result >>= decodeObservedBrokerStatus)
 
 observeBrokerVaultSealStatus :: FilePath -> IO (Either String BrokerVaultSealStatus)
-observeBrokerVaultSealStatus repoRoot =
-  fmap project <$> queryObservedBrokerStatus repoRoot
+observeBrokerVaultSealStatus repoRoot = do
+  result <- brokerQuery repoRoot queryVaultStatus
+  pure (result >>= decodeBrokerVaultSealStatus)
+
+decodeBrokerVaultSealStatus :: Value -> Either String BrokerVaultSealStatus
+decodeBrokerVaultSealStatus = fmap project . decodeObservedBrokerStatus
  where
   project status =
     BrokerVaultSealStatus
@@ -453,6 +659,7 @@ observeBrokerVaultSealStatus repoRoot =
       , brokerVaultStatusSealed = observedSealed status
       , brokerVaultStatusInitializationAmbiguous =
           observedInitializationAmbiguous status
+      , brokerVaultStatusInitializationPending = observedInitializationPending status
       }
 
 type BrokerQuery =
@@ -466,10 +673,11 @@ type BrokerMutation =
   -> BrokerActionRequest
   -> IO (Either BrokerError Value)
 
-type BrokerValueConnector =
-  IdempotencyKey
-  -> (BrokerEndpoint -> BrokerCallContext -> IO (Either BrokerError Value))
-  -> IO (Either BrokerHostConnectionError (Either BrokerError Value))
+type BrokerConnector =
+  forall value
+   . IdempotencyKey
+  -> (BrokerEndpoint -> BrokerCallContext -> IO value)
+  -> IO (Either BrokerHostConnectionError value)
 
 brokerQuery :: FilePath -> BrokerQuery -> IO (Either String Value)
 brokerQuery repoRoot =
@@ -477,7 +685,7 @@ brokerQuery repoRoot =
     (withBrokerHostConnection (brokerHostConnection repoRoot))
 
 brokerQueryWith
-  :: BrokerValueConnector
+  :: BrokerConnector
   -> BrokerQuery
   -> IO (Either String Value)
 brokerQueryWith connect query = do
@@ -531,7 +739,7 @@ runBrokerMutation repoRoot label route generation actionBinding mutation =
     mutation
 
 runBrokerMutationWith
-  :: BrokerValueConnector
+  :: BrokerConnector
   -> String
   -> BrokerRoute
   -> VaultStorageGeneration
@@ -541,19 +749,20 @@ runBrokerMutationWith
 runBrokerMutationWith connect label route generation actionBinding mutation =
   case prepareBrokerAction route generation actionBinding of
     Left err -> failBrokerCommand label err
-    Right (action, _, _) -> do
-      keyResult <- freshVaultIdempotencyKey
-      case keyResult of
-        Left err -> failBrokerCommand label err
-        Right key -> do
-          connected <-
-            connect
-              key
-              (\endpoint context -> mutation endpoint context action)
-          case connected of
-            Left err -> failBrokerCommand label (renderBrokerHostConnectionError err)
-            Right (Left err) -> failBrokerCommand label (renderBrokerError err)
-            Right (Right response) -> writeBrokerSuccess label response
+    Right (action, _, _) -> runBrokerMutationActionWith connect label action mutation
+
+runBrokerMutationActionWith
+  :: BrokerConnector -> String -> BrokerActionRequest -> BrokerMutation -> IO ExitCode
+runBrokerMutationActionWith connect label action mutation = do
+  keyResult <- freshVaultIdempotencyKey
+  case keyResult of
+    Left err -> failBrokerCommand label err
+    Right key -> do
+      connected <- connect key (\endpoint context -> mutation endpoint context action)
+      case connected of
+        Left err -> failBrokerCommand label (renderBrokerHostConnectionError err)
+        Right (Left err) -> failBrokerCommand label (renderBrokerError err)
+        Right (Right response) -> writeBrokerSuccess label response
 
 runSecretBrokerMutation
   :: FilePath
@@ -564,7 +773,22 @@ runSecretBrokerMutation
   -> SecretPayload
   -> BrokerMutation
   -> IO ExitCode
-runSecretBrokerMutation repoRoot route generation actionBinding operations payload mutation =
+runSecretBrokerMutation repoRoot =
+  runSecretBrokerMutationWith
+    (withBrokerHostConnection (brokerHostConnection repoRoot))
+    repoRoot
+
+runSecretBrokerMutationWith
+  :: BrokerConnector
+  -> FilePath
+  -> BrokerRoute
+  -> VaultStorageGeneration
+  -> Text
+  -> [SecretWorkerOperation]
+  -> SecretPayload
+  -> BrokerMutation
+  -> IO ExitCode
+runSecretBrokerMutationWith connect repoRoot route generation actionBinding operations payload mutation =
   case prepareBrokerAction route generation actionBinding of
     Left err -> failBrokerCommand label err
     Right (action, actionDigest, requestDigest) -> do
@@ -583,8 +807,7 @@ runSecretBrokerMutation repoRoot route generation actionBinding operations paylo
                   )
                   operations
           connected <-
-            withBrokerHostConnection
-              (brokerHostConnection repoRoot)
+            connect
               key
               ( \endpoint context ->
                   withAsync (mutation endpoint context action) $ \pending ->

@@ -2,10 +2,12 @@
 
 module QualificationEvidence (qualificationEvidenceSuite, validInput) where
 
+import CycleIdentityFixtures (fixtureLocal)
 import Data.ByteString.Char8 qualified as ByteString8
 import Data.Either (isLeft)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Prodbox.Test.Qualification.CascadeCycleIdentity (localGeneratedConfig)
 import Prodbox.Test.Qualification.Evidence
 import Prodbox.Test.Qualification.FrozenCounterexample
 import Prodbox.Test.Qualification.Invite
@@ -73,7 +75,7 @@ identity :: SourceIdentity -> PublicEvidenceDigest -> PublicEvidenceDigest -> Qu
 identity source first second =
   QualificationIdentity
     { qualificationSourceIdentity = source
-    , qualificationGeneratedConfigDigest = first
+    , qualificationGeneratedConfigDigest = localGeneratedConfig fixtureLocal
     , qualificationComponentImageDigests = [first, second]
     , qualificationTopologyWiringDigest = second
     , qualificationResourceEnvelopeDigest = first

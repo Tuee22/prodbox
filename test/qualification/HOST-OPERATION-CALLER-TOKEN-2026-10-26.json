@@ -1,0 +1,940 @@
+{
+  "schema_version": 1,
+  "name": "HOST-OPERATION-CALLER-TOKEN-2026-10-26",
+  "scope": "Shared closed caller-token policy and original-bound operation adapter. Actual packaged policy tests plus native production-source interpreter with a synthetic Kubernetes tool boundary and real managed process roles. No Vault/session/signing, production dispatch, live qualification or phase closure claim.",
+  "native_linkage": "The native fixture compiles the frozen private process owner, LocalClient, LifecycleAuthorityAuthentication and rollout sources coherently. It does not claim to invoke the packaged rollout symbol; the separate policy runner links the actual built library.",
+  "source_sets": {
+    "1": {
+      "source_identity_entry": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"392a60b22e787c53c8d9ebe389f5bca029c10a0958e78f5d3d680a3ca911ef3b\", sourceManifestEntryCount = 1571},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"6fbcebef324036a5e4eb821ac64a7d19031d68662bc3215228f1c8b0adfed524\", sourceManifestEntryCount = 1508})",
+      "source_identity_exit": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"392a60b22e787c53c8d9ebe389f5bca029c10a0958e78f5d3d680a3ca911ef3b\", sourceManifestEntryCount = 1571},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"6fbcebef324036a5e4eb821ac64a7d19031d68662bc3215228f1c8b0adfed524\", sourceManifestEntryCount = 1508})",
+      "source_identity_equal": true,
+      "inputs_index": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-1/inputs.json"
+    },
+    "2": {
+      "source_identity_entry": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"5701f6ffcba3789c7d45bf6165a863ab36eb59a96a289c5517c226ce5c38d294\", sourceManifestEntryCount = 1571},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"55957e2b81c048e4c92cc6868a3ad3924025cda24f5bcfa225c058de6592c59d\", sourceManifestEntryCount = 1508})",
+      "source_identity_exit": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"5701f6ffcba3789c7d45bf6165a863ab36eb59a96a289c5517c226ce5c38d294\", sourceManifestEntryCount = 1571},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"55957e2b81c048e4c92cc6868a3ad3924025cda24f5bcfa225c058de6592c59d\", sourceManifestEntryCount = 1508})",
+      "source_identity_equal": true,
+      "inputs_index": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/inputs.json"
+    }
+  },
+  "inputs": [
+    {
+      "path": "DEVELOPMENT_PLAN/README.md",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/DEVELOPMENT_PLAN/README.md",
+      "sha256": "7f3492705c07f32fac9a1826bc0627d4900c37f4e7156ba3848b1fb55247c16f"
+    },
+    {
+      "path": "DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md",
+      "sha256": "4d6aba0b5133e3e9bdf22db1c8ea73a5797f7c5db63dd87d761fd4e7cd48778d"
+    },
+    {
+      "path": "documents/engineering/haskell_code_guide.md",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/documents/engineering/haskell_code_guide.md",
+      "sha256": "d93598d77bb34ff03895d585b137200069b39c33fd46649afd9118ba125ade68"
+    },
+    {
+      "path": "prodbox.cabal",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/prodbox.cabal",
+      "sha256": "cf4e27f6f32f5960e1b3f1c603a50e704e3894323bf86762befad2ea0a2fb89c"
+    },
+    {
+      "path": "src/Prodbox/Capacity/HostExecution.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/Capacity/HostExecution.hs",
+      "sha256": "092ece17fb98e941eb4847e875d0f5b01c9ca458c810d8851207aac9dfba6a8c"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/LocalClient.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/ControlPlane/LocalClient.hs",
+      "sha256": "3e85e0bf48700b7fbcce03f9d9c4a2b536bd3f9aa0e488e1f15735ed44abb756"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthChart.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/ControlPlane/RpcAdmissionBirthChart.hs",
+      "sha256": "3ceb4d8d83d9af0a50d7df6d0a00dadad889d27608b73a1780d0a381e5af06de"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthCoordinator.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/ControlPlane/RpcAdmissionBirthCoordinator.hs",
+      "sha256": "fd3c88a6f836c2f38cc81c26449e38a62f982616ab579f12097f1dd5471eecec"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+      "sha256": "9f9c8a9e9e336baf9ba559a83cf0916895c3da086864a6bc549696f8c1f4bacc"
+    },
+    {
+      "path": "src/Prodbox/Lib/ChartPlatform.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/Lib/ChartPlatform.hs",
+      "sha256": "fe9729544fba35b3f5864262576e87ab831e8351e8fae8c0ba1cce37336ad059"
+    },
+    {
+      "path": "src/Prodbox/Lifecycle/HelmRelease.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/Lifecycle/HelmRelease.hs",
+      "sha256": "1e672269740479a589d4a0136cc3f633f510d9e15bcce76a0042f8a4a6c0d299"
+    },
+    {
+      "path": "src/Prodbox/Lifecycle/Teardown/EphemeralKubectl.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/Lifecycle/Teardown/EphemeralKubectl.hs",
+      "sha256": "3dd8dd5dbabc5e4a1c557dd3569d45b2fb8aca3f7a0754be03af19fd490d581b"
+    },
+    {
+      "path": "src/Prodbox/Subprocess.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/Subprocess.hs",
+      "sha256": "836bd5e3d6c82feb1fdcf6b1aac6390e1a221a6ebc986faf86b61d85f877af42"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostControllerInputs.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/Subprocess/HostControllerInputs.hs",
+      "sha256": "17fcfd173d39b908a65671cef3a559979482b8c280c40b946b7d001a353f7919"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostOperationFamily.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/Subprocess/HostOperationFamily.hs",
+      "sha256": "f6c4bfb56d4f600757a9f5842ef7498a1bdd6545d30ddd61218f1c88729a7288"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/KernelScope.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/Subprocess/KernelScope.hs",
+      "sha256": "61ed8449be7b6864d2933f90f0d76db89137b7d4559ffb7a3e456058f968cf2c"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/ScopeFamily.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/Subprocess/ScopeFamily.hs",
+      "sha256": "177ad32ad8639c727c1a8e7dc2ae8be5d77f6ad5146c0353edb38fef176761ab"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdBus.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/Subprocess/SystemdBus.hs",
+      "sha256": "cf9f8b023f736187870e488bb51226cf0f93354ac31a1c6bf00cad3abcf88457"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "sha256": "9567e2139351da6592ce7c1e4fd144b32fc62c04241140d5e3494bb1d12c3c79"
+    },
+    {
+      "path": "test/qualification/HostOperationRpcBirth.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/test/qualification/HostOperationRpcBirth.hs",
+      "sha256": "b1efa91e9106bae8065ebdaf0dfbb80e0517571f56ba823eea975c98bbe7f10c"
+    },
+    {
+      "path": "test/qualification/HostOperationRpcBirthFixture.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/test/qualification/HostOperationRpcBirthFixture.hs",
+      "sha256": "a303e0d7da081f36b9f21fb81e38051c98a472f31ea115c8e405c4d4125b5921"
+    },
+    {
+      "path": "test/support/TestSupport.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/test/support/TestSupport.hs",
+      "sha256": "156b7f56e11e832f9a410423db795e35a5ae374c01cee09e8a31b1c2a1a7d250"
+    },
+    {
+      "path": "test/support/Tier0Fixture.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/test/support/Tier0Fixture.hs",
+      "sha256": "9b1fcaef3fa7cc4f285ec7e1c276abc3d85293f42a5cdd1359d9aa6ec794821c"
+    },
+    {
+      "path": "test/unit/ControlPlaneRpcAdmissionBirth.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/test/unit/ControlPlaneRpcAdmissionBirth.hs",
+      "sha256": "65a61fc3a8bb4caed0e41e4a3c90a6669682ca532400d85f4225c9bf8b8049ba"
+    },
+    {
+      "path": "test/unit/Main.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/test/unit/Main.hs",
+      "sha256": "4bc359c45c5249b06907925ce6a574182ef1f15a5c0df0d3332fdfadd86c6ee5"
+    },
+    {
+      "path": "src/Prodbox/Capacity/Config.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/Capacity/Config.hs",
+      "sha256": "625b25c430d58c0558b091558ebe6a89f8e49bbe4ed85a7d13684b69551b5dbb"
+    },
+    {
+      "path": "src/Prodbox/Capacity/NativeHostProbe.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/Capacity/NativeHostProbe.hs",
+      "sha256": "1d095e7dc0bb90e82a2cdc8721d704e3d1d5f84d5249a558f615d4039c4547db"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthPayload.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/ControlPlane/RpcAdmissionBirthPayload.hs",
+      "sha256": "e55d30503618ed5996cb0d77c6d93eca886857dc6cbd07c372d15c97011cdf19"
+    },
+    {
+      "path": "src/Prodbox/Settings.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/Settings.hs",
+      "sha256": "7cb9b4aa55fd761c2fd7a899af8ad12a007afce8b7b6acc4ad4bcc5e0b22724f"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRequest.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/ControlPlane/RpcAdmissionBirthRequest.hs",
+      "sha256": "b4b1b145502e031841e6b47dee1e68a621274d8d2a6fc7511790c03db2b89591"
+    },
+    {
+      "path": "test/qualification/RpcBirthControllerRequest.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/test/qualification/RpcBirthControllerRequest.hs",
+      "sha256": "1c7f9c1f0be49edbbc57f3b297654fc6e1494b23de22de5f20c5edf263bc7d94"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthClock.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/ControlPlane/RpcAdmissionBirthClock.hs",
+      "sha256": "bc064db9384e0b30ae7a18f618ec5958bf6cabe51570134e13e77db58ebabb00"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostControllerArguments.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/Subprocess/HostControllerArguments.hs",
+      "sha256": "b9f635fcaf7bda5ffa6b1dda5545344b59507ec07beff20c4a2ddcca35494bf4"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthControllerInputs.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/ControlPlane/RpcAdmissionBirthControllerInputs.hs",
+      "sha256": "1a2a92266bf5f26f3ead84d1327b39b21517809b6c87305b03775658817f4e0c"
+    },
+    {
+      "path": "test/qualification/ControllerInputLoader.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/test/qualification/ControllerInputLoader.hs",
+      "sha256": "c3588c9c88296157108b31bad105694a9561d147b0de9f167103f217c1c4690a"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostControllerPublication.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/Subprocess/HostControllerPublication.hs",
+      "sha256": "7902af6c2ccc510926a2a36a37258a09d81881c3869808e6adeb90bdd7119549"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/OwnedProcessTree.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/Subprocess/OwnedProcessTree.hs",
+      "sha256": "b50d4f449526797009c3ce98de7239fc1b211486c6c42f5a2900a41c5ef20fb5"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/LifecycleAuthorityAuthentication.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/src/Prodbox/ControlPlane/LifecycleAuthorityAuthentication.hs",
+      "sha256": "493828f5d5caddd5bc77240a34a84fa6339ebd3a27cc961880c55d487b1d6faa"
+    },
+    {
+      "path": "test/unit/ControlPlaneVaultSession.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/test/unit/ControlPlaneVaultSession.hs",
+      "sha256": "06b30aba866c09745d0187852527ddac331a36931baafe337f498463b04b40f0"
+    },
+    {
+      "path": ".build/sprint-6.5/controller-caller-token-20261026/UnitPolicy.hs",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/.build/sprint-6.5/controller-caller-token-20261026/UnitPolicy.hs",
+      "sha256": "096cdde35453668cf924f61f47d4ec57ea51d789acf49df46b8d6db81a253b60"
+    }
+  ],
+  "binaries": [
+    {
+      "path": ".build/sprint-6.5/controller-caller-token-20261026/native-token-4",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/native-token-4",
+      "sha256": "96e62df4d805371fd6af24116ad575e36e8c7ef69061a133f0ea2eaf6e82a726"
+    },
+    {
+      "path": ".build/sprint-6.5/controller-caller-token-20261026/unit-policy-2",
+      "snapshot": ".build/sprint-6.5/controller-caller-token-20261026/native-inputs-2/unit-policy-2",
+      "sha256": "b03a52fc5b362272ff045c9fc258713a77243c651840a480a58dac48b96c4d92"
+    }
+  ],
+  "all_40_inputs_and_two_binaries_unchanged_within_each_source_set": true,
+  "between_source_sets": "Only the native expiry fixture changes: it records the adapter refusal before parent closing independently reports expiry. All 39 other inputs and the packaged policy binary remain identical. The five earlier passing controls retain source set 1; the corrected expiry control uses source set 2.",
+  "controls": {
+    "owned-token-operator": {
+      "source_index": 1,
+      "result": {
+        "command": [
+          "env",
+          "XDG_RUNTIME_DIR=/run/user/1000",
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+          "systemd-run",
+          "--user",
+          "--quiet",
+          "--wait",
+          "--pipe",
+          "--collect",
+          "--service-type=oneshot",
+          "--expand-environment=no",
+          "--unit=prodbox-controller-token-owned-token-operator-1-20261026",
+          "--working-directory=/home/matthewnowak/prodbox",
+          "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+          "--property=UMask=0022",
+          "--property=MemoryMax=5G",
+          "--property=MemorySwapMax=0",
+          "--property=OOMPolicy=kill",
+          "--property=OOMScoreAdjust=1000",
+          "--property=TasksMax=64",
+          "--property=TimeoutStartSec=65s",
+          "--property=TimeoutStopSec=2s",
+          "--",
+          "/usr/bin/time",
+          "-v",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-caller-token-20261026/native-token-3",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-caller-token-20261026/case-owned-token-operator-1",
+          "owned-token-operator"
+        ],
+        "started_utc": "2026-10-27T01:31:29.122290+00:00",
+        "completed_utc": "2026-10-27T01:32:11.210995+00:00",
+        "exit_code": 0,
+        "wall_seconds": 42.088723245076835
+      },
+      "closing": {
+        "exactSixRolesAbsent": true,
+        "heldGroupRetired": true,
+        "managerWorkspaceAbsent": true
+      },
+      "token_events": [
+        "caller-token serviceaccount",
+        "caller-token eligibility",
+        "caller-token request"
+      ],
+      "observations": "owner=Right (Right (RpcBirthCoordinationResult (RpcBirthDescriptor (AuthorityScope \"home\") 1 \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" (AuthorityEpoch 1) (AuthorityTime {internalAuthorityTimeMicros = 1793064749179356}) (ModelBObjectVersion {internalModelBObjectVersionText = \"opaque-v1\"}) \"2f544c038b3df29539563b333b5763b5ad138fd23c6b7c60f12537d11cad2497\" 7 4) (RpcBirthStatus {rpcBirthStatusPhase = BirthCommitted, rpcBirthStatusGeneration = 1, rpcBirthStatusCommitted = True, rpcBirthStatusDescriptorDigest = Just \"0b53b2955f2bfefd28fcc15da55c336e27ef89f5066c066ba3aad875b5ac20bd\"})))\nphase=BirthCommitted\nframes=12\nallOriginalBounds=True\n",
+      "original_home_source_removed": true
+    },
+    "owned-token-harness": {
+      "source_index": 1,
+      "result": {
+        "command": [
+          "env",
+          "XDG_RUNTIME_DIR=/run/user/1000",
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+          "systemd-run",
+          "--user",
+          "--quiet",
+          "--wait",
+          "--pipe",
+          "--collect",
+          "--service-type=oneshot",
+          "--expand-environment=no",
+          "--unit=prodbox-controller-token-owned-token-harness-1-20261026",
+          "--working-directory=/home/matthewnowak/prodbox",
+          "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+          "--property=UMask=0022",
+          "--property=MemoryMax=5G",
+          "--property=MemorySwapMax=0",
+          "--property=OOMPolicy=kill",
+          "--property=OOMScoreAdjust=1000",
+          "--property=TasksMax=64",
+          "--property=TimeoutStartSec=65s",
+          "--property=TimeoutStopSec=2s",
+          "--",
+          "/usr/bin/time",
+          "-v",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-caller-token-20261026/native-token-3",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-caller-token-20261026/case-owned-token-harness-1",
+          "owned-token-harness"
+        ],
+        "started_utc": "2026-10-27T01:32:12.042049+00:00",
+        "completed_utc": "2026-10-27T01:32:54.094635+00:00",
+        "exit_code": 0,
+        "wall_seconds": 42.0526047819294
+      },
+      "closing": {
+        "exactSixRolesAbsent": true,
+        "heldGroupRetired": true,
+        "managerWorkspaceAbsent": true
+      },
+      "token_events": [
+        "caller-token serviceaccount",
+        "caller-token eligibility",
+        "caller-token request"
+      ],
+      "observations": "owner=Right (Right (RpcBirthCoordinationResult (RpcBirthDescriptor (AuthorityScope \"home\") 1 \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" (AuthorityEpoch 1) (AuthorityTime {internalAuthorityTimeMicros = 1793064792072228}) (ModelBObjectVersion {internalModelBObjectVersionText = \"opaque-v1\"}) \"2f544c038b3df29539563b333b5763b5ad138fd23c6b7c60f12537d11cad2497\" 7 4) (RpcBirthStatus {rpcBirthStatusPhase = BirthCommitted, rpcBirthStatusGeneration = 1, rpcBirthStatusCommitted = True, rpcBirthStatusDescriptorDigest = Just \"03d58026bda478403fc9e7e6dc5af75f3f452b1ad4ceea49ee66893b90847d89\"})))\nphase=BirthCommitted\nframes=12\nallOriginalBounds=True\n",
+      "original_home_source_removed": true
+    },
+    "owned-token-account-refused": {
+      "source_index": 1,
+      "result": {
+        "command": [
+          "env",
+          "XDG_RUNTIME_DIR=/run/user/1000",
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+          "systemd-run",
+          "--user",
+          "--quiet",
+          "--wait",
+          "--pipe",
+          "--collect",
+          "--service-type=oneshot",
+          "--expand-environment=no",
+          "--unit=prodbox-controller-token-owned-token-account-refused-1-20261026",
+          "--working-directory=/home/matthewnowak/prodbox",
+          "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+          "--property=UMask=0022",
+          "--property=MemoryMax=5G",
+          "--property=MemorySwapMax=0",
+          "--property=OOMPolicy=kill",
+          "--property=OOMScoreAdjust=1000",
+          "--property=TasksMax=64",
+          "--property=TimeoutStartSec=65s",
+          "--property=TimeoutStopSec=2s",
+          "--",
+          "/usr/bin/time",
+          "-v",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-caller-token-20261026/native-token-3",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-caller-token-20261026/case-owned-token-account-refused-1",
+          "owned-token-account-refused"
+        ],
+        "started_utc": "2026-10-27T01:32:54.890162+00:00",
+        "completed_utc": "2026-10-27T01:33:36.942446+00:00",
+        "exit_code": 0,
+        "wall_seconds": 42.05230105808005
+      },
+      "closing": {
+        "exactSixRolesAbsent": true,
+        "heldGroupRetired": true,
+        "managerWorkspaceAbsent": true
+      },
+      "token_events": [
+        "caller-token serviceaccount"
+      ],
+      "observations": "owner=Right (Left (RpcBirthHostPreparationRefused (RpcBirthRolloutCallerTokenRefused (ExternalCallerServiceAccountUnobservable (ServiceAccountObservationIdentityMismatch \"external caller ServiceAccount read-back did not match the exact namespace/name/non-automount identity for LifecycleAuthorityTestHarness\")))))\nphase=BirthLegacy\nframes=0\nallOriginalBounds=True\n",
+      "original_home_source_removed": true
+    },
+    "owned-token-rbac-refused": {
+      "source_index": 1,
+      "result": {
+        "command": [
+          "env",
+          "XDG_RUNTIME_DIR=/run/user/1000",
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+          "systemd-run",
+          "--user",
+          "--quiet",
+          "--wait",
+          "--pipe",
+          "--collect",
+          "--service-type=oneshot",
+          "--expand-environment=no",
+          "--unit=prodbox-controller-token-owned-token-rbac-refused-1-20261026",
+          "--working-directory=/home/matthewnowak/prodbox",
+          "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+          "--property=UMask=0022",
+          "--property=MemoryMax=5G",
+          "--property=MemorySwapMax=0",
+          "--property=OOMPolicy=kill",
+          "--property=OOMScoreAdjust=1000",
+          "--property=TasksMax=64",
+          "--property=TimeoutStartSec=65s",
+          "--property=TimeoutStopSec=2s",
+          "--",
+          "/usr/bin/time",
+          "-v",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-caller-token-20261026/native-token-3",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-caller-token-20261026/case-owned-token-rbac-refused-1",
+          "owned-token-rbac-refused"
+        ],
+        "started_utc": "2026-10-27T01:33:38.073175+00:00",
+        "completed_utc": "2026-10-27T01:34:20.140464+00:00",
+        "exit_code": 0,
+        "wall_seconds": 42.06731171300635
+      },
+      "closing": {
+        "exactSixRolesAbsent": true,
+        "heldGroupRetired": true,
+        "managerWorkspaceAbsent": true
+      },
+      "token_events": [
+        "caller-token serviceaccount",
+        "caller-token eligibility"
+      ],
+      "observations": "owner=Right (Left (RpcBirthHostPreparationRefused (RpcBirthRolloutCallerTokenRefused ExternalCallerTokenEligibilityRefused)))\nphase=BirthLegacy\nframes=0\nallOriginalBounds=True\n",
+      "original_home_source_removed": true
+    },
+    "owned-token-malformed": {
+      "source_index": 1,
+      "result": {
+        "command": [
+          "env",
+          "XDG_RUNTIME_DIR=/run/user/1000",
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+          "systemd-run",
+          "--user",
+          "--quiet",
+          "--wait",
+          "--pipe",
+          "--collect",
+          "--service-type=oneshot",
+          "--expand-environment=no",
+          "--unit=prodbox-controller-token-owned-token-malformed-1-20261026",
+          "--working-directory=/home/matthewnowak/prodbox",
+          "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+          "--property=UMask=0022",
+          "--property=MemoryMax=5G",
+          "--property=MemorySwapMax=0",
+          "--property=OOMPolicy=kill",
+          "--property=OOMScoreAdjust=1000",
+          "--property=TasksMax=64",
+          "--property=TimeoutStartSec=65s",
+          "--property=TimeoutStopSec=2s",
+          "--",
+          "/usr/bin/time",
+          "-v",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-caller-token-20261026/native-token-3",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-caller-token-20261026/case-owned-token-malformed-1",
+          "owned-token-malformed"
+        ],
+        "started_utc": "2026-10-27T01:34:20.938584+00:00",
+        "completed_utc": "2026-10-27T01:35:02.987823+00:00",
+        "exit_code": 0,
+        "wall_seconds": 42.049254786688834
+      },
+      "closing": {
+        "exactSixRolesAbsent": true,
+        "heldGroupRetired": true,
+        "managerWorkspaceAbsent": true
+      },
+      "token_events": [
+        "caller-token serviceaccount",
+        "caller-token eligibility",
+        "caller-token request"
+      ],
+      "observations": "owner=Right (Left (RpcBirthHostPreparationRefused (RpcBirthRolloutCallerTokenRefused ExternalCallerTokenMalformed)))\nphase=BirthLegacy\nframes=0\nallOriginalBounds=True\n",
+      "original_home_source_removed": true
+    },
+    "owned-token-expired": {
+      "source_index": 2,
+      "result": {
+        "command": [
+          "env",
+          "XDG_RUNTIME_DIR=/run/user/1000",
+          "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+          "systemd-run",
+          "--user",
+          "--quiet",
+          "--wait",
+          "--pipe",
+          "--collect",
+          "--service-type=oneshot",
+          "--expand-environment=no",
+          "--unit=prodbox-controller-token-owned-token-expired-2-20261026",
+          "--working-directory=/home/matthewnowak/prodbox",
+          "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+          "--property=UMask=0022",
+          "--property=MemoryMax=5G",
+          "--property=MemorySwapMax=0",
+          "--property=OOMPolicy=kill",
+          "--property=OOMScoreAdjust=1000",
+          "--property=TasksMax=64",
+          "--property=TimeoutStartSec=65s",
+          "--property=TimeoutStopSec=2s",
+          "--",
+          "/usr/bin/time",
+          "-v",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-caller-token-20261026/native-token-4",
+          "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-caller-token-20261026/case-owned-token-expired-2",
+          "owned-token-expired"
+        ],
+        "started_utc": "2026-10-27T01:37:53.004631+00:00",
+        "completed_utc": "2026-10-27T01:38:35.089839+00:00",
+        "exit_code": 0,
+        "wall_seconds": 42.08522538887337
+      },
+      "closing": {
+        "exactSixRolesAbsent": true,
+        "heldGroupRetired": true,
+        "managerWorkspaceAbsent": true
+      },
+      "token_events": [],
+      "observations": "owner=Left KernelScopeDeadlineReached\nphase=BirthLegacy\nframes=0\nallOriginalBounds=True\n",
+      "original_home_source_removed": true
+    }
+  },
+  "policy_test_count": 25,
+  "native_managed_family": {
+    "memory_mib": 256,
+    "cpu_millicores": 700,
+    "tasks": 56,
+    "parent_memory_mib": 176,
+    "parent_heap_mib": 128,
+    "outer_seconds": 50,
+    "work_seconds": 40,
+    "hard_seconds": 42,
+    "stop_seconds": 45,
+    "finish_seconds": 47
+  },
+  "qa_launcher": {
+    "memory_max_gib": 5,
+    "tasks_max": 64,
+    "swap_bytes": 0,
+    "supervisor_seconds": 65,
+    "profile": "Unchanged from the prior operation preparation fixture. Launcher RSS does not measure the separately managed family."
+  },
+  "validation_results": {
+    "controller-token-library-build-1": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-controller-token-library-build-1-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=600s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "cabal",
+        "build",
+        "--builddir=.build",
+        "lib:prodbox",
+        "--ghc-options=-Werror"
+      ],
+      "started_utc": "2026-10-27T01:27:04.100622+00:00",
+      "completed_utc": "2026-10-27T01:28:28.871549+00:00",
+      "exit_code": 0,
+      "wall_seconds": 84.77094474993646
+    },
+    "controller-token-all-build-1": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-controller-token-all-build-1-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=1200s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "cabal",
+        "build",
+        "--builddir=.build",
+        "all",
+        "--ghc-options=-Werror"
+      ],
+      "started_utc": "2026-10-27T01:33:00.330332+00:00",
+      "completed_utc": "2026-10-27T01:33:09.996797+00:00",
+      "exit_code": 0,
+      "wall_seconds": 9.666481635998935
+    },
+    "controller-token-native-build-4": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-controller-token-native-build-4-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=600s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "ghc",
+        "-Wall",
+        "-Werror",
+        "-threaded",
+        "-rtsopts",
+        "-with-rtsopts=-N1",
+        "-hide-all-packages",
+        "-package-db",
+        "/home/matthewnowak/.cabal/store/ghc-9.12.4-5301/package.db",
+        "-package-id",
+        "base-4.21.2.0-60b9",
+        "-package-id",
+        "bytestring-0.11.5.4-76e2bb591efe928d842f8288364e9ef294891f67ce13cd0bc014a1e2fe5df0a0",
+        "-package-id",
+        "unix-2.8.8.0-9ce6978edc33076465fb56791d9ca017d405aa7230adf2653b2f7564cc3925f1",
+        "-package-id",
+        "text-2.0.2-8761414bfd4c61d83bb4a76313f5b7a899dddb96b90269a6e5d997a8bbbd6375",
+        "-package-id",
+        "aeson-2.2.5.0-e2e37fe6bc5aa07f45e066f8f61685fa5ad0b1eb18e2b2c128ef1ea752061e01",
+        "-package-id",
+        "async-2.2.6-8960f1dd21f4a009a29b1fe1a67c9a2a4a2c68697b93dd8f3fb173222380a50f",
+        "-package-id",
+        "crypton-1.0.6-020d21e85cd9683b83d7321e840b655ed76b478e58a637e86a778a7747ac3db7",
+        "-package",
+        "transformers",
+        "-package-id",
+        "process-1.6.30.0-6aaf8422fc072a0cd1390edbfe1125150c6bb2a95b2d3b42b9a9405f80b31cbd",
+        "-package-id",
+        "directory-1.3.10.1-d489a9b04bec59f8c3e0a56d9fa8c6036df06a729b2423829770f25fc263c55c",
+        "-package-id",
+        "filepath-1.4.301.0-55cfbc3f4dce88b4ce1658f6770d9ccbeb279efb5b93e8a3764f29b7dd69dd22",
+        "-package-id",
+        "temporary-1.3-fe250c7fcb6a9acbff484a742781194f9c09a4d7a37988cf39693cbaba0c5ac0",
+        "-package-id",
+        "typed-process-0.2.13.0-abd82bbc92edf3e4773c3dd817737de05db408f2ea5066648e8179fa7a8622cb",
+        "-package=prodbox",
+        "-package-id",
+        "network-3.1.4.0-1d8b779673bab29fa4d91c4b2077c7ccec77e8e8a1bd66b2b95ba4d224d64964",
+        "-package-id",
+        "dhall-1.42.3-f71713b7c542a7fcbde0a2e97ae07b9d32dfe03857095a90c6de6bb24d591cc1",
+        "-package-id",
+        "serialise-0.2.6.1-9fc9b98f7836b30172e1529223fb34de84f444ed67c191e32cd41daa2e1d73d0",
+        "-package-id",
+        "containers-0.6.8-9c73fa12219fb7e1c1121c78e2c1b0cf30923838f9754d37bac0134beb603c6c",
+        "-package-id",
+        "base64-bytestring-1.2.1.0-91628ae01012ed5bf73c3c97373488475dbd88cfd669a49aac9f7c995e8cca71",
+        "-package-id",
+        "cryptohash-sha256-0.11.102.1-6df39dbe01efd710a9783bb4456b0bac4b2e3444a6d321ab62b36f3ff9e6abe0",
+        "-itest/unit",
+        "-itest/support",
+        "-itest/qualification",
+        "-package-id",
+        "tasty-1.5.4-87b0b7a84b66321512246f51e4b2c73d419854c91e61f316f028599d02b6fb57",
+        "-package-id",
+        "tasty-golden-2.3.6-c4e6fa5b2abb4144c1889fed74ad6616bd7562f8ed7b77a0ea745194aaf5174f",
+        "-package-id",
+        "tasty-hunit-0.10.2-e92057303da32999a32a585f0581b8a8de1247905fe41fbc341e8c9d27161051",
+        "-package-id",
+        "tasty-quickcheck-0.11.1-83845e3e87c84d6edafadc8089f429f07dd0911031b48027f788998114a79ea2",
+        "-outputdir",
+        ".build/sprint-6.5/controller-caller-token-20261026/native-token-4-objects",
+        "test/qualification/HostOperationRpcBirth.hs",
+        "test/qualification/HostOperationRpcBirthFixture.hs",
+        "src/Prodbox/Subprocess/SystemdBus.hs",
+        "src/Prodbox/Subprocess/SystemdIdentity.hs",
+        "-o",
+        ".build/sprint-6.5/controller-caller-token-20261026/native-token-4",
+        "-XImportQualifiedPost",
+        "src/Prodbox/Subprocess/HostOperationFamily.hs",
+        "src/Prodbox/Subprocess/KernelScope.hs",
+        "src/Prodbox/Subprocess.hs",
+        "src/Prodbox/Subprocess/ScopeFamily.hs",
+        "src/Prodbox/ControlPlane/LocalClient.hs",
+        "src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+        "-package-db",
+        ".build/packagedb/ghc-9.12.4",
+        "-package-id",
+        "vector-0.13.2.0-56506683abbe5d505d9873d57f93e5ce8e2a9d1cbb2f2f719e5690d437baa472",
+        "-package-id",
+        "stm-2.5.3.1-a1f2",
+        "-package-id",
+        "time-1.12.2-79f6471dcc18660545ae6f423af96c288f6ea95ac7a0b62e890dc9daf5b1fce7",
+        "-package-id",
+        "scientific-0.3.8.1-7c3c80dbb45676207dcbea10819661eeea2761483c16ed54c917301d2397d4d4",
+        "src/Prodbox/Lifecycle/HelmRelease.hs",
+        "src/Prodbox/Subprocess/HostControllerInputs.hs",
+        "src/Prodbox/Subprocess/HostControllerArguments.hs",
+        "src/Prodbox/ControlPlane/LifecycleAuthorityAuthentication.hs"
+      ],
+      "started_utc": "2026-10-27T01:36:55.927579+00:00",
+      "completed_utc": "2026-10-27T01:37:13.194033+00:00",
+      "exit_code": 0,
+      "wall_seconds": 17.26647659484297
+    },
+    "controller-token-unit-build-2": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-controller-token-unit-build-2-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=600s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "ghc",
+        "-Wall",
+        "-Werror",
+        "-threaded",
+        "-rtsopts",
+        "-with-rtsopts=-N1",
+        "-hide-all-packages",
+        "-package-db",
+        "/home/matthewnowak/.cabal/store/ghc-9.12.4-5301/package.db",
+        "-package-id",
+        "base-4.21.2.0-60b9",
+        "-package-id",
+        "bytestring-0.11.5.4-76e2bb591efe928d842f8288364e9ef294891f67ce13cd0bc014a1e2fe5df0a0",
+        "-package-id",
+        "unix-2.8.8.0-9ce6978edc33076465fb56791d9ca017d405aa7230adf2653b2f7564cc3925f1",
+        "-package-id",
+        "text-2.0.2-8761414bfd4c61d83bb4a76313f5b7a899dddb96b90269a6e5d997a8bbbd6375",
+        "-package-id",
+        "aeson-2.2.5.0-e2e37fe6bc5aa07f45e066f8f61685fa5ad0b1eb18e2b2c128ef1ea752061e01",
+        "-package-id",
+        "async-2.2.6-8960f1dd21f4a009a29b1fe1a67c9a2a4a2c68697b93dd8f3fb173222380a50f",
+        "-package-id",
+        "crypton-1.0.6-020d21e85cd9683b83d7321e840b655ed76b478e58a637e86a778a7747ac3db7",
+        "-package",
+        "transformers",
+        "-package-id",
+        "process-1.6.30.0-6aaf8422fc072a0cd1390edbfe1125150c6bb2a95b2d3b42b9a9405f80b31cbd",
+        "-package-id",
+        "directory-1.3.10.1-d489a9b04bec59f8c3e0a56d9fa8c6036df06a729b2423829770f25fc263c55c",
+        "-package-id",
+        "filepath-1.4.301.0-55cfbc3f4dce88b4ce1658f6770d9ccbeb279efb5b93e8a3764f29b7dd69dd22",
+        "-package-id",
+        "temporary-1.3-fe250c7fcb6a9acbff484a742781194f9c09a4d7a37988cf39693cbaba0c5ac0",
+        "-package-id",
+        "typed-process-0.2.13.0-abd82bbc92edf3e4773c3dd817737de05db408f2ea5066648e8179fa7a8622cb",
+        "-package=prodbox",
+        "-package-id",
+        "network-3.1.4.0-1d8b779673bab29fa4d91c4b2077c7ccec77e8e8a1bd66b2b95ba4d224d64964",
+        "-package-id",
+        "dhall-1.42.3-f71713b7c542a7fcbde0a2e97ae07b9d32dfe03857095a90c6de6bb24d591cc1",
+        "-package-id",
+        "serialise-0.2.6.1-9fc9b98f7836b30172e1529223fb34de84f444ed67c191e32cd41daa2e1d73d0",
+        "-package-id",
+        "containers-0.6.8-9c73fa12219fb7e1c1121c78e2c1b0cf30923838f9754d37bac0134beb603c6c",
+        "-package-id",
+        "base64-bytestring-1.2.1.0-91628ae01012ed5bf73c3c97373488475dbd88cfd669a49aac9f7c995e8cca71",
+        "-package-id",
+        "cryptohash-sha256-0.11.102.1-6df39dbe01efd710a9783bb4456b0bac4b2e3444a6d321ab62b36f3ff9e6abe0",
+        "-itest/unit",
+        "-itest/support",
+        "-itest/qualification",
+        "-package-id",
+        "tasty-1.5.4-87b0b7a84b66321512246f51e4b2c73d419854c91e61f316f028599d02b6fb57",
+        "-package-id",
+        "tasty-golden-2.3.6-c4e6fa5b2abb4144c1889fed74ad6616bd7562f8ed7b77a0ea745194aaf5174f",
+        "-package-id",
+        "tasty-hunit-0.10.2-e92057303da32999a32a585f0581b8a8de1247905fe41fbc341e8c9d27161051",
+        "-package-id",
+        "tasty-quickcheck-0.11.1-83845e3e87c84d6edafadc8089f429f07dd0911031b48027f788998114a79ea2",
+        "-outputdir",
+        ".build/sprint-6.5/controller-caller-token-20261026/unit-policy-2-objects",
+        "-o",
+        ".build/sprint-6.5/controller-caller-token-20261026/unit-policy-2",
+        "-XImportQualifiedPost",
+        "-package-db",
+        ".build/packagedb/ghc-9.12.4",
+        "-package-id",
+        "vector-0.13.2.0-56506683abbe5d505d9873d57f93e5ce8e2a9d1cbb2f2f719e5690d437baa472",
+        "-package-id",
+        "stm-2.5.3.1-a1f2",
+        "-package-id",
+        "time-1.12.2-79f6471dcc18660545ae6f423af96c288f6ea95ac7a0b62e890dc9daf5b1fce7",
+        "-package-id",
+        "scientific-0.3.8.1-7c3c80dbb45676207dcbea10819661eeea2761483c16ed54c917301d2397d4d4",
+        ".build/sprint-6.5/controller-caller-token-20261026/UnitPolicy.hs"
+      ],
+      "started_utc": "2026-10-27T01:29:47.107128+00:00",
+      "completed_utc": "2026-10-27T01:29:53.795295+00:00",
+      "exit_code": 0,
+      "wall_seconds": 6.688184312079102
+    },
+    "controller-token-unit-policy-1": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-controller-token-unit-policy-1-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=180s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        ".build/sprint-6.5/controller-caller-token-20261026/unit-policy-2"
+      ],
+      "started_utc": "2026-10-27T01:30:52.079520+00:00",
+      "completed_utc": "2026-10-27T01:30:52.099155+00:00",
+      "exit_code": 0,
+      "wall_seconds": 0.019653857219964266
+    },
+    "controller-token-hlint-2": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-controller-token-hlint-2-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=180s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        ".build/prodbox-style-tools/bin/hlint",
+        "--hint=.hlint.yaml",
+        "--with-group=default",
+        "--with-group=extra",
+        "src/Prodbox/ControlPlane/LifecycleAuthorityAuthentication.hs",
+        "src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+        "test/unit/ControlPlaneVaultSession.hs",
+        "test/qualification/HostOperationRpcBirth.hs"
+      ],
+      "started_utc": "2026-10-27T01:36:55.904220+00:00",
+      "completed_utc": "2026-10-27T01:37:01.446761+00:00",
+      "exit_code": 0,
+      "wall_seconds": 5.542565701063722
+    }
+  },
+  "retained_failures": {
+    "native-build-1": "Older fixture build command omitted the newly private argument module. Add its source to the coherent native boundary.",
+    "native-build-2": "Packaged and local ProcessOutput types differed. Compile the authentication adapter with the same private owner boundary.",
+    "unit-build-1": "Standalone policy runner omitted mainWithSuite name; corrected runner passes.",
+    "expiry-control-1": "Expiry test expected the callback refusal to survive the parent closing check. The parent correctly reported KernelScopeDeadlineReached; zero protocol frames and exact six-role/held-group/workspace absence were observed. Correct the fixture to preserve its pre-close typed refusal. No production correction is needed."
+  },
+  "limitations": [
+    "All Kubernetes tool responses are authored fixtures; no real TokenRequest or Vault login occurs.",
+    "A token result is data and supplies no signing capability or Authority admission. Owned Vault sessions, registered signing, recovery and file retirement remain open.",
+    "No normalized aggregate production resource profile, image roll, live class closure, deployment qualification or phase closure is proved.",
+    "The current combined canonical/frontend gate remains owed."
+  ],
+  "scoped_controls_complete": true
+}

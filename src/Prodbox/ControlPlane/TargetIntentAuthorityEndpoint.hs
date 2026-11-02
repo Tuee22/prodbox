@@ -11,6 +11,8 @@ module Prodbox.ControlPlane.TargetIntentAuthorityEndpoint
   , TargetIntentIssueResponse (..)
   , targetIntentIssueResponseMaximumBytes
   , targetIntentIssueAuthenticatedHandler
+  , targetIntentIssueErrorResponse
+  , targetIntentIssueResponseStatus
   )
 where
 
@@ -52,6 +54,7 @@ import Prodbox.ControlPlane.TargetIntentAuthority
   , TargetIntentIssueError (..)
   , TargetIntentIssueRequest (..)
   , TargetIntentIssuerBoundary (..)
+  , issueAdmittedTargetWorkerExecutionPermit
   , issueTargetCommittedIntent
   , issuedTargetAcceptedAuthority
   , issuedTargetSignedIntent
@@ -84,11 +87,11 @@ import Prodbox.ControlPlane.TargetSecretWorker
   )
 import Prodbox.ControlPlane.TargetWorkerExecutionPermit
   ( encodeTargetWorkerExecutionPermit
-  , issueTargetWorkerExecutionPermit
   , targetWorkerExecutionPermitMatchesObservation
   , verifyTargetWorkerExecutionPermit
   )
 import Prodbox.Http.ReplyStatus (ReplyStatus (..))
+import Prodbox.Lifecycle.Authority.AdmissionGate (authoritySubmissionGateRefusalToken)
 import Prodbox.Lifecycle.Lease (AuthorityTime)
 import Prodbox.Lifecycle.TargetCommitIntent
   ( mkCredentialGeneration
@@ -245,14 +248,14 @@ permitResponse caller boundary wire =
                         Left detail -> pure (TargetIntentIssueRefused detail)
                         Right (rollout, attestation, sessionBinding) -> do
                           permitted <-
-                            issueTargetWorkerExecutionPermit
-                              (targetIntentAuthoritySigner boundary)
-                              (issuedTargetAcceptedAuthority issued)
+                            issueAdmittedTargetWorkerExecutionPermit
+                              boundary
+                              issued
                               rollout
                               attestation
                               sessionBinding
                           pure $ case permitted of
-                            Left _ -> TargetIntentIssueUnavailable "execution-permit-signer-unavailable"
+                            Left err -> permitIssueFailure err
                             Right permit ->
                               case verifyTargetWorkerExecutionPermit
                                 (issuedTargetAcceptedAuthority issued)
@@ -404,47 +407,59 @@ responseFromResult result = case result of
       , targetIntentIssueAcceptedAuthorityBytes =
           encodeAcceptedTargetAuthority (issuedTargetAcceptedAuthority issued)
       }
-  Left err -> case err of
-    TargetIntentIssuePreparedIntentUnavailable _ ->
-      TargetIntentIssueUnavailable "prepared-intent-unavailable"
-    TargetIntentIssueClockUnavailable _ ->
-      TargetIntentIssueUnavailable "authority-clock-unavailable"
-    TargetIntentIssueEpochUnavailable _ ->
-      TargetIntentIssueUnavailable "authority-epoch-unavailable"
-    TargetIntentIssueSignerUnavailable _ ->
-      TargetIntentIssueUnavailable "authority-signer-unavailable"
-    TargetIntentIssueTrustInstallUnavailable detail ->
-      TargetIntentIssueUnavailable
-        ( "target-trust-install-unavailable/"
-            <> renderTargetAuthorityTrustBoundaryCause
-              ( maybe
-                  TargetAuthorityTrustBoundaryOther
-                  id
-                  (parseTargetAuthorityTrustBoundaryCause detail)
-              )
-        )
-    TargetIntentIssueSignerGenerationChanged _ _ ->
-      TargetIntentIssueRefused "authority-signer-rotated"
-    TargetIntentIssueTargetUnregistered _ ->
-      TargetIntentIssueRefused "target-unregistered"
-    TargetIntentIssueTargetMismatch _ _ ->
-      TargetIntentIssueRefused "target-mismatch"
-    TargetIntentIssueAgentIdentityMismatch _ _ ->
-      TargetIntentIssueRefused "target-agent-identity-mismatch"
-    TargetIntentIssueNotPrepared ->
-      TargetIntentIssueRefused "intent-not-prepared"
-    TargetIntentIssueGenerationMismatch ->
-      TargetIntentIssueRefused "generation-mismatch"
-    TargetIntentIssueReceiptDigestMismatch ->
-      TargetIntentIssueRefused "receipt-digest-mismatch"
-    TargetIntentIssueDeadlineReached ->
-      TargetIntentIssueRefused "intent-deadline-reached"
-    TargetIntentIssueValueInvalid _ ->
-      TargetIntentIssueRefused "intent-value-invalid"
-    TargetIntentIssueSignatureInvalid _ ->
-      TargetIntentIssueRefused "intent-signature-invalid"
-    TargetIntentIssueTrustReadBackMismatch ->
-      TargetIntentIssueRefused "target-trust-read-back-mismatch"
+  Left err -> targetIntentIssueErrorResponse err
+
+targetIntentIssueErrorResponse :: TargetIntentIssueError -> TargetIntentIssueResponse
+targetIntentIssueErrorResponse err = case err of
+  TargetIntentIssuePreparedIntentUnavailable _ ->
+    TargetIntentIssueUnavailable "prepared-intent-unavailable"
+  TargetIntentIssueClockUnavailable _ ->
+    TargetIntentIssueUnavailable "authority-clock-unavailable"
+  TargetIntentIssueAdmissionUnavailable _ ->
+    TargetIntentIssueUnavailable "authority-admission-unavailable"
+  TargetIntentIssueAdmissionClosed refusal ->
+    TargetIntentIssueRefused
+      ("authority-mutation-admission-closed/" <> authoritySubmissionGateRefusalToken refusal)
+  TargetIntentIssueAdmissionChanged ->
+    TargetIntentIssueRefused "authority-mutation-admission-changed"
+  TargetIntentIssueAdmissionInvalid ->
+    TargetIntentIssueUnavailable "authority-admission-invalid"
+  TargetIntentIssueExecutionPermitFailed _ ->
+    TargetIntentIssueUnavailable "execution-permit-signer-unavailable"
+  TargetIntentIssueSignerUnavailable _ ->
+    TargetIntentIssueUnavailable "authority-signer-unavailable"
+  TargetIntentIssueTrustInstallUnavailable detail ->
+    TargetIntentIssueUnavailable
+      ( "target-trust-install-unavailable/"
+          <> renderTargetAuthorityTrustBoundaryCause
+            ( maybe
+                TargetAuthorityTrustBoundaryOther
+                id
+                (parseTargetAuthorityTrustBoundaryCause detail)
+            )
+      )
+  TargetIntentIssueSignerGenerationChanged _ _ ->
+    TargetIntentIssueRefused "authority-signer-rotated"
+  TargetIntentIssueTargetUnregistered _ ->
+    TargetIntentIssueRefused "target-unregistered"
+  TargetIntentIssueTargetMismatch _ _ ->
+    TargetIntentIssueRefused "target-mismatch"
+  TargetIntentIssueAgentIdentityMismatch _ _ ->
+    TargetIntentIssueRefused "target-agent-identity-mismatch"
+  TargetIntentIssueNotPrepared ->
+    TargetIntentIssueRefused "intent-not-prepared"
+  TargetIntentIssueGenerationMismatch ->
+    TargetIntentIssueRefused "generation-mismatch"
+  TargetIntentIssueReceiptDigestMismatch ->
+    TargetIntentIssueRefused "receipt-digest-mismatch"
+  TargetIntentIssueDeadlineReached ->
+    TargetIntentIssueRefused "intent-deadline-reached"
+  TargetIntentIssueValueInvalid _ ->
+    TargetIntentIssueRefused "intent-value-invalid"
+  TargetIntentIssueSignatureInvalid _ ->
+    TargetIntentIssueRefused "intent-signature-invalid"
+  TargetIntentIssueTrustReadBackMismatch ->
+    TargetIntentIssueRefused "target-trust-read-back-mismatch"
 
 targetIntentIssueResponseStatus :: TargetIntentIssueResponse -> ReplyStatus
 targetIntentIssueResponseStatus response = case response of

@@ -382,6 +382,7 @@ commandPathOfRequest request =
               BootstrapBrokerStart _ -> ["start"]
               BootstrapBrokerSecretWorker {} -> ["secret-worker"]
         NativeControlPlane role _ -> [RuntimeRole.runtimeRoleName role, "start"]
+        NativeRpcBirthController _ -> ["internal-rpc-birth-controller"]
         NativeCredentialProvisioner credentialCommand ->
           "credential-provisioner"
             : case credentialCommand of

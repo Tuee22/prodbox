@@ -11,6 +11,81 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-10-24 on Sprint `2.146` (Standards A/N/O).** The adapter preserves
+closed attestation mismatch fields and typed Pod/API observation causes without publishing
+compared identities, provider details or parser bodies. Three frozen controls retain failure;
+three replacements, focused **63/63**, installed **559/559**, canonical **6,885 + 27/35/61**
+and complete frontend/environment **99/99** pass on one unchanged operator. Admission,
+startup/cleanup bounds and durable encodings are unchanged. Native semantic attribution,
+class closure and publication/cutover composition remain owned by Sprint `6.5`.
+
+🔄 **Reopened 2026-10-24 on Sprint `2.146` (Standards A/N/P).** The native worker
+attestation refusal loses its subtype at the Broker adapter. Preserve the exact frozen
+implementation and provider recording, bank the diagnostic failure, and expose exhaustive
+closed causes without publishing observed values or weakening any identity check. The
+underlying native attestation subtype remains unobserved. Earlier closures retain their
+scoped evidence; Sprint `6.5` retains native class closure and cutover ownership.
+
+✅ **Reclosed 2026-10-24 on Sprint `2.145` (Standards A/N/O).** Authoritative worker
+settlement accepts only strictly superseded exclusion fields with exact immutable identity,
+quiescence, receipt cleanup and result readback. Production and physical fixtures share the
+retained response/worker-result observer, preserving encrypted responses and classified causes
+before separate publication. Missing proof remains fail-closed. Four frozen controls retain
+failure and four replacement controls pass; focused **56/56**, broader installed **514/514**,
+canonical **6,822 + 27/35/61** and complete frontend/environment **99/99** pass on one
+operator. Sprint `6.5` retains native class closure and cutover ownership.
+
+🔄 **Reopened 2026-10-24 on Sprint `2.145` (Standards A/N/P).** Retained root-init
+continuation reaches authoritative worker reconciliation under a newly acquired fence, but
+the preserved request still carries its original fence generation, owner nonce and deadline.
+The generic guard refuses those three renewed exclusion fields before settling the exact
+old worker/result. Bank the actual closed diagnostic and frozen driver before changing this
+phase-owned recovery boundary. Earlier initialization/reset closures retain their scoped
+evidence; Sprint `6.5` retains composed native qualification and cutover.
+
+✅ **Reclosed 2026-10-23 on Sprint `2.144` (Standards A/N/O).** Audited reset proof/action
+is durably armed before effects, and exact old/replacement binding recovery no longer requires
+retired preparation. Fresh clients reconstruct the original generation and action; a changed
+PVC refuses before physical mutation. All nineteen prior phase encodings are preserved.
+Focused **17/17**, installed **458/458**, native clients **16/16**, canonical
+**6,766 + 27/35/61**, and full frontend/environment **92/92** pass on one operator.
+Sprint `6.5` retains harness transport composition, native canary and two-cycle class closure;
+this code-owned closure supplies no deployment or cutover claim.
+
+🔄 **Reopened on Sprint `2.144` (2026-10-23, Standards A/N/P).** Offline review of
+reset response-loss composition identifies a missing durable reset-proof stage. The old
+producer and status binding cannot recover the generation-CAS/prepared-retirement gap that
+its permissive physical fake can replay with a remembered request. This reset-owned surface
+must bank a failing control and validate before the later harness composition resumes.
+
+✅ **Reclosed 2026-10-22 on Sprint `2.143` (Standards A/N/O).** Separate fresh and
+exact-snapshot continuation admissions make the existing durable recovery driver reachable
+without weakening the strict worker pristine guard. Both response-loss windows, stale/foreign
+snapshots and public readiness/status behavior pass focused and full validation. Canonical
+**6,701 + 27/35/61** and full frontend/environment **76/76** pass on one unchanged operator.
+Sprint `6.5` owns harness recovery composition, native canary and two-cycle class closure;
+no deployment-qualified or cutover claim is supplied by this code-owned closure.
+
+🔄 **Reopened 2026-10-22 on Sprint `2.143` (Standards A/N/P).** The new Broker image
+is Ready after the exact native Vault remount, but initialization refuses with
+`EngineProgramEvidenceRefused` and HTTP 409 `boundary-refused`. Its underlying cause remains
+unknown. Attribute and bank that bootstrap-owned boundary offline before changing behavior;
+Sprint `3.48` remains closed independently on its mount surface.
+
+✅ **Reclosed 2026-10-22 on Sprint `2.142` (Standards A/N/O).** The diagnostic repair
+passes warning-clean build, **10/10** focused cases, canonical **6,613 + 27/35/61** and the
+full built-frontend **76/76** suite. Unobserved application retains its closed primary class
+and distinguishes uninitialized from unavailable follow-up; exact binding precedes failed
+worker attribution. The underlying retained-mount correction belongs forward to Sprint
+`3.48`. Live class closure and composed deployment qualification remain pending.
+
+🔄 **Reopened 2026-10-22 on Sprint `2.142` (Standards A/N/P).** The restored current
+runtime passes Broker readiness, then its exact `initialize` worker exits before application
+is observed. The worker erases the Vault failure into one string and the host reports only
+terminal-phase attestation mismatches. This phase owns encrypted initialization and its
+diagnostics through Sprints `2.64`/`2.65`; reproduce and attribute this arm offline before
+repair and local validation. Campaign execution remains solely in Resume Here.
+
 ✅ **Reclosed 2026-10-13 on Sprints `2.136`-`2.141` (Standards A/N/P).** The live campaign reopened this phase six
 times on its own surfaces and closed each with a live observation: a retain of an unchanged certificate needs no slot
 (`2.136`); the Vault accessor audit passes over an accessor that vanished between its inventory and its lookup
@@ -15450,6 +15525,554 @@ first, which is why the mapping goes through the source and not through the deli
   (Standard C) and the Standard-P deployment-qualification registration.
 - `DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` — the Adapter replay-capacity measurement row
   (Standard I).
+
+## Sprint 2.142: A Pre-Application Vault Initialization Refusal Retains Its Cause [✅ Done]
+
+**Status**: Done — code-owned diagnostic surface validated 2026-10-22; registered before repair.
+**Counterexample**: `BOOTSTRAP-VAULT-INIT-PREAPPLICATION-REFUSAL-2026-10-22`.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/ProductionSecretWorker.hs`, the typed
+Vault/PGP boundary and exact one-shot worker observation/attestation path; repository-owned
+recording and focused actual-tool/closed-cause controls under `test/qualification/` and `test/unit/`.
+**Deployment qualification**: pending; the code-owned repair is independent of Sprint `6.5`'s
+two-cycle campaign and supplies no public activation permission.
+**Independent Validation**: frozen failing control, real pinned-tool refusal recording,
+initialized/uninitialized/unobservable follow-up cases, operation-specific terminal worker
+attribution, secret-safe diagnostics, warning-clean build, canonical and full frontend gates.
+**Docs to update**: `documents/engineering/vault_doctrine.md`,
+`documents/engineering/unit_testing_policy.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`, and this phase file.
+
+### Objective
+
+Attribute and repair the exact encrypted initialization refusal observed by the supported
+home bootstrap, retaining fail-closed handling and opaque custody. A terminal worker must not
+turn the primary failure into an unrelated attestation mismatch. Never log request/response
+bodies, passwords, plaintext shares, root tokens, private keys or exception payloads.
+
+### Recorded Counterexample
+
+The third supported invocation exits **1** in **399.13 seconds** on 2026-10-22, before
+credential preparation/candidate registration. The repaired runtime Broker is Ready with
+manifest `sha256:4c428cb55b231bed3c174c4a936d32ebcdc335a165c2cf3733cf083ba6c0bb66`.
+The exact `initialize` worker Pod `fa827857-552e-4f43-99f4-ffb2bfb2714f` starts at
+17:49:39 UTC and exits **1** at 17:49:40 UTC. Its only diagnostic is
+`Vault initialization failed before application was observed`. Vault remains uninitialized;
+the host reports `worker phase mismatch` for every admitted initialization operation.
+Evidence is `.build/sprint-6.5/resume-20261022/pre-3.*` plus `broker-repaired-*`.
+The underlying Vault failure class is not yet observed. No hand repair or absence proof is claimed.
+
+### Deliverables and Validation
+
+1. Freeze the superseded source/image identity and capture a secret-safe real-tool recording.
+   Reproduce the refused encrypted-init request against an isolated pinned Vault fixture;
+   preserve the same public-key shape, envelopes and load without touching retained live state.
+2. Preserve an exhaustive, payload-free primary/follow-up failure class and distinguish exact
+   terminal worker failure from a foreign worker or a mismatched operation. Cover applied,
+   unapplied and unobservable results, malformed responses and sibling worker operations.
+3. Attribute the underlying cause to its owning surface. The real recording identifies an
+   unlinked retained Vault mount, owned forward by Sprint `3.48`; this diagnostic sprint does
+   not mutate storage or extend its own scope into that phase. Batch both validated repairs
+   before an image roll. Preserve the original wire compatibility; no durable constructor
+   change is needed for the protected diagnostic.
+4. Run focused tests, warning-clean build, canonical and full frontend validation. Close this
+   code-owned surface before resuming Sprint `6.5`; keep class closure and aggregate live proof
+   pending until their exact evidence exists.
+
+### Cleanup Ownership
+
+This sprint removes any temporary diagnostic path it introduces and retains the scrubbed
+recording/reproducer after closure. It does not delete or reset the retained root, Vault state,
+prepared initialization journal, public cascade or legacy migration routes. No new operational
+legacy/removal scope is admitted by this registration.
+
+### Code-Local Evidence
+
+The exact pinned Vault binary is captured read-only from the live image; it is **1.18.3**.
+A network-isolated fixture using the shipped GnuPG and file backend accepts the public init
+shape on a linked root (**HTTP 200**, initialized), then refuses the same shape on a mount
+whose empty bind source was unlinked/recreated (**HTTP 400**, uninitialized). Both use total
+**500m / 768Mi**, zero extra swap and identical tmpfs/persistence budgets; private keys and
+all Vault state stay in the removed disposable fixture. Only closed provider classes are
+retained, never the init response. The real live log independently names keyring persistence
+and missing directory. The recording is repository-owned at
+`test/qualification/BOOTSTRAP-VAULT-INIT-PREAPPLICATION-REFUSAL-2026-10-22.json`.
+
+The superseded diagnostic's recorded-output control exits **1** as expected; the current
+production classifier/renderer exits **0** against that same recorded HTTP result. This is a
+recorded-output control, not a replay of the full frozen worker. The complete superseded image
+and source identities are retained under `.build/sprint-2.142/`; its archive's config digest
+is independently verified. The new code preserves the primary class, separates an unavailable
+follow-up from observed uninitialized state, and keeps applied-without-response semantics and
+durable wire tags unchanged. Exact host operation/action/request/storage matching precedes
+failed-worker attribution; terminal workers remain ineligible for attach. Warning-clean build
+and expanded focus pass **10/10** (**0.07 seconds** test time), with pinned HLint, formatter and
+corrected documentation lint. The canonical gate passes **6,613** primary plus **27/35/61**
+auxiliary cases, exit **0** in **1138.62 seconds**. Full frontend validation passes **76/76**,
+exit **0** in **1074.15 seconds** command wall time (**1068.20 seconds** test time), on the
+unchanged operator. Evidence is indexed in `.build/sprint-2.142/validation.json`.
+No live class closure is supplied. For the observed unlinked-mount cause the registered
+remedy is Sprint `3.48`'s bounded bootstrap repair through `prodbox cluster reconcile`;
+unobservable or foreign bindings remain refusals without a reset permission.
+
+## Sprint 2.143: Attribute And Repair Initialization Program-Evidence Refusal [✅ Done]
+
+**Status**: Done on the code-owned surface, 2026-10-22; registered before behavior changes.
+**Counterexample**: `BOOTSTRAP-INITIALIZE-PROGRAM-EVIDENCE-REFUSAL-2026-10-22`.
+**Implementation**: `InitializationEvidence`, `ProductionEngine.initializationEvidence`,
+`Engine.driveResumedRootInitialization`, closed Broker diagnostics/status, and the host
+continuation/readiness projection.
+**Live-proof**: pending; the remount step has crossed but real initialization has not.
+**Deployment qualification**: pending; no class closure or public cutover is supplied here.
+**Independent Validation**: frozen current source/image and recorded provider behavior; a
+stable offline old-failure/current-pass control with unchanged causal envelopes, background
+load, deadlines and persistence; sibling-state matrix, canonical and full frontend gates.
+**Docs to update**: `documents/engineering/vault_doctrine.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`,
+`DEVELOPMENT_PLAN/system-components.md`, and this phase file.
+
+### Objective and Observed Boundary
+
+Invocation `pre-4` terminates in **1490.21 seconds**, exit **1**, with initialization HTTP
+**409** `boundary-refused`. Ready Broker Pod `72882342-1810-4105-88a1-9799aa634703` runs image
+config `sha256:9d370c2a2bd31936e9842f1f9ff1580f11098384a533be6eb9b681455315b8df`, zero
+restarts. Its protected diagnostic names `EngineProgramEvidenceRefused`; neither that
+constructor nor the wire class establishes the underlying cause. Vault remains uninitialized
+and sealed. The fresh Vault Pod independently mounts the unchanged declared directory, so
+this finding does not reopen Sprint `3.48` on speculation.
+
+### Deliverables and Validation
+
+1. Preserve operator `4c62d7f5…`, both source identities, immutable runtime image identity and
+   closed safe observations before repair. Never print/hash private logs or returned material.
+2. Attribute the exact program-evidence producer using read-only observations and a stable
+   repository-owned recording. Do not turn the generic refusal into a guessed storage reset.
+3. Bank the failing superseded control, positive replacement and relevant healthy, missing,
+   stale/foreign, recovery, unobservable and closing-readback siblings at the same causal
+   budgets. Any durable refusal gains an explicit bounded repair, registered verb or `NukeOnly`
+   remedy with its reason.
+4. Run focused, canonical and full frontend validation before one batched image roll. Sprint
+   `6.5` owns native canary, two audit-clean cycles and the qualified public cutover.
+
+### Attribution and Bounded Repair
+
+The pristine-only production factory made the existing driver's advanced-journal recovery
+branches unreachable. A planted, invariant-valid, original-commitment-consistent in-flight
+journal demonstrates old refusal and replacement admission. The live journal phase was not
+exported by the deployed status API and is not claimed observed. The original fixture's
+commitment mismatch is retained as an invalid causal-profile attempt; the corrected minimal
+same-input control supersedes it. The frozen executable and runtime archive remain preserved;
+this producer control is not a full frozen Broker replay.
+
+Fresh initialization still uses the strict shared pristine classifier. Advanced state receives
+a distinct sealed continuation, never a current-pristine claim. Admission validates binding,
+invariants, original prepared commitment and phase-appropriate Vault status. After fencing,
+the interpreter requires the same version and exact snapshot, never recreates a missing
+journal, and reaches the existing response/custody recovery driver. An in-flight call never
+becomes a second `/sys/init`. Missing encrypted response becomes durable ambiguity with its
+existing explicit audited repair gate. Public status adds only a closed phase; initialized
+Vault remains pending while custody recovery is unfinished. Ordinary operator bootstrap
+continues with the existing password and does not silently reset ambiguity.
+
+### Cause-to-Remedy Table
+
+| Closed cause | Supported remedy and preservation rule |
+|-------------|-----------------------------------------|
+| `InitEvidenceUnavailable` | Retry the same bounded `prodbox vault init` after restoring observation; no state is removed. |
+| `InitEvidenceVersionConflict`, `InitEvidenceReadBackMismatch`, `InitEvidenceResumeChanged` | Reobserve and submit the same registered operation; fresh admission binds a new exact snapshot. Repeated inconsistent read-back preserves state for operator investigation. |
+| `InitEvidenceRequestGenerationMismatch` | Requery Broker status and submit against its current generation through the same CLI. |
+| `InitEvidenceAmbiguousNeedsReset` | `prodbox vault reset-ambiguous-initialization --yes`; the Broker must independently prove its existing strict absence predicate before changing the generation. |
+| `InitEvidenceCorrupt`, `InitEvidenceBindingMismatch`, `InitEvidencePristineRefused`, `InitEvidenceJournalInvalid`, `InitEvidenceOriginalPristineMismatch` | `NukeOnly`: no trustworthy same-generation custody proof exists; preserve all objects. Only the operator-owned total-decommission protocol may retire the retained root. |
+| `InitEvidenceCancelled` | `NukeOnly`: this cancelled custody intent cannot authorize a successor init; preserve its journal and prepared material. |
+| `InitEvidenceVaultStateMismatch` | `NukeOnly`: the observed Vault state contradicts the admitted journal phase; no supported inference can safely reset or replay it. |
+| `InitEvidenceResumeAbsent` | `NukeOnly`: an admitted advanced journal disappeared; never replace it with a fresh journal or infer absence of application. |
+
+These are remedy categories, not permission for an agent to run `nuke`. No resource envelope,
+absolute deadline or persisted wire format changes. The recording names the real generic
+refusal and its observation limits; the physical law composes producer, durable driver,
+worker checkpoint and both response-loss schedules. Sprint `6.5` owns harness recovery
+composition and the next batched native projection.
+
+### Validated Correction
+
+- Frozen runtime archive independently verifies config digest `sha256:9d370c2a…`; frozen
+  superseded operator is `4c62d7f5…`. Corrected consistent-input producer controls exit **1/0**.
+  The earlier structural fixture and compile refusals remain retained with their limitations.
+- Final warning-clean build and pinned formatting/HLint pass. Installed continuation/readiness
+  controls pass **45/45**, including all 19 closed phase tags, both response/receipt crash
+  windows, missing response, foreign/inconsistent/cancelled state and changed snapshot.
+- Canonical validation passes **6,701 + 27/35/61**, exit **0** in **1133.20 seconds**
+  (**270.33 seconds** primary test time). Full built-frontend suite passes **76/76**, exit
+  **0** in **1061.73 seconds** (**1055.99 seconds** test time), including all four environment
+  cases. Both gates use unchanged operator `c9016a9419183684bb5ae4665f3e59a19fa0e8f8a762a5570b35064f45911c39`.
+- The duplicate whole-suite `env` alias invocation is intentionally cancelled, exit **130**,
+  after confirming the completed suite includes `integrationCliSuite` and `integrationEnvSuite`.
+  It is recorded as cancellation, not another pass. Earlier canonical test-style refusal and
+  correction remain retained. Exact evidence is `.build/sprint-2.143/validation.json`.
+- No resource envelope, persistence format or deadline increases. The executable source
+  manifest is `768353214962ea422f1bcfa7760f5ff89c8747e1d707890a3885cb892c8cf459`
+  (**1,360** entries); governed documentation maintenance retains that key.
+
+### Remaining Work
+
+None on the code-owned surface. Live-proof and deployment qualification remain pending under
+Sprint `6.5`, including its already-registered harness continuation/audited-reset composition,
+batched native projection and two audit-clean cycles. No new live attempt, activation or
+legacy deletion is claimed here. Current execution remains solely in Resume Here.
+
+## Sprint 2.144: Durable Audited Reset Recovery Across Generation CAS [✅ Done]
+
+**Status**: Done (2026-10-23, Standards A/N/O); registered before behavior changes.
+**Counterexample**: `VAULT-RESET-GENERATION-CAS-LOST-PRODUCER-RECOVERY-2026-10-23`.
+**Implementation**: Bootstrap Broker root-reset journal transitions, production store binding
+and evidence resolution, metadata observation and matching clients; exact functions follow the
+frozen composition control.
+**Live-proof**: pending; this finding is from offline source/physical-fault review, not a new live run.
+**Deployment qualification**: pending; no class closure or cutover is supplied here.
+**Independent Validation**: frozen pre-repair source/operator and physical reset driver with
+production binding/admission predicates, both CAS-response-loss windows, restart without a
+remembered request, unchanged budgets, old-tag codec controls, canonical and full frontend gates.
+**Docs to update**: `documents/engineering/vault_doctrine.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`, and this phase file.
+
+### Proven Mechanism to Bank
+
+The existing reset driver performs the physical reset, advances the storage generation,
+removes the prepared envelope even if generation advancement reports failure, then records
+`RootResetPristine` only after both results succeed. A lost acknowledgement may therefore
+leave a new current generation, an old ambiguous journal and no prepared envelope. The
+production bound journal read refuses that generation, and reset admission requires the
+removed envelope. Existing physical replay tests inject the proof directly and do not test
+fresh production admission. A host-only intent cannot repair this refused producer.
+
+### Deliverables and Validation
+
+1. Freeze the current predecessor source/operator and bank the old failure before changing
+   the protocol; distinguish planted composition from actual provider observations.
+2. Persist and independently read back the exact audited reset proof before physical effects.
+   Its pending phase withdraws init admission and is addressable from only its old or exact
+   replacement binding. Resume the same proof without a second audit of deleted preparation.
+3. Keep the pending reset discoverable by a fresh client after either CAS response-loss window.
+   No guessed generation, foreign proof, absent journal, new init or host metadata reset may
+   replace this recovery. Retire preparation and close reset only with exact terminal readback.
+4. Preserve previous persisted constructor encodings; new state appends rather than renumbers.
+   Cover cancelled, corrupt, foreign, missing, unavailable and changed-proof siblings, both
+   production admission and driver, and the ordinary confirmed reset client.
+5. Run focused, warning-clean, pinned style, canonical and combined frontend/environment gates
+   before this code-owned surface closes. Sprint `6.5` retains harness composition, native
+   projection, two audit-clean cycles and cutover ownership.
+
+### Implemented Reset Boundary and Cause-to-Remedy Table
+
+The appended `RootResetInFlight proof actionDigest` phase is durably read back before any
+physical reset. It retains the exact old and replacement bindings and request action.
+Production store reads admit that pending phase only at either of those bindings; reset
+requests still name its old generation. The production admission kernel reuses its stored
+proof without requiring already-retired preparation and refuses a changed action or foreign
+current binding. The interpreter rechecks the exact phase/proof/action after fencing.
+The physical interpreter recomputes the existing replacement binding from the stored action,
+ambiguity and freshly observed PVC identity before any scale-down or reset Pod. A replacement
+PVC or changed action refuses without mutation. Generation advancement must succeed/read back
+before preparation retirement; reset-pristine
+is published only after those results close. Cancellation before arming refuses effects;
+a cancelled armed reset may finish only its safety tail. Generic init/restart cannot erase
+or reinterpret the pending reset.
+
+Status adds the pending phase plus metadata-only old-generation and action-digest
+projections. Fresh confirmed clients reconstruct that exact request; absent replay metadata
+never falls back to a newly computed action. Older persisted phase encodings are unchanged,
+with 19 synthetic fingerprints banked before repair; the new pending tag is appended.
+An old partial reset that already lost preparation without a recorded proof is not granted
+new evidence retroactively.
+
+| Closed cause | Supported remedy |
+|-------------|------------------|
+| `ResetEvidenceUnavailable`, version conflict or read-back mismatch | Restore observation and retry the same registered `prodbox vault reset-ambiguous-initialization --yes`; the pending proof and exact request remain authoritative. No absence or completion is inferred from a timeout. |
+| `ResetEvidencePendingGenerationAbsent`, `ResetEvidencePendingActionAbsent` | Restore the current metadata projection/client revision and reobserve; never guess replay metadata. |
+| `ResetEvidencePendingActionMismatch`, requested-generation mismatch | Reobserve the pending operation and submit its exact old generation and stored action through the confirmed reset client. A foreign request does not mutate it. |
+| `ResetEvidenceNotAmbiguous` | Observe status and use ordinary init/unseal/reconcile only when its independently observed state permits that operation; this refusal supplies no reset permission. |
+| `ResetEvidenceEstablishedGeneration`, expected retained-object presence | Reset is inadmissible because established custody or dependent state exists. Use ordinary lifecycle/recovery for that state; only operator-owned total decommission may retire it. |
+| `ResetEvidenceUnjournaledGenerationAdvance`, `ResetEvidencePreparedAbsent`, `ResetEvidencePreparedMismatch` without a pending proof | `NukeOnly`: legacy partial state lacks a trustworthy audited reset proof, so reconstruction from current absence would invent authority. Preserve all objects. |
+| `ResetEvidenceCorrupt`, binding mismatch, invalid journal, missing journal, current-binding mismatch or invalid audit proof | `NukeOnly` if authoritative readback cannot restore the exact operation: no matching proof/generation may be inferred or recreated. |
+| `ResetEvidenceCancelledBeforeArm` | `NukeOnly`: cancellation withdrew the unarmed intent; it cannot silently become a destructive reset. An already-armed reset instead retains its safety tail. |
+| `VaultResetIdentityChanged` | Restore observation of the exact admitted PVC and retry the registered reset; a replacement claim cannot inherit this proof. If that authoritative identity is lost, preserve state for operator-owned total decommission. |
+| `RootInitResetInProgress`, `RootInitResetNotArmed` | Use the registered confirmed reset and its durable pending proof. Neither generic restart nor a direct completion event may skip proof arming. |
+
+These rows never authorize an agent-run `nuke`, hand deletion, host intent workaround or
+larger timeout. Runtime class closure and migration qualification remain with Sprint `6.5`.
+
+### Remaining Work
+
+None on this code-owned surface. The frozen negative driver/predicate control exits **1**;
+the replacement focused matrix passes **17/17**, including all **19** old codec fingerprints,
+four crash points, post-admission evidence changes, cancellation, PVC identity and action
+mismatch. Installed regressions pass **458/458** and actual host-controller transport cases
+pass **16/16**. Warning-clean build, pinned formatting/HLint, canonical **6,766 + 27/35/61**
+and combined frontend/environment **92/92** pass on unchanged operator `e8cca41a…`.
+The primary suite takes **290.76 seconds**; canonical command **1127.19 seconds**; frontend
+command **1144.37 seconds** (**1137.52 seconds** test time). Retained failures, intentional
+interruption and corrected assertions remain indexed in `.build/sprint-2.144/validation.json`.
+Live class closure, harness readiness transport and cutover remain owned by Sprint `6.5`.
+Current execution and evidence remain solely in Resume Here.
+
+### Cleanup Ownership
+
+The pending proof uses the existing root-init journal and adds no retained root or second
+intent owner. The fenced Bootstrap Broker reset driver owns exact preparation retirement and
+terminal reset readback. Whole retained-root removal remains with the registered total-
+decommission protocol; an absent preparation object never licenses journal or storage deletion.
+
+## Sprint 2.145: Authoritative Init-Worker Recovery Under a Successor Fence [✅ Done]
+
+**Status**: Done (2026-10-24, Standards A/N/O); registered before behavior changes.
+**Counterexample**: `VAULT-INIT-AUTHORITATIVE-WORKER-SUPERSEDED-FENCE-2026-10-24`.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/EngineSecretWorker.hs`, its root-init
+caller in `Engine.hs`, the shared `InitializationRecovery.hs` observer wired into
+`ProductionEngine.hs`, exact production worker cleanup/store boundaries and owned tests.
+**Live-proof**: pending; the live refusal is observed, but no repaired native canary or
+audit-clean cycle is supplied here.
+**Deployment qualification**: pending; code-local closure does not activate a writer.
+**Independent Validation**: frozen actual worker-recovery function, deterministic successor-
+fence boundary fixtures, root-init/worker-checkpoint composition, real-tool recording,
+warning-clean/style, canonical and complete frontend/environment gates.
+**Docs to update**: `documents/engineering/vault_doctrine.md`,
+`documents/engineering/bootstrap_readiness_doctrine.md`, `DEVELOPMENT_PLAN/README.md`,
+`DEVELOPMENT_PLAN/00-overview.md`, `DEVELOPMENT_PLAN/system-components.md`, and this phase file.
+
+### Objective
+
+Separate a successor fence's authority to settle an exact predecessor from the immutable
+identity of the predecessor's worker/result. Recover only evidence-backed cleanup and
+terminal readback; never replay an in-flight Vault init, reinterpret a foreign result or
+discard a receipt/session to make progress.
+
+### Recorded Boundary
+
+Invocation six passes first-observation startup admission, then returns HTTP **409**
+`state-conflict`. The closed diagnostic names
+`EngineSecretWorkerRefused/StoredRequestBindingMismatch`, site
+`authoritative-stored-request`, differing only on **fence-generation**, **owner-nonce** and
+**operation-deadline**. Read-only status remains `init-call-in-flight`, uninitialized/sealed,
+without ambiguity or established custody. `RootPlanAwaitVaultInitResponse` obtains an outer
+recovery result and calls `reconcileAuthoritativeSecretWorkerResult`; that function requires
+the stored worker request to match the newly held fence before any reconciliation. Ordinary
+pre-receipt recovery already treats a strictly older fence separately; the authoritative
+outer-result path does not. This finding is on this phase's worker protocol, not evidence
+that the harness may bypass it or select reset from an HTTP error.
+
+### Deliverables and Validation
+
+1. Preserve the exact predecessor operator, source identity, runtime image and worker
+   implementation. Bank a failing executable control with the live field/site shape before
+   changing behavior. Hold load, fault schedule, CPU/memory/persistence and deadlines fixed.
+2. Define the exact immutable operation/action/request/storage/result checks and strictly
+   superseded-fence proof needed for predecessor settlement. Prove exact worker quiescence
+   through the existing registered boundary before a durable terminal result. A fresh fence
+   authorizes cleanup; it does not authorize the old worker to issue another Vault effect.
+3. Cover pre-receipt, authoritative-terminal and receipted cleanup states; same/newer fence,
+   foreign operation/action/request/storage, missing/unbound checkpoints, changed results,
+   cancellation, unavailable reads, CAS response loss, worker replacement and restart after
+   each cleanup/publication boundary. Preserve any state whose proof is insufficient and
+   give every durable refusal an explicit supported remedy. Batch all known safe siblings.
+4. Exercise the actual root-init driver with a retained checkpoint and a fresh fence,
+   including captured/missing response and response loss between worker terminalization and
+   root-journal advancement. Demonstrate no repeated init, fresh initialization-worker allocation, secret
+   transport, journal recreation or unregistered storage reset.
+5. Preserve existing persisted encodings and resource/deadline bounds. Run focused,
+   warning-clean, pinned style, canonical and complete frontend/environment validation
+   before code-owned closure. Sprint `6.5` owns the later batched native canary, two audit-
+   clean cycles, single-writer activation and legacy removal.
+
+### Implementation and Validation Evidence
+
+Four frozen actual-driver/producer controls fail as expected, and all four same-input
+replacement controls pass. The final focused matrix passes **56/56**; the two owned suites
+pass **168/168**, and installed broader Broker regressions **514/514**. The foreign-response
+matrix checks root binding, schema and recipient commitment before cleanup. Both publication
+CAS response-loss windows preserve exact terminal evidence without another init.
+
+Final all-target warning-clean build passes in **179.82 seconds**. Canonical validation
+passes **6,822 + 27/35/61**, exit **0** in **1166.75 seconds** (**312.56 seconds** primary
+test time). Complete frontend/environment validation passes **99/99**, exit **0** in
+**1170.42 seconds** (**1163.75 seconds** test time), on unchanged operator `d3758e23…`.
+Executable source remains `576295c6…` (**1,367** entries). Both aliases run this complete
+frontend/environment suite, so no duplicate environment invocation is owed.
+
+Initial shared-type import and record-selector compiler refusals remain retained. The first
+focused run is **53/55** because two assertions count the interrupted call's initial cleanup;
+corrected recovery-suffix assertions pass jointly with the final matrix. Pinned formatting,
+HLint and implementation documentation checks pass. Exact artifacts, scopes and all failures
+remain indexed in `.build/sprint-2.145/validation.json`. No resource, deadline, persistent
+encoding, secret transport or ordinary worker execution protocol is enlarged.
+
+**Frozen law and safety review, before behavior changes.** Both actual-driver controls
+fail with exactly the live site's three renewed fields: a pre-receipt predecessor and an
+already-terminal authoritative predecessor. Neither allocates a worker or repeats init.
+The proposed admission preserves operation/action/request/storage identity and requires a
+strictly older stored fence for any renewed-field mismatch. Same/newer or immutable mismatch
+continues to refuse. Existing exact-UID retirement/readback remains mandatory for an
+unreceipted predecessor; a matching authoritative terminal result is read-only replay.
+Receipts keep their complete mandatory cleanup and exact result comparison rather than
+being discarded. Ordinary non-authoritative recovery is unchanged. The repository recording
+and `.build/sprint-2.145/superseded-controls.json` retain the negative controls and production
+observation limits. Missing/unbound, foreign and unavailable proof remain fail-closed and
+require explicit remedy rows; they are not silently rebuilt from absence.
+
+**Retained-result sibling, banked before producer changes.** The actual frozen production
+local observer returns generic ambiguity when the separate encrypted-response object is
+absent, even if the worker checkpoint durably contains an encrypted response or a classified
+ambiguity. Both consistent producer/driver controls fail with
+`EngineSecretWorkerAuthoritativeResultMismatch`, with one init effect each. The earlier
+physical observer instead remembers `harnessInitMode`; that profile is insufficient evidence
+for production recovery across this publication gap. Share one retained-store observer
+between production and the physical fixture, validate the recovered receipt against the root
+binding/schema/recipient commitment, and preserve the exact worker result and closed cause.
+No durable response before worker-receipt persistence remains genuine ambiguity; it cannot
+be recovered from fixture memory. The frozen controls, including the control-only package
+ambiguity correction, remain in `.build/sprint-2.145/superseded-root-controls.json`.
+
+### Recovery Refusal Remedies
+
+| Closed cause | Supported remedy |
+|--------------|------------------|
+| `AuthoritativeStoredRequestBinding` with a strictly older fence and equal operation/action/request/storage | The same registered initialization continuation settles the exact predecessor automatically, with required quiescence and terminal readback. It grants no init replay or reset permission. |
+| Same-generation renewed fields, newer stored fence or foreign immutable identity | Reobserve the current registered operation and its exact fence. Resume only its recorded action/request/storage. If the original trustworthy binding cannot be restored, preserve the state for operator-owned total decommission. |
+| `EngineSecretWorkerAuthoritativeCheckpointMissing`, `SecretWorkerRecoveryPodUidUnbound` | Restore the exact trustworthy checkpoint/UID record and retry when available. `NukeOnly` if that proof is irretrievably lost: the current protocol cannot guess an exact predecessor from absence. |
+| `EngineSecretWorkerAuthoritativeResultMismatch`, `EngineResponseEvidenceMismatch` | Preserve both positive observations and restore the exact matching retained evidence. `NukeOnly` if the contradiction cannot be resolved authoritatively; no result, recipient or root binding is overwritten to make progress. |
+| Store/readback unavailable, version conflict or lost CAS reply | Retry the same registered operation after restoring observation. The independently read-back terminal worker/root state selects the remaining safety tail; no worker or init is replayed from a transport failure. |
+| Exact worker retirement/absence unavailable or a replacement UID occupies the coordinate | Restore observation or let the replacement's registered owner finish. Retry the same operation; no hand deletion or widened UID predicate is permitted. |
+| Current checkpoint permit mutation/fence/deadline refused | Reacquire the matching live operation authority through the supported command, then reobserve the predecessor. Successful quiescence alone does not authorize terminal publication. |
+
+These rows add no agent-run `nuke`, host reset, larger resource/deadline budget or secret
+transport. Native canary and two audit-clean cycles remain Sprint `6.5`'s independent axis.
+
+### Remaining Work
+
+None on the code-owned surface. Sprint `6.5` owns the batched native canary, two audit-clean
+cycles, single-writer activation, legacy removal and post-deletion qualification. This closure
+supplies no live class closure, AWS absence or operational cutover claim. Current execution
+remains solely in Resume Here.
+
+### Cleanup Ownership
+
+The existing Bootstrap Broker worker boundary owns exact UID-preconditioned retirement,
+absence readback and checkpoint CAS. The root-init journal remains the sole initialization
+owner. No host intent, hand deletion, broader permit, retained-root wipe or agent-run `nuke`
+is introduced by this sprint.
+
+## Sprint 2.146: Closed Worker Attestation Refusal Evidence [✅ Done]
+
+**Status**: Done (2026-10-24, Standards A/N/O); registered before behavior changes.
+**Implementation**: `src/Prodbox/Bootstrap/Broker/EngineAdapter.hs`,
+`src/Prodbox/Bootstrap/Broker/SecretWorker.hs`,
+`src/Prodbox/Bootstrap/Broker/KubernetesAttestation.hs`,
+`src/Prodbox/Bootstrap/Broker/KubernetesWorker.hs`, and Broker unit/physical fixtures.
+**Stable counterexample**: `BROKER-WORKER-ATTESTATION-CAUSE-COLLAPSE-2026-10-24`.
+**Independent validation**: frozen actual-adapter failure, same-input replacement pass,
+finite refusal/observation matrix, warning-clean build, canonical gate and complete frontend.
+**Live proof**: pending; Sprint `6.5` owns native canary and two audit-clean cycles.
+**Docs to update**: bootstrap readiness and Vault doctrine, this phase, overview,
+system-components and Resume Here.
+
+### Objective
+
+Preserve the exact, value-free cause of a refused one-shot worker attestation. The live
+adapter currently emits only `AttestationRefused` for distinct typed identity mismatches
+and unavailable observations. An outer refusal alone cannot attribute the next safe remedy.
+The native subtype is unobserved and must not be guessed from the missing evidence.
+
+### Deliverables
+
+- Freeze invocation seven's operator, complete source identity, actual adapter and runtime
+  image before changes. Preserve raw Broker logs privately without printing or hashing them.
+- Bank a failing frozen control over actual refusal values and the same-input replacement
+  control; distinguish all known mismatch/refusal constructors without publishing their values.
+- Carry closed production observation causes through Pod decoding, lifecycle gating and
+  attestation refusal. Transport details and parser bodies remain private; status codes and
+  compiled field labels may be exposed. Preserve existing startup and cleanup bounds.
+- Check missing/foreign UID, image, ServiceAccount, session, operation, fence, owner,
+  action/request/storage/deadline; unavailable reads, malformed responses, Pending/not-ready,
+  deleting and terminal workers; no effect or secret ingress after refusal.
+- Keep the original exact UID retirement/absence owner and durable worker schema. Supply
+  cause-to-remedy rows and distinguish diagnostic closure from fixing the still-unobserved
+  native semantic cause.
+
+### Validation
+
+The three actual frozen adapter controls fail by losing subtype while preserving redaction;
+the three same-input replacements pass. Final focused validation passes **63/63**, broader
+installed Broker regressions **559/559**, canonical **6,885 + 27/35/61** and complete
+frontend/environment **99/99**. The broader historical regex excludes eighteen new
+production-boundary cases, which are included in the focused and full canonical gates.
+Canonical exits **0** in **1026.89 seconds** (**272.31 seconds** primary test time);
+frontend exits **0** in **1164.92 seconds** (**1158.97 seconds** test time). One unchanged
+operator `5948f80c…` and executable manifest `75261303…` (**1,368** entries) bind the final
+gates. Formatting, HLint and documentation checks pass. Exact results and corrected edit/build
+failures remain under `.build/sprint-2.146/validation.json`. These results close only this
+code-owned diagnostic surface; they do not identify or repair the native attestation subtype.
+
+**Initial admission, before implementation.**
+
+At admission, invocation seven's protected diagnostic names `AttestationRefused`, and the existing
+adapter maps every `SecretWorkerAttestationRefusal` to that one label. Production already
+polls startup for up to 120 seconds; this sprint does not assume an immediate-GET defect.
+The native Pod was removed before its final attestation values were independently observed.
+The runtime and operator are frozen under `.build/sprint-2.146/`; no native rerun is admitted
+as a substitute for the frozen control and sibling matrix.
+
+**Frozen diagnostic law, 2026-10-24.** All three controls link the actual installed
+superseded adapter before behavior changes. Missing worker, unavailable observation and image
+mismatch each exit **1**, lose the specific cause and retain redaction. The exact same control
+inputs against the replacement adapter exit **0** and retain both subtype and redaction. This
+is a diagnostic counterexample, not a replay or attribution of the full live failure. The
+named repository recording and `.build/sprint-2.146/superseded-controls.json` /
+`replacement-controls.json` preserve that scope. Pinned formatting and HLint pass. The first
+all-target build refuses one test-helper name-shadowing warning in **102.09 seconds**; the
+corrected build and installed/full gates remain owed. No admission, deadline, resource,
+persistence or cleanup semantics are changed.
+
+**Installed matrix and final-gate admission, 2026-10-24.** Focused validation passes
+**63/63** and the historical broader Broker regex **559/559**; the separate focused set
+includes its eighteen new production-boundary cases. The corrected all-target build passes
+in **162.91 seconds**; the final metadata-frozen warning-clean build passes in **20.09 seconds**.
+Operator `5948f80c…` remains unchanged across installed tests and final build. Formatting,
+HLint and documentation lint pass. Canonical and complete frontend/environment validation
+now run on executable source `75261303…` (**1,368** entries). Their complete results remain
+owed before local closure. The exact recording is now frozen; later gate status belongs in
+the validation and resumption ledgers, not a rewritten fixture identity.
+
+**Canonical validation, 2026-10-24 04:10 UTC.** Canonical `prodbox dev check`
+passes, exit **0** in **1026.89 seconds**, with **6,885** primary tests (**272.31 seconds**)
+and **27/35/61** auxiliary cases. Operator `5948f80c…` and executable manifest `75261303…`
+remain unchanged. The complete frontend/environment suite now runs on the same artifact;
+its result and final closure checks remain owed. This gate validates the diagnostic surface
+and supplies no semantic attribution or native class closure.
+
+### Attestation Refusal Remedies
+
+| Closed cause family | Supported remedy |
+|---------------------|------------------|
+| `NotFound`, `PodMissing` | Reobserve the exact registered worker/checkpoint through the same initialization operation. The existing exact retirement/readback and strictly older-fence recovery may allocate its successor; missing observation alone never grants absence or replay. |
+| `ApiUnavailable`, `HttpStatus`, `ObservationUnobservable` | Restore supported local API/RBAC observation through `prodbox cluster reconcile`, then resume the same registered operation. Keep the checkpoint and all retained state. |
+| `NotStarted`, `ImageNotResolved`, `PodNotRunning/Pending`, `ContainerNotReady` | Use the existing bounded startup poll. On exhaustion, reconcile the registry/platform through the supported cluster surface and retry the registered operation only after fresh positive admission. No resource or deadline increase is implied. |
+| `PodNotRunning/Failed`, `PodNotRunning/Succeeded`, `PodDeleting` | Preserve the exact checkpoint; let its registered owner finish exact UID retirement and absence readback. Retry the same operation to select the remaining recovery tail. Never attach a payload to a terminal/deleting Pod. |
+| UID/image/ServiceAccount/session/operation/fence/owner/action/request/storage/deadline mismatch | Preserve both bindings and reconcile the intended deployment through the supported surface. Resume only after the registered owner can prove the exact predecessor and current authority. Never treat a different UID/image as equivalent or perform a hand deletion. |
+| `PodUnreadable`, `PodIdentityUnexpected`, `ContainerNotSole`, `ContainerStatusNotSole`, `DeclaredImageUnusable`, `RuntimeImageUnusable`, `DeclaredRuntimeImageDisagree`, `AnnotationUnusable`, `BindingUnusable`, unknown phase or invalid HTTP status | Restore the exact trustworthy workload/observation through the supported reconcile path and reobserve. If authoritative identity is irretrievably missing or contradictory, `NukeOnly`: the protocol cannot guess it. Total decommission remains operator-owned and TTY-only. |
+
+These rows grant no agent-run `nuke`, reset, hand deletion or inferred native cause.
+
+### Remaining Work
+
+None on the code-owned diagnostic surface. Sprint `6.5` retains the recorded publication/
+identity investigation, native semantic recovery, canary and two audit-clean cycles, single-writer
+activation, legacy removal and post-deletion qualification. This closure supplies no native
+semantic attribution, class closure, AWS absence or operational cutover claim.
+
+### Cleanup Ownership
+
+The existing Bootstrap Broker worker boundary retains exact UID-preconditioned retirement
+and absence readback. No hand deletion, reset, broader permit or agent-run `nuke` is added.
 
 ## Related Documents
 

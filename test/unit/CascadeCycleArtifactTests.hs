@@ -59,6 +59,8 @@ roundTripCases = do
         factComponentImages fact `shouldBe` fixtureInventory
         factCleanupRunId fact `shouldBe` "cascade-qualification-pre-1"
         factAwsAccount fact `shouldBe` "111122223333"
+        factInForceConfigDigest fact `shouldBe` fieldsInForceConfigDigest fixtureArtifactFields
+        factRpcRegistrationDigest fact `shouldBe` Just (localRpcRegistrationDigest fixtureLocal)
         factSucceeded fact `shouldBe` True
         factLifecycleResult fact `shouldBe` "LifecycleCleanupSucceeded"
 
@@ -83,7 +85,12 @@ roundTripCases = do
   it "keeps the identity of a cycle that ran on a different deployment apart" $ do
     let otherDeployment =
           fixtureArtifactFields
-            { fieldsParts = fixtureParts {partsGeneratedConfig = digestOf 'Z'}
+            { fieldsParts =
+                fixtureParts
+                  { partsGeneratedConfig =
+                      generatedConfigDigestFromParts (digestOf 'Z') (localRpcRegistrationDigest fixtureLocal)
+                  }
+            , fieldsInForceConfigDigest = publicEvidenceDigestText (digestOf 'Z')
             }
     (first, _) <- rendered fixtureArtifactFields
     (second, _) <- rendered otherDeployment
@@ -92,6 +99,35 @@ roundTripCases = do
         factKey one `shouldNotBe` factKey two
         diffParts (factParts one) (factParts two) `shouldBe` [ComponentGeneratedConfig]
       other -> expectationFailure ("expected two attested artifacts, got " ++ show other)
+
+  it "resets the qualification key when only the public registration pin changes" $ do
+    let parameters = localInForceConfigDigest fixtureLocal
+        changedPin = digestOf 'q'
+        changedConfig = generatedConfigDigestFromParts parameters changedPin
+        changed =
+          fixtureArtifactFields
+            { fieldsParts = fixtureParts {partsGeneratedConfig = changedConfig}
+            , fieldsRpcRegistrationDigest = changedPin
+            }
+    (first, _) <- rendered fixtureArtifactFields
+    (second, _) <- rendered changed
+    case (attestCascadeArtifact first, attestCascadeArtifact second) of
+      (Right one, Right two) -> do
+        factInForceConfigDigest one `shouldBe` factInForceConfigDigest two
+        factKey one `shouldNotBe` factKey two
+        diffParts (factParts one) (factParts two) `shouldBe` [ComponentGeneratedConfig]
+        factRpcRegistrationDigest two `shouldBe` Just changedPin
+      other -> expectationFailure ("expected two attested artifacts, got " ++ show other)
+
+  it "reads historical format two without inventing registration-pin coverage" $ do
+    (current, _) <- rendered fixtureArtifactFields
+    let historical =
+          resealed
+            (dropLines "rpc_registration_config_digest=" . mapLine "format_version=" "format_version=2")
+            current
+    fmap factRpcRegistrationDigest (attestCascadeArtifact historical) `shouldBe` Right Nothing
+    attestCascadeArtifact (resealed (mapLine "format_version=" "format_version=2") current)
+      `shouldBe` Left (ArtifactLineMalformed "rpc_registration_config_digest")
 
   it "keeps a line break in a value from breaking the artifact" $ do
     (text, _) <- rendered fixtureArtifactFields {fieldsLifecycleResult = "first\nsecond\rthird"}
@@ -115,8 +151,34 @@ defectCases = do
 
   it "refuses an artifact written by another format" $ do
     (text, _) <- rendered fixtureArtifactFields
-    attestCascadeArtifact (resealed (Text.replace "format_version=2" "format_version=1") text)
+    attestCascadeArtifact (resealed (mapLine "format_version=" "format_version=1") text)
       `shouldBe` Left (ArtifactFormatUnsupported "1")
+
+  it "refuses absent, malformed, duplicated or inconsistent registration coverage" $ do
+    (text, _) <- rendered fixtureArtifactFields
+    attestCascadeArtifact (resealed (dropLines "rpc_registration_config_digest=") text)
+      `shouldBe` Left (ArtifactLineMissing "rpc_registration_config_digest")
+    attestCascadeArtifact
+      (resealed (mapLine "rpc_registration_config_digest=" "rpc_registration_config_digest=bad") text)
+      `shouldBe` Left (ArtifactIdentityUnparsable "rpc_registration_config_digest")
+    attestCascadeArtifact
+      (resealed (addLine ("rpc_registration_config_digest=" <> Text.replicate 64 "0")) text)
+      `shouldBe` Left (ArtifactLineDuplicated "rpc_registration_config_digest")
+    attestCascadeArtifact
+      ( resealed
+          ( mapLine
+              "rpc_registration_config_digest="
+              ("rpc_registration_config_digest=" <> Text.replicate 64 "0")
+          )
+          text
+      )
+      `shouldBe` Left ArtifactGeneratedConfigDisagrees
+    attestCascadeArtifact
+      ( resealed
+          (mapLine "in_force_config_digest=" ("in_force_config_digest=" <> Text.replicate 64 "0"))
+          text
+      )
+      `shouldBe` Left ArtifactGeneratedConfigDisagrees
 
   it "refuses a missing, a duplicated and a malformed line, whatever the digest says" $ do
     (text, _) <- rendered fixtureArtifactFields

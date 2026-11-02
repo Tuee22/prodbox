@@ -16,6 +16,12 @@ module Prodbox.ControlPlane.TargetIntentAuthority
   , mkAuthorizedPreparedTargetIntent
   , authorizedPreparedTargetIntentFromLegacy
   , TargetIntentIssuerBoundary (..)
+  , TargetIntentWriter (..)
+  , TargetIntentAdmissionObservation (..)
+  , TargetIntentIssuanceAdmission
+  , issuedTargetAdmission
+  , recheckTargetIntentIssuance
+  , issueAdmittedTargetWorkerExecutionPermit
   , TargetIntentIssueError (..)
   , IssuedTargetIntent
   , issuedTargetSignedIntent
@@ -27,7 +33,8 @@ where
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
-import Prodbox.ControlPlane.Coordinate (AuthorityEpoch)
+import Prodbox.ControlPlane.Coordinate (AuthorityEpoch (..))
+import Prodbox.ControlPlane.ServiceSessionJournal (ServiceSessionBinding)
 import Prodbox.ControlPlane.TargetMaterialRegistry
   ( TargetSecretId
   , compiledTargetSecretSink
@@ -37,6 +44,7 @@ import Prodbox.ControlPlane.TargetSecretAgentExecution
   ( AcceptedTargetAuthority
   , SignedTargetCommittedIntent
   , TargetAgentIdentity
+  , TargetAgentRolloutEvidence
   , TargetCommittedIntentSpec (..)
   , acceptedTargetAgentIdentity
   , attachTargetCommittedIntentSignature
@@ -44,9 +52,17 @@ import Prodbox.ControlPlane.TargetSecretAgentExecution
   , mkTargetIntentPublicKey
   , mkTargetIssuerKeyGeneration
   , mkUnsignedTargetCommittedIntent
+  , signedTargetCommittedIntentSpec
   , targetCommittedIntentSigningPayload
   , verifySignedTargetCommittedIntent
   )
+import Prodbox.ControlPlane.TargetSecretWorker (TargetWorkerAttestation)
+import Prodbox.ControlPlane.TargetWorkerExecutionPermit
+  ( SignedTargetWorkerExecutionPermit
+  , TargetWorkerExecutionPermitError
+  , issueTargetWorkerExecutionPermit
+  )
+import Prodbox.Lifecycle.Authority.AdmissionGate (AuthoritySubmissionGateRefusal)
 import Prodbox.Lifecycle.Decommission.AuthorityExport
   ( AuthorityManifestSigner (..)
   )
@@ -144,8 +160,33 @@ authorizedPreparedTargetIntentFromLegacy agentIdentity legacyIdentity target int
         (targetCommitDigest intent)
         (targetCommitDeadline intent)
 
+data TargetIntentWriter
+  = TargetIntentLegacyWriter
+  | TargetIntentAuthorityWriter
+  | TargetIntentGenesisBackupWriter
+  | TargetIntentBackupRepairWriter
+  deriving stock (Eq, Show)
+
+data TargetIntentAdmissionObservation
+  = TargetIntentAdmissionReady !TargetIntentWriter !AuthorityEpoch
+  | TargetIntentAdmissionRefused !AuthoritySubmissionGateRefusal
+  deriving stock (Eq, Show)
+
+-- | One locally sampled admission decision. It is not serializable and grants
+-- no external effect permission; the issuer re-observes it around every stage.
+data TargetIntentIssuanceAdmission
+  = TargetIntentIssuanceAdmission
+      !TargetIntentWriter
+      !AuthorityEpoch
+      !TargetIntentIssueRequest
+  deriving stock (Eq, Show)
+
+issuanceEpoch :: TargetIntentIssuanceAdmission -> AuthorityEpoch
+issuanceEpoch (TargetIntentIssuanceAdmission _ epoch _) = epoch
+
 data TargetIntentIssuerBoundary m = TargetIntentIssuerBoundary
-  { readTargetIntentAuthorityEpoch :: m (Either Text AuthorityEpoch)
+  { readTargetIntentAuthorityAdmission
+      :: TargetIntentIssueRequest -> m (Either Text TargetIntentAdmissionObservation)
   , readTargetIntentAuthorityTime :: m (Either Text AuthorityTime)
   , readAuthorizedPreparedTargetIntent
       :: TargetIntentIssueRequest
@@ -168,7 +209,11 @@ data TargetIntentIssueError
   | TargetIntentIssueReceiptDigestMismatch
   | TargetIntentIssueClockUnavailable !Text
   | TargetIntentIssueDeadlineReached
-  | TargetIntentIssueEpochUnavailable !Text
+  | TargetIntentIssueAdmissionUnavailable !Text
+  | TargetIntentIssueAdmissionClosed !AuthoritySubmissionGateRefusal
+  | TargetIntentIssueAdmissionChanged
+  | TargetIntentIssueAdmissionInvalid
+  | TargetIntentIssueExecutionPermitFailed !TargetWorkerExecutionPermitError
   | TargetIntentIssueSignerUnavailable !Text
   | TargetIntentIssueSignerGenerationChanged !Natural !Natural
   | TargetIntentIssueValueInvalid !Text
@@ -180,6 +225,7 @@ data TargetIntentIssueError
 data IssuedTargetIntent = IssuedTargetIntent
   { issuedTargetSignedIntent :: !SignedTargetCommittedIntent
   , issuedTargetAcceptedAuthority :: !AcceptedTargetAuthority
+  , issuedTargetAdmission :: !TargetIntentIssuanceAdmission
   }
 
 issueTargetCommittedIntent
@@ -188,21 +234,23 @@ issueTargetCommittedIntent
   -> TargetIntentIssueRequest
   -> m (Either TargetIntentIssueError IssuedTargetIntent)
 issueTargetCommittedIntent boundary request = do
-  preparedResult <- readAuthorizedPreparedTargetIntent boundary request
-  case preparedResult of
-    Left detail -> pure (Left (TargetIntentIssuePreparedIntentUnavailable detail))
-    Right prepared -> case validatePrepared prepared of
-      Left err -> pure (Left err)
-      Right () -> do
-        nowResult <- readTargetIntentAuthorityTime boundary
-        epochResult <- readTargetIntentAuthorityEpoch boundary
-        case (nowResult, epochResult) of
-          (Left detail, _) -> pure (Left (TargetIntentIssueClockUnavailable detail))
-          (_, Left detail) -> pure (Left (TargetIntentIssueEpochUnavailable detail))
-          (Right now, Right epoch)
-            | authorityTimeMicros now >= authorityTimeMicros (authorizedPreparedDeadline prepared) ->
-                pure (Left TargetIntentIssueDeadlineReached)
-            | otherwise -> signPrepared now epoch prepared
+  admissionResult <- readIssuanceAdmission boundary request
+  case admissionResult of
+    Left err -> pure (Left err)
+    Right admission -> do
+      preparedResult <- readAuthorizedPreparedTargetIntent boundary request
+      case preparedResult of
+        Left detail -> pure (Left (TargetIntentIssuePreparedIntentUnavailable detail))
+        Right prepared -> case validatePrepared prepared of
+          Left err -> pure (Left err)
+          Right () -> do
+            nowResult <- readTargetIntentAuthorityTime boundary
+            case nowResult of
+              Left detail -> pure (Left (TargetIntentIssueClockUnavailable detail))
+              Right now
+                | authorityTimeMicros now >= authorityTimeMicros (authorizedPreparedDeadline prepared) ->
+                    pure (Left TargetIntentIssueDeadlineReached)
+                | otherwise -> signPrepared now admission prepared
  where
   validatePrepared intent
     | authorizedPreparedTarget intent /= targetIntentIssueTarget request =
@@ -224,7 +272,7 @@ issueTargetCommittedIntent boundary request = do
         Left TargetIntentIssueReceiptDigestMismatch
     | otherwise = Right ()
 
-  signPrepared now epoch prepared =
+  signPrepared now admission prepared =
     case compiledTargetSecretSink (targetIntentIssueTarget request) of
       Left detail -> pure (Left (TargetIntentIssueTargetUnregistered detail))
       Right sink -> do
@@ -233,34 +281,46 @@ issueTargetCommittedIntent boundary request = do
         case publicResult of
           Left detail -> pure (Left (TargetIntentIssueSignerUnavailable detail))
           Right (publicGeneration, manifestPublic) ->
-            case buildUnsigned publicGeneration manifestPublic epoch sink prepared of
+            case buildUnsigned publicGeneration manifestPublic (issuanceEpoch admission) sink prepared of
               Left err -> pure (Left err)
               Right (accepted, unsigned) -> do
-                signedResult <-
-                  signAuthorityManifestPayload
-                    (targetIntentAuthoritySigner boundary)
-                    (targetCommittedIntentSigningPayload unsigned)
-                case either
-                  (Left . TargetIntentIssueSignerUnavailable)
-                  (validateSigned now sink publicGeneration accepted unsigned)
-                  signedResult of
+                allowed <- recheckTargetIntentIssuance boundary admission (authorizedPreparedDeadline prepared)
+                signedResult <- case allowed of
+                  Left err -> pure (Left err)
+                  Right () ->
+                    fmap
+                      ( either
+                          (Left . TargetIntentIssueSignerUnavailable)
+                          (validateSigned now sink publicGeneration accepted unsigned)
+                      )
+                      ( signAuthorityManifestPayload
+                          (targetIntentAuthoritySigner boundary)
+                          (targetCommittedIntentSigningPayload unsigned)
+                      )
+                case signedResult of
                   Left err -> pure (Left err)
                   Right signed -> do
-                    installedResult <-
-                      installIssuedTargetAuthority
-                        boundary
-                        (targetIntentIssueTarget request)
-                        accepted
-                    pure $ case installedResult of
-                      Left detail -> Left (TargetIntentIssueTrustInstallUnavailable detail)
+                    stillAllowed <- recheckTargetIntentIssuance boundary admission (authorizedPreparedDeadline prepared)
+                    installedResult <- case stillAllowed of
+                      Left err -> pure (Left err)
+                      Right () ->
+                        fmap
+                          (either (Left . TargetIntentIssueTrustInstallUnavailable) Right)
+                          (installIssuedTargetAuthority boundary (targetIntentIssueTarget request) accepted)
+                    case installedResult of
+                      Left err -> pure (Left err)
                       Right readBack
-                        | readBack == accepted ->
-                            Right
+                        | readBack == accepted -> do
+                            finalAdmission <-
+                              recheckTargetIntentIssuance boundary admission (authorizedPreparedDeadline prepared)
+                            pure $
                               IssuedTargetIntent
                                 { issuedTargetSignedIntent = signed
                                 , issuedTargetAcceptedAuthority = readBack
+                                , issuedTargetAdmission = admission
                                 }
-                        | otherwise -> Left TargetIntentIssueTrustReadBackMismatch
+                                <$ finalAdmission
+                        | otherwise -> pure (Left TargetIntentIssueTrustReadBackMismatch)
   validateSigned now sink publicGeneration accepted unsigned (signatureGeneration, signature) = do
     if signatureGeneration == publicGeneration
       then Right ()
@@ -320,6 +380,75 @@ issueTargetCommittedIntent boundary request = do
               }
         )
     Right (accepted, unsigned)
+
+readIssuanceAdmission
+  :: (Monad m)
+  => TargetIntentIssuerBoundary m
+  -> TargetIntentIssueRequest
+  -> m (Either TargetIntentIssueError TargetIntentIssuanceAdmission)
+readIssuanceAdmission boundary request = do
+  observed <- readTargetIntentAuthorityAdmission boundary request
+  pure $ case observed of
+    Left detail -> Left (TargetIntentIssueAdmissionUnavailable detail)
+    Right (TargetIntentAdmissionRefused refusal) -> Left (TargetIntentIssueAdmissionClosed refusal)
+    Right (TargetIntentAdmissionReady writer epoch@(AuthorityEpoch value))
+      | value == 0 -> Left TargetIntentIssueAdmissionInvalid
+      | otherwise -> Right (TargetIntentIssuanceAdmission writer epoch request)
+
+-- | These observations do not replace durable outbox/worker quiescence. They
+-- prevent a closed or changed admission from releasing newly signed material;
+-- an already in-flight effect still belongs to its original retained owner.
+recheckTargetIntentIssuance
+  :: (Monad m)
+  => TargetIntentIssuerBoundary m
+  -> TargetIntentIssuanceAdmission
+  -> AuthorityTime
+  -> m (Either TargetIntentIssueError ())
+recheckTargetIntentIssuance boundary expected@(TargetIntentIssuanceAdmission _ _ request) deadline = do
+  observed <- readIssuanceAdmission boundary request
+  case observed of
+    Left err -> pure (Left err)
+    Right actual
+      | actual /= expected -> pure (Left TargetIntentIssueAdmissionChanged)
+      | otherwise -> do
+          time <- readTargetIntentAuthorityTime boundary
+          pure $ case time of
+            Left detail -> Left (TargetIntentIssueClockUnavailable detail)
+            Right now
+              | authorityTimeMicros now >= authorityTimeMicros deadline -> Left TargetIntentIssueDeadlineReached
+              | otherwise -> Right ()
+
+-- | The attested worker permit is a second signature, and must independently
+-- recheck the same admission before and after its signer. Reissuing the initial
+-- intent alone does not fence this later signing interval.
+issueAdmittedTargetWorkerExecutionPermit
+  :: (Monad m)
+  => TargetIntentIssuerBoundary m
+  -> IssuedTargetIntent
+  -> TargetAgentRolloutEvidence
+  -> TargetWorkerAttestation
+  -> ServiceSessionBinding
+  -> m (Either TargetIntentIssueError SignedTargetWorkerExecutionPermit)
+issueAdmittedTargetWorkerExecutionPermit boundary issued rollout attestation binding = do
+  allowed <- recheckTargetIntentIssuance boundary admission deadline
+  case allowed of
+    Left err -> pure (Left err)
+    Right () -> do
+      permitted <-
+        issueTargetWorkerExecutionPermit
+          (targetIntentAuthoritySigner boundary)
+          (issuedTargetAcceptedAuthority issued)
+          rollout
+          attestation
+          binding
+      case permitted of
+        Left err -> pure (Left (TargetIntentIssueExecutionPermitFailed err))
+        Right permit -> do
+          stillAllowed <- recheckTargetIntentIssuance boundary admission deadline
+          pure (permit <$ stillAllowed)
+ where
+  admission = issuedTargetAdmission issued
+  deadline = targetIntentDeadline (signedTargetCommittedIntentSpec (issuedTargetSignedIntent issued))
 
 mapValueError :: (Show err) => Either err value -> Either TargetIntentIssueError value
 mapValueError = either (Left . TargetIntentIssueValueInvalid . Text.pack . show) Right

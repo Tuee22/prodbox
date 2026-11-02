@@ -33,6 +33,9 @@ module Prodbox.Lifecycle.Authority.Migration
   , migrationAuthorityStatus
   , migrationPredecessor
   , migrationProjectionImports
+  , migrationNormalAdmissionEpoch
+  , migrationCommittedEpoch
+  , migrationEpochPromotion
   , requiredMigrationProjections
   , decideMigration
   , stepMigration
@@ -43,6 +46,7 @@ module Prodbox.Lifecycle.Authority.Migration
   , MigrationCodecError (..)
   , encodeMigrationState
   , decodeMigrationState
+  , validateMigrationState
   , encodeMigrationCommand
   , decodeMigrationCommand
   , encodeMigrationImportCommand
@@ -63,6 +67,8 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import GHC.Generics (Generic)
+import Prodbox.Lifecycle.Authority.EpochPromotion
+import Prodbox.Lifecycle.Authority.EpochTopology
 
 data AuthorityWriter = LegacyWriter | ReplacementWriter
   deriving stock (Eq, Ord, Show, Generic)
@@ -144,6 +150,11 @@ data MigrationState
       !MigrationEpoch
       !MigrationEpoch
       !(Map MigrationProjection MigrationProjectionImport)
+  | EpochMigration
+      !MigrationDigest
+      !(Map MigrationProjection MigrationProjectionImport)
+      !MigrationPredecessor
+      !EpochPromotionState
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -151,7 +162,8 @@ data MigrationState
 data MigrationPredecessor
   = OriginalLegacyPredecessor
   | ReleasedReplacementPredecessor !MigrationEpoch
-  deriving stock (Eq, Show)
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
 
 data MigrationCommand
   = VerifyShadow !MigrationDigest
@@ -159,6 +171,8 @@ data MigrationCommand
   | PrepareBinding !MigrationBinding
   | ActivateReplacement !MigrationEpoch
   | RequestLegacyRollback
+  | PrepareReplacementEpoch !MigrationEpoch !MigrationEpoch !EpochTopology
+  | ApplyPreparedEpochPromotion !EpochPromotionRequest
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -211,6 +225,8 @@ data MigrationEvent
   | ReplacementPredecessorFrozen
   | BindingPrepared !MigrationBinding
   | ReplacementActivated !MigrationEpoch
+  | ReplacementEpochPrepared !EpochPromotionState
+  | ReplacementEpochPromotionAdvanced !EpochPromotionState
   deriving stock (Eq, Show)
 
 data MigrationRefusal
@@ -222,6 +238,10 @@ data MigrationRefusal
   | ActivationBindingsMissing !(Set MigrationBinding)
   | EpochMustAdvance
   | LegacyRollbackForbidden
+  | StagedEpochPromotionRequired
+  | EpochPromotionNotPrepared
+  | EpochPromotionProtocolRefused !EpochPromotionRefusal
+  | EpochPromotionImportsIncomplete !(Set MigrationProjection)
   deriving stock (Eq, Show)
 
 data MigrationDecision
@@ -285,6 +305,12 @@ migrationAuthorityStatus state = case state of
   ForwardShadowVerified _ predecessor _ _ -> MigrationReplacementWriterActive predecessor
   ForwardWritersFrozen {} -> MigrationWritersQuiesced
   ForwardReplacementActive _ epoch _ _ -> MigrationReplacementWriterActive epoch
+  EpochMigration _ _ _ promotion -> case epochPromotionPhase promotion of
+    EpochAdmissionOpen -> MigrationReplacementWriterActive (MigrationEpoch (epochPromotionTargetEpoch promotion))
+    EpochPrepared -> MigrationWritersQuiesced
+    EpochFrozen -> MigrationWritersQuiesced
+    EpochPreparedRollback -> MigrationWritersQuiesced
+    EpochPreparedBindingsRetired -> MigrationWritersQuiesced
 
 activeWriter :: MigrationState -> Maybe AuthorityWriter
 activeWriter state = case state of
@@ -300,6 +326,34 @@ activeWriter state = case state of
   ForwardShadowVerified {} -> Just ReplacementWriter
   ForwardWritersFrozen {} -> Nothing
   ForwardReplacementActive {} -> Just ReplacementWriter
+  EpochMigration _ _ _ promotion -> case epochPromotionPhase promotion of
+    EpochAdmissionOpen -> Just ReplacementWriter
+    EpochPrepared -> Nothing
+    EpochFrozen -> Nothing
+    EpochPreparedRollback -> Nothing
+    EpochPreparedBindingsRetired -> Nothing
+
+-- | Historical coarse activation remains decodable for recovery, but it is
+-- never authority to admit a production operation. Only the final promotion
+-- CAS can expose normal admission.
+migrationNormalAdmissionEpoch :: MigrationState -> Maybe MigrationEpoch
+migrationNormalAdmissionEpoch state = case state of
+  EpochMigration _ _ _ promotion
+    | epochPromotionPhase promotion == EpochAdmissionOpen ->
+        Just (MigrationEpoch (epochPromotionTargetEpoch promotion))
+  _ -> Nothing
+
+-- | The retained Authority epoch advances at the frozen CAS, before physical
+-- promotions. Admission remains closed until the separate final CAS.
+migrationCommittedEpoch :: MigrationState -> Maybe MigrationEpoch
+migrationCommittedEpoch state = case state of
+  EpochMigration _ _ _ promotion -> MigrationEpoch <$> epochPromotionCommittedEpoch promotion
+  _ -> Nothing
+
+migrationEpochPromotion :: MigrationState -> Maybe EpochPromotionState
+migrationEpochPromotion state = case state of
+  EpochMigration _ _ _ promotion -> Just promotion
+  _ -> Nothing
 
 migrationPredecessor :: MigrationState -> MigrationPredecessor
 migrationPredecessor state = case state of
@@ -308,6 +362,9 @@ migrationPredecessor state = case state of
   ForwardShadowVerified _ predecessor _ _ -> ReleasedReplacementPredecessor predecessor
   ForwardWritersFrozen _ predecessor _ _ _ -> ReleasedReplacementPredecessor predecessor
   ForwardReplacementActive _ epoch _ _ -> ReleasedReplacementPredecessor epoch
+  EpochMigration _ _ predecessor promotion -> case epochPromotionCommittedEpoch promotion of
+    Just epoch -> ReleasedReplacementPredecessor (MigrationEpoch epoch)
+    Nothing -> predecessor
   _ -> OriginalLegacyPredecessor
 
 migrationProjectionImports
@@ -322,6 +379,7 @@ migrationProjectionImports state = case state of
   ForwardShadowVerified _ _ _ imports -> imports
   ForwardWritersFrozen _ _ _ _ imports -> imports
   ForwardReplacementActive _ _ _ imports -> imports
+  EpochMigration _ imports _ _ -> imports
   _ -> Map.empty
 
 decideMigration :: MigrationState -> MigrationCommand -> MigrationDecision
@@ -331,6 +389,45 @@ decideMigration state command = case command of
   PrepareBinding binding -> decideBindingPreparation state binding
   ActivateReplacement epoch -> decideReplacementActivation state epoch
   RequestLegacyRollback -> MigrationRefused LegacyRollbackForbidden
+  PrepareReplacementEpoch predecessor target topology ->
+    decideEpochPreparation state predecessor target topology
+  ApplyPreparedEpochPromotion request -> case state of
+    EpochMigration _ _ _ promotion -> case stepEpochPromotion promotion request of
+      (next, EpochPromotionAccepted) -> MigrationAccepted [ReplacementEpochPromotionAdvanced next]
+      (_, EpochPromotionAlreadyApplied) -> MigrationAlreadyApplied
+      (_, EpochPromotionRefused refusal) -> MigrationRefused (EpochPromotionProtocolRefused refusal)
+    _ -> MigrationRefused EpochPromotionNotPrepared
+
+decideEpochPreparation
+  :: MigrationState
+  -> MigrationEpoch
+  -> MigrationEpoch
+  -> EpochTopology
+  -> MigrationDecision
+decideEpochPreparation state predecessor target topology = case state of
+  ImportedWritersFrozen {} -> prepare
+  ForwardWritersFrozen _ expectedPredecessor expectedTarget _ imports
+    | not (completeProjectionImports imports) ->
+        MigrationRefused
+          (EpochPromotionImportsIncomplete (requiredMigrationProjections `Set.difference` Map.keysSet imports))
+    | predecessor < expectedPredecessor || target /= expectedTarget ->
+        MigrationRefused EpochMustAdvance
+    | otherwise -> prepare
+  EpochMigration _ _ _ current
+    | epochPromotionPhase current == EpochPreparedBindingsRetired
+        && migrationEpochValue predecessor >= epochPromotionPredecessorEpoch current
+        && migrationEpochValue target > epochPromotionTargetEpoch current ->
+        prepare
+    | epochPromotionPredecessorEpoch current == migrationEpochValue predecessor
+        && epochPromotionTargetEpoch current == migrationEpochValue target
+        && epochPromotionTopology current == topology ->
+        MigrationAlreadyApplied
+    | otherwise -> MigrationRefused (EpochPromotionProtocolRefused PromotionTopologyMismatch)
+  _ -> MigrationRefused PrepareBeforeFreeze
+ where
+  prepare = case prepareEpochPromotion (migrationEpochValue predecessor) (migrationEpochValue target) topology of
+    Left refusal -> MigrationRefused (EpochPromotionProtocolRefused refusal)
+    Right progress -> MigrationAccepted [ReplacementEpochPrepared progress]
 
 decideShadowVerification :: MigrationState -> MigrationDigest -> MigrationDecision
 decideShadowVerification state digest = case state of
@@ -346,6 +443,7 @@ decideShadowVerification state digest = case state of
   ForwardShadowVerified current _ _ _ -> replayOrShadowConflict current digest
   ForwardWritersFrozen current _ _ _ _ -> replayOrShadowConflict current digest
   ForwardReplacementActive current _ _ _ -> replayOrShadowConflict current digest
+  EpochMigration current _ _ _ -> replayOrShadowConflict current digest
 
 replayOrShadowConflict :: MigrationDigest -> MigrationDigest -> MigrationDecision
 replayOrShadowConflict current requested
@@ -369,6 +467,7 @@ decideWriterFreeze state digest = case state of
   ReplacementActive current _ -> replayOrFreezeConflict current digest
   ImportedReplacementActive current _ _ -> replayOrFreezeConflict current digest
   ForwardReplacementActive current _ _ _ -> replayOrFreezeConflict current digest
+  EpochMigration current _ _ _ -> replayOrFreezeConflict current digest
   _ -> MigrationRefused FreezeBeforeShadowVerification
 
 replayOrFreezeConflict :: MigrationDigest -> MigrationDigest -> MigrationDecision
@@ -394,14 +493,12 @@ preparedBindings state = case state of
 decideReplacementActivation :: MigrationState -> MigrationEpoch -> MigrationDecision
 decideReplacementActivation state epoch = case state of
   WritersFrozen _ prepared -> requireBindings prepared epoch
-  ImportedWritersFrozen _ prepared _ -> requireBindings prepared epoch
-  ForwardWritersFrozen _ predecessor target prepared _
-    | target <= predecessor -> MigrationRefused EpochMustAdvance
-    | epoch /= target -> MigrationRefused EpochMustAdvance
-    | otherwise -> requireBindings prepared epoch
+  ImportedWritersFrozen {} -> MigrationRefused StagedEpochPromotionRequired
+  ForwardWritersFrozen {} -> MigrationRefused StagedEpochPromotionRequired
   ReplacementActive _ currentEpoch -> activeEpochReplay currentEpoch epoch
   ImportedReplacementActive _ currentEpoch _ -> activeEpochReplay currentEpoch epoch
   ForwardReplacementActive _ currentEpoch _ _ -> activeEpochReplay currentEpoch epoch
+  EpochMigration {} -> MigrationRefused StagedEpochPromotionRequired
   _ -> MigrationRefused ActivationBeforeFreeze
 
 requireBindings :: Set MigrationBinding -> MigrationEpoch -> MigrationDecision
@@ -438,6 +535,14 @@ evolveMigration state event = case (state, event) of
     ImportedReplacementActive digest epoch imports
   (ForwardWritersFrozen digest predecessor _ _ imports, ReplacementActivated epoch) ->
     ForwardReplacementActive digest epoch predecessor imports
+  (ImportedWritersFrozen digest _ imports, ReplacementEpochPrepared promotion) ->
+    EpochMigration digest imports OriginalLegacyPredecessor promotion
+  (ForwardWritersFrozen digest predecessor _ _ imports, ReplacementEpochPrepared promotion) ->
+    EpochMigration digest imports (ReleasedReplacementPredecessor predecessor) promotion
+  (EpochMigration digest imports predecessor _, ReplacementEpochPromotionAdvanced promotion) ->
+    EpochMigration digest imports predecessor promotion
+  (EpochMigration digest imports predecessor _, ReplacementEpochPrepared promotion) ->
+    EpochMigration digest imports predecessor promotion
   _ -> state
 
 stepMigration :: MigrationState -> MigrationCommand -> (MigrationState, MigrationDecision)
@@ -509,6 +614,7 @@ carriesCompletedProjectionImports state = case state of
   ForwardShadowVerified _ _ _ imports -> not (Map.null imports)
   ForwardWritersFrozen _ _ _ _ imports -> not (Map.null imports)
   ForwardReplacementActive _ _ _ imports -> not (Map.null imports)
+  EpochMigration _ imports _ _ -> completeProjectionImports imports
   _ -> False
 
 decideForwardMigration :: MigrationState -> MigrationForwardCommand -> MigrationForwardDecision
@@ -526,6 +632,16 @@ decideForwardMigration state (BeginForwardMigration digest target) = case state 
     | otherwise -> ForwardMigrationAccepted
   ForwardShadowVerified current _ currentTarget _ -> replayForward current currentTarget
   ForwardWritersFrozen current _ currentTarget _ _ -> replayForward current currentTarget
+  EpochMigration current _ predecessorBinding promotion -> case epochPromotionCommittedEpoch promotion of
+    Just predecessor
+      | ReleasedReplacementPredecessor _ <- predecessorBinding
+      , current == digest
+      , migrationEpochValue target == predecessor ->
+          ForwardMigrationAlreadyApplied
+      | migrationEpochValue target <= predecessor ->
+          ForwardMigrationRefused ForwardMigrationEpochMustAdvance
+      | otherwise -> ForwardMigrationAccepted
+    Nothing -> ForwardMigrationRefused ForwardMigrationRequiresActiveReplacement
   _ -> ForwardMigrationRefused ForwardMigrationRequiresActiveReplacement
  where
   replayForward current currentTarget
@@ -546,6 +662,10 @@ stepForwardMigration state command@(BeginForwardMigration digest target) =
           (ForwardShadowVerified digest predecessor target imports, ForwardMigrationAccepted)
         ForwardReplacementActive _ predecessor _ imports ->
           (ForwardShadowVerified digest predecessor target imports, ForwardMigrationAccepted)
+        EpochMigration _ imports _ promotion -> case epochPromotionCommittedEpoch promotion of
+          Just predecessor ->
+            (ForwardShadowVerified digest (MigrationEpoch predecessor) target imports, ForwardMigrationAccepted)
+          Nothing -> (state, ForwardMigrationRefused ForwardMigrationRequiresActiveReplacement)
         _ -> (state, ForwardMigrationRefused ForwardMigrationRequiresActiveReplacement)
     decision -> (state, decision)
 
@@ -570,7 +690,7 @@ data MigrationEnvelope = MigrationEnvelope
   deriving anyclass (Serialise)
 
 currentMigrationEnvelopeVersion :: Word
-currentMigrationEnvelopeVersion = 2
+currentMigrationEnvelopeVersion = 3
 
 encodeMigrationState :: MigrationState -> ByteString
 encodeMigrationState state =
@@ -588,11 +708,14 @@ decodeMigrationState maximumBytes bytes
       case deserialiseOrFail bytes of
         Left _ -> Left MigrationEnvelopeInvalid
         Right envelope
-          | migrationEnvelopeVersion envelope `notElem` [1, currentMigrationEnvelopeVersion] ->
+          | migrationEnvelopeVersion envelope `notElem` [1, 2, currentMigrationEnvelopeVersion] ->
               Left MigrationEnvelopeUnsupportedVersion
           | serialise envelope /= bytes -> Left MigrationEnvelopeNonCanonical
           | migrationEnvelopeVersion envelope == 1
               && not (migrationStateSupportedByVersionOne (migrationEnvelopeState envelope)) ->
+              Left MigrationEnvelopeInvalid
+          | migrationEnvelopeVersion envelope < 3
+              && isEpochMigration (migrationEnvelopeState envelope) ->
               Left MigrationEnvelopeInvalid
           | not (validMigrationState (migrationEnvelopeState envelope)) ->
               Left MigrationEnvelopeInvalid
@@ -610,7 +733,7 @@ data MigrationCommandEnvelope = MigrationCommandEnvelope
   deriving anyclass (Serialise)
 
 currentMigrationCommandEnvelopeVersion :: Word
-currentMigrationCommandEnvelopeVersion = 1
+currentMigrationCommandEnvelopeVersion = 2
 
 encodeMigrationCommand :: MigrationCommand -> ByteString
 encodeMigrationCommand command =
@@ -628,8 +751,11 @@ decodeMigrationCommand maximumBytes bytes
       case deserialiseOrFail bytes of
         Left _ -> Left MigrationEnvelopeInvalid
         Right envelope
-          | migrationCommandEnvelopeVersion envelope /= currentMigrationCommandEnvelopeVersion ->
+          | migrationCommandEnvelopeVersion envelope `notElem` [1, currentMigrationCommandEnvelopeVersion] ->
               Left MigrationEnvelopeUnsupportedVersion
+          | migrationCommandEnvelopeVersion envelope == 1
+              && isEpochMigrationCommand (migrationCommandEnvelopeCommand envelope) ->
+              Left MigrationEnvelopeInvalid
           | serialise envelope /= bytes -> Left MigrationEnvelopeNonCanonical
           | not (validMigrationCommand (migrationCommandEnvelopeCommand envelope)) ->
               Left MigrationEnvelopeInvalid
@@ -723,7 +849,7 @@ validMigrationState state = case state of
   ShadowVerified digest -> validMigrationDigest digest
   WritersFrozen digest _ -> validMigrationDigest digest
   ReplacementActive digest epoch -> validMigrationDigest digest && validMigrationEpoch epoch
-  LegacyImportsObserved imports -> not (Map.null imports) && validProjectionImports imports
+  LegacyImportsObserved imports -> validProjectionImports imports
   LegacyImportsReady imports -> completeProjectionImports imports
   ImportedShadowVerified digest imports ->
     validMigrationDigest digest && completeProjectionImports imports
@@ -739,6 +865,33 @@ validMigrationState state = case state of
     validForwardState digest predecessor target imports
   ForwardReplacementActive digest epoch predecessor imports ->
     validForwardState digest predecessor epoch imports
+  EpochMigration digest imports predecessor promotion ->
+    validMigrationDigest digest
+      && completeProjectionImports imports
+      && validPredecessor predecessor promotion
+      && validateEpochPromotionState promotion == Right ()
+
+validateMigrationState :: MigrationState -> Either MigrationCodecError ()
+validateMigrationState state
+  | validMigrationState state = Right ()
+  | otherwise = Left MigrationEnvelopeInvalid
+
+validPredecessor :: MigrationPredecessor -> EpochPromotionState -> Bool
+validPredecessor predecessor promotion = case predecessor of
+  OriginalLegacyPredecessor -> True
+  ReleasedReplacementPredecessor epoch ->
+    validMigrationEpoch epoch && migrationEpochValue epoch <= epochPromotionPredecessorEpoch promotion
+
+isEpochMigration :: MigrationState -> Bool
+isEpochMigration state = case state of
+  EpochMigration {} -> True
+  _ -> False
+
+isEpochMigrationCommand :: MigrationCommand -> Bool
+isEpochMigrationCommand command = case command of
+  PrepareReplacementEpoch {} -> True
+  ApplyPreparedEpochPromotion {} -> True
+  _ -> False
 
 validForwardState
   :: MigrationDigest
@@ -782,6 +935,13 @@ validMigrationCommand command = case command of
   PrepareBinding _ -> True
   ActivateReplacement epoch -> validMigrationEpoch epoch
   RequestLegacyRollback -> True
+  PrepareReplacementEpoch predecessor target topology ->
+    validMigrationEpoch predecessor
+      && validMigrationEpoch target
+      && target > predecessor
+      && validateEpochTopology topology == Right ()
+  ApplyPreparedEpochPromotion request ->
+    validateEpochPromotionRequest request == Right ()
 
 validMigrationImportCommand :: MigrationImportCommand -> Bool
 validMigrationImportCommand command = case command of

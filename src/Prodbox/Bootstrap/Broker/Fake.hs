@@ -108,6 +108,12 @@ import Prodbox.Bootstrap.Broker.Fence
   , storeMutationPermitActionDigest
   , vaultEffectPermitActionDigest
   )
+import Prodbox.Bootstrap.Broker.InitializationEvidence
+  ( RootInitializationEvidence (..)
+  , rootInitJournalPhase
+  , rootInitResetActionDigest
+  , rootInitResetFromGeneration
+  )
 import Prodbox.Bootstrap.Broker.Model
   ( VaultSealObservation (..)
   , VaultSealPhase (..)
@@ -685,8 +691,8 @@ fakeEngineBoundary broker =
 fakeEvidenceBoundary :: FakeBroker -> BrokerProgramEvidenceBoundary IO
 fakeEvidenceBoundary broker =
   BrokerProgramEvidenceBoundary
-    { resolvePristineStorageProof = \_ ->
-        Right . fakePristineForRecord <$> readFakeRecord broker
+    { resolveRootInitializationEvidence = \_ ->
+        Right . BeginRootInitialization . fakePristineForRecord <$> readFakeRecord broker
     , resolveUnsealRecoveryCustody = \_ ->
         fakeRecoveryForRecord <$> readFakeRecord broker
     , resolveUnlockRotationCustody = \_ ->
@@ -900,6 +906,12 @@ fakeBootstrapStatus record =
     , bootstrapStatusSealed = not (vaultSealIsUnsealed (recordVaultSeal record))
     , bootstrapStatusRecoveryCustodyDurable = rootInitIsComplete (recordRootInit record)
     , bootstrapStatusInitializationAmbiguous = rootInitIsAmbiguous (recordRootInit record)
+    , bootstrapStatusInitializationPhase =
+        Just (rootInitJournalPhase (rootInitStatePhase (recordRootInit record)))
+    , bootstrapStatusInitializationResetFromGeneration =
+        rootInitResetFromGeneration (rootInitStatePhase (recordRootInit record))
+    , bootstrapStatusInitializationResetActionDigest =
+        rootInitResetActionDigest (rootInitStatePhase (recordRootInit record))
     , bootstrapStatusRootSessionActive = False
     , bootstrapStatusHandoffObserved = recordHandoffObserved record
     }
@@ -1095,10 +1107,19 @@ resetAmbiguousFakeVault
 resetAmbiguousFakeVault record
   | not (rootInitIsAmbiguous (recordRootInit record)) = Left FakeInitializationAmbiguous
   | otherwise = do
-      resetRoot <-
+      armedRoot <-
         mapFoldError
           ( applyRootInitCommand
               (recordRootInit record)
+              ( BeginAmbiguousRootReset
+                  fakeRootResetProof
+                  (fakeBrokerActionDigest BrokerVaultResetAmbiguousInitialization)
+              )
+          )
+      resetRoot <-
+        mapFoldError
+          ( applyRootInitCommand
+              armedRoot
               (ResetAmbiguousRootInitialization fakeRootResetProof)
           )
       let replacementGeneration =

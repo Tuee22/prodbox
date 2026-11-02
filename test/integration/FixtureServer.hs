@@ -19,6 +19,8 @@ import Control.Monad (void)
 import Crypto.Error (CryptoFailable (..))
 import Crypto.PubKey.Ed25519 qualified as Ed25519
 import Data.Aeson (Value, decodeStrict', withObject, (.:))
+import Data.Aeson qualified as Aeson
+import Data.Aeson.Key (Key)
 import Data.Aeson.Types (parseEither)
 import Data.ByteArray qualified as ByteArray
 import Data.ByteString qualified as ByteString
@@ -170,8 +172,10 @@ import Prodbox.Lifecycle.CleanupRun
   , recordPrimaryOutcome
   )
 import Prodbox.Settings (loadConfigFileAtPath, renderConfigDhall)
+import System.Directory (doesFileExist)
 import System.Environment (lookupEnv)
 import System.IO qualified as IO
+import Text.Read (readMaybe)
 
 data FixtureAuthenticatedFrameWire = FixtureAuthenticatedFrameWire
   { fixtureFrameVersion :: !Word16
@@ -663,13 +667,157 @@ fixtureInForceConfigFor bytes =
   fixtureDigest = TextEncoding.decodeUtf8 (hexSha256 bytes)
 
 brokerBody :: ByteString8.ByteString -> String -> IO ByteString.ByteString
-brokerBody _ path = do
+brokerBody request path = do
+  recovery <- lookupEnv "PRODBOX_TEST_BROKER_RECOVERY_MODE"
+  case recovery of
+    Just profile -> recoveryBrokerBody profile request path
+    Nothing -> ordinaryBrokerBody path
+
+ordinaryBrokerBody :: String -> IO ByteString.ByteString
+ordinaryBrokerBody path = do
   mode <- lookupEnv "PRODBOX_TEST_BROKER_STATUS_MODE"
   pure . ByteString8.pack $ case (path, mode) of
     ("/v1/bootstrap/vault/status", Just "malformed") -> "not-json"
     ("/v1/bootstrap/vault/status", _) ->
       "{\"storage_generation\":\"1\",\"initialized\":true,\"sealed\":false,\"initialization_ambiguous\":false}"
     _ -> "{}"
+
+data RecoveryFixtureStage
+  = RecoveryPending
+  | RecoveryAmbiguous
+  | RecoveryReset
+  | RecoveryResetPending
+  | RecoverySealedCustody
+  | RecoveryDurable
+  deriving (Eq, Read, Show)
+
+data RecoveryFixtureMode
+  = CapturedResponse
+  | MissingResponse
+  | ResetLostReply
+  | ResetRefused
+  | ResetForeignLineage
+  | ResetUnobservable
+  | ResumeUnresolved
+  | ResumeForeignGeneration
+  | AlreadyHealthy
+  | AlreadyReset
+  | ResetGenerationGap
+  | ResetGenerationGapMissingAction
+  deriving (Eq, Read, Show)
+
+recoveryBrokerBody :: String -> ByteString.ByteString -> String -> IO ByteString.ByteString
+recoveryBrokerBody profile request path = do
+  mode <- maybe (fail "unknown recovery fixture mode") pure (readMaybe profile)
+  statePath <-
+    lookupEnv "PRODBOX_TEST_BROKER_RECOVERY_STATE"
+      >>= maybe (fail "missing recovery fixture state path") pure
+  present <- doesFileExist statePath
+  stage <-
+    if present
+      then readFile statePath >>= maybe (fail "invalid recovery fixture stage") pure . readMaybe
+      else pure (initialRecoveryFixtureStage mode)
+  case path of
+    "/v1/bootstrap/vault/status"
+      | mode == ResetUnobservable && stage == RecoveryReset -> pure "not-json"
+      | otherwise -> pure (recoveryFixtureStatus mode stage)
+    "/v1/bootstrap/vault/init" -> do
+      generation <- recoveryFixtureRequestGeneration request
+      appendFile (statePath ++ ".events") ("init:" ++ Text.unpack generation ++ "\n")
+      let next = case (stage, mode) of
+            (RecoveryPending, ResumeUnresolved) -> RecoveryPending
+            (RecoveryPending, MissingResponse) -> RecoveryAmbiguous
+            _ -> RecoverySealedCustody
+      writeFile statePath (show next)
+      pure (if mode == MissingResponse && stage == RecoveryPending then "not-json" else "{}")
+    "/v1/bootstrap/vault/unseal" -> do
+      generation <- recoveryFixtureRequestGeneration request
+      appendFile (statePath ++ ".events") ("unseal:" ++ Text.unpack generation ++ "\n")
+      writeFile statePath (show RecoveryDurable)
+      pure "{}"
+    "/v1/bootstrap/vault/ambiguous-init/reset" -> do
+      generation <- recoveryFixtureRequestGeneration request
+      appendFile (statePath ++ ".events") ("reset:" ++ Text.unpack generation ++ "\n")
+      if mode == ResetGenerationGap || mode == ResetGenerationGapMissingAction
+        then do
+          action <- recoveryFixtureRequestAction request
+          if action /= Text.replicate 64 "a"
+            then fail "fresh client changed the stored reset action"
+            else pure ()
+        else pure ()
+      writeFile statePath (show (if mode == ResetRefused then stage else RecoveryReset))
+      pure (if mode == ResetLostReply || mode == ResetRefused then "not-json" else "{}")
+    _ -> pure "{}"
+
+initialRecoveryFixtureStage :: RecoveryFixtureMode -> RecoveryFixtureStage
+initialRecoveryFixtureStage mode = case mode of
+  CapturedResponse -> RecoveryPending
+  MissingResponse -> RecoveryPending
+  ResumeUnresolved -> RecoveryPending
+  ResumeForeignGeneration -> RecoveryPending
+  AlreadyHealthy -> RecoverySealedCustody
+  AlreadyReset -> RecoveryReset
+  ResetGenerationGap -> RecoveryResetPending
+  ResetGenerationGapMissingAction -> RecoveryResetPending
+  ResetLostReply -> RecoveryAmbiguous
+  ResetRefused -> RecoveryAmbiguous
+  ResetForeignLineage -> RecoveryAmbiguous
+  ResetUnobservable -> RecoveryAmbiguous
+
+recoveryFixtureStatus :: RecoveryFixtureMode -> RecoveryFixtureStage -> ByteString.ByteString
+recoveryFixtureStatus mode stage =
+  LazyByteString.toStrict . Aeson.encode $
+    Aeson.object
+      [ "storage_generation" Aeson..= generation
+      , "initialized"
+          Aeson..= ( stage `elem` [RecoverySealedCustody, RecoveryDurable]
+                       || (stage == RecoveryPending && mode == CapturedResponse)
+                   )
+      , "sealed" Aeson..= (stage /= RecoveryDurable)
+      , "initialization_ambiguous" Aeson..= (stage `elem` [RecoveryAmbiguous, RecoveryResetPending])
+      , "initialization_phase" Aeson..= phase
+      , "initialization_reset_from_generation" Aeson..= resetFrom
+      , "initialization_reset_action_digest" Aeson..= resetAction
+      ]
+ where
+  generation :: Text.Text
+  generation
+    | stage `elem` [RecoveryReset, RecoveryResetPending] = "2"
+    | stage `elem` [RecoverySealedCustody, RecoveryDurable]
+        && mode `notElem` [CapturedResponse, AlreadyHealthy, ResumeUnresolved] =
+        "2"
+    | otherwise = "1"
+  phase :: Text.Text
+  phase = case stage of
+    RecoveryPending -> "init-call-in-flight"
+    RecoveryAmbiguous -> "ambiguous"
+    RecoveryReset -> "reset-pristine"
+    RecoveryResetPending -> "reset-in-flight"
+    RecoverySealedCustody -> "custody-durable"
+    RecoveryDurable -> "custody-durable"
+  resetFrom :: Maybe Text.Text
+  resetFrom
+    | stage `notElem` [RecoveryReset, RecoveryResetPending] = Nothing
+    | mode == ResetForeignLineage = Just "foreign"
+    | otherwise = Just "1"
+
+  resetAction :: Maybe Text.Text
+  resetAction
+    | stage == RecoveryResetPending && mode /= ResetGenerationGapMissingAction =
+        Just (Text.replicate 64 "a")
+    | otherwise = Nothing
+
+recoveryFixtureRequestGeneration :: ByteString.ByteString -> IO Text.Text
+recoveryFixtureRequestGeneration request = recoveryFixtureRequestField request "storage_generation"
+
+recoveryFixtureRequestAction :: ByteString.ByteString -> IO Text.Text
+recoveryFixtureRequestAction request = recoveryFixtureRequestField request "action_digest"
+
+recoveryFixtureRequestField :: ByteString.ByteString -> Key -> IO Text.Text
+recoveryFixtureRequestField request field = do
+  let body = ByteString.drop 4 (snd (ByteString8.breakSubstring "\r\n\r\n" request))
+  value <- maybe (fail "recovery fixture request JSON is invalid") pure (decodeStrict' body)
+  either fail pure (parseEither (withObject "recovery fixture request" (.: field)) value)
 
 vaultBody :: ByteString8.ByteString -> String -> String
 vaultBody request path

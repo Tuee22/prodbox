@@ -13,6 +13,8 @@ module Prodbox.ControlPlane.DescriptorBoundLifecycleRuntime.Internal
   , DescriptorBoundLifecycleUnsupported (..)
   , descriptorBoundLifecycleNodeActionInternal
   , descriptorBoundOrdinaryLifecycleNodeActionInternal
+  , descriptorBoundLifecycleNodeActionInOperationInternal
+  , descriptorBoundOrdinaryLifecycleNodeActionInOperationInternal
   , DescriptorBoundLifecycleRuntimeRegression
   , fixedDescriptorBoundLifecycleRuntimeRegression
   , descriptorBoundLifecycleRuntimeCloudOperationsExact
@@ -94,6 +96,7 @@ import Prodbox.ControlPlane.PulumiCheckpointClient
   )
 import Prodbox.ControlPlane.RecoveryPlaneHostRuntime.Internal
   ( fixedRecoveryPlaneHostRuntimeRegression
+  , recoveryPlaneHostDescriptorBoundNodeActionInOperationInternal
   , recoveryPlaneHostDescriptorBoundNodeActionInternal
   , recoveryPlaneHostRuntimeClosedOperationsExact
   )
@@ -211,6 +214,7 @@ import Prodbox.Lifecycle.Teardown.ProviderDispatch
 import Prodbox.Runtime.Role
   ( RuntimeRole (LifecycleAuthorityRuntime)
   )
+import Prodbox.Subprocess (OperationSubprocesses)
 import System.IO.Temp (withSystemTempDirectory)
 
 -- | Every operation not owned by either released runtime has a distinct
@@ -318,6 +322,7 @@ descriptorBoundLifecycleNodeActionInternal
 descriptorBoundLifecycleNodeActionInternal cloudRuntime transport cascadePreUninstall cascadeHost =
   descriptorBoundCleanupNodeAction
     ( dispatchDescriptorBoundLifecycleNode
+        Nothing
         cloudRuntime
         transport
         (Just cascadePreUninstall)
@@ -333,10 +338,40 @@ descriptorBoundOrdinaryLifecycleNodeActionInternal
   -> DescriptorBoundCleanupNodeExecutionAction
 descriptorBoundOrdinaryLifecycleNodeActionInternal cloudRuntime transport =
   descriptorBoundCleanupNodeAction
-    (dispatchDescriptorBoundLifecycleNode cloudRuntime transport Nothing Nothing)
+    (dispatchDescriptorBoundLifecycleNode Nothing cloudRuntime transport Nothing Nothing)
+
+-- | The ordinary controller retains its original command owner through the
+-- post-Begin recovery observation. The remaining runtimes and transport are
+-- the concrete capabilities captured by the closed program.
+descriptorBoundLifecycleNodeActionInOperationInternal
+  :: OperationSubprocesses
+  -> CloudRuntime IO
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> CascadePreUninstallRuntime
+  -> CascadeHostRuntime
+  -> DescriptorBoundCleanupNodeExecutionAction
+descriptorBoundLifecycleNodeActionInOperationInternal owned cloudRuntime transport cascadePreUninstall cascadeHost =
+  descriptorBoundCleanupNodeAction
+    ( dispatchDescriptorBoundLifecycleNode
+        (Just owned)
+        cloudRuntime
+        transport
+        (Just cascadePreUninstall)
+        (Just cascadeHost)
+    )
+
+descriptorBoundOrdinaryLifecycleNodeActionInOperationInternal
+  :: OperationSubprocesses
+  -> CloudRuntime IO
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> DescriptorBoundCleanupNodeExecutionAction
+descriptorBoundOrdinaryLifecycleNodeActionInOperationInternal owned cloudRuntime transport =
+  descriptorBoundCleanupNodeAction
+    (dispatchDescriptorBoundLifecycleNode (Just owned) cloudRuntime transport Nothing Nothing)
 
 dispatchDescriptorBoundLifecycleNode
-  :: CloudRuntime IO
+  :: Maybe OperationSubprocesses
+  -> CloudRuntime IO
   -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
   -> Maybe CascadePreUninstallRuntime
   -> Maybe CascadeHostRuntime
@@ -347,6 +382,7 @@ dispatchDescriptorBoundLifecycleNode
   -> CleanupNodePlan
   -> IO CleanupNodeOutcome
 dispatchDescriptorBoundLifecycleNode
+  owner
   cloudRuntime
   transport
   cascadePreUninstall
@@ -363,8 +399,7 @@ dispatchDescriptorBoundLifecycleNode
       -- need the skolem this alternative introduces.
       Right (SomeTeardownOperation operation) -> case routeOperation operation of
         DescriptorBoundLifecycleRecoveryRoute ->
-          recoveryPlaneHostDescriptorBoundNodeActionInternal
-            transport
+          recoveryAction
             running
             context
             plan
@@ -403,6 +438,9 @@ dispatchDescriptorBoundLifecycleNode
         DescriptorBoundLifecycleCloudRoute -> runCloudAction
         DescriptorBoundLifecycleUnsupportedRoute _ -> runCloudAction
    where
+    recoveryAction = case owner of
+      Nothing -> recoveryPlaneHostDescriptorBoundNodeActionInternal transport
+      Just owned -> recoveryPlaneHostDescriptorBoundNodeActionInOperationInternal owned transport
     runCloudAction =
       runClosedLifecycleEffects
         ( runCompiledTeardownNodeWithDescriptorContext
@@ -1159,6 +1197,7 @@ executeRegressionOperation
                 outcome <-
                   descriptorBoundCleanupNodeAction
                     ( dispatchDescriptorBoundLifecycleNode
+                        Nothing
                         cloudRuntime
                         transport
                         Nothing

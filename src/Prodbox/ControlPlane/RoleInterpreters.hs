@@ -397,7 +397,7 @@ lifecycleAuthorityAdmissionInterpreter
   -> RoleReadinessSource
   -> Text
   -> m (Either Text Natural)
-  -> (AuthorityAdmissionAggregate -> Either Text ByteString)
+  -> (AuthorityAdmissionAggregate -> m (Either Text ByteString))
   -> AuthorityAdmissionRepository m revision
   -> ProjectionImportHandler m
   -> RetainedSesLeaseHandler m
@@ -499,7 +499,7 @@ lifecycleAuthorityAdmissionAuthenticatedHandler
   -> RoleReadinessSource
   -> Text
   -> m (Either Text Natural)
-  -> (AuthorityAdmissionAggregate -> Either Text ByteString)
+  -> (AuthorityAdmissionAggregate -> m (Either Text ByteString))
   -> AuthorityAdmissionRepository m revision
   -> ConfigAuthorityRepository m
   -> ProjectionImportHandler m

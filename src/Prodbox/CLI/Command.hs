@@ -72,6 +72,7 @@ import Prodbox.Lifecycle.Teardown.LegacyAdoptionLane
   ( AdoptableLegacyStack (..)
   )
 import Prodbox.Runtime.Role (RuntimeRole)
+import Prodbox.Subprocess.HostControllerArguments (HostControllerArguments)
 import Prodbox.Substrate (Substrate (..))
 import System.Exit
   ( ExitCode (ExitSuccess)
@@ -103,6 +104,7 @@ data NativeCommand
   | NativeEdge EdgeCommand
   | NativeGateway GatewayCommand
   | NativeHost HostCommand
+  | NativeRpcBirthController !HostControllerArguments
   | NativeK8s K8sCommand
   | NativeLint LintCommand
   | -- | Sprint 4.13: total teardown command. TTY-only, no @--yes@,

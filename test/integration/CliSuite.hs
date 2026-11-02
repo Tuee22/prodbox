@@ -9,9 +9,17 @@ module CliSuite
   )
 where
 
-import BootstrapSourceFixture (writeBootstrapSourceFixture)
+import BootstrapSourceFixture
+  ( readyMinioControllerJson
+  , readyMinioPodJson
+  , readyVaultClaimJson
+  , readyVaultControllerJson
+  , readyVaultNodeJson
+  , readyVaultPodJson
+  , writeBootstrapSourceFixture
+  )
 import Codec.Serialise (serialise)
-import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Concurrent.MVar
   ( MVar
   , modifyMVar
@@ -22,7 +30,7 @@ import Control.Concurrent.MVar
   , takeMVar
   )
 import Control.Exception (SomeException, bracket, finally, try)
-import Control.Monad (filterM, void, when)
+import Control.Monad (filterM, forM_, unless, void, when)
 import Data.Aeson qualified as Aeson
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy.Char8 qualified as LazyBS8
@@ -51,6 +59,7 @@ import Network.Socket
   , withSocketsDo
   )
 import Network.Socket.ByteString (recv, sendAll)
+import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.BuildSupport
   ( addBuildSupportEnvironment
   , canonicalOperatorBinaryPath
@@ -201,26 +210,74 @@ integrationCliSuite = do
         stderrText `shouldContain` "Missing required repository config"
         stderrText `shouldContain` "./.build/prodbox config setup"
 
-    it "Sprint 1.92: config generate emits an unauthored deployment skeleton" $
-      withSystemTempDirectory "prodbox-hs-config-generate" $ \tmpDir -> do
+    it "Sprint 1.95: fitted and portable generation remain recognizable unauthored templates" $
+      forM_ [[], ["--portable"]] $ \options ->
+        withSystemTempDirectory "prodbox-hs-config-generate" $ \tmpDir -> do
+          binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+          environment <-
+            generationHostEnvironment
+              "milli_cpu=10000,memory_mib=20480,ephemeral_storage_mib=100000,durable_storage_mib=180000"
+
+          (exitCode, stdoutText, stderrText) <-
+            readCreateProcessWithExitCode
+              (proc binary (["config", "generate"] ++ options)) {cwd = Just tmpDir, env = Just environment}
+              ""
+
+          exitCode `shouldBe` ExitSuccess
+          stderrText `shouldBe` ""
+          stdoutText `shouldContain` "Generated a non-secret Tier-0 prodbox.dhall"
+          generated <- readFile (tmpDir </> "prodbox.dhall")
+          generated `shouldContain` "demo_fqdn = \"\""
+          generated `shouldContain` "machine_id = \"\""
+          generated `shouldContain` "cluster_id = \"\""
+          generated `shouldContain` "vault_address = \"\""
+          generated `shouldContain` "minio_endpoint = \"\""
+          generated `shouldNotContain` "server ="
+          generated `shouldNotContain` "minio_bucket"
+          Tier0.isCanonicalUnauthoredProjectConfigDhall (Text.pack generated) `shouldReturn` True
+          Tier0.decodeProjectConfigDhall (tmpDir </> "prodbox.dhall") >>= (`shouldSatisfy` isLeft)
+
+    it "Sprint 1.95: fitted generation reaches the harness missing-fixture refusal" $
+      withSystemTempDirectory "prodbox-hs-fitted-harness" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
-
-        (exitCode, stdoutText, stderrText) <-
+        writeRepoMarkers tmpDir
+        generationEnvironment <-
+          generationHostEnvironment
+            "milli_cpu=10000,memory_mib=20480,ephemeral_storage_mib=100000,durable_storage_mib=180000"
+        (generationExit, _, generationError) <-
           readCreateProcessWithExitCode
-            (proc binary ["config", "generate", "--portable"]) {cwd = Just tmpDir}
+            (proc binary ["config", "generate"]) {cwd = Just tmpDir, env = Just generationEnvironment}
             ""
+        generationExit `shouldBe` ExitSuccess
+        generationError `shouldBe` ""
+        environment <- fakeAwsHarnessEnvironment tmpDir binary
+        (harnessExit, _, harnessError) <-
+          readCreateProcessWithExitCode
+            (proc binary ["test", "integration", "cascade-qualification"])
+              { cwd = Just tmpDir
+              , env = Just environment
+              }
+            ""
+        harnessExit `shouldBe` ExitFailure 1
+        harnessError `shouldContain` "harness config regeneration requires test-secrets.dhall (absent)."
+        harnessError `shouldNotContain` "machine_id"
 
-        exitCode `shouldBe` ExitSuccess
-        stderrText `shouldBe` ""
-        stdoutText `shouldContain` "Generated a non-secret Tier-0 prodbox.dhall"
-        generated <- readFile (tmpDir </> "prodbox.dhall")
-        generated `shouldContain` "demo_fqdn = \"\""
-        generated `shouldContain` "machine_id = \"\""
-        generated `shouldContain` "cluster_id = \"\""
-        generated `shouldContain` "vault_address = \"\""
-        generated `shouldContain` "minio_endpoint = \"\""
-        generated `shouldNotContain` "server ="
-        generated `shouldNotContain` "minio_bucket"
+    it
+      "LOCAL-PLATFORM-SCHEDULER-BASELINE-OMITTED-2026-10-24 refuses undersized generation before writing config"
+      $ withSystemTempDirectory "prodbox-platform-sizing-refusal"
+      $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \built -> installOperatorBinaryInDir built tmpDir
+        writeRepoMarkers tmpDir
+        environment <-
+          generationHostEnvironment
+            "milli_cpu=8000,memory_mib=15872,ephemeral_storage_mib=100000,durable_storage_mib=180000"
+        (exitCode, _, stderrText) <-
+          readCreateProcessWithExitCode
+            (proc binary ["config", "generate"]) {cwd = Just tmpDir, env = Just environment}
+            ""
+        exitCode `shouldBe` ExitFailure 1
+        stderrText `shouldContain` "below the plan's required 9045"
+        doesFileExist (tmpDir </> "prodbox.dhall") `shouldReturn` False
 
     it "runs native host info directly from the built Haskell frontend" $ do
       repoRoot <- getCurrentDirectory
@@ -391,6 +448,131 @@ integrationCliSuite = do
             stdoutText `shouldContain` "HEARTBEAT_NODE_B=1.5"
             requestLine <- takeMVar requestRef
             requestLine `shouldContain` "GET /v1/state"
+
+    forM_
+      [ ("captured response", "CapturedResponse", "harness", ExitSuccess, ["init:1", "unseal:1"])
+      ,
+        ( "missing response"
+        , "MissingResponse"
+        , "harness"
+        , ExitSuccess
+        , ["init:1", "reset:1", "init:2", "unseal:2"]
+        )
+      , ("lost reset reply", "ResetLostReply", "harness", ExitSuccess, ["reset:1", "init:2", "unseal:2"])
+      , ("healthy sealed custody", "AlreadyHealthy", "harness", ExitSuccess, ["unseal:1"])
+      ,
+        ( "terminal reset observed after restart"
+        , "AlreadyReset"
+        , "harness"
+        , ExitSuccess
+        , ["init:2", "unseal:2"]
+        )
+      ,
+        ( "pending reset from a fresh harness"
+        , "ResetGenerationGap"
+        , "harness"
+        , ExitSuccess
+        , ["reset:1", "init:2", "unseal:2"]
+        )
+      ,
+        ( "pending reset from a fresh confirmed client"
+        , "ResetGenerationGap"
+        , "confirmed-reset"
+        , ExitSuccess
+        , ["reset:1"]
+        )
+      , ("operator gate during pending reset", "ResetGenerationGap", "operator", ExitFailure 1, [])
+      , ("missing pending action", "ResetGenerationGapMissingAction", "harness", ExitFailure 1, [])
+      , ("refused reset", "ResetRefused", "harness", ExitFailure 1, ["reset:1"])
+      , ("foreign reset lineage", "ResetForeignLineage", "harness", ExitFailure 1, ["reset:1"])
+      , ("unobservable reset closing", "ResetUnobservable", "harness", ExitFailure 1, ["reset:1"])
+      , ("unresolved continuation", "ResumeUnresolved", "harness", ExitFailure 1, ["init:1"])
+      , ("foreign continuation generation", "ResumeForeignGeneration", "harness", ExitFailure 1, ["init:1"])
+      ,
+        ( "ordinary operator missing-response refusal"
+        , "MissingResponse"
+        , "operator"
+        , ExitFailure 1
+        , ["init:1"]
+        )
+      , ("ordinary operator repair gate", "ResetLostReply", "operator", ExitFailure 1, [])
+      ]
+      $ \(label, profile, policy, expectedExit, expectedEvents) ->
+        it ("HARNESS-RETAINED-INIT-RECOVERY-2026-10-22 composes " ++ label) $
+          withSystemTempDirectory "prodbox-harness-init-recovery" $ \tmpDir -> do
+            _ <- resolveBinaryPath >>= \binary -> installOperatorBinaryInDir binary tmpDir
+            writeRepoMarkers tmpDir
+            writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
+            writePrivateTestSecrets tmpDir testSecretsDhall
+            fixtureExecutable <- getExecutablePath
+            let statePath = tmpDir </> "recovery-state"
+            writeFile (statePath ++ ".events") ""
+            (exitCode, stdoutText, stderrText) <-
+              runInstalledWithFakeAuthorityEnvironment
+                tmpDir
+                fixtureExecutable
+                ["--fixture-vault-bootstrap", policy, tmpDir]
+                [ ("PRODBOX_TEST_BROKER_RECOVERY_MODE", profile)
+                , ("PRODBOX_TEST_BROKER_RECOVERY_STATE", statePath)
+                ]
+            when (exitCode /= expectedExit) (expectationFailure (stdoutText ++ stderrText))
+            exitCode `shouldBe` expectedExit
+            events <- lines <$> readFile (statePath ++ ".events")
+            events `shouldBe` expectedEvents
+
+    forM_
+      [ ("captured response", "CapturedResponse", ExitSuccess, ["init:1", "unseal:1"], True)
+      ,
+        ( "missing response"
+        , "MissingResponse"
+        , ExitSuccess
+        , ["init:1", "reset:1", "init:2", "unseal:2"]
+        , True
+        )
+      , ("healthy sealed custody", "AlreadyHealthy", ExitSuccess, ["unseal:1"], True)
+      , ("terminal reset", "AlreadyReset", ExitSuccess, ["init:2", "unseal:2"], True)
+      , ("pending reset", "ResetGenerationGap", ExitSuccess, ["reset:1", "init:2", "unseal:2"], True)
+      , ("unresolved continuation", "ResumeUnresolved", ExitFailure 1, ["init:1"], True)
+      , ("unavailable startup admission", "CapturedResponse", ExitFailure 1, [], False)
+      ]
+      $ \(label, profile, expectedExit, expectedEvents, admitted) ->
+        it ("BROKER-HARNESS-COLD-START-FORWARD-REFUSED-2026-10-23 admits " ++ label) $
+          withSystemTempDirectory "prodbox-cold-broker-startup" $ \tmpDir -> do
+            _ <- resolveBinaryPath >>= \binary -> installOperatorBinaryInDir binary tmpDir
+            writeRepoMarkers tmpDir
+            writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
+            writePrivateTestSecrets tmpDir testSecretsDhall
+            fixtureExecutable <- getExecutablePath
+            let statePath = tmpDir </> "recovery-state"
+                startup = tmpDir </> "startup-state"
+            writeFile (statePath ++ ".events") ""
+            (exitCode, stdoutText, stderrText) <-
+              withColdBrokerBackend startup $
+                runInstalledWithFakeAuthorityEnvironment
+                  tmpDir
+                  fixtureExecutable
+                  ["--fixture-vault-bootstrap", "harness", tmpDir]
+                  [ ("PRODBOX_TEST_BROKER_RECOVERY_MODE", profile)
+                  , ("PRODBOX_TEST_BROKER_RECOVERY_STATE", statePath)
+                  , ("PRODBOX_TEST_BROKER_COLD_START", "1")
+                  , ("PRODBOX_TEST_BROKER_STARTUP_STATE", startup)
+                  , ("PRODBOX_TEST_BROKER_STARTUP_REFUSED", if admitted then "0" else "1")
+                  ]
+            when (exitCode /= expectedExit) (expectationFailure (stdoutText ++ stderrText))
+            exitCode `shouldBe` expectedExit
+            events <- lines <$> readFile (statePath ++ ".events")
+            events `shouldBe` expectedEvents
+            doesFileExist (startup ++ ".ready") `shouldReturn` admitted
+            hasForwards <- doesFileExist (startup ++ ".forwards")
+            forwards <- if hasForwards then lines <$> readFile (startup ++ ".forwards") else pure []
+            if admitted
+              then do
+                forwards `shouldSatisfy` (not . null)
+                forwards `shouldSatisfy` all (== "backend-ready")
+              else forwards `shouldBe` []
+            unless admitted $ do
+              calls <- readFile (tmpDir </> "fake-rke2-state" </> "kubectl.txt")
+              calls `shouldNotContain` "|create|token|"
 
     it "vault status uses the caller-bound Bootstrap Broker transport" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
@@ -1444,7 +1626,7 @@ integrationCliSuite = do
             runtimeImageRef = runtimeRepository ++ ":prodbox-fixture"
             runtimeConfigDigest =
               "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-            runtimeManifestDigest = "sha256:" ++ replicate 64 'a'
+            runtimeManifestDigest = fixtureRuntimeManifestDigest
 
         (configIdentityExit, configIdentityStdout, configIdentityStderr) <-
           readCreateProcessWithExitCode
@@ -1760,6 +1942,56 @@ integrationCliSuite = do
           Just indexValue -> laterReadWriteExists indexValue `shouldBe` True
 
     it
+      "HOME-RUNTIME-CRI-REFERENCE-PUBLICATION-2026-10-24 refuses Broker deployment without CRI observation"
+      $ withSystemTempDirectory "prodbox-hs-cli"
+      $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \built -> installOperatorBinaryInDir built tmpDir
+        writeRepoMarkers tmpDir
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
+        baseEnvironment <- fakeRke2Environment tmpDir
+        let environment =
+              ("PRODBOX_FAKE_RUNTIME_REFERENCE_MODE", "unavailable")
+                : ("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token")
+                : filter ((/= "PRODBOX_FAKE_RUNTIME_REFERENCE_MODE") . fst) baseEnvironment
+        (exitCode, stdoutText, stderrText) <-
+          runRke2ReconcileWithFakeGateway tmpDir binary ["cluster", "reconcile"] environment
+        exitCode `shouldBe` ExitFailure 1
+        (stdoutText ++ stderrText) `shouldContain` "RuntimeCRIUnavailable"
+        let state = tmpDir </> "fake-rke2-state"
+        criRecord <- readFile (state </> "crictl.txt")
+        length (lines criRecord) `shouldBe` 3
+        ctrRecord <- readFile (state </> "ctr.txt")
+        ctrRecord `shouldNotContain` "content fetch"
+        helmRecord <- readFile (state </> "helm.txt")
+        helmRecord `shouldNotContain` "upgrade|--install|bootstrap-broker"
+
+    it
+      "INTERNAL-HELM-FAILED-RELEASE-STARTUP-LOGS-MISSING-2026-10-24 reports only closed startup causes before cleanup"
+      $ withSystemTempDirectory "prodbox-hs-cli"
+      $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \built -> installOperatorBinaryInDir built tmpDir
+        writeRepoMarkers tmpDir
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfig)
+        baseEnvironment <- fakeRke2Environment tmpDir
+        let state = tmpDir </> "fake-rke2-state"
+            environment =
+              ("PRODBOX_FAKE_AUTHORITY_STARTUP_FAILURE", "1")
+                : ("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token")
+                : baseEnvironment
+        writeFile (state </> "startup-pod.json") fixtureHelmStartupPod
+        writeFile (state </> "startup-pods.json") ("{\"items\":[" ++ fixtureHelmStartupPod ++ "]}")
+        (exitCode, stdoutText, stderrText) <-
+          runRke2ReconcileWithFakeGateway tmpDir binary ["cluster", "reconcile"] environment
+        exitCode `shouldBe` ExitFailure 1
+        let output = stdoutText ++ stderrText
+        output
+          `shouldContain` "startup-evidence/lifecycle-authority/current=config/decode/previous=config/decode"
+        output `shouldNotContain` "private-startup-sentinel"
+        output `shouldContain` "helm uninstall completed and absence was verified"
+        order <- lines <$> readFile (state </> "startup-evidence-order.txt")
+        order `shouldBe` ["log-current", "log-previous", "uninstall"]
+
+    it
       "REGISTRY-NODEPORT-READBACK-CONNECTION-REFUSED-AFTER-READY-CLEAN-INSTALL-2026-09-06 retries one transient Registry read-back and completes native reconcile/delete"
       $ withSystemTempDirectory "prodbox-hs-cli"
       $ \tmpDir -> do
@@ -1873,7 +2105,7 @@ integrationCliSuite = do
         kubectlRecord `shouldContain` "cluster-info"
         kubectlRecord `shouldContain` "get|nodes|-o|name"
         kubectlRecord `shouldContain` "wait|--for=condition=Ready|node|--all|--timeout=300s"
-        kubectlRecord `shouldContain` "rollout|status|statefulset/vault|-n|vault|--timeout=300s"
+        kubectlRecord `shouldContain` "rollout|status|statefulset/vault|--timeout=300s|-n|vault"
         kubectlRecord `shouldContain` "get|storageclass|-o|name"
         kubectlRecord
           `shouldContain` "delete|storageclass|storageclass.storage.k8s.io/local-path|--ignore-not-found=true"
@@ -1890,6 +2122,13 @@ integrationCliSuite = do
               "exec|--namespace|harbor|deployment/registry|--container|registry|--|/usr/bin/env|REGISTRY_LOG_LEVEL=error|/bin/registry|garbage-collect|--delete-untagged|/etc/docker/registry/config.yml"
         countRecordLines registryGcDryRunCommand kubectlRecord `shouldBe` 1
         countRecordLines registryGcDeleteCommand kubectlRecord `shouldBe` 1
+        runtimeCtrRecord <- readFile (tmpDir </> "fake-rke2-state" </> "ctr.txt")
+        runtimeCtrRecord
+          `shouldContain` ( "content fetch --plain-http --platform linux/amd64 127.0.0.1:30080/prodbox/prodbox-runtime@"
+                              ++ fixtureRuntimeManifestDigest
+                          )
+        runtimeCriRecord <- readFile (tmpDir </> "fake-rke2-state" </> "crictl.txt")
+        length (lines runtimeCriRecord) `shouldBe` 2
         kubectlRecord `shouldContain` "annotate|namespace/prodbox|prodbox.io/id=prodbox-"
         kubectlRecord `shouldContain` "label|namespace/prodbox|prodbox.io/id=prodbox-"
         kubectlRecord
@@ -2859,6 +3098,45 @@ integrationCliSuite = do
         stderrText `shouldContain` "gateway daemon Dhall config"
         stderrText `shouldNotContain` "Could not locate the repository root"
 
+    forM_ [False, True] $ \markers ->
+      it
+        ("dispatches the closed controller without schema materialization, repo markers=" ++ show markers)
+        $ withSystemTempDirectory "prodbox-rpc-controller-cli"
+        $ \tmpDir -> do
+          binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+          when markers $ do
+            writeFile (tmpDir </> "prodbox.cabal") "controller fixture repository marker\n"
+            createDirectoryIfMissing True (tmpDir </> "DEVELOPMENT_PLAN")
+            writeFile (tmpDir </> "DEVELOPMENT_PLAN" </> "README.md") "controller fixture repository marker\n"
+          let arguments =
+                [ "internal-rpc-birth-controller"
+                , "--config"
+                , tmpDir </> "unopened-settings.cbor"
+                , "--request"
+                , tmpDir </> "unopened-request.cbor"
+                , "--input-fingerprint"
+                , replicate 64 'a'
+                , "--operation-key"
+                , replicate 64 'b'
+                , "--outer-ns"
+                , "500"
+                , "--work-ns"
+                , "100"
+                , "--hard-ns"
+                , "200"
+                , "--stop-ns"
+                , "300"
+                , "--finish-ns"
+                , "400"
+                ]
+          (exitCode, _, stderrText) <-
+            readCreateProcessWithExitCode (proc binary arguments) {cwd = Just tmpDir} ""
+          exitCode `shouldBe` ExitFailure 1
+          stderrText `shouldContain` "RpcBirthControllerInputRefused"
+          stderrText `shouldNotContain` "not the repository root"
+          doesFileExist (tmpDir </> "prodbox-config-types.dhall") `shouldReturn` False
+          doesFileExist (tmpDir </> "test-secrets-types.dhall") `shouldReturn` False
+
     it "requires an explicit mounted config for native Bootstrap Broker start" $ do
       binary <- resolveBinaryPath
 
@@ -3328,6 +3606,14 @@ resolveBinaryPath = do
     Right binaryPath -> do
       binaryPath `shouldBe` canonicalOperatorBinaryPath repoRoot
       pure binaryPath
+
+generationHostEnvironment :: String -> IO [(String, String)]
+generationHostEnvironment capacity = do
+  environment <- getEnvironment
+  pure
+    ( ("PRODBOX_TEST_HOST_CAPACITY", capacity)
+        : filter ((/= "PRODBOX_TEST_HOST_CAPACITY") . fst) environment
+    )
 
 writeRepoMarkers :: FilePath -> IO ()
 writeRepoMarkers repoRoot = do
@@ -3905,12 +4191,16 @@ fakeAwsEnvironment repoRoot = do
               k /= "PATH"
                 && k /= "PRODBOX_ALLOW_NON_TTY_INTERACTIVE"
                 && k /= "PRODBOX_TEST_HOST_VAULT_KV_DIR"
+                && k /= "PRODBOX_TEST_HOST_CAPACITY"
           )
           currentEnvironment
   pure
     ( ("PATH", updatedPath)
         : ("PRODBOX_ALLOW_NON_TTY_INTERACTIVE", "1")
         : ("PRODBOX_TEST_HOST_VAULT_KV_DIR", fakeVaultKvDir repoRoot)
+        : ( "PRODBOX_TEST_HOST_CAPACITY"
+          , "milli_cpu=10000,memory_mib=18432,ephemeral_storage_mib=100000,durable_storage_mib=180000"
+          )
         : filtered
     )
 
@@ -4452,6 +4742,18 @@ withNoRke2Install baseEnvVars =
              , "PRODBOX_TEST_RESIDUE_UNREACHABLE"
              ]
 
+withColdBrokerBackend :: FilePath -> IO value -> IO value
+withColdBrokerBackend startup action =
+  bracket (forkIO awaitStartup) killThread (const action)
+ where
+  awaitStartup = do
+    started <- doesFileExist (startup ++ ".started")
+    if started
+      then do
+        threadDelay 2000000
+        writeFile (startup ++ ".backend-ready") "ready\n"
+      else threadDelay 10000 >> awaitStartup
+
 fakeRke2Environment :: FilePath -> IO [(String, String)]
 fakeRke2Environment repoRoot = do
   fakeBin <- writeFakeRke2Scripts repoRoot
@@ -4484,6 +4786,8 @@ fakeRke2Environment repoRoot = do
                           , "PRODBOX_FAKE_RKE2_DANGLING_RUNTIME_IMAGE_ID"
                           , "PRODBOX_FAKE_REGISTRY_GC_USAGE_REJECTION"
                           , "PRODBOX_FAKE_REGISTRY_READ_BACK_TRANSIENT"
+                          , "PRODBOX_FAKE_RUNTIME_REFERENCE_MODE"
+                          , "PRODBOX_FAKE_AUTHORITY_STARTUP_FAILURE"
                           , "PRODBOX_RKE2_CONTAINERD_SOCKET"
                           , "PRODBOX_RKE2_ENDPOINT_STATUS_ROOT"
                           , "PRODBOX_TEST_RESIDUE_UNREACHABLE"
@@ -4519,7 +4823,7 @@ fakeRke2Environment repoRoot = do
       , ("PRODBOX_TEST_AUTHORITY_CONFIG_PATH", repoRoot </> "prodbox.dhall")
       ,
         ( "PRODBOX_TEST_HOST_CAPACITY"
-        , "milli_cpu=8000,memory_mib=15872,ephemeral_storage_mib=100000,durable_storage_mib=180000"
+        , "milli_cpu=10000,memory_mib=18432,ephemeral_storage_mib=100000,durable_storage_mib=180000"
         )
       , ("HOME", repoRoot)
       ]
@@ -4706,6 +5010,7 @@ writeFakeRke2Scripts repoRoot = do
   writeExecutable (binDir </> "helm") fakeRke2HelmScript
   writeExecutable (binDir </> "docker") fakeRke2DockerScript
   writeExecutable (binDir </> "ctr") fakeRke2CtrScript
+  writeExecutable (binDir </> "crictl") fakeRke2CrictlScript
   writeExecutable (binDir </> "mkdir") fakeRke2MkdirScript
   writeExecutable (binDir </> "cp") fakeRke2CpScript
   writeExecutable (binDir </> "chown") fakeRke2ChownScript
@@ -4807,6 +5112,15 @@ fakeSudoScript =
     , "  printf '%s' \"$arg\" >> \"$record_dir/sudo.txt\""
     , "done"
     , "printf '\\n' >> \"$record_dir/sudo.txt\""
+    , "if [[ \"${1:-}\" == '-n' ]]; then shift; fi"
+    , "if [[ \"${1:-}\" == '/var/lib/rancher/rke2/bin/crictl' ]]; then shift; exec crictl \"$@\"; fi"
+    , "if [[ \"${1:-}\" == 'mkdir' && \"${!#}\" == *'/vault/vault/0' ]]; then"
+    , "  printf '%s' \"${!#}\" > \"$record_dir/vault-host-path\""
+    , "fi"
+    , "if [[ \"${1:-}\" == 'stat' && \"${!#}\" == *'/vault/vault/0' ]]; then"
+    , "  printf '2050:4242:2:41f8\\n'"
+    , "  exit 0"
+    , "fi"
     , "if [[ \"${1:-}\" == '--version' ]]; then"
     , "  printf 'sudo 1.9.15\\n'"
     , "  exit 0"
@@ -4850,524 +5164,629 @@ fakeRke2TestScript =
     , "esac"
     ]
 
+fixtureHelmStartupPod :: String
+fixtureHelmStartupPod =
+  "{\"metadata\":{\"name\":\"lifecycle-authority-0\",\"namespace\":\"lifecycle-authority\",\"uid\":\"11111111-1111-4111-8111-111111111111\",\"labels\":{\"app.kubernetes.io/instance\":\"lifecycle-authority\"}},\"spec\":{\"containers\":[{\"name\":\"lifecycle-authority\"}]},\"status\":{\"containerStatuses\":[{\"name\":\"lifecycle-authority\",\"restartCount\":480,\"containerID\":\"containerd://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}]}}"
+
+fixtureRuntimeManifestBody :: String
+fixtureRuntimeManifestBody =
+  "{\"schemaVersion\":2,\"mediaType\":\"application/vnd.oci.image.manifest.v1+json\",\"config\":{\"mediaType\":\"application/vnd.oci.image.config.v1+json\",\"digest\":\"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"},\"layers\":[]}"
+
+fixtureRuntimeManifestDigest :: String
+fixtureRuntimeManifestDigest = "sha256:" ++ BS8.unpack (hexSha256 (BS8.pack fixtureRuntimeManifestBody))
+
+runtimeFixtureDigests :: String -> String
+runtimeFixtureDigests =
+  Text.unpack
+    . Text.replace
+      (Text.pack ("sha256:" ++ replicate 64 'a'))
+      (Text.pack fixtureRuntimeManifestDigest)
+    . Text.pack
+
 fakeRke2CurlScript :: String
 fakeRke2CurlScript =
-  unlines
-    [ "#!/bin/bash"
-    , "set -euo pipefail"
-    , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
-    , "/bin/mkdir -p \"$record_dir\""
-    , "printf '%s\\n' \"$*\" >> \"$record_dir/curl.txt\""
-    , "if [[ \"$*\" == *'https://get.rke2.io'* ]]; then"
-    , "  out=''"
-    , "  while [[ $# -gt 0 ]]; do"
-    , "    if [[ \"${1:-}\" == '-o' ]]; then"
-    , "      out=${2:-}"
-    , "      break"
-    , "    fi"
-    , "    shift"
-    , "  done"
-    , "  printf '#!/usr/bin/env bash\\nexit 0\\n' > \"$out\""
-    , "  exit 0"
-    , "fi"
-    , "if [[ \"$*\" == *'https://api.ipify.org'* ]]; then"
-    , "  printf '198.51.100.24'"
-    , "  exit 0"
-    , "fi"
-    , "if [[ \"$*\" == *'/api/v2.0/projects/'* && \"$*\" == *'-X DELETE'* ]]; then"
-    , "  printf '200'"
-    , "  exit 0"
-    , "fi"
-    , "if [[ \"$*\" == *'http://127.0.0.1:30080/readyz'* ]]; then"
-    , "  printf '200'"
-    , "  exit 0"
-    , "fi"
-    , "if [[ \"$*\" == *'/blobs/uploads/'* ]]; then"
-    , "  # Sprint 4.43 deep registry->MinIO gate: a POST blob-upload session"
-    , "  # succeeds (202), modelling a registry that reached its MinIO S3 backend."
-    , "  #"
-    , "  # Sprint 5.30: Sprint `1.76` made that 202 insufficient on its own — the"
-    , "  # probe dumps headers with `-D -` and requires the registry to NAME the"
-    , "  # session it allocated, because the identifier is the receipt of the"
-    , "  # backend write. A 2xx naming no session is not a round trip. This fake"
-    , "  # emitted only the status, so it modelled a registry that cannot have"
-    , "  # written; the drift was invisible while the suite could not get here."
-    , "  printf 'HTTP/1.1 202 Accepted\\r\\n'"
-    , "  printf 'Docker-Upload-UUID: 00000000-0000-4000-8000-00000000fake\\r\\n'"
-    , "  printf '\\r\\n'"
-    , "  printf '202'"
-    , "  exit 0"
-    , "fi"
-    , "if [[ \"$*\" == *'http://127.0.0.1:30080/v2/_catalog?n=1000'* ]]; then"
-    , "  catalog_count_file=$record_dir/registry-catalog.count"
-    , "  catalog_count=0"
-    , "  if [[ -f \"$catalog_count_file\" ]]; then catalog_count=$(<\"$catalog_count_file\"); fi"
-    , "  catalog_count=$((catalog_count + 1))"
-    , "  printf '%s\\n' \"$catalog_count\" > \"$catalog_count_file\""
-    , "  if [[ \"${PRODBOX_FAKE_REGISTRY_READ_BACK_TRANSIENT:-0}\" == '1' && \"$catalog_count\" == '2' ]]; then"
-    , "    printf \"curl: (7) Failed to connect to 127.0.0.1 port 30080 after 0 ms: Couldn't connect to server\\n\" >&2"
-    , "    exit 7"
-    , "  fi"
-    , "  printf '{\"repositories\":[\"prodbox/prodbox-runtime\"]}'"
-    , "  exit 0"
-    , "fi"
-    , "if [[ \"$*\" == *'http://127.0.0.1:30080/v2/prodbox/prodbox-runtime/tags/list?n=1000'* ]]; then"
-    , "  printf '{\"name\":\"prodbox/prodbox-runtime\",\"tags\":[\"latest\",\"prodbox-3349a232b3454fb3be77b2f68919904f\"]}'"
-    , "  exit 0"
-    , "fi"
-    , "if [[ \"$*\" == *'http://127.0.0.1:30080/v2/prodbox/prodbox-runtime/manifests/'* ]]; then"
-    , "  printf 'HTTP/1.1 200 OK\\r\\n'"
-    , "  printf 'Content-Type: application/vnd.docker.distribution.manifest.v2+json\\r\\n'"
-    , "  printf 'Docker-Content-Digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\r\\n'"
-    , "  printf '\\r\\n'"
-    , "  exit 0"
-    , "fi"
-    , "if [[ \"$*\" == *'http://127.0.0.1:30080/v2/'* ]]; then"
-    , "  printf '401'"
-    , "  exit 0"
-    , "fi"
-    , "if [[ \"$*\" == *'/api/v2.0/projects'* ]]; then"
-    , "  printf '201'"
-    , "  exit 0"
-    , "fi"
-    , "printf 'unsupported fake curl command: %s\\n' \"$*\" >&2"
-    , "exit 1"
-    ]
+  runtimeFixtureDigests $
+    unlines
+      [ "#!/bin/bash"
+      , "set -euo pipefail"
+      , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
+      , "/bin/mkdir -p \"$record_dir\""
+      , "printf '%s\\n' \"$*\" >> \"$record_dir/curl.txt\""
+      , "if [[ \"${!#}\" == 'http://127.0.0.1:30080/v2/prodbox/prodbox-runtime/manifests/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' && \"$*\" == *'--header Accept: application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json'* ]]; then"
+      , "  printf '%s' '" ++ fixtureRuntimeManifestBody ++ "'"
+      , "  exit 0"
+      , "fi"
+      , "if [[ \"$*\" == *'https://get.rke2.io'* ]]; then"
+      , "  out=''"
+      , "  while [[ $# -gt 0 ]]; do"
+      , "    if [[ \"${1:-}\" == '-o' ]]; then"
+      , "      out=${2:-}"
+      , "      break"
+      , "    fi"
+      , "    shift"
+      , "  done"
+      , "  printf '#!/usr/bin/env bash\\nexit 0\\n' > \"$out\""
+      , "  exit 0"
+      , "fi"
+      , "if [[ \"$*\" == *'https://api.ipify.org'* ]]; then"
+      , "  printf '198.51.100.24'"
+      , "  exit 0"
+      , "fi"
+      , "if [[ \"$*\" == *'/api/v2.0/projects/'* && \"$*\" == *'-X DELETE'* ]]; then"
+      , "  printf '200'"
+      , "  exit 0"
+      , "fi"
+      , "if [[ \"$*\" == *'http://127.0.0.1:30080/readyz'* ]]; then"
+      , "  printf '200'"
+      , "  exit 0"
+      , "fi"
+      , "if [[ \"$*\" == *'/blobs/uploads/'* ]]; then"
+      , "  # Sprint 4.43 deep registry->MinIO gate: a POST blob-upload session"
+      , "  # succeeds (202), modelling a registry that reached its MinIO S3 backend."
+      , "  #"
+      , "  # Sprint 5.30: Sprint `1.76` made that 202 insufficient on its own — the"
+      , "  # probe dumps headers with `-D -` and requires the registry to NAME the"
+      , "  # session it allocated, because the identifier is the receipt of the"
+      , "  # backend write. A 2xx naming no session is not a round trip. This fake"
+      , "  # emitted only the status, so it modelled a registry that cannot have"
+      , "  # written; the drift was invisible while the suite could not get here."
+      , "  printf 'HTTP/1.1 202 Accepted\\r\\n'"
+      , "  printf 'Docker-Upload-UUID: 00000000-0000-4000-8000-00000000fake\\r\\n'"
+      , "  printf '\\r\\n'"
+      , "  printf '202'"
+      , "  exit 0"
+      , "fi"
+      , "if [[ \"$*\" == *'http://127.0.0.1:30080/v2/_catalog?n=1000'* ]]; then"
+      , "  catalog_count_file=$record_dir/registry-catalog.count"
+      , "  catalog_count=0"
+      , "  if [[ -f \"$catalog_count_file\" ]]; then catalog_count=$(<\"$catalog_count_file\"); fi"
+      , "  catalog_count=$((catalog_count + 1))"
+      , "  printf '%s\\n' \"$catalog_count\" > \"$catalog_count_file\""
+      , "  if [[ \"${PRODBOX_FAKE_REGISTRY_READ_BACK_TRANSIENT:-0}\" == '1' && \"$catalog_count\" == '2' ]]; then"
+      , "    printf \"curl: (7) Failed to connect to 127.0.0.1 port 30080 after 0 ms: Couldn't connect to server\\n\" >&2"
+      , "    exit 7"
+      , "  fi"
+      , "  printf '{\"repositories\":[\"prodbox/prodbox-runtime\"]}'"
+      , "  exit 0"
+      , "fi"
+      , "if [[ \"$*\" == *'http://127.0.0.1:30080/v2/prodbox/prodbox-runtime/tags/list?n=1000'* ]]; then"
+      , "  printf '{\"name\":\"prodbox/prodbox-runtime\",\"tags\":[\"latest\",\"prodbox-3349a232b3454fb3be77b2f68919904f\"]}'"
+      , "  exit 0"
+      , "fi"
+      , "if [[ \"$*\" == *'http://127.0.0.1:30080/v2/prodbox/prodbox-runtime/manifests/'* ]]; then"
+      , "  printf 'HTTP/1.1 200 OK\\r\\n'"
+      , "  printf 'Content-Type: application/vnd.docker.distribution.manifest.v2+json\\r\\n'"
+      , "  printf 'Docker-Content-Digest: sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\\r\\n'"
+      , "  printf '\\r\\n'"
+      , "  exit 0"
+      , "fi"
+      , "if [[ \"$*\" == *'http://127.0.0.1:30080/v2/'* ]]; then"
+      , "  printf '401'"
+      , "  exit 0"
+      , "fi"
+      , "if [[ \"$*\" == *'/api/v2.0/projects'* ]]; then"
+      , "  printf '201'"
+      , "  exit 0"
+      , "fi"
+      , "printf 'unsupported fake curl command: %s\\n' \"$*\" >&2"
+      , "exit 1"
+      ]
 
 fakeRke2KubectlScript :: String
 fakeRke2KubectlScript =
-  unlines
-    [ "#!/bin/bash"
-    , "set -euo pipefail"
-    , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:-${HOME:?}/fake-rke2-state}"
-    , "/bin/mkdir -p \"$record_dir\""
-    , "append_args() {"
-    , "  local target=$1"
-    , "  shift"
-    , "  local first=1"
-    , "  for arg in \"$@\"; do"
-    , "    if [[ $first -eq 0 ]]; then"
-    , "      printf '|' >> \"$target\""
-    , "    fi"
-    , "    first=0"
-    , "    printf '%s' \"$arg\" >> \"$target\""
-    , "  done"
-    , "  printf '\\n' >> \"$target\""
-    , "}"
-    , "next_apply_target() {"
-    , "  local counter_file=\"$record_dir/kubectl-apply.count\""
-    , "  local count=0"
-    , "  if [[ -f \"$counter_file\" ]]; then"
-    , "    count=$(/bin/cat \"$counter_file\")"
-    , "  fi"
-    , "  count=$((count + 1))"
-    , "  printf '%s' \"$count\" > \"$counter_file\""
-    , "  printf '%s/kubectl-apply-%s.json' \"$record_dir\" \"$count\""
-    , "}"
-    , "next_gateway_pods_sample() {"
-    , "  local counter_file=\"$record_dir/gateway-pods-sample.count\""
-    , "  local count=0"
-    , "  if [[ -f \"$counter_file\" ]]; then"
-    , "    count=$(/bin/cat \"$counter_file\")"
-    , "  fi"
-    , "  count=$((count + 1))"
-    , "  printf '%s' \"$count\" > \"$counter_file\""
-    , "  printf '%s' \"$count\""
-    , "}"
-    , "append_args \"$record_dir/kubectl.txt\" \"$@\""
-    , "requested_namespace=default"
-    , "previous_argument="
-    , "for argument in \"$@\"; do"
-    , "  if [[ \"$previous_argument\" == '--namespace' ]]; then requested_namespace=$argument; break; fi"
-    , "  previous_argument=$argument"
-    , "done"
-    , "if [[ \"${1:-}\" == '--kubeconfig' ]]; then"
-    , "  shift 2"
-    , "fi"
-    , "if [[ \"${1:-}\" == '--namespace' ]]; then"
-    , "  shift 2"
-    , "fi"
-    , "case \"${1:-}\" in"
-    , "  cluster-info)"
-    , "    printf 'Kubernetes control plane is running\\n'"
-    , "    ;;"
-    , "  version)"
-    , "    if [[ \"$*\" == *'--client=true'* ]]; then"
-    , "      printf 'Client Version: v1.33.0\\n'"
-    , "    else"
-    , "      printf 'unsupported fake kubectl version command: %s\\n' \"$*\" >&2"
-    , "      exit 1"
-    , "    fi"
-    , "    ;;"
-    , "  api-resources)"
-    , "    if [[ \"$*\" == *'--namespaced=true'* ]]; then"
-    , "      printf 'deployments.apps\\nconfigmaps\\n'"
-    , "    else"
-    , "      printf 'clusterroles.rbac.authorization.k8s.io\\n'"
-    , "    fi"
-    , "    ;;"
-    , "  auth)"
-    , "    if [[ \"${2:-}\" == 'can-i' ]]; then"
-    , "      printf 'yes\\n'"
-    , "    else"
-    , "      exit 1"
-    , "    fi"
-    , "    ;;"
-    , "  get)"
-    , "    if [[ $# -eq 4 && \"${2:-}\" == '--filename=-' && \"${3:-}\" == '--output=json' && \"${4:-}\" == '--ignore-not-found=true' ]]; then"
-    , "      /bin/cat >/dev/null"
-    , "      substrate_observation=\"$record_dir/credential-provisioner-substrate.json\""
-    , "      if [[ ! -s \"$substrate_observation\" ]]; then"
-    , "        printf 'Credential Provisioner substrate has not been applied\n' >&2"
-    , "        exit 1"
-    , "      fi"
-    , "      /bin/cat \"$substrate_observation\""
-    , "      exit 0"
-    , "    elif [[ \"${2:-}\" == --filename=* ]]; then"
-    , "      printf 'unsupported fake kubectl filename observation: %s\n' \"$*\" >&2"
-    , "      exit 1"
-    , "    fi"
-    , "    case \"${2:-}\" in"
-    , "      serviceaccount)"
-    , "        printf '%s\\n%s\\nfalse\\n' \"$requested_namespace\" \"${3:-}\""
-    , "        ;;"
-    , "      nodes)"
-    , "        if [[ \"$*\" == *'-o|json'* || \"$*\" == *'-o json'* ]]; then"
-    , "          /bin/cat <<'JSON'"
-    , "{\"items\":[{\"metadata\":{\"name\":\"bathurst\"}}]}"
-    , "JSON"
-    , "        elif [[ \"$*\" == *'-o|name'* || \"$*\" == *'-o name'* ]]; then"
-    , "          printf 'node/bathurst\\n'"
-    , "        else"
-    , "          printf 'bathurst'"
-    , "        fi"
-    , "        ;;"
-    , "      storageclass)"
-    , "        printf 'storageclass.storage.k8s.io/manual\\nstorageclass.storage.k8s.io/local-path\\n'"
-    , "        ;;"
-    , "      pv)"
-    , "        if [[ \"${3:-}\" == '-o' && \"$*\" == *'jsonpath={range .items'* ]]; then"
-    , "          # Empty success for the drain-time Delete-reclaim PV listing."
-    , "          exit 0"
-    , "        else"
-    , "          printf 'Error from server (NotFound): persistentvolumes \"%s\" not found\\n' \"${3:-pv}\" >&2"
-    , "          exit 1"
-    , "        fi"
-    , "        ;;"
-    , "      pvc)"
-    , "        printf 'Error from server (NotFound): persistentvolumeclaims \"%s\" not found\\n' \"${3:-pvc}\" >&2"
-    , "        exit 1"
-    , "        ;;"
-    , "      resourcequota)"
-    , "        if [[ \"$*\" == *'-o json'* ]]; then"
-    , "          /bin/cat <<'JSON'"
-    , renderFakeResourceQuotaItems
-    , "JSON"
-    , "        fi"
-    , "        ;;"
-    , "      limitrange)"
-    , "        if [[ \"$*\" == *'-o json'* ]]; then"
-    , "          /bin/cat <<'JSON'"
-    , renderFakeLimitRangeItems
-    , "JSON"
-    , "        fi"
-    , "        ;;"
-    , "      configmap)"
-    , "        /bin/cat <<'EOF'"
-    , "server {"
-    , "  location / {"
-    , "    proxy_pass http://core;"
-    , "  }"
-    , "}"
-    , "EOF"
-    , "        ;;"
-    , "      secret|secret/*)"
-    , "        if [[ \"$*\" == *'secret/minio-oidc-client'* && \"$*\" == *'metadata.resourceVersion'* ]]; then"
-    , "          printf 'fixture-resource-version-1'"
-    , "        elif [[ \"$*\" == *'secret/'* && \"$*\" == *'metadata.uid'* ]]; then"
-    , "          printf 'fixture-secret-uid:fixture-resource-version-1'"
-    , "        elif [[ \"${3:-}\" == 'minio' && \"$*\" == *'rootUser'* ]]; then"
-    , "          printf 'minioadmin'"
-    , "        elif [[ \"${3:-}\" == 'minio' && \"$*\" == *'rootPassword'* ]]; then"
-    , "          printf 'minioadmin123'"
-    , "        elif [[ \"${3:-}\" == 'gateway-minio-creds' ]]; then"
-    , "          # Sprint 2.19: readGatewayMinioCredsSecret probes for an existing"
-    , "          # Secret; absence is the happy path for first reconcile (fresh"
-    , "          # credentials get generated)."
-    , "          printf 'Error from server (NotFound): secrets \"gateway-minio-creds\" not found\\n' >&2"
-    , "          exit 1"
-    , "        elif [[ \"${3:-}\" == *'-pguser-keycloak' && \"$*\" == *'--ignore-not-found=true'* ]]; then"
-    , "          # The chart platform treats the Percona operator pguser Secret as"
-    , "          # optional during a fresh reconcile; absent means the post-readiness"
-    , "          # sync is a no-op and will be retried later."
-    , "          exit 0"
-    , "        else"
-    , "          printf 'unsupported fake secret lookup: %s\\n' \"$*\" >&2"
-    , "          exit 1"
-    , "        fi"
-    , "        ;;"
-    , -- Sprint 3.34 made `endpoints/kubernetes` a live observation on the
-      -- reconcile path (the post-DNAT Kubernetes API egress coordinate).
-      -- This inner case's `*)` arm answers an unknown resource with empty
-      -- stdout and exit 0, so before this arm existed the observer read
-      -- "" and refused with "observation was not in the expected form".
-      -- The address is RFC 5737 TEST-NET-1, unmistakably synthetic; the
-      -- port is the real post-DNAT API port, which is the coordinate the
-      -- chart rule under test is derived from.
-      "      endpoints)"
-    , "        if [[ \"${3:-}\" == 'kubernetes' ]]; then"
-    , "          printf '192.0.2.10|6443'"
-    , "        else"
-    , "          printf 'Error from server (NotFound): endpoints \"%s\" not found\\n' \"${3:-endpoints}\" >&2"
-    , "          exit 1"
-    , "        fi"
-    , "        ;;"
-    , "      deployment)"
-    , "        if [[ \"$*\" == *'jsonpath={.metadata.generation}'* ]]; then"
-    , "          printf '1:1:1:1'"
-    , "        elif [[ \"$*\" == *'jsonpath={.status.conditions'* ]]; then"
-    , "          printf 'True'"
-    , "        fi"
-    , "        ;;"
-    , "      statefulset)"
-    , "        if [[ \"$*\" == *'jsonpath={.spec.replicas}'* ]]; then"
-    , "          printf '1:1:1'"
-    , "        elif [[ \"$*\" == *'-o name'* ]]; then"
-    , "          # The gateway namespace holds one StatefulSet per home emitter beside the"
-    , "          # unrelated Pulsar broker; the gateway validations wait on the emitters only."
-    , "          printf 'statefulset.apps/gateway-node-a\\nstatefulset.apps/gateway-node-b\\nstatefulset.apps/pulsar\\n'"
-    , "        fi"
-    , "        ;;"
-    , "      daemonset)"
-    , "        if [[ \"$*\" == *'jsonpath={.status.desiredNumberScheduled}'* ]]; then"
-    , "          printf '1:1:1'"
-    , "        fi"
-    , "        ;;"
-    , "      deployments.apps)"
-    , "        if [[ \"$*\" == *'-n prodbox'* ]]; then"
-    , "          printf 'deployment.apps/prodbox-api\\n'"
-    , "        fi"
-    , "        ;;"
-    , "      configmaps)"
-    , "        if [[ \"$*\" == *'-n prodbox'* ]]; then"
-    , "          printf 'configmap/existing-config\\n'"
-    , "        fi"
-    , "        ;;"
-    , "      clusterroles.rbac.authorization.k8s.io)"
-    , "        if [[ \"$*\" == *'app.kubernetes.io/instance=harbor'* ]]; then"
-    , "          printf 'clusterrole.rbac.authorization.k8s.io/harbor-role\\n'"
-    , "        fi"
-    , "        ;;"
-    , "      crd)"
-    , "        if [[ \"$*\" == *'jsonpath={.status.conditions'* ]]; then"
-    , "          printf 'True'"
-    , "        else"
-    , "          printf 'customresourcedefinition.apiextensions.k8s.io/gatewayclasses.gateway.networking.k8s.io\\n'"
-    , "        fi"
-    , "        ;;"
-    , "      pods)"
-    , "        if [[ \"$*\" == *'--selector=job-name='* && \"$*\" == *'--output=name'* ]]; then"
-    , "          exit 0"
-    , "        elif [[ \"$*\" == *'-o json'* ]]; then"
-    , "          if [[ \"$*\" == *'--namespace gateway'* ]]; then"
-    , "            gateway_pods_sample=$(next_gateway_pods_sample)"
-    , "            if [[ \"${PRODBOX_FAKE_GATEWAY_OOM_PODS_SAMPLE:-0}\" == \"$gateway_pods_sample\" ]]; then"
-    , "              /bin/cat <<'JSON'"
-    , renderFakeGatewayPodItems True
-    , "JSON"
-    , "            else"
-    , "              /bin/cat <<'JSON'"
-    , renderFakeGatewayPodItems False
-    , "JSON"
-    , "            fi"
-    , "          else"
-    , "            /bin/cat <<'JSON'"
-    , "{\"items\":[{\"metadata\":{\"namespace\":\"keycloak\",\"name\":\"keycloak-0\"},\"status\":{\"qosClass\":\"Burstable\"},\"spec\":{\"containers\":[{\"name\":\"keycloak\",\"resources\":{\"requests\":{\"cpu\":\"500m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"limits\":{\"cpu\":\"1000m\",\"memory\":\"2048Mi\",\"ephemeral-storage\":\"2048Mi\"}}}]}},{\"metadata\":{\"namespace\":\"vscode\",\"name\":\"vscode-0\"},\"status\":{\"qosClass\":\"Burstable\"},\"spec\":{\"containers\":[{\"name\":\"vscode\",\"resources\":{\"requests\":{\"cpu\":\"500m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"limits\":{\"cpu\":\"1000m\",\"memory\":\"2048Mi\",\"ephemeral-storage\":\"4096Mi\"}}}]}},{\"metadata\":{\"namespace\":\"api\",\"name\":\"api-0\"},\"status\":{\"qosClass\":\"Burstable\"},\"spec\":{\"containers\":[{\"name\":\"api\",\"resources\":{\"requests\":{\"cpu\":\"250m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"limits\":{\"cpu\":\"500m\",\"memory\":\"512Mi\",\"ephemeral-storage\":\"1024Mi\"}}}]}},{\"metadata\":{\"namespace\":\"websocket\",\"name\":\"websocket-0\"},\"status\":{\"qosClass\":\"Burstable\"},\"spec\":{\"containers\":[{\"name\":\"websocket\",\"resources\":{\"requests\":{\"cpu\":\"100m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"limits\":{\"cpu\":\"250m\",\"memory\":\"512Mi\",\"ephemeral-storage\":\"1024Mi\"}}}]}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-0\"},\"status\":{\"qosClass\":\"Burstable\"},\"spec\":{\"containers\":[{\"name\":\"gateway\",\"resources\":{\"requests\":{\"cpu\":\"250m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"limits\":{\"cpu\":\"500m\",\"memory\":\"512Mi\",\"ephemeral-storage\":\"1024Mi\"}}}]}}]}"
-    , "JSON"
-    , "          fi"
-    , "        else"
-    , "          printf 'docker.io/library/busybox:latest\\ngoharbor/harbor-core:v2\\n'"
-    , "        fi"
-    , "        ;;"
-    , "      events)"
-    , "        printf '{\"items\":[]}'"
-    , "        ;;"
-    , "      --raw)"
-    , "        /bin/cat <<'JSON'"
-    , renderFakeGatewayMetricItems
-    , "JSON"
-    , "        ;;"
-    , "      *)"
-    , "        ;;"
-    , "    esac"
-    , "    ;;"
-    , "  exec)"
-    , "    if [[ \"$*\" == *'deployment/registry'* && \"$*\" == *'/bin/registry garbage-collect'* && \"$*\" == *'--delete-untagged /etc/docker/registry/config.yml'* ]]; then"
-    , "      if [[ \"$*\" != *'/usr/bin/env REGISTRY_LOG_LEVEL=error /bin/registry garbage-collect'* ]]; then"
-    , "        printf '178->30\\n' > \"$record_dir/registry-gc-partial-audit.txt\""
-    , "        for ((index=1; index<=400; index++)); do"
-    , "          printf 'time=\"2026-09-05T00:00:00Z\" level=info msg=\"Deleting blob: /docker/registry/v2/blobs/sha256/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" service=registry sequence=%04d\\n' \"$index\" >&2"
-    , "        done"
-    , "        exit 0"
-    , "      fi"
-    , "      if [[ \"${PRODBOX_FAKE_REGISTRY_GC_USAGE_REJECTION:-0}\" == '1' ]]; then"
-    , "        printf '%s\\n' 'Error: unknown flag: --quiet' \"Run 'registry help' for usage.\" >&2"
-    , "        exit 0"
-    , "      fi"
-    , "      history_file=\"$record_dir/registry-manifest-history.count\""
-    , "      if [[ ! -f \"$history_file\" ]]; then printf '177' > \"$history_file\"; fi"
-    , "      before=$(/bin/cat \"$history_file\")"
-    , "      printf 'prodbox/prodbox-runtime\\n'"
-    , "      for ((index=1; index<=176; index++)); do"
-    , "        printf -v digest '%064d' \"$index\""
-    , "        printf 'manifest eligible for deletion: sha256:%s\\n' \"$digest\""
-    , "      done"
-    , "      printf 'prodbox/prodbox-runtime: marking manifest sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \\n'"
-    , "      printf '\\n1 blobs marked, 176 blobs and 176 manifests eligible for deletion\\n'"
-    , "      for ((index=1; index<=176; index++)); do"
-    , "        printf -v digest '%064d' \"$index\""
-    , "        printf 'blob eligible for deletion: sha256:%s\\n' \"$digest\""
-    , "      done"
-    , "      if [[ \"$*\" != *'--dry-run'* ]]; then"
-    , "        printf '%s->1\\n' \"$before\" > \"$record_dir/registry-gc-audit.txt\""
-    , "        printf '1' > \"$history_file\""
-    , "      fi"
-    , "    elif [[ \"$*\" == *'statefulset/minio'* && \"$*\" == *'/proc/self/mountinfo'* ]]; then"
-    , "      printf '14443 14435 8:2 /tmp/prodbox/minio/0 /export rw,relatime - ext4 /dev/sda2 rw\\n'"
-    , "    else"
-    , "      printf 'unsupported fake kubectl exec command: %s\\n' \"$*\" >&2"
-    , "      exit 1"
-    , "    fi"
-    , "    ;;"
-    , "  wait|rollout)"
-    , "    ;;"
-    , "  logs)"
-    , "    printf 'gateway fake workload logs are diagnostic-only\n'"
-    , "    ;;"
-    , "  port-forward)"
-    , "    if [[ \"$*\" == *'service/bootstrap-broker'* ]]; then"
-    , "      mapping=${!#}"
-    , "      local_port=${mapping%%:*}"
-    , "      exec \"${PRODBOX_TEST_INTEGRATION_EXECUTABLE:?}\" --fixture-broker-server \"$local_port\""
-    , "    elif [[ \"$*\" == *'deployment/authority-backup'* ]]; then"
-    , "      mapping=${!#}"
-    , "      local_port=${mapping%%:*}"
-    , "      remote_port=${mapping#*:}"
-    , "      child_state_file=\"$record_dir/authority-backup-forward-child.state\""
-    , "      \"${PRODBOX_TEST_INTEGRATION_EXECUTABLE:?}\" --fixture-authority-server \"$local_port\" &"
-    , "      server_pid=$!"
-    , "      cleanup_authority_backup_forward() {"
-    , "        local forward_exit=$?"
-    , "        trap - TERM INT EXIT"
-    , "        if kill -0 \"$server_pid\" 2>/dev/null; then"
-    , "          kill \"$server_pid\" 2>/dev/null || true"
-    , "        fi"
-    , "        wait \"$server_pid\" 2>/dev/null || true"
-    , "        printf 'stopped\\n' > \"$child_state_file\""
-    , "        return \"$forward_exit\""
-    , "      }"
-    , "      trap cleanup_authority_backup_forward EXIT"
-    , "      trap 'exit 143' TERM"
-    , "      trap 'exit 130' INT"
-    , "      listener_ready=0"
-    , "      for _attempt in {1..100}; do"
-    , "        readiness_status="
-    , "        if { exec 3<>\"/dev/tcp/127.0.0.1/$local_port\"; } 2>/dev/null; then"
-    , "          printf 'GET /readyz HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n' >&3"
-    , "          if IFS= read -r -t 1 readiness_status <&3; then"
-    , "            /bin/cat <&3 >/dev/null"
-    , "          fi"
-    , "          exec 3>&-"
-    , "          exec 3<&-"
-    , "          if [[ \"$readiness_status\" == $'HTTP/1.1 200 OK\\r' ]]; then"
-    , "            listener_ready=1"
-    , "            break"
-    , "          fi"
-    , "        fi"
-    , "        if ! kill -0 \"$server_pid\" 2>/dev/null; then"
-    , "          printf 'fake Authority Backup fixture server exited before listener readiness\\n' >&2"
-    , "          exit 1"
-    , "        fi"
-    , "        /bin/sleep 0.01"
-    , "      done"
-    , "      if [[ \"$listener_ready\" -ne 1 ]]; then"
-    , "        printf 'fake Authority Backup fixture listener did not become ready: 127.0.0.1:%s\\n' \"$local_port\" >&2"
-    , "        exit 1"
-    , "      fi"
-    , "      printf 'Forwarding from 127.0.0.1:%s -> %s\\n' \"$local_port\" \"$remote_port\""
-    , "      wait \"$server_pid\""
-    , "    elif [[ \"$*\" == *'service/authority-backup'* ]]; then"
-    , "      printf 'unsupported fake Authority Backup port-forward target: %s\\n' \"$*\" >&2"
-    , "      exit 1"
-    , "    elif [[ \"$*\" == *'service/lifecycle-authority'* ]]; then"
-    , "      mapping=${!#}"
-    , "      local_port=${mapping%%:*}"
-    , "      exec \"${PRODBOX_TEST_INTEGRATION_EXECUTABLE:?}\" --fixture-authority-server \"$local_port\""
-    , "    else"
-    , "      trap 'exit 0' TERM INT"
-    , "      while true; do"
-    , "        sleep 1"
-    , "      done"
-    , "    fi"
-    , "    ;;"
-    , "  apply)"
-    , "    target=$(next_apply_target)"
-    , "    if [[ $# -eq 2 && \"${2:-}\" == '--filename=-' ]]; then"
-    , "      /bin/cat > \"$target\""
-    , "      if [[ ! -s \"$target\" ]]; then"
-    , "        printf 'Credential Provisioner substrate apply received empty input\n' >&2"
-    , "        exit 1"
-    , "      fi"
-    , "      /bin/cp \"$target\" \"$record_dir/credential-provisioner-substrate.json\""
-    , "    elif [[ \"${3:-}\" == \"-\" ]]; then"
-    , "      # Sprint 2.19: `kubectl apply -f -` (stdin) is the second leg of the"
-    , "      # `create namespace --dry-run | apply -f -` and `create secret"
-    , "      # generic --dry-run | apply -f -` pipelines used by"
-    , "      # ensureGatewayMinioBootstrap. Capture stdin to the apply-target file."
-    , "      /bin/cat > \"$target\""
-    , "    else"
-    , "      /bin/cp \"${3:?}\" \"$target\""
-    , "    fi"
-    , "    ;;"
-    , "  create)"
-    , "    case \"${2:-}\" in"
-    , "      token)"
-    , "        printf 'fixture-service-account-token\\n'"
-    , "        ;;"
-    , "      namespace)"
-    , "        # Sprint 2.19: ensureGatewayMinioBootstrap pre-creates the gateway"
-    , "        # namespace via `kubectl create namespace ... --dry-run=client -o yaml`"
-    , "        # piped to `kubectl apply -f -`. The fake replies with a minimal"
-    , "        # namespace manifest so the dry-run leg succeeds; the apply-f-stdin"
-    , "        # leg is handled by the `apply` arm above."
-    , "        append_args \"$record_dir/kubectl-create.txt\" \"$@\""
-    , "        printf 'apiVersion: v1\\nkind: Namespace\\nmetadata:\\n  name: %s\\n' \"${3:-}\""
-    , "        ;;"
-    , "      secret)"
-    , "        # Sprint 2.19: ensureGatewayMinioBootstrap pre-creates the"
-    , "        # gateway-minio-creds Secret via `kubectl create secret generic ...`"
-    , "        # with --dry-run=client. The fake replies with a minimal Secret"
-    , "        # manifest so the dry-run leg succeeds."
-    , "        append_args \"$record_dir/kubectl-create.txt\" \"$@\""
-    , "        printf 'apiVersion: v1\\nkind: Secret\\nmetadata:\\n  name: %s\\ntype: Opaque\\n' \"${4:-secret}\""
-    , "        ;;"
-    , "      *)"
-    , "        printf 'unsupported fake kubectl create command: %s\\n' \"$*\" >&2"
-    , "        exit 1"
-    , "        ;;"
-    , "    esac"
-    , "    ;;"
-    , "  patch|annotate|label)"
-    , "    ;;"
-    , "  delete)"
-    , "    append_args \"$record_dir/kubectl-delete.txt\" \"$@\""
-    , "    ;;"
-    , "  *)"
-    , "    printf 'unsupported fake kubectl command: %s\\n' \"$*\" >&2"
-    , "    exit 1"
-    , "    ;;"
-    , "esac"
-    ]
+  runtimeFixtureDigests $
+    unlines
+      [ "#!/bin/bash"
+      , "set -euo pipefail"
+      , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:-${HOME:?}/fake-rke2-state}"
+      , "/bin/mkdir -p \"$record_dir\""
+      , "if [[ \"${PRODBOX_TEST_BROKER_COLD_START:-0}\" == \"1\" ]]; then"
+      , "  startup_state=${PRODBOX_TEST_BROKER_STARTUP_STATE:?}"
+      , "  if [[ ! -f \"$startup_state.started\" ]]; then printf \"started\\n\" > \"$startup_state.started\"; fi"
+      , "fi"
+      , "append_args() {"
+      , "  local target=$1"
+      , "  shift"
+      , "  local first=1"
+      , "  for arg in \"$@\"; do"
+      , "    if [[ $first -eq 0 ]]; then"
+      , "      printf '|' >> \"$target\""
+      , "    fi"
+      , "    first=0"
+      , "    printf '%s' \"$arg\" >> \"$target\""
+      , "  done"
+      , "  printf '\\n' >> \"$target\""
+      , "}"
+      , "next_apply_target() {"
+      , "  local counter_file=\"$record_dir/kubectl-apply.count\""
+      , "  local count=0"
+      , "  if [[ -f \"$counter_file\" ]]; then"
+      , "    count=$(/bin/cat \"$counter_file\")"
+      , "  fi"
+      , "  count=$((count + 1))"
+      , "  printf '%s' \"$count\" > \"$counter_file\""
+      , "  printf '%s/kubectl-apply-%s.json' \"$record_dir\" \"$count\""
+      , "}"
+      , "next_gateway_pods_sample() {"
+      , "  local counter_file=\"$record_dir/gateway-pods-sample.count\""
+      , "  local count=0"
+      , "  if [[ -f \"$counter_file\" ]]; then"
+      , "    count=$(/bin/cat \"$counter_file\")"
+      , "  fi"
+      , "  count=$((count + 1))"
+      , "  printf '%s' \"$count\" > \"$counter_file\""
+      , "  printf '%s' \"$count\""
+      , "}"
+      , "append_args \"$record_dir/kubectl.txt\" \"$@\""
+      , "requested_namespace=default"
+      , "previous_argument="
+      , "for argument in \"$@\"; do"
+      , "  if [[ \"$previous_argument\" == '--namespace' ]]; then requested_namespace=$argument; break; fi"
+      , "  previous_argument=$argument"
+      , "done"
+      , "if [[ \"${1:-}\" == '--kubeconfig' ]]; then"
+      , "  shift 2"
+      , "fi"
+      , "if [[ \"${1:-}\" == '--namespace' ]]; then"
+      , "  shift 2"
+      , "fi"
+      , "if [[ \"${PRODBOX_FAKE_AUTHORITY_STARTUP_FAILURE:-0}\" == '1' ]]; then"
+      , "  if [[ \"$*\" == 'get pods --namespace lifecycle-authority --selector app.kubernetes.io/instance=lifecycle-authority --output json' ]]; then /bin/cat \"$record_dir/startup-pods.json\"; exit 0; fi"
+      , "  if [[ \"$*\" == 'get pod lifecycle-authority-0 --namespace lifecycle-authority --output json' ]]; then /bin/cat \"$record_dir/startup-pod.json\"; exit 0; fi"
+      , "  if [[ \"${1:-} ${2:-}\" == 'get --raw' && \"${3:-}\" == /api/v1/namespaces/lifecycle-authority/pods/lifecycle-authority-0/log?container=lifecycle-authority* ]]; then"
+      , "    if [[ \"${3:-}\" == *previous=true ]]; then printf '%s\\n' log-previous >> \"$record_dir/startup-evidence-order.txt\"; else printf '%s\\n' log-current >> \"$record_dir/startup-evidence-order.txt\"; fi"
+      , "    printf '%s\\n' '{\"event\":\"lifecycle_authority_startup_refused\",\"severity\":\"error\",\"field_role\":\"lifecycle-authority\",\"field_cause\":\"config/decode\",\"field_private\":\"private-startup-sentinel\"}'"
+      , "    exit 0"
+      , "  fi"
+      , "fi"
+      , "case \"${1:-}\" in"
+      , "  cluster-info)"
+      , "    printf 'Kubernetes control plane is running\\n'"
+      , "    ;;"
+      , "  version)"
+      , "    if [[ \"$*\" == *'--client=true'* ]]; then"
+      , "      printf 'Client Version: v1.33.0\\n'"
+      , "    else"
+      , "      printf 'unsupported fake kubectl version command: %s\\n' \"$*\" >&2"
+      , "      exit 1"
+      , "    fi"
+      , "    ;;"
+      , "  api-resources)"
+      , "    if [[ \"$*\" == *'--namespaced=true'* ]]; then"
+      , "      printf 'deployments.apps\\nconfigmaps\\n'"
+      , "    else"
+      , "      printf 'clusterroles.rbac.authorization.k8s.io\\n'"
+      , "    fi"
+      , "    ;;"
+      , "  auth)"
+      , "    if [[ \"${2:-}\" == 'can-i' ]]; then"
+      , "      printf 'yes\\n'"
+      , "    else"
+      , "      exit 1"
+      , "    fi"
+      , "    ;;"
+      , "  get)"
+      , "    if [[ $# -eq 4 && \"${2:-}\" == '--filename=-' && \"${3:-}\" == '--output=json' && \"${4:-}\" == '--ignore-not-found=true' ]]; then"
+      , "      /bin/cat >/dev/null"
+      , "      substrate_observation=\"$record_dir/credential-provisioner-substrate.json\""
+      , "      if [[ ! -s \"$substrate_observation\" ]]; then"
+      , "        printf 'Credential Provisioner substrate has not been applied\n' >&2"
+      , "        exit 1"
+      , "      fi"
+      , "      /bin/cat \"$substrate_observation\""
+      , "      exit 0"
+      , "    elif [[ \"${2:-}\" == --filename=* ]]; then"
+      , "      printf 'unsupported fake kubectl filename observation: %s\n' \"$*\" >&2"
+      , "      exit 1"
+      , "    fi"
+      , "    case \"${2:-}\" in"
+      , "      serviceaccount)"
+      , "        printf '%s\\n%s\\nfalse\\n' \"$requested_namespace\" \"${3:-}\""
+      , "        ;;"
+      , "      node)"
+      , "        if [[ \"${3:-}\" == 'bathurst' && \" $* \" == *' -o json '* ]]; then"
+      , "          /bin/cat <<'JSON'"
+      , readyVaultNodeJson
+      , "JSON"
+      , "        else"
+      , "          exit 1"
+      , "        fi"
+      , "        ;;"
+      , "      nodes)"
+      , "        if [[ \"$*\" == *'-o|json'* || \"$*\" == *'-o json'* ]]; then"
+      , "          /bin/cat <<'JSON'"
+      , "{\"items\":[{\"metadata\":{\"name\":\"bathurst\"}}]}"
+      , "JSON"
+      , "        elif [[ \"$*\" == *'-o|name'* || \"$*\" == *'-o name'* ]]; then"
+      , "          printf 'node/bathurst\\n'"
+      , "        else"
+      , "          printf 'bathurst'"
+      , "        fi"
+      , "        ;;"
+      , "      storageclass)"
+      , "        printf 'storageclass.storage.k8s.io/manual\\nstorageclass.storage.k8s.io/local-path\\n'"
+      , "        ;;"
+      , "      pv)"
+      , "        if [[ \"${3:-}\" == 'prodbox-retained-vault-vault-0' && \" $* \" == *' -o json '* ]]; then"
+      , "          host_path=$(/bin/cat \"$record_dir/vault-host-path\")"
+      , "          \"${PRODBOX_TEST_INTEGRATION_EXECUTABLE:?}\" --fixture-vault-volume \"$host_path\""
+      , "        elif [[ \"${3:-}\" == '-o' && \"$*\" == *'jsonpath={range .items'* ]]; then"
+      , "          # Empty success for the drain-time Delete-reclaim PV listing."
+      , "          exit 0"
+      , "        else"
+      , "          printf 'Error from server (NotFound): persistentvolumes \"%s\" not found\\n' \"${3:-pv}\" >&2"
+      , "          exit 1"
+      , "        fi"
+      , "        ;;"
+      , "      pvc)"
+      , "        if [[ \"${3:-}\" == 'data-vault-0' && \" $* \" == *' -o json '* ]]; then"
+      , "          /bin/cat <<'JSON'"
+      , readyVaultClaimJson
+      , "JSON"
+      , "        else"
+      , "          printf 'Error from server (NotFound): persistentvolumeclaims \"%s\" not found\\n' \"${3:-pvc}\" >&2"
+      , "          exit 1"
+      , "        fi"
+      , "        ;;"
+      , "      resourcequota)"
+      , "        if [[ \"$*\" == *'-o json'* ]]; then"
+      , "          /bin/cat <<'JSON'"
+      , renderFakeResourceQuotaItems
+      , "JSON"
+      , "        fi"
+      , "        ;;"
+      , "      limitrange)"
+      , "        if [[ \"$*\" == *'-o json'* ]]; then"
+      , "          /bin/cat <<'JSON'"
+      , renderFakeLimitRangeItems
+      , "JSON"
+      , "        fi"
+      , "        ;;"
+      , "      configmap)"
+      , "        /bin/cat <<'EOF'"
+      , "server {"
+      , "  location / {"
+      , "    proxy_pass http://core;"
+      , "  }"
+      , "}"
+      , "EOF"
+      , "        ;;"
+      , "      secret|secret/*)"
+      , "        if [[ \"$*\" == *'secret/minio-oidc-client'* && \"$*\" == *'metadata.resourceVersion'* ]]; then"
+      , "          printf 'fixture-resource-version-1'"
+      , "        elif [[ \"$*\" == *'secret/'* && \"$*\" == *'metadata.uid'* ]]; then"
+      , "          printf 'fixture-secret-uid:fixture-resource-version-1'"
+      , "        elif [[ \"${3:-}\" == 'minio' && \"$*\" == *'rootUser'* ]]; then"
+      , "          printf 'minioadmin'"
+      , "        elif [[ \"${3:-}\" == 'minio' && \"$*\" == *'rootPassword'* ]]; then"
+      , "          printf 'minioadmin123'"
+      , "        elif [[ \"${3:-}\" == 'gateway-minio-creds' ]]; then"
+      , "          # Sprint 2.19: readGatewayMinioCredsSecret probes for an existing"
+      , "          # Secret; absence is the happy path for first reconcile (fresh"
+      , "          # credentials get generated)."
+      , "          printf 'Error from server (NotFound): secrets \"gateway-minio-creds\" not found\\n' >&2"
+      , "          exit 1"
+      , "        elif [[ \"${3:-}\" == *'-pguser-keycloak' && \"$*\" == *'--ignore-not-found=true'* ]]; then"
+      , "          # The chart platform treats the Percona operator pguser Secret as"
+      , "          # optional during a fresh reconcile; absent means the post-readiness"
+      , "          # sync is a no-op and will be retried later."
+      , "          exit 0"
+      , "        else"
+      , "          printf 'unsupported fake secret lookup: %s\\n' \"$*\" >&2"
+      , "          exit 1"
+      , "        fi"
+      , "        ;;"
+      , -- Sprint 3.34 made `endpoints/kubernetes` a live observation on the
+        -- reconcile path (the post-DNAT Kubernetes API egress coordinate).
+        -- This inner case's `*)` arm answers an unknown resource with empty
+        -- stdout and exit 0, so before this arm existed the observer read
+        -- "" and refused with "observation was not in the expected form".
+        -- The address is RFC 5737 TEST-NET-1, unmistakably synthetic; the
+        -- port is the real post-DNAT API port, which is the coordinate the
+        -- chart rule under test is derived from.
+        "      endpoints)"
+      , "        if [[ \"${3:-}\" == 'kubernetes' ]]; then"
+      , "          printf '192.0.2.10|6443'"
+      , "        else"
+      , "          printf 'Error from server (NotFound): endpoints \"%s\" not found\\n' \"${3:-endpoints}\" >&2"
+      , "          exit 1"
+      , "        fi"
+      , "        ;;"
+      , "      deployment)"
+      , "        if [[ \"$*\" == *'jsonpath={.metadata.generation}'* ]]; then"
+      , "          printf '1:1:1:1'"
+      , "        elif [[ \"$*\" == *'jsonpath={.status.conditions'* ]]; then"
+      , "          printf 'True'"
+      , "        fi"
+      , "        ;;"
+      , "      statefulset)"
+      , "        if [[ \"${3:-}\" == 'minio' && \" $* \" == *' -o json '* ]]; then"
+      , "          /bin/cat <<'JSON'"
+      , readyMinioControllerJson
+      , "JSON"
+      , "        elif [[ \"${3:-}\" == 'vault' && \" $* \" == *' -o json '* ]]; then"
+      , "          /bin/cat <<'JSON'"
+      , readyVaultControllerJson
+      , "JSON"
+      , "        elif [[ \"$*\" == *'jsonpath={.spec.replicas}'* ]]; then"
+      , "          printf '1:1:1'"
+      , "        elif [[ \"$*\" == *'-o name'* ]]; then"
+      , "          # The gateway namespace holds one StatefulSet per home emitter beside the"
+      , "          # unrelated Pulsar broker; the gateway validations wait on the emitters only."
+      , "          printf 'statefulset.apps/gateway-node-a\\nstatefulset.apps/gateway-node-b\\nstatefulset.apps/pulsar\\n'"
+      , "        fi"
+      , "        ;;"
+      , "      daemonset)"
+      , "        if [[ \"$*\" == *'jsonpath={.status.desiredNumberScheduled}'* ]]; then"
+      , "          printf '1:1:1'"
+      , "        fi"
+      , "        ;;"
+      , "      deployments.apps)"
+      , "        if [[ \"$*\" == *'-n prodbox'* ]]; then"
+      , "          printf 'deployment.apps/prodbox-api\\n'"
+      , "        fi"
+      , "        ;;"
+      , "      configmaps)"
+      , "        if [[ \"$*\" == *'-n prodbox'* ]]; then"
+      , "          printf 'configmap/existing-config\\n'"
+      , "        fi"
+      , "        ;;"
+      , "      clusterroles.rbac.authorization.k8s.io)"
+      , "        if [[ \"$*\" == *'app.kubernetes.io/instance=harbor'* ]]; then"
+      , "          printf 'clusterrole.rbac.authorization.k8s.io/harbor-role\\n'"
+      , "        fi"
+      , "        ;;"
+      , "      crd)"
+      , "        if [[ \"$*\" == *'jsonpath={.status.conditions'* ]]; then"
+      , "          printf 'True'"
+      , "        else"
+      , "          printf 'customresourcedefinition.apiextensions.k8s.io/gatewayclasses.gateway.networking.k8s.io\\n'"
+      , "        fi"
+      , "        ;;"
+      , "      pod)"
+      , "        if [[ \"${3:-}\" == 'minio-0' && \" $* \" == *' -o json '* ]]; then"
+      , "          /bin/cat <<'JSON'"
+      , readyMinioPodJson
+      , "JSON"
+      , "        elif [[ \"${3:-}\" == 'vault-0' && \" $* \" == *' -o json '* ]]; then"
+      , "          /bin/cat <<'JSON'"
+      , readyVaultPodJson
+      , "JSON"
+      , "        else"
+      , "          printf 'unsupported fake Pod observation: %s\\n' \"$*\" >&2"
+      , "          exit 1"
+      , "        fi"
+      , "        ;;"
+      , "      pods)"
+      , "        if [[ \"$*\" == *'--selector=job-name='* && \"$*\" == *'--output=name'* ]]; then"
+      , "          exit 0"
+      , "        elif [[ \"$*\" == *'-o json'* ]]; then"
+      , "          if [[ \"$*\" == *'--namespace gateway'* ]]; then"
+      , "            gateway_pods_sample=$(next_gateway_pods_sample)"
+      , "            if [[ \"${PRODBOX_FAKE_GATEWAY_OOM_PODS_SAMPLE:-0}\" == \"$gateway_pods_sample\" ]]; then"
+      , "              /bin/cat <<'JSON'"
+      , renderFakeGatewayPodItems True
+      , "JSON"
+      , "            else"
+      , "              /bin/cat <<'JSON'"
+      , renderFakeGatewayPodItems False
+      , "JSON"
+      , "            fi"
+      , "          else"
+      , "            /bin/cat <<'JSON'"
+      , "{\"items\":[{\"metadata\":{\"namespace\":\"keycloak\",\"name\":\"keycloak-0\"},\"status\":{\"qosClass\":\"Burstable\"},\"spec\":{\"containers\":[{\"name\":\"keycloak\",\"resources\":{\"requests\":{\"cpu\":\"500m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"limits\":{\"cpu\":\"1000m\",\"memory\":\"2048Mi\",\"ephemeral-storage\":\"2048Mi\"}}}]}},{\"metadata\":{\"namespace\":\"vscode\",\"name\":\"vscode-0\"},\"status\":{\"qosClass\":\"Burstable\"},\"spec\":{\"containers\":[{\"name\":\"vscode\",\"resources\":{\"requests\":{\"cpu\":\"500m\",\"memory\":\"1024Mi\",\"ephemeral-storage\":\"1024Mi\"},\"limits\":{\"cpu\":\"1000m\",\"memory\":\"2048Mi\",\"ephemeral-storage\":\"4096Mi\"}}}]}},{\"metadata\":{\"namespace\":\"api\",\"name\":\"api-0\"},\"status\":{\"qosClass\":\"Burstable\"},\"spec\":{\"containers\":[{\"name\":\"api\",\"resources\":{\"requests\":{\"cpu\":\"250m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"limits\":{\"cpu\":\"500m\",\"memory\":\"512Mi\",\"ephemeral-storage\":\"1024Mi\"}}}]}},{\"metadata\":{\"namespace\":\"websocket\",\"name\":\"websocket-0\"},\"status\":{\"qosClass\":\"Burstable\"},\"spec\":{\"containers\":[{\"name\":\"websocket\",\"resources\":{\"requests\":{\"cpu\":\"100m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"limits\":{\"cpu\":\"250m\",\"memory\":\"512Mi\",\"ephemeral-storage\":\"1024Mi\"}}}]}},{\"metadata\":{\"namespace\":\"gateway\",\"name\":\"gateway-0\"},\"status\":{\"qosClass\":\"Burstable\"},\"spec\":{\"containers\":[{\"name\":\"gateway\",\"resources\":{\"requests\":{\"cpu\":\"250m\",\"memory\":\"256Mi\",\"ephemeral-storage\":\"512Mi\"},\"limits\":{\"cpu\":\"500m\",\"memory\":\"512Mi\",\"ephemeral-storage\":\"1024Mi\"}}}]}}]}"
+      , "JSON"
+      , "          fi"
+      , "        else"
+      , "          printf 'docker.io/library/busybox:latest\\ngoharbor/harbor-core:v2\\n'"
+      , "        fi"
+      , "        ;;"
+      , "      events)"
+      , "        printf '{\"items\":[]}'"
+      , "        ;;"
+      , "      --raw)"
+      , "        /bin/cat <<'JSON'"
+      , renderFakeGatewayMetricItems
+      , "JSON"
+      , "        ;;"
+      , "      *)"
+      , "        ;;"
+      , "    esac"
+      , "    ;;"
+      , "  exec)"
+      , "    if [[ \"$*\" == *'deployment/registry'* && \"$*\" == *'/bin/registry garbage-collect'* && \"$*\" == *'--delete-untagged /etc/docker/registry/config.yml'* ]]; then"
+      , "      if [[ \"$*\" != *'/usr/bin/env REGISTRY_LOG_LEVEL=error /bin/registry garbage-collect'* ]]; then"
+      , "        printf '178->30\\n' > \"$record_dir/registry-gc-partial-audit.txt\""
+      , "        for ((index=1; index<=400; index++)); do"
+      , "          printf 'time=\"2026-09-05T00:00:00Z\" level=info msg=\"Deleting blob: /docker/registry/v2/blobs/sha256/aa/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\" service=registry sequence=%04d\\n' \"$index\" >&2"
+      , "        done"
+      , "        exit 0"
+      , "      fi"
+      , "      if [[ \"${PRODBOX_FAKE_REGISTRY_GC_USAGE_REJECTION:-0}\" == '1' ]]; then"
+      , "        printf '%s\\n' 'Error: unknown flag: --quiet' \"Run 'registry help' for usage.\" >&2"
+      , "        exit 0"
+      , "      fi"
+      , "      history_file=\"$record_dir/registry-manifest-history.count\""
+      , "      if [[ ! -f \"$history_file\" ]]; then printf '177' > \"$history_file\"; fi"
+      , "      before=$(/bin/cat \"$history_file\")"
+      , "      printf 'prodbox/prodbox-runtime\\n'"
+      , "      for ((index=1; index<=176; index++)); do"
+      , "        printf -v digest '%064d' \"$index\""
+      , "        printf 'manifest eligible for deletion: sha256:%s\\n' \"$digest\""
+      , "      done"
+      , "      printf 'prodbox/prodbox-runtime: marking manifest sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \\n'"
+      , "      printf '\\n1 blobs marked, 176 blobs and 176 manifests eligible for deletion\\n'"
+      , "      for ((index=1; index<=176; index++)); do"
+      , "        printf -v digest '%064d' \"$index\""
+      , "        printf 'blob eligible for deletion: sha256:%s\\n' \"$digest\""
+      , "      done"
+      , "      if [[ \"$*\" != *'--dry-run'* ]]; then"
+      , "        printf '%s->1\\n' \"$before\" > \"$record_dir/registry-gc-audit.txt\""
+      , "        printf '1' > \"$history_file\""
+      , "      fi"
+      , "    elif [[ \"$*\" == *'vault-0'* && \"$*\" == *'stat -c'* && \"$*\" == *'/vault/data'* ]]; then"
+      , "      printf '2050:4242:2:41f8\\n'"
+      , "    elif [[ \"$*\" == *'statefulset/minio'* && \"$*\" == *'/proc/self/mountinfo'* ]]; then"
+      , "      printf '14443 14435 8:2 /tmp/prodbox/minio/0 /export rw,relatime - ext4 /dev/sda2 rw\\n'"
+      , "    else"
+      , "      printf 'unsupported fake kubectl exec command: %s\\n' \"$*\" >&2"
+      , "      exit 1"
+      , "    fi"
+      , "    ;;"
+      , "  wait|rollout)"
+      , "    if [[ \"${PRODBOX_TEST_BROKER_COLD_START:-0}\" == \"1\" && \"$*\" == *\"rollout status deployment/bootstrap-broker\"* ]]; then"
+      , "      startup_state=${PRODBOX_TEST_BROKER_STARTUP_STATE:?}"
+      , "      if [[ \"${PRODBOX_TEST_BROKER_STARTUP_REFUSED:-0}\" == \"1\" ]]; then"
+      , "        printf \"fixture: Broker Deployment startup admission unavailable\\n\" >&2"
+      , "        exit 1"
+      , "      fi"
+      , "      for _startup_poll in {1..600}; do"
+      , "        if [[ -f \"$startup_state.backend-ready\" ]]; then break; fi"
+      , "        /bin/sleep 0.1"
+      , "      done"
+      , "      if [[ ! -f \"$startup_state.backend-ready\" ]]; then"
+      , "        printf \"fixture: independent backend startup deadline elapsed\\n\" >&2"
+      , "        exit 1"
+      , "      fi"
+      , "      printf \"ready\\n\" > \"$startup_state.ready\""
+      , "    fi"
+      , "    ;;"
+      , "  logs)"
+      , "    printf 'gateway fake workload logs are diagnostic-only\n'"
+      , "    ;;"
+      , "  port-forward)"
+      , "    if [[ \"$*\" == *'service/bootstrap-broker'* ]]; then"
+      , "      if [[ \"${PRODBOX_TEST_BROKER_COLD_START:-0}\" == \"1\" ]]; then"
+      , "        startup_state=${PRODBOX_TEST_BROKER_STARTUP_STATE:?}"
+      , "        if [[ ! -f \"$startup_state.backend-ready\" ]]; then"
+      , "          printf \"early-exit\\n\" >> \"$startup_state.forwards\""
+      , "          printf \"fixture: cold backend makes kubectl forwarding exit\\n\" >&2"
+      , "          exit 1"
+      , "        fi"
+      , "        printf \"backend-ready\\n\" >> \"$startup_state.forwards\""
+      , "      fi"
+      , "      mapping=${!#}"
+      , "      local_port=${mapping%%:*}"
+      , "      exec \"${PRODBOX_TEST_INTEGRATION_EXECUTABLE:?}\" --fixture-broker-server \"$local_port\""
+      , "    elif [[ \"$*\" == *'deployment/authority-backup'* ]]; then"
+      , "      mapping=${!#}"
+      , "      local_port=${mapping%%:*}"
+      , "      remote_port=${mapping#*:}"
+      , "      child_state_file=\"$record_dir/authority-backup-forward-child.state\""
+      , "      \"${PRODBOX_TEST_INTEGRATION_EXECUTABLE:?}\" --fixture-authority-server \"$local_port\" &"
+      , "      server_pid=$!"
+      , "      cleanup_authority_backup_forward() {"
+      , "        local forward_exit=$?"
+      , "        trap - TERM INT EXIT"
+      , "        if kill -0 \"$server_pid\" 2>/dev/null; then"
+      , "          kill \"$server_pid\" 2>/dev/null || true"
+      , "        fi"
+      , "        wait \"$server_pid\" 2>/dev/null || true"
+      , "        printf 'stopped\\n' > \"$child_state_file\""
+      , "        return \"$forward_exit\""
+      , "      }"
+      , "      trap cleanup_authority_backup_forward EXIT"
+      , "      trap 'exit 143' TERM"
+      , "      trap 'exit 130' INT"
+      , "      listener_ready=0"
+      , "      for _attempt in {1..100}; do"
+      , "        readiness_status="
+      , "        if { exec 3<>\"/dev/tcp/127.0.0.1/$local_port\"; } 2>/dev/null; then"
+      , "          printf 'GET /readyz HTTP/1.1\\r\\nHost: 127.0.0.1\\r\\nConnection: close\\r\\n\\r\\n' >&3"
+      , "          if IFS= read -r -t 1 readiness_status <&3; then"
+      , "            /bin/cat <&3 >/dev/null"
+      , "          fi"
+      , "          exec 3>&-"
+      , "          exec 3<&-"
+      , "          if [[ \"$readiness_status\" == $'HTTP/1.1 200 OK\\r' ]]; then"
+      , "            listener_ready=1"
+      , "            break"
+      , "          fi"
+      , "        fi"
+      , "        if ! kill -0 \"$server_pid\" 2>/dev/null; then"
+      , "          printf 'fake Authority Backup fixture server exited before listener readiness\\n' >&2"
+      , "          exit 1"
+      , "        fi"
+      , "        /bin/sleep 0.01"
+      , "      done"
+      , "      if [[ \"$listener_ready\" -ne 1 ]]; then"
+      , "        printf 'fake Authority Backup fixture listener did not become ready: 127.0.0.1:%s\\n' \"$local_port\" >&2"
+      , "        exit 1"
+      , "      fi"
+      , "      printf 'Forwarding from 127.0.0.1:%s -> %s\\n' \"$local_port\" \"$remote_port\""
+      , "      wait \"$server_pid\""
+      , "    elif [[ \"$*\" == *'service/authority-backup'* ]]; then"
+      , "      printf 'unsupported fake Authority Backup port-forward target: %s\\n' \"$*\" >&2"
+      , "      exit 1"
+      , "    elif [[ \"$*\" == *'service/lifecycle-authority'* ]]; then"
+      , "      mapping=${!#}"
+      , "      local_port=${mapping%%:*}"
+      , "      exec \"${PRODBOX_TEST_INTEGRATION_EXECUTABLE:?}\" --fixture-authority-server \"$local_port\""
+      , "    else"
+      , "      trap 'exit 0' TERM INT"
+      , "      while true; do"
+      , "        sleep 1"
+      , "      done"
+      , "    fi"
+      , "    ;;"
+      , "  apply)"
+      , "    target=$(next_apply_target)"
+      , "    if [[ $# -eq 2 && \"${2:-}\" == '--filename=-' ]]; then"
+      , "      /bin/cat > \"$target\""
+      , "      if [[ ! -s \"$target\" ]]; then"
+      , "        printf 'Credential Provisioner substrate apply received empty input\n' >&2"
+      , "        exit 1"
+      , "      fi"
+      , "      /bin/cp \"$target\" \"$record_dir/credential-provisioner-substrate.json\""
+      , "    elif [[ \"${3:-}\" == \"-\" ]]; then"
+      , "      # Sprint 2.19: `kubectl apply -f -` (stdin) is the second leg of the"
+      , "      # `create namespace --dry-run | apply -f -` and `create secret"
+      , "      # generic --dry-run | apply -f -` pipelines used by"
+      , "      # ensureGatewayMinioBootstrap. Capture stdin to the apply-target file."
+      , "      /bin/cat > \"$target\""
+      , "    else"
+      , "      /bin/cp \"${3:?}\" \"$target\""
+      , "    fi"
+      , "    ;;"
+      , "  create)"
+      , "    case \"${2:-}\" in"
+      , "      token)"
+      , "        printf 'fixture-service-account-token\\n'"
+      , "        ;;"
+      , "      namespace)"
+      , "        # Sprint 2.19: ensureGatewayMinioBootstrap pre-creates the gateway"
+      , "        # namespace via `kubectl create namespace ... --dry-run=client -o yaml`"
+      , "        # piped to `kubectl apply -f -`. The fake replies with a minimal"
+      , "        # namespace manifest so the dry-run leg succeeds; the apply-f-stdin"
+      , "        # leg is handled by the `apply` arm above."
+      , "        append_args \"$record_dir/kubectl-create.txt\" \"$@\""
+      , "        printf 'apiVersion: v1\\nkind: Namespace\\nmetadata:\\n  name: %s\\n' \"${3:-}\""
+      , "        ;;"
+      , "      secret)"
+      , "        # Sprint 2.19: ensureGatewayMinioBootstrap pre-creates the"
+      , "        # gateway-minio-creds Secret via `kubectl create secret generic ...`"
+      , "        # with --dry-run=client. The fake replies with a minimal Secret"
+      , "        # manifest so the dry-run leg succeeds."
+      , "        append_args \"$record_dir/kubectl-create.txt\" \"$@\""
+      , "        printf 'apiVersion: v1\\nkind: Secret\\nmetadata:\\n  name: %s\\ntype: Opaque\\n' \"${4:-secret}\""
+      , "        ;;"
+      , "      *)"
+      , "        printf 'unsupported fake kubectl create command: %s\\n' \"$*\" >&2"
+      , "        exit 1"
+      , "        ;;"
+      , "    esac"
+      , "    ;;"
+      , "  patch|annotate|label)"
+      , "    ;;"
+      , "  delete)"
+      , "    append_args \"$record_dir/kubectl-delete.txt\" \"$@\""
+      , "    ;;"
+      , "  *)"
+      , "    printf 'unsupported fake kubectl command: %s\\n' \"$*\" >&2"
+      , "    exit 1"
+      , "    ;;"
+      , "esac"
+      ]
 
 fakeRke2HelmScript :: String
 fakeRke2HelmScript =
@@ -5390,6 +5809,10 @@ fakeRke2HelmScript =
     , "    printf '[]\\n'"
     , "    ;;"
     , "  status)"
+    , "    if [[ \"${PRODBOX_FAKE_AUTHORITY_STARTUP_FAILURE:-0}\" == '1' && \"${2:-}\" == 'lifecycle-authority' && -f \"$record_dir/authority-startup-failed\" && ! -f \"$record_dir/authority-startup-removed\" ]]; then"
+    , "      printf '%s\\n' '{\"name\":\"lifecycle-authority\",\"namespace\":\"lifecycle-authority\",\"info\":{\"status\":\"failed\"}}'"
+    , "      exit 0"
+    , "    fi"
     , "    if [[ \"${2:-}\" == 'harbor' && ! -f \"$record_dir/harbor-uninstalled\" ]]; then"
     , -- Sprint 5.30: Sprint `3.31` made `helm status --output json` decode
       -- `.info.status` into a closed constructor set and fail closed on an
@@ -5406,7 +5829,18 @@ fakeRke2HelmScript =
     , "      exit 1"
     , "    fi"
     , "    ;;"
+    , "  upgrade)"
+    , "    if [[ \"${PRODBOX_FAKE_AUTHORITY_STARTUP_FAILURE:-0}\" == '1' && \"$*\" == *'lifecycle-authority'* ]]; then"
+    , "      : > \"$record_dir/authority-startup-failed\""
+    , "      printf '%s\\n' 'Error: resource not ready, name: lifecycle-authority, kind: StatefulSet, status: Failed, reason: 1 pods have failed' >&2"
+    , "      exit 1"
+    , "    fi"
+    , "    ;;"
     , "  uninstall)"
+    , "    if [[ \"${PRODBOX_FAKE_AUTHORITY_STARTUP_FAILURE:-0}\" == '1' && \"${2:-}\" == 'lifecycle-authority' ]]; then"
+    , "      printf '%s\\n' uninstall >> \"$record_dir/startup-evidence-order.txt\""
+    , "      : > \"$record_dir/authority-startup-removed\""
+    , "    fi"
     , "    if [[ \"${2:-}\" == 'harbor' ]]; then"
     , "      : > \"$record_dir/harbor-uninstalled\""
     , "    fi"
@@ -5418,172 +5852,199 @@ fakeRke2HelmScript =
 
 fakeRke2DockerScript :: String
 fakeRke2DockerScript =
-  unlines
-    [ "#!/bin/bash"
-    , "set -euo pipefail"
-    , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
-    , "/bin/mkdir -p \"$record_dir\""
-    , -- Harbor login isolation: record the DOCKER_CONFIG every prodbox docker
-      -- call runs with, so the suite can prove it is the repo-local `.docker`
-      -- (never the operator's global ~/.docker).
-      "printf '%s\\n' \"${DOCKER_CONFIG:-UNSET}\" >> \"$record_dir/docker-config.txt\""
-    , "target_key() {"
-    , "  printf '%s' \"$1\" | tr '/:' '__'"
-    , "}"
-    , "first=1"
-    , "for arg in \"$@\"; do"
-    , "  if [[ $first -eq 0 ]]; then"
-    , "    printf '|' >> \"$record_dir/docker.txt\""
-    , "  fi"
-    , "  first=0"
-    , "  printf '%s' \"$arg\" >> \"$record_dir/docker.txt\""
-    , "done"
-    , "printf '\\n' >> \"$record_dir/docker.txt\""
-    , "source_image_identity() {"
-    , "  while IFS='|' read -r ref identity; do"
-    , "    if [[ \"$ref\" == \"$1\" ]]; then printf '%s' \"$identity\"; return 0; fi"
-    , "  done < \"$record_dir/bootstrap-image-identities\""
-    , "  return 1"
-    , "}"
-    , "case \"${1:-}\" in"
-    , "  image)"
-    , "    if [[ \"${2:-}\" == 'load' ]]; then"
-    , "      exit 0"
-    , "    elif [[ \"${2:-}\" == 'ls' ]]; then"
-    , "      dangling_id=${PRODBOX_FAKE_RKE2_DANGLING_RUNTIME_IMAGE_ID:-}"
-    , "      if [[ -n \"$dangling_id\" && ! -f \"$record_dir/dangling-runtime-image-removed\" ]]; then"
-    , "        printf '127.0.0.1:30080/prodbox/prodbox-runtime\\t%s\\n' \"$dangling_id\""
-    , "      fi"
-    , "      exit 0"
-    , "    elif [[ \"${2:-}\" == 'rm' ]]; then"
-    , "      dangling_id=${PRODBOX_FAKE_RKE2_DANGLING_RUNTIME_IMAGE_ID:-}"
-    , "      if [[ -n \"$dangling_id\" && \"${3:-}\" == \"$dangling_id\" ]]; then"
-    , "        : > \"$record_dir/dangling-runtime-image-removed\""
-    , "        exit 0"
-    , "      fi"
-    , "      exit 1"
-    , "    elif [[ \"${2:-}\" == 'inspect' ]]; then"
-    , "      if [[ \"${3:-}\" == '--format' && \"${4:-}\" == '{{.Id}}' ]]; then"
-    , "        if identity=$(source_image_identity \"${5:-}\"); then printf '%s\\n' \"$identity\"; exit 0; fi"
-    , "        printf 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\\n'"
-    , "        exit 0"
-    , "      elif [[ \"${3:-}\" == '--format' && \"${4:-}\" == '{{json .RepoDigests}}' ]]; then"
-    , "        image_ref=${5:-}"
-    , "        if [[ \"$image_ref\" == 127.0.0.1:30080/prodbox/prodbox-runtime:* ]]; then"
-    , "          printf '[\"127.0.0.1:30080/prodbox/prodbox-runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]\\n'"
-    , "          exit 0"
-    , "        fi"
-    , "      elif identity=$(source_image_identity \"${3:-}\"); then"
-    , "        printf '[{\"Id\":\"%s\",\"Architecture\":\"amd64\",\"RootFS\":{\"Layers\":[]},\"RepoDigests\":[]}]\\n' \"$identity\""
-    , "        exit 0"
-    , "      fi"
-    , "      exit 1"
-    , "    fi"
-    , "    exit 1"
-    , "    ;;"
-    , -- Sprint 3.36: the fake parses flags rather than positions. Production
-      -- now publishes host-architecture-scoped (`docker pull --platform \<p\>
-      -- \<ref\>`), and a fixture that reads the image reference from `$2`
-      -- silently reads `--platform` instead. The `save` arm below already
-      -- parsed this way; `pull` and `push` did not, which is why a correct
-      -- production change presented as `manifest unknown` in six cases.
-      "  pull)"
-    , "    shift"
-    , "    while [[ \"${1:-}\" == --* ]]; do"
-    , "      if [[ \"$1\" == '--platform' ]]; then shift 2; else shift; fi"
-    , "    done"
-    , "    ref=${1:-}"
-    , "    if [[ \"$ref\" == 127.0.0.1:30080/* ]]; then"
-    , "      if [[ -f \"$record_dir/pushed-$(target_key \"$ref\")\" ]]; then"
-    , "        exit 0"
-    , "      fi"
-    , "      echo 'manifest unknown' >&2"
-    , "      exit 1"
-    , "    fi"
-    , "    rate_limit_ref=${PRODBOX_FAKE_DOCKER_PULL_RATE_LIMIT_REF:-}"
-    , "    if [[ -n \"$rate_limit_ref\" && \"$ref\" == \"$rate_limit_ref\" ]]; then"
-    , "      echo 'toomanyrequests: rate limit exceeded' >&2"
-    , "      exit 1"
-    , "    fi"
-    , "    exit 0"
-    , "    ;;"
-    , "  tag)"
-    , "    source_ref=${2:-}"
-    , "    target_ref=${3:-}"
-    , "    printf '%s' \"$source_ref\" > \"$record_dir/tag-$(target_key \"$target_ref\")\""
-    , "    exit 0"
-    , "    ;;"
-    , "  push)"
-    , "    shift"
-    , "    while [[ \"${1:-}\" == --* ]]; do"
-    , "      if [[ \"$1\" == '--platform' ]]; then shift 2; else shift; fi"
-    , "    done"
-    , "    target_ref=${1:-}"
-    , "    tag_file=\"$record_dir/tag-$(target_key \"$target_ref\")\""
-    , "    source_ref=''"
-    , "    if [[ -f \"$tag_file\" ]]; then"
-    , "      source_ref=$(/bin/cat \"$tag_file\")"
-    , "    fi"
-    , -- Sprint 5.30: the upstream code-server image is published from a
-      -- rate-limited registry, and `pushDockerImageWithRetry` classifies its 429
-      -- as RETRYABLE. Model it the way production treats it — transient: one 429,
-      -- then success. A fake that returns 429 forever models a permanent limit,
-      -- which refutes the very retry the two tests asserting "Retrying Harbor
-      -- publication …" plus `ExitSuccess` exist to exercise, and takes down every
-      -- other case that merely passes through the runbook on its way elsewhere.
-      "    if [[ \"$source_ref\" == ghcr.io/coder/code-server:4.98.2 ]]; then"
-    , "      attempt_file=\"$record_dir/push-attempts-$(target_key \"$target_ref\")\""
-    , "      attempts=0"
-    , "      if [[ -f \"$attempt_file\" ]]; then"
-    , "        attempts=$(/bin/cat \"$attempt_file\")"
-    , "      fi"
-    , "      attempts=$((attempts + 1))"
-    , "      printf '%s' \"$attempts\" > \"$attempt_file\""
-    , "      if [[ \"$attempts\" -le 1 ]]; then"
-    , "        echo '429 Too Many Requests' >&2"
-    , "        exit 1"
-    , "      fi"
-    , "    fi"
-    , "    : > \"$record_dir/pushed-$(target_key \"$target_ref\")\""
-    , "    exit 0"
-    , "    ;;"
-    , "  build)"
-    , "    ;;"
-    , "  save)"
-    , "    out=''"
-    , "    while [[ $# -gt 0 ]]; do"
-    , "      if [[ \"${1:-}\" == '-o' ]]; then"
-    , "        out=${2:-}"
-    , "        break"
-    , "      fi"
-    , "      shift"
-    , "    done"
-    , "    printf 'FAKE IMAGE ARCHIVE\\n' > \"$out\""
-    , "    ;;"
-    , "  *)"
-    , "    ;;"
-    , "esac"
-    ]
+  runtimeFixtureDigests $
+    unlines
+      [ "#!/bin/bash"
+      , "set -euo pipefail"
+      , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
+      , "/bin/mkdir -p \"$record_dir\""
+      , -- Harbor login isolation: record the DOCKER_CONFIG every prodbox docker
+        -- call runs with, so the suite can prove it is the repo-local `.docker`
+        -- (never the operator's global ~/.docker).
+        "printf '%s\\n' \"${DOCKER_CONFIG:-UNSET}\" >> \"$record_dir/docker-config.txt\""
+      , "target_key() {"
+      , "  printf '%s' \"$1\" | tr '/:' '__'"
+      , "}"
+      , "first=1"
+      , "for arg in \"$@\"; do"
+      , "  if [[ $first -eq 0 ]]; then"
+      , "    printf '|' >> \"$record_dir/docker.txt\""
+      , "  fi"
+      , "  first=0"
+      , "  printf '%s' \"$arg\" >> \"$record_dir/docker.txt\""
+      , "done"
+      , "printf '\\n' >> \"$record_dir/docker.txt\""
+      , "source_image_identity() {"
+      , "  while IFS='|' read -r ref identity; do"
+      , "    if [[ \"$ref\" == \"$1\" ]]; then printf '%s' \"$identity\"; return 0; fi"
+      , "  done < \"$record_dir/bootstrap-image-identities\""
+      , "  return 1"
+      , "}"
+      , "case \"${1:-}\" in"
+      , "  image)"
+      , "    if [[ \"${2:-}\" == 'load' ]]; then"
+      , "      exit 0"
+      , "    elif [[ \"${2:-}\" == 'ls' ]]; then"
+      , "      dangling_id=${PRODBOX_FAKE_RKE2_DANGLING_RUNTIME_IMAGE_ID:-}"
+      , "      if [[ -n \"$dangling_id\" && ! -f \"$record_dir/dangling-runtime-image-removed\" ]]; then"
+      , "        printf '127.0.0.1:30080/prodbox/prodbox-runtime\\t%s\\n' \"$dangling_id\""
+      , "      fi"
+      , "      exit 0"
+      , "    elif [[ \"${2:-}\" == 'rm' ]]; then"
+      , "      dangling_id=${PRODBOX_FAKE_RKE2_DANGLING_RUNTIME_IMAGE_ID:-}"
+      , "      if [[ -n \"$dangling_id\" && \"${3:-}\" == \"$dangling_id\" ]]; then"
+      , "        : > \"$record_dir/dangling-runtime-image-removed\""
+      , "        exit 0"
+      , "      fi"
+      , "      exit 1"
+      , "    elif [[ \"${2:-}\" == 'inspect' ]]; then"
+      , "      if [[ \"${3:-}\" == '--format' && \"${4:-}\" == '{{.Id}}' ]]; then"
+      , "        if identity=$(source_image_identity \"${5:-}\"); then printf '%s\\n' \"$identity\"; exit 0; fi"
+      , "        printf 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\\n'"
+      , "        exit 0"
+      , "      elif [[ \"${3:-}\" == '--format' && \"${4:-}\" == '{{json .RepoDigests}}' ]]; then"
+      , "        image_ref=${5:-}"
+      , "        if [[ \"$image_ref\" == 127.0.0.1:30080/prodbox/prodbox-runtime:* ]]; then"
+      , "          printf '[\"127.0.0.1:30080/prodbox/prodbox-runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]\\n'"
+      , "          exit 0"
+      , "        fi"
+      , "      elif identity=$(source_image_identity \"${3:-}\"); then"
+      , "        printf '[{\"Id\":\"%s\",\"Architecture\":\"amd64\",\"RootFS\":{\"Layers\":[]},\"RepoDigests\":[]}]\\n' \"$identity\""
+      , "        exit 0"
+      , "      fi"
+      , "      exit 1"
+      , "    fi"
+      , "    exit 1"
+      , "    ;;"
+      , -- Sprint 3.36: the fake parses flags rather than positions. Production
+        -- now publishes host-architecture-scoped (`docker pull --platform \<p\>
+        -- \<ref\>`), and a fixture that reads the image reference from `$2`
+        -- silently reads `--platform` instead. The `save` arm below already
+        -- parsed this way; `pull` and `push` did not, which is why a correct
+        -- production change presented as `manifest unknown` in six cases.
+        "  pull)"
+      , "    shift"
+      , "    while [[ \"${1:-}\" == --* ]]; do"
+      , "      if [[ \"$1\" == '--platform' ]]; then shift 2; else shift; fi"
+      , "    done"
+      , "    ref=${1:-}"
+      , "    if [[ \"$ref\" == 127.0.0.1:30080/* ]]; then"
+      , "      if [[ -f \"$record_dir/pushed-$(target_key \"$ref\")\" ]]; then"
+      , "        exit 0"
+      , "      fi"
+      , "      echo 'manifest unknown' >&2"
+      , "      exit 1"
+      , "    fi"
+      , "    rate_limit_ref=${PRODBOX_FAKE_DOCKER_PULL_RATE_LIMIT_REF:-}"
+      , "    if [[ -n \"$rate_limit_ref\" && \"$ref\" == \"$rate_limit_ref\" ]]; then"
+      , "      echo 'toomanyrequests: rate limit exceeded' >&2"
+      , "      exit 1"
+      , "    fi"
+      , "    exit 0"
+      , "    ;;"
+      , "  tag)"
+      , "    source_ref=${2:-}"
+      , "    target_ref=${3:-}"
+      , "    printf '%s' \"$source_ref\" > \"$record_dir/tag-$(target_key \"$target_ref\")\""
+      , "    exit 0"
+      , "    ;;"
+      , "  push)"
+      , "    shift"
+      , "    while [[ \"${1:-}\" == --* ]]; do"
+      , "      if [[ \"$1\" == '--platform' ]]; then shift 2; else shift; fi"
+      , "    done"
+      , "    target_ref=${1:-}"
+      , "    tag_file=\"$record_dir/tag-$(target_key \"$target_ref\")\""
+      , "    source_ref=''"
+      , "    if [[ -f \"$tag_file\" ]]; then"
+      , "      source_ref=$(/bin/cat \"$tag_file\")"
+      , "    fi"
+      , -- Sprint 5.30: the upstream code-server image is published from a
+        -- rate-limited registry, and `pushDockerImageWithRetry` classifies its 429
+        -- as RETRYABLE. Model it the way production treats it — transient: one 429,
+        -- then success. A fake that returns 429 forever models a permanent limit,
+        -- which refutes the very retry the two tests asserting "Retrying Harbor
+        -- publication …" plus `ExitSuccess` exist to exercise, and takes down every
+        -- other case that merely passes through the runbook on its way elsewhere.
+        "    if [[ \"$source_ref\" == ghcr.io/coder/code-server:4.98.2 ]]; then"
+      , "      attempt_file=\"$record_dir/push-attempts-$(target_key \"$target_ref\")\""
+      , "      attempts=0"
+      , "      if [[ -f \"$attempt_file\" ]]; then"
+      , "        attempts=$(/bin/cat \"$attempt_file\")"
+      , "      fi"
+      , "      attempts=$((attempts + 1))"
+      , "      printf '%s' \"$attempts\" > \"$attempt_file\""
+      , "      if [[ \"$attempts\" -le 1 ]]; then"
+      , "        echo '429 Too Many Requests' >&2"
+      , "        exit 1"
+      , "      fi"
+      , "    fi"
+      , "    : > \"$record_dir/pushed-$(target_key \"$target_ref\")\""
+      , "    exit 0"
+      , "    ;;"
+      , "  build)"
+      , "    ;;"
+      , "  save)"
+      , "    out=''"
+      , "    while [[ $# -gt 0 ]]; do"
+      , "      if [[ \"${1:-}\" == '-o' ]]; then"
+      , "        out=${2:-}"
+      , "        break"
+      , "      fi"
+      , "      shift"
+      , "    done"
+      , "    printf 'FAKE IMAGE ARCHIVE\\n' > \"$out\""
+      , "    ;;"
+      , "  *)"
+      , "    ;;"
+      , "esac"
+      ]
 
 fakeRke2CtrScript :: String
 fakeRke2CtrScript =
-  unlines
-    [ "#!/bin/bash"
-    , "set -euo pipefail"
-    , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
-    , "/bin/mkdir -p \"$record_dir\""
-    , "printf '%s\\n' \"$*\" >> \"$record_dir/ctr.txt\""
-    , "if [[ \"$*\" == *'images inspect '* ]]; then"
-    , "  requested=${!#}"
-    , "  while IFS='|' read -r ref identity; do"
-    , "    if [[ \"$ref\" == \"$requested\" ]]; then"
-    , "      printf '%s\\n  application/vnd.oci.image.config.v1+json @%s\\n' \"$ref\" \"$identity\""
-    , "      exit 0"
-    , "    fi"
-    , "  done < \"$record_dir/bootstrap-image-identities\""
-    , "fi"
-    , "exit 0"
-    ]
+  runtimeFixtureDigests $
+    unlines
+      [ "#!/bin/bash"
+      , "set -euo pipefail"
+      , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
+      , "/bin/mkdir -p \"$record_dir\""
+      , "printf '%s\\n' \"$*\" >> \"$record_dir/ctr.txt\""
+      , "if [[ \"$*\" == *'content fetch '* ]]; then"
+      , "  if [[ \"${PRODBOX_FAKE_RUNTIME_REFERENCE_MODE:-delayed}\" == 'fetch-denied' ]]; then exit 1; fi"
+      , "  if [[ \"${!#}\" != '127.0.0.1:30080/prodbox/prodbox-runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ]]; then exit 1; fi"
+      , "  : > \"$record_dir/runtime-manifest-registered\""
+      , "  if [[ \"${PRODBOX_FAKE_RUNTIME_REFERENCE_MODE:-delayed}\" == 'fetch-lost' ]]; then exit 1; fi"
+      , "  exit 0"
+      , "fi"
+      , "if [[ \"$*\" == *'images inspect '* ]]; then"
+      , "  requested=${!#}"
+      , "  while IFS='|' read -r ref identity; do"
+      , "    if [[ \"$ref\" == \"$requested\" ]]; then"
+      , "      printf '%s\\n  application/vnd.oci.image.config.v1+json @%s\\n' \"$ref\" \"$identity\""
+      , "      exit 0"
+      , "    fi"
+      , "  done < \"$record_dir/bootstrap-image-identities\""
+      , "fi"
+      , "exit 0"
+      ]
+
+fakeRke2CrictlScript :: String
+fakeRke2CrictlScript =
+  runtimeFixtureDigests $
+    unlines
+      [ "#!/bin/bash"
+      , "set -euo pipefail"
+      , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
+      , "printf '%s\\n' \"$*\" >> \"$record_dir/crictl.txt\""
+      , "mode=${PRODBOX_FAKE_RUNTIME_REFERENCE_MODE:-delayed}"
+      , "if [[ \"$mode\" == 'unavailable' ]]; then exit 1; fi"
+      , "identity='sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'"
+      , "if [[ \"$mode\" == 'foreign-config' ]]; then identity='sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'; fi"
+      , "references='[]'"
+      , "if [[ -f \"$record_dir/runtime-manifest-registered\" ]]; then references='[\"127.0.0.1:30080/prodbox/prodbox-runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"]'; fi"
+      , "if [[ \"$mode\" == 'foreign-reference' ]]; then references='[\"127.0.0.1:30080/prodbox/prodbox-runtime@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"]'; fi"
+      , "printf '{\"status\":{\"id\":\"%s\",\"repoTags\":[\"%s\"],\"repoDigests\":%s}}\\n' \"$identity\" \"${!#}\" \"$references\""
+      ]
 
 fakeRke2MkdirScript :: String
 fakeRke2MkdirScript =
@@ -5642,6 +6103,10 @@ fakeRke2CatScript =
     , "set -euo pipefail"
     , "record_dir=${PRODBOX_FAKE_RKE2_RECORD_DIR:?}"
     , "printf '%s\\n' \"$*\" >> \"$record_dir/cat.txt\""
+    , "if [[ \"${1:-}\" == '/proc/sys/kernel/random/boot_id' ]]; then"
+    , "  printf '11111111-2222-4333-8444-555555555555\\n'"
+    , "  exit 0"
+    , "fi"
     , "printf 'cat: %s: No such file or directory\\n' \"${1:-file}\" >&2"
     , "exit 1"
     ]

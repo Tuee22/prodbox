@@ -33,6 +33,10 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.Bootstrap.Broker.InitializationEvidence
+  ( RootInitJournalPhase
+  , RootInitResumeEvidence
+  )
 import Prodbox.Bootstrap.Broker.Readiness (BrokerReadinessState)
 import Prodbox.Bootstrap.Broker.Request (RequestDigest)
 import Prodbox.Bootstrap.Broker.Types
@@ -80,6 +84,9 @@ data BootstrapStatus = BootstrapStatus
   , bootstrapStatusSealed :: !Bool
   , bootstrapStatusRecoveryCustodyDurable :: !Bool
   , bootstrapStatusInitializationAmbiguous :: !Bool
+  , bootstrapStatusInitializationPhase :: !(Maybe RootInitJournalPhase)
+  , bootstrapStatusInitializationResetFromGeneration :: !(Maybe VaultStorageGeneration)
+  , bootstrapStatusInitializationResetActionDigest :: !(Maybe ArtifactDigest)
   , bootstrapStatusRootSessionActive :: !Bool
   , bootstrapStatusHandoffObserved :: !Bool
   }
@@ -152,6 +159,9 @@ data BrokerProgram (operation :: CapabilityKind) result where
     -> BrokerProgram 'VaultBootstrapObserve (Maybe ChildRecoveryDelivery)
   InitializeVault
     :: PristineStorageProof
+    -> BrokerProgram 'VaultBootstrapMutate RecoveryCustodyReceipt
+  ResumeVaultInitialization
+    :: RootInitResumeEvidence
     -> BrokerProgram 'VaultBootstrapMutate RecoveryCustodyReceipt
   UnsealVault
     :: RecoveryCustodyReceipt
@@ -240,6 +250,7 @@ brokerProgramCapabilityRef references program = case program of
   ObserveBrokerReadiness -> bootstrapObserveRef references
   ObserveChildRecoveryDelivery _ _ -> bootstrapObserveRef references
   InitializeVault _ -> bootstrapMutateRef references
+  ResumeVaultInitialization _ -> bootstrapMutateRef references
   UnsealVault _ -> bootstrapMutateRef references
   SealVault -> bootstrapMutateRef references
   RotateUnlockBundle _ -> bootstrapMutateRef references
@@ -264,6 +275,7 @@ brokerProgramCapabilityOp program = case program of
   ObserveBrokerReadiness -> OpVaultBootstrapObserve
   ObserveChildRecoveryDelivery _ _ -> OpVaultBootstrapObserve
   InitializeVault _ -> OpVaultBootstrapMutate
+  ResumeVaultInitialization _ -> OpVaultBootstrapMutate
   UnsealVault _ -> OpVaultBootstrapMutate
   SealVault -> OpVaultBootstrapMutate
   RotateUnlockBundle _ -> OpVaultBootstrapMutate

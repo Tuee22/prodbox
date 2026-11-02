@@ -1,0 +1,71 @@
+{
+  "schema_version": 1,
+  "recording": "RPC-BIRTH-NATIVE-RUNTIME-FORMAT-FOLLOWUP-2026-10-25",
+  "owning_sprint": "6.5",
+  "recorded_utc": "2026-10-25T12:21:29.861682+00:00",
+  "previous_record": "test/qualification/RPC-BIRTH-NATIVE-RUNTIME-STYLE-FOLLOWUP-2026-10-25.json",
+  "change": "The standalone driver explicitly declares ImportQualifiedPost so canonical Fourmolu can parse it without a Cabal component or extra GHC2021 option. No fixture semantics or production resource profiles change.",
+  "repository_reproducer": {
+    "source": "test/qualification/RpcBirthNativeRuntime.hs",
+    "source_sha256": "489242eca1d6f0a238b1bd1ec8ed7cb3f41da260c881ec5a1be0c4a21863f9fd",
+    "preserved_source": ".build/sprint-6.5/rpc-coordinator-20261025/RpcBirthNativeRuntime-format-489242eca1d6f0a2.hs",
+    "build": [
+      "cabal",
+      "exec",
+      "--builddir=.build",
+      "--",
+      "ghc",
+      "-Wall",
+      "-Werror",
+      "-threaded",
+      "-rtsopts",
+      "-package=prodbox",
+      "-outputdir",
+      ".build/sprint-6.5/rpc-coordinator-20261025/native-format-1-objects",
+      "test/qualification/RpcBirthNativeRuntime.hs",
+      "-o",
+      ".build/sprint-6.5/rpc-coordinator-20261025/native-runtime-format-probe-1"
+    ],
+    "run": [
+      ".build/sprint-6.5/rpc-coordinator-20261025/native-runtime-format-probe-1",
+      "--operator",
+      ".build/prodbox"
+    ]
+  },
+  "recorded_run": {
+    "command": [
+      ".build/sprint-6.5/rpc-coordinator-20261025/native-runtime-format-probe-1",
+      "--operator",
+      ".build/prodbox"
+    ],
+    "started_utc": "2026-10-25T12:20:24.708006+00:00",
+    "completed_utc": "2026-10-25T12:20:26.409623+00:00",
+    "exit_code": 0,
+    "wall_seconds": 1.7016343609429896,
+    "binary_sha256": "2462fa6b6fd522e60e9e000da03b589f6b7075837464686a46c2fb47984f4ca5",
+    "operator_sha256": "9a1430a11b7f4ac95f5a5d4eb02fc89a7deb9dc99e79812ae02cb910f99183e2"
+  },
+  "source_identity_observed_after_recorded_run": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"42ba44e397dd43e2bd0b9d4c83b196ba6c09655be72aeaf7e21edfa6eb775fce\", sourceManifestEntryCount = 1502},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"535e9b44c54519d7bad8651c392298549dd49b22cf1050176e953c7a0de77dc8\", sourceManifestEntryCount = 1439})",
+  "formatter_validation": {
+    "command": [
+      ".build/prodbox-style-tools/bin/fourmolu",
+      "--mode",
+      "check",
+      "test/qualification/RpcBirthNativeRuntime.hs"
+    ],
+    "started_utc": "2026-10-25T12:18:58.317386+00:00",
+    "completed_utc": "2026-10-25T12:18:58.541186+00:00",
+    "exit_code": 0,
+    "wall_seconds": 0.22381953289732337
+  },
+  "positive_cases": 5,
+  "startup_refusal_cases": 8,
+  "boundaries_and_exclusions": "Same native-client/actual-role/synthetic-provider scope and exact postconditions as the original composition record; no deployed, provider-policy, resource-sufficiency, backup/retirement or deployment-qualification claim.",
+  "qualification_claim": false,
+  "qualified_cycles_added": 0,
+  "image_attempts": 0,
+  "live_attempts": 0,
+  "resource_envelopes_increased": false,
+  "hand_actions": [],
+  "validation_index": ".build/sprint-6.5/rpc-coordinator-20261025/validation-progress.json"
+}

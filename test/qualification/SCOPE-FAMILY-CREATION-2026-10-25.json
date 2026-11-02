@@ -1,0 +1,1425 @@
+{
+  "id": "SCOPE-FAMILY-CREATION-2026-10-25",
+  "recorded_utc": "2026-10-25T21:40:47.943194+00:00",
+  "scope": "Actual private family request/inventory, exact-invocation TERM, and non-renewable borrowed transport budgets. No production process-lifecycle, resource-admission or deployment qualification claim.",
+  "sources": [
+    {
+      "path": "src/Prodbox/Subprocess/ScopeFamily.hs",
+      "sha256": "c125da92324b3b124c4326821706b5f611c6697436d54b12e8daf01b3ea75cfe",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/scope-family-source-ScopeFamily.hs-c125da92324b3b12"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/KernelScope.hs",
+      "sha256": "d952403c16277c6f7bcb4608f398141ea211f97962292d3f3671facf97ca63e6",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/scope-family-source-KernelScope.hs-d952403c16277c6f"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdBus.hs",
+      "sha256": "f8c8be0dc5b028a28923f04267d2835f4feb71876104a7ae25371bc33378d860",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/scope-family-source-SystemdBus.hs-f8c8be0dc5b028a2"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "sha256": "ebbae68005102b59afc01ef3e302f9b54067369c3d790e4bf12221002ab51337",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/scope-family-source-SystemdIdentity.hs-ebbae68005102b59"
+    },
+    {
+      "path": "test/qualification/KernelScopeObservation.hs",
+      "sha256": "a76fdae8ba609225e00944f0f92dc0d7f013713073c6e1bc4930bfa2d93122c6",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/scope-family-source-KernelScopeObservation.hs-a76fdae8ba609225"
+    },
+    {
+      "path": "test/qualification/SystemdBusDeadline.hs",
+      "sha256": "93f66a42ea570b6809636e5b83f02c3f5d2072ef5ea52ddf60b18294e8b8a45e",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/scope-family-source-SystemdBusDeadline.hs-93f66a42ea570b68"
+    },
+    {
+      "path": "prodbox.cabal",
+      "sha256": "d51a6d3d46376f0c8a52e42758cd1c69e15feb7d3614f6ce8fd4b0e8fd103308",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/scope-family-source-prodbox.cabal-d51a6d3d46376f0c"
+    }
+  ],
+  "binaries": [
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/scope-family-native-threaded-4",
+      "sha256": "b37a6f1a55d4fd59a75a2043b3defe08e4edcc46996bd68622a5896b9d865e37"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/scope-family-native-nonthreaded-1",
+      "sha256": "6b20719d0e007067b1ffd3ef8b53b186b22448d96b075f036a6f6e58105d3aab"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/scope-family-bus-driver-1",
+      "sha256": "d0fba7d1f8dae32b47c7442dc57718920f09509a5fd6a6b38804a7597a22caeb"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/scope-family-bus-driver-nonthreaded-1",
+      "sha256": "c07e26a9b0fb6e4d18c843b34da822ea97444ca5ed5cbe1088fa80082f95f235"
+    }
+  ],
+  "family_cases": [
+    {
+      "record": "scope-family-threaded-expiry-4.result.json",
+      "style": "threaded",
+      "observation": {
+        "elapsed_micros": 360808,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-dbe20b85d36273e892f0eeaa448cffeb.scope",
+          "prodbox-owned-dbe20b85d36273e892f0eeaa448cffeb-expiry.timer",
+          "prodbox-owned-dbe20b85d36273e892f0eeaa448cffeb-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "expiry",
+        "negative_request": false,
+        "observed_terminal_ns": 2230306961079860,
+        "passed": true,
+        "production_process_lifecycle_claim": false
+      }
+    },
+    {
+      "record": "scope-family-threaded-term-4.result.json",
+      "style": "threaded",
+      "observation": {
+        "elapsed_micros": 359401,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-88d6673d5c56e81a97777a564b070d74.scope",
+          "prodbox-owned-88d6673d5c56e81a97777a564b070d74-expiry.timer",
+          "prodbox-owned-88d6673d5c56e81a97777a564b070d74-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "term",
+        "negative_request": false,
+        "observed_terminal_ns": 2230307034118011,
+        "passed": true,
+        "production_process_lifecycle_claim": false
+      }
+    },
+    {
+      "record": "scope-family-threaded-duplicate-4.result.json",
+      "style": "threaded",
+      "observation": {
+        "elapsed_micros": 358398,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-3cc4ea85686ef17ca317b6ba8fb86602.scope",
+          "prodbox-owned-3cc4ea85686ef17ca317b6ba8fb86602-expiry.timer",
+          "prodbox-owned-3cc4ea85686ef17ca317b6ba8fb86602-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "duplicate",
+        "negative_request": false,
+        "observed_terminal_ns": 2230307762251064,
+        "passed": true,
+        "production_process_lifecycle_claim": false
+      }
+    },
+    {
+      "record": "scope-family-threaded-expired-create-4.result.json",
+      "style": "threaded",
+      "observation": {
+        "elapsed_micros": 3228,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-94a206de0c62bf1c6efe9df541a18ac5.scope",
+          "prodbox-owned-94a206de0c62bf1c6efe9df541a18ac5-expiry.timer",
+          "prodbox-owned-94a206de0c62bf1c6efe9df541a18ac5-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "expired-create",
+        "negative_request": true,
+        "observed_terminal_ns": null,
+        "passed": true,
+        "production_process_lifecycle_claim": false
+      }
+    },
+    {
+      "record": "scope-family-threaded-future-create-4.result.json",
+      "style": "threaded",
+      "observation": {
+        "elapsed_micros": 2950,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-7c79cd777d3a7bee3c40bfd3e3e1face.scope",
+          "prodbox-owned-7c79cd777d3a7bee3c40bfd3e3e1face-expiry.timer",
+          "prodbox-owned-7c79cd777d3a7bee3c40bfd3e3e1face-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "future-create",
+        "negative_request": true,
+        "observed_terminal_ns": null,
+        "passed": true,
+        "production_process_lifecycle_claim": false
+      }
+    },
+    {
+      "record": "scope-family-threaded-foreign-descriptor-4.result.json",
+      "style": "threaded",
+      "observation": {
+        "elapsed_micros": 5607,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-948a69c673b8b4442f2d2cbe27ff4ce9.scope",
+          "prodbox-owned-948a69c673b8b4442f2d2cbe27ff4ce9-expiry.timer",
+          "prodbox-owned-948a69c673b8b4442f2d2cbe27ff4ce9-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "foreign-descriptor",
+        "negative_request": true,
+        "observed_terminal_ns": null,
+        "passed": true,
+        "production_process_lifecycle_claim": false
+      }
+    },
+    {
+      "record": "scope-family-nonthreaded-expiry-1.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "elapsed_micros": 361176,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-78663d876992710b97a5243d65258156.scope",
+          "prodbox-owned-78663d876992710b97a5243d65258156-expiry.timer",
+          "prodbox-owned-78663d876992710b97a5243d65258156-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "expiry",
+        "negative_request": false,
+        "observed_terminal_ns": 2230897651205594,
+        "passed": true,
+        "production_process_lifecycle_claim": false
+      }
+    },
+    {
+      "record": "scope-family-nonthreaded-term-1.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "elapsed_micros": 361299,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-7bd6dffe1b62464fe38d855fa095b362.scope",
+          "prodbox-owned-7bd6dffe1b62464fe38d855fa095b362-expiry.timer",
+          "prodbox-owned-7bd6dffe1b62464fe38d855fa095b362-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "term",
+        "negative_request": false,
+        "observed_terminal_ns": 2230897721231391,
+        "passed": true,
+        "production_process_lifecycle_claim": false
+      }
+    },
+    {
+      "record": "scope-family-nonthreaded-duplicate-1.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "elapsed_micros": 362594,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-527c619a2d55997310ab679aa21e233b.scope",
+          "prodbox-owned-527c619a2d55997310ab679aa21e233b-expiry.timer",
+          "prodbox-owned-527c619a2d55997310ab679aa21e233b-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "duplicate",
+        "negative_request": false,
+        "observed_terminal_ns": 2230898449028266,
+        "passed": true,
+        "production_process_lifecycle_claim": false
+      }
+    },
+    {
+      "record": "scope-family-nonthreaded-expired-create-1.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "elapsed_micros": 2609,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-08b16083b5d8dc7b67ceb1e6cefe7e4e.scope",
+          "prodbox-owned-08b16083b5d8dc7b67ceb1e6cefe7e4e-expiry.timer",
+          "prodbox-owned-08b16083b5d8dc7b67ceb1e6cefe7e4e-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "expired-create",
+        "negative_request": true,
+        "observed_terminal_ns": null,
+        "passed": true,
+        "production_process_lifecycle_claim": false
+      }
+    },
+    {
+      "record": "scope-family-nonthreaded-future-create-1.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "elapsed_micros": 2390,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-01a693587dc2a4adff7d00e8a8acbda0.scope",
+          "prodbox-owned-01a693587dc2a4adff7d00e8a8acbda0-expiry.timer",
+          "prodbox-owned-01a693587dc2a4adff7d00e8a8acbda0-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "future-create",
+        "negative_request": true,
+        "observed_terminal_ns": null,
+        "passed": true,
+        "production_process_lifecycle_claim": false
+      }
+    },
+    {
+      "record": "scope-family-nonthreaded-foreign-descriptor-1.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "elapsed_micros": 2664,
+        "family_absence_observed": true,
+        "family_names": [
+          "prodbox-owned-a144f6b44e33c8190ee25d6ab62eda2a.scope",
+          "prodbox-owned-a144f6b44e33c8190ee25d6ab62eda2a-expiry.timer",
+          "prodbox-owned-a144f6b44e33c8190ee25d6ab62eda2a-expiry.service"
+        ],
+        "foreign_child_preserved": true,
+        "mode": "foreign-descriptor",
+        "negative_request": true,
+        "observed_terminal_ns": null,
+        "passed": true,
+        "production_process_lifecycle_claim": false
+      }
+    }
+  ],
+  "observer_cases": [
+    {
+      "record": "scope-family-observer-threaded-kill-1.result.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 19945,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "kill",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": false,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "record": "scope-family-observer-threaded-terminate-1.result.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 18125,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "terminate",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": false,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "record": "scope-family-observer-threaded-terminate-then-kill-1.result.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 42423,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "terminate-then-kill",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": false,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "record": "scope-family-observer-threaded-delayed-admission-1.result.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 71182,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "delayed-admission",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": false,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "record": "scope-family-observer-threaded-wrong-limits-1.result.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 22285,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "wrong-limits",
+        "native_bus_result": "Right (Left KernelScopeResourceMismatch)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeResourceMismatch",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "record": "scope-family-observer-threaded-foreign-descriptor-1.result.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 11520,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "foreign-descriptor",
+        "native_bus_result": "Right (Left KernelScopeChildRefused)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeChildRefused",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "record": "scope-family-observer-threaded-invalid-unit-1.result.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 12753,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "invalid-unit",
+        "native_bus_result": "Right (Left KernelScopeInvalidInput)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeInvalidInput",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "record": "scope-family-observer-threaded-expired-1.result.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 10817,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "expired",
+        "native_bus_result": "Right (Left KernelScopeDeadlineReached)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeDeadlineReached",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "record": "scope-family-observer-threaded-cancel-1.result.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 25593,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "cancel",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "record": "scope-family-observer-threaded-parent-deadline-1.result.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 224247,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Just (Left KernelScopeDeadlineReached)",
+        "mode": "parent-deadline",
+        "native_bus_result": "Left (BusDeadlineReached BusRelease)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "record": "scope-family-observer-nonthreaded-kill-1.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 19086,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "kill",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": false,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "record": "scope-family-observer-nonthreaded-terminate-1.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 21850,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "terminate",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": false,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "record": "scope-family-observer-nonthreaded-terminate-then-kill-1.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 39702,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "terminate-then-kill",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": false,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "record": "scope-family-observer-nonthreaded-delayed-admission-1.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 73632,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "delayed-admission",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": false,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "record": "scope-family-observer-nonthreaded-wrong-limits-1.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 21717,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "wrong-limits",
+        "native_bus_result": "Right (Left KernelScopeResourceMismatch)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeResourceMismatch",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "record": "scope-family-observer-nonthreaded-foreign-descriptor-1.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 10981,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "foreign-descriptor",
+        "native_bus_result": "Right (Left KernelScopeChildRefused)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeChildRefused",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "record": "scope-family-observer-nonthreaded-invalid-unit-1.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 11690,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "invalid-unit",
+        "native_bus_result": "Right (Left KernelScopeInvalidInput)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeInvalidInput",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "record": "scope-family-observer-nonthreaded-expired-1.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": false,
+        "closed_handle_refused": true,
+        "elapsed_micros": 12336,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "expired",
+        "native_bus_result": "Right (Left KernelScopeDeadlineReached)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Left KernelScopeDeadlineReached",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "record": "scope-family-observer-nonthreaded-cancel-1.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 25446,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Nothing",
+        "mode": "cancel",
+        "native_bus_result": "Right (Right ())",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    },
+    {
+      "record": "scope-family-observer-nonthreaded-parent-deadline-1.result.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": true,
+        "closed_handle_refused": true,
+        "elapsed_micros": 223693,
+        "foreign_child_preserved": true,
+        "late_parent_budget_observation": "Just (Left KernelScopeDeadlineReached)",
+        "mode": "parent-deadline",
+        "native_bus_result": "Left (BusDeadlineReached BusRelease)",
+        "own_child_live_before_fixture_cleanup": true,
+        "passed": true,
+        "production_process_lifecycle_claim": false,
+        "result": "Right ()",
+        "scope_absent_after_reference_release_and_fixture_cleanup": true
+      }
+    }
+  ],
+  "transport_cases": [
+    {
+      "record": "scope-family-bus-threaded-authentication-stall-1.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": false,
+        "elapsed_micros": 200229,
+        "manager_peer": null,
+        "mode": "authentication-stall",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left (BusDeadlineReached BusAuthenticate))"
+      },
+      "socket_observer": {
+        "accepted": true,
+        "received_bytes": 48,
+        "peer_closed": true,
+        "closed_monotonic_ns": 2230897617897197
+      }
+    },
+    {
+      "record": "scope-family-bus-threaded-cancel-1.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": false,
+        "elapsed_micros": 22200,
+        "manager_peer": null,
+        "mode": "cancel",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Nothing"
+      },
+      "socket_observer": {
+        "accepted": true,
+        "received_bytes": 48,
+        "peer_closed": true,
+        "closed_monotonic_ns": 2230897940975294
+      }
+    },
+    {
+      "record": "scope-family-bus-threaded-cancel-reply-1.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": true,
+        "elapsed_micros": 21824,
+        "manager_peer": [
+          ":1.43",
+          1000
+        ],
+        "mode": "cancel-reply",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Nothing"
+      },
+      "socket_observer": {
+        "authentication_delay_micros": 0,
+        "accepted": true,
+        "upstream_connected": true,
+        "hello_forwarded": true,
+        "get_unit_destination": ":1.43",
+        "get_unit_uses_unique_destination": true,
+        "request_dropped": true,
+        "request_dropped_monotonic_ns": 2230897989163340,
+        "peer_closed": true,
+        "closed_monotonic_ns": 2230898008604409
+      }
+    },
+    {
+      "record": "scope-family-bus-threaded-continuation-io-1.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": true,
+        "elapsed_micros": 1669,
+        "manager_peer": [
+          ":1.43",
+          1000
+        ],
+        "mode": "continuation-io",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left BusIoRefused)"
+      },
+      "socket_observer": null
+    },
+    {
+      "record": "scope-family-bus-threaded-continuation-refusal-1.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": true,
+        "elapsed_micros": 2126,
+        "manager_peer": [
+          ":1.43",
+          1000
+        ],
+        "mode": "continuation-refusal",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left BusInputRefused)"
+      },
+      "socket_observer": null
+    },
+    {
+      "record": "scope-family-bus-threaded-environment-1.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": true,
+        "elapsed_micros": 1627,
+        "manager_peer": [
+          ":1.43",
+          1000
+        ],
+        "mode": "lookup",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Right \"/org/freedesktop/systemd1/unit/app_2eslice\")"
+      },
+      "socket_observer": null
+    },
+    {
+      "record": "scope-family-bus-threaded-expired-1.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": false,
+        "elapsed_micros": 19,
+        "manager_peer": null,
+        "mode": "expired",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left (BusDeadlineReached BusConnect))"
+      },
+      "socket_observer": null
+    },
+    {
+      "record": "scope-family-bus-threaded-foreign-peer-user-1.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": false,
+        "elapsed_micros": 2038,
+        "manager_peer": null,
+        "mode": "peer-rejected",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left BusManagerIdentityRefused)"
+      },
+      "socket_observer": {
+        "authentication_delay_micros": 0,
+        "accepted": true,
+        "upstream_connected": true,
+        "hello_forwarded": true,
+        "peer_reply_replaced": true,
+        "peer_closed": true,
+        "closed_monotonic_ns": 2230898764223936
+      }
+    },
+    {
+      "record": "scope-family-bus-threaded-invalid-1.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": false,
+        "elapsed_micros": 57,
+        "manager_peer": null,
+        "mode": "invalid",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left BusSocketRefused)"
+      },
+      "socket_observer": null
+    },
+    {
+      "record": "scope-family-bus-threaded-invalid-peer-name-1.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": false,
+        "elapsed_micros": 2125,
+        "manager_peer": null,
+        "mode": "peer-rejected",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left BusManagerIdentityRefused)"
+      },
+      "socket_observer": {
+        "authentication_delay_micros": 0,
+        "accepted": true,
+        "upstream_connected": true,
+        "hello_forwarded": true,
+        "peer_reply_replaced": true,
+        "peer_closed": true,
+        "closed_monotonic_ns": 2230898704351927
+      }
+    },
+    {
+      "record": "scope-family-bus-threaded-invalid-symlink-1.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": false,
+        "elapsed_micros": 68,
+        "manager_peer": null,
+        "mode": "invalid",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left BusSocketRefused)"
+      },
+      "socket_observer": null
+    },
+    {
+      "record": "scope-family-bus-threaded-late-continuation-1.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": true,
+        "elapsed_micros": 252057,
+        "manager_peer": [
+          ":1.43",
+          1000
+        ],
+        "mode": "late-continuation",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left (BusDeadlineReached BusRelease))"
+      },
+      "socket_observer": null
+    },
+    {
+      "record": "scope-family-bus-threaded-lookup-1.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": true,
+        "elapsed_micros": 1722,
+        "manager_peer": [
+          ":1.43",
+          1000
+        ],
+        "mode": "lookup",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Right \"/org/freedesktop/systemd1/unit/app_2eslice\")"
+      },
+      "socket_observer": null
+    },
+    {
+      "record": "scope-family-bus-threaded-lookup-proxy-1.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": true,
+        "elapsed_micros": 2721,
+        "manager_peer": [
+          ":1.43",
+          1000
+        ],
+        "mode": "lookup",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Right \"/org/freedesktop/systemd1/unit/app_2eslice\")"
+      },
+      "socket_observer": {
+        "authentication_delay_micros": 0,
+        "accepted": true,
+        "upstream_connected": true,
+        "hello_forwarded": true,
+        "get_unit_destination": ":1.43",
+        "get_unit_uses_unique_destination": true,
+        "request_forwarded": true,
+        "peer_closed": true,
+        "closed_monotonic_ns": 2230898653861369
+      }
+    },
+    {
+      "record": "scope-family-bus-threaded-missing-1.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": true,
+        "elapsed_micros": 1609,
+        "manager_peer": [
+          ":1.43",
+          1000
+        ],
+        "mode": "missing",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left (BusMethodRefused 2))"
+      },
+      "socket_observer": null
+    },
+    {
+      "record": "scope-family-bus-threaded-nested-budget-1.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": true,
+        "elapsed_micros": 78219,
+        "manager_peer": [
+          ":1.43",
+          1000
+        ],
+        "mode": "nested-budget",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Right \"recovered-missing\")"
+      },
+      "socket_observer": {
+        "authentication_delay_micros": 0,
+        "accepted": true,
+        "upstream_connected": true,
+        "hello_forwarded": true,
+        "get_unit_destination": ":1.43",
+        "get_unit_uses_unique_destination": true,
+        "request_forwarded": true,
+        "first_reply_held": true,
+        "late_first_reply_released_before_second_response": true,
+        "peer_closed": true,
+        "closed_monotonic_ns": 2230898895121491
+      }
+    },
+    {
+      "record": "scope-family-bus-threaded-reply-stall-1.json",
+      "style": "threaded",
+      "observation": {
+        "callback_entered": true,
+        "elapsed_micros": 200291,
+        "manager_peer": [
+          ":1.43",
+          1000
+        ],
+        "mode": "reply-stall",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left (BusDeadlineReached BusReply))"
+      },
+      "socket_observer": {
+        "authentication_delay_micros": 100000,
+        "accepted": true,
+        "upstream_connected": true,
+        "hello_forwarded": true,
+        "get_unit_destination": ":1.43",
+        "get_unit_uses_unique_destination": true,
+        "request_dropped": true,
+        "request_dropped_monotonic_ns": 2230897768429253,
+        "peer_closed": true,
+        "closed_monotonic_ns": 2230897866417457
+      }
+    },
+    {
+      "record": "scope-family-bus-nonthreaded-authentication-stall-1.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": false,
+        "elapsed_micros": 200234,
+        "manager_peer": null,
+        "mode": "authentication-stall",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left (BusDeadlineReached BusAuthenticate))"
+      },
+      "socket_observer": {
+        "accepted": true,
+        "received_bytes": 48,
+        "peer_closed": true,
+        "closed_monotonic_ns": 2230899301698701
+      }
+    },
+    {
+      "record": "scope-family-bus-nonthreaded-cancel-1.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": false,
+        "elapsed_micros": 30214,
+        "manager_peer": null,
+        "mode": "cancel",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Nothing"
+      },
+      "socket_observer": {
+        "accepted": true,
+        "received_bytes": 48,
+        "peer_closed": true,
+        "closed_monotonic_ns": 2230899628446421
+      }
+    },
+    {
+      "record": "scope-family-bus-nonthreaded-cancel-reply-1.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": true,
+        "elapsed_micros": 30095,
+        "manager_peer": [
+          ":1.43",
+          1000
+        ],
+        "mode": "cancel-reply",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Nothing"
+      },
+      "socket_observer": {
+        "authentication_delay_micros": 0,
+        "accepted": true,
+        "upstream_connected": true,
+        "hello_forwarded": true,
+        "get_unit_destination": ":1.43",
+        "get_unit_uses_unique_destination": true,
+        "request_dropped": true,
+        "request_dropped_monotonic_ns": 2230899679159042,
+        "peer_closed": true,
+        "closed_monotonic_ns": 2230899707191349
+      }
+    },
+    {
+      "record": "scope-family-bus-nonthreaded-continuation-io-1.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": true,
+        "elapsed_micros": 1551,
+        "manager_peer": [
+          ":1.43",
+          1000
+        ],
+        "mode": "continuation-io",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left BusIoRefused)"
+      },
+      "socket_observer": null
+    },
+    {
+      "record": "scope-family-bus-nonthreaded-continuation-refusal-1.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": true,
+        "elapsed_micros": 1618,
+        "manager_peer": [
+          ":1.43",
+          1000
+        ],
+        "mode": "continuation-refusal",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left BusInputRefused)"
+      },
+      "socket_observer": null
+    },
+    {
+      "record": "scope-family-bus-nonthreaded-environment-1.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": true,
+        "elapsed_micros": 2239,
+        "manager_peer": [
+          ":1.43",
+          1000
+        ],
+        "mode": "lookup",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Right \"/org/freedesktop/systemd1/unit/app_2eslice\")"
+      },
+      "socket_observer": null
+    },
+    {
+      "record": "scope-family-bus-nonthreaded-expired-1.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": false,
+        "elapsed_micros": 48,
+        "manager_peer": null,
+        "mode": "expired",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left (BusDeadlineReached BusConnect))"
+      },
+      "socket_observer": null
+    },
+    {
+      "record": "scope-family-bus-nonthreaded-foreign-peer-user-1.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": false,
+        "elapsed_micros": 1683,
+        "manager_peer": null,
+        "mode": "peer-rejected",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left BusManagerIdentityRefused)"
+      },
+      "socket_observer": {
+        "authentication_delay_micros": 0,
+        "accepted": true,
+        "upstream_connected": true,
+        "hello_forwarded": true,
+        "peer_reply_replaced": true,
+        "peer_closed": true,
+        "closed_monotonic_ns": 2230900495642216
+      }
+    },
+    {
+      "record": "scope-family-bus-nonthreaded-invalid-1.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": false,
+        "elapsed_micros": 70,
+        "manager_peer": null,
+        "mode": "invalid",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left BusSocketRefused)"
+      },
+      "socket_observer": null
+    },
+    {
+      "record": "scope-family-bus-nonthreaded-invalid-peer-name-1.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": false,
+        "elapsed_micros": 1815,
+        "manager_peer": null,
+        "mode": "peer-rejected",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left BusManagerIdentityRefused)"
+      },
+      "socket_observer": {
+        "authentication_delay_micros": 0,
+        "accepted": true,
+        "upstream_connected": true,
+        "hello_forwarded": true,
+        "peer_reply_replaced": true,
+        "peer_closed": true,
+        "closed_monotonic_ns": 2230900441390428
+      }
+    },
+    {
+      "record": "scope-family-bus-nonthreaded-invalid-symlink-1.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": false,
+        "elapsed_micros": 80,
+        "manager_peer": null,
+        "mode": "invalid",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left BusSocketRefused)"
+      },
+      "socket_observer": null
+    },
+    {
+      "record": "scope-family-bus-nonthreaded-late-continuation-1.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": true,
+        "elapsed_micros": 252600,
+        "manager_peer": [
+          ":1.43",
+          1000
+        ],
+        "mode": "late-continuation",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left (BusDeadlineReached BusRelease))"
+      },
+      "socket_observer": null
+    },
+    {
+      "record": "scope-family-bus-nonthreaded-lookup-1.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": true,
+        "elapsed_micros": 1826,
+        "manager_peer": [
+          ":1.43",
+          1000
+        ],
+        "mode": "lookup",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Right \"/org/freedesktop/systemd1/unit/app_2eslice\")"
+      },
+      "socket_observer": null
+    },
+    {
+      "record": "scope-family-bus-nonthreaded-lookup-proxy-1.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": true,
+        "elapsed_micros": 2104,
+        "manager_peer": [
+          ":1.43",
+          1000
+        ],
+        "mode": "lookup",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Right \"/org/freedesktop/systemd1/unit/app_2eslice\")"
+      },
+      "socket_observer": {
+        "authentication_delay_micros": 0,
+        "accepted": true,
+        "upstream_connected": true,
+        "hello_forwarded": true,
+        "get_unit_destination": ":1.43",
+        "get_unit_uses_unique_destination": true,
+        "request_forwarded": true,
+        "peer_closed": true,
+        "closed_monotonic_ns": 2230900394033868
+      }
+    },
+    {
+      "record": "scope-family-bus-nonthreaded-missing-1.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": true,
+        "elapsed_micros": 1668,
+        "manager_peer": [
+          ":1.43",
+          1000
+        ],
+        "mode": "missing",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left (BusMethodRefused 2))"
+      },
+      "socket_observer": null
+    },
+    {
+      "record": "scope-family-bus-nonthreaded-nested-budget-1.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": true,
+        "elapsed_micros": 75737,
+        "manager_peer": [
+          ":1.43",
+          1000
+        ],
+        "mode": "nested-budget",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Right \"recovered-missing\")"
+      },
+      "socket_observer": {
+        "authentication_delay_micros": 0,
+        "accepted": true,
+        "upstream_connected": true,
+        "hello_forwarded": true,
+        "get_unit_destination": ":1.43",
+        "get_unit_uses_unique_destination": true,
+        "request_forwarded": true,
+        "first_reply_held": true,
+        "late_first_reply_released_before_second_response": true,
+        "peer_closed": true,
+        "closed_monotonic_ns": 2230900619978523
+      }
+    },
+    {
+      "record": "scope-family-bus-nonthreaded-reply-stall-1.json",
+      "style": "nonthreaded",
+      "observation": {
+        "callback_entered": true,
+        "elapsed_micros": 200331,
+        "manager_peer": [
+          ":1.43",
+          1000
+        ],
+        "mode": "reply-stall",
+        "passed": true,
+        "production_owned_process_repair": false,
+        "result": "Just (Left (BusDeadlineReached BusReply))"
+      },
+      "socket_observer": {
+        "authentication_delay_micros": 100000,
+        "accepted": true,
+        "upstream_connected": true,
+        "hello_forwarded": true,
+        "get_unit_destination": ":1.43",
+        "get_unit_uses_unique_destination": true,
+        "request_dropped": true,
+        "request_dropped_monotonic_ns": 2230899448626527,
+        "peer_closed": true,
+        "closed_monotonic_ns": 2230899546858686
+      }
+    }
+  ],
+  "identity_guards": [
+    {
+      "record": "scope-family-identity-guards-threaded-1.result.json",
+      "observation": {
+        "count": 22,
+        "elapsed_micros": 156,
+        "mode": "identity-guards",
+        "passed": true
+      }
+    },
+    {
+      "record": "scope-family-identity-guards-nonthreaded-1.result.json",
+      "observation": {
+        "count": 22,
+        "elapsed_micros": 173,
+        "mode": "identity-guards",
+        "passed": true
+      }
+    }
+  ],
+  "library_build": {
+    "command": [
+      "env",
+      "XDG_RUNTIME_DIR=/run/user/1000",
+      "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+      "systemd-run",
+      "--user",
+      "--quiet",
+      "--wait",
+      "--pipe",
+      "--collect",
+      "--service-type=oneshot",
+      "--expand-environment=no",
+      "--unit=prodbox-scope-family-lib-20261025-1",
+      "--working-directory=/home/matthewnowak/prodbox",
+      "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+      "--property=UMask=0022",
+      "--property=MemoryMax=5G",
+      "--property=MemorySwapMax=0",
+      "--property=OOMPolicy=kill",
+      "--property=OOMScoreAdjust=1000",
+      "--property=TasksMax=64",
+      "--property=TimeoutStartSec=600s",
+      "--property=TimeoutStopSec=2s",
+      "--",
+      "cabal",
+      "build",
+      "--builddir=.build",
+      "lib:prodbox",
+      "--ghc-options=-Werror"
+    ],
+    "started_utc": "2026-10-25T21:35:06.518134+00:00",
+    "completed_utc": "2026-10-25T21:35:25.749060+00:00",
+    "exit_code": 0,
+    "wall_seconds": 19.230945099145174
+  },
+  "hlint": {
+    "command": [
+      ".build/prodbox-style-tools/bin/hlint",
+      "--hint=.hlint.yaml",
+      "--with-group=default",
+      "--with-group=extra",
+      "src/Prodbox/Subprocess/ScopeFamily.hs",
+      "src/Prodbox/Subprocess/KernelScope.hs",
+      "src/Prodbox/Subprocess/SystemdBus.hs",
+      "src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "test/qualification/KernelScopeObservation.hs",
+      "test/qualification/SystemdBusDeadline.hs"
+    ],
+    "started_utc": "2026-10-25T21:32:56.038492+00:00",
+    "completed_utc": "2026-10-25T21:33:01.519766+00:00",
+    "exit_code": 0,
+    "wall_seconds": 5.481296789366752
+  },
+  "limits": "Diagnostic scope64MiB/swap0/tasks16/relative2s emergency, helper16MiB/tasks8/start30ms/stop30ms, original total500ms and hard expiry350ms. These are explicit fixture values, not production defaults.",
+  "preserved_failures": [
+    "kernel-scope-term-threaded-delayed-admission-2.result.json",
+    "scope-family-compile-1.result.json",
+    "scope-family-native-build-threaded-1.result.json",
+    "scope-family-threaded-expiry-2.result.json",
+    "scope-family-threaded-expiry-3.result.json",
+    "scope-family-bus-nested-budget-threaded-1.json"
+  ],
+  "findings": [
+    "Inactive helper Unit.InvocationID is an empty array; preserve a present unit with no assigned invocation. GetUnitByPIDFD still requires exactly16 bytes, and all mutation IDs remain non-null.",
+    "The original delayed generic refusal discarded its location. The pending16-zero case is supported; this does not identify that discarded cause.",
+    "Standalone smoke builds must expose exact project package IDs: Cabal exec otherwise exposes both crypton and cryptonite to direct GHC. The ordinary library build succeeds with its declared dependencies.",
+    "The proxy initially framed pipelined auth replies as binary; pass auth text before inspecting late replies.",
+    "A75ms borrowed view times out without renewing the200ms original connection. A late first reply cannot complete the second call; closure is independently observed."
+  ],
+  "remaining": [
+    "Explicit early timer/helper retirement with references, idle/job barriers and exact closing absence; current normal family tests observe natural expiry.",
+    "Process/Go/exec startup, original-budget cancellation/unknown-admission recovery, reader settlement and public fast-session success+absence repair.",
+    "Whole-family CPU/memory/PID/parent/helper/placement/concurrency admission, physical caller, full canonical/frontend batch and deployment qualification."
+  ]
+}

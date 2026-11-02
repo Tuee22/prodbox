@@ -1,0 +1,109 @@
+{
+  "counterexample": "BOOTSTRAP-BROKER-RUNTIME-GPG-MISSING-2026-10-22",
+  "owner": "Sprint 1.96",
+  "observed_utc": "2026-10-22T16:49:54.186414+00:00",
+  "recording": {
+    "source": "The supported cascade-qualification invocation pre-20261022-1, transcript pre-2.log",
+    "exit": 1,
+    "wall_seconds": 1990.68,
+    "candidate_execution_reached": false,
+    "credential_preparation_reached": false,
+    "readiness": {
+      "operation": "readiness",
+      "ready": false,
+      "state": "dependency-unavailable: openpgp-boundary: the OpenPGP boundary is unavailable"
+    },
+    "gpg_executable_present": false,
+    "gpgv_executable_present": true,
+    "image_config_digest": "sha256:6d951d0f45014a7597669d01bb1ea3bf29851daf99ce4e7d89880f1f6bd632d8",
+    "registry_manifest_digest": "sha256:a0a298391f2973c78455779a295f6d6dc24cee9d33879f10a3895f846b507533",
+    "source_identity": {
+      "git_head": "b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6",
+      "worktree": "dirty",
+      "full_policy": "prodbox-source-manifest",
+      "full_policy_version": 1,
+      "full_policy_digest": "4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae",
+      "full_manifest_digest": "03bbe77a01f1de187f0c635c82406db5f8d6083b71f6a4dbf99048193934f41a",
+      "executable_policy": "prodbox-source-manifest-executable",
+      "executable_policy_version": 1,
+      "executable_policy_digest": "2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b",
+      "executable_manifest_digest": "19e1018c08f90e5a9441d9fecb37d8d0be2018afed7c6a16aa166a633e30de60"
+    }
+  },
+  "offline_law": {
+    "production_boundary": "Prodbox.Bootstrap.Broker.ProductionPgp.productionPgpReady requires gpg and /dev/shm; runGpg executes /usr/bin/gpg",
+    "artifact_probe": [
+      "docker",
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--read-only",
+      "--cpus",
+      "0.1",
+      "--memory",
+      "128m",
+      "--memory-swap",
+      "128m",
+      "--entrypoint",
+      "/bin/sh",
+      "sha256:6d951d0f45014a7597669d01bb1ea3bf29851daf99ce4e7d89880f1f6bd632d8",
+      "-c",
+      "test -x /usr/bin/gpg && test -d /dev/shm"
+    ],
+    "observed_superseded_exit": 1,
+    "expected_replacement_exit": 0,
+    "replacement_crypto_check": "Generate an ephemeral rsa2048 encryption recipient, encrypt and decrypt a fixed public probe, and remove its /dev/shm home and agent inside a disposable network-isolated container."
+  },
+  "causal_profile": {
+    "replicas_old_and_new": 1,
+    "cpu_old_and_new": "100m",
+    "memory_old_and_new": "128Mi",
+    "ephemeral_storage_old_and_new": "256Mi",
+    "deployment_rollout_timeout_seconds_old_and_new": 60,
+    "persistence_change": "none",
+    "background_load_change": "none",
+    "fault_schedule_change": "none",
+    "mapping": "Only the final image's missing GnuPG package/helpers are restored; no envelope or timeout is increased.",
+    "swap_allowance_bytes_old_and_new": 0
+  },
+  "siblings_observed_in_superseded_image": {
+    "present": [
+      "curl",
+      "git",
+      "tini",
+      "kubectl",
+      "pulumi",
+      "pulumi-language-yaml",
+      "aws",
+      "prodbox",
+      "pulumi-resource-aws-7.44.0"
+    ],
+    "absent_as_required": [
+      "/root/.ghcup",
+      "/root/.cabal",
+      "/opt/build/src",
+      "/opt/build/app"
+    ]
+  },
+  "limitations": [
+    "This records an artifact prerequisite and the real Broker refusal, not whole-deployment qualification.",
+    "Replacement artifact validation, live canary and two audit-clean cycles are not inferred from the package edit.",
+    "The image contains only public software and portable non-secret configuration; no secret fixture is read or hashed."
+  ],
+  "replacement_artifact_result": {
+    "image_config_digest": "sha256:b80df0945e2d185260e415ac331b8ddd70ccb6214cd3a274481f8aacdf63d237",
+    "architecture": "amd64",
+    "build_exit": 0,
+    "build_wall_seconds": 65.11,
+    "crypto_exit": 0,
+    "crypto_wall_seconds": 3.26,
+    "kernel_profiles_old_and_new": {
+      "cpu_max": "10000 100000",
+      "memory_max": 134217728,
+      "memory_swap_max": 0
+    },
+    "remaining_probe_containers": 0,
+    "scope": "Offline runtime artifact; composed live Broker and two audit-clean cycles remain pending."
+  }
+}

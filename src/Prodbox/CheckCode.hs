@@ -109,6 +109,7 @@ module Prodbox.CheckCode
   , forceViolationFindings
   , generatedSectionRules
   , generatedSectionsReconcilerViolations
+  , processGeneratedArtifacts
   , gatewayProbeViolations
   , gatewayChartStaticViolations
   , gatewayChartStaticsConformanceViolations
@@ -196,7 +197,7 @@ module Prodbox.CheckCode
 where
 
 import Control.Exception (evaluate)
-import Control.Monad (filterM, forM)
+import Control.Monad (filterM, foldM, forM)
 import Data.ByteString.Char8 qualified as ByteStringChar8
 import Data.Char (isAlpha, isAlphaNum, isAsciiLower, isAsciiUpper, isDigit, isSpace, toLower)
 import Data.Either (rights)
@@ -244,7 +245,7 @@ import Prodbox.Capacity.Config (defaultResourcePlan)
 import Prodbox.Capacity.MeasuredProfile (certifyMeasuredProfiles)
 import Prodbox.Config.Tier0
   ( decodeProjectConfigDhall
-  , defaultProjectConfig
+  , isCanonicalUnauthoredProjectConfigDhall
   , renderProjectConfigDhall
   )
 import Prodbox.ControlPlane.Runtime (controlPlaneCapacityPlan)
@@ -1030,9 +1031,9 @@ checkTier0SiblingDrift repoRoot = do
       onDisk <- readFileStrict tier0Path
       decoded <- decodeProjectConfigDhall tier0Path
       case decoded of
-        Left err
-          | onDisk == unauthoredTemplate -> pure []
-          | otherwise -> pure [tier0MalformedFinding tier0Path err]
+        Left err -> do
+          unauthoredTemplate <- isCanonicalUnauthoredProjectConfigDhall (Text.pack onDisk)
+          pure [tier0MalformedFinding tier0Path err | not unauthoredTemplate]
         Right config ->
           pure
             ( tier0DriftFindings
@@ -1040,8 +1041,6 @@ checkTier0SiblingDrift repoRoot = do
                 (Text.unpack (renderProjectConfigDhall config))
                 onDisk
             )
- where
-  unauthoredTemplate = Text.unpack (renderProjectConfigDhall defaultProjectConfig)
 
 -- | The malformed-file finding. Distinct from a drift finding because there is
 -- no decoded record to re-render, so no field can be named.
@@ -2037,61 +2036,64 @@ runDoctrineAlignmentCheck repoRoot = do
   repoPaths <- listRepoOwnedPaths repoRoot
   let surfaceViolations =
         map (("- " ++) . renderDoctrineViolation) (doctrineViolationsInPaths repoPaths)
-  serviceErrorViolations <- checkServiceErrorRetryableLiteral repoRoot
-  inlineRetryListViolations <- checkInlineRetrySubstringLists repoRoot
-  planOptionsHonoredViolations' <- checkPlanOptionsHonored repoRoot
+  serviceErrorViolations <- forceViolationFindings (checkServiceErrorRetryableLiteral repoRoot)
+  inlineRetryListViolations <- forceViolationFindings (checkInlineRetrySubstringLists repoRoot)
+  planOptionsHonoredViolations' <- forceViolationFindings (checkPlanOptionsHonored repoRoot)
   -- Sprint 4.27: the create-site coverage lint (the §3.1 totality gate
   -- over every `aws`/`pulumi` create call site, now generalized from
   -- IAM-only to every AWS-resource create verb via
   -- 'awsCreateSiteViolations') is a doctrine-alignment check, so it is
   -- wired here rather than alongside the Haskell-style lints.
-  createCallSiteViolations <- checkCreateCallSiteCoverage repoRoot
+  createCallSiteViolations <- forceViolationFindings (checkCreateCallSiteCoverage repoRoot)
   -- Sprint 7.43: the declaration of what reaches the write-ahead ownership lane
   -- and what does not, kept true against the registry and the source it
   -- describes. Wired beside the create-site gate because it answers the other
   -- half of the same question: not whether a create site is registered, but
   -- whether it is recorded before it acts.
-  createRecordCoverageFindings <- checkCreateRecordCoverage repoRoot
-  awsRemedyFindings <- checkAwsRemedyPolicy repoRoot
+  createRecordCoverageFindings <- forceViolationFindings (checkCreateRecordCoverage repoRoot)
+  awsRemedyFindings <- forceViolationFindings (checkAwsRemedyPolicy repoRoot)
   -- Sprint 0.28: the production `PRODBOX_*` read registry. Wired beside the
   -- create-site coverage gate because it is the same shape — a registry the
   -- worktree must agree with, rather than a claim about it.
-  productionEnvVarViolations <- checkProductionEnvVarReads repoRoot
+  productionEnvVarViolations <- forceViolationFindings (checkProductionEnvVarReads repoRoot)
   -- Sprint 1.91: the compiled-AWS-coordinate registry. Same register-or-fail
   -- shape as the read registry above, over the partition config_doctrine.md § 0
   -- draws between a value AWS fixes and a value an operator chooses.
-  awsCoordinateViolations <- checkAwsCoordinateLiterals repoRoot
+  awsCoordinateViolations <- forceViolationFindings (checkAwsCoordinateLiterals repoRoot)
   -- Sprint 1.92: the closed audit of deployment-varying authoring fields and
   -- prodbox-fixed protocol identities. This complements the open-ended AWS
   -- coordinate registry with an exact, intentionally bounded field set.
-  deploymentConfigOwnershipFindings <- checkDeploymentConfigOwnership repoRoot
+  deploymentConfigOwnershipFindings <-
+    forceViolationFindings (checkDeploymentConfigOwnership repoRoot)
   -- Sprint 2.52: Gateway object-store access consumes one validated endpoint
   -- observation and has no compiled service-address escape.
-  gatewayMinioEndpointFindings <- checkGatewayMinioEndpointOwnership repoRoot
+  gatewayMinioEndpointFindings <- forceViolationFindings (checkGatewayMinioEndpointOwnership repoRoot)
   -- Sprint 3.42: chart values project the validated endpoint and served host,
   -- and import the object-store vocabulary's one state-bucket identity.
-  chartDeploymentContextFindings <- checkChartDeploymentContextOwnership repoRoot
+  chartDeploymentContextFindings <-
+    forceViolationFindings (checkChartDeploymentContextOwnership repoRoot)
   -- Sprint 4.90: host probes and lifecycle capabilities consume the context
   -- already sealed by Tier-0, while every state-store path imports one bucket
   -- identity.
-  hostLifecycleContextFindings <- checkHostLifecycleContextOwnership repoRoot
+  hostLifecycleContextFindings <- forceViolationFindings (checkHostLifecycleContextOwnership repoRoot)
   -- Sprint 5.37: harness deployment answers are explicit fixture/run inputs,
   -- are validated before the one Tier-0 write, and contain no retired live
   -- deployment literal compiled into Haskell.
-  harnessDeploymentConfigFindings <- checkHarnessDeploymentConfigOwnership repoRoot
+  harnessDeploymentConfigFindings <-
+    forceViolationFindings (checkHarnessDeploymentConfigOwnership repoRoot)
   -- Sprint 7.12: substrate equivalence is a structural invariant — a shared
   -- platform component's chart version / image must come from the single
   -- 'Prodbox.ContainerImage' pin, never be re-pinned on a per-substrate
   -- branch. This is a doctrine-alignment check, so it is wired here.
-  substrateImagePinningViolations' <- checkSubstrateImagePinning repoRoot
+  substrateImagePinningViolations' <- forceViolationFindings (checkSubstrateImagePinning repoRoot)
   -- Sprint 5.47: a cleanup-authority guard with no production consumer is
   -- registered rather than invisible. Wired beside the registries above
   -- because it is the same register-or-fail shape, over the claims a leak
   -- falsifies rather than over a value an operator supplies.
-  typedGuardConsumptionViolations <- checkTypedGuardConsumption repoRoot
+  typedGuardConsumptionViolations <- forceViolationFindings (checkTypedGuardConsumption repoRoot)
   -- Sprint 5.48: the TLA+ directory and the model registry agree, and at least
   -- one registered configuration is expected to fail.
-  tlaRegistrationFindings <- checkTlaModelRegistration repoRoot
+  tlaRegistrationFindings <- forceViolationFindings (checkTlaModelRegistration repoRoot)
   case surfaceViolations
     ++ map ("- " ++) serviceErrorViolations
     ++ map ("- " ++) inlineRetryListViolations
@@ -3001,7 +3003,9 @@ chartDeploymentContextRequiredFragments =
       , "Tier0.minio_endpoint = minioEndpoint"
       , "\"endpointUrl\" .= minioEndpoint"
       , "renderBootstrapBrokerConfigDhall clusterId minioEndpoint"
-      , "valuesForLifecycleAuthority clusterId minioEndpoint"
+      , "valuesForLifecycleAuthorityWithRpcBirth birthConfig clusterId minioEndpoint"
+      , "deploymentRpcRegistration (validatedDeploymentContext settings)"
+      , "Tier0.rpc_registration = registration"
       , "Text.pack defaultObjectStoreBucket"
       ]
     )
@@ -11673,10 +11677,6 @@ generatedAssetDriftMessage targetPath registryKey =
     , "Run `prodbox dev docs generate` to update."
     ]
 
-missingGeneratedTargetMessage :: GeneratedSectionRule -> String
-missingGeneratedTargetMessage rule =
-  missingGeneratedFileMessage (generatedSectionPath rule) (generatedSectionKey rule)
-
 missingGeneratedFileMessage :: FilePath -> String -> String
 missingGeneratedFileMessage path registryKey =
   "Missing generated documentation target `"
@@ -11687,7 +11687,13 @@ missingGeneratedFileMessage path registryKey =
 
 processGeneratedArtifacts :: FilePath -> Bool -> IO [Either String (FilePath, String, Bool)]
 processGeneratedArtifacts repoRoot writeEnabled = do
-  sectionResults <- forM generatedSectionRules (processGeneratedSection repoRoot writeEnabled)
+  sectionResults <-
+    forM (dedupeSorted (map generatedSectionPath generatedSectionRules)) $ \path ->
+      processGeneratedSections
+        repoRoot
+        writeEnabled
+        path
+        [rule | rule <- generatedSectionRules, generatedSectionPath rule == path]
   fileResults <- forM trackingGeneratedPaths (processTrackedGeneratedPath repoRoot writeEnabled)
   untrackedManpageViolations <- checkUntrackedGeneratedManpages repoRoot
   pure (sectionResults ++ fileResults ++ map Left untrackedManpageViolations)
@@ -11719,24 +11725,33 @@ untrackedGeneratedManpageMessage path =
 
 processGeneratedSection
   :: FilePath -> Bool -> GeneratedSectionRule -> IO (Either String (FilePath, String, Bool))
-processGeneratedSection repoRoot writeEnabled rule = do
-  let targetPath = repoRoot </> generatedSectionPath rule
+processGeneratedSection repoRoot writeEnabled rule =
+  processGeneratedSections repoRoot writeEnabled (generatedSectionPath rule) [rule]
+
+processGeneratedSections
+  :: FilePath
+  -> Bool
+  -> FilePath
+  -> [GeneratedSectionRule]
+  -> IO (Either String (FilePath, String, Bool))
+processGeneratedSections repoRoot writeEnabled path rules = do
+  let targetPath = repoRoot </> path
   fileExists <- doesFileExist targetPath
   if not fileExists
-    then pure (Left (missingGeneratedTargetMessage rule))
+    then
+      pure (Left (missingGeneratedFileMessage path (intercalate ", " (map generatedSectionKey rules))))
     else do
       contents <- readFileStrict targetPath
       let forcedContents = length contents `seq` contents
-      pure $
-        case spliceGeneratedSection forcedContents rule of
-          Left err -> Left err
-          Right expectedContents ->
-            if writeEnabled
-              then Right (targetPath, expectedContents, forcedContents /= expectedContents)
-              else
-                if forcedContents == expectedContents
-                  then Right (targetPath, expectedContents, False)
-                  else Left (generatedSectionDriftMessage targetPath rule)
+          splice current rule = do
+            expected <- spliceGeneratedSection current rule
+            if writeEnabled || current == expected
+              then Right expected
+              else Left (generatedSectionDriftMessage targetPath rule)
+      -- Plan one complete write per file, retaining every preceding section splice.
+      pure $ do
+        expectedContents <- foldM splice forcedContents rules
+        Right (targetPath, expectedContents, forcedContents /= expectedContents)
 
 processTrackedGeneratedPath
   :: FilePath -> Bool -> TrackedGeneratedPath -> IO (Either String (FilePath, String, Bool))

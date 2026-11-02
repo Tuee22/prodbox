@@ -17,10 +17,16 @@ module Prodbox.Lifecycle.CredentialProvisioner.AwsAdminKubernetes
   , renderAwsAdminWorkerReceiptCaptureSource
   , renderAwsAdminJob
   , productionAwsAdminKubernetesBoundary
+  , operationAwsAdminKubernetesBoundary
+  , OperationAwsAdminKubernetesBoundary
+  , OperationAwsAdminKubernetesError (..)
+  , verifyOperationAwsAdminKubernetesBoundary
+  , coordinateOperationAwsAdminProvisioning
   )
 where
 
 import Control.Concurrent (threadDelay)
+import Control.Exception (IOException, try)
 import Control.Monad (unless)
 import Data.Aeson
   ( FromJSON (..)
@@ -34,6 +40,7 @@ import Data.Aeson
   , (.:?)
   , (.=)
   )
+import Data.Bifunctor (bimap, first)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as ByteString8
@@ -44,6 +51,8 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
+import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import Numeric.Natural (Natural)
 import Prodbox.CLI.Output (writeDiagnosticLine)
 import Prodbox.Capacity.Config qualified as Capacity
@@ -51,18 +60,22 @@ import Prodbox.Capacity.Render qualified as CapacityRender
 import Prodbox.ContainerImage qualified as ContainerImage
 import Prodbox.ControlPlane.AwsAdminProvisionerClient
   ( AwsAdminPreparedProvisioning (..)
+  , AwsAdminProvisionerClient
   )
 import Prodbox.ControlPlane.AwsAdminProvisionerEndpoint
   ( AwsAdminPodObservation (..)
   , AwsAdminProvisionerChallenge (..)
   )
-import Prodbox.Error (AppError, errorMsg)
+import Prodbox.Error (AppError, errorMsg, fatalError)
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminCoordinator
   ( AwsAdminCleanupBinding (..)
+  , AwsAdminCoordinatorError
   , AwsAdminKubernetesBoundary (..)
+  , coordinateAwsAdminProvisioning
   )
 import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
-  ( classifyAwsAdminWorkerReceiptTransport
+  ( AwsAdminWorkerReceipt
+  , classifyAwsAdminWorkerReceiptTransport
   , decodeAwsAdminWorkerReceipt
   , decodeAwsAdminWorkerReceiptTextEnvelope
   , renderAwsAdminWorkerReceiptTransportObservation
@@ -109,16 +122,28 @@ import Prodbox.Lifecycle.CredentialProvisioner.RuntimeSecurity
   )
 import Prodbox.Lifecycle.Lease (authorityTimeMicros)
 import Prodbox.Lifecycle.TargetCommitIntent (targetValueDigestText)
+import Prodbox.Lifecycle.Teardown.EphemeralKubectl
+  ( OperationHomeKubectl
+  , operationHomeKubectlMatches
+  , pauseOperationHomeKubectl
+  , runOperationHomeKubectlBytesWithInput
+  )
 import Prodbox.Observation.AbsenceMarker
   ( AbsenceProbe (..)
-  , reportsAbsence
+  , reportsAbsenceBytes
   )
+import Prodbox.Settings (Credentials)
 import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
+  , OperationProcessOutput
+  , OperationSubprocesses
   , ProcessOutput (..)
   , Subprocess (..)
   , captureSubprocessBounded
   , captureSubprocessWithInputBounded
+  , operationProcessExitCode
+  , operationProcessStderr
+  , operationProcessStdout
   )
 import System.Exit (ExitCode (..))
 
@@ -457,7 +482,87 @@ productionAwsAdminKubernetesBoundary
   -> AwsAdminJobResources
   -> IO (Either Text Natural)
   -> AwsAdminKubernetesBoundary IO
-productionAwsAdminKubernetesBoundary connection imageRepository resources acquireHeartbeat =
+productionAwsAdminKubernetesBoundary connection =
+  awsAdminKubernetesBoundary (HostAwsAdminKubectl connection)
+
+-- Only the canonical namespace/subject argument prefix is retained from the
+-- connection. The client owns its absolute tool, environment, directory and
+-- captured home projection, including every resumed Job and cleanup read.
+operationAwsAdminKubernetesBoundary
+  :: OperationHomeKubectl
+  -> CredentialProvisionerJobConnection
+  -> Text
+  -> AwsAdminJobResources
+  -> IO (Either Text OperationAwsAdminKubernetesBoundary)
+operationAwsAdminKubernetesBoundary client connection image resources = do
+  checked <- pauseOperationHomeKubectl client 0
+  pure $ case checked of
+    Left cause -> Left (Text.pack (show cause))
+    Right () ->
+      Right
+        ( OperationAwsAdminKubernetesBoundary
+            client
+            ( awsAdminKubernetesBoundary
+                (OwnedAwsAdminKubectl client (credentialProvisionerKubectlArguments connection []))
+                image
+                resources
+                (ownedHeartbeat client)
+            )
+        )
+
+-- This constructor is private: an ordinary credential tail cannot accept the
+-- legacy host runner or a caller-authored record of Kubernetes callbacks.
+data OperationAwsAdminKubernetesBoundary
+  = OperationAwsAdminKubernetesBoundary !OperationHomeKubectl !(AwsAdminKubernetesBoundary IO)
+
+data OperationAwsAdminKubernetesError
+  = OperationAwsAdminClientRefused !Text
+  | OperationAwsAdminCoordinateRefused !AwsAdminCoordinatorError
+  deriving (Eq, Show)
+
+verifyOperationAwsAdminKubernetesBoundary
+  :: OperationSubprocesses -> OperationAwsAdminKubernetesBoundary -> IO (Either Text ())
+verifyOperationAwsAdminKubernetesBoundary original (OperationAwsAdminKubernetesBoundary client _)
+  | not (operationHomeKubectlMatches original client) =
+      pure (Left "credential boundary belongs to another original operation")
+  | otherwise = firstApp id <$> pauseOperationHomeKubectl client 0
+
+coordinateOperationAwsAdminProvisioning
+  :: AwsAdminProvisionerClient IO
+  -> OperationAwsAdminKubernetesBoundary
+  -> Credentials
+  -> AwsAdminPermitIntent
+  -> IO (Either OperationAwsAdminKubernetesError AwsAdminWorkerReceipt)
+coordinateOperationAwsAdminProvisioning client (OperationAwsAdminKubernetesBoundary owned boundary) credentials intent = do
+  checked <- pauseOperationHomeKubectl owned 0
+  case checked of
+    Left cause -> pure (Left (OperationAwsAdminClientRefused (Text.pack (show cause))))
+    Right () ->
+      first OperationAwsAdminCoordinateRefused
+        <$> coordinateAwsAdminProvisioning client boundary credentials intent
+
+data AwsAdminKubectl
+  = HostAwsAdminKubectl !CredentialProvisionerJobConnection
+  | OwnedAwsAdminKubectl !OperationHomeKubectl ![String]
+
+ownedHeartbeat :: OperationHomeKubectl -> IO (Either Text Natural)
+ownedHeartbeat client = do
+  checked <- pauseOperationHomeKubectl client 0
+  case checked of
+    Left cause -> pure (Left (Text.pack (show cause)))
+    Right () -> do
+      now <- try getPOSIXTime :: IO (Either IOException POSIXTime)
+      pure $ case now of
+        Left _ -> Left "owned AWS-admin heartbeat unavailable"
+        Right value -> Right (fromInteger (max 0 (floor (toRational value * 1000000) :: Integer)))
+
+awsAdminKubernetesBoundary
+  :: AwsAdminKubectl
+  -> Text
+  -> AwsAdminJobResources
+  -> IO (Either Text Natural)
+  -> AwsAdminKubernetesBoundary IO
+awsAdminKubernetesBoundary executor imageRepository resources acquireHeartbeat =
   AwsAdminKubernetesBoundary
     { acquireAwsAdminJobHeartbeat = acquireHeartbeat
     , createAwsAdminJob = createJob
@@ -477,9 +582,9 @@ productionAwsAdminKubernetesBoundary connection imageRepository resources acquir
             (LazyByteString.toStrict (encode manifest))
             ["create", "--filename=-", "--output=json"]
         case result of
-          Right output | processExitCode output == ExitSuccess -> pure (Right ())
+          Right output | awsAdminOutputExitCode output == ExitSuccess -> pure (Right ())
           _ -> do
-            recovered <- observeExactJob connection imageRepository heartbeat prepared
+            recovered <- observeExactJob executor imageRepository heartbeat prepared
             pure $ case recovered of
               Right (Just _) -> Right ()
               Right Nothing -> Left "Job create failed and exact Job is absent"
@@ -488,10 +593,10 @@ productionAwsAdminKubernetesBoundary connection imageRepository resources acquir
   observeJobPod heartbeat prepared =
     fmap
       (either (Left . renderError) Right)
-      ( awaitAwsAdminPodObservationWith
+      ( awaitAwsAdminPodObservationChecked
           podObservationAttempts
-          (threadDelay observationDelayMicros)
-          (observeExactPodOnce connection imageRepository heartbeat prepared)
+          (pauseAwsAdminKubectl executor observationDelayMicros)
+          (observeExactPodOnce executor imageRepository heartbeat prepared)
       )
 
   attachWorker permit frame = do
@@ -509,9 +614,9 @@ productionAwsAdminKubernetesBoundary connection imageRepository resources acquir
         ]
     case attempted of
       Left err -> pure (Left (errorMsg err))
-      Right output -> case processExitCode output of
+      Right output -> case awsAdminOutputExitCode output of
         ExitSuccess -> do
-          let attachedBytes = ByteString8.pack (processStdout output)
+          let attachedBytes = awsAdminOutputStdout output
           writeReceiptTransportDiagnostic AwsAdminWorkerReceiptFromAttach attachedBytes
           (source, receiptBytes) <-
             recoverEmptyAwsAdminWorkerReceiptCaptureWith
@@ -528,13 +633,13 @@ productionAwsAdminKubernetesBoundary connection imageRepository resources acquir
                     (decodeAwsAdminWorkerReceiptCapture source receiptBytes)
                 )
             )
-        ExitFailure _ -> pure (Left (Text.pack (processStderr output)))
+        ExitFailure _ -> pure (Left (TextEncoding.decodeLatin1 (awsAdminOutputStderr output)))
 
   readWorkerReceiptLog podName = do
     attempted <-
       runBounded
         receiptLogLimits
-        connection
+        executor
         [ "logs"
         , "pod/" <> Text.unpack podName
         , "--container"
@@ -542,12 +647,12 @@ productionAwsAdminKubernetesBoundary connection imageRepository resources acquir
         ]
     pure $ case attempted of
       Right output
-        | processExitCode output == ExitSuccess ->
-            Just (ByteString8.pack (processStdout output))
+        | awsAdminOutputExitCode output == ExitSuccess ->
+            Just (awsAdminOutputStdout output)
       _ -> Nothing
 
   deleteJob heartbeat prepared supplied = do
-    observed <- observeExactJob connection imageRepository heartbeat prepared
+    observed <- observeExactJob executor imageRepository heartbeat prepared
     case observed of
       Left err -> pure (Left (renderError err))
       Right Nothing -> pure (Right ())
@@ -561,16 +666,16 @@ productionAwsAdminKubernetesBoundary connection imageRepository resources acquir
             pure $ case attempted of
               Left err -> Left (errorMsg err)
               Right output
-                | processExitCode output == ExitSuccess || isNotFound output -> Right ()
-                | otherwise -> Left (Text.pack (processStderr output))
+                | awsAdminOutputExitCode output == ExitSuccess || isNotFound output -> Right ()
+                | otherwise -> Left (TextEncoding.decodeLatin1 (awsAdminOutputStderr output))
         | otherwise -> pure (Left "Job UID changed before deletion")
 
   observeAbsent prepared supplied = do
-    result <- stableAbsence connection 12 prepared supplied
+    result <- stableAbsence executor 12 prepared supplied
     pure (either (Left . renderError) Right result)
 
   runWithInput limits input args =
-    captureSubprocessWithInputBounded limits input (kubectl connection args)
+    runInput limits input executor args
 
 bindingForPermit :: SignedAwsAdminPermit -> AwsAdminCleanupBinding
 bindingForPermit permit =
@@ -675,16 +780,16 @@ instance FromJSON ServiceAccountDto where
     ServiceAccountDto <$> metadata .: "name" <*> metadata .: "uid"
 
 observeExactJob
-  :: CredentialProvisionerJobConnection
+  :: AwsAdminKubectl
   -> Text
   -> Natural
   -> AwsAdminPreparedProvisioning
   -> IO (Either AwsAdminKubernetesError (Maybe JobDto))
-observeExactJob connection imageRepository heartbeat prepared = do
-  attempted <- runBounded observeLimits connection ["get", "--raw=" <> jobRawPath prepared]
+observeExactJob executor imageRepository heartbeat prepared = do
+  attempted <- runBounded observeLimits executor ["get", "--raw=" <> jobRawPath prepared]
   pure $ case attempted of
     Left err -> Left (AwsAdminKubernetesObservationFailed (errorMsg err))
-    Right output -> case processExitCode output of
+    Right output -> case awsAdminOutputExitCode output of
       ExitFailure _ | isNotFound output -> Right Nothing
       ExitFailure _ -> Left (AwsAdminKubernetesObservationFailed "exact Job is unobservable")
       ExitSuccess ->
@@ -693,7 +798,7 @@ observeExactJob connection imageRepository heartbeat prepared = do
             imageRepository
             heartbeat
             prepared
-            (ByteString8.pack (processStdout output))
+            (awsAdminOutputStdout output)
 
 decodeAndValidateJob
   :: Text
@@ -725,7 +830,15 @@ awaitAwsAdminPodObservationWith
   -> IO ()
   -> IO (Either AwsAdminKubernetesError AwsAdminPodConvergence)
   -> IO (Either AwsAdminKubernetesError (Maybe AwsAdminPodObservation))
-awaitAwsAdminPodObservationWith attempts waitForNext observe = seek attempts
+awaitAwsAdminPodObservationWith attempts waitForNext =
+  awaitAwsAdminPodObservationChecked attempts (Right <$> waitForNext)
+
+awaitAwsAdminPodObservationChecked
+  :: Int
+  -> IO (Either AwsAdminKubernetesError ())
+  -> IO (Either AwsAdminKubernetesError AwsAdminPodConvergence)
+  -> IO (Either AwsAdminKubernetesError (Maybe AwsAdminPodObservation))
+awaitAwsAdminPodObservationChecked attempts waitForNext observe = seek attempts
  where
   seek remaining
     | remaining <= 0 = pure observationBudgetExhausted
@@ -737,7 +850,11 @@ awaitAwsAdminPodObservationWith attempts waitForNext observe = seek attempts
           Right (AwsAdminPodReady pod) -> pure (Right (Just pod))
           Right AwsAdminPodTransitional
             | remaining == 1 -> pure observationBudgetExhausted
-            | otherwise -> waitForNext >> seek (remaining - 1)
+            | otherwise -> do
+                paused <- waitForNext
+                case paused of
+                  Left cause -> pure (Left cause)
+                  Right () -> seek (remaining - 1)
 
   observationBudgetExhausted =
     Left
@@ -746,13 +863,13 @@ awaitAwsAdminPodObservationWith attempts waitForNext observe = seek attempts
       )
 
 observeExactPodOnce
-  :: CredentialProvisionerJobConnection
+  :: AwsAdminKubectl
   -> Text
   -> Natural
   -> AwsAdminPreparedProvisioning
   -> IO (Either AwsAdminKubernetesError AwsAdminPodConvergence)
-observeExactPodOnce connection imageRepository heartbeat prepared = do
-  jobResult <- observeExactJob connection imageRepository heartbeat prepared
+observeExactPodOnce executor imageRepository heartbeat prepared = do
+  jobResult <- observeExactJob executor imageRepository heartbeat prepared
   case jobResult of
     Left err -> pure (Left err)
     Right Nothing -> pure (Right AwsAdminPodAbsent)
@@ -760,31 +877,31 @@ observeExactPodOnce connection imageRepository heartbeat prepared = do
       podsResult <-
         runBounded
           observeLimits
-          connection
+          executor
           ["get", "pods", "--selector=job-name=" <> Text.unpack (jobDtoName job), "--output=json"]
       serviceAccountResult <-
-        runBounded observeLimits connection ["get", "--raw=" <> serviceAccountRawPath]
+        runBounded observeLimits executor ["get", "--raw=" <> serviceAccountRawPath]
       pure $ do
         podsOutput <- firstApp AwsAdminKubernetesObservationFailed podsResult
         unless
-          (processExitCode podsOutput == ExitSuccess)
+          (awsAdminOutputExitCode podsOutput == ExitSuccess)
           (Left (AwsAdminKubernetesObservationFailed "Job Pods are unobservable"))
         PodListDto pods <-
           firstText
             AwsAdminKubernetesObservationFailed
-            (eitherDecodeStrict' (ByteString8.pack (processStdout podsOutput)))
+            (eitherDecodeStrict' (awsAdminOutputStdout podsOutput))
         pod <- case pods of
           [onlyPod] -> Right onlyPod
           [] -> Left (AwsAdminKubernetesObservationFailed "Job has no Pod")
           _ -> Left (AwsAdminKubernetesObservationFailed "Job has multiple Pods")
         saOutput <- firstApp AwsAdminKubernetesObservationFailed serviceAccountResult
         unless
-          (processExitCode saOutput == ExitSuccess)
+          (awsAdminOutputExitCode saOutput == ExitSuccess)
           (Left (AwsAdminKubernetesObservationFailed "ServiceAccount is unobservable"))
         ServiceAccountDto saName saUid <-
           firstText
             AwsAdminKubernetesObservationFailed
-            (eitherDecodeStrict' (ByteString8.pack (processStdout saOutput)))
+            (eitherDecodeStrict' (awsAdminOutputStdout saOutput))
         validatePod imageRepository heartbeat prepared job saName saUid pod
 
 validatePod
@@ -849,38 +966,44 @@ validatePod imageRepository heartbeat prepared job serviceAccountName serviceAcc
       }
 
 stableAbsence
-  :: CredentialProvisionerJobConnection
+  :: AwsAdminKubectl
   -> Int
   -> AwsAdminPreparedProvisioning
   -> Maybe AwsAdminCleanupBinding
   -> IO (Either AwsAdminKubernetesError Bool)
-stableAbsence connection attempts prepared supplied = seek attempts False
+stableAbsence executor attempts prepared supplied = seek attempts False
  where
   seek remaining sawZero
     | remaining <= 0 = pure (Left AwsAdminKubernetesStillPresent)
     | otherwise = do
-        observed <- observeAbsenceOnce connection prepared supplied
+        observed <- observeAbsenceOnce executor prepared supplied
         case observed of
           Left err -> pure (Left err)
           Right True
             | sawZero -> pure (Right True)
-            | otherwise -> threadDelay visibilityGraceMicros >> seek (remaining - 1) True
-          Right False -> threadDelay observationDelayMicros >> seek (remaining - 1) False
+            | otherwise -> afterPause visibilityGraceMicros (seek (remaining - 1) True)
+          Right False -> afterPause observationDelayMicros (seek (remaining - 1) False)
+
+  afterPause micros next = do
+    paused <- pauseAwsAdminKubectl executor micros
+    case paused of
+      Left cause -> pure (Left cause)
+      Right () -> next
 
 observeAbsenceOnce
-  :: CredentialProvisionerJobConnection
+  :: AwsAdminKubectl
   -> AwsAdminPreparedProvisioning
   -> Maybe AwsAdminCleanupBinding
   -> IO (Either AwsAdminKubernetesError Bool)
-observeAbsenceOnce connection prepared supplied = do
+observeAbsenceOnce executor prepared supplied = do
   -- During foreground observation Kubernetes may retain the exact Job with a
   -- deletion timestamp. Absence therefore uses a UID-only read, not the
   -- creation/attestation validator that correctly rejects deleting objects.
-  jobResult <- observeNamedJob connection prepared
+  jobResult <- observeNamedJob executor prepared
   podsResult <-
     runBounded
       observeLimits
-      connection
+      executor
       ["get", "pods", "--selector=job-name=" <> Text.unpack jobName, "--output=json"]
   pure $ do
     jobAbsent <- case jobResult of
@@ -893,12 +1016,12 @@ observeAbsenceOnce connection prepared supplied = do
         _ -> Right False
     output <- firstApp AwsAdminKubernetesAbsenceUnobservable podsResult
     unless
-      (processExitCode output == ExitSuccess)
+      (awsAdminOutputExitCode output == ExitSuccess)
       (Left (AwsAdminKubernetesAbsenceUnobservable "owned Pods are unobservable"))
     PodListDto pods <-
       firstText
         AwsAdminKubernetesAbsenceUnobservable
-        (eitherDecodeStrict' (ByteString8.pack (processStdout output)))
+        (eitherDecodeStrict' (awsAdminOutputStdout output))
     let ownedByExpected (OwnerDto kind name uid controller) =
           kind == "Job"
             && name == jobName
@@ -910,21 +1033,21 @@ observeAbsenceOnce connection prepared supplied = do
   jobName = awsAdminChallengeJobName (awsAdminPreparedChallenge prepared)
 
 observeNamedJob
-  :: CredentialProvisionerJobConnection
+  :: AwsAdminKubectl
   -> AwsAdminPreparedProvisioning
   -> IO (Either AwsAdminKubernetesError (Maybe JobDto))
-observeNamedJob connection prepared = do
-  attempted <- runBounded observeLimits connection ["get", "--raw=" <> jobRawPath prepared]
+observeNamedJob executor prepared = do
+  attempted <- runBounded observeLimits executor ["get", "--raw=" <> jobRawPath prepared]
   pure $ case attempted of
     Left err -> Left (AwsAdminKubernetesAbsenceUnobservable (errorMsg err))
-    Right output -> case processExitCode output of
+    Right output -> case awsAdminOutputExitCode output of
       ExitFailure _ | isNotFound output -> Right Nothing
       ExitFailure _ -> Left (AwsAdminKubernetesAbsenceUnobservable "named Job is unobservable")
       ExitSuccess ->
         Just
           <$> firstText
             AwsAdminKubernetesAbsenceUnobservable
-            (eitherDecodeStrict' (ByteString8.pack (processStdout output)))
+            (eitherDecodeStrict' (awsAdminOutputStdout output))
 
 deleteOptions :: Text -> Value
 deleteOptions uid =
@@ -957,10 +1080,60 @@ kubectl connection arguments =
 
 runBounded
   :: BoundedSubprocessLimits
-  -> CredentialProvisionerJobConnection
+  -> AwsAdminKubectl
   -> [String]
-  -> IO (Either AppError ProcessOutput)
-runBounded limits connection = captureSubprocessBounded limits . kubectl connection
+  -> IO (Either AppError AwsAdminCommandOutput)
+runBounded limits executor arguments = case executor of
+  HostAwsAdminKubectl connection ->
+    fmap legacyCommandOutput <$> captureSubprocessBounded limits (kubectl connection arguments)
+  OwnedAwsAdminKubectl client prefix ->
+    ownedResult
+      <$> runOperationHomeKubectlBytesWithInput client limits ByteString.empty (prefix <> arguments)
+
+runInput
+  :: BoundedSubprocessLimits
+  -> ByteString
+  -> AwsAdminKubectl
+  -> [String]
+  -> IO (Either AppError AwsAdminCommandOutput)
+runInput limits input executor arguments = case executor of
+  HostAwsAdminKubectl connection ->
+    fmap legacyCommandOutput
+      <$> captureSubprocessWithInputBounded limits input (kubectl connection arguments)
+  OwnedAwsAdminKubectl client prefix ->
+    ownedResult <$> runOperationHomeKubectlBytesWithInput client limits input (prefix <> arguments)
+
+-- No Show instance: command streams can contain worker ingress/receipts.
+-- Legacy conversion stays demand-driven; owned fields already carry bytes.
+data AwsAdminCommandOutput = AwsAdminCommandOutput
+  { awsAdminOutputExitCode :: !ExitCode
+  , awsAdminOutputStdout :: ByteString
+  , awsAdminOutputStderr :: ByteString
+  }
+
+legacyCommandOutput :: ProcessOutput -> AwsAdminCommandOutput
+legacyCommandOutput output =
+  AwsAdminCommandOutput
+    (processExitCode output)
+    (ByteString8.pack (processStdout output))
+    (ByteString8.pack (processStderr output))
+
+ownedCommandOutput :: OperationProcessOutput -> AwsAdminCommandOutput
+ownedCommandOutput output =
+  AwsAdminCommandOutput
+    (operationProcessExitCode output)
+    (operationProcessStdout output)
+    (operationProcessStderr output)
+
+ownedResult
+  :: (Show cause) => Either cause OperationProcessOutput -> Either AppError AwsAdminCommandOutput
+ownedResult = bimap (fatalError . Text.pack . show) ownedCommandOutput
+
+pauseAwsAdminKubectl :: AwsAdminKubectl -> Int -> IO (Either AwsAdminKubernetesError ())
+pauseAwsAdminKubectl executor micros = case executor of
+  HostAwsAdminKubectl _ -> Right <$> threadDelay micros
+  OwnedAwsAdminKubectl client _ ->
+    firstApp AwsAdminKubernetesObservationFailed <$> pauseOperationHomeKubectl client micros
 
 findContainer :: Text -> [ContainerDto] -> Maybe ContainerDto
 findContainer name = find (\(ContainerDto actual _) -> actual == name)
@@ -976,8 +1149,8 @@ mapContains expected actual = all (\(key, value) -> Map.lookup key actual == Jus
 -- succeeded and printed an object whose own content contained @not found@ —
 -- a ConfigMap value, a container log line, a condition message — was read as
 -- the object being absent.
-isNotFound :: ProcessOutput -> Bool
-isNotFound output = reportsAbsence KubernetesObjectProbe (processStderr output)
+isNotFound :: AwsAdminCommandOutput -> Bool
+isNotFound output = reportsAbsenceBytes KubernetesObjectProbe (awsAdminOutputStderr output)
 
 boundedField :: Text -> Int -> Text -> Either AwsAdminKubernetesError Text
 boundedField name maximumLength raw =

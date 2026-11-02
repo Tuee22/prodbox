@@ -66,11 +66,12 @@ that a remote transition occurred.
 The Bootstrap Broker launches its secret worker from the controller's own image, and § 0.4 decides
 *which* of the image's identities carries which obligation.
 
-A container image has two sha256 identities and they are the same sixty-four lower-hex characters:
-the **config digest** the container runtime reports as `status.containerStatuses[].imageID`, and the
-**manifest digest** an OCI registry can resolve. They are indistinguishable by syntax and
-distinguishable only by which endpoint answers them, so the separation cannot live in a smart
-constructor over the digest text — see
+Config and manifest identities both use sixty-four lower-hex characters. The public
+`status.containerStatuses[].imageID` is the CRI image reference: a Docker-archive import can
+initially report its bare config identity, while registering a repository manifest changes that
+reference without changing the image's config. A cached controller observation and a fresh worker
+observation can therefore disagree for the same bytes. The identities cannot be distinguished by
+syntax, so the separation belongs at their observed boundaries — see
 [local_registry_pipeline.md § 6.2](./local_registry_pipeline.md) for the pipeline half and
 [chaos_hardening_doctrine.md § 24](./chaos_hardening_doctrine.md) for the general shape.
 
@@ -92,10 +93,27 @@ Two consequences follow, and both are stronger than pinning the spec:
 2. Pinning the spec to a **config** digest proves nothing at all, because no kubelet can resolve it;
    the Pod never starts. A refusal that no run can reach is not a check.
 
+Before admitting the Bootstrap Broker, runtime publication positively binds its tag and CRI
+config identity to the exact registry reference. The expected config digest comes from the
+published manifest after its descriptor bytes verify against the registry digest; Docker's
+store-dependent `.Id` remains a rollout token. A missing reference permits at most one exact
+manifest fetch and requires independent closing readback. Initial and closing observations share
+one bounded admission deadline. Unavailable, malformed, foreign or ambiguous evidence refuses;
+acknowledgement alone never admits a controller. Pre-registry MinIO image seeding keeps its
+separate config-only import obligation. No worker identity check equates two unequal digests.
+
 The declared reference is re-observed at Pod creation rather than recorded in the durable worker
 intent. It is an addressing hint whose correct value can change with a redeploy, not part of the
 binding the intent commits to; the creation boundary additionally refuses when the freshly observed
 runtime digest no longer equals the one the intent pinned.
+
+A refused attestation retains a closed mismatch field or production observation cause in
+its protected Broker diagnostic. API unavailability, numeric HTTP refusal, absent/malformed
+Pod, missing or unresolved container/image identity, non-Running phase, not-ready/deleting
+state and invalid binding remain distinct. Observed identities, arbitrary phase text,
+provider details and parser bodies stay private. This evidence changes no admission predicate:
+only a complete positive attestation may admit secret ingress, and existing startup/cleanup
+budgets and exact UID retirement still apply.
 
 ### 0.5 Cannot observe is never success
 
@@ -186,6 +204,15 @@ standing Authority role.
 
 Memory containment alone is insufficient. A capability is not admissible when its bounded queue,
 measured service rate, CPU budget, or remaining absolute deadline cannot support the request.
+
+The host fit includes the declared standing Kubernetes/platform scheduler baseline as well as
+application requests and the separate host-only reservation. Missing or underdeclared platform
+demand refuses production admission; a failed observer is never a zero-demand observation.
+The allocator, host-fitting generator and generated Dhall assertion share that complete accounting.
+An unscheduled Pod has no container startup cause. It remains not-started until independently
+observed otherwise; a larger timeout cannot create missing scheduler capacity. Capacity refusals
+and authoring remedies are defined in
+[Resource Scaling Doctrine § 2B](resource_scaling_doctrine.md#2b-host-rke2-cluster-namespace-and-pod-lemmas).
 
 That rule includes ephemeral one-shot workers. Their exact Guaranteed-QoS scheduler draw is part of
 the validated resource plan before the Broker or Credential Provisioner may launch them. A Pod left
@@ -615,10 +642,10 @@ like any other, and the executor observes the role again when a later mutation f
 
 The Broker is selected as a distinct runtime role by `prodbox bootstrap-broker start` with
 `--config <path>`. Its role-only document and loopback listener cannot be substituted with Gateway
-config or a generic endpoint. Completed Sprint `3.26` supplied chart/render foundations, but the
-production boundary still reports only process liveness and keeps readiness and every non-health
-capability closed; a deterministic fake proves composition without becoming a production selection
-path. Physical adapter activation and cutover status live only in the
+config or a generic endpoint. Its dedicated production adapters admit only their exact observed
+capabilities and readiness evidence. Deterministic fakes validate composition without becoming a
+production selection path. Chart/render foundations originate in Sprint `3.26`; physical adapter
+activation and cutover status live only in the
 [Development Plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 Host access preserves that loopback boundary at both ends. Before minting the short-lived
@@ -645,12 +672,33 @@ foreign-generation, unauthorized, or unobservable observations authorize no dele
 foreign-generation Pod at the one fixed coordinate still proves the queried generation absent, but
 is never deleted on that predecessor's behalf.
 
-The controller and its attested initialization worker classify the retained root journal through one
-pure observation. A missing object and a present exact `RootInitPristine` are equivalent evidence of
-the current generation's pristine state; `RootResetPristine` carries its reset provenance and admits
-only when its replacement proof is the same derived proof. No progressed or ambiguous phase is
-lowered to pristine. This classifier is shared because two independently authored predicates over
-the same journal once gave opposite answers and made the preserved root permanently unstartable.
+The controller's fresh initialization branch and its attested worker share one strict pristine
+classifier. A missing object and present exact `RootInitPristine` admit the current generation's
+pristine proof only while Vault is uninitialized; `RootResetPristine` retains its reset provenance
+and requires the same derived replacement proof. No advanced or ambiguous phase becomes pristine.
+
+Advanced journals use a distinct controller continuation factory. It validates exact binding,
+state invariants, original prepared commitment and phase-appropriate Vault status, then binds
+version and snapshot in sealed evidence. The interpreter rechecks both after acquiring its fence;
+missing or changed state refuses without a new journal. In-flight recovery consumes an existing
+encrypted response or records ambiguity, never another init POST. The public optional
+`initialization_phase` is a closed metadata tag. An initialized/unsealed Vault with pending
+custody is not ready, and ordinary bootstrap retains the explicit audited reset gate for ambiguity.
+The fresh classifier remains shared; continuation does not weaken the worker's pristine guard.
+Recovery reads the separate encrypted response and, when that object is absent, the retained
+worker result. The same observer drives production and physical fixtures. A durable encrypted
+worker response is checked against the root binding, schema and recipient commitment; a
+durable classified ambiguity retains its cause. A response lost before either durable write
+remains ambiguity. Unavailable observation never becomes absence or a remembered response.
+Exact worker settlement precedes root-journal advancement and follows §3.3.5 below.
+The harness-only bootstrap prefix may compose the registered audited ambiguity reset. Its
+closing observation additionally requires `initialization_reset_from_generation` from the
+durable reset-pristine proof to equal the original operation generation, a different current
+generation, sealed/uninitialized Vault and the exact reset-pristine phase. Lost replies,
+foreign lineage and unobservable state never become inferred completion. One absolute host
+scope contains the entire prefix and ordinary bootstrap; per-call admission reserves the
+unchanged transport plus Broker lifetime before dispatch. The operator path keeps its
+explicit repair gate.
 
 Backup state is total: established/current may admit, positive permanent loss may select only the
 visible `BackupRepairFrozen` protocol, and temporary/unreachable/malformed/stale observation keeps
@@ -659,6 +707,14 @@ Retention Adapter plus the selected Agent's exact `TlsSecretObserve`/`TlsSecretS
 `TlsSecretMaterialize` lanes; home key exchange additionally resolves the home Agent's separate
 `TlsEnvelopeKeyExchange` lane. Positive absence or policy-valid expiry may select issuance, while
 corrupt, mismatched, rollback, or unobservable TLS state never becomes “missing.”
+
+Reset recovery records its audited proof and action in an appended pending root phase before
+physical effects. Ordinary init and generic restart refuse that phase; exact old/replacement
+binding observation remains possible after generation advancement. A fresh confirmed client
+uses the metadata-projected old generation and action digest, never a newly guessed request.
+The producer reuses the stored proof instead of requiring preparation that the same operation
+may already have retired. An unjournaled legacy gap remains a preserved refusal. Only exact
+generation/preparation/final-journal readback publishes reset-pristine.
 
 ### 3.3 M3 — Index programs by operation
 
@@ -735,14 +791,24 @@ immutable request. Its ServiceAccount therefore has `get` on exactly `bootstrap-
 addition to `get` on exactly `bootstrap-secret-worker`. Lease create/update/delete, Pod mutation,
 TokenReview, exec/attach, and Secret reads remain controller-only or absent.
 
-**Ambiguity recovery is liveness-gated because readiness is the state being repaired.** Ordinary
-host clients wait for the exact Broker Deployment rollout before credential minting or
-port-forward startup. `reset-ambiguous-initialization` is the sole exception: a durable ambiguity
-intentionally withdraws `/readyz`, so requiring Deployment readiness would make the typed recovery
-route unreachable. Its closed connector skips only that rollout barrier and still reserves a
-loopback port, mints the exact custom-audience TokenRequest credential, forwards only the compiled
-Service named port on `127.0.0.1`, proves authenticated `/healthz`, bounds retries, and bracket-cleans
-the subprocess. No caller-selectable mode weakens another route.
+**Broker transport readiness and Vault lifecycle readiness are separate.** The Broker's
+`/readyz` folds its cached capability inventory, bootstrap-store availability, readable Vault
+seal status, OpenPGP boundary, Lease observation and controller-image identity. It does not
+read the root-init journal or require Vault to be initialized or unsealed. Pending custody
+instead withholds the separate `ComponentVaultUnsealed` lifecycle readiness target. A retained
+init alone therefore does not prevent the Broker Deployment from becoming ready.
+
+Ordinary host clients, including the harness's first observation and a retained-init
+continuation, wait for the exact Broker Deployment rollout before credential minting or
+port-forward startup. The first observation cannot rely on HTTP retry against a forward that
+kubectl has already exited during cold startup. After an operation is observed, the registered
+confirmed reset and the harness's closing observations use the closed recovery connector so they
+can diagnose or repair an incomplete lifecycle without treating a Deployment barrier as proof
+of custody or absence. This connector skips only that barrier and still reserves a loopback
+port, mints the exact custom-audience TokenRequest credential, forwards only the compiled Service
+named port on `127.0.0.1`, proves authenticated `/healthz`, bounds retries, and bracket-cleans
+the subprocess. The harness keeps one parent deadline, and only observed ambiguity can select
+its single registered audited reset. No caller-selectable mode widens these exceptions.
 
 **Recovery diagnostics are closed and payload-free.** The physical ambiguity-reset interpreter
 returns a `VaultStorageResetFailure` stage algebra rather than free-form Kubernetes detail. Only
@@ -837,7 +903,7 @@ either way.
 
 #### 3.3.4 A pre-receipt checkpoint from a superseded generation is rolled, not refused (Sprint `2.50`)
 
-The durable secret-worker checkpoint may resume only under an identical
+Ordinary worker execution or re-prompt may resume the durable checkpoint only under an identical
 operation/fence/action/request/storage/deadline binding, with exactly one exception, bounded three
 ways:
 
@@ -845,7 +911,8 @@ ways:
    receipt and result are both absent by construction. A checkpoint that carries a receipt is a
    *result* record mid-cleanup, and its cleanup binding names a Pod UID, session id, and session
    accessor no successor can reconstruct; discarding one could leak a live Vault session. Those are
-   refused on every binding.
+   refused on mismatched ordinary execution bindings. The separately proven authoritative-result
+   cleanup in §3.3.5 preserves those receipts and never re-prompts the worker.
 2. **The stored fence generation is strictly older than the one held.** Not "some compared field
    differs". Within one generation the identical-binding requirement is unchanged, because the worker
    operations of one bootstrap session are ordered and discarding an interrupted predecessor could
@@ -866,6 +933,30 @@ and a refusing interruption never reaches this arm.
 covering five distinct comparisons is the § 0.5 failure in miniature — *cannot observe is never
 success* has a sibling in *cannot distinguish is never a diagnosis*. Field **labels** carry no value
 bytes, so the naming introduces no disclosure surface.
+
+#### 3.3.5 Authoritative result settlement preserves predecessor identity
+
+An outer root-init recovery may settle an exact retained worker under a successor fence.
+Operation, action digest, request digest and storage generation remain equal. Only fence
+generation, owner nonce and operation deadline may differ, and any such difference requires
+the stored generation to be strictly older than the held generation. Same-generation changes,
+newer checkpoints and foreign immutable identity refuse without cleanup.
+
+The current fence authorizes each checkpoint CAS and its readback. The old request continues
+to identify its exact Pod and result. An unreceipted predecessor requires UID-preconditioned
+retirement followed by positive absence before an authoritative terminal checkpoint. A
+receipted predecessor preserves its exact durable result and all session-revoke, zero-exit,
+delete and absence obligations. A matching authoritative terminal result is replayed read-only.
+No branch allocates a new initialization worker or repeats the Vault init effect. An expired
+predecessor deadline or interrupted caller does not grant another effect; only this bounded
+safety tail may continue under freshly proved authority.
+
+The separate encrypted-response object and worker receipt are independent durable evidence.
+When only the worker result survives, recovery retains that exact response or classified
+ambiguity and validates it against the prepared root metadata before cleanup. Contradictory
+positive evidence is preserved and refused. Missing/unbound checkpoints, replaced Pods,
+unavailable observations and lost CAS replies preserve the recoverable state; absence alone
+never recreates a checkpoint or invents a response.
 
 The same index separation applies to private roles: `AuthorityBackupCommitReadBack` cannot execute
 TLS-prefix work; `TlsRetentionCommitReadBack` cannot address Authority backup; Provider apply cannot

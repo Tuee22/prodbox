@@ -12,6 +12,15 @@
 -- refuses on disagreement.
 module LifecycleTeardownStackGeneration
   ( lifecycleTeardownStackGenerationSuite
+  , fixtureVerifiedProviderScope
+  , admitFixtureIntent
+  , readOnlyAuthorityRepository
+  , fixtureFoundation
+  , fixtureAwsScope
+  , creatingRunScope
+  , fixtureProviderConfig
+  , fixtureProviderRunMarker
+  , providerScopeRevision
   )
 where
 

@@ -86,6 +86,7 @@ module Prodbox.Vault.Client
   , vaultSeal
   , vaultKvReadV2
   , vaultKvReadVersionedV2
+  , vaultKvReadVersionedV2Bounded
   , vaultKvReadExactVersionV2
   , vaultKvCasWriteV2
   , vaultKvReadMetadataV2
@@ -103,7 +104,12 @@ module Prodbox.Vault.Client
   , vaultCreateTransitKey
   , vaultRotateTransitKey
   , vaultReadTransitSigningKey
+  , vaultReadTransitSigningKeyVersion
+  , vaultReadTransitSigningKeyBounded
   , vaultTransitSignEd25519
+  , vaultTransitSignEd25519AtVersion
+  , vaultReadClusterIncarnation
+  , vaultControlPlaneResponseMaximumBytes
   , vaultPkiIssueTestCertificate
   , vaultListPkiIssuers
   , vaultGeneratePkiInternalRoot
@@ -127,6 +133,8 @@ import Data.Aeson
   ( FromJSON (..)
   , ToJSON (..)
   , Value
+  , eitherDecodeStrict'
+  , encode
   , object
   , withObject
   , (.!=)
@@ -137,6 +145,7 @@ import Data.Aeson
 import Data.Aeson.Key qualified as AesonKey
 import Data.Aeson.KeyMap qualified as AesonKeyMap
 import Data.Aeson.Types (Pair, Parser)
+import Data.Bifunctor (first)
 import Data.ByteString (ByteString)
 import Data.ByteString.Base64 qualified as B64
 import Data.List (isInfixOf)
@@ -158,7 +167,8 @@ import Prodbox.Bootstrap.Broker.PgpBoundary
   )
 import Prodbox.Bootstrap.Broker.VaultWire (EncryptedVaultInitResponse)
 import Prodbox.Http.Client
-  ( HttpError (..)
+  ( HttpBoundedError (..)
+  , HttpError (..)
   , defaultHttpConfig
   , httpGetJson
   , httpGetJsonWithHeaders
@@ -166,6 +176,7 @@ import Prodbox.Http.Client
   , httpPostJsonResponseJson
   , httpPostJsonWithHeaders
   , httpRequestNoBody
+  , httpRequestRawBounded
   , renderHttpError
   )
 import Text.Read (readMaybe)
@@ -918,6 +929,17 @@ vaultKvReadVersionedV2 address token mount path =
     [vaultTokenHeader token]
     (vaultUrl address (kvV2DataPath mount path))
 
+-- | Small control-plane metadata under its declared response ceiling. Large
+-- retained replay projections keep their separately funded read path.
+vaultKvReadVersionedV2Bounded
+  :: VaultAddress
+  -> VaultToken
+  -> Text
+  -> Text
+  -> IO (Either HttpError KvV2VersionedSecret)
+vaultKvReadVersionedV2Bounded address token mount path =
+  readControlPlaneVaultJson VaultKvMetadataResponse address token (kvV2DataPath mount path)
+
 -- | Read one exact KV-v2 generation.  Retained custody uses this for a
 -- receipt-committed predecessor; reading "current" would race rotation.
 vaultKvReadExactVersionV2
@@ -1286,6 +1308,26 @@ instance ToJSON TransitSignRequest where
       , "prehashed" .= False
       ]
 
+data VersionedTransitSignRequest = VersionedTransitSignRequest !Natural !ByteString
+
+instance ToJSON VersionedTransitSignRequest where
+  toJSON (VersionedTransitSignRequest version input) =
+    object
+      [ "input" .= TextEncoding.decodeUtf8 (B64.encode input)
+      , "prehashed" .= False
+      , "key_version" .= version
+      ]
+
+newtype ClusterIncarnationReadResponse = ClusterIncarnationReadResponse Text
+
+instance FromJSON ClusterIncarnationReadResponse where
+  parseJSON = withObject "ClusterIncarnationReadResponse" $ \value -> do
+    initialized <- value .: "initialized"
+    sealed <- value .: "sealed"
+    if initialized && not sealed
+      then ClusterIncarnationReadResponse <$> value .: "cluster_id"
+      else fail "Vault incarnation requires initialized and unsealed observation"
+
 newtype TransitSignResponse = TransitSignResponse
   { transitSignResponseSignature :: Text
   }
@@ -1509,20 +1551,54 @@ vaultRotateTransitKey address token keyName =
 -- is a decode refusal, never substitutable signing material.
 vaultReadTransitSigningKey
   :: VaultAddress -> VaultToken -> Text -> IO (Either HttpError TransitSigningKeyInfo)
-vaultReadTransitSigningKey address token keyName = do
-  result <-
-    httpGetJsonWithHeaders
-      defaultHttpConfig
-      [vaultTokenHeader token]
-      (vaultUrl address ("/v1/transit/keys/" ++ Text.unpack keyName))
+vaultReadTransitSigningKey = vaultReadTransitSigningKeySelected LatestTransitSigningVersion
+
+data TransitSigningVersionSelection
+  = LatestTransitSigningVersion
+  | BoundedLatestTransitSigningVersion
+  | ExactTransitSigningVersion !Natural
+
+-- | Existing latest-version semantics under the registered RPC response bound.
+vaultReadTransitSigningKeyBounded
+  :: VaultAddress -> VaultToken -> Text -> IO (Either HttpError TransitSigningKeyInfo)
+vaultReadTransitSigningKeyBounded = vaultReadTransitSigningKeySelected BoundedLatestTransitSigningVersion
+
+-- | Read the exact public version without silently adopting a newer native
+-- generation. The returned name/version remain available for caller checks.
+vaultReadTransitSigningKeyVersion
+  :: VaultAddress -> VaultToken -> Text -> Natural -> IO (Either HttpError TransitSigningKeyInfo)
+vaultReadTransitSigningKeyVersion address token keyName version
+  | version == 0 = pure (Left (HttpDecode "Pinned Transit signing generation must be positive"))
+  | otherwise =
+      vaultReadTransitSigningKeySelected (ExactTransitSigningVersion version) address token keyName
+
+vaultReadTransitSigningKeySelected
+  :: TransitSigningVersionSelection
+  -> VaultAddress
+  -> VaultToken
+  -> Text
+  -> IO (Either HttpError TransitSigningKeyInfo)
+vaultReadTransitSigningKeySelected selection address token keyName = do
+  let path = "/v1/transit/keys/" ++ Text.unpack keyName
+  result <- case selection of
+    LatestTransitSigningVersion ->
+      httpGetJsonWithHeaders defaultHttpConfig [vaultTokenHeader token] (vaultUrl address path)
+    BoundedLatestTransitSigningVersion -> readRpcKeyJson address token path
+    ExactTransitSigningVersion _ -> readRpcKeyJson address token path
   pure (result >>= decodeSigningKey)
  where
   decodeSigningKey response
     | transitSigningKeyReadType response /= "ed25519" =
         Left (HttpDecode "Transit signing key is not Ed25519")
     | otherwise = do
-        let version = transitSigningKeyReadLatestVersion response
-            versionKey = Text.pack (show version)
+        version <- case selection of
+          LatestTransitSigningVersion -> Right (transitSigningKeyReadLatestVersion response)
+          BoundedLatestTransitSigningVersion -> Right (transitSigningKeyReadLatestVersion response)
+          ExactTransitSigningVersion requested
+            | requested <= transitSigningKeyReadLatestVersion response -> Right requested
+            | otherwise ->
+                Left (HttpDecode "Pinned Transit signing generation is newer than observed latest generation")
+        let versionKey = Text.pack (show version)
         encoded <-
           maybe
             (Left (HttpDecode "Transit signing key latest generation is missing"))
@@ -1556,6 +1632,93 @@ vaultTransitSignEd25519 address token keyName input = do
       (vaultUrl address ("/v1/transit/sign/" ++ Text.unpack keyName))
       (TransitSignRequest input)
   pure (result >>= decodeTransitSignature . transitSignResponseSignature)
+
+-- | Explicit native version selection for an independently registered logical
+-- generation. This does not change the existing latest-version signing path.
+vaultTransitSignEd25519AtVersion
+  :: VaultAddress
+  -> VaultToken
+  -> Text
+  -> Natural
+  -> ByteString
+  -> IO (Either HttpError TransitSignature)
+vaultTransitSignEd25519AtVersion address token keyName version input
+  | version == 0 = pure (Left (HttpDecode "Pinned Transit signing generation must be positive"))
+  | otherwise = do
+      result <-
+        httpRequestRawBounded
+          defaultHttpConfig
+          vaultControlPlaneResponseMaximumBytes
+          "POST"
+          [vaultTokenHeader token, ("Content-Type", "application/json")]
+          (vaultUrl address ("/v1/transit/sign/" ++ Text.unpack keyName))
+          (Just (encode (VersionedTransitSignRequest version input)))
+      pure (decodeRpcKeyResponse result >>= decodeTransitSignature . transitSignResponseSignature)
+
+-- | The public incarnation of this initialized, unsealed Vault. UUID and
+-- registered-origin validation belong to the typed RPC registration boundary.
+vaultReadClusterIncarnation :: VaultAddress -> VaultToken -> IO (Either HttpError Text)
+vaultReadClusterIncarnation address token = do
+  result <- readRpcKeyJson address token "/v1/sys/health"
+  pure $ case result of
+    Left err -> Left err
+    Right (ClusterIncarnationReadResponse value) -> Right value
+
+vaultControlPlaneResponseMaximumBytes :: Int
+vaultControlPlaneResponseMaximumBytes = 128 * 1024
+
+data VaultControlPlaneResponsePurpose
+  = VaultRpcKeyResponse
+  | VaultKvMetadataResponse
+  | VaultCallerLoginResponse
+
+vaultControlPlaneResponseLabel :: VaultControlPlaneResponsePurpose -> String
+vaultControlPlaneResponseLabel purpose = case purpose of
+  VaultRpcKeyResponse -> "Vault RPC key"
+  VaultKvMetadataResponse -> "Vault control-plane KV metadata"
+  VaultCallerLoginResponse -> "Vault Kubernetes login"
+
+readRpcKeyJson
+  :: (FromJSON response) => VaultAddress -> VaultToken -> String -> IO (Either HttpError response)
+readRpcKeyJson = readControlPlaneVaultJson VaultRpcKeyResponse
+
+readControlPlaneVaultJson
+  :: (FromJSON response)
+  => VaultControlPlaneResponsePurpose
+  -> VaultAddress
+  -> VaultToken
+  -> String
+  -> IO (Either HttpError response)
+readControlPlaneVaultJson purpose address token path = do
+  response <-
+    httpRequestRawBounded
+      defaultHttpConfig
+      vaultControlPlaneResponseMaximumBytes
+      "GET"
+      [vaultTokenHeader token]
+      (vaultUrl address path)
+      Nothing
+  pure (decodeControlPlaneVaultResponse purpose response)
+
+decodeRpcKeyResponse
+  :: (FromJSON response) => Either HttpBoundedError (Int, ByteString) -> Either HttpError response
+decodeRpcKeyResponse = decodeControlPlaneVaultResponse VaultRpcKeyResponse
+
+decodeControlPlaneVaultResponse
+  :: (FromJSON response)
+  => VaultControlPlaneResponsePurpose
+  -> Either HttpBoundedError (Int, ByteString)
+  -> Either HttpError response
+decodeControlPlaneVaultResponse purpose observed = case observed of
+  Left (HttpBoundedTransport err) -> Left err
+  Left (HttpBoundedResponseTooLarge _ _) -> Left (HttpDecode (label ++ " response exceeded its 128 KiB bound"))
+  Left (HttpBoundedResponseHeadersTooLarge {}) -> Left (HttpDecode (label ++ " response exceeded its retained-header bound"))
+  Right (status, body)
+    | status < 200 || status >= 300 -> Left (HttpStatus status (label ++ " request failed"))
+    | otherwise ->
+        first (const (HttpDecode (label ++ " response is not valid JSON"))) (eitherDecodeStrict' body)
+ where
+  label = vaultControlPlaneResponseLabel purpose
 
 decodeTransitSignature :: Text -> Either HttpError TransitSignature
 decodeTransitSignature encoded =
@@ -1661,11 +1824,14 @@ vaultKubernetesLoginWithLease
   -> IO (Either HttpError VaultKubernetesLoginResult)
 vaultKubernetesLoginWithLease address authPath role jwt = do
   result <-
-    httpPostJsonResponseJson
+    httpRequestRawBounded
       defaultHttpConfig
+      vaultControlPlaneResponseMaximumBytes
+      "POST"
+      [("Content-Type", "application/json")]
       (vaultUrl address ("/v1/auth/" ++ Text.unpack authPath ++ "/login"))
-      (KubernetesLoginRequest role jwt)
-  pure (toLoginResult <$> result)
+      (Just (encode (KubernetesLoginRequest role jwt)))
+  pure (toLoginResult <$> decodeControlPlaneVaultResponse VaultCallerLoginResponse result)
  where
   toLoginResult resp =
     VaultKubernetesLoginResult

@@ -29,10 +29,13 @@ spec:
       {{- include "lifecycle-authority.selectorLabels" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.podAnnotations }}
       annotations:
+        # The process reads role config at startup. A pin/config change must
+        # replace the single writer, even when its image is unchanged.
+        checksum/role-config: {{ include (print $.Template.BasePath "/configmap-config.yaml") . | sha256sum | quote }}
+        {{- with .Values.podAnnotations }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
       labels:
         {{- include "lifecycle-authority.labels" . | nindent 8 }}
     spec:
@@ -57,9 +60,8 @@ spec:
               protocol: TCP
           volumeMounts:
             - name: config
-              # Directory-style mount (no subPath) so the kubelet's atomic
-              # `..data` symlink swap on ConfigMap update propagates to the
-              # authority's file-watch reload loop.
+              # Directory-style mount; the checksum above replaces the process
+              # when its independently required startup configuration changes.
               mountPath: /etc/lifecycle-authority/config
               readOnly: true
             - name: authority-journal

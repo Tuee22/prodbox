@@ -30,7 +30,10 @@ import Prodbox.ControlPlane.TlsRetentionAuthorityClient
   , renderTlsRetentionAuthorityClientCause
   )
 import Prodbox.ControlPlane.TlsRetentionAuthorityEndpoint
-import Prodbox.Http.Client (HttpError (..))
+import Prodbox.Http.Client
+  ( HttpError (..)
+  , HttpResponseHeaderLimit (HttpResponseRetainedHeaderFields)
+  )
 import Prodbox.Lifecycle.Authority.TlsRetention
 import Prodbox.Lifecycle.CheckpointAuthority (ModelBCodec (..))
 import TestSupport
@@ -174,6 +177,10 @@ lifecycleAuthorityTlsRetentionSuite =
               ,
                 ( nestedTransport (ControlPlaneResponseTooLarge 999 1)
                 , "authenticated/transport/response-too-large"
+                )
+              ,
+                ( nestedTransport (ControlPlaneResponseHeadersTooLarge HttpResponseRetainedHeaderFields 101 100)
+                , "authenticated/transport/response-headers-too-large"
                 )
               ,
                 ( TlsRetentionAuthorityClientResponseInvalid

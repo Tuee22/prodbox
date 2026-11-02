@@ -1,0 +1,722 @@
+{
+  "scope": "Actual built-library authenticated Operator/Harness retained-registry observation. Shared fenced runtime projection, read-only clock/primary/marker interpreter, canonical public codec, bounded peer/client/HTTP composition and retained history. No host observer bootstrap, native process ownership, live source attestation or deployment qualification claim.",
+  "source_identity_entry": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"df0de57bcccaa6da9a6fdebc0425355b1bbd950ff73352576ab4dcefae8e2cf4\", sourceManifestEntryCount = 1575},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"1fb1a7d40e328d88a53ec06e8a5aa40630541d66410e7e8ad08386d70788f960\", sourceManifestEntryCount = 1512})",
+  "source_identity_exit": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"df0de57bcccaa6da9a6fdebc0425355b1bbd950ff73352576ab4dcefae8e2cf4\", sourceManifestEntryCount = 1575},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"1fb1a7d40e328d88a53ec06e8a5aa40630541d66410e7e8ad08386d70788f960\", sourceManifestEntryCount = 1512})",
+  "source_identity_equal": true,
+  "inputs": [
+    {
+      "path": "DEVELOPMENT_PLAN/README.md",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/DEVELOPMENT_PLAN/README.md",
+      "sha256": "fd124d99aea858ea7a600a69070aca57ce389b62dac0bb83d4f60a90cf390057"
+    },
+    {
+      "path": "DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md",
+      "sha256": "58c3d781d21627b5468b912fe942e6c5288c560300161c76a6f696fa6d27aedc"
+    },
+    {
+      "path": "documents/engineering/haskell_code_guide.md",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/documents/engineering/haskell_code_guide.md",
+      "sha256": "c348b00332108625390bee304ce940f1cf6c5357a68cca13e142171192fc33b5"
+    },
+    {
+      "path": "prodbox.cabal",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/prodbox.cabal",
+      "sha256": "b02545c11ff7f0798e64cde6758e37e7c3e6ebec7ad5143e88d42a865812e26b"
+    },
+    {
+      "path": "src/Prodbox/Capacity/HostExecution.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/Capacity/HostExecution.hs",
+      "sha256": "092ece17fb98e941eb4847e875d0f5b01c9ca458c810d8851207aac9dfba6a8c"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/LocalClient.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/LocalClient.hs",
+      "sha256": "3e85e0bf48700b7fbcce03f9d9c4a2b536bd3f9aa0e488e1f15735ed44abb756"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthChart.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/RpcAdmissionBirthChart.hs",
+      "sha256": "3ceb4d8d83d9af0a50d7df6d0a00dadad889d27608b73a1780d0a381e5af06de"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthCoordinator.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/RpcAdmissionBirthCoordinator.hs",
+      "sha256": "fd3c88a6f836c2f38cc81c26449e38a62f982616ab579f12097f1dd5471eecec"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+      "sha256": "4fc9483e77d54369c9c94e330fcf4b186632daac2e1470d4a936c908369f2896"
+    },
+    {
+      "path": "src/Prodbox/Lib/ChartPlatform.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/Lib/ChartPlatform.hs",
+      "sha256": "fe9729544fba35b3f5864262576e87ab831e8351e8fae8c0ba1cce37336ad059"
+    },
+    {
+      "path": "src/Prodbox/Lifecycle/HelmRelease.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/Lifecycle/HelmRelease.hs",
+      "sha256": "1e672269740479a589d4a0136cc3f633f510d9e15bcce76a0042f8a4a6c0d299"
+    },
+    {
+      "path": "src/Prodbox/Lifecycle/Teardown/EphemeralKubectl.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/Lifecycle/Teardown/EphemeralKubectl.hs",
+      "sha256": "3dd8dd5dbabc5e4a1c557dd3569d45b2fb8aca3f7a0754be03af19fd490d581b"
+    },
+    {
+      "path": "src/Prodbox/Subprocess.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/Subprocess.hs",
+      "sha256": "836bd5e3d6c82feb1fdcf6b1aac6390e1a221a6ebc986faf86b61d85f877af42"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostControllerInputs.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/Subprocess/HostControllerInputs.hs",
+      "sha256": "17fcfd173d39b908a65671cef3a559979482b8c280c40b946b7d001a353f7919"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostOperationFamily.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/Subprocess/HostOperationFamily.hs",
+      "sha256": "f6c4bfb56d4f600757a9f5842ef7498a1bdd6545d30ddd61218f1c88729a7288"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/KernelScope.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/Subprocess/KernelScope.hs",
+      "sha256": "61ed8449be7b6864d2933f90f0d76db89137b7d4559ffb7a3e456058f968cf2c"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/ScopeFamily.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/Subprocess/ScopeFamily.hs",
+      "sha256": "177ad32ad8639c727c1a8e7dc2ae8be5d77f6ad5146c0353edb38fef176761ab"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdBus.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/Subprocess/SystemdBus.hs",
+      "sha256": "cf9f8b023f736187870e488bb51226cf0f93354ac31a1c6bf00cad3abcf88457"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "sha256": "9567e2139351da6592ce7c1e4fd144b32fc62c04241140d5e3494bb1d12c3c79"
+    },
+    {
+      "path": "test/qualification/HostOperationRpcBirth.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/test/qualification/HostOperationRpcBirth.hs",
+      "sha256": "5b53373177ff0fc4848103083fa32efbd8148c98b315dc8e1666beb7f96c74aa"
+    },
+    {
+      "path": "test/qualification/HostOperationRpcBirthFixture.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/test/qualification/HostOperationRpcBirthFixture.hs",
+      "sha256": "a303e0d7da081f36b9f21fb81e38051c98a472f31ea115c8e405c4d4125b5921"
+    },
+    {
+      "path": "test/support/TestSupport.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/test/support/TestSupport.hs",
+      "sha256": "156b7f56e11e832f9a410423db795e35a5ae374c01cee09e8a31b1c2a1a7d250"
+    },
+    {
+      "path": "test/support/Tier0Fixture.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/test/support/Tier0Fixture.hs",
+      "sha256": "9b1fcaef3fa7cc4f285ec7e1c276abc3d85293f42a5cdd1359d9aa6ec794821c"
+    },
+    {
+      "path": "test/unit/ControlPlaneRpcAdmissionBirth.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/test/unit/ControlPlaneRpcAdmissionBirth.hs",
+      "sha256": "3e1ee69f3d8fe5baf23c6fa894566e4820e7df8be4d469fa624d33d92ada977c"
+    },
+    {
+      "path": "test/unit/Main.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/test/unit/Main.hs",
+      "sha256": "4bc359c45c5249b06907925ce6a574182ef1f15a5c0df0d3332fdfadd86c6ee5"
+    },
+    {
+      "path": "src/Prodbox/Capacity/Config.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/Capacity/Config.hs",
+      "sha256": "625b25c430d58c0558b091558ebe6a89f8e49bbe4ed85a7d13684b69551b5dbb"
+    },
+    {
+      "path": "src/Prodbox/Capacity/NativeHostProbe.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/Capacity/NativeHostProbe.hs",
+      "sha256": "1d095e7dc0bb90e82a2cdc8721d704e3d1d5f84d5249a558f615d4039c4547db"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthPayload.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/RpcAdmissionBirthPayload.hs",
+      "sha256": "e55d30503618ed5996cb0d77c6d93eca886857dc6cbd07c372d15c97011cdf19"
+    },
+    {
+      "path": "src/Prodbox/Settings.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/Settings.hs",
+      "sha256": "7cb9b4aa55fd761c2fd7a899af8ad12a007afce8b7b6acc4ad4bcc5e0b22724f"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRequest.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/RpcAdmissionBirthRequest.hs",
+      "sha256": "b4b1b145502e031841e6b47dee1e68a621274d8d2a6fc7511790c03db2b89591"
+    },
+    {
+      "path": "test/qualification/RpcBirthControllerRequest.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/test/qualification/RpcBirthControllerRequest.hs",
+      "sha256": "1c7f9c1f0be49edbbc57f3b297654fc6e1494b23de22de5f20c5edf263bc7d94"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthClock.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/RpcAdmissionBirthClock.hs",
+      "sha256": "bc064db9384e0b30ae7a18f618ec5958bf6cabe51570134e13e77db58ebabb00"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostControllerArguments.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/Subprocess/HostControllerArguments.hs",
+      "sha256": "b9f635fcaf7bda5ffa6b1dda5545344b59507ec07beff20c4a2ddcca35494bf4"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthControllerInputs.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/RpcAdmissionBirthControllerInputs.hs",
+      "sha256": "1a2a92266bf5f26f3ead84d1327b39b21517809b6c87305b03775658817f4e0c"
+    },
+    {
+      "path": "test/qualification/ControllerInputLoader.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/test/qualification/ControllerInputLoader.hs",
+      "sha256": "c3588c9c88296157108b31bad105694a9561d147b0de9f167103f217c1c4690a"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostControllerPublication.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/Subprocess/HostControllerPublication.hs",
+      "sha256": "7902af6c2ccc510926a2a36a37258a09d81881c3869808e6adeb90bdd7119549"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/OwnedProcessTree.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/Subprocess/OwnedProcessTree.hs",
+      "sha256": "b50d4f449526797009c3ce98de7239fc1b211486c6c42f5a2900a41c5ef20fb5"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/LifecycleAuthorityAuthentication.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/LifecycleAuthorityAuthentication.hs",
+      "sha256": "ee149b0dac97c1e3ec2bd0ec846f481d83f2eb5f6095827abc692a84d399a089"
+    },
+    {
+      "path": "test/unit/ControlPlaneVaultSession.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/test/unit/ControlPlaneVaultSession.hs",
+      "sha256": "06b30aba866c09745d0187852527ddac331a36931baafe337f498463b04b40f0"
+    },
+    {
+      "path": ".build/sprint-6.5/controller-caller-token-20261026/UnitPolicy.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/.build/sprint-6.5/controller-caller-token-20261026/UnitPolicy.hs",
+      "sha256": "096cdde35453668cf924f61f47d4ec57ea51d789acf49df46b8d6db81a253b60"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RegisteredRpcSigning.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/RegisteredRpcSigning.hs",
+      "sha256": "e68deb06df6848d957aff6d48fbcb8b0ab32e10af325929001d3aeee812b4949"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRuntime.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/RpcAdmissionBirthRuntime.hs",
+      "sha256": "381ca175e1f59d03b0f133ed138f82b2d2862e85c49d126555f3f6517c630ca1"
+    },
+    {
+      "path": "test/unit/ControlPlaneRegisteredRpcSigning.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/test/unit/ControlPlaneRegisteredRpcSigning.hs",
+      "sha256": "9c2d4f5b82ab67f9392be87ddaff4ea6c014afe45ce74a6eb1818f594f3e57c0"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcKeyRegistry.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/RpcKeyRegistry.hs",
+      "sha256": "031264106810dc8353e2962a454a8018cfaa8140a1db44e65d13b13b26ec2544"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthNative.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/RpcAdmissionBirthNative.hs",
+      "sha256": "6e5988c24ea65339af49512fa8ead4c5a7eba83eac8a8c4261d7fb91fdfe766b"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthExecution.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/RpcAdmissionBirthExecution.hs",
+      "sha256": "5e2ac251b1936a23feebafba3b96ddc8eba8a835d15c86e75c0394e6c88adfa9"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RequestAuthentication.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/RequestAuthentication.hs",
+      "sha256": "c4cb14893b90fda021a97e696f9b7859e83265f3a21e70057ab9eda9d3e4e2e5"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/AuthenticationRegistry.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/AuthenticationRegistry.hs",
+      "sha256": "0b2e942d0861f3700c4bb3cd9aa679fade9dcaefbaaacc404fe90ab13a7e2130"
+    },
+    {
+      "path": ".build/sprint-6.5/registered-caller-selection-20261026/PackagedSigning.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/.build/sprint-6.5/registered-caller-selection-20261026/PackagedSigning.hs",
+      "sha256": "3b71bc33802bbf344f90a256424385b992d43aa0058d3f2aa79058bce8352d17"
+    },
+    {
+      "path": "src/Prodbox/Vault/Session.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/Vault/Session.hs",
+      "sha256": "5aed6b15cc76b55c0b7b9cbcb1d4fc7d96db4df1952c657bd7dae35e3c57c8a2"
+    },
+    {
+      "path": ".build/sprint-6.5/prepared-caller-auth-20261026/PackagedAuthentication.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/.build/sprint-6.5/prepared-caller-auth-20261026/PackagedAuthentication.hs",
+      "sha256": "3bb7c76ba25edb6d05e5b4ea33cf16f4bb7b28f45f90fe4a24b2b90579b1330e"
+    },
+    {
+      "path": ".build/sprint-6.5/registered-prepared-auth-20261026/PackagedAuthentication.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/.build/sprint-6.5/registered-prepared-auth-20261026/PackagedAuthentication.hs",
+      "sha256": "3bb7c76ba25edb6d05e5b4ea33cf16f4bb7b28f45f90fe4a24b2b90579b1330e"
+    },
+    {
+      "path": "DEVELOPMENT_PLAN/development_plan_standards.md",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/DEVELOPMENT_PLAN/development_plan_standards.md",
+      "sha256": "d83bd630ff5852141e412b49078fed2297871fcb71251fc7a40342f20760a3e5"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthEndpoint.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/RpcAdmissionBirthEndpoint.hs",
+      "sha256": "cbc5dfac8ae1e2005fffaf0462ea79381f32f42f31f9eced2bdb9acb3e9c44fd"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/Runtime.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/Runtime.hs",
+      "sha256": "ffdb331735977c2cb66a702f18f92aece50c8fefd6aa5baf41ce7c7ee88e545f"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/AuthenticatedTransport.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/AuthenticatedTransport.hs",
+      "sha256": "194ffd09102af43d4826951f54f84023d994446f9dccd7c9fc3c47ee531ace22"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/Client.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/Client.hs",
+      "sha256": "2fa38cead508c275a1c0ce750a5fbddad3270066fd19eb3e7a5d425bdc1dfb48"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/Codec.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/ControlPlane/Codec.hs",
+      "sha256": "3d0877aaf276e39748816b2545a77bce06b12477322eac008dd562a031c40858"
+    },
+    {
+      "path": "src/Prodbox/Capacity/ControlPlaneReplayBudget.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/src/Prodbox/Capacity/ControlPlaneReplayBudget.hs",
+      "sha256": "6f7528e48e4f68b16329bcce947d04884a56600fa0b2acc459320b9ef49634eb"
+    },
+    {
+      "path": "documents/engineering/lifecycle_control_plane_architecture.md",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/documents/engineering/lifecycle_control_plane_architecture.md",
+      "sha256": "c5858ee02ddafd0dfa61302160792d625f2cf24998f74ba5c7af6c59ccc1376f"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-registry-observation-20261027/PackagedRegistry.hs",
+      "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/.build/sprint-6.5/rpc-registry-observation-20261027/PackagedRegistry.hs",
+      "sha256": "3bb7c76ba25edb6d05e5b4ea33cf16f4bb7b28f45f90fe4a24b2b90579b1330e"
+    }
+  ],
+  "binary": {
+    "path": "/home/matthewnowak/prodbox/.build/sprint-6.5/rpc-registry-observation-20261027/packaged-registry-3",
+    "snapshot": ".build/sprint-6.5/rpc-registry-observation-20261027/focused-inputs-6/packaged-registry",
+    "sha256": "519fc743cba89dca4dfa258eb26639603c10059232ac803147e9182c5fc18e25"
+  },
+  "all_inputs_and_binary_unchanged": true,
+  "result": {
+    "command": [
+      "env",
+      "XDG_RUNTIME_DIR=/run/user/1000",
+      "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+      "systemd-run",
+      "--user",
+      "--quiet",
+      "--wait",
+      "--pipe",
+      "--collect",
+      "--service-type=oneshot",
+      "--expand-environment=no",
+      "--unit=prodbox-rpc-registry-observation-focused-tests-6-20261026",
+      "--working-directory=/home/matthewnowak/prodbox",
+      "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+      "--property=UMask=0022",
+      "--property=MemoryMax=5G",
+      "--property=MemorySwapMax=0",
+      "--property=OOMPolicy=kill",
+      "--property=OOMScoreAdjust=1000",
+      "--property=TasksMax=64",
+      "--property=TimeoutStartSec=180s",
+      "--property=TimeoutStopSec=2s",
+      "--",
+      "/home/matthewnowak/prodbox/.build/sprint-6.5/rpc-registry-observation-20261027/packaged-registry-3"
+    ],
+    "started_utc": "2026-10-27T04:38:41.143316+00:00",
+    "completed_utc": "2026-10-27T04:38:42.910188+00:00",
+    "exit_code": 0,
+    "wall_seconds": 1.7668893379159272
+  },
+  "all_target_build_result": {
+    "command": [
+      "env",
+      "XDG_RUNTIME_DIR=/run/user/1000",
+      "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+      "systemd-run",
+      "--user",
+      "--quiet",
+      "--wait",
+      "--pipe",
+      "--collect",
+      "--service-type=oneshot",
+      "--expand-environment=no",
+      "--unit=prodbox-rpc-registry-observation-all-build-4-20261026",
+      "--working-directory=/home/matthewnowak/prodbox",
+      "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+      "--property=UMask=0022",
+      "--property=MemoryMax=5G",
+      "--property=MemorySwapMax=0",
+      "--property=OOMPolicy=kill",
+      "--property=OOMScoreAdjust=1000",
+      "--property=TasksMax=64",
+      "--property=TimeoutStartSec=1200s",
+      "--property=TimeoutStopSec=2s",
+      "--",
+      "cabal",
+      "build",
+      "--builddir=.build",
+      "all",
+      "--enable-tests",
+      "--ghc-options=-Werror"
+    ],
+    "started_utc": "2026-10-27T04:38:42.972933+00:00",
+    "completed_utc": "2026-10-27T04:41:28.474413+00:00",
+    "exit_code": 0,
+    "wall_seconds": 165.50149937300012
+  },
+  "test_count": 248,
+  "complete": true,
+  "schema_version": 1,
+  "name": "RPC-BIRTH-AUTHENTICATED-REGISTRY-OBSERVATION-2026-10-27",
+  "new_registry_test_count": 29,
+  "validations": {
+    "rpc-registry-observation-all-build-4": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-rpc-registry-observation-all-build-4-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=1200s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "cabal",
+        "build",
+        "--builddir=.build",
+        "all",
+        "--enable-tests",
+        "--ghc-options=-Werror"
+      ],
+      "started_utc": "2026-10-27T04:38:42.972933+00:00",
+      "completed_utc": "2026-10-27T04:41:28.474413+00:00",
+      "exit_code": 0,
+      "wall_seconds": 165.50149937300012
+    },
+    "rpc-registry-observation-packaged-build-3": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-rpc-registry-observation-packaged-build-3-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=600s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "ghc",
+        "-Wall",
+        "-Werror",
+        "-threaded",
+        "-rtsopts",
+        "-with-rtsopts=-N1",
+        "-hide-all-packages",
+        "-package-db",
+        "/home/matthewnowak/.cabal/store/ghc-9.12.4-5301/package.db",
+        "-package-id",
+        "base-4.21.2.0-60b9",
+        "-package-id",
+        "bytestring-0.11.5.4-76e2bb591efe928d842f8288364e9ef294891f67ce13cd0bc014a1e2fe5df0a0",
+        "-package-id",
+        "unix-2.8.8.0-9ce6978edc33076465fb56791d9ca017d405aa7230adf2653b2f7564cc3925f1",
+        "-package-id",
+        "text-2.0.2-8761414bfd4c61d83bb4a76313f5b7a899dddb96b90269a6e5d997a8bbbd6375",
+        "-package-id",
+        "aeson-2.2.5.0-e2e37fe6bc5aa07f45e066f8f61685fa5ad0b1eb18e2b2c128ef1ea752061e01",
+        "-package-id",
+        "async-2.2.6-8960f1dd21f4a009a29b1fe1a67c9a2a4a2c68697b93dd8f3fb173222380a50f",
+        "-package-id",
+        "crypton-1.0.6-020d21e85cd9683b83d7321e840b655ed76b478e58a637e86a778a7747ac3db7",
+        "-package",
+        "transformers",
+        "-package-id",
+        "process-1.6.30.0-6aaf8422fc072a0cd1390edbfe1125150c6bb2a95b2d3b42b9a9405f80b31cbd",
+        "-package-id",
+        "directory-1.3.10.1-d489a9b04bec59f8c3e0a56d9fa8c6036df06a729b2423829770f25fc263c55c",
+        "-package-id",
+        "filepath-1.4.301.0-55cfbc3f4dce88b4ce1658f6770d9ccbeb279efb5b93e8a3764f29b7dd69dd22",
+        "-package-id",
+        "temporary-1.3-fe250c7fcb6a9acbff484a742781194f9c09a4d7a37988cf39693cbaba0c5ac0",
+        "-package-id",
+        "typed-process-0.2.13.0-abd82bbc92edf3e4773c3dd817737de05db408f2ea5066648e8179fa7a8622cb",
+        "-package=prodbox",
+        "-package-id",
+        "network-3.1.4.0-1d8b779673bab29fa4d91c4b2077c7ccec77e8e8a1bd66b2b95ba4d224d64964",
+        "-package-id",
+        "dhall-1.42.3-f71713b7c542a7fcbde0a2e97ae07b9d32dfe03857095a90c6de6bb24d591cc1",
+        "-package-id",
+        "serialise-0.2.6.1-9fc9b98f7836b30172e1529223fb34de84f444ed67c191e32cd41daa2e1d73d0",
+        "-package-id",
+        "containers-0.6.8-9c73fa12219fb7e1c1121c78e2c1b0cf30923838f9754d37bac0134beb603c6c",
+        "-package-id",
+        "base64-bytestring-1.2.1.0-91628ae01012ed5bf73c3c97373488475dbd88cfd669a49aac9f7c995e8cca71",
+        "-package-id",
+        "cryptohash-sha256-0.11.102.1-6df39dbe01efd710a9783bb4456b0bac4b2e3444a6d321ab62b36f3ff9e6abe0",
+        "-itest/unit",
+        "-itest/support",
+        "-itest/qualification",
+        "-package-id",
+        "tasty-1.5.4-87b0b7a84b66321512246f51e4b2c73d419854c91e61f316f028599d02b6fb57",
+        "-package-id",
+        "tasty-golden-2.3.6-c4e6fa5b2abb4144c1889fed74ad6616bd7562f8ed7b77a0ea745194aaf5174f",
+        "-package-id",
+        "tasty-hunit-0.10.2-e92057303da32999a32a585f0581b8a8de1247905fe41fbc341e8c9d27161051",
+        "-package-id",
+        "tasty-quickcheck-0.11.1-83845e3e87c84d6edafadc8089f429f07dd0911031b48027f788998114a79ea2",
+        "-outputdir",
+        ".build/sprint-6.5/rpc-registry-observation-20261027/packaged-registry-3-objects",
+        "-o",
+        ".build/sprint-6.5/rpc-registry-observation-20261027/packaged-registry-3",
+        "-XImportQualifiedPost",
+        "-package-db",
+        ".build/packagedb/ghc-9.12.4",
+        "-package-id",
+        "vector-0.13.2.0-56506683abbe5d505d9873d57f93e5ce8e2a9d1cbb2f2f719e5690d437baa472",
+        "-package-id",
+        "stm-2.5.3.1-a1f2",
+        "-package-id",
+        "time-1.12.2-79f6471dcc18660545ae6f423af96c288f6ea95ac7a0b62e890dc9daf5b1fce7",
+        "-package-id",
+        "scientific-0.3.8.1-7c3c80dbb45676207dcbea10819661eeea2761483c16ed54c917301d2397d4d4",
+        ".build/sprint-6.5/rpc-registry-observation-20261027/PackagedRegistry.hs"
+      ],
+      "started_utc": "2026-10-27T04:38:04.503295+00:00",
+      "completed_utc": "2026-10-27T04:38:14.044676+00:00",
+      "exit_code": 0,
+      "wall_seconds": 9.541397582739592
+    },
+    "rpc-registry-observation-focused-tests-6": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-rpc-registry-observation-focused-tests-6-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=180s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "/home/matthewnowak/prodbox/.build/sprint-6.5/rpc-registry-observation-20261027/packaged-registry-3"
+      ],
+      "started_utc": "2026-10-27T04:38:41.143316+00:00",
+      "completed_utc": "2026-10-27T04:38:42.910188+00:00",
+      "exit_code": 0,
+      "wall_seconds": 1.7668893379159272
+    },
+    "rpc-registry-observation-hlint-5": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-rpc-registry-observation-hlint-5-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=180s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        ".build/prodbox-style-tools/bin/hlint",
+        "--hint=.hlint.yaml",
+        "--with-group=default",
+        "--with-group=extra",
+        "src/Prodbox/ControlPlane/RpcAdmissionBirthExecution.hs",
+        "src/Prodbox/ControlPlane/RpcAdmissionBirthRuntime.hs",
+        "src/Prodbox/ControlPlane/RpcAdmissionBirthEndpoint.hs",
+        "test/unit/ControlPlaneRpcAdmissionBirth.hs"
+      ],
+      "started_utc": "2026-10-27T04:38:04.483376+00:00",
+      "completed_utc": "2026-10-27T04:38:11.487700+00:00",
+      "exit_code": 0,
+      "wall_seconds": 7.004341604188085
+    },
+    "rpc-registry-observation-format-2": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-rpc-registry-observation-format-2-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=180s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        ".build/prodbox-style-tools/bin/fourmolu",
+        "--mode",
+        "check",
+        "src/Prodbox/ControlPlane/RpcAdmissionBirthExecution.hs",
+        "src/Prodbox/ControlPlane/RpcAdmissionBirthRuntime.hs",
+        "src/Prodbox/ControlPlane/RpcAdmissionBirthEndpoint.hs",
+        "test/unit/ControlPlaneRpcAdmissionBirth.hs"
+      ],
+      "started_utc": "2026-10-27T04:38:39.140925+00:00",
+      "completed_utc": "2026-10-27T04:38:40.179411+00:00",
+      "exit_code": 0,
+      "wall_seconds": 1.038509092759341
+    },
+    "rpc-registry-observation-files-lint-2": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-rpc-registry-observation-files-lint-2-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=180s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "./.build/prodbox",
+        "dev",
+        "lint",
+        "files"
+      ],
+      "started_utc": "2026-10-27T04:38:39.147006+00:00",
+      "completed_utc": "2026-10-27T04:39:17.851984+00:00",
+      "exit_code": 0,
+      "wall_seconds": 38.70499617699534
+    }
+  },
+  "limits_bytes": {
+    "existing_metadata_response": 65536,
+    "registry": 131072,
+    "descriptor_observation": 8192,
+    "registry_observation": 139392,
+    "registry_http_response": 139520
+  },
+  "large_valid_payload_proof": "The actual retained reader and authenticated client accept valid registry metadata above 64 KiB containing retired history. The same read under the ordinary HTTP ceiling refuses before decoding. The original seven-client profile and derived active-key trust ceiling stay unchanged.",
+  "preserved_wire_contract": "Existing command/status/descriptor encodings and limits are unchanged. The registry request/response use distinct version-one prefixes; only public descriptor and registry metadata are exported.",
+  "read_capability": "RpcBirthReadProgram has only clock, primary and marker reads. The registry read shares rpcBirthAuthenticationRegistry with runtime trust/signing and cannot name a native seed read, CAS or initialization.",
+  "retained_validation_corrections": [
+    {
+      "index": "/home/matthewnowak/prodbox/.build/sprint-6.5/rpc-registry-observation-20261027/focused-validation-1.json",
+      "reason": "An explicit thread option duplicated the serial option already supplied by the full unit Main; no tests ran."
+    },
+    {
+      "index": "/home/matthewnowak/prodbox/.build/sprint-6.5/rpc-registry-observation-20261027/focused-validation-2.json",
+      "reason": "The alternate explicit thread spelling still duplicated the existing unit Main option; no tests ran."
+    },
+    {
+      "index": "/home/matthewnowak/prodbox/.build/sprint-6.5/rpc-registry-observation-20261027/focused-validation-3.json",
+      "reason": "Two authored expectations were wrong: operator-key enrollment exceeded the unchanged seven-client table, and the historical prepared record still retained public metadata. Tests now use existing Authority-key rotation and an actually seedless historical retirement. Production implementation is unchanged."
+    },
+    {
+      "index": "/home/matthewnowak/prodbox/.build/sprint-6.5/rpc-registry-observation-20261027/focused-validation-5.json",
+      "reason": "The added large-payload fixture exceeded its unchanged active-key trust ceiling. The final fixture retains retired history while preserving the original active trust set, client capacity and byte limits."
+    }
+  ],
+  "repository_policy_checker": {
+    "path": ".build/prodbox",
+    "sha256": "81055f997d26f588c157768819d3c389d3e64f191b5fed97547bf90b5cb60c88",
+    "scope": "Unchanged prior combined-gate operator used for file-policy lint. No operator synchronization or new full canonical/frontend gate is claimed."
+  },
+  "limitations": [
+    "Retained storage and Vault HTTP boundaries are authored fixtures; no real Kubernetes, Vault, AWS or TLS operation is qualified.",
+    "The read returns data, not Authority admission, physical source/placement evidence, native key retirement or a cleanup receipt.",
+    "The host adapter must bind the returned descriptor to its independent captured requirement and preserve fresh before/after signing membership checks. Host bootstrap/cache/observer composition is not supplied by this read boundary.",
+    "An absent or seedless record never causes a native-counter reconstruction or a legacy fallback. A fresh read deadline never renews the original birth descriptor deadline.",
+    "Pinned-controller dispatch, unknown-admission causal closure, immutable-input retirement/recovery, broader composition gates and normalized resource/deployment qualification remain owed."
+  ]
+}

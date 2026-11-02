@@ -13,6 +13,8 @@ module Prodbox.ControlPlane.AuthorityControlClient
   , observeProviderBootstrapPredecessorWithTransport
   , decodeProviderBootstrapPredecessorResponse
   , decodeAuthorityControlTextResponse
+  , observeEpochPromotionWithTransport
+  , decodeEpochPromotionObservationResponse
   )
 where
 
@@ -21,6 +23,7 @@ import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Text (Text)
 import Data.Text.Encoding qualified as TextEncoding
+import Prodbox.Capacity.ControlPlaneReplayBudget qualified as ReplayBudget
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientError
   , AuthenticatedClientTransport
@@ -28,7 +31,8 @@ import Prodbox.ControlPlane.AuthenticatedTransport
   )
 import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   ( AuthorityControlPayload
-      ( AuthorityControlObserveProviderAdmissionRecovery
+      ( AuthorityControlObserveEpochPromotion
+      , AuthorityControlObserveProviderAdmissionRecovery
       , AuthorityControlObserveProviderBootstrapPredecessor
       )
   )
@@ -40,6 +44,11 @@ import Prodbox.ControlPlane.Codec
   ( ControlPlaneResponseCodecError
   , decodeControlPlaneResponse
   , encodeControlPlaneRequest
+  )
+import Prodbox.Lifecycle.Authority.EpochPromotionObservation
+  ( EpochPromotionObservation
+  , EpochPromotionObservationError
+  , validateEpochPromotionObservation
   )
 import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch
   ( CascadeAuditFreezeBinding
@@ -70,6 +79,8 @@ data AuthorityControlClientError
   | AuthorityControlRecoveryResponseMismatch
   | AuthorityControlRecoveryObservationInvalid !ProviderAdmissionRecoveryRefusal
   | AuthorityControlBootstrapPredecessorInvalid !ProviderAdmissionEpochError
+  | AuthorityControlEpochObservationInvalid !EpochPromotionObservationError
+  | AuthorityControlEpochObservationResponseMismatch
   deriving stock (Eq, Show)
 
 authorityControlClientWithTransport
@@ -106,6 +117,34 @@ decodeAuthorityControlTextBody body
 
 authorityControlMaximumResponseBytes :: Int
 authorityControlMaximumResponseBytes = 64 * 1024
+
+observeEpochPromotionWithTransport
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> IO (Either AuthorityControlClientError EpochPromotionObservation)
+observeEpochPromotionWithTransport transport = do
+  attempted <-
+    callAuthenticatedClientTransport
+      transport
+      LifecycleAuthorityControlRoute
+      (LazyByteString.toStrict (encodeControlPlaneRequest AuthorityControlObserveEpochPromotion))
+  pure (first AuthorityControlTransportFailed attempted >>= decodeEpochPromotionObservationResponse)
+
+decodeEpochPromotionObservationResponse
+  :: ControlPlaneResponse -> Either AuthorityControlClientError EpochPromotionObservation
+decodeEpochPromotionObservationResponse response@(ControlPlaneResponse status body)
+  | status == 200 = do
+      observation <-
+        first
+          AuthorityControlResponseInvalid
+          ( decodeControlPlaneResponse
+              ReplayBudget.authorityMetadataResponseMaximumBytes
+              (LazyByteString.fromStrict body)
+          )
+      _ <- first AuthorityControlEpochObservationInvalid (validateEpochPromotionObservation observation)
+      pure observation
+  | otherwise = do
+      _ <- decodeAuthorityControlTextResponse response
+      Left AuthorityControlEpochObservationResponseMismatch
 
 -- | Discover the retained reservation after the host retired its active
 -- intent. The authenticated reply is a locator, not a successor permit.

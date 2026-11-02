@@ -15,6 +15,19 @@ The chart platform is owned by the native Haskell runtime in:
 - `src/Prodbox/Lib/ChartPlatform.hs`
 - `src/Prodbox/Lib/Storage.hs`
 - `src/Prodbox/PostgresPlatform.hs`
+- `src/Prodbox/ControlPlane/RpcAdmissionBirthChart.hs`
+
+The registration-birth rollout prepares its home Authority inputs before preparation fences
+ordinary reads. `Prodbox.ControlPlane.RpcAdmissionBirthChart` constructs an opaque template through
+the canonical planner, holding the selected image/configuration/resources, storage bindings and
+bounded regular chart bytes. Descriptor rendering uses the canonical role renderer with the held
+image and endpoint, changing only `config.roleDhall`'s typed `rpc_registration` field. It checks the
+exact Authority and legacy/already-matching source pin and retains the descriptor. Raw text must
+match canonical rendering: semantic Dhall equivalence alone would change the rollout checksum.
+Rendering performs no new file, settings or cluster observation. The serialized
+input ceiling does not admit working heap or parent/child/helper resources. The physical executor
+still needs the original deadline, host/concurrency admission, exact Helm-state observations and
+independent authenticated runtime confirmation before the coordinator completes registration.
 
 The supported chart doctrine is:
 
@@ -816,6 +829,11 @@ previous observation read `service/kubernetes`, which is the **pre-DNAT** coordi
 halves from one source fixed the encoder count and not the layer, which is the § 24 rule this
 implements.
 
+The Endpoints port parser accepts one to five ASCII decimal digits representing a TCP port in
+`1..65535`. It rejects zero, wider spellings, out-of-range values and non-decimal input before any
+coordinate can reach chart values. Its bounded accumulation never converts an overflowing machine
+integer. Repeated identical ports and valid post-DNAT addresses retain their existing projection.
+
 Two coordinates deliberately survive as distinct. `kubernetes.default.svc.cluster.local:443` in
 `src/Prodbox/K8s/InCluster.hs` and `src/Prodbox/Vault/Reconcile.hs` is what a **client dials** and is
 correct pre-DNAT; the endpoint address and port are what a **policy engine matches**. They are not
@@ -841,6 +859,34 @@ the compiled owner still said `443` the cluster would break identically. Only a 
    [Retained Storage Lifecycle Doctrine](./storage_lifecycle_doctrine.md))
 
 This means a later deploy can rebind to the same retained host state.
+
+### Failed-release startup evidence
+
+A terminal Helm failure is observed before the existing failed-release cleanup runs. The
+observer selects only the exact internal release and refuses absent, ambiguous, foreign or
+malformed Pod scope. Namespace, release label, Pod UID, container identity and restart count
+must remain equal across each log read; a replacement or restart invalidates attribution.
+Current startup output is read once, with a previous read only after a positive restart count.
+All startup and ordinary failure diagnostics share one 30-second monotonic deadline. Each
+subprocess has a ceiling of three seconds, metadata output is at most 128 KiB, startup output
+64 KiB and stderr 16 KiB. Unavailable, oversized, expired and changed-scope reads supply no
+startup cause and do not authorize recovery.
+
+Startup bytes remain private in bounded memory. The report recognizes only the existing
+structured error event, role and closed cause vocabulary produced by Lifecycle Authority,
+Target Secret Agent and TLS Retention. Additional fields, non-JSON output, wrong roles/events,
+unknown causes and unsupported role classifiers remain unclassified. No raw startup text is
+printed, persisted or hashed; no new artifact store or lifecycle class is introduced. A safe
+observed cause is diagnostic only. It does not change readiness admission, Helm timeout
+preservation, cleanup ownership, resource envelopes or a destructive command's verdict.
+
+| Observation | Supported remedy |
+|-------------|------------------|
+| `StartupReadUnavailable`, `StartupReadDeadlineElapsed` | Restore the named Kubernetes read/tool prerequisite and inspect the same release through supported status/log commands. An unavailable diagnostic does not authorize retrying an ambiguous effect or changing its deadline. |
+| `StartupPodMissing`, `StartupPodsAmbiguous`, `StartupPodMalformed`, `StartupPodForeign`, `StartupContainerNotSole`, `StartupContainerNotStarted` | Preserve the failed observation and reobserve the exact supported release. Never borrow logs from another namespace, Pod, container or revision. |
+| `attribution-changed` | Discard the candidate cause and reobserve the current exact instance. Do not attribute captured bytes to its replacement. |
+| `unclassified` | No producer-owned cause was recognized. Inspect through the supported read-only log surface; raw text is never promoted into a public diagnostic or recovery permission. |
+| `not-applicable` previous log | No previous restart was observed; no previous-log claim is made. |
 
 ## 8. Supported Charts
 

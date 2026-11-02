@@ -27,7 +27,6 @@ where
 import Data.List (find)
 import Data.Text (Text)
 import Numeric.Natural (Natural)
-import Prodbox.ControlPlane.Coordinate (AuthorityEpoch (..))
 import Prodbox.ControlPlane.TargetMaterialClient
   ( TargetMaterialClientCause
   , allTargetMaterialClientCauses
@@ -36,18 +35,13 @@ import Prodbox.ControlPlane.TargetMaterialClient
 import Prodbox.ControlPlane.TargetMaterialRegistry (TargetSecretId)
 import Prodbox.ControlPlane.TargetSecretAgentExecution
   ( AcceptedTargetAuthority
+  , AcceptedTargetAuthorityAdvanceError (..)
   , TargetAgentIdentity
   , acceptedTargetAgentIdentity
-  , acceptedTargetAuthorityEpoch
-  , acceptedTargetFenceFloor
   , acceptedTargetId
-  , acceptedTargetIssuerGeneration
-  , acceptedTargetIssuerIdentity
-  , acceptedTargetIssuerPublicKey
   , targetAgentClusterIdentity
-  , targetIssuerKeyGenerationValue
+  , validateAcceptedTargetAuthorityAdvance
   )
-import Prodbox.Lifecycle.Lease (fencingTokenValue)
 
 data TargetAuthorityTrustObservation
   = TargetAuthorityTrustMissing
@@ -79,6 +73,7 @@ data TargetAuthorityTrustObservationCause
   | TargetAuthorityTrustObservationTargetMismatch
   | TargetAuthorityTrustObservationAgentIdentityMismatch
   | TargetAuthorityTrustObservationOther
+  | TargetAuthorityTrustObservationEpochTransitionFrozen
   deriving stock (Bounded, Enum, Eq, Show)
 
 allTargetAuthorityTrustObservationCauses :: [TargetAuthorityTrustObservationCause]
@@ -106,6 +101,7 @@ renderTargetAuthorityTrustObservationCause cause = case cause of
   TargetAuthorityTrustObservationTargetMismatch -> "record/target-mismatch"
   TargetAuthorityTrustObservationAgentIdentityMismatch -> "record/agent-identity-mismatch"
   TargetAuthorityTrustObservationOther -> "other"
+  TargetAuthorityTrustObservationEpochTransitionFrozen -> "epoch-transition-frozen"
 
 parseTargetAuthorityTrustObservationCause
   :: Text -> Maybe TargetAuthorityTrustObservationCause
@@ -306,32 +302,14 @@ validateAdvance
   :: AcceptedTargetAuthority
   -> AcceptedTargetAuthority
   -> Either TargetAuthorityTrustInstallError ()
-validateAdvance current desired
-  | acceptedTargetId current /= acceptedTargetId desired =
-      Left TargetAuthorityTrustTargetMismatch
-  | targetAgentClusterIdentity (acceptedTargetAgentIdentity current)
-      /= targetAgentClusterIdentity (acceptedTargetAgentIdentity desired) =
-      Left TargetAuthorityTrustAgentIdentityChanged
-  | acceptedTargetIssuerIdentity current /= acceptedTargetIssuerIdentity desired =
-      Left TargetAuthorityTrustIssuerIdentityChanged
-  | desiredGeneration < currentGeneration =
-      Left TargetAuthorityTrustIssuerGenerationRegressed
-  | desiredGeneration == currentGeneration
-      && acceptedTargetIssuerPublicKey current
-        /= acceptedTargetIssuerPublicKey desired =
-      Left TargetAuthorityTrustIssuerKeyConflict
-  | desiredEpoch < currentEpoch =
-      Left TargetAuthorityTrustEpochRegressed
-  | desiredEpoch == currentEpoch && desiredFence < currentFence =
-      Left TargetAuthorityTrustFenceRegressed
-  | otherwise = Right ()
+validateAdvance current desired =
+  either (Left . refusal) Right (validateAcceptedTargetAuthorityAdvance current desired)
  where
-  desiredGeneration =
-    targetIssuerKeyGenerationValue (acceptedTargetIssuerGeneration desired)
-  currentGeneration =
-    targetIssuerKeyGenerationValue (acceptedTargetIssuerGeneration current)
-  desiredEpoch = epochValue (acceptedTargetAuthorityEpoch desired)
-  currentEpoch = epochValue (acceptedTargetAuthorityEpoch current)
-  desiredFence = fencingTokenValue (acceptedTargetFenceFloor desired)
-  currentFence = fencingTokenValue (acceptedTargetFenceFloor current)
-  epochValue (AuthorityEpoch value) = value
+  refusal err = case err of
+    AuthorityAdvanceTargetChanged -> TargetAuthorityTrustTargetMismatch
+    AuthorityAdvanceAgentClusterChanged -> TargetAuthorityTrustAgentIdentityChanged
+    AuthorityAdvanceIssuerChanged -> TargetAuthorityTrustIssuerIdentityChanged
+    AuthorityAdvanceIssuerGenerationRegressed -> TargetAuthorityTrustIssuerGenerationRegressed
+    AuthorityAdvanceIssuerKeyConflict -> TargetAuthorityTrustIssuerKeyConflict
+    AuthorityAdvanceEpochRegressed -> TargetAuthorityTrustEpochRegressed
+    AuthorityAdvanceFenceRegressed -> TargetAuthorityTrustFenceRegressed

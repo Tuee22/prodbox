@@ -1,0 +1,138 @@
+{
+  "format_version": 1,
+  "record_id": "HOST-CONTROLLER-STDIN-2026-10-31",
+  "scope": "Scoped canonical anonymous-pipe carrier and staged request-bound native controller operand. No credential acquisition, supported dispatcher routing, complete ordinary network program, complete funding/admission, live qualification, runtime-epoch retirement or phase/class closure.",
+  "behavior_contract": [
+    "Only the existing published OrdinaryCascadeController family can receive the owned descriptor. Null input remains the default.",
+    "The owner binds the original key and work window, offers once, attempts delivery only after an actual manager reply and closes the writer on success, error or cancellation.",
+    "Raw frames are at most 65536 bytes and never enter request/config files, logs or digests. The receiver requires an anonymous pipe under the actual original process owner.",
+    "The staged credential frame binds version, original key and public request digest. Foreign, malformed, trailing, noncanonical, expired or missing input refuses.",
+    "The fixed controller reads synthetic credentials under its actual parent and validates backend region before caller preparation. Real prompt-origin integration remains open."
+  ],
+  "limits": {
+    "max_frame_bytes": 65536,
+    "controller_heap_bytes": 134217728,
+    "family_memory_bytes": 268435456,
+    "rts_capabilities": 1,
+    "source_qa_memory_bytes": 5368709120,
+    "source_qa_swap_bytes": 0,
+    "source_qa_tasks": 64
+  },
+  "identities": {
+    "native_source_entry": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"8e664601fbb1bb6e1ecf48bcfe4c617a3a1d5b28cce25a42e0bf2a0b6aa9a7d0\", sourceManifestEntryCount = 1649},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"79da8d757c54749880d923ff5cd4ddcfedba1c907dfb0197e6d05017c58d67c5\", sourceManifestEntryCount = 1586})",
+    "native_source_exit": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"8e664601fbb1bb6e1ecf48bcfe4c617a3a1d5b28cce25a42e0bf2a0b6aa9a7d0\", sourceManifestEntryCount = 1649},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"79da8d757c54749880d923ff5cd4ddcfedba1c907dfb0197e6d05017c58d67c5\", sourceManifestEntryCount = 1586})",
+    "prompt_source_entry": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"8e664601fbb1bb6e1ecf48bcfe4c617a3a1d5b28cce25a42e0bf2a0b6aa9a7d0\", sourceManifestEntryCount = 1649},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"79da8d757c54749880d923ff5cd4ddcfedba1c907dfb0197e6d05017c58d67c5\", sourceManifestEntryCount = 1586})",
+    "prompt_source_exit": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"8e664601fbb1bb6e1ecf48bcfe4c617a3a1d5b28cce25a42e0bf2a0b6aa9a7d0\", sourceManifestEntryCount = 1649},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"79da8d757c54749880d923ff5cd4ddcfedba1c907dfb0197e6d05017c58d67c5\", sourceManifestEntryCount = 1586})",
+    "canonical_artifact_build_source": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"8e664601fbb1bb6e1ecf48bcfe4c617a3a1d5b28cce25a42e0bf2a0b6aa9a7d0\", sourceManifestEntryCount = 1649},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"79da8d757c54749880d923ff5cd4ddcfedba1c907dfb0197e6d05017c58d67c5\", sourceManifestEntryCount = 1586})",
+    "canonical_operator_sha256": "b768fa5526993c3b8db2aee718edc2417b5c0c6d86d54f02c5ad694e1aa780f4",
+    "package": "Frozen verified canonical 873-module artifact snapshot; no private source overlay or mixed predecessor ABI.",
+    "record_delta": "This reporting-only record refinement follows repeated native controls after a named-helper style refactor. The final public identity is captured by the subsequent required canonical gate."
+  },
+  "results": {
+    "carrier_cases": 8,
+    "carrier_native_families": 4,
+    "carrier_modes": [
+      "raw full 64 KiB / all byte values",
+      "null input",
+      "expiry while writer blocked",
+      "cancellation after writer claim"
+    ],
+    "prompt_cases": 16,
+    "prompt_native_families": 3,
+    "prompt_modes": [
+      "valid synthetic frame reaches missing caller prerequisite",
+      "foreign request digest refuses",
+      "null input refuses without auth fallback"
+    ],
+    "closing_evidence": "Each of seven native families observes exact six-role absence after its original expiry and retires exact settings/request payloads through the typed owner. Thirty-five copied metadata records are public submission/publication/retirement observations only.",
+    "refinement": "All 8 carrier and 16 protocol/controller controls are repeated after extracting named helpers for repository style. Seven new native fields close; 35 current public metadata records and 35 predecessor records are preserved separately."
+  },
+  "evidence": [
+    {
+      "path": ".build/sprint-6.5/host-controller-stdin-20261030/controller-stdin-canonical-build-4-validation.json",
+      "sha256": "3ea3f8551791173a67b18222a437e8ecafff4336bf46a9ad97dc02213485c610"
+    },
+    {
+      "path": ".build/sprint-6.5/host-controller-stdin-20261030/controller-stdin-native-build-1-validation.json",
+      "sha256": "13c497c636fc88deb2536912c780d1a0cd7c1641bfd59c84b9d507cceedb6de4"
+    },
+    {
+      "path": ".build/sprint-6.5/host-controller-stdin-20261030/controller-stdin-native-tests-1-validation.json",
+      "sha256": "53448c32e3db59a5a280babf7d0ca1c946b838d9c46ae8dbe0ba1ad17cd70145"
+    },
+    {
+      "path": ".build/sprint-6.5/host-controller-stdin-20261030/controller-stdin-staged-typecheck-1-validation.json",
+      "sha256": "7474071154a711bdb0971cfbb0160564f300c6c06ca4ecdc9cff53f82cbdf4c8"
+    },
+    {
+      "path": ".build/sprint-6.5/host-controller-stdin-20261030/controller-stdin-prompt-build-1-validation.json",
+      "sha256": "3d261a1dc7b6f2baa937ac6318f215b616e7358cc6f8276979708b6f384b1824"
+    },
+    {
+      "path": ".build/sprint-6.5/host-controller-stdin-20261030/controller-stdin-prompt-tests-1-validation.json",
+      "sha256": "c33ecae6b2d66a80439af7c4c6d82b07965c8f6b7a6b928e4a9d2a6b5d343c65"
+    },
+    {
+      "path": ".build/sprint-6.5/host-controller-stdin-20261030/carrier-native-metadata-source-index-1.json",
+      "sha256": "8be4cefb7bd596b89bb2f11ee8d0d4d7090e40cd84a83d90ba3fb5034c5baaf5"
+    },
+    {
+      "path": ".build/sprint-6.5/host-controller-stdin-20261030/prompt-native-metadata-source-index-1.json",
+      "sha256": "41f4cd5af482303882e83b461f2e69bd3687680f9943c30d604e8d8e31547f7f"
+    },
+    {
+      "path": ".build/sprint-6.5/host-controller-stdin-20261030/superseded-source-index-1.json",
+      "sha256": "2d98c0e5481301d4d62070a51026b3a4cf2c58d475be6f8d573cfacf3a69b447"
+    },
+    {
+      "path": ".build/sprint-6.5/host-controller-stdin-20261030/superseded-archive-validation-1.json",
+      "sha256": "890c3c743749f27ea807110f223d1c2c4be7a394c039989d06180d6ea003cf6e"
+    },
+    {
+      "path": ".build/sprint-6.5/host-controller-stdin-20261030/controller-stdin-canonical-build-5-validation.json",
+      "sha256": "95f0f4f409cb7e30b5838f8caa932027859603f445eb5a22ce0c23b3892e3b5d"
+    },
+    {
+      "path": ".build/sprint-6.5/host-controller-stdin-20261030/controller-stdin-native-build-2-validation.json",
+      "sha256": "6f4abcd2abd35711c68678c5116be526e17ab9ee6704f6628e63214d15df4d67"
+    },
+    {
+      "path": ".build/sprint-6.5/host-controller-stdin-20261030/controller-stdin-native-tests-2-validation.json",
+      "sha256": "8ca7349e1917e48fdbc38b1dedaa6d9e94ad07448430bd5236de77ac21c51900"
+    },
+    {
+      "path": ".build/sprint-6.5/host-controller-stdin-20261030/controller-stdin-prompt-build-2-validation.json",
+      "sha256": "f1e9c2fcddc388730205b5c429273cc33147ae253484a6544f0c0419a7026a93"
+    },
+    {
+      "path": ".build/sprint-6.5/host-controller-stdin-20261030/controller-stdin-prompt-tests-2-validation.json",
+      "sha256": "d1c8a92fd658e7bd5424aad9678d7123ac5d3bb946ebd87999139001c9db7a39"
+    },
+    {
+      "path": ".build/sprint-6.5/host-controller-stdin-20261030/carrier-native-metadata-source-index-2.json",
+      "sha256": "2f3fd4bd9633857c7a8073aafc85decc000e4b355e690ead9726e0e74fdb9ffc"
+    },
+    {
+      "path": ".build/sprint-6.5/host-controller-stdin-20261030/prompt-native-metadata-source-index-2.json",
+      "sha256": "78ce9e69bbda9b5a291ca9440e2baa95c35e31a054b52eee48b87813658be8fb"
+    },
+    {
+      "path": ".build/sprint-6.5/host-controller-stdin-20261030/style-refinement-source-index-1.json",
+      "sha256": "7cebf29863b7503eb4cfcc9304f99f8bd99ca7eda0dbd6bb45b90e14d2673a34"
+    },
+    {
+      "path": ".build/sprint-6.5/host-controller-stdin-20261030/public-record-before-refinement-1.json",
+      "sha256": "c6226ce87093e54cd7e180a0fbfe6e521e16ef2b4fa1fd3f4611354d82f4cf0d"
+    },
+    {
+      "path": ".build/sprint-6.5/stdin-current-package-20261031/package-index-1.json",
+      "sha256": "7a82c38841400c9454856c9fa7fb6a6741da7b4f1aba8b5f87fa6b30c443c762"
+    }
+  ],
+  "limitations": [
+    "Synthetic native credentials do not establish an approved credential acquisition path. No actual test-secret file was read for these controls.",
+    "The carrier fixture compiler uses its default optimization and the prompt fixture uses O1 against the canonical O1 library. These are independent scoped controls, not a normalized before/after performance comparison.",
+    "Harness RTS samples are not child-process or complete-program working-set maxima. Installed profiles and runtime memory limits are unchanged.",
+    "Lost manager reply and the complete composed fault matrix remain qualification work. Invocation, pipe delivery and metadata preservation alone do not prove business completion."
+  ]
+}

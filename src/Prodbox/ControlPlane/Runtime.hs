@@ -100,6 +100,7 @@ module Prodbox.ControlPlane.Runtime
   , registeredClientTableFromTrustRegistry
   , validateControlPlaneConfig
   , mkLifecycleAuthorityCoordinates
+  , LifecycleAuthorityBirthStartup
   , lifecycleAuthorityRuntimeInterpreter
   , authorityBackupRuntimeInterpreter
   , tlsRetentionRuntimeInterpreter
@@ -204,13 +205,16 @@ import Prodbox.ControlPlane.AuthenticatedRuntime
   , RouteTrustResolutionFailure (..)
   , ValidatedAuthenticationTopology
   , installAuthenticatedRuntimeInterpreter
+  , installAuthenticatedRuntimeInterpreterWithVerifiedHandler
   , resolveRouteTrustRegistryWithFailure
   , validateControlPlaneAuthenticationWire
+  , validatedAuthenticationMaximum
   , validatedAuthenticationSigningKeyRef
   , validatedAuthenticationSigningPrincipal
   )
 import Prodbox.ControlPlane.AuthenticatedTransport
-  ( AuthenticatedServerProviders (..)
+  ( AuthenticatedClientProviders (..)
+  , AuthenticatedServerProviders (..)
   , RouteTrustRegistry
   , mkAuthenticatedClientTransport
   , mkAuthenticatedTransportBounds
@@ -220,13 +224,10 @@ import Prodbox.ControlPlane.AuthenticationRegistry
   ( targetSecretControllerAuditorVaultRole
   )
 import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
-  ( AuthorityAdmissionRepository (readAuthorityAdmission)
-  , AuthorityAdmissionSnapshot (authorityAdmissionSnapshotState)
+  ( AuthorityAdmissionRepository
   , AuthorityOperationSubmitResult (..)
   , authorityAdmissionMaximumEncodedBytes
   , authorityAdmissionMigrationImportApplicator
-  , authorityAdmissionStateCodecWithRegisteredClients
-  , modelBAuthorityAdmissionRepository
   , serveAuthorityOperationSubmit
   )
 import Prodbox.ControlPlane.AuthorityBackupAdapter
@@ -241,6 +242,12 @@ import Prodbox.ControlPlane.AuthorityBackupClient
 import Prodbox.ControlPlane.AuthorityBackupEndpoint
   ( AuthorityBackupReceipt (..)
   , authorityBackupDigestText
+  )
+import Prodbox.ControlPlane.AuthorityControlProtocol (isEpochPromotionObservationForRole)
+import Prodbox.ControlPlane.AuthorityPeerContextEndpoint
+  ( authorityPeerContextVerifiedHandler
+  , isAuthorityPeerContextObservationForRole
+  , vaultAuthorityPeerContextInterpreter
   )
 import Prodbox.ControlPlane.AuthorityProviderEndpoint
   ( AuthorityProviderDispatchBoundary (..)
@@ -384,6 +391,11 @@ import Prodbox.ControlPlane.EksDrainReadBackReceiptRepository
   ( eksDrainReadBackReceiptModelBCodec
   , modelBEksDrainReadBackReceiptRepository
   )
+import Prodbox.ControlPlane.EpochBindingReadback
+  ( epochBindingReadbackVerifiedHandler
+  , isPhysicalEpochReadbackForRole
+  , vaultEpochAuthenticationBackend
+  )
 import Prodbox.ControlPlane.ExternalMaterialIngressEndpoint
   ( ExternalMaterialIngressReceiptRecovery (..)
   , ExternalMaterialIngressReceiptRecoveryResult (..)
@@ -526,6 +538,7 @@ import Prodbox.ControlPlane.RetainedAuthentication
   ( authorityAdmissionWithRetainedEpoch
   , authorityAuthenticationEpoch
   , readRetainedAuthorityEpoch
+  , reconcileRetainedAuthorityEpoch
   , vaultRequestReplayRepository
   )
 import Prodbox.ControlPlane.RetainedMaterialDeliveryCoordinator
@@ -612,6 +625,15 @@ import Prodbox.ControlPlane.Server
   , renderHttpResponse
   , serveControlPlaneRequest
   )
+import Prodbox.ControlPlane.TargetAuthorityEpochBinding
+  ( homeTargetEpochAgentRegistry
+  , vaultTargetEpochBindingInterpreter
+  )
+import Prodbox.ControlPlane.TargetAuthorityEpochEndpoint
+  ( isTargetEpochObservationForRole
+  , targetEpochVerifiedHandler
+  )
+import Prodbox.ControlPlane.TargetAuthorityEpochExecution (vaultTargetEpochExecutionInterpreter)
 import Prodbox.ControlPlane.TargetAuthorityTrustClient
   ( targetAuthorityTrustClient
   )
@@ -789,7 +811,9 @@ import Prodbox.Lifecycle.AdminAction.Protocol
   , mkAdminActionBackupReceipt
   )
 import Prodbox.Lifecycle.Authority.Admission
-  ( AuthorityRegisteredSubmissionDecision (..)
+  ( AuthorityAdmissionAggregate
+  , AuthorityRegisteredSubmissionDecision (..)
+  , authorityAggregateRegisteredClients
   , initialCleanInstallAuthorityWithRegisteredClients
   , initialMigratingAuthorityWithRegisteredClients
   )
@@ -804,8 +828,7 @@ import Prodbox.Lifecycle.Authority.ClientRegistry
   , mkRegisteredClientTable
   )
 import Prodbox.Lifecycle.Authority.Genesis
-  ( AuthorityEpoch
-  , authorityEpochValue
+  ( authorityEpochValue
   )
 import Prodbox.Lifecycle.Authority.ProjectionImport
   ( productionLegacyProjectionSource
@@ -826,7 +849,7 @@ import Prodbox.Lifecycle.CheckpointAuthority
   ( AuthorityCoordinateError
   , LongLivedCheckpointAuthority
   , ModelBCasAdapter (modelBObserve)
-  , ModelBCodec (encodeModelBValue)
+  , ModelBCodec
   , ModelBObjectCoordinate
   , ModelBObservation (..)
   , StoreLifetime (ClusterRetained)
@@ -976,6 +999,25 @@ import System.Environment (getEnvironment)
 import System.Exit (ExitCode (..))
 import System.Timeout (timeout)
 
+import Prodbox.ControlPlane.RpcAdmissionBirth
+  ( RpcBirthRecord
+  , RpcBirthServingMode
+  , rpcBirthMarkerCodec
+  , rpcBirthPinnedRecordCodec
+  , rpcBirthRecordCodec
+  , rpcBirthServingModeRequiresRegistration
+  )
+import Prodbox.ControlPlane.RpcAdmissionBirthBackup (rpcBirthNativeBackupEnvelope)
+import Prodbox.ControlPlane.RpcAdmissionBirthConfig
+import Prodbox.ControlPlane.RpcAdmissionBirthEndpoint
+  ( isRpcBirthObservationForRole
+  , rpcBirthOwnBindingInterpreter
+  , rpcBirthVerifiedHandler
+  )
+import Prodbox.ControlPlane.RpcAdmissionBirthExecution (rpcBirthReadInterpreter)
+import Prodbox.ControlPlane.RpcAdmissionBirthNative
+import Prodbox.ControlPlane.RpcAdmissionBirthRuntime
+
 data ControlPlaneConfig = ControlPlaneConfig
   { schema_version :: !Natural
   , runtime_role :: !Text
@@ -987,6 +1029,7 @@ data ControlPlaneConfig = ControlPlaneConfig
   , target_agent_identity :: !Text
   , role_store :: !ControlPlaneRoleStore
   , request_authentication :: !ControlPlaneAuthenticationWire
+  , rpc_registration :: !RpcBirthConfig
   }
   deriving (Generic, Show)
 
@@ -1022,7 +1065,7 @@ data TlsRetentionStoreWire = TlsRetentionStoreWire
 
 instance Dhall.FromDhall TlsRetentionStoreWire
 
--- | Closed schema-v7 store choice.  The constructor itself is validated against
+-- | Closed schema-v8 store choice.  The constructor itself is validated against
 -- the executable's selected role before Vault authentication or listener bind;
 -- one role therefore cannot substitute another role's bucket/prefix record.
 data ControlPlaneRoleStore
@@ -1061,6 +1104,7 @@ data ControlPlaneConfigError
   | ControlPlaneConfigTargetAgentClusterMismatch
   | ControlPlaneConfigStoreRoleMismatch
   | ControlPlaneConfigAuthenticationInvalid !ControlPlaneAuthenticationConfigError
+  | ControlPlaneConfigRpcBirthInvalid !RpcBirthConfigError
   | ControlPlaneConfigAuthorityStoreInvalid !InClusterAuthorityStoreConfigError
   | ControlPlaneConfigDedicatedStoreInvalid !DedicatedAdapterStoreError
   deriving (Eq, Show)
@@ -1285,6 +1329,8 @@ data LifecycleAuthorityInterpreterCause
   = LifecycleAuthorityInterpreterRegisteredClients
   | LifecycleAuthorityInterpreterInitialAdmission !LifecycleAuthorityInitialAdmissionCause
   | LifecycleAuthorityInterpreterAuthorityScope
+  | LifecycleAuthorityInterpreterRpcBirth
+  | LifecycleAuthorityInterpreterRpcSigner
   | LifecycleAuthorityInterpreterTransportBounds
   | LifecycleAuthorityInterpreterAuthenticationLifetime
   | LifecycleAuthorityInterpreterReplayClockSkew
@@ -1419,6 +1465,8 @@ allLifecycleAuthorityInterpreterCauses =
   [LifecycleAuthorityInterpreterRegisteredClients]
     <> map LifecycleAuthorityInterpreterInitialAdmission allLifecycleAuthorityInitialAdmissionCauses
     <> [ LifecycleAuthorityInterpreterAuthorityScope
+       , LifecycleAuthorityInterpreterRpcBirth
+       , LifecycleAuthorityInterpreterRpcSigner
        , LifecycleAuthorityInterpreterTransportBounds
        , LifecycleAuthorityInterpreterAuthenticationLifetime
        , LifecycleAuthorityInterpreterReplayClockSkew
@@ -1447,6 +1495,8 @@ renderLifecycleAuthorityInterpreterCause cause = case cause of
   LifecycleAuthorityInterpreterInitialAdmission initialAdmissionCause ->
     "initial-admission/" <> renderLifecycleAuthorityInitialAdmissionCause initialAdmissionCause
   LifecycleAuthorityInterpreterAuthorityScope -> "authority-scope"
+  LifecycleAuthorityInterpreterRpcBirth -> "rpc-birth/configuration"
+  LifecycleAuthorityInterpreterRpcSigner -> "rpc-birth/signer"
   LifecycleAuthorityInterpreterTransportBounds -> "transport-bounds"
   LifecycleAuthorityInterpreterAuthenticationLifetime -> "authentication-lifetime"
   LifecycleAuthorityInterpreterReplayClockSkew -> "replay-clock-skew"
@@ -2152,16 +2202,131 @@ mkLifecycleAuthorityCoordinates storeConfig = do
 -- repositories share the dedicated in-cluster encrypted store but retain exact,
 -- distinct @'ClusterRetained'@ coordinates and codecs.  Readiness is the store's
 -- signed S3 probe, not socket liveness.
+data LifecycleAuthorityInitialState
+  = LifecycleAuthorityLegacyInitial
+  | LifecycleAuthorityRetainedInitial !AuthorityAdmissionAggregate
+
+data LifecycleAuthorityBirthStartup = LifecycleAuthorityBirthStartup
+  { authorityStartupClients :: !RegisteredClientTable
+  , authorityStartupInitialState :: !LifecycleAuthorityInitialState
+  , authorityStartupMode :: !RpcBirthServingMode
+  , authorityStartupBackend :: !RpcBirthNativeBackend
+  , authorityStartupCodec :: !(ModelBCodec RpcBirthRecord)
+  , authorityStartupClientSigner :: !(RequestSigningCapability IO)
+  , authorityStartupTrust :: !(IO (Either Text RouteTrustRegistry))
+  , authorityStartupSigner :: !(IO (Either Text (RequestSigningCapability IO)))
+  }
+
+data LifecycleAuthorityBirthAuthentication
+  = LifecycleAuthorityLegacyAuthentication !ResolvedAuthenticationProvisioning
+  | LifecycleAuthorityPinnedAuthentication !Natural
+
+resolveLifecycleAuthorityBirthStartup
+  :: VaultSession
+  -> InClusterAuthorityStore
+  -> LifecycleAuthorityCoordinates
+  -> RpcBirthConfig
+  -> LifecycleAuthorityBirthAuthentication
+  -> IO (Either LifecycleAuthorityInterpreterCause LifecycleAuthorityBirthStartup)
+resolveLifecycleAuthorityBirthStartup session store coordinates config authentication =
+  case prepared of
+    Left cause -> pure (Left cause)
+    Right (scope, mode) -> case authentication of
+      LifecycleAuthorityLegacyAuthentication resolved
+        | rpcBirthServingModeRequiresRegistration mode -> pure (Left LifecycleAuthorityInterpreterRpcBirth)
+        | otherwise -> pure $ do
+            let trust = resolvedAuthenticationTrustRegistry resolved
+                signer = resolvedAuthenticationClientSigner resolved
+            clients <-
+              mapLeft
+                (const LifecycleAuthorityInterpreterRegisteredClients)
+                (registeredClientTableFromTrustRegistry trust)
+            backend <-
+              mapLeft
+                (const LifecycleAuthorityInterpreterRpcBirth)
+                ( inClusterRpcBirthBackend
+                    store
+                    authority
+                    scope
+                    live
+                    retained
+                    clients
+                    session
+                    trust
+                )
+            pure
+              LifecycleAuthorityBirthStartup
+                { authorityStartupClients = clients
+                , authorityStartupInitialState = LifecycleAuthorityLegacyInitial
+                , authorityStartupMode = mode
+                , authorityStartupBackend = backend
+                , authorityStartupCodec =
+                    rpcBirthRecordCodec authorityAdmissionMaximumEncodedBytes live retained scope clients
+                , authorityStartupClientSigner = signer
+                , authorityStartupTrust = do
+                    (record, marker) <- observeRpcBirthNativeRecords backend
+                    pure (mapLeft (Text.pack . show) (rpcBirthRuntimeTrust mode trust record marker))
+                , authorityStartupSigner = resolveRpcBirthRuntimeSigner backend mode scope session signer
+                }
+      LifecycleAuthorityPinnedAuthentication maximumTrust ->
+        case do
+          codec <-
+            mapLeft
+              (const LifecycleAuthorityInterpreterRpcBirth)
+              (rpcBirthPinnedRecordCodec authorityAdmissionMaximumEncodedBytes live retained scope mode)
+          backend <-
+            mapLeft
+              (const LifecycleAuthorityInterpreterRpcBirth)
+              (inClusterPinnedRpcBirthBackend store authority scope live retained maximumTrust mode session)
+          pure (codec, backend) of
+          Left cause -> pure (Left cause)
+          Right (codec, backend) -> do
+            recovered <- resolveRpcBirthRecoveryAuthentication backend mode scope session
+            case mapLeft (const LifecycleAuthorityInterpreterRpcBirth) recovered of
+              Left cause -> pure (Left cause)
+              Right recovery -> do
+                trustResult <- observeRpcBirthRecoveryTrust backend mode maximumTrust recovery
+                signerResult <- resolveRpcBirthRecoverySigner backend mode scope session recovery
+                pure $ do
+                  _ <- mapLeft (const LifecycleAuthorityInterpreterRpcBirth) trustResult
+                  signer <- mapLeft (const LifecycleAuthorityInterpreterRpcSigner) signerResult
+                  let aggregate = rpcBirthRecoveryAggregate recovery
+                  pure
+                    LifecycleAuthorityBirthStartup
+                      { authorityStartupClients = authorityAggregateRegisteredClients aggregate
+                      , authorityStartupInitialState = LifecycleAuthorityRetainedInitial aggregate
+                      , authorityStartupMode = mode
+                      , authorityStartupBackend = backend
+                      , authorityStartupCodec = codec
+                      , authorityStartupClientSigner = signer
+                      , authorityStartupTrust = observeRpcBirthRecoveryTrust backend mode maximumTrust recovery
+                      , authorityStartupSigner = resolveRpcBirthRecoverySigner backend mode scope session recovery
+                      }
+ where
+  authority = lifecycleCheckpointAuthority coordinates
+  live = lifecycleAuthoritySubmissionCapacity
+  retained = lifecycleAuthorityRetainedSubmissionCapacity
+  prepared = do
+    scope <-
+      mapLeft
+        (const LifecycleAuthorityInterpreterAuthorityScope)
+        (mkAuthorityScope (checkpointAuthorityClusterId authority))
+    mode <-
+      mapLeft
+        (const LifecycleAuthorityInterpreterRpcBirth)
+        (validateRpcBirthConfig LifecycleAuthorityRuntime scope config)
+    pure (scope, mode)
+
 lifecycleAuthorityRuntimeInterpreter
   :: ControlPlaneVaultConfig
   -> VaultSession
-  -> RouteTrustRegistry
-  -> RequestSigningCapability IO
   -> InClusterAuthorityStore
   -> LifecycleAuthorityCoordinates
   -> TargetAgentIdentity
+  -> LifecycleAuthorityBirthStartup
   -> IO (Either LifecycleAuthorityInterpreterCause (RoleInterpreter IO, RoleReadinessObserver))
-lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clientSigner store coordinates registeredAgentIdentity = do
+lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession store coordinates registeredAgentIdentity startup = do
+  let clientSigner = authorityStartupClientSigner startup
   -- Sprint 4.55: five layers of this role's handler stack each took
   -- `inClusterAuthorityReady store` — a signed S3 LIST through the dedicated
   -- principal — and composed them with `&&`, so a single kubelet probe against
@@ -2178,23 +2343,20 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
           lifecycleAuthorityReadinessDependencies
       )
   let authorityReadiness = roleReadinessObserverSource readinessObserver
-  let registeredClientsResult =
-        mapLeft
-          (const LifecycleAuthorityInterpreterRegisteredClients)
-          (registeredClientTableFromTrustRegistry trustRegistry)
-  initialAdmissionResult <- case registeredClientsResult of
-    Left cause -> pure (Left cause)
-    Right registeredClients ->
+  initialAdmissionResult <- case authorityStartupInitialState startup of
+    LifecycleAuthorityRetainedInitial aggregate -> pure (Right aggregate)
+    LifecycleAuthorityLegacyInitial ->
       fmap
         (mapLeft LifecycleAuthorityInterpreterInitialAdmission)
-        (resolveInitialAdmission registeredClients)
+        (resolveInitialAdmission (authorityStartupClients startup))
   case do
-    registeredClients <- registeredClientsResult
     initialAdmission <- initialAdmissionResult
     authorityScope <-
       mapLeft
         (const LifecycleAuthorityInterpreterAuthorityScope)
         (mkAuthorityScope (checkpointAuthorityClusterId authority))
+    let birthMode = authorityStartupMode startup
+        birthBackend = authorityStartupBackend startup
     transportBounds <-
       mapLeft
         (const LifecycleAuthorityInterpreterTransportBounds)
@@ -2310,9 +2472,10 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
             providerEndpoint
         )
     pure
-      ( registeredClients
-      , initialAdmission
+      ( initialAdmission
       , authorityScope
+      , birthMode
+      , birthBackend
       , transportBounds
       , ordinaryClientLifetime
       , maximumAcceptedLifetime
@@ -2329,9 +2492,10 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
       ) of
     Left cause -> pure (Left cause)
     Right
-      ( registeredClients
-        , initialAdmission
+      ( initialAdmission
         , authorityScope
+        , birthMode
+        , birthBackend
         , transportBounds
         , ordinaryClientLifetime
         , maximumAcceptedLifetime
@@ -2357,23 +2521,20 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
         recoveryPlaneObserverResult <-
           productionRecoveryPlaneComponentObserverInternal
             localRke2HostObservationRepository
-        let admissionCodec =
-              authorityAdmissionStateCodecWithRegisteredClients
-                authorityAdmissionMaximumEncodedBytes
-                lifecycleAuthoritySubmissionCapacity
-                lifecycleAuthorityRetainedSubmissionCapacity
-                registeredClients
-            baseAdmissionRepository =
-              modelBAuthorityAdmissionRepository
-                initialAdmission
-                ( inClusterAuthorityModelBCasAdapter
-                    store
-                    authority
-                    admissionCodec
-                )
-                (lifecycleAuthorityAdmissionCoordinate coordinates)
+        let baseAdmissionRepository =
+              rpcBirthNativeAdmissionRepository birthBackend birthMode initialAdmission
             admissionRepository =
               authorityAdmissionWithRetainedEpoch vaultSession baseAdmissionRepository
+            birthAuthenticationEpoch = do
+              observed <- rpcBirthNativeAuthenticationAdmission birthBackend birthMode
+              case observed of
+                Left cause -> pure (Left cause)
+                Right aggregate -> do
+                  let epoch = authorityAuthenticationEpoch (fromMaybe initialAdmission aggregate)
+                  synchronizedEpoch <- reconcileRetainedAuthorityEpoch vaultSession epoch
+                  pure (epoch <$ synchronizedEpoch)
+            birthAuthenticationTrust = authorityStartupTrust startup
+            birthClientSigner = authorityStartupSigner startup
             replayRepository =
               modelBRequestReplayRepository
                 (initialRequestReplayProjection replayLimits)
@@ -2393,9 +2554,9 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                       AuthenticatedServerProviders
                         { provideAuthenticatedServerScope = pure (Right authorityScope)
                         , provideAuthenticatedServerEpoch =
-                            provideAuthenticationAuthorityEpoch admissionRepository
+                            birthAuthenticationEpoch
                         , provideAuthenticatedServerTime = currentAuthorityTime
-                        , provideAuthenticatedServerTrustRegistry = pure (Right trustRegistry)
+                        , provideAuthenticatedServerTrustRegistry = birthAuthenticationTrust
                         }
                   , provideAuthenticatedReplayAttempt = freshReplayAttempt
                   }
@@ -2403,17 +2564,23 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                 replayLimits
                 replayRepository
             checkpointClientProviders =
-              transitAuthenticatedClientProviders
-                clientSigner
-                (pure (Right authorityScope))
-                (provideAuthenticationAuthorityEpoch admissionRepository)
-                ordinaryClientLifetime
+              ( transitAuthenticatedClientProviders
+                  clientSigner
+                  (pure (Right authorityScope))
+                  birthAuthenticationEpoch
+                  ordinaryClientLifetime
+              )
+                { provideAuthenticatedClientSigner = birthClientSigner
+                }
             providerClientProviders =
-              transitAuthenticatedClientProviders
-                clientSigner
-                (pure (Right authorityScope))
-                (provideAuthenticationAuthorityEpoch admissionRepository)
-                providerClientLifetime
+              ( transitAuthenticatedClientProviders
+                  clientSigner
+                  (pure (Right authorityScope))
+                  birthAuthenticationEpoch
+                  providerClientLifetime
+              )
+                { provideAuthenticatedClientSigner = birthClientSigner
+                }
             targetTransport =
               mkAuthenticatedClientTransport
                 transportBounds
@@ -2673,7 +2840,12 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                 authorityReadiness
                 (checkpointAuthorityClusterId authority)
                 currentAuthorityTimeMicros
-                (first Text.pack . encodeModelBValue admissionCodec)
+                ( rpcBirthNativeBackupEnvelope
+                    (authorityStartupCodec startup)
+                    (rpcBirthMarkerCodec authorityScope)
+                    birthBackend
+                    birthMode
+                )
                 admissionRepository
                 configRepository
                 (projectionImportHandler admissionRepository)
@@ -2950,13 +3122,16 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                     (retainedMaterialModelBCodec SRetainedAcmeEabMaterial)
                 )
                 (lifecycleAuthorityRetainedAcmeEabCoordinate coordinates)
-        synchronized <- readAuthorityAdmission admissionRepository
+        synchronized <- birthAuthenticationEpoch
+        rpcSignerResult <- birthClientSigner
         signerResult <- readAuthorityManifestPublicKey manifestSigner
         pure $ do
           _ <-
             mapLeft
               (const LifecycleAuthorityInterpreterAdmissionRead)
               synchronized
+          runtimeRpcSigner <-
+            mapLeft (const LifecycleAuthorityInterpreterRpcSigner) rpcSignerResult
           (_, manifestPublicKey) <-
             mapLeft
               (const LifecycleAuthorityInterpreterManifestSignerRead)
@@ -3163,7 +3338,7 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                   controlPlaneMaximumBodyBytes
                   AuthorityProviderDispatchBoundary
                     { authorityProviderAdmissionRepository = admissionRepository
-                    , authorityProviderSigningCapability = clientSigner
+                    , authorityProviderSigningCapability = runtimeRpcSigner
                     , authorityProviderNow = currentAuthorityTime
                     , authorityProviderIntentLifetime = providerIntentLifetime
                     , authorityProviderRevision =
@@ -3240,10 +3415,8 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                   store
                   authority
                   registeredAgentIdentity
-                  ( fmap
-                      (fmap (Coordinate.AuthorityEpoch . authorityEpochValue))
-                      (readRetainedAuthorityEpoch vaultSession)
-                  )
+                  admissionRepository
+                  (lifecycleAuthorityFirstReconcileCoordinate coordinates)
                   currentAuthorityTime
                   manifestSigner
                   (Text.pack (runtimeRoleName LifecycleAuthorityRuntime))
@@ -3333,11 +3506,46 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession trustRegistry clie
                     lifecycleAuthorityRecoveryPlaneAuthenticatedHandler
                       recoveryPlaneHandler
                       authenticatedHandler
+                  verifiedHandler verified = do
+                    peer <-
+                      authorityPeerContextVerifiedHandler
+                        authorityScope
+                        (vaultAuthorityPeerContextInterpreter vaultSession currentAuthorityTime)
+                        verified
+                    case peer of
+                      Just response -> pure (Just response)
+                      Nothing -> do
+                        birth <- rpcBirthVerifiedHandler authorityScope birthMode birthBackend verified
+                        case birth of
+                          Just response -> pure (Just response)
+                          Nothing ->
+                            epochBindingReadbackVerifiedHandler
+                              controlPlaneMaximumBodyBytes
+                              authorityScope
+                              currentAuthorityTime
+                              (vaultEpochAuthenticationBackend vaultSession)
+                              ( vaultTargetEpochBindingInterpreter
+                                  vaultSession
+                                  currentAuthorityTime
+                                  (homeTargetEpochAgentRegistry registeredAgentIdentity targetTransport)
+                              )
+                              admissionRepository
+                              verified
                in mapLeft
                     (const LifecycleAuthorityInterpreterAuthenticatedRuntimeInstall)
                     ( fmap
-                        (,readinessObserver)
-                        ( installAuthenticatedRuntimeInterpreter
+                        ( \installed ->
+                            ( rpcBirthOwnBindingInterpreter
+                                authorityScope
+                                birthMode
+                                (rpcBirthReadInterpreter (rpcBirthNativeInterpreter birthBackend))
+                                installed
+                            , readinessObserver
+                            )
+                        )
+                        ( installAuthenticatedRuntimeInterpreterWithVerifiedHandler
+                            isRuntimeFreshObservation
+                            verifiedHandler
                             LifecycleAuthorityRuntime
                             runtimeInputs
                             completeAuthenticatedHandler
@@ -4102,15 +4310,6 @@ lifecycleAuthorityReplayCasAttempts = 8
 lifecycleAuthorityReplayMaximumEncodedBytes :: Int
 lifecycleAuthorityReplayMaximumEncodedBytes = ReplayBudget.lifecycleAuthorityReplayMaximumEncodedBytes
 
-provideAuthenticationAuthorityEpoch
-  :: AuthorityAdmissionRepository IO revision
-  -> IO (Either Text AuthorityEpoch)
-provideAuthenticationAuthorityEpoch repository = do
-  observed <- readAuthorityAdmission repository
-  pure $ do
-    snapshot <- observed
-    Right (authorityAuthenticationEpoch (authorityAdmissionSnapshotState snapshot))
-
 currentAuthorityTime :: IO (Either Text AuthorityTime)
 currentAuthorityTime = fmap (fmap authorityTimeFromMicros) currentAuthorityTimeMicros
 
@@ -4414,12 +4613,12 @@ validateControlPlaneConfig
   -> ControlPlaneConfig
   -> Either ControlPlaneConfigError ValidatedRoleStore
 validateControlPlaneConfig role config
-  | schema_version config /= 7 = Left ControlPlaneConfigVersionUnsupported
+  | schema_version config /= 8 = Left ControlPlaneConfigVersionUnsupported
   | runtime_role config /= Text.pack (runtimeRoleName role) =
       Left ControlPlaneConfigRoleMismatch
   | otherwise = do
       -- Validate the role-owned store before deriving identities from the
-      -- shared cluster identifier.  The store is the schema-v7 authority for
+      -- shared cluster identifier.  The store is the schema-v8 authority for
       -- whether that identifier is admissible for this runtime role; allowing
       -- the Target Agent projection to fail first hides the exact closed-store
       -- error (for example an empty primary-store cluster id).
@@ -4431,6 +4630,14 @@ validateControlPlaneConfig role config
       if targetAgentClusterIdentity agentIdentity == Text.strip (cluster_id config)
         then Right ()
         else Left ControlPlaneConfigTargetAgentClusterMismatch
+      scope <-
+        mapLeft
+          (const (ControlPlaneConfigRpcBirthInvalid RpcBirthConfigScopeInvalid))
+          (mkAuthorityScope (cluster_id config))
+      _ <-
+        mapLeft
+          ControlPlaneConfigRpcBirthInvalid
+          (validateRpcBirthConfig role scope (rpc_registration config))
       _ <-
         mapLeft
           ControlPlaneConfigAuthenticationInvalid
@@ -4529,6 +4736,7 @@ runControlPlaneRole role options = do
                     validatedStore
                     (cluster_id config)
                     agentIdentity
+                    (rpc_registration config)
                     (mountedAuthenticationProvisioning role (request_authentication config))
 
 mountedAuthenticationProvisioning
@@ -4577,9 +4785,10 @@ runRolePlan
   -> ValidatedRoleStore
   -> Text
   -> TargetAgentIdentity
+  -> RpcBirthConfig
   -> Either AuthenticatedRuntimeProvisioningGap ValidatedAuthenticationTopology
   -> IO ExitCode
-runRolePlan role options vaultConfig vaultSession validatedStore clusterId agentIdentity authenticationProvisioning =
+runRolePlan role options vaultConfig vaultSession validatedStore clusterId agentIdentity birthConfig authenticationProvisioning =
   runPlanWithOptions
     (controlPlanePlanOptions options)
     ( buildPlan
@@ -4588,7 +4797,7 @@ runRolePlan role options vaultConfig vaultSession validatedStore clusterId agent
               [ "CONTROL_PLANE_ROLE_START_PLAN"
               , "RUNTIME_ROLE=" ++ runtimeRoleName role
               , "CONFIG_PATH=" ++ controlPlaneConfigPath options
-              , "CONFIG_SCHEMA_VERSION=7"
+              , "CONFIG_SCHEMA_VERSION=8"
               , "CONFIG_RUNTIME_ROLE=" ++ runtimeRoleName role
               , "LISTENER=0.0.0.0:" ++ show controlPlaneListenPort
               , "ROLE_ROUTE_COUNT=" ++ show (length (routesForRole role))
@@ -4605,6 +4814,7 @@ runRolePlan role options vaultConfig vaultSession validatedStore clusterId agent
             validatedStore
             clusterId
             agentIdentity
+            birthConfig
             authenticationProvisioning
         )
     )
@@ -4623,50 +4833,58 @@ runRoleServer
   -> ValidatedRoleStore
   -> Text
   -> TargetAgentIdentity
+  -> RpcBirthConfig
   -> Either AuthenticatedRuntimeProvisioningGap ValidatedAuthenticationTopology
   -> IO ExitCode
-runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdentity authenticationProvisioning =
+runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdentity birthConfig authenticationProvisioning =
   case authenticationProvisioning of
     Left _ -> refuseControlPlaneStartup role TargetSecretAgentStartupAuthenticationTopology
-    Right topology -> do
-      resolved <- resolveMountedAuthenticationProvisioning vaultSession topology
-      case resolved of
-        Left cause -> refuseControlPlaneStartup role cause
-        Right authentication ->
-          runResolvedRole authentication
+    Right topology -> case (role, validatedStore, birthConfig) of
+      (LifecycleAuthorityRuntime, ValidatedPrimaryStore storeConfig, RpcBirthConfigRegistered _) ->
+        runAuthorityRole
+          (LifecycleAuthorityPinnedAuthentication (validatedAuthenticationMaximum topology))
+          storeConfig
+      _ -> do
+        resolved <- resolveMountedAuthenticationProvisioning vaultSession topology
+        case resolved of
+          Left cause -> refuseControlPlaneStartup role cause
+          Right authentication -> runResolvedRole authentication
  where
-  runResolvedRole authentication = case (role, validatedStore) of
-    ( LifecycleAuthorityRuntime
-      , ValidatedPrimaryStore storeConfig
-      ) -> do
-        storeResult <- newInClusterAuthorityStore vaultSession storeConfig
-        case storeResult of
-          Left storeError ->
+  runAuthorityRole authentication storeConfig = do
+    storeResult <- newInClusterAuthorityStore vaultSession storeConfig
+    case storeResult of
+      Left storeError ->
+        refuseLifecycleAuthorityStartup
+          (lifecycleAuthorityStartupCauseFromStoreError storeError)
+      Right store ->
+        case mkLifecycleAuthorityCoordinates storeConfig of
+          Left _ ->
             refuseLifecycleAuthorityStartup
-              (lifecycleAuthorityStartupCauseFromStoreError storeError)
-          Right store ->
-            case mkLifecycleAuthorityCoordinates storeConfig of
-              Left _ ->
+              LifecycleAuthorityStartupCoordinateConstruction
+          Right coordinates -> do
+            startupResult <-
+              resolveLifecycleAuthorityBirthStartup vaultSession store coordinates birthConfig authentication
+            interpreterResult <- case startupResult of
+              Left cause -> pure (Left cause)
+              Right startup ->
+                lifecycleAuthorityRuntimeInterpreter
+                  vaultConfig
+                  vaultSession
+                  store
+                  coordinates
+                  agentIdentity
+                  startup
+            case interpreterResult of
+              Left cause ->
                 refuseLifecycleAuthorityStartup
-                  LifecycleAuthorityStartupCoordinateConstruction
-              Right coordinates -> do
-                interpreterResult <-
-                  lifecycleAuthorityRuntimeInterpreter
-                    vaultConfig
-                    vaultSession
-                    (resolvedAuthenticationTrustRegistry authentication)
-                    (resolvedAuthenticationClientSigner authentication)
-                    store
-                    coordinates
-                    agentIdentity
-                case interpreterResult of
-                  Left cause ->
-                    refuseLifecycleAuthorityStartup
-                      (LifecycleAuthorityStartupInterpreterConstruction cause)
-                  Right (interpreter, readinessObserver) ->
-                    withRoleReadinessObservers
-                      [readinessObserver]
-                      (runControlPlaneServer role interpreter)
+                  (LifecycleAuthorityStartupInterpreterConstruction cause)
+              Right (interpreter, readinessObserver) ->
+                withRoleReadinessObservers
+                  [readinessObserver]
+                  (runControlPlaneServer role interpreter)
+  runResolvedRole authentication = case (role, validatedStore) of
+    (LifecycleAuthorityRuntime, ValidatedPrimaryStore storeConfig) ->
+      runAuthorityRole (LifecycleAuthorityLegacyAuthentication authentication) storeConfig
     (AuthorityBackupRuntime, ValidatedAuthorityBackupStore storeConfig) -> do
       bindingResult <- newAuthorityBackupAdapterBinding vaultSession storeConfig
       case bindingResult of
@@ -4768,6 +4986,7 @@ runRoleServer role vaultConfig vaultSession validatedStore clusterId agentIdenti
         role
         vaultSession
         clusterId
+        agentIdentity
         (resolvedAuthenticationTrustRegistry authentication)
         handler
         frameMaximum
@@ -5315,6 +5534,7 @@ installVaultAuthenticatedHandler
   :: RuntimeRole
   -> VaultSession
   -> Text
+  -> TargetAgentIdentity
   -> RouteTrustRegistry
   -> AuthenticatedRoleHandler IO
   -> Int
@@ -5326,6 +5546,7 @@ installVaultAuthenticatedHandler
   role
   vaultSession
   clusterId
+  agentIdentity
   trustRegistry
   inner
   frameMaximum
@@ -5404,7 +5625,13 @@ installVaultAuthenticatedHandler
     interpreter <-
       mapLeft
         (Text.pack . show)
-        (installAuthenticatedRuntimeInterpreter role runtimeInputs inner)
+        ( installAuthenticatedRuntimeInterpreterWithVerifiedHandler
+            isRuntimeFreshObservation
+            verifiedDomainHandler
+            role
+            runtimeInputs
+            inner
+        )
     pure $ do
       observer <-
         newRoleReadinessObserver
@@ -5421,6 +5648,22 @@ installVaultAuthenticatedHandler
             }
         , observer
         )
+   where
+    verifiedDomainHandler
+      | role == TargetSecretAgentRuntime =
+          targetEpochVerifiedHandler
+            controlPlaneMaximumBodyBytes
+            agentIdentity
+            (vaultTargetEpochExecutionInterpreter vaultSession currentAuthorityTime)
+      | otherwise = \_ -> pure Nothing
+
+isRuntimeFreshObservation :: RuntimeRole -> ControlPlaneRoute -> ByteString.ByteString -> Bool
+isRuntimeFreshObservation role route body =
+  isRpcBirthObservationForRole role route body
+    || isEpochPromotionObservationForRole role route body
+    || isAuthorityPeerContextObservationForRole role route body
+    || isTargetEpochObservationForRole controlPlaneMaximumBodyBytes role route body
+    || isPhysicalEpochReadbackForRole controlPlaneMaximumBodyBytes role route body
 
 authenticationMetadataMaximumBytes :: Int
 authenticationMetadataMaximumBytes = 1024

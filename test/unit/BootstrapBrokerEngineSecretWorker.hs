@@ -248,6 +248,188 @@ engineSecretWorkerSuite =
       countEvent WorkerRan events `shouldBe` 0
       lifecycleEvents events `shouldBe` []
 
+    describe "VAULT-INIT-AUTHORITATIVE-WORKER-SUPERSEDED-FENCE-2026-10-24" $ do
+      forM_ [UnreceiptedPredecessor, AuthoritativeTerminalPredecessor] $ \stage ->
+        it ("settles the exact successor-fence predecessor at " ++ show stage) $ do
+          let request = workerRequest "authoritative-successor" '9' SecretWorkerInitialize canonicalFence
+              checkpoint = authoritativeCheckpointFor stage request
+          harness <- newHarness NoFault [] (Just (StoreVersion 7, checkpointDigest, checkpoint)) healthyTimes
+          result <- reconcileAuthoritative harness SecretWorkerControllerRestarted authoritativeRecoveryFence
+          result `shouldBe` Right ()
+          after <- currentCheckpoint harness
+          fmap (secretWorkerCheckpointRequest . thirdCheckpoint) after `shouldBe` Just (Right request)
+          fmap (secretWorkerCheckpointResult . thirdCheckpoint) after
+            `shouldBe` Just (Just ambiguousInitializationWorkerResult)
+          events <- harnessEvents harness
+          let expectedDiscards = case stage of
+                UnreceiptedPredecessor -> 1
+                AuthoritativeTerminalPredecessor -> 0
+          countEvent WorkerDiscarded events `shouldBe` expectedDiscards
+          checkpointWrites events `shouldBe` expectedDiscards
+          assertNoWorkerReplay events
+
+      forM_ driverTestOperations $ \operation -> do
+        let request = workerRequest "authoritative-receipt" '9' operation canonicalFence
+            (receipt, stages) = checkpointStages request canonicalFence
+        forM_ (zip [0 :: Int ..] stages) $ \(index, (checkpoint, expectedLifecycle)) ->
+          it
+            ("preserves receipt cleanup across a successor fence for " ++ show operation ++ "/" ++ show index)
+            $ do
+              harness <- newHarness NoFault [] (Just (StoreVersion 7, checkpointDigest, checkpoint)) healthyTimes
+              result <-
+                reconcileAuthoritativeSecretWorkerResult
+                  (boundaryFor harness)
+                  SecretWorkerControllerRestarted
+                  operation
+                  authoritativeRecoveryFence
+                  (durableResultFor operation)
+              result `shouldBe` Right ()
+              assertCompletedCheckpoint harness request receipt
+              events <- harnessEvents harness
+              lifecycleEvents events `shouldBe` expectedLifecycle
+              countEvent WorkerDiscarded events `shouldBe` 0
+              assertNoWorkerReplay events
+
+      forM_ authoritativeRefusedBindings $ \(label, operation, storedFence, heldFence, expectedFields) ->
+        it ("preserves a refused authoritative binding: " ++ label) $ do
+          let request = workerRequest "authoritative-foreign" '9' operation storedFence
+              initial = Just (StoreVersion 7, checkpointDigest, noSecretWorkerReceipt request)
+          harness <- newHarness NoFault [] initial healthyTimes
+          result <- reconcileAuthoritative harness SecretWorkerControllerRestarted heldFence
+          result
+            `shouldBe` Left
+              (EngineSecretWorkerStoredRequestBindingMismatch AuthoritativeStoredRequestBinding expectedFields)
+          currentCheckpoint harness >>= (`shouldBe` initial)
+          events <- harnessEvents harness
+          countEvent WorkerDiscarded events `shouldBe` 0
+          checkpointWrites events `shouldBe` 0
+          assertNoWorkerReplay events
+
+      forM_ [DiscardUnobservable, DiscardReplaced] $ \fault ->
+        it ("requires exact predecessor quiescence after " ++ show fault) $ do
+          let request = workerRequest "authoritative-quiescence" '9' SecretWorkerInitialize canonicalFence
+              initial = Just (StoreVersion 7, checkpointDigest, noSecretWorkerReceipt request)
+              expected = case fault of
+                DiscardReplaced -> WorkerDiscardReplacementObserved
+                _ -> WorkerDiscardObservationUnavailable
+          harness <- newHarness fault [] initial healthyTimes
+          result <- reconcileAuthoritative harness SecretWorkerControllerRestarted authoritativeRecoveryFence
+          result `shouldBe` Left (EngineSecretWorkerBoundaryRefused expected)
+          currentCheckpoint harness >>= (`shouldBe` initial)
+          events <- harnessEvents harness
+          checkpointWrites events `shouldBe` 0
+          assertNoWorkerReplay events
+
+      forM_ [WrongMutationPermit, WrongFencePermit] $ \fault ->
+        it ("rechecks the held mutation authority after quiescence: " ++ show fault) $ do
+          let request = workerRequest "authoritative-permit" '9' SecretWorkerInitialize canonicalFence
+              initial = Just (StoreVersion 7, checkpointDigest, noSecretWorkerReceipt request)
+          harness <- newHarness fault [] initial healthyTimes
+          result <- reconcileAuthoritative harness SecretWorkerControllerRestarted authoritativeRecoveryFence
+          result `shouldSatisfy` isPermitRefusal
+          currentCheckpoint harness >>= (`shouldBe` initial)
+          events <- harnessEvents harness
+          countEvent WorkerDiscarded events `shouldBe` 1
+          checkpointWrites events `shouldBe` 0
+          assertNoWorkerReplay events
+
+      forM_ [minBound .. maxBound] $ \interruption ->
+        it ("finishes only the authoritative safety tail after " ++ show interruption) $ do
+          let request = workerRequest "authoritative-interruption" '9' SecretWorkerInitialize canonicalFence
+          harness <-
+            newHarness
+              NoFault
+              []
+              (Just (StoreVersion 7, checkpointDigest, noSecretWorkerReceipt request))
+              healthyTimes
+          result <- reconcileAuthoritative harness interruption authoritativeRecoveryFence
+          result `shouldBe` Right ()
+          events <- harnessEvents harness
+          countEvent WorkerDiscarded events `shouldBe` 1
+          assertNoWorkerReplay events
+
+      it "preserves a terminal result after a lost CAS reply and a third fence acquisition" $ do
+        let request = workerRequest "authoritative-lost-cas" '9' SecretWorkerInitialize canonicalFence
+            laterFence = fenceAt 3 canonicalOwner canonicalAction canonicalRequestDigest canonicalStorage 1300
+        harness <-
+          newHarness
+            LoseAuthoritativeCheckpointResponse
+            []
+            (Just (StoreVersion 7, checkpointDigest, noSecretWorkerReceipt request))
+            healthyTimes
+        first <- reconcileAuthoritative harness SecretWorkerControllerRestarted authoritativeRecoveryFence
+        first `shouldBe` Left (EngineSecretWorkerStoreRefused BootstrapStoreUnavailable)
+        second <- reconcileAuthoritative harness SecretWorkerControllerRestarted laterFence
+        second `shouldBe` Right ()
+        events <- harnessEvents harness
+        countEvent WorkerDiscarded events `shouldBe` 1
+        checkpointWrites events `shouldBe` 1
+        assertNoWorkerReplay events
+
+      it "does not require the predecessor's expired effect deadline for cleanup" $ do
+        let expired = fenceAt 1 canonicalOwner canonicalAction canonicalRequestDigest canonicalStorage 5
+            request = workerRequest "authoritative-expired" '9' SecretWorkerInitialize expired
+        harness <-
+          newHarness
+            NoFault
+            []
+            (Just (StoreVersion 7, checkpointDigest, noSecretWorkerReceipt request))
+            healthyTimes
+        result <- reconcileAuthoritative harness SecretWorkerControllerRestarted authoritativeRecoveryFence
+        result `shouldBe` Right ()
+        harnessEvents harness >>= assertNoWorkerReplay
+
+      it "refuses a missing checkpoint without inventing a worker or terminal result" $ do
+        harness <- newHarness NoFault [] Nothing healthyTimes
+        result <- reconcileAuthoritative harness SecretWorkerControllerRestarted authoritativeRecoveryFence
+        result `shouldBe` Left EngineSecretWorkerAuthoritativeCheckpointMissing
+        currentCheckpoint harness >>= (`shouldBe` Nothing)
+        harnessEvents harness >>= assertNoWorkerReplay
+
+      it "preserves an unbound intent rather than guessing a predecessor Pod" $ do
+        let request = workerRequest "authoritative-unbound" '9' SecretWorkerInitialize canonicalFence
+            initial =
+              Just
+                (StoreVersion 7, checkpointDigest, secretWorkerIntentCheckpoint (secretWorkerRequestIntent request))
+        harness <- newHarness NoFault [] initial healthyTimes
+        result <- reconcileAuthoritative harness SecretWorkerControllerRestarted authoritativeRecoveryFence
+        result `shouldBe` Left (EngineSecretWorkerRecoveryRefused SecretWorkerRecoveryPodUidUnbound)
+        currentCheckpoint harness >>= (`shouldBe` initial)
+        events <- harnessEvents harness
+        countEvent WorkerDiscarded events `shouldBe` 0
+        assertNoWorkerReplay events
+
+      it "preserves unavailable checkpoint evidence without cleanup" $ do
+        harness <- newHarness StoreUnavailable [] Nothing healthyTimes
+        result <- reconcileAuthoritative harness SecretWorkerControllerRestarted authoritativeRecoveryFence
+        result `shouldBe` Left (EngineSecretWorkerStoreRefused BootstrapStoreUnavailable)
+        events <- harnessEvents harness
+        countEvent WorkerDiscarded events `shouldBe` 0
+        assertNoWorkerReplay events
+
+      it "keeps a receipted result mismatch intact across successor-fence admission" $ do
+        let request = workerRequest "authoritative-result-conflict" '9' SecretWorkerUnseal canonicalFence
+            (_, stages) = checkpointStages request canonicalFence
+            foreignResult = unsealWorkerResult (BootstrapMutationReceipt successorAction True)
+        captured <- case stages of
+          (checkpoint, _) : _ -> pure checkpoint
+          [] -> fail "receipt fixture must contain its captured stage"
+        let initial = Just (StoreVersion 7, checkpointDigest, captured)
+        harness <- newHarness NoFault [] initial healthyTimes
+        result <-
+          reconcileAuthoritativeSecretWorkerResult
+            (boundaryFor harness)
+            SecretWorkerControllerRestarted
+            SecretWorkerUnseal
+            authoritativeRecoveryFence
+            foreignResult
+        result `shouldBe` Left EngineSecretWorkerAuthoritativeResultMismatch
+        currentCheckpoint harness >>= (`shouldBe` initial)
+        events <- harnessEvents harness
+        lifecycleEvents events `shouldBe` []
+        checkpointWrites events `shouldBe` 0
+        assertNoWorkerReplay events
+
     it "reads the fixed checkpoint first and recovers a lost pre-receipt Pod with a fresh identity" $ do
       let lost = workerRequest "lost" 'c' SecretWorkerInitialize canonicalFence
           replacement =
@@ -611,6 +793,37 @@ engineSecretWorkerSuite =
         countEvent WorkerDiscarded events `shouldBe` 1
         countEvent WorkerRan events `shouldBe` 0
 
+    describe "Sprint 2.146 closed observation refusal before ingress"
+      $ forM_
+        [ WorkerAttestationApiUnavailable
+        , WorkerAttestationHttpStatus 403
+        , WorkerAttestationPodMissing
+        , WorkerAttestationPodNotRunning WorkerPodPending
+        , WorkerAttestationPodNotRunning WorkerPodFailed
+        , WorkerAttestationPodDeleting
+        , WorkerAttestationImageNotResolved
+        , WorkerAttestationContainerNotReady
+        ]
+      $ \cause ->
+        it (secretWorkerAttestationReadCauseName cause) $ do
+          let request = workerRequest "closed-attestation" '3' SecretWorkerInitialize canonicalFence
+          harness <- newHarness (AttestationReadRefused cause) [request] Nothing healthyTimes
+          result <-
+            drive
+              harness
+              SecretWorkerControllerRestarted
+              SecretWorkerInitialize
+              canonicalFence
+              (vaultPermitFor canonicalFence SecretWorkerInitialize)
+              (unexpectedRunner harness)
+              (unexpectedRecovery harness)
+          result
+            `shouldBe` Left (EngineSecretWorkerAttestationRefused (SecretWorkerAttestationObservationRefused cause))
+          events <- harnessEvents harness
+          countEvent WorkerDiscarded events `shouldBe` 1
+          countEvent WorkerRan events `shouldBe` 0
+          countEvent WorkerRecovered events `shouldBe` 0
+
     it "rejects wrong-effect, wrong-mutation, wrong-fence, and unavailable-store authority" $ do
       let request = workerRequest "authority" '4' SecretWorkerInitialize canonicalFence
           cases =
@@ -786,6 +999,106 @@ engineSecretWorkerSuite =
             (unexpectedRecovery harness)
         result `shouldSatisfy` isCleanupRefusal
 
+data AuthoritativeStage
+  = UnreceiptedPredecessor
+  | AuthoritativeTerminalPredecessor
+  deriving (Eq, Show)
+
+authoritativeCheckpointFor
+  :: AuthoritativeStage
+  -> SecretFreeWorkerRequest
+  -> SecretWorkerDurableCheckpoint
+authoritativeCheckpointFor stage request = case stage of
+  UnreceiptedPredecessor -> noSecretWorkerReceipt request
+  AuthoritativeTerminalPredecessor ->
+    mustRight (authoritativelyRecoveredWorkerCheckpoint request ambiguousInitializationWorkerResult)
+
+authoritativeRecoveryFence :: BootstrapSessionFence
+authoritativeRecoveryFence =
+  fenceAt 2 alternateOwner canonicalAction canonicalRequestDigest canonicalStorage 1200
+
+reconcileAuthoritative
+  :: Harness
+  -> SecretWorkerInterruption
+  -> BootstrapSessionFence
+  -> IO (Either (EngineSecretWorkerError TestBoundaryError) ())
+reconcileAuthoritative harness interruption fence =
+  reconcileAuthoritativeSecretWorkerResult
+    (boundaryFor harness)
+    interruption
+    SecretWorkerInitialize
+    fence
+    ambiguousInitializationWorkerResult
+
+thirdCheckpoint :: (version, digest, value) -> value
+thirdCheckpoint (_, _, value) = value
+
+assertNoWorkerReplay :: [Event] -> Expectation
+assertNoWorkerReplay events = do
+  countEvent WorkerRan events `shouldBe` 0
+  countEvent WorkerAllocated events `shouldBe` 0
+  countEvent WorkloadCreated events `shouldBe` 0
+
+authoritativeRefusedBindings
+  :: [ ( String
+       , SecretWorkerOperation
+       , BootstrapSessionFence
+       , BootstrapSessionFence
+       , [SecretWorkerBindingField]
+       )
+     ]
+authoritativeRefusedBindings =
+  [
+    ( "same generation with renewed nonce and deadline"
+    , SecretWorkerInitialize
+    , canonicalFence
+    , fenceAt 1 alternateOwner canonicalAction canonicalRequestDigest canonicalStorage 1200
+    , [BindingOwnerNonce, BindingOperationDeadline]
+    )
+  ,
+    ( "same generation with only a changed deadline"
+    , SecretWorkerInitialize
+    , canonicalFence
+    , deadlineFence
+    , [BindingOperationDeadline]
+    )
+  ,
+    ( "checkpoint from a newer fence"
+    , SecretWorkerInitialize
+    , fenceAt 3 canonicalOwner canonicalAction canonicalRequestDigest canonicalStorage 1000
+    , authoritativeRecoveryFence
+    , [BindingFenceGeneration, BindingOwnerNonce, BindingOperationDeadline]
+    )
+  ,
+    ( "foreign operation"
+    , SecretWorkerUnseal
+    , canonicalFence
+    , authoritativeRecoveryFence
+    , [BindingOperation, BindingFenceGeneration, BindingOwnerNonce, BindingOperationDeadline]
+    )
+  ,
+    ( "foreign action"
+    , SecretWorkerInitialize
+    , canonicalFence
+    , fenceAt 2 alternateOwner successorAction canonicalRequestDigest canonicalStorage 1200
+    , [BindingFenceGeneration, BindingOwnerNonce, BindingActionDigest, BindingOperationDeadline]
+    )
+  ,
+    ( "foreign request"
+    , SecretWorkerInitialize
+    , canonicalFence
+    , fenceAt 2 alternateOwner canonicalAction successorRequestDigest canonicalStorage 1200
+    , [BindingFenceGeneration, BindingOwnerNonce, BindingRequestDigest, BindingOperationDeadline]
+    )
+  ,
+    ( "foreign storage generation"
+    , SecretWorkerInitialize
+    , canonicalFence
+    , fenceAt 2 alternateOwner canonicalAction canonicalRequestDigest alternateStorage 1200
+    , [BindingFenceGeneration, BindingOwnerNonce, BindingStorageGeneration, BindingOperationDeadline]
+    )
+  ]
+
 data TestBoundaryError
   = NoAllocatedRequest
   | UnexpectedAllocatedRequest
@@ -793,6 +1106,8 @@ data TestBoundaryError
   | UnexpectedWorkerRun
   | UnexpectedReceiptRecovery
   | PermitCouldNotBeMinted
+  | WorkerDiscardObservationUnavailable
+  | WorkerDiscardReplacementObserved
   deriving (Eq, Show)
 
 data CleanupPoint
@@ -807,8 +1122,12 @@ data Fault
   | LoseCreateResponse
   | LoseReceiptCheckpointResponse
   | LoseAbsentCheckpointResponse
+  | LoseAuthoritativeCheckpointResponse
+  | DiscardUnobservable
+  | DiscardReplaced
   | AttestationUnobservable
   | AttestationMismatched
+  | AttestationReadRefused !SecretWorkerAttestationReadCause
   | CleanupUnobservable !CleanupPoint
   | CleanupMismatched !CleanupPoint
   | CleanupNonZeroExit
@@ -931,6 +1250,7 @@ boundaryFor harness =
         pure . Right $ case fault of
           AttestationUnobservable ->
             SecretWorkerAttestationUnobservable "Pod API unavailable"
+          AttestationReadRefused cause -> SecretWorkerAttestationReadRefused cause
           AttestationMismatched ->
             SecretWorkerAttestationObserved
               ( (attestationFor request)
@@ -940,7 +1260,11 @@ boundaryFor harness =
           _ -> SecretWorkerAttestationObserved (attestationFor request)
     , discardUnreceiptedSecretWorker = \_request _interruption -> do
         recordEvent harness WorkerDiscarded
-        pure (Right ())
+        fault <- stateFault <$> readIORef harness
+        pure $ case fault of
+          DiscardUnobservable -> Left WorkerDiscardObservationUnavailable
+          DiscardReplaced -> Left WorkerDiscardReplacementObserved
+          _ -> Right ()
     , withSecretWorkerCheckpointPermit = \fence mutation use -> do
         recordEvent harness (PermitRequested mutation)
         now <- takeTime harness
@@ -1071,6 +1395,7 @@ shouldLoseCheckpointResponse harness checkpoint = do
       shouldLose = case (stateFault state, decision) of
         (LoseReceiptCheckpointResponse, Just SecretWorkerRecoveryRevokeSession {}) -> True
         (LoseAbsentCheckpointResponse, Just SecretWorkerRecoveryComplete {}) -> True
+        (LoseAuthoritativeCheckpointResponse, Just SecretWorkerRecoveryAuthoritativeComplete {}) -> True
         _ -> False
   if shouldLose
     then do

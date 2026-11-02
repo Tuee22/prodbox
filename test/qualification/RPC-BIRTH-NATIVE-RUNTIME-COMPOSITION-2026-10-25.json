@@ -1,0 +1,138 @@
+{
+  "schema_version": 1,
+  "recording": "RPC-BIRTH-NATIVE-RUNTIME-COMPOSITION-2026-10-25",
+  "owning_sprint": "6.5",
+  "recorded_utc": "2026-10-25T10:19:11.741880+00:00",
+  "scope": "Offline installed-operator startup and authenticated descriptor observation through actual native encrypted retained-store clients against explicit synthetic Vault/S3 HTTP boundaries.",
+  "repository_reproducer": {
+    "source": "test/qualification/RpcBirthNativeRuntime.hs",
+    "source_sha256": "42f71b53daf5541edbcff9d1dfbd8d64eed0b7b8ea0f9d8eb92d496b6de923ca",
+    "build": [
+      "cabal",
+      "exec",
+      "--builddir=.build",
+      "--",
+      "ghc",
+      "-Wall",
+      "-Werror",
+      "-threaded",
+      "-rtsopts",
+      "-package=prodbox",
+      "-outputdir",
+      ".build/rpc-birth-native-runtime",
+      "test/qualification/RpcBirthNativeRuntime.hs",
+      "-o",
+      ".build/rpc-birth-native-runtime/probe"
+    ],
+    "run": [
+      ".build/rpc-birth-native-runtime/probe",
+      "--operator",
+      ".build/prodbox"
+    ],
+    "prerequisites": "Linux mount/network namespaces, OpenSSL, iproute2/util-linux, noninteractive sudo; privilege is dropped before fixture/operator execution. No live cluster or AWS credentials."
+  },
+  "source_identity_at_recorded_run": {
+    "git_head": "b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6",
+    "worktree_state": "dirty",
+    "manifests": [
+      {
+        "policy_identifier": "prodbox-source-manifest",
+        "policy_version": 1,
+        "policy_digest": "4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae",
+        "manifest_digest": "ee7d1272ce8300f17c33cadc52401ea531954bb33773005a656e23d2e92899ac",
+        "entry_count": 1497
+      },
+      {
+        "policy_identifier": "prodbox-source-manifest-executable",
+        "policy_version": 1,
+        "policy_digest": "2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b",
+        "manifest_digest": "9949bbab77a592f26df50bd3e86075ff70de09cef0a28c48032258f18359765a",
+        "entry_count": 1434
+      }
+    ]
+  },
+  "source_identity_scope": "The operator/library source at the recorded run, before publication of this fixture and recording. Fixture source/binary are independently identified.",
+  "recorded_run": {
+    "command": [
+      "/home/matthewnowak/prodbox/.build/sprint-6.5/rpc-native-runtime-20261025/native-runtime-probe-r7",
+      "--operator",
+      "/home/matthewnowak/prodbox/.build/prodbox"
+    ],
+    "started_utc": "2026-10-25T10:11:34.797012+00:00",
+    "completed_utc": "2026-10-25T10:11:36.548760+00:00",
+    "exit_code": 0,
+    "wall_seconds": 1.7517674402333796,
+    "source_sha256": "42f71b53daf5541edbcff9d1dfbd8d64eed0b7b8ea0f9d8eb92d496b6de923ca",
+    "binary_sha256": "7895542161aa39305bc3886ecbca86a2ede269c96b26340166c21b901cf49f0b",
+    "operator_sha256": "bf4a0b206f0862f0d7e403ef79d0445cf580aaa67e248f7ab785b99c73739ec3"
+  },
+  "preserved_probe": ".build/sprint-6.5/rpc-native-runtime-20261025/native-runtime-probe-r7",
+  "preserved_operator": ".build/sprint-6.5/rpc-native-runtime-20261025/operator-bf4a0b206f0862f0",
+  "profile": {
+    "live_submission_capacity": 256,
+    "retained_submission_capacity": 1024,
+    "operation_client_capacity": 7,
+    "complete_home_key_inventory": 12,
+    "native_latest_version": 2,
+    "original_native_version": 1,
+    "unrelated_rpc_keys": "404"
+  },
+  "positive_cases": [
+    "BirthPrepared",
+    "BirthArmed",
+    "BirthCommitted",
+    "BirthRetiring",
+    "BirthRetired"
+  ],
+  "startup_refusal_cases": [
+    "MissingPrimary",
+    "MissingBoth",
+    "MissingMarker",
+    "CorruptPrimary",
+    "CorruptMarker",
+    "ForeignPin",
+    "OriginalKeyMissing",
+    "UnobservablePrimary"
+  ],
+  "postconditions": {
+    "positive": "Exact retained phase, original descriptor and configured pin are returned through real peer refresh, signed frames and HTTP listener. Admission/marker ciphertext bytes remain identical. Only the registered replay record may be written by authentication.",
+    "refusal": "The real operator exits1 without retained mutation or state initialization.",
+    "cleanup": "Every operator process is stopped and joined before exact listener-port release is asserted; service workers are linked/joined and private namespaces and temporary synthetic key material are released."
+  },
+  "actual_boundaries": [
+    "Installed prodbox lifecycle-authority start --config",
+    "Chart-rendered schema8 role config",
+    "Production retained-record codecs and AEAD envelope open/seal",
+    "Native Vault Kubernetes-login/KV/transit HTTP client",
+    "Native SigV4 S3 GET and conditional ETag replay writes",
+    "Actual signed client/peer refresh/frame verifier/descriptor handler"
+  ],
+  "explicit_fixture_boundaries": [
+    "Vault login/token/Transit and KV HTTP responses",
+    "In-memory S3 provider objects behind native HTTP requests",
+    "Synthetic public caller inventory and initial pure quiesced migration state",
+    "Synthetic projected Kubernetes CA; no live Kubernetes API observation"
+  ],
+  "excluded_claims": [
+    "real Vault/IAM/S3 provider authorization or policy",
+    "deployed readiness and service identity",
+    "outbound production-role RPC signing",
+    "cgroup/resource sufficiency",
+    "physical registry publication or pin retirement",
+    "backup/restore, native key/session retirement or other roles/origins",
+    "live cutover, AWS absence, defect-class closure or deployment qualification"
+  ],
+  "prior_fixture_corrections": [
+    "Missing projected CA was supplied only inside private mounts.",
+    "Distinct peer and descriptor nonces replaced a reused nonce.",
+    "Authentication replay writes were separated from immutable domain birth records in the oracle.",
+    "An early process wrapper returned before listener release; typed-process stop/join now precedes the cleanup assertion."
+  ],
+  "validation_index": ".build/sprint-6.5/rpc-native-runtime-20261025/validation-progress.json",
+  "qualification_claim": false,
+  "qualified_cycles_added": 0,
+  "image_attempts": 0,
+  "live_attempts": 0,
+  "resource_envelopes_increased": false,
+  "hand_actions": []
+}

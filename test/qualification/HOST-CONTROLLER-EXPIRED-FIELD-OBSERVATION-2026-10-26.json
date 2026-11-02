@@ -1,0 +1,415 @@
+{
+  "schema_version": 1,
+  "name": "HOST-CONTROLLER-EXPIRED-FIELD-OBSERVATION-2026-10-26",
+  "scope": "Actual packaged read-only six-role field selection from canonical decoded request data. Positively observes the matching keyed timer and foreign keyed absence, then reconstructs and reads after all original clocks expire while effect preparation stays refused. Manager data is not a kernel/Authority/retirement receipt or closure of unknown admission. No production activation or deployment qualification.",
+  "source_identity_entry": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"7bcfc08e7574117f602b32379001028b1a7020b138c512b003016cff61accdbc\", sourceManifestEntryCount = 1569},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"139180894e1507d22ef863046a37e074e29fe1f50588ab95267e8e126f4388b6\", sourceManifestEntryCount = 1506})",
+  "source_identity_exit": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"7bcfc08e7574117f602b32379001028b1a7020b138c512b003016cff61accdbc\", sourceManifestEntryCount = 1569},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"139180894e1507d22ef863046a37e074e29fe1f50588ab95267e8e126f4388b6\", sourceManifestEntryCount = 1506})",
+  "source_identity_equal": true,
+  "all_25_inputs_and_binary_unchanged": true,
+  "inputs_index": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/inputs.json",
+  "inputs": [
+    {
+      "path": "src/Prodbox/Capacity/Config.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/src/Prodbox/Capacity/Config.hs",
+      "sha256": "625b25c430d58c0558b091558ebe6a89f8e49bbe4ed85a7d13684b69551b5dbb"
+    },
+    {
+      "path": "src/Prodbox/Capacity/HostExecution.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/src/Prodbox/Capacity/HostExecution.hs",
+      "sha256": "092ece17fb98e941eb4847e875d0f5b01c9ca458c810d8851207aac9dfba6a8c"
+    },
+    {
+      "path": "src/Prodbox/Capacity/NativeHostProbe.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/src/Prodbox/Capacity/NativeHostProbe.hs",
+      "sha256": "1d095e7dc0bb90e82a2cdc8721d704e3d1d5f84d5249a558f615d4039c4547db"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthPayload.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/src/Prodbox/ControlPlane/RpcAdmissionBirthPayload.hs",
+      "sha256": "e55d30503618ed5996cb0d77c6d93eca886857dc6cbd07c372d15c97011cdf19"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/src/Prodbox/ControlPlane/RpcAdmissionBirthRollout.hs",
+      "sha256": "a2723311e4ea014fd6948f7b4702153480e632d6dc1241823f14e3d7791bb2c0"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthCoordinator.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/src/Prodbox/ControlPlane/RpcAdmissionBirthCoordinator.hs",
+      "sha256": "fd3c88a6f836c2f38cc81c26449e38a62f982616ab579f12097f1dd5471eecec"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostOperationFamily.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/src/Prodbox/Subprocess/HostOperationFamily.hs",
+      "sha256": "f6c4bfb56d4f600757a9f5842ef7498a1bdd6545d30ddd61218f1c88729a7288"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostControllerInputs.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/src/Prodbox/Subprocess/HostControllerInputs.hs",
+      "sha256": "17fcfd173d39b908a65671cef3a559979482b8c280c40b946b7d001a353f7919"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/src/Prodbox/Subprocess/SystemdIdentity.hs",
+      "sha256": "83b53baf0446afe195c9c6d4efcea8a7e16b00448f1210dfb155a608d1e13630"
+    },
+    {
+      "path": "src/Prodbox/Settings.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/src/Prodbox/Settings.hs",
+      "sha256": "7cb9b4aa55fd761c2fd7a899af8ad12a007afce8b7b6acc4ad4bcc5e0b22724f"
+    },
+    {
+      "path": "prodbox.cabal",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/prodbox.cabal",
+      "sha256": "0d227dc273cacb39c6be91819521002d5529ce4b18602e918b267649f109a181"
+    },
+    {
+      "path": "DEVELOPMENT_PLAN/README.md",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/DEVELOPMENT_PLAN/README.md",
+      "sha256": "c2a9601900822e93f800af64ecbeb0d0feb2bab5657d75a4ffcabfece6c72369"
+    },
+    {
+      "path": "DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/DEVELOPMENT_PLAN/phase-6-clean-room-handoff.md",
+      "sha256": "21f099d6c321a52128bc317631d06ffd685e63e620e7bb1504e6da9441fe6371"
+    },
+    {
+      "path": "documents/engineering/haskell_code_guide.md",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/documents/engineering/haskell_code_guide.md",
+      "sha256": "b60355dcb1bb3c18e25fd90212ad8db7365a403f6092e763815c020cce40637d"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthRequest.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/src/Prodbox/ControlPlane/RpcAdmissionBirthRequest.hs",
+      "sha256": "be4452d1113cacfa53e1c7a3f8325c99fd8124ce8c12fd88ce622bdc0fe454b7"
+    },
+    {
+      "path": "test/qualification/RpcBirthControllerRequest.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/test/qualification/RpcBirthControllerRequest.hs",
+      "sha256": "8fe10420f237a2a48f8f25427ade901396e7e71d57456102516b6d0bd0cb6857"
+    },
+    {
+      "path": "src/Prodbox/Subprocess.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/src/Prodbox/Subprocess.hs",
+      "sha256": "836bd5e3d6c82feb1fdcf6b1aac6390e1a221a6ebc986faf86b61d85f877af42"
+    },
+    {
+      "path": "test/support/TestSupport.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/test/support/TestSupport.hs",
+      "sha256": "156b7f56e11e832f9a410423db795e35a5ae374c01cee09e8a31b1c2a1a7d250"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthClock.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/src/Prodbox/ControlPlane/RpcAdmissionBirthClock.hs",
+      "sha256": "bc064db9384e0b30ae7a18f618ec5958bf6cabe51570134e13e77db58ebabb00"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/KernelScope.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/src/Prodbox/Subprocess/KernelScope.hs",
+      "sha256": "61ed8449be7b6864d2933f90f0d76db89137b7d4559ffb7a3e456058f968cf2c"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/SystemdBus.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/src/Prodbox/Subprocess/SystemdBus.hs",
+      "sha256": "db79600b1ca63104d6841a877aa9f6a0b5168f11b495911445e1c4bc1a004df2"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostControllerArguments.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/src/Prodbox/Subprocess/HostControllerArguments.hs",
+      "sha256": "b9f635fcaf7bda5ffa6b1dda5545344b59507ec07beff20c4a2ddcca35494bf4"
+    },
+    {
+      "path": "src/Prodbox/ControlPlane/RpcAdmissionBirthControllerInputs.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/src/Prodbox/ControlPlane/RpcAdmissionBirthControllerInputs.hs",
+      "sha256": "4e93fee6a927b787febb3733c9054bc958249193e6e13cc55aad75f7ecb07648"
+    },
+    {
+      "path": "test/qualification/ControllerInputLoader.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/test/qualification/ControllerInputLoader.hs",
+      "sha256": "c504e98ff1492866f433f26121f3a9dea0fd8ded75bad49f36f5a437edea3c25"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/HostControllerPublication.hs",
+      "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/src/Prodbox/Subprocess/HostControllerPublication.hs",
+      "sha256": "7902af6c2ccc510926a2a36a37258a09d81881c3869808e6adeb90bdd7119549"
+    }
+  ],
+  "binary": {
+    "path": ".build/sprint-6.5/controller-field-observation-20261026/native-field-2",
+    "snapshot": ".build/sprint-6.5/controller-field-observation-20261026/native-inputs-1/driver",
+    "sha256": "03530da278f14ff4736ba4cbc41c236fbb8f85d8d7c3bab97945c50da901cd4d"
+  },
+  "complete": true,
+  "native_result": {
+    "command": [
+      "env",
+      "XDG_RUNTIME_DIR=/run/user/1000",
+      "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+      "systemd-run",
+      "--user",
+      "--quiet",
+      "--wait",
+      "--pipe",
+      "--collect",
+      "--service-type=oneshot",
+      "--expand-environment=no",
+      "--unit=prodbox-controller-field-native-control-1-20261026",
+      "--working-directory=/home/matthewnowak/prodbox",
+      "--property=MemoryMax=176M",
+      "--property=MemorySwapMax=0",
+      "--property=CPUQuota=30%",
+      "--property=OOMPolicy=kill",
+      "--property=OOMScoreAdjust=1000",
+      "--property=TasksMax=16",
+      "--property=TimeoutStartSec=30s",
+      "--property=TimeoutStopSec=2s",
+      "--",
+      "/usr/bin/time",
+      "-v",
+      "/usr/bin/strace",
+      "-f",
+      "-qq",
+      "-s",
+      "256",
+      "-e",
+      "trace=process",
+      "-o",
+      "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-field-observation-20261026/native-field-1.trace",
+      ".build/sprint-6.5/controller-field-observation-20261026/native-field-2",
+      "field",
+      "/home/matthewnowak/prodbox/.build/sprint-6.5/controller-field-observation-20261026/case-field-1",
+      "+RTS",
+      "-M134217728b",
+      "-N1",
+      "-RTS"
+    ],
+    "started_utc": "2026-10-27T00:31:29.954515+00:00",
+    "completed_utc": "2026-10-27T00:31:50.020024+00:00",
+    "exit_code": 0,
+    "wall_seconds": 20.065526364836842
+  },
+  "observations": {
+    "closing_field_state": "ControllerFieldAbsent",
+    "decoded_after_expiry_ns": 2327900771141738,
+    "expired_effect_refused": true,
+    "expired_read_refused": true,
+    "foreign_timer_state": "ControllerFieldAbsent",
+    "fresh_observed_ns": 2327900776579047,
+    "fresh_read_end_ns": 2327901771349865,
+    "fresh_read_started_ns": 2327900771349865,
+    "matching_timer_state": "ControllerFieldPresent",
+    "original_outer_ns": 2327900749686850,
+    "started_ns": 2327880749686850
+  },
+  "peak_rss_kib": 32232,
+  "fresh_read_micros": 5229.182,
+  "local_profile": {
+    "memory_max_mib": 176,
+    "heap_mib": 128,
+    "cpu_percent": 30,
+    "tasks_max": 16,
+    "swap_bytes": 0,
+    "supervisor_seconds": 30
+  },
+  "managed_family_profile": {
+    "memory_max_mib": 256,
+    "cpu_millicores": 700,
+    "tasks_max": 56,
+    "original_outer_seconds": 20,
+    "original_work_seconds": 15,
+    "original_hard_seconds": 16,
+    "original_stop_seconds": 17,
+    "original_finish_seconds": 18
+  },
+  "validation_results": {
+    "controller-field-library-build-1": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-controller-field-library-build-1-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=600s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "cabal",
+        "build",
+        "--builddir=.build",
+        "lib:prodbox",
+        "--ghc-options=-Werror"
+      ],
+      "started_utc": "2026-10-27T00:25:37.698278+00:00",
+      "completed_utc": "2026-10-27T00:26:05.788643+00:00",
+      "exit_code": 0,
+      "wall_seconds": 28.090389385819435
+    },
+    "controller-field-native-build-2": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-controller-field-native-build-2-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=600s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        "ghc",
+        "-Wall",
+        "-Werror",
+        "-threaded",
+        "-rtsopts",
+        "-with-rtsopts=-N1",
+        "-hide-all-packages",
+        "-package-db",
+        "/home/matthewnowak/.cabal/store/ghc-9.12.4-5301/package.db",
+        "-package-id",
+        "base-4.21.2.0-60b9",
+        "-package-id",
+        "bytestring-0.11.5.4-76e2bb591efe928d842f8288364e9ef294891f67ce13cd0bc014a1e2fe5df0a0",
+        "-package-id",
+        "unix-2.8.8.0-9ce6978edc33076465fb56791d9ca017d405aa7230adf2653b2f7564cc3925f1",
+        "-package-id",
+        "text-2.0.2-8761414bfd4c61d83bb4a76313f5b7a899dddb96b90269a6e5d997a8bbbd6375",
+        "-package-id",
+        "aeson-2.2.5.0-e2e37fe6bc5aa07f45e066f8f61685fa5ad0b1eb18e2b2c128ef1ea752061e01",
+        "-package-id",
+        "async-2.2.6-8960f1dd21f4a009a29b1fe1a67c9a2a4a2c68697b93dd8f3fb173222380a50f",
+        "-package-id",
+        "crypton-1.0.6-020d21e85cd9683b83d7321e840b655ed76b478e58a637e86a778a7747ac3db7",
+        "-package",
+        "transformers",
+        "-package-id",
+        "process-1.6.30.0-6aaf8422fc072a0cd1390edbfe1125150c6bb2a95b2d3b42b9a9405f80b31cbd",
+        "-package-id",
+        "directory-1.3.10.1-d489a9b04bec59f8c3e0a56d9fa8c6036df06a729b2423829770f25fc263c55c",
+        "-package-id",
+        "filepath-1.4.301.0-55cfbc3f4dce88b4ce1658f6770d9ccbeb279efb5b93e8a3764f29b7dd69dd22",
+        "-package-id",
+        "temporary-1.3-fe250c7fcb6a9acbff484a742781194f9c09a4d7a37988cf39693cbaba0c5ac0",
+        "-package-id",
+        "typed-process-0.2.13.0-abd82bbc92edf3e4773c3dd817737de05db408f2ea5066648e8179fa7a8622cb",
+        "-package=prodbox",
+        "-package-id",
+        "network-3.1.4.0-1d8b779673bab29fa4d91c4b2077c7ccec77e8e8a1bd66b2b95ba4d224d64964",
+        "-package-id",
+        "dhall-1.42.3-f71713b7c542a7fcbde0a2e97ae07b9d32dfe03857095a90c6de6bb24d591cc1",
+        "-package-id",
+        "serialise-0.2.6.1-9fc9b98f7836b30172e1529223fb34de84f444ed67c191e32cd41daa2e1d73d0",
+        "-package-id",
+        "containers-0.6.8-9c73fa12219fb7e1c1121c78e2c1b0cf30923838f9754d37bac0134beb603c6c",
+        "-package-id",
+        "base64-bytestring-1.2.1.0-91628ae01012ed5bf73c3c97373488475dbd88cfd669a49aac9f7c995e8cca71",
+        "-package-id",
+        "cryptohash-sha256-0.11.102.1-6df39dbe01efd710a9783bb4456b0bac4b2e3444a6d321ab62b36f3ff9e6abe0",
+        "-itest/unit",
+        "-itest/support",
+        "-itest/qualification",
+        "-package-id",
+        "tasty-1.5.4-87b0b7a84b66321512246f51e4b2c73d419854c91e61f316f028599d02b6fb57",
+        "-package-id",
+        "tasty-golden-2.3.6-c4e6fa5b2abb4144c1889fed74ad6616bd7562f8ed7b77a0ea745194aaf5174f",
+        "-package-id",
+        "tasty-hunit-0.10.2-e92057303da32999a32a585f0581b8a8de1247905fe41fbc341e8c9d27161051",
+        "-package-id",
+        "tasty-quickcheck-0.11.1-83845e3e87c84d6edafadc8089f429f07dd0911031b48027f788998114a79ea2",
+        "-outputdir",
+        ".build/sprint-6.5/controller-field-observation-20261026/native-field-2-objects",
+        "-o",
+        ".build/sprint-6.5/controller-field-observation-20261026/native-field-2",
+        "-XImportQualifiedPost",
+        "-package-db",
+        ".build/packagedb/ghc-9.12.4",
+        "-package-id",
+        "vector-0.13.2.0-56506683abbe5d505d9873d57f93e5ce8e2a9d1cbb2f2f719e5690d437baa472",
+        "-package-id",
+        "stm-2.5.3.1-a1f2",
+        "-package-id",
+        "time-1.12.2-79f6471dcc18660545ae6f423af96c288f6ea95ac7a0b62e890dc9daf5b1fce7",
+        "-package-id",
+        "scientific-0.3.8.1-7c3c80dbb45676207dcbea10819661eeea2761483c16ed54c917301d2397d4d4",
+        "test/qualification/ControllerInputLoader.hs",
+        "src/Prodbox/Subprocess/HostControllerInputs.hs"
+      ],
+      "started_utc": "2026-10-27T00:30:15.449136+00:00",
+      "completed_utc": "2026-10-27T00:30:21.553911+00:00",
+      "exit_code": 0,
+      "wall_seconds": 6.1047950512729585
+    },
+    "controller-field-hlint-2": {
+      "command": [
+        "env",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+        "systemd-run",
+        "--user",
+        "--quiet",
+        "--wait",
+        "--pipe",
+        "--collect",
+        "--service-type=oneshot",
+        "--expand-environment=no",
+        "--unit=prodbox-controller-field-hlint-2-20261026",
+        "--working-directory=/home/matthewnowak/prodbox",
+        "--setenv=PATH=/home/matthewnowak/.ghcup/bin:/usr/local/bin:/usr/bin:/bin",
+        "--property=UMask=0022",
+        "--property=MemoryMax=5G",
+        "--property=MemorySwapMax=0",
+        "--property=OOMPolicy=kill",
+        "--property=OOMScoreAdjust=1000",
+        "--property=TasksMax=64",
+        "--property=TimeoutStartSec=180s",
+        "--property=TimeoutStopSec=2s",
+        "--",
+        ".build/prodbox-style-tools/bin/hlint",
+        "--hint=.hlint.yaml",
+        "--with-group=default",
+        "--with-group=extra",
+        "src/Prodbox/Subprocess/HostOperationFamily.hs",
+        "src/Prodbox/ControlPlane/RpcAdmissionBirthControllerInputs.hs",
+        "test/qualification/ControllerInputLoader.hs"
+      ],
+      "started_utc": "2026-10-27T00:30:15.426817+00:00",
+      "completed_utc": "2026-10-27T00:30:17.653839+00:00",
+      "exit_code": 0,
+      "wall_seconds": 2.22703754901886
+    }
+  },
+  "limitations": [
+    "The global slice is shared; matching/foreign keyed timer/controller assertions distinguish exact key selection from aggregate presence.",
+    "This is an in-process reconstruction of canonical data after expiry, not crash/restart or unknown/late-admission recovery.",
+    "The field preserves present/unobservable states. No forced mid-inventory service failure or complete fault matrix is claimed by this native control.",
+    "The managed controller executes real command/transport roles outside the QA launcher process trace; there is no zero-application-child claim for the whole topology.",
+    "No independent held-cgroup terminal proof or file-retirement capability is minted by manager absence. Input files remain retained.",
+    "Full production resource accounting, the wider recovery/domain batch canonical/frontend gates and deployment qualification remain open."
+  ]
+}

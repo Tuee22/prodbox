@@ -6,6 +6,7 @@ module ControlPlaneVaultSession
 where
 
 import Data.Either (isLeft, isRight)
+import Data.IORef (modifyIORef', newIORef, readIORef)
 import Data.List (nub)
 import Data.Text qualified as Text
 import Prodbox.ControlPlane.AuthenticationRegistry
@@ -30,6 +31,7 @@ import Prodbox.ControlPlane.CallerPrincipal
 import Prodbox.ControlPlane.InClusterAuthorityStore
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   ( ExternalCallerTokenError (..)
+  , ExternalCallerTokenStage (..)
   , ExternalLifecycleAuthorityCaller (..)
   , KubernetesTokenRequestLifetimeError (..)
   , ServiceAccountObservationFailure (..)
@@ -44,6 +46,7 @@ import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   , externalCallerTokenRequestArguments
   , externalCallerTokenSessionError
   , kubernetesTokenRequestLifetimeSeconds
+  , mintExternalCallerTokenUsing
   , mkKubernetesTokenRequestLifetime
   , renderExternalCallerTokenError
   , renderServiceAccountObservationFailure
@@ -373,6 +376,43 @@ controlPlaneVaultSessionSuite =
               `shouldSatisfy` isLeft
       assertCaller operator "bootstrap-broker" "prodbox-control-plane-operator" 600 "5m"
       assertCaller harness "gateway" "prodbox-control-plane-test-harness" 900 "15m"
+
+    it "shares ordered caller-token policy across interpreters and stops at the refusing stage" $ do
+      let stages =
+            [ ObserveExternalCallerServiceAccount
+            , CheckExternalCallerTokenEligibility
+            , RequestExternalCallerToken
+            ]
+          cases =
+            [ (Nothing, stages, Right "synthetic-token")
+            ,
+              ( Just ObserveExternalCallerServiceAccount
+              , take 1 stages
+              , Left (ExternalCallerServiceAccountUnobservable ServiceAccountObservationSubprocessUnavailable)
+              )
+            ,
+              ( Just CheckExternalCallerTokenEligibility
+              , take 2 stages
+              , Left ExternalCallerTokenEligibilitySubprocessUnavailable
+              )
+            , (Just RequestExternalCallerToken, stages, Left ExternalCallerTokenRequestSubprocessUnavailable)
+            ]
+          check caller namespace account (refusal, expectedStages, expectedResult) = do
+            observed <- newIORef []
+            let run stage = do
+                  modifyIORef' observed (++ [stage])
+                  pure $
+                    if Just stage == refusal
+                      then Left ()
+                      else Right (ProcessOutput ExitSuccess (response stage) "")
+                response stage = case stage of
+                  ObserveExternalCallerServiceAccount -> namespace ++ "\n" ++ account ++ "\nfalse\n"
+                  CheckExternalCallerTokenEligibility -> "yes\n"
+                  RequestExternalCallerToken -> "synthetic-token\n"
+            mintExternalCallerTokenUsing run caller `shouldReturn` expectedResult
+            readIORef observed `shouldReturn` expectedStages
+      mapM_ (check LifecycleAuthorityOperator "bootstrap-broker" "prodbox-control-plane-operator") cases
+      mapM_ (check LifecycleAuthorityTestHarness "gateway" "prodbox-control-plane-test-harness") cases
 
     it "Sprint 2.100 refuses TokenRequest lifetimes below the Kubernetes floor" $ do
       mkKubernetesTokenRequestLifetime 0

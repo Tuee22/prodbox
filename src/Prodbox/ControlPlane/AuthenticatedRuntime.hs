@@ -14,12 +14,15 @@ module Prodbox.ControlPlane.AuthenticatedRuntime
   , validateControlPlaneAuthenticationWire
   , validatedAuthenticationSigningPrincipal
   , validatedAuthenticationSigningKeyRef
+  , validatedAuthenticationMaximum
   , RouteTrustResolutionFailure (..)
   , resolveRouteTrustRegistryWith
   , resolveRouteTrustRegistryWithFailure
   , AuthenticatedRuntimeInputs (..)
   , AuthenticatedRuntimeInstallError (..)
   , installAuthenticatedRuntimeInterpreter
+  , installAuthenticatedRuntimeInterpreterWithReadPolicy
+  , installAuthenticatedRuntimeInterpreterWithVerifiedHandler
   , AuthenticatedRuntimeProvisioningGap (..)
   , authenticatedRuntimeUnavailableInterpreter
   )
@@ -38,7 +41,7 @@ import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.AuthenticatedRoleInterpreter
   ( AuthenticatedRoleHandler
   , AuthenticatedRoleProviders
-  , authenticatedRoleInterpreter
+  , authenticatedRoleInterpreterWithVerifiedHandler
   )
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedTransportBounds
@@ -62,6 +65,7 @@ import Prodbox.ControlPlane.RequestAuthentication
   ( RequestKeyError
   , SigningKeyGenerationError
   , TrustedRequestKey
+  , VerifiedControlPlaneRequest
   , mkSigningKeyGeneration
   , mkTrustedRequestKey
   )
@@ -136,11 +140,14 @@ data ValidatedTrustedCaller = ValidatedTrustedCaller
 
 data ValidatedAuthenticationTopology = ValidatedAuthenticationTopology
   { validatedAuthenticationRole :: !RuntimeRole
-  , validatedAuthenticationMaximum :: !Natural
+  , internalValidatedAuthenticationMaximum :: !Natural
   , validatedAuthenticationSigningPrincipal :: !CallerPrincipal
   , validatedAuthenticationSigningKeyRef :: !ControlPlaneSigningKeyRef
   , validatedAuthenticationCallers :: ![ValidatedTrustedCaller]
   }
+
+validatedAuthenticationMaximum :: ValidatedAuthenticationTopology -> Natural
+validatedAuthenticationMaximum = internalValidatedAuthenticationMaximum
 
 -- | Typed failure boundary for resolving a validated topology.  The public
 -- key lookup error remains caller-selected, while all post-resolution
@@ -195,7 +202,7 @@ validateControlPlaneAuthenticationWire role wire = do
   pure
     ValidatedAuthenticationTopology
       { validatedAuthenticationRole = role
-      , validatedAuthenticationMaximum = maximum_trusted_callers_per_route wire
+      , internalValidatedAuthenticationMaximum = maximum_trusted_callers_per_route wire
       , validatedAuthenticationSigningPrincipal = signingCaller
       , validatedAuthenticationSigningKeyRef = signerRef
       , validatedAuthenticationCallers = entries
@@ -370,7 +377,27 @@ installAuthenticatedRuntimeInterpreter
   -> AuthenticatedRuntimeInputs m
   -> AuthenticatedRoleHandler m
   -> Either AuthenticatedRuntimeInstallError (RoleInterpreter m)
-installAuthenticatedRuntimeInterpreter expectedRole inputs handler =
+installAuthenticatedRuntimeInterpreter = installAuthenticatedRuntimeInterpreterWithReadPolicy (\_ _ _ -> False)
+
+installAuthenticatedRuntimeInterpreterWithReadPolicy
+  :: (Monad m)
+  => (RuntimeRole -> ControlPlaneRoute -> ByteString -> Bool)
+  -> RuntimeRole
+  -> AuthenticatedRuntimeInputs m
+  -> AuthenticatedRoleHandler m
+  -> Either AuthenticatedRuntimeInstallError (RoleInterpreter m)
+installAuthenticatedRuntimeInterpreterWithReadPolicy readPolicy =
+  installAuthenticatedRuntimeInterpreterWithVerifiedHandler readPolicy (\_ -> pure Nothing)
+
+installAuthenticatedRuntimeInterpreterWithVerifiedHandler
+  :: (Monad m)
+  => (RuntimeRole -> ControlPlaneRoute -> ByteString -> Bool)
+  -> (VerifiedControlPlaneRequest -> m (Maybe (ReplyStatus, ByteString)))
+  -> RuntimeRole
+  -> AuthenticatedRuntimeInputs m
+  -> AuthenticatedRoleHandler m
+  -> Either AuthenticatedRuntimeInstallError (RoleInterpreter m)
+installAuthenticatedRuntimeInterpreterWithVerifiedHandler readPolicy verifiedHandler expectedRole inputs handler =
   case inputs of
     AuthenticatedRuntimeInputs
       suppliedRole
@@ -384,7 +411,9 @@ installAuthenticatedRuntimeInterpreter expectedRole inputs handler =
             Left (AuthenticatedRuntimeRoleMismatch expectedRole suppliedRole)
         | otherwise ->
             Right
-              ( authenticatedRoleInterpreter
+              ( authenticatedRoleInterpreterWithVerifiedHandler
+                  readPolicy
+                  verifiedHandler
                   transportBounds
                   maximumLifetime
                   providers

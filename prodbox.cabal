@@ -11,6 +11,95 @@ extra-source-files:
     test/fixtures/credential-successor/*.cbor
     test/fixtures/credential-successor/provenance.json
     test/golden/aws-lifecycle/*.json
+    test/qualification/MINIO-BOOTSTRAP-ORDEREDREADY-2026-10-22.json
+    test/qualification/BOOTSTRAP-VAULT-INIT-PREAPPLICATION-REFUSAL-2026-10-22.json
+    test/qualification/VAULT-RETAINED-MOUNT-UNLINKED-2026-10-22.json
+    test/qualification/BOOTSTRAP-INITIALIZE-PROGRAM-EVIDENCE-REFUSAL-2026-10-22.json
+    test/qualification/VAULT-RESET-GENERATION-CAS-LOST-PRODUCER-RECOVERY-2026-10-23.json
+    test/qualification/BROKER-HARNESS-COLD-START-FORWARD-REFUSED-2026-10-23.json
+    test/qualification/VAULT-INIT-AUTHORITATIVE-WORKER-SUPERSEDED-FENCE-2026-10-24.json
+    test/qualification/BROKER-WORKER-ATTESTATION-CAUSE-COLLAPSE-2026-10-24.json
+    test/qualification/HOME-RUNTIME-CRI-REFERENCE-PUBLICATION-2026-10-24.json
+    test/qualification/INTERNAL-HELM-FAILED-RELEASE-STARTUP-LOGS-MISSING-2026-10-24.json
+    test/qualification/LOCAL-PLATFORM-SCHEDULER-BASELINE-OMITTED-2026-10-24.json
+    test/qualification/RpcBirthNativeRuntime.hs
+    test/qualification/RpcBirthControllerDispatcher.hs
+    test/qualification/RPC-BIRTH-NATIVE-RUNTIME-COMPOSITION-2026-10-25.json
+    test/qualification/RPC-REGISTERED-CALLER-SELECTION-2026-10-26.json
+    test/qualification/RPC-BIRTH-NATIVE-RUNTIME-STYLE-FOLLOWUP-2026-10-25.json
+    test/qualification/RPC-BIRTH-NATIVE-RUNTIME-FORMAT-FOLLOWUP-2026-10-25.json
+    test/qualification/OwnedSubprocessFastSessionEscape.hs
+    test/qualification/OwnedSubprocessExecSemantics.hs
+    test/qualification/OWNED-KERNEL-RUNNER-2026-10-25.json
+    test/qualification/OWNED-MANAGER-REFUSAL-JOIN-DELAY-2026-10-25.json
+    test/qualification/RPC-BIRTH-HELD-CHART-CHECKSUM-DRIFT-2026-10-25.json
+    test/qualification/SystemdBusDeadline.hs
+    test/qualification/KernelScopeObservation.hs
+    test/qualification/OwnedSubprocessCgroupRetirement.hs
+    test/qualification/HostOperationFamily.hs
+    test/qualification/HostOperationRpcBirth.hs
+    test/qualification/HostOperationRpcBirthFixture.hs
+    test/qualification/HostControllerInputs.hs
+    test/qualification/HostControllerStdin.hs
+    test/qualification/HOST-CONTROLLER-STDIN-2026-10-31.json
+    test/qualification/HostControllerSubmission.hs
+    test/qualification/HostOperationRetirement.hs
+    test/qualification/HOST-OPERATION-RETIREMENT-OBSERVATION-2026-10-27.json
+    test/qualification/HostControllerInputRetirement.hs
+    test/qualification/HostControllerPublicationLifecycle.hs
+    test/qualification/HOST-CONTROLLER-INPUT-RETIREMENT-2026-10-27.json
+    test/qualification/HOST-CONTROLLER-LAUNCH-SEAL-2026-10-27.json
+    test/qualification/HOST-CONTROLLER-COLD-PUBLICATION-2026-10-27.json
+    test/qualification/SystemdProviderContract.hs
+    test/qualification/HOST-NATIVE-PROVIDER-PROCESSING-CONTRACT-2026-10-27.json
+    test/qualification/SystemdSubmissionProxy.hs
+    test/qualification/KubernetesApiPort.hs
+    test/qualification/SettingsPayload.hs
+    test/qualification/ProcessEnvironmentSemantics.hs
+    test/qualification/NativeHostProbe.hs
+    test/qualification/RpcBirthControllerRequest.hs
+    test/qualification/ControllerInputLoader.hs
+    test/qualification/HostAuthorityForwardFixture.hs
+    test/qualification/HOST-AUTHORITY-CHANNEL-LIFETIME-2026-10-27.json
+    test/qualification/HOST-OWNED-FORWARD-STARTUP-2026-10-27.json
+    test/qualification/HOST-CALLER-VAULT-RESPONSE-BOUNDS-2026-10-27.json
+    test/qualification/HOST-BOUNDED-HTTP-EXCHANGE-POLICY-2026-10-28.json
+    test/qualification/RpcBirthHostClock.hs
+    test/qualification/HOST-WINDOW-CLOCK-SAMPLING-2026-10-26.json
+    test/qualification/HOST-CONTROLLER-REQUEST-2026-10-26.json
+    test/qualification/HOST-CONTROLLER-INPUT-LOADER-2026-10-26.json
+    test/qualification/HOST-CONTROLLER-INPUT-PUBLICATION-2026-10-26.json
+    test/qualification/HOST-CONTROLLER-EXPIRED-FIELD-OBSERVATION-2026-10-26.json
+    test/qualification/HOST-CONTROLLER-CALLER-DOMAIN-2026-10-26.json
+    test/qualification/HOST-CONTROLLER-SUBMISSION-PROVENANCE-2026-10-27.json
+    test/qualification/HOST-UNCERTAIN-SUBMISSION-NATIVE-FAULTS-2026-10-27.json
+    test/qualification/HOST-OPERATION-CALLER-TOKEN-2026-10-26.json
+    test/qualification/HOST-PREPARED-CALLER-AUTHENTICATION-2026-10-26.json
+    test/qualification/HOST-REGISTERED-PREPARED-CALLER-AUTHENTICATION-2026-10-27.json
+    test/qualification/HOST-TOTAL-PREPARED-CALLER-2026-10-27.json
+    test/qualification/HOST-RPC-BIRTH-CONTROLLER-DISPATCH-2026-10-27.json
+    test/qualification/RPC-BIRTH-AUTHENTICATED-REGISTRY-OBSERVATION-2026-10-27.json
+    test/qualification/NATIVE-HOST-CAPACITY-2026-10-26.json
+    test/qualification/HOST-CONTROLLER-SETTINGS-PAYLOAD-2026-10-26.json
+    test/qualification/KUBERNETES-API-PORT-DOMAIN-2026-10-26.json
+    test/qualification/HOST-CONTROLLER-INPUTS-2026-10-26.json
+    test/qualification/HOST-OPERATION-CLIENT-2026-10-26.json
+    test/qualification/HOST-OPERATION-PREPARATION-2026-10-26.json
+    test/qualification/HOST-OPERATION-ABSOLUTE-EXPIRY-2026-10-26.json
+    test/qualification/HOST-OPERATION-PARENT-LEASE-2026-10-26.json
+    test/qualification/HOST-OPERATION-PROCESS-ROLES-2026-10-26.json
+    test/qualification/HOST-OPERATION-SUPERVISOR-2026-10-26.json
+    test/qualification/OWNED-CGROUP-RETIREMENT-2026-10-26.json
+    test/qualification/OWNED-ALARM-RETIREMENT-2026-10-26.json
+    test/qualification/HOST-EXECUTION-TRANSPORT-BUDGET-2026-10-26.json
+    test/qualification/KERNEL-SCOPE-OBSERVATION-2026-10-25.json
+    test/qualification/SCOPE-FAMILY-CREATION-2026-10-25.json
+    test/qualification/SCOPE-FAMILY-RETIREMENT-2026-10-25.json
+    test/qualification/SYSTEMD-BUS-AUTHENTICATION-BUDGET-2026-10-25.json
+    test/qualification/BOUNDED-CHILD-FAST-SESSION-ESCAPE-2026-10-25.json
+    test/qualification/BOUNDED-CHILD-FAST-SESSION-ESCAPE-OBSERVER-2026-10-25.json
+    test/qualification/FileLintResidency.hs
+    test/qualification/FILE-LINT-LAZY-CORPUS-RESIDENCY-2026-10-25.json
 
 extra-doc-files:    README.md
 
@@ -65,6 +154,10 @@ library
         Prodbox.Bootstrap.Broker.ProductionEngine
         Prodbox.Bootstrap.Broker.ProductionCryptoParameters
         Prodbox.Bootstrap.Broker.ProductionPgp
+        Prodbox.Bootstrap.Broker.InitializationEvidence
+        Prodbox.Bootstrap.Broker.InitializationRecovery
+        Prodbox.Bootstrap.Broker.ResetEvidence
+        Prodbox.Bootstrap.HarnessInitRecovery
         Prodbox.Bootstrap.Broker.PristineJournal
         Prodbox.Bootstrap.Broker.ProductionSecretWorker
         Prodbox.Bootstrap.Broker.ProductionSecretWorkerBoundary
@@ -73,14 +166,20 @@ library
         Prodbox.Bootstrap.Broker.VaultWire
         Prodbox.BuildSupport
         Prodbox.Capacity.Allocation
+        Prodbox.Capacity.HostExecution
+        Prodbox.Capacity.RpcBirthTraffic
+        Prodbox.Capacity.RegisteredCallerTraffic
         Prodbox.Capacity.AuthorityBackupBudget
         Prodbox.Capacity.ControlPlaneReplayBudget
         Prodbox.Capacity.AwsLifecycleBudget
         Prodbox.Capacity.Dns01CleanupBudget
         Prodbox.Capacity.SesCaptureCleanupBudget
         Prodbox.Capacity.Config
+        Prodbox.Capacity.PlatformSchedulerBudget
+        Prodbox.Capacity.LegacyDhall
         Prodbox.Capacity.Derivation
         Prodbox.Capacity.HostProbe
+        Prodbox.Capacity.NativeHostProbe
         Prodbox.Capacity.Render
         Prodbox.Capacity.MeasuredProfile
         Prodbox.Capacity.OneShotWorkerSchedulerBudget
@@ -115,6 +214,7 @@ library
         Prodbox.Cluster.Topology
         Prodbox.Cbor
         Prodbox.Config.Basics
+        Prodbox.Config.CanonicalDhallValueShape
         Prodbox.Config.ComponentGraph
         Prodbox.Config.FloorDhall
         Prodbox.Config.LocalRetainedRoot
@@ -124,6 +224,7 @@ library
         Prodbox.Config.RetainedArtifacts
         Prodbox.Config.SchemaDhall
         Prodbox.Config.Tier0
+        Prodbox.Config.Tier0File
         Prodbox.Config.InForce
         Prodbox.Config.InForce.Core
         Prodbox.ContainerImage
@@ -226,6 +327,34 @@ library
         Prodbox.ControlPlane.AuthorityAdmissionEndpoint
         Prodbox.ControlPlane.AuthorityProviderEndpoint
         Prodbox.ControlPlane.AuthorityControlClient
+        Prodbox.ControlPlane.AuthorityControlProtocol
+        Prodbox.ControlPlane.AuthorityPeerContext
+        Prodbox.ControlPlane.AuthorityPeerContextEndpoint
+        Prodbox.ControlPlane.AuthorityPeerContextClient
+        Prodbox.ControlPlane.RpcKeyRegistry
+        Prodbox.ControlPlane.RpcOwnBindingHint
+        Prodbox.ControlPlane.RpcClientRegistration
+        Prodbox.ControlPlane.RpcAdmissionBirth
+        Prodbox.ControlPlane.RpcAdmissionBirthExecution
+        Prodbox.ControlPlane.RpcAdmissionBirthWire
+        Prodbox.ControlPlane.RpcAdmissionBirthBootstrap
+        Prodbox.ControlPlane.RpcAdmissionBirthCoordinator
+        Prodbox.ControlPlane.RpcAdmissionBirthPublication
+        Prodbox.ControlPlane.RpcAdmissionBirthChart
+        Prodbox.ControlPlane.RpcAdmissionBirthRollout
+        Prodbox.ControlPlane.RpcAdmissionBirthPayload
+        Prodbox.ControlPlane.RpcAdmissionBirthRequest
+        Prodbox.ControlPlane.RpcAdmissionBirthClock
+        Prodbox.ControlPlane.RpcAdmissionBirthControllerInputs
+        Prodbox.ControlPlane.RpcAdmissionBirthController
+        Prodbox.ControlPlane.RpcAdmissionBirthNative
+        Prodbox.ControlPlane.RpcAdmissionBirthEndpoint
+        Prodbox.ControlPlane.RpcAdmissionBirthConfig
+        Prodbox.ControlPlane.RpcAdmissionBirthRuntime
+        Prodbox.ControlPlane.RpcAdmissionBirthBackup
+        Prodbox.ControlPlane.RegisteredRpcSigning
+        Prodbox.ControlPlane.RpcBirthSigningBudget
+        Prodbox.ControlPlane.RegisteredCallerBudget
         Prodbox.ControlPlane.AuthorityOperationClient
         Prodbox.ControlPlane.AuthorityObservationClient
         Prodbox.ControlPlane.AuthorityObservationEndpoint
@@ -248,6 +377,7 @@ library
         Prodbox.ControlPlane.EksClientAuthProjection
         Prodbox.ControlPlane.EksClientAuthClient
         Prodbox.ControlPlane.EksDrainIntentClient
+        Prodbox.ControlPlane.EpochBindingReadback
         Prodbox.ControlPlane.EksDrainIntentEndpoint
         Prodbox.ControlPlane.EksDrainIntentRepository
         Prodbox.ControlPlane.EksDrainIntentTransportClient
@@ -259,6 +389,8 @@ library
         Prodbox.ControlPlane.InClusterAuthorityStore
         Prodbox.ControlPlane.ListenPort
         Prodbox.ControlPlane.LocalClient
+        Prodbox.ControlPlane.HomeEndpoint
+        Prodbox.ControlPlane.OperationUse
         Prodbox.ControlPlane.LifecycleAuthorityAuthentication
         Prodbox.ControlPlane.LifecycleAuthorityRestoreProduction
         Prodbox.ControlPlane.MigrationEndpoint
@@ -286,10 +418,19 @@ library
         Prodbox.ControlPlane.RetainedSesLeaseClient
         Prodbox.ControlPlane.RetainedSesLeaseEndpoint
         Prodbox.ControlPlane.Server
+        Prodbox.ControlPlane.TargetAuthorityEpoch
+        Prodbox.ControlPlane.TargetAuthorityEpochCodec
+        Prodbox.ControlPlane.TargetAuthorityEpochExecution
+        Prodbox.ControlPlane.TargetAuthorityEpochProtocol
+        Prodbox.ControlPlane.TargetAuthorityEpochEndpoint
+        Prodbox.ControlPlane.TargetAuthorityEpochClient
+        Prodbox.ControlPlane.TargetAuthorityEpochBinding
         Prodbox.ControlPlane.TargetAuthorityTrust
         Prodbox.ControlPlane.TargetAuthorityTrustClient
         Prodbox.ControlPlane.TargetAuthorityTrustEndpoint
+        Prodbox.ControlPlane.TargetAuthorityTrustStore
         Prodbox.ControlPlane.TargetIntentAuthority
+        Prodbox.ControlPlane.TargetIntentAdmission
         Prodbox.ControlPlane.TargetIntentAuthorityClient
         Prodbox.ControlPlane.TargetIntentAuthorityEndpoint
         Prodbox.ControlPlane.TargetIntentAuthorityProduction
@@ -374,6 +515,7 @@ library
         Prodbox.Host.Lima
         Prodbox.Host.Substrate
         Prodbox.Host.Wsl2
+        Prodbox.Http.BodyBufferBudget
         Prodbox.Http.Client
         Prodbox.Http.ReplyStatus
         Prodbox.Http.ResponseObligation
@@ -408,12 +550,16 @@ library
         Prodbox.Lifecycle.EbsVolume
         Prodbox.Lifecycle.Authority.AdminAction
         Prodbox.Lifecycle.Authority.Admission
+        Prodbox.Lifecycle.Authority.AdmissionGate
         Prodbox.Lifecycle.Authority.BackupRepair
         Prodbox.Lifecycle.Authority.BootstrapReconcile
         Prodbox.Lifecycle.Authority.ClientRegistry
         Prodbox.Lifecycle.Authority.ChartStatics
         Prodbox.Lifecycle.Authority.Config
         Prodbox.Lifecycle.Authority.Cutover
+        Prodbox.Lifecycle.Authority.EpochTopology
+        Prodbox.Lifecycle.Authority.EpochPromotion
+        Prodbox.Lifecycle.Authority.EpochPromotionObservation
         Prodbox.Lifecycle.Authority.Genesis
         Prodbox.Lifecycle.Authority.Migration
         Prodbox.Lifecycle.Authority.MigrationInterpreter
@@ -649,6 +795,10 @@ library
         Prodbox.Infra.BootstrapImageSource
         Prodbox.Infra.BootstrapImageSourceNative
         Prodbox.Infra.BootstrapImageSeed
+        Prodbox.Infra.MinioRollout
+        Prodbox.Infra.RuntimeImagePublication
+        Prodbox.Infra.HelmStartupEvidence
+        Prodbox.Infra.VaultRetainedMount
         Prodbox.K8s
         Prodbox.K8s.InCluster
         Prodbox.Lib.AwsSubstratePlatform
@@ -696,12 +846,15 @@ library
         Prodbox.Scaling.Spot
         Prodbox.Substrate
         Prodbox.Subprocess
+        Prodbox.Subprocess.ProcessEnvironment
+        Prodbox.Subprocess.StartupLine
         Prodbox.Supervision
         Prodbox.TestPlan
         Prodbox.Test.GatewayRuntimeStability
         Prodbox.Test.CounterexampleValidation
         Prodbox.Test.CertificateScopeServing
         Prodbox.Test.CascadeQualificationCycle
+        Prodbox.Test.CascadeQualificationLocal
         Prodbox.Test.CascadeQualificationReceipt
         Prodbox.Test.CleanRoomHandoff
         Prodbox.Test.CleanRoomScan
@@ -760,6 +913,21 @@ library
 
     hs-source-dirs:   src
     other-modules:
+        Prodbox.Lifecycle.Teardown.NamespaceUidDecoder
+        Prodbox.Subprocess.SystemdBus
+        Prodbox.Subprocess.SystemdIdentity
+        Prodbox.Subprocess.SystemdProviderProfile
+        Prodbox.Subprocess.SystemdProvider
+        Prodbox.Subprocess.KernelScope
+        Prodbox.Subprocess.ScopeFamily
+        Prodbox.Subprocess.HostOperationFamily
+        Prodbox.Subprocess.HostOperationRetirement
+        Prodbox.Subprocess.HostControllerInputs
+        Prodbox.Subprocess.HostControllerStdin
+        Prodbox.Subprocess.HostControllerPublication
+        Prodbox.Subprocess.HostControllerPublicationRecord
+        Prodbox.Subprocess.HostControllerInputRetirement
+        Prodbox.Subprocess.HostControllerArguments
         Prodbox.Lifecycle.Authority.ProviderCredentialCleanupEvidence.Internal
         Prodbox.Lifecycle.CredentialProvisioner.AwsAdminAttestedRecovery.Internal
         Prodbox.ControlPlane.CompletedProviderPredecessor
@@ -769,6 +937,7 @@ library
         Prodbox.ControlPlane.ProviderCredentialAdmissionEvidence
         Prodbox.ControlPlane.ProviderCredentialPublication.Internal
         Prodbox.ControlPlane.CredentialSuccessorRegression.Internal
+        Prodbox.ControlPlane.OperationCredentialRetirement
         Paths_prodbox
         Prodbox.Bootstrap.Broker.Request.Internal
         Prodbox.Config.LocalRetainedRoot.Internal
@@ -786,7 +955,6 @@ library
         Prodbox.ControlPlane.CascadeHostRuntime.Internal
         Prodbox.Lifecycle.Teardown.CascadeCandidate.Internal
         Prodbox.Test.CascadeQualification
-        Prodbox.Test.CascadeQualificationLocal
         Prodbox.ControlPlane.PulumiCheckpointProtocol
         Prodbox.ControlPlane.CleanupRunProtocol
         Prodbox.Lifecycle.CleanupRun.Outcome
@@ -884,9 +1052,25 @@ test-suite prodbox-unit
         AdminActionQuotaJournal
         AdminActionLifecycle
         Allocation
+        CanonicalDhallValueShape
+        CapacityHostExecution
+        CapacityRpcBirthTraffic
+        CapacityRegisteredCallerTraffic
+        RegisteredCallerNativeTraffic
+        HttpClientExchangePolicy
+        HttpClientHeaderBudget
+        HttpBodyBufferBudget
+        HttpClientBodyBuffer
+        SubprocessStartupLine
         BootstrapImageArchive
         BootstrapImageSource
         BootstrapImageSourceNative
+        HarnessInitRecovery
+        MinioRollout
+        RuntimeImagePublication
+        HelmStartupEvidence
+        PlatformSchedulerCapacity
+        VaultRetainedMount
         BootstrapSourceFixture
         BootstrapImageSeed
         EbsEnsure
@@ -989,6 +1173,10 @@ test-suite prodbox-unit
         LifecycleAuthorityClientRegistry
         LifecycleAuthorityConfig
         LifecycleAuthorityCutover
+        LifecycleAuthorityEpochPromotion
+        LifecycleAuthorityEpochObservation
+        LifecycleAuthorityEpochReadback
+        EpochPromotionFixture
         LifecycleAuthorityGenesis
         LifecycleAuthorityMigration
         LifecycleAuthorityProjectionImport
@@ -1023,6 +1211,19 @@ test-suite prodbox-unit
         ControlPlaneServer
         ControlPlaneRoleInterpreters
         ControlPlaneTargetSecretWorker
+        ControlPlaneTargetAuthorityEpoch
+        ControlPlaneTargetAuthorityBinding
+        ControlPlaneAuthorityPeerContext
+        ControlPlaneRpcKeyRegistry
+        ControlPlaneRpcClientRegistration
+        ControlPlaneRpcAdmissionBirth
+        ControlPlaneRpcBirthBootstrap
+        ControlPlaneRpcBirthController
+        ControlPlaneRpcBirthWire
+        GeneratedArtifactSections
+        ControlPlaneRpcBirthRollout
+        ControlPlaneRegisteredRpcSigning
+        ControlPlaneTargetIntentAdmission
         ControlPlaneTlsRetentionEndpoint
         ControlPlaneVaultSession
         CredentialProvisioner
@@ -1086,6 +1287,8 @@ test-suite prodbox-unit
         LifecycleTeardownDecision
         LifecycleTeardownEksDrainAttemptRecovery
         LifecycleTeardownEksDrainInterpreter
+        LifecycleTeardownNamespaceUidDecoder
+        NamespaceUidProbeFixture
         LifecycleTeardownEksDrainIntent
         LifecycleTeardownEksTeardownExecutor
         LifecycleTeardownEksDrainSession
@@ -1093,6 +1296,9 @@ test-suite prodbox-unit
         LifecycleTeardownOwnershipManifest
         LifecycleTeardownProviderAwsScopeAdapter
         LifecycleTeardownProviderDispatch
+        LifecycleTeardownCapturedProviderDispatch
+        LifecycleTeardownCapturedCreationBinding
+        LifecycleTeardownCapturedEksAuth
         LifecycleTeardownProgram
         LifecycleTeardownRecoveryCapability
         ControlPlaneRegisteredStackCreationSubmitter
@@ -1183,6 +1389,7 @@ test-suite prodbox-unit
         AwsDestroyConverge
         ProviderFailureSummary
         SubprocessKillable
+        SubprocessFixtures
         StoreLifetimeWitness
         SupervisionWitness
         TargetCommitSmtp
@@ -1190,6 +1397,7 @@ test-suite prodbox-unit
         TestSupport
         Tier0PlanAssert
         Tier0FixtureSuite
+        Tier0RpcRegistration
         VaultSession
         VaultSessionSafety
 
@@ -1270,7 +1478,8 @@ test-suite prodbox-integration
 test-suite prodbox-authority-admission-unit
     type:             exitcode-stdio-1.0
     main-is:          Main.hs
-    hs-source-dirs:   test/authority-admission
+    hs-source-dirs:   test/authority-admission test/support
+    other-modules:    EpochPromotionFixture
     default-language: GHC2021
     ghc-options:      -Wall
     build-depends:
@@ -1301,12 +1510,19 @@ test-suite prodbox-control-plane-authenticated-transport-unit
     type:             exitcode-stdio-1.0
     main-is:          Main.hs
     hs-source-dirs:   test/control-plane-authenticated-transport
+    other-modules:
+        AuthenticatedRequestFixture
+        AuthenticatedRequestFootprint
+        AuthenticatedRequestPreflight
+
     default-language: GHC2021
     ghc-options:      -Wall
     build-depends:
         base ^>=4.21.2.0,
         base64-bytestring ^>=1.2,
         bytestring ^>=0.11.5.3,
+        cborg ^>=0.2.10.0,
+        cryptohash-sha256 ^>=0.11.102.1,
         prodbox,
         stm ^>=2.5.3,
         serialise ^>=0.2.6.1,
@@ -1341,6 +1557,8 @@ test-suite prodbox-daemon-lifecycle
     hs-source-dirs:   test/daemon-lifecycle test/support
     other-modules:
         TestSupport
+        SubprocessFixtures
+        SubprocessOwned
         Tier0Fixture
 
     default-language: GHC2021
@@ -1355,6 +1573,7 @@ test-suite prodbox-daemon-lifecycle
         filepath ^>=1.4.2.2,
         network ^>=3.1.4,
         prodbox,
+        process ^>=1.6.19.0,
         stm ^>=2.5.1,
         tasty ^>=1.5,
         tasty-golden ^>=2.3.5,

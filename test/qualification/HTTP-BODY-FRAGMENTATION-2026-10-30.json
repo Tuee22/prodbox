@@ -1,0 +1,50 @@
+{
+  "format_version": 1,
+  "counterexample_id": "HTTP-BODY-FRAGMENTATION-2026-10-30",
+  "scope": "Native loopback response-fragmentation counterexample and runtime-coupled payload-buffer cursor. The same full two-MiB/one-byte-transfer body exhausts the old 128-MiB heap and passes after replacement. No full ordinary-controller, original-family, performance, live-provider class closure or deployment qualification claim.",
+  "law_recording": "Pinned http-client exposes each one-byte transfer chunk to the body reader. Retaining each ByteString/list node exhausts heap under a valid body ceiling. The growing collector copies into opaque cursor-selected capacities and returns the filled prefix without final concatenation.",
+  "comparison_profile": {
+    "body_bytes": 2097152,
+    "transfer_chunk_payload_bytes": 1,
+    "chunked_data_wire_bytes": 12582912,
+    "rts_heap_bytes": 134217728,
+    "rts_capabilities": 1,
+    "test_threads": 1,
+    "source_qa_memory_bytes": 5368709120,
+    "source_qa_swap_bytes": 0,
+    "source_qa_tasks": 64,
+    "request_timeout_micros": 30000000,
+    "mapping": "Identical fixture/body/timeout/heap/package IDs; only the selected helper and new pure allocation cursor change."
+  },
+  "selected_sources": {
+    "shared_fixture_sha256": "a9c9523699cfbeee6e2e1de8ee6e896c6dbb125365c557f9a452e394f5406a4b",
+    "before_helper_sha256": "a8df40c0a2db279f389f328f10a547271f4daff53c14ca12b674c12751f4ef96",
+    "candidate_helper_sha256": "4f5b5e13b9c035a79f8ae11c92de5c0400631ce1f6adcbf9a29f84c3bb32c17f",
+    "cursor_sha256": "ac7a2e99f09ac86a8b9ab7aa3f75550f9b794a0550883f3353f96e49ab9a121b"
+  },
+  "preserved_public_source_identity": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"83beef3a87e8ee16bc50af22cf6105ba17560a6ee2e6f461840891c57d0484e3\", sourceManifestEntryCount = 1638},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"07fe9331a19e634130a55827b0b8b0b33af754eb480b8c1f7e56d6586946cdc2\", sourceManifestEntryCount = 1575})",
+  "identity_scope": "Excluded vehicle inputs are identified separately; the complete public pair identifies the unchanged baseline, not a replacement deployment.",
+  "payload_buffer_contract": {
+    "maximum_simultaneously_live_capacity": "2 * body ceiling",
+    "maximum_cumulative_payload_allocation": "3 * body ceiling",
+    "excluded_terms": [
+      "incoming chunks and CString copies",
+      "ForeignPtr/cursor objects and alignment",
+      "parser/header/status state",
+      "decoded DTOs and GC",
+      "native/kernel memory and complete physical admission"
+    ]
+  },
+  "evidence": {
+    "directory": ".build/sprint-6.5/http-body-funding-20261030",
+    "superseded_index": "superseded-input-index-1.json",
+    "before": "http-body-before-tests-1-validation.json",
+    "after": "http-body-after-tests-1-validation.json",
+    "progress": "prototype-progress-validation-1.json",
+    "old_exit": 251,
+    "new_exit": 0,
+    "pure_budget_cases": 73,
+    "compatibility_cases": 34
+  },
+  "overflow_contract": "Subtraction checks and Natural observations precede Int conversion and pointer arithmetic; overruns remain exact beyond machine-word size."
+}

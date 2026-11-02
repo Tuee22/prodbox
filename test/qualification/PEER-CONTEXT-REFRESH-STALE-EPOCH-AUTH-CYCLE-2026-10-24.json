@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "counterexample": "PEER-CONTEXT-REFRESH-STALE-EPOCH-AUTH-CYCLE-2026-10-24",
+  "owning_sprint": "6.5",
+  "banked_utc": "2026-10-24T20:39:03.305006+00:00",
+  "scope": "Actual compiled signed client/server transport; HTTP is injected. The old exact-epoch verifier refuses before an existing read handler. No deployed Vault, network, remote registration or qualification claim.",
+  "causal_profile": {
+    "scope": "retained-home",
+    "signed_request_epoch": 1,
+    "server_observed_epoch": 2,
+    "signing_generation": 1,
+    "clock_micros": 1000,
+    "absolute_deadline_micros": 2000,
+    "maximum_lifetime_micros": 10000,
+    "frame_maximum_bytes": 65536,
+    "metadata_maximum_bytes": 256,
+    "signed_envelope_maximum_bytes": 65000,
+    "fault_schedule": "none",
+    "old_to_new_mapping": "Add a fixed authenticated metadata-only refresh route. Preserve exact epoch on every existing route and all caller-slot, signature, scope, framing, replay, deadline and resource bounds. New response is bounded at 1024 bytes inside the existing transport ceiling.",
+    "process_topology_or_physical_resource_envelopes_increased": false,
+    "native_resource_enforcement_claim": false
+  },
+  "frozen": {
+    "source_identity_record": ".build/sprint-6.5/peer-context-20261024/frozen-source-identity.log",
+    "git_head": "b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6",
+    "worktree": "dirty",
+    "full_manifest": "f69b4078cce885060c6e7e42c2cd791a8d0354f885e1e4894a2594793242014b",
+    "executable_manifest": "3dfba1cfea3b1acecc0f0bef66fc8c184cad679066dbe3e98ae4ad3df18d3418",
+    "source_policy_identifier": "prodbox-source-manifest",
+    "source_policy_version": 1,
+    "source_policy_digest": "4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae",
+    "executable_policy_identifier": "prodbox-source-manifest-executable",
+    "executable_policy_version": 1,
+    "executable_policy_digest": "2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b",
+    "operator_sha256": "9ce2c56cf387ddff939bc2186d901eb9c2c8f065d73f22db96a24be177e5d790",
+    "control_binary_sha256": "edb52bc2c5640a4bcfc31183e68d8da9486509ee606b1fe090fff4967d40b598",
+    "semantic_exit": 1,
+    "expected_exit": 1,
+    "wall_seconds": 0.0030456939712166786
+  },
+  "replacement": {
+    "state": "Implemented read-only route/client/runtime; validation running. Remote registration, transport and complete physical closure remain open.",
+    "validation_record": ".build/sprint-6.5/peer-context-20261024/validation.json",
+    "actual_vault_http_exercised": false,
+    "complete_physical_counterexample_closure": false
+  },
+  "deployment_qualification": "pending",
+  "qualified_cycles": 0,
+  "hand_actions": []
+}

@@ -193,6 +193,7 @@ import Prodbox.ControlPlane.ProviderCaller
   ( dispatchHostProviderIntentFresh
   , renderProviderCallerError
   )
+import Prodbox.ControlPlane.RpcAdmissionBirthConfig (RpcBirthConfig (..))
 import Prodbox.Error (fatalError)
 import Prodbox.Infra.AwsEksTestStack
   ( awsEksCanonicalClusterName
@@ -1611,6 +1612,7 @@ validateConfigSetupInput adminCredentials zoneId zoneName demoFqdnRaw demoTtl ac
           { contextInputClusterId = Text.strip (Text.pack clusterIdRaw)
           , contextInputVaultAddress = Text.strip (Text.pack vaultAddressRaw)
           , contextInputMinioEndpoint = Text.strip (Text.pack minioEndpointRaw)
+          , contextInputRpcRegistration = RpcBirthConfigLegacy
           }
       normalizedBootstrapOverride = normalizeOptionalText (Text.pack bootstrapOverrideRaw)
       -- Sprint 1.80: the one place a string becomes a mode. Every other site
@@ -2431,6 +2433,7 @@ harnessDeploymentInputForSubstrate substrate secrets = do
             { contextInputClusterId = clusterId
             , contextInputVaultAddress = vaultAddress
             , contextInputMinioEndpoint = minioEndpoint
+            , contextInputRpcRegistration = RpcBirthConfigLegacy
             }
       , harnessDeploymentTopology = topology
       , harnessDeploymentStorageRoot =
@@ -2587,9 +2590,7 @@ regenerateConfigFromTestSecrets repoRoot policyTier substrate = do
       else pure (Right Tier0.defaultProjectConfig)
   canonicalSkeleton <-
     if tier0Exists
-      then
-        (== Tier0.renderProjectConfigDhall Tier0.defaultProjectConfig)
-          <$> TextIO.readFile tier0Path
+      then TextIO.readFile tier0Path >>= Tier0.isCanonicalUnauthoredProjectConfigDhall
       else pure True
   case (currentConfigResult, existingProjectResult) of
     (Right currentConfig, Right existingProject) -> do
@@ -2601,9 +2602,9 @@ regenerateConfigFromTestSecrets repoRoot policyTier substrate = do
         Right False -> generate currentConfig
     -- The generated default is intentionally unauthored and may cease to
     -- decode after a smart constructor is tightened (for example, the empty
-    -- topology machine id).  Exact equality with the current canonical
-    -- rendering is the only decode-failure escape: a partially authored or
-    -- merely similar file still refuses instead of being overwritten.
+    -- topology machine id). Only the canonical template with its typed host
+    -- vector may escape that refusal; a partially authored or merely similar
+    -- file is never overwritten.
     (Left _, Left _) | canonicalSkeleton -> generate defaultConfigFile
     (Left err, _) -> pure (Left err)
     (_, Left err) -> pure (Left err)
@@ -2753,6 +2754,7 @@ existingHarnessConfigDisposition repoRoot config projectConfig tier0Exists subst
       { contextInputClusterId = Tier0.cluster_id tier0Context
       , contextInputVaultAddress = Tier0.vault_address tier0Context
       , contextInputMinioEndpoint = Tier0.minio_endpoint tier0Context
+      , contextInputRpcRegistration = Tier0.rpc_registration tier0Context
       }
   authoredValues =
     [ demo_fqdn (domain config)

@@ -1,14 +1,14 @@
 {-# LANGUAGE DerivingStrategies #-}
 
--- | Restart-safe orchestration of the authority-epoch cutover.
+-- | Historical import/shadow orchestration retained during the cutover.
 --
 -- Every effect is injected and closed over the finite projection/binding
 -- inventories.  The sequence imports and completes the legacy projections,
 -- obtains a stable shadow proof, suspends and reads back every legacy writer,
 -- proves the shadow digest did not move, durably freezes admission, prepares
--- and reads back every binding, activates one replacement epoch, and finally
--- re-observes that exact epoch.  No step dual-writes and an activation response
--- is never accepted without the authoritative read-back.
+-- and reads back the coarse compatibility binding inventory. That inventory
+-- cannot establish prepared/promoted topology, so production migration refuses
+-- its final activation. It must not mint an operational activation receipt.
 module Prodbox.Lifecycle.Authority.Cutover
   ( AuthorityCutoverBoundary (..)
   , AuthorityCutoverStage (..)
@@ -83,6 +83,7 @@ data AuthorityCutoverFailure
       !AuthorityCutoverStage
       !MigrationAuthorityStatus
   | AuthorityCutoverEpochConflict !MigrationEpoch
+  | AuthorityCutoverStagedPromotionRequired
   deriving stock (Eq, Show)
 
 data AuthorityCutoverResult
@@ -106,10 +107,8 @@ runAuthorityCutover boundary targetEpoch = do
   case initial of
     Left detail ->
       pure (Left (AuthorityCutoverEffectFailed CutoverInitialObservation detail))
-    Right (MigrationReplacementWriterActive activeEpoch)
-      | activeEpoch == targetEpoch ->
-          pure (Right (AuthorityCutoverAlreadyActive activeEpoch))
-      | otherwise -> pure (Left (AuthorityCutoverEpochConflict activeEpoch))
+    Right (MigrationReplacementWriterActive _) ->
+      pure (Left AuthorityCutoverStagedPromotionRequired)
     Right _ -> runPendingCutover
  where
   runPendingCutover = do

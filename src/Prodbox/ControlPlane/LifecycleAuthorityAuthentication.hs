@@ -26,10 +26,18 @@ module Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   , withAuthorityBackupAuthenticatedTransport
   , withTlsRetentionAuthenticatedTransport
   , externalCallerServiceAccount
+  , externalCallerVaultRole
+  , externalCallerLoginWithToken
+  , lifecycleAuthenticationConstants
+  , externalCallerPrincipal
+  , externalCallerFromPrincipal
   , externalCallerKubernetesSubject
   , externalCallerServiceAccountReadArguments
   , externalCallerTokenEligibilityArguments
   , externalCallerTokenRequestArguments
+  , ExternalCallerTokenStage (..)
+  , externalCallerTokenStageArguments
+  , mintExternalCallerTokenUsing
   , validateExternalCallerServiceAccountReadBack
   , ServiceAccountObservationFailure (..)
   , classifyServiceAccountObservation
@@ -73,9 +81,7 @@ import Prodbox.ControlPlane.AuthenticationRegistry
   , harnessControlPlaneVaultRole
   , operatorControlPlaneVaultRole
   )
-import Prodbox.ControlPlane.CallerPrincipal
-  ( CallerPrincipal (CallerOperatorCli, CallerTestHarness)
-  )
+import Prodbox.ControlPlane.CallerPrincipal (CallerPrincipal (..))
 import Prodbox.ControlPlane.Coordinate
   ( CoordinateError
   , mkAuthorityScope
@@ -504,62 +510,74 @@ externalCallerLogin address environment repoRoot caller = do
   tokenResult <- mintExternalCallerToken environment repoRoot caller
   case tokenResult of
     Left failure -> pure (Left (externalCallerTokenSessionError caller failure))
-    Right jwt -> do
-      loginResult <-
-        vaultKubernetesLoginWithLease
-          address
-          "kubernetes"
-          (externalCallerVaultRole caller)
-          jwt
-      pure $ case loginResult of
-        Left err -> Left (httpErrorToSessionError err)
-        Right lease ->
-          Right
-            LoginLease
-              { loginLeaseToken = vaultLoginToken lease
-              , loginLeaseSeconds = vaultLoginLeaseSeconds lease
-              , loginLeaseRenewable = vaultLoginRenewable lease
-              }
+    Right jwt -> externalCallerLoginWithToken address caller jwt
+
+externalCallerLoginWithToken
+  :: VaultAddress
+  -> ExternalLifecycleAuthorityCaller
+  -> Text
+  -> IO (Either VaultSessionError LoginLease)
+externalCallerLoginWithToken address caller jwt = do
+  loginResult <-
+    vaultKubernetesLoginWithLease address "kubernetes" (externalCallerVaultRole caller) jwt
+  pure $ case loginResult of
+    Left err -> Left (httpErrorToSessionError err)
+    Right lease ->
+      Right
+        LoginLease
+          { loginLeaseToken = vaultLoginToken lease
+          , loginLeaseSeconds = vaultLoginLeaseSeconds lease
+          , loginLeaseRenewable = vaultLoginRenewable lease
+          }
 
 mintExternalCallerToken
   :: [(String, String)]
   -> FilePath
   -> ExternalLifecycleAuthorityCaller
   -> IO (Either ExternalCallerTokenError Text)
-mintExternalCallerToken environment repoRoot caller = do
-  serviceAccountReadBack <-
+mintExternalCallerToken environment repoRoot caller =
+  mintExternalCallerTokenUsing run caller
+ where
+  run stage =
     captureSubprocessBounded
       tokenRequestLimits
       Subprocess
         { subprocessPath = "kubectl"
-        , subprocessArguments = externalCallerServiceAccountReadArguments caller
+        , subprocessArguments = externalCallerTokenStageArguments caller stage
         , subprocessEnvironment = Just environment
         , subprocessWorkingDirectory = Just repoRoot
         }
+
+data ExternalCallerTokenStage
+  = ObserveExternalCallerServiceAccount
+  | CheckExternalCallerTokenEligibility
+  | RequestExternalCallerToken
+  deriving stock (Eq, Show)
+
+externalCallerTokenStageArguments
+  :: ExternalLifecycleAuthorityCaller -> ExternalCallerTokenStage -> [String]
+externalCallerTokenStageArguments caller stage = case stage of
+  ObserveExternalCallerServiceAccount -> externalCallerServiceAccountReadArguments caller
+  CheckExternalCallerTokenEligibility -> externalCallerTokenEligibilityArguments caller
+  RequestExternalCallerToken -> externalCallerTokenRequestArguments caller
+
+-- The interpreter owns subprocess placement and deadlines; this shared policy
+-- owns stage ordering and refusal classification for both host paths.
+mintExternalCallerTokenUsing
+  :: (Monad m)
+  => (ExternalCallerTokenStage -> m (Either err ProcessOutput))
+  -> ExternalLifecycleAuthorityCaller
+  -> m (Either ExternalCallerTokenError Text)
+mintExternalCallerTokenUsing run caller = do
+  serviceAccountReadBack <- run ObserveExternalCallerServiceAccount
   case classifyServiceAccountObservation caller serviceAccountReadBack of
     Left failure -> pure (Left (ExternalCallerServiceAccountUnobservable failure))
     Right () -> do
-      eligibility <-
-        captureSubprocessBounded
-          tokenRequestLimits
-          Subprocess
-            { subprocessPath = "kubectl"
-            , subprocessArguments = externalCallerTokenEligibilityArguments caller
-            , subprocessEnvironment = Just environment
-            , subprocessWorkingDirectory = Just repoRoot
-            }
+      eligibility <- run CheckExternalCallerTokenEligibility
       case classifyTokenEligibility eligibility of
         Left err -> pure (Left err)
         Right () -> do
-          tokenRequest <-
-            captureSubprocessBounded
-              tokenRequestLimits
-              Subprocess
-                { subprocessPath = "kubectl"
-                , subprocessArguments = externalCallerTokenRequestArguments caller
-                , subprocessEnvironment = Just environment
-                , subprocessWorkingDirectory = Just repoRoot
-                }
+          tokenRequest <- run RequestExternalCallerToken
           pure (classifyTokenRequest tokenRequest)
 
 -- | Sprint 4.84: the distinguishable causes of a failed external-caller
@@ -955,6 +973,15 @@ externalCallerPrincipal :: ExternalLifecycleAuthorityCaller -> CallerPrincipal
 externalCallerPrincipal caller = case caller of
   LifecycleAuthorityOperator -> CallerOperatorCli
   LifecycleAuthorityTestHarness -> CallerTestHarness
+
+externalCallerFromPrincipal :: CallerPrincipal -> Maybe ExternalLifecycleAuthorityCaller
+externalCallerFromPrincipal principal = case principal of
+  CallerOperatorCli -> Just LifecycleAuthorityOperator
+  CallerTestHarness -> Just LifecycleAuthorityTestHarness
+  CallerService _ -> Nothing
+  CallerAdminActionRunner -> Nothing
+  CallerCredentialProvisioner -> Nothing
+  CallerCredentialProvisionerCompletion -> Nothing
 
 externalCallerVaultRole :: ExternalLifecycleAuthorityCaller -> Text
 externalCallerVaultRole caller = case caller of

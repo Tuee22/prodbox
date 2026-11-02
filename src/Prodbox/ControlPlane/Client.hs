@@ -42,6 +42,7 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Network.HTTP.Types.Header (Header)
 import Network.HTTP.Types.Method (Method)
+import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.Route
   ( ControlPlaneMethod (ControlPlaneGet, ControlPlanePost)
   , ControlPlaneRoute (..)
@@ -52,6 +53,7 @@ import Prodbox.Http.Client
   ( HttpBoundedError (..)
   , HttpConfig
   , HttpError
+  , HttpResponseHeaderLimit
   , httpRequestRawBounded
   )
 import Prodbox.Runtime.Role (RuntimeRole (..))
@@ -71,7 +73,8 @@ data ControlPlaneClientError
   | ControlPlaneEndpointAuthorityInvalid
   | ControlPlaneResponseLimitMustBePositive
   | ControlPlaneTransportFailed !HttpError
-  | ControlPlaneResponseTooLarge !Int !Int
+  | ControlPlaneResponseTooLarge !Natural !Int
+  | ControlPlaneResponseHeadersTooLarge !HttpResponseHeaderLimit !Int !Int
   deriving (Eq, Show)
 
 mkLifecycleAuthorityEndpoint
@@ -128,6 +131,8 @@ controlPlaneEndpointText (ControlPlaneEndpoint endpoint) = endpoint
 -- | The route family indexed by its owning runtime role.  There is no generic
 -- constructor accepting a 'ControlPlaneRoute' or a path.
 data ControlPlaneRouteFor (r :: RuntimeRole) where
+  LifecycleAuthorityPeerObserveRoute
+    :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
   LifecycleAuthorityControlRoute
     :: ControlPlaneRouteFor 'LifecycleAuthorityRuntime
   LifecycleMigrationApplyRoute
@@ -262,6 +267,7 @@ deriving instance Show (ControlPlaneRouteFor r)
 
 controlPlaneRouteForValue :: ControlPlaneRouteFor r -> ControlPlaneRoute
 controlPlaneRouteForValue route = case route of
+  LifecycleAuthorityPeerObserveRoute -> LifecycleAuthorityPeerObserve
   LifecycleAuthorityControlRoute -> LifecycleAuthorityControl
   LifecycleMigrationApplyRoute -> LifecycleMigrationApply
   LifecycleProjectionImportRoute -> LifecycleProjectionImport
@@ -403,11 +409,13 @@ callControlPlane client indexedRoute body = do
     Left (HttpBoundedTransport err) -> Left (ControlPlaneTransportFailed err)
     Left (HttpBoundedResponseTooLarge observed maximumAllowed) ->
       Left (ControlPlaneResponseTooLarge observed maximumAllowed)
+    Left (HttpBoundedResponseHeadersTooLarge limit observed maximumAllowed) ->
+      Left (ControlPlaneResponseHeadersTooLarge limit observed maximumAllowed)
     Right (status, responseBody)
       | ByteString.length responseBody > clientMaximumResponseBytes client ->
           Left
             ( ControlPlaneResponseTooLarge
-                (ByteString.length responseBody)
+                (fromIntegral (ByteString.length responseBody))
                 (clientMaximumResponseBytes client)
             )
       | otherwise -> Right (ControlPlaneResponse status responseBody)

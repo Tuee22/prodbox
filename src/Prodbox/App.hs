@@ -98,6 +98,7 @@ main = do
 runCommandRequest :: CommandRequest -> IO ()
 runCommandRequest request =
   case request of
+    RunNative command@(NativeRpcBirthController _) -> dispatch "." command
     RunNative command -> do
       repoRootResult <- findRepoRoot
       case repoRootResult of
@@ -134,6 +135,7 @@ canRunWithoutRepoRoot :: NativeCommand -> Bool
 canRunWithoutRepoRoot (NativeBootstrapBroker (BootstrapBrokerStart _)) = True
 canRunWithoutRepoRoot (NativeBootstrapBroker (BootstrapBrokerSecretWorker _ _)) = True
 canRunWithoutRepoRoot (NativeControlPlane _ _) = True
+canRunWithoutRepoRoot (NativeRpcBirthController _) = True
 canRunWithoutRepoRoot (NativeCredentialProvisioner _) = True
 canRunWithoutRepoRoot (NativeGateway (GatewayDaemonCommand _)) = True
 canRunWithoutRepoRoot (NativeGateway (GatewayStatusCommand _)) = True

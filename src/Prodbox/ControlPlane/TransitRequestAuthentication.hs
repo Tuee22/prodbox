@@ -10,6 +10,7 @@ module Prodbox.ControlPlane.TransitRequestAuthentication
   , resolveTransitPublicGenerationDetailed
   , resolveTransitRequestSigningCapability
   , transitAuthenticatedClientProviders
+  , freshAuthenticatedClientNonce
   )
 where
 
@@ -31,7 +32,8 @@ import Prodbox.ControlPlane.AuthenticationRegistry
 import Prodbox.ControlPlane.CallerPrincipal (CallerPrincipal)
 import Prodbox.ControlPlane.Coordinate (AuthorityScope)
 import Prodbox.ControlPlane.RequestAuthentication
-  ( RequestSigningCapability
+  ( RequestNonce
+  , RequestSigningCapability
   , mkRequestNonce
   , mkRequestSigningCapability
   , mkSigningKeyGeneration
@@ -166,10 +168,13 @@ transitAuthenticatedClientProviders signer provideScope provideEpoch lifetime =
     , provideAuthenticatedClientDeadline = do
         now <- currentAuthorityTime
         pure (Right (addAuthorityDuration now lifetime))
-    , provideAuthenticatedClientNonce = do
-        bytes <- getRandomBytes 32
-        pure (mapLeft (Text.pack . show) (mkRequestNonce bytes))
+    , provideAuthenticatedClientNonce = freshAuthenticatedClientNonce
     }
+
+freshAuthenticatedClientNonce :: IO (Either Text RequestNonce)
+freshAuthenticatedClientNonce = do
+  bytes <- getRandomBytes 32
+  pure (mapLeft (Text.pack . show) (mkRequestNonce bytes))
 
 currentAuthorityTime :: IO AuthorityTime
 currentAuthorityTime = do

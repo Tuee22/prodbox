@@ -6,8 +6,11 @@ module LifecycleTeardownDns01ChallengeRecordAdapter
   )
 where
 
+import Data.ByteString qualified as ByteString
+import Data.ByteString.Char8 qualified as ByteStringChar8
 import Data.List.NonEmpty (NonEmpty (..))
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ProviderIntentExecutionResult (..)
   )
@@ -26,11 +29,13 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   )
 import Prodbox.Lifecycle.Teardown.Dns01ChallengeOwnerDeleteInterpreter
 import Prodbox.Lifecycle.Teardown.Dns01ChallengeRecordAdapter
+import Prodbox.Lifecycle.Teardown.EphemeralKubectl (ephemeralKubectlLimits)
 import Prodbox.Lifecycle.Teardown.Graph
 import Prodbox.Lifecycle.Teardown.Model
 import Prodbox.Lifecycle.Teardown.Observation
 import Prodbox.Lifecycle.Teardown.RegisteredTargetExecutor
 import Prodbox.Lifecycle.Teardown.Registry
+import Prodbox.Subprocess (BoundedSubprocessLimits (boundedSubprocessMaximumStdoutBytes))
 import TestSupport
 
 lifecycleTeardownDns01ChallengeRecordAdapterSuite :: SuiteBuilder ()
@@ -204,6 +209,24 @@ lifecycleTeardownDns01ChallengeRecordAdapterSuite =
       parseDns01ChallengeOwners "cert-manager|chal-1" `shouldSatisfy` isLeftResult
       parseDns01ChallengeOwners "cert-manager||app.example.test"
         `shouldSatisfy` isLeftResult
+
+    it "parses and selects every duplicate owner in the full bounded String response" $ do
+      let maximumOutput = boundedSubprocessMaximumStdoutBytes ephemeralKubectlLimits
+          row = "n|x|a\n"
+          count = maximumOutput `div` ByteString.length row
+          rows = ByteString.concat (replicate count row)
+          encoded = rows <> ByteStringChar8.replicate (maximumOutput - ByteString.length rows) ' '
+      -- A subprocess response arrives through IO; keep its full String conversion.
+      received <- ByteString.useAsCStringLen encoded ByteString.packCStringLen
+      let body = ByteStringChar8.unpack received
+      length body `shouldBe` maximumOutput
+      case parseDns01ChallengeOwners (Text.pack body) of
+        Left failure -> expectationFailure (Text.unpack failure)
+        Right owners -> do
+          length owners `shouldBe` count
+          let selected = selectDns01ChallengeOwnersToDelete ("_acme-challenge.a." :| []) owners
+          length (dns01ChallengeOwnersToDelete selected) `shouldBe` count
+          dns01ChallengeOrphanedRecords selected `shouldBe` []
 
 owner :: Text -> Text -> Text -> Dns01ChallengeOwner
 owner namespace name dnsName =

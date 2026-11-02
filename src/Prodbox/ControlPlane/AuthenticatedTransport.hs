@@ -14,13 +14,23 @@ module Prodbox.ControlPlane.AuthenticatedTransport
   , AuthenticatedTransportBoundsError (..)
   , mkAuthenticatedTransportBounds
   , AuthenticatedFrameError (..)
+  , AuthenticatedRequestFootprint
+  , authenticatedRequestFootprint
+  , authenticatedSigningClaimsBytes
+  , authenticatedMetadataBytes
+  , authenticatedEnvelopeBytes
+  , authenticatedRequestFrameBytes
 
     -- * Client wrapper
   , AuthenticatedClientProviders (..)
   , AuthenticatedClientError (..)
   , AuthenticatedClientTransport
   , mkAuthenticatedClientTransport
+  , authenticatedClientTransportWithin
+  , authenticatedClientTransportAtEpoch
+  , resolveAuthenticatedClientTransportDeadline
   , callAuthenticatedClientTransport
+  , callAuthenticatedPeerObservation
   , callAuthenticatedControlPlane
 
     -- * Closed route trust registry
@@ -28,6 +38,7 @@ module Prodbox.ControlPlane.AuthenticatedTransport
   , RouteTrustRegistryError (..)
   , mkRouteTrustRegistry
   , routeTrustRegistryKeysFor
+  , routeTrustRegistryMaximumKeys
 
     -- * Server wrapper
   , AuthenticatedServerProviders (..)
@@ -61,7 +72,7 @@ import Prodbox.ControlPlane.Client
   ( ControlPlaneClient
   , ControlPlaneClientError
   , ControlPlaneResponse
-  , ControlPlaneRouteFor
+  , ControlPlaneRouteFor (LifecycleAuthorityPeerObserveRoute)
   , callControlPlane
   , controlPlaneRouteForValue
   )
@@ -77,11 +88,16 @@ import Prodbox.ControlPlane.RequestAuthentication
   , TrustedRequestKey
   , VerifiedCallerSlot
   , VerifiedControlPlaneRequest
+  , cborByteStringEncodedBytes
   , decodeAndVerifyControlPlaneRequest
   , encodeSignedControlPlaneRequest
+  , mkPeerObservationVerificationContext
   , mkRequestNonce
   , mkRequestVerificationContext
   , requestNonceBytes
+  , requestSigningClaimsEncodedBytes
+  , requestSigningEnvelopeEncodedBytes
+  , requestSigningFootprint
   , signControlPlaneRequestWith
   , signingKeyGenerationValue
   , trustedRequestCallerPrincipal
@@ -98,18 +114,18 @@ import Prodbox.ControlPlane.RequestReplay
   , runReplayProtectedRequest
   )
 import Prodbox.ControlPlane.Route
-  ( ControlPlaneRoute
+  ( ControlPlaneRoute (LifecycleAuthorityPeerObserve)
   , controlPlaneRouteRole
   , routesForRole
   )
-import Prodbox.Lifecycle.Authority.Genesis (AuthorityEpoch)
+import Prodbox.Lifecycle.Authority.Genesis (AuthorityEpoch, authorityEpochGenesis)
 import Prodbox.Lifecycle.Lease
   ( AuthorityDuration
   , AuthorityTime
   , authorityTimeFromMicros
   , authorityTimeMicros
   )
-import Prodbox.Runtime.Role (RuntimeRole)
+import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 
 data AuthenticatedTransportBounds = AuthenticatedTransportBounds
   { maximumAuthenticatedFrameBytes :: !Int
@@ -161,6 +177,9 @@ data AuthenticatedFrameError
   | AuthenticatedMetadataNonCanonical
   | AuthenticatedMetadataNonceInvalid !RequestNonceError
   | AuthenticatedSignedEnvelopeTooLarge !Int !Int
+  | AuthenticatedRequestBodyTooLarge !Int !Int
+  | AuthenticatedPredictedEnvelopeTooLarge !Natural !Int
+  | AuthenticatedPredictedFrameTooLarge !Natural !Int
   deriving stock (Eq, Show)
 
 data AuthenticatedMetadataWire = AuthenticatedMetadataWire
@@ -198,15 +217,7 @@ encodeAuthenticatedFrame
   -> SignedControlPlaneRequest
   -> Either AuthenticatedFrameError LazyByteString.ByteString
 encodeAuthenticatedFrame bounds deadline nonce signed = do
-  let metadata =
-        LazyByteString.toStrict
-          ( serialise
-              AuthenticatedMetadataWire
-                { authenticatedMetadataVersion = authenticatedMetadataVersionValue
-                , authenticatedMetadataDeadlineMicros = authorityTimeMicros deadline
-                , authenticatedMetadataNonce = requestNonceBytes nonce
-                }
-          )
+  let metadata = encodeAuthenticatedMetadata deadline nonce
       envelope = LazyByteString.toStrict (encodeSignedControlPlaneRequest signed)
   checkMaximum AuthenticatedMetadataTooLarge (maximumAuthenticatedMetadataBytes bounds) metadata
   checkMaximum AuthenticatedSignedEnvelopeTooLarge (maximumSignedEnvelopeBytes bounds) envelope
@@ -225,6 +236,84 @@ encodeAuthenticatedFrame bounds deadline nonce signed = do
         ( AuthenticatedFrameTooLarge
             framedLength
             (maximumAuthenticatedFrameBytes bounds)
+        )
+
+encodeAuthenticatedMetadata :: AuthorityTime -> RequestNonce -> ByteString
+encodeAuthenticatedMetadata deadline nonce =
+  LazyByteString.toStrict $
+    serialise
+      AuthenticatedMetadataWire
+        { authenticatedMetadataVersion = authenticatedMetadataVersionValue
+        , authenticatedMetadataDeadlineMicros = authorityTimeMicros deadline
+        , authenticatedMetadataNonce = requestNonceBytes nonce
+        }
+
+-- Payload sizes, not HTTP headers, decoded heap, replay or physical admission.
+-- This value contains no signed request and invokes no effect provider.
+data AuthenticatedRequestFootprint = AuthenticatedRequestFootprint
+  { authenticatedSigningClaimsBytes :: !Natural
+  , authenticatedMetadataBytes :: !Natural
+  , authenticatedEnvelopeBytes :: !Natural
+  , authenticatedRequestFrameBytes :: !Natural
+  }
+  deriving stock (Eq, Show)
+
+authenticatedRequestFootprint
+  :: AuthenticatedTransportBounds
+  -> RequestSigningCapability m
+  -> ControlPlaneRoute
+  -> RuntimeRole
+  -> AuthorityScope
+  -> AuthorityEpoch
+  -> AuthorityTime
+  -> RequestNonce
+  -> Word
+  -> Either AuthenticatedClientError AuthenticatedRequestFootprint
+authenticatedRequestFootprint bounds signer route callee scope epoch deadline nonce bodyBytes = do
+  signing <-
+    either
+      (Left . AuthenticatedClientBindingFailed)
+      Right
+      (requestSigningFootprint signer route callee scope epoch deadline nonce bodyBytes)
+  let metadata = encodeAuthenticatedMetadata deadline nonce
+      metadataBytes = ByteString.length metadata
+      envelopeBytes = requestSigningEnvelopeEncodedBytes signing
+  either (Left . AuthenticatedClientFrameFailed) Right $
+    checkMaximum AuthenticatedMetadataTooLarge (maximumAuthenticatedMetadataBytes bounds) metadata
+  if envelopeBytes > fromIntegral (maximumSignedEnvelopeBytes bounds)
+    then
+      Left
+        ( AuthenticatedClientFrameFailed
+            (AuthenticatedPredictedEnvelopeTooLarge envelopeBytes (maximumSignedEnvelopeBytes bounds))
+        )
+    else pure ()
+  -- The envelope now fits a positive Int bound, so its Word conversion cannot
+  -- wrap. The same holds for a materialized strict metadata ByteString length.
+  let emptyFrameBytes =
+        fromIntegral
+          ( LazyByteString.length
+              ( serialise
+                  (AuthenticatedFrameWire authenticatedFrameVersionValue ByteString.empty ByteString.empty)
+              )
+          )
+      frameBytes =
+        emptyFrameBytes
+          - 2 * cborByteStringEncodedBytes 0
+          + cborByteStringEncodedBytes (fromIntegral metadataBytes)
+          + cborByteStringEncodedBytes (fromIntegral envelopeBytes)
+  if frameBytes > fromIntegral (maximumAuthenticatedFrameBytes bounds)
+    then
+      Left
+        ( AuthenticatedClientFrameFailed
+            (AuthenticatedPredictedFrameTooLarge frameBytes (maximumAuthenticatedFrameBytes bounds))
+        )
+    else
+      Right
+        ( AuthenticatedRequestFootprint
+            (requestSigningClaimsEncodedBytes signing)
+            (fromIntegral metadataBytes)
+            envelopeBytes
+            frameBytes
         )
 
 decodeAuthenticatedFrame
@@ -332,6 +421,20 @@ mkAuthenticatedClientTransport
   -> AuthenticatedClientTransport r
 mkAuthenticatedClientTransport = AuthenticatedClientTransport
 
+-- | A nested request may shorten its provider's deadline, never renew it.
+-- All other authentication providers and the role-indexed client are retained.
+authenticatedClientTransportWithin
+  :: AuthorityTime -> AuthenticatedClientTransport r -> AuthenticatedClientTransport r
+authenticatedClientTransportWithin deadline (AuthenticatedClientTransport bounds providers client) =
+  AuthenticatedClientTransport
+    bounds
+    ( providers
+        { provideAuthenticatedClientDeadline =
+            fmap (fmap (min deadline)) (provideAuthenticatedClientDeadline providers)
+        }
+    )
+    client
+
 callAuthenticatedClientTransport
   :: AuthenticatedClientTransport r
   -> ControlPlaneRouteFor r
@@ -340,6 +443,49 @@ callAuthenticatedClientTransport
 callAuthenticatedClientTransport
   (AuthenticatedClientTransport bounds providers client) =
     callAuthenticatedControlPlane bounds providers client
+
+-- | Resolve once so a caller can physically bound signing, refresh and HTTP
+-- by the same deadline that the resulting transport will sign.
+-- | A verified peer refresh changes only the epoch. Identity, scope,
+-- nonce, deadline and role-indexed endpoint providers remain fixed.
+authenticatedClientTransportAtEpoch
+  :: AuthorityEpoch -> AuthenticatedClientTransport r -> AuthenticatedClientTransport r
+authenticatedClientTransportAtEpoch epoch (AuthenticatedClientTransport bounds providers client) =
+  AuthenticatedClientTransport
+    bounds
+    (providers {provideAuthenticatedClientEpoch = pure (Right epoch)})
+    client
+
+resolveAuthenticatedClientTransportDeadline
+  :: AuthorityTime
+  -> AuthenticatedClientTransport r
+  -> IO (Either AuthenticatedClientError (AuthorityTime, AuthenticatedClientTransport r))
+resolveAuthenticatedClientTransportDeadline parent (AuthenticatedClientTransport bounds providers client) = do
+  observed <- provideAuthenticatedClientDeadline providers
+  pure $ case observed of
+    Left detail -> Left (AuthenticatedClientDeadlineUnavailable detail)
+    Right deadline ->
+      let effective = min parent deadline
+       in Right
+            ( effective
+            , AuthenticatedClientTransport
+                bounds
+                (providers {provideAuthenticatedClientDeadline = pure (Right effective)})
+                client
+            )
+
+-- | The historical-epoch signer cannot escape through an ordinary transport:
+-- its only operation is this fixed authenticated metadata route.
+callAuthenticatedPeerObservation
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> ByteString
+  -> IO (Either AuthenticatedClientError ControlPlaneResponse)
+callAuthenticatedPeerObservation (AuthenticatedClientTransport bounds providers client) =
+  callAuthenticatedControlPlane
+    bounds
+    (providers {provideAuthenticatedClientEpoch = pure (Right authorityEpochGenesis)})
+    client
+    LifecycleAuthorityPeerObserveRoute
 
 -- | Obtain every security-sensitive value from an injected typed provider,
 -- sign the exact inner bytes, frame the independent nonce/deadline projection,
@@ -351,49 +497,68 @@ callAuthenticatedControlPlane
   -> ControlPlaneRouteFor r
   -> ByteString
   -> IO (Either AuthenticatedClientError ControlPlaneResponse)
-callAuthenticatedControlPlane bounds providers client indexedRoute body = do
-  signerResult <- provideAuthenticatedClientSigner providers
-  case signerResult of
-    Left detail -> pure (Left (AuthenticatedClientSignerUnavailable detail))
-    Right signer -> do
-      scopeResult <- provideAuthenticatedClientScope providers
-      case scopeResult of
-        Left detail -> pure (Left (AuthenticatedClientScopeUnavailable detail))
-        Right scope -> do
-          epochResult <- provideAuthenticatedClientEpoch providers
-          case epochResult of
-            Left detail -> pure (Left (AuthenticatedClientEpochUnavailable detail))
-            Right epoch -> do
-              deadlineResult <- provideAuthenticatedClientDeadline providers
-              case deadlineResult of
-                Left detail -> pure (Left (AuthenticatedClientDeadlineUnavailable detail))
-                Right deadline -> do
-                  nonceResult <- provideAuthenticatedClientNonce providers
-                  case nonceResult of
-                    Left detail -> pure (Left (AuthenticatedClientNonceUnavailable detail))
-                    Right nonce -> send signer scope epoch deadline nonce
+callAuthenticatedControlPlane bounds providers client indexedRoute body
+  | ByteString.length body > bodyMaximum =
+      pure $
+        Left $
+          AuthenticatedClientFrameFailed
+            (AuthenticatedRequestBodyTooLarge (ByteString.length body) bodyMaximum)
+  | otherwise = do
+      signerResult <- provideAuthenticatedClientSigner providers
+      case signerResult of
+        Left detail -> pure (Left (AuthenticatedClientSignerUnavailable detail))
+        Right signer -> do
+          scopeResult <- provideAuthenticatedClientScope providers
+          case scopeResult of
+            Left detail -> pure (Left (AuthenticatedClientScopeUnavailable detail))
+            Right scope -> do
+              epochResult <- provideAuthenticatedClientEpoch providers
+              case epochResult of
+                Left detail -> pure (Left (AuthenticatedClientEpochUnavailable detail))
+                Right epoch -> do
+                  deadlineResult <- provideAuthenticatedClientDeadline providers
+                  case deadlineResult of
+                    Left detail -> pure (Left (AuthenticatedClientDeadlineUnavailable detail))
+                    Right deadline -> do
+                      nonceResult <- provideAuthenticatedClientNonce providers
+                      case nonceResult of
+                        Left detail -> pure (Left (AuthenticatedClientNonceUnavailable detail))
+                        Right nonce -> send signer scope epoch deadline nonce
  where
+  bodyMaximum = min (maximumAuthenticatedFrameBytes bounds) (maximumSignedEnvelopeBytes bounds)
   send signer scope epoch deadline nonce = do
     let route = controlPlaneRouteForValue indexedRoute
         callee = controlPlaneRouteRole route
-    signedResult <-
-      signControlPlaneRequestWith
-        signer
-        route
-        callee
-        scope
-        epoch
-        deadline
-        nonce
-        body
-    case signedResult of
-      Left (Left err) -> pure (Left (AuthenticatedClientBindingFailed err))
-      Left (Right err) -> pure (Left (AuthenticatedClientSigningFailed err))
-      Right signed -> case encodeAuthenticatedFrame bounds deadline nonce signed of
-        Left err -> pure (Left (AuthenticatedClientFrameFailed err))
-        Right framed -> do
-          result <- callControlPlane client indexedRoute (LazyByteString.toStrict framed)
-          pure (either (Left . AuthenticatedClientTransportFailed) Right result)
+    case authenticatedRequestFootprint
+      bounds
+      signer
+      route
+      callee
+      scope
+      epoch
+      deadline
+      nonce
+      (fromIntegral (ByteString.length body)) of
+      Left cause -> pure (Left cause)
+      Right _ -> do
+        signedResult <-
+          signControlPlaneRequestWith
+            signer
+            route
+            callee
+            scope
+            epoch
+            deadline
+            nonce
+            body
+        case signedResult of
+          Left (Left err) -> pure (Left (AuthenticatedClientBindingFailed err))
+          Left (Right err) -> pure (Left (AuthenticatedClientSigningFailed err))
+          Right signed -> case encodeAuthenticatedFrame bounds deadline nonce signed of
+            Left err -> pure (Left (AuthenticatedClientFrameFailed err))
+            Right framed -> do
+              result <- callControlPlane client indexedRoute (LazyByteString.toStrict framed)
+              pure (either (Left . AuthenticatedClientTransportFailed) Right result)
 
 data RouteTrustRegistry = RouteTrustRegistry
   { routeTrustRole :: !RuntimeRole
@@ -409,6 +574,9 @@ routeTrustRegistryKeysFor
   :: ControlPlaneRoute -> RouteTrustRegistry -> [TrustedRequestKey]
 routeTrustRegistryKeysFor route registry =
   Map.findWithDefault [] route (routeTrustKeys registry)
+
+routeTrustRegistryMaximumKeys :: RouteTrustRegistry -> Natural
+routeTrustRegistryMaximumKeys = routeTrustMaximumKeysPerRoute
 
 data RouteTrustRegistryError
   = RouteTrustMaximumMustBePositive
@@ -601,16 +769,7 @@ verifyWithKey
   -> TrustedRequestKey
   -> Either RequestAuthenticationError VerifiedControlPlaneRequest
 verifyWithKey bounds decoded route localRole scope epoch now maximumLifetime trusted =
-  case mkRequestVerificationContext
-    trusted
-    route
-    localRole
-    scope
-    epoch
-    (decodedAuthenticatedDeadline decoded)
-    (decodedAuthenticatedNonce decoded)
-    now
-    maximumLifetime of
+  case contextResult of
     Left _ ->
       -- The server checks route/local-role ownership before reaching this helper,
       -- so this constructor is unreachable without a broken route registry.
@@ -620,6 +779,30 @@ verifyWithKey bounds decoded route localRole scope epoch now maximumLifetime tru
         (maximumSignedEnvelopeBytes bounds)
         context
         (decodedAuthenticatedSignedEnvelope decoded)
+ where
+  contextResult
+    | route == LifecycleAuthorityPeerObserve =
+        Right
+          ( mkPeerObservationVerificationContext
+              trusted
+              scope
+              epoch
+              (decodedAuthenticatedDeadline decoded)
+              (decodedAuthenticatedNonce decoded)
+              now
+              maximumLifetime
+          )
+    | otherwise =
+        mkRequestVerificationContext
+          trusted
+          route
+          localRole
+          scope
+          epoch
+          (decodedAuthenticatedDeadline decoded)
+          (decodedAuthenticatedNonce decoded)
+          now
+          maximumLifetime
 
 data AuthenticatedServeResult failure
   = AuthenticatedServeRefused !AuthenticatedServerError

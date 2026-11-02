@@ -1,0 +1,166 @@
+{
+  "schema_version": 1,
+  "name": "OWNED-ALARM-RETIREMENT-2026-10-26",
+  "status": "local repair validated; current full gates and production qualification pending",
+  "scope": "Offline component validation before evidence publication. Current canonical/daemon gates follow publication. No running Kubernetes/Authority rollout or deployment qualification.",
+  "private_evidence": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-progress-1.json",
+  "frozen_counters": [
+    ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-selected-cause-1.json",
+    ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-frontend-counter-1.json"
+  ],
+  "source_identity_before_evidence_publication": "Right (SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest\", sourcePolicyVersion = 1, sourcePolicyDigest = \"4e35f2ead11a0e645129c1d38787562aaf8a8daf622642470eb5d69cbde4d7ae\"}, sourceManifestDigest = \"086758febf642b6b573eda2f9f3087b0409fc6f243060e17ee7fd111cb9e0c22\", sourceManifestEntryCount = 1534},SourceIdentity {sourceGitHead = GitHead \"b5d5ee5470bcb0c19c348221f1a6dbc47195d6b6\", sourceWorktreeState = WorktreeDirty, sourceManifestPolicyIdentity = SourceManifestPolicyIdentity {sourcePolicyIdentifier = \"prodbox-source-manifest-executable\", sourcePolicyVersion = 1, sourcePolicyDigest = \"2e6d869e691c03f211f1c4afdd8700d73d561dad3ba28223dfbdab760c3ff80b\"}, sourceManifestDigest = \"b66846ccadacfbad4408d0a84a1e6b69a6f8601015d184c17fb331f69d3b9a1f\", sourceManifestEntryCount = 1471})",
+  "source_identity_equal": true,
+  "inputs": [
+    {
+      "path": "src/Prodbox/Subprocess.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-inputs-1/src/Prodbox/Subprocess.hs",
+      "sha256": "333db6159e4081399db124ec868d048964ef2a5fcf51742262d343859b9aa1c2"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/KernelScope.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-inputs-1/src/Prodbox/Subprocess/KernelScope.hs",
+      "sha256": "b763fa86f411b4c016cab4a3f04261e76caf2c8d08a6ffea77264a3c27a00941"
+    },
+    {
+      "path": "src/Prodbox/Subprocess/ScopeFamily.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-inputs-1/src/Prodbox/Subprocess/ScopeFamily.hs",
+      "sha256": "177ad32ad8639c727c1a8e7dc2ae8be5d77f6ad5146c0353edb38fef176761ab"
+    },
+    {
+      "path": "test/daemon-lifecycle/SubprocessOwned.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-inputs-1/test/daemon-lifecycle/SubprocessOwned.hs",
+      "sha256": "cf1bd35c286a9892834555e4d5c56b17db14328442e45e84ad74530517d99783"
+    },
+    {
+      "path": "test/qualification/OwnedSubprocessCgroupRetirement.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-inputs-1/test/qualification/OwnedSubprocessCgroupRetirement.hs",
+      "sha256": "ab75ebf1205b5dfbd1330cb31143e99f8e0d96ce8b1dda9482a0891efd4060fe"
+    },
+    {
+      "path": "test/qualification/KernelScopeObservation.hs",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-inputs-1/test/qualification/KernelScopeObservation.hs",
+      "sha256": "c6ca5579a0ced033e7cad6f62ad34153c60d11bed68c16e075328d3b3b85b0bd"
+    },
+    {
+      "path": "documents/engineering/haskell_code_guide.md",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-inputs-1/documents/engineering/haskell_code_guide.md",
+      "sha256": "72616bbacfa5c782d9a4297ad5f67368b4c70232d2ac62490ceb6a74ac4de26e"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-counter-1",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-inputs-1/.build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-counter-1",
+      "sha256": "118ff625543c2a1313e00578bde75d8605c85364612d23cbc5c4dddfbc982be9"
+    },
+    {
+      "path": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-private-after-1",
+      "snapshot": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-inputs-1/.build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-private-after-1",
+      "sha256": "09e534c67f72a595b314ad68975bc348634d489b384ab9217d52697531972c8d"
+    }
+  ],
+  "causal_profile": {
+    "per_command_total_us": 500000,
+    "grace_us": 50000,
+    "stop_us": 100000,
+    "confirmation_us": 50000,
+    "stdout_bytes": 128,
+    "stderr_bytes": 128,
+    "child_memory_bytes": 67108864,
+    "child_tasks": 16,
+    "helper_memory_bytes": 16777216,
+    "helper_tasks": 8,
+    "child_cpu_micros": 1000000,
+    "helper_cpu_micros": 1000000,
+    "fixed_stress_maximum_calls": 2048
+  },
+  "result": {
+    "predecessor_first_failure_call": 345,
+    "predecessor_error": "OwnedSubprocessAlarmScopeUnobservable",
+    "predecessor_command_wall_us": 375367,
+    "replacement_successful_calls": 2048,
+    "replacement_stress_wall_seconds": 76.59874135628343,
+    "direct_early_retirement_calls": 64,
+    "refusal_and_descriptor_controls": 5
+  },
+  "repair": "Stop confirmation and alarm retirement share a retry of transient observation/I/O refusals on the same held kernel scope, bounded by the original lease and caller end. Positive kernel absence predicates are unchanged. Populated groups return immediately; closed/expired requests cannot renew a bound.",
+  "preserved_negative_oracles": [
+    "live group: ScopeFamilyGroupNotTerminal and original timer remains armed",
+    "expired retirement: ScopeFamilyManagerRefused (BusDeadlineReached BusRequest) and original timer remains armed",
+    "unsubmitted intent: ScopeFamilyScopeMismatch with no auxiliary units",
+    "expired observation: KernelScopeDeadlineReached without waiting",
+    "closed handle: refuses observation",
+    "fully retired group: independent deleted FD plus descriptor-relative absence and production Right True"
+  ],
+  "retained_intermediate_failure": "alarm-retirement-private-after-build-1: Werror name shadowing in diagnostic fixture, renamed before any replacement stress run.",
+  "results": {
+    "alarm-retirement-repair-format-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.5600721654482186,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-format-1.result.json"
+    },
+    "alarm-retirement-repair-format-2": {
+      "exit_code": 0,
+      "wall_seconds": 0.2030625781044364,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-format-2.result.json"
+    },
+    "alarm-retirement-repair-hlint-1": {
+      "exit_code": 0,
+      "wall_seconds": 7.088775554671884,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-hlint-1.result.json"
+    },
+    "alarm-retirement-repair-all-build-1": {
+      "exit_code": 0,
+      "wall_seconds": 212.50200973730534,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-all-build-1.result.json"
+    },
+    "alarm-retirement-repair-counter-build-1": {
+      "exit_code": 0,
+      "wall_seconds": 5.799210007768124,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-counter-build-1.result.json"
+    },
+    "alarm-retirement-private-after-build-1": {
+      "exit_code": 1,
+      "wall_seconds": 2.1496356590650976,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-private-after-build-1.result.json"
+    },
+    "alarm-retirement-private-after-build-2": {
+      "exit_code": 0,
+      "wall_seconds": 2.9212681031785905,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-private-after-build-2.result.json"
+    },
+    "alarm-retirement-repair-stress-1": {
+      "exit_code": 0,
+      "wall_seconds": 76.59874135628343,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-stress-1.result.json"
+    },
+    "alarm-retirement-repair-retire-repeat-1": {
+      "exit_code": 0,
+      "wall_seconds": 2.7348742936737835,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-retire-repeat-1.result.json"
+    },
+    "alarm-retirement-repair-reject-live-retire-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.06738647259771824,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-reject-live-retire-1.result.json"
+    },
+    "alarm-retirement-repair-expired-retire-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.058942191768437624,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-expired-retire-1.result.json"
+    },
+    "alarm-retirement-repair-unsubmitted-retire-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.06281877588480711,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-unsubmitted-retire-1.result.json"
+    },
+    "alarm-retirement-repair-retired-group-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.048696719110012054,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-retired-group-1.result.json"
+    },
+    "alarm-retirement-repair-closed-kill-1": {
+      "exit_code": 0,
+      "wall_seconds": 0.042432818096131086,
+      "metadata": ".build/sprint-6.5/rpc-coordinator-20261025/alarm-retirement-repair-closed-kill-1.result.json"
+    }
+  }
+}

@@ -11,62 +11,26 @@ module SubprocessKillable
   )
 where
 
-import Control.Concurrent (threadDelay)
-import Control.Exception (IOException, finally, try)
+import Control.Exception (finally)
+import Control.Monad (forM_)
 import Data.List (isInfixOf)
 import Data.Maybe (isNothing)
 import Data.Text qualified as Text
-import GHC.Clock (getMonotonicTimeNSec)
 import Prodbox.Subprocess
 import Prodbox.Subprocess.OwnedProcessTree
+import SubprocessFixtures
 import System.Directory (doesFileExist)
 import System.Exit (ExitCode (..))
-import System.IO.Error (isDoesNotExistError)
 import System.IO.Temp (withSystemTempDirectory)
-import System.Posix.Signals (nullSignal, sigKILL, signalProcess)
-import System.Posix.Types (CPid (..))
 import System.Process qualified as Process
 import System.Timeout (timeout)
 import TestSupport
-
-script :: String -> Subprocess
-script body =
-  Subprocess
-    { subprocessPath = "/bin/sh"
-    , subprocessArguments = ["-c", body]
-    , subprocessEnvironment = Nothing
-    , subprocessWorkingDirectory = Nothing
-    }
-
-elapsedMillis :: IO a -> IO (a, Int)
-elapsedMillis action = do
-  start <- getMonotonicTimeNSec
-  result <- action
-  end <- getMonotonicTimeNSec
-  pure (result, fromIntegral ((end - start) `div` 1000000))
-
--- | The pid a script recorded for itself or for a child it started.
-recordedPid :: FilePath -> IO Int
-recordedPid path = read <$> readFile path
-
--- | Whether the process is gone, allowing the init process a moment to reap an
--- orphan.
-eventuallyGone :: Int -> IO Bool
-eventuallyGone pid = go (40 :: Int)
- where
-  go 0 = not <$> alive
-  go remaining = do
-    stillAlive <- alive
-    if stillAlive then threadDelay 50000 >> go (remaining - 1) else pure True
-  alive = do
-    result <-
-      try (signalProcess nullSignal (CPid (fromIntegral pid))) :: IO (Either IOException ())
-    pure (either (const False) (const True) result)
 
 subprocessKillableSuite :: SuiteBuilder ()
 subprocessKillableSuite =
   describe "killable subprocess runner" $ do
     ownedProcessTreeCases
+    boundedOwnedCases
     it "reports the exit and both streams of a child that completes" $ do
       result <-
         captureSubprocessKillable
@@ -207,6 +171,67 @@ subprocessKillableSuite =
     Left _ -> True
     Right _ -> False
 
+boundedOwnedCases :: SuiteBuilder ()
+boundedOwnedCases = describe "Sprint 6.5 total-budget bounded owned child" $ do
+  forM_
+    [ ("total", (0, 100000, 100000, 100000, 4, 4))
+    , ("grace", (1000000, 0, 100000, 100000, 4, 4))
+    , ("confirmation", (1000000, 100000, 0, 100000, 4, 4))
+    , ("settlement", (1000000, 100000, 100000, 0, 4, 4))
+    , ("stdout", (1000000, 100000, 100000, 100000, 0, 4))
+    , ("stderr", (1000000, 100000, 100000, 100000, 4, 0))
+    , ("no work reserve", (300000, 100000, 100000, 100000, 4, 4))
+    , ("overflowing cleanup", (maxBound, maxBound, maxBound, maxBound, 4, 4))
+    ]
+    $ \(label, (total, grace, confirmation, settlement, out, err)) ->
+      it ("refuses invalid " <> label <> " before launch") $ do
+        resources <- ownedFixtureResources
+        case mkOwnedSubprocessLimits resources total grace confirmation settlement out err of
+          Left cause -> cause `shouldBe` OwnedSubprocessInvalidLimits
+          Right _ -> expectationFailure "invalid owned-child budget was admitted"
+
+  forM_ [0 .. 7 :: Int] $ \index ->
+    forM_ [0, maxBound] $ \invalid ->
+      it ("refuses non-finite resource field " <> show index <> " = " <> show invalid) $ do
+        let base = [67108864, 16, 1000000, 16777216, 8, 1000000, 30000, 30000]
+            fields = take index base <> [invalid] <> drop (index + 1) base
+        case fields of
+          [memory, tasks, cpu, helperMemory, helperTasks, helperCpu, helperStart, helperStop] ->
+            case mkOwnedSubprocessResourceBounds
+              memory
+              tasks
+              cpu
+              helperMemory
+              helperTasks
+              helperCpu
+              helperStart
+              helperStop of
+              Left cause -> cause `shouldBe` OwnedSubprocessInvalidLimits
+              Right _ -> expectationFailure "invalid resource field admitted"
+          _ -> expectationFailure "invalid fixture field count"
+
+  forM_ [("child", 10001, 1000000), ("helper", 1000000, 10001)] $ \(label, cpu, helperCpu) ->
+    it ("refuses an inexact " <> label <> " CPU projection") $
+      case mkOwnedSubprocessResourceBounds 67108864 16 cpu 16777216 8 helperCpu 30000 30000 of
+        Left cause -> cause `shouldBe` OwnedSubprocessInvalidLimits
+        Right _ -> expectationFailure "inexact CPU quota admitted"
+
+  it "reserves helper startup and stop strictly inside confirmation" $ do
+    resources <- ownedFixtureResources
+    case mkOwnedSubprocessLimits resources 1000000 100000 60000 100000 4 4 of
+      Left cause -> cause `shouldBe` OwnedSubprocessInvalidLimits
+      Right _ -> expectationFailure "helper consumes the complete confirmation reserve"
+    case mkOwnedSubprocessLimits resources 1000000 100000 60001 100000 4 4 of
+      Left cause -> expectationFailure (show cause)
+      Right _ -> pure ()
+
+  it "refuses monotonic deadline overflow before child creation" $
+    withSystemTempDirectory "bounded-owned-overflow" $ \directory -> do
+      let pidPath = directory <> "/pid"
+      result <- runOwnedFixture maxBound 4 4 (script ("echo $$ > " <> pidPath))
+      result `shouldBe` Left OwnedSubprocessInvalidLimits
+      doesFileExist pidPath `shouldReturn` False
+
 -- A process in a separate session also has a separate process group, which is
 -- stronger than the Pulumi plugin shape that originally escaped the group kill.
 ownedProcessTreeCases :: SuiteBuilder ()
@@ -261,36 +286,12 @@ ownedProcessTreeCases = describe "Sprint 4.111 owned descendant stop" $ do
           recordedPid pluginFile >>= processStopped >>= (`shouldBe` True)
         )
         `finally` cleanupPlugin pluginFile
- where
-  -- Positional shell arguments keep the fixture path out of the program text.
-  pluginBody path =
-    "setsid /bin/sh -c 'echo $$ > \"$1\"; cat /proc/$$/stat > \"$1.stat\"; trap \"\" TERM; exec sleep 30' plugin "
-      ++ quote path
-      ++ " &"
-  quote value = "'" ++ concatMap (\c -> if c == '\'' then "'\"'\"'" else [c]) value ++ "'"
-  cleanupPlugin path = do
-    exists <- doesFileExist (path <> ".stat")
-    if exists
-      then do
-        original <- parseProcessStat . Text.pack <$> readFile (path <> ".stat")
-        case original of
-          Nothing -> pure ()
-          Just identity -> do
-            current <-
-              try (readFile ("/proc/" ++ show (statPid identity) ++ "/stat")) :: IO (Either IOException String)
-            case current of
-              Right value
-                | Just row <- parseProcessStat (Text.pack value)
-                , statStart row == statStart identity -> do
-                    _ <- try (signalProcess sigKILL (statPid identity)) :: IO (Either IOException ())
-                    pure ()
-              _ -> pure ()
-      else pure ()
-  -- A zombie has stopped and no longer holds a plugin's memory or pipes.
-  processStopped pid = do
-    contents <- try (readFile ("/proc/" ++ show pid ++ "/stat")) :: IO (Either IOException String)
-    pure $ case contents of
-      Left err -> isDoesNotExistError err
-      Right value -> case parseProcessStat (Text.pack value) of
-        Just row -> statState row `elem` ["Z", "X"]
-        Nothing -> False
+
+-- Positional shell arguments keep the fixture path out of the program text.
+pluginBody :: FilePath -> String
+pluginBody path =
+  "setsid /bin/sh -c 'echo $$ > \"$1\"; cat /proc/$$/stat > \"$1.stat\"; trap \"\" TERM; exec sleep 30' plugin "
+    ++ quote path
+    ++ " &"
+quote :: String -> String
+quote value = "'" ++ concatMap (\c -> if c == '\'' then "'\"'\"'" else [c]) value ++ "'"

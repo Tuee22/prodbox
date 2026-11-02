@@ -138,6 +138,7 @@ data TargetMaterialClientCause
   | TargetMaterialClientRemoteRequestCodecRejected
   | TargetMaterialClientRemoteMetadataUnavailable
   | TargetMaterialClientRemoteOther
+  | TargetMaterialClientTransportHeadersTooLarge
   deriving stock (Eq, Show)
 
 allTargetMaterialClientCauses :: [TargetMaterialClientCause]
@@ -163,6 +164,7 @@ allTargetMaterialClientCauses =
     <> fmap TargetMaterialClientTransportStatus allStatusCauses
     <> [ TargetMaterialClientTransportDecodeFailed
        , TargetMaterialClientTransportResponseTooLarge
+       , TargetMaterialClientTransportHeadersTooLarge
        , TargetMaterialClientResponseCodecTooLarge
        , TargetMaterialClientResponseCodecInvalid
        ]
@@ -229,6 +231,8 @@ renderTargetMaterialClientCause cause = case cause of
     "authenticated/transport/http/decode-failed"
   TargetMaterialClientTransportResponseTooLarge ->
     "authenticated/transport/response-too-large"
+  TargetMaterialClientTransportHeadersTooLarge ->
+    "authenticated/transport/response-headers-too-large"
   TargetMaterialClientResponseCodecTooLarge -> "response-codec/too-large"
   TargetMaterialClientResponseCodecInvalid -> "response-codec/invalid"
   TargetMaterialClientResponseCodecInvalidAtStatus status ->
@@ -271,6 +275,7 @@ classifyTransportError err = case err of
   ControlPlaneResponseLimitMustBePositive -> TargetMaterialClientResponseLimitInvalid
   ControlPlaneTransportFailed httpError -> classifyTransportHttpError httpError
   ControlPlaneResponseTooLarge _ _ -> TargetMaterialClientTransportResponseTooLarge
+  ControlPlaneResponseHeadersTooLarge {} -> TargetMaterialClientTransportHeadersTooLarge
 
 classifyTransportHttpError :: HttpError -> TargetMaterialClientCause
 classifyTransportHttpError err = case err of

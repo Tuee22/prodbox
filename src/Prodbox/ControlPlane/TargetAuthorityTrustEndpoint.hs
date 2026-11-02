@@ -12,6 +12,7 @@ module Prodbox.ControlPlane.TargetAuthorityTrustEndpoint
   , targetAuthorityTrustAuthenticatedHandler
   , classifyTargetAuthorityTrustObservationFailure
   , vaultTargetAuthorityTrustRepository
+  , targetAuthorityTrustRepositoryWithEpochRows
   )
 where
 
@@ -34,6 +35,17 @@ import Prodbox.ControlPlane.Codec
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute (TargetSecretTrustInstall)
   )
+import Prodbox.ControlPlane.TargetAuthorityEpoch
+  ( TargetAuthorityEpochTransition (..)
+  , advanceOrdinaryTargetAuthority
+  , initialTargetAuthorityEpochRecord
+  , targetEpochRecordActive
+  , targetEpochRecordTransition
+  )
+import Prodbox.ControlPlane.TargetAuthorityEpochCodec
+  ( decodeTargetAuthorityEpochFields
+  , targetAuthorityEpochStateField
+  )
 import Prodbox.ControlPlane.TargetAuthorityTrust
   ( TargetAuthorityTrustInstallError (..)
   , TargetAuthorityTrustInstallResult (..)
@@ -45,6 +57,13 @@ import Prodbox.ControlPlane.TargetAuthorityTrust
   , renderTargetAuthorityTrustObservationCause
   , targetAuthorityTrustDesiredMatchesLocal
   )
+import Prodbox.ControlPlane.TargetAuthorityTrustStore
+  ( TargetTrustRowError (..)
+  , TargetTrustRowInterpreter (..)
+  , TargetTrustRowProgram (..)
+  , classifyTargetAuthorityTrustObservationFailure
+  , vaultTargetTrustRowInterpreter
+  )
 import Prodbox.ControlPlane.TargetSecretAgentExecution
   ( TargetAgentIdentity
   , acceptedTargetAuthorityMaximumEncodedBytes
@@ -52,28 +71,9 @@ import Prodbox.ControlPlane.TargetSecretAgentExecution
   , decodeAcceptedTargetAuthority
   , encodeAcceptedTargetAuthority
   )
-import Prodbox.ControlPlane.TargetSecretWorkerRuntime
-  ( targetSecretWorkerTrustPath
-  )
-import Prodbox.Http.Client (HttpError (..))
 import Prodbox.Http.ReplyStatus (ReplyStatus (..))
-import Prodbox.Vault.Client
-  ( KvV2Cas (KvV2Cas)
-  , KvV2VersionedSecret (..)
-  , VaultCasOutcome (..)
-  , classifyVaultCasOutcome
-  , renderVaultCasOutcome
-  , vaultKvCasWriteV2
-  , vaultKvReadVersionedV2
-  )
-import Prodbox.Vault.Session
-  ( VaultSession
-  , VaultSessionError (..)
-  , VaultSessionOperationError (..)
-  , sessionAddress
-  , withSessionToken
-  , withSessionTokenDetailed
-  )
+import Prodbox.Vault.Client (renderVaultCasOutcome)
+import Prodbox.Vault.Session (VaultSession)
 
 newtype TargetAuthorityTrustRequest = TargetAuthorityTrustRequest
   { targetAuthorityTrustAcceptedBytes :: ByteString
@@ -87,6 +87,7 @@ data TargetAuthorityTrustResponse
   | TargetAuthorityTrustRecoveredResponse !ByteString
   | TargetAuthorityTrustRefusedResponse !Text
   | TargetAuthorityTrustUnavailableResponse !Text
+  | TargetAuthorityEpochResponse !ByteString
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -156,6 +157,7 @@ responseStatus response = case response of
   TargetAuthorityTrustRecoveredResponse _ -> ReplyOk
   TargetAuthorityTrustRefusedResponse _ -> ReplyConflict
   TargetAuthorityTrustUnavailableResponse _ -> ReplyServiceUnavailable
+  TargetAuthorityEpochResponse _ -> ReplyOk
 
 responseBody :: (Serialise value) => value -> ByteString
 responseBody = LazyByteString.toStrict . encodeControlPlaneResponse
@@ -163,33 +165,35 @@ responseBody = LazyByteString.toStrict . encodeControlPlaneResponse
 vaultTargetAuthorityTrustRepository
   :: TargetAgentIdentity -> VaultSession -> TargetAuthorityTrustRepository IO
 vaultTargetAuthorityTrustRepository localAgentIdentity session =
+  targetAuthorityTrustRepositoryWithEpochRows
+    localAgentIdentity
+    (vaultTargetTrustRowInterpreter session)
+
+targetAuthorityTrustRepositoryWithEpochRows
+  :: (Monad m)
+  => TargetAgentIdentity -> TargetTrustRowInterpreter m -> TargetAuthorityTrustRepository m
+targetAuthorityTrustRepositoryWithEpochRows localAgentIdentity interpreter =
   TargetAuthorityTrustRepository
     { observeTargetAuthorityTrust = observe
     , compareAndSwapTargetAuthorityTrust = compareAndSwap
     }
  where
   observe target = do
-    result <-
-      withSessionTokenDetailed session $ \token ->
-        vaultKvReadVersionedV2
-          (sessionAddress session)
-          token
-          "secret"
-          (targetSecretWorkerTrustPath target)
-    pure $ case result of
-      Left (VaultSessionRequestFailed (HttpStatus 404 _)) -> TargetAuthorityTrustMissing
-      Left err ->
-        TargetAuthorityTrustUnobservable
-          (classifyTargetAuthorityTrustObservationFailure err)
-      Right versioned ->
-        case decodeFields (kvV2VersionedSecretData versioned) of
-          Left cause -> TargetAuthorityTrustUnobservable cause
-          Right accepted ->
-            classifyTargetAuthorityTrustRecord
-              localAgentIdentity
-              target
-              (kvV2VersionedSecretVersion versioned)
-              accepted
+    observed <- readRow target
+    pure $ case observed of
+      Left cause -> TargetAuthorityTrustUnobservable cause
+      Right (0, Nothing) -> TargetAuthorityTrustMissing
+      Right (version, Just record) -> case targetEpochRecordTransition record of
+        TargetEpochPrepared _ -> frozen
+        TargetEpochRetired _ -> frozen
+        TargetEpochNoTransition -> activeObservation version record
+        TargetEpochPromoted _ -> activeObservation version record
+      Right _ -> TargetAuthorityTrustUnobservable TargetAuthorityTrustObservationRecordInvalid
+   where
+    frozen = TargetAuthorityTrustUnobservable TargetAuthorityTrustObservationEpochTransitionFrozen
+    activeObservation version record = case targetEpochRecordActive record of
+      Nothing -> TargetAuthorityTrustUnobservable TargetAuthorityTrustObservationFieldAbsent
+      Just accepted -> classifyTargetAuthorityTrustRecord localAgentIdentity target version accepted
 
   compareAndSwap target expected accepted
     | acceptedTargetId accepted /= target =
@@ -202,20 +206,62 @@ vaultTargetAuthorityTrustRepository localAgentIdentity session =
         ) =
         pure (Left "accepted Authority Agent identity mismatch")
     | otherwise = do
-        result <-
-          withSessionToken session $ \token ->
-            vaultKvCasWriteV2
-              (sessionAddress session)
-              token
-              "secret"
-              (targetSecretWorkerTrustPath target)
-              (KvV2Cas expected)
-              (Map.singleton "accepted_authority" (encodeTrustText accepted))
-        -- Sprint 4.74: an accepted-Authority trust rotation that lost a race
-        -- must not read the same as one Vault never answered.
-        pure $ case classifyVaultCasOutcome result of
-          VaultCasApplied _ -> Right ()
-          failed -> Left (renderVaultCasOutcome failed)
+        observed <- readRow target
+        case observed of
+          Left _ -> pure (Left "accepted Authority row is unobservable")
+          Right (version, existing)
+            | version /= expected -> pure (Left "accepted Authority CAS version mismatch")
+            | otherwise -> case prepareRecord target accepted existing of
+                Left _ -> pure (Left "accepted Authority epoch transition refuses installation")
+                Right record -> do
+                  result <- runTargetTrustRowProgram interpreter (CompareAndSwapTargetTrustRow target expected record)
+                  pure (either (Left . writeFailure) Right result)
+
+  prepareRecord target accepted existing = do
+    record <- case existing of
+      Nothing -> either (const (Left ())) Right (initialTargetAuthorityEpochRecord target Nothing)
+      Just retained -> Right retained
+    either (const (Left ())) Right (advanceOrdinaryTargetAuthority accepted record)
+
+  readRow target = do
+    result <- runTargetTrustRowProgram interpreter (ReadTargetTrustRow target)
+    pure $ case result of
+      Left err -> Left (readFailure err)
+      Right Nothing -> Right (0, Nothing)
+      Right (Just (version, fields))
+        | version == 0 -> Left TargetAuthorityTrustObservationRecordInvalid
+        | otherwise -> do
+            record <- decodeRow target fields
+            pure (version, Just record)
+
+  readFailure err = case err of
+    TargetTrustRowObservationFailed cause -> cause
+    TargetTrustRowWriteFailed _ -> TargetAuthorityTrustObservationOther
+    TargetTrustRowInvalidTarget -> TargetAuthorityTrustObservationTargetMismatch
+    TargetTrustRowInvalidRecord _ -> TargetAuthorityTrustObservationRecordInvalid
+
+  writeFailure err = case err of
+    TargetTrustRowObservationFailed cause -> renderTargetAuthorityTrustObservationCause cause
+    TargetTrustRowWriteFailed outcome -> renderVaultCasOutcome outcome
+    TargetTrustRowInvalidTarget -> "target-mismatch"
+    TargetTrustRowInvalidRecord _ -> "record-invalid"
+
+  decodeRow target fields
+    | Map.member targetAuthorityEpochStateField fields =
+        either
+          (const (Left TargetAuthorityTrustObservationRecordInvalid))
+          Right
+          (decodeTargetAuthorityEpochFields target fields)
+    | otherwise = do
+        accepted <- decodeFields fields
+        case classifyTargetAuthorityTrustRecord localAgentIdentity target 1 accepted of
+          TargetAuthorityTrustUnobservable cause -> Left cause
+          TargetAuthorityTrustObserved _ _ ->
+            either
+              (const (Left TargetAuthorityTrustObservationRecordInvalid))
+              Right
+              (initialTargetAuthorityEpochRecord target (Just accepted))
+          TargetAuthorityTrustMissing -> Left TargetAuthorityTrustObservationRecordInvalid
 
   decodeFields fields = do
     encodedText <-
@@ -230,30 +276,3 @@ vaultTargetAuthorityTrustRepository localAgentIdentity session =
     first
       (const TargetAuthorityTrustObservationRecordInvalid)
       (decodeAcceptedTargetAuthority acceptedTargetAuthorityMaximumEncodedBytes encoded)
-
-  encodeTrustText =
-    TextEncoding.decodeUtf8 . Base64.encode . encodeAcceptedTargetAuthority
-
-classifyTargetAuthorityTrustObservationFailure
-  :: VaultSessionOperationError -> TargetAuthorityTrustObservationCause
-classifyTargetAuthorityTrustObservationFailure operationError = case operationError of
-  VaultSessionAcquisitionFailed sessionError -> case sessionError of
-    VaultSessionSealed _ -> TargetAuthorityTrustObservationSessionAcquisitionSealed
-    VaultSessionForbidden _ -> TargetAuthorityTrustObservationSessionAcquisitionForbidden
-    VaultSessionUnavailable _ -> TargetAuthorityTrustObservationSessionAcquisitionUnavailable
-  VaultSessionReloginFailed sessionError -> case sessionError of
-    VaultSessionSealed _ -> TargetAuthorityTrustObservationSessionReloginSealed
-    VaultSessionForbidden _ -> TargetAuthorityTrustObservationSessionReloginForbidden
-    VaultSessionUnavailable _ -> TargetAuthorityTrustObservationSessionReloginUnavailable
-  VaultSessionRequestFailed httpError -> case httpError of
-    HttpStatus 401 _ -> TargetAuthorityTrustObservationRequestUnauthorized
-    HttpStatus 403 _ -> TargetAuthorityTrustObservationRequestForbidden
-    HttpStatus status _
-      | status >= 400 && status < 500 ->
-          TargetAuthorityTrustObservationRequestClientFailure
-      | status >= 500 && status < 600 ->
-          TargetAuthorityTrustObservationRequestServerFailure
-      | otherwise -> TargetAuthorityTrustObservationRequestUnexpectedStatus
-    HttpConnectionFailure _ -> TargetAuthorityTrustObservationRequestConnectionFailure
-    HttpTimeout _ -> TargetAuthorityTrustObservationRequestTimeout
-    HttpDecode _ -> TargetAuthorityTrustObservationRequestDecodeFailure

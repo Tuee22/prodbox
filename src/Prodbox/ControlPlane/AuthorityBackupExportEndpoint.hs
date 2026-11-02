@@ -83,7 +83,7 @@ authorityBackupExportMaximumResponseBytes = 1024 * 1024
 serveAuthorityBackupExportRequest
   :: (Monad m)
   => Int
-  -> (AuthorityAdmissionAggregate -> Either Text ByteString)
+  -> (AuthorityAdmissionAggregate -> m (Either Text ByteString))
   -> AuthorityAdmissionRepository m revision
   -> ByteString
   -> m AuthorityBackupExportResult
@@ -92,27 +92,29 @@ serveAuthorityBackupExportRequest maximumRequestBytes encodeAggregate repository
     Left err -> pure (AuthorityBackupExportBadRequest err)
     Right request -> do
       observed <- readAuthorityAdmission repository
-      pure $ case observed of
-        Left detail -> AuthorityBackupExportReadFailed detail
+      case observed of
+        Left detail -> pure (AuthorityBackupExportReadFailed detail)
         Right snapshot ->
           let aggregate = authorityAdmissionSnapshotState snapshot
            in if purposeMatches
                 (authorityBackupExportPurpose request)
                 (authorityAggregateAdmission aggregate)
-                then case encodeAggregate aggregate of
-                  Left detail -> AuthorityBackupExportEncodeFailed detail
-                  Right envelope
-                    | ByteString.null envelope
-                        || ByteString.length envelope
-                          > authorityBackupExportMaximumResponseBytes ->
-                        AuthorityBackupExportEncodeFailed "aggregate envelope size is invalid"
-                    | otherwise ->
-                        AuthorityBackupExported
-                          AuthorityBackupExportResponse
-                            { authorityBackupExportEnvelope = envelope
-                            , authorityBackupExportDigest = digestBytes envelope
-                            }
-                else AuthorityBackupExportPurposeMismatch
+                then do
+                  encoded <- encodeAggregate aggregate
+                  pure $ case encoded of
+                    Left detail -> AuthorityBackupExportEncodeFailed detail
+                    Right envelope
+                      | ByteString.null envelope
+                          || ByteString.length envelope
+                            > authorityBackupExportMaximumResponseBytes ->
+                          AuthorityBackupExportEncodeFailed "aggregate envelope size is invalid"
+                      | otherwise ->
+                          AuthorityBackupExported
+                            AuthorityBackupExportResponse
+                              { authorityBackupExportEnvelope = envelope
+                              , authorityBackupExportDigest = digestBytes envelope
+                              }
+                else pure AuthorityBackupExportPurposeMismatch
 
 purposeMatches :: AuthorityBackupExportPurpose -> AuthorityAdmissionState -> Bool
 purposeMatches purpose state = case (purpose, state) of

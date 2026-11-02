@@ -763,9 +763,15 @@ rootInitializationSuite =
                 `shouldBe` RootPlanAmbiguityRequiresPristineReset
                   (mkInitAmbiguity (fixturePrepared fixture))
               expectRight
-                ( applyRootInitCommand
-                    ambiguous
-                    (ResetAmbiguousRootInitialization (fixtureResetProof fixture))
+                ( do
+                    armed <-
+                      applyRootInitCommand
+                        ambiguous
+                        ( BeginAmbiguousRootReset
+                            (fixtureResetProof fixture)
+                            (preparedInitEnvelopeDigest (fixturePrepared fixture))
+                        )
+                    applyRootInitCommand armed (ResetAmbiguousRootInitialization (fixtureResetProof fixture))
                 )
                 $ \reset ->
                   rootInitStateBinding reset

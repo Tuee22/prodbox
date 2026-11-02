@@ -129,6 +129,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.FirstReconcileJournal
   , firstReconcileJournalCodec
   , firstReconcileJournalCursor
   , firstReconcileJournalPlan
+  , firstReconcileJournalPlanIsCompiled
   , firstReconcileJournalRecoveryPending
   , initialFirstReconcileJournal
   , settleFirstReconcileJournalStore
@@ -806,12 +807,7 @@ classifyGenesisJournalObservation observed = case observed of
       )
 
 retainedPlanIsCompiled :: FirstReconcileJournal -> Bool
-retainedPlanIsCompiled journal =
-  firstReconcilePlanDigest retainedPlan
-    == firstReconcilePlanDigest
-      (defaultFirstReconcileProvisioningPlan (firstReconcilePlanDeadline retainedPlan))
- where
-  retainedPlan = firstReconcileJournalPlan journal
+retainedPlanIsCompiled = firstReconcileJournalPlanIsCompiled
 
 observeJournal
   :: ModelBCasAdapter 'ClusterRetained IO FirstReconcileJournal

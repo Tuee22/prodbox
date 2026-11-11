@@ -432,6 +432,453 @@ rejects an unbounded term, missing deadline, zero capacity, or concurrency decla
 simultaneous-peak proof. A serialized maximum is valid only for a lane that is actually serialized;
 it cannot be reused as evidence for concurrent lanes.
 
+The host operation's local one-shot claim has a separate quiescent field term. On the pinned
+unprofiled 64-bit GHC ABI, the erased IORef wrapper, STRef, MutVar and Bool graph is charged at
+48 bytes. The cell installs the Bool directly with an atomic swap, so settled state contains
+neither a blocking waiter queue nor a cancelled update selector. Unit controls inspect the actual
+reachable pointer graph before/after concurrent claims, cancellation and owner failure, including
+the pinned Bool constructor's nonpointer padding. This term funds only that local cell: executing
+claimants, compiler closures, transient allocation/GC, complete controller state, native queues and
+physical/Authority admission retain their separate costs and proofs.
+
+The shared registered-caller budget owns a different cell. Validated traffic/cost counts bound
+all eight remaining values by `Word64`, so the pinned 64-bit runtime stores each as a small Natural.
+Construction forces the strict counter record before storing it. Each debit completes its closed,
+finite pure transition before cancellation can escape; no provider, nonce producer or blocking
+external operation runs in that critical section. The post-collection quiescent term is **232
+bytes**: STRef and MutVar (16 bytes each), the nine-word record (72 bytes), and eight boxed scalars
+(16 bytes each), conservatively counting sharing repeatedly. Permanent controls inspect actual
+constructor/edge layouts after construction, debits, exhaustion, contention, cancellation and
+producer failure. Executing callers, update/GC temporaries and the complete caller/native state
+retain separate terms; this field reservation grants no admission.
+
+Retained byte-view terms need an established backing origin. The canonical Target intent
+public-key constructor validates the existing cryptographic domain, then forces a payload-sized
+copy before returning success. Its signing-key factory uses the same storage boundary. Permanent
+controls inspect allocation capacity and backing identity, including a 32-byte view at a nonzero
+offset into a 1-MiB allocation, and reject an unevaluated copy in the successful result. This is
+ownership evidence for that field; the copy's transient coexistence with its input and the complete
+request/controller peak retain separate funding obligations.
+
+The fixed ordinary-profile reader uses strict finite states instead of retaining preceding
+fields in decoder binders. Its reader module and writer share only the fixed schema; canonical
+readback still checks the complete existing binary domain. The prospective step-boundary data
+term charges current and next states, step envelopes, cursor/offset graphs, helper result headers,
+an input view and an error value. Constructor header maxima derive from the closed generic
+representations. Permanent controls inspect the actual state graphs and constructor headers,
+including arbitrary-width values and nonzero-offset source views. The term excludes referenced
+profile data, which has its own bound, and does not fund helper/SDK/compiler control, stack,
+allocation/GC/native peaks or independent admission.
+
+The embedded home kubeconfig constructor likewise completes normalization and a compact payload
+copy before returning success. Its quiescent field term includes the complete owned ByteString
+allocation. Independent controls cover encoder chunk boundaries, successful-result eagerness and
+nonzero-offset input views. Input parsing, encoding, the copy and GC temporaries retain separate
+peak terms; this field projection grants no controller or Authority admission.
+
+`PinnedByteStringData` observes the full managed backing capacity of a valid owned immutable
+ByteString on the pinned ABI. Its scalar snapshot includes the view and complete allocation,
+including backing retained by an offset slice. Unsupported foreign-pointer ownership and invalid
+lengths return typed refusals before payload reads. The compact observer additionally compares
+that same backing with the logical-length compact term; it refuses excess retention rather than
+silently treating a slice as a copy. Neither observer copies or reads payload bytes, reserves
+storage, proves lifetime/immutability, or admits a controller. Repeated views may conservatively
+charge a shared allocation more than once. Permanent graph controls cover compact/offset/shared
+views, compact-copy corroboration, borrowed storage and invalid managed lengths. Copy execution,
+concurrent retention, compiler/control/GC/native costs and independent admission remain separate.
+
+A retained publisher contributes its own data in addition to descriptors, preparations, rendered
+arguments and payload storage. Its projection includes copied birth/anonymous metadata, original
+identity/window fields, stat backings and settled owner cells. A backing-capacity observation of
+an owned immutable `FileStatus` must distinguish PlainPtr storage from MallocPtr storage with an
+empty finalizer cell; the latter includes its unpacked cell and `NoFinalizers` value. Borrowed
+storage or attached finalizers cannot be silently priced as that class. This observation reads
+capacity/cell metadata, not stat payload bytes, and grants no file validity, descriptor lifetime,
+mutation or admission authority. The launch check must use its actual owner's opaque scalar,
+under the original deadline before callback entry. A settled projection requires empty queues;
+earlier publication/repreparation overlap, active/queued borrowers and closers, construction,
+pricing, execution/control, stack/GC/native resources and complete admission keep separate terms.
+
+When publication remains live across readback and revalidation, its selected external retention
+term must accompany the original preparation through settings, request and fresh-preparation
+checks. Derive the term from the actual opaque publisher observation, compact payload reservation
+and descriptor program; do not accept a serialized reserve or duplicate the original preparation
+inside that term. Include its scalar/carrier data, check the contemporaneous sum before readback,
+and retain the same context for prospective and closing preparation checks. A refusal cannot
+retry a context-free route. Independent immutable-data observations require explicit typed-root
+quiescence and must not enter arbitrary thunks. Wire/scratch, allocation/pricing, active/queued
+ownership, compiler/control/stack/GC/native costs and complete admission remain separate.
+
+A recovery rebuild requires a prospective application-state check for its selected replacement
+slot before invoking the indexed constructor. Retain original preparation, fresh matched settings
+and external publication in that comparison. Include the prospective fresh settings/request pair
+in the runtime guard before rebuilding. Check the actual returned request again before physical
+preparation, then guard its actual pair: the selected slot cannot authorize a larger result.
+Both guards preserve original preparation/publication and complete supported input backings,
+replace the fresh-root term idempotently, and retain the original work end and independently
+observed heap/nursery policy. Do not substitute the prospective operand for the actual result. Refusal-prefix tests
+must distinguish a constructor never entered from a result refused afterward. This selected state
+reservation does not bound constructor/encoder/validation intermediates or instruction/control/
+GC/native allocation, and cannot replace independent admission or authenticated completion.
+
+Before parent publication encoding, add the actual retained preparation and the budget value
+used to price it to the fixed initial-domain data floor. Independently check the runtime heap
+before demanding that operand, then compare the known retained sum plus the observed configured
+nursery under the same original work end. This precedes encoding and publisher construction;
+expiry or mismatch cannot select a weaker route. This selected data comparison does not fund its
+own budget construction/pricing, encoder intermediates, active ownership or control/GC/native
+allocation peaks, and grants no whole-program or Authority admission.
+
+At a held-size readback allocation, compose the original preparation and selected external
+retention with originating-buffer headers and the closed result envelope before reading payloads.
+The reader adds the rounded sizes from its held, revalidated stat versions; input bytes cannot
+supply an alternative reserve. An allocating read's deny-only runtime policy must also include the
+independently observed configured nursery under the original deadline. Refusal or expiry cannot
+select an unguarded read route. Independent small-file controls should check successful returned
+data and unchanged read-descriptor offsets on refusal. Passing this finite-policy comparison
+proves neither free heap nor allocator/SDK, control/stack/GC/native sufficiency or admission.
+
+Runtime guards around allocating matching/revalidation work must carry the actual buffers and
+selected retained typed roots. Preserve original preparation and external publication retention
+while adding observed fresh settings at the closing guard. Independently reject an incompatible
+heap declaration before demanding that structured operand, then observe supported full managed
+backings and check the known live-data minimum with the configured nursery under the original
+work end. Include the operand's own selected data and the original operand metadata retained by
+derived copies. A closed origin factory preserves the same original across repeated inclusion,
+without a chain or duplicate underlying typed-root/backing terms. Price that combined actual
+data graph; constructor/pricing and earlier-derived/compiler/control/GC/native peaks remain
+separate. Replace originating-buffer terms rather
+than pricing offset views by logical length. A backing refusal cannot select a weaker route.
+Operand construction/pricing must receive its own prior funding: the comparison it produces does
+not fund itself, all validation intermediates, future results, SDK/encoder/control/GC/native costs,
+or complete admission.
+
+A compiled return-table census establishes facts only over its declared field and exact
+executable bytes. Exported symbols omit local compiler tables and cannot establish the global
+maximum. A separate symbol-retaining analysis build must bind its metadata to the actual image;
+if recompilation changes allocated contents, validate that new image rather than assuming an
+older one is equivalent. Verify the pinned info-table ABI and independently cross-check the
+symbol census and maximum witnesses. Missing or malformed metadata is unobservable for the
+claim, never a zero-frame bound. For a conservative raw file-backed field, scan independently of
+symbol names, include possible incidental candidates, and verify the pinned ABI alignment and the
+complete header and bitmap mapping. Independently check coverage; metadata outside that field is
+not silently treated as absent. Such a field depends on the runtime metadata matching the file
+bytes. External, generated, relocated or changed metadata, dynamic/special/native frames, runtime
+metadata validity, reachability, simultaneous depth and invocation frequency require separate
+closure before global stack funding or admission.
+
+`BoxedNormalForm` supplies primitive quiescent storage terms on that same pinned ABI.
+Text terms include the actual backing array capacity; arbitrary-width Natural terms include their
+limb array. Copied ByteString terms require an established compact backing origin. The complete
+`SettingsNormalForm` projection covers raw and derived settings through a closed set of explicit
+field instances; an unsupported new field has no permissive fallback. Repeated references are
+conservatively charged. Test-only graph observations follow actual closure edges, count sharing
+once and reject unexpected unevaluated or executable closures. They use explicit post-evaluation
+quiescence and include large-view disagreement controls. These structural terms are necessary
+component reservations; decoder/extraction/validation/GC peaks, compiler environments, native
+memory and independent physical/Authority admission retain separate obligations.
+
+The pinned test observer treats an evaluated `BLACKHOLE` as an update indirection, retaining
+both its header and data referent. It resolves only indirection heads and never enters the
+target; active owners, executable heads and update-only cycles refuse. These observations
+distinguish quiescent data from retained compiler updates without converting either into a
+construction, GC, stack, native or admission bound.
+Collection can make formerly distinct boxes equal, so equality along a changing update path
+does not prove a cycle. Head resolution uses a fixed chain limit instead. Controlled collection
+after reading an update header covers this boundary while preserving legal constructor cycles.
+
+Local settings validation retains the public-edge and coordinate projections produced by its
+ordered checks and supplies those same values to the final settings record. The AWS subzone
+shares the already checked served-host value. This removes repeated builder work while keeping
+partial projections live through the remaining local validation. Their transient coexistence,
+the private projection wrapper, resource-plan/context validation, control, GC and native costs
+remain part of complete phase funding; returned-value normal-form accounting stays separate.
+The complete constructor finishes those ordered pure checks before converting and resolving
+the manual storage path. Refused configurations therefore do not materialize that path for
+resolution. Successful resolution preserves the raw path's existing interpretation. The
+successful projection and path work still require their own construction, coexistence and
+runtime funding; postponing the effect supplies no admission receipt.
+
+`ProcessEnvironment` owns an additional quiescent term. Its closed factories establish either
+one exact-length raw entry shared by key/value views or two separate compact overlay allocations.
+The pair term charges two compact graphs; the spare headers cover the shared entry's separator
+and alignment. List/tuple/owner/usage records and scalar storage are charged separately. This joint
+origin argument does not permit sizing arbitrary byte views by their visible lengths. Native
+capture, encoding, execution marshalling, transient coexistence and GC retain separate obligations.
+
+Closed canonical-Dhall measurement follows the trusted data schema before the general expression
+decoder. It retains only structural counts and token spans. The normal-form term separately
+charges expression nodes, sequences, record/union maps and scalar backing; it applies to fully
+evaluated closed data on the pinned ABI. The checked-data operand binds that measurement to the
+exact immutable source used by its direct expression decoder. Successful decoding evaluates that
+syntax before returning, so decoder thunks do not escape into typed extraction. The inspected
+settings operand carries the same measurement/source binding across a prospective scratch check
+and the settings decoder; scope, root, canonical producer readback and semantic validation are
+still checked by the decoder. It owns a reference, with no compact
+backing or resource-admission claim. Canonical producer readback and semantic validation remain
+independent. These terms do not fund construction, extraction, canonical production, validation,
+GC, native memory or the complete controller. Those phase peaks retain their own derivations.
+
+Checked settings readback has explicit evaluated extraction, syntax and token-program stages.
+Its raw-data projection traverses a closed set of field instances; a new unsupported leaf fails
+compilation. The prepared token program measures supported definite tokens before one output
+allocation, with the selected writer's lookahead and originating-buffer headers charged separately.
+The captured-input budget composes those data terms with the profile and source-buffer phases.
+These APIs retain the distinction between known data requirements and complete working-set funding.
+
+The selected Dhall list extractor traverses into a temporary `Seq` before converting to the
+returned Haskell list. The intermediate finger-tree spines have their own data term: on the
+pinned ABI, `128 * (list elements + value-list roots)` bytes covers their evaluated structure,
+including empty and nested lists. Payloads belong to the separately charged raw settings term.
+The budget conservatively retains complete raw data alongside these spines and joins that
+extraction stage by `max` with later path conversion and canonical readback. Source/syntax
+storage remains live across those stages. Permanent graph controls use the actual SDK sequence
+extractor and distinguish the combined sequence/list graph from the returned list alone.
+This term does not cover traversal construction, generic products/results, custom narrowing or
+failure temporaries, compiler/control/stack/GC/native costs or complete admission.
+
+AWS-profile and topology narrowing pass diagnostic Text directly to the SDK. Their public
+String renderers delegate to that same Text source and unpack only for String-based callers.
+Multi-fragment messages use Text.concat over field/value Text and scalar fragments, so the SDK
+does not first build the whole diagnostic as a linked String. Message contents and typed first
+refusals are preserved. Decimal and substrate-name conversion, literal/view construction and
+compiler/control/GC/native costs retain their own funding; direct Text rendering alone is not a
+complete failure-path or working-set bound.
+
+The AWS profile's IPv4 CIDR recognizer uses explicit octet/prefix states. Its grammar admits at
+most nineteen characters after trimming, including three-digit prefixes such as `/000` and `/032`.
+A twenty-step scan includes the final end check and bounds `Text.uncons` calls. The returned value
+contains only the numeric address and prefix. Trimming, scalar/construction/compiler costs and
+whole working-set/admission bounds remain separate obligations.
+
+AWS-profile list cardinality guards inspect at most the required number of elements plus one
+constructor. The five decoder checks require three, three, three, two and three elements, so
+their decisions inspect at most nineteen list constructors in total. A rejected list keeps its
+complete actual count in the error payload; observing that payload can still traverse the full
+list. List decoding, error construction and full resource admission remain separately funded.
+
+AWS profile narrowing checks trimmed token lengths before case conversion. The general token
+keeps its existing 64-character output limit, and volume tokens derive their input bound from
+the supported spellings. Selected Text lowercasing does not remove characters; its output check
+still catches expansion. Those guards bound converter inputs without limiting surrounding
+whitespace. The CIDR scanner above preserves the existing decimal grammar and padded prefixes
+without constructing split token lists or Strings. Accepted values, normalized results and first
+refusals remain unchanged. Source/backing storage,
+the wide DTO, bounded temporary construction and complete compiler/control/GC/native funding
+remain separate obligations.
+
+The settings inspector marks the trusted AWS-profile record in its closed schema. Measurement
+counts only present record values; `None` and type declarations contribute zero and the marker
+does not change the wire grammar or ordinary syntax counts. The extraction reservation charges
+all prospective case-converter ByteArrays for each counted profile. Validator limits and call
+counts parameterize the same bound: for `n` guarded characters, at most `n+1` arrays each fit
+`16*n+48` bytes including headers/alignment. Initial lookahead and logical growth budgets are
+distinct. Four 64-character and four maximum-catalogue-length conversions currently contribute
+285,056 bytes per profile, without relying on collection between resizes.
+
+Generic product spines have a separate term. The closed raw-field traversal includes the wide
+AWS input DTO when deriving maximum constructor arity. Each record or selected union constructor
+has at most `max(1,arity)-1` three-word product nodes; metadata/field wrappers are newtypes.
+The extraction stage conservatively holds these products, Seq spines, case arrays and complete
+raw data together. Later path conversion and producer readback remain serial alternatives.
+Generic sum spines use a separate depth bound from that same closed raw-field traversal.
+Each `(:+:)` adds one level, products take the maximum, and containers carry their element's
+maximum. Child depths included beneath an outer sum conservatively overbound each local spine.
+The selected Dhall decoder maps `L1`/`R1` onto the chosen branch; each wrapper occupies two words.
+Charge `16 * maximumDepth * selectedValueUnions` beside products, Seq spines and returned raw data.
+Additionally reserve one two-word `U1` leaf per record or selected value union, including
+non-nullary constructors conservatively. Nullary records have no sum branch but retain this leaf.
+Type-only alternatives contribute no extracted sum spine. The wide AWS input traversal remains
+part of both structural maxima, and budget metadata covers the additional strict scalar.
+Result/dictionary data,
+DTO/parser intermediates, union-schema evaluation, other construction and compiler/control/GC/native
+costs still require their complete derivations; these terms grant no admission.
+
+Type declarations carried by empty lists, `None` and union selectors have separate checked
+record-field, union-alternative, text-token and text-span counts. Value-record keys and value
+payloads do not enter those counts. The existing syntax layout bound applies to that type-only
+projection. Settings extraction separately reserves five such evaluated trees: expected syntax,
+both denoted operands and both closed-type evaluator values. On the closed grammar, evaluator
+values retain no more structure than the corresponding syntax/map/Maybe graph; record-field
+wrappers and original-key spines can disappear. Every encoded type occurrence is conservatively
+charged, including ones whose extractor may avoid a comparison.
+SDK expected-type metadata can remain reachable through CAFs. The captured-input reservation
+therefore conservatively retains all five tree terms beside both serial branches, including
+profile and final-request checkpoints; it does not assume they are collected after extraction.
+
+Expected-schema key labels have compact origins. SecretRef, ScalingPolicy and RpcBirthConfig
+constructor-prefix modifiers copy their final labels on both SDK paths, preserving schema bytes
+while releasing stripped metadata prefixes. A full expected/declared settings-schema traversal
+checks that invariant. Packing and copying those labels, dictionary/results and
+compiler/control/update/GC/native costs retain separate funding.
+Usage and budget metadata include their additional strict scalars. This selected tree-data
+reservation is not a complete extraction working set or an admission receipt.
+
+The selected generic union decoder deletes the constructor from both supplied and expected maps.
+Measurement separately sums the selected maps' entry counts and height bounds; type-only unions
+contribute no deletion work. For each deletion, original-key list copying uses at most `24*n+56`
+bytes for cons cells, Map/Original wrappers and Nil. The search and extremal descent in `glue`
+visit at most `h(n)` ancestors together. Each balance constructs at most three six-word Bin nodes;
+the extremal walk also constructs at most one four-word MinView/MaxView per ancestor. Charge
+`176*h(n)` bytes, including intermediate data without requiring collection between deletions.
+Closed-type comparison builds two ascending key/value lists at every compared map. Both lists
+use at most `96` bytes per checked type entry; `32` bytes per type visit conservatively covers
+both Nils, including empty maps. Payloads alias the separately reserved type trees. These
+selected deletion/list terms remain alongside both input branches to allow metadata CAF retention.
+They cover data constructors, not comparison/compiler/control/stack/GC/native working sets.
+
+The closed trusted-shape compiler traverses the SDK map's existing underlying map directly.
+Record and union schemas do not need an original-order pair list or a rebuilt input map before
+that traversal. The resulting shape's structural-data projection covers every constructor,
+complete Text backing arrays, exact requirement scalars and map/Maybe/container data on the pinned
+ABI. It deliberately counts shared fields conservatively. This projection describes evaluated
+shape data; it does not pre-fund declaration or shape construction, label packing/copying,
+dictionary/results, compiler/control/GC/native costs or independent admission.
+
+SecretRef decoding uses literal constructor labels and the same SDK leaf decoders. An exact
+closed structural comparison of unselected alternatives can bypass SDK map deletion and
+normalization; all other cases retain the SDK union decoder. The selected annotation is ignored,
+unknown constructors refuse before annotation comparison, and expected-schema failure precedes
+input evaluation. The selected entry may be absent from the supplied map, matching SDK deletion
+semantics. Traversal reads existing maps and follows only the trusted closed structure. The
+existing conservative deletion/evaluation reservations remain; helper/branch-table construction,
+comparison/control/GC/native costs and complete admission still require their own funding.
+
+The closed shape compiler returns evaluated shape constructors, strict map values and evaluated
+union payload shapes. Its successful result does not retain the lazy `Traversable Map` instance's
+constructor thunks. Direct graph laws inspect returned record, union and complete-settings roots
+before any sizer evaluates their children; ordered unsupported-field refusal remains unchanged.
+A separate compilation constructor-data term covers the output graph, one `Right` per compile
+step, at most four `Right` results per map entry plus four per map root, and one extra result per
+union alternative. This conservatively includes all such data without requiring collection;
+shared key backings are charged in the output graph. Declaration/key construction, bound
+calculation, compiler closures/control/stack/GC/native costs and pre-compilation admission remain
+separate obligations. This term is neither a complete preparation bound nor an admission witness.
+
+Fixed settings/profile inspection metadata derives from the canonical typed producers at build
+time. The envelope has one shared typed owner; staging applies the same path/profile marks and
+ordinary-profile requirements. Generated runtime code constructs the existing valid map tree
+directly, forces its values and union payloads, and copies Text literals through the pinned SDK
+instance. It does not rebuild declarations, compile shapes or insert map entries at runtime.
+The opaque template has a nominal producer index and a numeric constructor-data floor that can
+be queried without demanding its metadata field. The floor covers result data, literal-conversion
+data, the template/numeric prefix and successful materialization `Right`; control, update, GC,
+native and unrelated decoder/encoder metadata remain separate obligations.
+
+Fixed literal field-name mappings use nominally indexed `FieldNameTable` values. Their one
+declaration source is `Config.FieldNameTable.Stage`; generated tables retain a numeric data term
+beside deferred literal entries. The term includes table/list/pair data and the pinned Text
+literal loader's array, pointer, scalar, offset and unit wrappers. Numeric queries do not demand
+the entries. SDK original-name packing, lookup/control, update headers, native literal storage,
+GC and actual initialization/invocation/retention schedules remain separate; the term alone is
+neither a complete input reservation nor admission evidence. Shared source-dependency discovery
+serves both field-table and shape staging without a settings/shape import cycle.
+
+The captured-input floor retains both template data terms and the four canonical field-table
+terms across its serial branches. Those table bindings are `NOINLINE`, so SDK dictionaries share
+the same fixed roots rather than each constructing a table. The combined numeric floor is emitted
+at build time and keeps the predecessor's 128-byte scalar allowance conservatively. The cold profile floor
+includes them before full profile inspection. The ordinary loader also checks known retained
+input/profile/wire/coordinate data against the actual runtime before settings inspection and
+passes its declared scratch capacity to the checked metadata materializer. These deny-only
+checks do not establish complete working-set funding or physical/Authority admission.
+
+The ordinary profile's finite structural-count check also runs during compilation. Its opaque,
+nominal newtype wraps the same staged template and erases at runtime. The compiler refuses
+unrestricted value lists, including a profile missing its authored exact-list requirement;
+zero-count outer lists retain the existing rule that their element values are never visited.
+Both ordinary profile clients consume the certified template without reconstructing a discarded
+count-bound tree. Text/scalar byte limits, canonicality and semantic validation remain in their
+existing owners, and finite structural counts grant no complete-memory or admission bound.
+
+The settings decoder's duplicate-detection Set has a separate construction-data term.
+For each checked record/union map with `n` entries, the `delta = 3` invariant bounds either
+child of a tree with at least three nodes by `floor(3*(n−1)/4)` nodes. Define `h(n) = n`
+for `n ≤ 2`, and `h(n) = 1 + h(floor(3*(n−1)/4))` otherwise. Shape measurement sums
+`n * h(n)` separately for each map without retaining keys or values. Set insertion allocates
+at most three nodes per visited ancestor and one leaf or replacement, so the term charges
+`n * (1 + 3*h(n))` five-word `Bin` nodes. Actual Map and Set depth controls check the recurrence.
+The term charges all such nodes, including replaced paths, without depending on collection
+between insertions. It conservatively joins the existing settled-Set term. Key payloads
+alias syntax. Permanent graph controls retain all actual insertion prefixes under fixed
+ordering and duplicate cases, distinguishing their storage from one settled Set. Other
+constructors, comparison/control/stack costs, GC copies and the complete working set retain
+separate funding obligations.
+
+Strict Map construction has its own data term under the same pin. For each map with `n`
+entries, `fromList` consumes each entry through one
+singleton, insertion or link. Link and any terminal insertion descend at most the two input
+heights, each bounded by `h(n)`; balancing allocates at most three nodes per ancestor.
+The term charges `n * (1 + 6*h(n))` six-word `Bin` nodes and `2 * n` four-word
+`create` result tuples. A nonempty result consumes an entry except its first unordered-tail
+marker, after which the caller uses insertion; empty inputs bypass `create`.
+The budget sums these charges per checked record/union map, without assuming collection
+between operations. Final nodes overlap the syntax reservation conservatively; keys and values
+alias its payloads. Actual settled maps and retained insertion histories supply permanent graph
+controls. Other constructors, comparison/compiler/control/stack costs, GC copies and complete
+program funding remain separate.
+
+`CanonicalDhallTokenMatch` interprets the selected definite SDK tokens as byte equality against an
+existing source. It reads Text UTF8 slices and positive Integer limbs directly, without constructing
+an encoded output buffer. Invalid array views and unsupported tokens return structured refusals.
+This comparison neither produces bytes nor establishes a schema or admission witness. Token
+preparation, trusted shape checking and semantic validation retain their own boundaries; byte
+production still uses the SDK writer. Comparison control, temporary scalar wrappers, stack, GC and
+native costs remain separate funding obligations.
+
+The separate binary token interpreter additionally admits definite ByteString and sliced-byte-array
+fields. The Dhall-data interpreter continues to refuse them. This permits comparison of the actual
+ordinary request encoder without constructing a whole encoded request buffer; its per-field
+generalized-UTF8 marshalling and encoder control still require their own funding.
+
+Checked generalized-UTF8 String decoding validates the complete byte payload before calling the
+same SDK array decoder directly. It copies only that visible payload into the SDK's array, without
+constructing or reparsing a synthetic CBOR field. The payload array, returned Char spine and
+construction/control/GC/native costs retain their separate obligations.
+
+The controller settings producer uses the pinned encoders for its closed typed fields. Their
+embeddings already contain normal data, so canonical writing drops source annotations and invokes
+the CBOR writer directly, without an evaluator tree or quoted replacement syntax. Its trusted
+declared schema uses the structural shape compiler. The general shape-compilation entrypoint
+retains normalization for other callers, including type aliases. These choices remove evaluator
+and quotation phases from this producer; they do not fund typed construction, CBOR buffers,
+extraction, validation or GC.
+
+A trusted Text coordinate can additionally measure its longest ordinary POSIX path component.
+The measurement counts characters, ignores dot-only components of length one or two and retains
+only a numeric result. It neither validates the path nor changes the accepted Text grammar.
+The settings reader selects `parameters.storage.manual_pv_host_root`; other Text fields cannot
+inflate that component count. The ordinary-controller reconstruction uses its unavoidable String
+cons storage as a necessary refusal check before settings decoding, with no admission grant.
+
+Held controller input files use their pinned stat sizes for payload allocation, followed by a
+one-byte stack EOF probe. They do not allocate the serialized rejection ceiling or a trim copy.
+Short reads and extra bytes refuse, and the enclosing descriptor owner rechecks the complete
+file versions after both reads. An initial-data reader accepts a trusted caller's compiled floor
+that already includes both zero-payload source-buffer headers. Inside that same live descriptor
+owner, it revalidates versions and adds both rounded held payload sizes before observing the actual
+finite, single-capability RTS policy under the original work end. Refusal precedes either payload
+allocation. Closed-owner and changed-version errors retain precedence; the existing registration
+reader keeps its separate path. This comparison reserves no free heap or physical/Authority
+capacity. Payload sizes, stat/read machinery, decoded state and construction or GC peaks remain
+separate terms.
+
+An allocating initial-profile traversal also compares its trusted known-data floor plus the
+observed configured minimum allocation area against the actual finite, single-capability RTS
+heap cap. The pinned RTS reports both heap cap and allocation-area size in blocks; `BLOCK_SIZE`
+comes from its C API. A zero allocation-area observation refuses. The original absolute work end
+bounds the observation and its closing check. This conservative policy comparison neither changes
+the nursery configuration nor reserves available heap. It does not replace complete construction,
+copying-collection, stack or native funding, nor physical-parent or Authority admission. The
+source-allocation reader retains its separate data-only policy and descriptor precedence.
+
+Ephemeral HTTP endpoints can use the bounded client's separate zero-idle manager. Released
+connections are closed without retaining a pool entry; the ordinary shared client still pools
+connections for standing services. Both managers are process-wide. Active requests, manager and
+reaper state, TLS contexts, body/parser storage and kernel costs retain separate funding terms.
+The SDK response timeout covers headers; an owned caller supplies its original outer deadline
+around the complete call. A manager's deprecated `closeManager` is not a release receipt.
+
 The fenced Provider Worker is the concrete serialized case. Its four admitted request workers and
 independent readiness observer share one process-wide subprocess permit across both AWS CLI and
 Pulumi launch sites. The earlier 80 MiB child slot covered only the 74,052 KiB packaged AWS CLI

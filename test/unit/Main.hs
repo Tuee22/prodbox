@@ -26,6 +26,7 @@ import AwsControlPlaneIsolation (awsControlPlaneIsolationSuite)
 import AwsDestroyConverge (awsDestroyConvergeSuite)
 import AwsFieldAuditExit (awsFieldAuditExitSuite)
 import AwsLifecycleCanary (awsLifecycleCanarySuite)
+import AwsLifecycleDrillLedgerTests (awsLifecycleDrillLedgerSuite)
 import AwsLifecycleScope (awsLifecycleScopeSuite)
 import AwsNativeClients (awsNativeClientsSuite)
 import AwsNetworkPurge (awsNetworkPurgeSuite)
@@ -38,6 +39,7 @@ import AwsSesReadiness (awsSesReadinessSuite)
 import AwsSesSmtpKey (awsSesSmtpKeySuite)
 import AwsStackDiff (awsStackDiffSuite)
 import AwsStackEvidence (awsStackEvidenceSuite)
+import AwsSubstrateCidrTests (awsSubstrateCidrSuite)
 import AwsSubstrateProfile (awsSubstrateProfileSuite)
 import AwsTestCanary (awsTestCanarySuite)
 import AwsTestCanaryExecution (awsTestCanaryExecutionSuite)
@@ -62,11 +64,16 @@ import BootstrapImageSeed (bootstrapImageSeedSuite)
 import BootstrapImageSource (bootstrapImageSourceSuite)
 import BootstrapImageSourceNative (bootstrapImageSourceNativeSuite)
 import BrokerChartStatics (brokerChartStaticsSuite)
+import CanonicalDhallPathMeasurement (canonicalDhallPathMeasurementSuite)
+import CanonicalDhallStorage (canonicalDhallStorageSuite)
+import CanonicalDhallTokenMatchTests (canonicalDhallTokenMatchSuite)
 import CanonicalDhallValueShape (canonicalDhallValueShapeSuite)
 import CapabilityReadinessBarrierSuite (capabilityReadinessBarrierSuite)
 import CapacityHostExecution (capacityHostExecutionSuite)
+import CapacityNormalForm (capacityNormalFormSuite)
 import CapacityRegisteredCallerTraffic (capacityRegisteredCallerTrafficSuite)
 import CapacityRpcBirthTraffic (capacityRpcBirthTrafficSuite)
+import CapturedInputData (capturedInputDataSuite)
 import CascadeCycleArtifactTests (cascadeCycleArtifactSuite)
 import CascadeCycleIdentityTests (cascadeCycleIdentitySuite)
 import CascadeCycleLedgerTests (cascadeCycleLedgerSuite)
@@ -77,6 +84,7 @@ import CertScopeSuite (certScopeSuite)
 import CertificateScopeServing (certificateScopeServingSuite)
 import CleanRoomHandoff (cleanRoomHandoffSuite)
 import CleanupRun (cleanupRunSuite)
+import ClosedDhallUnion (closedDhallUnionSuite)
 import ClusterDeleteEntryArm (clusterDeleteEntryArmSuite)
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (concurrently_)
@@ -266,11 +274,13 @@ import DnsOwnerAuthoritySuite (dnsOwnerAuthoritySuite)
 import DnsRecord (dnsRecordSuite)
 import EbsEnsure (ebsEnsureSuite)
 import EksClientAuthProjection (eksClientAuthProjectionSuite)
+import EmbeddedHomeKubeconfigStorage (embeddedHomeKubeconfigStorageSuite)
 import EscapeRegistry (escapeRegistrySuite)
 import ExternalMaterialIngressLifecycle
   ( externalMaterialIngressLifecycleSuite
   )
 import FencedCheckpoint (fencedCheckpointSuite)
+import FieldNameTableTests (fieldNameTablesSuite)
 import GHC.Clock (getMonotonicTimeNSec)
 import GatewayAuthority (gatewayAuthoritySuite)
 import GatewayBounded (gatewayBoundedSuite)
@@ -291,6 +301,7 @@ import GatewayRuntimeStability (gatewayRuntimeStabilitySuite)
 import GeneratedArtifactSections (generatedArtifactSectionsSuite)
 import HarnessInitRecovery (harnessInitRecoverySuite)
 import HarnessSesSmtp (harnessSesSmtpSuite)
+import HeapGraphUpdates (heapGraphUpdatesSuite)
 import HelmRelease (helmReleaseSuite)
 import HelmStartupEvidence (helmStartupEvidenceSuite)
 import HostCleanupCompositionRoot (hostCleanupCompositionRootSuite)
@@ -302,6 +313,7 @@ import HttpBodyBufferBudget (httpBodyBufferBudgetCases)
 import HttpClientBodyBuffer (httpClientBodyBufferCases)
 import HttpClientExchangePolicy (httpClientExchangePolicySuite)
 import HttpClientHeaderBudget (httpClientHeaderBudgetCases)
+import InspectedRpcBirthSettings (inspectedRpcBirthSettingsSuite)
 import InviteQualification (inviteQualificationSuite)
 import KeycloakConsumerScript (keycloakConsumerScriptSuite)
 import KeycloakPublicIssuer (keycloakPublicIssuerSuite)
@@ -311,6 +323,7 @@ import LifecycleAuthorityBootstrapReconcile (lifecycleAuthorityBootstrapReconcil
 import LifecycleAuthorityClientRegistry (lifecycleAuthorityClientRegistrySuite)
 import LifecycleAuthorityConfig (lifecycleAuthorityConfigSuite)
 import LifecycleAuthorityCutover (lifecycleAuthorityCutoverSuite)
+import LifecycleAuthorityEpochCoordinator (lifecycleAuthorityEpochCoordinatorSuite)
 import LifecycleAuthorityEpochObservation (lifecycleAuthorityEpochObservationSuite)
 import LifecycleAuthorityEpochPromotion (lifecycleAuthorityEpochPromotionSuite)
 import LifecycleAuthorityEpochReadback (lifecycleAuthorityEpochReadbackSuite)
@@ -515,8 +528,10 @@ import LongLivedDecommission (longLivedDecommissionSuite)
 import MeasuredProfile (measuredProfileSuite)
 import MinioRollout (minioRolloutSuite)
 import ModelBCasTransportAdapter (modelBCasTransportAdapterSuite)
+import NarrowingErrorTextTests (narrowingErrorTextSuite)
 import Numeric.Natural (Natural)
 import ObjectStoreNative (objectStoreNativeSuite)
+import OneShotAttempt (oneShotAttemptSuite)
 import OperationBudget (operationBudgetSuite)
 import Options.Applicative
   ( ParserResult (..)
@@ -524,10 +539,15 @@ import Options.Applicative
   , execParserPure
   , renderFailure
   )
+import OrdinaryMemoryProfileCodec (ordinaryMemoryProfileSuite)
+import OrdinaryMemoryProfileReader (ordinaryMemoryProfileReaderSuite)
+import OrdinaryScopeJournalTests (ordinaryScopeJournalSuite)
 import OrdinaryTeardownRecovery (ordinaryTeardownRecoverySuite)
 import OrdinaryTeardownRepair (ordinaryTeardownRepairSuite)
 import Parser (parserSuite)
+import PinnedByteStringData (pinnedByteStringDataSuite)
 import PlatformSchedulerCapacity (platformSchedulerCapacitySuite)
+import ProcessEnvironmentStorage (processEnvironmentStorageSuite)
 import Prodbox.App
   ( Env (..)
   , askEnv
@@ -1844,6 +1864,7 @@ import QualificationSourceIdentity (qualificationSourceIdentitySuite)
 import QualificationTeardownCounterexample
   ( qualificationTeardownCounterexampleSuite
   )
+import RegisteredCallerBudgetStorage (registeredCallerBudgetStorageSuite)
 import RegisteredCallerNativeTraffic (registeredCallerNativeTrafficSuite)
 import RegisteredStackCreationOwnership (registeredStackCreationOwnershipSuite)
 import RegistryProbe (registryProbeSuite)
@@ -1853,16 +1874,20 @@ import RetainedDeliveryRefusalLog (retainedDeliveryRefusalLogSuite)
 import RetainedSesPreparation (retainedSesPreparationSuite)
 import RetainedSesTargetRecovery (retainedSesTargetRecoverySuite)
 import RoleReadinessSuite (roleReadinessSuite)
+import RpcBirthSettingsCodecTests (rpcBirthSettingsCodecSuite)
 import RuntimeImagePublication (runtimeImagePublicationSuite)
 import ScopeCodecProperties (scopeCodecPropertiesSuite)
 import ScopeCodecWitness (scopeCodecWitnessSuite)
 import SealedConstructors (sealedConstructorsSuite)
+import SerialiseStringCodec (serialiseStringCodecSuite)
 import SesCapture (sesCaptureSuite)
 import SesCaptureCleanup (sesCaptureCleanupSuite)
 import SesCapturePolicy (sesCapturePolicySuite)
 import SesWorkflow (sesWorkflowSuite)
+import SettingsProjection (settingsProjectionSuite)
 import SigV4 (sigV4Suite)
 import SmtpKeyRepairInterpreter (smtpKeyRepairInterpreterSuite)
+import StaticDhallShape (staticDhallShapeSuite)
 import StoreLifetimeWitness (storeLifetimeWitnessSuite)
 import StsIdentity (stsIdentitySuite)
 import SubprocessKillable (subprocessKillableSuite)
@@ -1897,6 +1922,7 @@ import System.IO.Temp (withSystemTempDirectory)
 import System.IO.Unsafe (unsafePerformIO)
 import System.Posix.Files (createNamedPipe, createSymbolicLink, setFileMode)
 import TargetCommitSmtp (targetCommitSmtpSuite)
+import TargetIntentPublicKeyStorage (targetIntentPublicKeyStorageSuite)
 import TemporalQualification (temporalQualificationSuite)
 import TestSecretsSecurity (testSecretsSecuritySuite)
 import TestSupport
@@ -3047,6 +3073,7 @@ unitSuite = do
   qualificationFrozenCounterexampleSuite
   qualificationEvidenceSuite
   qualificationSourceIdentitySuite
+  awsLifecycleDrillLedgerSuite
   sealedConstructorsSuite
   qualificationCreateInterruptedCounterexampleSuite
   qualificationTeardownCounterexampleSuite
@@ -3055,6 +3082,8 @@ unitSuite = do
   awsSesLeaseRoleSuite
   awsSesReadinessSuite
   awsSesSmtpKeySuite
+  awsSubstrateCidrSuite
+  narrowingErrorTextSuite
   awsSubstrateProfileSuite
   bootstrapBrokerClientSuite
   bootstrapBrokerCustodySuite
@@ -3073,6 +3102,28 @@ unitSuite = do
   localRetainedRootSuite
   localRke2RecoveryStateSuite
   ordinaryTeardownRecoverySuite
+  ordinaryScopeJournalSuite
+  oneShotAttemptSuite
+  targetIntentPublicKeyStorageSuite
+  capacityNormalFormSuite
+  heapGraphUpdatesSuite
+  pinnedByteStringDataSuite
+  fieldNameTablesSuite
+  canonicalDhallPathMeasurementSuite
+  serialiseStringCodecSuite
+  ordinaryMemoryProfileSuite
+  ordinaryMemoryProfileReaderSuite
+  canonicalDhallStorageSuite
+  staticDhallShapeSuite
+  rpcBirthSettingsCodecSuite
+  closedDhallUnionSuite
+  inspectedRpcBirthSettingsSuite
+  capturedInputDataSuite
+  settingsProjectionSuite
+  canonicalDhallTokenMatchSuite
+  processEnvironmentStorageSuite
+  embeddedHomeKubeconfigStorageSuite
+  registeredCallerBudgetStorageSuite
   ordinaryTeardownRepairSuite
   authorityLogicalObjectTaxonomySuite
   awsNativeClientsSuite
@@ -3202,6 +3253,7 @@ unitSuite = do
   controlPlaneTargetSecretWorkerSuite
   controlPlaneTargetAuthorityEpochSuite
   controlPlaneTargetAuthorityBindingSuite
+  lifecycleAuthorityEpochCoordinatorSuite
   authorityPeerContextSuite
   rpcKeyRegistrySuite
   rpcClientRegistrationSuite
@@ -3840,7 +3892,6 @@ unitSuite = do
         , "aws/tls-retention-store"
         , "aws/gateway-dns"
         , "aws/cert-manager/home/dns01"
-        , "aws/cert-manager/aws/dns01"
         ]
         assertDedicatedSpec
     it "Sprint 4.74: a Vault CAS names which of three facts it established" $ do
@@ -11626,6 +11677,16 @@ unitSuite = do
       map (retryDelayMicros policy) [0, 1, 2, 3, 4]
         `shouldBe` [100, 200, 400, 800, 1000]
 
+    it "saturates retry delays without overflowing or traversing huge attempt indices" $ do
+      let growing = testRetryPolicy 3 (maxBound `div` 2 + 1) 2 maxBound
+          zero = testRetryPolicy 3 0 2 maxBound
+          constant = testRetryPolicy 3 9 1 maxBound
+      map (retryDelayMicros growing) [-1, 0, 1, maxBound]
+        `shouldBe` [maxBound `div` 2 + 1, maxBound `div` 2 + 1, maxBound, maxBound]
+      retryDelayMicros zero maxBound `shouldBe` 0
+      retryDelayMicros constant maxBound `shouldBe` 9
+      jitteredDelayMicros growing 1 0 `shouldBe` maxBound
+
     it "repeats an indeterminate outcome only for a claimed-idempotent operation" $ do
       -- Sprint 1.77: a dropped connection is INDETERMINATE — the request may
       -- have been applied and only the response lost. The plain retrier stops;
@@ -15308,6 +15369,11 @@ unitSuite = do
       InCluster.inClusterNamespacePath
         `shouldBe` "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
+    it "redacts the ServiceAccount bearer token when credentials are rendered" $ do
+      let credentials = InCluster.InClusterCredentials "private-token" "/ca.crt" "target"
+      show credentials
+        `shouldBe` "InClusterCredentials {inClusterCredentialsToken = <redacted>, inClusterCredentialsCaCertPath = \"/ca.crt\", inClusterCredentialsNamespace = \"target\"}"
+
     it "secretApiBaseUrl points at the in-cluster kube-apiserver Service" $
       InCluster.secretApiBaseUrl
         `shouldBe` "https://kubernetes.default.svc.cluster.local:443"
@@ -18095,6 +18161,7 @@ unitSuite = do
               , ("aws_lb_controller_role_arn", "arn:aws:iam::123:role/lbc")
               , ("aws_lb_controller_role_name", "prodbox-lbc-role")
               , ("retained_ebs_availability_zone", (fixtureAwsRegion FixtureUsEast1 <> "a"))
+              , ("cert_manager_dns01_role_arn", "arn:aws:iam::123:role/cm-dns01")
               ]
       case AwsEks.parseAwsEksTestStackFromOutputs outputs of
         Left err -> expectationFailure ("expected Right, got Left: " ++ err)
@@ -18131,6 +18198,7 @@ unitSuite = do
               , ("aws_lb_controller_role_arn", "role-arn")
               , ("aws_lb_controller_role_name", "role-name")
               , ("retained_ebs_availability_zone", (fixtureAwsRegion FixtureUsEast1 <> "a"))
+              , ("cert_manager_dns01_role_arn", "arn:aws:iam::123:role/cm-dns01")
               ]
       case AwsEks.parseAwsEksTestStackFromOutputs outputs of
         Left err -> err `shouldContain` "subnet_ids"
@@ -20122,6 +20190,8 @@ unitSuite = do
                    , -- Sprint 7.36: the exact EKS IAM role/policy family is
                      -- registered independently of the Pulumi checkpoint.
                      "aws-eks-iam-role-family"
+                   , -- Sprint 7.47: the cert-manager DNS01 role family.
+                     "aws-eks-cert-manager-role-family"
                    , -- Sprint 7.36: the exact AWS Load Balancer Controller
                      -- family is independently registered too.
                      "aws-eks-load-balancer-controller-family"
@@ -20529,16 +20599,19 @@ unitSuite = do
               (encode (renderedManifests SubstrateHomeLocal noEabSettings))
       rendered `shouldNotContain` "acme-eab-secret-materializer"
 
-    it "projects only the run-scoped AWS DNS01 generation on the EKS target" $ do
+    it "renders no credential projection on the EKS target and an ambient Route 53 solver" $ do
       let rendered =
             BL8.unpack
               (encode (renderedManifests SubstrateAws noEabSettings))
-      rendered `shouldContain` "aws-dns01-target-materializer"
-      rendered `shouldContain` "secret/aws/cert-manager/aws/dns01"
-      rendered `shouldContain` "aws-cert-manager-run"
+      -- Sprint 7.47 (D5(a)): the identity is an IRSA role on the cert-manager
+      -- ServiceAccount, so no materializer, Vault object or Secret exists.
+      rendered `shouldNotContain` "aws-dns01-target-materializer"
+      rendered `shouldNotContain` "secret/aws/cert-manager/aws/dns01"
+      rendered `shouldNotContain` "aws-cert-manager-run"
+      rendered `shouldNotContain` "route53-credentials"
+      rendered `shouldNotContain` "accessKeyIDSecretRef"
       rendered `shouldNotContain` "home-dns01-secret-materializer"
-      rendered `shouldNotContain` "secret/aws/cert-manager/home/dns01"
-      rendered `shouldNotContain` "stringData"
+      rendered `shouldContain` "hostedZoneID"
 
     it "the public-edge ClusterIssuer name is the ZeroSSL cert-manager issuer" $
       publicEdgeClusterIssuerName `shouldBe` "zerossl-dns01"
@@ -23516,17 +23589,17 @@ unitSuite = do
       it "sizes retained replay by role and gives outer refusals precedence (Sprints 2.105/2.127)" $ do
         ControlPlaneRuntime.lifecycleAuthorityFirstReconcileRequestMaximum `shouldBe` 93
         ControlPlaneRuntime.lifecycleAuthorityReconcileAttemptRequestMaximum `shouldBe` 97
-        ControlPlaneRuntime.lifecycleAuthorityReplayCapacity `shouldBe` 4110
+        ControlPlaneRuntime.lifecycleAuthorityReplayCapacity `shouldBe` 4262
         ControlPlaneRuntime.lifecycleAuthorityReplayCapacity
           `shouldBe` (2 * ControlPlaneRuntime.lifecycleAuthorityQualificationAttemptRequestMaximum)
         ControlPlaneRuntime.authorityBackupReconcileAttemptRequestMaximum `shouldBe` 9
         ControlPlaneRuntime.authorityBackupQualificationPreludeRequestMaximum `shouldBe` 13
-        ControlPlaneRuntime.authorityBackupCheckpointAttemptRequestMaximum `shouldBe` 1650
-        ControlPlaneRuntime.providerWorkerQualificationAttemptRequestMaximum `shouldBe` 87
-        ControlPlaneRuntime.providerWorkerReplayCapacity `shouldBe` 174
-        ControlPlaneRuntime.authorityBackupCascadeCandidateRequestMaximum `shouldBe` 649
-        ControlPlaneRuntime.authorityBackupQualificationAttemptRequestMaximum `shouldBe` 2392
-        ControlPlaneRuntime.authorityBackupReplayCapacity `shouldBe` 4784
+        ControlPlaneRuntime.authorityBackupCheckpointAttemptRequestMaximum `shouldBe` 1722
+        ControlPlaneRuntime.providerWorkerQualificationAttemptRequestMaximum `shouldBe` 91
+        ControlPlaneRuntime.providerWorkerReplayCapacity `shouldBe` 182
+        ControlPlaneRuntime.authorityBackupCascadeCandidateRequestMaximum `shouldBe` 673
+        ControlPlaneRuntime.authorityBackupQualificationAttemptRequestMaximum `shouldBe` 2488
+        ControlPlaneRuntime.authorityBackupReplayCapacity `shouldBe` 4976
         ControlPlaneRuntime.authorityBackupReplayCapacity
           `shouldBe` (2 * ControlPlaneRuntime.authorityBackupQualificationAttemptRequestMaximum)
         ControlPlaneRuntime.authorityBackupReplayMaximumEncodedBytes
@@ -27563,6 +27636,7 @@ sampleAwsEksTestStackSnapshot =
         "arn:aws:iam::123456789012:role/aws-eks-test-aws-lb-controller"
     , AwsEks.eksSnapshotAwsLbControllerRoleName = "aws-eks-test-aws-lb-controller"
     , AwsEks.eksSnapshotRetainedEbsAvailabilityZone = (fixtureAwsRegion FixtureUsEast1 <> "a")
+    , AwsEks.eksSnapshotCertManagerDns01RoleArn = "arn:aws:iam::123:role/cm-dns01"
     }
 
 -- | Sprint 4.18: the flat @Map Text Text@ shape the Pulumi backend
@@ -27617,6 +27691,7 @@ sampleAwsEksTestStackOutputsMap =
     , ("aws_lb_controller_role_arn", "arn:aws:iam::123456789012:role/aws-eks-test-aws-lb-controller")
     , ("aws_lb_controller_role_name", "aws-eks-test-aws-lb-controller")
     , ("retained_ebs_availability_zone", (fixtureAwsRegion FixtureUsEast1 <> "a"))
+    , ("cert_manager_dns01_role_arn", "arn:aws:iam::123:role/cm-dns01")
     ]
 
 gatewaySecretRefType :: String

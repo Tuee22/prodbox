@@ -376,6 +376,7 @@ providerAwsScopeAdapterSuite =
                      -- mint.
                      "src/Prodbox/ControlPlane/LegacyAdoptionCompositionRoot.hs"
                    , "src/Prodbox/ControlPlane/ProviderAwsScopeReceipt.hs"
+                   , "src/Prodbox/ControlPlane/ProviderScopeObservation.hs"
                    , "src/Prodbox/ControlPlane/ProviderWorkerClient.hs"
                    , "src/Prodbox/ControlPlane/Runtime.hs"
                    , -- Sprint 6.5's candidate observes the exact executed

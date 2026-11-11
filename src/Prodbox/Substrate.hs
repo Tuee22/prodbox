@@ -33,6 +33,8 @@ import Dhall
   )
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.Config.FieldNameTable (modifyFieldName)
+import Prodbox.Config.FieldNameTables (scalingSubstrateFieldNames)
 
 data Substrate
   = SubstrateHomeLocal
@@ -63,12 +65,15 @@ data ScalingPolicy
 instance FromDhall ScalingPolicy where
   autoWith _ =
     genericAutoWith
-      defaultInterpretOptions {constructorModifier = stripPrefix "ScalingPolicy"}
+      defaultInterpretOptions {constructorModifier = scalingPolicyConstructorName}
 
 instance ToDhall ScalingPolicy where
   injectWith _ =
     genericToDhallWith
-      defaultInterpretOptions {constructorModifier = stripPrefix "ScalingPolicy"}
+      defaultInterpretOptions {constructorModifier = scalingPolicyConstructorName}
+
+scalingPolicyConstructorName :: Text -> Text
+scalingPolicyConstructorName = Text.copy . stripPrefix "ScalingPolicy"
 
 data ScalingPolicyBySubstrate = ScalingPolicyBySubstrate
   { scalingHomeLocal :: ScalingPolicy
@@ -201,8 +206,4 @@ lowerFirst value =
     Nothing -> value
 
 scalingPolicyBySubstrateField :: Text -> Text
-scalingPolicyBySubstrateField value =
-  case value of
-    "scalingHomeLocal" -> "home_local"
-    "scalingAws" -> "aws"
-    _ -> value
+scalingPolicyBySubstrateField = modifyFieldName scalingSubstrateFieldNames

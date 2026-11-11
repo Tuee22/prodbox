@@ -353,6 +353,7 @@ authenticatedRoleInterpreterWithVerifiedHandler
         (AuthorityBackupRuntime, AuthorityBackupObserve) -> readFresh
         (LifecycleAuthorityRuntime, LifecyclePulumiCheckpoint)
           | isPulumiCheckpointObservationRequest body -> readFresh
+        (LifecycleAuthorityRuntime, LifecycleProviderScopeObserve) -> readFresh
         (LifecycleAuthorityRuntime, LifecycleCleanupRun)
           | isCleanupRunObservationRequest body -> readFresh
         _ -> runReplayProtectedRequest attempts repository now attempt verified effect
@@ -396,6 +397,8 @@ authenticatedRoleInterpreterWithVerifiedHandler
         Just ReplayBudget.checkpointMetadataResponseMaximumBytes
       (LifecycleAuthorityRuntime, LifecycleOperationObserve) ->
         Just ReplayBudget.checkpointMetadataResponseMaximumBytes
+      (LifecycleAuthorityRuntime, LifecycleProviderScopeObserve) ->
+        Just ReplayBudget.providerScopeObservationMaximumBytes
       (LifecycleAuthorityRuntime, LifecyclePulumiCheckpoint)
         | not (isPulumiCheckpointObservationRequest body) ->
             Just ReplayBudget.checkpointMetadataResponseMaximumBytes

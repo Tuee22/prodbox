@@ -120,6 +120,7 @@ owning implementation change updates `CommandSpec` and regenerates this section.
 | `prodbox test integration clean-room-handoff` | Verify clean-room migration, rollback refusal, and legacy absence |
 | `prodbox test integration cascade-qualification` | Run one named destructive recover-to-clean cascade qualification cycle |
 | `prodbox test integration cascade-qualification-receipt` | Report whether the cycle ledger holds consecutive qualifying cascade cycles |
+| `prodbox test integration aws-lifecycle-receipt` | Report whether the AWS lifecycle drill ledger meets every scoped claim criterion |
 | `prodbox test integration aws-lifecycle` | Exercise audit-bracketed AWS stack create and destroy cycles |
 | `prodbox test integration aws-lifecycle-canary` | Exercise planted test-VPC network dependencies and exact cleanup |
 | `prodbox test integration ha-rke2-aws` | Run HA RKE2 AWS integration tests |

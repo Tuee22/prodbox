@@ -12,7 +12,10 @@ import Data.List (isInfixOf)
 import Data.Maybe (isJust, isNothing)
 import Data.Text qualified as Text
 import Numeric.Natural (Natural)
-import Prodbox.CheckCode (dependencyAdmissionInternalSourceViolations)
+import Prodbox.CheckCode
+  ( dependencyAdmissionInternalSourceViolations
+  , recoveryClaimInternalSourceViolations
+  )
 import Prodbox.Config.ComponentGraph
   ( ComponentDag
   , ComponentId (..)
@@ -259,6 +262,75 @@ dependencyAdmissionSuite =
         ( dependencyAdmissionInternalSourceViolations
             ("src/Prodbox/Lib/AwsSubstratePlatform.hs", internalImport)
         )
+        `shouldBe` 1
+
+    it "keeps recovery claim internals inside their owning modules" $ do
+      let inputs = "import qualified Prodbox.Subprocess.HostControllerInputs.Internal as Inputs"
+          program = "import Prodbox.Subprocess.HostOperationFamily.Program.Internal"
+          header exports = unlines ["module Fixture", "  ( " ++ exports ++ " )", "where"]
+          owner = "src/Prodbox/Subprocess/KernelScope.hs"
+          inputFacade = "src/Prodbox/Subprocess/HostControllerInputs.hs"
+          operationFacade = "src/Prodbox/Subprocess/HostOperationFamily.hs"
+          controller = "src/Prodbox/ControlPlane/OrdinaryRecoveryController.hs"
+          unrelated = "src/Prodbox/ControlPlane/Unrelated.hs"
+      recoveryClaimInternalSourceViolations (owner, header "OperationParent" ++ inputs ++ program)
+        `shouldBe` []
+      recoveryClaimInternalSourceViolations (inputFacade, header "HostControllerInputs" ++ inputs)
+        `shouldBe` []
+      recoveryClaimInternalSourceViolations (operationFacade, header "HostControllerProgram" ++ program)
+        `shouldBe` []
+      length (recoveryClaimInternalSourceViolations (unrelated, inputs ++ program)) `shouldBe` 2
+      length
+        (recoveryClaimInternalSourceViolations (operationFacade, header "HostControllerProgram" ++ inputs))
+        `shouldBe` 1
+      length
+        (recoveryClaimInternalSourceViolations (inputFacade, header "HostControllerInputs" ++ program))
+        `shouldBe` 1
+      recoveryClaimInternalSourceViolations (unrelated, "import Prodbox.Subprocess.HostControllerInputs")
+        `shouldBe` []
+      length
+        ( recoveryClaimInternalSourceViolations
+            (inputFacade, header "claimRecoveryControllerInputs" ++ inputs)
+        )
+        `shouldBe` 1
+      length
+        (recoveryClaimInternalSourceViolations (inputFacade, header "HostControllerInputs (..)" ++ inputs))
+        `shouldBe` 1
+      length
+        ( recoveryClaimInternalSourceViolations
+            (operationFacade, header "claimRecoveryHostControllerProgram" ++ program)
+        )
+        `shouldBe` 1
+      length
+        ( recoveryClaimInternalSourceViolations
+            (operationFacade, header "HostControllerProgram (..)" ++ program)
+        )
+        `shouldBe` 1
+      mapM_
+        (\name -> length (recoveryClaimInternalSourceViolations (owner, header name ++ inputs)) `shouldBe` 1)
+        ["claimRecoveryProgramOwned", "claimRecoveryProgramOwnedUsing", "claimRecoveryOperationParentUsing"]
+      length
+        ( recoveryClaimInternalSourceViolations
+            (inputFacade, header "claimRecoveryControllerInputsUsing" ++ inputs)
+        )
+        `shouldBe` 1
+      length
+        ( recoveryClaimInternalSourceViolations
+            (operationFacade, header "claimRecoveryHostControllerProgramUsing" ++ program)
+        )
+        `shouldBe` 1
+      recoveryClaimInternalSourceViolations (controller, header "RecoveryControllerAdmission")
+        `shouldBe` []
+      mapM_
+        (\name -> length (recoveryClaimInternalSourceViolations (controller, header name)) `shouldBe` 1)
+        [ "runAdmittedRecoveryControllerUsing"
+        , "runClaimedRecoveryController"
+        , "RecoveryControllerAdmission (..)"
+        , "module Internal"
+        ]
+      length (recoveryClaimInternalSourceViolations (owner, header "module Inputs" ++ inputs))
+        `shouldBe` 1
+      length (recoveryClaimInternalSourceViolations (owner, "module Fixture where" ++ inputs))
         `shouldBe` 1
 
     it "Sprint 4.64: beginning a run and continuing one are different functions" $ do

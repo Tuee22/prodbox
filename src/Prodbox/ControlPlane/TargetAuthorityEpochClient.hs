@@ -10,6 +10,7 @@ module Prodbox.ControlPlane.TargetAuthorityEpochClient
   , decodeTargetEpochClientResponse
   , mutateTargetAuthorityEpoch
   , observeTargetAuthorityEpochWithClient
+  , observeTargetAuthorityEpochWithVerifiedResponse
   )
 where
 
@@ -21,6 +22,7 @@ import Prodbox.ControlPlane.AuthenticatedTransport
   , AuthenticatedClientTransport
   , authenticatedClientTransportWithin
   , callAuthenticatedClientTransport
+  , callAuthenticatedTargetTransportWithSignedRequest
   )
 import Prodbox.ControlPlane.Client
   ( ControlPlaneResponse (..)
@@ -30,6 +32,11 @@ import Prodbox.ControlPlane.Codec
   ( ControlPlaneResponseCodecError
   , decodeControlPlaneResponse
   , encodeControlPlaneRequest
+  )
+import Prodbox.ControlPlane.RequestAuthentication (TrustedRequestKey)
+import Prodbox.ControlPlane.TargetAuthenticatedResponse
+  ( TargetAuthenticatedResponseError
+  , verifyTargetAuthenticatedResponse
   )
 import Prodbox.ControlPlane.TargetAuthorityEpoch
 import Prodbox.ControlPlane.TargetAuthorityEpochExecution
@@ -43,7 +50,7 @@ import Prodbox.ControlPlane.TargetAuthorityTrustEndpoint
   , targetAuthorityTrustResponseMaximumBytes
   )
 import Prodbox.ControlPlane.TargetMaterialRegistry (TargetSecretId)
-import Prodbox.ControlPlane.TargetSecretAgentExecution (acceptedTargetId)
+import Prodbox.ControlPlane.TargetSecretAgentExecution (TargetAgentIdentity, acceptedTargetId)
 import Prodbox.Lifecycle.Lease (AuthorityTime)
 import Prodbox.Runtime.Role (RuntimeRole (TargetSecretAgentRuntime))
 
@@ -59,6 +66,7 @@ data TargetEpochClientError
   | TargetEpochClientRefused !Text
   | TargetEpochClientUnavailable !Text
   | TargetEpochClientReadBackMismatch
+  | TargetEpochClientResponseAuthenticationFailed !TargetAuthenticatedResponseError
   deriving stock (Eq, Show)
 
 targetEpochClient :: AuthenticatedClientTransport 'TargetSecretAgentRuntime -> TargetEpochClient IO
@@ -137,3 +145,43 @@ observeTargetAuthorityEpochWithClient client target = do
   observation response = case response of
     TargetEpochObserved _ value -> Right value
     TargetEpochMutated _ -> Left TargetEpochClientReadBackMismatch
+
+-- | Opt-in signed observation. The caller supplies a currently authenticated
+-- Target key and must bound key acquisition, request, verification and use by
+-- the same deadline and registry revision. The transport must admit the
+-- signed-envelope response size; this function never falls back to unsigned.
+observeTargetAuthorityEpochWithVerifiedResponse
+  :: AuthenticatedClientTransport 'TargetSecretAgentRuntime
+  -> TargetAgentIdentity
+  -> TrustedRequestKey
+  -> TargetSecretId
+  -> IO (Either TargetEpochClientError TargetEpochObservation)
+observeTargetAuthorityEpochWithVerifiedResponse transport agent trusted target =
+  case encodeTargetEpochRequest request of
+    Left err -> pure (Left (TargetEpochClientProtocolInvalid err))
+    Right encoded -> do
+      result <-
+        callAuthenticatedTargetTransportWithSignedRequest
+          transport
+          (LazyByteString.toStrict (encodeControlPlaneRequest (TargetAuthorityTrustRequest encoded)))
+      pure $ do
+        (signedRequest, ControlPlaneResponse outerStatus envelope) <-
+          first TargetEpochClientTransportFailed result
+        if outerStatus == 200 then pure () else Left (TargetEpochClientHttpStatus outerStatus)
+        (status, response) <-
+          first
+            TargetEpochClientResponseAuthenticationFailed
+            ( verifyTargetAuthenticatedResponse
+                targetAuthorityTrustResponseMaximumBytes
+                agent
+                trusted
+                signedRequest
+                envelope
+            )
+        decoded <-
+          decodeTargetEpochClientResponse request (ControlPlaneResponse (fromIntegral status) response)
+        case decoded of
+          TargetEpochObserved _ value -> Right value
+          TargetEpochMutated _ -> Left TargetEpochClientReadBackMismatch
+ where
+  request = TargetEpochObserve target

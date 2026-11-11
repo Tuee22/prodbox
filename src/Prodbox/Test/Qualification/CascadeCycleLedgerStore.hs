@@ -1,3 +1,4 @@
+{-# LANGUAGE CApiFFI #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -15,6 +16,7 @@ module Prodbox.Test.Qualification.CascadeCycleLedgerStore
   , cycleLedgerPath
   , readCycleLedger
   , appendCycleRecord
+  , appendCycleRecordAtTip
   , QualificationResumeSnapshot
   , mkQualificationResumeSnapshot
   , qualificationResumeBegun
@@ -27,6 +29,7 @@ where
 
 import Control.Exception (IOException, bracket, finally, mask, throwIO, try)
 import Data.Bifunctor (first)
+import Data.Bits ((.|.))
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Base64 qualified as Base64
@@ -35,6 +38,8 @@ import Data.List (nub, sort)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Foreign.C.Error (throwErrnoIfMinus1_)
+import Foreign.C.Types (CInt (..))
 import Prodbox.Test.Qualification.CascadeCycleArtifact
   ( CycleLabel
   , componentImageInventoryDigests
@@ -56,6 +61,7 @@ import Prodbox.Test.Qualification.CascadeCycleLedger
   , parseCycleLedger
   , renderLedgerRefusal
   )
+import Prodbox.Test.Qualification.Evidence (PublicEvidenceDigest)
 import System.Directory (createDirectoryIfMissing, removeFile)
 import System.FilePath (takeDirectory, (</>))
 import System.IO (IOMode (AppendMode), hClose, hFlush, openBinaryTempFile, withBinaryFile)
@@ -69,6 +75,7 @@ import System.Posix.IO
   , openFd
   )
 import System.Posix.IO.ByteString qualified as PosixByteString
+import System.Posix.Types (Fd (..))
 import System.Posix.Unistd (fileSynchronise)
 import System.Posix.User (getEffectiveUserID)
 
@@ -77,6 +84,7 @@ data LedgerStoreError
     LedgerStoreUnreadable !FilePath !String
   | LedgerStoreRefused !LedgerRefusal
   | LedgerStoreWriteFailed !FilePath !String
+  | LedgerStoreTipChanged
   | -- | After an append, the file's tip is not the entry that was written.
     LedgerStoreReadBackDisagrees
   deriving (Eq, Show)
@@ -91,6 +99,8 @@ renderLedgerStoreError err = case err of
       ++ ". It is never repaired in place; delete the file only to abandon the count and restart it at zero."
   LedgerStoreWriteFailed path detail ->
     "could not append to the cycle ledger " ++ path ++ ": " ++ detail
+  LedgerStoreTipChanged ->
+    "the cycle ledger changed since qualification was observed; observe it again"
   LedgerStoreReadBackDisagrees ->
     "the cycle ledger read back is not what was written"
 
@@ -127,25 +137,52 @@ decodeLedger bytes = case TextEncoding.decodeUtf8' bytes of
 -- before the candidate it announces runs. A caller that cannot append does not
 -- run the candidate.
 appendCycleRecord :: FilePath -> LedgerRecord -> IO (Either LedgerStoreError LedgerEntry)
-appendCycleRecord path record = do
-  createDirectoryIfMissing True (takeDirectory path)
-  current <- readCycleLedger path
-  case current of
-    Left err -> pure (Left err)
-    Right ledger -> case appendRecord ledger record of
-      Left refusal -> pure (Left (LedgerStoreRefused refusal))
-      Right (_, entry) -> do
-        written <- try (writeLine entry)
-        case written of
-          Left (err :: IOException) -> pure (Left (LedgerStoreWriteFailed path (show err)))
-          Right () -> do
-            readBack <- readCycleLedger path
-            pure $ case readBack of
-              Left err -> Left err
-              Right after
-                | ledgerTip after == entryDigest entry -> Right entry
-                | otherwise -> Left LedgerStoreReadBackDisagrees
+appendCycleRecord = appendCycleRecordWithTip Nothing
+
+-- | Refuse an observation made against a different ledger history, checking
+-- the tip under the same lock as the append.
+appendCycleRecordAtTip
+  :: PublicEvidenceDigest -> FilePath -> LedgerRecord -> IO (Either LedgerStoreError LedgerEntry)
+appendCycleRecordAtTip expected = appendCycleRecordWithTip (Just expected)
+
+appendCycleRecordWithTip
+  :: Maybe PublicEvidenceDigest -> FilePath -> LedgerRecord -> IO (Either LedgerStoreError LedgerEntry)
+appendCycleRecordWithTip expected path record = do
+  attempted <- try $ do
+    createDirectoryIfMissing True (takeDirectory path)
+    bracket
+      ( openFd
+          (takeDirectory path)
+          ReadOnly
+          defaultFileFlags {directory = True, nofollow = True, cloexec = True}
+      )
+      closeFd
+      ( \(Fd fd) -> do
+          throwErrnoIfMinus1_ "cycle ledger lock" (lockLedgerDirectory fd (2 .|. 4))
+          appendLocked
+      )
+  pure $ case attempted of
+    Left (err :: IOException) -> Left (LedgerStoreWriteFailed path (show err))
+    Right result -> result
  where
+  appendLocked = do
+    current <- readCycleLedger path
+    case current of
+      Left err -> pure (Left err)
+      Right ledger | maybe False (/= ledgerTip ledger) expected -> pure (Left LedgerStoreTipChanged)
+      Right ledger -> case appendRecord ledger record of
+        Left refusal -> pure (Left (LedgerStoreRefused refusal))
+        Right (_, entry) -> do
+          written <- try (writeLine entry)
+          case written of
+            Left (err :: IOException) -> pure (Left (LedgerStoreWriteFailed path (show err)))
+            Right () -> do
+              readBack <- readCycleLedger path
+              pure $ case readBack of
+                Left err -> Left err
+                Right after
+                  | ledgerTip after == entryDigest entry -> Right entry
+                  | otherwise -> Left LedgerStoreReadBackDisagrees
   writeLine entry = do
     withBinaryFile path AppendMode $ \handle -> do
       ByteString.hPut handle (TextEncoding.encodeUtf8 (entryLine entry <> "\n"))
@@ -158,6 +195,11 @@ appendCycleRecord path record = do
       (openFd target mode defaultFileFlags {directory = isDirectory, cloexec = True})
       closeFd
       fileSynchronise
+
+-- Linux flock is held on the opened directory description until close. The
+-- nonblocking exclusive lock refuses concurrent writers rather than waiting
+-- beyond an operation's own deadline.
+foreign import capi "sys/file.h flock" lockLedgerDirectory :: CInt -> CInt -> IO CInt
 
 -- | Pre-uninstall capture for one qualification label. It stores the actual
 -- named image inventory beside the exact Begin identity, never reconstructed

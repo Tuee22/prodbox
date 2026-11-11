@@ -258,7 +258,7 @@ isValidDnsLabelText label =
 
 -- | A DNS record TTL in seconds, inside the bounds a public record may carry.
 --
--- The bounds are the ones @Prodbox.Settings.validateDemoTtl@ already applied.
+-- These are the local configuration validator's established TTL bounds.
 -- What changes is that the decision survives: the one production reader used to
 -- @show@ the raw @Natural@ into a rendered Dhall record, so a TTL the validator
 -- had already approved was re-read as an unbounded number.

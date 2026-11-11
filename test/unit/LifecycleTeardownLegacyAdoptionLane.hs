@@ -114,9 +114,9 @@ lifecycleTeardownLegacyAdoptionLaneSuite =
                 (legacyAdoptionDispatchKeyFor AdoptAwsTest intent)
             | intent <- familyIntents
             ]
-      length keys `shouldBe` 6
+      length keys `shouldBe` 7
       keys `shouldSatisfy` all isRight
-      length (nub keys) `shouldBe` 6
+      length (nub keys) `shouldBe` 7
       -- And stable: repeating the plan pass replays the Authority's retained
       -- observation rather than allocating a new identity for one question.
       [ fmap

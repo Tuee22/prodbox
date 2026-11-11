@@ -5,6 +5,7 @@ module Prodbox.CLI.Rke2
   ( acmeRuntimeManifestWith
   , ensureAcmeRuntimeForSubstrate
   , acmeClusterIssuerSpec
+  , acmeClusterIssuerSpecFor
   , awaitAcmeMaterialization
   , ensureRuntimeImageForSubstrate
   , ensureGatewayMinioBootstrap
@@ -1042,9 +1043,6 @@ homeDns01VaultRole = "aws-cert-manager-home"
 
 homeDns01VaultPath :: String
 homeDns01VaultPath = "aws/cert-manager/home/dns01"
-
-awsDns01VaultPath :: String
-awsDns01VaultPath = "aws/cert-manager/aws/dns01"
 
 acmeEabSecretName :: String
 acmeEabSecretName = "acme-eab-credentials"
@@ -8610,8 +8608,12 @@ ensureAcmeRuntimeForSubstrate substrate repoRoot settings prodboxId labelValue =
                 case applyExit of
                   ExitFailure _ -> pure applyExit
                   ExitSuccess -> do
-                    dnsMaterialized <-
-                      awaitDns01Materialization repoRoot dnsCredentialLabel dnsMaterializerName
+                    dnsMaterialized <- case substrate of
+                      SubstrateHomeLocal ->
+                        awaitDns01Materialization repoRoot dnsCredentialLabel dnsMaterializerName
+                      -- Sprint 7.47: nothing is materialized on AWS; the IRSA
+                      -- role is the credential, so there is no Job to wait on.
+                      SubstrateAws -> pure ExitSuccess
                     case dnsMaterialized of
                       ExitFailure _ -> pure dnsMaterialized
                       ExitSuccess -> do
@@ -8888,15 +8890,18 @@ acmeRuntimeManifestWith
   :: Substrate -> ValidatedSettings -> Text.Text -> String -> String -> Either String [Value]
 acmeRuntimeManifestWith substrate settings hostedZoneId prodboxId labelValue =
   (credentialResources ++)
-    <$> acmeCommonRuntimeResources settings hostedZoneId prodboxId labelValue
+    <$> acmeCommonRuntimeResources substrate settings hostedZoneId prodboxId labelValue
  where
+  -- Sprint 7.47 (D5(a)): the AWS arm has no credential projection at all. Its
+  -- cert-manager ServiceAccount carries an IRSA role scoped to the one subzone,
+  -- so no access key, Vault object or materializer Job exists to wait on.
   credentialResources = case substrate of
     SubstrateHomeLocal -> homeDns01MaterializerManifests prodboxId labelValue
-    SubstrateAws -> awsDns01TargetMaterializerManifests prodboxId labelValue
+    SubstrateAws -> []
 
 acmeCommonRuntimeResources
-  :: ValidatedSettings -> Text.Text -> String -> String -> Either String [Value]
-acmeCommonRuntimeResources settings hostedZoneId prodboxId labelValue = do
+  :: Substrate -> ValidatedSettings -> Text.Text -> String -> String -> Either String [Value]
+acmeCommonRuntimeResources substrate settings hostedZoneId prodboxId labelValue = do
   acmeAccount <- requireAcmeAccount settings
   awsRegion <- requireOperationalAwsRegion settings
   Right (clusterIssuer acmeAccount awsRegion : eabMaterializerResources)
@@ -8915,7 +8920,7 @@ acmeCommonRuntimeResources settings hostedZoneId prodboxId labelValue = do
   clusterIssuer acmeAccount awsRegion =
     clusterIssuerResource
       publicEdgeClusterIssuerName
-      (acmeClusterIssuerSpec acmeAccount awsRegion hostedZoneId)
+      (acmeClusterIssuerSpecFor substrate acmeAccount awsRegion hostedZoneId)
   clusterIssuerResource issuerName issuerSpec =
     object
       [ "apiVersion" .= ("cert-manager.io/v1" :: String)
@@ -8939,19 +8944,6 @@ homeDns01MaterializerManifests prodboxId labelValue =
     homeDns01MaterializerName
     homeDns01VaultRole
     homeDns01VaultPath
-    prodboxId
-    labelValue
-
--- | AWS uses a distinct run-scoped Vault object and ServiceAccount.  This is
--- the target-local one-shot projection: credential bytes move only from the
--- EKS Vault session through a memory volume into the fixed cert-manager
--- Secret, never through the host or the Gateway.
-awsDns01TargetMaterializerManifests :: String -> String -> [Value]
-awsDns01TargetMaterializerManifests prodboxId labelValue =
-  dns01TargetMaterializerManifests
-    awsDns01MaterializerName
-    "aws-cert-manager-run"
-    awsDns01VaultPath
     prodboxId
     labelValue
 
@@ -9415,28 +9407,38 @@ acmeEabMaterializerManifests prodboxId labelValue =
 -- | The DNS-01 Route 53 ACME solver block referenced by the ZeroSSL
 -- 'ClusterIssuer'. Keyed off 'route53CredentialsSecretName' and the
 -- substrate hosted zone.
-acmeRoute53Solver :: Text.Text -> Text.Text -> Value
-acmeRoute53Solver awsRegion hostedZoneId =
+acmeRoute53Solver :: Substrate -> Text.Text -> Text.Text -> Value
+acmeRoute53Solver substrate awsRegion hostedZoneId =
   object
     [ "dns01"
         .= object
           [ "route53"
               .= object
-                [ "region" .= Text.unpack awsRegion
-                , "hostedZoneID" .= Text.unpack hostedZoneId
-                , "accessKeyIDSecretRef"
-                    .= object
-                      [ "name" .= route53CredentialsSecretName
-                      , "key" .= ("access-key-id" :: String)
-                      ]
-                , "secretAccessKeySecretRef"
-                    .= object
-                      [ "name" .= route53CredentialsSecretName
-                      , "key" .= ("secret-access-key" :: String)
-                      ]
-                ]
+                ( [ "region" .= Text.unpack awsRegion
+                  , "hostedZoneID" .= Text.unpack hostedZoneId
+                  ]
+                    ++ staticCredentialRefs
+                )
           ]
     ]
+ where
+  -- The home substrate projects a long-lived access key into a Secret. The AWS
+  -- substrate names none: cert-manager then uses its ambient identity, the IRSA
+  -- role bound to its ServiceAccount.
+  staticCredentialRefs = case substrate of
+    SubstrateHomeLocal ->
+      [ "accessKeyIDSecretRef"
+          .= object
+            [ "name" .= route53CredentialsSecretName
+            , "key" .= ("access-key-id" :: String)
+            ]
+      , "secretAccessKeySecretRef"
+          .= object
+            [ "name" .= route53CredentialsSecretName
+            , "key" .= ("secret-access-key" :: String)
+            ]
+      ]
+    SubstrateAws -> []
 
 -- | Secret-free base for the ZeroSSL ACME @ClusterIssuer@.  When EAB is
 -- configured, the namespace-scoped one-shot materializer patches the exact
@@ -9451,12 +9453,15 @@ acmeRoute53Solver awsRegion hostedZoneId =
 -- 'AwsRegion' have no empty inhabitant, so a ClusterIssuer with a blank contact
 -- or a blank region is unconstructible here rather than merely unlikely.
 acmeClusterIssuerSpec :: AcmeAccount -> AwsRegion -> Text.Text -> Value
-acmeClusterIssuerSpec acmeAccount awsRegion hostedZoneId =
+acmeClusterIssuerSpec = acmeClusterIssuerSpecFor SubstrateHomeLocal
+
+acmeClusterIssuerSpecFor :: Substrate -> AcmeAccount -> AwsRegion -> Text.Text -> Value
+acmeClusterIssuerSpecFor substrate acmeAccount awsRegion hostedZoneId =
   object
     [ "server" .= Text.unpack (acmeDirectoryUrlText (acmeAccountDirectoryUrl acmeAccount))
     , "email" .= Text.unpack (emailAddressText (acmeAccountEmail acmeAccount))
     , "privateKeySecretRef" .= object ["name" .= zerosslAccountKeySecretName]
-    , "solvers" .= [acmeRoute53Solver (awsRegionText awsRegion) hostedZoneId]
+    , "solvers" .= [acmeRoute53Solver substrate (awsRegionText awsRegion) hostedZoneId]
     ]
 
 ensurePostgresOperatorRuntime :: FilePath -> String -> String -> IO ExitCode

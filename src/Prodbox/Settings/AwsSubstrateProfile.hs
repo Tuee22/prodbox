@@ -24,6 +24,11 @@ module Prodbox.Settings.AwsSubstrateProfile
   , awsEksStackConfiguration
   , awsTestStackConfiguration
   , renderAwsSubstrateProfileError
+  , renderAwsSubstrateProfileErrorText
+  , awsProfileGeneralCaseMaximumCharacters
+  , awsProfileVolumeCaseMaximumCharacters
+  , awsProfileGeneralCaseMaximumCalls
+  , awsProfileVolumeCaseMaximumCalls
   )
 where
 
@@ -45,6 +50,9 @@ import Dhall
 import Dhall.Marshal.Decode (fromMonadic, toMonadic)
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.Config.FieldNameTable (modifyFieldName)
+import Prodbox.Config.FieldNameTables (awsProfileFieldNames)
+import Prodbox.Settings.AwsSubstrateCidr qualified as Cidr
 
 -- | The exact authored Dhall record.  It is deliberately a wide DTO: only
 -- 'AwsSubstrateProfile' crosses into provider or AWS request construction.
@@ -120,7 +128,7 @@ narrowingDecoder base narrow =
         wide <- toMonadic (extract base expression)
         case narrow wide of
           Right narrowed -> pure narrowed
-          Left err -> toMonadic (extractError (Text.pack (renderAwsSubstrateProfileError err)))
+          Left err -> toMonadic (extractError (renderAwsSubstrateProfileErrorText err))
     }
 
 mkAwsSubstrateProfile
@@ -131,13 +139,17 @@ mkAwsSubstrateProfile input = do
   eksDisk <- positive "eks_node_disk_size_gib" (eks_node_disk_size_gib input)
   eksMinimum <- positive "eks_node_min_size" (eks_node_min_size input)
   eksMaximum <- positive "eks_node_max_size" (eks_node_max_size input)
-  testInstances <- exactList 3 "aws_test_instance_types" (aws_test_instance_types input)
+  testInstances <-
+    exactList awsProfileTestNodeCount "aws_test_instance_types" (aws_test_instance_types input)
   validatedTestInstances <- traverse (validatedToken "aws_test_instance_types") testInstances
   testVolumeTypeTexts <-
-    exactList 3 "aws_test_root_volume_types" (aws_test_root_volume_types input)
+    exactList awsProfileTestNodeCount "aws_test_root_volume_types" (aws_test_root_volume_types input)
   testVolumeTypes <- traverse mkAwsEbsVolumeType testVolumeTypeTexts
   testVolumeSizes <-
-    exactList 3 "aws_test_root_volume_sizes_gib" (aws_test_root_volume_sizes_gib input)
+    exactList
+      awsProfileTestNodeCount
+      "aws_test_root_volume_sizes_gib"
+      (aws_test_root_volume_sizes_gib input)
       >>= traverse (positive "aws_test_root_volume_sizes_gib")
   staticVolumeType <- mkAwsEbsVolumeType (static_ebs_volume_type input)
   eksVpc <- validatedNetworkCidr "eks_vpc_cidr" (eks_vpc_cidr input)
@@ -165,11 +177,31 @@ mkAwsSubstrateProfile input = do
 
 mkAwsEbsVolumeType :: Text -> Either AwsSubstrateProfileError AwsEbsVolumeType
 mkAwsEbsVolumeType raw
-  | normalized `elem` supported = Right (AwsEbsVolumeType normalized)
-  | otherwise = Left (AwsSubstrateProfileUnsupportedVolumeType raw)
+  | Text.length trimmed > awsProfileVolumeCaseMaximumCharacters = unsupported
+  | normalized `elem` supportedEbsVolumeTypes = Right (AwsEbsVolumeType normalized)
+  | otherwise = unsupported
  where
-  normalized = Text.toLower (Text.strip raw)
-  supported = ["gp2", "gp3", "io1", "io2", "st1", "sc1", "standard"]
+  -- Selected Text lowercasing never removes a character. Any accepted token
+  -- therefore fits the longest supported spelling before case conversion.
+  trimmed = Text.strip raw
+  normalized = Text.toLower trimmed
+  unsupported = Left (AwsSubstrateProfileUnsupportedVolumeType raw)
+
+-- These inputs also parameterize the selected converter's data reservation.
+-- One general token/static volume plus the fixed test-node list are converted.
+awsProfileTestNodeCount :: Int
+awsProfileTestNodeCount = 3
+
+awsProfileGeneralCaseMaximumCharacters, awsProfileVolumeCaseMaximumCharacters :: Int
+awsProfileGeneralCaseMaximumCharacters = 64
+awsProfileVolumeCaseMaximumCharacters = foldr (max . Text.length) 0 supportedEbsVolumeTypes
+
+awsProfileGeneralCaseMaximumCalls, awsProfileVolumeCaseMaximumCalls :: Natural
+awsProfileGeneralCaseMaximumCalls = 1 + fromIntegral awsProfileTestNodeCount
+awsProfileVolumeCaseMaximumCalls = 1 + fromIntegral awsProfileTestNodeCount
+
+supportedEbsVolumeTypes :: [Text]
+supportedEbsVolumeTypes = ["gp2", "gp3", "io1", "io2", "st1", "sc1", "standard"]
 
 awsSubstrateOperatorCidr :: AwsSubstrateProfile -> Text
 awsSubstrateOperatorCidr = internalOperatorCidr
@@ -256,21 +288,7 @@ awsTestStackConfiguration profile =
           Left (AwsSubstrateProfileListLength "aws_test_subnet_cidrs" 3 (length subnets))
 
 profileFieldName :: Text -> Text
-profileFieldName fieldName = case fieldName of
-  "internalOperatorCidr" -> "operator_cidr"
-  "internalEksNodeInstanceType" -> "eks_node_instance_type"
-  "internalEksNodeDiskSizeGib" -> "eks_node_disk_size_gib"
-  "internalEksNodeMinSize" -> "eks_node_min_size"
-  "internalEksNodeMaxSize" -> "eks_node_max_size"
-  "internalAwsTestInstanceTypes" -> "aws_test_instance_types"
-  "internalAwsTestRootVolumeTypes" -> "aws_test_root_volume_types"
-  "internalAwsTestRootVolumeSizesGib" -> "aws_test_root_volume_sizes_gib"
-  "internalStaticEbsVolumeType" -> "static_ebs_volume_type"
-  "internalEksVpcCidr" -> "eks_vpc_cidr"
-  "internalEksSubnetCidrs" -> "eks_subnet_cidrs"
-  "internalAwsTestVpcCidr" -> "aws_test_vpc_cidr"
-  "internalAwsTestSubnetCidrs" -> "aws_test_subnet_cidrs"
-  other -> other
+profileFieldName = modifyFieldName awsProfileFieldNames
 
 positive :: Text -> Natural -> Either AwsSubstrateProfileError Natural
 positive fieldName value
@@ -279,17 +297,28 @@ positive fieldName value
 
 exactList :: Int -> Text -> [value] -> Either AwsSubstrateProfileError [value]
 exactList expected fieldName values
-  | length values == expected = Right values
+  | hasExactLength expected values = Right values
   | otherwise = Left (AwsSubstrateProfileListLength fieldName expected (length values))
+
+-- Decide from the bounded prefix; keep the complete count in the lazy error.
+hasExactLength :: Int -> [value] -> Bool
+hasExactLength remaining values = case values of
+  [] -> remaining == 0
+  _ : rest -> remaining > 0 && hasExactLength (remaining - 1) rest
 
 validatedToken :: Text -> Text -> Either AwsSubstrateProfileError Text
 validatedToken fieldName raw
-  | Text.null normalized = Left (AwsSubstrateProfileFieldEmpty fieldName)
-  | Text.length normalized > 64 = Left (AwsSubstrateProfileFieldEmpty fieldName)
+  | Text.null trimmed || Text.length trimmed > awsProfileGeneralCaseMaximumCharacters =
+      Left (AwsSubstrateProfileFieldEmpty fieldName)
+  | Text.length normalized > awsProfileGeneralCaseMaximumCharacters =
+      Left (AwsSubstrateProfileFieldEmpty fieldName)
   | Text.all tokenCharacter normalized = Right normalized
   | otherwise = Left (AwsSubstrateProfileFieldEmpty fieldName)
  where
-  normalized = Text.toLower (Text.strip raw)
+  -- Check the noncontracting converter's input first; keep the output check
+  -- because one input character can expand into several output characters.
+  trimmed = Text.strip raw
+  normalized = Text.toLower trimmed
   tokenCharacter character =
     isAsciiLower character || isDigit character || character `elem` (".-_" :: String)
 
@@ -311,28 +340,9 @@ validatedNetworkCidr fieldName raw = do
         else Left (AwsSubstrateProfileMalformedCidr fieldName)
 
 parsedCidr :: Text -> Text -> Either AwsSubstrateProfileError (Integer, Int)
-parsedCidr fieldName raw =
-  case Text.splitOn "/" (Text.strip raw) of
-    [addressText, prefixText] -> do
-      octets <- maybe malformed Right (traverse parseOctet (Text.splitOn "." addressText))
-      prefix <- maybe malformed Right (parseDecimal prefixText)
-      case octets of
-        [a, b, c, d]
-          | prefix >= 0 && prefix <= 32 ->
-              Right (a * 16777216 + b * 65536 + c * 256 + d, fromInteger prefix)
-        _ -> malformed
-    _ -> malformed
- where
-  malformed = Left (AwsSubstrateProfileMalformedCidr fieldName)
-  parseOctet value = do
-    if Text.length value > 3 then Nothing else Just ()
-    number <- parseDecimal value
-    if number <= 255 && (Text.length value == 1 || Text.head value /= '0')
-      then Just number
-      else Nothing
-  parseDecimal value
-    | Text.null value || Text.length value > 3 || not (Text.all isDigit value) = Nothing
-    | otherwise = Just (read (Text.unpack value))
+parsedCidr fieldName raw = case Cidr.parseAwsCidr raw of
+  Nothing -> Left (AwsSubstrateProfileMalformedCidr fieldName)
+  Just parsed -> Right (Cidr.awsCidrAddress parsed, Cidr.awsCidrPrefix parsed)
 
 hostMask :: Int -> Integer
 hostMask prefix
@@ -340,23 +350,40 @@ hostMask prefix
   | otherwise = (1 `shiftL` (32 - prefix)) - 1
 
 renderAwsSubstrateProfileError :: AwsSubstrateProfileError -> String
-renderAwsSubstrateProfileError err = case err of
+renderAwsSubstrateProfileError = Text.unpack . renderAwsSubstrateProfileErrorText
+
+renderAwsSubstrateProfileErrorText :: AwsSubstrateProfileError -> Text
+renderAwsSubstrateProfileErrorText err = case err of
   AwsSubstrateProfileFieldEmpty fieldName ->
-    Text.unpack fieldName ++ " must be a non-empty AWS token"
-  AwsSubstrateProfileFieldZero fieldName -> Text.unpack fieldName ++ " must be greater than zero"
+    Text.concat [fieldName, " must be a non-empty AWS token"]
+  AwsSubstrateProfileFieldZero fieldName ->
+    Text.concat [fieldName, " must be greater than zero"]
   AwsSubstrateProfileListLength fieldName expected actual ->
-    Text.unpack fieldName
-      ++ " must contain exactly "
-      ++ show expected
-      ++ " values (got "
-      ++ show actual
-      ++ ")"
-  AwsSubstrateProfileMalformedCidr fieldName -> Text.unpack fieldName ++ " is not a canonical IPv4 CIDR"
+    Text.concat
+      [ fieldName
+      , " must contain exactly "
+      , Text.pack (show expected)
+      , " values (got "
+      , Text.pack (show actual)
+      , ")"
+      ]
+  AwsSubstrateProfileMalformedCidr fieldName ->
+    Text.concat [fieldName, " is not a canonical IPv4 CIDR"]
   AwsSubstrateProfileHostCidrForNetwork fieldName ->
-    Text.unpack fieldName ++ " requires a network CIDR, not a /32 host CIDR"
+    Text.concat [fieldName, " requires a network CIDR, not a /32 host CIDR"]
   AwsSubstrateProfileUnsupportedVolumeType value ->
-    "unsupported EBS volume type: " ++ Text.unpack value
+    Text.concat ["unsupported EBS volume type: ", value]
   AwsSubstrateProfileDesiredBelowMinimum desired minimumValue ->
-    "EKS desired node count " ++ show desired ++ " is below authored minimum " ++ show minimumValue
+    Text.concat
+      [ "EKS desired node count "
+      , Text.pack (show desired)
+      , " is below authored minimum "
+      , Text.pack (show minimumValue)
+      ]
   AwsSubstrateProfileMaximumBelowDesired maximumValue desired ->
-    "EKS authored maximum " ++ show maximumValue ++ " is below desired node count " ++ show desired
+    Text.concat
+      [ "EKS authored maximum "
+      , Text.pack (show maximumValue)
+      , " is below desired node count "
+      , Text.pack (show desired)
+      ]

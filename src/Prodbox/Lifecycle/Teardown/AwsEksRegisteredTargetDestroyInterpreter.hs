@@ -233,6 +233,7 @@ data AwsEksRegisteredTargetDestroyError (surface :: CleanupSurface)
   | AwsEksRegisteredTargetDestroyIamBackstopAmbiguous !Int
   | AwsEksRegisteredTargetDestroyLoadBalancerBackstopMissing
   | AwsEksRegisteredTargetDestroyLoadBalancerBackstopAmbiguous !Int
+  | AwsEksRegisteredTargetDestroyCertManagerBackstopAmbiguous !Int
   | AwsEksRegisteredTargetDestroyCatalogOperationMissing !Text
   | AwsEksRegisteredTargetDestroySuccessfulPredecessorsMismatch
       ![AwsEksDestroyPredecessorIdentity]
@@ -478,17 +479,31 @@ validateSuccessfulPredecessors context target = do
             (length candidates)
         )
   validateStaticTarget AwsEksLoadBalancerControllerFamilyKey loadBalancerTarget
+  -- Sprint 7.47: the cert-manager role family is a later key. A retained
+  -- program compiled before it existed never selected it, so its backstop is
+  -- expected exactly when it is present, and at most once.
+  certManagerTargets <- case certManagerBackstops of
+    [] -> Right []
+    [backstop] -> do
+      validateStaticTarget AwsEksCertManagerRoleFamilyKey backstop
+      Right [backstop]
+    candidates ->
+      Left (AwsEksRegisteredTargetDestroyCertManagerBackstopAmbiguous (length candidates))
   expected <-
     mapM
       expectedIdentity
-      [ SomeTeardownOperation (ObserveRegisteredTarget target)
-      , SomeTeardownOperation (ReadBackStackCheckpointRecovery target)
-      , SomeTeardownOperation (ReadBackAwsStackReaderBundle target)
-      , SomeTeardownOperation (ReadBackEksKubernetesDrain target)
-      , SomeTeardownOperation (ReadBackRegisteredTargetAbsent ebsTarget)
-      , SomeTeardownOperation (ReadBackRegisteredTargetAbsent iamTarget)
-      , SomeTeardownOperation (ReadBackRegisteredTargetAbsent loadBalancerTarget)
-      ]
+      ( [ SomeTeardownOperation (ObserveRegisteredTarget target)
+        , SomeTeardownOperation (ReadBackStackCheckpointRecovery target)
+        , SomeTeardownOperation (ReadBackAwsStackReaderBundle target)
+        , SomeTeardownOperation (ReadBackEksKubernetesDrain target)
+        , SomeTeardownOperation (ReadBackRegisteredTargetAbsent ebsTarget)
+        , SomeTeardownOperation (ReadBackRegisteredTargetAbsent iamTarget)
+        , SomeTeardownOperation (ReadBackRegisteredTargetAbsent loadBalancerTarget)
+        ]
+          ++ [ SomeTeardownOperation (ReadBackRegisteredTargetAbsent backstop)
+             | backstop <- certManagerTargets
+             ]
+      )
   let actual = map succeededIdentity successful
       attempted = map attemptedIdentity (teardownExecutionAttemptedPredecessors context)
   if sort actual == sort expected
@@ -521,6 +536,13 @@ validateSuccessfulPredecessors context target = do
     , SomeTeardownOperation (ReadBackRegisteredTargetAbsent backstop) <-
         [teardownSucceededPredecessorOperation predecessor]
     , registeredTargetKey backstop == AwsEksIamRoleFamilyKey
+    ]
+  certManagerBackstops =
+    [ backstop
+    | predecessor <- successful
+    , SomeTeardownOperation (ReadBackRegisteredTargetAbsent backstop) <-
+        [teardownSucceededPredecessorOperation predecessor]
+    , registeredTargetKey backstop == AwsEksCertManagerRoleFamilyKey
     ]
   loadBalancerBackstops =
     [ backstop

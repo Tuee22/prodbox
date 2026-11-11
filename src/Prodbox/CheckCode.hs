@@ -171,6 +171,7 @@ module Prodbox.CheckCode
   , providerSessionDurationLiteralViolations
   , controlPlaneReplyStatusViolations
   , dependencyAdmissionInternalSourceViolations
+  , recoveryClaimInternalSourceViolations
   , responseObligationViolations
   , tier0EncoderViolations
   , brokerReadinessProjectionViolations
@@ -2172,6 +2173,8 @@ haskellStyleViolations repoRoot = do
   roundTripWitnessViolations <- forceViolationFindings (checkRoundTripWitnessBoundary repoRoot)
   dnsOwnerAuthorityViolations <- forceViolationFindings (checkDnsOwnerAuthorityBoundary repoRoot)
   dependencyAdmissionViolations <- forceViolationFindings (checkDependencyAdmissionBoundary repoRoot)
+  recoveryClaimInternalViolations <-
+    forceViolationFindings (checkRecoveryClaimInternalBoundary repoRoot)
   responseObligationFindings <- forceViolationFindings (checkResponseObligation repoRoot)
   tier0EncoderFindings <- forceViolationFindings (checkTier0FixtureEncoder repoRoot)
   sharedRetryViolations <- forceViolationFindings (checkSharedRetrySchedule repoRoot)
@@ -2217,6 +2220,7 @@ haskellStyleViolations repoRoot = do
         ++ roundTripWitnessViolations
         ++ dnsOwnerAuthorityViolations
         ++ dependencyAdmissionViolations
+        ++ recoveryClaimInternalViolations
         ++ responseObligationFindings
         ++ tier0EncoderFindings
         ++ sharedRetryViolations
@@ -5503,6 +5507,23 @@ checkDependencyAdmissionBoundary repoRoot = do
           pure (dependencyAdmissionInternalSourceViolations (path, contents))
       )
 
+-- | Keep the recovery marker and program constructor inside their owning modules.
+checkRecoveryClaimInternalBoundary :: FilePath -> IO [String]
+checkRecoveryClaimInternalBoundary repoRoot = do
+  repoPaths <- listRepoOwnedPaths repoRoot
+  fmap concat $
+    forM
+      [ path
+      | path <- repoPaths
+      , "src/" `isPrefixOf` path
+      , ".hs" `isSuffixOf` path
+      , path /= "src/Prodbox/CheckCode.hs"
+      ]
+      ( \path -> do
+          contents <- readFileStrict (repoRoot </> path)
+          pure (recoveryClaimInternalSourceViolations (path, contents))
+      )
+
 -- | Sprint 7.40: the ephemeral Kubernetes client's credential machinery has
 -- exactly one statement.
 --
@@ -6497,6 +6518,82 @@ dependencyAdmissionInternalSourceViolations (path, contents) =
         ++ "(Sprint 4.56)."
     | internalModuleName `isInfixOf` contents
     , path `notElem` internalModuleAllowedPaths
+    ]
+
+-- | Refuse source references that bypass the recovery claim's held owner.
+recoveryClaimInternalSourceViolations :: (FilePath, String) -> [String]
+recoveryClaimInternalSourceViolations (path, contents) =
+  internalImports ++ ownerExports
+ where
+  internalImports =
+    [ path ++ " reaches the internal recovery-claim boundary " ++ moduleName
+    | (moduleName, allowed) <- boundaries
+    , moduleName `isInfixOf` contents
+    , path `notElem` allowed
+    ]
+  ownerExports = case lookup path restrictedExports of
+    Nothing -> []
+    Just (hiddenNames, hiddenConstructors) -> case moduleExportListIn contents of
+      Nothing -> [path ++ " must declare an explicit recovery-claim-safe export list"]
+      Just exports ->
+        [ path ++ " exposes recovery-claim internals in its export list"
+        | "module " `isInfixOf` exports
+            || any (`exportListNamesType` exports) hiddenNames
+            || any (`exportListExposesConstructors` exports) hiddenConstructors
+        ]
+  restrictedExports =
+    [
+      ( "src/Prodbox/Subprocess/HostControllerInputs.hs"
+      , (["claimRecoveryControllerInputs", "claimRecoveryControllerInputsUsing"], ["HostControllerInputs"])
+      )
+    ,
+      ( "src/Prodbox/Subprocess/HostOperationFamily.hs"
+      ,
+        ( ["claimRecoveryHostControllerProgram", "claimRecoveryHostControllerProgramUsing"]
+        , ["HostControllerProgram"]
+        )
+      )
+    ,
+      ( "src/Prodbox/Subprocess/KernelScope.hs"
+      ,
+        (
+          [ "claimRecoveryControllerInputs"
+          , "claimRecoveryControllerInputsUsing"
+          , "claimRecoveryHostControllerProgram"
+          , "claimRecoveryHostControllerProgramUsing"
+          , "claimRecoveryProgramOwned"
+          , "claimRecoveryProgramOwnedUsing"
+          , "claimRecoveryOperationParentUsing"
+          , "HostControllerProgram"
+          ]
+        , []
+        )
+      )
+    ,
+      ( "src/Prodbox/ControlPlane/OrdinaryRecoveryController.hs"
+      ,
+        ( ["runAdmittedRecoveryControllerUsing", "runClaimedRecoveryController"]
+        , ["RecoveryControllerAdmission"]
+        )
+      )
+    ]
+  boundaries =
+    [
+      ( "Prodbox.Subprocess.HostControllerInputs.Internal"
+      ,
+        [ "src/Prodbox/Subprocess/HostControllerInputs.hs"
+        , "src/Prodbox/Subprocess/HostControllerInputs/Internal.hs"
+        , "src/Prodbox/Subprocess/KernelScope.hs"
+        ]
+      )
+    ,
+      ( "Prodbox.Subprocess.HostOperationFamily.Program.Internal"
+      ,
+        [ "src/Prodbox/Subprocess/HostOperationFamily.hs"
+        , "src/Prodbox/Subprocess/HostOperationFamily/Program/Internal.hs"
+        , "src/Prodbox/Subprocess/KernelScope.hs"
+        ]
+      )
     ]
 
 -- | Sprint 4.67: no control-plane producer states an HTTP status as a number.

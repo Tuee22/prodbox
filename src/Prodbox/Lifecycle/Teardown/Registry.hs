@@ -56,6 +56,9 @@ module Prodbox.Lifecycle.Teardown.Registry
   , awsEksIamRoleFamilyResource
   , awsEksIamRoleNames
   , awsEksIamManagedPolicyNames
+  , awsEksCertManagerRoleFamilyResource
+  , awsEksCertManagerRoleNames
+  , awsEksCertManagerPolicyNames
   , awsEksLoadBalancerControllerFamilyResource
   , awsEksLoadBalancerControllerName
   , awsEksLoadBalancerControllerTags
@@ -468,6 +471,35 @@ awsEksLoadBalancerControllerTags =
   , ("prodbox.io/resource", "public-edge")
   ]
 
+-- | Sprint 7.47 (D5(a)): the cert-manager DNS01 IRSA role, a family of its own
+-- so the frozen 'awsEksIamRoleFamilyResource' coordinate, and every retained
+-- cleanup program that selected only earlier keys, keep their digests.
+awsEksCertManagerRoleNames :: [Text]
+awsEksCertManagerRoleNames =
+  [ "prodbox-"
+      <> awsEksPulumiStackName
+      <> "-"
+      <> awsEksProvisionedClusterName
+      <> "-cm-dns01-role"
+  ]
+
+awsEksCertManagerPolicyNames :: [Text]
+awsEksCertManagerPolicyNames = [awsEksPulumiStackName <> "-cm-dns01"]
+
+awsEksCertManagerRoleFamilyResource
+  :: ManagedResourceDescriptor 'PerRun 'ControllerFamily
+awsEksCertManagerRoleFamilyResource =
+  mkManagedResource
+    AwsEksCertManagerRoleFamilyKey
+    PerRunLifecycle
+    ControllerFamilyKind
+    ( AwsIamRoleFamilyCoordinate
+        awsEksProvisionedClusterName
+        awsEksCertManagerRoleNames
+        awsEksCertManagerPolicyNames
+    )
+    AwsResourceApiAuthority
+
 awsEksLoadBalancerControllerFamilyResource
   :: ManagedResourceDescriptor 'PerRun 'ControllerFamily
 awsEksLoadBalancerControllerFamilyResource =
@@ -521,6 +553,7 @@ managedResourceRegistry =
   , SomeManagedResourceDescriptor sesInviteMailObjectsResource
   , SomeManagedResourceDescriptor
       (networkDependentFamilyResource AwsTestCanarySecurityGroupsKey TestCanarySecurityGroups)
+  , SomeManagedResourceDescriptor awsEksCertManagerRoleFamilyResource
   ]
 
 lifecycleRegistry :: [RegisteredIdentity]

@@ -31,6 +31,49 @@ subprocessKillableSuite =
   describe "killable subprocess runner" $ do
     ownedProcessTreeCases
     boundedOwnedCases
+    it "captures both streams when their positive ceilings are maxBound" $ do
+      result <-
+        captureSubprocessBounded
+          (BoundedSubprocessLimits 1 maxBound maxBound 5000000)
+          (script "printf out; printf err >&2")
+      case result of
+        Right output -> do
+          processExitCode output `shouldBe` ExitSuccess
+          processStdout output `shouldBe` "out"
+          processStderr output `shouldBe` "err"
+        Left _ -> expectationFailure "expected bounded capture to accept the largest positive ceilings"
+
+    it "bounded capture kills a SIGTERM-ignoring child at its deadline" $
+      withSystemTempDirectory "bounded-term" $ \directory -> do
+        let pidFile = directory <> "/pid"
+        (result, elapsed) <-
+          elapsedMillis
+            ( captureSubprocessBounded
+                (BoundedSubprocessLimits 1 1024 1024 300000)
+                (script ("trap '' TERM; echo $$ > " <> pidFile <> "; while :; do sleep 1; done"))
+            )
+        case result of
+          Left _ -> pure ()
+          Right _ -> expectationFailure "expected the deadline to refuse the child"
+        elapsed `shouldSatisfy` (< 4000)
+        recordedPid pidFile >>= eventuallyGone >>= (`shouldBe` True)
+
+    it "bounded capture kills a SIGTERM-ignoring child when the caller is cancelled" $
+      withSystemTempDirectory "bounded-cancel" $ \directory -> do
+        let pidFile = directory <> "/pid"
+        (outcome, elapsed) <-
+          elapsedMillis
+            ( timeout
+                400000
+                ( captureSubprocessBounded
+                    (BoundedSubprocessLimits 1 1024 1024 30000000)
+                    (script ("trap '' TERM; echo $$ > " <> pidFile <> "; while :; do sleep 1; done"))
+                )
+            )
+        isNothing outcome `shouldBe` True
+        elapsed `shouldSatisfy` (< 4000)
+        recordedPid pidFile >>= eventuallyGone >>= (`shouldBe` True)
+
     it "reports the exit and both streams of a child that completes" $ do
       result <-
         captureSubprocessKillable

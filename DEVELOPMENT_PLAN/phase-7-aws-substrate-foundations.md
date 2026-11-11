@@ -7331,6 +7331,184 @@ Operator decisions (accepted 2026-10-21 for D5–D7; D8 accepted 2026-10-20):
 Implement and validate the selected D5–D7 routes and the approved D8 source-build projection when
 this sprint reaches the numerical queue.
 
+**Source survey for D6/D7, 2026-11-09 (no code changed).** Where the retained-delivery boundary
+lives: `Lifecycle/Authority/RetainedMaterial.hs` (the schema-indexed `RetainedMaterialTarget`,
+whose identity is a validated free-text field and whose Vault path is fixed by schema alone:
+`secret/acme/eab` and `secret/keycloak/smtp`), `ControlPlane/RetainedMaterialDelivery{Coordinator,
+Endpoint,Production,Client}.hs` (the coordinator compares an intent's target with the request's;
+production rewrap goes through `TargetRetainedMaterialRewrapClient` and
+`TargetSecretAgentExecution.TargetAgentIdentity`). The single-registered-agent refusal is therefore
+not in the target type: it is in `ControlPlane/Runtime.hs` (the `retainedDeliveryBoundary`
+around line 3170), where both `deliverRetainedSesSmtp` and `deliverRetainedAcmeEab` refuse any
+request whose target text differs from the one `registeredAgentIdentity`, and then hand that same
+identity, the one `retainedRewrapClient` (built on `targetOneShotTransport`, which reaches the home
+Target Agent) and the one `retainedTargetBoundary` to production delivery. A second target
+therefore needs a per-target triple (identity, transport, boundary), not only a wider identity set,
+and the EKS transport is exactly the host-bridged lane that does not yet exist. A second (EKS) target needs, in order: (1) the Authority's registered
+agent set widened from one identity to a closed set keyed by substrate, with registration of the
+canonical EKS agent an explicit, fenced act; (2) the coordinator and endpoint selecting the rewrap
+client by the request's registered target rather than by a single configured agent; (3) the
+host-bridged lane the public-edge TLS workflow shapes; (4) validation 3 (accepted when registered,
+refused when not). Items (1)-(2) change Authority admission and are Standard-P-invalidating; none
+was started. D5(a) additionally needs the per-run subzone's hosted-zone id to reach the `aws-eks`
+stack, which is a cross-stack ordering and ownership-lane decision this survey did not resolve.
+**First slice landed, 2026-11-09 (uncommitted; behavior-preserving).** A substrate-keyed
+`TargetEpochAgentRegistry` already exists (`TargetAuthorityEpochBinding`, from the Phase `4`/`6.5`
+epoch work). It now exposes `targetEpochRegistrySubstrateForCluster`, a whole-identity membership
+lookup from a delivery request's cluster-identity text to its registered substrate and agent. A
+unit case (validation 3, offline) shows that a registry with a home and an EKS agent finds both, a
+home-only registry (today's production shape) refuses the EKS identity, and an empty string, a
+prefix and a different case are not registered. **Slice 2 landed (uncommitted, home-only so behavior-preserving):**
+`Runtime.hs`'s `retainedDeliveryBoundary` now admits a delivery target by
+`targetEpochRegistrySubstrateForCluster` over `homeTargetEpochAgentRegistry registeredAgentIdentity
+targetTransport` in both the SES SMTP and ACME EAB arms, instead of comparing the target text with
+`registeredAgentIdentity` directly; with only the home agent registered it admits exactly what the
+comparison did (821 retained-delivery-related unit cases pass). **Slice 2b landed (same session):** both arms now hand
+production delivery the agent the registry lookup returned (`deliveryAgent`) rather than the fixed
+`registeredAgentIdentity`; with only home registered that is the same value. The rewrap client and
+target boundary are still the home ones. **Next slices, in order:** (3) a per-substrate rewrap transport, which is the
+host-bridged lane and the part that needs a live EKS Agent; (4) register the canonical EKS agent
+and add the EKS-side Vault policy (validation 2); (5) D5(a)'s scoped workload role, which needs
+the subzone-id decision above. Sprint `7.47` remains `Parked` and otherwise unimplemented.
+
+**D5(a) scoping options, 2026-11-09 (design note, no code changed).** The `aws-eks` program already
+has the cluster OIDC provider and two IRSA roles (`awsLbControllerRole`, `ebsCsiDriverRole`), so a
+cert-manager role is a third resource of the same shape, bound to
+`system:serviceaccount:<cert-manager namespace>:cert-manager`. Only its Route 53 scoping is open:
+**(i)** pass the subzone's hosted-zone id into the stack as config and use
+`arn:aws:route53:::hostedzone/<id>` — exact, but orders the subzone stack before `aws-eks` and
+adds a checkpointed input; **(ii)** keep `hostedzone/*` and constrain with the Route 53 condition keys
+`route53:ChangeResourceRecordSetsNormalizedRecordNames` (`_acme-challenge.<subzone>` names only),
+`...RecordTypes` (`TXT`) and `...Actions` (`UPSERT`, `DELETE`) — needs only the subzone *name*,
+which the stack's config already derives from the substrate domain, but the grant then reaches every
+zone in the account for those names. Either also needs `route53:GetChange` and
+`route53:ListHostedZonesByName`. Consumers to change with the role: `AwsEksTestStack.hs` output
+decoding and its fixtures, the cert-manager ServiceAccount annotation and solver (no static
+credential), retirement of `AwsRunCertManagerDns01` in `TargetMaterialRegistry.hs`,
+`TargetSecretWorker.hs`, `Rke2.hs` and `VaultInventory.hs`, and the four governed documents. **Operator selected (i), the exact hosted-zone ARN (2026-11-09).** Tracing the consumer list shows why this is
+not a one-resource change: the `aws-eks` stack configuration is a pure function of the substrate profile,
+built inside the sealed Provider Worker (`ProviderWork.hs` `awsEksStackConfiguration` call near line 714;
+`ProviderProduction.hs` near line 599). The zone id is a runtime value, so it must enter the signed Provider
+intent for the AWS EKS create and the write-ahead ownership manifest, and the subzone stack must be proven
+converged (its `subzone_id` output read) before that intent is minted. That changes Provider wire codecs
+and Standard-P-bound admission, so it lands as its own sub-slice with a frozen two-sided wire family
+before the Pulumi role and the materializer retirement.
+**Slice 5a landed, 2026-11-09 (uncommitted; additive).** `ProviderStackConfig`, both retained-binding
+`ProviderConfigWire` types and the view gain one **last** constructor each
+(`AwsEksProfileZoneProviderStackConfig` / `AwsEksProfileZoneProviderConfigWire`), so every earlier Generic-
+`Serialise` tag is unchanged. Its smart constructor validates the profile and a non-empty, control-free zone
+id; the compiled `aws-eks` arm appends `hostedZoneId` to the stack configuration, and `aws-eks/Main.yaml`
+declares that key (default `unrecorded`, the Sprint `7.41` precedent). The zone-less form stays applyable so a
+destroy never needs a zone. `aws stack eks reconcile` resolves the zone through
+`resolveSubstrateHostedZoneId` and refuses before minting an intent when no subzone converged.
+**First attempt withdrawn, then landed as its own family.** Adding the role name to `awsEksIamRoleNames`
+changed the frozen `AwsIamRoleFamilyCoordinate` and broke 26 frozen cleanup-program cases
+(`CleanupProgramDescriptorGraphMismatch`). The role is therefore a **new registered key**,
+`AwsEksCertManagerRoleFamilyKey` (appended last, text `aws-eks-cert-manager-role-family`, `PerRun`), with its
+own coordinate: role `prodbox-<stack>-<cluster>-cm-dns01-role` and managed policy `<stack>-cm-dns01` (the wire
+requires a non-empty managed-policy list, so the Route 53 grant is a managed policy plus attachment, not an
+inline one). `aws-eks/Main.yaml` declares the role (IRSA for `cert-manager:cert-manager`), the policy
+(`ChangeResourceRecordSets` on `hostedzone/${hostedZoneId}` only, `GetChange`, `ListHostedZonesByName`), the
+attachment and the output `cert_manager_dns01_role_arn`. The existing IAM-role-family adapter is generalised
+by key (`mkExactAwsIamRoleFamilyObservationRequestFor`), the Provider Worker accepts either registered
+(roles, policies) pair, the executor map, result check, legacy-adoption observer, create-record coverage row,
+audit-field inventory, resource-class row and generated `substrates.md` row follow, and the EKS destroy
+interpreter expects the new read-back predecessor only when a program selected it, so retained programs that
+never selected the key still restart. The seven frozen v3 programs pass unchanged.
+**Consequences recorded, not hidden:** every full-registry cascade program grows by three nodes (77 -> 80) and
+its graph digest changes, so the replay envelopes widen as the doctrine says: Provider dispatches 87 -> 91,
+Lifecycle Authority 2,055 -> 2,131 requests (4,110 -> 4,262 slots), Authority Backup 2,392 -> 2,488
+(4,784 -> 4,976). The retained `host-cleanup-history` fixture is a cascade run completed under the earlier
+key set, so its test now recompiles over exactly those keys; a retained cascade-history handoff from an older
+binary would not recompile against the full registry, which is a compatibility fact of any per-run key.
+**IRSA solver landed (slice 5c, 2026-11-09).** The AWS ACME step renders no materializer Job, Vault object or
+Secret, the Route 53 solver names no static credential (cert-manager uses its ambient identity), and
+`ensureAcmeRuntimeForSubstrate` no longer waits on the DNS01 materializer for `SubstrateAws`, which closes the
+"waits 300 seconds on an object nothing writes" defect for DNS01. The cert-manager install now sets the
+ServiceAccount annotation `eks.amazonaws.com/role-arn` from the new stack output
+`cert_manager_dns01_role_arn` (decoded into `eksSnapshotCertManagerDns01RoleArn`, refused when empty) and
+`securityContext.fsGroup=1001` so the projected token is readable. The home arm is unchanged.
+**Run-scoped Vault path retired (slice 5e, 2026-11-09).** `VaultInventory` no longer registers the
+`aws-cert-manager-run` consumer role/policy or the `secret/aws/cert-manager/aws/dns01` object, and the six
+governed passages that described the run-scoped generation (`vault_doctrine`, `aws_integration_environment_doctrine`,
+`aws_admin_credentials`, `lifecycle_control_plane_architecture`, `lifecycle_reconciliation_doctrine`,
+`substrates.md`) now describe the IRSA role. `AwsRunCertManagerDns01` and its credential class are deliberately
+kept as **tombstones**: they are constructors of the Credential Provisioner's Generic-`Serialise` wire types, the
+first-reconcile journal and the retained inventory, so deleting one would shift every later tag. They are
+already excluded from `targetWorkerTargetIds`, refused by the first-reconcile plan, and have no producer; the
+unit suite pins their wire path and that exclusion.
+**D6/D7 lane survey, 2026-11-10 (no code changed).** The registry half is done: `TargetEpochAgentRegistry`
+already maps each substrate to `(agent identity, authenticated transport)`, and delivery admission looks the
+request's cluster identity up in it. Three components of the delivery stack in `Runtime.hs` are still built only
+from home inputs and are what a second target would need per-entry: the **sink observer**
+(`retainedTargetObserver`, over the home `targetMaterialClient`), the **materialization boundary**
+(`retainedTargetBoundary`, which carries the home Vault address and auth path and the home Job connection with
+`127.0.0.1:30080` as image repository), and the **rewrap client** (over `targetOneShotTransport`). The first and
+third can follow the registry entry's transport. The second cannot be derived: it needs the EKS Vault address,
+the EKS Job connection and an image repository the EKS nodes can pull, none of which are inputs to the
+Lifecycle Authority runtime today. Supplying them is a deployment-configuration design (how the host-bridged
+lane reaches the EKS control plane, and how that connection is fenced and rotated) that cannot be validated
+without a live EKS cluster, so it stays open here.
+**D8 EKS delivery options, 2026-11-10 (design note, awaiting an operator choice D9).** The two source-built
+archives (MinIO server, `mc`) must reach EKS nodes before MinIO or the registry exist, and their digest must be
+proved on the node. Three routes, none implemented:
+**(a) Node-level import from a verified S3 object.** `aws-eks` stack gains a retained, digest-named S3 object per
+archive (the Authority already owns S3 prefixes); a one-shot DaemonSet with host access imports it into containerd
+and reports the config digest. No registry is needed, so there is no circularity; cost is a privileged pod and one
+more node-role S3 read grant. **(b) A filesystem-backed bootstrap registry** (`registry:2` on hostPath) serving only
+these two images, torn down once MinIO is ready. Smaller privilege, but a second registry to qualify and a window
+in which the nodes pull from an unauthenticated in-cluster endpoint. **(c) Bake the archives into the node AMI or
+user-data.** Simplest to reason about, but it ties image identity to node launch and breaks the exact-digest
+read-back the cascade relies on. **Recommendation: (a)**, because it keeps one verified artifact path shared with
+the home seed (`BootstrapImageSeed` already imports only on a matching config digest), adds no registry, and its
+proof is the same digest comparison. Decision D9 (choose (a), (b) or (c)) is needed before implementation; it
+cannot be validated without a live EKS node.
+**Delivery lane unit landed (slice 5f, 2026-11-10; behavior-preserving).** `Runtime.hs` now resolves a
+registered delivery target to `(agent, lane)` through `withRegisteredDeliveryAgent registry laneFor target`. A
+`RetainedDeliveryLane` holds the sink observer's material client and the one-shot rewrap client; production's
+`retainedDeliveryLaneFor` wires `CutoverHome` only, built from exactly the transports the stack used before. A
+registered agent with no wired lane is refused (`retained delivery lane is not wired for the registered Target
+Agent`) before any component of another substrate's lane can be used for it, so the EKS lane is now a second case
+of one lookup. The lane also carries the materialization boundary (slice 5g), so a lane is the whole set of
+home-or-EKS inputs; the EKS lane's boundary needs the EKS connection inputs. A unit case covers a wired lane, a registered agent without a lane, and an unregistered
+target.
+**D8** is owned first by Sprint `6.5` (home bootstrap prerequisite, in execution order); this sprint retains only
+the EKS projection and proof.
+**D8 survey, 2026-11-10 (no code changed).** The home prerequisite exists in source:
+`Prodbox.Infra.BootstrapImage{Archive,Source,SourceNative}` assemble the source-built MinIO and `mc` archives
+(repository `prodbox/<component>-bootstrap`, tag `<release>-source-v1`), `BootstrapImageSeed` imports an image
+into containerd only when its canonical config digest matches, and `ContainerImage.publicMinio{,Mc}Image` name
+them. What this sprint still owns is the EKS projection: an EKS node has no host Docker cache, and the registry
+that would hold these two images is itself backed by MinIO. A path is needed that gets the two verified archives
+onto the nodes (a node-level import or a filesystem-backed bootstrap registry for these two images alone) and
+proves the digest there. That is a delivery design with a live-node proof, not an offline change.
+**Not done:** the EAB and SMTP delivery lane
+(D6/D7), the D8 MinIO image source, the governed documents beyond
+the replay prose, and any live proof.
+**Frozen v4 fixture landed (slice 5d, 2026-11-09).** `test/fixtures/lifecycle-descriptor-v4.json` freezes six
+programs (local, cascade, cascade with zone, per-run, per-run with zone, operational) compiled by compiler `v7`
+after the new key existed: descriptor bytes, descriptor digest and graph digest. A unit case restarts each through
+the real descriptor-bound reader and asserts that exactly the cascade and per-run programs carry the
+`aws-eks-cert-manager-role-family` nodes, so a later registry key can neither change their digests nor leak into
+them. The bytes are generated once by a guarded one-off (`PRODBOX_GENERATE_FROZEN_V4=<path>`) and are never
+regenerated by an ordinary run, as with the v3 document. This sprint stays `Parked` and its deployment
+qualification stays invalidated.
+**Successor survey, 2026-11-09 (written before the work above; kept for its inventory).** Frozen programs are safe against a *new* key: a
+descriptor records its exact registered keys (`selectedExplicitPerRunKeys`) and recompiles only those, which is
+why the seven frozen v3 programs did not acquire the later canary family. Only an edit to an *existing* key's
+coordinate breaks them. The successor is therefore a new registered key for the cert-manager role (its own
+`AwsIamRoleFamilyCoordinate` with the single role name), not a wider `awsEksIamRoleNames`. Sites that handle
+the existing key and need a counterpart (or a generalisation from one family to a list): `Teardown/Model.hs`
+(key, text, durability), `Registry.hs` (descriptor), `RegisteredTargetExecutor.hs` (executor map),
+`AwsIamRoleFamilyAdapter.hs` (it hard-codes `roles == awsEksIamRoleNames` and the one key),
+`AwsRegisteredTargetInterpreter.hs` (three arms), `AwsEksRegisteredTargetDestroyInterpreter.hs` (static-target
+validation and backstop check), `RegisteredTargetResult.hs`, `LegacyAdoptionObserver.hs`,
+`CreateRecordCoverage.hs` (the Sprint `7.43` creator classification), `AwsAuditField.hs`,
+`Test/AwsLifecycle.hs`, `TestRunner.hs`, the write-ahead ownership manifest, and about fifteen unit modules that
+enumerate the family. It also needs the compiler-version guard the canary key has, so a historical compiler
+cannot declare it. This is one coupled Standard-P change that must land with its frozen two-sided fixture and a
+full gate; it is not started.
+
 ## Sprint 7.48: The Per-Run Subzone Could Not Be Deleted While It Held What The Run Wrote [✅ Done]
 
 **Status**: Done (2026-10-08). Phase `7` own-surface reopen (Standards A/N) on the AWS per-run subzone's

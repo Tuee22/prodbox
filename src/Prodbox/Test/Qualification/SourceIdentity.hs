@@ -19,6 +19,11 @@ module Prodbox.Test.Qualification.SourceIdentity
   , SourceScope (..)
   , canonicalSourceManifestPolicyId
   , canonicalSourceManifestPolicyVersion
+  , awsLifecycleSourceManifestPolicyId
+  , awsLifecycleScopePaths
+  , awsLifecycleScopePrefixes
+  , mkAwsLifecycleSourceIdentity
+  , isAwsLifecycleScopePath
   , executableSourceManifestPolicyId
   , gitHeadText
   , isDocumentationPath
@@ -190,6 +195,106 @@ mkScopedSourceIdentity scope gitHead worktreeState configuredSecretRoots candida
               , sourceManifestDigest = sha256Hex manifestBytes
               , sourceManifestEntryCount = length kept
               }
+
+-- | The policy identifier of the AWS stack lifecycle's scoped manifest
+-- (Sprint 6.7). It differs from the other two identifiers, so a scoped digest
+-- can never be mistaken for a full or executable one.
+awsLifecycleSourceManifestPolicyId :: Text
+awsLifecycleSourceManifestPolicyId = "prodbox-source-manifest-aws-lifecycle"
+
+-- | The exact modules the AWS stack lifecycle claim covers: the Provider's
+-- destroy and observation modules, the native-family reaper, the registry
+-- families, the audit, the lifecycle scope and canary, and the validations that
+-- assert the verdict (the drill harness and the oracle). The list is part of
+-- the policy digest, so adding or removing a module changes the identity.
+awsLifecycleScopePaths :: [Text]
+awsLifecycleScopePaths =
+  [ "src/Prodbox/Capacity/AwsLifecycleBudget.hs"
+  , "src/Prodbox/ControlPlane/ProviderProduction.hs"
+  , "src/Prodbox/Infra/AwsEksSubzoneStack.hs"
+  , "src/Prodbox/Infra/AwsEksTestStack.hs"
+  , "src/Prodbox/Infra/AwsFieldAudit.hs"
+  , "src/Prodbox/Infra/AwsStackRepair.hs"
+  , "src/Prodbox/Infra/AwsTestStack.hs"
+  , "src/Prodbox/Lifecycle/AwsAudit.hs"
+  , "src/Prodbox/Lifecycle/AwsAuditEvidence.hs"
+  , "src/Prodbox/Lifecycle/AwsAuditField.hs"
+  , "src/Prodbox/Lifecycle/AwsDestroyConverge.hs"
+  , "src/Prodbox/Lifecycle/AwsInventory.hs"
+  , "src/Prodbox/Lifecycle/AwsNativeStackFamily.hs"
+  , "src/Prodbox/Lifecycle/AwsNetworkDependents.hs"
+  , "src/Prodbox/Lifecycle/AwsNetworkFamily.hs"
+  , "src/Prodbox/Lifecycle/AwsNetworkPurge.hs"
+  , "src/Prodbox/Lifecycle/AwsProviderRecording.hs"
+  , "src/Prodbox/Lifecycle/AwsRemedy.hs"
+  , "src/Prodbox/Lifecycle/AwsStackDestroy.hs"
+  , "src/Prodbox/Lifecycle/AwsStackDiff.hs"
+  , "src/Prodbox/Lifecycle/AwsTestCanary.hs"
+  , "src/Prodbox/Lifecycle/AwsTestCanaryExecution.hs"
+  , "src/Prodbox/Lifecycle/AwsWait.hs"
+  , "src/Prodbox/Test/AwsLifecycle.hs"
+  , "src/Prodbox/Test/AwsLifecycleCanary.hs"
+  , "src/Prodbox/Test/AwsStackEvidence.hs"
+  ]
+
+-- | Directory prefixes the scope covers whole: the Provider worker and the four
+-- Pulumi programs.
+awsLifecycleScopePrefixes :: [Text]
+awsLifecycleScopePrefixes =
+  [ "pulumi/aws-eks/"
+  , "pulumi/aws-eks-subzone/"
+  , "pulumi/aws-ses/"
+  , "pulumi/aws-test/"
+  , "src/Prodbox/Lifecycle/ProviderWorker/"
+  ]
+
+-- | Whether a normalized path is inside the AWS lifecycle scope.
+isAwsLifecycleScopePath :: Text -> Bool
+isAwsLifecycleScopePath path =
+  path `elem` awsLifecycleScopePaths
+    || any (`Text.isPrefixOf` path) awsLifecycleScopePrefixes
+
+-- | The AWS-lifecycle scoped identity. Every candidate is admitted exactly as
+-- under the full scope (an excluded or unallowlisted path is refused), then only
+-- the scoped paths are hashed, so a document, an unlisted module or a test
+-- outside the harness cannot move the digest. It is Sprint 6.7's identity and is
+-- deliberately not a 'SourceScope', so the cascade identity cannot select it.
+mkAwsLifecycleSourceIdentity
+  :: GitHead
+  -> WorktreeState
+  -> [Text]
+  -> [SourceCandidate]
+  -> Either SourceIdentityError SourceIdentity
+mkAwsLifecycleSourceIdentity gitHead worktreeState configuredSecretRoots candidates = do
+  normalizedSecretRoots <- traverse normalizeSecretRoot configuredSecretRoots
+  let secretRoots = sort (Set.toList (Set.fromList normalizedSecretRoots))
+  admitted <- traverse (admitCandidate secretRoots) candidates
+  rejectDuplicatePaths admitted
+  case filter (isAwsLifecycleScopePath . admittedPath) admitted of
+    [] -> Left SourceManifestEmpty
+    kept -> do
+      let policyBytes =
+            BS.concat
+              [ canonicalPolicyBytes FullSurface secretRoots
+              , encodePolicyClause "policy-id" [awsLifecycleSourceManifestPolicyId]
+              , encodePolicyClause "source-scope" ["aws-lifecycle"]
+              , encodePolicyClause "aws-lifecycle-paths" awsLifecycleScopePaths
+              , encodePolicyClause "aws-lifecycle-prefixes" awsLifecycleScopePrefixes
+              ]
+          manifestBytes = BS.concat (map encodeManifestEntry (sortOn admittedPath kept))
+      pure
+        SourceIdentity
+          { sourceGitHead = gitHead
+          , sourceWorktreeState = worktreeState
+          , sourceManifestPolicyIdentity =
+              SourceManifestPolicyIdentity
+                { sourcePolicyIdentifier = awsLifecycleSourceManifestPolicyId
+                , sourcePolicyVersion = canonicalSourceManifestPolicyVersion
+                , sourcePolicyDigest = sha256Hex policyBytes
+                }
+          , sourceManifestDigest = sha256Hex manifestBytes
+          , sourceManifestEntryCount = length kept
+          }
 
 inScope :: SourceScope -> Text -> Bool
 inScope scope path = case scope of

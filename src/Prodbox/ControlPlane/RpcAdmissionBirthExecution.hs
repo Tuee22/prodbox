@@ -94,6 +94,8 @@ import Prodbox.ControlPlane.RpcAdmissionBirthWire
   , rpcBirthRegistryObservationMaximumBytes
   , rpcBirthRegistryRequest
   , rpcBirthRequestPrefix
+  , rpcBirthSignedDescriptorRequest
+  , rpcBirthSignedRegistryRequest
   )
 import Prodbox.ControlPlane.RpcKeyRegistry
   ( RpcKeyRegistry
@@ -297,7 +299,9 @@ mkRpcBirthDescriptorContext
   -> Either RpcBirthError RpcBirthDescriptorContext
 mkRpcBirthDescriptorContext expected mode request = do
   validateRpcBirthRequestContext expected request
-  unless (verifiedRequestBody request == rpcBirthDescriptorRequest) (Left RpcBirthRequestInvalid)
+  unless
+    (verifiedRequestBody request `elem` [rpcBirthDescriptorRequest, rpcBirthSignedDescriptorRequest])
+    (Left RpcBirthRequestInvalid)
   pure (RpcBirthDescriptorContext expected (verifiedRequestDeadline request) mode)
 
 rpcBirthDescriptorContextDeadline :: RpcBirthDescriptorContext -> AuthorityTime
@@ -310,7 +314,9 @@ mkRpcBirthRegistryContext
   -> Either RpcBirthError RpcBirthRegistryContext
 mkRpcBirthRegistryContext expected mode request = do
   validateRpcBirthRequestContext expected request
-  unless (verifiedRequestBody request == rpcBirthRegistryRequest) (Left RpcBirthRequestInvalid)
+  unless
+    (verifiedRequestBody request `elem` [rpcBirthRegistryRequest, rpcBirthSignedRegistryRequest])
+    (Left RpcBirthRequestInvalid)
   pure (RpcBirthRegistryContext expected (verifiedRequestDeadline request) mode)
 
 rpcBirthRegistryContextDeadline :: RpcBirthRegistryContext -> AuthorityTime

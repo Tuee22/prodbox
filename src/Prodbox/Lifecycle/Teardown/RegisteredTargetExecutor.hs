@@ -167,3 +167,4 @@ registeredTargetExecutorFor key = case key of
   HomeDns01ChallengeRecordKey -> Right Dns01ChallengeRecordFamilyExecutor
   SesInviteMailObjectsKey -> Right SesInviteMailObjectsExecutor
   AwsTestCanarySecurityGroupsKey -> Right NetworkDependentFamilyExecutor
+  AwsEksCertManagerRoleFamilyKey -> Right EksIamRoleFamilyExecutor

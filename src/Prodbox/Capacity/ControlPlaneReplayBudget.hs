@@ -11,6 +11,7 @@ module Prodbox.Capacity.ControlPlaneReplayBudget
   , authorityMetadataResponseMaximumBytes
   , awsAdminResponseMaximumBytes
   , checkpointMetadataResponseMaximumBytes
+  , providerScopeObservationMaximumBytes
   ) where
 
 import Numeric.Natural (Natural)
@@ -50,6 +51,11 @@ awsAdminResponseMaximumBytes = 64 * 1024
 
 checkpointMetadataResponseMaximumBytes :: Int
 checkpointMetadataResponseMaximumBytes = 4 * 1024
+
+-- Shared by the scope-observation producer, authenticated response limiter and
+-- recovery caller schedule.
+providerScopeObservationMaximumBytes :: Int
+providerScopeObservationMaximumBytes = 4 * 1024
 
 mebibyte :: Int
 mebibyte = 1024 * 1024

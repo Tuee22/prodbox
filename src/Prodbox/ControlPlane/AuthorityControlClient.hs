@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 -- | Authenticated client for the Lifecycle Authority's closed control fold.
 -- The request is a typed genesis/repair/migration command; callers must
@@ -14,7 +15,12 @@ module Prodbox.ControlPlane.AuthorityControlClient
   , decodeProviderBootstrapPredecessorResponse
   , decodeAuthorityControlTextResponse
   , observeEpochPromotionWithTransport
+  , observeEpochPromotionWithVerifiedResponse
   , decodeEpochPromotionObservationResponse
+  , EpochPromotionSubmission (..)
+  , prepareEpochPromotionWithTransport
+  , submitEpochPromotionWithTransport
+  , decodeEpochPromotionSubmissionResponse
   )
 where
 
@@ -27,6 +33,7 @@ import Prodbox.Capacity.ControlPlaneReplayBudget qualified as ReplayBudget
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientError
   , AuthenticatedClientTransport
+  , callAuthenticatedAuthorityObservationWithSignedRequest
   , callAuthenticatedClientTransport
   )
 import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
@@ -34,21 +41,34 @@ import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
       ( AuthorityControlObserveEpochPromotion
       , AuthorityControlObserveProviderAdmissionRecovery
       , AuthorityControlObserveProviderBootstrapPredecessor
+      , AuthorityControlObserveSignedEpochPromotion
       )
+  )
+import Prodbox.ControlPlane.AuthorityAuthenticatedResponse
+  ( AuthorityAuthenticatedResponseError
+  , verifyAuthorityAuthenticatedResponse
   )
 import Prodbox.ControlPlane.Client
   ( ControlPlaneResponse (..)
-  , ControlPlaneRouteFor (LifecycleAuthorityControlRoute)
+  , ControlPlaneRouteFor (LifecycleAuthorityControlRoute, LifecycleMigrationApplyRoute)
   )
 import Prodbox.ControlPlane.Codec
   ( ControlPlaneResponseCodecError
   , decodeControlPlaneResponse
   , encodeControlPlaneRequest
   )
+import Prodbox.ControlPlane.RequestAuthentication (TrustedRequestKey)
+import Prodbox.Lifecycle.Authority.EpochPromotion (EpochPromotionRequest)
 import Prodbox.Lifecycle.Authority.EpochPromotionObservation
   ( EpochPromotionObservation
   , EpochPromotionObservationError
   , validateEpochPromotionObservation
+  )
+import Prodbox.Lifecycle.Authority.EpochTopology (EpochTopology)
+import Prodbox.Lifecycle.Authority.Migration
+  ( MigrationCommand (ApplyPreparedEpochPromotion, PrepareReplacementEpoch)
+  , MigrationEpoch
+  , encodeMigrationCommand
   )
 import Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch
   ( CascadeAuditFreezeBinding
@@ -71,6 +91,7 @@ newtype AuthorityControlClient m = AuthorityControlClient
 
 data AuthorityControlClientError
   = AuthorityControlTransportFailed !AuthenticatedClientError
+  | AuthorityControlResponseAuthenticationFailed !AuthorityAuthenticatedResponseError
   | AuthorityControlRefused !Text
   | AuthorityControlHttpStatus !Int !Text
   | AuthorityControlResponseInvalid !ControlPlaneResponseCodecError
@@ -81,6 +102,7 @@ data AuthorityControlClientError
   | AuthorityControlBootstrapPredecessorInvalid !ProviderAdmissionEpochError
   | AuthorityControlEpochObservationInvalid !EpochPromotionObservationError
   | AuthorityControlEpochObservationResponseMismatch
+  | AuthorityControlEpochSubmissionResponseMismatch
   deriving stock (Eq, Show)
 
 authorityControlClientWithTransport
@@ -128,6 +150,75 @@ observeEpochPromotionWithTransport transport = do
       LifecycleAuthorityControlRoute
       (LazyByteString.toStrict (encodeControlPlaneRequest AuthorityControlObserveEpochPromotion))
   pure (first AuthorityControlTransportFailed attempted >>= decodeEpochPromotionObservationResponse)
+
+-- | The caller supplies an independently authenticated Authority key and
+-- bounds the complete call, including key selection, by the original deadline.
+observeEpochPromotionWithVerifiedResponse
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> TrustedRequestKey
+  -> IO (Either AuthorityControlClientError EpochPromotionObservation)
+observeEpochPromotionWithVerifiedResponse transport trusted = do
+  attempted <-
+    callAuthenticatedAuthorityObservationWithSignedRequest
+      transport
+      (LazyByteString.toStrict (encodeControlPlaneRequest AuthorityControlObserveSignedEpochPromotion))
+  pure $ do
+    (request, ControlPlaneResponse outerStatus envelope) <-
+      first AuthorityControlTransportFailed attempted
+    if outerStatus == 200
+      then pure ()
+      else Left (AuthorityControlHttpStatus outerStatus "signed-response-unavailable")
+    (status, body) <-
+      first
+        AuthorityControlResponseAuthenticationFailed
+        (verifyAuthorityAuthenticatedResponse authorityControlMaximumResponseBytes trusted request envelope)
+    decodeEpochPromotionObservationResponse (ControlPlaneResponse (fromIntegral status) body)
+
+-- | Acknowledgement of the endpoint's decision, not evidence that the
+-- requested physical binding or the resulting admission state remains current.
+data EpochPromotionSubmission
+  = EpochPromotionSubmitted
+  | EpochPromotionAlreadySubmitted
+  deriving stock (Eq, Show)
+
+-- | Prepare an exact topology under the existing frozen Authority. The
+-- acknowledgement does not replace the subsequent retained observation.
+prepareEpochPromotionWithTransport
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> MigrationEpoch
+  -> MigrationEpoch
+  -> EpochTopology
+  -> IO (Either AuthorityControlClientError EpochPromotionSubmission)
+prepareEpochPromotionWithTransport transport predecessor target topology =
+  submitEpochMigration transport (PrepareReplacementEpoch predecessor target topology)
+
+submitEpochPromotionWithTransport
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> EpochPromotionRequest
+  -> IO (Either AuthorityControlClientError EpochPromotionSubmission)
+submitEpochPromotionWithTransport transport request =
+  submitEpochMigration transport (ApplyPreparedEpochPromotion request)
+
+submitEpochMigration
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> MigrationCommand
+  -> IO (Either AuthorityControlClientError EpochPromotionSubmission)
+submitEpochMigration transport command = do
+  attempted <-
+    callAuthenticatedClientTransport
+      transport
+      LifecycleMigrationApplyRoute
+      (LazyByteString.toStrict (encodeMigrationCommand command))
+  pure (first AuthorityControlTransportFailed attempted >>= decodeEpochPromotionSubmissionResponse)
+
+decodeEpochPromotionSubmissionResponse
+  :: ControlPlaneResponse -> Either AuthorityControlClientError EpochPromotionSubmission
+decodeEpochPromotionSubmissionResponse response = do
+  summary <- decodeAuthorityControlTextResponse response
+  case summary of
+    "migration-accepted" -> Right EpochPromotionSubmitted
+    "migration-already-applied" -> Right EpochPromotionAlreadySubmitted
+    _ -> Left AuthorityControlEpochSubmissionResponseMismatch
 
 decodeEpochPromotionObservationResponse
   :: ControlPlaneResponse -> Either AuthorityControlClientError EpochPromotionObservation

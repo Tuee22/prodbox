@@ -512,6 +512,7 @@ commandPathOfRequest request =
                     IntegrationCleanRoomHandoff -> ["clean-room-handoff"]
                     IntegrationCascadeQualification -> ["cascade-qualification"]
                     IntegrationCascadeQualificationReceipt -> ["cascade-qualification-receipt"]
+                    IntegrationAwsLifecycleReceipt -> ["aws-lifecycle-receipt"]
                     IntegrationHaRke2Aws -> ["ha-rke2-aws"]
                     IntegrationLifecycle -> ["lifecycle"]
                     IntegrationPulumi -> ["pulumi"]

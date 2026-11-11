@@ -6,6 +6,7 @@ module ControlPlaneTargetAuthorityBinding (controlPlaneTargetAuthorityBindingSui
 
 import Control.Exception (AsyncException (UserInterrupt), throwIO, try)
 import Control.Monad (forM_, void, when)
+import ControlPlaneTargetAuthorityEpoch qualified as SignedFixture
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as Lazy
 import Data.Either (isLeft)
@@ -17,22 +18,37 @@ import Data.Text qualified as Text
 import EpochPromotionFixture
 import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.AuthenticatedTransport qualified as Transport
+import Prodbox.ControlPlane.AuthenticationRegistry
+  ( controlPlaneSigningKeyRefFor
+  , trustedCallersForRoute
+  )
 import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
 import Prodbox.ControlPlane.Client qualified as Client
 import Prodbox.ControlPlane.Coordinate qualified as Coordinate
 import Prodbox.ControlPlane.EpochBindingReadback
 import Prodbox.ControlPlane.RequestAuthentication qualified as Authentication
 import Prodbox.ControlPlane.Route
+import Prodbox.ControlPlane.RpcKeyRegistry
+import Prodbox.ControlPlane.Runtime (withRegisteredDeliveryAgent)
 import Prodbox.ControlPlane.TargetAuthorityEpoch
 import Prodbox.ControlPlane.TargetAuthorityEpochBinding
+import Prodbox.ControlPlane.TargetAuthorityEpochCodec (encodeTargetAuthorityEpochFields)
+import Prodbox.ControlPlane.TargetAuthorityEpochExecution
+import Prodbox.ControlPlane.TargetAuthorityTrustStore
 import Prodbox.ControlPlane.TargetMaterialRegistry
 import Prodbox.ControlPlane.TargetSecretAgentExecution
-import Prodbox.Http.ReplyStatus (ReplyStatus (ReplyConflict, ReplyOk))
+import Prodbox.ControlPlane.TargetSignedEpochBinding
+import Prodbox.Http.ReplyStatus (ReplyStatus (ReplyConflict, ReplyOk, ReplyServiceUnavailable))
 import Prodbox.Lifecycle.Authority.Admission
+import Prodbox.Lifecycle.Authority.ClientRegistry
 import Prodbox.Lifecycle.Authority.EpochPromotion
 import Prodbox.Lifecycle.Authority.EpochTopology
 import Prodbox.Lifecycle.Authority.Genesis qualified as Genesis
 import Prodbox.Lifecycle.Authority.Migration
+import Prodbox.Lifecycle.Authority.RetainedMaterial
+  ( SRetainedMaterialSchema (..)
+  , mkRetainedMaterialTarget
+  )
 import Prodbox.Lifecycle.Lease
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime, TargetSecretAgentRuntime))
 import TestSupport
@@ -204,6 +220,30 @@ controlPlaneTargetAuthorityBindingSuite = describe "Sprint 6.5 complete physical
 
 verifiedReadbackSuite :: SuiteBuilder ()
 verifiedReadbackSuite = do
+  it "commits only after all signed Target rows match the Authority snapshot" $ do
+    fixture <- newSignedReadbackFixture
+    let (authority, boundary, agents) = fixture
+        call = signedReadbackCall authority agents
+    call `shouldReturn` Just (ReplyOk, "migration-accepted")
+    (length <$> readIORef (SignedFixture.authenticatedEpochFrames boundary)) `shouldReturn` 18
+    readIORef (writes authority) `shouldReturn` 1
+    tampered <- newSignedReadbackFixture
+    let (tamperedAuthority, tamperedBoundary, tamperedAgents) = tampered
+    writeIORef (SignedFixture.fixtureTamper tamperedBoundary) True
+    tamperedResult <- signedReadbackCall tamperedAuthority tamperedAgents
+    case tamperedResult of
+      Just (ReplyServiceUnavailable, body) -> body `shouldSatisfy` BS.isPrefixOf "epoch-binding-readback/target/row-unavailable/"
+      _ -> expectationFailure "tampered response did not return row unavailable"
+    (length <$> readIORef (SignedFixture.authenticatedEpochFrames tamperedBoundary)) `shouldReturn` 1
+    readIORef (writes tamperedAuthority) `shouldReturn` 0
+    raced <- newSignedReadbackFixture
+    let (racedAuthority, _, racedAgents) = raced
+    writeIORef (readHook racedAuthority) $ \count ->
+      when (count == 18) (modifyIORef' (retained racedAuthority) (\(_, aggregate) -> (2, aggregate)))
+    signedReadbackCall racedAuthority racedAgents
+      `shouldReturn` Just (ReplyConflict, "epoch-binding-readback/concurrent-state")
+    readIORef (writes racedAuthority) `shouldReturn` 0
+
   it "records the independently read Target digest at the observed aggregate revision" $ do
     fixture <- newFixture preparedAggregate RowsPrepared
     serve fixture preparedAction `shouldReturn` Just (ReplyOk, "migration-accepted")
@@ -211,6 +251,44 @@ verifiedReadbackSuite = do
     (_, aggregate) <- readIORef (retained fixture)
     aggregate `shouldBe` apply preparedAggregate preparedAction
     authorityAggregateAuthenticationEpoch aggregate `shouldBe` Genesis.authorityEpochGenesis
+
+  it "passes the CAS snapshot to every Target effect and refuses a concurrent revision" $ do
+    fixture <- newFixture preparedAggregate RowsPrepared
+    revisions <- newIORef []
+    let targets snapshot = TargetEpochBindingInterpreter $ \effect -> do
+          modifyIORef' revisions (authorityAdmissionRevision snapshot :)
+          runTargetEpochBindingEffect (interpreter fixture) effect
+        call =
+          epochBindingReadbackVerifiedHandlerWithSnapshotTargets
+            65536
+            scope
+            (Right <$> readIORef (clock fixture))
+            (EpochAuthenticationBackend (pure (Right Genesis.authorityEpochGenesis)))
+            targets
+            (repository fixture)
+            (verifiedFor "home" Genesis.authorityEpochGenesis preparedAction)
+    call `shouldReturn` Just (ReplyOk, "migration-accepted")
+    used <- readIORef revisions
+    used `shouldSatisfy` (not . null)
+    used `shouldSatisfy` all (== 1)
+    readIORef (writes fixture) `shouldReturn` 1
+    raced <- newFixture preparedAggregate RowsPrepared
+    raceRevisions <- newIORef []
+    let raceTargets snapshot = TargetEpochBindingInterpreter $ \effect -> do
+          modifyIORef' raceRevisions (authorityAdmissionRevision snapshot :)
+          runTargetEpochBindingEffect (interpreter raced) effect
+    writeIORef (readHook raced) $ \count -> when (count == 18) (writeIORef (retained raced) (2, frozenAggregate))
+    epochBindingReadbackVerifiedHandlerWithSnapshotTargets
+      65536
+      scope
+      (Right <$> readIORef (clock raced))
+      (EpochAuthenticationBackend (pure (Right Genesis.authorityEpochGenesis)))
+      raceTargets
+      (repository raced)
+      (verifiedFor "home" Genesis.authorityEpochGenesis preparedAction)
+      `shouldReturn` Just (ReplyConflict, "epoch-binding-readback/concurrent-state")
+    readIORef raceRevisions >>= (`shouldSatisfy` all (== 1))
+    readIORef (writes raced) `shouldReturn` 0
 
   it "settles a lost aggregate CAS reply through exact closing observation" $ do
     fixture <- newFixture preparedAggregate RowsPrepared
@@ -323,6 +401,70 @@ agentRegistrySuite = do
           ]
       )
       `shouldBe` Right ()
+
+  it "retained-delivery membership: a registered cluster identity is found, any other is refused" $ do
+    let registry =
+          mustRight
+            ( mkTargetEpochAgentRegistry
+                [ (CutoverHome, agentAt CutoverHome, dummyTransport)
+                , (CutoverAws, agentAt CutoverAws, dummyTransport)
+                ]
+            )
+        homeOnly = homeTargetEpochAgentRegistry (agentAt CutoverHome) dummyTransport
+        clusterOf substrate = targetAgentClusterIdentity (agentAt substrate)
+    fmap fst (targetEpochRegistrySubstrateForCluster registry (clusterOf CutoverHome))
+      `shouldBe` Just CutoverHome
+    fmap fst (targetEpochRegistrySubstrateForCluster registry (clusterOf CutoverAws))
+      `shouldBe` Just CutoverAws
+    -- Home-only (today's production shape): the EKS agent is refused.
+    fmap fst (targetEpochRegistrySubstrateForCluster homeOnly (clusterOf CutoverHome))
+      `shouldBe` Just CutoverHome
+    fmap fst (targetEpochRegistrySubstrateForCluster homeOnly (clusterOf CutoverAws))
+      `shouldBe` Nothing
+    -- Whole-identity match only.
+    fmap fst (targetEpochRegistrySubstrateForCluster registry "") `shouldBe` Nothing
+    fmap fst (targetEpochRegistrySubstrateForCluster registry (Text.take 2 (clusterOf CutoverAws)))
+      `shouldBe` Nothing
+    fmap
+      fst
+      (targetEpochRegistrySubstrateForCluster registry (Text.toUpper (clusterOf CutoverAws)))
+      `shouldBe` Nothing
+
+  it
+    "retained-delivery lane: a registered agent is delivered through its lane, and one without a lane is refused"
+    $ do
+      let registry =
+            mustRight
+              ( mkTargetEpochAgentRegistry
+                  [ (CutoverHome, agentAt CutoverHome, dummyTransport)
+                  , (CutoverAws, agentAt CutoverAws, dummyTransport)
+                  ]
+              )
+          -- Only home has a wired lane; the lane here is a plain tag.
+          laneFor substrate = case substrate of
+            CutoverHome -> Just ("home-lane" :: Text.Text)
+            CutoverAws -> Nothing
+          targetFor substrate =
+            mustRight
+              ( mkRetainedMaterialTarget
+                  SRetainedAcmeEabMaterial
+                  (targetAgentClusterIdentity (agentAt substrate))
+              )
+          deliver substrate =
+            withRegisteredDeliveryAgent registry laneFor (targetFor substrate) $ \agent lane ->
+              pure (Right (targetAgentClusterIdentity agent, lane))
+      deliver CutoverHome
+        `shouldReturn` Right (targetAgentClusterIdentity (agentAt CutoverHome), "home-lane")
+      -- Registered, but no lane is wired for it: refused before any lane is used.
+      deliver CutoverAws
+        `shouldReturn` Left "retained delivery lane is not wired for the registered Target Agent"
+      -- Not registered at all.
+      withRegisteredDeliveryAgent
+        (homeTargetEpochAgentRegistry (agentAt CutoverHome) dummyTransport)
+        laneFor
+        (targetFor CutoverAws)
+        (\agent lane -> pure (Right (targetAgentClusterIdentity agent, lane)))
+        `shouldReturn` Left "retained delivery target is not the registered Target Agent"
 
   forM_ [(500000, 1000000), (2000000, 1000000)] $ \(original, cap) ->
     it "signs the earlier provider/parent deadline into both authenticated frame projections" $ do
@@ -516,6 +658,92 @@ repository fixture =
     }
 
 data RowMode = RowsPrepared | RowsPromoted | RowsRetired
+
+newSignedReadbackFixture
+  :: IO (Fixture, SignedFixture.AuthenticatedEpochFixture, TargetSignedAgentRegistry)
+newSignedReadbackFixture = do
+  authority <- newFixture preparedAggregate RowsPrepared
+  epoch <-
+    SignedFixture.newEpochFixture
+      (recordAt RowsPrepared CutoverHome TargetAcmeEab topologyDigest preparationDeadline)
+  let original = SignedFixture.epochInterpreter epoch
+      interpret :: TargetEpochExecutionProgram value -> IO (Either TargetEpochExecutionError value)
+      interpret program = case program of
+        RunTargetEpochStore _ (ReadTargetTrustRow target) -> do
+          result <-
+            runTargetEpochBindingEffect
+              (interpreter authority)
+              (ReadTargetBindingRow preparationDeadline CutoverHome target)
+          pure $ case result of
+            Left _ -> Left TargetEpochRequestBindingInvalid
+            Right row ->
+              Right
+                (fmap (\(version, record) -> (version, mustRight (encodeTargetAuthorityEpochFields record))) row)
+        RunTargetEpochStore _ CompareAndSwapTargetTrustRow {} -> pure (Left TargetEpochRequestBindingInvalid)
+        _ -> runTargetEpochExecutionProgram original program
+      customized = epoch {SignedFixture.epochInterpreter = TargetEpochExecutionInterpreter interpret}
+  boundary <- SignedFixture.newAuthenticatedEpochFixtureWithSignedResponses True customized
+  let vault = mustRight (mkRpcVaultIncarnation "11111111-1111-1111-1111-111111111111")
+      targetPrincipal = Authentication.CallerService TargetSecretAgentRuntime
+      origin principal = mkRpcKeyOrigin scope vault (controlPlaneSigningKeyRefFor principal)
+      seedKey principal =
+        let source =
+              mustRight
+                ( Authentication.mkRequestSigner
+                    principal
+                    (mustRight (Authentication.mkSigningKeyGeneration 1))
+                    (BS.replicate 32 (fromIntegral (Authentication.callerPrincipalCode principal) + 31))
+                )
+            public =
+              if principal == targetPrincipal
+                then Authentication.trustedRequestPublicKeyBytes (SignedFixture.fixtureTargetKey boundary)
+                else Authentication.requestSignerPublicKeyBytes source
+         in mustRight (mkRpcObservedKey (origin principal) 1 public)
+      keys = mustRight (seedLegacyRpcKeyRegistry scope (map seedKey Authentication.allCallerPrincipals))
+      clientSpec principal =
+        mustRight
+          ( mkRegisteredClientSpec
+              (clientPrincipalForCaller principal)
+              (mustRight (mkRegisteredClientSlot (fromIntegral (Authentication.callerPrincipalCode principal))))
+              (mustRight (mkRegisteredClientGeneration 1))
+              4
+          )
+      clients =
+        mustRight
+          (mkRegisteredClientTable 16 (map clientSpec (trustedCallersForRoute LifecycleOperationSubmit)))
+      seeded =
+        mustRight (seedAuthorityRpcKeyRegistry scope keys (importedFrozenEpochAggregateWithClients clients))
+      aggregate =
+        applyEpochAggregateCommand
+          seeded
+          ( ApplyAuthorityMigration
+              (PrepareReplacementEpoch (epochFixtureEpoch 1) (epochFixtureEpoch 2) topology)
+          )
+      agents =
+        mustRight
+          ( mkTargetSignedAgentRegistry
+              [
+                ( CutoverHome
+                , agentAt CutoverHome
+                , origin targetPrincipal
+                , SignedFixture.authenticatedEpochTransport boundary
+                )
+              ]
+          )
+  writeIORef (retained authority) (1, aggregate)
+  pure (authority, boundary, agents)
+
+signedReadbackCall
+  :: Fixture -> TargetSignedAgentRegistry -> IO (Maybe (ReplyStatus, BS.ByteString))
+signedReadbackCall fixture agents =
+  epochBindingReadbackVerifiedHandlerWithSnapshotTargets
+    65536
+    scope
+    (Right <$> readIORef (clock fixture))
+    (EpochAuthenticationBackend (pure (Right Genesis.authorityEpochGenesis)))
+    (\snapshot -> targetSignedEpochBindingInterpreter scope snapshot agents (interpreter fixture))
+    (repository fixture)
+    (verifiedFor "home" Genesis.authorityEpochGenesis preparedAction)
 
 data Fixture = Fixture
   { rows :: IORef (Map.Map (CutoverSubstrate, TargetSecretId) (Natural, TargetAuthorityEpochRecord))

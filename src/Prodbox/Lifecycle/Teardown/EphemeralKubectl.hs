@@ -56,6 +56,7 @@ module Prodbox.Lifecycle.Teardown.EphemeralKubectl
   , EmbeddedHomeKubeconfigError (..)
   , prepareEmbeddedHomeKubeconfig
   , embeddedHomeKubeconfigBytes
+  , embeddedHomeKubeconfigNormalFormBytes
   , writeEmbeddedHomeKubeconfig
   , EphemeralKubectl
   , runEphemeralKubectl
@@ -105,6 +106,8 @@ import Data.Text.Encoding qualified as TextEncoding
 import Data.Vector qualified as Vector
 import Data.Word (Word64)
 import GHC.Clock (getMonotonicTimeNSec)
+import Numeric.Natural (Natural)
+import Prodbox.Capacity.BoxedNormalForm (boxedCompactBytes)
 import Prodbox.ControlPlane.EksClientAuthProjection
   ( EksClientAuthProjection
   , eksClientAuthBearerToken
@@ -175,7 +178,9 @@ data EmbeddedHomeKubeconfigError = EmbeddedHomeKubeconfigInvalid
 
 prepareEmbeddedHomeKubeconfig
   :: ByteString -> Either EmbeddedHomeKubeconfigError EmbeddedHomeKubeconfig
-prepareEmbeddedHomeKubeconfig bytes = EmbeddedHomeKubeconfig <$> normalizeEmbeddedHomeKubeconfig bytes
+prepareEmbeddedHomeKubeconfig bytes = do
+  normalized <- normalizeEmbeddedHomeKubeconfig bytes
+  pure $! EmbeddedHomeKubeconfig (ByteString.copy normalized)
 
 embeddedHomeKubeconfigBytes :: EmbeddedHomeKubeconfig -> ByteString
 embeddedHomeKubeconfigBytes (EmbeddedHomeKubeconfig bytes) = bytes
@@ -1005,3 +1010,8 @@ withHomeCleanupKubectl kubectl environment workingDirectory consume = do
     Right path -> Right (EphemeralKubectl (runBoundedKubectl kubectl safeEnvironment workingDirectory path))
  where
   safeEnvironment = filter (not . forbiddenKubectlEnvironmentKey . fst) environment
+
+-- | Quiescent compact payload only. Parsing, encoding, copying and transient
+-- coexistence with the untrusted source remain separate resource obligations.
+embeddedHomeKubeconfigNormalFormBytes :: EmbeddedHomeKubeconfig -> Natural
+embeddedHomeKubeconfigNormalFormBytes = boxedCompactBytes . embeddedHomeKubeconfigBytes

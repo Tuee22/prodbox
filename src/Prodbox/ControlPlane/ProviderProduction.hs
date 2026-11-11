@@ -605,6 +605,17 @@ compiledStackFor ref config marker = case (providerStackRefText ref, config) of
             configuration
             CompiledStackApplyable
         )
+    AwsEksProfileZoneConfig profile desiredSize hostedZoneId -> do
+      configuration <-
+        first (Text.pack . renderAwsSubstrateProfileError) (awsEksStackConfiguration profile desiredSize)
+      Right
+        ( stack
+            "prodbox-aws-eks-test"
+            "aws-eks-test"
+            "aws-eks"
+            (configuration ++ [("hostedZoneId", Text.unpack hostedZoneId)])
+            CompiledStackApplyable
+        )
     _ -> Left "provider stack/config pair is not in the compiled non-SES registry"
   ("aws-eks-subzone", _) -> case providerStackConfigView config of
     AwsEksSubzoneConfig parentZoneId subzoneName ->
@@ -1896,21 +1907,21 @@ deleteManagedPolicy environment accountId policyName = do
 validateEksIamFamilyProjection
   :: Text -> Text -> Either Text ([Text], [Text])
 validateEksIamFamilyProjection roleNames policyNames = do
-  let expectedRoles = TeardownRegistry.awsEksIamRoleNames
-      expectedPolicies = TeardownRegistry.awsEksIamManagedPolicyNames
-      actualRoles = Text.splitOn "|" roleNames
+  let actualRoles = Text.splitOn "|" roleNames
       actualPolicies = Text.splitOn "|" policyNames
-  if actualRoles == expectedRoles
+  if (actualRoles, actualPolicies) `elem` registeredFamilies
     then Right ()
-    else Left "EKS IAM role family does not equal the registered coordinate"
-  if actualPolicies == expectedPolicies
-    then Right ()
-    else Left "EKS IAM managed-policy family does not equal the registered coordinate"
+    else Left "EKS IAM family does not equal a registered coordinate"
   if length actualRoles == length (nub actualRoles)
     && length actualPolicies == length (nub actualPolicies)
     && all (not . Text.null) (actualRoles ++ actualPolicies)
     then Right (actualRoles, actualPolicies)
     else Left "EKS IAM family contains an empty or duplicate member"
+ where
+  registeredFamilies =
+    [ (TeardownRegistry.awsEksIamRoleNames, TeardownRegistry.awsEksIamManagedPolicyNames)
+    , (TeardownRegistry.awsEksCertManagerRoleNames, TeardownRegistry.awsEksCertManagerPolicyNames)
+    ]
 
 -- | Exact controller-family observation. The deterministic name prevents a
 -- family scan, while the complete registered tag projection is verified on

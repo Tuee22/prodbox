@@ -34,6 +34,15 @@ config:
     type: string
     default: unrecorded
 
+  # Sprint 7.47 (D5(a), option (i)): the exact per-run subzone hosted-zone id the
+  # cert-manager DNS01 role is scoped to. The default is a statement rather than a
+  # blank, for the same reason as the two values above: a destroy of a stack made
+  # before this field existed must not fail for want of it, and an ARN naming the
+  # literal `unrecorded` grants nothing.
+  hostedZoneId:
+    type: string
+    default: unrecorded
+
 variables:
   stackName: ${pulumi.stack}
   clusterName: ${stackName}-cluster
@@ -319,6 +328,59 @@ resources:
         Name: ${stackName}-aws-lb-controller
         prodbox.io/managed-by: prodbox
 
+  # Sprint 7.47 (D5(a)): the cert-manager DNS01 solver assumes this role through
+  # the cluster's OIDC provider, so no static access key or Vault-generated run
+  # credential exists. The role, its managed policy and the attachment are the
+  # registered `aws-eks-cert-manager-role-family`; the Route 53 grant is limited
+  # to changing records in the one per-run subzone and reading the change status.
+  certManagerDns01Policy:
+    type: aws:iam:Policy
+    properties:
+      name: ${stackName}-cm-dns01
+      description: "cert-manager DNS01 permissions for the per-run subzone only"
+      policy:
+        fn::toJSON:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action: route53:ChangeResourceRecordSets
+              Resource: arn:aws:route53:::hostedzone/${hostedZoneId}
+            - Effect: Allow
+              Action: route53:GetChange
+              Resource: arn:aws:route53:::change/*
+            - Effect: Allow
+              Action: route53:ListHostedZonesByName
+              Resource: "*"
+      tags:
+        Name: ${stackName}-cm-dns01
+        prodbox.io/managed-by: prodbox
+
+  certManagerDns01Role:
+    type: aws:iam:Role
+    properties:
+      name: ${iamNamePrefix}-cm-dns01-role
+      assumeRolePolicy:
+        fn::toJSON:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Federated: ${oidcProvider.arn}
+              Action: sts:AssumeRoleWithWebIdentity
+              Condition:
+                StringEquals:
+                  ${oidcIssuerHostPath}:sub: system:serviceaccount:cert-manager:cert-manager
+                  ${oidcIssuerHostPath}:aud: sts.amazonaws.com
+      tags:
+        Name: ${stackName}-cm-dns01
+        prodbox.io/managed-by: prodbox
+
+  certManagerDns01PolicyAttachment:
+    type: aws:iam:RolePolicyAttachment
+    properties:
+      role: ${certManagerDns01Role.name}
+      policyArn: ${certManagerDns01Policy.arn}
+
   awsLbControllerPolicyAttachment:
     type: aws:iam:RolePolicyAttachment
     properties:
@@ -407,4 +469,5 @@ outputs:
   aws_lb_controller_role_name: ${awsLbControllerRole.name}
   retained_ebs_availability_zone: ${availabilityZones[0]}
   ebs_csi_driver_role_arn: ${ebsCsiDriverRole.arn}
+  cert_manager_dns01_role_arn: ${certManagerDns01Role.arn}
   ebs_csi_driver_addon_arn: ${ebsCsiDriverAddon.arn}

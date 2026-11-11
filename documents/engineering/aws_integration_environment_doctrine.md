@@ -1348,9 +1348,10 @@ exact operation-indexed capability references—not nominal endpoints or separat
 AWS public-edge and cert-manager ownership is role-separated. The retained Authority signs a
 registered `public-edge:a:<zone>:<fqdn>` Provider intent; only the Provider Worker's sealed narrow
 session performs native Route 53 observation, UPSERT, wait, and authoritative read-back. The EKS
-Gateway remains diagnostics-only. Separately, the EKS target materializer authenticates with the
-`aws-cert-manager-run` Vault role and reads only `secret/aws/cert-manager/aws/dns01`; it cannot read
-the long-lived home DNS01 generation. Explicit EKS IAM role names contain both stack/run and cluster
+Gateway remains diagnostics-only. Separately, EKS cert-manager reaches Route 53 through an IAM role
+bound to its own ServiceAccount by the cluster's OIDC provider, scoped to the one per-run subzone
+(Sprint `7.47`); no static key or Vault object exists for it, and it cannot touch the long-lived home
+DNS01 generation. Explicit EKS IAM role names contain both stack/run and cluster
 identity, allowing checkpoint-loss recovery by exact name without an account-wide IAM scan.
 
 In the target implementation Lifecycle Authority's pure `decide`/`evolve` aggregate commits the

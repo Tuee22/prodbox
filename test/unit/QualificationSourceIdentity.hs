@@ -28,6 +28,58 @@ qualificationSourceIdentitySuite =
         @?= canonicalSourceManifestPolicyId
       sourcePolicyVersion (sourceManifestPolicyIdentity first)
         @?= canonicalSourceManifestPolicyVersion
+    it "AWS-lifecycle scope: only listed modules and Pulumi programs move the identity" $ do
+      headId <- acceptedHead
+      let scoped = "src/Prodbox/Lifecycle/AwsStackDestroy.hs"
+          pulumi = "pulumi/aws-eks/Main.yaml"
+          base =
+            [ regular scoped 0o644 "destroy v1"
+            , regular pulumi 0o644 "program v1"
+            , regular "src/Prodbox/App.hs" 0o644 "app v1"
+            , regular "DEVELOPMENT_PLAN/README.md" 0o644 "plan v1"
+            , regular "test/unit/Other.hs" 0o644 "test v1"
+            ]
+          scopedIdentity = either (fail . show) pure . mkAwsLifecycleSourceIdentity headId WorktreeDirty []
+          replaceBytes path new =
+            map (\c -> if sourceCandidatePath c == path then c {sourceCandidateBytes = new} else c) base
+      baseline <- scopedIdentity base
+      listed <- scopedIdentity (replaceBytes scoped "destroy v2")
+      program <- scopedIdentity (replaceBytes pulumi "program v2")
+      unlisted <- scopedIdentity (replaceBytes "src/Prodbox/App.hs" "app v2")
+      document <- scopedIdentity (replaceBytes "DEVELOPMENT_PLAN/README.md" "plan v2")
+      outsideTest <- scopedIdentity (replaceBytes "test/unit/Other.hs" "test v2")
+      assertBool
+        "listed module participates"
+        (sourceManifestDigest baseline /= sourceManifestDigest listed)
+      assertBool
+        "Pulumi program participates"
+        (sourceManifestDigest baseline /= sourceManifestDigest program)
+      sourceManifestDigest baseline @?= sourceManifestDigest unlisted
+      sourceManifestDigest baseline @?= sourceManifestDigest document
+      sourceManifestDigest baseline @?= sourceManifestDigest outsideTest
+      sourceManifestEntryCount baseline @?= 2
+      sourcePolicyIdentifier (sourceManifestPolicyIdentity baseline)
+        @?= awsLifecycleSourceManifestPolicyId
+      full <- acceptedIdentity headId WorktreeDirty [] base
+      assertBool
+        "scoped policy digest differs from the full one"
+        ( sourcePolicyDigest (sourceManifestPolicyIdentity baseline)
+            /= sourcePolicyDigest (sourceManifestPolicyIdentity full)
+        )
+      assertBool "scope paths are recognised" (all isAwsLifecycleScopePath awsLifecycleScopePaths)
+      assertBool "an unlisted module is outside" (not (isAwsLifecycleScopePath "src/Prodbox/App.hs"))
+    it "AWS-lifecycle scope refuses an excluded candidate and an empty scope" $ do
+      headId <- acceptedHead
+      assertBool
+        "secret candidate refused"
+        ( isLeft
+            (mkAwsLifecycleSourceIdentity headId WorktreeDirty [] [regular "test-secrets.dhall" 0o600 "s"])
+        )
+      assertBool
+        "no scoped path is empty"
+        ( isLeft
+            (mkAwsLifecycleSourceIdentity headId WorktreeDirty [] [regular "src/Prodbox/App.hs" 0o644 "a"])
+        )
     it "content and mode drift change the source manifest" $ do
       headId <- acceptedHead
       baseline <- acceptedIdentity headId WorktreeClean [] [regular "src/A.hs" 0o644 "a"]

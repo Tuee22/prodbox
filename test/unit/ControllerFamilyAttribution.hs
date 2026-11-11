@@ -154,6 +154,7 @@ familyCases = do
                    , (AwsEksKey, AwsEksLoadBalancerControllerFamilyKey)
                    , (AwsEksKey, AwsEksVpcCniInterfacesKey)
                    , (AwsEksKey, AwsEksClusterSecurityGroupsKey)
+                   , (AwsEksKey, AwsEksCertManagerRoleFamilyKey)
                    , (AwsTestKey, AwsTestVpcCniInterfacesKey)
                    , (AwsTestKey, AwsTestCanarySecurityGroupsKey)
                    ]
@@ -165,6 +166,7 @@ familyCases = do
                    , AwsEksLoadBalancerControllerFamilyKey
                    , AwsEksVpcCniInterfacesKey
                    , AwsEksClusterSecurityGroupsKey
+                   , AwsEksCertManagerRoleFamilyKey
                    ]
       all (null . ownershipManifestEntryObservedIdentities) entries `shouldBe` True
 

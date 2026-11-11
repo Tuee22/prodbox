@@ -64,6 +64,16 @@ Current review guidance includes:
 
 The build must not pretend to enforce guidance that it cannot actually prove.
 
+Fixed inspection-schema staging keeps declaration compilation, semantic marking and literal
+generation pure. `CanonicalDhallValueShape.Stage` is the build-only Template Haskell boundary:
+it registers Haskell source and package-manifest dependencies and translates structured
+preparation/discovery failures into compiler errors. It reads no runtime configuration or secrets.
+Generated runtime metadata contains strict constructor trees and a separately queryable numeric
+data floor. Runtime value codecs and semantic validation retain their own existing owners.
+`CanonicalDhallValueShape.BoundedStage` additionally certifies finite structural counts during
+compilation and exposes an opaque nominal newtype. The runtime erases that wrapper; it is neither
+a byte-budget proof nor a capability to perform effects.
+
 ### 2.3 Shared Runtime Foundations
 
 The current supported worktree has started converging on a small shared foundation layer:
@@ -299,7 +309,17 @@ keyed controller. Actual role scopes bind to and order after that controller, so
 stops them and shutdown orders them before the controller/helper boundary. Direct helper-to-scope
 references would retain terminal loaded scopes and prevent serial reuse. Controller mode/arguments
 and RTS policy are closed over the calling program and explicit input paths. An intent admits one
-submission; existing or unobservable field
+submission. Its local claim uses `Prodbox.Subprocess.OneShotAttempt`: a direct atomic Bool swap
+consumes that intent value before validation/send, and cancellation or a later refusal cannot
+reopen it. No blocking waiter queue or update-selector closure belongs to the quiescent cell.
+This is a local one-attempt fence, not durable operation retirement or an Authority grant.
+The registered caller's shared counter budget forces its initial eight-field data record and
+finishes each atomic update under an uninterruptible mask. Only the closed, total calculation over
+validated `Word64`-bounded counters belongs there; no supplied callback, external blocking effect
+or unbounded arithmetic may enter that section. Cancellation can consume a quota without running
+its effect and cannot retain an unfinished update selector. Its quiescent field term is separate
+from the one-shot claim, executing callers and complete resource/admission evidence.
+Existing or unobservable field
 observations refuse before mutation. The read-only inventory preserves absent, present without an
 invocation, and unobservable states. Neither submission nor inventory grants a placement or
 Authority capability. The caller must bind production dispatch, pinned inputs, kernel role
@@ -318,6 +338,17 @@ parent identities, ownership, permissions, versions, scope lifetime and the orig
 rechecked before submission and parent effects. Escaped or changed program capabilities refuse
 before a family is submitted. These ceilings grant no decoded-state memory budget. Immutable launch
 files stay distinct from the Tier-0 file the coordinator may publish.
+
+Native submission, publication-birth and ordinary-scope records decode String fields through
+`Prodbox.Config.SerialiseString`. The selected `serialise` instance uses text for ordinary Unicode
+and generalized UTF8 bytes for Strings containing surrogates. Check every byte of the latter before
+its unchecked SDK traversal; preserve the valid String domain and exact encoded bytes. The enclosing
+record still owns its byte ceiling, semantic validation and canonical read-back. The guard supplies
+no decoded-state or transient-memory budget, native ownership or admission capability.
+`generalisedUtf8ScalarCount` validates the same byte grammar and observes its exact Char count
+without constructing Text, String or Char values. A caller using that count before allocation must
+bind the selected payload to its actual enclosing schema and retain the decoder's canonical and
+semantic checks. The count itself supplies no complete memory bound or admission witness.
 
 When request validation needs captured settings, the bounded canonical request envelope exposes
 only untrusted root/scope coordinates after matching the supplied original key and window. The
@@ -579,7 +610,7 @@ repository discovery and schema materialization. Publication resolves through th
 rule from the already-held executable path, independently of the working directory or retained
 storage root. None of these metadata arguments alone grants an operation owner or Authority permit.
 
-The authenticated registry observation uses the runtime's same fenced projection and the bounded
+The registry observation request uses the runtime's same fenced projection and the bounded
 birth read algebra: clock, primary and marker reads only. Its exact Operator/Harness request is
 separate from descriptor and mutation commands. The canonical response binds public registry
 history to the original complete home seed and birth descriptor; it contains no inner admission
@@ -587,8 +618,11 @@ payload or credential. The client bounds providers, peer refresh, signing, HTTP 
 by one original deadline. Its distinct response bound covers the registry's existing byte ceiling;
 ordinary metadata limits remain unchanged. A host consumer must separately compare the descriptor
 with its independently captured pin and retain native source/membership checks around signing.
-Returned metadata supplies no capability, physical origin proof, renewed work window or retirement
-receipt. Serialized byte limits alone supply no heap or host admission proof.
+The response is currently unsigned: its original-seed digest does not authenticate later key
+registrations or retirements. A local substitution control is recorded in
+[Sprint 6.5 Resume Here](../../DEVELOPMENT_PLAN/README.md#resume-here). Returned metadata supplies
+no independently authenticated current registry, capability, physical origin proof, renewed work
+window or retirement receipt. Serialized byte limits alone supply no heap or host admission proof.
 
 Registered external-caller bootstrap has a distinct untrusted own-binding hint. Only its exact
 versioned query on the migration route bypasses ordinary frame authentication; every other body
@@ -600,9 +634,10 @@ the primary revision around its marker, requires the independently configured re
 selects from the same retained authentication projection. Legacy, missing, corrupt and unobservable
 provenance refuse; the program cannot seed or mutate. A fixed server-owned two-second window covers
 retained reads and strict response encoding. This public hint is data only. The bootstrap consumer
-must independently attest its native origin/public version and obtain the normally authenticated,
-independently pinned full registry before constructing an ordinary checked signer. Native matching
-alone cannot attest an untrusted logical generation or current registration.
+must independently attest its native origin/public version and obtain an authenticated current
+registry before constructing an ordinary checked signer. The current response verifies the pinned
+original seed and the caller's own binding, but does not authenticate the full later registry.
+Native matching alone cannot attest an untrusted logical generation or current registration.
 
 The native input producer traverses the compiled `/run/user/<uid>` root without following
 symlinks, requiring trusted ancestors and the effective user's private runtime directory. It
@@ -893,6 +928,8 @@ owner-checked Unix socket does not use ambient bus-address discovery. Authentica
 asynchronous replies consume the original monotonic deadline; bounded native polls allow
 cancellation, and brackets release messages, reply slots, callbacks and connections. Manager
 methods form a closed set and failures carry closed causes rather than raw backend text. A bus
+action's `IOException` is classified separately from an I/O exception outside the action; that
+boundary classification does not identify whether a nested operation caused the exception. A bus
 connection is transport alone: the process owner separately attests the manager, exact unit,
 kernel descriptors and admitted resource plan. A late continuation cannot produce success, but
 the transport does not impose a hard runtime bound on arbitrary caller IO.
@@ -1004,6 +1041,10 @@ retaining linked character lists for values or re-encoding them for each child. 
 `Show` or serialized representation and grants no process slot, window or Authority capability.
 Both invocation forms pass through the same original command/transport owner, input/stream limits,
 Go/exec gate and joined cleanup. Encoded input usage is distinct from a complete heap/native bound.
+Its owner supplies a separate quiescent data projection over the actual list, pairs, metadata
+scalars and established byte-buffer origins. An explicit empty value supports isolated planning
+and overlay construction; it does not relax the supported invocation's inherited PATH/HOME policy.
+The native capture graph controls run in a separate process with a complete synthetic environment.
 
 Native ephemeral Kubernetes clients retain the same original use/file scopes and captured home or
 EKS projection. String and byte environments share one exact credential-key inventory; filtering
@@ -1130,20 +1171,35 @@ which begins drain. See
 
 ## Shared HTTP Client Manager (Sprint 1.64)
 
-`Prodbox.Http.Client` owns **one** process-wide TLS `Manager` (`sharedTlsManager`), constructed
+`Prodbox.Http.Client` owns the default process-wide TLS `Manager` (`sharedTlsManager`), constructed
 exactly once through the `unsafePerformIO` + `{-# NOINLINE #-}` idiom. `http-client` `Manager`s are
 designed for concurrent reuse and pool connections per host, so a single shared manager is both
 correct and the point: counterexample `LCPC-2026-07-11` traced a gateway hot-path CPU driver to the
 old per-call `newManager` construction (a fresh TLS context and connection pool on every request).
-Never construct a `Manager` per call. This singleton lives only in `Prodbox.Http.Client`, outside
-every daemon-runtime module (where module-level mutable state is forbidden), and the manager is
-immutable after construction. The cached renewable Vault Kubernetes-auth session
+Never construct a `Manager` per call. Its factory lives in `Prodbox.Http.Client`, outside
+every daemon-runtime module (where module-level mutable state is forbidden), with fixed settings.
+The cached renewable Vault Kubernetes-auth session
 (`Prodbox.Vault.Session`) rides on the same shared manager and is documented in
 [vault_doctrine.md § 12.1](./vault_doctrine.md).
 
 The manager disables automatic request replay after a reused connection loses its response.
 That failure remains observable even when the server already received the request; the owning
 interpreter decides whether and how to observe or retry it. Connection pooling remains shared.
+
+The bounded client also offers `httpRequestRawBoundedNoIdle` through a separate process-wide
+manager with zero idle capacity. This is for ephemeral endpoints whose completed connections
+should be released rather than retained under historical endpoint keys. It shares the existing
+wire, header, body, redirect, retry and timeout policy. The pinned pool closes a released
+connection without inserting a key; it does not bound active request concurrency. The zero-idle
+manager defers the original SDK TLS/proxy factories until TLS is used and caches their pair once
+per process. Plain HTTP does not initialize those contexts or read their certificate bundle.
+The pinned proxy-factory selector comes from `Network.HTTP.Client.Internal`; the native vehicle
+also observes an actual ClientHello. Its manager,
+reaper and TLS/native state still require funding and process-lifetime ownership. The SDK timeout
+bounds response headers; an owned caller wraps the entire request with its original outer
+deadline. `closeManager` is a no-op in the pinned SDK, not a joined release boundary. Native
+completion, refusal, cancellation and default-pool compatibility controls live in
+`test/qualification/HttpReleasedConnections.hs`.
 Bounded protocol requests additionally set a zero redirect allowance and return the first response
 under their body ceiling. Their fixed endpoint and request allowance cannot silently expand through
 a redirect. General HTTP requests retain their redirect policy. The native exchange counterprogram

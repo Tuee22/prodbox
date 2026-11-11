@@ -7,11 +7,13 @@ module Prodbox.Subprocess.ProcessEnvironment
   ( ProcessEnvironment
   , ProcessEnvironmentUsage (..)
   , ProcessEnvironmentError (..)
+  , emptyProcessEnvironment
   , captureProcessEnvironmentBefore
   , overlayProcessEnvironment
   , filterProcessEnvironment
   , processEnvironmentUsage
   , processEnvironmentNativeEntries
+  , processEnvironmentNormalFormBytes
   ) where
 
 import Control.Exception (IOException, evaluate, try)
@@ -24,6 +26,7 @@ import GHC.Foreign qualified as GHC
 import GHC.IO.Encoding (getFileSystemEncoding)
 import GHC.IO.Exception (IOErrorType, ioe_errno, ioe_type)
 import Numeric.Natural (Natural)
+import Prodbox.Capacity.BoxedNormalForm
 import System.Posix.Env.ByteString qualified as Native
 
 -- Values deliberately have no Show or serialized representation.
@@ -41,6 +44,9 @@ data ProcessEnvironmentError
   | ProcessEnvironmentOverlayInvalid
   | ProcessEnvironmentIoRefused !IOErrorType !(Maybe Int)
   deriving (Eq, Show)
+
+emptyProcessEnvironment :: ProcessEnvironment
+emptyProcessEnvironment = fromEntries []
 
 captureProcessEnvironmentBefore :: Word64 -> IO (Either ProcessEnvironmentError ProcessEnvironment)
 captureProcessEnvironmentBefore ending = ioResult $ do
@@ -108,3 +114,21 @@ ioResult action = do
     Left (cause :: IOException) ->
       Left (ProcessEnvironmentIoRefused (ioe_type cause) (fromIntegral <$> ioe_errno cause))
     Right value -> value
+
+-- | Quiescent data only; capture/encoding/exec and GC peaks remain separate.
+-- Native.getEnvironmentPrim copies each complete raw entry into exact-length
+-- PlainPtr storage. splitEntry yields two views of that one allocation;
+-- overlays instead own two exact-length allocations. The joint pair term
+-- charges two compact byte graphs. Its spare headers cover the raw entry's
+-- one separator and alignment when the allocation is shared. This is a bound
+-- for that closed pair-origin invariant, not for arbitrary ByteString views.
+processEnvironmentNormalFormBytes :: ProcessEnvironment -> Natural
+processEnvironmentNormalFormBytes (ProcessEnvironment entries (ProcessEnvironmentUsage count encoded)) =
+  boxedRecordBytes
+    [ boxedListBytes pairBytes entries
+    , boxedRecordBytes [boxedNaturalBytes count, boxedNaturalBytes encoded]
+    ]
+ where
+  pairBytes (key, value) = boxedRecordBytes [bytesTerm key, bytesTerm value]
+  bytesTerm bytes = 64 + aligned (fromIntegral (Bytes.length bytes))
+  aligned bytes = 8 * ((bytes + 7) `div` 8)

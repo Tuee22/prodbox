@@ -50,7 +50,7 @@ instance Dhall.ToDhall RpcBirthConfig where
 rpcBirthInterpretOptions :: Dhall.InterpretOptions
 rpcBirthInterpretOptions =
   Dhall.defaultInterpretOptions
-    { Dhall.constructorModifier = \value -> maybe value id (Text.stripPrefix "RpcBirthConfig" value)
+    { Dhall.constructorModifier = \value -> Text.copy (maybe value id (Text.stripPrefix "RpcBirthConfig" value))
     }
 
 data RpcBirthConfigError

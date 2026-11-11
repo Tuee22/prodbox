@@ -664,6 +664,8 @@ parserForPath path =
       Just (withCoverage (TestIntegration IntegrationCascadeQualification))
     ["test", "integration", "cascade-qualification-receipt"] ->
       Just (withCoverage (TestIntegration IntegrationCascadeQualificationReceipt))
+    ["test", "integration", "aws-lifecycle-receipt"] ->
+      Just (withCoverage (TestIntegration IntegrationAwsLifecycleReceipt))
     ["test", "integration", "ha-rke2-aws"] -> Just (withCoverage (TestIntegration IntegrationHaRke2Aws))
     ["test", "integration", "lifecycle"] -> Just (withCoverage (TestIntegration IntegrationLifecycle))
     ["test", "integration", "pulumi"] -> Just (withCoverage (TestIntegration IntegrationPulumi))
@@ -2862,6 +2864,9 @@ testGroupSpec =
         , integrationLeaf
             "cascade-qualification-receipt"
             "Report whether the cycle ledger holds consecutive qualifying cascade cycles"
+        , integrationLeaf
+            "aws-lifecycle-receipt"
+            "Report whether the AWS lifecycle drill ledger meets every scoped claim criterion"
         , integrationLeaf "aws-lifecycle" "Exercise audit-bracketed AWS stack create and destroy cycles"
         , integrationLeaf
             "aws-lifecycle-canary"

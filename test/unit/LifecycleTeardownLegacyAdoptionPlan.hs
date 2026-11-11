@@ -37,6 +37,7 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
                    , AwsEksLoadBalancerControllerFamilyKey
                    , AwsEksVpcCniInterfacesKey
                    , AwsEksClusterSecurityGroupsKey
+                   , AwsEksCertManagerRoleFamilyKey
                    ]
       legacyAdoptionExpectedFamily AwsTestKey
         `shouldBe` [AwsTestKey, AwsTestVpcCniInterfacesKey, AwsTestCanarySecurityGroupsKey]
@@ -52,12 +53,14 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
                    , AwsEksLoadBalancerControllerFamilyKey
                    , AwsEksVpcCniInterfacesKey
                    , AwsEksClusterSecurityGroupsKey
+                   , AwsEksCertManagerRoleFamilyKey
                    ]
       map legacyAdoptionEntryIdentities (legacyAdoptionPlanEntries plan)
         `shouldBe` [ [ObservedResourceIdentity "arn:eks"]
                    , [ObservedResourceIdentity "vol-1"]
                    , [ObservedResourceIdentity "arn:iam-family"]
                    , [ObservedResourceIdentity "arn:lbc-family"]
+                   , []
                    , []
                    , []
                    ]
@@ -73,6 +76,7 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
                    , [ObservedResourceIdentity "arn:lbc-family"]
                    , []
                    , []
+                   , []
                    ]
       renderLegacyAdoptionPlan plan `shouldContainText` "observed-empty"
 
@@ -84,6 +88,7 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
             , (AwsEksLoadBalancerControllerFamilyKey, ["arn:lbc-family"])
             , (AwsEksVpcCniInterfacesKey, [])
             , (AwsEksClusterSecurityGroupsKey, [])
+            , (AwsEksCertManagerRoleFamilyKey, [])
             ]
         )
         `shouldBe` Left (LegacyAdoptionCandidatesMissing [AwsEbsPerRunTestKey])
@@ -98,6 +103,7 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
             , (AwsEksLoadBalancerControllerFamilyKey, ["arn:lbc-family"])
             , (AwsEksVpcCniInterfacesKey, [])
             , (AwsEksClusterSecurityGroupsKey, [])
+            , (AwsEksCertManagerRoleFamilyKey, [])
             , (AwsTestKey, ["arn:test"])
             ]
         )
@@ -113,6 +119,7 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
             , (AwsEksLoadBalancerControllerFamilyKey, ["arn:lbc-family"])
             , (AwsEksVpcCniInterfacesKey, [])
             , (AwsEksClusterSecurityGroupsKey, [])
+            , (AwsEksCertManagerRoleFamilyKey, [])
             ]
         )
         `shouldBe` Left (LegacyAdoptionCandidatesDuplicated [AwsEbsPerRunTestKey])
@@ -125,6 +132,7 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
         , presentObservation AwsEksLoadBalancerControllerFamilyKey ["arn:lbc-family"]
         , presentObservation AwsEksVpcCniInterfacesKey []
         , presentObservation AwsEksClusterSecurityGroupsKey []
+        , presentObservation AwsEksCertManagerRoleFamilyKey []
         ]
         `shouldBe` Left (LegacyAdoptionCandidatesUnobservable [AwsEbsPerRunTestKey])
 
@@ -139,6 +147,7 @@ lifecycleTeardownLegacyAdoptionPlanSuite =
             , (AwsEksLoadBalancerControllerFamilyKey, ["arn:lbc-family"])
             , (AwsEksVpcCniInterfacesKey, [])
             , (AwsEksClusterSecurityGroupsKey, [])
+            , (AwsEksCertManagerRoleFamilyKey, [])
             ]
         )
         `shouldBe` Left
@@ -242,6 +251,7 @@ completeEksRows ebsIdentities =
   , (AwsEksLoadBalancerControllerFamilyKey, ["arn:lbc-family"])
   , (AwsEksVpcCniInterfacesKey, [])
   , (AwsEksClusterSecurityGroupsKey, [])
+  , (AwsEksCertManagerRoleFamilyKey, [])
   ]
 
 permitRequest

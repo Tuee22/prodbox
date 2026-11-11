@@ -75,8 +75,8 @@ Adapter, whose workflow the public-edge TLS path reaches itself. Public-edge A-r
 observation/reconcile is a closed
 `ObservePublicARecord`/`ReconcilePublicARecord` Provider intent registered by exact zone and
 canonical FQDN. The EKS Gateway cannot represent either intent. AWS cert-manager receives only the
-run-scoped `secret/aws/cert-manager/aws/dns01` generation through its target-local one-shot
-materializer; the home DNS01 Vault path and all host plaintext renderers are absent from that arm.
+no credential at all: its ServiceAccount carries an IRSA role scoped to the per-run subzone, so there is no
+materializer, Vault path or host plaintext renderer in that arm (Sprint `7.47`).
 
 The physical dependency order is:
 
@@ -1535,17 +1535,17 @@ probe; EOF, timeout, or any other line remains pending liveness and retires that
 successful child stays bracketed through the authenticated establishment action.
 
 The Lifecycle Authority retains one complete qualification schedule and its immediate unchanged
-retry within the authentication deadline-plus-skew horizon. Its response profile derives **2,055
-requests per attempt / 4,110 slots**: 93 first-reconcile requests, 52 pre/postflight credential
-requests, 20 config requests, 40 historical-import requests, 320 descriptor-journal requests, 1,383
-checkpoint requests, 87 Provider dispatches, 46 graph-metadata requests and 14 retained-material
+retry within the authentication deadline-plus-skew horizon. Its response profile derives **2,131
+requests per attempt / 4,262 slots**: 93 first-reconcile requests, 52 pre/postflight credential
+requests, 20 config requests, 40 historical-import requests, 332 descriptor-journal requests, 1,443
+checkpoint requests, 91 Provider dispatches, 46 graph-metadata requests and 14 retained-material
 requests. The eight-member first-reconcile base is 56; recovery adds marker observe/settle, three
 pending-operation observations, three recovery views and at most three seven-RPC coordinations and one lost-completion read per ordinary member.
 The config portion includes the four reconcile transitions and sixteen conservative subsequent
 loads. Historical import charges all four local-tail nodes at eight RPCs each plus initial,
 claim and closing observations. The journal charges both ACK/read transitions for every compiled
 node, including nodes that actually finish locally after uninstall. Nested checkpoint traffic is
-`87 * (3 * 3 + 2 * 3) + 15 * 4 + 2 * (3 + 2 * 3) = 1383`: three loads and one
+`91 * (3 * 3 + 2 * 3) + 15 * 4 + 2 * (3 + 2 * 3) = 1443`: three loads and one
 submit/publication pair per Provider RPC under the three-attempt bound, direct graph operations,
 and two host output reads. No minimum AWS duration is assumed.
 
@@ -1559,10 +1559,10 @@ complete two-attempt mixed profile fits **212 MiB**; the Authority's coupled mem
 separate runtime reserve. Configuration admission refuses older, smaller authored profiles.
 
 The Authority Backup Adapter has a separate caller envelope. Its existing prelude, journal and
-checkpoint schedules contribute `13 + 649 + 1650 = 2312` calls. Historical local-tail import adds
+checkpoint schedules contribute `13 + 673 + 1722 = 2408` calls. Historical local-tail import adds
 58 calls: four nodes at twelve backup calls each, plus claim and initial/final reads. Bounded
 credential recovery and settlement add twenty-two predecessor-pair reads. Its complete schedule is
-therefore **2,392 requests / 4,784 slots**. The old-journal response proof uses actual generated
+therefore **2,488 requests / 4,976 slots**. The old-journal response proof uses actual generated
 attempt identifiers and a 40 KiB bound, alongside compact 4 KiB replies and conservative 224 KiB
 prelude replies. Its encoded ceiling is **64 MiB**, with `3 * 64 + 48 = 240 MiB` production memory.
 Replay codec **v19** reads canonical v2–v18 entries without clearing or reinterpreting them; stored
@@ -3779,6 +3779,29 @@ binding leaves the slot occupied. Re-entry into the same nonterminal run accepts
 base binding and resumes from the already-durable phase. Total loss of the retained trust root
 refuses and does not widen ordinary teardown into decommission.
 
+The ordinary scope-submission journal records public identity metadata only. It commits the
+closed request's program digest before its request WAL and before any Authority submission.
+Binding an Authority operation requires exact request readback; that operation ID remains a
+recovery coordinate and grants no scope, permit or completion evidence. A scope-only predecessor
+cannot acquire a program identity retrospectively. Active records are never overwritten.
+
+The journal holds an owner-checked, no-follow directory descriptor, serializes local threads and
+competing processes, and publishes through a synced private temporary plus atomic hard link,
+directory sync and independent readback. Reopening the same publication repeats sync/readback.
+Closing joins accepted uses; escaped handles refuse. A process lock may refuse contention rather
+than wait beyond the caller's original bound. Journal retirement and Authority reconciliation
+belong to the enclosing lifecycle operation.
+
+| Closed journal refusal | Required remedy |
+|------------------------|-----------------|
+| `ScopeJournalBindingInvalid`, `ScopeJournalCallerChanged`, `ScopeJournalParentChanged` or `ScopeJournalEncodingTooLarge` | Correct the original public request, caller, parent coordinates or funded encoding before submission. Preserve existing records; a changed operand cannot rewrite their binding. |
+| `ScopeJournalDirectoryUnsafe` or `ScopeJournalFileUnsafe` | Preserve the original retained directory and records. Re-establish their exact owned, readable metadata through supported recovery; do not follow a replacement path or substitute a new journal. |
+| `ScopeJournalClosed` | Submit through a live joined journal owner for the same original operation. An escaped handle cannot reopen its authority or refresh the operation window. |
+| `ScopeJournalRequestConflict`, `ScopeJournalOperationConflict` or `ScopeJournalProgramConflict` | Observe and resume the committed winner. A different request, operation or program cannot replace it; completion/retirement requires the registered lifecycle proof. |
+| `ScopeJournalRequestMissing` | Commit and read back the exact closed request/program before binding its Authority operation. An ID without that evidence cannot reconstruct the missing binding. |
+| `ScopeJournalProgramBindingMissing` or `ScopeJournalEncodingInvalid` | Preserve the admitted predecessor/corrupt history and use its verified retained recovery evidence. `NukeOnly` if that evidence is irrecoverable: no safe journal reset or retrospective program-binding operation exists. |
+| `ScopeJournalReadBackMismatch`, `ScopeJournalWriteNoProgress` or `ScopeJournalIoFailure` | Preserve publications and temporary residue, settle the I/O cause and retry the exact original submission/readback. For observed `setLock` contention, retry after the competing owner releases; never delete its lock or overwrite its records. |
+
 #### 11.0.1 Retained artifact authority
 
 A repair of this profile may read bytes only from a validated, versioned, architecture-specific
@@ -4248,11 +4271,13 @@ can be retired safely; observation never renews the original preparation. The cl
 deadline-provider resolution, peer refresh, signing, HTTP and canonical decoding by one resolved
 request deadline. A coordinator retains the original descriptor deadline across later effects.
 
-The distinct authenticated registry observation uses the same migration route and exact
+The distinct registry observation request uses the same migration route and exact
 Operator/Harness boundary. It consumes only that read algebra and shares the runtime's fenced
 registry projection. Its canonical versioned response carries the public birth observation and
 complete public registry, including retired history; it validates scope and the original home
-seed digest against the descriptor. No inner admission payload, private key or credential enters
+seed digest against the descriptor. The response is currently unsigned and that seed digest does
+not authenticate later registrations or retirement history; the local substitution control is
+recorded in [Sprint 6.5 Resume Here](../../DEVELOPMENT_PLAN/README.md#resume-here). No inner admission payload, private key or credential enters
 this response. Missing or seedless provenance cannot trigger a native seed read or initialization.
 The existing 128-KiB registry and 8-KiB birth-observation ceilings derive a 139,392-byte observation
 ceiling and a 139,520-byte enclosing HTTP ceiling. This is a distinct purpose bound: ordinary
@@ -4272,8 +4297,9 @@ fixed server-owned two-second window, the read-only birth algebra confirms the s
 projection and independent registered pin before selecting one active binding for that origin.
 Legacy, missing, corrupt, unobservable or changed provenance cannot initialize a seed or supply a
 fallback binding. The result is public data, with no full registry, inner admission or credential.
-Native origin/public-version attestation and a normally authenticated, independently pinned registry
-read remain mandatory before ordinary checked signing. The hint itself grants no capability,
+Native origin/public-version attestation and an independently authenticated current registry
+remain mandatory before ordinary checked signing. The current response's seed and own-binding
+checks do not supply that full-registry authentication. The hint itself grants no capability,
 admission, renewed preparation or retirement receipt.
 
 The host coordination fold owns submission order, while the Authority owns all birth transitions.

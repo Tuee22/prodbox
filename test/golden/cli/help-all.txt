@@ -1109,6 +1109,18 @@ Options:
 Examples:
 - prodbox test integration cascade-qualification-receipt  # Run the `cascade-qualification-receipt` integration suite.
 
+## prodbox test integration aws-lifecycle-receipt
+prodbox test integration aws-lifecycle-receipt - Report whether the AWS lifecycle drill ledger meets every scoped claim criterion
+
+Report whether the AWS lifecycle drill ledger meets every scoped claim criterion
+Options:
+- --coverage - Enable coverage reporting for the selected test scope
+- --cov-fail-under <INTEGER> - Require a minimum coverage percentage
+- --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
+
+Examples:
+- prodbox test integration aws-lifecycle-receipt  # Run the `aws-lifecycle-receipt` integration suite.
+
 ## prodbox test integration aws-lifecycle
 prodbox test integration aws-lifecycle - Exercise audit-bracketed AWS stack create and destroy cycles
 

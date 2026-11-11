@@ -62,7 +62,6 @@ module Prodbox.Subprocess.HostOperationFamily
   , hostOperationAbsent
   ) where
 
-import Control.Concurrent.MVar (MVar, modifyMVar, newMVar)
 import Control.Monad (unless, when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE, withExceptT)
@@ -84,6 +83,7 @@ import Prodbox.Subprocess.HostControllerInputs
 import Prodbox.Subprocess.HostControllerInputs qualified as Inputs
 import Prodbox.Subprocess.HostControllerPublication qualified as Publication
 import Prodbox.Subprocess.HostControllerStdin qualified as Stdin
+import Prodbox.Subprocess.OneShotAttempt qualified as Attempt
 import Prodbox.Subprocess.SystemdBus
 import Prodbox.Subprocess.SystemdIdentity qualified as Identity
 import Prodbox.Subprocess.SystemdProvider qualified as Provider
@@ -138,7 +138,7 @@ data HostOperationIntent
       !HostOperationHelperBounds
       !Identity.HostExecutionKey
       !Identity.HostExecutionWindow
-      !(MVar Bool)
+      !Attempt.OneShotAttempt
 
 -- No caller-selected executable, mode, argument tail or environment callback.
 -- The scoped owner holds exact executable/input descriptors. Payload schema,
@@ -212,7 +212,7 @@ newHostOperationIntent kind plan helper@(HostOperationHelperBounds start stop) k
         || (toInteger start + toInteger stop) * 1000
           > toInteger (Identity.hostExecutionStopEnd window) - toInteger (Identity.hostExecutionHardEnd window)
         then pure (Left HostOperationInvalidWindow)
-        else Right . HostOperationIntent kind plan helper key window <$> newMVar False
+        else Right . HostOperationIntent kind plan helper key window <$> Attempt.newOneShotAttempt
 
 hostOperationUnitName :: HostOperationIntent -> HostOperationRole -> String
 hostOperationUnitName = fieldUnitName . intentField
@@ -657,7 +657,7 @@ submitHostOperationFamilyWithPublication
   -> HostControllerProgram
   -> IO (Either HostOperationError ())
 submitHostOperationFamilyWithPublication publication input original intent@(HostOperationIntent _ _ _ _ window attempted) program = do
-  admitted <- modifyMVar attempted (\prior -> pure (True, not prior))
+  admitted <- Attempt.claimOneShotAttempt attempted
   now <- getMonotonicTimeNSec
   if not admitted
     then pure (Left HostOperationAlreadyAttempted)

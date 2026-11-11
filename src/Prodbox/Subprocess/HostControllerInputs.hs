@@ -19,6 +19,7 @@ module Prodbox.Subprocess.HostControllerInputs
   , verifyHostControllerInputs
   , HostControllerInputBytes
   , readHostControllerInputs
+  , readHostControllerInputsWithInitialDataFloor
   , hostControllerConfigurationBytes
   , hostControllerRequestBytes
   , hostControllerExecutablePath
@@ -77,10 +78,14 @@ import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Ratio (denominator, numerator)
 import Data.Text (Text)
 import Data.Word (Word32, Word64, Word8)
+import Foreign.Marshal.Alloc (allocaBytes)
 import Foreign.Ptr (plusPtr)
 import GHC.Clock (getMonotonicTimeNSec)
 import GHC.Generics (Generic)
 import GHC.IO.Exception (IOErrorType, ioe_errno, ioe_type)
+import Numeric.Natural (Natural)
+import Prodbox.Config.SerialiseString (SerialiseString (..))
+import Prodbox.Subprocess.InitialRuntimePolicy qualified as InitialRuntime
 import Prodbox.Subprocess.SystemdIdentity qualified as Identity
 import Prodbox.Subprocess.SystemdProvider qualified as Provider
 import System.Environment (getExecutablePath)
@@ -122,6 +127,7 @@ data HostControllerInputError
   | ControllerInputUnsafe !HostControllerInputRole
   | ControllerInputChanged !HostControllerInputRole
   | ControllerInputTooLarge !HostControllerInputRole
+  | ControllerInputRuntimeRefused !Natural
   | ControllerInputFingerprintMismatch
   | ControllerSubmissionExists
   | ControllerSubmissionMalformed
@@ -237,6 +243,8 @@ data HostControllerInputs
 
 type InputMetadata = (Word8, FilePath, ParentVersion, FileVersion)
 
+type WireInputMetadata = (Word8, SerialiseString, ParentVersion, FileVersion)
+
 -- Public provenance only. No constructor, record update, admission or retirement
 -- capability escapes; complete original stat metadata survives binary replacement.
 data HostControllerSubmissionRecord
@@ -253,16 +261,16 @@ data HostControllerSubmissionRecord
 data SubmissionWire
   = SubmissionWire
       !Word8
-      !String
+      !SerialiseString
       ![Word64]
-      !String
-      !String
-      !String
+      !SerialiseString
+      !SerialiseString
+      !SerialiseString
       !Word32
       !Word32
       !Word64
-      !String
-      ![InputMetadata]
+      !SerialiseString
+      ![WireInputMetadata]
   deriving stock (Generic)
   deriving anyclass (Serialise)
 
@@ -404,21 +412,21 @@ encodeHostControllerSubmission (HostControllerSubmissionRecord key window domain
   wire =
     SubmissionWire
       1
-      (Identity.hostExecutionKeyText key)
+      (SerialiseString (Identity.hostExecutionKeyText key))
       [ Identity.hostExecutionOuterEnd window
       , Identity.hostExecutionWorkEnd window
       , Identity.hostExecutionHardEnd window
       , Identity.hostExecutionStopEnd window
       , Identity.hostExecutionFinishEnd window
       ]
-      (Identity.hostManagerBootId domain)
-      (Identity.hostManagerBusId domain)
-      (Identity.hostManagerUniqueName domain)
+      (SerialiseString (Identity.hostManagerBootId domain))
+      (SerialiseString (Identity.hostManagerBusId domain))
+      (SerialiseString (Identity.hostManagerUniqueName domain))
       (Identity.hostManagerUserId domain)
       (Identity.hostManagerProcessId domain)
       (Identity.hostManagerStartTicks domain)
-      (Identity.hostBusUniqueNameText sender)
-      metadata
+      (SerialiseString (Identity.hostBusUniqueNameText sender))
+      [(role, SerialiseString path, parent, version) | (role, path, parent, version) <- metadata]
 
 decodeHostControllerSubmission
   :: ByteString -> Either HostControllerInputError HostControllerSubmissionRecord
@@ -469,20 +477,32 @@ decodeLegacySubmission bytes = do
   payload <- maybe malformed Right (BS.stripPrefix submissionPrefix bytes)
   wire <- either (const malformed) Right (deserialiseOrFail (Lazy.fromStrict payload))
   case wire of
-    SubmissionWire version key clocks boot bus manager user pid ticks name metadata -> do
-      unless (version == 1) malformed
-      coordinate <- maybe malformed Right (Identity.hostExecutionKeyFromText key)
-      window <- case clocks of
-        [outer, work, hard, stop, finish] ->
-          maybe malformed Right (Identity.hostExecutionWindow outer work hard stop finish)
-        _ -> malformed
-      domain <- maybe malformed Right (Identity.hostManagerDomain boot bus manager user pid ticks)
-      sender <- maybe malformed Right (Identity.hostBusUniqueName name)
-      unless (map (\(role, _, _, _) -> role) metadata == [0, 1, 2]) malformed
-      unless (all metadataWellFormed metadata) malformed
-      let record = HostControllerSubmissionRecord coordinate window domain sender metadata
-      unless (encodeHostControllerSubmission record == bytes) malformed
-      pure record
+    SubmissionWire
+      version
+      (SerialiseString key)
+      clocks
+      (SerialiseString boot)
+      (SerialiseString bus)
+      (SerialiseString manager)
+      user
+      pid
+      ticks
+      (SerialiseString name)
+      wireMetadata -> do
+        let metadata = [(role, path, parent, file) | (role, SerialiseString path, parent, file) <- wireMetadata]
+        unless (version == 1) malformed
+        coordinate <- maybe malformed Right (Identity.hostExecutionKeyFromText key)
+        window <- case clocks of
+          [outer, work, hard, stop, finish] ->
+            maybe malformed Right (Identity.hostExecutionWindow outer work hard stop finish)
+          _ -> malformed
+        domain <- maybe malformed Right (Identity.hostManagerDomain boot bus manager user pid ticks)
+        sender <- maybe malformed Right (Identity.hostBusUniqueName name)
+        unless (map (\(role, _, _, _) -> role) metadata == [0, 1, 2]) malformed
+        unless (all metadataWellFormed metadata) malformed
+        let record = HostControllerSubmissionRecord coordinate window domain sender metadata
+        unless (encodeHostControllerSubmission record == bytes) malformed
+        pure record
  where
   malformed :: Either HostControllerInputError value
   malformed = Left ControllerSubmissionMalformed
@@ -858,43 +878,95 @@ inputByteLimit role = if role == ControllerSubmission then maximumSubmissionByte
 
 readHostControllerInputs
   :: HostControllerInputs -> IO (Either HostControllerInputError HostControllerInputBytes)
-readHostControllerInputs inputs@(HostControllerInputs ending _ _ configuration request active) = withMVar active $ \live ->
+readHostControllerInputs = readInputs ExistingRead
+
+-- The trusted caller supplies its minimum data floor with both zero-payload
+-- originating buffer headers already included. Held sizes add only rounded
+-- payloads. No bytes, serialized capacity or callback supplies this demand.
+-- Successful policy observation grants neither free heap nor admission.
+readHostControllerInputsWithInitialDataFloor
+  :: Natural -> HostControllerInputs -> IO (Either HostControllerInputError HostControllerInputBytes)
+readHostControllerInputsWithInitialDataFloor floorBytes = readInputs (InitialDataRead floorBytes)
+
+data InputReadPolicy = ExistingRead | InitialDataRead !Natural
+
+readInputs
+  :: InputReadPolicy
+  -> HostControllerInputs
+  -> IO (Either HostControllerInputError HostControllerInputBytes)
+readInputs policy inputs@(HostControllerInputs ending _ _ configuration request active) = withMVar active $ \live ->
   if not live
     then pure (Left ControllerInputsClosed)
     else runExceptT $ do
       ExceptT (validateInputs inputs)
+      case policy of
+        ExistingRead -> pure ()
+        InitialDataRead floorBytes -> do
+          configPayload <- either throwE pure (heldPayloadBytes configuration)
+          requestPayload <- either throwE pure (heldPayloadBytes request)
+          let required = floorBytes + configPayload + requestPayload
+          observed <-
+            ExceptT
+              (ownIO ControllerConfiguration (InitialRuntime.verifyInitialRuntimePolicyBefore ending required))
+          case observed of
+            Left InitialRuntime.InitialRuntimePolicyExpired -> throwE ControllerInputsExpired
+            Left InitialRuntime.InitialRuntimePolicyRefused -> throwE (ControllerInputRuntimeRefused required)
+            Right () -> pure ()
       configBytes <- ExceptT (readHeldInput ending configuration)
       requestBytes <- ExceptT (readHeldInput ending request)
       ExceptT (validateInputs inputs)
       pure (HostControllerInputBytes configBytes requestBytes)
 
+-- These are the same held versions revalidated before and after both reads.
+-- The payload allocator never exceeds their sizes, even if a file changes.
+heldPayloadBytes :: HeldInput -> Either HostControllerInputError Natural
+heldPayloadBytes (HeldInput role _ _ _ _ (FileVersion _ _ expected _ _ _ _ _ _))
+  | expected < 0 = Left (ControllerInputUnsafe role)
+  | expected > toInteger (inputByteLimit role) = Left (ControllerInputTooLarge role)
+  | otherwise = Right (8 * ((fromInteger expected + 7) `div` 8))
+
+-- The held stat version fixes the exact payload size. Allocate that size once,
+-- then probe EOF with one stack byte; the rejection ceiling is never scratch.
+-- A short read or extra byte refuses before any partial buffer can escape.
 readHeldInput :: Word64 -> HeldInput -> IO (Either HostControllerInputError ByteString)
-readHeldInput ending (HeldInput role _ _ file _ _) = do
-  let maximumBytes = inputByteLimit role
-  failure <- newIORef Nothing
-  attempted <- ownIO role $ do
-    _ <- Posix.fdSeek file AbsoluteSeek 0
-    BSInternal.createAndTrim (maximumBytes + 1) $ \buffer -> do
-      let loop count = do
-            available <- checkTime ending
-            case available of
-              Left cause -> writeIORef failure (Just cause) >> pure 0
-              Right () -> do
-                obtained <-
-                  Posix.fdReadBuf
-                    file
-                    (buffer `plusPtr` count)
-                    (fromIntegral (min 8192 (maximumBytes + 1 - count)))
-                let total = count + fromIntegral obtained
-                if total > maximumBytes
-                  then writeIORef failure (Just (ControllerInputTooLarge role)) >> pure 0
-                  else if obtained == 0 then pure total else loop total
-      loop 0
-  refused <- readIORef failure
-  pure $ case (attempted, refused) of
-    (Left cause, _) -> Left cause
-    (_, Just cause) -> Left cause
-    (Right bytes, Nothing) -> Right bytes
+readHeldInput ending (HeldInput role _ _ file _ (FileVersion _ _ expected _ _ _ _ _ _))
+  | expected < 0 = pure (Left (ControllerInputUnsafe role))
+  | expected > toInteger (inputByteLimit role) = pure (Left (ControllerInputTooLarge role))
+  | otherwise = do
+      let expectedBytes = fromInteger expected
+      failure <- newIORef Nothing
+      attempted <- ownIO role $ do
+        _ <- Posix.fdSeek file AbsoluteSeek 0
+        BSInternal.create expectedBytes $ \buffer -> do
+          let refuse cause = writeIORef failure (Just cause)
+              finish = allocaBytes 1 $ \sentinel -> do
+                obtained <- Posix.fdReadBuf file sentinel 1
+                when (obtained /= 0) $
+                  refuse $
+                    if expectedBytes == inputByteLimit role
+                      then ControllerInputTooLarge role
+                      else ControllerInputChanged role
+              loop count = do
+                available <- checkTime ending
+                case available of
+                  Left cause -> refuse cause
+                  Right ()
+                    | count == expectedBytes -> finish
+                    | otherwise -> do
+                        obtained <-
+                          Posix.fdReadBuf
+                            file
+                            (buffer `plusPtr` count)
+                            (fromIntegral (min 8192 (expectedBytes - count)))
+                        if obtained == 0
+                          then refuse (ControllerInputChanged role)
+                          else loop (count + fromIntegral obtained)
+          loop 0
+      refused <- readIORef failure
+      pure $ case (attempted, refused) of
+        (Left cause, _) -> Left cause
+        (_, Just cause) -> Left cause
+        (Right bytes, Nothing) -> Right bytes
 
 checkTime :: Word64 -> IO (Either HostControllerInputError ())
 checkTime ending = do

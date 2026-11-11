@@ -58,6 +58,7 @@ data NativeValidation
   | ValidationCleanRoomHandoff
   | ValidationCascadeQualification
   | ValidationCascadeQualificationReceipt
+  | ValidationAwsLifecycleReceipt
   | ValidationChartsPlatform
   | ValidationResourceGuardrails
   | ValidationDaemonBootstrap
@@ -384,6 +385,12 @@ testExecutionPlan substrate scope =
             "integration-cascade-qualification-receipt"
             [ValidationCascadeQualificationReceipt]
             False
+        IntegrationAwsLifecycleReceipt ->
+          nativeNamedSuite
+            "integration aws-lifecycle-receipt"
+            "integration-aws-lifecycle-receipt"
+            [ValidationAwsLifecycleReceipt]
+            False
         IntegrationHaRke2Aws ->
           nativeNamedSuite
             "integration ha-rke2-aws"
@@ -631,6 +638,7 @@ validationInitialPrerequisites validation =
     ValidationCleanRoomHandoff -> []
     ValidationCascadeQualification -> pulumiSubstratePrerequisites
     ValidationCascadeQualificationReceipt -> []
+    ValidationAwsLifecycleReceipt -> []
     -- The chart-platform / storage / lifecycle validations operate on the
     -- local cluster: cluster only, no AWS credentials.
     ValidationChartsPlatform -> clusterPrerequisites
@@ -675,6 +683,7 @@ validationDeferredPrerequisites validation =
     ValidationCleanRoomHandoff -> []
     ValidationCascadeQualification -> [PulumiLoggedIn]
     ValidationCascadeQualificationReceipt -> []
+    ValidationAwsLifecycleReceipt -> []
     ValidationChartsPlatform -> []
     ValidationResourceGuardrails -> []
     ValidationDaemonBootstrap -> []
@@ -801,6 +810,7 @@ nativeValidationId validation =
     ValidationCleanRoomHandoff -> "clean-room-handoff"
     ValidationCascadeQualification -> "cascade-qualification"
     ValidationCascadeQualificationReceipt -> "cascade-qualification-receipt"
+    ValidationAwsLifecycleReceipt -> "aws-lifecycle-receipt"
     ValidationChartsPlatform -> "charts-platform"
     ValidationResourceGuardrails -> "resource-guardrails"
     ValidationDaemonBootstrap -> "daemon-bootstrap"

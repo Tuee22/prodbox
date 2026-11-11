@@ -5,6 +5,8 @@ module AwsSubstrateProfile
   )
 where
 
+import Control.Monad (forM_)
+import Data.Either (isRight)
 import Data.List (isInfixOf)
 import Data.Text qualified as Text
 import Dhall qualified
@@ -15,6 +17,7 @@ import Prodbox.Lifecycle.EbsVolume qualified as EbsVolume
 import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   ( ProviderStackConfigView (..)
   , mkAwsEksProfileProviderStackConfig
+  , mkAwsEksProfileZoneProviderStackConfig
   , mkAwsTestProfileProviderStackConfig
   , providerStackConfigView
   )
@@ -32,6 +35,51 @@ import TestSupport
 awsSubstrateProfileSuite :: SuiteBuilder ()
 awsSubstrateProfileSuite =
   describe "Sprint 7.37 authored AWS substrate profile" $ do
+    forM_ listCardinalityCases $ \(fieldName, _, _, unreadTailInput) ->
+      it ("rejects an overlong " <> Text.unpack fieldName <> " before reading its tail") $
+        case mkAwsSubstrateProfile unreadTailInput of
+          Left _ -> pure ()
+          Right _ -> expectationFailure "an overlong AWS list was accepted"
+
+    it "preserves exact list errors and successful profiles for finite cardinalities" $
+      forM_ listCardinalityCases $ \(fieldName, expected, inputForCount, _) ->
+        forM_ [0 .. 12] $ \count ->
+          if count == expected
+            then mkAwsSubstrateProfile (inputForCount count) `shouldSatisfy` isRight
+            else
+              mkAwsSubstrateProfile (inputForCount count)
+                `shouldBe` Left (AwsSubstrateProfileListLength fieldName expected count)
+
+    it "preserves the full accepted CIDR decimal grammar before bounded splitting" $ do
+      forM_ [0 :: Int .. 255] $ \octet -> do
+        let part = Text.pack (show octet)
+            cidr = Text.intercalate "." (replicate 4 part) <> "/032"
+        (awsSubstrateOperatorCidr <$> mkAwsSubstrateProfile (validInput {operator_cidr = cidr}))
+          `shouldBe` Right cidr
+      forM_ [0 :: Int .. 31] $ \prefix -> do
+        let digits = Text.justifyRight 3 '0' (Text.pack (show prefix))
+            cidr = "0.0.0.0/" <> digits
+            profile = mustRight (mkAwsSubstrateProfile (validInput {eks_vpc_cidr = cidr}))
+        (lookup "vpcCidr" <$> awsEksStackConfiguration profile 3) `shouldBe` Right (Just (Text.unpack cidr))
+      forM_ ["1.2.3.4/0000", "1.2.3.4.5/032", "256.1.2.3/032", Text.replicate 128 "0."] $ \cidr ->
+        mkAwsSubstrateProfile (validInput {operator_cidr = cidr})
+          `shouldBe` Left (AwsSubstrateProfileMalformedCidr "operator_cidr")
+
+    it "checks token length before lowercasing without changing normalization or refusals" $ do
+      forM_ [(Text.replicate 64 "A", replicate 64 'a'), (Text.replicate 64 "K", replicate 64 'k')] $ \(raw, expected) -> do
+        let profile = mustRight (mkAwsSubstrateProfile (validInput {eks_node_instance_type = "  " <> raw <> "  "}))
+        (lookup "nodeInstanceType" <$> awsEksStackConfiguration profile 3) `shouldBe` Right (Just expected)
+      forM_ [Text.replicate 65 "A", Text.replicate 63 "A" <> "İ", Text.replicate 256 "A", " "] $ \raw ->
+        mkAwsSubstrateProfile (validInput {eks_node_instance_type = raw})
+          `shouldBe` Left (AwsSubstrateProfileFieldEmpty "eks_node_instance_type")
+
+    it "keeps supported EBS spellings and the original unsupported value" $ do
+      forM_ ["gp2", "gp3", "io1", "io2", "st1", "sc1", "standard"] $ \token ->
+        (awsEbsVolumeTypeText <$> mkAwsEbsVolumeType ("  " <> Text.toUpper token <> "  "))
+          `shouldBe` Right token
+      forM_ ["standardx", Text.replicate 256 "A", Text.replicate 16 "İ", " "] $ \raw ->
+        mkAwsEbsVolumeType raw `shouldBe` Left (AwsSubstrateProfileUnsupportedVolumeType raw)
+
     it "refuses every named malformed envelope before minting a profile" $ do
       mkAwsSubstrateProfile (validInput {eks_node_instance_type = ""})
         `shouldBe` Left (AwsSubstrateProfileFieldEmpty "eks_node_instance_type")
@@ -87,6 +135,16 @@ awsSubstrateProfileSuite =
           testConfig = mustRight (mkAwsTestProfileProviderStackConfig profile)
       providerStackConfigView eksConfig `shouldBe` AwsEksProfileConfig profile 3
       providerStackConfigView testConfig `shouldBe` AwsTestProfileConfig profile
+
+    it "carries the exact subzone hosted-zone id in the append-only zoned EKS config" $ do
+      let profile = mustRight (mkAwsSubstrateProfile validInput)
+      providerStackConfigView
+        (mustRight (mkAwsEksProfileZoneProviderStackConfig profile 3 "Z0123456789ABC"))
+        `shouldBe` AwsEksProfileZoneConfig profile 3 "Z0123456789ABC"
+      mkAwsEksProfileZoneProviderStackConfig profile 3 ""
+        `shouldSatisfy` either (const True) (const False)
+      mkAwsEksProfileZoneProviderStackConfig profile 3 "Z1\nZ2"
+        `shouldSatisfy` either (const True) (const False)
 
     it
       "takes the EKS desired count from the topology when it is EKS and from the profile minimum otherwise"
@@ -159,23 +217,58 @@ awsSubstrateProfileSuite =
       eksInfra `shouldSatisfy` (not . isInfixOf "api.ipify.org")
       testInfra `shouldSatisfy` (not . isInfixOf "api.ipify.org")
 
+listCardinalityCases
+  :: [(Text.Text, Int, Int -> AwsSubstrateProfileInput, AwsSubstrateProfileInput)]
+listCardinalityCases =
+  [
+    ( "aws_test_instance_types"
+    , 3
+    , \count -> validInput {aws_test_instance_types = replicate count "m7i.large"}
+    , validInput
+        { aws_test_instance_types =
+            replicate 4 "m7i.large" <> error "synthetic instance-list tail forced"
+        }
+    )
+  ,
+    ( "aws_test_root_volume_types"
+    , 3
+    , \count -> validInput {aws_test_root_volume_types = replicate count "gp3"}
+    , validInput
+        { aws_test_root_volume_types =
+            replicate 4 "gp3" <> error "synthetic volume-type-list tail forced"
+        }
+    )
+  ,
+    ( "aws_test_root_volume_sizes_gib"
+    , 3
+    , \count -> validInput {aws_test_root_volume_sizes_gib = replicate count 31}
+    , validInput
+        { aws_test_root_volume_sizes_gib =
+            replicate 4 31 <> error "synthetic volume-size-list tail forced"
+        }
+    )
+  ,
+    ( "eks_subnet_cidrs"
+    , 2
+    , \count -> validInput {eks_subnet_cidrs = replicate count "10.71.10.0/24"}
+    , validInput
+        { eks_subnet_cidrs =
+            replicate 3 "10.71.10.0/24" <> error "synthetic EKS-subnet-list tail forced"
+        }
+    )
+  ,
+    ( "aws_test_subnet_cidrs"
+    , 3
+    , \count -> validInput {aws_test_subnet_cidrs = replicate count "10.72.10.0/24"}
+    , validInput
+        { aws_test_subnet_cidrs =
+            replicate 4 "10.72.10.0/24" <> error "synthetic test-subnet-list tail forced"
+        }
+    )
+  ]
+
 validInput :: AwsSubstrateProfileInput
-validInput =
-  AwsSubstrateProfileInput
-    { operator_cidr = "203.0.113.44/32"
-    , eks_node_instance_type = "m7i.large"
-    , eks_node_disk_size_gib = 61
-    , eks_node_min_size = 2
-    , eks_node_max_size = 5
-    , aws_test_instance_types = ["m7i.large", "m7i.xlarge", "c7i.large"]
-    , aws_test_root_volume_types = ["gp3", "io2", "gp2"]
-    , aws_test_root_volume_sizes_gib = [31, 32, 33]
-    , static_ebs_volume_type = "io2"
-    , eks_vpc_cidr = "10.71.0.0/16"
-    , eks_subnet_cidrs = ["10.71.10.0/24", "10.71.20.0/24"]
-    , aws_test_vpc_cidr = "10.72.0.0/16"
-    , aws_test_subnet_cidrs = ["10.72.10.0/24", "10.72.20.0/24", "10.72.30.0/24"]
-    }
+validInput = syntheticAwsSubstrateProfileInput
 
 mustRight :: (Show left) => Either left right -> right
 mustRight value = case value of

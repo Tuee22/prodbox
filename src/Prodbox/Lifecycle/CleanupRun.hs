@@ -53,6 +53,8 @@ module Prodbox.Lifecycle.CleanupRun
   , completeCleanupNode
   , cleanupRunTerminal
   , CleanupRunReport (..)
+  , CleanupRunReportBindingError (..)
+  , validateCleanupRunReportBinding
   , compactCleanupRun
   , encodeCleanupRunReport
   , decodeCleanupRunReport
@@ -100,7 +102,7 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Char (isAscii, isAsciiLower, isAsciiUpper, isDigit)
-import Data.List (find, nub)
+import Data.List (find, isSubsequenceOf, nub)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
@@ -527,12 +529,18 @@ settleBlockedCleanupNodes run =
         [] -> states
         blockers -> Map.insert (cleanupNodeId plan) (CleanupNodeBlocked blockers) states
     _ -> states
-  terminalBlockers states plan =
-    [ cleanupDependencyNode dependency
-    | dependency <- cleanupNodeDependencies plan
-    , dependencyBlocks states dependency
-    ]
-  dependencyBlocks states dependency =
+  terminalBlockers = blockingDependencies
+
+-- A blocked node records the terminal blockers visible at settlement time.
+-- Later terminal outcomes can add blockers, but cannot remove these ones.
+blockingDependencies :: Map CleanupNodeId CleanupNodeState -> CleanupNodePlan -> [CleanupNodeId]
+blockingDependencies states plan =
+  [ cleanupDependencyNode dependency
+  | dependency <- cleanupNodeDependencies plan
+  , dependencyBlocks dependency
+  ]
+ where
+  dependencyBlocks dependency =
     case Map.lookup (cleanupDependencyNode dependency) states of
       Just (CleanupNodeBlocked _) ->
         cleanupDependencyKind dependency /= CleanupRequiresTerminal
@@ -560,6 +568,37 @@ data CleanupRunReport = CleanupRunReport
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
+
+-- | Structural agreement only. Authentication and the decision whether the
+-- terminal outcomes constitute success remain the caller's responsibilities.
+data CleanupRunReportBindingError
+  = CleanupReportRunMismatch
+  | CleanupReportGraphMismatch
+  | CleanupReportNodeSetMismatch
+  | CleanupReportNodeNonterminal !CleanupNodeId
+  | CleanupReportNodeInvalidBlockers !CleanupNodeId
+  deriving stock (Eq, Show)
+
+validateCleanupRunReportBinding
+  :: CleanupRunId -> CleanupGraph -> CleanupRunReport -> Either CleanupRunReportBindingError ()
+validateCleanupRunReportBinding expectedRun graph report
+  | cleanupReportRunId report /= expectedRun = Left CleanupReportRunMismatch
+  | cleanupReportGraphDigest report /= cleanupGraphDigest graph = Left CleanupReportGraphMismatch
+  | Map.keysSet states /= Set.fromList (map cleanupNodeId (cleanupGraphNodes graph)) =
+      Left CleanupReportNodeSetMismatch
+  | otherwise = mapM_ checkTerminal (Map.toAscList states)
+ where
+  states = cleanupReportNodeStates report
+  plans = Map.fromList [(cleanupNodeId plan, plan) | plan <- cleanupGraphNodes graph]
+  checkTerminal (node, state) = case state of
+    CleanupNodeCompleted {} -> Right ()
+    CleanupNodeBlocked blockers ->
+      case Map.lookup node plans of
+        Just plan
+          | not (null blockers) && blockers `isSubsequenceOf` blockingDependencies states plan -> Right ()
+        _ -> Left (CleanupReportNodeInvalidBlockers node)
+    CleanupNodePending -> Left (CleanupReportNodeNonterminal node)
+    CleanupNodeRunning {} -> Left (CleanupReportNodeNonterminal node)
 
 compactCleanupRun :: CleanupRun -> Either CleanupRunError CleanupRunReport
 compactCleanupRun run

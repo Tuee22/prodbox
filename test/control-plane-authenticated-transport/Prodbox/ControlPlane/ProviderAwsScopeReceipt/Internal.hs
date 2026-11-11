@@ -1,0 +1,1 @@
+../../../../../src/Prodbox/ControlPlane/ProviderAwsScopeReceipt/Internal.hs

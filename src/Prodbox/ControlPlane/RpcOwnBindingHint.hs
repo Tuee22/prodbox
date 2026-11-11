@@ -6,7 +6,8 @@
 -- | Bounded public discovery data for one external caller's own native origin.
 -- A hint is untrusted: neither decoding nor selection constructs a signer or
 -- authorizes an ordinary request. The bootstrap consumer separately attests the
--- native key and obtains the authenticated, independently pinned full registry.
+-- native key. The current registry response checks the pinned original seed
+-- and own binding, but does not authenticate later registry membership.
 module Prodbox.ControlPlane.RpcOwnBindingHint
   ( RpcOwnBindingQuery
   , mkRpcOwnBindingQuery

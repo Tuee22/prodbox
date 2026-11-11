@@ -18,11 +18,63 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
 - `prodbox.cabal` defines the Haskell library, the `prodbox` executable, and the Haskell test
   suites under `test/`.
 - `cabal.project` defines the repository Cabal package set.
+- The canonical closed-data token program directly depends on `primitive ==0.9.1.0`.
+  Its storage accounting uses that version's `ByteArray` representation alongside the selected
+  CBOR writer. The direct token comparator also uses the selected Text UTF8 layout and positive
+  ghc-bignum limb representation. A version change requires reviewing the selected SDK writer and
+  revalidating token equality, scalar and backing-data controls.
+- Checked generalized-UTF8 String decoding directly uses the exposed
+  `Codec.Serialise.Internal.GeneralisedUTF8` routine from `serialise ==0.2.6.1`, after byte
+  validation. Updating that pin requires reviewing its unchecked array traversal and the CBOR
+  payload-array conversion, then revalidating the complete Char domain and malformed, sliced and
+  segmented payload controls.
+- Captured settings charge duplicate-detection Set node construction against
+  `containers ==0.6.8`. The bound uses its five-word `Bin` layout, `delta = 3`
+  balance invariant and at most three new nodes per insertion-path ancestor.
+  Shape measurement weights each map's entry count by the height recurrence derived from
+  that invariant, rather than a rounded logarithmic estimate.
+  Updating that pin requires reviewing `Dhall.Map.nubOrd`, Set insertion and both balance
+  functions, then revalidating the retained insertion-history graphs and scratch checks.
+- The same pin owns Strict Map construction accounting: six-word `Bin` nodes,
+  four-word `create` result tuples, `fromList`'s ordered-prefix/fallback dispatch and
+  `link`/`insertMin`/`insertMax` balancing. Changes require reviewing those source paths
+  and revalidating actual maps, insertion histories and the ordinary input checkpoints.
+- Settings extraction pins `text ==2.0.2` for guarded AWS case-converter allocation accounting.
+  The bound covers its initial lookahead allocation and every prospective resize array, using
+  validator-owned character limits and call counts. Changing this pin requires reviewing the
+  converter's growth/shrink implementation and character mapping, then revalidating marker
+  counts, grammar compatibility, extraction reservations and native input checkpoints.
+- Closed type-tree data accounting pins `dhall ==1.42.3`. Its selected expected-type,
+  denotation and closed-type evaluator layouts underlie the five-tree reservation. A pin change
+  requires reviewing those paths, compact schema-key origins, type-only counts, syntax graphs
+  and the native input checkpoints. Construction/control/update/GC/native costs remain separate.
 - `cabal.project` pins `with-compiler: ghc-9.12.4` and carries the temporary
   `allow-newer: *:base, *:template-haskell` escape hatch required by the current package set.
-  This clause set is what currently lets the `dhall ^>=1.42` bound build cleanly under GHC
+  This clause set is what currently lets the selected `dhall ==1.42.3` build cleanly under GHC
   `9.12.4`; the clauses may be tightened when an upstream `dhall` release ships bounds that
   natively match GHC `9.12.4` and `template-haskell` 2.23.
+- Fixed inspection metadata directly depends on `template-haskell ==2.23.0.0`.
+  Build-time staging reads the canonical typed producer declaration and preserves the existing
+  valid `containers ==0.6.8` map tree with direct strict constructor expressions.
+  Its Text literals use `text ==2.0.2`'s `Lift` instance and UTF8 array copier.
+  Changes to these pins require reviewing emitted code, constructor-data terms, actual returned
+  graphs, schema fidelity, nominal type refusals and source-dependency rebuild controls.
+  The finite-count certificate shares those pins and the same emitted template. Pin changes
+  also revalidate unrestricted/exact/empty list cases, compile-time refusals and profile clients
+  after removal of runtime count-bound traversal.
+- Managed ByteString backing observations in `Prodbox.Capacity.PinnedByteStringData` use
+  the selected GHC `ForeignPtr`/`PlainPtr` and mutable-byte-array capacity representation.
+  GHC or ByteString dependency changes require revalidating owned compact buffers, offset and
+  shared views, unsupported borrowed ownership, invalid lengths and compact-copy corroboration
+  against independent heap graphs. These observations assume valid owned immutable producers;
+  they grant no mutation permit, lifetime guarantee or memory admission.
+- Publisher stat-data observations additionally depend on the installed `unix ==2.8.8.0`
+  `FileStatus` newtype and its owned `mallocForeignPtrBytes` producer, plus GHC's MallocPtr,
+  unpacked finalizer cell and `NoFinalizers` representation. PlainPtr has a separate data term.
+  Pin changes require independent backing/owner graphs, empty-cell checks, borrowed and attached-
+  finalizer refusals, settled MVar/latch shape checks and the native combined-reservation boundary.
+  These are immutable-producer contracts and selected data terms, not proof of arbitrary stat
+  validity, active ownership, allocation/GC/native peaks or complete admission.
 - Host build doctrine uses `cabal build --builddir=.build exe:prodbox`; the `.build/` contract is
   intentionally command-line owned.
 - Repository-owned container builds live under `docker/`. There is a **single** custom Haskell
@@ -156,6 +208,28 @@ generated `-M` argument; the library and test-suite stanzas retain their ordinar
 `Prodbox.Capacity.RuntimeMemory` derives the exact byte-valued heap argument from a validated
 `RuntimeMemoryPlan`, and `ChartPlatform` passes it only to the gateway role. `prodbox.cabal` carries
 no `-with-rtsopts` heap value, and Docker, `GHCRTS`, and Helm defaults carry none either.
+
+The unit suite's `ghc-heap ==9.12.4` dependency is test-only and follows that exact compiler pin.
+The library's `deepseq ==1.5.1.0` pin is the selected compiler's package used to evaluate checked
+closed Dhall expressions before returning decoder success. It does not supply a parser or
+whole-process bound. The separate test observer checks one-shot claims, field ownership and quiescent storage graphs on the unprofiled
+64-bit ABI; it adds
+no heap-inspection dependency to the production library or runtime image and grants no whole-heap,
+RSS or deployment qualification claim.
+The update-header observer also follows GHC `9.12.4`'s evaluated `BLACKHOLE` representation.
+Changing that pin requires reviewing `rts/Updates.h`, `rts/StgMiscClosures.cmm`, the `StgInd`
+layout and heap-inspection API, then revalidating completed/active updates, CAF chains, sharing
+and every unit/native observation client.
+The pinned `areBoxesEqual` API allows distinct objects to become equal after collection. Update
+head validation therefore uses bounded traversal rather than path equality; pin changes also
+revalidate collection between the header observation and target validation.
+
+Static field-name tables also depend on Text `2.0.2`'s `Lift Text` implementation in
+`Data.Text`: it emits `unpackCStringLen#`, allocating and copying the exact visible UTF-8 bytes
+without reconstructing a Haskell String. The table data term accounts for its explicit array,
+pointer, scalar and result wrappers on the pinned ABI. A pin change revalidates emitted code,
+Unicode/NUL preservation, deferred numeric queries, constructor graphs and SDK schema agreement;
+compiler/update/GC/native costs and the SDK call schedule keep separate ownership.
 
 Profiling builds used to calibrate reserves remain diagnostic variants of the pinned GHC `9.12.4`
 toolchain, not a second supported runtime artifact. See

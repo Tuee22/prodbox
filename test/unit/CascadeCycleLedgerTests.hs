@@ -1,3 +1,4 @@
+{-# LANGUAGE CApiFFI #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Sprint 6.5: the ledger that makes "two consecutive qualifying cycles" a fact
@@ -11,22 +12,34 @@ module CascadeCycleLedgerTests
   )
 where
 
+import Control.Exception (bracket)
 import CycleIdentityFixtures
 import CycleLedgerFixtures
 import Data.ByteString qualified as ByteString
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Foreign.C.Types (CInt (..))
 import Prodbox.Test.Qualification.CascadeCycleArtifact
 import Prodbox.Test.Qualification.CascadeCycleIdentity
 import Prodbox.Test.Qualification.CascadeCycleLedger
 import Prodbox.Test.Qualification.CascadeCycleLedgerStore
 import Prodbox.Test.Qualification.Evidence (hashPublicEvidence, publicEvidenceDigestText)
-import System.Directory (removeFile)
+import System.Directory (createDirectoryIfMissing, removeFile)
+import System.FilePath (takeDirectory)
 import System.IO.Temp (withSystemTempDirectory)
 import System.Posix.Files (createNamedPipe, createSymbolicLink, setFileMode)
+import System.Posix.IO (OpenFileFlags (..), OpenMode (ReadOnly), closeFd, defaultFileFlags, openFd)
+import System.Posix.Types (Fd (..))
 import System.Timeout (timeout)
 import TestSupport
+
+foreign import capi "sys/file.h flock" lockFixtureDirectory :: CInt -> CInt -> IO CInt
+
+isStoreWriteFailure :: Either LedgerStoreError value -> Bool
+isStoreWriteFailure result = case result of
+  Left (LedgerStoreWriteFailed _ _) -> True
+  _ -> False
 
 cascadeCycleLedgerSuite :: SuiteBuilder ()
 cascadeCycleLedgerSuite =
@@ -105,6 +118,39 @@ resumeSnapshotCases = describe "pre-uninstall named image capture" $ do
 
 appendCases :: SuiteBuilder ()
 appendCases = do
+  it "refuses an append based on an outdated ledger observation" $
+    withSystemTempDirectory "qualification-ledger-tip" $ \root -> do
+      let path = cycleLedgerPath root
+          before = ledgerTip emptyCycleLedger
+          begun = beginRecord "pre-1" DeploymentA 1
+          closed = closeRecord "pre-1" DeploymentA 1 CyclePassed (Just "d")
+      appendCycleRecord path begun >>= (`shouldSatisfy` either (const False) (const True))
+      observed <- readCycleLedger path
+      let current = either (error . show) id observed
+      appendCycleRecordAtTip before path closed `shouldReturn` Left LedgerStoreTipChanged
+      readCycleLedger path `shouldReturn` Right current
+      appendCycleRecordAtTip (ledgerTip current) path closed
+        >>= (`shouldSatisfy` either (const False) (const True))
+
+  it "refuses a concurrent ledger writer and succeeds after its lock is released" $
+    withSystemTempDirectory "qualification-ledger-lock" $ \root -> do
+      let path = cycleLedgerPath root
+          record = beginRecord "pre-1" DeploymentA 1
+          directory = takeDirectory path
+      createDirectoryIfMissing True directory
+      bracket
+        (openFd directory ReadOnly defaultFileFlags {directory = True})
+        closeFd
+        ( \(Fd fd) -> do
+            lockFixtureDirectory fd 2 `shouldReturn` 0
+            refused <- appendCycleRecord path record
+            refused `shouldSatisfy` isStoreWriteFailure
+            readCycleLedger path `shouldReturn` Right emptyCycleLedger
+        )
+      appended <- appendCycleRecord path record
+      appended `shouldSatisfy` either (const False) (const True)
+      readCycleLedger path >>= (`shouldSatisfy` either (const False) ((== 1) . length . ledgerEntries))
+
   it "chains each entry to the one before it, from a fixed genesis" $ do
     let (ledger, _) = ledgerOf [Pass "pre-1" DeploymentA]
         entries = ledgerEntries ledger

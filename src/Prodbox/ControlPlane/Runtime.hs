@@ -11,6 +11,8 @@
 -- Roles whose production composition has not landed remain explicitly fail-closed.
 module Prodbox.ControlPlane.Runtime
   ( ControlPlaneConfig (..)
+  , RetainedDeliveryLane (..)
+  , withRegisteredDeliveryAgent
   , ControlPlaneAuthenticationWire (..)
   , ControlPlaneTrustedCallerWire (..)
   , ControlPlaneRoleStore (..)
@@ -461,6 +463,9 @@ import Prodbox.ControlPlane.ProviderProduction
   , providerProductionNarrowSession
   , providerProductionReady
   )
+import Prodbox.ControlPlane.ProviderScopeObservation
+  ( authorityProviderScopeObservationAuthenticatedHandler
+  )
 import Prodbox.ControlPlane.ProviderWorkerClient
   ( dispatchProviderCommittedIntent
   , providerWorkerExecutionAuthenticatedHandlerObserved
@@ -626,7 +631,9 @@ import Prodbox.ControlPlane.Server
   , serveControlPlaneRequest
   )
 import Prodbox.ControlPlane.TargetAuthorityEpochBinding
-  ( homeTargetEpochAgentRegistry
+  ( TargetEpochAgentRegistry
+  , homeTargetEpochAgentRegistry
+  , targetEpochRegistrySubstrateForCluster
   , vaultTargetEpochBindingInterpreter
   )
 import Prodbox.ControlPlane.TargetAuthorityEpochEndpoint
@@ -652,7 +659,8 @@ import Prodbox.ControlPlane.TargetIntentAuthorityProduction
   ( productionTargetIntentIssuerBoundary
   )
 import Prodbox.ControlPlane.TargetMaterialClient
-  ( observeRegisteredTargetMaterial
+  ( TargetMaterialClient
+  , observeRegisteredTargetMaterial
   , targetMaterialClient
   , targetWorkerReceiptFromMaterialObservation
   )
@@ -678,7 +686,8 @@ import Prodbox.ControlPlane.TargetMaterialRegistry
   , targetSecretIdToken
   )
 import Prodbox.ControlPlane.TargetMaterializationProduction
-  ( classifyTargetIntentIssueError
+  ( ProductionTargetMaterializationBoundary
+  , classifyTargetIntentIssueError
   , productionTargetMaterializationBoundary
   , renderTargetWorkerCoordinatorDiagnostic
   )
@@ -687,7 +696,8 @@ import Prodbox.ControlPlane.TargetOneShotOperationEndpoint
   , targetOneShotOperationAuthenticatedHandler
   )
 import Prodbox.ControlPlane.TargetRetainedMaterialRewrapClient
-  ( targetRetainedMaterialRewrapClient
+  ( TargetRetainedMaterialRewrapClient
+  , targetRetainedMaterialRewrapClient
   )
 import Prodbox.ControlPlane.TargetRetainedMaterialRewrapEndpoint
   ( TargetRetainedMaterialSourceObservation (..)
@@ -827,6 +837,7 @@ import Prodbox.Lifecycle.Authority.ClientRegistry
   , mkRegisteredClientSpec
   , mkRegisteredClientTable
   )
+import Prodbox.Lifecycle.Authority.EpochTopology (CutoverSubstrate (..))
 import Prodbox.Lifecycle.Authority.Genesis
   ( authorityEpochValue
   )
@@ -836,7 +847,8 @@ import Prodbox.Lifecycle.Authority.ProjectionImport
   , productionProjectionImportTarget
   )
 import Prodbox.Lifecycle.Authority.RetainedMaterial
-  ( SRetainedMaterialSchema (..)
+  ( RetainedMaterialTarget
+  , SRetainedMaterialSchema (..)
   , retainedMaterialSchemaToken
   , retainedMaterialTargetText
   )
@@ -2317,6 +2329,36 @@ resolveLifecycleAuthorityBirthStartup session store coordinates config authentic
         (validateRpcBirthConfig LifecycleAuthorityRuntime scope config)
     pure (scope, mode)
 
+-- | Run a retained delivery against the registered Target Agent named by the
+-- request's target, or refuse. Membership is a lookup in the registered-agent
+-- set (Sprint 7.47); production registers only the home agent.
+withRegisteredDeliveryAgent
+  :: TargetEpochAgentRegistry
+  -> (CutoverSubstrate -> Maybe lane)
+  -> RetainedMaterialTarget schema
+  -> (TargetAgentIdentity -> lane -> IO (Either Text result))
+  -> IO (Either Text result)
+withRegisteredDeliveryAgent registry laneFor target continue =
+  case targetEpochRegistrySubstrateForCluster registry (retainedMaterialTargetText target) of
+    Nothing ->
+      pure (Left "retained delivery target is not the registered Target Agent")
+    Just (substrate, agent) -> case laneFor substrate of
+      -- A registered agent with no wired delivery lane is refused before any
+      -- component of another substrate's lane can be used for it (Sprint 7.47).
+      Nothing -> pure (Left "retained delivery lane is not wired for the registered Target Agent")
+      Just lane -> continue agent lane
+
+-- | The per-substrate components a retained delivery uses to reach its Target
+-- Agent: the sink observer's client, the one-shot rewrap client and the
+-- materialization boundary (the Vault address, Job connection and image
+-- repository that reach that Agent's cluster). The EKS lane, a second case of
+-- the lane lookup, supplies all three of its own.
+data RetainedDeliveryLane = RetainedDeliveryLane
+  { retainedLaneMaterialClient :: TargetMaterialClient IO
+  , retainedLaneRewrapClient :: TargetRetainedMaterialRewrapClient IO
+  , retainedLaneMaterializationBoundary :: ProductionTargetMaterializationBoundary
+  }
+
 lifecycleAuthorityRuntimeInterpreter
   :: ControlPlaneVaultConfig
   -> VaultSession
@@ -3141,10 +3183,10 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession store coordinates 
               (const LifecycleAuthorityInterpreterTargetWorkerImage)
               (mkTargetWorkerImageDigest (targetAgentRolloutDigest registeredAgentIdentity))
           let signerDigest = manifestPublicKeyDigest manifestPublicKey
-              retainedTargetObserver target = do
+              retainedTargetObserver lane target = do
                 observed <-
                   observeRegisteredTargetMaterial
-                    (targetMaterialClient targetTransport)
+                    (retainedLaneMaterialClient lane)
                     target
                 pure $ case observed of
                   Left err -> Left (Text.take 256 (Text.pack (show err)))
@@ -3168,113 +3210,134 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession store coordinates 
                     }
                   (targetIntentAuthorityClient localAuthorityTransport)
                   currentAuthorityTime
-              retainedRewrapClient =
-                targetRetainedMaterialRewrapClient targetOneShotTransport
+              -- Sprint 7.47: membership of a delivery target is a lookup in the
+              -- registered-agent set. Production registers only the home agent, so
+              -- this admits exactly the identity the comparison it replaced did.
+              retainedDeliveryRegistry =
+                homeTargetEpochAgentRegistry registeredAgentIdentity targetTransport
+              -- Home is the only wired lane. A second substrate adds a case here,
+              -- supplying its own observer client, rewrap client and boundary.
+              retainedDeliveryLaneFor substrate = case substrate of
+                CutoverHome ->
+                  Just
+                    RetainedDeliveryLane
+                      { retainedLaneMaterialClient = targetMaterialClient targetTransport
+                      , retainedLaneRewrapClient =
+                          targetRetainedMaterialRewrapClient targetOneShotTransport
+                      , retainedLaneMaterializationBoundary = retainedTargetBoundary
+                      }
+                _ -> Nothing
+              deliverSesSmtpTo deliveryAgent lane now source request =
+                case mkCrossClusterDurableCoordinate
+                  authority
+                  ( "retained-material/delivery/"
+                      <> retainedMaterialSchemaToken SRetainedSesSmtpMaterial
+                      <> "/"
+                      <> retainedMaterialTargetText (retainedDeliveryRequestTarget request)
+                  ) of
+                  Left err -> pure (Left (Text.pack (show err)))
+                  Right outboxCoordinate -> do
+                    sourceReady <-
+                      observeRetainedDeliveryStage
+                        "source-current"
+                        ( ensureRetainedMaterialCurrentSource
+                            retainedSesSmtpRepository
+                            now
+                            source
+                        )
+                    case sourceReady of
+                      Left detail -> pure (Left detail)
+                      Right () ->
+                        coordinateRetainedMaterialDelivery
+                          ( modelBRetainedMaterialRepository
+                              ( inClusterAuthorityModelBCasAdapter
+                                  store
+                                  authority
+                                  (retainedMaterialModelBCodec SRetainedSesSmtpMaterial)
+                              )
+                              outboxCoordinate
+                          )
+                          now
+                          source
+                          request
+                          (\_ -> observeRetainedDeliveryStage "sink-observe" (retainedTargetObserver lane TargetSesSmtp))
+                          ( \keyPair intent ->
+                              observeRetainedDeliveryStage "materialize" $
+                                fmap retainedMaterialDeliveryTargetReceipt
+                                  <$> productionRetainedMaterialDeliveryWithKeyPair
+                                    SRetainedSesSmtpMaterial
+                                    (retainedLaneMaterializationBoundary lane)
+                                    (retainedLaneRewrapClient lane)
+                                    deliveryAgent
+                                    targetWorkerImage
+                                    now
+                                    keyPair
+                                    source
+                                    intent
+                          )
+              deliverAcmeEabTo deliveryAgent lane now source request =
+                case mkCrossClusterDurableCoordinate
+                  authority
+                  ( "retained-material/delivery/"
+                      <> retainedMaterialSchemaToken SRetainedAcmeEabMaterial
+                      <> "/"
+                      <> retainedMaterialTargetText (retainedDeliveryRequestTarget request)
+                  ) of
+                  Left err -> pure (Left (Text.pack (show err)))
+                  Right outboxCoordinate -> do
+                    sourceReady <-
+                      observeRetainedDeliveryStage
+                        "source-current"
+                        ( ensureRetainedMaterialCurrentSource
+                            retainedAcmeEabRepository
+                            now
+                            source
+                        )
+                    case sourceReady of
+                      Left detail -> pure (Left detail)
+                      Right () ->
+                        coordinateRetainedMaterialDelivery
+                          ( modelBRetainedMaterialRepository
+                              ( inClusterAuthorityModelBCasAdapter
+                                  store
+                                  authority
+                                  (retainedMaterialModelBCodec SRetainedAcmeEabMaterial)
+                              )
+                              outboxCoordinate
+                          )
+                          now
+                          source
+                          request
+                          (\_ -> observeRetainedDeliveryStage "sink-observe" (retainedTargetObserver lane TargetAcmeEab))
+                          ( \keyPair intent ->
+                              observeRetainedDeliveryStage "materialize" $
+                                fmap retainedMaterialDeliveryTargetReceipt
+                                  <$> productionRetainedMaterialDeliveryWithKeyPair
+                                    SRetainedAcmeEabMaterial
+                                    (retainedLaneMaterializationBoundary lane)
+                                    (retainedLaneRewrapClient lane)
+                                    deliveryAgent
+                                    targetWorkerImage
+                                    now
+                                    keyPair
+                                    source
+                                    intent
+                          )
               retainedDeliveryBoundary =
                 withRetainedDeliveryRefusalLog observeRetainedDeliveryRefusal $
                   RetainedMaterialDeliveryBoundary
                     { deliverRetainedSesSmtp = \now source request ->
-                        if retainedMaterialTargetText (retainedDeliveryRequestTarget request)
-                          /= targetAgentClusterIdentity registeredAgentIdentity
-                          then pure (Left "retained delivery target is not the registered Target Agent")
-                          else case mkCrossClusterDurableCoordinate
-                            authority
-                            ( "retained-material/delivery/"
-                                <> retainedMaterialSchemaToken SRetainedSesSmtpMaterial
-                                <> "/"
-                                <> retainedMaterialTargetText (retainedDeliveryRequestTarget request)
-                            ) of
-                            Left err -> pure (Left (Text.pack (show err)))
-                            Right outboxCoordinate -> do
-                              sourceReady <-
-                                observeRetainedDeliveryStage
-                                  "source-current"
-                                  ( ensureRetainedMaterialCurrentSource
-                                      retainedSesSmtpRepository
-                                      now
-                                      source
-                                  )
-                              case sourceReady of
-                                Left detail -> pure (Left detail)
-                                Right () ->
-                                  coordinateRetainedMaterialDelivery
-                                    ( modelBRetainedMaterialRepository
-                                        ( inClusterAuthorityModelBCasAdapter
-                                            store
-                                            authority
-                                            (retainedMaterialModelBCodec SRetainedSesSmtpMaterial)
-                                        )
-                                        outboxCoordinate
-                                    )
-                                    now
-                                    source
-                                    request
-                                    (\_ -> observeRetainedDeliveryStage "sink-observe" (retainedTargetObserver TargetSesSmtp))
-                                    ( \keyPair intent ->
-                                        observeRetainedDeliveryStage "materialize" $
-                                          fmap retainedMaterialDeliveryTargetReceipt
-                                            <$> productionRetainedMaterialDeliveryWithKeyPair
-                                              SRetainedSesSmtpMaterial
-                                              retainedTargetBoundary
-                                              retainedRewrapClient
-                                              registeredAgentIdentity
-                                              targetWorkerImage
-                                              now
-                                              keyPair
-                                              source
-                                              intent
-                                    )
+                        withRegisteredDeliveryAgent
+                          retainedDeliveryRegistry
+                          retainedDeliveryLaneFor
+                          (retainedDeliveryRequestTarget request)
+                          (\deliveryAgent lane -> deliverSesSmtpTo deliveryAgent lane now source request)
                     , deliverRetainedAcmeEab = \now source request ->
-                        if retainedMaterialTargetText (retainedDeliveryRequestTarget request)
-                          /= targetAgentClusterIdentity registeredAgentIdentity
-                          then pure (Left "retained delivery target is not the registered Target Agent")
-                          else case mkCrossClusterDurableCoordinate
-                            authority
-                            ( "retained-material/delivery/"
-                                <> retainedMaterialSchemaToken SRetainedAcmeEabMaterial
-                                <> "/"
-                                <> retainedMaterialTargetText (retainedDeliveryRequestTarget request)
-                            ) of
-                            Left err -> pure (Left (Text.pack (show err)))
-                            Right outboxCoordinate -> do
-                              sourceReady <-
-                                observeRetainedDeliveryStage
-                                  "source-current"
-                                  ( ensureRetainedMaterialCurrentSource
-                                      retainedAcmeEabRepository
-                                      now
-                                      source
-                                  )
-                              case sourceReady of
-                                Left detail -> pure (Left detail)
-                                Right () ->
-                                  coordinateRetainedMaterialDelivery
-                                    ( modelBRetainedMaterialRepository
-                                        ( inClusterAuthorityModelBCasAdapter
-                                            store
-                                            authority
-                                            (retainedMaterialModelBCodec SRetainedAcmeEabMaterial)
-                                        )
-                                        outboxCoordinate
-                                    )
-                                    now
-                                    source
-                                    request
-                                    (\_ -> observeRetainedDeliveryStage "sink-observe" (retainedTargetObserver TargetAcmeEab))
-                                    ( \keyPair intent ->
-                                        observeRetainedDeliveryStage "materialize" $
-                                          fmap retainedMaterialDeliveryTargetReceipt
-                                            <$> productionRetainedMaterialDeliveryWithKeyPair
-                                              SRetainedAcmeEabMaterial
-                                              retainedTargetBoundary
-                                              retainedRewrapClient
-                                              registeredAgentIdentity
-                                              targetWorkerImage
-                                              now
-                                              keyPair
-                                              source
-                                              intent
-                                    )
+                        withRegisteredDeliveryAgent
+                          retainedDeliveryRegistry
+                          retainedDeliveryLaneFor
+                          (retainedDeliveryRequestTarget request)
+                          (\deliveryAgent lane -> deliverAcmeEabTo deliveryAgent lane now source request)
                     }
               manifestRepository =
                 modelBDecommissionCommitRepository
@@ -3347,7 +3410,7 @@ lifecycleAuthorityRuntimeInterpreter vaultConfig vaultSession store coordinates 
                         fmap (mapLeft renderProviderWorkerClientError)
                           . dispatchProviderCommittedIntent providerTransport
                     }
-                  externalMaterialHandler
+                  (authorityProviderScopeObservationAuthenticatedHandler admissionRepository externalMaterialHandler)
               awsAdminHandler =
                 awsAdminProvisionerAuthenticatedHandler
                   awsAdminProvisionerMaximumBytes

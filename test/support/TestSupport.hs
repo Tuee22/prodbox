@@ -27,6 +27,7 @@ module TestSupport
   , fixtureAwsRegion
   , fixtureProviderRunMarker
   , syntheticConfigFile
+  , syntheticAwsSubstrateProfileInput
   , syntheticProjectConfig
   , verifiedCallerSlotFixture
   , withElapsedMicros
@@ -85,6 +86,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
 import Prodbox.Retry qualified as Retry
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 import Prodbox.Settings qualified as Settings
+import Prodbox.Settings.AwsSubstrateProfile qualified as AwsProfile
 import System.Directory
   ( copyFile
   , getPermissions
@@ -102,6 +104,24 @@ import Test.Tasty.HUnit
   , testCase
   )
 import Test.Tasty.QuickCheck (Testable, testProperty)
+
+syntheticAwsSubstrateProfileInput :: AwsProfile.AwsSubstrateProfileInput
+syntheticAwsSubstrateProfileInput =
+  AwsProfile.AwsSubstrateProfileInput
+    { AwsProfile.operator_cidr = "203.0.113.44/32"
+    , AwsProfile.eks_node_instance_type = "m7i.large"
+    , AwsProfile.eks_node_disk_size_gib = 61
+    , AwsProfile.eks_node_min_size = 2
+    , AwsProfile.eks_node_max_size = 5
+    , AwsProfile.aws_test_instance_types = ["m7i.large", "m7i.xlarge", "c7i.large"]
+    , AwsProfile.aws_test_root_volume_types = ["gp3", "io2", "gp2"]
+    , AwsProfile.aws_test_root_volume_sizes_gib = [31, 32, 33]
+    , AwsProfile.static_ebs_volume_type = "io2"
+    , AwsProfile.eks_vpc_cidr = "10.71.0.0/16"
+    , AwsProfile.eks_subnet_cidrs = ["10.71.10.0/24", "10.71.20.0/24"]
+    , AwsProfile.aws_test_vpc_cidr = "10.72.0.0/16"
+    , AwsProfile.aws_test_subnet_cidrs = ["10.72.10.0/24", "10.72.20.0/24", "10.72.30.0/24"]
+    }
 
 -- | Valid deployment-neutral fixture. Production defaults intentionally leave
 -- operator-authored identity and public-host fields empty.

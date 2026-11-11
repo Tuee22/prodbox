@@ -16,6 +16,7 @@ import ControlPlaneRpcAdmissionBirth
   , rpcBirthHomeRegistryFixture
   , withRpcBirthCallerVaultFixture
   , withRpcBirthPreparedCoordinatorRegistryWireFixture
+  , withRpcBirthPreparedSignedRegistryWireFixture
   )
 import Data.Bifunctor (first)
 import Data.ByteString qualified as BS
@@ -24,23 +25,32 @@ import Data.Either (isLeft)
 import Data.IORef
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Word (Word64)
 import GHC.Generics (Generic)
 import Prodbox.ControlPlane.AuthenticatedTransport qualified as Transport
 import Prodbox.ControlPlane.AuthenticationRegistry
+import Prodbox.ControlPlane.AuthorityAuthenticatedResponse qualified as AuthorityResponse
 import Prodbox.ControlPlane.Client qualified as Client
 import Prodbox.ControlPlane.Codec (decodeControlPlaneResponse, encodeControlPlaneResponse)
 import Prodbox.ControlPlane.Coordinate qualified as Coordinate
 import Prodbox.ControlPlane.LifecycleAuthorityAuthentication (ExternalLifecycleAuthorityCaller (..))
 import Prodbox.ControlPlane.RegisteredRpcSigning
 import Prodbox.ControlPlane.RequestAuthentication
+import Prodbox.ControlPlane.Route
+  ( ControlPlaneRoute (LifecycleAuthorityPeerObserve, LifecycleMigrationApply)
+  )
 import Prodbox.ControlPlane.RpcAdmissionBirth
 import Prodbox.ControlPlane.RpcAdmissionBirthBootstrap
 import Prodbox.ControlPlane.RpcAdmissionBirthConfig
+import Prodbox.ControlPlane.RpcAdmissionBirthCoordinator qualified as Coordinator
 import Prodbox.ControlPlane.RpcAdmissionBirthEndpoint
 import Prodbox.ControlPlane.RpcAdmissionBirthExecution
 import Prodbox.ControlPlane.RpcAdmissionBirthNative (rpcBirthSystemTime)
 import Prodbox.ControlPlane.RpcKeyRegistry
 import Prodbox.ControlPlane.RpcOwnBindingHint
+import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
+import Prodbox.Lifecycle.Decommission.AuthorityExport (AuthorityManifestSigner (..))
+import Prodbox.Lifecycle.Decommission.Manifest (manifestPublicKeyDigest, mkManifestPublicKey)
 import Prodbox.Lifecycle.Lease
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 import Prodbox.Vault.Client (VaultToken (..))
@@ -49,6 +59,8 @@ import TestSupport
 
 rpcBirthBootstrapSuite :: SuiteBuilder ()
 rpcBirthBootstrapSuite = describe "Sprint 6.5 private registered RPC bootstrap" $ do
+  it "bootstraps against the actual pinned manifest response handlers" manifestBootstrapComposition
+  it "rejects substituted and replayed signed bootstrap observations" signedBootstrapControl
   forM_ [LifecycleAuthorityOperator, LifecycleAuthorityTestHarness] $ \caller ->
     it ("uses the cached native Vault adapter and fixed authenticated reads for " <> show caller) $
       withBootstrapFixture $ \fixture ->
@@ -300,6 +312,323 @@ runBootstrap fixture native mode deadline wire =
             wire
         )
     )
+
+manifestBootstrapComposition :: IO ()
+manifestBootstrapComposition = do
+  authoritySigner <-
+    pure
+      ( must
+          ( mkRequestSigner
+              (CallerService LifecycleAuthorityRuntime)
+              (must (mkSigningKeyGeneration 1))
+              (BS.replicate 32 211)
+          )
+      )
+  let public = must (mkManifestPublicKey (requestSignerPublicKeyBytes authoritySigner))
+      expected = manifestPublicKeyDigest public
+      capability = localRequestSigningCapability authoritySigner
+  version <- newIORef 1
+  rotateOnSign <- newIORef False
+  substitutions <- newIORef (0 :: Int)
+  saved <- newIORef Nothing
+  now <- rpcBirthSystemTime
+  let deadline = authorityTimeFromMicros (authorityTimeMicros now + 10000000)
+      manifest =
+        AuthorityManifestSigner
+          { readAuthorityManifestPublicKey = do
+              current <- readIORef version
+              pure (Right (current, public))
+          , signAuthorityManifestPayload = \bytes -> do
+              signature <- signCanonicalBytesWithRequestCapability capability bytes
+              shouldRotate <- readIORef rotateOnSign
+              when shouldRotate (writeIORef version 2)
+              pure (either (Left . Text.pack . show) (\value -> Right (1, value)) signature)
+          }
+  withRpcBirthPreparedSignedRegistryWireFixture expected manifest deadline (pure Nothing) $ \config observer bounds providers inner probe -> do
+    registry <- must <$> observeRpcKeyRegistry observer
+    routes <- newIORef []
+    let mode = must (validateRpcBirthConfig LifecycleAuthorityRuntime scope config)
+        wire http method url bytes = do
+          let hint = isRpcOwnBindingQuery bytes
+              peer = "/peer/observe" `Text.isSuffixOf` Text.pack url
+              route
+                | hint = "hint"
+                | peer = "peer"
+                | otherwise = "registry"
+          modifyIORef' routes (<> [route])
+          if hint
+            then do
+              let query = must (decodeRpcOwnBindingQuery scope bytes)
+              pure (Right (200, encodeRpcOwnBindingHint (must (selectRpcOwnBindingHint query registry))))
+            else do
+              result <- inner http method url bytes
+              case result of
+                Left failure -> pure (Left failure)
+                Right (status, body) -> do
+                  previous <- readIORef saved
+                  when (not peer && status == 200 && maybe True (const False) previous) (writeIORef saved (Just body))
+                  selected <- readIORef substitutions
+                  pure $ Right $ case selected of
+                    1 | not peer -> (200, BS.take (BS.length body - 1) body)
+                    2 | not peer -> (200, maybe body id previous)
+                    _ -> (status, body)
+        fixture = BootstrapFixture mode deadline registry bounds providers wire routes
+        client =
+          must
+            ( Client.controlPlaneClientWithTransport
+                (rpcBirthRegistryResponseMaximumBytes + 512)
+                (must (Client.mkLifecycleAuthorityEndpoint "http://home.test"))
+                wire
+            )
+    native <- fixtureNative fixture NativeHealthy
+    let run =
+          observeRpcBirthBootstrapRegistryWithPinnedManifest
+            native
+            (Right <$> rpcBirthSystemTime)
+            (Transport.provideAuthenticatedClientNonce providers)
+            scope
+            mode
+            deadline
+            bounds
+            client
+            expected
+            (readAuthorityManifestPublicKey manifest)
+    result <- run
+    fmap rpcBirthObservedRegistry result `shouldBe` Right registry
+    let descriptorTransport = Transport.mkAuthenticatedClientTransport bounds providers client
+        descriptorRead trusted =
+          requestRpcBirthDescriptorWithVerifiedResponses
+            (Right <$> rpcBirthSystemTime)
+            deadline
+            scope
+            trusted
+            descriptorTransport
+        authorityKey = trustedRequestKeyFromSigner authoritySigner
+        wrongKey =
+          trustedRequestKeyFromSigner
+            ( must
+                ( mkRequestSigner
+                    (CallerService LifecycleAuthorityRuntime)
+                    (must (mkSigningKeyGeneration 1))
+                    (BS.replicate 32 212)
+                )
+            )
+    descriptor <- descriptorRead authorityKey
+    fmap rpcBirthObservationRequiresRegistration descriptor `shouldBe` Right True
+    descriptorRead wrongKey >>= (`shouldSatisfy` isLeft)
+    probe >>= (\(phase, _) -> phase `shouldBe` BirthPrepared)
+    writeIORef substitutions 1
+    descriptorRead authorityKey >>= (`shouldSatisfy` isLeft)
+    effects <- newIORef (0 :: Int)
+    let countEffect = modifyIORef' effects (+ 1)
+        publication =
+          Coordinator.RpcBirthPublicationEffects
+            (\_ -> countEffect >> pure (Right config))
+            (\_ _ _ -> countEffect >> pure (Right ()))
+            (\_ _ -> countEffect >> pure (Right ()))
+    Coordinator.coordinateRpcBirthWithVerifiedDescriptors
+      (Right <$> rpcBirthSystemTime)
+      scope
+      deadline
+      1
+      (Text.replicate 32 "a")
+      descriptorTransport
+      publication
+      authorityKey
+      >>= (`shouldSatisfy` isLeft)
+    readIORef effects `shouldReturn` 0
+    run >>= (`shouldSatisfy` isLeft)
+    writeIORef substitutions 2
+    descriptorRead authorityKey >>= (`shouldSatisfy` isLeft)
+    run >>= (`shouldSatisfy` isLeft)
+    writeIORef substitutions 0
+    writeIORef rotateOnSign True
+    run >>= (`shouldSatisfy` isLeft)
+    readIORef version `shouldReturn` 2
+    probe >>= (\(phase, _) -> phase `shouldBe` BirthPrepared)
+
+signedBootstrapControl :: IO ()
+signedBootstrapControl = withBootstrapFixture $ \fixture -> do
+  native <- fixtureNative fixture NativeHealthy
+  substitution <- newIORef (0 :: Int)
+  savedRegistry <- newIORef Nothing
+  let authoritySigner =
+        must
+          ( mkRequestSigner
+              (CallerService LifecycleAuthorityRuntime)
+              (must (mkSigningKeyGeneration 1))
+              (BS.replicate 32 211)
+          )
+      authorityKey = trustedRequestKeyFromSigner authoritySigner
+      manifestPublic = must (mkManifestPublicKey (requestSignerPublicKeyBytes authoritySigner))
+      expectedManifest = manifestPublicKeyDigest manifestPublic
+      capability = localRequestSigningCapability authoritySigner
+      otherSigner =
+        must
+          ( mkRequestSigner
+              (CallerService LifecycleAuthorityRuntime)
+              (must (mkSigningKeyGeneration 1))
+              (BS.replicate 32 212)
+          )
+      trust = must (registeredRpcRouteTrust LifecycleAuthorityRuntime 16 (bootstrapRegistry fixture))
+      lifetime = must (authorityDurationFromMicros 60000000)
+      serverProviders =
+        Transport.AuthenticatedServerProviders
+          (pure (Right scope))
+          (pure (Right authorityEpochGenesis))
+          (Right <$> rpcBirthSystemTime)
+          (pure (Right trust))
+      wire config method url bytes = do
+        original <- bootstrapWire fixture config method url bytes
+        if isRpcOwnBindingQuery bytes
+          then pure original
+          else case original of
+            Left failure -> pure (Left failure)
+            Right (status, body) -> do
+              let isPeer = "/peer/observe" `Text.isSuffixOf` Text.pack url
+                  route = if isPeer then LifecycleAuthorityPeerObserve else LifecycleMigrationApply
+              authenticated <-
+                Transport.authenticateControlPlaneFrame
+                  (bootstrapBounds fixture)
+                  lifetime
+                  serverProviders
+                  LifecycleAuthorityRuntime
+                  route
+                  (Lazy.fromStrict bytes)
+              let request = Transport.authenticatedServerVerifiedRequest (must authenticated)
+              envelope <-
+                must
+                  <$> AuthorityResponse.signAuthorityAuthenticatedResponse
+                    rpcBirthRegistryResponseMaximumBytes
+                    capability
+                    request
+                    (fromIntegral status)
+                    body
+              previous <- readIORef savedRegistry
+              when (not isPeer && maybe True (const False) previous) (writeIORef savedRegistry (Just envelope))
+              mode <- readIORef substitution
+              if mode == 4 && not isPeer
+                then do
+                  let (_, forgedBody) = rewriteForgedAuthorityRegistry fixture (status, body)
+                  forged <-
+                    must
+                      <$> AuthorityResponse.signAuthorityAuthenticatedResponse
+                        rpcBirthRegistryResponseMaximumBytes
+                        (localRequestSigningCapability otherSigner)
+                        request
+                        200
+                        forgedBody
+                  pure (Right (200, forged))
+                else pure $ Right $ case mode of
+                  1 | not isPeer -> rewriteForgedAuthorityRegistry fixture (status, body)
+                  2 | not isPeer -> (200, maybe envelope id previous)
+                  3 | isPeer -> (200, body)
+                  _ -> (200, envelope)
+      client =
+        must
+          ( Client.controlPlaneClientWithTransport
+              (rpcBirthRegistryResponseMaximumBytes + 512)
+              (must (Client.mkLifecycleAuthorityEndpoint "http://home.test"))
+              wire
+          )
+      run =
+        observeRpcBirthBootstrapRegistryWithVerifiedResponses
+          native
+          (Right <$> rpcBirthSystemTime)
+          (Transport.provideAuthenticatedClientNonce (bootstrapProviders fixture))
+          scope
+          (bootstrapMode fixture)
+          (bootstrapDeadline fixture)
+          (bootstrapBounds fixture)
+          client
+          authorityKey
+      runPinned readPublic =
+        observeRpcBirthBootstrapRegistryWithPinnedManifest
+          native
+          (Right <$> rpcBirthSystemTime)
+          (Transport.provideAuthenticatedClientNonce (bootstrapProviders fixture))
+          scope
+          (bootstrapMode fixture)
+          (bootstrapDeadline fixture)
+          (bootstrapBounds fixture)
+          client
+          expectedManifest
+          readPublic
+  genuine <- run
+  fmap rpcBirthObservedRegistry genuine `shouldBe` Right (bootstrapRegistry fixture)
+  writeIORef substitution 1
+  run >>= (`shouldSatisfy` isLeft)
+  writeIORef substitution 2
+  run >>= (`shouldSatisfy` isLeft)
+  writeIORef substitution 3
+  run >>= (`shouldSatisfy` isLeft)
+  writeIORef substitution 4
+  run >>= (`shouldSatisfy` isLeft)
+  writeIORef substitution 0
+  pinned <- runPinned (pure (Right (1, manifestPublic)))
+  fmap rpcBirthObservedRegistry pinned `shouldBe` Right (bootstrapRegistry fixture)
+  let otherPublic = must (mkManifestPublicKey (requestSignerPublicKeyBytes otherSigner))
+  beforeRefusal <- length <$> readIORef (bootstrapRoutes fixture)
+  runPinned (pure (Right (1, otherPublic))) `shouldReturn` Left RpcBirthBootstrapAuthorityKeyMismatch
+  runPinned (pure (Right (0, manifestPublic)))
+    `shouldReturn` Left RpcBirthBootstrapAuthorityKeyInvalid
+  runPinned (pure (Right (fromIntegral (maxBound :: Word64) + 1, manifestPublic)))
+    `shouldReturn` Left RpcBirthBootstrapAuthorityKeyInvalid
+  runPinned (pure (Left "unavailable")) `shouldReturn` Left RpcBirthBootstrapAuthorityKeyUnavailable
+  readIORef (bootstrapRoutes fixture) >>= (`shouldBe` beforeRefusal) . length
+  keyReads <- newIORef (0 :: Int)
+  let rotated = do
+        count <- atomicModifyIORef' keyReads (\value -> (value + 1, value + 1))
+        pure (Right (if count == 1 then 1 else 2, manifestPublic))
+  runPinned rotated `shouldReturn` Left RpcBirthBootstrapAuthorityKeyMismatch
+  readIORef keyReads `shouldReturn` 2
+  closingReads <- newIORef (0 :: Int)
+  let failsClosing = do
+        count <- atomicModifyIORef' closingReads (\value -> (value + 1, value + 1))
+        pure (if count == 1 then Right (1, manifestPublic) else Left "unavailable")
+  runPinned failsClosing `shouldReturn` Left RpcBirthBootstrapAuthorityKeyUnavailable
+  readIORef closingReads `shouldReturn` 2
+  readIORef (bootstrapRoutes fixture) >>= (`shouldSatisfy` not . null)
+
+rewriteForgedAuthorityRegistry :: BootstrapFixture -> (Int, BS.ByteString) -> (Int, BS.ByteString)
+rewriteForgedAuthorityRegistry fixture (status, body) =
+  let encoded =
+        must (decodeControlPlaneResponse rpcBirthRegistryResponseMaximumBytes (Lazy.fromStrict body))
+          :: Either RpcBirthError BS.ByteString
+      prefix = "prodbox-rpc-birth-registry-response/v1\NUL"
+      original = maybe (error "fixture registry prefix") id (BS.stripPrefix prefix (must encoded))
+      RegistryObservationWire wireVersion descriptor _ = must (deserialiseOrFail (Lazy.fromStrict original))
+      forgedSigner =
+        must
+          ( mkRequestSigner
+              (CallerService LifecycleAuthorityRuntime)
+              (must (mkSigningKeyGeneration 2))
+              (BS.replicate 32 201)
+          )
+      origin =
+        mkRpcKeyOrigin
+          scope
+          (must (mkRpcVaultIncarnation "11111111-1111-1111-1111-111111111111"))
+          (controlPlaneSigningKeyRefFor (CallerService LifecycleAuthorityRuntime))
+      forged =
+        snd
+          ( must
+              ( registerRpcKey
+                  (must (mkRpcObservedKey origin 2 (requestSignerPublicKeyBytes forgedSigner)))
+                  (bootstrapRegistry fixture)
+              )
+          )
+      rewritten =
+        prefix
+          <> Lazy.toStrict
+            (serialise (RegistryObservationWire wireVersion descriptor (must (encodeRpcKeyRegistry forged))))
+      canonical = must (decodeRpcBirthRegistryObservation scope rewritten)
+   in ( status
+      , Lazy.toStrict
+          ( encodeControlPlaneResponse
+              (Right (must (encodeRpcBirthRegistryObservation canonical)) :: Either RpcBirthError BS.ByteString)
+          )
+      )
 
 data NativeFault
   = NativeHealthy

@@ -10,6 +10,7 @@ module Prodbox.ControlPlane.AuthorityControlProtocol
   ( AuthorityControlPayload (..)
   , isEpochPromotionObservationRequest
   , isEpochPromotionObservationForRole
+  , isSignedEpochPromotionObservationForRole
   )
 where
 
@@ -66,6 +67,7 @@ data AuthorityControlPayload
     AuthorityControlObserveProviderAdmissionRecovery !CascadeAuditFreezeBinding
   | AuthorityControlObserveProviderBootstrapPredecessor
   | AuthorityControlObserveEpochPromotion
+  | AuthorityControlObserveSignedEpochPromotion
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -75,10 +77,19 @@ isEpochPromotionObservationForRole role route body =
     && route == LifecycleAuthorityControl
     && isEpochPromotionObservationRequest body
 
+isSignedEpochPromotionObservationForRole :: RuntimeRole -> ControlPlaneRoute -> ByteString -> Bool
+isSignedEpochPromotionObservationForRole role route body =
+  role == LifecycleAuthorityRuntime
+    && route == LifecycleAuthorityControl
+    && case decodeControlPlaneRequest 64 (LazyByteString.fromStrict body) of
+      Right AuthorityControlObserveSignedEpochPromotion -> True
+      _ -> False
+
 isEpochPromotionObservationRequest :: ByteString -> Bool
 isEpochPromotionObservationRequest body =
   case decodeControlPlaneRequest 64 (LazyByteString.fromStrict body) of
     Right AuthorityControlObserveEpochPromotion -> True
+    Right AuthorityControlObserveSignedEpochPromotion -> True
     Right AuthorityControlGenesis {} -> False
     Right AuthorityControlBackupRepair {} -> False
     Right AuthorityControlBeginMigration -> False

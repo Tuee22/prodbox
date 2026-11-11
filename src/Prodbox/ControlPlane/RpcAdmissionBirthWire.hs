@@ -10,6 +10,8 @@ module Prodbox.ControlPlane.RpcAdmissionBirthWire
   , rpcBirthRequestPrefix
   , rpcBirthDescriptorRequest
   , rpcBirthRegistryRequest
+  , rpcBirthSignedDescriptorRequest
+  , rpcBirthSignedRegistryRequest
   , isRpcBirthRequest
   , isRpcBirthDescriptorRequest
   , isRpcBirthRegistryRequest
@@ -30,6 +32,10 @@ rpcBirthRequestPrefix, rpcBirthDescriptorRequest, rpcBirthRegistryRequest :: Byt
 rpcBirthRequestPrefix = "prodbox-rpc-birth-request/v1\NUL"
 rpcBirthDescriptorRequest = "prodbox-rpc-birth-descriptor/v1\NUL"
 rpcBirthRegistryRequest = "prodbox-rpc-birth-registry/v1\NUL"
+
+rpcBirthSignedDescriptorRequest, rpcBirthSignedRegistryRequest :: ByteString
+rpcBirthSignedDescriptorRequest = rpcBirthDescriptorRequest <> "signed/v1"
+rpcBirthSignedRegistryRequest = rpcBirthRegistryRequest <> "signed/v1"
 
 isRpcBirthRequest, isRpcBirthDescriptorRequest, isRpcBirthRegistryRequest :: ByteString -> Bool
 isRpcBirthRequest = BS.isPrefixOf rpcBirthRequestPrefix

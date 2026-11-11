@@ -517,7 +517,7 @@ deploymentContextFieldModifier value =
 
 -- | The one narrowed deployment context carried by every validated command.
 -- Its constructor is private: the only minting path is
--- 'validatedDeploymentContextFor'. Machine identifiers have already crossed
+-- the checked topology/context builders below. Machine identifiers have already crossed
 -- 'ClusterTopology''s validating Dhall decoder and are retained here beside
 -- the context coordinates they must agree with.
 data ValidatedDeploymentContext = ValidatedDeploymentContext
@@ -1137,39 +1137,50 @@ validateConfigWithContext
   -> DeploymentContextInput
   -> ConfigFile
   -> IO (Either String ValidatedSettings)
-validateConfigWithContext repoRoot contextInput config = do
-  resolvedManualRoot <- makeAbsolute (repoRoot </> Text.unpack (manual_pv_host_root (storage config)))
-  pure $ do
-    -- Local commands (cluster, charts, host, config, gateway) decode and
-    -- validate config WITHOUT requiring operational AWS credentials or the
-    -- Route 53 / ACME public-edge fields. Those belong to the AWS / edge
-    -- tier ('validateAwsBootstrapConfig' / 'validateOperationalAwsCredentials')
-    -- and are validated lazily only when a command actually reaches AWS.
-    validateLocalConfig config
-    allocatedPlan <-
-      mapLeft
-        Allocation.renderCompileError
-        (Allocation.compileResourcePlanUncertified (resource_plan (capacity config)))
-    validateOneShotSecretWorkerCapacity (resource_plan (capacity config))
-    validateGatewayEmitterCapacity (resource_plan (capacity config))
-    -- Sprint 1.83: the public-edge parse is retained rather than repeated. The
-    -- same call inside `validateLocalConfig` above is the refusal; this is the
-    -- value, and it is the only one any consumer sees.
-    publicEdge <- validatedPublicEdgeFor (domain config) (aws_substrate config)
-    -- Sprint 1.89: the same move as the line above, for the rest of the
-    -- coordinate surface. `validateLocalConfig` refuses on exactly these rules;
-    -- this is the value it refused on.
-    coordinates <- validatedCoordinatesFor config
-    deploymentContext <- validatedDeploymentContextFor contextInput (cluster_topology config)
-    pure
-      ValidatedSettings
-        { validatedConfig = config
-        , resolvedManualPvHostRoot = resolvedManualRoot
-        , validatedAllocatedPlan = allocatedPlan
-        , validatedPublicEdge = publicEdge
-        , validatedCoordinates = coordinates
-        , validatedDeploymentContext = deploymentContext
-        }
+validateConfigWithContext repoRoot contextInput config =
+  case validateConfigProjection contextInput config of
+    Left cause -> pure (Left cause)
+    Right (ValidatedConfigProjection allocatedPlan publicEdge coordinates deploymentContext) -> do
+      resolvedManualRoot <- makeAbsolute (repoRoot </> Text.unpack (manual_pv_host_root (storage config)))
+      pure $
+        Right
+          ValidatedSettings
+            { validatedConfig = config
+            , resolvedManualPvHostRoot = resolvedManualRoot
+            , validatedAllocatedPlan = allocatedPlan
+            , validatedPublicEdge = publicEdge
+            , validatedCoordinates = coordinates
+            , validatedDeploymentContext = deploymentContext
+            }
+
+-- Keep path conversion and filesystem context out of refused validations.
+-- Successful resolution retains the existing raw-path interpretation.
+data ValidatedConfigProjection
+  = ValidatedConfigProjection
+      Allocation.SomeAllocatedPlan
+      ValidatedPublicEdge
+      ValidatedCoordinates
+      ValidatedDeploymentContext
+
+validateConfigProjection
+  :: DeploymentContextInput -> ConfigFile -> Either String ValidatedConfigProjection
+validateConfigProjection contextInput config = do
+  -- Local commands (cluster, charts, host, config, gateway) decode and
+  -- validate config WITHOUT requiring operational AWS credentials or the
+  -- Route 53 / ACME public-edge fields. Those belong to the AWS / edge
+  -- tier ('validateAwsBootstrapConfig' / 'validateOperationalAwsCredentials')
+  -- and are validated lazily only when a command actually reaches AWS.
+  LocalConfigProjection publicEdge coordinates topology <- localConfigProjection config
+  allocatedPlan <-
+    mapLeft
+      Allocation.renderCompileError
+      (Allocation.compileResourcePlanUncertified (resource_plan (capacity config)))
+  validateOneShotSecretWorkerCapacity (resource_plan (capacity config))
+  validateGatewayEmitterCapacity (resource_plan (capacity config))
+  -- Retain the edge and coordinates produced by the ordered local checks.
+  -- Standalone projection builders keep their existing public contracts.
+  deploymentContext <- deploymentContextForTopology contextInput topology
+  pure (ValidatedConfigProjection allocatedPlan publicEdge coordinates deploymentContext)
 
 -- | Narrow every Tier-0 deployment-context coordinate exactly once.
 validatedDeploymentContextFor
@@ -1177,7 +1188,23 @@ validatedDeploymentContextFor
   -> ClusterTopology
   -> Either String ValidatedDeploymentContext
 validatedDeploymentContextFor contextInput topologyInput = do
-  mapLeft renderTopologyError (validateClusterTopology topologyInput)
+  topology <- validateTopologyForContext topologyInput
+  deploymentContextForTopology contextInput topology
+
+newtype ValidatedTopologyForContext = ValidatedTopologyForContext ClusterTopology
+
+validateTopologyForContext :: ClusterTopology -> Either String ValidatedTopologyForContext
+validateTopologyForContext topology = do
+  mapLeft renderTopologyError (validateClusterTopology topology)
+  pure (ValidatedTopologyForContext topology)
+
+-- The local fold retains this witness so complete settings validation need not
+-- repeat the same pure topology checks. Standalone context construction checks first.
+deploymentContextForTopology
+  :: DeploymentContextInput
+  -> ValidatedTopologyForContext
+  -> Either String ValidatedDeploymentContext
+deploymentContextForTopology contextInput (ValidatedTopologyForContext topologyInput) = do
   clusterIdentity <- contextField "context.cluster_id" (contextInputClusterId contextInput)
   vaultEndpoint <- httpEndpointField "context.vault_address" (contextInputVaultAddress contextInput)
   minioEndpoint <- httpEndpointField "context.minio_endpoint" (contextInputMinioEndpoint contextInput)
@@ -1218,7 +1245,10 @@ contextField fieldName raw
 httpEndpointField :: String -> Text -> Either String Text
 httpEndpointField fieldName raw = do
   value <- contextField fieldName raw
-  let lower = Text.toLower value
+  -- Only the scheme participates in case-insensitive matching. Lowercase
+  -- mappings never erase a character, so eight input characters cover both
+  -- accepted prefixes without converting the endpoint's remaining text.
+  let lower = Text.toLower (Text.take 8 value)
       authority
         | "http://" `Text.isPrefixOf` lower = Text.drop 7 value
         | "https://" `Text.isPrefixOf` lower = Text.drop 8 value
@@ -1235,8 +1265,8 @@ httpEndpointField fieldName raw = do
 -- @validate*Section@ is now @void@ over the corresponding builder, so there is
 -- one rule per coordinate rather than a rule and a re-derivation that can drift.
 --
--- The order matches 'validateLocalConfig' so the first refusal a config meets is
--- the same through either entry point.
+-- Standalone coordinate projection keeps its field order. Complete settings
+-- validation retains the results of its ordered local checks instead.
 validatedCoordinatesFor :: ConfigFile -> Either String ValidatedCoordinates
 validatedCoordinatesFor config = do
   demoTtl <- demoTtlCoordinateFor (domain config)
@@ -1382,12 +1412,15 @@ awsSubstrateCoordinatesFor section = do
   -- Field order matches the refusal order this section has always had, so the
   -- first message a malformed pair produces is unchanged.
   subzone <- optionalFqdnCoordinate "aws_substrate.subzone_name" (subzone_name section)
-  zoneId <-
-    optionalCoordinateField
-      "aws_substrate.hosted_zone_id"
-      mkRoute53ZoneId
-      (hosted_zone_id section)
+  zoneId <- awsSubstrateZoneIdCoordinateFor section
   Right (zoneId, subzone)
+
+awsSubstrateZoneIdCoordinateFor :: AwsSubstrateSection -> Either String (Maybe Route53ZoneId)
+awsSubstrateZoneIdCoordinateFor section =
+  optionalCoordinateField
+    "aws_substrate.hosted_zone_id"
+    mkRoute53ZoneId
+    (hosted_zone_id section)
 
 sesCoordinatesFor
   :: SesSection -> Either String (Maybe Fqdn, Maybe DnsLabel, Maybe S3BucketName)
@@ -1506,7 +1539,8 @@ awsRegionCoordinateFor fieldName refs =
 -- zone, or ACME account are required here, so a host with an empty @aws.*@
 -- block still decodes config for every local cluster command.
 --
--- Sprint 1.81: this is a __positional__ constructor pattern, not a list of checks
+-- Sprint 1.81: the shared local projection fold uses a __positional__ constructor pattern,
+-- not a list of checks
 -- over field accessors. The distinction is the whole point. As a list it never
 -- mentioned the record, so @-Wall@ had nothing to warn about and a field added to
 -- 'ConfigFile' was skipped by construction — four sections (@ses@,
@@ -1540,7 +1574,15 @@ awsRegionCoordinateFor fieldName refs =
 -- inventory, and a number in prose beside it is exactly the drift that made the
 -- original figures wrong.
 validateLocalConfig :: ConfigFile -> Either String ()
-validateLocalConfig
+validateLocalConfig = void . localConfigProjection
+
+-- Both entrypoints share this positional fold. Its partial projections stay
+-- private and are returned only after every local check succeeds.
+data LocalConfigProjection
+  = LocalConfigProjection !ValidatedPublicEdge !ValidatedCoordinates !ValidatedTopologyForContext
+
+localConfigProjection :: ConfigFile -> Either String LocalConfigProjection
+localConfigProjection
   ( ConfigFile
       awsSection
       route53Section
@@ -1556,19 +1598,40 @@ validateLocalConfig
       retainedArtifactsSection
       componentNodes
     ) = do
-    validateConfiguredCertScope domainSection awsSubstrateSection
-    validateDemoTtl (demo_ttl domainSection)
-    validateAwsCredentialsRef "aws" awsSection
-    validateAwsSubstrateSection awsSubstrateSection
-    validateSesSection sesSection
-    validatePublicEdgeDeployment deploymentSection
+    publicEdge <- validatedPublicEdgeFor domainSection awsSubstrateSection
+    demoTtl <- demoTtlCoordinateFor domainSection
+    operationalRegion <- validatedAwsCredentialsRegion "aws" awsSection
+    substrateZoneId <- awsSubstrateZoneIdCoordinateFor awsSubstrateSection
+    let substrateSubzone = servedHostFqdn <$> validatedAwsServedHost publicEdge
+    (senderDomain, receiveSubdomain, captureBucket) <- sesCoordinatesFor sesSection
+    bootstrapIp <- validatedDeploymentBootstrap deploymentSection
     validateCapacitySection capacitySection
-    mapLeft renderTopologyError (validateClusterTopology clusterTopologySection)
-    validateStorageSection storageSection
-    validatePulumiStateBackendSection pulumiStateBackendSection
+    topology <- validateTopologyForContext clusterTopologySection
+    manualPvRoot <- storageCoordinateFor storageSection
+    (backendBucket, backendRegion, backendKeyPrefix) <-
+      pulumiStateBackendCoordinatesFor pulumiStateBackendSection
     validateRetainedArtifactsSection retainedArtifactsSection
     validateComponentNodes componentNodes
-    validateLocallyOptionalCoordinates route53Section acmeSection
+    homeZoneId <- homeZoneIdCoordinateFor route53Section
+    acmeAccount <- acmeAccountCoordinateFor acmeSection
+    let coordinates =
+          ValidatedCoordinates
+            { coordinateHomeZoneId = homeZoneId
+            , coordinateAwsSubstrateZoneId = substrateZoneId
+            , coordinateAwsSubstrateSubzone = substrateSubzone
+            , coordinateOperationalAwsRegion = operationalRegion
+            , coordinatePulumiBackendRegion = backendRegion
+            , coordinatePulumiBackendBucket = backendBucket
+            , coordinatePulumiBackendKeyPrefix = backendKeyPrefix
+            , coordinateSesSenderDomain = senderDomain
+            , coordinateSesReceiveSubdomain = receiveSubdomain
+            , coordinateSesCaptureBucket = captureBucket
+            , coordinateDemoTtl = demoTtl
+            , coordinateBootstrapPublicIp = bootstrapIp
+            , coordinateManualPvHostRoot = manualPvRoot
+            , coordinateAcmeAccount = acmeAccount
+            }
+    pure (LocalConfigProjection publicEdge coordinates topology)
 
 -- | Sprint 4.86: the operator-declared retained artifacts.
 --
@@ -1584,23 +1647,6 @@ validateRetainedArtifactsSection section =
   case declaredRetainedArtifacts section of
     Left err -> Left (renderRetainedArtifactDeclarationError err)
     Right _ -> Right ()
-
--- | Sprint 1.89: the two sections with no purely-local /presence/ rule.
---
--- This function replaces @ignoreLocallyUnconstrained@, whose name and comment
--- both said these sections "carry no purely-local invariant". That was true of
--- presence and false of shape, and the difference mattered: an empty
--- @route53.zone_id@ and an empty ACME account are the correct state for a host
--- that never touches AWS — but @route53.zone_id = \"not-a-zone\"@ was not
--- correct anywhere, and nothing anywhere refused it. The AWS tier's
--- 'validateAwsBootstrapConfig' supplies the presence rule; this supplies the
--- shape rule that was missing, on every load, for a value that is only ever
--- optional.
-validateLocallyOptionalCoordinates
-  :: Route53Section -> AcmeSection -> Either String ()
-validateLocallyOptionalCoordinates route53Section acmeSection = do
-  void (homeZoneIdCoordinateFor route53Section)
-  void (acmeAccountCoordinateFor acmeSection)
 
 -- | Sprint 1.81: the AWS substrate coordinates. Both fields are legitimately
 -- empty on a home-only host — and @hosted_zone_id@ is legitimately empty even
@@ -1621,25 +1667,6 @@ requireAwsSubstrateProfile settings =
       Left
         "aws_substrate.profile is required for AWS substrate provisioning; author every profile field in Tier-0 Dhall"
     Just authored -> Right authored
-
--- | Sprint 1.81: the SES identity coordinates. Empty is the correct state for a
--- host with no SES workflow, so each field is checked only when set.
-validateSesSection :: SesSection -> Either String ()
-validateSesSection = void . sesCoordinatesFor
-
--- | Sprint 1.81: the manual-PV host root is joined onto the repository root by
--- 'validateConfig', so a value that escapes it is a path traversal expressed as
--- config. It must be a safe relative path: non-empty, not absolute, and with no
--- @..@ segment.
-validateStorageSection :: StorageSection -> Either String ()
-validateStorageSection = void . storageCoordinateFor
-
--- | Sprint 1.81: the long-lived Pulumi state backend. Bucket and region are
--- empty until the backend is provisioned, so they are checked only when set; the
--- key prefix is always present and must be a safe relative path, because it is
--- concatenated into object keys.
-validatePulumiStateBackendSection :: PulumiStateBackendSection -> Either String ()
-validatePulumiStateBackendSection = void . pulumiStateBackendCoordinatesFor
 
 -- | Sprint 1.81: the component graph is validated at DECODE rather than only at
 -- projection. Before this, an authored graph with a cycle, a dangling edge, or a
@@ -1684,8 +1711,11 @@ validateOperationalAwsCredentials config = do
   requireNonEmpty "aws.region" (awsCredentialRegion (aws config))
 
 validatePublicEdgeDeployment :: DeploymentSection -> Either String ()
-validatePublicEdgeDeployment deploymentSection = do
-  validateBootstrapOverride
+validatePublicEdgeDeployment = void . validatedDeploymentBootstrap
+
+validatedDeploymentBootstrap :: DeploymentSection -> Either String (Maybe IpLiteral)
+validatedDeploymentBootstrap deploymentSection = do
+  bootstrapIp <- bootstrapPublicIpCoordinateFor deploymentSection
   validateAdvertisementMode
   validateScalingPolicyBySubstrate
     "deployment.envoy_gateway_controller_scaling"
@@ -1697,9 +1727,8 @@ validatePublicEdgeDeployment deploymentSection = do
   validateScalingPolicyBySubstrate
     "deployment.websocket_scaling"
     (websocket_scaling deploymentSection)
+  pure bootstrapIp
  where
-  -- Sprint 1.89: one rule, shared with the builder that keeps the value.
-  validateBootstrapOverride = void (bootstrapPublicIpCoordinateFor deploymentSection)
   -- Sprint 1.80: a total match over the union. The "must be l2 or bgp when set"
   -- arm is gone because there is nothing left for it to reject — Dhall refuses a
   -- misspelling at type-check. What remains is the cross-field rule Dhall cannot
@@ -1882,10 +1911,6 @@ configuredDelegatedZoneNames domainSection awsSection =
 parentZoneName :: Text -> Text
 parentZoneName name = Text.drop 1 (Text.dropWhile (/= '.') (Text.strip name))
 
-validateDemoTtl :: Natural -> Either String ()
-validateDemoTtl ttl =
-  coordinateField "domain.demo_ttl" (void (mkDnsTtl ttl))
-
 -- | Sprint 7.15: the ZeroSSL external-account-binding (EAB) key ID and HMAC
 -- key are no longer plaintext @Optional Text@; they are @SecretRef.Vault@
 -- references into @secret/acme/eab@ (fields @key_id@ / @hmac_key@), resolved
@@ -1902,7 +1927,10 @@ validateAcmeBinding acmeSection
       mapM_ (validateVaultRef "acme.eab_hmac_key") (eab_hmac_key acmeSection)
 
 validateAwsCredentialsRef :: String -> AwsCredentialsRef -> Either String ()
-validateAwsCredentialsRef prefix refs = do
+validateAwsCredentialsRef prefix = void . validatedAwsCredentialsRegion prefix
+
+validatedAwsCredentialsRegion :: String -> AwsCredentialsRef -> Either String (Maybe AwsRegion)
+validatedAwsCredentialsRegion prefix refs = do
   validateVaultRef (prefix ++ ".access_key_id") (awsCredentialAccessKeyId refs)
   validateVaultRef (prefix ++ ".secret_access_key") (awsCredentialSecretAccessKey refs)
   mapM_ (validateVaultRef (prefix ++ ".session_token")) (awsCredentialSessionToken refs)
@@ -1910,7 +1938,7 @@ validateAwsCredentialsRef prefix refs = do
   -- and skipped the region beside them, so on a local load the region was
   -- decided by nothing at all — the AWS tier's 'validateOperationalAwsCredentials'
   -- checks only that it is non-empty, and only when an AWS flow runs.
-  void (awsRegionCoordinateFor (prefix ++ ".region") refs)
+  awsRegionCoordinateFor (prefix ++ ".region") refs
 
 validateVaultRef :: String -> SecretRef -> Either String ()
 validateVaultRef fieldName ref =

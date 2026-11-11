@@ -176,10 +176,15 @@ mkRetryPolicy maxAttempts baseDelay multiplier maxDelay jitter
 -- so every retrier is jittered, and @prodbox dev check@ enforces that this
 -- schedule is not reached from outside this module.
 retryDelayMicros :: RetryPolicy -> Int -> Int
-retryDelayMicros policy attemptIndex =
-  min
-    (retryPolicyMaxDelayMicros policy)
-    (retryPolicyBaseDelayMicros policy * retryPolicyMultiplier policy ^ max 0 attemptIndex)
+retryDelayMicros policy attemptIndex = grow (max 0 attemptIndex) base
+ where
+  base = retryPolicyBaseDelayMicros policy
+  multiplier = retryPolicyMultiplier policy
+  limit = retryPolicyMaxDelayMicros policy
+  grow remaining delay
+    | remaining == 0 || delay == 0 || multiplier == 1 = delay
+    | delay > limit `div` multiplier = limit
+    | otherwise = grow (remaining - 1) (delay * multiplier)
 
 -- | Apply a uniform sample in @[0, 'jitterSampleBound')@ to a scheduled delay.
 --

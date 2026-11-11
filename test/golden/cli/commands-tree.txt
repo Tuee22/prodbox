@@ -137,6 +137,7 @@ prodbox
       clean-room-handoff
       cascade-qualification
       cascade-qualification-receipt
+      aws-lifecycle-receipt
       aws-lifecycle
       aws-lifecycle-canary
       ha-rke2-aws

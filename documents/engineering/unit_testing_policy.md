@@ -14,6 +14,54 @@ capability invariants are owned by
 current-revision deployment evidence are owned only by the
 [Development Plan](../../DEVELOPMENT_PLAN/README.md).
 
+Pinned-compiler heap observations follow every accepted graph edge and count shared closures
+once. Static indirections need header identity separate from referent identity: their stable
+names can be equal. The test observer uses box identity for indirection headers and stable names
+for other accepted closures, retaining both. Its total-byte API includes both data and update
+headers. Representation-layout laws may inspect the separate data-byte observation, while
+retaining their complete-graph bound checks; an exact representation-node count is not an exact
+whole-graph delta. Mutable-cell observation remains an explicit separate mode. These are
+quiescent graph observations, not construction, GC, stack, native-memory or admission bounds.
+Primitive normal-form laws that explicitly exclude compiler closures compare their structural
+data term with data bytes; a static-Natural regression must also demonstrate that total storage
+can exceed that term because of update headers. Complete program funding still owes those headers.
+The frozen superseded observer remains only as a finite regression reference.
+An evaluated `BLACKHOLE` also retains an update header on the pinned runtime. The observer
+resolves its indirection head to data without entering the target, counts the header separately,
+and refuses an active TSO/blocking-queue owner, executable target or cyclic update chain.
+Permanent native heap laws cover the completed header, repeated aliases, a CAF chain and an
+active worker that is explicitly released and joined. This extends representation observation;
+compiler/update working-set funding remains independent.
+Collection can merge distinct box references, so head validation follows updates under a fixed
+chain limit rather than treating repeated pointer equality as a cycle. The test-only collection
+mode runs GC after reading an update header. Permanent laws cover its completed target and legal
+constructor cycles, and active-owner refusal is checked with and without that collection.
+
+Transformations can change sharing: repeated references to one input node may produce separate
+result nodes. Observe input and output graphs independently. Structural bounds count encoded
+occurrences rather than relying on the smaller physical input graph; check a held input/output
+pair against both observed roots. These checks remain data evidence, with construction, GC and
+admission requiring separate bounds.
+
+Static field-name policy laws cover exact matches and unknown-field identity, deferred numeric
+queries, duplicate-source refusal before target demand, Unicode/NUL and target aliases, actual
+SDK root labels and independent returned-data graphs. Frozen function comparisons and compiler
+role-refusal controls qualify the staged policy separately. These are data/behavior observations;
+SDK invocation, control, update, GC, native and admission claims require their own evidence.
+
+Allocation-bound regressions use reviewed source-derived terms and fixed bounded inputs. Check
+that insufficient declared capacity produces the intended typed refusal before expanding
+materialization, and that ordinary accepted fixtures preserve SDK behavior. Do not substitute a
+search for process exhaustion for these laws. Small graph observations establish only their
+declared representation terms; complete admission and deployment qualification retain their
+separate obligations under Development Plan Standard P.
+
+Retained envelope-codec laws compare expected/declared schemas and value behavior with the actual
+SDK, including AWS, Unicode/NUL and wide Natural fixtures. Collection and concurrent borrowers
+observe the decoder/encoder root identities separately. Explicit-encoder embedding preserves the
+existing evaluated source-erasure contract. Root identity proves reuse within one process; it is
+not an allocation, function-environment, complete working-set or cross-process sharing bound.
+
 ## 0. Canonical Statements
 
 1. Skip/xfail is prohibited by default. Missing prerequisites fail fast with an actionable typed
@@ -901,6 +949,21 @@ results, complete fault matrix, operation IDs, consecutive aggregate results, cl
 result, start/completion timestamps, and evidence digest. Missing or stale fields refuse
 qualification. Evidence from an older revision or a weaker topology cannot close the current
 counterexample.
+
+Native controller entrypoint fixtures run the actual stdin/controller path under its original
+submitted physical owner, qualified inputs and fixed prompt boundary. Prerequisite faults may be
+confined to the child process; they must not mutate the parent environment or replace host/provider
+observations. Preserve exact typed refusals and verify physical retirement independently. Bind
+child-exit evidence to the same boot and exact operation/unit identity, retaining lifecycle metadata
+without raw prompt, environment or credential-bearing output. Successful transport delivery or
+retirement is not business completion, and a controlled prefix refusal cannot qualify the full
+Authority program. Test selectors remain public fixture metadata outside operational namespaces;
+production configuration and dispatch never acquire a fixture selector.
+A fixture tool used to cross a real capture boundary must accept a closed argv shape, ignore any
+host credential/configuration path operands, and emit a fixed public projection without invoking
+another tool. Verify its bounded invocation count and keep its selection in the child process
+alone. An exact refusal after capture/normalization/private readback proves that prefix only;
+authenticated service execution and business completion still need their own evidence.
 
 ### Clean-room interruption matrix
 

@@ -334,6 +334,16 @@ import Prodbox.Subprocess
 import Prodbox.Substrate (Substrate (..), gatewayNodeIdsForSubstrate, substrateId)
 import Prodbox.Test.AwsLifecycle qualified as AwsLifecycle
 import Prodbox.Test.AwsLifecycleCanary (registeredCanaryPlantIntent, registeredLifecycleAwsBinding)
+import Prodbox.Test.AwsLifecycleDrillRecorder
+  ( DestroyMinutes
+  , DrillKind (..)
+  , noteDestroyElapsed
+  , recordAwsLifecycleDrill
+  )
+import Prodbox.Test.AwsLifecycleReceipt
+  ( AwsReceiptReport (..)
+  , runAwsLifecycleReceipt
+  )
 import Prodbox.Test.AwsStackEvidence qualified as AwsStackEvidence
 import Prodbox.Test.CascadeQualification
   ( cascadeQualificationAttempt
@@ -1520,9 +1530,21 @@ runNativeValidationWithCleanupScope bodyScope inviteBinding maybeGatewayStabilit
           (runAwsIamHarnessInspect repoRoot)
           ["PROVIDER_ROLE=", "IAM_PRINCIPAL=assumed-role", "CONFIG_PATH="]
       ValidationAwsLifecycle ->
-        runAwsLifecycleScopeValidation bodyScope AwsLifecycle.AwsStackCycles repoRoot environment
+        recordedLifecycleDrill
+          repoRoot
+          environment
+          DrillEksCycle
+          ( \minutes ->
+              runAwsLifecycleScopeValidation bodyScope AwsLifecycle.AwsStackCycles minutes repoRoot environment
+          )
       ValidationAwsLifecycleCanary ->
-        runAwsLifecycleScopeValidation bodyScope AwsLifecycle.AwsTestVpcCanary repoRoot environment
+        recordedLifecycleDrill
+          repoRoot
+          environment
+          DrillCanary
+          ( \minutes ->
+              runAwsLifecycleScopeValidation bodyScope AwsLifecycle.AwsTestVpcCanary minutes repoRoot environment
+          )
       ValidationAwsEks ->
         runAwsStackCreateValidation repoRoot environment AwsStackEvidence.AwsEksValidation
       ValidationPulumi ->
@@ -1545,6 +1567,7 @@ runNativeValidationWithCleanupScope bodyScope inviteBinding maybeGatewayStabilit
         runCascadeQualificationValidation repoRoot environment substrate
       ValidationCascadeQualificationReceipt ->
         runCascadeQualificationReceiptValidation repoRoot environment
+      ValidationAwsLifecycleReceipt -> runAwsLifecycleReceiptValidation repoRoot
       ValidationChartsPlatform ->
         runSequentially
           [ assertNativeCommandOutputContainsAll
@@ -1673,6 +1696,7 @@ nativeValidationKubeconfigMode validation =
     ValidationCertificateScope -> ValidationUsesSelectedSubstrateKubeconfig
     ValidationCleanRoomHandoff -> ValidationUsesSelectedSubstrateKubeconfig
     ValidationCascadeQualificationReceipt -> ValidationUsesSelectedSubstrateKubeconfig
+    ValidationAwsLifecycleReceipt -> ValidationUsesSelectedSubstrateKubeconfig
     ValidationResourceGuardrails -> ValidationUsesSelectedSubstrateKubeconfig
     ValidationDaemonBootstrap -> ValidationUsesSelectedSubstrateKubeconfig
     ValidationPulsarBroker -> ValidationUsesSelectedSubstrateKubeconfig
@@ -3132,15 +3156,30 @@ provisionAndVerifyAwsTestStack repoRoot environment =
 -- The outer durable bracket owns every exit. Each public stack command is a
 -- peer of that cleanup kernel, and every observation is authenticated through
 -- the retained operator identity rather than a Gateway-lifetime identity.
+
+-- | Run a lifecycle drill between its ledger @Begun@ and @Closed@ records. A
+-- ledger or scoped identity that cannot be used refuses the drill before it
+-- mutates anything: the count is the evidence and cannot be skipped.
+recordedLifecycleDrill
+  :: FilePath
+  -> [(String, String)]
+  -> DrillKind
+  -> (DestroyMinutes -> IO ExitCode)
+  -> IO ExitCode
+recordedLifecycleDrill repoRoot environment kind run = do
+  recorded <- recordAwsLifecycleDrill repoRoot environment kind run
+  either failWith pure recorded
+
 runAwsLifecycleScopeValidation
   :: Maybe HarnessBodyScope
   -> AwsLifecycle.AwsLifecycleExercise
+  -> DestroyMinutes
   -> FilePath
   -> [(String, String)]
   -> IO ExitCode
-runAwsLifecycleScopeValidation Nothing _ _ _ =
+runAwsLifecycleScopeValidation Nothing _ _ _ _ =
   failWith "AWS lifecycle validation requires its registered credential/cleanup harness"
-runAwsLifecycleScopeValidation (Just registered) exercise repoRoot environment =
+runAwsLifecycleScopeValidation (Just registered) exercise destroyMinutes repoRoot environment =
   case registeredLifecycleAwsBinding registered of
     Left detail -> failWith (Text.unpack detail)
     Right binding
@@ -3181,7 +3220,7 @@ runAwsLifecycleScopeValidation (Just registered) exercise repoRoot environment =
     AuditAwsTest -> Right <$> runAwsStackCreateValidation repoRoot environment AwsStackEvidence.PulumiValidation
     AuditAwsEksSubzone -> pure (Left "the lifecycle drill does not create a hosted subzone")
   destroy stack = case stack of
-    AuditAwsEks -> captureDestroy "eks"
+    AuditAwsEks -> noteDestroyElapsed destroyMinutes (captureDestroy "eks")
     AuditAwsTest -> captureDestroy "test"
     AuditAwsEksSubzone -> pure (Left "the lifecycle drill does not destroy a hosted subzone")
   captureDestroy stack = do
@@ -5816,6 +5855,18 @@ runCascadeQualificationReceiptValidation repoRoot environment = do
     else
       failWith
         "the cycle ledger does not hold two consecutive qualifying cascade cycles on the current tree"
+
+-- | Read-only: report whether the AWS lifecycle drill ledger meets every
+-- criterion of the scoped claim on the current tree's scoped source identity.
+-- Like the cascade receipt it is outside @test all@, where a pending campaign is
+-- a normal state, and exits zero only for a qualifying verdict.
+runAwsLifecycleReceiptValidation :: FilePath -> IO ExitCode
+runAwsLifecycleReceiptValidation repoRoot = do
+  report <- runAwsLifecycleReceipt repoRoot
+  writeOutput (unlines (map Text.unpack (awsReceiptLines report)))
+  if awsReceiptQualified report
+    then pure ExitSuccess
+    else failWith "the AWS lifecycle drill ledger does not meet every criterion of the scoped claim"
 
 curlTlsServingProbe :: FilePath -> String -> IO (Either String ())
 curlTlsServingProbe repoRoot host = do

@@ -10,6 +10,7 @@ import Control.Concurrent.Async qualified as Async
 import Control.Exception (AsyncException (ThreadKilled), SomeException, throwIO, try)
 import Control.Monad (forM_, unless, void)
 import Control.Monad.Trans.Class (lift)
+import Control.Monad.Trans.Except (throwE)
 import Data.Bits ((.&.))
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as Chars
@@ -49,10 +50,22 @@ main = do
   setFileMode directory 0o700
   uid <- getEffectiveUserID
   started <- getMonotonicTimeNSec
+  let socket = "/run/user/" <> show uid <> "/bus"
+      busDeadline = started + 10000000000
+  actionFailure <-
+    withSystemdBus busDeadline socket (\_ -> lift (ioError (userError "fixture action failure")))
+      :: IO (Either BusError ())
+  assert
+    "callback IOException was reported as transport I/O"
+    (actionFailure == Left BusActionIoRefused)
+  typedFailure <-
+    withSystemdBus busDeadline socket (\_ -> throwE BusManagerIdentityRefused)
+      :: IO (Either BusError ())
+  assert "callback typed refusal changed" (typedFailure == Left BusManagerIdentityRefused)
   right
     =<< withSystemdBus
       (started + 10000000000)
-      ("/run/user/" <> show uid <> "/bus")
+      socket
       ( \connection -> do
           domain <- observeManagerDomain connection
           sender <- observeBusSender connection

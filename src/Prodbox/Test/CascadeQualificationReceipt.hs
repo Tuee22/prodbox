@@ -121,7 +121,7 @@ import Prodbox.Test.Qualification.CascadeCycleLedger
   , resolveAttempts
   )
 import Prodbox.Test.Qualification.CascadeCycleLedgerStore
-  ( appendCycleRecord
+  ( appendCycleRecordAtTip
   , cycleLedgerPath
   , readCycleLedger
   , renderLedgerStoreError
@@ -400,7 +400,11 @@ recordCutover repoRoot environment kind = do
         case markResult of
           Left reason -> pure (Left reason)
           Right mark -> do
-            appended <- appendCycleRecord (cycleLedgerPath repoRoot) (RecordCutoverMark mark)
+            appended <-
+              appendCycleRecordAtTip
+                (ledgerTip (obsLedger observed))
+                (cycleLedgerPath repoRoot)
+                (RecordCutoverMark mark)
             pure $ case appended of
               Left err -> Left (Text.pack (renderLedgerStoreError err))
               Right _ -> Right (renderCutoverMarkKind kind)

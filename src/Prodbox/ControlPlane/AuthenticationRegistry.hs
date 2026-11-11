@@ -201,6 +201,7 @@ controlPlaneRouteCallerTopology =
     )
   , (LifecycleAdminActionExecution, [CallerAdminActionRunner])
   , row LifecycleProviderDispatch []
+  , row LifecycleProviderScopeObserve []
   , (ProviderWorkApply, [authority])
   , (ProviderWorkObserve, [authority])
   , row AuthorityBackupCopy [authority]

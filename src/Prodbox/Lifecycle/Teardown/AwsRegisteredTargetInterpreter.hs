@@ -483,6 +483,7 @@ observeAwsRegisteredTarget interpreter context target =
         Right EksIamRoleFamilyExecutor ->
           observeIamRoleFamily
             interpreter
+            (registeredTargetKey target)
             ProviderDecisionObservation
             context
         Right NetworkDependentFamilyExecutor ->
@@ -591,6 +592,7 @@ readBackAwsRegisteredTargetAbsent interpreter context target =
       Right EksIamRoleFamilyExecutor ->
         observeIamRoleFamily
           interpreter
+          (registeredTargetKey target)
           ProviderAbsenceReadBack
           context
       Right NetworkDependentFamilyExecutor ->
@@ -1735,34 +1737,39 @@ reconcileRetainedEbs interpreter context target = do
 -- adapter itself remains the authority on whether the per-run family is
 -- selectable on that surface.
 mkIamRoleFamilyObservationRequest
-  :: ObservationRevision
+  :: RegisteredResourceKey
+  -> ObservationRevision
   -> ObservationEvidenceScope
   -> Either
        AwsIamRoleFamilyAdapterError
        ExactAwsIamRoleFamilyObservationRequest
-mkIamRoleFamilyObservationRequest revision scope =
+mkIamRoleFamilyObservationRequest familyKey revision scope =
   case evidenceCleanupSurface scope of
     LocalOnly ->
-      mkExactAwsIamRoleFamilyObservationRequest LocalOnlySurface revision scope
+      mkExactAwsIamRoleFamilyObservationRequestFor familyKey LocalOnlySurface revision scope
     Cascade ->
-      mkExactAwsIamRoleFamilyObservationRequest CascadeSurface revision scope
+      mkExactAwsIamRoleFamilyObservationRequestFor familyKey CascadeSurface revision scope
     ExplicitPerRun ->
-      mkExactAwsIamRoleFamilyObservationRequest
+      mkExactAwsIamRoleFamilyObservationRequestFor
+        familyKey
         ExplicitPerRunSurface
         revision
         scope
     OperationalTeardown ->
-      mkExactAwsIamRoleFamilyObservationRequest
+      mkExactAwsIamRoleFamilyObservationRequestFor
+        familyKey
         OperationalTeardownSurface
         revision
         scope
     ExplicitLongLived ->
-      mkExactAwsIamRoleFamilyObservationRequest
+      mkExactAwsIamRoleFamilyObservationRequestFor
+        familyKey
         ExplicitLongLivedSurface
         revision
         scope
     TotalDecommission ->
-      mkExactAwsIamRoleFamilyObservationRequest
+      mkExactAwsIamRoleFamilyObservationRequestFor
+        familyKey
         TotalDecommissionSurface
         revision
         scope
@@ -1776,14 +1783,16 @@ mapIamRoleFamily =
 observeIamRoleFamily
   :: (Monad m)
   => AwsRegisteredTargetInterpreter m
+  -> RegisteredResourceKey
   -> ProviderDispatchPurpose
   -> TeardownExecutionContext surface
   -> m (Either AwsRegisteredTargetInterpreterError ExactResourceObservation)
-observeIamRoleFamily interpreter purpose context =
+observeIamRoleFamily interpreter familyKey purpose context =
   case mkProviderDispatchKey operationId purpose of
     Left err -> pure (Left (AwsRegisteredTargetDispatchKeyInvalid err))
     Right dispatchKey ->
       case mkIamRoleFamilyObservationRequest
+        familyKey
         (observationRevisionForProviderDispatchKey dispatchKey)
         scope of
         Left err -> pure (Left (AwsRegisteredTargetIamRoleFamilyInvalid err))
@@ -1816,7 +1825,7 @@ reconcileIamRoleFamily
   -> m (Either AwsRegisteredTargetInterpreterError RegisteredTargetReconcileResult)
 reconcileIamRoleFamily interpreter context target = do
   exactResult <-
-    observeIamRoleFamily interpreter ProviderDecisionObservation context
+    observeIamRoleFamily interpreter (registeredTargetKey target) ProviderDecisionObservation context
   case exactResult of
     Left err -> pure (refusedResult context target err)
     Right exact ->
@@ -1830,6 +1839,7 @@ reconcileIamRoleFamily interpreter context target = do
             )
         Right dispatchKey ->
           case mkIamRoleFamilyObservationRequest
+            (registeredTargetKey target)
             (observationRevisionForProviderDispatchKey dispatchKey)
             scope of
             Left err ->

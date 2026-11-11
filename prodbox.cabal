@@ -40,6 +40,9 @@ extra-source-files:
     test/qualification/HostOperationRpcBirth.hs
     test/qualification/HostOperationRpcBirthFixture.hs
     test/qualification/HostControllerInputs.hs
+    test/qualification/HostControllerInputInitialData.hs
+    test/qualification/InitialRuntimePolicy.hs
+    test/qualification/HostControllerStringCodec.hs
     test/qualification/HostControllerStdin.hs
     test/qualification/HOST-CONTROLLER-STDIN-2026-10-31.json
     test/qualification/HostControllerSubmission.hs
@@ -56,6 +59,9 @@ extra-source-files:
     test/qualification/KubernetesApiPort.hs
     test/qualification/SettingsPayload.hs
     test/qualification/ProcessEnvironmentSemantics.hs
+    test/qualification/ProcessEnvironmentStorage.hs
+    test/qualification/OrdinaryScopeJournalProcessDeath.hs
+    test/qualification/CallerTokenStagePolicy.hs
     test/qualification/NativeHostProbe.hs
     test/qualification/RpcBirthControllerRequest.hs
     test/qualification/ControllerInputLoader.hs
@@ -166,6 +172,14 @@ library
         Prodbox.Bootstrap.Broker.VaultWire
         Prodbox.BuildSupport
         Prodbox.Capacity.Allocation
+        Prodbox.Capacity.BoxedNormalForm
+        Prodbox.Capacity.PinnedByteStringData
+        Prodbox.Capacity.CanonicalDhallNormalForm
+        Prodbox.Capacity.OrdinaryCapturedInputBudget
+        Prodbox.Capacity.OrdinaryRecoveryObservationSchedule
+        Prodbox.Capacity.ProfileScalarHandoffData
+        Prodbox.Capacity.SettingsExtractedData
+        Prodbox.Capacity.SettingsNormalForm
         Prodbox.Capacity.HostExecution
         Prodbox.Capacity.RpcBirthTraffic
         Prodbox.Capacity.RegisteredCallerTraffic
@@ -214,11 +228,27 @@ library
         Prodbox.Cluster.Topology
         Prodbox.Cbor
         Prodbox.Config.Basics
+        Prodbox.Config.CanonicalDhallDataEncoding
+        Prodbox.Config.CanonicalDhallDataSyntax
+        Prodbox.Config.CanonicalDhallTokenMatch
         Prodbox.Config.CanonicalDhallValueShape
+        Prodbox.Config.CanonicalDhallValueShape.BoundedStage
+        Prodbox.Config.CanonicalDhallValueShape.Stage
+        Prodbox.Config.CheckedCanonicalDhallData
+        Prodbox.Config.ClosedDhallUnion
+        Prodbox.Config.SerialiseString
         Prodbox.Config.ComponentGraph
+        Prodbox.Config.FieldNameTable
+        Prodbox.Config.FieldNameTable.Stage
+        Prodbox.Config.FieldNameTables
+        Prodbox.Config.SchemaSourceDependencies
         Prodbox.Config.FloorDhall
         Prodbox.Config.LocalRetainedRoot
         Prodbox.Config.LocalRke2RecoveryState
+        Prodbox.Config.OrdinaryMemoryProfile
+        Prodbox.Config.OrdinaryMemoryProfile.Reader
+        Prodbox.Config.OrdinaryMemoryProfile.Schema
+        Prodbox.Config.OrdinaryMemoryProfile.DeclaredShape
         Prodbox.Config.OrdinaryTeardownRecovery
         Prodbox.Config.OrdinaryTeardownRepair
         Prodbox.Config.RetainedArtifacts
@@ -327,6 +357,11 @@ library
         Prodbox.ControlPlane.AuthorityAdmissionEndpoint
         Prodbox.ControlPlane.AuthorityProviderEndpoint
         Prodbox.ControlPlane.AuthorityControlClient
+        Prodbox.ControlPlane.AuthorityAuthenticatedResponse
+        Prodbox.ControlPlane.AuthorityManifestResponse
+        Prodbox.ControlPlane.AuthorityResponseTrust
+        Prodbox.ControlPlane.AuthoritySignedObservationEndpoint
+        Prodbox.ControlPlane.AuthoritySnapshotObservation
         Prodbox.ControlPlane.AuthorityControlProtocol
         Prodbox.ControlPlane.AuthorityPeerContext
         Prodbox.ControlPlane.AuthorityPeerContextEndpoint
@@ -343,6 +378,10 @@ library
         Prodbox.ControlPlane.RpcAdmissionBirthChart
         Prodbox.ControlPlane.RpcAdmissionBirthRollout
         Prodbox.ControlPlane.RpcAdmissionBirthPayload
+        Prodbox.ControlPlane.RpcBirthSettingsEnvelope
+        Prodbox.ControlPlane.RpcBirthSettingsCodec
+        Prodbox.ControlPlane.RpcBirthSettingsShape
+        Prodbox.ControlPlane.OrdinaryWireProfile
         Prodbox.ControlPlane.RpcAdmissionBirthRequest
         Prodbox.ControlPlane.RpcAdmissionBirthClock
         Prodbox.ControlPlane.RpcAdmissionBirthControllerInputs
@@ -424,6 +463,10 @@ library
         Prodbox.ControlPlane.TargetAuthorityEpochProtocol
         Prodbox.ControlPlane.TargetAuthorityEpochEndpoint
         Prodbox.ControlPlane.TargetAuthorityEpochClient
+        Prodbox.ControlPlane.TargetAuthenticatedResponse
+        Prodbox.ControlPlane.TargetResponseTrust
+        Prodbox.ControlPlane.TargetSnapshotObservation
+        Prodbox.ControlPlane.TargetSignedEpochBinding
         Prodbox.ControlPlane.TargetAuthorityEpochBinding
         Prodbox.ControlPlane.TargetAuthorityTrust
         Prodbox.ControlPlane.TargetAuthorityTrustClient
@@ -559,7 +602,9 @@ library
         Prodbox.Lifecycle.Authority.Cutover
         Prodbox.Lifecycle.Authority.EpochTopology
         Prodbox.Lifecycle.Authority.EpochPromotion
+        Prodbox.Lifecycle.Authority.EpochPromotionCoordinator
         Prodbox.Lifecycle.Authority.EpochPromotionObservation
+        Prodbox.Lifecycle.Authority.EpochPromotionSchedule
         Prodbox.Lifecycle.Authority.Genesis
         Prodbox.Lifecycle.Authority.Migration
         Prodbox.Lifecycle.Authority.MigrationInterpreter
@@ -752,6 +797,7 @@ library
         Prodbox.Lifecycle.Teardown.Observation
         Prodbox.Lifecycle.Teardown.OperationalCredentialCoverage
         Prodbox.Lifecycle.Teardown.OperationalCredentialInventory
+        Prodbox.Lifecycle.Teardown.OrdinaryScopeJournal
         Prodbox.Lifecycle.Teardown.OwnershipManifest
         Prodbox.Lifecycle.Teardown.ProviderDispatch
         Prodbox.Lifecycle.Teardown.ProviderAwsScopeAdapter
@@ -839,6 +885,7 @@ library
         Prodbox.Secret.VaultInventory
         Prodbox.Service
         Prodbox.Settings
+        Prodbox.Settings.AwsSubstrateCidr
         Prodbox.Settings.AwsSubstrateProfile
         Prodbox.Settings.Coordinate
         Prodbox.Settings.SecretRef
@@ -847,6 +894,7 @@ library
         Prodbox.Substrate
         Prodbox.Subprocess
         Prodbox.Subprocess.ProcessEnvironment
+        Prodbox.Subprocess.OneShotAttempt
         Prodbox.Subprocess.StartupLine
         Prodbox.Supervision
         Prodbox.TestPlan
@@ -855,6 +903,8 @@ library
         Prodbox.Test.CertificateScopeServing
         Prodbox.Test.CascadeQualificationCycle
         Prodbox.Test.CascadeQualificationLocal
+        Prodbox.Test.AwsLifecycleDrillRecorder
+        Prodbox.Test.AwsLifecycleReceipt
         Prodbox.Test.CascadeQualificationReceipt
         Prodbox.Test.CleanRoomHandoff
         Prodbox.Test.CleanRoomScan
@@ -862,6 +912,8 @@ library
         Prodbox.Test.TemporalQualification
         Prodbox.Test.Qualification.CascadeCycleArtifact
         Prodbox.Test.Qualification.CascadeCycleIdentity
+        Prodbox.Test.Qualification.AwsLifecycleDrillLedger
+        Prodbox.Test.Qualification.AwsLifecycleDrillLedgerStore
         Prodbox.Test.Qualification.CascadeCycleLedger
         Prodbox.Test.Qualification.CascadeCycleLedgerStore
         Prodbox.Test.Qualification.CounterexampleProfile
@@ -923,6 +975,7 @@ library
         Prodbox.Subprocess.HostOperationFamily
         Prodbox.Subprocess.HostOperationRetirement
         Prodbox.Subprocess.HostControllerInputs
+        Prodbox.Subprocess.InitialRuntimePolicy
         Prodbox.Subprocess.HostControllerStdin
         Prodbox.Subprocess.HostControllerPublication
         Prodbox.Subprocess.HostControllerPublicationRecord
@@ -966,6 +1019,7 @@ library
         Prodbox.ControlPlane.RecoveryPlaneEndpoint.Internal
         Prodbox.ControlPlane.EksClientAuthProjection.Internal
         Prodbox.ControlPlane.ProviderAwsScopeReceipt.Internal
+        Prodbox.ControlPlane.ProviderScopeObservation
         Prodbox.ControlPlane.ProviderCredentialSession.Internal
         Prodbox.ControlPlane.TargetMaterialEndpoint.Internal
         Prodbox.Lifecycle.Authority.ProviderAdmissionEpoch.Internal
@@ -997,12 +1051,13 @@ library
         cborg ^>=0.2.10.0,
         co-log ^>=0.7.0.0,
         co-log-core ^>=0.3.2.6,
-        containers ^>=0.6.7,
+        containers ==0.6.8,
         crypton ^>=1.0.6,
         memory ^>=0.18,
         cryptohash-sha1 ^>=0.11,
         cryptohash-sha256 ^>=0.11.102,
-        dhall ^>=1.42,
+        deepseq ==1.5.1.0,
+        dhall ==1.42.3,
         either ^>=5.0.3,
         exceptions ^>=0.10.11,
         directory ^>=1.3.8.5,
@@ -1019,12 +1074,14 @@ library
         network ^>=3.1.4,
         optparse-applicative ^>=0.18.1.0,
         pem ^>=0.2,
+        primitive ==0.9.1.0,
         process ^>=1.6.19.0,
         scientific ^>=0.3.7,
-        serialise ^>=0.2.6.1,
+        serialise ==0.2.6.1,
         stm ^>=2.5,
         temporary ^>=1.3,
-        text ^>=2.0.2,
+        template-haskell ==2.23.0.0,
+        text ==2.0.2,
         time ^>=1.12,
         transformers ^>=0.6,
         typed-process ^>=0.2.13.0,
@@ -1052,16 +1109,41 @@ test-suite prodbox-unit
         AdminActionQuotaJournal
         AdminActionLifecycle
         Allocation
+        CanonicalDhallTokenMatchTests
         CanonicalDhallValueShape
+        CanonicalDhallPathMeasurement
+        CanonicalDhallStorage
+        FieldNameTableTests
+        StaticDhallShape
+        StaticDhallShapeFixtures
+        ClosedDhallUnion
+        CapturedInputData
+        InspectedRpcBirthSettings
+        RpcBirthSettingsCodecTests
+        SettingsProjection
+        SerialiseStringCodec
+        OrdinaryMemoryProfileCodec
+        OrdinaryMemoryProfileReader
         CapacityHostExecution
+        CapacityNormalForm
+        HeapGraphUpdates
+        PinnedByteStringData
+        PinnedHeapGraph
+        FrozenPinnedHeapGraph
+        ProcessEnvironmentStorage
+        OrdinaryScopeJournalTests
+        EmbeddedHomeKubeconfigStorage
         CapacityRpcBirthTraffic
         CapacityRegisteredCallerTraffic
         RegisteredCallerNativeTraffic
+        RegisteredCallerBudgetStorage
         HttpClientExchangePolicy
         HttpClientHeaderBudget
         HttpBodyBufferBudget
         HttpClientBodyBuffer
         SubprocessStartupLine
+        OneShotAttempt
+        TargetIntentPublicKeyStorage
         BootstrapImageArchive
         BootstrapImageSource
         BootstrapImageSourceNative
@@ -1100,6 +1182,10 @@ test-suite prodbox-unit
         AwsSesLeaseRole
         AwsSesReadiness
         AwsSesSmtpKey
+        AwsSubstrateCidrTests
+        NarrowingErrorTextTests
+        FrozenNarrowingErrors
+        FrozenAwsSubstrateCidr
         AwsSubstrateProfile
         SesWorkflow
         InviteQualification
@@ -1213,6 +1299,7 @@ test-suite prodbox-unit
         ControlPlaneTargetSecretWorker
         ControlPlaneTargetAuthorityEpoch
         ControlPlaneTargetAuthorityBinding
+        LifecycleAuthorityEpochCoordinator
         ControlPlaneAuthorityPeerContext
         ControlPlaneRpcKeyRegistry
         ControlPlaneRpcClientRegistration
@@ -1343,6 +1430,7 @@ test-suite prodbox-unit
         CertificateScopeServing
         CleanRoomHandoff
         CycleIdentityFixtures
+        AwsLifecycleDrillLedgerTests
         CycleLedgerFixtures
         MeasuredProfile
         ObjectStoreNative
@@ -1410,20 +1498,23 @@ test-suite prodbox-unit
         base64-bytestring ^>=1.2,
         bytestring ^>=0.11.5.3,
         cborg ^>=0.2.10.0,
-        containers ^>=0.6.7,
+        containers ==0.6.8,
+        deepseq ==1.5.1.0,
         crypton ^>=1.0.6,
         cryptohash-sha1 ^>=0.11,
-        dhall ^>=1.42,
+        dhall ==1.42.3,
+        either ^>=5.0.3,
         directory ^>=1.3.8.5,
         filepath ^>=1.4.2.2,
         memory ^>=0.18,
+        ghc-heap ==9.12.4,
         network ^>=3.1.4.0,
         http-client ^>=0.7.17,
         http-types ^>=0.12.4,
         optparse-applicative ^>=0.18.1.0,
         process ^>=1.6.19.0,
         scientific ^>=0.3.7,
-        serialise ^>=0.2.6.1,
+        serialise ==0.2.6.1,
         prodbox,
         stm ^>=2.5.1,
         tasty ^>=1.5,
@@ -1431,7 +1522,8 @@ test-suite prodbox-unit
         tasty-hunit ^>=0.10.2,
         tasty-quickcheck ^>=0.11,
         temporary ^>=1.3,
-        text ^>=2.0.2,
+        template-haskell ==2.23.0.0,
+        text ==2.0.2,
         time ^>=1.12,
         transformers ^>=0.6,
         unix ^>=2.8.8.0,
@@ -1463,7 +1555,7 @@ test-suite prodbox-integration
         network ^>=3.1.4,
         process ^>=1.6.19.0,
         scientific ^>=0.3.7,
-        serialise ^>=0.2.6.1,
+        serialise ==0.2.6.1,
         prodbox,
         stm ^>=2.5.3,
         time ^>=1.12,
@@ -1471,7 +1563,7 @@ test-suite prodbox-integration
         tasty-golden ^>=2.3.5,
         tasty-hunit ^>=0.10.2,
         tasty-quickcheck ^>=0.11,
-        text ^>=2.0.2,
+        text ==2.0.2,
         temporary ^>=1.3,
         unix ^>=2.8.8.0
 
@@ -1484,11 +1576,11 @@ test-suite prodbox-authority-admission-unit
     ghc-options:      -Wall
     build-depends:
         base ^>=4.21.2.0,
-        containers ^>=0.6.7,
+        containers ==0.6.8,
         prodbox,
         tasty ^>=1.5,
         tasty-hunit ^>=0.10.2,
-        text ^>=2.0.2
+        text ==2.0.2
 
 test-suite prodbox-control-plane-authentication-unit
     type:             exitcode-stdio-1.0
@@ -1500,20 +1592,24 @@ test-suite prodbox-control-plane-authentication-unit
         base ^>=4.21.2.0,
         bytestring ^>=0.11.5.3,
         prodbox,
-        serialise ^>=0.2.6.1,
+        serialise ==0.2.6.1,
         tasty ^>=1.5,
         tasty-hunit ^>=0.10.2,
         tasty-quickcheck ^>=0.11,
-        text ^>=2.0.2
+        text ==2.0.2
 
 test-suite prodbox-control-plane-authenticated-transport-unit
     type:             exitcode-stdio-1.0
     main-is:          Main.hs
-    hs-source-dirs:   test/control-plane-authenticated-transport
+    hs-source-dirs:   test/control-plane-authenticated-transport test/support
     other-modules:
         AuthenticatedRequestFixture
         AuthenticatedRequestFootprint
         AuthenticatedRequestPreflight
+        EpochPromotionFixture
+        ProviderScopeFixture
+        Prodbox.ControlPlane.ProviderAwsScopeReceipt.Internal
+        Prodbox.ControlPlane.ProviderScopeObservation
 
     default-language: GHC2021
     ghc-options:      -Wall
@@ -1522,13 +1618,14 @@ test-suite prodbox-control-plane-authenticated-transport-unit
         base64-bytestring ^>=1.2,
         bytestring ^>=0.11.5.3,
         cborg ^>=0.2.10.0,
+        containers ==0.6.8,
         cryptohash-sha256 ^>=0.11.102.1,
         prodbox,
         stm ^>=2.5.3,
-        serialise ^>=0.2.6.1,
+        serialise ==0.2.6.1,
         tasty ^>=1.5,
         tasty-hunit ^>=0.10.2,
-        text ^>=2.0.2
+        text ==2.0.2
 
 test-suite prodbox-haskell-style
     type:             exitcode-stdio-1.0
@@ -1540,7 +1637,7 @@ test-suite prodbox-haskell-style
     build-depends:
         base ^>=4.21.2.0,
         bytestring ^>=0.11.5.3,
-        containers ^>=0.6.7,
+        containers ==0.6.8,
         directory ^>=1.3.8.5,
         filepath ^>=1.4.2.2,
         prodbox,
@@ -1568,7 +1665,7 @@ test-suite prodbox-daemon-lifecycle
         async ^>=2.2.5,
         base ^>=4.21.2.0,
         bytestring ^>=0.11.5.3,
-        containers ^>=0.6.7,
+        containers ==0.6.8,
         directory ^>=1.3.8.5,
         filepath ^>=1.4.2.2,
         network ^>=3.1.4,
@@ -1580,7 +1677,7 @@ test-suite prodbox-daemon-lifecycle
         tasty-hunit ^>=0.10.2,
         tasty-quickcheck ^>=0.11,
         temporary ^>=1.3,
-        text ^>=2.0.2,
+        text ==2.0.2,
         time ^>=1.12,
         unix ^>=2.8.8.0
 
@@ -1594,7 +1691,7 @@ test-suite prodbox-pulumi
     build-depends:
         base ^>=4.21.2.0,
         bytestring ^>=0.11.5.3,
-        containers ^>=0.6.7,
+        containers ==0.6.8,
         directory ^>=1.3.8.5,
         filepath ^>=1.4.2.2,
         prodbox,

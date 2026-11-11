@@ -22,6 +22,7 @@ module Prodbox.Http.Client
   , httpPostJsonNoResponse
   , httpRequestRaw
   , httpRequestRawBounded
+  , httpRequestRawBoundedNoIdle
   , httpRequestNoBody
   , HttpDownloadError (..)
   , HttpDownload (..)
@@ -48,6 +49,7 @@ import Network.HTTP.Client
   , HttpException (..)
   , HttpExceptionContent (..)
   , Manager
+  , ManagerSettings (managerIdleConnectionCount)
   , Request
   , RequestBody (..)
   , Response
@@ -57,6 +59,7 @@ import Network.HTTP.Client
   , managerRetryableException
   , managerSetMaxHeaderLength
   , managerSetMaxNumberHeaders
+  , managerTlsConnection
   , method
   , newManager
   , parseRequest
@@ -70,10 +73,12 @@ import Network.HTTP.Client
   , responseTimeoutMicro
   , withResponse
   )
+import Network.HTTP.Client.Internal (Connection, managerTlsProxyConnection)
 import Network.HTTP.Client.TLS (tlsManagerSettings)
 import Network.HTTP.Types.Header (Header)
 import Network.HTTP.Types.Method (Method)
 import Network.HTTP.Types.Status (statusCode)
+import Network.Socket (HostAddress)
 import Numeric.Natural (Natural)
 import Prodbox.Http.BodyBufferBudget
 import System.Directory (removeFile)
@@ -182,7 +187,7 @@ renderHttpError httpErr = case httpErr of
     | length body > 200 = take 200 body ++ "…"
     | otherwise = body
 
--- | The one process-wide TLS 'Manager', constructed exactly once (Sprint
+-- | The shared TLS 'Manager' for standing clients, constructed once (Sprint
 -- 1.64). @http-client@ 'Manager's are designed for concurrent reuse and pool
 -- connections per host, so a single shared manager is both correct and the
 -- point of this singleton: counterexample @LCPC-2026-07-11@ traced a gateway
@@ -193,16 +198,68 @@ renderHttpError httpErr = case httpErr of
 -- immutable after construction.
 {-# NOINLINE sharedTlsManager #-}
 sharedTlsManager :: Manager
-sharedTlsManager =
+sharedTlsManager = unsafePerformIO (newManager boundedTlsManagerSettings)
+
+boundedTlsManagerSettings :: ManagerSettings
+boundedTlsManagerSettings =
+  -- The caller owns observation and any retry after an uncertain send.
+  managerSetMaxHeaderLength httpBoundedResponseMaximumHeaderLineBytes $
+    managerSetMaxNumberHeaders httpBoundedResponseMaximumHeaderFields $
+      tlsManagerSettings {managerRetryableException = const False}
+
+-- One process-wide manager, not one manager/reaper per request. Its pool
+-- destroys released connections without inserting a key or idle socket. Active
+-- requests and the manager/reaper itself retain their separate funding terms.
+{-# NOINLINE noIdleTlsManager #-}
+noIdleTlsManager :: Manager
+noIdleTlsManager =
   unsafePerformIO
-    -- A reused connection can fail after the server received the request.
-    -- Its typed caller owns observation and any subsequent retry.
     ( newManager
-        ( managerSetMaxHeaderLength httpBoundedResponseMaximumHeaderLineBytes $
-            managerSetMaxNumberHeaders httpBoundedResponseMaximumHeaderFields $
-              tlsManagerSettings {managerRetryableException = const False}
-        )
+        boundedTlsManagerSettings
+          { managerIdleConnectionCount = 0
+          , managerTlsConnection = pure noIdleTlsConnection
+          , managerTlsProxyConnection = pure noIdleTlsProxyConnection
+          }
     )
+
+-- The SDK eagerly asks for both factories while creating a manager. The
+-- handlers below defer that setup until a TLS connection is requested. A data
+-- CAF retains both original SDK factories once; plain HTTP never forces it.
+data NoIdleTlsFactories
+  = NoIdleTlsFactories
+      !(Maybe HostAddress -> String -> Int -> IO Connection)
+      !( BS.ByteString
+         -> (Connection -> IO ())
+         -> String
+         -> Maybe HostAddress
+         -> String
+         -> Int
+         -> IO Connection
+       )
+
+{-# NOINLINE noIdleTlsFactories #-}
+noIdleTlsFactories :: NoIdleTlsFactories
+noIdleTlsFactories =
+  unsafePerformIO
+    ( NoIdleTlsFactories
+        <$> managerTlsConnection tlsManagerSettings
+        <*> managerTlsProxyConnection tlsManagerSettings
+    )
+
+noIdleTlsConnection :: Maybe HostAddress -> String -> Int -> IO Connection
+noIdleTlsConnection address host port = case noIdleTlsFactories of
+  NoIdleTlsFactories connect _ -> connect address host port
+
+noIdleTlsProxyConnection
+  :: BS.ByteString
+  -> (Connection -> IO ())
+  -> String
+  -> Maybe HostAddress
+  -> String
+  -> Int
+  -> IO Connection
+noIdleTlsProxyConnection headers prepare server address host port = case noIdleTlsFactories of
+  NoIdleTlsFactories _ connect -> connect headers prepare server address host port
 
 -- | Run an action against the shared TLS 'Manager'. The TLS manager handles
 -- both @http://@ and @https://@ URLs and reuses connections per host.
@@ -359,7 +416,31 @@ httpRequestRawBounded
   -> String
   -> Maybe BL.ByteString
   -> IO (Either HttpBoundedError (Int, BS.ByteString))
-httpRequestRawBounded config maximumBytes httpMethod extraHeaders url maybeBody
+httpRequestRawBounded = httpRequestRawBoundedWithManager sharedTlsManager
+
+-- | Same wire, header, body, redirect, retry and timeout policy as the shared
+-- client. Released connections are closed rather than retained for reuse. The
+-- original owner must separately bound active requests and process lifetime.
+httpRequestRawBoundedNoIdle
+  :: HttpConfig
+  -> Int
+  -> Method
+  -> [Header]
+  -> String
+  -> Maybe BL.ByteString
+  -> IO (Either HttpBoundedError (Int, BS.ByteString))
+httpRequestRawBoundedNoIdle = httpRequestRawBoundedWithManager noIdleTlsManager
+
+httpRequestRawBoundedWithManager
+  :: Manager
+  -> HttpConfig
+  -> Int
+  -> Method
+  -> [Header]
+  -> String
+  -> Maybe BL.ByteString
+  -> IO (Either HttpBoundedError (Int, BS.ByteString))
+httpRequestRawBoundedWithManager manager config maximumBytes httpMethod extraHeaders url maybeBody
   | maximumBytes < 0 = pure (Left (HttpBoundedResponseTooLarge 0 maximumBytes))
   | otherwise = do
       requestResult <- try (parseRequest url) :: IO (Either HttpException Request)
@@ -387,11 +468,10 @@ httpRequestRawBounded config maximumBytes httpMethod extraHeaders url maybeBody
           result <-
             try
               ( try
-                  ( withManager $ \manager ->
-                      withResponse request manager $ \response -> do
-                        consume FinalHeaderBlock (responseHeaders response)
-                        boundedBody <- readBoundedBody maximumBytes (responseBody response)
-                        pure (statusCode (responseStatus response), boundedBody)
+                  ( withResponse request manager $ \response -> do
+                      consume FinalHeaderBlock (responseHeaders response)
+                      boundedBody <- readBoundedBody maximumBytes (responseBody response)
+                      pure (statusCode (responseStatus response), boundedBody)
                   )
               )
           pure $ case result of

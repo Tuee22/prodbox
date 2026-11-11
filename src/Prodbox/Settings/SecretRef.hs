@@ -44,11 +44,13 @@ import Dhall
   ( FromDhall (..)
   , InterpretOptions (..)
   , ToDhall (..)
+  , auto
   , defaultInterpretOptions
   , genericAutoWith
   , genericToDhallWith
   )
 import GHC.Generics (Generic)
+import Prodbox.Config.ClosedDhallUnion (closedUnionDecoder)
 import Prodbox.Http.Client (HttpError (HttpStatus), renderHttpError)
 import Prodbox.Vault.Client
   ( VaultAddress
@@ -78,8 +80,12 @@ data SecretRef
 -- 'SecretRefVault' maps to the Dhall alternative @Vault@.
 instance FromDhall SecretRef where
   autoWith _ =
-    genericAutoWith
-      defaultInterpretOptions {constructorModifier = dropPrefix "SecretRef"}
+    closedUnionDecoder
+      [ ("Vault", SecretRefVault <$> auto)
+      , ("TransitKey", SecretRefTransitKey <$> auto)
+      , ("Prompt", SecretRefPrompt <$> auto)
+      , ("TestPlaintext", SecretRefTestPlaintext <$> auto)
+      ]
 
 -- | Sprint 7.17: the dual encoder, used to render the @default@ value and the
 -- committed @prodbox-config-types.dhall@ schema from the Haskell source of
@@ -88,7 +94,11 @@ instance FromDhall SecretRef where
 instance ToDhall SecretRef where
   injectWith _ =
     genericToDhallWith
-      defaultInterpretOptions {constructorModifier = dropPrefix "SecretRef"}
+      defaultInterpretOptions {constructorModifier = secretRefConstructorName}
+
+-- Schema labels retain their visible bytes, not the stripped metadata prefix.
+secretRefConstructorName :: Text -> Text
+secretRefConstructorName = Text.copy . dropPrefix "SecretRef"
 
 data VaultSecretRef = VaultSecretRef
   { vaultSecretMount :: Text

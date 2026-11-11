@@ -5,10 +5,12 @@ module Prodbox.ControlPlane.RegisteredCallerBudget
   , CallerBudgetKind (..)
   , CallerBudgetError (..)
   , newCallerBudget
+  , callerBudgetNormalFormBytes
   , consumeCallerBudget
   , nextCallerBudgetedNonce
   ) where
 
+import Control.Exception (uninterruptibleMask_)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Word (Word64)
 import Numeric.Natural (Natural)
@@ -61,11 +63,15 @@ newCallerBudget traffic loginMaximum originalRemainingNs
                 (protocolHttpRequests traffic)
                 (callerCostStartupProbes cost)
                 (callerCostTokenLogins cost)
-        remaining <- newIORef initial
+        remaining <- newIORef $! initial
         pure (Right (CallerBudget remaining))
 
 consumeCallerBudget :: CallerBudget -> CallerBudgetKind -> IO (Either CallerBudgetError ())
-consumeCallerBudget (CallerBudget state) kind = atomicModifyIORef' state transition
+consumeCallerBudget (CallerBudget state) kind =
+  -- Only the closed, total transition over eight Word64-bounded counters runs
+  -- here. It has no external blocking effect. Finish forcing the installed
+  -- value before cancellation can leave an update selector in the cell.
+  uninterruptibleMask_ (atomicModifyIORef' state transition)
  where
   transition remaining = case consume kind remaining of
     Left cause -> (remaining, Left cause)
@@ -90,3 +96,11 @@ consume kind (Remaining ordinary registry nonce scopes forwards http probes logi
   CallerTokenLogin -> (Remaining ordinary registry nonce scopes forwards http probes) <$> debit logins
  where
   debit value = if value == 0 then Left (CallerBudgetExhausted kind) else Right (value - 1)
+
+-- | Complete quiescent local cell on the pinned unprofiled 64-bit ABI.
+-- The validated cost bounds all eight counters by Word64, so each Natural
+-- is small. STRef + MutVar + Remaining + eight boxed scalars is
+-- 16 + 16 + 72 + 8*16 = 232 bytes, conservatively repeating shared scalars.
+-- Executing callers, update temporaries and complete owner funding are separate.
+callerBudgetNormalFormBytes :: CallerBudget -> Natural
+callerBudgetNormalFormBytes (CallerBudget reference) = reference `seq` 232

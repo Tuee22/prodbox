@@ -331,17 +331,6 @@ chartVaultSecretConsumers =
           [VaultSecretPath "secret" "aws/cert-manager/home/dns01"]
       , vaultSecretConsumerTtl = "1h"
       }
-  , -- EKS-only target projection. The role cannot read the home DNS identity.
-    VaultSecretConsumer
-      { vaultSecretConsumerName = "cert-manager-aws-dns01"
-      , vaultSecretConsumerPolicyName = "aws-cert-manager-run"
-      , vaultSecretConsumerRoleName = "aws-cert-manager-run"
-      , vaultSecretConsumerNamespaces = ["cert-manager"]
-      , vaultSecretConsumerServiceAccounts = ["aws-dns01-target-materializer"]
-      , vaultSecretConsumerKvPaths =
-          [VaultSecretPath "secret" "aws/cert-manager/aws/dns01"]
-      , vaultSecretConsumerTtl = "1h"
-      }
   ]
 
 chartVaultSecretObjects :: [VaultSecretObjectSpec]
@@ -392,13 +381,10 @@ chartVaultSecretObjects =
           "secret"
           "aws/cert-manager/home/dns01"
           awsCredentialFields
-      , -- Registered for the AWS-target projection. It is absent from the
-        -- home first-reconcile plan and from every home DNS01 read grant.
-        kvObject
-          "secret"
-          "aws/cert-manager/aws/dns01"
-          awsCredentialFields
-      , -- Sprint 4.50: long-lived IAM credentials scoped only to the
+      , -- Sprint 7.47: the EKS DNS01 identity is an IRSA role on the cert-manager
+        -- ServiceAccount, so there is no run-scoped Vault object or consumer role
+        -- for it. 'AwsRunCertManagerDns01' remains only as a retired wire tombstone.
+        -- Sprint 4.50: long-lived IAM credentials scoped only to the
         -- Authority Backup Adapter's compiled S3 prefixes. The AWS harness
         -- authors these fields; bootstrap never synthesizes them.
         kvObject

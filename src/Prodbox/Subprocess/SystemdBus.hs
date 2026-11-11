@@ -193,6 +193,7 @@ data BusError
   | BusSocketRefused
   | BusLibraryUnavailable
   | BusIoRefused
+  | BusActionIoRefused
   | BusNativeRefused !BusStage !Int
   | BusMethodRefused !Int
   | BusMalformedReply
@@ -373,7 +374,11 @@ withSystemdBus deadline socket action = do
             checked BusConnect (startBus api bus)
             awaitReady api bus deadline
             pinned <- pinManager (BusConnection api bus deadline Nothing active)
-            action pinned
+            ExceptT $ do
+              outcome <- tryIO (runExceptT (action pinned))
+              pure $ case outcome of
+                Left _ -> Left BusActionIoRefused
+                Right value -> value
         )
         `finally` uninterruptibleMask_ (modifyMVar_ active (const (pure False)))
   acquireLibrary = tryIO $

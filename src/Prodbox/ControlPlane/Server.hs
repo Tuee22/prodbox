@@ -216,6 +216,7 @@ controlPlaneRouteMaximumBodyBytes route = case route of
   LifecycleAdminAction -> controlPlaneMaximumBodyBytes
   LifecycleAwsAdminProvisioner -> controlPlaneMaximumBodyBytes
   LifecycleProviderDispatch -> controlPlaneMaximumBodyBytes
+  LifecycleProviderScopeObserve -> controlPlaneMaximumBodyBytes
   ProviderWorkApply -> controlPlaneMaximumBodyBytes
   ProviderWorkObserve -> controlPlaneMaximumBodyBytes
   AuthorityBackupObserve -> controlPlaneMaximumBodyBytes

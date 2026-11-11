@@ -17,6 +17,7 @@ module Prodbox.ControlPlane.EpochBindingReadback
   , serveEpochBindingReadbackRequest
   , epochBindingReadbackAuthenticatedHandler
   , epochBindingReadbackVerifiedHandler
+  , epochBindingReadbackVerifiedHandlerWithSnapshotTargets
   , isPhysicalEpochReadbackForRole
   )
 where
@@ -306,7 +307,7 @@ serveEpochBindingReadbackRequest
 serveEpochBindingReadbackRequest maximumBytes backend repository body =
   serveEpochBindingReadbackRequestUsing
     (const (pure (Right ())))
-    (runEpochBindingReadbackProgram backend)
+    (\snapshot -> runEpochBindingReadbackProgram backend (authorityAdmissionSnapshotState snapshot))
     maximumBytes
     repository
     body
@@ -315,7 +316,7 @@ serveEpochBindingReadbackRequestUsing
   :: (Monad m)
   => (Maybe AuthorityAdmissionAggregate -> m (Either EpochBindingReadbackFailure ()))
   -> ( forall result
-        . AuthorityAdmissionAggregate
+        . AuthorityAdmissionSnapshot revision
        -> EpochBindingReadbackProgram result
        -> m (Either EpochBindingReadbackFailure result)
      )
@@ -343,28 +344,28 @@ serveEpochBindingReadbackRequestUsing check runProgram maximumBytes repository b
             && promotionRequestTopology request == epochTopologyDigest (epochPromotionTopology state)
         )
         (throwE PhysicalPromotionContextMismatch)
-      ExceptT (verifyReadback aggregate state (promotionRequestAction request))
+      ExceptT (verifyReadback snapshot state (promotionRequestAction request))
       ExceptT (check (Just aggregate))
       record snapshot command
     pure (either failureResponse id result)
-  verifyReadback aggregate state action = case action of
+  verifyReadback snapshot state action = case action of
     ObservePreparedEpochBinding supplied ->
       matching supplied
         <$> runProgram
-          aggregate
+          snapshot
           (ReadPreparedPhysicalBinding state (readbackBinding supplied))
     ObservePromotedEpochBinding supplied ->
       matching supplied
         <$> runProgram
-          aggregate
+          snapshot
           (ReadPromotedPhysicalBinding state (readbackBinding supplied))
     ObserveOldEpochRejected supplied oldEpoch ->
       matching supplied
         <$> runProgram
-          aggregate
+          snapshot
           (ReadOldPhysicalWriterRejection state (readbackBinding supplied) oldEpoch)
     ObservePreparedEpochBindingAbsent binding ->
-      runProgram aggregate (ReadPreparedPhysicalBindingAbsence state binding)
+      runProgram snapshot (ReadPreparedPhysicalBindingAbsence state binding)
     CommitFrozenEpoch -> pure (Left PhysicalBindingWrongPhase)
     OpenEpochAdmission -> pure (Left PhysicalBindingWrongPhase)
     BeginPreparedEpochRollback -> pure (Left PhysicalBindingWrongPhase)
@@ -452,7 +453,28 @@ epochBindingReadbackVerifiedHandler
   -> AuthorityAdmissionRepository IO revision
   -> VerifiedControlPlaneRequest
   -> IO (Maybe (ReplyStatus, ByteString))
-epochBindingReadbackVerifiedHandler maximumBytes scope readTime authentication targets repository verified
+epochBindingReadbackVerifiedHandler maximumBytes scope readTime authentication targets =
+  epochBindingReadbackVerifiedHandlerWithSnapshotTargets
+    maximumBytes
+    scope
+    readTime
+    authentication
+    (const targets)
+
+-- | Opt-in composition whose Target interpreter is derived from the same
+-- snapshot later used by the readback CAS. The caller still owns origin
+-- authentication, signed-response verification and complete resource admission.
+epochBindingReadbackVerifiedHandlerWithSnapshotTargets
+  :: forall revision
+   . Int
+  -> AuthorityScope
+  -> IO (Either Text AuthorityTime)
+  -> EpochAuthenticationBackend IO
+  -> (AuthorityAdmissionSnapshot revision -> TargetEpochBindingInterpreter IO)
+  -> AuthorityAdmissionRepository IO revision
+  -> VerifiedControlPlaneRequest
+  -> IO (Maybe (ReplyStatus, ByteString))
+epochBindingReadbackVerifiedHandlerWithSnapshotTargets maximumBytes scope readTime authentication targetsForSnapshot repository verified
   | not
       ( isPhysicalEpochReadbackForRole
           maximumBytes
@@ -467,8 +489,11 @@ epochBindingReadbackVerifiedHandler maximumBytes scope readTime authentication t
   | otherwise = do
       budget <- newIORef deadline
       capPreparation <- newIORef (not retiring)
-      let observeTarget :: TargetEpochBindingEffect value -> IO (Either TargetEpochBindingFailure value)
-          observeTarget program = do
+      let observeTarget
+            :: TargetEpochBindingInterpreter IO
+            -> TargetEpochBindingEffect value
+            -> IO (Either TargetEpochBindingFailure value)
+          observeTarget targets program = do
             result <- runTargetEpochBindingEffect targets program
             case program of
               ReadTargetBindingRow {} -> case result of
@@ -485,16 +510,16 @@ epochBindingReadbackVerifiedHandler maximumBytes scope readTime authentication t
            where
             narrow preparation = modifyIORef' budget (min (targetEpochDeadline (targetEpochPreparationContext preparation)))
           runProgram
-            :: AuthorityAdmissionAggregate
+            :: AuthorityAdmissionSnapshot revision
             -> EpochBindingReadbackProgram value
             -> IO (Either EpochBindingReadbackFailure value)
-          runProgram aggregate program = do
+          runProgram snapshot program = do
             currentDeadline <- readIORef budget
             runEpochBindingReadbackProgramWithTargets
               currentDeadline
               authentication
-              (TargetEpochBindingInterpreter observeTarget)
-              aggregate
+              (TargetEpochBindingInterpreter (observeTarget (targetsForSnapshot snapshot)))
+              (authorityAdmissionSnapshotState snapshot)
               program
           check aggregate = do
             currentDeadline <- readIORef budget

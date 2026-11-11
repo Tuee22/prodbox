@@ -249,6 +249,15 @@ createRecordCoverage =
       "The cluster's IAM role family is declared in the EKS stack's write-ahead manifest by the same \
       \registry-derived edge. IAM is invisible to the regional Tagging API, so the family is named by role names."
   , keyRow
+      AwsEksCertManagerRoleFamilyKey
+      (DeclaredInStackManifest AwsEksKey)
+      [ DestroyCite
+          "src/Prodbox/Lifecycle/Teardown/AwsIamRoleFamilyAdapter.hs"
+          "authorizeExactAwsIamRoleFamilyReap"
+      ]
+      "The cert-manager DNS01 role is created by the same EKS stack and is declared in its write-ahead manifest by \
+      \the same registry-derived edge; it is a family of its own so the earlier family's coordinate stays frozen."
+  , keyRow
       AwsEksLoadBalancerControllerFamilyKey
       (DeclaredInStackManifest AwsEksKey)
       [ DestroyCite

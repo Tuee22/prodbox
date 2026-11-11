@@ -23,6 +23,7 @@ import Prodbox.ControlPlane.RequestAuthentication
 import Prodbox.ControlPlane.Route
 import Prodbox.ControlPlane.RpcClientRegistration
 import Prodbox.ControlPlane.RpcKeyRegistry
+import Prodbox.ControlPlane.TargetResponseTrust
 import Prodbox.Http.ReplyStatus (replyStatusCode)
 import Prodbox.Lifecycle.Authority.Admission
 import Prodbox.Lifecycle.Authority.ClientRegistry
@@ -39,6 +40,40 @@ rpcClientRegistrationSuite = describe "Sprint 6.5 origin-aware operation admissi
   forM_ ["0", "01", "-1", "+1", "1/extra", "18446744073709551616"] $ \suffix ->
     it ("refuses a noncanonical origin principal suffix " <> show suffix) $
       mkClientPrincipal (callerPrincipalText agent <> "/rpc-origin/" <> suffix) `shouldSatisfy` isLeft
+
+  it "selects a Target response key from the exact Authority snapshot and origin" $ do
+    let snapshot = AuthorityAdmissionSnapshot (7 :: Int) seededAggregate
+        origin = mkRpcKeyOrigin rootScope homeVault (controlPlaneSigningKeyRefFor agent)
+        wrongRole =
+          mkRpcKeyOrigin
+            rootScope
+            homeVault
+            (controlPlaneSigningKeyRefFor (CallerService ProviderWorkerRuntime))
+        wrongVault = mkRpcKeyOrigin rootScope remoteVault (controlPlaneSigningKeyRefFor agent)
+        selected = must (selectTargetResponseTrust rootScope origin snapshot)
+    authorityAdmissionRevision (targetResponseTrustSnapshot selected) `shouldBe` 7
+    trustedRequestCallerPrincipal (targetResponseTrustKey selected) `shouldBe` agent
+    signingKeyGenerationValue (trustedRequestGeneration (targetResponseTrustKey selected)) `shouldBe` 1
+    trustedRequestPublicKeyBytes (targetResponseTrustKey selected)
+      `shouldBe` requestSignerPublicKeyBytes (signer agent 1 17)
+    selectTargetResponseTrust rootScope wrongRole snapshot `shouldSatisfy` isLeft
+    selectTargetResponseTrust rootScope wrongVault snapshot `shouldSatisfy` isLeft
+    selectTargetResponseTrust remoteScope origin snapshot `shouldSatisfy` isLeft
+    selectTargetResponseTrust rootScope origin (AuthorityAdmissionSnapshot (7 :: Int) initialAggregate)
+      `shouldSatisfy` isLeft
+    let retired = must (retireAuthorityRpcKey agent (signingGeneration 1) seededAggregate)
+    selectTargetResponseTrust rootScope origin (AuthorityAdmissionSnapshot (8 :: Int) retired)
+      `shouldSatisfy` isLeft
+    signingKeyGenerationValue (trustedRequestGeneration (targetResponseTrustKey selected)) `shouldBe` 1
+    fixture <- newFixture seededAggregate
+    observed <- readAuthorityAdmission (fixtureRepository fixture) >>= (pure . must)
+    let pinned = must (selectTargetResponseTrust rootScope origin observed)
+        revision = authorityAdmissionRevision (targetResponseTrustSnapshot pinned)
+    compareAndSwapAuthorityAdmission (fixtureRepository fixture) revision retired
+      `shouldReturn` Right ()
+    stale <- compareAndSwapAuthorityAdmission (fixtureRepository fixture) revision seededAggregate
+    stale `shouldSatisfy` isLeft
+    readIORef (fixtureState fixture) `shouldReturn` retired
 
   it "accepts only a canonical role and positive origin generation" $ do
     clientPrincipalCaller remotePrincipal `shouldBe` Just agent

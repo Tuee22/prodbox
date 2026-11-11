@@ -20,6 +20,7 @@ module Prodbox.ControlPlane.RpcAdmissionBirthCoordinator
   , coordinatedRpcBirthStatus
   , coordinateRpcBirth
   , coordinateRpcBirthWithTransport
+  , coordinateRpcBirthWithVerifiedDescriptors
   ) where
 
 import Control.Monad (unless, when)
@@ -35,6 +36,7 @@ import Prodbox.ControlPlane.AuthenticatedTransport
   , resolveAuthenticatedClientTransportDeadline
   )
 import Prodbox.ControlPlane.Coordinate (AuthorityScope, authorityScopeText)
+import Prodbox.ControlPlane.RequestAuthentication (TrustedRequestKey)
 import Prodbox.ControlPlane.RpcAdmissionBirth
 import Prodbox.ControlPlane.RpcAdmissionBirthConfig
 import Prodbox.ControlPlane.RpcAdmissionBirthEndpoint
@@ -110,7 +112,9 @@ data RpcBirthCoordinationEffects m = RpcBirthCoordinationEffects
   { coordinationReadTime :: m (Either Text AuthorityTime)
   , coordinationObserve :: AuthorityTime -> m (Either RpcBirthClientError RpcBirthDescriptorObservation)
   , coordinationSubmit
-      :: AuthorityTime -> RpcBirthCommand -> m (Either RpcBirthClientError RpcBirthStatus)
+      :: AuthorityTime
+      -> RpcBirthCommand
+      -> m (Either RpcBirthClientError RpcBirthStatus)
   , coordinationPublication :: RpcBirthPublicationEffects m
   }
 
@@ -271,6 +275,62 @@ coordinateRpcBirthWithTransport
   -> RpcBirthPublicationEffects IO
   -> IO (Either RpcBirthCoordinationError RpcBirthCoordinationResult)
 coordinateRpcBirthWithTransport readTime scope parent generation key transport publication =
+  coordinateRpcBirthUsingTransport
+    readTime
+    scope
+    parent
+    generation
+    key
+    transport
+    publication
+    (requestRpcBirthDescriptorWithin readTime)
+    (requestRpcBirthWithin readTime)
+
+-- | The caller supplies an independently established Authority key and owns
+-- its freshness, revocation and original resource/deadline admission.
+coordinateRpcBirthWithVerifiedDescriptors
+  :: IO (Either Text AuthorityTime)
+  -> AuthorityScope
+  -> AuthorityTime
+  -> Natural
+  -> Text
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> RpcBirthPublicationEffects IO
+  -> TrustedRequestKey
+  -> IO (Either RpcBirthCoordinationError RpcBirthCoordinationResult)
+coordinateRpcBirthWithVerifiedDescriptors readTime scope parent generation key transport publication trusted =
+  coordinateRpcBirthUsingTransport
+    readTime
+    scope
+    parent
+    generation
+    key
+    transport
+    publication
+    (\bound selected -> requestRpcBirthDescriptorWithVerifiedResponses readTime bound selected trusted)
+    (\bound selected -> requestRpcBirthWithVerifiedPeer readTime bound selected trusted)
+
+coordinateRpcBirthUsingTransport
+  :: IO (Either Text AuthorityTime)
+  -> AuthorityScope
+  -> AuthorityTime
+  -> Natural
+  -> Text
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> RpcBirthPublicationEffects IO
+  -> ( AuthorityTime
+       -> AuthorityScope
+       -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+       -> IO (Either RpcBirthClientError RpcBirthDescriptorObservation)
+     )
+  -> ( AuthorityTime
+       -> AuthorityScope
+       -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+       -> RpcBirthCommand
+       -> IO (Either RpcBirthClientError RpcBirthStatus)
+     )
+  -> IO (Either RpcBirthCoordinationError RpcBirthCoordinationResult)
+coordinateRpcBirthUsingTransport readTime scope parent generation key transport publication observeDescriptor submit =
   case mkRpcBirthCoordinationRequest scope parent generation key of
     Left cause -> pure (Left cause)
     Right _ -> do
@@ -287,8 +347,8 @@ coordinateRpcBirthWithTransport readTime scope parent generation key transport p
               coordinateRpcBirth
                 ( RpcBirthCoordinationEffects
                     readTime
-                    (\bound -> requestRpcBirthDescriptorWithin readTime bound scope boundedTransport)
-                    (\bound -> requestRpcBirthWithin readTime bound scope boundedTransport)
+                    (\bound -> observeDescriptor bound scope boundedTransport)
+                    (\bound -> submit bound scope boundedTransport)
                     publication
                 )
                 request

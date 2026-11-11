@@ -579,8 +579,11 @@ material is split across:
 - `secret/aws/authority-backup-store` — `LongLived`, Authority Backup Adapter only;
 - `secret/aws/tls-retention-store` — `LongLived`, TLS Retention Adapter only;
 - `secret/aws/gateway-dns` — `LongLived`, home Gateway DNS writer only;
-- `secret/aws/cert-manager/home/dns01` — `LongLived`, home cert-manager only; and
-- `secret/aws/cert-manager/aws/dns01` — `Operational`, AWS cert-manager only.
+- `secret/aws/cert-manager/home/dns01` — `LongLived`, home cert-manager only.
+
+The former `secret/aws/cert-manager/aws/dns01` path is retired (Sprint `7.47`): AWS cert-manager uses an
+IRSA role declared by the `aws-eks` stack, so it holds no Vault-borne key. `AwsRunCertManagerDns01` survives
+only as a tombstone in the frozen wire types and is excluded from every worker target list.
 
 Each path has a distinct IAM resource, Vault policy, generation, consumer, and cleanup node.
 `prodbox.dhall` contains only non-secret role coordinates.

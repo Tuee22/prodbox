@@ -109,9 +109,12 @@ data ReplacementWriterPermit = ReplacementWriterPermit
 data QualificationPassed = QualificationPassed !QualificationIdentity
   deriving (Eq, Show)
 
--- | At most one mutation permit exists in every phase.  Activation consumes
--- the legacy permit; deletion cannot recreate it; and the identity-changing
--- deletion returns the state to qualification-pending.
+-- | Each modeled state contains at most one writer permit. These pure values
+-- are reusable: a caller can retain a pre-activation state after computing a
+-- post-activation state. Actual exclusive mutation therefore requires a
+-- separately enforced authoritative transition; this model alone cannot
+-- consume a permit across callers or processes. Identity-changing deletion
+-- returns the model to qualification-pending.
 data CutoverState (phase :: CutoverPhase) where
   CutoverPreActivation
     :: !QualificationIdentity

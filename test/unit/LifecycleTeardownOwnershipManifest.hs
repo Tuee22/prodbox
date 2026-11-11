@@ -113,6 +113,7 @@ lifecycleTeardownOwnershipManifestSuite =
                    , (AwsEksKey, AwsEksLoadBalancerControllerFamilyKey)
                    , (AwsEksKey, AwsEksVpcCniInterfacesKey)
                    , (AwsEksKey, AwsEksClusterSecurityGroupsKey)
+                   , (AwsEksKey, AwsEksCertManagerRoleFamilyKey)
                    , (AwsTestKey, AwsTestVpcCniInterfacesKey)
                    , (AwsTestKey, AwsTestCanarySecurityGroupsKey)
                    ]
@@ -126,6 +127,7 @@ lifecycleTeardownOwnershipManifestSuite =
                    , (AwsEksLoadBalancerControllerFamilyKey, "aws-eks-test-cluster")
                    , (AwsEksVpcCniInterfacesKey, "aws-eks-test-cluster")
                    , (AwsEksClusterSecurityGroupsKey, "aws-eks-test-cluster")
+                   , (AwsEksCertManagerRoleFamilyKey, "aws-eks-test-cluster")
                    ]
       lookup AwsEksKey registeredStackClusters `shouldBe` Just "aws-eks-test-cluster"
       lookup AwsTestKey registeredStackClusters `shouldBe` Just "aws-test-cluster"
@@ -158,6 +160,7 @@ lifecycleTeardownOwnershipManifestSuite =
           , AwsEksLoadBalancerControllerFamilyKey
           , AwsEksVpcCniInterfacesKey
           , AwsEksClusterSecurityGroupsKey
+          , AwsEksCertManagerRoleFamilyKey
           ]
 
     it "Sprint 4.111 declares test-VPC interfaces without inventing a cluster" $ do

@@ -28,7 +28,7 @@ lifecycleTeardownRecoveryCapabilitySuite :: SuiteBuilder ()
 lifecycleTeardownRecoveryCapabilitySuite = do
   describe "lifecycle teardown recovery capability catalog" $ do
     it "keeps all current registered identities free of Target-Agent ability" $ do
-      length lifecycleRegistry `shouldBe` 16
+      length lifecycleRegistry `shouldBe` 17
       forM_ lifecycleRegistry $ \identity -> do
         recoveryCapabilitySetNames
           (registeredIdentityRecoveryCapabilities identity)

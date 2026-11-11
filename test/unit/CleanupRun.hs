@@ -118,6 +118,99 @@ cleanupRunSuite =
       cleanupRunPrimaryOutcome run `shouldBe` Nothing
       Map.elems (cleanupRunNodeStates run) `shouldBe` [CleanupNodePending, CleanupNodePending]
 
+    it "binds a terminal report to the exact run, graph and complete terminal node field" $ do
+      let expectedRun = cleanupRunId (freshRun graphBoth)
+          report =
+            CleanupRunReport
+              expectedRun
+              (cleanupGraphDigest graphBoth)
+              CleanupPrimarySucceeded
+              ( Map.fromList
+                  [ (nodeAId, CleanupNodeCompleted attemptA CleanupNodeSucceeded)
+                  , (nodeBId, CleanupNodeCompleted attemptB CleanupNodeSucceeded)
+                  ]
+              )
+          check = validateCleanupRunReportBinding expectedRun graphBoth
+      check report `shouldBe` Right ()
+      check (report {cleanupReportRunId = cleanupRunId (freshRunNamed "other-run" graphBoth)})
+        `shouldBe` Left CleanupReportRunMismatch
+      check (report {cleanupReportGraphDigest = cleanupGraphDigest graphA})
+        `shouldBe` Left CleanupReportGraphMismatch
+      check (report {cleanupReportNodeStates = Map.delete nodeBId (cleanupReportNodeStates report)})
+        `shouldBe` Left CleanupReportNodeSetMismatch
+      check
+        ( report
+            { cleanupReportNodeStates = Map.insert unknownId CleanupNodePending (cleanupReportNodeStates report)
+            }
+        )
+        `shouldBe` Left CleanupReportNodeSetMismatch
+      check
+        ( report
+            { cleanupReportNodeStates = Map.insert nodeAId CleanupNodePending (cleanupReportNodeStates report)
+            }
+        )
+        `shouldBe` Left (CleanupReportNodeNonterminal nodeAId)
+      check
+        ( report
+            { cleanupReportNodeStates =
+                Map.insert nodeBId (CleanupNodeRunning attemptA) (cleanupReportNodeStates report)
+            }
+        )
+        `shouldBe` Left (CleanupReportNodeNonterminal nodeBId)
+
+    it "rejects fabricated terminal blocker references" $ do
+      let expectedRun = cleanupRunId (freshRun graphSuccess)
+          report =
+            CleanupRunReport expectedRun (cleanupGraphDigest graphSuccess) CleanupPrimarySucceeded $
+              Map.fromList
+                [ (nodeAId, CleanupNodeCompleted attemptA (CleanupNodeFailed "drain"))
+                , (nodeBId, CleanupNodeBlocked [nodeAId])
+                ]
+          check = validateCleanupRunReportBinding expectedRun graphSuccess
+      check report `shouldBe` Right ()
+      check
+        ( report
+            { cleanupReportNodeStates =
+                Map.insert
+                  nodeAId
+                  (CleanupNodeCompleted attemptA CleanupNodeSucceeded)
+                  (cleanupReportNodeStates report)
+            }
+        )
+        `shouldBe` Left (CleanupReportNodeInvalidBlockers nodeBId)
+      check
+        ( report
+            { cleanupReportNodeStates =
+                Map.insert nodeBId (CleanupNodeBlocked []) (cleanupReportNodeStates report)
+            }
+        )
+        `shouldBe` Left (CleanupReportNodeInvalidBlockers nodeBId)
+      check
+        ( report
+            { cleanupReportNodeStates =
+                Map.insert nodeBId (CleanupNodeBlocked [unknownId]) (cleanupReportNodeStates report)
+            }
+        )
+        `shouldBe` Left (CleanupReportNodeInvalidBlockers nodeBId)
+
+    it "accepts a blocker recorded before another dependency fails" $ do
+      let independentC = nodePlan nodeCId (cleanupNodeOperationId nodeCFromAttempt) [] "cleanup/summarize-attempt"
+          waitingB =
+            nodePlan
+              nodeBId
+              (cleanupNodeOperationId nodeB)
+              [requiresSuccess nodeAId, requiresSuccess nodeCId]
+              "cleanup/destroy"
+          graph = expectRight (mkCleanupGraph [nodeA, independentC, waitingB])
+          run0 = expectRight (recordPrimaryOutcome ownerA 1 CleanupPrimarySucceeded (freshRun graph))
+          run1 = expectRight (beginCleanupNode ownerA 1 nodeAId attemptA run0)
+          run2 = expectRight (beginCleanupNode ownerA 1 nodeCId attemptB run1)
+          run3 = expectRight (completeCleanupNode ownerA 1 nodeCId attemptB (CleanupNodeFailed "first") run2)
+          run4 = expectRight (completeCleanupNode ownerA 1 nodeAId attemptA (CleanupNodeFailed "later") run3)
+          report = expectRight (compactCleanupRun run4)
+      Map.lookup nodeBId (cleanupReportNodeStates report) `shouldBe` Just (CleanupNodeBlocked [nodeCId])
+      validateCleanupRunReportBinding (cleanupRunId run4) graph report `shouldBe` Right ()
+
     it "refuses a live competing owner and records RunnerLost before expired takeover" $ do
       claimCleanupRun ownerB 50 200 (freshRun graphBoth)
         `shouldBe` Left (CleanupLeaseHeld ownerA)

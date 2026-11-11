@@ -396,6 +396,7 @@ The per-group command matrix (generated; do not edit by hand):
 | `prodbox test integration clean-room-handoff` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration cascade-qualification` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration cascade-qualification-receipt` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
+| `prodbox test integration aws-lifecycle-receipt` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration aws-lifecycle` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration aws-lifecycle-canary` | none | `--coverage`, `--cov-fail-under`, `--substrate` |
 | `prodbox test integration ha-rke2-aws` | none | `--coverage`, `--cov-fail-under`, `--substrate` |

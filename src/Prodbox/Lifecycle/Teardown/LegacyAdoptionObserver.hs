@@ -38,7 +38,7 @@ import Prodbox.Lifecycle.Teardown.AwsIamRoleFamilyAdapter
   ( AwsIamRoleFamilyAdapterError
   , awsIamRoleFamilyObservationRequestProviderIntent
   , decodeExactAwsIamRoleFamilyObservation
-  , mkExactAwsIamRoleFamilyObservationRequest
+  , mkExactAwsIamRoleFamilyObservationRequestFor
   )
 import Prodbox.Lifecycle.Teardown.AwsLoadBalancerControllerFamilyAdapter
   ( AwsLoadBalancerControllerFamilyAdapterError
@@ -135,8 +135,8 @@ observeAndPlanLegacyAdoption surface stackKey scope revision config observer = d
                 )
     Just identity
       | registeredIdentityKind identity == ControllerFamily
-      , key == AwsEksIamRoleFamilyKey ->
-          case mkExactAwsIamRoleFamilyObservationRequest surface revision scope of
+      , key `elem` [AwsEksIamRoleFamilyKey, AwsEksCertManagerRoleFamilyKey] ->
+          case mkExactAwsIamRoleFamilyObservationRequestFor key surface revision scope of
             Left err ->
               pure (Left (LegacyAdoptionIamRoleFamilyRequestInvalid err))
             Right request -> do

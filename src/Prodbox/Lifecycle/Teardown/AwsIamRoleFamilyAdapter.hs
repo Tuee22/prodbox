@@ -9,6 +9,7 @@
 module Prodbox.Lifecycle.Teardown.AwsIamRoleFamilyAdapter
   ( ExactAwsIamRoleFamilyObservationRequest
   , mkExactAwsIamRoleFamilyObservationRequest
+  , mkExactAwsIamRoleFamilyObservationRequestFor
   , awsIamRoleFamilyObservationRequestScope
   , awsIamRoleFamilyObservationRequestRevision
   , awsIamRoleFamilyObservationRequestProviderIntent
@@ -88,7 +89,18 @@ mkExactAwsIamRoleFamilyObservationRequest
   -> ObservationRevision
   -> ObservationEvidenceScope
   -> Either AwsIamRoleFamilyAdapterError ExactAwsIamRoleFamilyObservationRequest
-mkExactAwsIamRoleFamilyObservationRequest surface revision scope = do
+mkExactAwsIamRoleFamilyObservationRequest =
+  mkExactAwsIamRoleFamilyObservationRequestFor AwsEksIamRoleFamilyKey
+
+-- | The same exact adapter for any registered IAM-role family. The key selects
+-- the registry identity; its coordinate must still equal one registered pair.
+mkExactAwsIamRoleFamilyObservationRequestFor
+  :: RegisteredResourceKey
+  -> CleanupSurfaceWitness surface
+  -> ObservationRevision
+  -> ObservationEvidenceScope
+  -> Either AwsIamRoleFamilyAdapterError ExactAwsIamRoleFamilyObservationRequest
+mkExactAwsIamRoleFamilyObservationRequestFor familyKey surface revision scope = do
   identity <-
     maybe (Left AwsIamRoleFamilyRegistryIdentityMissing) Right identityMaybe
   if registeredIdentityKind identity == ControllerFamily
@@ -134,7 +146,7 @@ mkExactAwsIamRoleFamilyObservationRequest surface revision scope = do
       , internalIamFamilyRequestCoordinate = providerIntentCoordinate intent
       }
  where
-  identityMaybe = lookupRegisteredIdentity AwsEksIamRoleFamilyKey
+  identityMaybe = lookupRegisteredIdentity familyKey
 
 familyFromCoordinate
   :: ManagedResourceCoordinate
@@ -142,14 +154,24 @@ familyFromCoordinate
 familyFromCoordinate coordinate = case coordinate of
   AwsIamRoleFamilyCoordinate ownerCluster roles policies
     | ownerCluster == awsEksProvisionedClusterName
-    , roles == awsEksIamRoleNames
-    , policies == awsEksIamManagedPolicyNames
+    , (roles, policies) `elem` registeredIamRoleFamilies
     , not (null roles)
     , not (null policies)
     , length roles == length (nub roles)
     , length policies == length (nub policies) ->
         Right (roles, policies)
   _ -> Left (AwsIamRoleFamilyRegistryCoordinateInvalid coordinate)
+
+-- | Every (roles, managed policies) pair the registry declares. Frozen families
+-- stay as they are; a new family is a new pair, never a wider old one.
+registeredIamRoleFamilies :: [([Text], [Text])]
+registeredIamRoleFamilies =
+  [ (awsEksIamRoleNames, awsEksIamManagedPolicyNames)
+  , (awsEksCertManagerRoleNames, awsEksCertManagerPolicyNames)
+  ]
+
+requestFamilyKey :: ExactAwsIamRoleFamilyObservationRequest -> RegisteredResourceKey
+requestFamilyKey = registeredIdentityKey . internalIamFamilyRequestIdentity
 
 data IamFamilyMemberKind = IamFamilyRole | IamFamilyPolicy
   deriving (Eq, Ord, Show)
@@ -262,7 +284,7 @@ authorizeExactAwsIamRoleFamilyReap request exact = do
       Right
       ( mkCompleteObservationSet
           (internalIamFamilyRequestScope request)
-          [AwsEksIamRoleFamilyKey]
+          [requestFamilyKey request]
           [exact]
       )
   case decideCompleteObservationSet complete of
@@ -298,13 +320,13 @@ confirmExactAwsIamRoleFamilyAbsence request result = do
       Right
       ( mkCompleteObservationSet
           (internalIamFamilyRequestScope request)
-          [AwsEksIamRoleFamilyKey]
+          [requestFamilyKey request]
           [exact]
       )
   case decideCompleteObservationSet complete of
     AllSelectedResourcesAbsent -> case exactObservationResult exact of
       ExactResourceAbsent evidence -> Right evidence
-      _ -> Left (AwsIamRoleFamilyStillPresent (AwsEksIamRoleFamilyKey :| []))
+      _ -> Left (AwsIamRoleFamilyStillPresent (requestFamilyKey request :| []))
     SelectedResourcesRequireCleanup remaining ->
       Left (AwsIamRoleFamilyStillPresent remaining)
     CompleteObservationsRefused failures ->

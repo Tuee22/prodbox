@@ -33,6 +33,7 @@ module Prodbox.Cluster.Topology
   , mkSingleMachineRke2Topology
   , renderClusterType
   , renderTopologyError
+  , renderTopologyErrorText
   , validateClusterTopology
   )
 where
@@ -141,7 +142,7 @@ narrowingDecoder base narrow =
         wide <- toMonadic (extract base expression)
         case narrow wide of
           Right narrowed -> pure narrowed
-          Left err -> toMonadic (extractError (Text.pack (renderTopologyError err)))
+          Left err -> toMonadic (extractError (renderTopologyErrorText err))
     }
 
 instance FromDhall MachineId where
@@ -303,22 +304,25 @@ validateMachine machineValue = do
   pure ()
 
 renderTopologyError :: TopologyError -> String
-renderTopologyError err =
-  case err of
-    EmptyMachineId ->
-      "cluster_topology machine_id must be non-empty"
-    WorkerSubstrateMismatch machineSubstrate workerSubstrate ->
-      "cluster_topology worker substrate "
-        ++ renderWorkerSubstrate workerSubstrate
-        ++ " does not match machine substrate "
-        ++ renderWorkerSubstrate machineSubstrate
-    Rke2TopologyEmpty ->
-      "cluster_topology rke2 topology must include at least one machine"
-    EksHostResidentSubstrate substrate ->
-      "cluster_topology eks substrate must be in-cluster, not "
-        ++ renderWorkerSubstrate substrate
-    EksNodeGroupSizeZero ->
-      "cluster_topology eks node_group_size must be greater than zero"
+renderTopologyError = Text.unpack . renderTopologyErrorText
+
+renderTopologyErrorText :: TopologyError -> Text
+renderTopologyErrorText err = case err of
+  EmptyMachineId -> "cluster_topology machine_id must be non-empty"
+  WorkerSubstrateMismatch machineSubstrate workerSubstrate ->
+    Text.concat
+      [ "cluster_topology worker substrate "
+      , Text.pack (renderWorkerSubstrate workerSubstrate)
+      , " does not match machine substrate "
+      , Text.pack (renderWorkerSubstrate machineSubstrate)
+      ]
+  Rke2TopologyEmpty -> "cluster_topology rke2 topology must include at least one machine"
+  EksHostResidentSubstrate substrate ->
+    Text.concat
+      [ "cluster_topology eks substrate must be in-cluster, not "
+      , Text.pack (renderWorkerSubstrate substrate)
+      ]
+  EksNodeGroupSizeZero -> "cluster_topology eks node_group_size must be greater than zero"
 
 defaultComputeWorker :: ComputeWorker
 defaultComputeWorker =

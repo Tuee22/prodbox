@@ -98,6 +98,7 @@ data ControlPlaneRoute
   | LifecycleTlsRetentionUnopenableSuccessorStage
   | TargetAwsAdminCredentialRevoke
   | LifecycleAuthorityPeerObserve
+  | LifecycleProviderScopeObserve
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 allControlPlaneRoutes :: [ControlPlaneRoute]
@@ -123,6 +124,7 @@ controlPlaneRouteMethod route = case route of
   LifecycleAdminAction -> ControlPlanePost
   LifecycleAwsAdminProvisioner -> ControlPlanePost
   LifecycleProviderDispatch -> ControlPlanePost
+  LifecycleProviderScopeObserve -> ControlPlanePost
   ProviderWorkApply -> ControlPlanePost
   ProviderWorkObserve -> ControlPlaneGet
   AuthorityBackupCopy -> ControlPlanePost
@@ -191,6 +193,7 @@ controlPlaneRoutePath route = case route of
   LifecycleAdminAction -> "/v1/authority/admin-action"
   LifecycleAwsAdminProvisioner -> "/v1/authority/aws-admin-provisioner"
   LifecycleProviderDispatch -> "/v1/authority/provider-dispatch"
+  LifecycleProviderScopeObserve -> "/v1/authority/provider-scope/observe"
   ProviderWorkApply -> "/v1/provider-work/apply"
   ProviderWorkObserve -> "/v1/provider-work/observe"
   AuthorityBackupCopy -> "/v1/authority-backup/copy"
@@ -267,6 +270,7 @@ controlPlaneRouteRole route = case route of
   LifecycleAdminAction -> LifecycleAuthorityRuntime
   LifecycleAwsAdminProvisioner -> LifecycleAuthorityRuntime
   LifecycleProviderDispatch -> LifecycleAuthorityRuntime
+  LifecycleProviderScopeObserve -> LifecycleAuthorityRuntime
   ProviderWorkApply -> ProviderWorkerRuntime
   ProviderWorkObserve -> ProviderWorkerRuntime
   AuthorityBackupCopy -> AuthorityBackupRuntime

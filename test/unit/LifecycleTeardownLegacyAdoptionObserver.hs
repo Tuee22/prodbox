@@ -137,7 +137,12 @@ observationResult intent =
         ObserveNativeStackFamily ref _ ->
           mustRight (encodeAwsNativeStackFamilyEvidence ref [])
         ObserveTestEbsVolumes _ -> ebsAbsentEvidence
-        ObserveEksIamRoleFamily _ _ -> iamAbsentEvidence
+        ObserveEksIamRoleFamily roles policies ->
+          familyEvidenceFor
+            eksIamRoleFamilyEvidenceFamily
+            ( map (\name -> ["role", name, "absent"]) (Text.splitOn "|" roles)
+                <> map (\name -> ["policy", name, "absent"]) (Text.splitOn "|" policies)
+            )
         ObserveEksLoadBalancerControllerFamily _ _ -> lbcAbsentEvidence
         _ -> "unexpected mutation intent"
     )
@@ -163,7 +168,9 @@ providerIntentResourceKey intent = case intent of
       | providerStackRefText stackRef == "aws-eks" -> AwsEksKey
       | otherwise -> AwsTestKey
   ObserveTestEbsVolumes _ -> AwsEbsPerRunTestKey
-  ObserveEksIamRoleFamily _ _ -> AwsEksIamRoleFamilyKey
+  ObserveEksIamRoleFamily roles _
+    | Text.splitOn "|" roles == awsEksCertManagerRoleNames -> AwsEksCertManagerRoleFamilyKey
+    | otherwise -> AwsEksIamRoleFamilyKey
   ObserveEksLoadBalancerControllerFamily _ _ ->
     AwsEksLoadBalancerControllerFamilyKey
   _ -> AwsTestKey
@@ -177,14 +184,6 @@ familyEvidenceFor family rows =
   case encodeProviderEvidence (providerEvidenceFamilyOwnBound family) family rows of
     Right evidence -> providerEvidenceText evidence
     Left refusal -> error ("fixture refused: " <> show refusal)
-
-iamAbsentEvidence :: Text.Text
-iamAbsentEvidence =
-  familyEvidenceFor
-    eksIamRoleFamilyEvidenceFamily
-    ( map (\name -> ["role", name, "absent"]) awsEksIamRoleNames
-        <> map (\name -> ["policy", name, "absent"]) awsEksIamManagedPolicyNames
-    )
 
 lbcAbsentEvidence :: Text.Text
 lbcAbsentEvidence =

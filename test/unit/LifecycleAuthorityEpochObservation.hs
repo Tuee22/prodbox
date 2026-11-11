@@ -30,6 +30,23 @@ import TestSupport
 lifecycleAuthorityEpochObservationSuite :: SuiteBuilder ()
 lifecycleAuthorityEpochObservationSuite =
   describe "Sprint 6.5 authenticated epoch promotion observation" $ do
+    it "accepts only explicit promotion acknowledgements and preserves refusals" $ do
+      decodeEpochPromotionSubmissionResponse (ControlPlaneResponse 200 "migration-accepted")
+        `shouldBe` Right EpochPromotionSubmitted
+      decodeEpochPromotionSubmissionResponse (ControlPlaneResponse 200 "migration-already-applied")
+        `shouldBe` Right EpochPromotionAlreadySubmitted
+      decodeEpochPromotionSubmissionResponse (ControlPlaneResponse 200 "migration-refused")
+        `shouldBe` Left AuthorityControlEpochSubmissionResponseMismatch
+      decodeEpochPromotionSubmissionResponse (ControlPlaneResponse 409 "migration-concurrent-write")
+        `shouldBe` Left (AuthorityControlRefused "migration-concurrent-write")
+      decodeEpochPromotionSubmissionResponse (ControlPlaneResponse 503 "migration-read-failed")
+        `shouldBe` Left (AuthorityControlHttpStatus 503 "migration-read-failed")
+      decodeEpochPromotionSubmissionResponse
+        (ControlPlaneResponse 200 (ByteString.replicate (64 * 1024 + 1) 97))
+        `shouldSatisfy` isLeft
+      decodeEpochPromotionSubmissionResponse (ControlPlaneResponse 200 (ByteString.pack [255]))
+        `shouldBe` Left AuthorityControlTextResponseInvalidUtf8
+
     it "reads one complete snapshot through the actual control endpoint without a CAS" $ do
       let states = scanl apply importedFrozenEpochAggregate (epochPromotionCommands 1 2)
       forM_ states $ \aggregate -> do
@@ -124,6 +141,9 @@ lifecycleAuthorityEpochObservationSuite =
 
     it "classifies only the canonical observer as a fresh-nonce read" $ do
       isEpochPromotionObservationRequest (LazyByteString.toStrict query) `shouldBe` True
+      isEpochPromotionObservationRequest
+        (LazyByteString.toStrict (encodeControlPlaneRequest AuthorityControlObserveSignedEpochPromotion))
+        `shouldBe` True
       forM_
         [ encodeControlPlaneRequest AuthorityControlBeginMigration
         , encodeControlPlaneRequest (AuthorityControlBindProviderGeneration 7)
@@ -138,6 +158,8 @@ lifecycleAuthorityEpochObservationSuite =
         `shouldBe` LazyByteString.pack [131, 0, 1, 129, 2]
       encodeControlPlaneRequest AuthorityControlObserveProviderBootstrapPredecessor
         `shouldBe` LazyByteString.pack [131, 0, 1, 129, 10]
+      encodeControlPlaneRequest AuthorityControlObserveEpochPromotion
+        `shouldBe` LazyByteString.pack [131, 0, 1, 129, 11]
  where
   query = encodeControlPlaneRequest AuthorityControlObserveEpochPromotion
   apply aggregate command = applyEpochAggregateCommand aggregate (ApplyAuthorityMigration command)

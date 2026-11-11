@@ -14,9 +14,13 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
+import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Data.Word (Word16)
+import EpochPromotionFixture
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.Aws.Region (canonicalRegressionAwsRegion)
@@ -37,6 +41,7 @@ import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   , AuthorityOperationSubmitResponse (..)
   , authorityOperationResponseMaximumBytes
   )
+import Prodbox.ControlPlane.AuthorityControlClient qualified as AuthorityControl
 import Prodbox.ControlPlane.AuthorityControlProtocol
   ( AuthorityControlPayload (AuthorityControlObserveEpochPromotion)
   , isEpochPromotionObservationForRole
@@ -56,6 +61,7 @@ import Prodbox.ControlPlane.Client
     , LifecycleEksDrainIntentRoute
     , LifecycleEksDrainReadBackReceiptRoute
     , LifecycleOperationSubmitRoute
+    , LifecycleProviderScopeObserveRoute
     , LifecyclePulumiCheckpointRoute
     , LifecycleRecoveryPlaneRoute
     , ProviderWorkApplyRoute
@@ -80,9 +86,14 @@ import Prodbox.ControlPlane.Coordinate
   ( AuthorityScope
   , mkAuthorityScope
   )
+import Prodbox.ControlPlane.EpochBindingReadback (isPhysicalEpochReadbackForRole)
+import Prodbox.ControlPlane.EpochBindingReadback qualified as EpochReadback
+import Prodbox.ControlPlane.MigrationEndpoint
 import Prodbox.ControlPlane.ProjectionImportEndpoint
   ( unavailableProjectionImportHandler
   )
+import Prodbox.ControlPlane.ProviderAwsScopeReceipt.Internal qualified as ScopeReceipt
+import Prodbox.ControlPlane.ProviderScopeObservation qualified as ScopeObservation
 import Prodbox.ControlPlane.ProviderWorkerClient
   ( providerWorkerResponseMaximumBytes
   )
@@ -151,16 +162,33 @@ import Prodbox.ControlPlane.Runtime
 import Prodbox.ControlPlane.Server
   ( RoleInterpreter (..)
   )
+import Prodbox.ControlPlane.TargetAuthorityEpochBinding qualified as TargetBinding
 import Prodbox.ControlPlane.TargetMaterialEndpoint qualified as TargetMaterial
 import Prodbox.ControlPlane.TargetMaterialRegistry (TargetSecretId (TargetSesSmtp))
-import Prodbox.Http.ReplyStatus (ReplyStatus (..))
+import Prodbox.Http.ReplyStatus (ReplyStatus (..), replyStatusCode)
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionAggregate
   , AuthorityAdmissionCommand (ApplyAuthorityGenesis)
   , initialCleanInstallAuthorityWithRegisteredClients
   , stepAuthorityAdmission
   )
+import Prodbox.Lifecycle.Authority.Admission qualified as Admission
 import Prodbox.Lifecycle.Authority.ClientRegistry
+import Prodbox.Lifecycle.Authority.ClientRegistry qualified as ClientRegistry
+import Prodbox.Lifecycle.Authority.EpochPromotion
+  ( EpochBindingReadback (..)
+  , EpochPromotionAction (CommitFrozenEpoch, ObservePreparedEpochBinding)
+  , EpochPromotionRequest (..)
+  )
+import Prodbox.Lifecycle.Authority.EpochPromotion qualified as Promotion
+import Prodbox.Lifecycle.Authority.EpochTopology
+  ( CutoverSubstrate (CutoverHome)
+  , EpochTopologyBinding (RetainedAuthenticationEpochBinding)
+  , epochTopologyDigest
+  , mkCutoverDigest
+  , mkEpochTopology
+  , requiredEpochTopologyBindings
+  )
 import Prodbox.Lifecycle.Authority.Genesis
   ( AuthorityGenesisCommand (..)
   , BackupReceipt (BackupReceipt)
@@ -168,6 +196,11 @@ import Prodbox.Lifecycle.Authority.Genesis
   , TargetAgentGenerationReceipt (TargetAgentGenerationReceipt)
   , authorityEpochGenesis
   )
+import Prodbox.Lifecycle.Authority.Migration
+  ( MigrationCommand (ApplyPreparedEpochPromotion)
+  , decodeMigrationCommand
+  )
+import Prodbox.Lifecycle.Authority.Migration qualified as Migration
 import Prodbox.Lifecycle.Authority.Submission
   ( ClientId (ClientId)
   , ClientSequence (ClientSequence)
@@ -217,6 +250,7 @@ import Prodbox.Lifecycle.Teardown.Program (cascadeProgramCheckpointOperationCoun
 import Prodbox.Runtime.Role
   ( RuntimeRole (..)
   )
+import ProviderScopeFixture qualified as ScopeFixture
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
   ( assertBool
@@ -551,7 +585,7 @@ replayPureTests =
         requestReplayEntryCount oldProjection @?= 4
         lifecycleAuthorityFirstReconcileRequestMaximum @?= 93
         lifecycleAuthorityReconcileAttemptRequestMaximum @?= 97
-        lifecycleAuthorityReplayCapacity @?= 4110
+        lifecycleAuthorityReplayCapacity @?= 4262
         currentDecisions
           @?= replicate
             (fromIntegral lifecycleAuthorityFirstReconcileRequestMaximum)
@@ -574,13 +608,13 @@ replayPureTests =
               reserveRequestSequence priorLimits requests
             (currentDecisions, currentProjection) =
               reserveRequestSequence currentLimits requests
-        requestCount @?= 4110
+        requestCount @?= 4262
         priorDecisions
           @?= replicate 64 ReplayReservationFresh
-            <> replicate 4046 ReplayReservationCapacityExhausted
+            <> replicate 4198 ReplayReservationCapacityExhausted
         requestReplayEntryCount priorProjection @?= 64
-        currentDecisions @?= replicate 4110 ReplayReservationFresh
-        requestReplayEntryCount currentProjection @?= 4110
+        currentDecisions @?= replicate 4262 ReplayReservationFresh
+        requestReplayEntryCount currentProjection @?= 4262
     , testCase "bounds the complete Authority response profile and its immediate retry" $ do
         let limits = mustRight (mkRequestReplayLimits lifecycleAuthorityReplayCapacity (2 * 1024 * 1024) skew)
             maximumBytes = ReplayBudget.lifecycleAuthorityReplayMaximumEncodedBytes
@@ -598,7 +632,7 @@ replayPureTests =
                 (initialRequestReplayProjection limits)
                 (zip requests responses)
             encoded = mustRight (encodeRequestReplayProjection maximumBytes limits completed)
-        sum (map fst lifecycleAuthorityQualificationResponseProfile) @?= 2055
+        sum (map fst lifecycleAuthorityQualificationResponseProfile) @?= 2131
         length responses @?= fromIntegral lifecycleAuthorityReplayCapacity
         requestReplayEntryCount completed @?= lifecycleAuthorityReplayCapacity
         assertBool
@@ -626,17 +660,17 @@ replayPureTests =
               reserveRequestSequence currentLimits requests
         authorityBackupReconcileAttemptRequestMaximum @?= 9
         authorityBackupQualificationPreludeRequestMaximum @?= 13
-        authorityBackupCascadeCandidateRequestMaximum @?= 649
+        authorityBackupCascadeCandidateRequestMaximum @?= 673
         cascadeProgramCheckpointOperationCount @?= 15
-        authorityBackupCheckpointAttemptRequestMaximum @?= 1650
-        authorityBackupQualificationAttemptRequestMaximum @?= 2392
-        authorityBackupReplayCapacity @?= 4784
+        authorityBackupCheckpointAttemptRequestMaximum @?= 1722
+        authorityBackupQualificationAttemptRequestMaximum @?= 2488
+        authorityBackupReplayCapacity @?= 4976
         priorDecisions
           @?= replicate 1324 ReplayReservationFresh
-            <> replicate 3460 ReplayReservationCapacityExhausted
+            <> replicate 3652 ReplayReservationCapacityExhausted
         requestReplayEntryCount priorProjection @?= 1324
-        currentDecisions @?= replicate 4784 ReplayReservationFresh
-        requestReplayEntryCount currentProjection @?= 4784
+        currentDecisions @?= replicate 4976 ReplayReservationFresh
+        requestReplayEntryCount currentProjection @?= 4976
     , testCase "sizes Provider Worker for the complete qualification cascade and one retry" $ do
         let priorLimits = mustRight (mkRequestReplayLimits 80 64 skew)
             currentLimits =
@@ -651,14 +685,14 @@ replayPureTests =
               reserveRequestSequence priorLimits requests
             (currentDecisions, currentProjection) =
               reserveRequestSequence currentLimits requests
-        providerWorkerQualificationAttemptRequestMaximum @?= 87
-        providerWorkerReplayCapacity @?= 174
+        providerWorkerQualificationAttemptRequestMaximum @?= 91
+        providerWorkerReplayCapacity @?= 182
         priorDecisions
           @?= replicate 80 ReplayReservationFresh
-            <> replicate 94 ReplayReservationCapacityExhausted
+            <> replicate 102 ReplayReservationCapacityExhausted
         requestReplayEntryCount priorProjection @?= 80
-        currentDecisions @?= replicate 174 ReplayReservationFresh
-        requestReplayEntryCount currentProjection @?= 174
+        currentDecisions @?= replicate 182 ReplayReservationFresh
+        requestReplayEntryCount currentProjection @?= 182
     , testCase "bounds the encoded Authority Backup qualification envelope" $ do
         let legacyJournalCapacity =
               2
@@ -774,7 +808,7 @@ replayPureTests =
                   )
               | run <- runs
               ]
-        length (cleanupGraphNodes graph) @?= 77
+        length (cleanupGraphNodes graph) @?= 80
         assertBool
           "the compiled cascade aggregate outgrew its replay-response proof bound"
           (maximum aggregateSizes < aggregateResponseMaximum)
@@ -1748,37 +1782,464 @@ authenticatedRoleInterpreterTests :: TestTree
 authenticatedRoleInterpreterTests =
   testGroup
     "authenticated role interpreter composition"
-    $ [ testCase ("checkpoint observation retains only a fresh-nonce refusal: " <> show request) $ do
-          let limits = mustRight (mkRequestReplayLimits 4 (2 * 1024 * 1024) skew)
-              payload = ByteString.replicate (2 * 1024 * 1024) 97
-              requestBody = LazyByteString.toStrict (encodeControlPlaneRequest request)
+    $ [ testCase "scope observer test sources match the production modules" $ do
+          mapM_
+            ( \relative -> do
+                production <- ByteString.readFile ("src/Prodbox/ControlPlane/" <> relative)
+                fixture <-
+                  ByteString.readFile ("test/control-plane-authenticated-transport/Prodbox/ControlPlane/" <> relative)
+                fixture @?= production
+            )
+            ["ProviderScopeObservation.hs", "ProviderAwsScopeReceipt/Internal.hs"]
+      , testCase "signed preparation commits and replays against the Authority aggregate" $ do
+          state <- newIORef (0 :: Int, importedFrozenEpochAggregate)
+          writes <- newIORef (0 :: Int)
+          let repository =
+                AuthorityAdmissionRepository
+                  { readAuthorityAdmission = do
+                      (revision, aggregate) <- readIORef state
+                      pure (Right (AuthorityAdmissionSnapshot revision aggregate))
+                  , compareAndSwapAuthorityAdmission = \expected next -> do
+                      modifyIORef' writes (+ 1)
+                      atomicModifyIORef' state $ \(revision, aggregate) ->
+                        if revision == expected
+                          then ((revision + 1, next), Right ())
+                          else ((revision, aggregate), Left "concurrent")
+                  }
+              operator = signerForPrincipal CallerOperatorCli
+              limits = mustRight (mkRequestReplayLimits 8 (2 * 1024 * 1024) skew)
+              handler = AuthenticatedRoleHandler transportReadyReadinessSource $ \_ route bytes ->
+                if route /= LifecycleMigrationApply
+                  then pure Nothing
+                  else do
+                    result <- serveAuthorityMigrationApply 65536 repository (LazyByteString.fromStrict bytes)
+                    pure
+                      (Just (migrationEndpointHttpStatus result, TextEncoding.encodeUtf8 (migrationEndpointSummary result)))
+          replay <- newReplayState (initialRequestReplayProjection limits)
+          let wrapped =
+                authenticatedRoleInterpreter
+                  transportBounds
+                  maximumLifetime
+                  ( AuthenticatedRoleProviders
+                      (serverProvidersForRole LifecycleAuthorityRuntime (trustedRequestKeyFromSigner operator))
+                      (pure (Right attemptA))
+                  )
+                  LifecycleAuthorityRuntime
+                  casAttempts
+                  limits
+                  (fakeReplayRepository replay RequestReplayCasApplied)
+                  handler
+          endpoint <- mustRightIO (mkLifecycleAuthorityEndpoint "http://lifecycle-authority:8600")
+          client <-
+            mustRightIO
+              ( controlPlaneClientWithTransport
+                  65536
+                  endpoint
+                  ( \_ _ _ bytes -> do
+                      answer <- interpreterHandle wrapped LifecycleMigrationApply bytes
+                      case answer of
+                        Nothing -> fail "migration handler not installed"
+                        Just (status, responseBody) -> pure (Right (replyStatusCode status, responseBody))
+                  )
+              )
+          let transport nonce =
+                mkAuthenticatedClientTransport
+                  transportBounds
+                  ((clientProvidersFor operator) {provideAuthenticatedClientNonce = pure (Right nonce)})
+                  client
+              submit nonce =
+                AuthorityControl.prepareEpochPromotionWithTransport
+                  (transport nonce)
+                  (epochFixtureEpoch 1)
+                  (epochFixtureEpoch 2)
+                  epochTopologyFixture
+          submit nonceA >>= (@?= Right AuthorityControl.EpochPromotionSubmitted)
+          submit nonceA >>= (@?= Right AuthorityControl.EpochPromotionSubmitted)
+          readIORef writes >>= (@?= 1)
+          submit nonceB >>= (@?= Right AuthorityControl.EpochPromotionAlreadySubmitted)
+          readIORef writes >>= (@?= 1)
+          stale <-
+            AuthorityControl.prepareEpochPromotionWithTransport
+              (transport (nonceForIndex 40))
+              (epochFixtureEpoch 3)
+              (epochFixtureEpoch 4)
+              epochTopologyFixture
+          case stale of
+            Left (AuthorityControl.AuthorityControlRefused _) -> pure ()
+            _ -> assertFailure ("stale preparation was not refused: " <> show stale)
+          readIORef writes >>= (@?= 1)
+          (_, aggregate) <- readIORef state
+          case Admission.authorityAggregateMigration aggregate of
+            Admission.AuthorityMigrationControlled migration -> case Migration.migrationEpochPromotion migration of
+              Just promotion -> do
+                Promotion.epochPromotionPhase promotion @?= Promotion.EpochPrepared
+                Promotion.epochPromotionTargetEpoch promotion @?= 2
+                Promotion.epochPromotionTopology promotion @?= epochTopologyFixture
+              Nothing -> assertFailure "promotion was not retained"
+            Admission.AuthorityCleanInstall -> assertFailure "migration mode was lost"
+      , testCase "verified physical readback records an independently observed binding" $ do
+          expected <-
+            maybe (fail "authentication digest invalid") pure (EpochReadback.authenticationEpochBindingDigest 2)
+          filler <- maybe (fail "fixture digest invalid") pure (mkCutoverDigest (Text.replicate 64 "b"))
+          let substrates = Set.singleton CutoverHome
+              required = requiredEpochTopologyBindings substrates Set.empty Set.empty
+              rows = Map.insert RetainedAuthenticationEpochBinding expected (Map.fromSet (const filler) required)
+          topology <- mustRightIO (mkEpochTopology substrates Set.empty Set.empty rows)
+          state <- newIORef (0 :: Int, importedFrozenEpochAggregate)
+          writes <- newIORef (0 :: Int)
+          physicalReads <- newIORef (0 :: Int)
+          available <- newIORef True
+          clockValue <- newIORef now
+          let repository =
+                AuthorityAdmissionRepository
+                  { readAuthorityAdmission = do
+                      (revision, aggregate) <- readIORef state
+                      pure (Right (AuthorityAdmissionSnapshot revision aggregate))
+                  , compareAndSwapAuthorityAdmission = \revision next -> do
+                      modifyIORef' writes (+ 1)
+                      atomicModifyIORef' state $ \(current, aggregate) ->
+                        if revision == current
+                          then ((current + 1, next), Right ())
+                          else ((current, aggregate), Left "concurrent")
+                  }
+              backend = EpochReadback.EpochAuthenticationBackend $ do
+                modifyIORef' physicalReads (+ 1)
+                online <- readIORef available
+                pure (if online then Right authorityEpochGenesis else Left "unavailable")
+              fallback = AuthenticatedRoleHandler transportReadyReadinessSource $ \_ route bytes ->
+                if route /= LifecycleMigrationApply
+                  then pure Nothing
+                  else do
+                    result <- serveAuthorityMigrationApply 65536 repository (LazyByteString.fromStrict bytes)
+                    pure
+                      (Just (migrationEndpointHttpStatus result, TextEncoding.encodeUtf8 (migrationEndpointSummary result)))
+              targetInterpreter =
+                TargetBinding.TargetEpochBindingInterpreter
+                  (\_ -> pure (Left TargetBinding.TargetBindingAgentUnregistered))
+              domain =
+                EpochReadback.epochBindingReadbackVerifiedHandler
+                  65536
+                  scope
+                  (Right <$> readIORef clockValue)
+                  backend
+                  targetInterpreter
+                  repository
+              operator = signerForPrincipal CallerOperatorCli
+              limits = mustRight (mkRequestReplayLimits 8 (2 * 1024 * 1024) skew)
+          replay <- newReplayState (initialRequestReplayProjection limits)
+          let wrapped =
+                authenticatedRoleInterpreterWithVerifiedHandler
+                  (isPhysicalEpochReadbackForRole 65536)
+                  domain
+                  transportBounds
+                  (mustRight (authorityDurationFromMicros 10000000))
+                  ( AuthenticatedRoleProviders
+                      (serverProvidersForRole LifecycleAuthorityRuntime (trustedRequestKeyFromSigner operator))
+                      (pure (Right attemptA))
+                  )
+                  LifecycleAuthorityRuntime
+                  casAttempts
+                  limits
+                  (fakeReplayRepository replay RequestReplayCasApplied)
+                  fallback
+          endpoint <- mustRightIO (mkLifecycleAuthorityEndpoint "http://lifecycle-authority:8600")
+          client <-
+            mustRightIO
+              ( controlPlaneClientWithTransport
+                  65536
+                  endpoint
+                  ( \_ _ _ bytes -> do
+                      answer <- interpreterHandle wrapped LifecycleMigrationApply bytes
+                      case answer of
+                        Nothing -> fail "migration handler not installed"
+                        Just (status, responseBody) -> pure (Right (replyStatusCode status, responseBody))
+                  )
+              )
+          let transport nonce =
+                mkAuthenticatedClientTransport
+                  transportBounds
+                  ( (clientProvidersFor operator)
+                      { provideAuthenticatedClientNonce = pure (Right nonce)
+                      , provideAuthenticatedClientDeadline = pure (Right (authorityTimeFromMicros 5000000))
+                      }
+                  )
+                  client
+              request =
+                EpochPromotionRequest
+                  2
+                  (epochTopologyDigest topology)
+                  (ObservePreparedEpochBinding (EpochBindingReadback RetainedAuthenticationEpochBinding expected))
+              submit nonce = AuthorityControl.submitEpochPromotionWithTransport (transport nonce) request
+          AuthorityControl.prepareEpochPromotionWithTransport
+            (transport nonceA)
+            (epochFixtureEpoch 1)
+            (epochFixtureEpoch 2)
+            topology
+            >>= (@?= Right AuthorityControl.EpochPromotionSubmitted)
+          let forged =
+                EpochPromotionRequest
+                  2
+                  (epochTopologyDigest topology)
+                  (ObservePreparedEpochBinding (EpochBindingReadback RetainedAuthenticationEpochBinding filler))
+          rejected <- AuthorityControl.submitEpochPromotionWithTransport (transport (nonceForIndex 39)) forged
+          case rejected of
+            Left (AuthorityControl.AuthorityControlRefused _) -> pure ()
+            _ -> assertFailure ("forged physical readback was accepted: " <> show rejected)
+          readIORef physicalReads >>= (@?= 1)
+          readIORef writes >>= (@?= 1)
+          submit nonceB >>= (@?= Right AuthorityControl.EpochPromotionSubmitted)
+          readIORef physicalReads >>= (@?= 2)
+          repeated <- submit nonceB
+          case repeated of
+            Left (AuthorityControl.AuthorityControlRefused _) -> pure ()
+            _ -> assertFailure ("physical readback replay was not refused: " <> show repeated)
+          readIORef physicalReads >>= (@?= 2)
+          submit (nonceForIndex 40) >>= (@?= Right AuthorityControl.EpochPromotionAlreadySubmitted)
+          readIORef physicalReads >>= (@?= 3)
+          readIORef writes >>= (@?= 2)
+          writeIORef available False
+          unavailable <- submit (nonceForIndex 41)
+          case unavailable of
+            Left (AuthorityControl.AuthorityControlHttpStatus 503 _) -> pure ()
+            _ -> assertFailure ("unavailable physical observation was accepted: " <> show unavailable)
+          readIORef physicalReads >>= (@?= 4)
+          readIORef writes >>= (@?= 2)
+          writeIORef available True
+          writeIORef clockValue (authorityTimeFromMicros 5000000)
+          expired <- submit (nonceForIndex 42)
+          expired
+            @?= Left (AuthorityControl.AuthorityControlRefused "epoch-binding-readback/request-deadline-reached")
+          readIORef physicalReads >>= (@?= 4)
+          readIORef writes >>= (@?= 2)
+          (_, aggregate) <- readIORef state
+          case Admission.authorityAggregateMigration aggregate of
+            Admission.AuthorityMigrationControlled migration ->
+              case Migration.decideMigration
+                migration
+                ( ApplyPreparedEpochPromotion
+                    (EpochPromotionRequest 2 (epochTopologyDigest topology) CommitFrozenEpoch)
+                ) of
+                Migration.MigrationRefused
+                  (Migration.EpochPromotionProtocolRefused (Promotion.PromotionPreparedBindingsMissing missing)) ->
+                    assertBool
+                      "observed binding absent from retained readbacks"
+                      (RetainedAuthenticationEpochBinding `Set.notMember` missing)
+                other -> assertFailure ("unexpected commit decision: " <> show other)
+            Admission.AuthorityCleanInstall -> assertFailure "migration mode was lost"
+      , testCase "promotion client signs the exact migration route and preserves exact replay" $ do
+          digest <- maybe (fail "fixture digest invalid") pure (mkCutoverDigest (Text.replicate 64 "a"))
+          let operator = signerForPrincipal CallerOperatorCli
+              request = EpochPromotionRequest 2 digest CommitFrozenEpoch
+              limits = mustRight (mkRequestReplayLimits 8 (2 * 1024 * 1024) skew)
+          calls <- newIORef (0 :: Int)
+          let handler = AuthenticatedRoleHandler transportReadyReadinessSource $ \_ route bytes ->
+                if route /= LifecycleMigrationApply
+                  then pure Nothing
+                  else do
+                    decodeMigrationCommand 4096 (LazyByteString.fromStrict bytes)
+                      @?= Right (ApplyPreparedEpochPromotion request)
+                    n <- atomicModifyIORef' calls (\value -> (value + 1, value))
+                    pure (Just (ReplyOk, if n == 0 then "migration-accepted" else "migration-already-applied"))
+          replay <- newReplayState (initialRequestReplayProjection limits)
+          let wrapped =
+                authenticatedRoleInterpreter
+                  transportBounds
+                  maximumLifetime
+                  ( AuthenticatedRoleProviders
+                      (serverProvidersForRole LifecycleAuthorityRuntime (trustedRequestKeyFromSigner operator))
+                      (pure (Right attemptA))
+                  )
+                  LifecycleAuthorityRuntime
+                  casAttempts
+                  limits
+                  (fakeReplayRepository replay RequestReplayCasApplied)
+                  handler
+          endpoint <- mustRightIO (mkLifecycleAuthorityEndpoint "http://lifecycle-authority:8600")
+          client <-
+            mustRightIO
+              ( controlPlaneClientWithTransport
+                  4096
+                  endpoint
+                  ( \_ _ _ bytes -> do
+                      answer <- interpreterHandle wrapped LifecycleMigrationApply bytes
+                      case answer of
+                        Nothing -> fail "migration handler not installed"
+                        Just (status, responseBody) -> pure (Right (replyStatusCode status, responseBody))
+                  )
+              )
+          let transport nonce =
+                mkAuthenticatedClientTransport
+                  transportBounds
+                  ((clientProvidersFor operator) {provideAuthenticatedClientNonce = pure (Right nonce)})
+                  client
+          first <- AuthorityControl.submitEpochPromotionWithTransport (transport nonceA) request
+          first @?= Right AuthorityControl.EpochPromotionSubmitted
+          repeated <- AuthorityControl.submitEpochPromotionWithTransport (transport nonceA) request
+          repeated @?= Right AuthorityControl.EpochPromotionSubmitted
+          readIORef calls >>= (@?= 1)
+          fresh <- AuthorityControl.submitEpochPromotionWithTransport (transport nonceB) request
+          fresh @?= Right AuthorityControl.EpochPromotionAlreadySubmitted
+          readIORef calls >>= (@?= 2)
+      , testCase "scope client and Authority handler bind signed reads to the retained operation" $ do
+          let (operation, aggregate, receipt) = ScopeFixture.completedScope
+              key = mustRight (ClientRegistry.mkClientSubmissionKey "provider-aws-scope/fixture")
+              operator = signerForPrincipal CallerOperatorCli
+              limits = mustRight (mkRequestReplayLimits 8 ReplayBudget.providerScopeObservationMaximumBytes skew)
+          scopeReads <- newIORef (0 :: Int)
+          writes <- newIORef (0 :: Int)
+          available <- newIORef True
+          let repository =
+                AuthorityAdmissionRepository
+                  { readAuthorityAdmission =
+                      do
+                        modifyIORef' scopeReads (+ 1)
+                        online <- readIORef available
+                        pure
+                          (if online then Right (AuthorityAdmissionSnapshot () aggregate) else Left "authority unavailable")
+                  , compareAndSwapAuthorityAdmission = \_ _ -> modifyIORef' writes (+ 1) >> pure (Left "unexpected write")
+                  }
+              fallback = AuthenticatedRoleHandler transportReadyReadinessSource (\_ _ _ -> pure Nothing)
+              handler = ScopeObservation.authorityProviderScopeObservationAuthenticatedHandler repository fallback
+          replay <- newReplayState (initialRequestReplayProjection limits)
+          let wrapped =
+                authenticatedRoleInterpreter
+                  transportBounds
+                  maximumLifetime
+                  ( AuthenticatedRoleProviders
+                      (serverProvidersForRole LifecycleAuthorityRuntime (trustedRequestKeyFromSigner operator))
+                      (pure (Right attemptA))
+                  )
+                  LifecycleAuthorityRuntime
+                  casAttempts
+                  limits
+                  (fakeReplayRepository replay RequestReplayCasApplied)
+                  handler
+          tamper <- newIORef (0 :: Int)
+          endpoint <- mustRightIO (mkLifecycleAuthorityEndpoint "http://lifecycle-authority:8600")
+          client <-
+            mustRightIO
+              ( controlPlaneClientWithTransport
+                  4096
+                  endpoint
+                  ( \_ _ _ bytes -> do
+                      answer <- interpreterHandle wrapped LifecycleProviderScopeObserve bytes
+                      case answer of
+                        Nothing -> fail "scope handler not installed"
+                        Just (status, answerBody) -> do
+                          mode <- readIORef tamper
+                          let altered = case mode of
+                                1 ->
+                                  LazyByteString.toStrict
+                                    ( encodeControlPlaneResponse
+                                        (ScopeObservation.ProviderScopeObserved expectedAcceptedOperation receipt)
+                                    )
+                                2 ->
+                                  LazyByteString.toStrict
+                                    (encodeControlPlaneResponse (ScopeObservation.ProviderScopeObserved operation "bad-receipt"))
+                                _ -> answerBody
+                          pure (Right (replyStatusCode status, altered))
+                  )
+              )
+          let transport nonce =
+                mkAuthenticatedClientTransport
+                  transportBounds
+                  ((clientProvidersFor operator) {provideAuthenticatedClientNonce = pure (Right nonce)})
+                  client
+          first <- ScopeObservation.observeAuthorityProviderAwsScope (transport nonceA) key operation
+          case first of
+            Right proof ->
+              ScopeReceipt.verifiedAuthorityProviderAwsScopeAccountId proof
+                @?= AwsAccountId ScopeFixture.fixtureAccount
+            Left failure -> assertFailure (show failure)
+          duplicate <- ScopeObservation.observeAuthorityProviderAwsScope (transport nonceA) key operation
+          either (const (pure ())) (const (assertFailure "replayed nonce returned a scope proof")) duplicate
+          fresh <- ScopeObservation.observeAuthorityProviderAwsScope (transport nonceB) key operation
+          either (assertFailure . show) (const (pure ())) fresh
+          writeIORef available False
+          unavailable <-
+            ScopeObservation.observeAuthorityProviderAwsScope (transport (nonceForIndex 10)) key operation
+          either
+            (const (pure ()))
+            (const (assertFailure "unavailable Authority returned an earlier scope proof"))
+            unavailable
+          writeIORef available True
+          recovered <-
+            ScopeObservation.observeAuthorityProviderAwsScope (transport (nonceForIndex 11)) key operation
+          either (assertFailure . show) (const (pure ())) recovered
+          wrong <-
+            ScopeObservation.observeAuthorityProviderAwsScope
+              (transport (nonceForIndex 7))
+              (mustRight (ClientRegistry.mkClientSubmissionKey "other"))
+              operation
+          either (const (pure ())) (const (assertFailure "foreign key returned a scope proof")) wrong
+          writeIORef tamper 1
+          mismatch <-
+            ScopeObservation.observeAuthorityProviderAwsScope (transport (nonceForIndex 8)) key operation
+          case mismatch of
+            Left ScopeObservation.ProviderScopeObservationIdentityMismatch -> pure ()
+            _ -> assertFailure "mismatched operation was not refused"
+          writeIORef tamper 2
+          forged <-
+            ScopeObservation.observeAuthorityProviderAwsScope (transport (nonceForIndex 9)) key operation
+          case forged of
+            Left (ScopeObservation.ProviderScopeObservationProofInvalid _) -> pure ()
+            _ -> assertFailure "invalid receipt was not refused"
+          readIORef scopeReads >>= (@?= 7)
+          readIORef writes >>= (@?= 0)
+      , testCase "Provider scope observation requires a fresh nonce for every read" $ do
+          let limits = mustRight (mkRequestReplayLimits 4 ReplayBudget.providerScopeObservationMaximumBytes skew)
           state <- newReplayState (initialRequestReplayProjection limits)
           effects <- newIORef (0 :: Int)
-          frame <- captureLifecycleFrame clientProviders LifecyclePulumiCheckpointRoute requestBody
+          frame <- captureLifecycleFrame clientProviders LifecycleProviderScopeObserveRoute body
           freshFrame <-
             captureLifecycleFrame
               (clientProviders {provideAuthenticatedClientNonce = pure (Right nonceB)})
-              LifecyclePulumiCheckpointRoute
-              requestBody
+              LifecycleProviderScopeObserveRoute
+              body
           let inner =
                 RoleInterpreter
                   transportReadyReadinessSource
-                  (\_ _ -> modifyIORef' effects (+ 1) >> pure (Just (ReplyOk, payload)))
+                  (\_ _ -> modifyIORef' effects (+ 1) >> pure (Just (ReplyOk, "scope-receipt")))
               wrapped = authorityReadInterpreter limits state inner
-          first <- interpreterHandle wrapped LifecyclePulumiCheckpoint (LazyByteString.toStrict frame)
-          first @?= Just (ReplyOk, payload)
-          duplicate <- interpreterHandle wrapped LifecyclePulumiCheckpoint (LazyByteString.toStrict frame)
-          duplicate @?= Just (ReplyConflict, "authenticated-read-replay-requires-fresh-nonce\n")
-          readIORef effects >>= (@?= 1)
-          fresh <- interpreterHandle wrapped LifecyclePulumiCheckpoint (LazyByteString.toStrict freshFrame)
-          fresh @?= Just (ReplyOk, payload)
+          interpreterHandle wrapped LifecycleProviderScopeObserve (LazyByteString.toStrict frame)
+            >>= (@?= Just (ReplyOk, "scope-receipt"))
+          interpreterHandle wrapped LifecycleProviderScopeObserve (LazyByteString.toStrict frame)
+            >>= (@?= Just (ReplyConflict, "authenticated-read-replay-requires-fresh-nonce\n"))
+          interpreterHandle wrapped LifecycleProviderScopeObserve (LazyByteString.toStrict freshFrame)
+            >>= (@?= Just (ReplyOk, "scope-receipt"))
           readIORef effects >>= (@?= 2)
-          projection <- fakeReplayProjection <$> readIORef state
-          assertBool
-            "checkpoint payloads must not enter retained replay"
-            (ByteString.length (mustRight (encodeRequestReplayProjection 1024 limits projection)) < 1024)
-      | request <- [ObservePulumiCheckpoint "aws-eks", ObservePulumiCheckpointPair "aws-eks"]
       ]
+      ++ [ testCase ("checkpoint observation retains only a fresh-nonce refusal: " <> show request) $ do
+             let limits = mustRight (mkRequestReplayLimits 4 (2 * 1024 * 1024) skew)
+                 payload = ByteString.replicate (2 * 1024 * 1024) 97
+                 requestBody = LazyByteString.toStrict (encodeControlPlaneRequest request)
+             state <- newReplayState (initialRequestReplayProjection limits)
+             effects <- newIORef (0 :: Int)
+             frame <- captureLifecycleFrame clientProviders LifecyclePulumiCheckpointRoute requestBody
+             freshFrame <-
+               captureLifecycleFrame
+                 (clientProviders {provideAuthenticatedClientNonce = pure (Right nonceB)})
+                 LifecyclePulumiCheckpointRoute
+                 requestBody
+             let inner =
+                   RoleInterpreter
+                     transportReadyReadinessSource
+                     (\_ _ -> modifyIORef' effects (+ 1) >> pure (Just (ReplyOk, payload)))
+                 wrapped = authorityReadInterpreter limits state inner
+             first <- interpreterHandle wrapped LifecyclePulumiCheckpoint (LazyByteString.toStrict frame)
+             first @?= Just (ReplyOk, payload)
+             duplicate <- interpreterHandle wrapped LifecyclePulumiCheckpoint (LazyByteString.toStrict frame)
+             duplicate @?= Just (ReplyConflict, "authenticated-read-replay-requires-fresh-nonce\n")
+             readIORef effects >>= (@?= 1)
+             fresh <- interpreterHandle wrapped LifecyclePulumiCheckpoint (LazyByteString.toStrict freshFrame)
+             fresh @?= Just (ReplyOk, payload)
+             readIORef effects >>= (@?= 2)
+             projection <- fakeReplayProjection <$> readIORef state
+             assertBool
+               "checkpoint payloads must not enter retained replay"
+               (ByteString.length (mustRight (encodeRequestReplayProjection 1024 limits projection)) < 1024)
+         | request <- [ObservePulumiCheckpoint "aws-eks", ObservePulumiCheckpointPair "aws-eks"]
+         ]
       ++ [ testCase "epoch promotion observation retains only a fresh-nonce refusal" $ do
              let limits = mustRight (mkRequestReplayLimits 4 ReplayBudget.authorityMetadataResponseMaximumBytes skew)
                  payload = ByteString.replicate ReplayBudget.authorityMetadataResponseMaximumBytes 99
@@ -1862,6 +2323,11 @@ authenticatedRoleInterpreterTests =
                ( LifecycleOperationSubmitRoute
                , LifecycleOperationSubmit
                , ReplayBudget.checkpointMetadataResponseMaximumBytes
+               )
+             ,
+               ( LifecycleProviderScopeObserveRoute
+               , LifecycleProviderScopeObserve
+               , ReplayBudget.providerScopeObservationMaximumBytes
                )
              ,
                ( LifecyclePulumiCheckpointRoute

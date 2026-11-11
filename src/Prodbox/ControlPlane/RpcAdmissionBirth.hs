@@ -532,7 +532,8 @@ publicDigest = Text.pack . concatMap hex . BS.unpack . SHA256.hash
  where
   hex byte = let rendered = showHex byte "" in if length rendered == 1 then '0' : rendered else rendered
 lowerHex :: Char -> Bool
-lowerHex value = value `elem` (['0' .. '9'] <> ['a' .. 'f'])
+lowerHex value =
+  (value >= '0' && value <= '9') || (value >= 'a' && value <= 'f')
 
 data DescriptorWire = DescriptorWire !Text !Natural !Text !Natural !Natural !Text !Text !Natural !Natural
   deriving stock (Generic)

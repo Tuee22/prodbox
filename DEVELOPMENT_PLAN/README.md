@@ -29,16 +29,10902 @@ dependency licenses the deviation ([Standard N.2](development_plan_standards.md#
 | 2 | `6.7` | 6 | Parked | — |
 | 3 | `7.47` | 7 | Parked | — |
 
-**Session paused at the operator’s request, 2026-11-01 UTC.**
-The development goal is paused. Sprint `6.5` remains the first open sprint; `6.7` and `7.47` stay
-parked. Do not begin another development producer until the operator resumes. The separate
+**Live-campaign admission attempt, 2026-11-09.** The operator asked for the Sprint `6.5` live
+campaign to start. Pre-flight stopped before any AWS or cluster mutation. Free space was
+**43.77 GiB**, below the **45 GiB** floor, so **26** inactive fixture executables were compressed
+with the 2026-11-08 routine (each archive decompressed and hash-checked before its original was
+removed; one restored as a control); net recovery **2.27 GiB**, closing observation **45.90 GiB**.
+Manifest `.build/sprint-6.5/resume-20261102/evidence-compressed-fixtures-live-prep-20261109/manifest.jsonl`;
+restore with `python3 .build/sprint-6.5/resume-20261102/restore-fixture-live-prep-20261109.py <path>`.
+The operator binary matches the current source (no newer input). The campaign is **not admitted**:
+the host still reports 8 CPUs and about 15 GiB, below the unchanged complete workload minimum of
+**9,045 milliCPU / 17,482 MiB** that the harness fit requires (the 2026-11-02 bootstrap dry-run
+refused it), `.data/` is absent, the generated `.build/prodbox.dhall` carries an empty
+`cluster_topology machine_id`, and the 2026-11-01 supported destroys left **no AWS absence**
+receipt. No limit, replica count or reserve floor was lowered to force admission and no live
+attempt was spent. Unblocking needs a host with the required capacity (or an operator decision to
+change the declared plan), after which the AWS residue must be audited first. Sprints `6.5`, `6.7`
+and `7.47` keep their queue states; nothing here establishes qualification.
+
+**Sprint `7.47` slices 5a-5b, 2026-11-09.** The `aws-eks` Provider configuration gained an append-only,
+zone-bearing form and the EKS create refuses before minting an intent unless a subzone converged. The
+cert-manager DNS01 IRSA role now exists as its own registered family
+(`aws-eks-cert-manager-role-family`) after a first attempt that widened the frozen IAM-role-family coordinate
+was withdrawn for breaking 26 frozen cleanup-program cases. Cascade programs grow by three nodes and the
+replay envelopes widen accordingly (detail in the `7.47` block). Remaining: the ServiceAccount annotation and
+IRSA solver, retirement of the AWS-run materializer, and live proof. `7.47` stays `Parked`, `6.5` stays
+`Next`; nothing here establishes qualification.
+
+**Verified local evidence compaction, 2026-11-08.** To recover local space without discarding
+validation evidence, 21 inactive fixture executables and 13 inactive schedule-test executables were
+compressed. Each archive was decompressed and hash-checked before its original was removed; one
+original from each set was then restored and hash-verified as a control. Net recovery after those
+restores is **4,179,748,609 bytes** (about **3.89 GiB**); the closing observation was
+**48,334,536,704 bytes** free (about **45.02 GiB**), with almost no headroom. Manifests are in
+`.build/sprint-6.5/resume-20261102/evidence-compressed-{fixtures,schedules}-continuation-20261108/`.
+For an absent path use the corresponding `restore-fixture-continuation-20261108.py` or
+`restore-schedules-continuation-20261108.py` under the same evidence root; each refuses an existing
+path and verifies the archive hash. The stopped `agentctl` Docker containers were left intact.
+This time-specific disk observation does not satisfy the independent CPU/memory admission, replace
+the live campaign protocol or establish qualification; recheck it before any image or live work.
+After the later coordinator and response-integrity validations, a fresh read reports
+**48,199,782,400 bytes** free, below the **45 GiB** image/live floor.
+
+**Target signing provenance review, 2026-11-08.** `standingControlPlaneAuthenticationPolicy`
+grants the Target runtime access to the role-named Transit signing path, and
+`vaultNativeRpcSigningInterpreter` identifies its origin by local scope, Vault incarnation and
+role key. The Agent chart sets one service account and declares rollout metadata on the Pod
+template; its single-replica `Recreate` policy does not make a role key an independently attested
+Pod key. Consequently the v2 signed rollout claim cannot establish which Pod held the signing
+capability or whether a replacement adopted an epoch. Before a physical Agent-controller binding
+can be admitted, its design must independently bind the exact live instance and owner chain to a
+freshly authenticated credential or key, fence prior instances, and observe the phase-specific epoch
+under the original deadline. The exact issuance, revocation and capacity protocol remains open;
+this source review does not grant a new signing or Kubernetes permission.
+
+**Staged-promotion submission client, 2026-11-08.** The Authority control client now has a typed
+authenticated migration-route submission for `ApplyPreparedEpochPromotion`. It accepts only the
+endpoint's explicit accepted/already-applied acknowledgements, preserves non-success status and
+rejects malformed or oversized text. The acknowledgement is not a physical readback or proof of
+current admission: callers must re-observe. The warning-clean operator/unit build and **9** focused
+epoch-observation tests pass with unchanged inputs and terminal receipts in
+`epoch-promotion-client-build-1.json` and `epoch-promotion-client-unit-1.json`; operator SHA-256 is
+`59d410b7231e4e929bda47ee91c69103032067985d023e7fdb3ed5910a9d4b6e`. A signed in-memory test
+now exercises the real client and authenticated interpreter, verifies the exact migration route and
+command, confirms an identical nonce replays the prior acknowledgment without rerunning the
+handler, and confirms a fresh nonce reaches the handler. The authenticated suite passes **925**
+tests in `epoch-promotion-client-signed-3.json`. Its first build caught a shadowed test name; the
+second run correctly exposed the test's mistaken expectation that mutation replay refuses instead
+of returning the cached response. `epoch-promotion-client-canonical-gate-1.json` was stopped before
+the test change and has no terminal producer receipt; it is not a gate result. The fresh canonical
+gate `epoch-promotion-client-canonical-gate-2.json` passed **9,787 + 27 + 35 + 925** tests, with
+unchanged inputs and both terminal receipts (1,157.04 seconds). The test uses an in-memory handler,
+not the physical readback endpoint. The
+staged coordinator, physical adapters and live qualification remain open; this change does not
+activate the replacement.
+
+The client now also has a signed physical-readback replay control using the runtime's read policy:
+the same nonce returns the fresh-nonce refusal without re-entering the handler, and a fresh nonce
+re-enters it. All **926** authenticated transport tests pass with unchanged inputs in
+`epoch-promotion-client-physical-signed-1.json`. This is an in-memory handler and does not prove
+any physical binding; the preceding canonical gate predates this test change.
+
+The same typed client now submits `PrepareReplacementEpoch` with a predecessor, target and complete
+topology through the authenticated migration route. A signed in-memory handler checks the exact
+decoded command; the operator builds warning-clean and all **927** authenticated transport tests
+pass with unchanged inputs and terminal receipts in `epoch-promotion-prepare-build-1.json` and
+`epoch-promotion-prepare-signed-1.json`. The operator SHA-256 is
+`29e83f6caf26325fe7ecb859c706c3f8435986082f9e3a8fd83f4e9392a05719`. This is a submission
+acknowledgment, not preparation or readback evidence. The canonical gate
+`epoch-promotion-prepare-canonical-gate-1.json` passed **9,787 + 27 + 35 + 927** tests, with
+unchanged inputs and both terminal receipts (1,166.70 seconds).
+
+The maintained signed suite now exercises preparation through the actual migration endpoint and a
+CAS-backed in-memory Authority aggregate: one write is retained, an identical nonce replays, a
+fresh retry returns already-applied, and a stale preparation is refused. It also exercises the
+actual context-free physical-readback endpoint with a simulated authentication-epoch backend:
+the exact binding is recorded, forged data and nonce replay refuse, a fresh request re-observes,
+and an unavailable backend cannot record a write. All **927** transport tests pass with unchanged
+inputs in `epoch-promotion-aggregate-supported-1.json`. The draft controls and initial warning
+failure are retained in `epoch-promotion-aggregate-draft-run-{1,2}.json` and
+`epoch-promotion-physical-aggregate-draft-run-{1,2,3,4}.json`. These do not exercise the verified
+runtime handler, Vault, physical promotion or a live deployment. The canonical gate above predates
+the maintained test changes; the coordinator, physical adapters and live qualification remain open.
+
+The maintained physical-readback test now uses the verified runtime handler with simulated
+authentication and Target backends. It additionally confirms that expiry refuses before another
+backend read or aggregate write; all **927** transport tests pass with unchanged inputs in
+`epoch-promotion-verified-supported-1.json`. The isolated verified controls are in
+`epoch-promotion-verified-aggregate-draft-run-{1,2}.json`. The preceding full gate
+`epoch-promotion-aggregate-canonical-gate-1.json` stopped at formatting before tests; the pinned
+formatter required a second pass. The fresh `epoch-promotion-verified-canonical-gate-1.json` passed
+**9,787 + 27 + 35 + 927** tests, with unchanged inputs and both terminal receipts (1,175.54 seconds).
+The verified-handler test still uses simulated backends and makes no Vault or live qualification claim.
+
+**Maintained staged coordinator, 2026-11-08.** The phase coordinator and its one-pass traffic
+schedule are now maintained under `Prodbox.Lifecycle.Authority`. The coordinator checks the exact
+predecessor, target, topology, retained epoch and phase around its abstract physical and submission
+effects; it re-observes admission and supports pre-commit retirement. Its maintained in-memory
+control exercises completion, a lost commit reply and frozen-phase resume, retirement, post-commit
+rollback refusal, epoch drift, expiry, a phase race and schedule agreement. The warning-clean build
+and focused control passed with terminal receipts and unchanged inputs in
+`epoch-coordinator-supported-build-1.json` and `epoch-coordinator-supported-unit-1.json`; focused
+HLint and `prodbox dev lint files` also pass. Canonical gate
+`epoch-coordinator-supported-canonical-1.json` passed **9,797 + 27 + 35 + 927** tests with
+unchanged inputs and both terminal receipts (1,170.10 seconds). Physical callbacks
+are simulated: their fencing, exact readback, cancellation and idempotence remain obligations,
+as do a real transport, complete resource admission and runtime wiring. The one-pass schedule is
+not a full resource bound. No cutover has been activated.
+
+**Snapshot-bound Authority response trust, 2026-11-09.** The opt-in signed peer and promotion
+readers can now select the active Authority signing key for an exact role and origin from an
+independently supplied retained snapshot. Each successful read requires an independently obtained
+closing snapshot with the same revision and selected binding, and returns the original snapshot for
+a later fenced use. The fixture exercises both real signed clients, wrong-role and retired-key
+refusals, a changed revision, unavailable closing read and refusal before send for a wrong origin.
+The warning-clean build and **115** focused tests passed with unchanged inputs and terminal receipts
+in `authority-snapshot-trust-build-2.json` and `authority-snapshot-trust-unit-2.json`; build 1 had a
+test-only revision-type warning. Its interim unit run used the preceding executable after a source
+annotation change and is not source-matched evidence. Focused HLint and policy lint pass. Canonical
+gate `authority-snapshot-trust-canonical-1.json` passed **9,798 + 27 + 35 + 927** tests with
+unchanged inputs and both terminal receipts (1,169.76 seconds). This helper cannot authenticate its own repository or native origin,
+prevent a change after the closing read, provide an initial trust anchor, enforce the original
+deadline or fund the operation. Runtime integration and a final CAS or other fenced protocol remain
+required; existing production responses remain unsigned.
+
+**Manifest trust-source review, 2026-11-09.** Host Lifecycle Authority authentication obtains the
+manifest public key from its configured Vault session and computes a digest for the existing
+decommission client; that observation is not an independently provisioned bootstrap pin. The
+source comment and unavailable-signer diagnostic now say so without changing the decommission
+protocol. The Tier-0 RPC birth publication permits only legacy-to-registered publication and
+refuses pin replacement, so adding durable manifest trust needs an explicitly fenced provisioning,
+rotation and revocation design rather than treating either existing value as that trust anchor.
+The operator build passed with unchanged inputs and terminal receipts in
+`manifest-trust-source-build-1.json`. This review does not establish Vault transport provenance,
+change runtime bootstrap, or close Sprint `6.5`.
+
+**Staged promotion read, 2026-11-09.** Promotion observations now have a distinct signed request,
+while both request forms remain read-only and use the same aggregate observation. An authenticated
+local handler composition serves both forms without a write; signed response substitution and replay
+remain refused. Tests pin the prior promotion and peer request bytes and classify the new promotion
+request as a fresh-nonce read. The warning-clean build and **117 + 9** focused tests passed with
+unchanged inputs and terminal receipts in `epoch-promotion-wire-negotiation-build-2.json` and
+`epoch-promotion-wire-negotiation-unit-{3,4}.json`; focused HLint passed. The canonical gate is
+pending. Runtime dispatch, independent trust provisioning, rotation, admission and live rollout
+remain open.
+
+**Staged Authority read formats, 2026-11-09.** Signed peer, birth-descriptor and birth-registry
+requests now have distinct bodies from their unsigned predecessors, so a staged server can select
+the correct response format without guessing from the caller. The signed allowlist accepts only
+the new exact bodies; birth read contexts and replay classification recognize both forms. A local
+handler composition serves old and new peer/descriptor/registry reads in one registration and
+resume, while the signed clients continue to reject forged, truncated and replayed responses.
+The warning-clean build and **116 + 218 + 25** focused tests passed with unchanged inputs and
+terminal receipts in `authority-read-wire-negotiation-build-1.json` and
+`authority-read-wire-negotiation-unit-{1,2,3}.json`; focused HLint passes. Canonical gate
+`authority-read-wire-negotiation-canonical-1.json` passed **9,803 + 27 + 35 + 927** tests in
+1,160 seconds, with unchanged inputs and both terminal receipts. This is fixture composition, not
+runtime dispatch or deployment evidence; independent trust provisioning and rotation, admission
+and rollout remain open.
+
+**Verified birth coordinator composition, 2026-11-09.** The opt-in coordinator now verifies the
+peer refresh before birth-command submissions as well as before descriptor reads. This fixes a
+compatibility gap in which a consistently signed peer handler could not serve the coordinator's
+previous unsigned submission refresh. A local authenticated fixture now drives actual preparation,
+Tier-0 CAS/readback, rollout simulation, commitment and idempotent resume through the verified
+coordinator and manifest-backed handlers; resume does not repeat rollout. The warning-clean build
+and **218 + 25** focused tests pass with unchanged inputs and terminal receipts in
+`rpc-birth-signed-coordinator-build-2.json` and `rpc-birth-signed-coordinator-unit-{1,2}.json`;
+the first build had a test-only shadowing warning. Focused HLint and file policy lint pass. Canonical
+gate `rpc-birth-signed-coordinator-canonical-1.json` passed **9,803 + 27 + 35 + 927** tests in
+1,159 seconds, with unchanged inputs and both terminal receipts. The fixture supplies its signing key, simulates rollout, and does not
+establish independent trust provisioning, rotation, revocation, complete resource admission or
+deployed compatibility. Production remains unchanged and Sprint `6.5` remains active.
+
+**Signed birth descriptor observations, 2026-11-09.** An opt-in descriptor handler and client now
+bind the descriptor response to its authenticated request and an independently supplied Authority
+key. An opt-in coordinator uses verified peer and descriptor observations before source publication.
+The actual manifest-backed handler and client accept a matching descriptor and refuse wrong keys,
+truncation and replay; a substituted initial descriptor makes the coordinator refuse before its
+publication effects. The warning-clean build and **25 + 217** focused tests passed with unchanged
+inputs and terminal receipts in `rpc-birth-signed-descriptor-build-3.json` and
+`rpc-birth-signed-descriptor-unit-{3,4}.json`; focused HLint passed. Canonical gates 1 and 2 stopped
+at formatting before tests: the shell formatter differs from the repository-pinned formatter. The
+pinned formatter checks cleanly. Canonical gate `rpc-birth-signed-descriptor-canonical-3.json`
+passed **9,802 + 27 + 35 + 927** tests in 1,306 seconds, with unchanged inputs and both terminal
+receipts.
+The fixture supplies its own trust key. Production dispatch remains unchanged, and independent
+pin provisioning, rotation, revocation, complete capacity/deadline admission and deployed
+compatibility remain open. This does not close Sprint `6.5`.
+
+**Birth publication trust boundary, 2026-11-09.** Source tracing shows that the registration
+coordinator constructs its Tier-0 descriptor pin from `requestRpcBirthDescriptorWithin` after
+observing preparation. That request refreshes peer context and decodes the descriptor response
+without the opt-in response verifier; authenticating the later registry response alone therefore
+does not authenticate the descriptor used for first publication. The chart renderer independently
+reconstructs the same descriptor pin for rollout. The existing signed-observation allowlist covers
+peer, promotion, registry and now descriptor reads through the opt-in handler. A complete cutover must establish
+the Authority trust anchor before first publication, authenticate the exact peer and descriptor
+observations used by the coordinator, and retain the same binding through durable source readback
+and runtime rollout, including recovery and rotation. This is a source-path finding, not a tested
+interception or proof that any live registration was altered. It does not authorize promoting the
+existing opt-in registry client as a complete production solution.
+
+**Pinned manifest bootstrap composition, 2026-11-09.** A local fixture now joins the opt-in pinned
+bootstrap client to the actual manifest-backed peer and registry handlers and native birth
+repository. It accepts the genuine registry, refuses a truncated response, a prior signed response
+replayed against a fresh request and a manifest generation change during signing, and confirms the
+retained birth phase remains prepared. The warning-clean build and **25 + 217** focused tests pass
+with unchanged inputs and both terminal receipts in `rpc-birth-manifest-composition-build-1.json`
+and `rpc-birth-manifest-composition-unit-{1,2}.json`; focused HLint and policy lint pass. Canonical
+gate `rpc-birth-manifest-composition-canonical-1.json` passed **9,802 + 27 + 35 + 927** tests in
+1,138 seconds, with unchanged inputs and both terminal receipts. The fixture supplies its own pin and signing key and is not deployed
+evidence. Pin provisioning and rotation, full resource/deadline admission, replay capacity and
+runtime compatibility remain required before production can use the path.
+
+**Pinned manifest-key bootstrap foundation, 2026-11-09.** An opt-in bootstrap now accepts an
+independently provisioned Authority manifest public-key digest, verifies the native public key and
+generation against that pin before the signed peer/registry exchange, and refuses if the key or
+generation changes or becomes unavailable at the closing read. Generation zero and values above
+`Word64` are refused. Matching opt-in server adapters use the manifest signing interface without
+exposing a generic signing capability; they check the pinned public key around each signature and
+again before returning. Local controls cover both actual read handlers, wrong pins, changed
+generation, unavailable reads and wrong-route no-effect behavior. The warning-clean build and
+**24 + 217 + 116** focused tests passed with unchanged inputs and terminal receipts in
+`rpc-birth-manifest-pin-build-2.json` and `rpc-birth-manifest-pin-unit-{1,2,3}.json`; build 1 had
+a test-only shadowing warning. Focused HLint and policy lint pass. Canonical gate
+`rpc-birth-manifest-pin-canonical-1.json` passed **9,801 + 27 + 35 + 927** tests with unchanged
+inputs and both terminal receipts (1,160.61 seconds).
+The pin is supplied by the caller: its durable provisioning, authenticated origin, rotation and
+revocation protocol, complete deadline/resource/replay admission and live compatibility are not
+implemented by this foundation. The local composition above is not a deployed end-to-end exchange.
+Existing production bootstrap remains unsigned.
+
+**Opt-in signed registry bootstrap, 2026-11-09.** The registered-caller bootstrap now has an
+opt-in path that retains its native origin/public-key checks and pinned-seed checks while requiring
+both peer and registry responses to verify under an independently supplied Authority key. The
+registry signer is limited to the exact authenticated Operator/Harness registry request and binds
+the response to the signed request and nonce. A local fixture accepts a genuine exchange and
+refuses the earlier substituted registry, a forged registry signed by a different Authority key,
+a replayed signed registry and an unsigned peer response. A separate test exercises the actual
+signed registry handler against the in-memory birth repository and refuses a descriptor request.
+The warning-clean build and **217 + 24 + 115** focused tests passed with unchanged inputs and terminal
+receipts in `rpc-birth-signed-bootstrap-build-5.json` and
+`rpc-birth-signed-bootstrap-unit-{7,8,9}.json`. The first focused attempt stopped at a test-only
+route-trust limit above the hard maximum; the fixture was corrected. Focused HLint and policy lint
+pass. Canonical gate `rpc-birth-signed-bootstrap-canonical-1` was stopped without a producer
+receipt after review found that the earlier signed observation handler intercepted registry reads;
+the corrected dispatch guard and its regression control pass the focused suites. Replacement gate
+`rpc-birth-signed-bootstrap-canonical-2.json` passed **9,800 + 27 + 35 + 927** tests with unchanged
+inputs and both terminal receipts (1,158.99 seconds). The key must come from an independently
+authenticated source; the existing Vault key-read path itself needs transport/provenance proof.
+Settings accept both HTTP and HTTPS Vault endpoints, and the Vault chart advertises an in-cluster
+HTTP address, so a Vault public-key read cannot be treated as authenticated solely because it is
+separate from the RPC registry. Key rotation, revocation,
+complete deadline/replay/resource admission, response capacity and compatible runtime rollout
+remain open. The production bootstrap remains on the unsigned path, so the counterexample below
+is not closed for supported operation.
+
+**Bootstrap registry response integrity counterexample, 2026-11-09.** The registered caller
+bootstrap authenticates its requests and checks the pinned original home-seed digest and the
+caller's own native binding, but the registry HTTP response is unsigned. In
+`authority-bootstrap-registry-integrity-draft-run-1.json`, a local transport fixture preserves
+the original seed and caller binding while adding a different Authority public key as a later
+active generation. The actual `observeRpcBirthBootstrapRegistry` accepts the response, and
+`selectActiveRpcKeyForOrigin` selects the substituted key instead of the fixture's retained key.
+The run has unchanged supported and private inputs and both terminal receipts. It demonstrates
+response-substitution behavior in a fixture, not a live interception. The bootstrap response is
+not an independently authenticated source for `AuthorityResponseTrust`: authenticating later
+membership and its rotation/retirement history requires an independent trust anchor, freshness
+and durable fencing. Do not wire the snapshot reader or coordinator to this response as if its
+seed check authenticated the complete current registry. The former `RpcOwnBindingHint` comment
+overstated that authentication and has been corrected. Canonical gate
+`authority-bootstrap-doc-canonical-1.json` passed **9,798 + 27 + 35 + 927** tests with unchanged
+inputs and both terminal receipts (1,171.61 seconds) after that comment correction.
+
+**Opt-in signed Authority observations, 2026-11-08.** The Authority now has an opt-in response
+envelope, handler and clients for the exact peer-context and promotion-observation reads. A signed
+response binds status, body, signer generation and the complete signed request, including its nonce;
+the signer refuses other routes and mutation requests. In a local authenticated fixture both real
+handlers and clients accept matching responses and refuse unsigned substitution, replay at a fresh
+nonce, truncation and wrong keys. The maintained coordinator composed with these clients refuses
+the earlier forged admission-open response before a physical call or submission. The warning-clean
+build and **115** focused peer tests pass with unchanged inputs and terminal receipts in
+`authority-signed-observation-build-6.json` and `authority-signed-observation-unit-4.json`;
+builds 3 and 4 contained a test-only redundant-import warning. Focused HLint and policy lint pass.
+Canonical gate `authority-signed-observation-canonical-1` was stopped without a producer receipt
+to tighten the peer verifier to its existing 1 KiB body limit; the focused suite now confirms an
+oversized signed peer reply is refused. Replacement gate `authority-signed-observation-canonical-2.json`
+passed **9,798 + 27 + 35 + 927** tests with unchanged inputs and both terminal receipts (1,182.74
+seconds). These are
+opt-in, in-memory controls, not runtime wiring: the caller
+must independently authenticate and rotate the Authority key, preserve the original deadline,
+admit complete replay/response/resource costs and coordinate a compatible deployment. Existing
+production responses remain unsigned and the counterexample below remains open for that path.
+
+**Authority observation integrity counterexample, 2026-11-08.** The Authority promotion client
+authenticates its request but accepts a structurally valid unsigned response; the standard
+in-cluster Authority Service URL is HTTP. In `authority-observation-integrity-draft-run-2.json`,
+an in-memory transport substitutes an admission-open response for two actual prepared-state
+responses. With a simulated target-epoch peer, the maintained coordinator returns
+`PromotionAdmissionObserved` while the actual fixture aggregate remains prepared, with zero
+physical calls and zero Authority writes. The first fixture run stopped on a syntax error before
+execution. The successful run has unchanged supported and private inputs and both terminal
+receipts. This demonstrates a local response-substitution failure, not a live interception or
+deployed compromise. Independently authenticate the Authority and peer responses, bind them to
+the exact requests and fresh nonces, and validate trust, rotation, deadline and resource admission
+before wiring this coordinator or treating its completion as physical evidence.
+
+**Private staged-coordinator draft, 2026-11-08.** The predecessor draft under
+`.build/sprint-6.5/resume-20261102/epoch-promotion-coordinator-draft-1/` re-observes the retained
+phase and exact epoch/topology around its finite binding program. Its in-memory aggregate controls
+cover completion, a lost commit reply followed by frozen-phase resume, prepared-binding retirement,
+post-commit rollback refusal, epoch drift, expiry and a concurrent phase change. The explicit
+one-pass schedule agrees with instrumented prepared, frozen-resume and retirement runs in
+`epoch-promotion-coordinator-draft-run-5.json`, with unchanged private input hashes. For the
+**33**-binding, **18**-old-writer fixture, one uninterrupted complete pass makes **173** Authority
+observations and **104** submissions. With a peer refresh before each, the shared cached-signer
+traffic calculation projects **2,774** signed frames. Physical-adapter traffic, retries,
+concurrent owners, replay retention, heap/native/kernel memory and full admission are not included.
+
+An injected-clock transport draft exposed a blocked-clock counterexample in
+`epoch-promotion-peer-draft-run-5.json`. A separate native-clock draft pins the existing
+UTC/monotonic sampler and original host window; isolated signed controls cover peer refresh,
+unexpected epoch, peer/snapshot disagreement, expiry, an earlier provider deadline, reversed
+monotonic samples and one real host clock sample in `epoch-promotion-native-peer-draft-run-1.json`.
+Its injectable clock constructor is a test seam and must not be exposed on a supported path. Neither
+draft has a production physical interpreter, admitted owner, full resource proof or deployed
+qualification; the physical actions' exact fencing and idempotence are obligations, not proven by
+these model controls. Compose those boundaries before promotion or activation.
+
+A further isolated composition connects that draft loop to the bounded signed peer/Authority
+transport. With simulated peer and Authority responses and an unavailable physical interpreter,
+it performs two fresh observations, refuses the first physical action and sends no migration
+mutation. `epoch-promotion-composition-draft-run-1.json` records the warning-clean local control
+with unchanged supported and private inputs. Its test-only replay/response limits are fixture
+settings, not an installed or admitted capacity. The physical callback remains abstract; its
+fencing, idempotence, cancellation-safe termination and resource funding are not established.
+An additional signed composition uses the actual Authority control and verified readback handlers
+over an in-memory aggregate, with a simulated peer, clock and physical callback. It reaches the
+first unsupported binding, receives the explicit refusal and leaves the aggregate unchanged;
+no Vault read or migration write occurs. `epoch-promotion-real-composition-draft-run-3.json`
+passed with unchanged supported and private inputs after two test-harness build corrections. The
+callback's synthetic success does not prove a physical effect or fence; the test demonstrates only
+that the real readback handler will not turn that claim into a recorded binding.
+
+**Private Agent-controller binding prototype, 2026-11-08.** The existing Target worker boundary can
+read and validate the Agent Deployment's identity, UID and observed generation. A private digest
+prototype in `agent-controller-binding-draft-1/` binds that rollout metadata to a substrate and
+target epoch. It passes parser, identity, UID, generation, substrate, epoch, over-bound and bounded
+non-ASCII controls at a 128 MiB heap limit in `agent-controller-binding-draft-run-2.json`, with
+unchanged supported and private inputs. Its tentative Word64 generation ceiling and 2 KiB encoded
+metadata bound are not yet a supported admission policy. The evidence constructor is not itself a
+physical observation; an authenticated, fresh, deadline-bounded Target-owned route must independently
+read Kubernetes, bind the registered Agent and return only validated metadata. That route, its
+replay/resource profile, runtime composition and live proof remain open; the production readback
+continues to refuse this binding.
+
+**Sprint `6.7` pure core, 2026-11-09 (queue order unchanged, uncommitted).** At the operator's
+standing goal ("implement and validate all phases") the code-local, AWS-free part of `6.7` was
+landed while `6.5` stays `Next` and `6.7` stays `Parked`: a scoped AWS-lifecycle source-manifest
+policy and a hash-chained drill ledger with a read-only receipt (details in the sprint's Remaining
+Work). This does not reorder the queue, close either sprint or produce any live evidence.
+
+**Bounded-capture direct-child kill, 2026-11-09.** `captureSubprocessBounded` and its
+stdin variant now stop the direct child on every exit path (normal, timeout, asynchronous
+cancellation) with SIGKILL and a bounded 2 s reap poll, instead of SIGTERM-then-wait, which could
+wait past the deadline on a child that ignores termination (the gap recorded below). Two new
+real-child controls (`trap '' TERM` child, deadline and caller cancellation) pass in under 0.5 s
+each and the **42** killable-subprocess tests pass; the all-targets `-Werror` build is warning-clean.
+Scope is the DIRECT child only: a descendant that changed process group or session is neither
+signalled nor proven absent, so the whole-family settlement obligation below remains open and the
+Target rollout observer must still not be moved behind this helper on that basis. `prodbox dev check` exited 0 on the
+freshly built binary after the pinned fourmolu reformat (its first run stopped at formatting
+before tests). Sprint `6.5` remains active.
+
+**Bounded-capture cancellation gap, 2026-11-08.** The Target rollout observer currently uses
+`captureSubprocessBounded`. An isolated child test in `bounded-capture-cancel-baseline-2.json`
+showed that cancellation can leave the direct child alive until the enclosing unit is stopped.
+A candidate `finally` cleanup passed the cooperative-child control and **40** subprocess tests,
+but `bounded-capture-ignore-term-1.json` showed that its cleanup can wait beyond the unit deadline
+when the child ignores termination. The isolated unit was stopped and its recorded child was
+absent afterward. The partial source and test change were withdrawn byte-for-byte to the last
+canonical-gate inputs; the first baseline wrapper also failed before starting its producer due to
+an invocation error. A complete fix needs cancellation-safe, bounded termination and positive
+settlement evidence for the owned process family under an explicitly funded cleanup window. Do
+not put the existing helper behind the new Target observation route as if outer timeout alone
+proved child cleanup. No production rollout-observation or live infrastructure change was made.
+The restored operator and unit executable rebuilt warning-clean with unchanged inputs in
+`bounded-capture-restored-build-1.json`; the operator remains at the last validated source identity
+and no `prodbox*` user units were listed. A native in-cluster Kubernetes client exists, but its
+current unbounded response and projected-token reads do not satisfy this new route's bounded input
+contract. A fixed-path native read with bounded credentials, TLS/response handling and the original
+deadline is a possible alternative; it still needs role-owned authentication, replay, resource and
+physical-observation proof.
+
+**Process-family ownership counterexample, 2026-11-08.** The existing session/ancestry
+`OwnedProcessTree` observer cannot by itself establish whole-family absence after a descendant
+changes session and is reparented. In `owned-session-escape-draft-run-3.json`, a real child
+changed session, its original leader exited, and the still-live reparented child was absent from
+the actual observer's returned set. The test killed its child; the enclosing transient unit is
+inactive and unloaded. The first two fixture runs (`owned-session-escape-draft-run-{1,2}.json`)
+failed because the test checked the `/proc/<pid>` directory with a regular-file predicate; the
+second captured the live process stat and the third corrected the predicate. Earlier draft private
+hash records were overwritten; the third retains its own. Do not reuse session enumeration as a
+whole-family settlement proof for bounded capture. A kernel-owned scope with independently observed
+emptiness, or a native Kubernetes read with no subprocess, remains necessary together with funded
+cleanup and deadline handling. No production process or rollout-observation change was made by
+this control.
+
+**Signed Target rollout claim, 2026-11-08.** The opt-in response envelope now signs a digest of
+the responding Agent's declared rollout and the client verifies its expected rollout. The signer
+also refuses an Agent cluster that differs from the authenticated request scope. A fixture using
+the same Target key for a different same-cluster responding rollout is refused, alongside the
+existing altered-request, replay and tampering controls. The warning-clean build and **107 + 45**
+focused tests passed with terminal receipts and unchanged inputs in `target-rollout-claim-build-1.json`
+and `target-rollout-claim-unit-{1,2}.json`. The envelope domain changed to v2; neither version is
+wired into runtime, and a compatible deployment transition remains required. A signer holding the
+shared key can assert an arbitrary rollout: this claim is not independent Pod or Deployment
+attestation and does not establish epoch adoption, deadlines or resource admission. Canonical gate
+`target-rollout-claim-canonical-1.json` passed **9,796 + 27 + 35 + 927** tests with unchanged
+inputs and both terminal receipts (1,179.86 seconds).
+
+**Signed Target readback composition in a local fixture, 2026-11-08.** The actual signed Target
+handler and snapshot-bound interpreter are now composed with the Authority readback handler. The
+control reads all nine home Target rows twice, records the aggregate once, refuses a tampered
+response, and refuses the final CAS after a concurrent revision change. The first fixture run
+stopped at the Authority's missing registered-client seed; the corrected setup seeds it before
+preparing migration. The warning-clean build and **45** Target binding tests passed with terminal
+receipts and unchanged inputs in `target-signed-transaction-build-4.json` and
+`target-signed-transaction-unit-3.json`; the tightened tampering control requires the specific
+row-unavailable refusal after one request. Canonical gate `target-signed-transaction-canonical-1`
+was stopped after a focused HLint check found a test-only pattern hint; it has no terminal producer
+receipt. Replacement gate `target-signed-transaction-canonical-2.json` stopped at the repository's
+case-in-lambda style rule before tests; the assertion was corrected, and focused HLint and
+`prodbox dev lint files` pass. Canonical gate `target-signed-transaction-canonical-3.json` passed
+**9,796 + 27 + 35 + 927** tests with unchanged inputs and both terminal receipts (1,288.46 seconds).
+This is an in-memory
+control, not a physical deployment, deadline or capacity proof.
+
+**Maintained signed Target binding interpreter, 2026-11-08.** An opt-in interpreter selects an
+Agent and its exact key origin from a validated registry and reads its row using the Authority's
+supplied admission snapshot and signed Target response. It refuses tampered responses and retired
+keys without an unsigned fallback; registry controls reject missing home, duplicate or aliased
+identities and mismatched origins. The warning-clean build and **107** focused trust tests passed
+with unchanged inputs and terminal receipts in `target-signed-rows-build-2.json` and
+`target-signed-rows-unit-2.json`. The canonical `target-signed-rows-canonical-1.json` gate passed
+**9,795 + 27 + 35 + 927** tests with unchanged inputs and both terminal receipts (1,161.53
+seconds). This is not runtime-wired:
+the caller must authenticate the origin and physical Agent, impose the physical deadline and
+resource admission, and use the same snapshot for CAS. Production Target responses remain unsigned.
+
+**Maintained snapshot-aware Authority readback adapter, 2026-11-08.** An opt-in Authority
+readback handler now derives its Target interpreter from the exact admission snapshot later used by
+the readback CAS. The existing handler delegates with its existing fixed interpreter. A focused
+control confirms all Target effects see the original revision, a matching readback records at that
+revision, and a concurrent revision change refuses the write. The warning-clean build and focused
+Target-binding and general physical-readback suites passed with unchanged inputs and terminal
+receipts in `target-readback-snapshot-build-1.json` and `target-readback-snapshot-unit-{1,2}.json`.
+The canonical `target-readback-snapshot-canonical-1.json` gate passed with unchanged inputs and
+both terminal receipts (1,160.27 seconds). This adapter is not wired to the signed Target interpreter
+or runtime; the physical observer, origin authentication, deadline/resource admission and signed-wire
+rollout remain open. Existing production Target responses remain unsigned.
+
+**Maintained snapshot-bound Target observation, 2026-11-08.** `TargetSnapshotObservation`
+selects the Target response key from the supplied Authority snapshot, checks the registered origin's
+scope against the intended Agent identity, calls the opt-in signed client with a shortened deadline,
+and returns the observation with that same snapshot. A maintained fixture exercises the actual
+signed Target handler and client, confirms the retained revision and refuses wrong-role or retired-key
+origins before sending another request. The **107** Target trust tests and warning-clean build pass
+with unchanged inputs and terminal receipts in `target-snapshot-observation-unit-2.json` and
+`target-snapshot-observation-build-3.json`; the first build contained a test-only shadowing warning.
+The first canonical gate stopped at a test-only HLint hint before tests; the hint was corrected.
+The fresh `target-snapshot-observation-canonical-2.json` gate passed with unchanged inputs and both
+terminal receipts (1,161.34 seconds). The caller must authenticate the repository and origin, impose the
+original physical deadline over all effects, and use the retained revision in the final CAS. This
+helper is not wired to runtime dispatch and does not prove physical Pod identity, resource admission,
+wire compatibility or deployed cutover; existing Target responses remain unsigned.
+
+**Maintained Target response trust selection, 2026-11-08.** `TargetResponseTrust` selects an
+active Target Agent key for an exact origin from the registry in an Authority admission snapshot,
+checks the authority scope and signer role, and retains that snapshot for the later CAS. The focused
+suite covers missing/foreign/retired keys and shows that a repository revision advanced by retirement
+refuses a write using the retained old revision. The warning-clean operator/unit build and **40**
+origin-aware tests passed with unchanged inputs and terminal receipts in
+`target-response-trust-build-2.json` and `target-response-trust-unit-2.json`. The canonical
+`target-response-trust-canonical-1.json` gate passed with unchanged inputs and terminal receipts
+(1,173.06 seconds). Selection alone does not authenticate the repository or origin, enforce deadline, bind the
+origin to a physical Deployment, or cause callers to use the retained revision. The signed Target
+client and adapter are still not wired into production; the response-integrity counterexample remains
+open until the complete transaction and rollout are validated.
+
+**Maintained signed Target observation client, 2026-11-08.** An opt-in client now retains the
+exact Target trust request it signed and verifies the response envelope against that request and a
+caller-supplied Target key before decoding the observation. The maintained fixture runs the actual
+authenticated Target handler and signed adapter: it accepts the genuine reply, refuses an unsigned
+substitution and refuses a previous signed response replayed against a fresh nonce. Existing unsigned
+fixture mode remains exercised. The warning-clean build and **106** Target trust tests passed with
+unchanged inputs and terminal receipts in `target-signed-client-build-3.json` and
+`target-signed-client-unit-2.json`; `target-supported-signed-composition-run-2.json` is the earlier
+private composition and its first run stopped at a private-fixture shadowing warning. The first
+canonical gate was stopped deliberately with no producer terminal receipt after identifying that a
+shared refactor prolonged signed-request lifetime for every caller. The corrected code preserves
+the earlier general transport implementation apart from formatting and confines that retention to
+the opt-in Target path. The fresh `target-signed-client-canonical-2.json` gate passed with unchanged
+inputs and terminal receipts (1,179.45 seconds). Runtime dispatch and production callers still use the unsigned path: fresh registry
+key selection, the end-to-end deadline, wire/replay/signing resource admission, compatibility rollout
+and deployed validation remain open, and no downgrade is allowed in the opt-in verifier.
+
+**Maintained signed Target observation adapter, 2026-11-08.** The Target epoch endpoint now
+provides an opt-in adapter that runs the existing verified observation handler and signs its actual
+status/body with the request-bound envelope. A focused test verifies the real handler's prepared
+row, refuses a different request nonce and a wrong signer, and observes no row write. The
+warning-clean operator/unit build and **105** Target trust tests passed with unchanged inputs and
+terminal receipts in `target-signed-observation-build-1.json` and
+`target-signed-observation-unit-1.json`. The canonical `target-signed-observation-canonical-1.json`
+gate passed with unchanged inputs and terminal receipts (1,170.47 seconds). The adapter is not connected
+to the runtime and does not itself enforce the original deadline over signing or delivery, select a
+trusted registry key, implement wire negotiation, fund replay/signing/response resources, or supply a
+matching production client. Existing responses remain unsigned and the integrity counterexample
+remains open until the entire route is safely composed and validated.
+
+**Maintained Target response-envelope foundation, 2026-11-08.**
+`TargetAuthenticatedResponse` signs a domain-separated response only for an already verified
+Authority-to-Target trust request, using its complete signed-request digest; verification requires
+the exact signed request and a supplied Target public key. Focused controls reject a different nonce,
+wrong key/signer, altered or unsigned data, invalid status and oversize/overflow limits. The
+warning-clean operator/unit build and Target trust suite passed with unchanged inputs and terminal
+receipts in `target-response-foundation-build-2.json` and `target-response-foundation-unit-2.json`.
+The canonical `target-response-foundation-canonical-1.json` gate passed with unchanged inputs and
+both terminal receipts (1,160.66 seconds). This codec is not wired into the runtime: it does not independently
+select a current registry key, enforce the request deadline/replay policy, fund wire/heap/signing
+work or authenticate any existing Target response. The response-integrity counterexample below
+remains open until the complete protocol, role-owned key and compatibility rollout are validated.
+
+**Private Target response registry-selection control, 2026-11-08.**
+`target-response-registry-draft-run-1.json` selects the fixture Target signer by exact scope, Vault
+incarnation and key origin from the existing retained RPC key registry. After registering a later
+active generation, the newly selected key verifies its response and refuses the earlier response;
+retired and wrong-origin lookups refuse. The test also confirms that the old registry snapshot still
+accepts the earlier key, so signature verification against a stale view is insufficient. The run
+is warning-clean with unchanged private/supported inputs and terminal receipts. Fresh authenticated
+registry acquisition, stable origin-to-Agent/Deployment binding, rotation during an in-flight
+observation and a final same-revision check remain unimplemented. No production response verifier or
+registry admission was added.
+
+**Private signed Target handler composition, 2026-11-08.**
+`target-signed-transport-draft-run-1.json` places the draft response envelope around the actual
+Target authenticated request interpreter and epoch observation handler in a local fixture. The
+client accepts a matching signed response and rejects both an unsigned substituted prepared-state
+response and a previously valid signed response replayed for a fresh request frame/nonce. The
+underlying initial row remains unchanged and no row writes occur. The warning-clean run has
+unchanged private/supported inputs and terminal receipts. The signing wrapper, trusted server key
+and transport are fixture-provided, not the production runtime: independent key-registry selection,
+server signing failures, full wire/heap/replay budgets, deadline and deployment compatibility
+remain open. The production Target response remains unsigned, so the counterexample below is not
+closed.
+
+**Private Target response-signature control, 2026-11-08.**
+`target-signed-response-draft-run-2.json` tests a domain-separated response envelope using the
+existing opaque Ed25519 signing capability and a Target Agent trusted key. Its claims bind the
+hash of the complete supplied request frame, response status/body hash and signer generation.
+Controls accept the matching response and reject a changed request frame, body, status or key,
+wrong signer role, invalid status, oversized data and an overflowing configured bound. Both
+private runs are warning-clean with unchanged private/supported inputs and terminal receipts; the
+second adds overflow and status controls. This does not yet prove that either endpoint signs or
+verifies the same actual canonical authenticated request, select an independently registered key,
+check deadline/replay, bound full decoding/signing allocations, or provide compatible rollout and
+runtime admission. The response wire and signer are private drafts; the actual Target HTTP response
+remains unsigned and the counterexample below remains open.
+
+**Target response-integrity counterexample, 2026-11-08.** The current authenticated client signs
+its request; its raw HTTP response is returned without a server signature check, and the standard
+in-cluster Target Service URL uses HTTP. In `target-response-integrity-draft-run-2.json`, a private
+copy of the existing authenticated client/server fixture substitutes a well-formed prepared-state
+response at the transport boundary after the actual handler responds. The client accepts that
+observation while the fixture's retained row remains initial and no row write occurs. The earlier
+control substitutes absence. Both are local fault-injection tests with unchanged supported/private
+inputs and terminal receipts, not evidence of a live interception. Do not treat the present Target
+HTTP response alone as independently authenticated physical evidence. Before using it for cutover,
+provide and validate server/response authentication bound to the exact request and fresh nonce,
+role, scope and epoch, with replay/deadline and resource admission; keep the unsupported Agent
+controller binding closed until then. The experiment does not establish an Authority aggregate write or deployed
+compromise.
+
+**Private projected-pair and TLS rotation composition, 2026-11-08.**
+`k8s-rotation-composition-draft-run-3.json` combines the pinned projected-directory pair, one
+serialized no-idle manager with per-connection CA selection, bounded response and production Agent
+rollout parser. A fixture swaps `..data` between reading the old CA and token: the first request
+uses the coherent old pair and validates the expected rollout; the next reads the replacement pair
+and rejects the server under the changed CA; restoring the old pair succeeds. The fixture observes
+two successful HTTP/1.1 connections close. The first run stopped at a type-default warning and the
+second's wrapper expected the wrong request count; both receipts are retained. The third is
+warning-clean with unchanged private/supported inputs and terminal receipts. Fixture paths, sizes,
+clock, and identity do not establish production admission, role authentication, actual epoch
+adoption, live kubelet behavior, or complete cancellation/resource proofs.
+
+**Private single-manager dynamic-CA control, 2026-11-08.** The pinned HTTP/TLS source exposes a
+connection factory that can be constructed against an existing connection context. In
+`k8s-dynamic-tls-draft-run-1.json`, one fixture manager uses a serialized, no-idle connection
+factory that selects the current fixture CA for each handshake. The server accepts the original
+CA, rejects a replacement CA, and accepts the original again after controlled cancellation; all
+three successful HTTP/1.1 connections close. Four handshake attempts use the same manager, the
+proxy remains disabled, and private/supported inputs and both terminal receipts agree. This avoids
+creating a manager/reaper per tested CA change, but does not prove bounded TLS/parser allocation,
+waiters, all cancellation paths, fixed production endpoint, credential-generation coherence,
+resource admission or role authentication. The factory and its mutable CA are private fixture code,
+not an admitted runtime transport.
+
+**Private CA-keyed manager owner, 2026-11-08.** `k8s-manager-cache-draft-run-3.json`
+serializes fixture manager use, reuses a manager for identical CA bytes, replaces it when the CA
+changes, and recovers the lock after cancellation at a controlled point. The replacement CA rejects
+the old fixture server, and switching back permits it; private/supported inputs are unchanged and
+both receipts are terminal. The first draft did not compile under warnings-as-errors because the
+pinned HTTP library deprecates `closeManager`; the second compiled with a draft-only deprecation
+suppression but used an incorrect third-response fixture. The corrected third run still uses that
+suppression. It does not prove manager/reaper retirement, absence of escaped references, bounded
+waiters, cancellation at every setup/close point, or any production admission/lifetime contract; do
+not promote it as warning-clean supported code. Inspecting pinned `http-client-0.7.19` source
+establishes that `closeManager` does nothing: pool shutdown follows a weak-reference finalizer, and
+each pool starts a reaper. `k8s-manager-cache-draft-run-5.json` removes the deprecated call, sets
+the fixture manager's idle-connection limit to zero and passes without warning suppression. An
+HTTP/1.1 TLS server observes all three fixture connections close. This does not bound the number or
+retirement time of reapers across CA rotations, prove allocation or waiter budgets, or establish
+cancellation-safe setup and a supported manager lifetime. The stale-CA counterexample remains.
+
+**Private CA-rotation counterexample, 2026-11-08.** `k8s-ca-rotation-draft-run-1.json`
+replaces the fixture CA after constructing the native HTTPS manager. Even after the composition
+rereads the new CA, the old manager still accepts the server under the prior CA; a newly constructed
+manager using the replacement CA rejects it. The warning-clean fixture has unchanged
+private/supported inputs and terminal receipts. Therefore rereading projected CA bytes without
+updating and safely retiring the TLS manager is insufficient. Production still needs a bounded,
+cancellation-safe manager lifetime and concurrency policy tied to the currently admitted CA;
+this local counterexample does not change production transport or prove live rotation.
+
+**Private projected credential-pair control, 2026-11-08.** `projected-pair-draft-run-2.json`
+opens the projected `..data` directory once and reads its fixed CA and token children relative to
+that descriptor. In a local atomic-link-swap fixture it returns both files from the opened generation;
+if that generation is removed between reads, it refuses rather than combining generations, and a
+fresh read observes the replacement. Byte-limit, invalid-limit and controlled cancellation/descriptor
+count checks also pass. The earlier run covers the swap but not old-generation removal. Both runs
+are warning-clean with unchanged private/supported inputs and terminal receipts. These are fixture
+controls only: path/ownership policy, token validation, real kubelet rotation, original deadline,
+blocking kernel IO, capacity and production integration remain open.
+
+**Private Agent owner-chain control, 2026-11-08.** `agent-owner-chain-draft-run-1.json`
+checks fixture Pod → ReplicaSet → Deployment owner UIDs and namespaces against separately supplied
+Pod and Deployment UIDs. Eight warning-clean controls cover a matching chain, stale Pod/owner UIDs,
+missing or duplicate controller ownership, a foreign namespace and malformed input; private and
+supported inputs are unchanged and both receipts are terminal. This is only a pure metadata control:
+its supplied Pod UID is not authenticated, its Deployment UID is not independently observed, and
+it neither proves current epoch adoption nor rules out changes between reads. The existing projected
+ServiceAccount identity decoder explicitly delegates JWT authentication to Vault, and the current
+Agent worker Role grants Deployment and Pod reads but no ReplicaSet reads. A real design must
+establish authenticated instance identity, an exact fresh owner-chain read and appropriately scoped
+RBAC, fencing and resource/deadline admission; do not treat this draft as physical proof.
+
+**Private Agent observation through signed cutover composition, 2026-11-08.**
+`agent-authenticated-readback-draft-run-1.json` connects the prior staged coordinator and actual
+authenticated Authority migration/readback handlers to a local TLS Agent Deployment fixture. Its
+physical callback reads the fixture, validates rollout metadata against a fixture identity and
+computes the private digest. The existing Authority readback handler then correctly refuses the
+unsupported Agent binding; no Authority aggregate write occurs. The run is warning-clean with
+unchanged private/supported inputs and terminal receipts. The callback's digest is not accepted by
+or supplied to a production physical interpreter; the test confirms refusal and no aggregate
+mutation, not a successful binding. The peer, aggregate and Kubernetes service are fixtures, and
+role ownership, deadline/resource admission and deployed qualification remain open.
+
+**Private observed Agent digest composition, 2026-11-08.**
+`agent-physical-digest-draft-run-2.json` composes the local native HTTPS fixture and actual rollout
+parser with the private Agent-controller digest function. It refuses an expected identity that
+differs from the observed identity, and changes the digest when either the requested target epoch
+or the observed Deployment UID changes. The earlier run covers identity and epoch; the second adds
+the independently returned replacement UID. Both runs pass with unchanged private/supported inputs
+and terminal receipts. The existing worker coordinator also checks observed against registered
+identity. These fixture controls do not establish an authenticated route, independently registered
+Agent selection, real Kubernetes observation, an admitted metadata bound or the complete migration
+binding and resource protocol. The digest and native reader remain private drafts. In particular, the draft accepts the target
+epoch from its caller: the same rollout observation can be hashed at two different epochs, as the
+control demonstrates. The changed digest is domain separation, not evidence that the controller
+installed or adopted either epoch. `observeTargetAuthorityEpoch` separately checks its authenticated
+request epoch against the published Vault epoch and reads target trust rows, but that shared fact
+alone does not independently bind a specific Deployment UID to an installed controller epoch.
+Before adding an Agent-controller physical interpreter, define and observe that relationship for
+prepared and promoted phases, including its fencing, rather than treating the caller-supplied epoch
+or Deployment annotations as physical proof.
+
+**Private native-read deadline control, 2026-11-08.** `k8s-deadline-draft-run-2.json`
+wraps fresh projected CA/token reads, CA parsing and the HTTPS response in one fixture timeout. A
+server sends one byte every 120 ms: the existing two-second HTTP read timeout permits the complete
+stream, while the 300 ms outer timeout cancels the composed operation. A later request through the
+same fixture manager succeeds. Both receipts are terminal and private/supported input hashes are
+unchanged; `k8s-deadline-draft-run-1.json` is the earlier shorter control. This demonstrates the
+need for an end-to-end deadline, not a hard bound on arbitrary blocked kernel IO or proof of socket
+settlement, production monotonic/UTC window conversion, manager lifetime, admission or replay.
+The fixture's limits and timeout are not a supported capacity or production route.
+
+**Private endpoint and proxy control, 2026-11-08.** `k8s-proxy-isolation-draft-run-2.json`
+repeats the composed local TLS read with a hostile HTTPS proxy in the environment. A manager that
+inherits the proxy fails, while `managerSetProxy noProxy` reaches the fixture and the server observes
+exactly three requests to the fixed Agent Deployment path. The local hostname and port remain test
+seams; this does not yet prove a production-fixed Kubernetes host, manager lifetime, original
+deadline, resource admission, authenticated route or deployed readback. The warning-clean run has
+unchanged private and supported inputs and terminal receipts; its first passing proxy control is
+retained in `k8s-proxy-isolation-draft-run-1.json`. No production transport was changed.
+
+**Private native-read composition, 2026-11-08.** `k8s-read-composition-draft-run-2.json`
+combines the private descriptor-bound projected token and CA reads, bounded CA parser, custom-CA
+bounded HTTPS request and the production `parseTargetAgentRolloutObservation` against a local TLS
+fixture. It accepts exact identity and fully observed generation, rejects a stale generation and an
+oversized response, and refuses a token above the fixture limit. The fixture confirms receipt of
+its dummy bearer token. The first run stopped at an unused-import warning before starting the
+server; its receipt is retained. Both receipts and input snapshots for the second run are terminal
+and unchanged. This is a local composition with test-only sizes, endpoint and manager; it does not
+prove production proxy isolation, original deadline, cancellation, allocation/admission budgets,
+registered identity readback, role authentication/replay or deployed physical observation. No
+production route is enabled by this evidence.
+
+**Private native HTTPS controls, 2026-11-08.** `k8s-https-draft-run-2.json` exercises a
+private copy of the actual bounded HTTP implementation with a custom fixture CA and a local TLS
+server. It passes an exact-size response, over-limit refusal, no-follow redirect, wrong URL hostname
+and untrusted CA controls; the server confirms no redirect destination request. Inputs are unchanged
+and both receipts are terminal. The prior `k8s-https-draft-run-1.json` failed because changing the
+TLS parameter name alone did not override the hostname taken from the request URL: the server saw
+that request. The correction changes the URL host for the negative control, demonstrating why a
+production Kubernetes URL must itself be fixed. The test uses an ephemeral manager and removes proxy
+variables in its fixture; it does not prove manager lifetime, production proxy isolation, bounded
+CA/token reads, original deadline, replay admission, resource funding or a physical binding. Its
+custom-manager export exists only in the private copy and is not a supported runtime change.
+
+**Private bounded CA-bundle parser, 2026-11-08.** A draft in `bounded-ca-draft-1/` parses a
+caller-bounded PEM bundle into an in-memory certificate store, with an explicit certificate-count
+limit and complete non-whitespace input consumption. A generated self-signed certificate fixture
+and eight refusal/acceptance controls pass warning-clean with unchanged supported and private
+inputs in `bounded-ca-draft-run-3.json`. The earlier `bounded-ca-draft-run-2.json` exposed that
+`pemParseBS` accepts trailing garbage; the draft now rejects it. The fixture private key was
+deleted after certificate generation. These controls do not establish a supported certificate or
+byte budget, parser allocation bound, bounded file read, TLS hostname verification, cancellation,
+manager lifetime or a physical Kubernetes observation. The draft is not wired into production.
+
+**Private projected-token read control, 2026-11-08.** A draft under
+`projected-token-draft-1/` opens a projected-token path once with nonblocking and close-on-exec
+flags, checks that same descriptor for a regular file, and bounds the bytes read before accepting
+visible ASCII. Its eight local controls cover a projected-style symlink, exact and exceeded limits,
+empty and invalid bytes, a FIFO, a missing path and an invalid limit. The warning-clean run
+`projected-token-draft-run-1.json` has unchanged supported inputs and terminal receipts. Its
+private input-check file was overwritten by the second draft run, so its private-input hashes are
+no longer independently retained.
+The visible-ASCII rule and supplied byte limit are experimental, not an admitted Kubernetes token
+contract; there is no proven credential size budget, general cancellation/deadline proof, CA
+handling or production integration. A second run, `projected-token-draft-run-2.json`, adds a
+controlled symlink replacement after opening: the in-flight read sees the original inode and a
+fresh read sees the replacement. It also cancels while a test hook holds the open handle and checks
+the descriptor count returns to its starting value. These are local controls, not proof of all kernel
+or deadline behavior. A fresh `projected-token-draft-run-3.json` repeats these controls with a
+unique, exclusively created private-input receipt; a duplicate identifier is refused without
+changing the prior receipt. This prevents subsequent runs from repeating the evidence overwrite.
+The draft does not establish a physical readback or replace the existing client. Complete these obligations and the route's full
+resource/replay proof before using it for the Agent binding.
+
+**Bounded-capture limit arithmetic, 2026-11-08.** The bounded subprocess stream reader now
+calculates its read size without overflowing when the accepted positive ceiling is `maxBound`.
+A real-child regression checks both streams at that boundary. The warning-clean operator/unit
+build and subprocess suite passed with unchanged inputs and terminal receipts in
+`bounded-capture-maxbound-build-1.json` and `bounded-capture-maxbound-unit-1.json`. The canonical
+`bounded-capture-maxbound-canonical-1.json` gate passed with unchanged inputs and both terminal
+receipts (1,162.57 seconds). This fixes the limit arithmetic only; cancellation-safe process-family
+termination and funded cleanup remain open as described above.
+
+**In-cluster credential rendering, 2026-11-08.** The native Kubernetes credential type no longer
+includes its bearer token in `Show` output; the CA path and namespace remain visible. The
+warning-clean operator/unit build and the focused in-cluster helper suite passed with unchanged
+inputs and terminal receipts in `incluster-credential-redaction-build-1.json` and
+`incluster-credential-redaction-unit-2.json`. The first focused invocation used an unsupported
+runner option and exited before tests (`incluster-credential-redaction-unit-1.json`). This does not
+bound the existing client reads or establish the new physical readback. The canonical
+`incluster-credential-redaction-canonical-1.json` gate passed with unchanged inputs and both
+terminal receipts (1,157.75 seconds).
+
+**Cutover physical composition review, 2026-11-08.** The retained Authority admission aggregate
+places migration and new-submission admission under the same compare-and-swap revision. The
+historical `runAuthorityCutover` still stops at coarse activation rather than executing staged
+promotion. A minimal home-only topology with no TLS or DNS scope rows requires **24** bindings:
+four fixed bindings, five capabilities, three home Agent/Target bindings and twelve backend
+generation/issuer bindings. The runtime composes independent readback paths for the retained
+authentication epoch and `PendingAcceptedAuthorityBinding`; the other required binding families
+still return `PhysicalBindingUnsupported`. The Target path itself remains subject to its physical
+interpreter and can refuse; being routed is not a successful readback. Additional substrates and
+declared TLS/DNS coordinates add rows. Evaluating `requiredEpochTopologyBindings` for that minimal
+home scope returned 24. Compose and validate the missing role-owned physical
+adapters and staged coordinator, including stale-writer and restart controls, before treating a
+qualification-ledger mark or pure `CutoverState` as a live writer fence. This source inspection is
+not activation, physical-readback evidence or phase closure.
+The coordinator must keep epoch drift observable: backup repair can change the aggregate's
+authentication epoch independently of a retained promotion. It must re-observe and refuse stale
+work rather than treating a mismatched snapshot as a successful promotion or hiding it from
+recovery. For physical readbacks, the migration endpoint compares the supplied exact binding to
+its own observation and records against the same aggregate revision; a coordinator cannot replace
+that check with its topology digest or a caller-produced receipt.
+
+**Cutover model ownership gap, 2026-11-08.** The supported `CutoverState` is a pure,
+non-linear value: a caller can retain the pre-activation state after computing a post-activation
+state and then still call `rollbackLegacy` on the retained value. Each individual state models one
+writer, but the GADT alone does not consume a permit across calls or processes. The current
+`CascadeQualificationReceipt` uses these transitions for qualification mark and dry-run planning;
+this observation is not evidence of two live writers. Before activation, the implementation must
+enforce the transition at an authoritative, durable exclusive mutation boundary and validate stale
+pre-activation callers, concurrent activation and restart/recovery against it. The existing pure
+model and a successful qualification witness do not discharge that obligation. The rebuilt unit
+suite's retained-state counterexample and per-state model control both pass; documentation lint
+passes. The first focused test invocation used an invalid pattern and ran no tests. These source
+and test changes postdate the last full canonical gate, which is therefore historical.
+
+**Qualification ledger append serialization, 2026-11-08.** `appendCycleRecord` now holds a
+nonblocking exclusive lock on the ledger directory across reading, validating, appending, syncing
+and read-back. A competing cooperating writer is refused instead of constructing another entry from
+the same tip. The rebuilt ledger suite's **29** tests pass, including a separately held lock that
+refuses an append without changing the ledger and allows it after release. This serializes ledger
+appends; it is not an Authority fence, a protection against non-cooperating filesystem changes, or
+the live writer transition required above. The canonical `prodbox dev check` passed with
+**9,784 + 27 + 35 + 922** tests, unchanged inputs and both terminal receipts in
+`ledger-append-lock-canonical-gate-1.json` (1,183.97 seconds).
+
+**Qualification mark tip binding, 2026-11-08.** Cutover mark recording now supplies the exact
+tip from its qualification observation to the locked append. If the ledger changed in between,
+the append refuses and requests a fresh observation; a matching tip proceeds through the existing
+ledger rules. The rebuilt executable and unit suite compile; **30** ledger and **6** receipt tests
+pass, including a stale-tip refusal of an otherwise valid record and a matching-tip control. The
+operator SHA-256 is `5c63e18a4a0812919b08c2e38d57f80b038f94958c77314a5bba05b73ec81dec`.
+This is a ledger-history check, not a fence on source, deployment or live writers. The preceding
+canonical gate is historical for the previous source. The new `prodbox dev check` passed with
+**9,785 + 27 + 35 + 922** tests, unchanged inputs and both terminal receipts in
+`qualification-mark-tip-canonical-gate-1.json` (1,162.37 seconds).
+
+**Signed scope test integration attempt, 2026-11-08.** A compact synthetic retained-receipt
+fixture and signed client/real-handler test were drafted for the authenticated-transport suite.
+The suite build refused the import because `ProviderScopeObservation` is package-private; the
+test did not run. Exposing that module merely for the test would widen a proof boundary, so the
+draft is retained under `.build/sprint-6.5/resume-20261102/scope-supported-draft-1/` and the
+supported Cabal file and test entrypoint were restored byte-for-byte to the last canonical-gate
+inputs. The draft's synthetic receipt has not been validated. Durable signed-suite coverage still
+needs a test arrangement that exercises the production private implementation without widening
+its package interface; the earlier private signed fixture remains the current evidence.
+
+**Signed scope test integration, 2026-11-08.** The authenticated-transport test component now
+compiles the two package-private observation modules through test-only symbolic links to their
+production sources; the library's exposed modules are unchanged. A compact synthetic retained
+receipt drives the actual signed client and Authority handler. The maintained suite covers a
+matching receipt, replayed nonce, fresh retry, wrong submission key, mismatched operation and
+malformed receipt, and checks Authority reads without writes. All **923** authenticated-transport
+tests pass and `prodbox dev lint files` passes. The first test-component build lacked the private
+modules' `containers` dependency; a subsequent build exposed a name-shadowing warning, and the
+first file lint refused a literal region. These were corrected before the passing run. The test
+builds private source again in its own component; it does not prove live networking, complete
+resource funding or ordinary-caller integration. The preceding canonical gate is historical for
+the earlier source. The new `prodbox dev check` passed with **9,785 + 27 + 35 + 923** tests,
+unchanged source and link snapshots, and both terminal receipts in
+`signed-scope-supported-canonical-gate-2.json` (1,178.82 seconds).
+The first gate wrapper stopped before starting the command because its source snapshot rejected
+symbolic links; a replacement wrapper records the two explicitly allowed link targets and their
+content hashes as well as all other source inputs.
+
+**Signed scope source-distribution drift control, 2026-11-08.** `cabal sdist` materializes the
+two test links as regular files in the archive. Both copies match their production counterparts in
+the observed archive. The maintained transport suite now compares each pair, so an unpacked
+distribution cannot silently run the signed test against an edited test copy. The comparison
+passes in the unpacked distribution and fails when that isolated copy is deliberately changed;
+the modified unpacked fixture is under `signed-scope-sdist-1/` in the current evidence root. The
+full authenticated-transport suite passes **924** tests. The preceding canonical gate is historical
+for the earlier test source. The new `prodbox dev check` passed with **9,785 + 27 + 35 + 924**
+tests, unchanged source and link snapshots, and both terminal receipts in
+`signed-scope-sdist-canonical-gate-1.json` (1,138.29 seconds).
+
+**Signed scope availability re-observation, 2026-11-08.** The maintained signed scope test now
+performs a successful read, makes the Authority repository unavailable, and verifies that a fresh
+nonce returns a refusal rather than the earlier receipt. After restoring the repository, another
+fresh nonce succeeds; read counts and zero Authority writes are checked. All **924** transport
+tests pass. This is an in-memory availability transition, not a generation-rotation or live-network
+test. The preceding canonical gate is historical for the earlier test source. The new
+`prodbox dev check` passed with **9,785 + 27 + 35 + 924** tests, unchanged source and link
+snapshots, and both terminal receipts in `signed-scope-unavailable-canonical-gate-1.json`
+(1,164.15 seconds).
+
+**Evidence storage cleanup, 2026-11-08.** The local filesystem had about **0.59 GiB** available.
+A verified scan found inactive historical fixture outputs already preserved in the artifact store.
+**460** regular output paths now share byte-identical archived inodes, preserving each path, mode,
+ownership and modification time; both copies were hashed before replacement and paired receipts are
+in `.build/sprint-6.5/resume-20261102/artifact-deduplication{,-small}-20261108.jsonl`. This
+recovered **46,750,806,672 bytes**. These paths now share writes: rerun a historical fixture into a
+new output path, never overwrite either linked copy. The operator and current compiler outputs were
+not selected.
+
+Eight additional inactive fixture executables were compressed with independently verified SHA-256,
+recovering **1,312,144,544 bytes** net. Their original executable paths are absent until restored;
+the manifest is `.build/sprint-6.5/resume-20261102/evidence-compressed-20261108/manifest.jsonl`.
+Restore one to its original path with `python3
+.build/sprint-6.5/resume-20261102/restore-fixture-20261108.py <original-path>`; it refuses an
+existing path and verifies the decompressed hash. Sources, logs and terminal receipts remain.
+Closing observation shows **45.36 GiB** available. This clears the recorded **45 GiB** admission
+floor at observation time, with little headroom; it does not itself establish qualification or
+change the live campaign protocol.
+
+**Additional evidence compaction, 2026-11-08.** After later private fixtures reduced available
+space, **94** inactive content-addressed artifact snapshots and **33** inactive fixture executables
+were compressed. Each archive was independently decompressed and SHA-256 checked before its
+original path was removed; artifact hashes were also checked against their names. A restore of one
+file from each archive set passed verification and those two paths are present. After those restore
+controls, the net recovery is **19,790,763,933 bytes (18.43 GiB)** and the observed filesystem has
+**46.60 GiB** available. The manifests are
+`.build/sprint-6.5/resume-20261102/evidence-compressed-{artifacts,fixtures}-20261108/manifest.jsonl`.
+An archived path is absent until restored. Restore it with, respectively, `python3
+.build/sprint-6.5/resume-20261102/restore-artifact-20261108.py <original-path>` or `python3
+.build/sprint-6.5/resume-20261102/restore-fixture-extra-20261108.py <original-path>`; each refuses
+an existing path and verifies the decompressed digest. This observation clears the recorded 45 GiB
+floor at observation time only; it is not deployment qualification or permission to skip the live
+campaign protocol.
+
+**Further fixture compaction, 2026-11-08.** After subsequent native fixtures again reduced free
+space below the live-attempt floor, **56** inactive fixture executables were compressed and each
+archive independently decompressed and verified. One original path was restored as a control and
+remains present; after that control, net recovery is **8,981,477,398 bytes (8.36 GiB)** and the
+observed filesystem has **47.84 GiB** available. The manifest is
+`.build/sprint-6.5/resume-20261102/evidence-compressed-fixtures-later-20261108/manifest.jsonl`;
+an absent path can be restored with `python3
+.build/sprint-6.5/resume-20261102/restore-fixture-later-20261108.py <original-path>`. The restore
+refuses an existing path and verifies the decompressed digest. One restored control path also
+appears in an earlier archive manifest; either verified archive can restore it when absent. This
+space observation is not qualification and must be repeated before any image/live attempt.
+
+**Later fixture compaction, 2026-11-08.** After subsequent validation reduced free space below
+the **45 GiB** image/live floor, **24** inactive single-link fixture executables were compressed.
+Each archive was independently decompressed and hash-checked before removing its original path;
+one original was restored and verified as a control and remains present. Net recovery after that
+control is **3,704,620,287 bytes**; the closing free-space observation is **46.93 GiB**. The
+manifest is `.build/sprint-6.5/resume-20261102/evidence-compressed-fixtures-current-20261108/manifest.jsonl`.
+Restore an absent executable with `python3
+.build/sprint-6.5/resume-20261102/restore-fixture-current-20261108.py <original-path>`; it refuses
+an existing path and verifies the digest. This observation is not a live qualification and must be
+repeated before any image or live attempt.
+
+**Post-validation fixture compaction, 2026-11-08.** As local validation again reduced free
+space below the **45 GiB** image/live floor, **37** inactive single-link fixture executables were
+compressed and each archive was decompressed and hash-checked before removal of its original. One
+original was restored and verified as a control and remains present. Net recovery after that control
+is **5,861,728,823 bytes**; the closing observation was **45.91 GiB** free. The manifest is
+`.build/sprint-6.5/resume-20261102/evidence-compressed-fixtures-post-20261108/manifest.jsonl`.
+An absent executable can be restored with `python3
+.build/sprint-6.5/resume-20261102/restore-fixture-post-20261108.py <original-path>`; the restore
+refuses an existing path and verifies the digest. This observation is not a live qualification and
+must be repeated before any image or live attempt.
+
+**Host sizing recheck, 2026-11-08 11:26 UTC.** A read-only host snapshot reports eight
+logical CPUs available to this process and 16,312,648 KiB total memory, with RKE2 active and no
+hypervisor detected. The recorded complete-workload minimum remains 9,045 milli-CPU / 17,482 MiB;
+this host remains below both dimensions before any additional controller reserve. Evidence is
+`.build/sprint-6.5/resume-20261102/host-sizing-observation-20261108-2.json`. This is not a native
+admission receipt; the pending host-sizing decision and a fresh native observation remain necessary
+for a live qualification attempt. Offline implementation and validation can continue.
+
+**Recent fixture compaction, 2026-11-08.** Another **24** inactive single-link fixture
+executables were compressed and each archive independently decompressed and hash-checked before
+removal. One original was restored and verified as a control and remains present. Net recovery
+after that control is **3,724,321,781 bytes (3.47 GiB)**; the closing observation was **45.91 GiB**
+free. The manifest is
+`.build/sprint-6.5/resume-20261102/evidence-compressed-fixtures-recent-20261108/manifest.jsonl`.
+Restore an absent executable with `python3
+.build/sprint-6.5/resume-20261102/restore-fixture-recent-20261108.py <original-path>`; the restore
+refuses an existing path and verifies the digest. Repeat the free-space measurement before any
+image build or live attempt.
+
+**Terminal blocker integrity, 2026-11-08.** The supported cleanup-report binding now refuses
+blocked nodes whose recorded blockers are empty, foreign, satisfied, or otherwise inconsistent
+with the graph and final terminal outcomes. The check reuses the state machine's blocking rule and
+allows later failures to add blockers after settlement. The warning-clean operator/unit build and
+all **32** focused CleanupRun cases pass, including actual late-blocker and malformed-report
+regressions. The new operator SHA-256 is
+`5fbe396de98ff03209b0247ce95acc8fd222dcc550a2931e65a410761a6c71dc` after formatting and
+rebuilding; the previous full gate below is historical for its prior source identity. The first
+two new canonical checks stopped at the formatter (receipts `blocker-report-canonical-gate-{1,2}.json`);
+the second exposed a version mismatch with the host formatter. The repository-pinned formatter,
+HLint and rebuilt **32** focused tests pass. The subsequent canonical `prodbox dev check` passed
+with **9,781 + 27 + 35 + 922** tests, unchanged inputs and both terminal receipts in
+`blocker-report-canonical-gate-3.json` (1,157.77 seconds). This report integrity fix does not
+establish current resource absence or complete Sprint 6.5.
+
+**Recovery controller seam guard, 2026-11-08.** The supported source rule additionally refuses
+exports of the recovery controller's injected observation and claimed continuation, its admission
+constructor, and the kernel's injected raw-claim seam. The warning-clean operator/unit build,
+focused rule regression and `prodbox dev lint files` pass. The new operator SHA-256 is
+`22ca4147d8d4f6c00b65ff24dbc6eea1d6ec6352790b3dad32ab316d0a169e7e`; the preceding gate is
+historical for the previous source. The fresh canonical `prodbox dev check` passed with
+**9,782 + 27 + 35 + 922** tests, unchanged inputs and both terminal receipts in
+`recovery-controller-seam-canonical-gate-1.json` (1,167.28 seconds). This policy does not integrate
+the private controller or establish recovery admission.
+
+**Recovery claim seam guard, 2026-11-08.** The supported source rule now also refuses exports
+of the private kernel claim interpreter, its injected-action seam and the lower-level claim seams.
+The warning-clean operator/unit build, focused regression and `prodbox dev lint files` pass. The
+new operator SHA-256 is `de126363ac7da434b4c8400e61af7b45762d6c9f15739ddc84db8a804ba983c9`;
+the full gate below is historical for the preceding source. The fresh canonical gate passed with
+**9,782 + 27 + 35 + 922** tests and unchanged inputs in **1,159.68 seconds**; its terminal receipts
+and source identity are in `recovery-claim-seam-canonical-gate-1.json`. The source rule does not
+activate the private claim or provide runtime admission.
+
+**Recovery claim interface gate, 2026-11-08.** The supported doctrine checker now restricts
+references to the planned recovery input and program internal modules to their owning facades and
+kernel interpreter, and rejects raw claim/constructor exports or module re-exports from those
+owners. Focused allowed/forbidden import and export cases pass; the rebuilt operator and unit suite
+compile and `prodbox dev lint files` passes. The new operator SHA-256 is
+`ad660a2f479a1d53f9415a378543411fb330db511cefcfd0899cd0ed6c8786a8`. The canonical gate passed
+with **9,782 + 27 + 35 + 922** tests and unchanged inputs in **1,155.68 seconds**; both terminal
+receipts and source identity are in `recovery-claim-boundary-canonical-gate-1.json`. Earlier gates
+are historical for their earlier sources. This text/source policy does not itself integrate the
+private recovery code or prove its runtime admission.
+
+**Previous supported-source gate.** Before the terminal blocker integrity change above, an operator rebuild and canonical `prodbox dev check`
+passed against the supported source, including the cleanup-report binding additions. The main unit
+suite passed **9,779** tests; Authority admission, authentication and authenticated transport
+passed **27**, **35** and **922** tests respectively. The bounded run completed in **1,184.27 s**
+with unchanged supported inputs and producer/launcher terminal receipts; evidence is
+`.build/sprint-6.5/resume-20261102/current-supported-gate-20261108.{json,log}`. The rebuilt
+operator SHA-256 is `4f62e3cc5c53fa9e2327a7e4a5ff51a7f67ec085b2187ad48d76d2198b15ff33`.
+This result does not validate the private parent composition or qualify a live deployment.
+
+**Ordinary completion integration boundary.** Draft **190**'s
+`submitAndRetirePublishedOrdinaryController` has no consumer in the private source tree: its
+result independently records the submission outcome and physical input-retirement disposition.
+The supported `observeHistoricalHostCleanupCompletionForRun` joins an exact run's host cleanup
+intent, sealed handoff and local completion journal; it is historical local-terminal evidence,
+not an authenticated Authority report or proof of current absence. The existing next-bootstrap
+`reconcileHistoricalHostCleanup` separately reads and verifies the Authority report before intent
+retirement. Connecting the ordinary caller therefore requires an exact request/run/graph/scope
+binding and the applicable authenticated report or terminal-journal path; a run ID, submission
+success or input retirement alone cannot establish business completion. This source review does
+not validate the connection, change the supported command path or close Sprint `6.5`.
+
+**Scope recovery observation.** The supported ordinary scope journal now has an
+observation operation that checks the exact existing program and request binding before returning
+an operation ID, without preparing or repairing journal records. The ID remains a recovery
+coordinate, not a verified Authority receipt. A regression covers absent, prepared, committed,
+conflicting and incomplete records. The operator/unit build, all **19** scope-journal tests and
+`prodbox dev check` pass; the gate's main unit suite passed **9,777** cases. Integration with
+the ordinary caller, Authority verification, funding and the sprint validation gates remain open.
+The Authority-internal `readBackVerifiedAuthorityProviderAwsScopeInternal` already reads the exact
+retained Provider operation and validates its completed scope receipt. The authenticated general
+operation observer returns only the operation ID and submission status; it does not return that
+receipt. The Provider dispatch route can admit and execute work, so it is not a read-only
+replacement. A recovery connection needs an authenticated, bounded Authority-owned observation of
+the exact retained scope receipt, with missing, pending and conflicting identities left unresolved.
+That read must first resolve the submission key for the authenticated caller's principal and key
+generation, as the existing operation observer does, and verify the resulting exact operation
+against the Provider receipt in the same Authority snapshot. An operation ID supplied alone does
+not establish that caller binding. A private `verifyRegisteredAuthorityProviderAwsScope` now
+implements that same-snapshot join. An isolated fixture against the rebuilt formatted library
+accepts a matching completed scope and refuses pending, foreign-caller, wrong-generation,
+wrong-key and wrong-operation cases; its temporary package configuration exposes the private
+module only to that fixture. Evidence is `scope-join-controls-1/result-1.json` under the current
+Sprint `6.5` evidence root. A second fixture gives two registered callers the same key and a
+completed scope operation each; each own-operation check passes, while the second caller cannot
+verify the first caller's operation. Its evidence is `scope-join-controls-3/result-1.json`.
+The private `readRegisteredAuthorityProviderAwsScopeReceipt` now obtains one Authority snapshot,
+checks that same binding from the verified caller slot and returns its retained receipt. A fixture
+checks exact receipts, cross-caller and changed-generation refusals, unavailable reads, one read
+per call and no writes; evidence is `scope-observer-controls-1/result-1.json`. The current library
+build passes. These are private in-process controls. A new Authority route and authenticated client
+now call the observer. The library build and a direct handler fixture pass: it accepts the exact
+receipt and refuses a service caller, wrong key and oversized request without repository writes.
+Evidence is `scope-route-controls-1/result-1.json`; a previous build failed on a module cycle and
+the separated handler fixes that compile failure. The rebuilt unit executable's route-registry,
+server-seam, Provider-dispatch and scope-proof boundary selections pass (**9**, **32**, **9** and
+**10** cases respectively). The fixture is not signed-transport proof or a full funding/activation
+claim. Caller integration remains open; the earlier gate predates this change.
+The scope observation now uses fresh-nonce replay handling so a cached receipt cannot bypass a
+later caller-generation check. Signed-frame controls pass for fresh-nonce replay and the producer
+response ceiling using a stand-in inner handler; the current direct-handler fixture also passes.
+The authenticated-transport suite passes **922** cases. Evidence is `scope-route-controls-2/result-1.json`.
+A further local fixture runs the actual scope client and handler through signed frame verification
+and retained replay, with an in-memory Authority and transport callback: the exact receipt and a
+fresh nonce pass, while a repeated nonce and wrong key refuse; three repository reads and no writes
+are observed. Evidence is `scope-signed-controls-1/result-1.json`; an initial fixture compile failed
+on an import and was corrected. A further signed-client fixture also refuses a mismatched response
+operation and malformed receipt, while recording five Authority reads and no writes; evidence is
+`scope-signed-controls-2/result-1.json`. Its initial missing-field compile failure was corrected.
+These fixtures are not live network or deployment proof. Durable suite integration, full resource
+funding and ordinary-caller integration remain open. The canonical `prodbox dev check` now passes
+against the current source, including the **922**-case authenticated-transport suite. The rebuilt
+operator SHA-256 is `53f1a5c76bfe5d5ac18af20695f0c4cd7c4bac60eb13806ea985b7ce08bf498c`,
+superseding the earlier public binary identity below.
+For report integration, `observeDescriptorBoundCleanupRunCompletion` checks the requested run ID
+and descriptor digest even for a compacted result; the ordinary caller must additionally compare
+the returned report's graph digest, node identities and terminal states with its reconstructed plan.
+A local terminal handoff needs its
+own exact historical-journal join, because the Authority can already be absent. Neither branch is
+connected to the ordinary caller yet.
+The current source adds `validateCleanupRunReportBinding` and a descriptor-bound observation helper
+that applies it to present reports. They check the run, graph digest, complete node identity set and
+terminal states; they do not authenticate the source or decide success. The library/unit build and
+all **30** cleanup-run tests pass. An in-memory client fixture also confirms that missing stays
+missing, a valid terminal report is returned and an incomplete node set is refused; evidence is
+`report-binding-controls-1/result-1.json`. Its initial fixture compile used a text digest where the
+typed digest was required and was corrected. The current canonical gate covers this source; the supported ordinary caller and local terminal
+branch do not yet consume this helper.
+Private draft **191** composes the original scope-journal binding, authenticated scope read,
+candidate-plan reconstruction and graph-bound Authority report observation. A missing recorded
+scope is a refusal and an observed nonterminal report remains unresolved. Its bounded build failed
+because the submission-key error was declared as the wrong type; private inputs remained unchanged,
+but the plan ledger changed during the run, so the whole-worktree manifest also differs. Draft
+**192** corrects the error type; its bounded warning-clean build passes with unchanged worktree and
+private inputs. A temporary-root fixture at the original **128 MiB** heap limit proves a missing
+scope record refuses before the Authority transport is touched; both input manifests remain stable.
+Evidence is `ordinary-authority-completion-build-2.json` and `ordinary-authority-fixture-run-1.json`;
+the fixture binary SHA-256 is `0370f838e0fcde1dcebed444dab965d768a83705e4051594573f23f6f01dbded`.
+Positive report observation, public caller integration, the local terminal-handoff branch, complete
+funding and qualification remain open.
+A separate positive fixture is being built to join the exact synthetic report through the signed
+scope and cleanup routes. Its first build refused a shadowing warning in copied test scaffolding;
+the next refused an unused import. Neither fixture ran, and inputs remained stable. A corrected
+fixture passed through both signed routes, reading an exact synthetic report without Authority
+writes at the **128 MiB** heap limit; its binary SHA-256 is
+`0c34f9f3bbf8f627bb164ae8476feb08538d670c41c96327402a37f24c570006` and evidence is
+`ordinary-authority-fixture-run-4.json`. A follow-on fixture accepts the matching report and
+refuses wrong-graph, missing-node and nonterminal-node reports through both signed routes, with no
+Authority writes and the same heap limit. Its worktree and private inputs remained stable; evidence
+is `ordinary-authority-fixture-run-5.json`, and its binary SHA-256 is
+`ed5ad18977c63d2cd112935598740f7f88fb12d711ecce7495d406e6f0390310`. These are in-memory controls,
+not live deployment evidence or complete funding.
+Private draft **193** adds a separate local historical-completion observer: it requires the original
+scope-journal binding, reconstructs the plan from the handoff's retained scope, and checks the
+sealed descriptor, host intent and report structure. Its build and behavioral validation are
+partially complete: the warning-clean bounded build passes with unchanged worktree and private
+inputs. A temporary-journal fixture at the original **128 MiB** heap limit refuses both a missing
+scope record and a missing terminal handoff; its binary SHA-256 is
+`251a623d1554e9415ec92c007daed864b21302c7349105942e05f7551a30d0b2`, and evidence is
+`ordinary-local-completion-build-1.json` and `ordinary-local-fixture-run-1.json`. Both input manifests
+remained stable. Historical evidence is not a statement of current host absence; positive local
+caller integration and complete funding remain unproved. A test-only overlay constructs a synthetic
+sealed handoff from the actual candidate plan and exercises the production local handoff and
+completion-journal readers: the private observer returns the exact historical report after the
+fixture withdraws its simulated current-absence observation. The bounded run passes at **128 MiB**
+with stable worktree and private inputs; evidence is `ordinary-local-positive-run-1.json`, with
+binary SHA-256 `7e4ab44391874b954980b363817829f5248d15b80acf2b402c51760c1f9e7e27`. This overlay
+does not alter supported evidence constructors and does not prove live absence or complete funding.
+Private draft **194** adds a typed local-first probe. Only a missing exact handoff yields an opaque
+token for the separate Authority observation; all other local refusals remain unresolved. Its
+warning-clean fixture passed with the original **128 MiB** heap: it checks missing scope, missing
+handoff, a synthetic sealed historical completion, and a missing completion journal. The test-only
+overlay builds the synthetic handoff from the candidate plan; it does not prove live completion.
+`ordinary-completion-probe-run-1.json` records unchanged supported inputs, and the private input
+manifests also match. Fixture binary SHA-256 is
+`9052075030e3bda157e9c264cdf244feef91ec7224826bc71c6fee2fdc23447f`.
+A second bounded fixture carries the probe's opaque token through the signed in-memory Authority
+observer: the exact synthetic report passes and wrong graph, missing node and nonterminal node
+are refused without Authority writes. `ordinary-completion-probe-run-2.json` records unchanged
+supported inputs; private input manifests also match. Its fixture binary SHA-256 is
+`e3d4c34c34fbea9008dfcd70ca183218ca677a2cd5eb9ebd15251427c748d699`.
+A third bounded fixture compiled but stopped during invalid-report controls. A fourth fixture
+expands only the signed in-memory test replay store from eight to sixteen entries for the added
+requests; it passes at **128 MiB**, preserving a failed terminal report and refusing a wrong-run
+report as well as the earlier graph and node controls, without Authority writes. The first failure
+is consistent with replay-store exhaustion but did not identify its exact refusal. Production
+budgets are unchanged. `ordinary-completion-probe-run-{3,4}.json` retain both outcomes; run 4 has
+stable supported and private inputs and fixture SHA-256
+`a3653a6d8accb220081bdcbc32150dea4a5cb14349f79d5d2b0df4b560afcaac`. The probe has no public caller yet; original owner-scoped Authority
+observation and complete resource funding remain open.
+
+Private draft **195** composes the fixed submit-and-retire operation with the local-first completion
+probe. It retains the original attempt result and probes only after submitted-input retirement;
+never-sent and unresolved dispositions carry no probe. A warning-clean native fixture passes the
+two never-sent refusals, a dummy submitted child with an unresolved completion probe, and submitted
+cancellation with its original exception and six-role/input retirement. The fixture uses dummy
+non-AWS credentials and the original **128 MiB** heap; it does not exercise business completion.
+`ordinary-parent-completion-run-1.json` records stable supported inputs and the private manifests
+match. Fixture SHA-256 is `8a6c8f2c5c972ac6493624cf9bf03efc9580a4ec76b057c1ab8826443c917193`.
+A second native parent fixture passes with a synthetic sealed historical completion derived from
+the exact request's candidate plan. After the dummy child and input retirement, the parent returns
+the exact synthetic report; the separate cancellation case still preserves the original exception
+and retires all roles and inputs. This is a test-only overlay and does not prove a live cleanup.
+`ordinary-parent-completion-run-2.json` records stable supported inputs; private manifests also
+match. Its fixture SHA-256 is `5eaf6928bc7c18ebf4c4db8ad05ad160915485848f89b2700d01e95c4e233075`.
+The rebuildable binary for failed `ordinary-completion-probe-run-3` was removed to recover
+**226,385,240 bytes**; its source, input manifest, log and terminal result remain, and its removed
+binary SHA-256 was `416bcf343457d9885571376700d8377efdc2c74d0e1649a18a5f243830b27aea`.
+Private draft **196** adds interrupted-parent recovery: it retains the exact recovered physical
+disposition and probes completion only after a submitted retirement receipt. A warning-clean native
+fixture passes never-sent recovery and a submitted attempt interrupted twice: the original
+cancellation survives, inputs remain while the child is live, replay is refused, and recovery
+retains the submitted receipt before reporting the dummy completion as unresolved. The six roles
+and inputs are absent afterward. The fixture creates no AWS operation and uses the original
+**128 MiB** heap. `ordinary-parent-recovery-run-1.json` records stable supported inputs; private
+manifests also match. Fixture SHA-256 is
+`bdbb7368e7f99c4e0727271c904291497305ea0e49302115dac961f6474742db`.
+Private draft **197** adds an owner-scoped Authority observation entry. It checks that the actual
+authentication's original process, deadline, context and profile match the request, and that the
+scope journal's parent and registered signer identity match, before opening the owned Authority
+channel. Its bounded build is warning-clean and the existing signed-observation regression passes
+at **128 MiB** with stable supported and private inputs; `ordinary-owned-completion-run-1.json`
+records the run and fixture SHA-256 is
+`97b8510f1d96bfdf55edacf656ff06edc56e4295ccf297f28381307d503839a5`. The regression exercises the
+existing observer, not the new owner checks; those require direct positive and refusal controls.
+Private draft **198** additionally requires the opaque token returned only by the missing-handoff
+probe before selecting the owned observation. Its warning-clean bounded build and existing signed
+observation regression pass at **128 MiB**, with stable supported and private inputs. Evidence is
+`ordinary-owned-completion-run-2.json` and fixture SHA-256 is
+`dc6f44fb82f46acbee0835edac390dfe64659c3033fb8ce0263f97aea143b566`. The regression does not call
+the owned entry or test its owner guards. The entry has no production caller and cannot outlive the
+original owner. Fresh recovery ownership, direct owner checks, full resource funding and
+supported-command integration remain open.
+
+Private draft **199** factors the owned entry's binding checks into its unexported action gate. A
+test-only overlay differs from that source only by exporting the gate. At **128 MiB**, the bounded
+fixture admits one exact synthetic binding and refuses a mismatched preparation, execution key,
+window, principal, signing generation or public key before the action runs. Supported and private
+inputs remain stable; evidence is `ordinary-owned-gate-run-1.json` and fixture SHA-256 is
+`7d285b780dd0cddb1a26dea98e10b082bc4caa05a198471198374dafacca4425`. These controls do not create
+or verify a live authenticated owner, prove fresh-owner recovery or fund the complete program.
+A second bounded fixture joins this gate to the signed in-memory scope/report observer: a foreign
+generation refuses before nonce generation or Authority reads, while the exact synthetic binding
+reaches the signed observer and retains its failed-report and invalid-report controls. It uses the
+same test-only gate export and does not construct a real `OperationCallerAuthentication`. The run
+passes at **128 MiB** with stable supported and private inputs; evidence is
+`ordinary-owned-gate-run-2.json` and fixture SHA-256 is
+`f2ab7728de428c0023052ddd2732e5d965a9aafcc643e3bad39a57c6e87318a4`.
+A native fixture now verifies actual original-owner caller preparation with a public fixture
+kubeconfig: its exact owner, deadline, context and profile match, while a different deadline is
+refused. The dummy submitted child retires its inputs and all six roles; no Authority authentication
+or business execution occurs. The corrected fixture passes at **128 MiB** with stable supported and
+private inputs; evidence is `ordinary-owned-native-run-2.json` and fixture SHA-256 is
+`50f6624fd5671e6fb2f1731968b9030978f0eb3433901f4fe88c352000e0258d`. The first run also passed
+its assertions but retained two stale copied receipt/log labels; it remains in
+`ordinary-owned-native-run-1.json`. Neither run validates an actual authenticated caller or the
+owned observation itself.
+Private draft **200** hides the parent result constructors and creates an opaque recovery-observation
+capability only from a submitted retirement receipt and the Authority probe produced by the same
+fixed parent flow. The first native fixture stopped before submission because copied test setup
+created a synthetic terminal history before the new scope-only setup. The second stopped at an
+unused copied-helper warning. A third fixture passed the native controls at **128 MiB**; its
+fixture SHA-256 is `e23566d376fe8a9041df5fee796dba82ef2c26fcb4baedff0b9ae39d4fcca0ca` and
+`ordinary-recovery-token-run-3.json` records stable supported and private inputs. Draft **201**
+replaces exported record fields with ordinary accessors to prevent external record updates. Its
+native revalidation passes at **128 MiB**, retaining the never-sent, submitted and interrupted
+controls with stable inputs; fixture SHA-256 is
+`53eb07e651159f74d5ba0fa633aab2aa8c254fa048b63ec7f7c5e5943accad1b`, with evidence in
+`ordinary-recovery-token-run-4.json`. The external record-update control confirms GHC refuses to
+use the accessor as a record field; `ordinary-recovery-token-negative-run-2.json` records the
+control. Its first harness expected the wrong diagnostic wording, although GHC had already refused
+the update. Private draft **202** adds a fixed read-only interpreter for that capability. It requires a
+different live process key, the new owner's matching bounded caller preparation and the original
+registered caller identity, then reads only the original scope and completion report. Its bounded
+synthetic gate/signed-observer fixture passes at **128 MiB**: it refuses the original process key,
+a mismatched preparation and foreign signing generation before nonce creation or Authority reads,
+and accepts the matching synthetic owner through the existing signed report controls. The two
+test-only overlays differ from private source only by exporting their gates. Supported and private
+inputs remained stable; evidence is `ordinary-recovery-observer-run-1.json` and fixture SHA-256 is
+`2024ddf9eec5d601bb41554f99c40ad829dc6bf11a10cd975f4a242c23046de1`. The fixture does not invoke
+the production interpreter with a real owner or construct its joined capability. Creation and
+admission of a dedicated fresh owner, its complete budget, native authenticated execution and
+supported routing remain open.
+Private draft **203** enumerates the two read-only recovery routes and their existing encoded
+response ceilings as one input to a future complete budget. A bounded fixture passes at **128 MiB**:
+six signed in-memory client/handler traces match the scope-then-report schedule, response bodies fit
+their respective existing ceilings, and the report request selects fresh-nonce observation handling.
+Supported and private inputs remained stable; evidence is `ordinary-recovery-schedule-run-1.json`
+and fixture SHA-256 is `8c54ba0dc6ba7be2e36b2fa6d476b936ac50601568953689265fd0a00524199d`.
+This projection alone does not establish heap, native, replay-slot, owner or Authority admission.
+Private draft **204** feeds the two observed frames and one Authority role scope into the existing
+registered-caller traffic and cost model. Bounded counter and signed-route checks pass at
+**128 MiB**, including exhaustion of each derived counter; supported and private inputs remained
+stable. Evidence is `ordinary-recovery-budget-run-1.json`, fixture SHA-256
+`a2447670d0113e82e609cb5aac67efff799367171a46d1105483b2861043c20a`. Draft **205** checks the
+actual authenticated caller's declared starting traffic against that projection before recovery
+observation. A bounded fixture passes exact projection, one-under controls for all eight traffic
+dimensions, exact exhaustion of the actual counter implementation, and the signed route regression
+at **128 MiB**. Its test-only overlays differ only by exports; supported and private inputs remain
+stable. Evidence is `ordinary-recovery-budget-run-2.json`, fixture SHA-256
+`34e59e6a2024d6ad13ddaa3ed16aff8f262de9241634b46ca7d975f4f91666c1`. The fixture does not construct
+a real authenticated caller or inspect remaining counters; the mutable caller budget independently
+debits real effects. These calculations do not install or admit a dedicated recovery caller or prove
+remaining heap and physical costs. This capability does not itself admit a fresh owner or open a
+channel.
+
+Private draft **206** adds a bounded canonical recovery-request envelope: it retains the exact
+original request while requiring a distinct recovery key and binding decode to the observed recovery
+key/window. Its first fixture stopped on a test-only name-shadowing warning. The corrected bounded
+fixture passes round-trip, original-key reuse, owner-key/window mismatch, zero deadline, malformed,
+trailing, oversized and foreign-settings controls at **128 MiB**. Supported and private inputs
+remained stable; evidence is `ordinary-recovery-request-run-2.json` and fixture SHA-256 is
+`a05aa411ff3bdf6caa5ba544975bbbc0274389698633d1279506f7d34ef834c6`. It does not publish, admit
+or run a recovery owner, and its complete decoding/allocation budget remains open.
+Private draft **207** binds the recovery request and recovered disposition in an opaque session,
+checks the fresh owner key/window before retirement or observation, and uses the existing live-owner
+guard for both actions. A bounded native fixture passes at **128 MiB**: the actual observed process
+owner is refused when the recovery request names a different key, before recovery starts; the dummy
+submitted/cancelled paths still retire all six roles and inputs. Supported and private inputs
+remained stable; evidence is `ordinary-recovery-session-run-1.json`, fixture SHA-256
+`e14d9c6cb49586e431d5eb3fad1f9a57dc33aa226c0f291f635ac66ec2c7a722`. This is a refusal, not a
+positive recovered session. Draft **208** additionally retains the exact process-owner lease in
+the opaque session and requires that same lease at observation. The bounded native foreign-owner
+refusal and existing submitted/cancellation retirement controls pass at **128 MiB**, with stable
+supported and private inputs; evidence is `ordinary-recovery-session-run-2.json`, fixture SHA-256
+`b910810db80a01e1a2fb3881e9a8573794e8f3cccf07a78c54f6420083ebfe55`. The fixture does not enter a
+positive session or directly exercise the observation lease comparison. Owner publication, admission,
+complete funding and authenticated positive execution remain open.
+The first two-owner native fixture stopped at a test callback type error before execution. A
+second fixture reached both dummy submissions but produced no fresh-session result; the owner
+surface discards child stdout/stderr. The third records `RecoverySessionOwnerRefused
+OperationUseDeadlineReached`. A fourth fixture measures the remaining window and elapsed recovery
+time without changing limits. It entered with **14.73 s** remaining and returned after **14.73 s**,
+showing a deadline-length wait rather than entry expiry. The fifth diagnostic's single retirement
+observation returned `OrdinaryLaunchRetirementRefused (RetirementRolePresent OperationSlice)`.
+Both fixture owners used `OrdinaryCascadeController`, whose slice is shared across keys, so the
+fresh owner's slice prevented re-observing the original field's required slice absence. The next
+implementation must provide a distinct recovery-owner physical kind/slice; the original exact
+absence predicate must not be weakened. Evidence is `ordinary-recovery-session-positive-run-{4,5}`.
+The fixture's submitted inputs retired; no Authority authentication or AWS work occurred.
+Private draft **209** introduces a distinct recovery controller kind, unit/slice/publication names,
+and separate kind tags for submission and birth records while preserving the existing tags. It still
+refuses the ordinary input-reader and stdin submission paths for the new kind. A warning-clean
+bounded fixture passes distinct unit/slice/publication names and round-trips the new tags using
+synthetic projections of real captured records, while preserving the original captured bytes. Its
+test-only overlays add only export/helper code; the native interruption case still retires the
+original six roles and inputs. Supported and private inputs remained stable at **128 MiB**; evidence
+is `ordinary-recovery-kind-run-1.json`, fixture SHA-256
+`5d6f1be744678b00e1f199e217d02ec8b564e6898af6d34dd1520b06009d1ba1`. No recovery-kind controller
+was launched; its publication, admission and execution remain unimplemented.
+Private draft **210** additionally projects the observed process owner's controller kind and requires
+`OrdinaryRecoveryController` before either recovery session entry or the fixed read-only observer.
+A native control passes at **128 MiB**: an actual ordinary controller with the recovery request's
+matching key/window is refused, and the existing submitted/cancelled paths still retire all six
+roles and inputs. Supported and private inputs remained stable; evidence is
+`ordinary-recovery-kind-guard-run-1.json`, fixture SHA-256
+`45cc5824dde8b1530574f8872eda0dc4f1da43e023ce27258032548295eff229`. The test does not launch a
+recovery-kind controller or exercise a positive session. Dedicated recovery publication, admission
+and execution remain unimplemented.
+
+Private draft **211** extends the recovery-request envelope with a manager-domain identity. A
+warning-clean bounded fixture passes its round-trip and foreign-domain refusal alongside the
+previous envelope controls at **128 MiB**, with supported and private inputs unchanged; evidence is
+`ordinary-recovery-domain-run-1.json`, fixture SHA-256
+`6fd9c92230c3c5c785e7b5a0585c4341c44a790fa07072977d24fde4b7776fa4`. The expected domain is
+supplied to the decoder by its caller: observing that identity from the actual running manager and
+enforcing it at session admission remain unimplemented.
+
+Private draft **212** attempts a deadline-bounded domain read through the retained process owner's
+manager connection at session entry and observation. The first fixture stopped at compilation
+because its helper modules were omitted from the fixture copy. The corrected fixture passes at
+**128 MiB**: a native ordinary owner's manager read matches its recorded domain, foreign-key and
+ordinary-kind session refusals hold, and submitted and cancellation paths retire all six roles and
+inputs. Supported and private inputs remained stable; evidence is
+`ordinary-recovery-domain-owner-run-2.json`, fixture SHA-256
+`c5684385b2d31564980c70b5885002dcb5d5bc8815e23cc591f7ce6514b93710`. This checks the owner read,
+not the domain-mismatch session branch: a recovery-kind owner and its positive session are still
+not available, and the new read's complete funding is unproved.
+Private draft **213** factors that domain comparison into the check used by both session effects;
+a native ordinary-owner fixture passes matching and foreign-domain controls under the live-owner
+use guard, plus the existing submission, refusal and cancellation controls at **128 MiB**.
+Supported and private inputs remained stable; evidence is `ordinary-recovery-domain-guard-run-1.json`,
+fixture SHA-256 `bed0bd7ecb44106aa206fcae76f3e9bdec47bca2debaa296938b1b1550624543`.
+The comparison is exercised independently of recovery-kind session entry; it does not prove the
+missing recovery launch, positive session, or its complete funding.
+Private draft **214** adds a source-backed initial-profile inspection of the original request
+inside the recovery envelope, without constructing the surrounding decoded graph. A warning-clean
+fixture passes at **128 MiB** for a real encoded request, truncated, malformed and oversized input,
+alongside the previous envelope controls. Trailing bytes remain inspectable and are refused by
+the separate canonical decoder. Supported and private inputs remained stable; evidence is
+`ordinary-recovery-initial-profile-run-1.json`, fixture SHA-256
+`9da55d8a1db62ceaff317f69522cb619fa43e0a357feb962c7f47b97f6a373f6`. The locator is not a
+canonical decoder, runtime funding, owner admission, or a complete recovery input loader.
+Private draft **215** adds a separate recovery-kind descriptor reader that uses the existing
+pre-allocation runtime floor and refuses other controller kinds. The first fixture stopped on a
+test-only name-shadowing warning. The corrected local fixture passes three heap-boundary cases at
+**128 MiB**, both cross-kind refusals and unchanged descriptor positions on refusal; its published
+inputs are retired. Supported and private inputs remained stable; evidence is
+`ordinary-recovery-input-reader-run-2.json`, fixture SHA-256
+`638d3c2f20185769e56db092164e50f892466910462245726f8802d1b6de6994`. This uses synthetic payloads
+under held descriptors; selecting the reader does not authenticate a payload or admit an owner.
+A local composition fixture passes at **128 MiB** using real encoded settings and a recovery
+request through that reader, followed by the separate profile inspector and canonical decoder;
+the published inputs retire and supported and private inputs remain stable. Evidence is
+`ordinary-recovery-input-composition-run-1.json`, fixture SHA-256
+`ffb11dbbec710e83757181807ddd1e6675be7f9e88935972257045efd9f921a8`. It supplies validated settings
+directly and is not the missing funded recovery loader or a recovery-owner admission.
+The existing ordinary captured-input loader ends by preparing the original request and checking
+its original work window and Authority deadline. Recovery after that window cannot reuse that
+preparation as a fresh-owner admission: the shared decoding stages must be separated from original
+preparation, with the retained recovery envelope and fresh owner's costs independently funded.
+Private draft **216** exposes the bounded original-request view needed by that separation. A
+fixture passes at **128 MiB**, checking the view's bytes and that its address lies within the
+retained envelope, alongside the existing inspection and refusal controls. Supported and private
+inputs remained stable; evidence is `ordinary-recovery-original-view-run-1.json`, fixture SHA-256
+`f01c49faf0d869d28e3fe45ce546ec5bf6686fd8e5639ef616450290adb1ce33`. It does not itself validate
+coordinates or funding.
+Private draft **217** experiments with a separate original-request decoding stage under the fresh
+work deadline, without preparing the original operation. Its first staged fixture refused at the
+scratch check: counting the complete envelope as the original command demanded **17,334,519**
+bytes against **16,777,216** available. Draft **218** separately counts the shared envelope
+backing difference and view; its fixture stopped at a warning-as-error name collision. Draft
+**219** corrected that collision and its fixture also refused: the original command alone demanded
+**17,334,231** bytes against **16,777,216**. With fixture scratch derived at **17,825,792** bytes,
+the staged interpreter passes at **128 MiB**, checking the fresh deadline, no original preparation,
+foreign-original refusal and initial denial before parsing. Supported and private inputs remained
+stable; evidence is `ordinary-recovery-decode-stages-run-4.json`, fixture SHA-256
+`792b315e4fe0b3999ea90b4686601031b117bf019e46766a17741f881d7aefa2`. This interpreter simulates
+runtime observations; none of these drafts is connected to a controller. Canonical recovery-envelope
+validation, physical admission and complete retained-data, construction, GC and native funding
+remain open.
+A local fixture also passes at **128 MiB** with actual runtime checks, an expired original window
+and a fresh work window; it separately decodes the canonical recovery envelope and does not prepare
+the original operation. Supported and private inputs remained stable; evidence is
+`ordinary-recovery-native-decode-run-1.json`, fixture SHA-256
+`19ecbf63771d40d6208d057ac289123fafc26dc060109f4a0cf409bff682f75b`. Its test-only overlay exposes
+the existing native load interpreter without changing its implementation. This is one bounded
+fixture, not a proof of complete funding or a recovery-owner admission.
+A combined held-descriptor and actual-runtime fixture also passes at **128 MiB**, reading the
+recovery payload, decoding the expired original with a fresh work window, separately checking the
+canonical envelope, and retiring its published inputs. Supported and private inputs remained stable;
+evidence is `ordinary-recovery-native-pinned-run-1.json`, fixture SHA-256
+`51af7cc51e34bdad8ea47cc80572839cfc43b8f7acaa245835e538aa88314622`. It does not launch a
+recovery-kind controller or prove complete funding.
+Private draft **220** adds the known live recovery-view metadata to the actual runtime-readback
+operand. The held-descriptor and actual-runtime fixture passes again at **128 MiB** and observes a
+readback floor that includes at least the view term. Supported and private inputs remained stable;
+evidence is `ordinary-recovery-native-pinned-run-2.json`, fixture SHA-256
+`037a88d208735646de509629bc259c43f0c5ffd163d9ddbf71ef2b75d050aa40`. The floor comparison checks
+the projection, not all construction or live data; complete funding and recovery admission remain
+open.
+Private draft **221** binds the canonical recovery envelope to the already decoded original
+request, avoiding a second original reconstruction. A fixture passes at **128 MiB** for exact
+round-trip, foreign original, foreign key/window/domain, malformed and trailing input, with stable
+supported and private inputs. Evidence is `ordinary-recovery-bind-run-1.json`, fixture SHA-256
+`729b862fb07da1537e238e7d23b4bf03d2d3e73d7fb216745fbb89661866bba0`. The separate envelope
+decode's full allocation and admission budget remain unproved.
+Private draft **222** adds a prospective selected-data bound for the closed outer recovery wire.
+A bounded fixture measures **4,824** bytes of decoded object graph against a **101,362**-byte
+projection for a **2,513**-byte envelope, alongside the existing binding refusals. Supported and
+private inputs remained stable; evidence is `ordinary-recovery-wire-data-run-1.json`, fixture
+SHA-256 `14d9068394d0206acf1aaace8df843bf38d79cb05d4a8f624faf797d17ea6596`. This one object does
+not prove the bound for every valid input; the projection also excludes parser, encoding/copy,
+GC and native peaks and does not admit a recovery owner.
+Private draft **223** carries the decoded settings/request, live view and prospective outer-wire
+data into the native runtime check before binding the envelope. A held-descriptor fixture passes
+at **128 MiB** with actual runtime checks, an expired original window, foreign recovery-key refusal
+and a control showing runtime denial precedes envelope decoding. Supported and private inputs
+remained stable; evidence is `ordinary-recovery-binding-native-run-1.json`, fixture SHA-256
+`0c596df7ed649573679b1da5e180214edc72e700ef3572a845160c6d855f8e10`. The check is still a
+selected-data floor, not complete encoding, GC, native or physical admission funding.
+Private draft **224** replaces the decoder's separate settings/request/buffer arguments with an
+opaque captured value retaining the exact inputs and fresh window for the binder. Staged and native
+held-descriptor fixtures pass at **128 MiB**, including fresh-deadline, foreign-key and runtime-denial
+controls; supported and private inputs remained stable. Evidence is
+`ordinary-recovery-bound-inputs-run-1.json`, fixture SHA-256
+`3529c8ebe59600a751736160ba53cff03ba70d13bbf9e62cf04ff8f0e7bc6114`. The witness and retained-view
+terms are included in known data checks; complete funding and owner admission remain open.
+Private draft **225** attempts source-bound original-coordinate inspection under the fresh work
+deadline, after independent initial-profile and selected outer-wire data checks. The resulting
+coordinates remain untrusted until canonical binding and owner admission. A held-descriptor native
+fixture passes at **128 MiB**, checking both original and fresh coordinates, the retained envelope
+and foreign-owner refusal alongside the prior staged controls. Supported and private inputs
+remained stable; evidence is `ordinary-recovery-coordinates-native-run-1.json`, fixture SHA-256
+`3ae02f17c293e52241d4bb0e39563bd8710fe85a7ece25903400b2a5fdba8c79`. This does not establish
+complete funding or a recovery owner.
+Private draft **226** carries the inspected source-bound coordinates through decoding and
+canonical binding, so those stages derive the original coordinates and fresh identity from the
+same retained envelope. Known coordinate and witness terms are included in the intermediate
+checks. Its first fixture stopped at a coordinate-variable type collision; draft **227** corrects
+that collision. The second fixture stopped on an unused local in a test-only legacy case. The
+corrected native and staged controls pass at **128 MiB**, including foreign-owner and runtime-denial
+checks, with supported and private inputs stable; evidence is `ordinary-recovery-token-chain-run-3.json`,
+fixture SHA-256 `c7fcc6e59f0a6b6510dc8aabd24dd7b8184344592544d66eceb74e5d7ce9ca87`. The result is
+still private and does not establish complete funding or owner admission.
+The generic held-input layer currently caps a request file at **1 MiB**, while the recovery
+envelope permits the original's **1 MiB** plus **4 KiB** overhead. The mismatch is fail-closed,
+but a complete recovery loader must reconcile the limits without silently excluding valid large
+original requests or broadening other controller kinds.
+Private draft **228** composes held recovery descriptors, bounded decode/binding and opening/closing
+manager readback into a fixed input loader. Local native and staged fixtures pass at **128 MiB**,
+including foreign fingerprint and fresh-key refusals and input retirement; supported and private
+inputs remained stable. Evidence is `ordinary-recovery-loader-native-run-1.json`, fixture SHA-256
+`4ea49854625d18382f6c1a7dd82867c90c42d86014c410110d0fd5ed657e5aa1`. This loader does not
+establish an operation parent or admission, and retains the unresolved input-size and
+complete-funding limitations above.
+Private draft **229** carries a controller-kind-specific request ceiling through held descriptors,
+publication, birth and submission metadata while retaining the ordinary ceiling for other kinds.
+A native fixture passes exact ordinary (**1 MiB**) and recovery (**1 MiB + 4 KiB**) synthetic
+payloads, refuses each kind's request above its ceiling and an oversized configuration, decodes
+birth records, retires inputs and passes the existing loader controls at **128 MiB**. Supported
+and private inputs remained stable; evidence is `ordinary-recovery-input-limits-run-1.json`, fixture
+SHA-256 `a3a2601a9c98fc9a6435aab96bc58710dc8caf6c234f6479a86e7087ca9893ab`. A second native
+fixture passes submission-record decoding at the recovery limit and refuses recovery-request,
+ordinary-request and configuration overflow. It projects synthetic size metadata from a real
+ordinary submission; those projected records are never submitted or used for retirement. The
+original submitted operation is interrupted and its six roles and inputs retire. Supported and
+private inputs remained stable; evidence is `ordinary-recovery-submission-limits-run-1.json`,
+fixture SHA-256 `e9585053e2e689786803f9a6a2df9ffa1611dcfc61e4eb501323ec03e6606c91`.
+Complete funding and recovery-owner admission remain unproved.
+Descriptor-state, publication-owner data, readback-boundary and ordinary-publication regressions
+for draft **229** pass at **128 MiB** with supported and private inputs unchanged; evidence is
+`ordinary-recovery-limit-regression-run-1.json` using the fixture executable identified above.
+These controls cover the descriptor's added ceiling term, but do not establish the complete
+recovery-owner resource budget.
+Private draft **230** keeps the recovery program and validated inputs inside a scoped callback,
+so a future observed owner can borrow the same descriptors. The native fixture passes at **128 MiB**,
+including live descriptor validation, refusal of an escaped handle after normal and exceptional
+callbacks, foreign input refusals and retirement. Supported and private inputs remained stable;
+evidence is `ordinary-recovery-input-lease-run-1.json`, fixture SHA-256
+`37565281fde928e2c73335f44606341af77a4bf51ed1e8091258c877284f10f6`. The lease is not physical or
+Authority admission and its complete retained-data and execution budget remain open.
+Private draft **231** adds a selected-data projection for the live recovery input lease and its
+typed request. Two graph attempts failed inside the loader callback and the bus wrapper reported
+`BusIoRefused`; the fixture used the immutable graph observer even though the held program contains
+an `MVar`. A third fixture uses the existing descriptor-aware observer and passes at **128 MiB**:
+the live lease graph measures **72,832** bytes against a **143,856**-byte selected-data projection.
+Supported and private inputs remained stable; evidence is `ordinary-recovery-lease-data-run-3.json`,
+fixture SHA-256 `f66d31845516d08e99b1c8af7090536fac51ff0d4fc8e2896b4f8638c39d9a49`. One fixture
+does not prove the bound generally, and the projection alone is not a complete construction, GC,
+native, execution or physical admission budget.
+Private draft **232** compiles a non-admitting host baseline for a fresh recovery window from the
+original declared resource shape, observed host data, manager identity and a clock sample. A native
+baseline fixture stopped at a compile-time mismatch between helper bounds and intent accessors.
+Draft **233** adds a read-only bounds projection. A local fixture passes at **128 MiB** against
+native host observation, including foreign-manager, expired-window, insufficient-host and
+foreign-settings refusals, alongside the lease and decode controls. Supported and private inputs
+remained stable; evidence is `ordinary-recovery-host-baseline-run-2.json`, fixture SHA-256
+`42657e468081837368630ce66cfc3723e0f866aa1d12219c44cf9374f1b08e3a`. The original shape has not
+been proved to fund recovery traffic or complete process costs; this baseline creates no operation
+intent or permit.
+Private draft **234** adds a read-only native host-baseline observation under the held input lease,
+with manager, clock and descriptor rechecks. A local fixture passes at **128 MiB**, including
+refusal of the escaped lease and retirement of the fixture inputs; the baseline mismatch controls
+also pass. Supported and private inputs remained stable; evidence is
+`ordinary-recovery-host-observation-run-1.json`, fixture SHA-256
+`e30c4ab10d927c9c14feaf516f205aa9cc2bf90d01e448efcb920d8197a2fef7`. It creates no operation
+intent, reservation or admission and does not prove complete recovery funding.
+Private draft **235** adds exact never-sent and submitted input-retirement routes for the separate
+recovery family, with an interrupted-recovery choice that does not treat a possible send as
+never-sent. The first local fixture encountered an existing one-shot publication namespace; a
+second fixture using a fresh key passed the never-sent checks but its separate baseline control
+encountered another previously used namespace, so the overall run did not complete. A new run
+isolates the never-sent case and passes at **128 MiB**: foreign work-window and missing-submission
+refusals hold, and the exact recovery inputs retire. Supported and private inputs remained stable;
+evidence is `ordinary-recovery-retirement-never-run-3.json`, fixture SHA-256
+`dd3993de7ff2def274acd76c3a74497295233adc16dbe6244ed258dcb5d87b20`. A submitted recovery-kind
+owner and its physical-retirement proof remain unvalidated.
+Private draft **236** adds a bounded submitted-retirement wait that retries only positively
+observed live conditions. A local fixture passes at **128 MiB**, checking the four positive-live
+classifications, identity-mismatch refusal and immediate unobservable result for a missing record;
+the never-sent inputs then retire. Supported and private inputs remained stable; evidence is
+`ordinary-recovery-retirement-wait-run-1.json`, fixture SHA-256
+`f8024f93fb9ac36baea447c179edbdd9ddab07d921b87210a5488fc32ccb431c`. A missing or unreadable
+record is not absence evidence; submitted recovery-kind retirement still needs a live owner test.
+A bounded local fixture passes at **128 MiB** with a real separate recovery-kind systemd owner. Its
+observed owner enters a recovery session, retires a synthetic never-sent original, and the parent
+obtains the recovery family's submitted-retirement receipt with both input sets absent. Supported
+and private inputs remained stable; evidence is `ordinary-recovery-owner-native-run-1.json`,
+fixture SHA-256 `27e897ca50c611201b04c5dcb0e3e27f4340b9755c164badbf729691a00ae55f`. The
+dispatcher and launch are test-only, the original had not been sent, and the declared host shape
+comes from the existing fixture rather than a completed recovery funding proof. This performs no
+AWS work and does not qualify the supported route or authenticated completion.
+A second bounded local fixture attempts a submitted dummy ordinary owner followed by a fresh
+recovery-kind owner after the original window. Its first attempt stopped before the recovery launch:
+one caller cancellation allowed the original cleanup to retire the inputs. A local unit listing
+afterward showed no remaining `prodbox*` user units. The corrected two-interruption fixture passes
+at **128 MiB**: after the original window, a real recovery-kind owner retires the submitted
+original's inputs, observes that Authority completion must still be read, and its own submitted
+family and inputs retire. Supported and private inputs remained stable; evidence is
+`ordinary-recovery-submitted-native-run-2.json`, fixture SHA-256
+`27e5973a10849f5410d498ff6024317255ea559a915c69647f59ea4d1384e10b`. The fixture performs no
+Authority read or AWS work and does not prove a terminal business result or production admission.
+Private draft **237** prepares a recovery caller declaration only under a matching live recovery
+owner, binding the fresh key/window/deadline and requiring the declared caller traffic to cover the
+two recovery reads. Its first fixture stopped at missing clock-field imports; draft **238** corrects
+those imports. A real local recovery-kind owner then passes at **128 MiB**, producing a fresh-key,
+fresh-window caller declaration after submitted-original retirement; an actual ordinary-kind owner
+is refused, and both families' inputs retire. Supported and private inputs remained stable; evidence
+is `ordinary-recovery-caller-declaration-run-2.json`, fixture SHA-256
+`d0907b6f2115e1cf0fb9d46bc51972083b6aac23ea3b11164ca9b61bfb711db9`. The declaration does not
+authenticate a caller, issue a request or prove complete funding.
+Private draft **239** binds a physical recovery owner to the exact scoped input-program lease
+before fixed caller preparation. A local submitted-original fixture is in progress with a test-only
+discovery path and a fake `kubectl` that emits public fixture data; it will not authenticate or
+contact Authority. The first fixture stopped at a test-only attempt to print an opaque fingerprint.
+The corrected fixture passes at **128 MiB**: it refuses a separate descriptor lease with the same
+fingerprint, prepares the caller through an owned fake-tool subprocess, and retires both families.
+Supported and private inputs remained stable; evidence is `ordinary-recovery-caller-preparation-run-2.json`,
+fixture SHA-256 `2629c94a0c2e387d293429ba6fa6e8f9b179ff8712c47ae92609ae40aab6eae2`. The fixture
+uses the injectable discovery seam directly; the fixed production-discovery helper, authentication,
+complete funding and production routing remain unvalidated.
+Private draft **240** routes the fixed production helper through the same owner/lease checks; a
+fixture passes at **128 MiB** through that helper's private discovery seam and fake local tool,
+including refusal of a distinct input lease with the same fingerprint. Both local families retire;
+supported and private inputs remained stable. Evidence is `ordinary-recovery-caller-wrapper-run-1.json`,
+fixture SHA-256 `95fbb9b7aaa4c6331f1183b07d69dcf5889139ea103f186d26022c6a3181f1be`. The seam is
+exported only by the test overlay; production discovery and Authority authentication remain
+unvalidated.
+Private draft **241** binds recovery session entry and observation to the same scoped input program
+as the physical owner, rather than accepting only matching request coordinates. A local
+submitted-original fixture passes at **128 MiB**, refusing a different lease with the same
+fingerprint before the real owner's session and caller preparation; both families retire.
+Supported and private inputs remained stable; evidence is
+`ordinary-recovery-session-input-binding-run-1.json`, fixture SHA-256
+`3a8ef484c0cbe83a4137183f5791da5cc721a1107320a61fc24ee5e1634b7938`. The additional retained
+lease/session data still requires complete funding before supported admission.
+Private draft **242** composes fixed caller preparation, authentication and observation only after
+the recovery session has submitted-retirement evidence requiring an Authority read. A native
+never-sent control passes at **128 MiB**, refusing caller preparation and retiring both local input
+families. Supported and private inputs remained stable; evidence is
+`ordinary-recovery-auth-gate-native-run-1.json`, fixture SHA-256
+`d9d43fd2b00118bd517b192da1e22814f5f3a7a3265a99befb8332eaff2c5654`. Positive authentication,
+complete funding and supported routing remain unvalidated.
+The submitted-original native fixture also exercises draft **242**'s fixed caller path with an
+empty tool search path: when the home discovery or required tool is unavailable, the session
+returns a typed caller-preparation refusal instead of attempting Authority authentication. Both
+local families and their inputs retire. The first invocation stopped at missing copied fixture
+modules before running an operation; the corrected invocation passes at **128 MiB**, with
+supported and private inputs unchanged. Evidence is
+`ordinary-recovery-submitted-auth-refusal-run-2.json`, fixture SHA-256
+`2b2fca9305c02f841d6e8388e9c75186435fbc267bc2c75a2a95dbc6f3906698`. This is a refusal-path
+control, not evidence of successful discovery, authentication, complete funding or production
+routing.
+Private draft **243** adds a necessary runtime-policy check after recovery input loading and before
+the scoped callback: the selected retained-input projection and the runtime's minimum allocation
+area must fit its finite heap policy. A real local submitted-original recovery fixture passes at
+**128 MiB**, including the caller-prerequisite refusal and retirement of both families; supported
+and private inputs remained unchanged. Evidence is `ordinary-recovery-input-policy-run-1.json`,
+fixture SHA-256 `c5dd4dd30830d5e5cb52b57e5ba9e4017a5eff330dfce5478b15c776b52cd351`.
+The existing native policy probe separately accepts the exact heap-minus-nursery boundary and
+refuses one byte above it at **128 MiB**. The fixture does not force the new loader branch to
+refuse; full construction, GC, active effects and native costs, owner admission, positive
+authentication and supported routing remain unproved.
+Private draft **244** fixes the production policy observer at the public loader entrypoint and
+factors an unexported interpreter seam for a refusal control. A test-only overlay exposes the seam:
+under a real local recovery owner and loaded inputs, it supplies a policy refusal, checks that the
+original deadline and a nonzero input projection reach the observer, and verifies that the callback
+is not entered. The ordinary native path then succeeds and both local families retire. The fixture
+passes at **128 MiB**, with supported and private inputs unchanged; evidence is
+`ordinary-recovery-input-policy-refusal-run-1.json`, fixture SHA-256
+`99129c2102e3e9eef2972aa5df807968a011cbd031105736a4ee0ad22f2f1064`. The forced refusal is an
+interpreter control; the separate native boundary probe above tests the actual runtime policy. This
+does not establish complete recovery funding, independent admission or supported routing.
+Private draft **245** attempted a selected ordinary submission-record projection, but a real
+submitted fixture refused it: the original record also contains a Provider binding. Draft **246**
+includes that binding and requires an independently supplied bound for its `ByteString` backing
+allocation; a visible length alone is insufficient. An initial fixture compile stopped at a
+missing test import. The corrected real local fixture refuses a bound smaller than the visible
+reference and observes **18,104 bytes** against an **88,104-byte** projection using a **65,536-byte**
+fixture assumption. It then retires both local operation families. Supported and private inputs
+remained unchanged; evidence is `ordinary-recovery-submission-data-run-3.json`, fixture SHA-256
+`95520abbd8a1c4cee0ba2830ae2d654757595ed8f9c68266c8d526c51f536f50`. This single measurement does
+not prove that the assumed backing bound holds in production, nor account for the full receipt,
+session, construction, GC or native costs. It grants no admission.
+Private draft **247** removes that backing-size assumption from the retained Provider reference:
+both native construction and decoding copy the reference into a compact allocation, and the
+projection prices that allocation. A real local submitted-record fixture passes at **128 MiB**;
+the observed record is **13,864 bytes** against a **22,720-byte** projection. Decoding the same
+canonical record from a larger backing buffer preserves equality and observes **17,048 bytes**
+against the same projection. Both local operation families retire; supported and private inputs
+remain unchanged. Evidence is `ordinary-recovery-submission-compact-run-1.json`, fixture SHA-256
+`f30716bde915ca1eb818ad543ab25bf8d3f9d78716e6a20d9f77e64810d0c4df`. This establishes neither
+the full receipt/session budget nor the cost of the added copy, and grants no admission.
+Private draft **248** projects the ordinary submitted-retirement receipt through its two `newtype`
+wrappers to the retained submission record. A test-only overlay exposes the recovered receipt to
+an actual local recovery owner; its observed graph fits the projection, and the original and
+recovery families retire. The fixture passes at **128 MiB** with supported and private inputs
+unchanged; evidence is `ordinary-recovery-receipt-data-run-1.json`, fixture SHA-256
+`2145c40652dc127da028cdbb94a139e753ec72c12c92e50163d29ac6b3e6dac5`. The child performs the
+receipt assertion; its numerical measurement is not present in the parent log. This prices only
+that receipt, not the other session roots or its construction.
+
+The copied `OrdinaryParentCompletion` test overlay used in the earlier submitted-owner fixtures
+predated the private recovery-kind guard in `observeRecoveryAuthority` and omitted that guard.
+Those fixtures did not perform an authenticated Authority observation, so they do not validate
+that guard. The **248** fixture refreshes this overlay from the current private source before
+exposing test constructors; the supported source remains unaffected. Positive authenticated
+observation, full recovery funding and supported routing remain open.
+Private draft **249** adds a selected-data projection for the submitted recovery result when its
+local probe requires an Authority read. It prices the retained retirement receipt, original
+request and their constructors; other outcomes return no projection. After an initial fixture
+compile stopped on a shadowed test variable, the corrected native fixture passes at **128 MiB**:
+the receipt observes **13,696 bytes** against **22,440**, and the recovered parent observes
+**38,248 bytes** against **77,464**. Both local operation families retire, with supported and
+private inputs unchanged. Evidence is `ordinary-recovery-parent-data-run-2.json`, fixture SHA-256
+`07087ac3d3064515e4c4fc142fc2bcf5d3c6db40fe50bd76e9a88bb4c2ea225e`. This is one selected
+quiescent result, not a complete session, construction, GC or native-effects budget and not an
+admission decision.
+Private draft **250** combines the held-input and Authority-needed recovery-result projections for
+the same session, while deliberately leaving the physical owner unpriced. A native fixture observes
+**70,112 bytes** for those two roots against a **187,176-byte** projection; both local operation
+families retire, and supported and private inputs remain unchanged. Evidence is
+`ordinary-recovery-session-selected-data-run-1.json`, fixture SHA-256
+`f5297bcc482348d985fa78eae16cb89d2dfba15c520d0214b7a6274267b3d4e7`. The session's live owner,
+other result arms, construction, GC and native effects remain outside this projection; it does not
+admit recovery or establish complete funding.
+A bounded native owner-graph investigation confirms why that owner remains unpriced: the current
+test observer refuses a live function closure (`FUN_1_0`) rather than counting executable closures
+as immutable data. The fixture catches that refusal, then completes submitted recovery and retires
+both local families. Supported and private inputs remain unchanged; evidence is
+`ordinary-recovery-owner-graph-run-1.json`, fixture SHA-256
+`75b5ac0941a7442398e3c44d4b125f9a6222b7708cbea8e517d5dda8e6b7011f`. The next owner-budget work
+must account for the retained function and mutable-state shapes and their native counterparts; this
+refusal is not a numerical bound.
+A test-only observer that counts retained function closures without invoking them next refused a
+thunk, and then refused a mutable variable after executable-closure inspection was extended. A
+further snapshot follows the mutable variable's current value and observes **24,000 bytes** for
+one quiescent local owner. All three fixtures retain the original strict observer for other roots,
+finish recovery and retire both families; supported and private inputs remain unchanged. Evidence
+is `ordinary-recovery-owner-graph-run-{2,3,4}.json`; the final fixture SHA-256 is
+`f6df5bcb700f3252a17bedc0786d4bfe9c73133f4aed4b0f87025f8779cf3332`. This diagnostic does not
+bound future cell values, queued work, construction, compiler/GC or native memory, and is not an
+owner admission or complete funding proof.
+An isolated fixture overlay decomposes the observed owner into its retained fields. In one native
+snapshot the owner totals **24,120 bytes**, with the held program **10,248**, operation intent
+**8,608**, runtime-directory view **2,776**, invocation path **2,160**, label **1,712**, and bus
+view **1,352** bytes; component graphs share data and cannot be summed as independent measurements.
+The original and recovery families retire. An initial build stopped on a test-only shadowing
+warning; the corrected run passes with supported and private inputs unchanged. Evidence is
+`ordinary-recovery-owner-components-run-2.json`, fixture SHA-256
+`dfad4b8225532cee91d39fd1d9b11e89ee1f004bbcc2d6115df6387165ebbeef`. This identifies accounting
+targets but neither bounds other owners nor prices their native resources.
+Private draft **251** composes the existing quiescent intent and host-plan structural terms into a
+single retained-intent projection. In an actual local recovery owner, the intent observes
+**8,496 bytes** against **10,112** projected and the held program observes **10,320 bytes** against
+**16,824** projected. Both local families retire and supported and private inputs remain unchanged;
+evidence is `ordinary-recovery-owner-intent-budget-run-1.json`, fixture SHA-256
+`e0786ae88391822b32c48c7eb9915b0167378377b53d48125d0b3a0793d29ab0`. These are selected
+quiescent components, not a bound on owner activity, queued work, construction, native resources,
+compiler/GC costs or other possible shapes, and they grant no admission.
+Private draft **252** closes a repeated-budget gap in the recovery session: the fixed Authority
+observation path now claims one atomic session-wide attempt before preparing a caller, and the
+separate raw authenticated-observation entrypoint is private. In a local submitted-owner fixture,
+two concurrent attempts yield one caller-prerequisite refusal and one already-attempted refusal;
+a later attempt is also refused, and both families retire. The never-sent fixture separately
+confirms repeated calls return Authority-not-required without entering the caller path. Both
+fixtures pass at **128 MiB** with supported and private inputs unchanged; evidence is
+`ordinary-recovery-one-shot-run-1.json` and `ordinary-recovery-one-shot-never-run-1.json`, with
+fixture SHA-256 values `037b5d338cde06b1870ff513814f149a9984495d65f9b3485a8ca7f667ead9e9` and
+`d01bc0c2e6d80ea1d264b19b74e58865f3471ff57a8b512a4fb3913c7b07d0b4`. A failed preparation consumes
+this session's attempt. Durable re-entry after that refusal, successful Authority authentication,
+complete funding and supported routing remain unproved; the one-shot claim is not a retry or
+business-completion receipt.
+Private draft **253** moves that fixed-path attempt claim onto the exact held recovery-input lease,
+so constructing a second session under the same owner cannot reset it. A local fixture first
+reconstructs the submitted retirement and Authority-needed result twice from the retained terminal
+journal under one owner, then races the two sessions: exactly one reaches caller preparation and
+the other is already attempted. Both local families retire. The first run stopped inside the owner
+after the selected-data observer encountered the new mutable claim cell; the corrected observer
+and fixture pass at **128 MiB** with supported and private inputs unchanged. Evidence is
+`ordinary-recovery-shared-claim-run-2.json`, fixture SHA-256
+`7c4694fcc9692815e448c8bcaf9eb40a5718e2855f4969e522cc957533c6b3de`. This tests re-reading the
+terminal retirement under the same owner, not re-entry under a later fresh owner, successful
+authentication or a complete funding and supported-path proof.
+A follow-on local fixture exercises draft **253** with two sequential, distinct recovery owners.
+After the first owner's caller preparation refuses and that family retires, the second re-reads the
+same original's terminal retirement, obtains its own one-shot allowance, and also retires. Each
+owner independently refuses a competing session's attempt. The initial fixture build stopped on a
+test-only layout error; the corrected run passes at **128 MiB**, with supported and private inputs
+unchanged. Evidence is `ordinary-recovery-fresh-reentry-run-2.json`, fixture SHA-256
+`54bbac3641d7a031aa65f398f96d5b8652cb83a6480c37cb7a0df29ee5ddcb37`. The launch and dispatcher are
+test-only, the caller prerequisite is deliberately unavailable, and this is not a successful
+Authority read, a funded production route or proof across a manager restart.
+For a possible positive local authenticated observation, read-only inspection finds RKE2 active
+but `lifecycle-authority-0` waiting on its local runtime image; the registry is not ready because
+the local MinIO bootstrap image is unavailable. The installed binary's sibling configuration is
+still the unauthored template and its dry run refuses the empty machine ID. In a separate temporary
+binary-sibling directory, the preserved secret-free home draft renders `cluster reconcile
+--dry-run` successfully with public edge disabled and includes both MinIO bootstrap and Authority
+reconciliation; `home-config-probe-1/result.json` records the non-secret result. The temporary
+binary and configuration copies were removed. This is a plan, not a deployment or host-fit proof:
+the earlier native host observation below records that the draft's workload minimum exceeded the
+observed host capacity. No Kubernetes or AWS mutation occurred in this check. Positive Authority
+authentication and the live-campaign gates remain open.
+A local fixture now runs the existing in-memory signed scope/report handlers while a real recovery
+owner holds its operation-use guard and the original's retired submission evidence. It accepts the
+matching synthetic report, preserves a reported failure, rejects foreign owner/generation and
+wrong or nonterminal reports, checks both signed routes and records no Authority writes. The local
+families retire; supported and private inputs remain unchanged. Evidence is
+`ordinary-recovery-owned-signed-run-1.json`, fixture SHA-256
+`987212263e68133a7538538d6f2f402177813a7f8050d0c2f757073a5d2626f1`. This test-only seam uses
+in-memory authentication and repeatedly exercises the binding gate; it bypasses the fixed session
+one-shot for those synthetic checks. It is not the production Vault/Kubernetes authentication
+path, a caller-budget proof, a live Authority result or a qualification run.
+Private draft **254** factors the session's owner/Authority-needed/one-shot gate behind an unexported
+seam; the production entrypoint still fixes caller preparation and authentication. A test-only
+overlay supplies the signed in-memory observer under the real local recovery owner. The exact
+synthetic report passes through the scope and report handlers, and a second session sharing the
+lease is refused after that successful observation. Both local families retire; supported and
+private inputs remain unchanged. Evidence is `ordinary-recovery-session-signed-run-1.json`, fixture
+SHA-256 `259d7e1953a0c5ff2a44ae50278ceacd224ac39319ba49e655e7ea47e27733d6`. The injected
+observer is not the production Vault/Kubernetes authentication path, and this does not establish
+full funding, live Authority behavior or deployment qualification.
+Private draft **255** puts the fixed-path attempt claim and its action inside a joined owner-use
+guard, checking the held program and manager domain before claiming and rechecking the owner after
+the bounded action. The in-memory signed-success fixture and the competing-session refusal fixture
+both pass at **128 MiB**, with local families retired and supported and private inputs unchanged.
+Evidence is `ordinary-recovery-guard-signed-run-1.json` and
+`ordinary-recovery-guard-race-run-1.json`, fixture SHA-256 values
+`b26492fa7e27fd5316f4b983342ca2880f9a4e30eebe937197657e6029bf3ea9` and
+`a025bd59c15ce08923aab9b7d277be8c1a113acaf2af14b443e0f79d543f63b8`. These positive and race
+controls do not directly exercise owner loss during the action, production authentication, complete
+funding or supported routing.
+A draft **255** local cancellation control now interrupts a blocked test-only observation after its
+claim, waits for the joined use to unwind, and confirms a second session cannot reset the allowance.
+Both local operation families retire. The first fixture build stopped on unused test scaffolding
+and a shadowed name; the corrected run passes at **128 MiB** with supported and private inputs
+unchanged. Evidence is `ordinary-recovery-guard-cancel-run-2.json`, fixture SHA-256
+`57fbce3c12bcb7078e6e6228766414c49551e7d63ab882067fe5adba2a3ccc5f`. This is cancellation of an
+injected local action, not a lost live Authority response or a production authentication proof.
+Private draft **256** seals the Authority observation result behind the guarded path and exposes
+separate pending, reported-success and reported-non-success statuses. Reported success requires a
+successful primary outcome and a nonempty set of successful completed nodes; the report remains
+available, and the status is not independent current-absence evidence. The local signed fixture
+passes at **128 MiB** and checks pending, success, cancelled, empty, pending-node, blocked-node and
+unconfirmed-node outcomes; both local families retire and supported/private inputs remain unchanged.
+Evidence is `ordinary-recovery-report-status-run-1.json`, fixture SHA-256
+`6916575379218fa32dd73c7b4b975dd0b5ad37f8499b67c7535fe8b4912cf754`. Production authentication,
+local historical-result integration, complete result/owner funding and supported routing remain
+open.
+Private draft **257** exposes the exact local historical observation separately from an Authority
+observation and applies the same reported-success predicate to its retained report. A local
+fixture creates a synthetic sealed handoff and completion journal from the original candidate,
+then a real recovery-kind owner retires the submitted original, returns that exact historical
+report and refuses the unnecessary Authority path. Both local families retire; supported and
+private inputs remain unchanged. Evidence is `ordinary-recovery-local-status-run-1.json`, fixture
+SHA-256 `f84c83b6e2da8d9c197e85dfae0686fd5586012c4119ae6931cc18622ca1b27c`. The handoff is
+synthetic and historical; this is not a live current-absence claim, complete funding or supported
+cutover.
+Private draft **258** composes a single owner-guarded recovery decision with four explicit arms:
+never sent, exact local historical completion, unresolved local evidence, and Authority
+observation. Four local owner fixtures pass at **128 MiB**, exercising each arm and retiring their
+operation families. The Authority fixture uses an injected signed in-memory observer, and the
+historical handoff is synthetic; neither proves live Authority or current absence. Supported and
+private inputs remain unchanged. Evidence is `ordinary-recovery-resolve-{local,signed,never,
+unresolved}-run-1.json`, with fixture SHA-256 values respectively
+`7372743e63bdbae2a3a8e3eba089e584b7e57a246a475d21724f81d4dc3113dc`,
+`792479f926ea73a53ae1f8868d1eeed0f5e2c2c0885544d2c2892ab088d56320`,
+`4c078faf52d529b6030b025557e501181000e5e35964709e86b1da29bcfd6c57`, and
+`7adb4859c87b815f100f3a68c05a7ee5663556621227b14d85ff655cdfd47bff`. Complete resource funding,
+production caller authentication, owner creation and supported routing remain open.
+Private draft **259** moves the recovery-kind owner, subprocess construction, session and typed
+decision into a fixed controller composition. Its opaque admission has no production constructor:
+the missing complete funding and physical admission must supply that constructor before routing can
+use it. Three native fixtures expose a test-only constructor around the non-admitting host baseline
+and pass at **128 MiB** for synthetic local history, never-sent retirement and an Authority caller
+prerequisite refusal; every local family retires. An initial local fixture build stopped on an unused
+test import. Supported and private inputs remain unchanged. Evidence is
+`ordinary-recovery-controller-{local,never,refusal}-run-{2,1,1}.json`, fixture SHA-256 values
+respectively `8a3699e1ce3557a1ab02c5c385dae3ddc0804d31ca66460f0836dc1491788293`,
+`fb4bcecff64ea80a364de5600ec17c17dc8aad6481d209279cefc8932e1a52f9`, and
+`ec55a554ca511c137a5ed096e4392c83dd1b795f76f96a12e0152e5f06a7d216`. The baseline is not an
+admission; production authentication, complete funding, public launch/dispatch and qualification
+remain open.
+Private draft **260** adds a typed decision over the original parent's submission disposition and
+completion probe, retaining the independent submission outcome and keeping unresolved retirement,
+missing/refused probes, local historical completion and the joined Authority-recovery capability
+distinct. Native local fixtures pass at **128 MiB** for never-sent retirement, synthetic historical
+completion, missing scope and recorded scope requiring Authority, including cancellation cleanup;
+local operation families retire and supported/private inputs remain unchanged. The first
+missing-scope fixture build stopped on an unused test helper. Evidence is
+`ordinary-parent-decision-run-1.json`, `ordinary-parent-decision-unresolved-run-2.json` and
+`ordinary-parent-decision-authority-run-1.json`, fixture SHA-256 values respectively
+`58dbe7beda1cdcc57a99c0a5f1525490eaa55dcb810435aacd017678e0d45ed9`,
+`be261ef1bbaf5a80b970e58d2e8a0eee1bf426d65406aaa8b3d3fe8393ea0052`, and
+`e16fa66998e4b4972c26916e3c9d570cf923db9aeed0005e8ad72de4a77950f8`. Unresolved-retirement and
+missing-probe arms are not directly exercised here; the decision does not itself perform an
+Authority read, prove current absence or provide a supported route.
+A follow-on draft **260** fixture directly checks the never-sent unresolved arm with a real
+expired cleanup, then completes the later local retirement. With a real submitted-retirement
+receipt, test-only constructors also check that a missing probe stays missing and that an
+inconsistent synthetic completion probe cannot override submitted-retirement refusal. The fixture
+passes at **128 MiB**, including cancellation cleanup, with supported/private inputs unchanged;
+evidence is `ordinary-parent-decision-boundaries-run-1.json`, fixture SHA-256
+`b6fe658503dbf3369e762583df2b74063d826043e8e04fe1b5426e774524b826`. The submitted-unresolved
+and missing-probe inputs are constructed controls, not live failures, and do not qualify the
+supported route.
+Private draft **261** constructs a recovery declaration only from the original request retained
+inside the submitted-retirement/Authority-needed join. Fresh key, window, manager and deadline are
+still untrusted data until independently observed and admitted. Local fixtures pass at **128 MiB**:
+the Authority-needed case preserves the exact original and refuses the old key, while never-sent,
+historical, missing-probe and unresolved-retirement cases refuse request construction. Local
+families retire and supported/private inputs remain unchanged. Evidence is
+`ordinary-parent-recovery-{request,nonrequired}-run-1.json`, fixture SHA-256 values respectively
+`3b1708c2a9d33aa55b0a0686a68f3972dc952e60b44f530bbf1ab62fc99c9226` and
+`a8a80309b67923234fd0902a1690a9eeaca6420e09a7cafb84e9cbe0cb09227b`. Request construction grants
+no owner, publication, complete funding, authenticated observation or supported route.
+Private draft **262** composes recovery-family publication, fixed systemd submission and exact
+input retirement. Its opaque launch admission has no production constructor. Submission outcome
+and never-sent/submitted retirement dispositions remain separate, and exceptions retain their
+original cause while invoking the existing recovery path. A test-only admission runs the fixed
+launcher for two successive local recovery owners; each submission and submitted-retirement result
+passes at **128 MiB**, and both input families retire. Supported/private inputs remain unchanged;
+evidence is `ordinary-recovery-launch-native-run-1.json`, fixture SHA-256
+`22b4f12baaacc9deef5674c2dd830a9328a9619f1e9aa41eb5905ea5a0b18c99`. This is not a complete
+launch funding or output/completion protocol. Never-sent, uncertain-send and interrupted-launch
+controls for this new composition, production admission/authentication and supported routing remain
+open.
+Private draft **263** factors the submission interpreter behind an unexported seam while fixing the
+production launcher to the native interpreter. With an injected pre-send refusal, local fixtures
+confirm never-sent retirement, an expired-cleanup unresolved disposition followed by recovery, and
+cancellation after publication with the original cancellation preserved. A separate fixture
+reruns two real local submissions through the fixed interpreter and retires both families. Both
+fixtures pass at **128 MiB** with supported/private inputs unchanged; evidence is
+`ordinary-recovery-launch-refusals-run-1.json` and `ordinary-recovery-launch-native-run-2.json`,
+fixture SHA-256 values respectively
+`8d56adee52a4818d5f868dd74bcd6161bbd9b1c354e86c653fee4cd70ce18856` and
+`82eba1c4102f5d126a3118eba3d38c141c07a6d7aa3cc2963e38fee16641d3d7`. These controls do not cover
+an interrupted or ambiguous send after its possible-send marker, output/completion transport,
+complete funding, production admission or public routing.
+Two follow-on draft **263** fixtures exercise the possible-send side with real local submissions.
+One injects a simulated lost response after each of two successful sends and preserves that failure
+while proving submitted retirement. The other cancels after each submitted record exists, preserves
+the cancellation and uses exact recovery retirement to prove both families' inputs absent. Both
+pass at **128 MiB**, with supported/private inputs unchanged. Evidence is
+`ordinary-recovery-launch-ambiguous-run-1.json` and `ordinary-recovery-launch-cancel-sent-run-1.json`,
+fixture SHA-256 values respectively
+`016fdd59549a211e33252b2e30a0d4b4d3ce9911cab69eaa8f717168deb1cb21` and
+`c6c5211e620c3d6e9a3f07bb42fbbe68a2918ef563ca443f27665d450efc215e`. The response failure is
+injected after a successful send, not a real lost systemd reply; production admission, output
+transport, complete funding and supported routing remain open.
+Private draft **264** binds an admitted recovery launch back to the parent's exact joined
+retirement/Authority-needed declaration before publication; a different original is refused. A
+local fixture confirms that refusal and then launches and retires the matching recovery family,
+while preserving the original parent's cancellation cleanup. The first fixture used a previously
+fenced fixed key; the second completed the launch but its later diagnostic reused an expired
+deadline; a third reused a fake-tool marker and lacked a child marker. A fresh fixture with a new
+key and independent diagnostic deadline passes at **128 MiB**, with supported/private inputs
+unchanged. Evidence is `ordinary-parent-launch-binding-run-4.json`, fixture SHA-256
+`9ce5b0b48effc6f3e12557a5ef30b6e2ac925d532074313ca0d20455a32e8c9b`. The test uses a fabricated
+admission; its request encoding/comparison, complete funding, production authentication and
+recoverable result handoff remain unproved, and the composition is not publicly routed.
+Private drafts **265–266** attach a one-shot claim to each opaque recovery-launch admission. The
+parent path claims before deriving or comparing the recovery declaration; the direct path claims
+before settings encoding. A mismatch or cancellation consumes the claim, and the unexported
+claimed continuation cannot be reached through either public entrypoint without it. Local fixtures
+pass at **128 MiB** for a mismatched parent declaration, concurrent parent calls, direct pre-send
+refusal/cancellation and concurrent real local submissions; the operation families retire.
+Supported/private inputs remain unchanged. Evidence is `ordinary-parent-launch-oneshot-run-1.json`,
+`ordinary-recovery-launch-claimed-refusals-run-1.json` and
+`ordinary-recovery-launch-claimed-native-run-1.json`, fixture SHA-256 values respectively
+`f1f3fb291fbbf71feb9974218b4421ec9e8f8de3082672771b172c845ad63a62`,
+`8271259d0f03533929f44a8d19f272d1826debc5c27f6ed4eb6cac1c717bfe6a`, and
+`ede071e0ead85aa01efa8f02a9979e9e45b878aac81dd3593453d7089849afff`. The admission and its
+funding, comparison/allocation costs, production authentication, result handoff and supported
+routing remain open; a one-shot per admission alone does not prove global admission uniqueness.
+
+
+Private draft **267** places parent declaration derivation and comparison, and direct settings and
+request encoding, within the fresh recovery work deadline after the one-shot claim. Local fixtures
+pass at **128 MiB** for expired parent and direct admissions, mismatched declarations, concurrent
+admission calls, successful native submission and retirement, refusal, and cancellation. Both
+supported and private fixture inputs were unchanged. Evidence is
+`ordinary-parent-launch-deadline-run-1.json`, `ordinary-recovery-launch-deadline-refusals-run-1.json`
+and `ordinary-recovery-launch-deadline-native-run-1.json`; fixture SHA-256 values respectively
+`8cd8e01f93be01c0ae2916e517b024a85c006b14874c4c5885e78ff314d7c843`,
+`5c19ee59ef5d10c6d08c045c473081778f0b0a37f38b8cfe39b00475c91212d0`, and
+`13509d2019e52d122c596b73e51784bf73353463020c8479fe6a252638ef7ec2`. The timed helper checks
+before and after work, but this does not prove a hard execution bound on pure evaluation or fund
+its allocation, GC, native memory and stack costs. Admission construction, global uniqueness,
+production authentication, result handoff and supported routing remain open.
+
+
+Private draft **268** shares the original request encoding between the constructor's original-size
+and outer-envelope-size checks instead of explicitly encoding it twice. A fixture compares the
+resulting wire bytes against a frozen draft 267 codec, exercises malformed/foreign inputs, staged
+decoding, deadline refusal and cancellation, and passes at **128 MiB**. A separate native parent
+fixture passes concurrent submission, retirement and cancellation. Supported and private fixture
+inputs remain unchanged. Evidence is `ordinary-recovery-request-shared-encoding-run-1.json` and
+`ordinary-parent-shared-encoding-run-1.json`, with fixture SHA-256 values respectively
+`4636e99e28693a9ae10c5cfe8dcc3a949e609c932a02bc984426644c7cd0a933` and
+`f83d1a352dcd6198a09304d3cbb1d5fa9896671df514eed61676beb61afef6e1`. This is a source-level
+allocation simplification; no measured peak reduction, complete construction/GC/native funding,
+production admission, result handoff or supported routing is established.
+
+
+
+Private draft **269** gives the opaque recovery-controller admission its own one-shot claim, before
+intent creation or owner observation. A local native fixture races two entries on the same
+fabricated admission, observes exactly one winner and an already-attempted refusal, then refuses a
+third call before writing its success marker. The winning owner retires the original never-sent
+inputs and its recovery family. The corrected fixture passes at **128 MiB** with supported and
+private inputs unchanged; evidence is `ordinary-recovery-controller-oneshot-run-2.json`, fixture
+SHA-256 `3d66bae8625a2dd0e1feceffb3c98216abc7738fb3f67b9042e4e58bfaf99051`. The earlier run's
+marker preceded the third-call assertion, so it does not prove that assertion. A one-shot per
+fabricated admission does not establish unique admission per lease, failure/cancellation behavior,
+complete funding, production construction or supported routing; those remain open.
+
+
+A follow-on draft **269** fixture exercises the one-shot controller after a submitted original,
+using two distinct local recovery owners. Each fixed controller preserves the expected missing
+caller-tool/discovery refusal, rejects reuse of its own admission before its marker, and the driver
+observes submitted retirement of both recovery families and original/recovery input absence. The
+first run reached that marker but then failed on diagnostic files belonging to a different test
+child. After removing those unrelated fixture expectations, `ordinary-recovery-controller-refusal-
+oneshot-run-2.json` passes at **128 MiB**, with supported/private inputs unchanged; the fixture
+SHA-256 is `c430f3db70a2e27cd92108edec0f39b8f94cc8787f137d0412f1253dfc5f0c1f`. This is a
+prerequisite refusal, not a positive authenticated Authority read. Cancellation, admission
+uniqueness, complete funding and production routing remain open.
+
+
+Private draft **270** moves the controller claim from the admission value to its held input lease,
+separate from the Authority-observation claim. Thus separately fabricated admissions over the same
+lease share one controller attempt. The selected quiescent input projection also includes the
+second cell. Local native fixtures pass at **128 MiB** for concurrent admissions on one lease,
+sequential refusal through a duplicate admission, and fresh owners after a caller refusal. A
+cell-aware graph observation measured **73,160 bytes** against a **144,408-byte** selected input
+projection for the fixture; the submitted-owner regression also passes. Inputs were unchanged.
+Receipts are `ordinary-recovery-controller-lease-oneshot-run-1.json`,
+`ordinary-recovery-controller-refusal-lease-run-1.json` and
+`ordinary-recovery-controller-lease-data-run-2.json`, with fixture SHA-256 values respectively
+`356432f427040f6bfcf37a23d4023926cd9fc8a2ef00544955a0e43f70367c13`,
+`73d75fd4b8b64919b9413572ac6993af708a4e459b78c32b7e207b27e3f5d5e5` and
+`5909b6b01a88b52443e5e36d9c6c23d72085acc69440875017e6ad64511534da`. The first data run and a
+diagnostic run failed because the old immutable-only observer rejected the new mutable cell; its
+exception was wrapped as a D-Bus I/O refusal. The passing observer explicitly accepts quiescent
+cells, so its selected-data result is not a bound on active updates, GC or native memory. Separate
+leases, cancellation, complete admission/funding, result handoff and supported routing remain open.
+
+
+**Separate-lease counterexample.** In draft **270**, a fixed local fixture opens the same published
+recovery inputs twice at once. The held program leases are distinct but have equal input
+fingerprints; both independently accept their controller claim. This falsifies any claim that the
+lease-local latch enforces one controller attempt for the published operation. The fixture does not
+start either controller or mutate AWS; its first build failed because the fingerprint lacks a
+`Show` instance, and the corrected run passes with unchanged inputs at **128 MiB**. Evidence is
+`ordinary-recovery-separate-lease-counterexample-run-2.json`, fixture SHA-256
+`d793fc9fb55e14b837252f53af9230521a5cc9256a3f7ebcc49a09328b44a373`. A shared, operation-bound
+claim with a closed replay and crash disposition is still required before complete admission.
+The existing publication/retirement directory lock is a possible exclusion primitive, but a lock
+alone permits sequential replay and its lifetime must not prevent retirement; no fix is inferred
+from this observation. The current local filesystem is below the **45 GiB** image/live floor and
+must be rechecked and recovered before such an attempt.
+
+
+Private drafts **271–272** add an operation-bound recovery-controller claim in the canonical
+published-input directory. Exclusive creation prevents different leases from both claiming; the
+file and parent are synced and read back before the claimant enters the controller. A pre-existing
+or incomplete marker refuses without rewrite, and an interrupted attempt does not deliberately
+remove it. The marker is limited to the exact recovery key and canonical configuration/request
+paths; it conveys no physical or Authority admission. At **128 MiB**, local fixtures pass a
+concurrent two-lease race, sequential reopen and foreign-key refusal, abrupt process exit after a
+confirmed claim, incomplete-marker refusal, and two successive native caller-refusal/retirement
+families. Supported/private inputs were unchanged. Evidence is
+`ordinary-recovery-operation-claim-{race,crash,partial}-272-run-1.json` and
+`ordinary-recovery-controller-refusal-operation-272-run-1.json`; fixture SHA-256 values respectively
+`87c6baa61b42cfa43ed21e76a1aff45ecceb67f719da13e922b35513c6528ebe`,
+`eaa0ce9c611794ab322ef87028855a1b6d36b7e90011a07f22076fc08b5da393`,
+`708a3e8c3fb364401272b1d05578e7a7b62f8529040950af3e40a090069566a7`, and
+`3b668e7df46ea8db2d4263bff49fc5e0eda2c63c94e6cd5da0cc72a8f5aa2201`. The crash fixture first failed
+to compile, then its child lacked the required bounded RTS settings; a diagnostic run exposed that
+refusal before the corrected fixture passed. Draft 271's pinned formatting needed a second pass;
+draft 272 and the recorded tests bind the formatted source. A synthetic incomplete marker is not a
+power-loss test. Marker lifecycle/storage ownership, cancellation during publication, physical
+owner admission before the claim, complete resource funding, result handoff and supported routing
+remain open; no deployment qualification follows from these local controls.
+
+
+Private draft **273** moves the operation-bound claim inside the observed recovery-owner scope,
+after a fresh owner-before-effect check. A fabricated admission invoked outside that owner is
+refused without creating the claim. Native local fixtures also pass an actual-owner run, a race
+between two distinct held leases under that owner, and two submitted-original caller-refusal and
+retirement families. Supported/private inputs were unchanged; the four fixtures use **128 MiB**.
+Evidence is `ordinary-recovery-owner-before-claim-run-4.json`,
+`ordinary-recovery-owner-claim-native-run-1.json`, `ordinary-recovery-owner-claim-two-leases-run-1.json`
+and `ordinary-recovery-owner-claim-refusal-run-1.json`, with fixture SHA-256 values respectively
+`376fdf1a73958d7ac9b0d9d31c24687244fcdc5ac6eb9623900a817d19a3d1c4`,
+`f6a2f8c9e8a9588a721562b7461401d2366f6f7d1eaf3491769603fdad4346e6`,
+`23bd87194b4779f49e50746b2994748b156a144e3f5c2f7d7b1ac981f39a5546`, and
+`e98495986ae7d2b71988a5819b010453529f7fee27e0d7b31cd6d4892d787572`. Earlier non-owner fixture
+attempts failed before the intended check because their host baseline required a retained directory
+that this fixture did not have; the corrected fixture uses its already prepared native plan. The
+pre-claim owner observation itself still needs complete resource/uniqueness funding, and the lower
+level claim helper is not an admission capability. Claim cancellation, power loss, storage lifecycle,
+authenticated result handoff and supported routing remain open.
+
+
+Private draft **274** places the fixed operation claim under the observed owner's live borrow and
+checks owner identity before and after the file effect. A closed escaped owner refuses before the
+claim; an actual owner racing distinct leases admits one controller; a non-owner creates no marker;
+and two successive submitted-original caller-refusal families retire. The local **128 MiB**
+fixtures pass with supported/private inputs unchanged. Evidence is
+`ordinary-recovery-borrow-before-claim-run-1.json`, `ordinary-recovery-borrow-two-leases-run-1.json`
+and `ordinary-recovery-borrow-refusal-run-1.json`; fixture SHA-256 values respectively
+`b7d31096edd2883423248800779f01995938e03f15e3c2f8a939daa8708dd359`,
+`76b331b3a3bf90287bc5ecfac8467c3c428068974e379bd21dd1d8f7bd58bd1c`, and
+`ad160139061644a54dcfa43d7dcb27f4a5fde2716a5523fa5b01d2ac84a07ae8`. The tests do not prove
+owner-close joining during an in-flight claim, cancellation, power loss or a complete resource and
+physical admission. The lower-level claim function remains separately callable in the private
+draft; enforce its production ownership boundary before integration. Marker storage lifecycle,
+authenticated result handoff and supported routing remain open.
+
+
+Private draft **275** factors the owner-held claim through an unexported fixed-action seam for
+local validation. A native-owner fixture blocks the injected claim, observes the closing owner
+thread waiting on an MVar, then confirms release and an escaped-owner refusal. It also exercises
+cancellation of that blocked action. A separate instrumented fixture cancels the actual file claim
+after exclusive creation and before writing: it observes the empty marker, preserves the async
+cancellation, refuses a repeated claim and retires the original and recovery inputs. The first
+instrumented build stopped on an unused test-only import; the corrected fixtures pass at **128 MiB**
+with supported/private inputs unchanged. Evidence is `ordinary-recovery-owner-join-run-2.json`,
+`ordinary-recovery-owner-join-cancel-run-1.json` and `ordinary-recovery-claim-interrupt-run-2.json`;
+fixture SHA-256 values respectively `1eedc6a10040e6de6d99b99a081b3826e08a94282380d8d7c60c09a633a3b36c`,
+`68a33691e9286e2d27943ef6b2cc7d47e562e2e9e8efd039442e296a330318b3`, and
+`615c8a77a603f7e1336eddb86e976bf4d769c09b246338e5ac427c64144cda55`. The blocking hooks and
+exposed seams exist only in the test overlay. This is cancellation at one file stage, not a
+power-loss or all-interruption proof; marker lifecycle, lower-level ownership enforcement, complete
+funding/admission, authenticated result handoff and supported integration remain open.
+
+
+Private draft **276** moves the input claim implementation and the program constructor into
+internal modules. Their ordinary facades no longer export the raw claim, and the fixed claim
+interpreter resides in the owner-held kernel module. Local **128 MiB** fixtures pass the actual
+owner/closed-owner/two-lease/cancellation paths and the non-owner refusal; compiler controls accept
+the ordinary facades and refuse both formerly exposed claim names. Supported and private inputs
+were unchanged. Evidence is `ordinary-recovery-owner-private-claim-run-1.json`,
+`ordinary-recovery-private-before-claim-run-1.json` and `ordinary-recovery-claim-facade-run-1.json`;
+the two executable fixture SHA-256 values are
+`67e062dfddb1bae03ec964b9f7c5d3c8617d52eb0f15a47502cb15f4b4f73730` and
+`92a8e2046d6c64c6d46143c49fd6e3e0fa1c5fb05f6bb0e6007e0e48a20aef7a`. The new supported source rule
+above is ready to guard the intended import boundary, but this private composition and its new
+modules are not integrated into the supported build. Its non-owner and cancellation evidence is
+local; marker lifecycle, complete admission/funding, authenticated handoff and qualification remain
+open.
+
+
+A follow-on draft **276** native fixture interrupts the owner-bound file claim after exclusive
+creation and before writing. It observes the empty marker, preserves cancellation, refuses reuse
+through the fixed owner claim and controller, and retires the original and recovery inputs. The
+**128 MiB** fixture passes with supported/private inputs unchanged; evidence is
+`ordinary-recovery-private-claim-interrupt-run-1.json`, fixture SHA-256
+`eb687ff386acb8f084f511235d3cff420dd9f8f0b68f5ae45ac047e4188012e2`. Its blocking hook is a
+test-only overlay. A private-source inventory finds the two internal module names only in their
+intended facades, origins and kernel owner, matching the supported rule's allowlist. This is one
+interruption point and a source-text observation, not power-loss proof, complete admission/funding
+or supported integration.
+
+
+Private drafts **277–278** add an opaque recovery runtime-storage observation to the still
+unconstructible production admission. It must match the recovery key, window and original declared
+host ephemeral demand; the observed owner rechecks it before and after claiming. A mismatch or
+pre-claim root drift refuses without a marker. A test-only closing-observation injection confirms
+that a refusal after the claim preserves the marker and a fresh lease cannot replay it. Actual native
+owner and two successive caller-refusal/retirement fixtures also pass. The **128 MiB** fixtures
+have unchanged supported/private inputs. Evidence is
+`ordinary-recovery-nonowner-storage-278-run-1.json`,
+`ordinary-recovery-owner-storage-drift-278-run-1.json`, `ordinary-recovery-storage-after-claim-run-1.json`
+and `ordinary-recovery-refusal-storage-278-run-1.json`; fixture SHA-256 values respectively
+`dc516e922b3ae8fb5daeef96461c0c65054d2481d5c31d4db418e6512c43b01c`,
+`6d49fc550ae6109c68b427889b815cdebfcb97825bb5cfb2608f590e5ddecd13`,
+`ac02a3700baa6a310a0e29ea47f97918384ba7531dbdf3aa2c11fc89ce77b7f9`, and
+`94cf84aeb11ddae6371737a6121301c7cedb5e7bbb4a0f2b2718bc17704c9b97`. Earlier mismatch fixtures
+first failed to compile on stale test constructors and then selected a storage key equal to the
+recovery key; the corrected fixture observes a distinct key. This is a capacity observation and
+recheck, not a reservation or a complete marker/inode, heap, GC, native, concurrent-owner or
+whole-program funding proof. Production admission construction, marker lifecycle, authenticated
+result handoff and supported routing remain open.
+
+
+Private draft **279** extends the runtime-root snapshot with total and available inode counts and
+requires one currently available inode immediately before creating the claim marker; the
+post-claim check requires no additional marker inode. A zero inode total is treated as unobservable
+when an inode is needed, not as a successful availability check. Fixture controls cover unknown,
+exhausted, available and inconsistent counts; the native host observation, a valid owner, foreign
+storage binding, injected pre-claim inode refusal and injected post-claim refusal all pass at
+**128 MiB** with unchanged supported/private inputs. The pre-claim refusal leaves no marker and a
+fresh lease proceeds. Evidence is `ordinary-recovery-inode-owner-run-2.json`,
+`ordinary-recovery-inode-nonowner-run-1.json`, `ordinary-recovery-inode-before-claim-run-2.json`
+and `ordinary-recovery-inode-after-claim-run-1.json`; fixture SHA-256 values respectively
+`d79dc0898d9e04cb4b1733ae4c3f4f8e75468c499e34d74560d1914521962cad`,
+`d01f7893373f0701978b731c2ead25182448ac4fe248697400fccacf559e129c`,
+`039086028043bbd6f806069927634183276062ba66842eec97d5ae14aa239ea6`, and
+`4e81c3a7f61d25d9ffe429e3b4e88780cde8ffe586be7ee1e4575f5da8b54e3f`. An independent C `statvfs`
+probe on this x86-64 host reported the same field offsets and inode totals as the native observer;
+its source and executable are `statvfs-inode-abi-1{.c,}`. The first pre-claim fixture failed to
+compile on two unused test bindings; the corrected fixture passed. Counts can change immediately
+and do not reserve space or inodes; this is not complete marker/filesystem, concurrent-owner, heap,
+GC or native funding, nor a portable ABI qualification. Production admission, marker lifecycle,
+authenticated handoff and supported integration remain open. Disk availability fell below the
+**45 GiB** image/live floor after these fixtures; the later compaction and its time-limited free-space
+observation are recorded above. Measure again before such an attempt.
+
+Private draft **280** replaces the runtime filesystem observer's hard-coded `statvfs` offsets with
+size, alignment and field offsets generated from the build host's headers by `hsc2hs`. It retains the
+existing Linux/architecture and native-width refusals. On this x86-64 host the generated layout
+compiles with `-Wall -Werror`; the existing inode-boundary and native owner fixtures pass at the
+**128 MiB** heap limit. The latter observes a dedicated recovery owner and never-sent retirement.
+Evidence is `ordinary-recovery-header-layout-run-3.json`; the fixture SHA-256 is
+`368e2a9caa763750bf1e5dd4bb8721e7ba8c3720645ecadc36d81dde8fcd447d`. Its **120** private input
+hashes in `ordinary-recovery-header-layout-1/private-inputs-entry-3.json` remained unchanged, as
+did the supported input snapshot. The first fixture build was stopped after an independent compile
+exposed a missing generated-code import; a second direct compile caught defaulted numeric types.
+The next fixture build failed before execution because support modules were omitted; the successful
+third build included them. This is a private draft and one host's native observation, not a
+cross-compilation or other-architecture qualification, capacity reservation, complete funding,
+production admission or supported routing.
+
+An independent C probe and the draft's header-generated Haskell reader also reported identical
+fragment size, total and available blocks, and total and available inodes for both `/run/user/1000`
+and `/` in one local observation. Sources, binaries and values are under
+`statvfs-header-field-probe-1/` in the current evidence root. The available counts can change
+between reads; this observation does not reserve them or qualify another host or ABI.
+
+The completed draft fixture's disposable object cache `ordinary-header-layout-objects-1/` was
+removed after its process exited. The filesystem's available space rose from **48,582,631,424**
+to **48,939,683,840 bytes** (a **357,052,416-byte** observed increase). Its fixture sources,
+executable, input hashes and terminal receipts remain under the current evidence root; rebuilding
+the fixture will recreate object files. Free space must still be measured before an image or live
+attempt.
+
+**Supported host-probe promotion attempt, 2026-11-08.** A draft replaced the supported native
+host probe's fixed `statvfs` offsets with an `hsc2hs`-generated layout while retaining its existing
+total-capacity calculation and ABI gates. The executable and unit suite compiled warning-clean,
+but the draft was not run or promoted: the current qualification source-manifest allowlist admits
+`.hs` under `src` but not `.hsc`, and the manifest enumerator skips paths outside that allowlist.
+Thus this new executable input would not be bound into the qualification identity. The draft is
+preserved under `native-statvfs-promotion-draft-1/` in the current evidence root. The supported
+probe and Cabal file were restored byte-for-byte to the last canonical-gate inputs and rebuilt.
+Before promotion, the executable-source policy and applicable source lint/format enforcement must
+cover the generated-input format, with a versioned policy and tests that prove changes invalidate
+the identity; alternatively, use a solution already covered by the current policy. The draft build
+does not qualify the runtime change or another ABI.
+
+**Current recovery integration inventory.** The recursive private-source import field of draft
+**268**'s recovery launcher and controller contains **82** modules: **55** have no supported
+counterpart, **25** differ, and **2** are byte-identical. The path/import/byte inventory and exact
+identities are in `recovery-integration-inventory-draft-268.json` under the current evidence root
+(SHA-256 `d4ad797fc1b3d29f2fc8c528a4150d22a5add0547a1f3171eb3c0174db225930`). Traversal stops
+when a module has no private source, so this is not a complete supported dependency graph,
+semantic review or build. It supersedes draft 190's module counts for these two roots only; funding,
+admission, authenticated result handoff and production integration remain open.
+
+The same bounded import traversal for draft **280** found **85** modules before the following
+promotion: **58** absent, **25** different and **2** byte-identical. The inventory and script are
+under `recovery-integration-inventory-280/` in the current evidence root; the inventory SHA-256 is
+`52dbb00581e827411f02c4e43a9e9bc3d9b3aa14601dcabd243f667ef92f7a93`. It stops at supported-only
+imports and is a byte comparison, not a full dependency or semantic review. The generated private
+`StatVfsLayout.hs` also depends on its adjacent `.hsc` source, which is not represented as a second
+module in these counts.
+
+**Recovery observation schedule integration, 2026-11-08.** The fixed scope-read then report-read
+schedule and its caller-traffic calculation are now in supported source. The warning-clean operator
+and unit build, all **nine** shared caller-budget cases, and `prodbox dev lint files` pass. The new
+control checks route order, response ceilings, expected traffic and refusal when any one counter is
+underfunded. The rebuilt operator SHA-256 is
+`c9440738af5617af9e2c746dcab787a790ca5bbe68e2a1ee7c7c4fddc337d21f`. The schedule is not yet
+consumed by the ordinary recovery caller and prices neither the complete owner nor heap, GC or
+native effects; it grants no admission. The preceding canonical gate is historical for the earlier
+source. The first new gate was stopped during HLint after review found that the scope endpoint,
+authenticated limiter and schedule used separate equal-valued bounds. They now use the same
+`providerScopeObservationMaximumBytes` constant. The warning-clean build, **nine** caller-budget
+cases, **924** authenticated-transport cases and file lint pass for the combined change; the
+operator SHA-256 is `0fc0714246bfb253134fcd80fcc577f52514986f610354e7f588c46b666529e5`.
+The stopped gate is not a validation result. The fresh `prodbox dev check` passed with
+**9,786 + 27 + 35 + 924** tests, unchanged source and link snapshots and both terminal receipts in
+`recovery-observation-schedule-canonical-gate-2.json` (1,155.59 seconds).
+
+Private draft **281** removes its duplicate schedule so the recovery composition resolves the
+supported module. In `ordinary-recovery-supported-schedule-run-1.json`, the budget controls,
+signed in-memory Authority report, inode checks and never-sent native owner completed at the
+**128 MiB** heap limit with unchanged supported and **119** private inputs. The subsequent
+submitted-owner mode failed: after the original submission and its data checks, the recovery
+marker did not appear before the recovery work end. The recovery controller exited non-zero;
+the user manager's `prodbox*` unit listing was empty after the fixture returned. This is a local
+fixture failure, not a passing submitted-recovery result or AWS evidence. The first four modes'
+success does not establish complete admission, funding or supported routing. A test-only diagnostic
+rerun (`ordinary-recovery-supported-schedule-diagnostic-run-1.json`) repeated the failure and left
+no `prodbox*` user units, but wrapped the wrong child entrypoint and captured no exception. A second
+test-only diagnostic targets the controller entrypoint without changing the deadline.
+That rerun (`ordinary-recovery-supported-schedule-diagnostic-run-2.json`) again failed before the
+marker, with the child reporting `OrdinaryLoadBusRefused BusIoRefused`; no `prodbox*` user units
+were listed after return. `withSystemdBus` can map an `IOException` from its enclosed callback to
+that same error, so this does not yet identify a socket or manager failure. A further test-only
+diagnostic (`ordinary-recovery-supported-schedule-diagnostic-run-3.json`) again failed and showed
+that a nested callback's `IOException` was also mapped to `BusIoRefused`; its single diagnostic
+file was overwritten by the outer error. No `prodbox*` user units were listed after return. A
+test-only diagnostic that retains nested exceptions in order is needed to identify the first cause.
+That diagnostic (`ordinary-recovery-supported-schedule-diagnostic-run-4.json`) exposes a test
+assertion in the controller race: its result did not match one successful controller and one
+already-attempted refusal. The later `BusIoRefused` is the wrapper around that test exception, not
+evidence that the bus socket failed. No `prodbox*` user units were listed after return. The test
+did not print the two race results. A further test-only diagnostic
+(`ordinary-recovery-supported-schedule-diagnostic-run-5.json`) recorded one
+`RecoveryControllerAlreadyAttempted` and one refusal during caller authentication, ultimately
+`KernelScopeChildRefused`; supported and 120 private inputs were unchanged, and no `prodbox*` user
+units remained. The refusal checks the child's pidfd identity, parent, state and liveness; the
+specific failed check is not yet known. The submitted driver also expects the marker and artifacts
+of the legacy test helper, while its controller entrypoint currently runs the newer one-shot
+never-sent fixture. Consequently this composition cannot establish submitted recovery even if the
+child-scope refusal is resolved. Reconcile the fixture with the intended submitted-recovery contract
+and identify the refusal before drawing a conclusion; neither result proves AWS cleanup or phase
+completion.
+
+A subsequent diagnostic build (`ordinary-recovery-supported-schedule-diagnostic-run-6.json`)
+failed before execution because its private fixture imports were incomplete. After restoring those
+imports, `ordinary-recovery-supported-schedule-diagnostic-run-6b.json` again failed the submitted
+fixture, this time with `KernelHostRoleUnsettled OperationCommandProcess` and an
+`AlreadyAttempted` result. The intended child-identity instrumentation was not rebuilt, so this
+run cannot locate the earlier child refusal. Its supported inputs remained unchanged and no
+`prodbox*` user units were listed after return. These results do not validate the mismatched
+submitted fixture; inspect its owner and helper contract before another diagnostic.
+
+The supported systemd bus interpreter now distinguishes an `IOException` thrown while its supplied
+action executes (`BusActionIoRefused`) from an I/O exception outside that action (`BusIoRefused`).
+This reports an execution boundary, not the root cause of a nested exception. The warning-clean
+operator build passed, and the native manager submission fixture, including action-exception and
+typed-refusal controls, passed under its 128 MiB heap limit with unchanged supported inputs in
+`systemd-bus-action-boundary-native-1.json`. This does not validate submitted recovery; the
+first canonical quality gate (`systemd-bus-action-canonical-gate-1.json`) stopped at the pinned
+formatter before reaching tests, because the host formatter had formatted an unrelated expression
+differently. After applying the pinned formatter, `systemd-bus-action-canonical-gate-2.json`
+passed with **9,786 + 27 + 35 + 924** tests, unchanged inputs and both terminal receipts
+(1,378.37 seconds). The operator SHA-256 is
+`2da6f62d989561f80c1b5f0323baab527c185413014029040f71304fdd38dd43`. No `prodbox*` user units
+were listed after return. This gate does not establish submitted recovery or live qualification.
+
+**Retry overflow correction.** The supported shared retry schedule now saturates before
+multiplication can overflow its `Int` ceiling, and handles zero and constant delays without
+traversing large attempt indices. A boundary regression, warning-clean operator/unit build,
+`prodbox test unit`, and `prodbox dev check` pass; the latter's main unit binary passed **9,776**
+cases. The rebuilt operator SHA-256 is
+`2cb05f7c9e0442a1db7c6bd4a5b28549f468e47f727c3e4050ba09f8fbe1550c`.
+This source change supersedes earlier public source/operator identity claims below. Private draft
+**176** incorporates only the same arithmetic change while retaining its additional retirement
+policy; fixture **86** links against a reused failed-build object cache and passes all **40** local
+stages at unchanged limits. Its binary SHA-256 is
+`49b52e3defca7f33913d70eeaebf18dfd802f49a08489e332f7f7062a53fe50f`.
+Caller, manager and router identity and zero-capability observations preceded the run. An earlier
+whole-module replacement failed at build because it omitted that private policy; no fixtures ran,
+and its receipt is retained. Evidence is in `.build/sprint-6.5/resume-20261102/` under
+`retry-private-final-validation-1.json` and the fixture records. Fixture **84** and its return-table
+measurements remain historical evidence for their exact old bytes; they do not establish frame
+bounds for fixture **86**. Full funding, independent admission, authenticated completion and
+qualification remain open; the queue is unchanged.
+
+**Private integration inventory.** Draft **190** contains **46** Haskell modules absent from the
+supported source tree and not named in the current Cabal file, **23** whose supported counterparts
+differ, and **2** identical counterparts. The byte/path inventory is bound to fixture **102**'s
+validated draft inputs in `.build/sprint-6.5/resume-20261102/private-integration-surface-final-1.json`.
+This is an integration worklist, not a semantic comparison, supported build, admission or activation.
+The unresolved funding, authenticated completion, gates and qualification still precede cutover.
+
+**Fixture 102 return field.** The exact private fixture **102** image has **393,993** potential
+`RET_SMALL` and **624** potential `RET_BIG` entries in the ABI-aligned self-contained file-backed
+field; the largest candidate is **4,928 bytes**. Independent aligned-address enumeration agrees
+on all candidates using the same load-mapping implementation, and GNU `readelf`/`od` independently
+check the mappings and maximum raw witness. Evidence is
+`.build/sprint-6.5/resume-20261102/fixture-102-return-field-final-1.json`. Candidates may be
+incidental data; generated, external, relocated or changed metadata and other frame types are
+outside the field. Runtime validity, reachability, simultaneous depth, total stack funding and
+admission remain unproved. The same image also contains `stg_gc_fun_info` with type tag
+`RET_FUN` (**32**), confirmed against the installed headers and raw bytes; that table lies outside
+the two-type scan. Its presence does not prove runtime reachability or bound its dynamic frame.
+Evidence is `.build/sprint-6.5/resume-20261102/fixture-102-ret-fun-final-1.json`. No target
+image executes during these scans.
+
+**Parent pre-read preparation budget.** Private draft **190** includes the preparation-budget
+operand in the retained-publication state check before reading the published inputs. Fixture
+**102** checks the pre-read refusal and passes all **40** local stages at the original limits.
+Its binary SHA-256 is
+`f4dbe8a6bbc9738322f24bbd55bf61c1aa3f92f4c38f61faf392c717bb312ad0`;
+evidence is `.build/sprint-6.5/resume-20261102/parent-preread-budget-final-1.json`. The change
+prices selected data only; construction, control, GC, native execution, independent admission and
+authenticated completion remain open.
+
+**Retained publication-budget operand.** Private draft **189** carries the publication-budget
+record with its payload in both retained-readback and launch-state projections. Fixture **101**
+checks the budget graph and ownership boundaries and passes all **40** local stages at the original
+limits. Its binary SHA-256 is
+`a0cec1384c272692f97c438f154a1be1df5df2babfefc48aaf8a9ab0c669f77c`.
+Fixture **100** stopped on a stale numerical expectation: its three-digit fixture path made the
+observed descriptor **40 bytes** larger. That failure and the corrected run are retained. A closing
+read-only local input scan found no payload, unexpected or unsafe entries; it is not AWS absence
+or authenticated completion evidence. Evidence is
+`.build/sprint-6.5/resume-20261102/retained-publication-budget-final-1.json`. Construction,
+evaluator, stack, GC, native costs and full independent admission remain open.
+
+**Launch preparation-budget operands.** Private draft **188** includes the two preparation-budget
+operands alongside their referenced graphs in the launch-state calculation. Fixture **99** checks
+an operand graph and launch refusal/acceptance boundaries, and passes all **40** local stages at
+the original limits. Its binary SHA-256 is
+`749cf5e48463a7b56484df2b94f82230a9b94a9ba300bf349b09921f4dbdc15b`;
+evidence is `.build/sprint-6.5/resume-20261102/launch-preparation-operands-final-1.json`. This is
+selected operand data, not funding for construction, evaluator, stack, GC or native work; full
+independent admission and authenticated completion remain open.
+
+**Captured runtime floor.** Private draft **187** includes the captured-state budget record in
+both direct and recovery runtime readback floors. Fixture **98** checks both floor differences and
+passes all **40** local stages at the original limits. Its binary SHA-256 is
+`f09d14aa86a96c51f875623d6e8e39d43f7841431c52904f6aab2edfb1df916e`;
+evidence is `.build/sprint-6.5/resume-20261102/captured-runtime-floor-final-1.json`. This selected
+data term does not fund its construction, evaluator, stack, GC or native work, and does not
+establish independent admission or authenticated completion.
+
+**Recovery budget operands.** Private draft **186** includes the retained preparation-budget
+operand and the captured-state budget operand in the recovery-state calculation. Fixture **97**
+observes those selected operand graphs, checks the recovery boundaries and passes all **40** local
+stages at the original limits. Its binary SHA-256 is
+`f866e837e96425bb2f15f4645f235d1634b1f89911ff3bc4824f97fd6c427cbe`;
+evidence is `.build/sprint-6.5/resume-20261102/recovery-budget-operands-final-1.json`. This is
+selected operand data, not funding for their construction, evaluator, stack, GC or native work;
+independent admission and authenticated completion remain open.
+
+**Publication refusal field bound.** Private draft **185** extends the publication program's
+numeric field maximum to include the budget-record term now present in a state refusal. Fixture
+**96** checks the actual required-state value against the bound and selected monotonicity cases,
+and passes all **40** local stages at the original limits. Its binary SHA-256 is
+`33c6e1f77f77796814b703e9e46835ffc3064e4cbbd1840a0f249ecae34c2eee`;
+evidence is `.build/sprint-6.5/resume-20261102/publication-required-bound-final-1.json`. This is
+a selected result-metadata bound, not complete construction, stack, GC or native funding, and
+it does not establish independent admission or authenticated completion.
+
+**Publication-copy ownership check.** In private fixture **95**, the scratch term charges the
+observed source backing pair, while the `CheckSourceScratch` instruction's other-heap data term
+charges its two `PinnedByteStringData` scalar observations before interpretation. The existing
+copy-scratch and program-data stages both pass. These terms have separate partition owners;
+they do not establish complete instruction construction, execution, GC or native funding.
+
+**Captured and publication budget checks.** Private draft **184** charges the current captured
+and publication budget records in their respective state checks while preserving their root-size
+projections for other consumers. Fixture **95** checks both observed budget graphs and exact
+refusal/acceptance boundaries, and passes all **40** local stages at the original limits. Its
+linked binary SHA-256 is
+`e1e5f0a85fae389c3aa13847e6018295baffaa7d469a840877572853e4890fef`;
+evidence is `.build/sprint-6.5/resume-20261102/captured-publication-budget-check-final-1.json`.
+Earlier projections, construction, evaluator, GC and native costs, complete admission and
+authenticated completion remain open. This private change does not activate the caller.
+
+**Preparation budget checks.** Private draft **183** charges each evaluated preparation-budget
+value alongside its referenced preparation graph in the fresh, retained and retained-publication
+checks. Fixture **94** checks the retained and publication refusal/acceptance boundaries and passes
+all **40** local stages at the original limits. Its linked binary SHA-256 is
+`07fef0ddaa37d15b88726b8ab955a07f66e914e63dead6abc49f0d86c2ea9b95`;
+evidence is `.build/sprint-6.5/resume-20261102/preparation-budget-check-final-1.json`. Construction,
+enclosing wrappers, evaluator and GC work, native costs, independent admission and authenticated
+completion remain open. This private change does not activate the caller.
+
+**Recovery budget projection allowance.** Private draft **182** charges both the base and
+publication-projected recovery-budget record shapes when publication is present. Fixture **93**
+observes the two-record graph, checks refusal boundaries and passes all **40** local stages at
+the original limits. Its linked binary SHA-256 is
+`354c61d54a03eab4e598dfe7cfbfecd79f3a2acc499c5fb22e2b3dabbbbbf230`;
+evidence is `.build/sprint-6.5/resume-20261102/recovery-projection-final-1.json`. Reordered or
+repeated projections, construction, evaluator, GC and native costs, independent admission and
+authenticated completion remain open. This private change does not activate the caller.
+
+**Recovery budget record.** Private draft **181** charges the current recovery-budget record
+and its scalar data while checking the retained and fresh state. Fixture **92** observes that
+record's graph, checks settings/request refusal boundaries, and passes all **40** local stages at
+the original limits. Its linked binary SHA-256 is
+`5aae22a4dae0b36859dc1af20cf3fb56b1f62c496192c41887e5dbd08485aa72`;
+evidence is `.build/sprint-6.5/resume-20261102/recovery-budget-record-final-1.json`. Earlier
+projections, construction, evaluator, GC, native costs, independent admission and authenticated
+completion remain open. This private change does not activate the caller or reorder the queue.
+
+**Launch budget projection allowance.** Private draft **180** conservatively charges four copies
+of the final launch-budget record shape for the fixed base → descriptor → publication → publisher
+sequence, whose earlier projections replace only zero fields. Fixture **91** observes a selected
+three-record graph and passes all **40** local stages at the original limits. Its linked binary
+SHA-256 is `e2ea70e2eae85ad07320e924806dbb159e74cb7e6872ab8e2de6772ba7776190`.
+Fixture **90** passed 39 stages but its graph observer refused an unevaluated test value; that
+failure is retained, and fixture **91** forces the values before observation. A closing read-only
+local input-field scan found no payload, unexpected or unsafe entries; it is not AWS absence or
+an authenticated completion receipt. Evidence is
+`.build/sprint-6.5/resume-20261102/launch-projection-final-1.json`. Reordered or repeated external
+projections, construction, evaluator, GC, native, full admission and authenticated completion
+remain open. The public runtime and queue are unchanged.
+
+**Earlier private return-field scan.** Fixture **89** has **393,809** potential `RET_SMALL` and
+**624** potential `RET_BIG` entries in the ABI-aligned, self-contained file-backed field; its
+largest candidate is **4,928 bytes**. Independent aligned-address enumeration agrees with the
+complete candidate set, using the same load-mapping implementation. GNU `readelf` independently
+confirms the load mappings and `od` confirms the maximum header and bitmap size. Evidence is
+`.build/sprint-6.5/resume-20261102/current-private-return-field-final-1.json` and
+`current-return-loads-final-1.json`. This field can
+include incidental code or data and assumes runtime metadata matches the file. External, generated,
+relocated or changed metadata and other frame types remain outside it; reachability, simultaneous
+depth, full stack funding and admission remain unproved. Fixture **102** has different binary
+bytes and is covered only by its separately recorded scan above. The scan executes no target image.
+
+**Fixture restoration probe.** A copy-only probe restored one historical fixture binary's bytes
+from its content-addressed copy. That copy was mode `0644` while the historical executable was
+`0755`; applying the recorded original mode restored an executable copy with matching hash. No
+recorded fixture path was removed. This one probe does not establish that every historical path,
+metadata dependency or validation procedure can be restored; evidence is
+`.build/sprint-6.5/resume-20261102/fixture-restoration-probe-result-2.json`.
+
+**Local cache cleanup.** The rebuildable `ordinary-local-symbol-objects-1` compiler cache was
+removed after its source and final-image evidence had been preserved, freeing about **281 MiB**.
+A later cleanup removed only compiler object/interface files from older selected-context candidate
+caches, retaining their analysis dumps and recorded evidence; it freed another **371 MiB**.
+The project filesystem then had about **8.60 GiB** free. After later private validation artifacts,
+the current observation is approximately **4.04 GiB** free, below the **45 GiB** image/live
+admission threshold. A local copy-on-write clone probe returned unsupported, so separate binary
+evidence remains intact. The current object cache and retained evidence remain available.
+
+**Launch budget record.** Private draft **179** includes the current six-field launch-budget
+record and its scalar values in the launch state check, in addition to the data it references.
+Fixture **89** observes that record's graph, checks exact refusal/acceptance boundaries, and passes
+all **40** local stages at the original limits. The linked binary SHA-256 is
+`1740fcf20b3397eed196f4edd02a8377eaf3bea61b7a83461c26f4d91d6ddc43`;
+evidence is `.build/sprint-6.5/resume-20261102/launch-budget-record-final-1.json`. Older budget
+projections, construction, control, GC, native costs and complete independent admission remain
+open. This private change does not activate the caller or establish authenticated completion.
+
+**Parent readback budget data.** Private draft **178** also charges the evaluated preparation
+budget's known data size in the parent readback floor. Fixture **88** checks that floor and passes
+all **40** local stages at the original limits, with caller, manager and router checked before the
+run. Its linked binary SHA-256 is
+`52e3fab11342fba3eb7c69073cc149edf3f611194931449facff11849075561a`.
+Evidence is `.build/sprint-6.5/resume-20261102/parent-budget-readback-final-1.json`. This selected
+conservative data term grants no complete construction, stack, GC, native, physical or Authority
+admission and no authenticated completion. The public runtime and execution queue are unchanged.
+
+**Recovery readback budget data.** Private draft **177** adds one preparation-budget value's
+known data size to the retained recovery readback floor alongside the preparation graph. Fixture
+**87** checks the exact floor difference and passes all **40** local stages at the original limits,
+including submitted and separate-process recovery cases; the caller, manager and router were
+checked before the run. The linked binary SHA-256 is
+`4f0588fd6d80c8eb631302188346bf7eab92fe7a83fa2155da09db43c6fff69f`.
+Evidence is `.build/sprint-6.5/resume-20261102/preparation-budget-readback-final-1.json`.
+This conservative selected-data charge does not fund its own construction, other transient or
+control costs, stack, GC, native execution, independent admission or authenticated completion.
+The public runtime is unchanged and the numerical queue remains unchanged.
+
+**Preparation construction scope.** Source inspection narrows one pending construction term:
+`compileHostExecutionPlanWithTransport` calls `compileResourcePlanAgainstObserved`, which checks
+the observed scalar dimensions and shared-device storage case and returns the existing compiled
+plan; it does not recompile the workload list. The three existing observed-host refinement tests
+pass for independent sufficiency, an insufficient dimension and shared storage. This is a
+source/control observation, not an allocation or stack bound. Pricing the checks and arithmetic,
+startup expectations, native observations, plan/result construction and retained budget traversal
+still precedes a complete preparation funding claim.
+
+**Next implementation step.** Complete the ordinary caller's closed publication/submission/
+completion/recovery schedule and independent resource admission. Native prompt handoff, a real
+owned/stdin controller prerequisite refusal, actual native capture through business-entry layout
+refusal, and healthy/cancelled submitted-retirement paths now pass, as do selected fresh-process submitted
+and never-sent recovery paths. The launch reservation now charges the settled publisher data.
+Its selected data now follows readback/revalidation/preparation, and the read allocation policy
+includes that retention and the configured nursery. Existing runtime guards also price actual
+buffer backings and selected retained/fresh roots. Publication preflight also includes its original
+preparation and budget data before encoding. Recovery reserves its selected replacement request
+slot before rebuilding and checks the actual result afterward. Runtime guards around that rebuild
+also include the prospective/actual fresh settings/request pair and the original operand metadata
+retained by its derived copies. Fund remaining
+publication/revalidation construction and active ownership, and compose the actual business/Authority
+program with full resource funding; fresh manager/router identity and zero-capability checks remain
+mandatory before further submitted work. Establish stack-chunk transitions that preserve the checked
+constructor/startup bounds, and callee/collector re-establishment of valid caller frames and stack
+limits. Source-level growth arithmetic now separates copy capacity from the required reserve;
+the installed four frame-size corridors and copy/publication tail now match under explicit
+contracts. Native size selection, scan initialization and early-return/throw handoffs now match
+under the allocator, layout and arithmetic contracts. The installed allocation wrapper and large
+route now have checked local graph, direct-store/call cadence and block-request rounding.
+The block pool now has conditional source capacity/split bounds and checked installed bucket-rank
+and size arithmetic. Its installed megablock search now has local first-best/exact-unlink effects
+and a linear instruction bound under the finite-list contract. Its fresh/split first-megablock
+descriptor initialization is now checked over symbolic base/node inputs. The shared post-selection
+group initializer now has checked head/tail stores, uint32 guard classes and caller restore.
+The fresh-small route now has checked group/remainder construction and a normal return join
+under an explicit `freeGroup` preservation contract. That selected remainder now has a joined
+native no-coalescing path preserving the allocated prefix, undoing its counter credit and inserting
+it into the size bucket. Cached splitting now has checked unlink/reinsert alias cases and an
+input bridge to the shared initializer. The direct cached exact-removal route now also joins its
+list updates through that initializer and caller restore. Megagroup dispatch now has checked
+search/OS call cadence, argument origins and native-frame restoration under its component contracts.
+Its cached best-fit split now joins retained/returned capacity arithmetic to the actual descriptor
+initializer and normal return, under stable owned-region and nonwrapping metadata contracts.
+The fresh OS-result route now also joins actual first-megablock initialization, final capacity
+and caller restore, conditional on the aligned writable region returned by its OS helper.
+The installed OS commit wrapper now has checked local normal/failure paths and exact exit status;
+mapping placement/success and physical backing remain dependencies of the OS-result contract.
+Its `my_mmap` helper now has checked symbolic API-boundary cases across all three modes,
+including one mapping call without retry for commit-only; kernel guarantees remain separate.
+`getMBlocks` now has checked coherent interval/accounting cases through normal allocation,
+commit termination and arena-capacity exit, with a conditional finite-list instruction bound.
+Arena initialization now has checked publication from the reservation helper's actual returned
+base and adjusted length, plus cold-image zero declarations; reservation validity/startup remain open.
+Reservation setup now has checked temporary-array/frame bounds on nonbinding-limit paths and
+conditional source alignment/slop arithmetic. Bounded complete nonbinding-limit histories now
+carry state through retries and cleanup. Binding-limit adjustment now has checked numeric/helper
+cases through its continuation/failure boundary. Selected adjusted histories now carry actual
+state through array setup and the body; general histories and successful OS cleanup remain open.
+Reservation results now also feed actual cold arena publication and first-allocation models;
+invalid publications remain explicit and are excluded from valid allocation fixtures.
+One native alignment iteration now joins that prefix through rounding, null/small-length cuts,
+both trimming calls/diagnostics and the low/high-address continuations, under helper contracts.
+Native retry transitions now check every admitted slot index, exact length/metadata/hint effects
+and the decreasing attempt rank. The cleanup loop now has checked traversal/diagnostics and
+return/canary paths. Complete selected model histories now distinguish retained high spans from
+normal invalid returns; general histories, OS cleanup success and reservation validity remain open.
+Discharge general coalescing/concurrent
+effects and global free-list
+ownership/validity/length and freshness, remaining helper effects/costs, global frame-size bounds
+beyond the conditional file-backed return-table field, and nonwrapping metadata conditions. Three native bootstrap
+constructors now join fresh stack partitions to normal first
+handoffs with Sp above SpLim, under their constructor/entry contracts. The native startup limit,
+uint32-sized constructor reserve and seven local Cmm
+stack extents are now checked under their explicit entry/allocator contracts. Discharge capability
+publication/migration and helper FunTable-preservation contracts as well. The installed initializer's normal
+returns and local scheduler/StgRun handoff now join the GC slot at capability+16 to BaseReg−8
+under those contracts. Four selected `ARG_NONE`/`ARG_P` function-entry
+GC save/resume paths now join their native caller routes and local frame/register origins under
+those contracts. Twenty native force handoffs and six local
+pointer-GC caller/return joins are now checked under those contracts. The launcher/wrapper add
+two checked return maps and a local
+query/scalar-GC frame join; the adapter has checked function metadata and a frame-free claim tail.
+All 28 selected owner/preparer return maps have checked local native header, payload and
+inherited-slot correspondence under the entry contract. Then connect
+the conditional per-invocation stack bound to runtime scheduling and invocation frequency.
+The installed stack tracer now composes its local payload bounds through eleven frame kinds,
+six large entry/empty-span bridges and checked bottom guards under a valid-partition contract.
+The installed `trace_PAP_payload`
+small, BCO and large-function routes now have conditional payload progress/direct-request bounds,
+empty-span bypass and normal saved-register restoration. Eager-thunk dispatch/direct corridors,
+ordinary pointer-loop progress and AP argument-loading paths are also checked locally;
+complete metadata admission and transitive queue/helper costs remain separate dependencies.
+The installed large-bitmap BCO/return/function slot corridors and chunk counters now have
+conditional progress/direct-insertion bounds, including queue-growth branches. The small-return
+and small-function-return payload loops have symbolic progress/request proofs, local entry/exit
+bridges and bounded root/SRT corridors; updates have a checked one-request/two-word step. Then fund queue/block/native costs,
+wait/service liveness, next-chunk space and scheduler/handler application before closing
+whole-runtime one-entry and retention. The native tracer passes fixed synthetic
+metadata, composition and all 28 captured owner/preparer bitmap fixtures under bounded external
+interpreters; this is not live-collector or universal scan equivalence. Source-derived scan bounds
+charge queue-push requests to consumed stack or thunk-object words, with explicit metadata and
+uint32_t counter contracts; requests alone provide no byte or admission funding. The installed stack remembered-set wrapper
+now has at most one direct trace call, while the thunk WHITEHOLE wrapper preserves its eager-helper
+arguments; their wait loops retain no iteration/liveness bound. The installed `dirty_STACK` local graph bounds direct bookkeeping
+cadence; fixed machine-state cases preserve its stack pointer under the helper contracts. The
+installed `updateThunk` local graph has
+checked publication-store ordering, helper cadence and C-register/stack restoration; concurrent
+visibility and transitive helper costs remain separate. The selected zero-value stack-underflow
+helper path switches chunks and empties the old logical stack under its explicit structural/C-ABI
+contracts. The selected installed update/underflow blocks have checked allocation, copy and handoff instructions;
+their per-visit request is not a bound on frame visits or global retention. The selected non-null
+catch-frame replacement builds a handler/exception buffer; it does not establish that work frozen
+earlier is unreachable.
+Discharge the pending handler's remaining transitive helper and queue/capability contracts. Its installed
+local call-cadence, C-stack restoration and Boolean-return paths are validated below. The selected tag-one pending
+action enter/apply frames are validated below; generic/untagged paths and collector tag preservation
+remain separate contracts. Six fixed queued-exception cases now
+validate the caller restore boundary and its ticket/publication outcomes. The local mask dispatch graphs preserve the action register and allow
+at most one direct transfer; their installed GC frame now saves the action and the matching
+primitive-entry retry address under the collector/scheduler contract. Connect these results
+and the local closed-root/launcher/adapter/claim origins to update-thunk duplication containment. The installed masking-state
+query and scalar-GC save/return instructions are validated below; collector/scheduler execution
+remains a separate contract. Discharge the remaining callee, collector/scheduler, freshness
+and cross-module containment contracts of the preparer and owner origin proofs below. Their selected local continuation maps
+match the captured binary; installed pointer-return and selected `ARG_NONE`/`ARG_P` entry-GC
+save/resume paths are validated. Fixed native owner fixtures now survive observed major
+collections at preparation/invocation/publication boundaries. Collector binary equivalence, interior
+safe points, scheduling and complete runtime preservation remain open. Selected native weak-key
+observations cover pending/completed retention and consumed-ticket release, without physical
+backing/RSS or admission credit.
+Connect these proofs to the private matched-context owner's update-thunk evaluation/duplication,
+mask-primitive and GC continuation boundaries and cancellation/lifetime
+contract. The actual-owner native masking/cancellation cases below validate caller-mask
+restoration, pre-invocation cancellation and post-publication cancellation. Interruption after
+claim but before publication and complete cancellation/lifetime closure remain open. Its selected local compiled paths, installed atomic reservation/retry and exact masking
+wrapper/tagged-application dispatch are validated below. This supplies the one-entry
+scheduling boundary needed to bound initialization frequencies and the remaining allocator,
+remembered-set/list, native and RTS costs before funding the guarded static/initialization terms.
+Installed String layouts, Text array requests and the CAF claim fence are validated below;
+the three selected Text CAFs have at most six demand opportunities per projection-root entry,
+while actual initialization frequencies remain open. The twelve-site
+Settings literal cohort is inventoried below; its full initialization and physical memory funding
+remain open. Complete the closed compiled-context schedule and matching decoded/context
+lifetime contracts. All **47** local endpoint reservation sites are classified; the selected term
+charges those composed components with source/artifact guards under the explicit one-result-entry
+assumption. Continue through local coordinate, capacity, component/artifact and path consumers
+before closing full schedules.
+The private selected context term now composes trim, whitespace scans, scheme scalars,
+converter backing arrays, bounded prefix streams, selected slice boundaries, literal value/pack
+data, fixed outer/result/error-prefix data, machine-ID list spines and selected RPC trim/scan/
+refusal, label/length/equality boundaries, selected generation/guard/result data, selected compiled
+local reservations and map thunk creation. It is separate from the fifteen SDK budgets and is not
+consumed by ordinary admission.
+Complete initial/publication/recovery schedules still need callbacks/children, deep codec initialization,
+actual compiled sharing/duplication and bound-calculation/metadata/constants/dictionaries/functions.
+Compiler/control/update/stack/GC/native costs, typed outer reports and independent physical/Authority
+admission remain open before complete ordinary integration and qualification.
+
+**Settings refusal now precedes storage-path conversion and resolution.**
+The complete settings constructor first completes the existing ordered local, capacity and
+deployment-context checks through a private projection. Only a successful projection reaches
+`Text.unpack` and `makeAbsolute` for the storage path. Successful resolution retains the original
+raw-path interpretation, including whitespace; no wire format or resource allowance changes.
+A frozen pre-change probe observes premature storage demand on an earlier invalid field; its
+replacement obtains the intended typed refusal without demanding storage. All six focused
+projection tests pass, including eight successful absolute/relative-root path cases and the
+existing single/paired first-refusal table. Two rejected duplicate thread-option invocations remain
+recorded; the runner already supplies its serial option. The warning-clean all-target build
+passes in **286.93 seconds** under the unchanged **5 GiB** source-QA cap.
+
+Evidence is retained under `.build/sprint-6.5/resume-20261102/settings-path-order-1/` and the
+`settings-path-order-{before-1,build-1,after-1,focused-3}` terminal receipts. The synchronized
+operator is `2268d0425cdbf2169d9bcf6b962a94fc32e1a9cb2d594849f8270ad807a768e2`.
+Canonical gate **59** refuses formatter drift introduced by the host's unpinned formatter;
+the pinned **0.19.0.1** formatter restores all unrelated Settings source exactly. Canonical gate
+**60** passes **10,739** cases (**9,769 / 27 / 35 / 908**) in **1,211.33 seconds**.
+The shared CLI/environment executable passes all **105** cases through
+`prodbox test integration cli` in **1,449.39 seconds** command wall time. Its earlier outer-QA
+**900-second** timeout remains incomplete evidence, with positive manager/cgroup termination
+observations. The complete rerun changes only that outer QA deadline to **3,600 seconds**;
+fixture clocks, **5 GiB** QA cap and **64-task** cap remain unchanged. The source comparison
+preserves the exact pure-check sequence, six result-field origins and successful raw-path
+expression. Final evidence is `settings-path-order-final-validation-1.json`.
+Earlier source-bound context certificates
+retain their recorded identities and do not certify this revised validation schedule. The new
+projection's construction, successful path conversion/resolution, complete runtime funding,
+ordinary admission and deployment qualification remain open. Sprint `6.5` stays active;
+later sprints remain parked.
+
+**Ordinary settings entries now have a separate private source schedule.**
+`reconstructed-draft-126/` removes the two codec demand-observation overlays from private `125`
+while retaining its functional streaming-match changes; its codec-root module equals canonical
+source. The new typed model separates initial loading, publication checking and recovery, with
+**10 / 1 / 4** interpreter boundaries. Its compiled four-operation census is respectively
+**1 / 2 / 1 / 1**, **0 / 1 / 0 / 0**, and **0 / 2 / 1 / 1** for settings extraction, embedding,
+semantic validation and storage-path resolution. The reviewed-source census and all **eight**
+drift controls pass, as does pinned HLint. These are per-entry named source seams under the
+reviewed linear-body/IO contracts, not compiled allocation, deep codec initialization or complete
+caller-frequency bounds.
+
+The candidate's **516-module** build passes. The first native matrix and diagnostic retain the
+original fixture's **128 MiB** heap, **256 MiB** declared container and clocks. Initial loading
+refuses after the inspection policy: the known scratch term requires **17,334,159 bytes** against
+**16,777,216** declared. Both failures and the independently frozen first source/binary record
+remain evidence, alongside `ordinary-settings-schedule-checkpoint-1.json`.
+
+The positive fixture now recompiles its scratch partition from six explicit known data phases.
+It uses a provisional declaration only to evaluate that recipe, then rounds the maximum and
+rechecks the final compiled request. The resulting **17 MiB** (**17,825,792 bytes**) covers the
+**17,499,879-byte** maximum. Restoring the original scratch field reproduces the original
+canonical request bytes. Heap, declared container, every other reservation and all clocks remain
+unchanged. The original **16 MiB** fixture remains a passing typed-refusal control.
+All **18** initial/publication/recovery boundary cases and **204** compatibility cases pass.
+Three separate native modes preserve actual RTS/data-checkpoint success, recovery success and
+the intended incompatible-runtime refusal. Native initial checkpoints report **773,520 /
+17,341,887 / 17,408,487 / 17,499,879 bytes**. These are known data terms, not measured whole
+working-set or admission bounds.
+
+The fixture generator's pre-build variable collision and the subsequent unsupported whole-profile
+`Eq` assertion remain recorded. The first funded matrix passes, while its compatibility run
+retains nine stale-fixture failures. The corrected compatibility vehicle includes the inspection
+checkpoint, routes healthy controls through the derived partition and retains the current
+persistent metadata and serial-phase worksheet; it removes no test and adds the inspection
+refusal case. Evidence is under `ordinary-settings-schedule-{1,2,3,4,5}/`,
+`ordinary-settings-source-audit-1/` and `ordinary-settings-schedule-final-validation-1.json`.
+Next compose these per-entry results with the actual parent/publication/recovery invocation
+schedule, complete helper/child/deep-codec/compiler/runtime costs and independent admission before
+promotion or qualification. Sprint `6.5` retains cleanup ownership and remains active.
+
+**The private ordinary parent now owns publication and never-sent retirement.**
+Private `128` shares the unchanged load interpreter between initial loading and recovery. Its
+opaque launch owns the shared ordinary publication namespace, reprepares captured inputs before
+use, permits one submission attempt through the existing prompt and shared permit-indexed core,
+and closes escaped launch handles. Never-sent inputs retire through the existing read-back owner;
+possibly sent inputs remain retained. Metadata-only recovery preserves the original work end and
+never renews an expired program. This candidate remains excluded from public dispatch.
+
+The warning-clean **519-step** build, pinned formatter and HLint pass. All **18** settings boundary
+cases, the original underfunded control, **204** compatibility cases and the preceding **three**
+native modes pass against this candidate. Four additional native cases cover normal callback
+return, invalid-prompt single use, callback exception and cancellation. They independently confirm
+payload absence, escaped-handle refusal, retained namespace fencing and recovery read-back;
+exceptions and cancellation propagate. No manager submission, child execution or AWS operation is
+claimed by these four cases.
+
+The isolated native configuration retains mandatory replay and secret-worker profiles, uses a
+matching Redis runtime profile, and derives host capacity from workload limits, replica counts,
+platform overhead and the fixed controller draw. Its declared **3,965m / 6,842 MiB / 2,817 MiB /
+1,026 MiB** vector is checked against actual host observations; it is not a measured working-set
+claim. Its known data peak is **16,100,589 bytes** within **16 MiB** scratch, with the same
+**128 MiB** heap and **256 MiB** declared controller container. The original **20 / 15 / 16 / 17 /
+18-second** window fits the unchanged **30-second** child lifetime. Earlier compiler, fixture
+configuration, missing-controller-draw and incompatible-window refusals remain preserved; they
+supply no publication-success evidence. The ambiguous clock-replacement generator also refuses
+before launching validation and then selects only the new publication fixture.
+
+Evidence is under `ordinary-parent-{1,2,3,4,5,6,7,8,9}/`,
+`ordinary-parent-checkpoint-1.json` and `ordinary-parent-final-validation-1.json`. Complete the
+closed parent/submission/completion/recovery invocation schedule, helper and child initialization,
+complete memory funding and independent admission before promotion and qualification. The public
+operator and executable source scope retain canonical gate **60** and frontend **105** evidence;
+this private increment does not repeat or extend those public claims. Sprint `6.5` stays active.
+
+**The private ordinary controller has an original-owner stdin entry.** Private `129` adds
+`runOrdinaryControllerFromStdin` and shares the existing caller-preparation/business body with the
+explicit credential-operand entry. Both load pinned inputs and verify the original physical
+process owner before selecting their fixed credential source. Prompt errors remain typed; no
+ambient credential discovery or public dispatch is added. Its warning-clean **522-step** build,
+pinned formatting and HLint pass. The eighteen boundary cases, original underfunded control,
+204 compatibility cases, three prior native modes and four publication/lifetime cases pass.
+An actual native unowned-parent control confirms the same physical-parent refusal on both entry
+paths before credential acquisition. Evidence is `ordinary-entry-checkpoint-1.json`.
+
+The submitted-handoff qualification fixture uses synthetic credentials and a child that only
+checks the actual input/process/prompt owners, without calling the business program or AWS. Its
+first attempt refuses a synthetic region mismatch; the second exposes the fixture's absent
+backend region. After explicitly authoring that synthetic region, preparation reaches the shared
+provider qualification boundary and refuses `ProviderProcessRefused ProviderManager`. Read-only
+observation identifies manager PID **2,953,026**, start tick **22,022,946**, with permitted/effective
+capability mask **0000000800000000** (`CAP_WAKE_ALARM`) and zero ambient capabilities. The provider's
+required zero-capability contract therefore does not hold. Preserve that guard and the host state;
+this source increment changes neither. Each attempt positively observes all six roles absent and
+retires its never-sent payloads. None proves submission or child execution.
+
+Records are under `ordinary-parent-{10,11,12,13}/`, `ordinary-manager-observation-1.json` and
+`ordinary-entry-final-validation-1.json`. Before retrying this native handoff, reobserve the exact
+manager capability contract. Continue the closed invocation and complete resource-funding work
+independently. Business-program execution, Authority admission, public cutover and qualification
+remain open in Sprint `6.5`; no later sprint advances.
+
+**The private ordinary parent has submitted-input recovery.** Private `130` adds an opaque
+physical-input retirement receipt and a metadata-only recovery entry. It derives the exact
+ordinary namespace from the original key, validates the recorded kind/window/manager domain,
+and uses the shared physical-retirement owner before removing payloads. It verifies the returned
+receipt against that same submission record. A fresh cleanup deadline authorizes observation and
+retirement only; missing metadata has no never-sent fallback and grants no work renewal or
+Authority/business completion. This is a source-composed path; positive submitted recovery remains
+unproven while native provider qualification refuses the manager.
+
+The warning-clean **522-step** build, pinned formatting and HLint pass. All **18** boundary cases,
+the original underfunded control, **204** compatibility cases, **three** prior native modes and
+**four** publication/lifetime cases pass against private `130`. Across two publication contexts,
+four missing-record checks refuse both with live payloads and after never-sent retirement; two
+expired-cleanup checks also refuse. Live payloads remain present and ordinary unsent cleanup
+still proves absence. The two entrypoints retain their same unowned-parent-before-credential
+refusal. This increment launches no submitted-handoff attempt and no AWS operation.
+
+`ordinary-manager-observation-2.json` reobserves the same manager generation and nonzero
+capability mask, so the native prerequisite remains unmet without a retry.
+`ordinary-submitted-recovery-checkpoint-1.json` freezes the preceding positive fixture;
+`ordinary-submitted-recovery-final-validation-1.json` retains the final source/binary scope and
+checks under `ordinary-parent-{14,15}/`. Complete actual positive submitted/completion/recovery
+execution, closed call-frequency composition and full helper/child/runtime funding before public
+promotion or qualification. Sprint `6.5` remains active, with cleanup ownership unchanged.
+
+**The private ordinary parent has a fixed submission prefix.** Private `131` adds
+`submitPublishedOrdinaryController`: one publication, captured-input repreparation and one
+prompt/submission attempt, with no caller-supplied action. It flattens the callback's typed refusal
+while retaining the publication/retirement disposition. This prefix grants neither controller
+completion nor Authority admission; the general callback vehicle retains its own trusted
+composition obligations and is not a closed operation-frequency bound.
+
+The warning-clean **522-step** native build, pinned formatting and HLint pass. All **18** boundary
+cases, the original underfunded control, **204** compatibility cases, **three** earlier native
+modes, **four** publication/lifetime cases, the unowned-parent controls, **four** missing-record
+checks and **two** expired-cleanup checks pass against this candidate. Two further fixed-prefix
+cases refuse invalid credentials and an invalid region, retain the successful never-sent cleanup
+disposition, prove payload absence, preserve namespace fencing and read back recovery. The first
+fixture's missing outer `do` remains a preserved compiler failure; no tests ran on that attempt.
+No actual manager submission or AWS operation executes in the replacement controls.
+
+The new typed parent-settings schedule compares with a reviewed source-derived graph. Across
+**28** compiled model cells, **11** drift controls pass. In extraction / embedding / semantic
+validation / storage-path order, the fixed prefix is **0 / 3 / 1 / 1** and controller startup is
+**1 / 2 / 1 / 1**; metadata-only never-sent and submitted recovery each count zero. These counts
+begin with an already prepared request, exclude the business body and depend on the reviewed
+linear IO/helper contracts. They supply no compiler/deep-initialization, transitive byte cost,
+whole-operation frequency, complete funding or independent admission proof. Source guards also
+check that prompt encoding and the two metadata recovery roots contain no named settings seams.
+
+Evidence is under `ordinary-parent-{16,17}/`, `ordinary-parent-source-audit-1/` and
+`ordinary-fixed-prefix-final-validation-1.json`. The current executable scope and public operator
+retain their preceding canonical/frontend identities. Complete the full caller's completion and
+recovery integration, all resource funding and positive native handoff after its manager
+prerequisite holds. Sprint `6.5` stays active and later sprints stay parked.
+
+**Recovery now charges its retained and replacement preparation together.** Private `132` adds
+a retaining preparation path and a separate typed recovery instruction. Ordinary initial
+preparation still selects no retained operand; recovery supplies its original preparation. Both
+prospective and returned state checks add that original structural budget to the replacement's
+budget. The prospective check precedes creation of the new one-shot intent; the returned check
+uses the actual preparation before exposing it to the caller. Shared fields are conservatively
+charged twice. This funds neither their construction nor the complete live controller/GC/native
+working set and grants no Authority admission.
+
+The unchanged native effect interpreter is shared by both preparation entries. A source comparison
+preserves the old preparation fold exactly apart from the combined state-check call/operand.
+The current settings census still matches **28** compiled cells with **11** drift controls, and
+source guards verify the recovery instruction selects retaining admission and both checks remain
+on their intended sides of intent creation. The warning-clean **522-step** build, pinned
+formatting and HLint pass, alongside all **18** boundary cases, the original underfunded control,
+**204** compatibility cases, **three** prior native modes, **four** publication/lifetime cases,
+the ownership/missing-record/expiry controls and **two** fixed-prefix prompt refusals.
+
+Three fixed structural-boundary cases use the actual preparation fold and one-shot intent with
+explicit host/clock/storage observations. One preparation is **148,520 bytes**, so this fixture's
+retained-plus-replacement reservation is **297,040 bytes**. **297,039** refuses before creating an
+intent; **297,040** and **297,041** each create exactly one. The single-preparation control accepts
+all three declarations. Heap, container and clocks are unchanged; only the authored application
+partition selects the boundary. This is exact component-reservation evidence, not observed peak
+memory or native/Authority admission. No exhaustion search, manager submission or AWS operation
+runs.
+
+The preparation script's ambiguous constructor marker and standalone formatter refusal remain
+recorded before compiler/native validation; their partial source is frozen. Evidence is under
+`ordinary-parent-18/`, `ordinary-parent-source-audit-2/` and
+`ordinary-retained-preparation-final-validation-1.json`. Complete parent owner/publication state,
+construction/coexistence/compiler/runtime terms, full caller integration and positive submitted
+execution before promotion or qualification. Sprint `6.5` remains active; later sprints stay parked.
+
+**Recovery readback now checks its retained intermediate state.** Private `133` adds opaque
+settings/readback and request/reconstruction state budgets. After the existing post-validation
+runtime-policy check, recovery charges the retained preparation plus fresh settings before
+canonical settings readback. After request reconstruction it charges the retained preparation
+plus the fresh settings/request pair before entering retaining preparation. Both use the
+application-state partition, with phase-specific typed refusals. They cover known returned roots,
+not validation/construction, pricing traversal, compiler/GC/native peaks or complete owner state.
+
+The warning-clean **523-step** build, pinned formatting and HLint pass. Six fixed actual-recovery
+controls use real semantic validation and explicit runtime/preparation interpreter cutoffs. Their
+settings and request reservations are **215,120** and **269,648 bytes**. One below settings stops
+at the settings check; its boundary and one above pass that check but refuse the later request
+phase. One below request stops there; its boundary and one above reach the preparation cutoff.
+Reaching that cutoff is not successful preparation or operation completion. The existing
+poisoned-settings runtime-refusal control still passes: pricing/readback never forces the fresh
+settings ahead of the policy refusal. Heap, container and clocks remain unchanged.
+
+All **18** settings boundary cases, the original underfunded control, **204** compatibility cases,
+**three** prior native modes, **four** publication/lifetime cases, **two** fixed-prefix refusals and
+**three** retained-preparation boundaries pass against this candidate. The source-derived settings
+census remains **28** compiled cells with **11** drift controls; extra source guards check both
+new state-check positions. Evidence is under `ordinary-parent-19/`,
+`ordinary-parent-source-audit-3/` and `ordinary-recovery-state-final-validation-1.json`.
+No manager submission or AWS operation runs. Complete constructor/coexistence, parent/publication
+owner and compiler/runtime funding, full caller integration and positive submitted execution
+before promotion or qualification. Sprint `6.5` stays active; later sprints stay parked.
+
+**The private parent now reserves its argument data before opening the launch gate.** Private
+`134` charges retained and replacement preparation state alongside the typed arguments and one
+rendered base argument vector. Its prospective renderer follows the pinned nine-pair flag
+sequence, prices path/key/fingerprint Strings and computes Word64 decimal lengths without
+materializing clock strings. The check evaluates under the original work deadline before gate
+creation or callback entry. It covers one eighteen-String vector; arbitrary callback frequency,
+construction/pricing work, compiler updates/GC, owner/gate data, native argv marshalling and the
+executable/entrypoint/RTS suffixes remain separate funding obligations.
+
+Six bounded independent graph cases cover ASCII, Unicode and shared paths, each with small and
+maximum-width clocks. They compare actual evaluated argument data with the projection, verify
+renderer/parser agreement and check all nine flags. The fixed ASCII anchor is **7,480** typed,
+**12,136** rendered and **19,640** joint bytes. Update-header observations are retained separately;
+these data comparisons do not fund those headers or complete memory. In the existing reduced
+native configuration, the combined component reservation is **235,160 bytes**: one below refuses
+before the callback; the boundary and one above enter it. All three positively retire never-sent
+payloads and read back recovery. These declarations are not the separate full-config fixture's
+297,040-byte paired-preparation boundary, and callback entry grants no Authority admission.
+
+The warning-clean **525-step** build, pinned formatting and HLint pass, as do all preceding
+component/native modes: eighteen settings boundary cases, the original underfunded control,
+204 compatibility cases, three prior native modes, four publication/lifetime cases, two fixed
+submission refusals, three retained-preparation boundaries and six recovery-state boundaries.
+The current source census still matches **28** model cells with **11** drift controls; additional
+guards bind the flag template and deadline/evaluation/gate order. Its first checker assumes a
+single-line application; its second strips `--` inside quoted flag literals. Both fail before
+model compilation and remain preserved. The replacement matcher normalizes whitespace and reads
+literal declarations without that comment stripper; implementation and native fixtures stay
+unchanged throughout these checker corrections.
+
+Evidence is under `ordinary-parent-20/`, `ordinary-parent-source-audit-{4,5,6}/` and
+`ordinary-argument-state-final-validation-1.json`. No manager submission or AWS operation runs.
+Complete remaining owner/native/rendering construction and runtime funding, closed caller
+integration and positive submitted/completion/recovery execution before promotion or qualification.
+Sprint `6.5` remains active; later sprints remain parked.
+
+**The private launch gate has a separate owned scope and settled-state reservation.** Private
+`135` moves the existing gate behind an opaque module. Its nonblocking readers/claimants retain
+ready/busy/spent/closed semantics; an attempted action remains consumed after cancellation or
+exception. The one scope closer joins an active claim before closing. A masked factory installs
+that closer before exposing the gate. No raw gate constructor, close operation or reset escapes.
+
+A fixed fresh-cell probe and the pinned unprofiled threaded C layout agree: wrapper **16**,
+primitive MVar **32**, empty-queue sentinel **16** and stored stage **16** bytes. Eight fixed gate
+cases cover sequential/escaped use, eight busy claimants, cancellation before/after claim,
+claim/scope exceptions, scope cancellation and scope closure joining a claim. Ten settled graph
+observations are exactly **80 bytes**, with empty head/tail queues and only the allowed data
+constructors. These are settled no-waiter fields, not executing claimant, queued closer, compiler
+update/GC or thread-stack bounds.
+
+The local reservation adds that **80-byte** gate and **104 bytes** of launch/input/program headers
+and program kind to the previous argument component. The reduced native fixture now requires
+**235,344 bytes**: one below prevents callback entry; the boundary and one above enter it. All
+three retain exact never-sent payload retirement and recovery read-back. The six argument graphs
+and their fixed anchors remain unchanged. This header/field increment supplies no complete
+descriptor/publication-owner, construction, active-thread, native argv or runtime funding.
+
+The warning-clean **526-step** build, pinned formatting and HLint pass. All preceding component
+and native modes pass, including 204 compatibility cases, eighteen settings boundaries, the
+original underfunded control, publication/ownership/refusal controls and the three retained/six
+recovery-state boundaries. The source census retains **28** model cells and **11** drift controls;
+new guards check gate use and its nonblocking claim/read primitives. Evidence is under
+`ordinary-gate-probe-1/`, `ordinary-parent-21/`, `ordinary-parent-source-audit-7/` and
+`ordinary-launch-gate-final-validation-1.json`. No manager submission or AWS operation runs.
+Complete remaining owner, active-thread, construction/compiler/runtime and positive submitted
+execution obligations before promotion or qualification. Sprint `6.5` remains active and later
+sprints remain parked.
+
+**The private descriptor owner has a quiescent data projection.** Private `136` projects the
+opaque input owner and its program wrapper without exposing raw constructors, descriptors or
+payloads. It charges all three held roles, paths, descriptor scalars, copied parent/file versions,
+integer time fractions, deadline/user scalars and the settled Bool borrow cell. The existing
+settled-MVar **80-byte** term is shared with the launch gate. Projection traverses the copied data
+and opens nothing; it grants neither live ownership nor admission. A source comparison preserves
+the canonical descriptor implementation apart from imports/exports and these pure helpers.
+
+Six fixed native graph cases cover ASCII and Unicode file names while live, after reading and
+after scope closure. ASCII projection is **17,392 bytes** against **10,648** observed data bytes;
+Unicode is **17,632** against **10,856**. Each remains identical across its three states, with zero
+observed update headers in these samples. The two closed handles still refuse payload reads.
+The separate observer permits only a settled, empty-queue Bool MVar; queued/executable/foreign
+state still refuses. This is component normal-form evidence, not a constructor, update/GC,
+active-borrower/closer, native/kernel descriptor or complete owner bound.
+
+The warning-clean **528-step** build, pinned formatting and HLint pass, alongside all preceding
+component/native modes and the unchanged launch reservation. The settings source census retains
+**28** cells and **11** drift controls. Its additional guards verify pure projection and unchanged
+descriptor behavior. The first fixture refuses a shadowed local test binding before any test
+runs; the replacement changes only that binding and its fixture path. A standalone formatter
+refusal is resolved by supplying the repository's GHC2021 language option, without modifying the
+canonical module's pragmas. Both records remain evidence.
+
+Artifacts are under `ordinary-parent-{22,23}/`, `ordinary-parent-source-audit-8/` and
+`ordinary-descriptor-state-final-validation-1.json`. The parent does **not** yet consume this
+projection: join it into the retained preparation/argument reservation, then fund remaining
+publication, constructor/control/runtime and native terms before full admission or qualification.
+No manager submission or AWS operation runs. Sprint `6.5` remains active; later sprints stay parked.
+
+**A label-independent scan narrows the static image coverage gap.** On the exact private fixture
+**84** image below, a byte-position search and an independent aligned-word enumeration agree on
+**393,833** potential `RET_SMALL` and **625** potential `RET_BIG` tables in file-backed load
+segments. All **203,085** named tables are included; the extra large candidate remains included
+without asserting that it is a table. Under the pinned, independently probed C ABI alignment and
+complete file-backed header/bitmap conditions, the maximum candidate is **4,928 bytes**. Removing
+section-header discovery outside the loaded bytes leaves the complete candidate field unchanged.
+GNU `readelf` independently agrees on all four load mappings, and `od` confirms the maximum
+header, bitmap offset and 615-word size through those mappings. This checks the raw witness,
+not whether it is reached at runtime. Nine fixed parse-only controls include a segment-boundary case and a corrected empty-segment carry
+error in the initial scanner. The first cross-check receipt failed because its output filename
+collided with the receipt; a fresh corrected check passed. Only a small ABI layout probe executes.
+
+This is a conditional bound over raw bytes, which may include incidental data or instructions;
+it assumes the relevant runtime metadata matches those bytes. External, generated, relocated or
+changed metadata, other frame types, native frames, runtime validity, reachability and simultaneous
+depth remain open. An unaligned raw candidate of about **512 MiB** is outside the probed C ABI
+class and is not an observation of runtime memory use. No runtime limits, public build, live AWS
+state, authenticated business completion or qualification claim changed. Evidence is retained under
+`.build/sprint-6.5/resume-20261102/` in the `label-free-*` and `return-candidate-abi-*` records.
+
+**A fresh symbol-retaining private image exposes the return-table census gap.** Runtime **174**
+and every Haskell fixture source remain unchanged. Fixture **84** recompiles all **547** home
+compilation steps and links with assembler `--keep-locals` and linker `--discard-none` in a fresh
+object cache. These are private analysis-build flags; public build settings are unchanged. A small
+compile-only probe exposes additional local tables while preserving its allocated sections except
+build ID. The full fresh executable differs from the older mixed-cache image in allocated data/code
+sections, so it receives its own complete native validation rather than an equivalence claim.
+
+The warning-clean **548-step**, **40-stage** matrix passes at the original heap/container/resource/
+clock limits. The exact new image contains **438,449** named allocated info symbols and **203,085**
+unique named static return tables: **202,461** `RET_SMALL`, **624** `RET_BIG`, including **203,046**
+local return tables. The largest observed named return frame is **4,928 bytes** (**615** payload
+words plus one header word), enclosed by the compiled
+`Prodbox.ControlPlane.RpcBirthSettingsShape.rpcBirthSettingsShapeTemplate3` function. Association
+with a global function is observed for **118,540** tables; tables without such an association stay
+in the census and maximum calculation rather than being discarded.
+
+An installed threaded-header probe captures **70** dependencies and verifies the pinned info-table
+ABI, including signed **32-bit** large-bitmap offsets. Three fixed synthetic ELF tables and **seven**
+parse-only controls check small/multiword large bitmaps, both offset signs, malformed/missing
+metadata and an observable valid size change. Only the layout probe executes. Independent GNU
+`readelf` agrees on every named symbol's ordinal/binding/type/section/value/size, and GNU `objdump`
+bytes confirm the maximum table and its bitmap. On this same executable, an exported-only census
+sees **39** static return tables and reports **56 bytes**; it misses the local **4,928-byte** witness.
+That real metadata counterexample is banked rather than treating exported names as full coverage.
+
+**14** source/build/identity checks pass. Exact-unit same-boot journal evidence rechecks the two
+actual controller exits, and the closing local input-field observation finds **zero payloads**,
+**zero unexpected entries** and **zero unsafe entries**, preserving **945** fenced directories/
+**3,029** immutable metadata entries. Public executable source/operator identities and canonical
+gate **63**'s **10,745-case** evidence remain unchanged. Evidence is `ordinary-parent-84/`,
+`stack-symbol-retention-probe-1.json`, `stack-local-info-link-identity-1.json`,
+`static-return-info-{abi,inventory,binutils}-1.json`, `static-frame-census-law-1.json` and
+`static-frame-{source-review,run-validation,final-validation}-1.json` under the current evidence root.
+
+This is an exact-image observed maximum over named `RET_SMALL`/`RET_BIG` tables, not a global
+frame bound. Prebuilt dependency archives may still omit local tables; unnamed/dynamic/special/
+native frames, runtime metadata/lifetime validity, reachability, simultaneous depth and invocation
+frequency remain separate. Complete compiler/control/GC/native and construction funding,
+independent admission, authenticated business completion, public cutover, legacy removal and
+deployment qualification remain open. There are no host-configuration changes or AWS operations;
+Sprint `6.5` remains active and later queue rows stay parked.
+
+**Derived runtime operands now retain and price their original metadata.** Private runtime
+**174** gives each derived operand an opaque origin pointing to the original operand. The fixed
+factories create an origin-free base, then preserve that same original on repeated settings/request
+inclusion; they cannot build a chain or cycle through the exported API. The guard adds the original
+operand's local metadata to the current operand's selected term. Underlying typed roots and buffer
+backings remain priced once. This makes that retained data explicit instead of assuming it vanishes
+while a derived operand is checked. Parent retirement remains physical evidence only; business
+completion still requires the existing authenticated lifecycle-report/local-completion-journal path.
+
+The fixed local metadata terms are **96** bytes for the base and **96** for the derived operand,
+with **96** bytes of retained original data: **192** bytes together. The independent combined graph,
+including supported actual buffer backings, measures **93,768** bytes under the **93,784-byte**
+selected bound. Base compact-buffer data now prices **570,344** bytes. Retained bare/published/fresh
+settings floors are **762,944**/**881,480**/**913,152** bytes. Repeated settings/request inclusion
+remains idempotent, and all five exact four-guard prefix controls pass without changing limits.
+
+The warning-clean **548-step**, **40-stage** matrix, formatting, HLint and **16** source/ordering/
+isolation checks pass. A mistaken **104-byte** fixture expectation was corrected to **96** and a
+multiline-sensitive source check was corrected in fresh records; runtime and observer sources
+were unchanged by those corrections. The failed records remain separate evidence. A final
+read-only local input-field observation finds **zero payload files**, **zero unexpected entries**
+and **zero unsafe entries**, while preserving **906** directories/**2,898** protocol metadata
+entries at immutable **0400**. Initial diagnostics that expected empty directories or **0600**
+metadata are preserved as wrong-field/wrong-mode refusals. Nothing is deleted or chmodded, and
+metadata presence/absence is never promoted to a qualified receipt or AWS/business completion.
+
+Only one private runtime module changes. Public executable source/operator identities and
+canonical gate **63**'s **10,745-case** evidence remain unchanged. Evidence is `ordinary-parent-83/`,
+`original-operand-{source-review-2,run-validation-1,final-validation-1}.json`,
+`original-operand-{owned,captured}-journal-1.json`, `original-operand-validation-refusal-1.json`,
+`original-operand-input-field-3.json` and `original-operand-input-field-refusal-{1,2}.json` under the
+current evidence root. Factory/pricing and earlier-derived/control/GC/native allocation peaks,
+complete independent admission, authenticated business completion, public cutover, legacy removal
+and deployment qualification remain open. There are no host-configuration changes or AWS operations;
+Sprint `6.5` remains active and later queue rows stay parked.
+
+**Runtime guards now include the fresh request around rebuilding.** Private runtime **173** adds
+an opaque typed-root factory that replaces the fresh scalar with the complete settings/request
+pair while preserving original preparation/publication retention and both actual input buffers.
+The operand layout, backing observation, nursery-aware comparison and independent declared/actual
+heap check before operand demand remain unchanged. Repeated inclusion is idempotent.
+
+Recovery checks the prospective pair after its selected application-state reservation and before
+request rebuilding. After the actual-result state check, a separate runtime guard includes the
+actual returned pair before physical preparation. Both use the original work end and memory plan;
+neither substitutes the prospective request for the actual result. The initial publication and
+fresh-settings runtime guards remain, giving **four** runtime checks on successful recovery.
+
+Five exact runtime-prefix controls independently stop at each guard or reach preparation. A
+separate differing-result fixture observes prospective/actual floors of **850,944**/**851,440**
+bytes, matching the actual request's **496-byte** structural increase. All four native policy
+checks accept these small fixtures under the original limits. The test then injects a closing
+runtime refusal and proves preparation is not entered; this is not a claim of native heap pressure
+or exhaustion. The selected factory's idempotence and request contribution also pass.
+
+The warning-clean **548-step**, **40-stage** matrix passes, including every prior stage. The
+expanded complete schedule has **21** prefix cases. Formatting, HLint and **16** source/ordering/
+isolation checks pass; the initial source check's multiline-list formatting refusal is preserved
+separately and followed by a fresh exact ordered-token check. Same-boot exact-unit journal evidence
+rechecks both actual controller exits. Only three private runtime modules change, and public
+executable source/operator identities and canonical gate **63**'s **10,745-case** evidence remain
+unchanged. Evidence is `ordinary-parent-81/`,
+`request-runtime-{source-review-2,run-validation-1,final-validation-1}.json`,
+`request-runtime-{owned,captured}-journal-1.json` and
+`request-runtime-source-review-refusal-1.json` under the current evidence root.
+
+These guards price selected retained roots plus configured nursery; they do not observe free heap
+or fund factory/pricing, constructor/encoder/validation intermediates, active ownership or instruction/
+control/GC/native allocation. Complete independent admission, authenticated business/Authority
+completion, public cutover, legacy removal and deployment qualification remain open. There are no
+host-configuration changes or AWS operations. Sprint `6.5` remains active; later queue rows stay parked.
+
+**Recovery checks its selected request reservation before rebuilding.** Private runtime **172**
+adds the application-state comparison for the selected replacement slot before request revalidation.
+It preserves the original preparation, matched fresh settings and optional external publication
+retention in that sum. The rebuild is an explicit `RevalidateOrdinaryCapturedRequest` GADT step
+with a fixed native interpreter and typed refusal. The closing check prices the actual returned
+request before physical preparation, so the selected reservation never substitutes for result
+observation. No request callback, config flag or production dispatch route is added.
+
+Both bare and publication-retaining recovery tables preserve their **12** boundary cases. An
+underfunded request slot stops before the rebuild instruction; funded paths reach it and the
+existing preparation step. A separate closing-drift fixture returns a valid larger request from
+the explicit test interpreter: the prospective **269,648-byte** reservation passes, but the actual
+**270,144-byte** requirement refuses before preparation. The complete source schedule includes
+request revalidation as its own boundary, increasing its successful/refusal-prefix matrix from
+**18** to **19** cases. The four named settings-operation ceilings remain unchanged; downstream
+request/codec/helper costs remain separate.
+
+The warning-clean **548-step**, **39-stage** matrix passes, including every previous stage and
+both actual controller stdin cases with same-boot exact-unit exit evidence. Formatting, HLint and
+**15** source/ordering/isolation checks pass. The compile-only fixture trace-type refusal and a
+whitespace-sensitive source-check refusal are preserved separately, followed by fresh successful
+records; runtime sources are unchanged by those fixture/checker corrections. Only three private
+runtime modules change. Public executable source/operator identities and canonical gate **63**'s
+**10,745-case** evidence remain unchanged. Evidence is `ordinary-parent-80/`,
+`request-revalidation-{source-review-2,run-validation-1,final-validation-1}.json`,
+`request-revalidation-{owned,captured}-journal-1.json`,
+`request-revalidation-preparation-refusal-1.json` and
+`request-revalidation-source-review-refusal-1.json` under the current evidence root.
+
+This is a selected state reservation before construction and a mandatory actual-result check.
+It does not bound constructor/encoder/validation intermediates or instruction/control/GC/native
+allocation, grant complete independent admission, or prove authenticated business completion.
+There are no host-configuration changes or AWS operations. Sprint `6.5` remains active; public
+cutover, legacy removal and deployment qualification remain open, and later queue rows stay parked.
+
+**Publication preflight now includes the retained preparation before encoding.** Private runtime
+**171** replaces the parent's fixed-domain-only runtime comparison with a closed helper that adds
+the actual preparation and its budget value. Both checks use the original work end. The independent
+runtime/declared-heap check still precedes demand of the retained operand; the nursery-aware data
+comparison then precedes encoding, publisher creation and the unchanged storage/domain checks.
+No serialized reserve, alternate observer or fallback route is added.
+
+In the fixed fixture, the prior **2,667,256-byte** data floor gains **99,240** bytes of retained
+preparation and **128** bytes of budget data, producing **2,766,624** bytes before the independently
+observed nursery. The separate heap graph measures that budget value at **128** bytes. Native
+acceptance, original-expiry refusal and declared-heap-mismatch refusal pass; both early refusals
+leave an error-valued retained operand unforced. Limits and actual RTS flags remain unchanged.
+
+The warning-clean **548-step**, **38-stage** matrix passes, including every earlier stage and both
+actual owned/stdin controller cases. Exact-unit same-boot lifecycle metadata rechecks expected
+child exits **78** and **79**, independently of transport/retirement results. Formatting, HLint and
+**14** source/ordering/isolation checks pass. The first candidate's redundant-import compile refusal
+and unsupported lint-option refusal are preserved separately; neither is counted as validation.
+Only two private runtime modules change; public executable sources/operator and canonical gate
+**63**'s **10,745-case** evidence remain unchanged. Evidence is `ordinary-parent-78/`,
+`publication-preflight-{source-review,run-validation,final-validation}-1.json`,
+`publication-preflight-{owned,captured}-journal-1.json` and
+`publication-preflight-preparation-refusal-1.json` under the current evidence root.
+
+This corrects a selected retained-data omission before publication encoding. Budget construction/
+pricing, encoder/intermediate allocation, active ownership, compiler/control/GC/native peaks,
+complete independent admission and authenticated business/Authority completion remain open.
+There are no host-configuration changes or AWS operations. Sprint `6.5` remains active; public
+cutover and deployment qualification are still required before proceeding through the queue.
+
+**Actual native capture now reaches business-entry retained-layout validation.** A focused
+fixture invokes the real owned/stdin controller with a Haskell fixture executable selected as
+`kubectl` only in that child's private PATH. Its one exact `config view` argv route ignores both
+incoming path operands, emits a fixed public embedded-certificate projection, and records one
+value-free invocation marker. It never opens, copies, hashes or parses the host kubeconfig or
+invokes a real tool. The production discovery, native capture, embedded-config normalization,
+private write/readback, caller preparation and business-program entry all run unchanged.
+
+Task-owned fixture repository markers allow the real local-composition resolver to reach the
+intentionally absent retained control directory. The controller returns exactly
+`OrdinaryControllerProgramRefused` → `OrdinaryProgramCallerRefused` →
+`CallerLocalCompositionRefused` → `HostCleanupCompositionRetainedRootUnusable` →
+`LocalRetainedRootEntryMissing LocalRetainedRootControlDirectory`. That resolver precedes caller
+authentication. Same-boot exact-unit lifecycle metadata independently confirms child exit **79**.
+The parent still proves submitted retirement, its unchanged PATH and tool-directory identity,
+and independent six-role/input absence before the qualified finalizer repeats the absence check.
+Business completion remains explicitly false.
+
+The warning-clean **548-step** build and both focused native cases pass under the original limits;
+the earlier **36-stage** matrix remains separate retained evidence and is not claimed as rerun.
+**14** source/ordering/isolation checks pass. Runtime **169**, all other fixture modules, public
+executable sources and operator identity remain unchanged. There are no host-configuration
+changes, authenticated service calls or AWS operations. Evidence is `ordinary-parent-76/`, its
+`captured-controller-cases-1/`, `captured-controller-{journal,source-review}-1.json` and
+`captured-controller-{run-validation,final-validation}-1.json` under the current evidence root.
+Full funding/admission, authenticated business/Authority execution and completion, public cutover
+and deployment qualification remain Sprint `6.5` obligations.
+
+**The actual owned controller stdin entry reaches its typed caller-prerequisite refusal.** The
+unchanged private `169` runtime now runs `runOrdinaryControllerFromStdin` inside the submitted
+controller service, beyond the earlier prompt-only child. The real input, physical-owner, anonymous
+prompt, credential/region and caller-preparation prefix returns exactly `CallerToolUnavailable`.
+Only that child's PATH points at a private empty directory. The parent PATH remains unchanged,
+and the empty directory's identity and contents are rechecked. Home discovery checks metadata;
+the missing-tool branch precedes kubeconfig-content capture, command execution, Vault/Authority
+calls and entry into the business program.
+
+A fixed public selector beside the fixture executable chooses this qualification case; it is
+owned/private/bounded metadata, contains no request or prompt data, and adds no production flag,
+config field or dispatch route. The original prompt-only child body, reference loader, observers
+and complete private runtime source remain unchanged. The selector, outcome and case record are
+preserved with the exact consumed fixture/binary evidence.
+
+The child records the exact typed refusal and exits **78**. A read-only exact-unit journal query,
+bound to the same boot and operation key, independently confirms `EXIT_CODE=exited` and
+`EXIT_STATUS=78`; only lifecycle metadata fields are retained, not raw journal messages. The
+parent reports successful transport submission and a submitted-retirement receipt while the
+child reports the expected failure. Independent six-role/input absence checks pass before the
+general finalizer checks again. This explicitly distinguishes delivery, physical retirement,
+child failure and business completion; the case records `business_completed=False`.
+
+The warning-clean **548-step**, **36-stage** matrix passes, including every preceding stage.
+**12** source/ordering/isolation checks pass. The new test runs first and preserves the original
+heap/container/resource vectors, actual RTS flags and work/outer clocks. No runtime source,
+host configuration, AWS operation or public dispatch changes occur. Canonical gate **63**'s
+**10,745-case** evidence and public executable source/operator identities remain unchanged.
+Evidence is `ordinary-parent-75/`, its `owned-controller-cases-1/`,
+`owned-controller-{journal,source-review}-1.json` and
+`owned-controller-{run-validation,final-validation}-1.json` under the current evidence root.
+
+This proves one real owned/stdin/controller/caller-preparation refusal path. Authenticated
+business/Authority execution and completion, complete constructor/caller/runtime funding,
+independent admission, public cutover and deployment qualification remain open. Sprint `6.5`
+stays active; later queue rows remain parked.
+
+**Existing runtime guards now carry actual buffers and selected live roots.** Private `169`
+adds an opaque structured operand to the existing runtime instruction. Initial loading supplies
+its actual buffers; publication matching adds the captured settings/request roots; recovery uses
+the complete original preparation and its optional retained-publication term. The second recovery
+guard adds the actual fresh settings without replacing the original roots or buffers. The fixed
+native interpreter first checks the independently observed heap against the declaration, then
+observes both whole managed buffer backings and checks the selected data floor plus configured
+nursery under the original work end. Early heap/deadline refusals do not demand the operand.
+Unsupported backing has a distinct typed refusal; neither refusal selects a weaker route.
+
+The operand's own field data is included. The two zero-payload buffer terms in the fixed metadata
+prefix are replaced by actual full-backing observations, so offset views cannot supply only their
+logical lengths. The selected result/Right envelope remains charged. Three independent operand
+graphs cover compact, offset and shared views: floors are **570,320/576,360/578,408 bytes** and each
+local graph fits its field/backing term. Shared referents may be conservatively charged twice.
+
+For the fixed native fixture, the recovery floor is **762,920 bytes** without publisher retention,
+**881,456** with it, and **913,032** after fresh settings. Repeated fresh-settings inclusion is
+idempotent. Native acceptance, expiry before operand demand, a lower declared-heap mismatch before
+operand demand, and borrowed-backing refusal pass. Three exact model prefixes stop at the first
+guard, stop at the second, or reach preparation with the same context and both expected floors.
+Named settings boundaries remain unchanged; the native runtime instruction now performs the
+additional backing/traversal observations, whose complete effects/costs remain separate.
+
+The warning-clean **548-step**, **35-stage** matrix passes, including every preceding stage.
+Pinned formatting/HLint and **14** source/ordering checks pass. The first compile-only extension
+accidentally adapted the independent reference loader; it is preserved, and the successor restores
+that reference byte-for-byte and leaves both graph observers unchanged. Evidence is
+`ordinary-parent-{73,74}/`, `runtime-readback-preparation-refusal-1.json`,
+`runtime-readback-source-review-1.json` and
+`runtime-readback-{run-validation,final-validation}-1.json` under the current evidence root.
+Canonical gate **63**'s **10,745-case** evidence and public executable source/operator identities
+remain current. Base fixture limits and actual RTS flags remain unchanged; the lower declaration
+is a mismatch control only. No host configuration, AWS operation or public dispatch changes occur.
+
+These checks cover selected known live data, not all initial/revalidation intermediates or future
+results. Operand construction/pricing itself, encoder/validation/SDK allocation, active/queued
+ownership, executing control/stack/GC/native resources, actual business/Authority composition,
+full independent admission and deployment qualification remain open. Sprint `6.5` stays active;
+later queue rows remain parked.
+
+**Readback allocation now includes retained data and the configured nursery.** Private `168`
+adds original preparation, the actual retained publication term and a **40-byte** selected
+result/Right envelope to the parent's zero-payload data floor. The two originating ByteString
+headers remain in the existing floor. The fixed native fixture's base rises from **570,104** to
+**787,920 bytes**, including **217,776 bytes** of retained data; the reader then adds only the
+rounded payload sizes from its held stat versions. The original work end encloses the call.
+
+The held-size policy lane now uses the actual traversal-policy observer before either payload
+allocation. Its configured nursery joins the required data in the comparison with the finite
+RTS heap cap; failure/expiry remains typed and cannot select the unguarded read route. This is a
+deny-only observation, not a free-heap reservation or complete allocation/GC/native admission.
+
+Three fixed native policy controls observe **134,217,728-byte** heap and **4,194,304-byte** nursery
+settings. Data-floor values **130,023,423/130,023,424** admit; **130,023,425** refuses. Each case has
+only **32/65-byte** file payloads, **97 bytes** total; no buffer proportional to those scalar
+policy thresholds is allocated. Metadata-only observations match the two read-only descriptors by
+device/inode and access flags. Success advances their offsets to the exact lengths; refusal leaves
+both offsets unchanged. The probe has the existing fixed **256-descriptor** inventory bound and
+does not read input contents. Two independent successful-result graphs are exactly **272 bytes**:
+**104** rounded payload bytes, **128** buffer-header bytes and the **40-byte** result envelope.
+All three publishers retire through the shared never-sent API with independent six-role/input
+absence checks.
+
+The warning-clean **547-step**, **34-stage** matrix passes, including every preceding stage.
+Pinned formatting, HLint and **10** source/ordering checks pass. The initial source checker
+mistook a ByteString comment for an API parameter and missed layout inside parentheses; its
+refusal is preserved and the corrected matcher checks the same unchanged implementation.
+Evidence is `ordinary-parent-72/`, `parent-readback-source-review-{1,2}.json` and
+`parent-readback-{run-validation,final-validation}-1.json` under the current evidence root.
+Canonical gate **63**'s **10,745-case** evidence and public executable source/operator identities
+remain unchanged, as do heap/container/resource vectors and work/outer clocks. No host
+configuration, AWS operation or public dispatch changes occur.
+
+Complete readback/wire allocator and SDK effects, validation/publication construction and pricing,
+active/queued ownership, executing control/stack/GC/native resources, actual business/Authority
+composition, full independent admission and deployment qualification remain open. Sprint `6.5`
+stays active; later queue rows remain parked.
+
+**Publisher retention now travels through readback, revalidation and preparation.** Private
+`167` derives one opaque scalar from the actual settled publisher, compact published payloads and
+current descriptor program. The factory accepts those typed objects, not an arbitrary reserve or
+serialized capacity hint. It excludes the original preparation already charged by the receiving
+checks. Its three scalar fields plus one `Just` carrier add **96 bytes** of selected bookkeeping;
+the fixed native fixture's complete additional selected term is **118,536 bytes**.
+
+Before the payload-readback call, the parent checks original preparation plus that term under the
+original work end. The same context then accompanies both recovery state checks and the closed
+preparation instruction. Native preparation carries a closed retained-state variant and checks
+original preparation, fresh preparation and the additional term both prospectively before intent
+creation and after the result is built. A typed refusal never retries without the context.
+Repeated recovery projection replaces its own field and preserves the original/fresh root terms.
+
+Five independent joint graphs cover the actual owner, program, published pair and scalar. Each
+fits the selected sum plus the explicit **40-byte** test tuple; the scalar/carrier graph is exactly
+**96 bytes**. The fixture explicitly forces its typed outer roots before graph observation. Six
+revalidation model boundaries preserve the exact context into preparation. Three native
+preparation boundaries refuse at **317,015 bytes** and admit at **317,016/317,017**. The native
+pre-read control refuses **217,775** against a **217,776-byte** requirement and verifies exact
+never-sent retirement plus six-role/input absence.
+
+The original **251,496-byte** argument control now refuses earlier, at request revalidation's
+**303,888-byte** requirement. Its unchanged allowance still prevents callback entry and retires
+inputs. The later argument boundary remains **353,744 bytes**, with its original one-below/
+boundary/one-above controls passing. The warning-clean **546-step**, **33-stage** matrix passes,
+including all prior submitted, interruption and fresh-process recovery cases. Pinned formatting,
+HLint and **15** source/ordering/quiescence checks pass. Original heap/container/resource vectors
+and work/outer clocks remain unchanged. Canonical gate **63**'s **10,745-case** evidence and public
+executable source/operator identities remain current.
+
+The compile-only error-constructor edit, the obsolete expectation of a later argument refusal,
+and the first graph fixture's unevaluated outer root are all frozen as failed attempts. The error
+shape is restored, the assertion now requires the exact earlier typed refusal, and the graph
+fixture forces its actual roots; neither observer nor any limit is relaxed. Evidence is
+`ordinary-parent-{68,69,70,71}/`, `retained-publication-{preparation-refusal,early-refusal,graph-refusal}-1.json`,
+`retained-publication-source-review-{1,2}.json` and
+`retained-publication-{run-validation,final-validation}-1.json` under the current evidence root.
+The new case runs first in the final matrix, followed by every preceding case; no stage is skipped.
+
+This closes the selected persistent-data coexistence gap at those boundaries. Readback wire and
+scratch, earlier publication/validation allocation and pricing, active/queued ownership, executing
+control/stack/GC/native resources, actual business/Authority composition and complete admission
+remain open. No host configuration, AWS operation or public dispatch changes occur. Sprint `6.5`
+stays active; later queue rows remain parked.
+
+**The retained launch reservation now includes its settled publisher owner.** Private `165`
+adds the actual publisher's scalar data observation to the existing preparation/argument/
+descriptor/payload reservation. Observation and the combined check stay inside the original work
+deadline, before launch-gate creation or callback entry. The opaque observed value supplies the
+term; runtime code contains no fixture-sized publisher allowance. Repeated inclusion replaces its
+own field and preserves the other ownership terms. Unsupported backing remains a typed refusal.
+
+The projection includes the original key/window/UID/FD fields, copied anonymous/birth metadata,
+all retained stat backings, two settled empty-queue MVars and the Bool latch. The installed stat
+producer uses `MallocPtr` with an unpacked empty finalizer cell; its reservation includes that cell
+and `NoFinalizers`. Plain managed backing has its separate term. Borrowed storage and attached
+finalizers refuse before any stat payload access. This observes owned immutable snapshot data;
+it neither validates arbitrary stat bytes nor grants descriptor lifetime or mutation authority.
+
+Three independent stat graphs match their data terms exactly: **240/384 bytes** for the two
+MallocPtr capacities and **200 bytes** for the PlainPtr control. Nine actual publisher graphs cover
+ready, spent and closed states at fixed payload sizes **0/37/4096**, each within the **8,632-byte**
+selected publisher term. All three fixture publishers retire through the shared never-sent API,
+with independent six-role/input absence checks. Nine combined pure boundaries, three refusals of
+the preceding component reservation, idempotent inclusion and payload-projection commutation pass.
+These selected settled-state graphs do not cover active/queued borrowers or closers.
+
+The actual native launch boundary is now **353,744 bytes** for the fixed reduced fixture: one below
+refuses before callback entry; the boundary and one above enter it. Every path retires inputs.
+The original **251,496-byte** underfunded argument control still refuses, and the original heap,
+container, resource vector and work/outer clocks remain unchanged. The warning-clean **544-step**,
+**32-stage** matrix passes, including all preceding submission, interruption and fresh-process
+recovery controls. Pinned formatting/HLint and **11** source/ordering checks pass. Canonical gate
+**63**'s **10,745-case** evidence and public executable source/operator identities remain unchanged.
+
+The compile-only test-wrapper refusal, the first stat observer's typed refusal of MallocPtr and
+the source checker's path-order mismatch are preserved. Their successors correct the test wrapper,
+add the explicit no-finalizer backing class, and compare the same path set in a common order;
+none is counted as a passing matrix. Evidence is `ordinary-parent-{64,65,66,67}/`,
+`publisher-data-{preparation-refusal,component-validation,run-validation,final-validation}-1.json`,
+`publisher-stat-backing-refusal-1.json` and `publisher-data-source-review-{1,2}.json` under the current
+evidence root. The installed ABI sources and exact consumed inputs/binaries accompany the records.
+
+The earlier publication/repreparation overlap, allocation/pricing/construction, active/queued
+ownership, compiler/control/stack/GC/native costs, actual business/Authority composition and full
+independent admission remain open. This private caller remains qualification-gated. No host
+configuration, AWS operation or public dispatch changes occur. Sprint `6.5` stays active; later
+queue rows remain parked.
+
+**Fresh recovery also respects a live publisher and retires never-sent inputs after exit.** The
+unchanged private `162` runtime passes fixture `63`'s warning-clean **542-step**, **31-stage**
+matrix. The new fixed case completes ordinary input publication and keeps its original owner open,
+without calling submission. A separate executable attempts never-sent recovery while that creator
+is still alive. It receives exactly `ControllerPublicationBusy`, never enters the retirement
+callback, and verifies both input files remain and all six operation roles are absent.
+
+Only after that positive refusal does the coordinator release the creator to exit immediately
+with expected status **74**, bypassing its finalizers. It waits for process termination and observes
+both inputs and the immutable birth record still present, with no submission record. Two further
+fresh executable callers then run the shared never-sent recovery API after the original outer end,
+using the durable birth metadata and a fresh **five-second cleanup-only** end. Each returns a
+never-sent receipt and independently verifies six-role/input absence; replay remains idempotent.
+The coordinator, creator, live probe and two recovery callers have five distinct PIDs. The birth
+metadata fence remains; only the exact owned synthetic fixture directory is removed after cleanup.
+
+This covers complete publication before submission at one fixed exit point. It does not cover
+an interrupted partial publication, every later send timing, manager/epoch replacement, power-loss
+durability, actual business/Authority completion or full funding/admission. The earlier **30**
+stages, including fresh submitted recovery and double-interruption recovery, still pass under the
+original heap/container/resource vectors and work/outer clocks. No runtime source, host setting,
+AWS operation or public dispatch changes occur. Canonical gate **63**'s **10,745-case** evidence
+and public executable source/operator identities remain unchanged.
+
+Evidence is `ordinary-parent-63/`, `ordinary-unsent-process-run-validation-1.json` and
+`ordinary-unsent-process-final-validation-1.json` under the current evidence root, with docs lint
+and source/operator provenance. Sprint `6.5` remains active on full funding, independent admission,
+remaining timings and actual business/Authority composition; later queue rows remain parked.
+
+**Fresh executable callers retire a submitted operation after the submitter exits.** The unchanged
+private `162` runtime passes fixture `62`'s warning-clean **542-step**, **30-stage** matrix.
+The new coordinator launches a submitter that receives the fixed dummy prompt, observes its child
+physically live and its original qualified submission record/input files present, then exits
+immediately with the expected status **73**, bypassing its Haskell finalizers. The coordinator
+waits for that process to terminate and independently verifies that the inputs remain present.
+
+Two separate executable processes then receive only the request path, operation key and hash of
+the durable submission metadata. Each reads that record afresh and uses the registered shared
+retirement API after the original outer expiry, under a fresh **five-second cleanup-only** end.
+Both verify the original binding, a matching submitted-retirement receipt, six-role absence and
+input-payload absence. The second recovery is an idempotent replay. All four coordinator/submitter/
+recoverer PIDs differ; the retained submission metadata fence survives both recoveries. Only the
+exact owned synthetic fixture directory is removed after positive retirement evidence.
+
+This covers one fixed post-submission process-exit point in the same retained manager/router/
+domain. It does not prove partial-publication crash recovery, manager/epoch replacement, power-loss
+durability, every interruption timing, actual business/Authority completion or full admission.
+Original heap/container/resource vectors and work/outer clocks remain unchanged. The prior **29**
+stages still pass. Canonical gate **63**'s **10,745-case** evidence, public source key and operator
+remain unchanged; no host configuration, AWS operation or ordinary dispatch changes occur.
+
+Evidence is `ordinary-parent-62/`, `ordinary-fresh-process-run-validation-1.json` and
+`ordinary-fresh-process-final-validation-1.json` under the current evidence root. The initial
+preservation verifier's incorrect source-token assertion is retained separately; its correction
+changes only that assertion and preserves the failed receipt. The native matrix itself passes.
+Full funding, independent admission, remaining recovery timings and business/Authority composition
+remain open. Sprint `6.5` stays active; later queue rows stay parked.
+
+**Repeated interruption preserves submitted inputs for metadata-only recovery.** The unchanged
+private `162` runtime now passes a fixed repeated-interruption case in fixture `61`. Two new
+barrier-controlled model cases enter recovery before the second async interruption, covering both
+same-action retirement and distinct publication/recovery helpers. The first `AsyncCancelled`
+remains primary; the distinct action runs once and recovery once, while same-action retirement
+runs twice. All **12** exception-model cases pass.
+
+The native case waits for prompt receipt, a qualified submission record and closure of the
+publisher's configuration/request descriptors before requesting two distinct async interruptions.
+The descriptor probe inspects only the current process's metadata under the original work end,
+with a fixed 256-descriptor test inventory bound. The driver unwinds before that work end while
+the controlled child remains physically live. Both input files and the original qualified record
+remain present. Never-sent retirement and another publication refuse; no input deletion is inferred
+from cancellation or caller unwind.
+
+After the original outer end, the same-process metadata-only recovery API selects submitted
+retirement under the existing fresh **five-second cleanup-only** window. The original request
+window/domain remain unchanged. Six-role absence and missing input payloads are independently
+verified before the general harness finalizer observes them again. This proves one fixed double-
+interruption/retained-input recovery path; it does not prove fresh-process restart recovery,
+all interruption timings or actual business/Authority completion.
+
+The warning-clean **542-step**, **29-stage** matrix passes with the original heap/container,
+resource vector and work/outer declarations. The earlier **28** stages remain, including healthy
+and cancelled submitted-driver cases, and the original underfunded controls remain unchanged.
+The first extension stops at compile-only local-name shadowing before any native case runs; its
+successor changes only the new model block's names. Production private/canonical runtime source
+is unchanged. Public canonical gate **63**'s **10,745-case** evidence and executable source key
+remain current. A fresh read-only manager observation still confirms zero capabilities.
+
+Evidence is `ordinary-parent-{60,61}/`, `repeated-interruption-preparation-refusal-1.json`,
+`ordinary-manager-observation-7.json` and `ordinary-repeated-interruption-final-validation-1.json`
+under the current evidence root. Current documentation and source/operator provenance accompany
+that record. Full caller/construction/runtime funding, independent admission, remaining recovery
+timings, actual business/Authority completion and deployment qualification remain open; the later
+fresh-process checkpoint above covers one fixed post-submission exit. Sprint `6.5` stays active and later sprints remain parked. No host configuration,
+AWS resource or ordinary dispatch changes in this increment.
+
+**The ordinary candidate is rebased to the canonical observer source.** Private `162` differs
+from private `161` only in its backing observer, which now equals the canonical module byte-for-
+byte, including the repository-required named primitive helper. The same warning-clean **542-step**,
+**26-stage** matrix passes under the original heap/container/clock limits. All selected data terms,
+including the **3,968-byte** combined payload envelope, remain unchanged. Source checks retain
+**36** model cells/**12** drift controls, the existing driver/recovery/masking/postcondition guards,
+and the closed state-machine, environment and control-envelope mutations. This revalidates the
+private composition against canonical gate **63**'s source state; earlier private records retain
+their own identities. It does not promote the ordinary caller or close its complete funding,
+independent admission, positive submitted recovery or qualification duties.
+
+**The approved manager repair is applied and native submitted paths pass.** The operator
+approved installing the reviewed per-user restriction and restarting the shared user manager.
+`/etc/systemd/system/user@1000.service.d/50-prodbox-provider-capabilities.conf` removes only
+`CAP_WAKE_ALARM` from its capability bounding set; the provider's zero-capability checks are
+unchanged. The application rechecks the live unit/draft identity, installs without overwriting an
+existing file, reloads the system manager and restarts the user manager once. Previously running
+user services and only whitelisted desktop/session environment keys are restored; credential
+environment values are neither retained nor imported by this flow.
+
+The application receipt records fresh manager PID **474572** and authenticated user-bus router
+PID **474626**, each with zero permitted/effective/ambient capabilities and UID **1000**.
+All previously running user services return active, every stage exits zero and rollback is unused.
+`ordinary-manager-observation-6.json` independently confirms the repaired manager afterward.
+The earlier WakeAlarm observations and syntax-only draft validation remain preserved. The installed
+override is persistent operator-owned host configuration outside project teardown; source/native
+validation does not authorize unrelated shared-host changes.
+
+One fixed prompt-submission vehicle first proves receipt by the original child, refusal of a
+second submission, retained inputs until physical absence and exact retirement of all six roles.
+The extended matrix repeats that vehicle and exercises the complete closed submit-and-retire
+method twice: a healthy path returns `OrdinaryAttemptSubmittedRetired`, and cancellation after
+prompt receipt/qualified submission preserves `AsyncCancelled` while retiring submitted inputs.
+The cancellation child holds only until its original work end. Both cases independently verify
+six-role absence and missing configuration/request payloads, with qualified recovery available
+only as the harness finalizer. These are physical prompt/input proofs using explicit dummy
+non-AWS credentials, not execution or completion of the actual business/Authority program.
+
+The warning-clean **542-step**, **28-stage** matrix passes with the original **128 MiB** heap,
+**256 MiB** declared container, fixture resource vector and work/cleanup clocks. The **26-stage**
+canonical-source rebase, original underfunded controls, graph data and all existing compatibility,
+refusal and recovery tests remain green. The first extended fixture stops at compile-only
+name-shadowing before any native execution; its correction renames only the test hold flag.
+Source checks retain **36** model cells/**12** drift controls and the prior closed driver/state/
+environment/control mutations. Public code remains at canonical gate **63**, **10,745 cases**
+and the same executable source key. New private/native evidence belongs to that public source
+state; earlier private/frontend records retain their own identities.
+
+Evidence is `ordinary-parent-{57,58,59}/`, `ordinary-parent-source-audit-32/`,
+`ordinary-current-native-checkpoint-1.json`, `submitted-driver-preparation-refusal-1.json`,
+`native-submission-after-manager-1.{json,log}`, `manager-capability-remediation-1/` and
+`ordinary-submitted-driver-final-validation-1.json` under the current evidence root. Sprint `6.5`
+owns cleanup of the local evidence/draft tree; the installed host prerequisite remains operator
+owned. Complete constructor/caller/runtime funding, independent admission, repeated interruption,
+actual business/Authority completion and deployment qualification remain open. Sprint `6.5`
+stays active; later sprints remain parked. No AWS operation or ordinary dispatch promotion runs.
+
+**The standalone backing observer is integrated and canonically validated.**
+`Prodbox.Capacity.PinnedByteStringData` is registered in the library with six permanent test groups.
+The promoted source differs from the validated private foundation only by a named primitive
+state-token helper extraction required by repository style. Tests cover owned compact storage,
+full backing retained by offset views, conservative alias charging, compact-copy corroboration,
+unsupported borrowed storage and fixed invalid managed lengths before payload reads. Independent
+heap graphs check returned data. Resource/dependency doctrine records the selected ABI and producer
+contracts. The complete ordinary caller and its admission remain private under their existing
+promotion gate; this foundation activates no lifecycle dispatch.
+
+**Canonical gate 63 passes 10,745 cases (9,775 + 27 + 35 + 908).** The warning-clean all-target
+build registers **906** library modules, including the new observer and its permanent tests. The
+terminal producer and launcher receipts confirm unchanged inputs, exit zero and **1,312.12 seconds**
+for the gate. Selected canonical formatting and HLint checks also pass. Gate **61**'s named-helper
+style refusal and gate **62**'s second-pass assertion formatting refusal both precede compilation
+and remain preserved. The initial source review's whitespace-sensitive fixture check is corrected
+without changing implementation or test behavior. Later exact review permits only the named
+primitive helper and formatter-only test layout beyond the planned source/package/test/docs change
+set. Documentation lint and current source/operator correlation accompany final preservation.
+
+`pinned-backing-baseline-1.json`, `pinned-backing-source-review-{2,3,4}.json`,
+`pinned-backing-style-refusal-1.json`, `pinned-backing-format-refusal-1.json` and
+`pinned-backing-canonical-final-validation-1.json` retain the promotion, refusals, full gate and
+source/artifact provenance under the current evidence root. The executable source key changes;
+earlier private proofs and the predecessor **105-case** frontend record retain their original
+identities. This foundation neither requalifies them nor proves complete memory funding,
+independent caller admission, positive submitted recovery or deployment qualification. No manager
+change, native submitted handoff retry, AWS operation or ordinary dispatch promotion runs.
+Sprint `6.5` remains active; later sprints remain parked.
+
+**The payload fold now carries explicit result-indexed control states.** Private `161`
+replaces its monadic continuation chain with eleven closed data states and a fixed driver. Each
+state selects one instruction with the matching result type; its exhaustive transition accepts
+only that result and advances to the next state. Source observations remain until scratch
+validation, then copied buffers advance through force/backing/final-state checks. A typed refusal
+returns immediately, and exceptions/cancellation propagate. The public producer and native effect
+bodies retain their existing boundaries; no request supplies a transition or interpreter.
+
+The selected control-data envelope charges each state/continuation once, the finished state, and
+both internal tuple/public opaque result wrappers. Buffer referents retain their separate
+application/scratch owners. Independent graphs cover **11** intermediate states, **one** finished
+state and **two** terminal results; each equals its local term plus observed buffer referents in
+this fixture. Intermediate/finished local data sum to **536 bytes**, with **80 bytes** for both
+terminal wrapper forms, giving **616 bytes**. This term joins the prior native environment and
+selected instruction/result data before native interpreter construction or effects. Component
+reserve declarations at **3,967/3,968/3,969** refuse/accept/accept with unchanged heap/container
+fields. Both the earlier 2,512-byte selected-only reserve and 3,352-byte native-environment-plus-
+selected reserve remain negative controls. This funds selected data once, not compiler duplication,
+executing functions/control stacks, pricing/construction, exceptions, SDK/GC/native costs or full
+caller admission.
+
+The warning-clean **542-step**, **26-stage** matrix passes. The original **15** schedule cases
+still prove the eleven-effect/two-copy trace, typed-refusal prefixes and exception/cancellation
+cutoffs; existing recovery and compatibility controls remain green. Pinned formatting, HLint,
+docs lint and public executable identity accompany final preservation. Source checks retain
+**36** model cells/**12** drift controls and prior mutations, with reviewed state-to-instruction
+and forward-transition bodies replacing the old monadic-fold guard. **Three** mutations reject
+skipped scratch/final-state checks or a changed copy role; **two** additional mutations reject
+under-counted continuations or an omitted control term. The graph helper's initial unforced
+selector and a provenance output-name collision are preserved before the corrected observer.
+
+Evidence is under `ordinary-parent-{55,56}/`, `ordinary-parent-source-audit-31/`,
+`ordinary-control-observer-refusal-final-1.json` and `ordinary-control-data-final-validation-1.json`
+in the current evidence root. Remaining execution/construction and independent admission duties,
+positive native submitted recovery and deployment qualification stay open. No manager mutation,
+submitted handoff retry, AWS operation or public dispatch runs. Sprint `6.5` remains active and
+later sprints remain parked.
+
+**The native payload interpreter now retains an explicit data environment.** Private `160`
+replaces its stored native function with a closed two-field constructor containing only the
+preparation budget and validated memory plan. A total dispatcher distinguishes this native value
+from the internal callback used by test instrumentation. The public producer selects the native
+constructor; no callback enters its API or a request. The fixed eleven-step fold and native effect
+bodies remain unchanged. Executing functions and the fold's compiler/control environments still
+require separate funding.
+
+The preparation budget's own five-Natural graph is priced separately from the preparation graph
+it describes. Its current bound and observed data are both **128 bytes**. The complete native
+interpreter data bound is **840 bytes**, including its memory-plan referent; the baseline graph
+observes **776 bytes**. Two accepted component plans also fit the same projection. The public
+preflight adds this environment to the prior **2,512-byte** selected schedule sum before creating
+the interpreter or entering native effects. Component other-heap declarations at **3,351/3,352/
+3,353** refuse/accept/accept, keeping original heap/container fields. The former 2,512-byte reserve
+now refuses, preserving the missing-environment case as a negative control. Two unsupported-backing
+cases retain the before-observer ordering proof. These are local data bounds, not a complete
+runtime reserve or independent admission claim.
+
+The warning-clean **540-step**, **25-stage** matrix passes, including all prior compatibility,
+refusal, cancellation, recovery and graph checks. Pinned formatting, HLint, docs lint and public
+executable identity checks accompany the evidence. Source checks retain the **36** model cells,
+**12** drift controls and earlier mutations; **three** new mutations reject a stored native
+callback, omitted memory-plan data or omitted environment addition. Initial and strengthened source
+checks are preserved under `ordinary-parent-source-audit-{29,30}/`, with native evidence under
+`ordinary-parent-54/` and final provenance in `ordinary-native-data-final-validation-1.json` in the
+current evidence root. Other captured environments, compiler duplication, pricing/construction,
+exceptions, transitive execution, stack/GC/native costs, full caller admission, positive submitted
+recovery and deployment qualification remain open. No manager change, submitted handoff retry,
+AWS operation or public dispatch runs. Sprint `6.5` stays active; later sprints remain parked.
+
+**The payload producer now checks the combined schedule data before entry.** Private `159`
+adds the eleven selected instruction/result envelopes, including their source-snapshot allowances,
+and compares that sum with the original other-heap reserve before entering the fixed native fold.
+This conservatively permits each selected local graph to remain live through the final step.
+Buffer referents retain their existing application/scratch owners; compact buffers use the same
+local instruction shapes as source buffers. Scratch uses the maximum scalar width of two valid
+pinned backing observations. Each native step retains its existing individual reserve check.
+
+The combined data term is **2,512 bytes** in the current fixture. Component reserve declarations
+at 2,511/2,512/2,513 refuse/accept/accept with the original heap/container fields unchanged.
+The sum also matches the eleven actual delegated step envelopes. Two valid unsupported-backing
+cases distinguish refusal before backing inspection from entry into the native observer. These
+are bounded admission tests; no allocation-exhaustion search runs. The sum covers one selected
+instruction/result graph per fixed step, not captured closures, duplicated compiler temporaries,
+pricing/construction, exceptions, SDK execution, stacks, GC/native costs or complete caller
+admission. Those obligations, positive submitted recovery and deployment qualification remain open.
+
+The warning-clean **540-step**, **25-stage** matrix, pinned formatting and HLint pass. Source
+checks retain the **36** model cells/**12** drift controls and earlier mutation controls, with
+**three** new controls rejecting a skipped preflight or omitted copy/final-state envelope.
+Documentation lint and executable identity checks accompany preservation in
+`ordinary-schedule-data-final-validation-1.json`; native/source evidence is under
+`ordinary-parent-53/` and `ordinary-parent-source-audit-28/` in the current evidence root.
+A fresh read-only manager observation at **2026-11-07 17:26:35 UTC** records PID **247617**
+with permitted/effective `CAP_WAKE_ALARM` and zero ambient capabilities. Its zero-capability
+prerequisite still fails; no submitted handoff retry or manager mutation occurs. Source funding
+continues independently. No AWS or public-dispatch operation runs. Sprint `6.5` remains active;
+later sprints remain parked.
+
+**Payload native steps now check a prospective local-data envelope.** Private `158` separates
+the closed instruction/result types from the interpreter and projects boxed instruction headers,
+phase/role data, source snapshot scalars and settled Either results/errors. Buffer referents
+remain in their existing state/scratch reservations. The error envelope includes actual memory
+quantity widths and a pinned Int-capacity bound for backing-derived quantities; pairing two full
+buffer terms can cross Word64, so limb storage is charged. The guard confirms its own numeric
+refusal fits that field envelope, then compares the selected local-data term with the original
+other-heap reserve **before** entering the native step. Typed reserve/unsupported-bound refusals
+propagate through the parent without acquiring a publisher.
+
+The fixed native construction has local envelopes **232** (force/state), **224** (source/copy/
+compact) and **240** (scratch). Three component reserve declarations at 239/240/241 refuse/accept/
+accept while retaining the original heap/container plan fields. Eleven actual instruction graphs
+and eleven settled-result graphs fit local terms plus independently accounted buffer referents.
+Nine error graphs cover all constructors and fixed arbitrary-width scalar fields; the projection
+is evaluated before quiescent observation. These data checks do not price exceptions, captured
+closures, prior retained instructions, pricing/construction, SDK/transitive execution, stack,
+GC/native resources or the complete caller. A 240-byte component result is not a whole-runtime
+other-heap admission claim.
+
+The warning-clean **540-step**, **25-stage** matrix passes at unchanged heap/container/clock
+limits, alongside pinned formatting, HLint, docs lint and source checks. Existing **36** model
+cells/**12** drift controls and the **11** driver, **three** recovery-fold, **two** masking, **two**
+compact-postcondition and **three** schedule mutations remain green. New guards bind the
+pre-effect reserve check, original other-heap partition, scalar field/self-refusal bounds and
+closed instruction projection. The initial all-passing component matrix is frozen before adding
+independent instruction/result and wide-scalar error graphs. Those additions first needed
+explicit exponent types and normal-form forcing; source/lint preparation corrections and the
+quiescent-thunk refusal are preserved before the corrected fixture.
+
+Evidence is `ordinary-parent-{49,50,51,52}/`, `ordinary-parent-source-audit-27/`,
+`ordinary-payload-data-prior-fixture-1.json`, `ordinary-program-data-preparation-refusal-1.json`,
+`ordinary-parent-failure-preservation-51.json` and `ordinary-program-data-final-validation-1.json`
+under the current evidence root. Complete instruction/result lifetime and execution funding,
+valid producer/representation contracts, independent caller admission, positive native submitted
+recovery and business/Authority completion remain open. No native submitted retry, manager
+mutation, AWS operation or public dispatch runs. Sprint `6.5` stays active; later sprints remain
+parked.
+
+**The payload constructor now has a closed eleven-step effect schedule.** Private `156` moves
+the sequence into a result-indexed GADT and fixed fold: source force/state, two source-backing
+observations, scratch validation, two copies, compact force, two destination postconditions and
+closing state validation. The public opaque producer supplies only the native interpreter and
+constructs its two-buffer object after successful fold return; no interpreter enters the request
+or public producer API. The parent, original deadline, returned bytes and error mapping remain
+unchanged. One invocation delegates at most **11** native steps, including **two** copy calls.
+This is a local invocation ceiling, not SDK/transitive execution or resource funding.
+
+**15** controls wrap the actual native interpreter with typed boundary failures and traces: one
+complete success, eleven refusals (one at each step), exceptions at both copy boundaries and
+cancellation before the first delegated copy. Each refusal preserves its exact error and delegates
+only the preceding prefix. Exceptions/cancellation propagate with no later effect. Existing six
+constructor-state/scratch boundaries, opaque graph checks and all native publication/recovery
+modes pass in the warning-clean **538-step**, **24-stage** fixture at unchanged heap/container/
+clock declarations.
+
+Pinned formatting, HLint, docs lint and source checks pass. The **36** settings-model cells and
+**12** drift controls remain unchanged, with **11** driver, **three** recovery-fold, **two** masking
+and **two** compact-postcondition mutations. **Three** new schedule mutations reject omitted
+scratch/final-state checks and an extra copy step. Source guards bind the public native-interpreter
+selection, all eleven operand-bearing steps and the native memory partitions. The first GADT
+binding required an explicit polymorphic step signature; its compile refusal is frozen. A later
+all-passing matrix is frozen before HLint's equivalent `void` rewrite. Evidence is
+`ordinary-parent-{46,47,48}/`, `ordinary-parent-source-audit-25/`,
+`ordinary-parent-failure-preservation-46.json`, `ordinary-payload-schedule-prior-fixture-1.json`
+and `ordinary-payload-schedule-final-validation-1.json` under the current evidence root.
+
+Instruction/result construction, SDK/helper execution, original/copy/return-value coexistence,
+budget metadata/pricing, compiler/GC/control/native/FD resources, complete caller admission,
+positive native submitted recovery and business/Authority completion remain open. No native
+submitted retry, manager mutation, AWS operation or public dispatch runs. Sprint `6.5` stays
+active and later sprints remain parked.
+
+**Publication now consumes an opaque resource-checked payload object.** Private `153` extracts
+the fixed state/scratch/copy/backing sequence into one producer. Its opaque two-strict-ByteString
+value exposes ordinary read-only functions, with no constructor or record-update fields. Only
+successful prospective state and source-scratch checks, both compact copies, both backing
+postconditions and the closing state check reach construction. The parent runs that whole
+producer inside its original encode deadline, maps the same typed errors, and passes bytes and
+budget from that same object to publication and launch. No extra cached budget graph is stored.
+Semantic request validation, publisher ownership and Authority admission remain independent.
+
+Six fixed producer-entry controls cover below/equal/above application-state and source-scratch
+requirements. They retain the original heap/container plan fields. The application-state
+requirement stays **192,856 bytes** and source scratch **95,528 bytes**; each below-bound declaration
+returns the exact typed refusal, while the four successful results preserve both byte sequences
+and fit their **93,616-byte** opaque-container data term under independent heap observation.
+These are component constructor plans; they do not weaken the whole native request's stronger
+scratch prerequisite. All prior native publication/launch/recovery modes pass at unchanged
+heap/container/clock declarations in the warning-clean **537-step**, **23-stage** matrix.
+
+Pinned formatting, HLint, docs lint and source checks pass. The **36** settings-model cells and
+**12** drift controls remain unchanged, alongside **11** driver, **three** recovery-fold, **two**
+masking and **two** compact-postcondition mutations. Source guards follow the new zero-settings-
+operation producer edge and pin its constructor order, opaque fields, original memory/deadline,
+read-only byte projections and same-object budget. The first extraction left one unused parent
+import, refused by warning-clean compilation before native tests; that failure is frozen before
+the import-only correction. Evidence is `ordinary-parent-{44,45}/`,
+`ordinary-parent-source-audit-23/`, `ordinary-parent-failure-preservation-44.json` and
+`ordinary-payload-object-final-validation-1.json` under the current evidence root.
+
+Encoding and copy construction/execution, producer immutability/backing stability, budget
+metadata/pricing, compiler/GC/control/native/FD resources, complete independent admission,
+positive native submitted recovery and business/Authority completion remain open. No native
+submitted retry, manager mutation, AWS operation or public dispatch runs. Sprint `6.5` stays
+active and later sprints remain parked.
+
+**Copied publication backing now corroborates its compact reservation.** Private `151` adds an
+actual post-copy backing check for each destination before the existing final state check and
+publisher acquisition. The same supported managed-backing observation is compared with that
+value's word-rounded compact data term. Oversized retained backing returns a typed error with
+actual/allowed data terms; unsupported backing and other observation failures propagate. No
+capacity hint or separate observed buffer can be substituted through this helper's API.
+
+Three fixed nonzero-offset views of a 4,096-byte buffer require **4,160** data bytes and refuse
+compact terms **72**, **104** and **128**. Their byte-identical compact copies pass; independent
+heap graphs match each accepted term exactly. A scoped unsupported backing also refuses. The
+real encoded/copy native fixture observes the copied pair at **93,616 bytes**, exactly matching
+the term carried through publication and launch. All prior native/controller/component modes
+pass in the warning-clean **536-step**, **22-stage** fixture at unchanged heap/container/clock
+limits. These are postcondition and data-ownership checks, not a bound on allocation execution.
+
+Pinned formatting, HLint, docs lint and source checks pass. Existing **36** model cells/**12**
+drift controls, **11** driver, **three** recovery-fold and **two** masking mutations remain green;
+**two** further compact-postcondition mutations reject a reversed capacity comparison and loss of
+observation refusal. Added source guards bind both copied values and postcondition-before-publisher
+ordering. Evidence is `ordinary-parent-43/`, `ordinary-parent-source-audit-22/` and
+`ordinary-compact-backing-final-validation-1.json` under the current evidence root.
+
+Encoding and copy construction/execution, producer immutability/backing stability, budget
+metadata/pricing, compiler/GC/control/native/FD resources and complete caller admission remain
+open. Positive native submitted recovery and business/Authority completion remain unproven. No
+native submitted retry, manager mutation, AWS operation or public dispatch runs. Sprint `6.5`
+stays active and later sprints remain parked.
+
+**Publication copying now checks the original buffers against scratch.** Private `150` adds a
+constant-time pinned-ABI ByteString backing observation. Owned immutable library-produced
+`PlainPtr` values supply their actual managed array capacity; unsupported backing and invalid
+lengths refuse with typed errors. The data snapshot grants neither lifetime nor native ownership.
+Before either compact copy, the encode action observes both original buffers and checks their
+complete source-pair term against the original runtime scratch declaration. The destination pair
+remains in application state, so these two resident data terms are accounted separately during
+copy overlap. The original deadline and publisher ordering are unchanged.
+
+Three fixed graph cases cover compact, nonzero-offset sliced and shared buffers. The compact
+term **264** and sliced term **6,296** match observed data; the shared term **8,344** conservatively
+covers its **4,216** observed bytes. Nine pure below/equal/above scratch declarations refuse/
+accept/accept. The real encoded native fixture requires **95,528** source-pair bytes, exceeding
+its **93,616** logical compact-pair term, and fits the unchanged **16,777,216** scratch declaration.
+An explicitly scoped non-PlainPtr buffer refuses without reading payload contents. The complete
+native flow retains its stronger existing scratch minimum, so the below-bound scratch controls
+are pure component checks, not native underfunding claims. The initial all-passing matrix is
+frozen before adding that unsupported-backing control.
+
+The warning-clean **536-step**, **21-stage** matrix passes at unchanged heap/container/clock
+limits, with pinned formatting, HLint, docs lint and source checks. Existing **36** model cells/
+**12** drift controls, **11** driver, **three** recovery-fold and **two** masking mutations remain
+green. New guards pin actual backing-capacity use, refusal handling, both observations, the
+scratch partition and check-before-copy order. Evidence is `ordinary-parent-{41,42}/`,
+`ordinary-parent-source-audit-21/`, `ordinary-copy-scratch-prior-fixture-1.json` and
+`ordinary-copy-scratch-final-validation-1.json` under the current evidence root.
+
+This funds the selected retained original-buffer data during overlap. Encoding and copy
+construction/execution, immutable-producer and backing-stability contracts, budget metadata/
+pricing, compiler/GC/control state, publication-owner/native/FD resources and complete caller
+admission remain open. Positive native submitted recovery and business/Authority completion
+remain unproven. No native submitted retry, manager mutation, AWS operation or public dispatch
+runs. Sprint `6.5` stays active and later sprints remain parked.
+
+**Launch admission now includes the publication payload lifetime.** Private `149` passes the
+actual compact-payload budget from the publisher to its launch owner and includes its payload-only
+term in the existing deadline-bounded argument/descriptor reservation. The original preparation
+is already charged, so it is not added again. Both projection setters preserve the other's term;
+payload inclusion replaces its field and is idempotent. No raw capacity hint or alternate byte
+source enters the owner. The check still precedes gate construction and callback entry.
+
+The fixed native fixture adds **93,616 bytes** for the compact pair to the previous **251,496**
+launch term, yielding **345,112 bytes**. Three declarations at 345,111/345,112/345,113 refuse/enter/
+enter the callback, and each proves never-sent retirement. A retained declaration of **251,496**
+now refuses the same exact new requirement before callback entry and also retires its payloads.
+This preserves the former declaration as a negative control while enforcing the newly included
+lifetime. The tests independently derive the opaque payload term from the fixed preparation,
+check that the added bytes equal only that term, prove repeated inclusion idempotent, and confirm
+the publication preparation is counted once. Existing pre-publication state controls and all
+native/component modes remain green without changing heap/container/clock declarations.
+
+The warning-clean **535-step**, **20-stage** matrix, pinned formatting, HLint, docs lint and source
+checks pass. The settings census stays **36** model cells/**12** drift controls, with the existing
+**11** driver, **three** recovery-fold and **two** masking mutations. Added source guards pin the
+actual publisher-to-owner budget flow, descriptor/payload field preservation and payload-only
+projection before the existing gate. Evidence is `ordinary-parent-40/`,
+`ordinary-parent-source-audit-20/` and `ordinary-launch-publication-final-validation-1.json` under
+the current evidence root.
+
+This remains known quiescent data funding. Publication-owner/active-thread state, encoder/copy
+coexistence, budget construction/pricing, compiler/GC/control/native/FD resources and whole caller
+invocation funding remain required before independent admission or qualification. Positive native
+submitted recovery and business/Authority completion remain open. No native submitted retry,
+manager mutation, AWS operation or public dispatch runs. Sprint `6.5` stays active; later sprints
+remain parked.
+
+**Publication now reserves its retained preparation and compact payloads.** Private `148` adds
+an opaque ordinary-publication state term: the retained preparation plus the two-element tuple
+of compact settings/request ByteStrings. The publisher's existing deadline-bounded encode action
+checks that prospective term against the original request's application-state declaration before
+copying, creates compact `Bytes.copy` storage for both payloads, then checks the actual copied
+pair before returning it to publisher acquisition. No caller-supplied capacity hint or admission
+capability enters this path. The tuple and both known-capacity backing arrays are charged.
+
+Six fixed compact-buffer graph cases (empty, aligned/unaligned, and bounded larger pairs) fit their
+terms; five match the full observed data exactly and the shared empty case is conservative. The
+fixed native preparation's combined requirement is **192,856 bytes**. Three pure declarations
+at one below/equal/one above give refuse/accept/accept; a native declaration of **192,855** returns
+the exact typed publication-state refusal before the callback and positively observes the entire
+publication namespace absent. Its independently rebuilt preparation and changed request encoding
+retain the same required term. Existing normal/native publication and later argument-admission
+controls still pass, without changing heap/container/clock declarations.
+
+The warning-clean **535-step**, **20-stage** matrix passes, along with pinned formatting, HLint,
+docs lint and source checks. The existing **36** model cells/**12** drift controls, **11** driver,
+**three** recovery-fold and **two** masking mutations remain green. Added guards pin both copy
+calls, both state checks, the original preparation/declaration and encode-before-owner ordering.
+Evidence is `ordinary-parent-39/`, `ordinary-parent-source-audit-19/` and
+`ordinary-publication-state-final-validation-1.json` under the current evidence root.
+
+This closes the selected quiescent payload/preparation integration gap. Encoding, original/copy
+coexistence, budget construction/pricing, compiler/GC/control state, publication-owner/native/FD
+resources and whole caller invocation funding remain required before independent admission or
+qualification. Positive native submitted recovery and business/Authority completion remain open.
+No native submitted retry, manager mutation, AWS operation or public dispatch runs. Sprint `6.5`
+stays active and later sprints remain parked.
+
+**Retirement waits now refuse masked entry before observing.** Private `147` adds an explicit
+`getMaskingState` check before the wait engine. Unmasked entry reaches the existing absolute-
+deadline engine; masked-interruptible and masked-uninterruptible entry each returns its exact
+`RetirementWaitMaskingRefused` value before any observation. The engine is unexported, so the
+supported module entry cannot bypass this precondition. A native observer must still preserve
+interruptibility internally; masking/FFI and bounded-join contracts remain required for the
+complete deadline/resource claim. This check does not establish arbitrary observer termination.
+
+Two new fixed negative controls check both masking states, zero observations and restored caller
+state. Two positive controls follow the driver's actual nested `mask`/restore and exception-
+cleanup shapes: each enters the wait unmasked exactly once, and exception cleanup preserves its
+primary exception. Together with the prior nine cases, **13** wait controls pass. The initial
+11-control fixture remains frozen before adding the two positive nesting controls. All **19**
+command stages pass in the warning-clean **534-step** native/component build at unchanged heap,
+container and clock declarations, including ten exception controls, 15 recovery-choice cases and
+all native unresolved/interrupted compositions.
+
+Pinned formatting, HLint, docs lint and source checks pass. The census remains **36** model
+cells/**12** drift controls with **11** driver mutations, **three** recovery-fold mutations and
+**two** new masking-entry mutations. Public executable source identity remains unchanged.
+Evidence is `ordinary-parent-{37,38}/`, `ordinary-parent-source-audit-18/`,
+`ordinary-wait-masking-prior-fixture-1.json` and
+`ordinary-wait-masking-final-validation-1.json` under the current evidence root. No native
+submitted retry, manager mutation, AWS operation or public dispatch runs. Positive native
+submitted recovery, repeated interruption, complete caller/owner/control/runtime/native funding,
+independent admission and business/Authority completion remain open. Sprint `6.5` stays active;
+later sprints remain parked.
+
+**Interrupted recovery now uses a closed typed decision program.** Private `146` extracts the
+never-sent/submitted choice into a two-operation GADT and fixed fold. Its native interpreter keeps
+the original request and cleanup deadline, classifies only the exact possible-send-marker refusal
+as possibly sent, and retains every other typed refusal. The fold terminates on never-sent
+retirement or refusal; only a possibly-sent observation enters submitted recovery once. Submitted
+failure returns directly and cannot re-enter never-sent cleanup. The public physical-receipt ADT
+is reconstructed only from its corresponding native result; this abstraction grants no ownership
+or Authority admission.
+
+**15** fixed interpreter controls verify the complete choice: one never-sent receipt, six
+never-sent refusals (missing, unreadable, changed, expired, malformed, unsafe), one submitted
+receipt, five submitted refusals (missing, unqualified, provider mismatch, unobservable manager,
+record mismatch), and exceptions at either operation. Each checks its exact result and effect
+sequence. Test receipt tokens prove fold routing only; they are not native retirement evidence.
+Existing native interrupted/expired-cleanup compositions and all preceding modes pass in the
+warning-clean **534-step**, **19-stage** matrix at unchanged heap/container/clock declarations.
+Pinned formatting, HLint, docs lint and source checks pass. The settings census remains **36**
+model cells/**12** drift controls with **11** driver mutations; **three** further fold mutation
+controls reject refusal fallthrough, duplicated/wrong recovery selection and lost never-sent
+success. Native classification and the fixed fold are both source-pinned.
+
+Evidence is `ordinary-parent-36/`, `ordinary-parent-source-audit-17/` and
+`ordinary-recovery-choice-final-validation-1.json` under the current evidence root. No new
+publication marker, native submitted retry, manager mutation, AWS operation or public dispatch
+runs. Positive native possible-send recovery, repeated interruption, complete caller/owner/control/
+runtime/native funding, independent admission and business/Authority completion remain open.
+Sprint `6.5` stays active and later sprints remain parked.
+
+**Attempt results now encode their exact retirement disposition.** Private `145` replaces the
+stored publication-result/optional-retirement pair with the independent submission outcome and
+one closed four-variant disposition: never-sent retired, never-sent unresolved, submitted retired,
+or submitted unresolved. Each retired variant requires its actual matching receipt type; each
+unresolved variant retains its structured failure. Positional result storage and ordinary getter
+functions expose neither a constructor nor record-update fields. The driver preserves the
+submission outcome regardless of retirement, maps all four routes explicitly, and still never
+reports physical retirement as business/Authority completion.
+
+Two new native fixed-driver cases use an expired cleanup deadline with the existing credential/
+region refusals. Each preserves the original prompt refusal and the exact nested publication-
+borrow expiry as a **never-sent unresolved** disposition, observes both payloads still present,
+then cold-recovers under a valid read deadline and proves both absent with the namespace fence
+retained. The two existing never-sent retired cases also pass. Submitted result mappings have
+source/compiler controls but no positive native submitted proof.
+
+The warning-clean **532-step**, **18-stage** matrix passes at the original heap/container/clock
+declarations, including all ten exception and nine wait controls and previous component/native
+modes. Pinned formatting, HLint, docs lint and source census pass. The census stays **36** model
+cells and **12** drift controls, with **11** driver mutations now also rejecting swapped submitted
+success/failure mappings. The earlier fixture's expired-cleanup assertion expected transaction
+expiry instead of publication-borrow expiry; its failure and retained payload inventory are
+frozen. The next fixture retires those exact payloads through the shared ownership-checked
+never-sent transaction and positively reads back absence before the full matrix passes. That
+passing fixture is also frozen before positional storage replaces exported record fields.
+
+Evidence is `ordinary-parent-{33,34,35}/`, `ordinary-parent-source-audit-16/`,
+`ordinary-parent-failure-preservation-33.json`, `ordinary-attempt-result-prior-fixture-1.json`
+and `ordinary-attempt-result-final-validation-1.json` under the current evidence root. No hand
+payload deletion, native submitted retry, manager mutation, AWS operation or public dispatch runs.
+Positive submitted recovery, repeated interruption, complete caller/owner/control/runtime/native
+funding, independent admission and business/Authority completion remain open. Sprint `6.5` stays
+active and later sprints remain parked.
+
+**Publication exceptions now enter ownership-checked cold recovery.** Private `143` places the
+restored fixed publication/submission action inside a distinct-action exception boundary. A
+normal typed result returns directly. If publication throws, its publisher/gate/descriptor scopes
+first unwind; the boundary then attempts `recoverInterruptedOrdinaryControllerInputs` with the
+original request and cleanup deadline, and rethrows the primary exception even when recovery
+throws. It never replays publication or submission.
+
+Interrupted recovery first attempts the existing birth/inode/marker-checked never-sent protocol.
+Only its exact `ControllerPublicationPossiblySent` refusal selects the submitted wait, which
+still independently requires the qualified submission record and matching original identity.
+Missing, changed, expired or unreadable metadata propagates its typed refusal and cannot authorize
+fallback deletion. The resulting ADT distinguishes actual never-sent and submitted physical
+retirement receipts; neither is business/Authority completion. Structured unresolved cleanup
+remains metadata-owned when the primary exception is rethrown. An interrupted publication enters
+at most one 60-observation submitted schedule; the normal possible-send path retains its maximum
+two schedules under the same deadline, so the invocation-wide source ceiling stays **120**.
+
+The warning-clean **532-step**, **17-stage** fixture passes. Its **ten** exception controls include
+a distinct-action typed refusal, primary/secondary failures and cancellation with exactly one
+publication entry and one eligible recovery entry. Two additional native exception/cancellation
+cases cold-recover actual never-sent publications, prove payload absence and escaped-owner
+refusal, fence namespace reuse, and refuse both missing birth and expired cleanup. These native
+cases compose the publisher with cold recovery; they do not prove positive submitted execution
+or a fault-injected complete fixed-driver native run. All prior component/native modes remain
+green at unchanged heap/container/clock declarations.
+
+The settings census now includes the complete fixed parent attempt and interrupted recovery:
+**36** compiled model cells match the reviewed named seams with **12** drift controls and **nine**
+driver mutation controls. Interrupted recovery adds no settings extraction, embedding, semantic
+validation or path resolution. Pinned formatting, HLint and docs lint pass. The first native
+fixture is frozen before a wrapped-pattern formatter stabilization; the subsequent cancellation
+test's shadowed binding refuses warning-clean compilation before tests and is preserved before
+its binding-only correction. Evidence is `ordinary-parent-{30,31,32}/`,
+`ordinary-parent-source-audit-14/`, `ordinary-interrupted-prior-fixture-1.json`,
+`ordinary-parent-failure-preservation-31.json` and
+`ordinary-interrupted-recovery-final-validation-1.json` under the current evidence root.
+
+No native submitted retry, manager mutation, AWS operation or public dispatch runs. Positive
+possible-send recovery, repeated interruption, full caller/owner/control/runtime/native funding,
+independent admission and business/Authority completion remain open. Sprint `6.5` stays active;
+later sprints remain parked.
+
+**Known possible-send retirement now waits under a closed deadline.** Private `141` routes the
+fixed driver's retirement boundary through a finite observation schedule. Its named private
+`ordinaryControllerRetirementRetryPolicy` belongs to the shared Retry module and its compiled
+policy inventory: **60** observations with one-second, downward-jittered intervals. One absolute
+cleanup deadline wraps the complete schedule, including a blocked observation and every delay;
+clock checks precede each observation and follow the closing result. No relative timeout renews
+that deadline or the original work window.
+
+Only the exact structured sender-present, role-present, kernel-present and workspace-present
+observations are pending. Missing/unqualified submission records, changed identity/epoch, failed
+provider/manager observations and other refusals stop as typed unobservable results. Success
+requires the existing exact physical input-retirement receipt. Exhaustion preserves its last
+pending cause; expiry remains a distinct typed result. The previous exception boundary can enter
+the schedule once more under the **same** deadline, so its source call ceiling is **120** recovery
+observations per invocation, replacing private `139`'s two direct observations. This is a call
+ceiling, not independent heap/native/FD/control resource admission, and proves no business or
+Authority completion.
+
+Nine fixed controls cover immediate success, pending then success, unobservable stop, finite
+exhaustion, expiry before entry, a blocked observation, a delay clipped by expiry, typed
+classification (**nine** positive-presence and **ten** refusal values), and cancellation. They use
+explicit test schedules through `mkRetryPolicy`; the compiled production-shaped policy retains
+its separate fixed fields. All prior modes also pass in the warning-clean **532-step**,
+**16-stage** native/component fixture, including the six exception controls and two native
+never-sent driver cases at unchanged heap/container/clock declarations. Pinned formatting, HLint
+and source audit pass with the existing **28** settings-model cells, **11** drift controls,
+**eight** driver mutation controls and added wait/classifier/deadline/policy guards.
+
+The first private `140` native matrix also passes. Its source checker split the Retry export
+header at a comment's `where`, and a second pinned formatter pass adjusts one wrapped-pattern
+indentation; both failed checks and the passing matrix are frozen before the corrected fixture.
+Evidence is `ordinary-parent-{28,29}/`, `ordinary-parent-source-audit-13/`,
+`ordinary-completion-preparation-refusal-1.json` and
+`ordinary-completion-wait-final-validation-1.json` under the current evidence root.
+No manager mutation, native submitted retry, AWS operation or public dispatch runs. Cancellation
+before a returned publication disposition, repeated recovery interruption, full owner/control/
+runtime/native funding, independent admission, business/Authority completion and positive native
+submitted execution remain open. Sprint `6.5` stays active and later sprints remain parked.
+
+**Known possible-send retirement now preserves interruption recovery.** Private `139` masks the
+transition from the restored publication/submission action to its disposition branch. Only a
+returned possible-send disposition enters the retirement interpreter boundary. Its normal typed
+result returns directly. If that retirement action throws, the boundary attempts the **same**
+resumable metadata/physical transaction once more under the original cleanup deadline, then
+rethrows the original exception. A secondary exception or cancellation cannot replace it. There
+is no typed-refusal retry, deadline renewal, polling loop or new work submission. One invocation
+therefore enters submitted recovery at most twice; that call bound is not byte/native funding.
+
+Six deterministic controls cover a typed refusal, a synchronous primary exception with successful
+or throwing recovery, cancellation with successful or throwing recovery, and a masked caller
+handoff into an interruptible transaction. They check exact entry counts and original
+exception/cancellation preservation. These are interpreter-boundary fixtures, not native submitted
+retirement receipts. Both native never-sent fixed-driver cases and all previous native/component
+modes also pass in the warning-clean **530-step**, **15-stage** fixture. Heap/container/clock limits
+remain unchanged. Pinned formatting, HLint and the source census pass; its **28** model cells and
+**11** drift controls remain unchanged, with **eight** driver mutation controls and explicit source
+checks for the two-entry exception boundary. The first fixture's unused test import refused
+compilation before tests; that failure is frozen before the corrected fixture. Evidence is
+`ordinary-parent-{26,27}/`, `ordinary-parent-source-audit-11/`,
+`ordinary-parent-failure-preservation-26.json` and
+`ordinary-exception-recovery-final-validation-1.json` in the current evidence root.
+
+The previous read-only manager observation still refuses the required capability contract; no
+submitted handoff retry, manager mutation or AWS operation runs. Cancellation before publication
+returns a disposition, repeated interruption of recovery, bounded completion/wait scheduling,
+full owner/control/runtime/native funding and independent admission remain open. Partial or
+unobservable cleanup remains durable-recovery-owned, never a completion receipt. No public
+promotion or phase closure follows; Sprint `6.5` stays active and later sprints remain parked.
+
+**The ordinary parent now connects submission to a closing retirement observation.** Private
+`138` adds a fixed `submitAndRetirePublishedOrdinaryController` entrypoint. Publication/submission
+returns and closes its descriptor/gate owners before the new entrypoint branches on its closing
+publication disposition. Never-sent retirement or unresolved never-sent cleanup is preserved
+without entering submitted recovery. A possible send always invokes the existing exact
+submission-record/causal-closure/physical-input retirement path with the original request and
+supplied cleanup deadline, even when the submission outcome is an error. The opaque attempt
+result preserves that outcome and the retirement observation independently; it cannot turn
+physical retirement into business/Authority completion or discard unresolved evidence.
+
+The warning-clean **528-step** native build and all **14** command stages pass, including two new
+invalid-credential/region cases through the fixed entrypoint. Both preserve the exact prompt
+refusal, prove never-sent payload absence, fence namespace reuse and read back recovery; neither
+enters submitted retirement. Existing **204** compatibility cases, **18** settings boundaries and
+all publication, gate, descriptor, argument and recovery controls remain green at unchanged
+heap/container/clock limits. Pinned formatting, HLint and the source audit pass; its existing
+**28** model cells/**11** drift controls are supplemented by **six** driver mutation controls
+covering the closed handoff and all disposition branches. These source controls do not prove a
+positive native submission or retirement. Evidence is `ordinary-parent-25/`,
+`ordinary-parent-source-audit-10/` and `ordinary-submit-retire-final-validation-1.json` under the
+current evidence root.
+
+This entrypoint takes one retirement observation, with no polling, work renewal or missing-record
+fallback. A still-present or unobservable family remains unresolved for recovery. Cancellation and
+exception completion of the whole driver, bounded completion/wait scheduling, complete owner and
+runtime funding, independent admission and successful submitted execution remain open. The
+manager prerequisite is unchanged and no native submission retry or AWS operation runs. Private
+`138` is not publicly dispatched; Sprint `6.5` remains active and later sprints stay parked.
+
+**Parent admission now consumes the descriptor data projection.** Private `137` includes the
+actual opaque program's copied descriptor state in the existing deadline-bounded launch check.
+The program header/kind is already charged, so inclusion adds only its descriptor referent and
+replaces that term on repetition. No caller-supplied byte count or resource capability is accepted.
+The parent supplies the same verified program used for its arguments and launch, and the check
+still precedes gate construction and callback entry. This remains known quiescent data funding,
+not a complete publication/active-owner, construction, compiler/GC/native or admission proof.
+
+One fixed live-metadata fixture derives **16,152 bytes** of additional descriptor state and
+verifies idempotent inclusion, then proves never-sent retirement. The three subsequent fixed
+native declarations retain the same data shape and independently check their exact required
+value: **251,495** refuses before callback entry, while **251,496** and **251,497** enter it. All
+three positively retire payloads and read back recovery. The 40-byte program header/kind is
+counted once; heap, container and clocks remain unchanged. This is no exhaustion or retry-until-
+success campaign and provides no submitted-operation or Authority evidence.
+
+The warning-clean **528-step** build, pinned formatting and HLint pass. All preceding component
+and native modes pass, including the six descriptor graphs/two closed-lease refusals, eight gate
+cases/ten settled graphs and all settings, compatibility, argument and recovery controls. The
+current source census remains **28** model cells with **11** drift controls; new guards confirm
+actual descriptor inclusion under the original work deadline. Evidence is under
+`ordinary-parent-24/`, `ordinary-parent-source-audit-9/` and
+`ordinary-descriptor-admission-final-validation-1.json`. The earlier unconsumed projection record
+retains its historical scope; this increment closes that specific integration gap.
+No manager submission or AWS operation runs. Publication-owner and active-thread state,
+constructor/control/runtime/native funding, full caller integration and positive submitted
+execution remain open before public promotion and qualification. Sprint `6.5` stays active.
+
+**Stack growth has a conditional source-level headroom bound.**
+The captured `threadStackOverflow` source selects a whole-frame prefix, reserves two words for
+an underflow link when the old chunk remains, advances both logical stack pointers and publishes
+the successor before dirtying it. Its capacity predicate alone does not prove the 21-word reserve:
+a fixed eight-word partition can consume all successor headroom. For positive copy-buffer size
+`B` and valid frames of at most `F` words, the copied prefix has at most `B+F−1` words. A chunk
+allocation `C >= reserve+B+F+4` therefore suffices under the fresh-allocator, valid-partition,
+nonwrapping arithmetic and normal-helper contracts. No global `F` bound is established.
+
+The installed C layout probe confirms eight-byte words, a three-word stack header and two-word
+underflow frame. A warning-clean Haskell flag reader, run with `-M128m -N2 -T`, agrees with raw
+RTS flag fields: initial stack 128 words, chunk 4,096 and buffer 128. That profile admits the
+sufficient condition for `F <= 3,943`; applying the previously selected six-word local frame bound
+conditionally leaves at least 3,958 free words. This does not extend that local frame bound to all
+runtime frames. All 21,824 tiny partition/chunk/buffer cases and 15 source-clause mutation controls
+pass. Two earlier checker runs failed their mutation-control preparation and remain recorded;
+the corrected controls restrict edits to the growth routine and replace complete identifier names.
+`semantic-context-stack-growth-headroom-final-validation-1.json` preserves the source, probes,
+receipts and controls. Native growth equivalence, allocator/collector execution, pointer and uint32
+metadata nonwrap, physical chunk retirement, invocation frequency and ordinary admission remain
+open. Sprint order, production allowances and canonical gate 58 retain their preceding scope.
+
+**Installed growth frame sizes and the copy/publication tail match locally.**
+The 550-byte installed `threadStackOverflow` routine has 160 bound instruction rows and 14
+relocations. Its selected small-bitmap, large-bitmap, function-return and BCO corridors produce
+the symbolic frame extents `L+1`, `L+1`, `L+3` and `L+2`. The reviewed scan instructions test the
+buffer/end threshold before frame reads and accept a whole frame only after its capacity guard;
+the sole accepted cursor update is checked. This joins the conditional source prefix argument
+under valid positive-sized stable metadata and nonwrapping arithmetic. It does not establish
+metadata admission or a whole-program maximum frame size.
+
+The affine copy-tail interpreter proves `memcpy(D+S−cut, S, cut−S)`, old Sp=`cut`, new
+Sp=`D+S−cut`, successor publication, and the exact capability/successor arguments to `dirty_STACK`.
+Here `D` is the successor end, reduced by two words when a new underflow link is inserted.
+Normal `memcpy` behavior and stable fields are contracts. The tail restores six saved C registers
+and its 56-byte local C frame; deeper helper/native costs remain separate. All four installed
+underflow variants have one pointer payload word, closure type 35 and zero SRT metadata, matching
+the two-word frame layout. A compiled probe checks 23 installed layout/constants fields.
+The expanded checker passes 59 instruction/reference/ABI binding controls, 12 symbolic semantic
+controls and 12 underflow-metadata controls. Its earlier 58-control version also passes and remains
+preserved in `semantic-context-stack-growth-native-final-validation-1.json`. No actual or changed
+RTS growth routine executes. Allocator behavior, throw-helper internals, collector concurrency,
+global cadence, physical retirement and admission remain open.
+
+**Installed growth size selection and initialization are checked conditionally.**
+Symbolic exploration covers all 28 pre-scan paths: 24 reach scan initialization, three return
+without resource-field writes and one restores the C caller before transferring the exact
+capability, TSO and exception arguments to `throwToSelf`. The early returns cover maximum-stack
+squeezing and sufficient space recovered by squeezing. No exception-helper internals or
+squeezing liveness follows from this handoff check.
+
+The growth paths select the configured chunk `C0`, or `max(C0,2*N+6)` when the old stack uses less
+than half its payload. Each normal allocator return has exactly one allocation call charged to
+the current TSO; the charge is cleared afterward. The successor has STACK info, a 16-bit zero
+store covering dirty/marking, payload size `C−3`, Sp at the payload end and total-stack accounting
+`T+C−3`. The two threshold paths initialize the checked prefix scan at old Sp with
+`min(old Sp+8*B, old end)`. Store widths/order, live callee origins, old structural fields and the
+56-byte local C frame are checked. The proof requires a fresh successful allocator preserving
+the declared structural fields. It also requires selected `C>=5`, `C<=UINT32_MAX`,
+`T+C−3<=UINT32_MAX` and nonwrapping pointers; the native 32-bit stores and doubled-size truncation
+do not establish these bounds themselves.
+
+The expanded checker passes 24 semantic controls and 13 ABI controls. Its first 29-control version
+also passes. The intermediate checker nonpass retains an incorrectly chosen control that changes
+a redundant restore of an unchanged register; the corrected control changes the live saved RBX
+restore. `semantic-context-stack-growth-prefix-final-validation-1.json` preserves all three
+versions, their receipts and the prior native/capability evidence. These are conditional local
+results; allocator/collector execution, complete metadata admission, global scheduling/frequency,
+physical costs and ordinary admission remain open. Canonical gate 58 retains its preceding scope.
+
+**The installed stack allocator's large route is checked locally.**
+The observed chunk size, and nontruncating growth from it, selects the large-object route:
+`C>=409` words. For `C=512q+r`, all 512 residue classes establish
+`requested_blocks=q+(r!=0)=ceil(C/512)`. A uint32-sized word request rounds without overflow and
+needs at most 8,388,608 blocks, below the signed block-count limit. The observed 4,096-word chunk
+requests eight blocks. This is a request count: `allocGroupOnNode` may supply more blocks, and
+neither returned block capacity nor OS/physical memory is bounded by this result.
+
+The large route's 97 local graph states cover 84 instructions. It calls the group allocator,
+mutex lock and mutex unlock at most once each, under normal C ABI and nonreturning panic
+contracts. Its 13 direct resource stores are inventoried; the direct TSO write debits
+`alloc_limit`, with distinct live structures and helper preservation still required for stack-field
+preservation. The private capability accounting word at offset 1,200 is bound in the native code;
+its source `total_allocated` layout correspondence remains a contract. Normal returns restore the
+saved C registers. The wrapper reserves eight local C-stack bytes and the large route 40; joined
+to the checked 56-byte growth frame and two call-return slots, the local chain consumes 120 bytes.
+Deeper helper/native costs and invocation frequency remain separate.
+
+The wrapper returns the non-null helper result. A null result instead calls `reportHeapOverflow`
+then `stg_exit(251)` under their helper contracts; it is not an application typed refusal.
+The large route also requires requested blocks below nonzero `maxHeapSize`, a single-object check
+that does not prove aggregate heap admission. Fourteen ABI fields, eight global-data relocations
+and all selected call references are checked. The expanded checker passes 37 binding, ABI, graph,
+rounding and relocation controls; the preceding 29-control version also passes. The first nonpass
+retains a checker ABI expectation that confused the strict comparison value 408 with the threshold
+quotient 409. `semantic-context-stack-allocator-final-validation-1.json` preserves these results.
+Only the tiny layout probe executes. Block-pool/OS success, freshness, helper effects and liveness,
+collector behavior, physical funding and ordinary admission remain open; Sprint 6.5 stays active.
+
+**Block-pool capacity and the small bucket scan have conditional bounds.**
+The captured GHC release source and three installed procedures supply a checked local bridge:
+151 instruction rows for `allocGroupOnNode`, 117 for `alloc_mega_group` and 46 for
+`split_free_block`, with all 11 direct call references bound. Sixteen installed ABI/constants
+fields confirm 4-KiB blocks, 1-MiB megablocks, a 16-KiB first-block offset, 64-byte descriptors,
+252 usable blocks in the first megablock and eight free-list buckets per node.
+
+For `1<=n<252`, the source's exact, split and new-megablock routes return an `n`-block group
+under valid descriptor/list and helper contracts. The native split arithmetic selects descriptor
+`bd+64*(K−n)`, sets its size to `n` and leaves `K−n` blocks in the remainder. All 31,878 small
+interval partitions preserve total length and disjoint front/end intervals. The installed bucket
+scan starts at `ceil(log2(n))`; its rank `8−ln` decreases after each null bucket. All 64,256
+request/availability-mask cases obey at most eight reads, or five for the observed eight-block
+stack request. A starting index of eight goes directly to the megablock route without a bucket read.
+
+For larger requests, the installed arithmetic is
+`m=1+floor((4096*n+16383)/1048576)`, with group capacity `252+256*(m−1)`.
+All 256 rounding residue classes establish `n<=capacity<=n+255`. Cached exact returns still
+require the free-list helper's exact-match metadata contract. On a pool miss, a small request can
+ask the megablock helper for 1 MiB, retaining the unused remainder in the pool; larger direct
+requests use `m` MiB. These are conditional group-capacity and direct-request bounds, not OS
+mapping, committed/RSS, global cache-retention or ordinary admission funding.
+
+The expanded checker passes 44 native-anchor, ABI, source-clause and relocation controls; its
+preceding 24-control version also passes. `semantic-context-block-pool-final-validation-1.json`
+preserves the source/native capture, probes, models and receipts. No native allocator or altered
+object executes. Free-list ownership, valid-node admission, global list validity/length,
+remaining descriptor/group transitions, transitive helper effects, OS freshness/success and physical funding
+remain open. The production allowance, sprint queue and canonical gate 58 retain their scope.
+
+**The installed megablock free-list search has conditional local effects and a linear bound.**
+All 34 instruction rows of `alloc_mega_group_from_free_list` are bound to the installed object.
+The leaf has no relocations, calls, allocations or native C-frame adjustment. It preserves RDI,
+RSI, R10, R11 and the callee-saved registers, discharging those selected local preservation
+contracts for its caller. Under valid, stable, finite acyclic descriptors and distinct head/output
+slots, the loop keeps the first minimum-sized node strictly above the request in the visited
+nonmatching prefix. Equal-sized candidates retain the first choice. An exact match removes the
+first matching node through the head slot or previous link and returns it; exhaustion returns
+null. Only the best output and the selected unlink slot change; node sizes and other links remain
+unchanged under those alias contracts. Selection alone does not establish global pool ownership.
+
+The unvisited suffix length supplies the rank: a list of `L` nodes has at most `L` visits.
+Conservative native segment enumeration counts five entry instructions for a nonempty list,
+at most 16 per continuing visit and 17 for a terminal visit; the empty route takes eight.
+Thus `16*L+8` instruction rows bounds the search under the stated contracts. This is not a CPU-cycle
+or wall-clock bound, and no numeric bound on `L` is established. The 6,825 tiny machine-state
+fixtures cover empty lists, head/interior exact removal, exhaustion, candidate replacement and
+ties, with an independent expected list/output oracle. All 31 semantic, ABI, byte-binding,
+source-clause and register-preservation controls pass; the preceding 21-control version also
+passes. Five ABI fields are checked by the compiled layout probe.
+`semantic-context-mega-free-list-final-validation-1.json` preserves the fixtures, conditional
+induction, native segment graph and receipts. No native search or altered runtime executes.
+Global free-list validity/ownership, its length bound, remaining descriptor/group transitions, transitive
+allocation/OS effects, physical funding and ordinary admission remain open; Sprint 6.5 stays active.
+
+**Both installed first-megablock initializer corridors have exact field-write bounds.**
+The fresh-region and split-region paths in `alloc_mega_group` are interpreted over an arbitrary
+symbolic megablock base and node ID. The contracts require a valid owned 1-MiB-aligned region,
+representable end pointer and node in `0..15`. Each path performs exactly 252 iterations and
+504 field stores. Descriptor `i` is at `base+256+64*i`; its start field receives
+`base+16384+4096*i`, and its two-byte node field at offset 44 receives the node ID. All 2,520
+touched bytes are distinct and within the metadata prefix before the 16-KiB payload boundary.
+The final descriptor cursor reaches that boundary and the data cursor reaches the megablock end.
+The corridors contain no calls or allocations. These are field-write bounds for the first
+megablock, with other descriptor/group transitions and later megablock metadata outside this proof.
+
+The compiled probe verifies 12 installed layout/constants fields. All 30 semantic, ABI,
+source-clause and byte-binding controls pass. The earlier checker nonpass records its missing
+`%ebp` register alias; the corrected interpreter handles the bounded node's 32-bit source and
+16-bit field store. `semantic-context-mblock-init-final-validation-1.json` preserves both checker
+versions, the two symbolic traces, exact-write checks and validation receipts. No native initializer
+or altered runtime executes. Input-region ownership/freshness, global pool validity, remaining
+helper effects, OS behavior, physical funding and ordinary admission remain open. Sprint 6.5 and
+canonical gate 58 retain their preceding scope.
+
+**The shared post-selection group initializer has checked field and return behavior.**
+The common `allocGroupOnNode` corridor sets head `link=null` and `free=start`, preserving the
+head start and block count. For sizes 2–252 it also sets the last descriptor's 32-bit block count
+to zero and its link to the head. Size 1 and sizes 253–`UINT32_MAX` skip tail writes. The native
+guard compares `(size−2) mod 2^32` with 250; its three complete size classes establish that later
+megablock metadata is not accessed through this tail operation. Tail addresses, when used, are
+`head+64*(size−1)` under the valid owned metadata and nonwrapping address contracts.
+
+All 256 selected size cases retain symbolic head/payload addresses and compare the complete
+modeled memory with the expected two or four field stores. The cases include every small size,
+the large-class boundary and large representatives; the interval argument covers the full positive
+uint32 guard domain. Metadata must be disjoint from the valid caller save slot. The returned head,
+saved RBX and caller Sp are restored from the checked 24-byte local C frame. Together with the
+three previously checked caller frames and three return slots, this visible chain accounts for
+152 local C-stack bytes; deeper helper costs and global invocation frequency remain separate.
+
+Eight ABI fields and all 27 semantic, ABI, source-clause and byte-binding controls pass. Both
+checker versions are preserved in `semantic-context-group-init-final-validation-1.json`; the
+expanded contract explicitly states metadata/caller-stack separation. No native initializer or
+altered runtime executes. This common corridor covers selected exact/split/megagroup handoffs.
+The remaining `freeGroup` effects, helper success and ownership, global pool invariants,
+physical funding and ordinary admission remain open. Sprint 6.5 stays active and gate 58 retains
+its preceding executable scope.
+
+**The single-megablock small-allocation fallback has an exact pre-freeGroup boundary.**
+All 251 request sizes `n=1..251` are checked over symbolic region, node and counter values, each
+with watermark representatives below, equal to and above the new count: 753 cases. The returned
+group occupies blocks `[0,n)` and the remainder `[n,252)`. Both heads receive their exact sizes,
+start/free pointers and null links; tail markers are written only for groups larger than one block.
+The remainder's positive size `252−n` is credited once to the global and selected-node counters,
+and the watermark becomes the larger of its old value and the new global count under the
+declared nonwrapping counter contracts. The exact pre-call modeled memory and 11–14
+metadata/counter/save-slot stores are checked for every case.
+
+Exactly one `freeGroup` submission receives the remainder descriptor. The interpreter then
+forgets the remainder and pool counters, retaining only the allocated-prefix metadata and caller
+frame under an explicit helper-preservation contract. Thus the proof does not infer the helper's
+coalescing, final counter values or global ownership from merely calling it. The head pointer is
+saved across normal C-ABI caller-register clobbering, reloaded and returned with RBX/Sp restored
+from the 24-byte local C frame. Metadata, counters and caller-frame slots must be distinct, the
+region valid and owned, and the input descriptors initialized.
+
+Fourteen ABI fields and nine selected data/helper relocations are checked. All 38 semantic,
+ABI, source-clause and relocation controls pass; the earlier 24-control version also passes.
+`semantic-context-fresh-small-group-final-validation-1.json` preserves both versions, the complete
+case matrix, the pre-helper checks and the deliberately limited return join. Only the tiny layout
+probe executes. Other `freeGroup`/coalescing effects, pool ownership/validity/length, OS behavior,
+physical funding and ordinary admission remain open. Sprint 6.5 and gate 58 retain their scope.
+
+**The fresh-small remainder has a joined installed freeGroup path.**
+The observer is generated from the preserved caller interpreter by inserting one hook at its
+already-checked pre-helper boundary. All 753 captured caller cases then pass through both empty
+and occupied bucket variants: 1,506 selected helper cases. The caller's original return traces and
+results still match their frozen record. The exact helper memory oracle covers the captured
+allocated-prefix metadata, caller slots and watermark as well as the new remainder, counter and
+bucket effects; the prefix-preservation assumption is discharged locally for this route under the
+owned-region, stable disjoint memory and nonwrapping arithmetic contracts.
+
+The remainder ends beyond the last descriptor, so no forward coalescing read occurs. Its previous
+group is the allocated prefix: the direct or tail-link lookup reaches a free pointer that cannot
+be the free marker, so backward coalescing is skipped. The helper marks the remainder free,
+clears its generation fields, debits its exact block count from global/node counters and sets up
+its tail when needed. It prepends the remainder to bucket `floor(log2(252−n))`, updating the old
+head's backlink only when that head exists. The allocated prefix and unrelated modeled fields
+remain unchanged. Occupied-head fixtures use a block count within the selected bucket; global
+bucket-list validity remains a contract. This undoes the remainder credit while retaining the caller's original request
+charge; the watermark stays unchanged.
+
+The selected leaf performs 8–12 stores, no calls and no local C-frame adjustment. The visible
+caller chain adds only the fourth call-return slot, reaching 160 local C-stack bytes; deeper
+allocation helpers and global scheduling costs remain separate. Eighteen ABI fields and seven
+selected data relocations are checked. All 49 semantic, ABI, source-clause, relocation and
+byte-binding controls pass. `semantic-context-remainder-free-final-validation-1.json` preserves
+the initial joined result, expanded controls, generated observer and validation receipts. No native
+allocator or altered runtime executes. This does not establish general free/coalescing behavior,
+global free-list ownership/acyclicity/length, concurrency, OS effects, physical funding or ordinary
+admission. Sprint 6.5 and canonical gate 58 retain their scope.
+
+**Cached splitting has checked local list effects and an initializer input bridge.**
+The installed `split_free_block` leaf is checked in 36 valid size/pointer-alias cases. They cover
+head and interior removal, predecessor equal to or distinct from the old list head, successor
+presence, reinsertion into the same or a lower bucket, and empty/nonempty lower buckets. All 45
+nonpadding instruction rows are exercised. An independent list oracle verifies removal, the
+remaining group's reinsertion, neighbor backlinks and untouched modeled fields. The current
+size-one fixtures retain valid cached-tail metadata. The leaf makes no calls or C-frame adjustment.
+
+Thirteen size-arithmetic anchors establish the local equations `R=K−n`, selected descriptor
+`head+64*R`, selected size `n` and remaining size `R` under `1<=n<K<=251`. Initialized start
+pointers are preserved, so the selected group meets the previous shared initializer's head/start/
+positive-size requirements under its metadata/frame contracts. All 31,375 small split pairs
+satisfy the integer partition and bucket-monotonicity checks. Combining valid bucket membership
+with the ceiling search admits 21,333 cached pairs including exact matches; requests above 128
+cannot use the small cache, and exact matches are limited to powers of two from 1 through 128.
+These arithmetic classes are distinct from the 36 native fixture cases; native execution for
+every size pair and global membership/ownership are not established by this result.
+
+Ten ABI fields and all 31 semantic, ABI, source-clause, relocation and byte-binding controls pass.
+The initial checker nonpass retains an invalid mutation that substituted a register already holding
+the same value; independent replay confirms its equivalent checked outcomes. The corrected
+control changes the stored remainder size. `semantic-context-cached-split-final-validation-1.json`
+preserves that nonpass and both passing versions. No native helper or altered runtime executes.
+Global free-list ownership/validity/length, concurrency, remaining
+helper effects and physical/ordinary admission funding remain open. Sprint 6.5 stays active.
+
+**Direct cached exact removal is joined through initialization and return.**
+All eight admitted power-of-two request sizes are checked across three list positions and
+successor presence: 48 cases with symbolic metadata, node and caller-frame addresses. The
+positions cover removal at the head, after the old head and deeper in the list. The exact-match
+entry binds the request copy, selected size load, equality comparison and branch target. Removal
+updates the bucket head or previous link, plus the successor backlink when present; it performs
+one or two stores without a call or stack adjustment. An independent list oracle checks the
+modeled effects and leaves the selected descriptor's start/size intact.
+
+One hook in the preserved initializer interpreter supplies the actual post-removal state to its
+unchanged common corridor. Every initializer result and return trace still matches its frozen
+case. The resulting group has null next link, free pointer equal to its start, the checked tail
+markers when needed, and restored RBX/Sp from the 24-byte C frame. The visible caller chain
+remains 152 local C-stack bytes under the earlier caller contracts. Valid stable bucket membership,
+initialized owned metadata, node range, disjoint frame/global slots and nonwrapping addresses
+remain preconditions; no global ownership or concurrency result follows from these local cases.
+
+Ten ABI fields and all 31 semantic, ABI, entry, source-clause, relocation and byte-binding controls
+pass. The preceding 21-control version also passes. The generated observer, both checker versions,
+case matrices and receipts are preserved in `semantic-context-cached-exact-final-validation-1.json`.
+No native allocator or changed runtime executes. General coalescing, global pool validity/length
+and freshness, remaining helper costs, physical funding and ordinary admission remain open.
+Sprint 6.5 stays active; canonical gate 58 retains its existing executable scope.
+
+**Megagroup dispatch has a checked call/frame projection and argument origins.**
+The installed `alloc_mega_group` graph has 400 projected states. It invokes the deferred and
+regular list searches at most once each, and submits at most one of `getMBlocks` or
+`getMBlocksOnNode`. The stack-canary failure call is a distinct nonreturning contract; normal
+returns restore all callee-saved registers and the caller Sp from the 40-byte local C frame.
+The two previously checked 252-iteration initializer loops have backedges summarized only for
+helper-count/native-frame state. Their bodies have no calls, SP writes or callee-saved writes.
+This projection is not an instruction/cycle count or a claim that a search/OS helper terminates.
+
+Pinned origin/dominance checks carry `252+256*(m−1)` words to either search and its output slot
+to entry Sp−40, separate from the canary at Sp−32 and saved RBX/RBP slots. The checked leaf
+search preserves RSI/R10/R11, supporting both call sites. OS submissions receive the original
+`m` and, for NUMA, the node argument. For the prior uint32 word-request class, `1<=m<=32769`
+and node in `0..15` make the uint32 argument narrowing exact. Nine ABI/type checks include the
+NUMA flag offset/width and both public OS-helper signatures; all nine local relocations are bound.
+The visible C chain reaches 200 bytes in this helper and 208 at the next helper entry, with
+external frames and OS/search costs still separate. Stable disjoint frame/TLS/list memory and
+normal helper C ABI remain contracts.
+
+All 40 semantic, ABI, control-flow, loop-summary, source-clause, relocation and byte-binding
+controls pass, including repeated-search and double-OS-submission variants. The earlier
+20-control version also passes. `semantic-context-mega-dispatch-final-validation-1.json` preserves
+both versions and the prior search/initializer evidence. No native dispatch or altered runtime
+executes. Global ownership/validity/length, helper liveness/OS success, general coalescing,
+physical funding and ordinary admission remain open. Sprint 6.5 and gate 58 retain their scope.
+
+**Cached best-fit megagroup splitting joins region arithmetic, initialization and return.**
+The installed `alloc_mega_group` split corridor is checked symbolically for an aligned original
+base, requested megablocks `m` and cached megablocks `B`, with `1<=m<=32769`, `m<B<=2^24`,
+node in `0..15` and a representable original span end. From the original `256B−4` block count,
+the actual quotient/subtract/add sequence computes the retained size `R=B−m`. The resulting
+physical spans are disjoint and conserve the original region. Their capacities are `256R−4`
+and `256m−4`: together four blocks fewer than before, accounting for the additional 16 KiB
+metadata prefix. This is address/capacity arithmetic, not an RSS or committed-memory bound.
+
+The actual split prefix supplies the relocated base, descriptor and node to an observed copy of
+the previously checked symbolic initializer. Its 252 iterations join through the returned count
+store and normal canary epilogue. The exact write image has 506 stores touching 2,528 distinct
+metadata bytes: four bytes in the retained header and 2,524 bytes in the returned metadata
+prefix, below its payload. The route makes no calls and restores the saved registers and caller
+Sp from the existing 40-byte frame. The returned head/start/count satisfy the shared group
+initializer's input contract. Stable owned cache metadata, frame/TLS disjointness, normal canary
+and prior search preservation remain explicit assumptions.
+
+All 23 semantic and ABI controls pass, including changed size quotient, retained count, returned
+descriptor offset/count and return-register variants. The installed object, listings, source,
+14 ABI fields, initializer observer, scoped receipt and parent evidence are retained in
+`semantic-context-mega-best-split-final-validation-1.json`. Only the small ABI probe executes;
+no native allocator or changed runtime executes. Global pool ownership/validity/length,
+concurrency, coalescing, helper costs, physical funding, ordinary admission and qualification
+remain open. Sprint 6.5 stays active, later sprints stay parked and canonical gate 58 retains
+its existing executable scope.
+
+**Fresh megagroup results join initialization, final capacity and caller return.**
+The installed post-OS corridor now carries the actual normal-return base through the previously
+checked first-megablock initializer, final count store and canary epilogue. The NUMA helper's
+normal-return jump reaches the same corridor. For `1<=m<=32769` and node in `0..15`, the returned
+descriptor is `base+256`, its start is `base+16384` and its uint32 block count is `256*m−4`, at
+most 8,388,860. The payload span ends exactly at `base+m*1048576`. This requires the OS result
+to be an owned writable aligned region of that extent with a representable end; no OS success,
+freshness, mapping commitment, RSS or physical funding follows from the arithmetic.
+
+The observed initializer receives the caller's actual symbolic registers rather than a separately
+constructed final descriptor. Its 504 start/node stores join the final count store: 505 stores
+touch 2,524 distinct bytes within the first metadata prefix, below the payload. Caller save slots
+remain unchanged, the normal return restores RBX/RBP/Sp, and there are no further helper calls.
+The existing local C frame is 40 bytes; external helper frames and costs remain separate.
+All 25 semantic, join-target and ABI controls pass, including changed count/field stores,
+initializer stride/termination, restored register and NUMA/epilogue joins.
+`semantic-context-mega-fresh-return-final-validation-1.json` preserves the observer, source,
+installed object/listings, 14-field ABI result, scoped receipt and parent evidence. Only the small
+existing ABI probe executes; no native allocator or changed runtime executes. General pool
+ownership/concurrency, coalescing, helper success/costs, physical funding, ordinary admission and
+qualification remain open. Sprint 6.5 stays active, later rows stay parked and canonical gate 58
+retains its existing executable scope.
+
+**The installed OS commit wrapper separates normal return from failure exit.**
+The captured installed configuration selects `USE_LARGE_ADDRESS_SPACE=1`. Primary GHC 9.12.4
+`MBlock.c`/POSIX `OSMem.c` and both installed archive members are retained for the remaining OS
+allocator work; capture alone proves no source/binary equivalence. The installed
+`osCommitMemory` wrapper has 17 bound instruction rows and six bound helper/diagnostic
+relocations. Symbolic execution covers every local instruction across its two paths. Both call
+`my_mmap(at,size,2)` once, preserving the original size in RBP. A nonnull result restores the
+saved RBP and caller Sp and returns. A null result makes two diagnostic calls, supplying the
+original size to the first, then calls nonreturning `stg_exit(1)`. It is not a typed prodbox
+refusal. The local C frame is eight bytes, with callee frames/costs separate.
+
+All 22 semantic, ABI, source-clause, relocation and byte-binding controls pass. A small installed
+header probe confirms eight-byte words, the enabled large-address-space mode and failure status
+1. `semantic-context-os-commit-final-validation-1.json` preserves the primary source/native
+capture, both symbolic paths, controls, ABI probe, scoped receipts and prior fresh-return
+evidence. No mapping function or changed native code executes. `my_mmap` result/placement,
+reserved-address-range invariants, mapping/commit success, global ownership/concurrency,
+helper liveness/costs, physical funding and ordinary admission remain open. Normal C ABI,
+returning diagnostics and nonreturning `stg_exit` are explicit contracts. Sprint 6.5 stays active;
+later rows and canonical gate 58 retain their preceding scope.
+
+**The installed mapping helper has checked syscall boundaries and caller restoration.**
+`my_mmap` now has 88 symbolic cases across reserve, commit and combined modes, null/non-null
+input addresses, initial success/EPERM/other-error outcomes, eligible retry outcomes and all four
+success/failure pairs for its two advice calls. Opaque input address/size and mapping-result
+tokens remain distinct; external calls clobber caller-saved registers in the model. These cases
+cover all 106 nonpadding instructions. Nine external references and 16 installed Linux/RTS ABI
+fields bind the helper calls, flags, protection/advice constants and error values.
+
+The commit-only route submits exactly one `mmap(at,size,PROT_READ|PROT_WRITE,
+MAP_FIXED|MAP_ANON|MAP_PRIVATE,-1,0)` and never enters the retry call. The reserve/combined
+routes may retry once without the address hint after an initial EPERM with a nonnull hint.
+Final mapping failure returns null; the selected EPERM normalization writes ENOMEM. Successful
+commit/combined mappings receive WILLNEED/DODUMP advice, and reservation-only mappings receive
+DONTNEED/DONTDUMP advice. Either advice result is ignored, preserving the returned mapping;
+these calls therefore supply no residency guarantee. The independent effect oracle checks exact
+call ordering/arguments and direct errno writes. Every modeled return restores all six saved
+registers and the caller Sp from the 72-byte local C frame. The commit wrapper and this helper
+compose to 88 visible C-stack bytes including their intervening return slot, or 96 at the next
+external helper entry, excluding external frames and costs.
+
+All 50 semantic, ABI, source-clause, relocation and byte-binding controls pass. The scoped record
+`semantic-context-my-mmap-final-validation-1.json` preserves the cases, object/listing, small ABI
+probe, parent wrapper evidence and immutable receipts. No mapping/advice function or changed
+native code executes. This is a symbolic API-boundary check under normal C ABI and scripted
+kernel/helper outcomes, not proof of kernel mapping placement/success, valid reserved ranges,
+global ownership/concurrency, page residency, helper costs, physical funding or ordinary admission.
+Sprint 6.5 stays active; later sprints stay parked and canonical gate 58 retains its scope.
+
+**Arena interval allocation has checked list, accounting and terminal boundaries.**
+The installed `getMBlocks` now passes 1,452 bounded whole-memory cases: lists of zero through
+three free intervals with one/two/four-megablock capacities, requests of one/two/three megablocks,
+insufficient/exact/spare arena tails, two peak-accounting classes and returning/terminating
+commit results. Twelve additional cases in that total use the admitted maximum request 32,769
+as integer arithmetic only. The model's malloc metadata, globals and caller frame are disjoint
+from its arena, including those maximum-request cases. No requested region is actually allocated.
+
+An independent whole-state oracle checks first-fit interval selection, partial front consumption,
+exact-fit doubly linked removal and metadata free, fresh watermark advancement, allocated/peak
+counters and caller restoration. There are 684 normal returns, 684 terminal commit failures and
+84 arena-capacity exits. Cache metadata changes before commit are retained on the modeled
+terminal failure; neither that result nor an exit is described as a successful allocation or a
+typed prodbox refusal. Twelve source-derived/public ABI fields and all 15 global/helper
+references are bound. The cases cover all 69 nonpadding instructions. Every normal return
+restores the saved registers and caller Sp from the 40-byte local C frame. Its direct commit
+chain contributes 136 visible C-stack bytes through `my_mmap`, including the intervening return
+slots, or 144 at the next external helper entry, excluding external frames and costs.
+
+The sole search backedge follows one `next` link after an insufficient interval. Under the
+finite stable acyclic-list contract, at most `L` nodes are visited. Its continuing corridor has
+six instruction rows; removing that backedge leaves syntactic paths of at most 60 rows.
+`128+8L` is a conservative common instruction-row bound, not a cycle count or a numeric `L`
+bound. The successful bounded states also retain sorted disjoint positive free intervals and
+coherent allocated-count accounting within the modeled arena; initialization and all freeing
+transitions remain separate dependencies of those input invariants.
+
+All 53 semantic, ABI, source-clause, relocation and byte-binding controls pass. The earlier
+nonpass retained an accepted `ja`→`jne` control: exact/insufficient tails could not distinguish
+those conditions. Its diagnostic confirms identical original fixture results. The corrected
+matrix adds strictly spare tails and moves the caller frame outside the largest modeled arena.
+`semantic-context-get-mblocks-final-validation-1.json` preserves both versions, the diagnostic,
+guarded preparation, ABI probe, exact scoped receipts and prior mapping evidence. No native
+allocator or changed code executes. Arena/list initialization, general free/decommit/coalescing,
+concurrency, helper liveness/costs, OS mapping success/placement, physical funding and ordinary
+admission remain open. Sprint 6.5 stays active; later sprints stay parked and canonical gate 58
+retains its preceding executable scope.
+
+**Arena initialization publishes the returned base and reloaded reservation length.**
+The installed `initMBlocks` and `osMemInit` leaf now pass eight symbolic combinations of
+zero/nonzero hint, unchanged/adjusted reservation length and zero/nonzero returned base. The
+actual caller carries the configured hint and the address-space-size field pointer into
+`osReserveHeapMemory`, then reloads that field after the helper returns. Its three direct arena
+stores publish `begin=returned_base`, `watermark=returned_base` and
+`end=returned_base+actual_length`, rather than the original requested length. The joined leaf
+sets `next_request` from the configured hint. The model checks the exact direct write image,
+preservation of unrelated fields/saved registers and restored caller Sp. Its local C frame is
+eight bytes; the leaf uses no local frame. Reservation helper frames/costs remain separate.
+
+Ten references and ten installed ABI fields bind both functions, the configured flag
+offsets/widths and the arena layout. All 13 initializer instructions and four leaf instructions
+are covered. Six exact-size SHT_NOBITS declarations bind the cold-image zero fields: free-list
+head, watermark, allocated/peak counts, address range and `next_request`. The initializer does
+not reset the free-list head or counters; an arbitrary previous state is preserved. An empty
+initial free list and zero accounting therefore still require the cold-start/once-only startup
+contract. Under that contract and a valid aligned nonzero returned reservation with representable
+end, the published fields supply the initial empty-arena precondition. This does not establish
+the reservation contract or prove the startup call schedule.
+
+All 36 semantic, ABI, source-clause, relocation and byte-binding controls pass. Zero-result
+publication is retained explicitly: this initializer performs no refusal or validity check on the
+reservation outcome. `semantic-context-mblock-bootstrap-final-validation-1.json` preserves the
+two installed functions, symbolic stores, zero-image declarations, ABI probe, scoped receipts and
+prior arena-allocation evidence. No native bootstrap or reservation function executes. Reservation
+success/ownership/alignment and length bounds, startup ordering, freeing/concurrency invariants,
+helper costs, physical funding, ordinary admission and qualification remain open. Sprint 6.5
+stays active; later rows stay parked and canonical gate 58 retains its existing executable scope.
+
+**Reservation setup has checked temporary storage and source slop accounting.**
+The installed `osReserveHeapMemory` prologue now passes 20 native-instruction model cases:
+unset/below-minimum/minimum/default hints crossed with failed, zero, equal, larger and infinite
+resource-limit observations. These are the paths that do not adjust the requested length. The
+below-minimum hint issues a returning warning and continues; it is not a refusal. The exact
+`getrlimit` arguments and helper order, saved-register/canary slots, hint/length-cell origins and
+array origins are checked through the retry-loop entry. The two compiler-emitted stack-probe
+loops take zero backedges on these paths. Each 256-element array has 2,048 bytes and exactly
+256 eight-byte zero stores; the arrays are disjoint. The local frame, including six saved
+registers, fixed locals and both arrays, reaches 4,280 bytes. External helper frames and costs
+remain separate; this is not a whole-runtime stack or RSS bound.
+
+Conditional source algebra uses `base=q*MB+r`, `len=k*MB`, `k>=1`, `0<r<MB` and a representable
+raw span end. Rounding yields a retained `len`-byte span with positive disjoint prefix/suffix
+slop of `MB−r` and `r`. Their sum is one megablock. When `r=0`, the source returns the base
+without trimming the additional megablock it requested. Returning trimming diagnostics also do
+not prove that either slop interval was unmapped. The conservative owned-address-space term
+therefore retains the raw `len+MB` bound per attempt; it supplies no page-residency credit.
+The source cap is 256 attempts, with two 256-element temporary arrays and monotone
+`len -= len/8` failure reduction between megablock round-downs. Native retry/cleanup equivalence,
+successful trimming and validity of the final loop outcome remain unproven.
+
+All 37 semantic, ABI, source-clause, selected-reference and byte-binding controls pass. Nine
+installed ABI fields bind word/block/pointer/size/resource-limit layouts. The scoped record
+`semantic-context-reserve-prefix-final-validation-1.json` preserves the 20 cases, source algebra,
+installed object/listing, ABI probe, receipts and prior bootstrap evidence. No native reservation,
+large allocation or exhaustion search runs. Resource-limit adjustment, complete reservation
+outcome/ownership and native retry/cleanup, startup ordering, freeing/concurrency invariants,
+helper costs, physical funding, ordinary admission and qualification remain open. Sprint 6.5
+stays active; later rows stay parked and canonical gate 58 retains its scope.
+
+**One reservation alignment iteration joins actual prefix state and helper outcomes.**
+The installed inlined alignment corridor now passes 1,176 cases from an observed copy of the
+checked prologue. Guarded insertions vary only its requested-length fixture and capture the
+actual register/memory state; the original 20 default-length results remain identical. Six
+length declarations include sub-megablock refusals, nonmultiples and a one-TiB integer
+declaration. Unset/default hints and failed/infinite resource-limit observations reach the
+same entry contract. The mapping cases use six byte-residue classes, bases below/at/above the
+minimum region and all four combinations of the two trimming results. No declared mapping is
+actually reserved.
+
+The native path rounds the length down, guards the minimum, submits the actual hint and
+`rounded_len+MB` with reserve operation 1, then carries the returned raw base through the
+alignment instructions. An independent effect oracle checks both trim intervals and their
+diagnostic ordering. Returning diagnostics after either trim failure preserve the aligned base
+through the real scratch slots and registers. The resulting base reaches the actual low/high
+continuation, while null reaches the shrink continuation. There are eight nonreturning `barf`
+cuts, 16 null-result cuts, 384 low-address continuations and 768 high-address continuations.
+Neither cut is described as a successful reservation or typed prodbox refusal.
+
+Saved frame/array registers, the caller Sp, initialized arrays, length-cell identity and all
+unrelated modeled memory remain intact. The corridor adds no local stack allocation to the
+4,280-byte prologue frame. Including the intervening return slot and checked `my_mmap` frame
+gives 4,360 visible C-stack bytes, or 4,368 at its next external helper entry, excluding external
+frames/costs. This is a selected call-chain term, not complete bootstrap or physical funding.
+
+All 36 semantic, ABI, selected-reference and byte-binding controls pass. The shared nine-field
+ABI probe, nine alignment/diagnostic references, generated observer, native listing/object,
+cases and immutable receipts are retained in
+`semantic-context-reserve-align-final-validation-1.json`. No native reservation/unmapping or
+changed runtime executes. Native length-shrink/retry/cleanup and resource-limit adjustment,
+final reservation validity/ownership, startup/freeing/concurrency, helper costs, physical
+funding, ordinary admission and qualification remain open. Sprint 6.5 stays active; later sprints
+stay parked and canonical gate 58 retains its preceding executable scope.
+
+**Reservation retry transitions check every slot and the decreasing attempt rank.**
+The native null/low transition now passes 2,304 cases: nine captured alignment-cut templates
+at every index `i` in `0..255`. They cover null results, aligned/unaligned low results, an end
+exactly at the minimum address and results crossing it, including both high-trim outcomes.
+An observer insertion captures actual registers/memory at the preceding alignment cut. Counter,
+hint and earlier array entries are then instantiated from the conditional induction domain;
+this is not a claim that all those metadata values came from a particular complete history.
+
+The independent whole-memory/effect oracle checks `len -= len/8` after null, exactly the
+current pointer/length cells after low results, the optional high-portion `munmap` and diagnostic,
+and preservation outside the declared cell writes and the high-trim scratch slot. The native
+slot offset advances from
+`8*i` to `8*(i+1)`, and the hint advances by one 4 KiB block. Only index 255 proceeds to cleanup;
+the others return to alignment. The checked prefix supplies index zero and initialized arrays.
+Thus, under the entry invariant and normal helper ABI, `256-i` decreases on each such
+transition and no slot outside either 256-element array is written. Metadata ownership and
+reachability of complete histories remain separate requirements.
+
+The nine templates execute at most 26 transition instruction rows and add no local C frame.
+This is not a CPU-cycle or external-helper liveness bound. All 29 semantic, ABI,
+selected-reference and byte-binding controls pass. The scoped record
+`semantic-context-reserve-retry-final-validation-1.json` preserves the observer, captured
+alignment inputs, native listing/object, nine-field ABI result, cases, receipts and prior
+alignment evidence. The frozen preceding 1,176 alignment results remain identical when observed.
+No native reservation, unmapping or changed runtime executes. Final cleanup, complete
+history/metadata ownership, resource-limit adjustment, final reservation validity, startup/frees/
+concurrency, helper costs, physical funding, ordinary admission and qualification remain open.
+Sprint 6.5 stays active; later rows stay parked and canonical gate 58 retains its preceding scope.
+
+**Reservation cleanup checks every slot, diagnostics and the local return contract.**
+The installed cleanup loop and epilogue now pass 4,680 cases from captured high-result alignment
+and low/null retry-cap states. Conditional array inputs include empty/full/even patterns, a
+singleton at every slot and the unmodified captured arrays. These 260 patterns cross three
+incoming-result classes, successful/failed/alternating unmap results and both canary-comparison
+outcomes. The 18 unmodified-array cases extend the earlier passing 4,662-case matrix; all
+preceding results remain identical.
+
+The independent oracle checks exactly one ordered visit to each slot `0..255`, one `munmap`
+per nonzero pointer and a returning diagnostic for each negative unmap result. A null incoming
+result issues the final diagnostic as well. None of those diagnostics upgrades an unobservable
+or unsuccessful cleanup to proven absence. Array/frame memory remains unchanged. Normal
+returns copy the incoming R15 value to RAX, restore all six saved registers and restore the entry
+Sp; the mismatched-canary path instead reaches nonreturning `__stack_chk_fail`. This is a
+scripted TLS comparison, not a live stack-corruption experiment. No local C frame is added to
+the existing 4,280 bytes. The largest fixture executes 3,348 instruction rows; external helper
+frames, costs and liveness remain separate.
+
+The observed low/null retry-cap inputs also make the remaining reservation-validity dependency
+concrete: the epilogue can return null or a low value, and the captured low value is also an
+argument to a cleanup unmap call. The model does not execute that unmap or infer its success.
+Therefore a normal return alone does not establish a valid, retained, high-address reservation.
+Complete history/ownership and the reservation outcome contract still require closure.
+
+All 32 semantic, ABI, selected-reference and byte-binding controls pass. Six cleanup/diagnostic
+references and the shared nine-field ABI result are bound. The scoped record
+`semantic-context-reserve-cleanup-final-validation-1.json` preserves both checker versions,
+guarded preparation, actual predecessor observers, cases, object/listing, receipts and prior
+retry evidence. No native reservation, unmapping or changed runtime executes. Resource-limit
+adjustment, complete histories, actual cleanup success and final reservation validity, startup/
+freeing/concurrency, helper costs, physical funding, ordinary admission and qualification remain
+open. Sprint 6.5 stays active; later rows stay parked and canonical gate 58 retains its scope.
+
+**Complete bounded reservation histories carry actual state and modeled ownership.**
+The installed body now passes 384 histories from the observed nonbinding-limit prologue through
+all selected alignment/retry/cleanup instructions and the terminal return/failure. No arrays,
+lengths, hints or indices are reseeded between iterations. An independent functional program
+checks the complete ordered effects, final length/result, every recorded array cell and a shared
+scripted API world's final owned intervals. The world admits disjoint available raw intervals,
+removes successfully unmapped portions and retains failed unmaps; it does not execute any OS
+mapping. This is a bounded complete-history model, not a kernel availability or cleanup proof.
+
+Sixteen fixed plan/length declarations include immediate aligned/unaligned high results, null
+and low retries before high results, low intervals crossing the minimum address, null-created
+holes between low records, all-null results, all-low attempt exhaustion, a high/null final
+attempt and abort after a low reservation. They cross three unmap-result modes, both canary
+comparisons, unset/default hints and failed/infinite resource-limit observations. One-TiB lengths
+are integer declarations only. The maximum is 256 reserve attempts and 11,536 fixture instruction
+rows; external helper frames/costs and liveness remain separate.
+
+There are 132 normal returns, 120 nonreturning `barf` results and 132 canary-failure results.
+Among the normal returns, 108 have a valid high primary span in the scripted world's interval
+ledger and 24 return low/null values. Failed trimming and aligned raw slop remain owned in that
+model. Abort-after-low records retain their pre-termination owned intervals; no claim is made
+about real process-exit reclamation or live leakage. These results therefore do not turn routine
+return, diagnostic output or entering cleanup into a valid-reservation/absence receipt.
+
+All 21 semantic and ABI controls pass. The first checker stopped at an over-restrictive VM
+write predicate that omitted the retry hint cell. Its nonpass remains retained. Guarded preparation
+corrects that predicate and gives the functional oracle attempt-indexed records, including holes
+after null results; a further guarded extension adds terminal-null and abort-after-low cases.
+The preceding 336 complete-history results remain identical. The scoped record
+`semantic-context-reserve-histories-final-validation-1.json` preserves all versions, preparations,
+objects/listings, API-world effects, ABI result, receipts and prior component evidence. No native
+reservation/unmapping, large allocation or exhaustion campaign executes. Binding-limit adjustment,
+general kernel outcomes/ownership, actual cleanup/residency, startup/freeing/concurrency, helper
+costs, physical funding, ordinary admission and qualification remain open. Sprint 6.5 stays
+active; later rows stay parked and canonical gate 58 retains its preceding executable scope.
+
+**Binding address-space limits have checked numeric adjustment and helper failures.**
+The installed adjustment corridor now passes 900 numeric/helper cases from an observed
+`getrlimit` prologue cut. Positive current limits below the requested length exercise default
+round-to-nearest binary64 conversion, the exact embedded `0.666` and `2^63` constants, truncation
+and page round-down. Both unsigned-64 conversion corridors are covered, including fixed odd
+midpoint values and values around the 53/63-bit boundaries. The oracle uses
+`trunc(binary64(limit)*0.666) & ~(page_size−1)`; it does not replace the literal with exact
+two-thirds. Page sizes and thread-stack sizes are scripted positive inputs under their stated
+power-of-two/nonoverflow contracts. These are scalar declarations, with no resource limits or
+thread attributes changed on this host.
+
+The native path checks the three-stack margin after adjustment. The cases have 174
+continuations to the common array setup, 626 exits with status 1 and 100 nonreturning `barf`
+paths. Helper call order/arguments cover attribute initialization, stack-size read, attribute
+destruction, cached/cold page-size lookup, diagnostics and each failure exit. The actual length
+and page-cache stores match the independent oracle. The 56-byte attribute object and eight-byte
+stack-size cell fit the existing fixed locals, preserve saved-register/canary/hint state and
+add no local C frame before the array setup. External helper frames, costs and liveness remain
+separate; a native failure exit is not a typed prodbox refusal.
+
+All 44 semantic, ABI/rounding-environment, reference and constant-binding controls pass. Ten
+installed ABI fields and 22 selected references bind layouts, queries, helpers and binary64 data.
+The first checker retained an accepted low-bit mutation whose effect was hidden by page
+rounding for its original values; a diagnostic confirms identical original 612-case reports.
+The expanded fixed midpoint classes distinguish that control, while all original results remain
+identical. The observed prologue also preserves all 20 original default-length prefix results.
+`semantic-context-reserve-limit-final-validation-1.json` preserves both versions, the diagnostic,
+guarded preparation, observer, ABI probe, constants, receipts and preceding history evidence.
+No native limit adjustment, thread-attribute operation, reservation or large allocation runs.
+Composition with complete adjusted histories, general kernel outcomes/ownership, actual cleanup/
+residency, startup/freeing/concurrency, helper costs, physical funding, ordinary admission and
+qualification remain open. Sprint 6.5 stays active; later rows stay parked and canonical gate 58
+retains its preceding executable scope.
+
+**Adjusted limits now feed complete modeled histories through actual array setup.**
+The healthy continuing subset of the binding-limit proof now joins the common array setup and
+complete native body: 46 validated current-limit/page/stack/cache combinations, current limits
+at most one GiB, requested length one TiB and the unset/default hint. Six scripted plans,
+three unmap-result modes and both canary comparisons produce 1,656 complete model histories.
+There are 690 normal returns, 276 nonreturning `barf` paths and 690 canary-failure paths.
+The helper-failure and numeric-boundary cases outside this continuing subset retain the
+preceding 900-case component scope; they are not narrated as complete adjusted histories.
+
+Guarded observers capture the adjustment's actual register/memory state at the continuation,
+then execute the existing native array setup from that state. Its two arrays, attribute locals,
+page cache, length cell, saved registers and canary are carried into the body. The original
+requested length remains a distinct value. The functional body oracle starts from the
+independently validated adjusted length. It checks the complete subsequent effects, carried
+array records, terminal result and scripted owned intervals. No intermediate state is reconstructed
+from an expected final descriptor, and the original requested length cannot replace the
+adjusted length silently.
+
+The scripted provider uses an available high region at 16 TiB, distinct from the requested hint.
+This keeps raw intervals disjoint from preceding low reservations, including retained slop and
+failed trims. It changes only fixture availability; no real mapping or production setting changes.
+The selected setup retains the existing 4,280-byte local frame. External helper frames, costs,
+liveness and physical backing remain separate.
+
+All 18 bridge, native-semantic and ABI controls pass, including stale length/hint, wrong array
+origin and an oracle incorrectly using the original length. The scoped record
+`semantic-context-adjusted-histories-final-validation-1.json` preserves the five guarded source
+observers/adapters, exact predecessors, actual state transitions, object/listing, ten-field ABI
+result and immutable receipts. No native limit/attribute/mapping action, large allocation or
+exhaustion campaign executes. General kernel outcomes/ownership, actual cleanup/residency,
+startup/freeing/concurrency, helper costs, physical funding, ordinary admission and qualification
+remain open. Sprint 6.5 stays active; later rows stay parked and canonical gate 58 retains its
+preceding executable scope.
+
+**Reservation results now join arena publication and the first allocation.**
+The preceding ordinary/adjusted history records supply all 822 normal reservation results to
+the installed `initMBlocks`/`osMemInit` model. Guarded source insertions substitute their actual
+concrete hint, requested/returned lengths and returned base, instantiate the cold-image globals
+as zero and capture the native publication stores. The model reloads the returned length and
+publishes the exact begin/end/watermark fields. Six native zero-image declarations remain bound;
+the cold-image/once-only-startup premise is still explicit, and no reset of an arbitrary running
+allocator is claimed.
+
+There are 798 valid primary spans in the scripted reservation worlds and 24 low/null results.
+All 24 invalid results remain visible as actual publications; the initializer itself has no
+rejection guard. They are excluded from the valid first-allocation fixtures, not described as
+product-side refusals. For each valid modeled arena, its captured fields form the empty-list,
+zero-accounting input to the installed `getMBlocks` interpreter and independent whole-state
+oracle. This replaces the preceding arbitrary arena base/watermark with a history-derived state.
+
+The 7,932 first-allocation cases include one/two/32,769-megablock requests, the declared capacity
+and one megablock beyond it, with duplicate sizes removed and both normal/terminal commit
+outcomes. Sizes are integer declarations only, including requests spanning the full large
+modeled arena. An oversized request exits 251 before a commit call, even when raw slop is still
+owned outside the published end. A terminal commit does not advance watermark or accounting.
+A normal first allocation returns the published base and advances watermark, allocated count
+and peak by exactly the requested amount. Actual commitment/residency is not inferred from the
+abstract helper result. The eight-byte initializer and 40-byte allocation frames retain their
+separate component scopes; no whole caller-stack or invocation-frequency claim follows.
+
+All 30 publication, projection/admission-fixture, allocation and ABI controls pass. Two existing
+ABI probes supply 22 fields. The scoped record
+`semantic-context-bootstrap-allocation-final-validation-1.json` preserves the three guarded
+observers/oracle, exact history inputs, cold-field assumptions, publication/allocation cases,
+objects/listings, probes and immutable receipts. No native bootstrap, mapping/commit, large
+allocation or changed runtime executes. General kernel outcomes/ownership, real cold-start
+ordering, pool/freeing/concurrency, helper costs, physical funding, ordinary admission and
+qualification remain open. Sprint 6.5 stays active; later rows stay parked and canonical gate 58
+retains its preceding executable scope.
+
+**Context-field local allocation cadence is certified for the captured compiler output.**
+The pinned optimized `contextField` procedure has **72** basic blocks and **five** heap
+reservation sites of **32, 32, 40, 16 and 40** bytes. The explicit branch/return graph proves
+that no successful reservation can reach its own site again within one invocation. Its successful
+local reservations therefore total at most **160 bytes per invocation**, conservatively including
+the **40-byte** reservation rolled back on the nonempty-input arm. Failed heap checks retry through
+GC without writing a local heap object; their attempts and runtime costs are separate from this
+successful-reservation bound. No successful reservation reaches the entry stack-check retry.
+
+`semantic-context-field-cadence-2/validation-1.json` preserves the graph and **eight** passing
+negative controls: a successful backedge, unknown target, duplicate label, unsupported switch,
+unknown tail call, hidden heap-pointer write, missing terminator and untracked continuation.
+The first checker rejected a valid direct-branch continuation and remains a recorded nonpass;
+the corrected checker accepts explicit branch or return targets. The preservation record
+`semantic-context-field-cadence-validation-1.json` binds the result to the existing full Cmm dump,
+current Settings source, unchanged public source manifest and synchronized operator binary.
+This certifies only the captured procedure's local reservations. Callees, deferred thunk evaluation,
+literal/CAF initialization, stack, GC, native/RSS and whole-schedule composition remain separate
+obligations. No production allowance, selected context quote, admission decision or sprint status
+changes. Canonical gate **58** remains the unchanged executable's validation; documentation is
+checked separately.
+
+**Projection local allocation and named-call frequencies are certified for the captured output.**
+All **six** entry procedures in the optimized projection group are covered: **101** basic blocks
+and **seven** reservation sites. The root's sites of **48, 72, 72 and 40** bytes sum to 232,
+but explicit branch/return exploration, including GC re-entry, bounds successful local reservations
+at **120 bytes per root invocation**. The two result-construction entries each reserve at most
+**48 bytes per entry**; the deferred refusal-prefix entry reserves at most **24**. The selector
+and error-label entries have no local reservation. These are separate per-entry bounds, not a
+group total or a proof of global thunk sharing/evaluation multiplicity.
+
+Every named root call site executes at most once per invocation: one cluster-field validation,
+two endpoint validations, one coordinate validation, one RPC-config validation and one call into
+the generic machine-ID map. Recursive map execution and all other callee costs remain outside
+this local graph. `semantic-context-projection-cadence-3/validation-1.json` preserves the reachable
+reservation sets, local maxima, explicit GC re-entry edges and **15** passing negative controls,
+including repeated named calls, successful allocation backedges, sequential result arms and larger
+reservations. The first two control assemblies remain recorded nonpasses: one introduced a GC
+backedge detected before its intended bound assertion; another changed the failure debit in a
+different procedure. Their corrected fixtures reach the intended refusals.
+`semantic-context-projection-cadence-validation-1.json` binds the proof and retained nonpasses to
+the full compiler dump, current Settings source, unchanged public source manifest and synchronized
+operator. Endpoint frequencies, literal/CAF initialization, full runtime/schedule composition,
+matching decoded/context lifetime and independent admission remain open. No production allowance,
+selected context quote or sprint status changes; canonical gate **58** remains the unchanged
+executable's validation, with documentation checked separately.
+
+**Endpoint iterator reservations and packed-writer rank are certified for the captured output.**
+The endpoint group's **20** iterator/adapter/error-prefix/writer procedures cover **187** basic
+blocks and **28 of 47** reservation sites. Each of the **six** UTF-8 iterator entries reserves
+at most **56 local bytes per entry**, with four mutually exclusive allocation branches and only
+`Done`/`Yield` normal returns. The twelve tail adapters and error-prefix entry have no local heap
+reservation; their callees remain separate. This does not yet bound the endpoint root's iterator
+invocation counts.
+
+The packed writer's four UTF-8 branches each reserve **16 bytes per output step**. A decreasing
+rank, `ceil(bitLength(nonnegative packed value) / 21)`, bounds it by three steps over nonnegative
+`Int64`. The complete pinned lowercase table has **1,433** entries, all positive and at most
+**1,625,292,905**; it needs at most two steps. Successful local writer reservations are therefore
+at most **48 bytes** for the general nonnegative domain and **32 bytes** for an actual table
+value. Exact interval arithmetic proves the shift decreases the rank. Stack provenance across
+**26** states proves each of the four feedback branches shifts an exact copy of the current value
+and restores its forty-byte frame; corrupted saves/restores are refused.
+
+`semantic-context-endpoint-iterator-cadence-3/validation-1.json` preserves these graphs and
+**14** passing negative controls. The initial twelve-control check passes; the first provenance
+extension's Python match-index error remains a recorded nonpass, followed by the corrected check.
+`semantic-context-endpoint-iterator-cadence-validation-1.json` binds the result to the full Cmm
+dump, current Settings source, unchanged public source manifest/operator and the mapping source
+read back from the pinned Text archive. This step left **19** endpoint root/converter sites;
+the converter proof below closes five of them. Cross-entry frequencies, literal/CAF initialization,
+sharing, full runtime/schedule accounting and independent admission remain open. No quote,
+production allowance or sprint status changes.
+Canonical gate **58** remains the unchanged executable's validation; documentation is checked
+separately.
+
+**Converter local reservations compose with the packed-writer bound.**
+The converter's **55** blocks and **five** reservation sites are classified. Its setup segment
+reserves **16 bytes** initially and after each growth. A character segment either reserves
+**16 local bytes** or calls the packed writer bounded above by **32 bytes**; those branches are
+mutually exclusive. Explicit source-offset provenance across **53** states verifies positive
+one/two/three/four-byte advances through the exact stack save/restore paths, while growth preserves
+the pending source offset.
+
+The capacity invariant is `destinationOffset <= capacity`. A growth adds
+`max 12 remainingInputBytes`, admitting the pending character, whose write uses at most twelve
+bytes and preserves that invariant. There is at most one growth per consumed character, hence
+at most `B` growths and `B + 1` setup segments for `B` valid UTF-8 input bytes. Local reservations
+plus the certified writer therefore total at most **16 + 48 × B** bytes. The unchanged
+`Text.take 8` scheme prefix has at most **32 bytes**, giving **1,552 bytes per conversion** for
+this selected compiled portion. This is an allocation bound, not a complete working-set or
+physical admission bound; backing arrays and the mapping/demand/resize/shrink callees remain
+separately owned.
+
+`semantic-context-endpoint-converter-cadence-1/validation-1.json` preserves the segment graphs,
+source provenance, vectors at **0/1/8/32** input bytes and **nine** passing negative controls.
+`semantic-context-endpoint-converter-cadence-validation-1.json` binds those facts to the preceding
+writer proof, full compiler dump, current Settings source, pinned Text archive, unchanged public
+manifest and synchronized operator. The first preservation check's source-whitespace assertion
+remains a recorded nonpass; its successor normalizes whitespace for the source-fragment check.
+This step covered **33 of 47** sites; the root proof below accounts for the remaining fourteen.
+Whole-program call frequencies, literal/CAF initialization, full runtime/schedule composition and
+independent admission remain open. No selected quote, production allowance or sprint status changes. Canonical gate **58**
+remains the unchanged executable's validation, with documentation checked separately.
+
+**All endpoint local reservation sites are classified for the captured compiler output.**
+The root's **169** blocks and **14** sites complete the endpoint group's **47-site** inventory.
+The existing iterator/adapter proof establishes `Done`/`Yield` returns, so six generic `Skip`
+allocation sites are unreachable. The remaining three comparison loops consume the finite ASCII
+literals `http://`, `https://` and `/`. Each matching continuation forwards the literal iterator's
+returned next index and replaces the current step. Root-loop provenance covers **22/23/20** states;
+the three literal iterator index proofs each cover **36**, including GC stack saves/restores and
+the one-byte ASCII advance. Literal values and their Text constructors are bound to the full STG
+dump and pinned `Data.Text.Show` source. Their initialization costs remain separate.
+
+At most **8 + 9 + 2 = 19** paired steps are charged, conservatively including each closing entry.
+Fixed successful root reservations total **312 bytes**, with at most **32** more per paired step;
+rollbacks receive no credit. The root's local bound is therefore **920 bytes**. Paired iterators
+add **2,128**, the certified converter/writer component adds **1,552**, and context-field local
+reservations add **160**, totaling **4,760 selected local bytes per endpoint entry**.
+One projection root entry (**120**), at most one result-construction entry (**48**), one direct
+context-field entry (**160**) and two endpoint entries compose to **9,848 bytes**. That last
+composition explicitly assumes at most one result-construction entry; it does not establish global
+thunk sharing/evaluation multiplicity or full ordinary-program call frequencies. Generic map,
+literal/CAF initialization, other callees, compiler/RTS/GC/native costs and physical admission
+remain separately owned.
+
+`semantic-context-endpoint-root-cadence-1/validation-1.json` preserves the pruned graph, loop and
+iterator index provenance and **14** passing negative controls. They reject reset/corrupted next
+indices, stale initial/feedback steps, `Skip` output, incorrect stream closures, native-call or
+literal drift and hidden heap-pointer writes. `semantic-context-endpoint-root-cadence-validation-1.json`
+binds the composition and its assumption to the preceding component proofs, complete Cmm/STG
+dumps, pinned literal source/archive, current Settings source and unchanged public manifest/operator.
+No selected quote, production allowance or sprint status changes; canonical gate **58** remains
+the unchanged executable's validation, with documentation checked separately.
+
+**Selected compiled reservations are privately funded and artifact-dependent.**
+`semantic-context-selected-candidate-16/` replaces the preceding **56-byte** result-thunk term
+with the **9,848-byte** selected projection/context/endpoint composition. The separate **64 × B**
+map-creation coefficient is unchanged. The current private context term is therefore
+**11,288 × B + 326,744**, an increase of **9,792** fixed bytes. This remains conditional on one
+projection root entry and at most one result-construction entry; it does not establish global
+thunk evaluation multiplicity, whole-binary equivalence, working-set admission or ordinary-program
+schedule/lifetime enforcement. All **32** other quote vectors, including the **30** SDK vectors,
+remain exact.
+
+The guarded staged quote now checks **nine** artifacts: the three preceding interfaces, complete
+Cmm/STG dumps, three extracted worker groups and a compact reservation certificate bound to the
+component proofs. Successful checking returns the verified paths and registers each with
+Template Haskell `addDependentFile`. The primary quote's interface records all nine dependencies.
+A real `ghc --make` rebuild without `-fforce-recomp` first accepts a complete isolated fixture;
+appending one byte to that fixture's compiler-dump copy then invalidates the quote and produces
+the intended `OwnerSourceChanged` refusal. All other fixture inputs and retained artifacts stay
+unchanged. Each missing/changed artifact fixture has all **904** governed source files, so it
+reaches its intended interface, compiler-dump or certificate boundary.
+
+Strict **110-module** compilation, all **73** bounded runtime groups at unchanged
+**128 MiB / N2 / one test thread**, pinned formatting/HLint and **29** intended compiler refusals
+pass: **27** static controls, one composition-producer refusal and one incremental artifact
+refusal. `semantic-context-compiled-reservations-validation-1.json` preserves source inverses,
+coefficient and quote comparisons, interface dependencies, fixture identities and terminal receipts.
+Only three Haskell modules change and one allocation-model module is added relative to the
+preceding draft. No ordinary caller consumes this partial term. Literal/CAF initialization, other
+callees, compiler/control/update/stack/GC/native costs, complete schedules, matching/lifetime
+enforcement, physical admission and qualification remain open. The installed Settings artifacts,
+operator bytes and executable source identity remain unchanged; canonical gate **58** remains
+their validation, with documentation checked separately. Sprint **6.5** stays active.
+
+**Settings literal payloads and CAF initialization boundaries are inventoried.**
+The **12** source literal sites compile to **eight** RTS String CAFs, **three** generated Text
+CAFs and one direct `unpackAppendCString#` prefix, `context.rpc_registration: `. That prefix
+has no standalone String CAF. Exact ELF bytes and relocations bind the CString values, terminating
+NULs and closure pointers to their STG/Cmm declarations. CString payloads total **349 bytes**;
+the eight five-word String CAFs and three four-word Text CAFs total **416**; two static `Left`
+wrappers add **48**. The resulting **813 bytes** are selected **unpadded static payload**, not
+info tables, SRTs, alignment, code or mapped/RSS pages. Each generated Text initializer has one
+successful local **32-byte** reservation, with its unpacker, `newCAF`, re-entry and RTS work
+separate. No once-per-process or global initialization-frequency claim follows from that local bound.
+
+The matching release's
+[RTS String worker](https://raw.githubusercontent.com/ghc/ghc/ghc-9.12.4-release/rts/StgStdThunks.cmm)
+dispatches through the runtime's Haskell unpacker interface after the CAF claim. Its
+[storage manager](https://raw.githubusercontent.com/ghc/ghc/ghc-9.12.4-release/rts/sm/Storage.c)
+requests a `StgInd` blackhole after a successful claim. A native probe of the installed unprofiled
+threaded headers measures **8/8/16/32** bytes for Word/header/indirection/static-indirection.
+Those measurements identify the object request; allocator, remembered-set/list work and installed
+RTS binary equivalence remain unproved. Primary source URLs, exact source bytes and header/probe
+identities are retained.
+
+The first ELF checker refuses stripped local labels. A new controlled capture retains local
+symbols: all **five** allocated section byte sequences and **14,203** normalized relocations
+match the preceding controlled object, while Cmm/STG differ only in capture timestamps. This is
+controlled-capture equivalence, not installed-library equivalence. The first retained-symbol run
+also kept an assembler file beside the source and correctly failed input immutability despite
+compiler exit zero. Its sole newly generated `src/Prodbox/Settings.s` is moved into the evidence
+directory; the corrected capture omits `-keep-s-files` and passes with public inputs unchanged.
+Both nonpasses remain recorded.
+
+`semantic-context-caf-inventory-2/validation-1.json` preserves the inventory, ELF checks, Text-entry
+graphs, ABI probe and **nine** passing negative controls. `semantic-context-caf-inventory-validation-1.json`
+replays object/relocation equivalence and binds the evidence to current Settings source, unchanged
+public inputs/operator and retained source/artifact identities. The private context coefficients
+remain **11,288 × B + 326,744**; these newly inventoried static/initialization components have
+not yet been added. Full unpacker/call-frequency, compiler/RTS/GC/native, lifetime/schedule and
+physical admission obligations remain open. Canonical gate **58** remains the unchanged
+executable's validation, with documentation checked separately. Sprint **6.5** stays active.
+
+**Installed String unpacker dispatch and local allocations are validated.**
+The installed threaded RTS dispatches through interface offset **392** to
+`ghc-prim:GHC.CString.unpackCString#`. An installed-header native probe, the interface-table
+relocation, its installation relocation and the RTS dispatch instruction agree. The header's
+`GHC.Internal.CString` comment does not identify the actual installed binding. Read-only archive
+member extraction binds these checks to the installed `CString.o`, `RtsIface.o` and threaded RTS
+objects rather than assuming release-source/binary equivalence.
+
+Each successful nonzero-byte branch reserves **64 bytes** for ordinary unpacking: a **24-byte**
+deferred tail, a **16-byte** character and a **24-byte** list cell. Append unpacking reserves
+**72 bytes**, with a **32-byte** tail capturing the suffix as well as the address. The deferred
+tail advances the address by one and calls its corresponding worker. Checked failure paths report
+the same reservation before GC; saved continuations restore their operands and retry. The ordinary
+zero-byte branch returns shared static nil with no local allocation. The append zero-byte branch
+enters its suffix, whose effects remain separate.
+
+Exactly `n` successful nonzero-byte branches therefore charge **64 × n** or **72 × n** local
+bytes. Under the explicit condition of one complete traversal of each of the eight String CAF
+bodies and the inline prefix, these selected paths total **20,752 bytes**. This is not an established
+global initialization bound: claim success/failure, repeated or duplicated evaluation, initialization
+frequency, Text unpacking, GC/update/stack/native work and physical admission still need accounting.
+The preceding **40 bytes per character** value-only component does not include deferred-tail
+creation; future composition must distinguish shared returned data from transient initialization
+instead of adding both complete terms.
+
+`semantic-context-cstring-installed-1/layout-validation-1.json` records the binding, instruction
+layouts, conditional cohort charges and **11** passing mutation controls. The first checker refuses
+an unnamed ELF section-symbol representation; the second completes its semantic checks but fails
+while recording an external header as a repository-relative path. Both failed runs and the corrected
+passing run retain terminal receipts with unchanged public inputs. The corrected run preserves a
+local header copy. No production or private budget coefficient changes: the selected term remains
+**11,288 × B + 326,744**, ordinary admission does not consume it, and canonical gate **58** remains
+the unchanged executable's validation. Documentation is checked separately. Sprint **6.5** stays active;
+the queue does not advance.
+
+**Installed Text initializer and CAF claim request boundaries are validated.**
+The exact linked `text-2.0.2` ASCII worker calls `strlen`, passes that length to
+`stg_newByteArrayzh`, copies the bytes through `memcpy`, and returns the array, zero offset and
+original length. Its checked native entry and return continuation have no local heap reservation.
+The installed primitive requests **2 + ((n + 7) >> 3)** words through `allocateMightFail`;
+success writes the array info and byte count, allocation failure raises, and GC retries re-enter the
+primitive. A native installed-header probe measures **8-byte** words and **16-byte** array
+header/payload offset. For the exact ASCII prefixes `http://`, `https://` and `/`, each array request
+is **24 bytes**. With the preceding controlled caller's **32-byte** local reservation, the three
+successful initializations conditionally total **168 bytes**. This does not charge allocator or
+`strlen`/`memcpy` workspace, nor establish their global initialization frequency. No intermediate
+String appears on these installed worker paths; the earlier broader literal model remains separate.
+
+The installed `lockCAF` code checks `WHITEHOLE`/`IND_STATIC` and atomically claims the CAF with
+`lock cmpxchg`; existing or losing claims return null before requesting a blackhole. A winning
+claim requests **two words / 16 bytes** through either `allocateMightFail` or `nonmovingAllocate`,
+then publishes the blackhole and static indirection. The selected `newCAF` entry calls that claim
+function once and returns its null result before its registration work. Checked conditional
+write-barrier and allocation-failure paths remain distinct. These selected installed paths establish
+the request fence, not full `newCAF`/allocator behavior or once-per-process initialization. Reset,
+reload, duplication, registration/remembered-set blocks, GC and native workspace remain open.
+
+`semantic-context-text-installed-2/validation-1.json` retains installed archive-member identities,
+entry/continuation/primitive instruction and relocation checks, the ABI probe, three source-linked
+prefix charges and **14** passing mutation controls. **28** references in the captured Settings
+object identify the exact worker unit
+`text-2.0.2-8761414bfd4c61d83bb4a76313f5b7a899dddb96b90269a6e5d997a8bbbd6375`.
+The initial `semantic-context-text-installed-1/` check examined GHC's bundled `text-2.1.4`;
+its result does not prove this project's selected Text path and is superseded for that claim.
+The corrected check extracts the archive named by the actual object binding, handles its unsplit
+text section and rejects the bundled worker identity and a missing selected binding. The first
+corrected run rejects its own invalid missing-binding control because the chosen Text object also
+references that worker; the replacement control uses an object with no such references and passes.
+All evidence and failed receipts remain retained. The corrected array charges are unchanged.
+
+`semantic-context-caf-claim-installed-1/validation-1.json`
+retains the installed claim/publication boundaries and **10** passing mutation controls. Both runs
+finish with terminal producer and launcher receipts and unchanged public inputs. The selected
+coefficients remain **11,288 × B + 326,744** until frequency and the remaining initialization
+costs are funded without double-counting returned values. Ordinary admission remains unchanged;
+canonical gate **58** validates the same executable, with documentation checked separately.
+Sprint **6.5** stays active and later queue entries stay parked.
+
+**Selected Text-CAF demand cadence is bounded per projection-root entry.**
+The captured endpoint root has one load/demand site for each of `http://`, `https://` and `/`.
+The complete local graph retains every data branch and explicitly adds the entry GC retry edge.
+No path after a selected load reaches that load again; each indirect demand block has only its
+corresponding load as predecessor, and its tagged fast path and explicit return continuation agree.
+GC retries after demand resume downstream without repeating the literal load. The prior endpoint
+root/iterator/converter proofs replay unchanged. The prior projection graph separately bounds each
+of its **two** endpoint calls to one invocation, so the selected Text literals have at most **three**
+demand opportunities per endpoint entry and **six** per projection entry.
+
+This is a demand-site bound under the existing one-projection-entry assumption, not an actual
+initializer count. CAF claim wins, sharing or duplication between consumers, resets/reloads,
+concurrent operations, transitive RTS/native costs and the matching decoded/context ownership
+contract remain separate obligations. No once-per-process claim or initializer funding follows.
+The private coefficients and ordinary admission remain unchanged.
+
+`semantic-context-text-demand-cadence-2/validation-1.json` retains the graph, source/artifact
+identities, per-site reachable blocks and **eight** passing controls, including GC return edges that
+would repeat each selected demand. The first checker rejects its attempted HTTP backedge earlier
+than expected because that mutation also changes the required demand-call shape; the corrected
+control changes a downstream GC return and directly exercises the repetition refusal. That failed
+receipt remains retained. The passing run has terminal producer/launcher receipts and unchanged
+public inputs. Canonical gate **58** remains the unchanged executable's validation; documentation
+is checked separately. Sprint **6.5** remains active and the numerical queue does not advance.
+
+**A private matched-source context owner enforces single use in native checks.**
+`semantic-context-owned-projection-1/OwnedContextProjection.hs` prepares an opaque ticket from
+one checked immutable source, decodes that checked operand through the fixed SettingsEnvelope
+decoder and retains its fully evaluated extracted value. No caller-supplied decoder, inspected
+usage, replacement source or context callback enters execution. An atomic state transition consumes
+the ticket before the sole context-projection call. The selected accepted value or complete refusal
+is forced while private to the winning thread, then an opaque completed value retains the checked
+and decoded roots alongside that outcome. Its selected data-component charge derives usage from
+its own checked source; it cannot borrow an unrelated inspection's allowance. It exposes no raw
+backing or derived-context selector and has no Show instance.
+
+Strict warning-clean compilation of **71** modules, linking step **72**, and **seven** native cases pass under the
+unchanged **128 MiB / N2**, single-test-thread envelope. The cases cover two independently matched
+sources, sequential reuse, six concurrent submissions with exactly one winner, consumed semantic
+refusal, a registered Unicode endpoint, malformed source and an unsupported schema. **Six** compiler
+controls refuse forged tickets/results, Show on either owner type, unrelated inspected usage and
+source replacement at execution. Pinned formatting and HLint pass. A single mutation retaining the
+ready state makes the same suite fail exactly its **three** reuse cases while the other **four**
+remain positive, establishing that those checks detect loss of consumption.
+
+`semantic-context-owned-projection-1/validation-1.json` and `controls-validation-2.json` retain
+the native and API evidence. The first API verifier mismatches three GHC diagnostic phrases;
+the corrected verifier checks the existing terminal refusals without recompilation.
+`semantic-context-owned-projection-control-1/validation-5.json` retains the deliberate defect and
+its native failures. Four preceding countercheck harness failures (argument position, interface
+lookup, output-directory creation and a missing dynamic interface) remain retained; the final
+isolated static build uses existing metadata objects without modifying them. All accepted source-QA
+runs have terminal producer/launcher receipts and unchanged public inputs.
+
+This is a private source/scheduling prototype, not ordinary admission or complete settings
+validation. Its compiled one-entry/force/publication contract, cancellation/recovery behavior,
+retention/retirement integration and owner/control/construction/metadata/runtime costs remain open.
+Actual CAF initialization frequency remains open. Neither private coefficients nor the operator
+change: **11,288 × B + 326,744**, canonical gate **58**, **10,737** cases. Documentation is checked
+separately. Sprint **6.5** remains active; later phases stay parked.
+
+**The private owner's selected compiled claim/force/publication paths are validated.**
+`semantic-context-owned-compiler-1/` captures Core, STG and static/dynamic Cmm for the native-tested
+owner against its exact existing interfaces, with strict **O1** flags and local assembler symbols.
+Existing sources, interfaces and native objects remain unchanged. All **five** allocated section
+byte sequences and **623** normalized relocations match the preceding native-tested owner object;
+this connects the local compiler inspection to that object without assuming whole-binary equivalence.
+
+`semantic-context-owned-cmm-1/validation-1.json` checks four selected procedure graphs with explicit
+entry-GC retry edges, returning calls, continuations, reservation failure/success edges and known
+terminal calls. Each work entry calls context projection at most once. Projection's return
+dominates both outcome publications; the accepted normal-form call's return dominates accepted
+publication, and the refusal traversal's nil exit dominates refused publication. The atomic call's
+return dominates work-closure creation. The checked closure layouts capture the checked/extracted
+roots and their context fields; both completed outcomes retain those roots. A consumed result
+reaches no work-creation site, and the update function returns the consumed-state tag.
+
+The update function, work action, claim action and launch procedure have local successful
+reservation maxima of **64 / 64 / 40 / 32 bytes per corresponding entry**. The two outcome
+publication reservations are mutually exclusive. These maxima are not a complete owner sum:
+external atomic update-function invocation frequency, restoration/application, masking, GC,
+transitive allocation/native work and full pointer provenance/lifetime remain separate. The proof
+does not yet establish whole-operation root frequency, cancellation/recovery or admission.
+
+All **12** controls pass, including accepted-force bypass, projection/atomic repetition through GC
+returns, a non-consuming update, a foreign update function, lost backing captures, an incorrect
+refusal stop tag and hidden control/heap writes. The source-QA capture and checker have terminal
+producer/launcher receipts and unchanged public inputs. Private coefficients remain
+**11,288 × B + 326,744** and ordinary admission stays unchanged. Canonical gate **58** remains the
+unchanged executable's validation, with documentation checked separately. Sprint **6.5** remains
+active and later phases stay parked.
+
+**Installed atomic reservation/retry and selected restore dispatch boundaries are validated.**
+The installed threaded `stg_atomicModifyMutVar2#` reserves **56 local bytes** before constructing
+a **32-byte** application thunk and **24-byte** selector thunk. Its CAS loop updates the captured
+old value and retries using those same objects; the retry edge does not revisit allocation or
+evaluate the update function. The selected return carries the old value and deferred application.
+The checked GC continuation restores the mutvar and update-function operands before retrying
+entry. The reservation excludes `dirty_MUT_VAR`, GC, later thunk evaluation/duplication and their
+transitive work; it is not the primitive's complete memory cost.
+
+The installed archive contains **three** members named `IO.o`. Read-only archive parsing selects
+the unique member exporting the exact `GHC.Internal.IO.mask2/3/4` workers referenced by the
+native-tested owner. The default same-name extraction belongs to the concurrency module and is
+retained as a rejected control. Alias relocations and wrapper instructions bind `mask2` to
+`stg_maskUninterruptible#`, `mask3` to `stg_unmaskAsyncExceptions#` and `mask4` to
+`stg_maskAsyncExceptions#`, forwarding the supplied action without a local reservation. The
+installed `stg_ap_pv_fast` tag-2 and `stg_ap_v_fast` tag-1 paths dispatch directly to their supplied
+function entries without allocation. The owner object's bindings and captured function tags match
+those selected paths; generic application fallbacks are not covered by that zero-allocation claim.
+
+`semantic-context-owner-runtime-1/boundaries-validation-1.json` retains exact archive/member and
+instruction/relocation identities, owner bindings and **12** passing controls for reservation,
+captures, CAS destination/retry, GC restoration, wrong same-name archive member, masking target
+and tagged dispatch. `masking-object-index-2.json` records all three candidate member identities
+and the selected occurrence. Capture and checking finish with terminal producer/launcher receipts
+and unchanged public inputs. The remaining mask primitive/return-frame and pending-exception
+behavior, update-thunk invocation frequency, full cancellation/lifetime and physical admission stay
+open. No local numbers are promoted to a complete owner sum. Coefficients, ordinary admission and
+operator bytes remain unchanged; canonical gate **58** still validates that executable, with
+documentation checked separately. Sprint **6.5** remains active and the queue does not advance.
+
+**Fixed native masking/cancellation cases and selected return-frame boundaries pass.**
+`semantic-context-mask-cancellation-1/` exercises all **three** initial masking states with one
+successful restored action, one synchronous failure and one blocked-action cancellation: **nine**
+fixed native cases. Every case observes exactly one action entry. Both interruptible cancellation
+cases stop before the blocked action returns. The uninterruptible case first observes the live
+`throwTo` sender blocked on its queued exception, then releases the action; that action returns
+before cancellation is delivered at the outer boundary. None of the cancellation cases publishes a
+caller-visible result. MVar handshakes and the observed sender status establish those boundaries;
+no sleep or input-size search selects a cancellation window. Each observation has a bounded timeout
+and cleanup releases the gate before stopping workers.
+
+Strict **O1** compilation, all **nine** cases, pinned formatting and HLint pass under the unchanged
+**128 MiB / N2**, single-test-thread envelope. The restore-omission counterprogram in
+`semantic-context-mask-cancellation-control-1/` fails exactly the **three** Unmasked cases while
+the **six** already-masked cases remain positive at identical limits. The counterprogram's nonzero
+native exit is the required negative evidence, not an accepted validation failure.
+
+`semantic-context-mask-return-1/validation-1.json` separately pins the installed three return-frame
+restoration sequences and the unmasked pending-exception path's saved **result** frame,
+`stg_ret_p_info`. Their outbound relocations contain no direct original-action application target.
+An installed-header native probe confirms `TSO_BLOCKEX = 4`, `TSO_INTERRUPTIBLE = 8`, flags offset
+**36** and pending-exception pointer offset **104**. **Five** controls reject changed flag updates,
+lost saved results and replacement of the result frame with an action frame. These are selected
+instruction/layout checks, not a complete pending-handler/GC control-flow proof.
+
+The native fixtures, counterprogram and return-frame check retain terminal producer/launcher
+receipts and unchanged public inputs. The actual context owner's cancellation and retention/
+retirement integration, full mask/GC/native behavior, updater duplication and complete funding
+remain open. Ordinary admission, private coefficients and operator bytes stay unchanged;
+canonical gate **58** still validates that executable, with documentation checked separately.
+Sprint **6.5** remains active and the numerical queue stays fixed.
+
+**A private closed source-to-context module keeps ticket handling internal.**
+`semantic-context-closed-program-1/ClosedContextProgram.hs` accepts one wire value, prepares one
+owner ticket, executes that ticket and publishes an opaque completed result. Its module interface
+exposes neither pending tickets nor prepare/run-ticket functions, arbitrary execution callbacks,
+result constructors or Show. Status, finite-fixture matching and the existing selected data-component
+query delegate to the completed owner; no caller-supplied inspected value or budget enters the
+program. The earlier ticket API remains an internal prototype/test surface, not another supported
+ordinary path. Package exposure and production integration remain separate.
+
+Strict warning-clean compilation of **72** modules, linking step **73**, and **six** native cases
+pass at the unchanged **128 MiB / N2**, single-test-thread limits. The cases cover distinct matching
+sources and charges, six simultaneous fresh invocations that each succeed with their own ticket,
+semantic refusal, a registered Unicode context, malformed wire and unsupported schema. **Five**
+compiler controls reject ticket escape/re-execution, callback injection, Show and result forging
+through this module's interface. Pinned formatting and HLint pass.
+
+`compiled-validation-1.json` checks the native build's **17-block** closed entry graph, including
+entry GC retry and returning continuations. Preparation and execution each occur at most once per
+entry; preparation's return dominates execution, and execution's return dominates publication.
+Preparation failure cannot execute a ticket, and execution failure cannot publish a wrapped result.
+Selected ticket/completed payload layout checks pass. The sole successful local publication
+reservation is **32 bytes** for the wrapper and Right; callee and total working-set costs remain
+separate. All **eight** controls pass, including repeated prepare/execute through GC, order
+bypasses, wrong payloads, callback injection and incorrect reservation failure accounting.
+
+An independent controlled recompile matches the native-tested closed-entry object across all
+**three** allocated section byte sequences and **80** normalized relocations. The two **17-block**
+root graphs agree after a bijective renaming of block labels; timestamp normalization alone does
+not make their complete Cmm files identical.
+
+The native/API/compiler records live under `semantic-context-closed-program-1/`; all accepted
+source-QA runs retain terminal producer/launcher receipts with unchanged public inputs. The owner
+object rebuilt into this fixture matches the earlier native-tested owner across all **five**
+allocated section byte sequences and **623** normalized relocations. This does not establish full
+callee freshness, cross-module invocation/provenance, packaging, owner cancellation/lifetime or
+complete funding/admission. Private coefficients, ordinary admission and operator bytes remain
+unchanged; canonical gate **58** still validates that executable, with documentation checked
+separately. Sprint **6.5** remains active and later phases stay parked.
+
+**Selected ticket-preparation and installed new-cell allocation paths are validated.**
+`semantic-context-ticket-preparation-1/validation-1.json` checks the captured preparer's **42-block**
+graph with explicit entry-GC retry, returning calls, continuations, successful reservation edges
+and rollback-aware control flow. Shape compilation, measurement, checked decoding, extraction and
+`stg_newMutVar#` each occur at most once per corresponding entry. Oversize, unavailable shape,
+wire, extraction and schema refusal paths reach neither the cell call nor ticket publication.
+The cell call's return dominates ticket publication; publication GC retries return downstream of
+the cell call. Checked source/usage, ready-state backing and pending-ticket payload layout checks
+bind the selected construction sites.
+
+The preparer's local successful reservation maximum is **80 bytes**, covering the selected
+**48-byte** checked/ready construction and **32-byte** pending/Right publication; its **16-byte**
+Left path remains separate. Failed reservation attempts are not successful allocations, and the
+maximum takes no allocation credit from a later rollback. The installed threaded `stg_newMutVar#`
+fast path reserves **16 bytes**, writes the supplied ready state at payload offset **8** and returns
+the newly reserved cell. Its only selected retry is before those writes. These selected successful
+ticket-construction requests therefore total **96 bytes**. Preparation callees, metadata, GC/native
+work, full provenance, containment/retirement and complete owner funding remain separate; **96**
+is not a complete preparation or admission budget.
+
+All **ten** controls pass, including a publication retry that would allocate another cell, wrong
+ready/source/backing/ticket fields, a foreign cell factory, incorrect failure accounting and native
+cell size/state/retry changes. The checker retains terminal producer/launcher receipts with unchanged
+public inputs. The already validated owner-object equivalence connects this preparer capture to
+the closed native fixture; no new code or coefficients enter the ordinary path. Canonical gate
+**58** still validates the unchanged executable, with documentation checked separately. Sprint
+**6.5** remains active and later phases remain parked.
+
+**Successful ticket preparation preserves correlated source/usage/decoded origins under explicit contracts.**
+`semantic-context-ticket-source-provenance-2/validation-1.json` follows **50** finite symbolic
+states across the **32** captured preparer blocks that can publish a successful ticket. The prior
+**42-block** graph proof separately excludes all failure paths from that publication. The new
+checker begins with one symbolic source, follows its boxed value and three unboxed decoder-view
+arguments through fixed stack addresses, and verifies the arguments at shape, measurement,
+checked decode, extraction and new-cell boundaries. The checked object combines that source with
+its measurement; the ready state combines that checked object with the extracted value; the
+returned Right contains the pending ticket for the resulting cell.
+
+Register and expression annotations, pointer/word stack stores and loads, stack motion and popped
+slots are checked explicitly. Returning calls discard unrelated register origins; force/GC returns
+preserve only the logical R1 result and live typed stack slots according to the declared boundary
+contract. This is a successful-path local provenance proof under those callee/GC contracts, not a
+proof of their implementations, full cross-module containment, backing compactness, retirement,
+owner cancellation or admission. No pointer-address identity or GC lifetime credit is used.
+
+All **11** controls pass, including source/measurement substitution, wrong decoder-view fields,
+foreign extractor/syntax, lost extracted backing, pointer/word store or annotation mismatches and
+a wrong checked-source load. The initial nine-control checker also passes; the second version adds
+explicit annotation checks and two controls without changing the native artifact or its origin
+state count. Both source-QA runs retain terminal producer/launcher receipts with unchanged public
+inputs. Production code, private coefficients and operator bytes remain unchanged; canonical gate
+**58** still validates that executable, with documentation checked separately. Sprint **6.5** stays
+active and later phases stay parked.
+
+**Selected updater, claim and completion paths preserve correlated origins under explicit contracts.**
+`semantic-context-owner-origin-flow-1/validation-1.json` extends the preparer proof through
+**12**, **28** and **76** finite symbolic states over **8**, **15** and **30** successful-corridor
+blocks respectively. The updater packages the matching checked and extracted roots; the claim
+captures both roots and the context/configuration from that extracted envelope into the work
+closure. Projection receives the envelope's context and its configuration's topology. Both accepted
+and refused publications retain the matching checked/extracted roots; the refusal publication
+retains the original refusal rather than the cursor used to traverse it.
+
+The checker tracks typed registers, live stack slots, stack motion and intra-block constructor
+fields, including explicit pointer/word annotations. Atomic, projection, normal-form, force and GC
+returns have declared logical-origin contracts; this proof does not establish those implementations
+or physical address identity. The prior owner graph certificate separately checks failure exclusion,
+forcing and call cadence. All **ten** altered-Cmm controls are refused, covering wrong fields,
+old-state/result substitution, lost roots, wrong projection/forcing arguments, lost refusal and a
+pointer/word annotation mismatch. Altered Cmm is inspected only and never executed.
+
+The source-QA run has terminal producer/launcher receipts and unchanged public inputs. The final
+`semantic-context-owner-origin-flow-final-validation-1.json` preserves the checker, captured Cmm,
+controls and predecessor evidence. Production code, private coefficients and operator bytes remain
+unchanged; canonical gate **58** remains the executable validation, with documentation checked
+separately. Runtime update-thunk duplication, callee/GC implementations, cross-module containment,
+full lifetime/cancellation and complete physical admission remain open. Sprint **6.5** stays active;
+later phases stay parked.
+
+**Selected continuation stack maps retain every subsequently required pointer origin.**
+`semantic-context-owner-stack-roots-6/validation-1.json` replays the preparer and updater/claim/work
+origin proofs while checking the captured continuation metadata at each selected call. It walks
+frames to the procedure-entry boundary, requires pointer-typed values in every traced slot and
+erases pointer origins in untraced slots before continuing. Word scalars retain their logical values;
+this grants no pointer-lifetime credit to an address represented as a word. The resulting origin
+states and outputs match the prior proofs (**50** preparer states and **12/28/76** owner states).
+
+The combined capture declares **28** continuation maps. The successful-ticket and owner corridors
+visit **27**; failure-only `c9Hx` is explicitly outside this proof. All **56** traced frame-slot
+positions have individual negative controls that change their metadata to untraced, and all are
+refused on replay. Three frame-slot positions lose stale pointer origins without affecting any
+subsequent required value. The initial owner-only check also passes all **32** controls across
+its **16** maps. Earlier checker failures remain preserved: duplicated module exception identities,
+erasing necessary word scalars and incorrectly demanding failure-only map coverage were checker
+issues, corrected before the combined result. Altered Cmm is never executed.
+
+Terminal producer/launcher receipts retain unchanged public inputs. The final
+`semantic-context-owner-stack-roots-final-validation-1.json` preserves the checks and controls.
+This discharges the selected local stack-map part of the preservation contract only. Binary bitmap
+encoding, runtime collector/register spilling, SRT/static roots, opaque callee implementations,
+physical backing lifetime, cancellation and complete admission remain open. Production code,
+private coefficients and operator bytes remain unchanged; canonical gate **58** remains the
+executable validation and documentation passes separately. Sprint **6.5** stays active and later
+phases stay parked.
+
+**Captured return-frame encodings and the installed pointer-GC spill/return boundary agree.**
+`semantic-context-owner-binary-bitmaps-1/validation-1.json` reads the captured owner ELF and checks
+all **28** return-frame bitmap words and `RET_SMALL` tags against its Cmm maps. The native installed
+threaded-header probe reports **16-byte** standard/return info tables, layout/type/SRT offsets
+**0/8/12**, bitmap shift **6**, mask **63** and `RET_SMALL = 30`. No relocation overlaps a checked
+bitmap or type. All **56** changed-bitmap/type controls are refused; changed objects are never
+linked or executed. The probe captures its **70** installed GHC header dependencies. This includes
+the failure-only map's encoding without extending successful-path origin coverage to that failure.
+
+`semantic-context-owner-pointer-gc-frame-2/validation-1.json` checks the installed threaded
+`HeapStackCheck.thr_o` against its archive member. Exact `stg_gc_unpt_r1` instructions save R1
+(`rbx`) at the payload of a **two-word** `stg_ret_p_info` frame, move Sp (`rbp`) by two words and
+transfer to `stg_gc_noregs`. The return frame's bitmap is **1** (one traced pointer); its exact
+instructions reload that slot into R1, pop two words and enter the caller's continuation. All
+**11** controls pass, covering spill/load/stack changes, bitmap/type corruption, relocation addends,
+a scalar-frame substitution and a wrong dispatch target. The earlier nine-control check also
+passes. This is a temporary stack frame, not a heap allocation or a complete stack budget.
+
+Both checks retain terminal producer/launcher receipts and unchanged public inputs. Final
+`semantic-context-owner-binary-gc-final-validation-1.json` preserves the evidence and links the
+captured object to the prior local origin/root checks. Entry-time `stg_gc_fun`, collector/scheduler
+execution, update/forcing, static roots, stack growth, full lifetime/cancellation and admission remain
+open. No production code, private coefficients or operator bytes change; canonical gate **58**
+remains executable validation, with documentation checked separately. Sprint **6.5** remains active
+and later phases remain parked.
+
+**Selected function-entry GC paths save and restore the owner arguments.**
+`semantic-context-owner-entry-gc-2/validation-1.json` checks all four selected binary function-info
+fields: preparer, updater and claim use `ARG_P = 5`, while work uses `ARG_NONE = 3`. Installed
+threaded `AutoApply.thr_o` supplies matching argument bitmap words **1/0**, save-table entries and
+stack-application entries. The installed `HeapStackCheck.thr_o` dispatch and resume code is checked
+in full, including relocation targets. The proof selects only these two standard argument layouts;
+special/custom/interpreter layouts receive no preservation claim.
+
+The installed native header probe reports a **40-byte** function info table, function-type offset
+**16**, `RET_FUN = 32` and size/function/payload frame offsets **8/16/24**. The selected save paths
+retain the function closure at slot **2**, preceded by the info pointer and cached payload size.
+`ARG_P` additionally saves R2 at slot **3**, giving **four** frame words; `ARG_NONE` needs **three**.
+The selected resume restores the function closure, removes the three-word header, dispatches by its
+function type and, for `ARG_P`, reloads R2 and removes its payload slot before entering that closure.
+These are temporary stack-frame sizes, not total stack or heap budgets. Dynamic `RET_FUN` tracing
+and the collector/scheduler remain explicit runtime contracts.
+
+All **20** controls pass, covering function-type fields, entry dispatch/resume instructions,
+closure/argument saves and loads, frame adjustment, argument bitmaps and both indexed tables.
+Changed objects are parsed only. The first 14-control version also passes. The final
+`semantic-context-owner-entry-gc-final-validation-1.json` preserves both checks, installed-object
+identities and unchanged-input terminal producer/launcher receipts. Callee implementations,
+collector/scheduler execution, update-thunk duplication, static roots, stack growth,
+containment/lifetime/cancellation and admission remain open. Production code, private coefficients
+and operator bytes remain unchanged; canonical gate **58** remains executable validation, with
+documentation checked separately. Sprint **6.5** remains active and later phases stay parked.
+
+**Actual private owner fixtures survive observed major GC at fixed lifecycle boundaries.**
+`semantic-context-owner-major-gc-2/validation-1.json` links the original native-tested owner and
+its dependency objects unchanged into a new fixture frontend. The seven existing groups cover
+source matching, sequential reuse, six concurrent submissions with one winner, semantic refusal,
+registered Unicode fields, malformed wire and unsupported schema. Successful preparation forces
+major GC before returning the ticket; every owner invocation forces major GC before the claim and
+after the result returns. RTS statistics confirm a positive major-GC counter delta at all **34**
+checkpoints (**6/7/13/5/3** across the five ticket-bearing groups). All **seven** groups pass under
+the unchanged **128-MiB**, **N2** profile with one test-runner thread and statistics enabled.
+
+The first native frontend also passed all seven groups and 34 checkpoints; its runner wrongly
+expected **37**, so that qualification record remains nonpassing. A separate recheck preserves and
+correctly classifies its terminal native result without rerunning it. The second frontend changes
+import formatting only and corrects the runner expectation; its fresh build/run, pinned Fourmolu
+and HLint checks pass. Both versions retain matching source/interface/object manifests. This proves
+the sampled boundaries only, not interior GC safe points, physical backing compactness, retirement,
+cancellation, a complete working-set bound or ordinary admission.
+
+The captured [GHC 9.12.4 collector source](https://raw.githubusercontent.com/ghc/ghc/ghc-9.12.4-release/rts/sm/Scav.c)
+traces zero bits in ordinary return payloads and, for `RET_FUN`, evacuates the retained function
+before reading its argument layout and tracing its payload. Five exact source guards and their
+five removal controls pass in `semantic-context-collector-source-1/validation-1.json`. These are
+selected release-source facts, not a proof of complete C semantics or equivalence to the installed
+collector binary. That distinction remains part of the next work.
+
+Final `semantic-context-owner-major-gc-final-validation-1.json` preserves both frontend results,
+source review, style checks and terminal unchanged-input receipts. No production code, private
+coefficients, operator bytes or live-attempt counters change. Canonical gate **58** remains the
+executable validation; documentation passes separately. Sprint **6.5** remains active and later
+phases stay parked.
+
+**Actual-owner masking and cancellation boundaries pass eighteen fixed native cases.**
+`semantic-context-owner-cancellation-3/validation-1.json` links the unchanged private owner and
+its dependency objects into a fixture with **three** initial masking states, **two** outcomes
+(accepted/refused) and **three** scenarios. Six normal-return cases verify caller-mask restoration
+before/after the owner, correct matched publication and subsequent consumption. Twelve cancellation
+cases gate either before invocation or after publication. Explicit MVars, `throwTo`, observed
+`BlockedOnException` for queued uninterruptible cancellation and bounded waits establish ordering;
+there are no timing sleeps or workload-size searches.
+
+Unmasked and interruptibly masked cancellation before invocation leaves the ticket uncalled and
+usable. In the uninterruptible mode, the sender is observed blocked until gate release; the owner
+then runs once and consumes its ticket, and the queued exception is delivered on scope exit.
+After-publication cancellation leaves the ticket consumed and the parent's published matched result
+readable after major GC. Invocation and scope-return observations distinguish those outcomes.
+All **18** cases and **18** observed major-GC checkpoints pass under **128 MiB**, **N2**, one test
+thread and statistics enabled. Pinned Fourmolu and HLint pass.
+
+The existing ready-state-retention mutation replaces only the owner object for the same frontend.
+It produces exactly **14** expected consumption failures and retains **four** positive pre-invocation
+cancellation cases in `semantic-context-owner-cancellation-control-1/validation-2.json`. The initial
+control classifier missed FAIL/OK lines separated from headers by GC progress output; a separate
+recheck correctly classifies the unchanged terminal run. Earlier fixture parse/preparation failures
+remain preserved. No native operation is repeated to repair an output-classification result.
+
+Final `semantic-context-owner-cancellation-final-validation-1.json` preserves the frontend, object
+identities, positive and control results and terminal unchanged-input receipts. These scenarios
+cancel outside the owner invocation or after its result is published. They do not prove interruption
+inside projection, recovery after a consumed-but-unpublished result, collector binary equivalence,
+full lifetime/retirement or admission. Production code, private coefficients and operator bytes
+remain unchanged; canonical gate **58** remains executable validation, with documentation checked
+separately. Sprint **6.5** stays active and later phases remain parked.
+
+**Selected source-backing keys remain live with owners and retire when their roots leave scope.**
+`semantic-context-owner-backing-lifetime-2/validation-1.json` links the unchanged private owner and
+dependency objects into **seven** fixed weak-pointer fixtures. Fresh wire storage is allocated in
+IO, avoiding shared pure fixture backing. The observed weak key is the source's actual
+`ForeignPtrContents`, not a reconstructed `ForeignPtr` wrapper or an unpackable ByteString box.
+`keepAlive#` pins only the ticket/result under test; separate non-inlined scope helpers prevent a
+local source binding from becoming the intended retention root. The build uses the project's pinned
+**bytestring 0.11.5.4** package identity.
+
+The unowned baseline's contents key becomes unobservable after major GC. Pending tickets retain
+that key, and completed accepted/refused results retain it while their source match and checked
+source-derived charge remain readable. After those roots leave scope, their keys become
+unobservable. A consumed ticket kept alive without its discarded result also allows the key to
+retire. All **seven** groups and **22** observed major-GC checkpoints pass under **128 MiB**, **N2**,
+one test thread and statistics enabled. These are finite weak-key liveness/retirement observations,
+not proof that all physical storage is freed, backing is compact, a particular address moves,
+or an allocator/RSS/admission credit is available.
+
+Replacing only the owner object with the existing ready-state-retention mutation makes both
+consumed-ticket retirement cases fail with `source backing retired`, while all **five** other
+cases stay positive. The control is qualified in
+`semantic-context-owner-backing-lifetime-control-1/validation-1.json`. The first frontend's unused
+helper failed the warnings-as-errors compile; the corrected frontend, pinned Fourmolu and HLint
+pass. Final `semantic-context-owner-backing-lifetime-final-validation-1.json` preserves the results,
+input/object identities and terminal unchanged-input receipts. Arbitrary-input backing graphs,
+interior cancellation/recovery, full lifetime/retirement, working-set accounting and admission remain
+open. Production code, private coefficients and operator bytes remain unchanged; canonical gate
+**58** remains executable validation, with documentation checked separately. Sprint **6.5** remains
+active and later phases stay parked.
+
+**The captured closed root has no local ticket/cell escape under explicit callee contracts.**
+`semantic-context-closed-ticket-containment-2/validation-1.json` checks **19** finite symbolic
+states across **16** of the root's **17** blocks. The remaining block is an execute-result force
+path excluded by the declared constructor-return contract. The checker follows the one source
+through preparation, the returned pending ticket's cell into one execute call, and all **three**
+terminal origins: preparation failure, execution failure and completed closed publication. It
+tracks pointer tags, register clobbering, stack motion, continuation words and heap fields.
+
+Only registered preparation/execute/force/GC calls are admitted. The root's stack holds continuation
+words only; its local heap publication accepts only the completed result and closed wrapper.
+Unregistered stores, pointer stack stores, pending/cell heap capture and pending returns are refused.
+All **12** controls pass, covering source/field substitution, discarded-register reads, stack/heap/
+global/return escape, callback substitution, wrong GC roots and pointer/word stores. Altered Cmm is
+inspected only. The first checker's source-substitution control failed at an earlier unknown-register
+boundary than expected; its nonpassing record is preserved and the revised control supplies a known
+foreign origin to test the intended boundary.
+
+The prior seventeen-block graph certificate separately proves call cadence and failure exclusion;
+prior captured-object equivalence connects the Cmm to the native-tested closed module. Final
+`semantic-context-closed-ticket-containment-final-validation-1.json` preserves the check, controls,
+predecessor identities and terminal unchanged-input receipts. This is local non-escape under the
+preparer/execute result, force and GC contracts. It does not prove those implementations, full
+freshness, launcher/masking-adapter containment, lack of other owners outside this root, update-thunk
+duplication, interior cancellation or admission. Production code, private coefficients and operator
+bytes remain unchanged; canonical gate **58** remains executable validation and documentation is
+checked separately. Sprint **6.5** stays active and later phases remain parked.
+
+**Launcher and masking-adapter origins connect the closed root's cell to the claim.**
+`semantic-context-owner-origin-flow-4/validation-1.json` extends the updater/claim/work checker
+with the launcher's **ten** blocks/states and the adapter's **one** block/state. The original
+**12/28/76** origin-state results remain unchanged. The launcher saves the incoming cell across
+the masking-state query and reservation GC, captures that same cell in its claim closure and
+preserves the closure through the selected masking branch. Direct claim entries receive their
+expected `mask2` or `mask4` restore closure; the unmasked branch captures the claim closure in the
+masking adapter, which loads it and supplies `mask3` to the claim. Dispatch guards are checked
+against the masking-state word's origin, not just the set of outgoing targets.
+
+The launcher's `c9JJ` continuation declares one traced pointer slot for the saved cell. Its encoded
+native bitmap word **1** and `RET_SMALL` tag **30** match the previously captured installed-header
+ABI, with no relocation overlapping the bitmap/type. All **19** Cmm controls and **two** changed
+native bitmap/type controls pass. They cover cell capture, wrong slots, restore/branch substitution,
+scalar-GC origin loss, adapter fields/capture and an untraced saved cell, alongside the prior ten
+updater/claim/work controls. Changed Cmm/object data is never executed. The earlier eighteen-control
+version also passes; its initial predecessor expected a store-kind refusal where the checker
+correctly refused the earlier pointer/word stack load, and that record remains nonpassing.
+
+Final `semantic-context-owner-launcher-origins-final-validation-1.json` preserves both passing
+versions, controls, captured-object/predecessor identities and terminal unchanged-input receipts.
+The local root's cell forwarding now joins the launcher/adapter's claim-closure capture and the
+claim's declared cell-field/atomic arguments. Mask-query semantics, scalar-GC implementation,
+mask-primitive one-entry behavior, full cross-module freshness/aliasing, update-thunk duplication,
+interior cancellation and admission remain explicit obligations. No ordinary code or coefficients
+change; canonical gate **58** remains executable validation and documentation is checked separately.
+Sprint **6.5** stays active and later phases remain parked.
+
+**Installed masking-state query and scalar-GC save/return contracts are locally validated.**
+`semantic-context-owner-mask-query-gc-1/validation-1.json` checks the complete installed
+`stg_getMaskingState#`, `stg_gc_unbx_r1` and `stg_ret_n_info` instruction sections and their exact
+relocation sets against the threaded RTS archive members. The native header probe confirms flag
+bits **4/8**, TSO flags offset **36**, CurrentTSO register-table offset **872**, a **16-byte** info
+table and the existing bitmap/type ABI. Preprocessed headers confirm R1/Sp/Base as **rbx/rbp/r13**;
+all **70** GHC header dependencies are captured.
+
+The straight-line query tests the two flag bits and sums their Boolean values in R1, then enters
+the caller continuation without allocation or an outward call. For the declared valid configurations,
+unmasked/uninterruptible/interruptible correspond to words **0/1/2**. Twelve finite flag calculations
+also check that selected unrelated bits do not affect that mapping; they are calculations over the
+reviewed code's operations, not twelve native executions. The scalar-GC spill saves R1 in a
+**two-word** `stg_ret_n_info` frame and transfers to `stg_gc_noregs`; return reloads the word, pops
+the frame and enters the prior continuation. Bitmap **65** declares one **untraced** payload word.
+The launcher's separate saved-cell continuation remains pointer-traced as established above.
+
+All **16** altered-instruction/bitmap/type/relocation controls pass without executing changed code.
+`semantic-context-mask-query-native-1/validation-1.json` independently runs **three** fixed native
+cases through `getMaskingState#`, verifying raw words against Haskell masking states before/after
+an observed major GC and restoration to unmasked afterward. All three cases, pinned Fourmolu and
+HLint pass under **128 MiB**, **N2**, one test thread and statistics enabled. This native test exercises
+the query and scope restoration; it does not independently force the exact scalar-GC spill entry.
+
+Final `semantic-context-owner-mask-query-gc-final-validation-1.json` preserves binary/native/header
+evidence and terminal unchanged-input receipts. These checks discharge the selected query and
+scalar-frame instruction/layout contracts only. Collector/scheduler execution, mask-primitive
+one-entry behavior, update-thunk duplication, full freshness/aliasing/lifetime, interior cancellation
+and admission remain open. Production code, private coefficients and operator bytes remain
+unchanged; canonical gate **58** remains executable validation, with documentation checked
+separately. Sprint **6.5** stays active and later phases remain parked.
+
+**All local masking-primitive instructions preserve the original action register and bound direct dispatch.**
+`semantic-context-mask-dispatch-graph-3/validation-1.json` binds objdump's instruction bytes to the
+reviewed installed threaded `Exception.thr_o` sections and decodes each local branch displacement
+and external transfer relocation. The three mask/uninterruptible/unmask primitives contain
+**30/31/82** instructions, all covered by the graph. Exact relocation sets admit only their declared
+return frames, self-retry addresses, GC entry, action dispatch and pending-exception boundaries.
+No local instruction writes the original R1 action register. Returning native calls retain the
+explicit C-ABI preservation contract.
+
+There are **1/1/3** direct `stg_ap_v_fast` transfer sites. A finite state graph follows GC retry edges
+back to the primitive entry and counts only a taken action-exit edge; each local entry can transfer
+the action directly at most once. Each primitive has one GC retry site before direct dispatch.
+The unmask primitive also has one returning pending-handler call, a thread-finished exit and a
+dynamic stack-resume exit. The saved action and scheduler/handler behavior behind those boundaries
+remain outside the local cadence result; this is not whole-runtime one-entry closure.
+
+All **six** graph-model controls that add a return/repeat after dispatch and **three** changed native
+entry-branch controls are refused. Changed objects and hypothetical graph edges are inspected only.
+The initial capture comparison failed because the objdump filename header used relative versus
+absolute paths. The second checker counted a conditional dispatch even on its untaken edge, causing
+a false repeated-transfer refusal on the pristine unmask procedure. Both failures remain preserved;
+the third version binds the same native bytes and uses separate terminal nodes for taken action
+transfers. No runtime binary changes to repair these checker errors.
+
+Final `semantic-context-mask-dispatch-graph-final-validation-1.json` preserves the checker, graph,
+listing, controls, installed-object identity and terminal unchanged-input receipts. GC action-frame
+preservation/retry, pending-handler/scheduler/dynamic-stack behavior, full action return/resumption,
+update-thunk duplication, cancellation and admission remain open. Existing native masking fixtures
+remain component evidence, not a substitute for those obligations. Production code, private
+coefficients and operator bytes remain unchanged; canonical gate **58** remains executable validation
+and documentation is checked separately. Sprint **6.5** remains active and later phases stay parked.
+
+**Mask GC retry frames preserve the selected action and return to the matching primitive entry.**
+`semantic-context-mask-gc-retry-1/validation-1.json` checks the installed
+`stg_gc_prim_p_ll` and its return-info instruction sections, exact relocation targets and all three
+masking primitives' self-address/GC-transfer instructions. Each supplies its own entry address in
+R2 (**r14**) while retaining the original action in R1 (**rbx**). The prior full local dispatch graphs
+are replayed against the same installed object and byte-bound instruction listing.
+
+The GC handoff reserves **three stack words**, saves the action at payload slot **1** and the retry
+address at slot **2**, installs its return frame and transfers to `stg_gc_noregs`. Bitmap **130**
+describes two payload words: the action is **traced**, and the retry address is **untraced**. The
+return code reloads the retry address into rax, restores the action into R1, removes the three-word
+frame and jumps to the saved code address. It does not enter the action at that boundary. These
+are temporary stack-frame sizes, not heap allocations or a complete stack/working-set budget.
+
+All **17** instruction/bitmap/type/relocation controls pass, including wrong action/retry slots,
+trace-role changes, scalar-frame/dispatch substitution and each primitive's incorrect self-address
+addend. Changed objects are parsed only. Final `semantic-context-mask-gc-retry-final-validation-1.json`
+preserves these checks, the replayed graph, installed archive/header identities and terminal
+unchanged-input receipts. This discharges the selected save/return instruction and self-target
+contracts; collector pointer updating, generic GC dispatch/scheduling, pending-exception and dynamic
+stack resumption, whole-runtime one-entry, update-thunk duplication, cancellation and admission
+remain open. Production code, private coefficients and operator bytes remain unchanged; canonical
+gate **58** remains executable validation and documentation is checked separately. Sprint **6.5**
+stays active and later phases remain parked.
+
+**Queued pending exceptions distinguish unmasked action refusal from masked publication.**
+`semantic-context-owner-pending-unmask-1/validation-1.json` links the unchanged private owner and
+dependency objects into **six** fixed cases: accepted/refused inputs and three target masking modes.
+A worker first blocks under uninterruptible masking; the sender is observed
+`ThreadBlocked BlockedOnException` before that gate is released. A marker then confirms arrival
+at the restore boundary while interruptibly masked. Separate action-entry, owner-call, action-return
+and escaped-scope observations distinguish pending delivery from action execution. Explicit MVars
+and bounded waits establish ordering; no sleep or input/workload-size search is involved.
+
+Unmasking delivers `ThreadKilled` before action entry or any owner call, leaving the ticket usable
+and matched for the parent. Interruptible masking permits one owner publication, then cancellation
+at the following blocked operation. Uninterruptible masking permits publication and retains the
+queued exception through the blocked operation; the sender is observed still blocked until release,
+and delivery occurs before scope escape. Both masked publications remain readable and their tickets
+remain consumed. All **six** cases and **six** observed major-GC checkpoints pass under **128 MiB**,
+**N2**, one test thread and statistics enabled. Pinned Fourmolu and HLint pass.
+
+The single fixture mutation omits the Unmasked target's restore operation. It produces exactly
+**two** unexpected-action-entry failures while preserving all **four** masked positives in
+`semantic-context-owner-pending-unmask-control-1/validation-1.json`. The explicit action-entry flag
+is checked even if a queued asynchronous exception supersedes an assertion during unwinding.
+Final `semantic-context-owner-pending-unmask-final-validation-1.json` preserves the positive/control
+frontends, object/input identities and terminal unchanged-input receipts.
+
+These are caller restore-boundary observations with the real owner as the intended action. They
+do not deterministically interrupt projection after its claim, prove every pending-handler branch,
+prove full scheduler/dynamic-stack continuations or close whole-runtime one-entry, lifetime,
+duplication or admission. Production code, private coefficients and operator bytes remain unchanged;
+canonical gate **58** remains executable validation and documentation is checked separately.
+Sprint **6.5** stays active and later phases remain parked.
+
+**The pending action's selected tagged enter/apply frames preserve one action transfer.**
+`semantic-context-pending-action-frames-1/validation-1.json` checks the installed unmask primitive's
+**three-word** pending buffer: `stg_enter_info`, the saved action pointer and `stg_ap_v_info`.
+The enter frame's bitmap **1** traces its one payload word; the apply frame's bitmap **0** has no
+payload. Exact header references, selected instructions and relocation-free selected paths are
+checked against the installed threaded HeapStackCheck/AutoApply/Exception objects. The native
+header probe confirms function info size **40**, function-type/arity offsets **16/20**, and the
+existing **16-byte** standard info/bitmap ABI; all **70** GHC header dependencies are captured.
+
+For a tag-one closure, six enter-frame instructions load the saved action, return that tagged
+closure without evaluating it and remove two words. Seven apply-frame instructions check tag one,
+remove the remaining word and enter the action's function info. This selected **13-instruction**
+path has one direct action-info transfer and no selected heap reservation. The captured owner's
+work and masking-adapter info tables both declare `ARG_NONE = 3`, arity **1**, in native metadata
+and Cmm; prior claim/launcher/adapter origin checks are replayed for their tagged constructors.
+This certifies the known tagged path when that intact continuation is selected, not every possible
+entry into generic enter/apply code.
+
+All **22** byte/metadata/relocation/Cmm controls pass, covering pending-buffer slots, trace roles,
+frame types, tag guards, stack pops, action-info lookup, frame-header swaps and unsupported function
+shapes. Changed objects and Cmm are inspected only. Final
+`semantic-context-pending-action-frames-final-validation-1.json` preserves the checks, native/header
+and predecessor identities and terminal unchanged-input receipts. Handler/scheduler continuation
+selection, generic/untagged paths, collector tag preservation, full action cadence, duplication,
+interior cancellation and admission remain open. These temporary frame sizes do not supply a
+complete stack or physical memory budget. Production code, private coefficients and operator bytes
+remain unchanged; canonical gate **58** remains executable validation, with documentation checked
+separately. Sprint **6.5** stays active and later phases remain parked.
+
+**The installed pending handler has bounded local delivery calls and restores the saved action register.**
+`semantic-context-pending-handler-2/validation-1.json` binds all **107** installed
+`maybePerformBlockedException` instructions and exact relocation targets to its captured threaded
+`RaiseAsync.thr_o`. A **209-state** symbolic traversal checks native branch displacements, normal
+helper-return edges, stack motion, saved-register slots and return values. Each local entry calls
+`raiseAsync`, `tryWakeupThread` and the completed-thread queue wake at most **once**. Cancelled-message
+and lock/yield loops carry no such call; their iteration count and liveness are not bounded here.
+The finite graph covers every non-padding instruction and admits no indirect action call.
+
+All normal returns produce **0/1**, restore the four locally saved callee-saved registers and
+remove the local **56-byte** C frame. This restores the incoming rbx action register and rbp/r12/r13
+under the normal-return C-helper ABI contracts. The 56 bytes exclude return addresses, caller
+alignment, helper frames and native allocations; they do not fund a complete native working set.
+The installed header probe confirms thread states **3/4/5**, TSO state/flags/queue offsets
+**32/36/104** and message link/source/target/exception offsets **8/16/24/32**; **70** header
+dependencies are captured.
+
+The captured [GHC release source](https://raw.githubusercontent.com/ghc/ghc/ghc-9.12.4-release/rts/RaiseAsync.c)
+distinguishes completed-thread queue wake from normal message delivery and skips cancelled messages.
+A nonzero handler result is therefore not by itself evidence that a particular exception was raised.
+Five selected source guards and removal controls pass; they do not establish complete source/native
+semantic equivalence. The native path proof independently validates its own encoded calls and
+Boolean returns, including the non-delivery cleanup return.
+
+All **14** model/byte/relocation/source controls pass. They detect repeated local delivery/wake
+calls, non-Boolean returns, lost saved registers, incorrect stack removal, changed instructions,
+a substituted delivery target and lost source facts. The initial native-only eight-control version
+also passes. Final `semantic-context-pending-handler-final-validation-1.json` preserves both versions,
+archive/source/header identities and terminal unchanged-input receipts. Transitive native helper
+semantics, queue/capability invariants and liveness, raise/unwind and scheduler continuation selection,
+collector/tag behavior, whole-runtime one-entry, duplication, cancellation and admission remain open.
+Production code, private coefficients and operator bytes remain unchanged; canonical gate **58**
+remains executable validation and documentation is checked separately. Sprint **6.5** stays active
+and later phases remain parked.
+
+**Selected asynchronous catch replacement installs the handler and exception as the new stack roots.**
+`semantic-context-raise-catch-frame-1/validation-1.json` checks the installed `raiseAsync` jump-table
+entry for `CATCH_FRAME = 34`, the non-null-exception catch blocks, header references and matching
+native return-frame layouts. The native probe confirms the **two-word** catch frame and handler
+offset **8**, TSO stack/flags/state offsets **24/36/32**, stack-sp offset **16** and
+`ThreadRunGHC = 1`; **70** GHC header dependencies are captured.
+
+The selected native blocks obtain the handler from the catch frame, step beyond the discarded
+frame and install **four words**: enter-info, handler, apply-pv-info and exception. The saved stack
+pointer and runnable state select that replacement. Both new payload roots are traced by the
+matching enter/apply frame layouts. Initial unmasked flags add one unmask-return word and select
+handler flags **12**; interruptibly masked flags remain **12**; uninterruptibly masked flags remain
+**4**. These are three finite calculations over the reviewed flag/stack operations, not three new
+native executions. The new buffer contains the handler and exception, not the original action.
+
+Five guards on the captured [GHC release source](https://raw.githubusercontent.com/ghc/ghc/ghc-9.12.4-release/rts/RaiseAsync.c)
+check the null-exception exclusion, discard-through-catch operation, optional unmask return,
+handler/exception slots and stack publication. They are selected source facts, not a proof of the
+whole C function. In particular, earlier update/underflow freezing can preserve resumable work
+elsewhere; replacing the catch buffer does not prove global unreachability or retirement.
+
+All **22** byte/metadata/relocation/source controls pass. They detect incorrect handler/exception
+slots, stack adjustment, flag/state updates, root trace roles, frame types, catch-case routing,
+header references and lost source facts. Changed objects/source are inspected only. Final
+`semantic-context-raise-catch-frame-final-validation-1.json` preserves the checks and installed
+archive/source/header identities with terminal unchanged-input receipts. Frame walking/freezing,
+transitive helper and capability/queue invariants, scheduler and generic handler application,
+whole-runtime one-entry/retention, duplication, cancellation and admission remain open. Production
+code, private coefficients and operator bytes remain unchanged; canonical gate **58** remains
+executable validation and documentation is checked separately. Sprint **6.5** stays active and later
+phases remain parked.
+
+**Canonical gate 58 passes 10,737 cases; RPC hex validation is validated.**
+The shared lowercase-hex predicate uses two inclusive ASCII ranges instead of constructing an
+enumeration for each character. Whole-owner inverse replay changes only that predicate, whose
+accepted set remains exactly `0123456789abcdef`. The permanent regression covers all **128**
+ASCII characters and **six** Unicode examples through both direct and configured-pin validation.
+Strict operator/unit compilation, pinned formatting and all **216** RPC registration suite cases
+pass. A separate warning-clean, pinned-Text probe passes **15** fixed functional cases for scope
+normalization/refusal ordering, generation limits, digest lengths and legacy compatibility at the
+unchanged **128 MiB / N2** runtime limit.
+
+`hex-range-canonical-1/source-review-1.json` preserves predicate equivalence;
+`rpc-fixed-refusal-source-review-1.json` binds the four nullary error constructors to actual
+rendered strings of **29, 26, 27 and 24** characters. Refusal rendering on this route is therefore
+fixed-size, correcting the earlier variable-rendering description. The initial probe build selected
+the unrelated installed Text 2.1.4 and failed; its retained successor explicitly selects the
+repository's Text 2.0.2 unit without changing probe source. These are functional/source facts;
+RPC allocation accounting and the complete working-set/admission proof remain open. Earlier
+private budget records retain their captured predecessor identities. The full quality gate passes
+**9,767 + 27 + 35 + 908** cases with exact terminal receipts,
+unchanged sources and correlated operator/source identities in
+`hex-range-canonical-validation-1.json`. No live attempt, credential access, limit change or phase
+advancement occurs; gate **57** below remains predecessor evidence.
+
+**Selected installed update/underflow freezing preserves a separate suspended-work root.**
+`semantic-context-raise-freezing-2/validation-1.json` checks the `raiseAsync` jump-table routes for
+`UPDATE_FRAME = 33` and `UNDERFLOW_FRAME = 35`, their selected native blocks and seven relocation
+references against the installed threaded object. The native header probe confirms the **32-byte**
+`StgAP_STACK`, size/function/payload offsets **16/24/32**, and the **16-byte** update frame with
+updatee at offset **8**. All **70** GHC header dependencies are captured.
+
+On each selected visit, the request is **32 + 8 × W bytes**, where **W** is the stack interval's
+word count excluding its current closure. The current closure becomes `ap.fun`; the next W words
+become its stack payload. This assumes a valid aligned live interval with W representable as
+`uint32_t`, stable allocator storage and the native C-helper ABI. It neither bounds the number of
+visits nor funds collector, allocator or helper costs. Update freezing calls `updateThunk` with the
+new object unless the updatee matches the stop-frame updatee. That matching branch still allocates
+and copies, then preserves the original updatee to retain blackhole behavior. The selected normal
+branch's publication/barrier and aliasing semantics remain owned by `updateThunk`.
+
+Underflow freezing records the old stack pointer at the copied interval's frame, calls
+`threadStackUnderflow`, reloads the TSO's stack object and places the new AP_STACK one word before
+the returned stack pointer. Stack-switch semantics, availability of that preceding word and
+helper/collector preservation remain contracts. These paths explain why replacing a later catch
+buffer does not prove the earlier suspended work unreachable or unable to resume.
+
+All **15** fixed copy/handoff models (W = **0/1/2/7/32**, both update branches and underflow) and
+**51** byte/relocation/source controls pass. Altered objects are inspected only. The first checker
+refused an unnamed ELF section-symbol reference; its successor checks the referenced section's
+identity and retains that nonpass. Final `semantic-context-raise-freezing-final-validation-1.json`
+binds source, installed archive, headers, controls and unchanged-input terminal receipts to the
+existing operator. Whole-unwind frequency, global aliases/resumption, helper internals,
+collector/scheduler, physical retention and admission remain open. Production code and selected
+private coefficients are unchanged; canonical gate **58** retains its executable scope and docs
+are validated separately. Sprint **6.5** remains active, with later phases parked.
+
+**The selected freezing underflow handoff takes the installed zero-return-value helper path.**
+`semantic-context-stack-underflow-2/validation-1.json` connects the checked freezing copy endpoint
+with `threadStackUnderflow` in installed `Threads.thr_o`. The header probe confirms stack
+payload/size/SP offsets **24/8/16**, the **16-byte** underflow frame and next-chunk offset **8**,
+and TSO stack/total-size offsets **24/128**; all **70** installed GHC header dependencies are
+captured. Under a valid terminal underflow-frame layout, the freezing copy ends exactly at that
+frame. The helper therefore computes **zero** return-value words, independently of the copied
+segment's length, and skips its return-value `memcpy` and capacity-refusal paths.
+
+A symbolic replay of **42** selected native instructions installs the linked next chunk, sets the
+old stack SP to its payload end, debits its stack size from the TSO total, calls `dirty_STACK` once,
+leaves the next stack SP unchanged and returns **zero**. It restores all six saved C registers and
+its **72-byte** local C frame; return addresses, helpers and their allocations are excluded. The
+replay assumes valid pointer arithmetic and uint32_t stack accounting, capability ownership,
+normal C-helper ABI behavior and stable selected structural fields across `dirty_STACK`.
+
+Five fixed bridge fixtures use W = **0/1/2/7/32**. All **33** controls pass: two nonzero-return-count
+inputs, eight altered ABI fields, ten changed native sites, one substituted helper reference, six
+semantic-model mutations and six removed source facts. The semantic controls separately detect
+lost chunk installation, old-stack emptying, next-SP preservation, return value, saved-register
+restoration and helper arguments. Altered objects are never executed. Six selected source guards
+match the captured [GHC release source](https://raw.githubusercontent.com/ghc/ghc/ghc-9.12.4-release/rts/Threads.c);
+they do not certify complete source/native equivalence. The initial **21-control** version also
+passes and remains preserved.
+
+Final `semantic-context-stack-underflow-final-validation-1.json` binds both checks to the installed
+archive, captured source/headers, unchanged-input terminal receipts and current operator identity.
+Logical stack emptying does not erase payload bytes, prove physical release or eliminate other
+aliases. The caller's AP_STACK push still needs a preceding writable word in the next chunk;
+`dirty_STACK` internals, concurrency/collector behavior, `updateThunk`, complete unwind frequency,
+whole-runtime retention and admission remain open. No production code, private coefficient,
+limit or phase state changes. Gate **58** retains its executable scope; documentation is checked
+separately and Sprint **6.5** remains active.
+
+**Installed thunk publication has one local store pair and bounded local bookkeeping calls.**
+`semantic-context-update-thunk-3/validation-1.json` checks all **147** installed `updateThunk`
+instructions and exact relocations in the previously captured threaded `Threads.thr_o`. A
+**419-state** traversal visits all **143** non-padding instructions and models every local branch;
+the four unvisited instructions are padding. Every ordinary return or outgoing queue tail transfer
+has exactly one value store to the thunk's indirectee followed by one BLACKHOLE-header store.
+The value and target retain their input origins across the normal C-helper ABI boundary.
+
+Each local path calls `allocBlockOnNode_lock` at most **once**, calls
+`updateRemembSetPushThunk` at most **once**, and inserts the thunk in a mutable-list slot at most
+**once**. Queue handoffs select either `checkBlockingQueues(cap,tso)` or the wake route with the
+saved untagged old indirectee; their implementations and effects are not certified here. Normal
+returns and both tail transfers restore six saved registers and the **72-byte** local C frame.
+The frame excludes return addresses, callees and their allocations. Mutable-list capacity and
+bookkeeping-block growth therefore retain explicit funding obligations.
+
+The native header probe confirms word/indirection sizes **8/16**, indirectee/header offsets
+**8/0**, blocking-queue owner offset **24** and block-descriptor generation offset **40**; all
+**70** header dependencies are captured. Seven selected guards bind the captured release sources:
+`Threads.c` selects the update and queue routes, while
+[Updates.h](https://raw.githubusercontent.com/ghc/ghc/ghc-9.12.4-release/rts/Updates.h) specifies
+collector bookkeeping and a release store of the indirectee before release header publication.
+Source guards and instruction order do not independently prove the concurrent memory model,
+barrier execution, alias retirement or whole-source/native equivalence.
+
+All **42** controls pass: eight semantic-model mutations, twelve changed native sites, six
+substituted relocations, three repeated-publication/bookkeeping routes, six altered ABI fields and
+seven removed source facts. Mutated objects are inspected only. The initial checker refused an
+unmodeled ordinary pointer increment; the corrected **26-control** version passes and is preserved
+alongside that nonpass. Final `semantic-context-update-thunk-final-validation-1.json` preserves the
+current result, source/header/archive identities, unchanged-input terminal receipts and current
+operator identity. It assumes valid disjoint RTS structures, capability/collector contracts and
+normal C-helper behavior. `dirty_STACK`, transitive block/barrier/queue effects, next-chunk space,
+complete unwind frequency, global retention, physical memory funding and admission remain open.
+Production source, selected private coefficients, limits and queue state are unchanged. Canonical
+gate **58** retains its executable scope; docs are checked separately and Sprint **6.5** stays active.
+
+**Installed stack-dirty bookkeeping preserves the selected stack pointer under helper contracts.**
+`semantic-context-dirty-stack-3/validation-1.json` checks all **63** installed `dirty_STACK`
+instructions and three exact relocation targets in threaded `Storage.thr_o`. A **140-state**
+branch traversal visits all **61** non-padding instructions and bounds each direct remembered-set
+call, block-allocator call, dirty-flag store and mutable-list insertion to at most **one** per
+local entry. It grants no transitive allocator/collector bound.
+
+A separate interpreter replays **48** fixed synthetic machine states through **eight** native
+paths: barrier off/on, dirty bytes **0/1/64/255**, generations **0/1/65,535**, and available/full
+mutable-list blocks. The barrier is checked before the dirty flag, so even an already-dirty stack
+may call `updateRemembSetPushStack`. A clean stack becomes dirty; a nonzero dirty byte is retained.
+Only the clean, older-generation route inserts the original stack pointer in the mutable list,
+advances its cursor by one word and links a new bookkeeping block when the old block is full.
+The synthetic helpers preserve modeled stack fields and return under the normal C ABI; these are
+explicit contracts, not evidence of their actual implementations.
+
+All cases preserve the original stack SP and the three saved C registers, restore the **40-byte**
+local C frame, and pass exact helper-argument/order and mutable-list head/link/value checks.
+The frame excludes return addresses and callees. The native header probe confirms word size **8**,
+stack dirty/SP/payload offsets **12/16/24**, generation offset **40** and **4,096-byte** block
+size; all **70** header dependencies are captured. That block size does not account for physical
+allocator growth, descriptors or synchronization costs.
+
+All **33** controls pass: seven semantic mutations, three repeated-bookkeeping routes, twelve
+changed native sites, three substituted relocations, six altered ABI fields and two removed source
+facts. Mutated objects are never executed. The initial checker misparsed an indexed destination;
+the next checker reached a C-probe format mismatch. Both nonpasses are retained with their exact
+terminal receipts and sources. The corrected parser respects addressing parentheses, and the
+probe formats an explicit `size_t` block size. Two source guards match the previously captured
+release `Storage.c`; they do not establish full source/native or concurrent memory-model equivalence.
+Final `semantic-context-dirty-stack-final-validation-1.json` preserves graph/case/control results,
+installed archive, source/header identities, unchanged-input receipts and current operator identity.
+Remembered-set helper semantics, block growth, collector concurrency, next-chunk space, whole-runtime
+frequency/retention, physical funding and admission remain open. No production source, coefficient,
+limit or phase state changes. Gate **58** retains its executable scope; docs are checked separately
+and Sprint **6.5** remains active.
+
+**Installed remembered-set entry boundaries separate bounded local handoffs from open waits.**
+`semantic-context-remembered-boundaries-4/validation-1.json` binds the installed
+`updateRemembSetPushStack` and `updateRemembSetPushThunk` entry functions to captured threaded
+`NonMovingMark.thr_o`, release source and exact relocations. The stack function's **211-state**
+traversal visits **132** non-padding instructions out of **137** total. It calls the stack tracer
+at most **once**, with capability address **+1,032**, original stack SP and payload end. The source
+names that first argument as the remembered-set queue; its private capability-layout interpretation
+remains an explicit contract. Its selected atomic claim addresses the stack's marking byte. The selected non-local ordinary store addresses
+segment mark metadata; valid disjoint stack/segment structures remain a contract. Return and
+large-object finishing tail routes restore three saved C registers and a **24-byte** local frame.
+Callee frames, allocations and collector effects are excluded.
+
+The thunk entry's **nine-state** traversal covers all **eight** instructions, including one reached
+padding instruction. Its seven non-padding instructions poll the header while it is WHITEHOLE,
+then tail-call `updateRemembSetPushThunkEager` with the original capability and thunk plus the
+header-derived thunk-info pointer. The wrapper has no local C frame or direct helper call before
+that handoff. The WHITEHOLE loop and the stack's concurrent-mark wait have no local allocator call;
+neither loop has a termination or iteration bound here. Eager-thunk processing, stack tracing and
+large-object finishing remain separate transitive contracts.
+
+The header probe confirms word size **8**, marking/SP/payload/size offsets **13/16/24/8**,
+block-descriptor generation-pointer/flags offsets **32/46**, thunk-info size **16** and header-info
+offset **0**. All **70** installed header dependencies are captured. Seven source guards match
+[NonMovingMark.c](https://raw.githubusercontent.com/ghc/ghc/ghc-9.12.4-release/rts/sm/NonMovingMark.c),
+including the stack claim/trace/finish and wait routes plus the thunk lock-read/tail route. These
+are selected source facts, not a full source/native or concurrent correctness proof.
+
+All **45** controls pass: eight semantic mutations, one repeated-trace route, fifteen changed
+native sites, five substituted relocations, nine altered ABI fields and seven removed source
+facts. Mutated objects are never executed. Two earlier checker versions failed source-control
+classification because an identical fact outside the selected function and whitespace-sensitive
+end markers weakened the control. The corrected checker normalizes whitespace before selecting
+both function envelopes. Its initial passing result is retained; the final report separately
+counts reached padding instead of labeling every visited instruction non-padding. Final
+`semantic-context-remembered-boundaries-final-validation-1.json` preserves these results/nonpasses,
+archive/source/header identities and unchanged-input terminal receipts with current operator
+identity. Helper internals, wait liveness, collector concurrency, allocator growth, whole-runtime
+frequency/retention, physical funding and admission remain open. No production source, coefficient,
+limit, phase advancement, live attempt or credential access occurs. Gate **58** retains its
+executable scope; docs are checked separately and Sprint **6.5** stays active.
+
+**Source-derived stack/thunk scan bounds charge queue requests to scanned words.**
+`semantic-context-trace-scan-bounds-2/validation-1.json` composes ten affine family bounds from
+captured `NonMovingMark.c`. For a valid frame with n bitmap payload words, the source scan has:
+
+- Update frames consume **2** words and request at most **1** push.
+- Small/large return-bitmap frames, including the handled small-frame kinds, consume **1 + n**
+  words and request at most **1 + n** pushes.
+- BCO returns consume **2 + n** words and request at most **1 + n** pushes.
+- Function returns consume **3 + n** words and request at most **2 + n** pushes.
+
+The request count conservatively includes one possible SRT root and, where present, the BCO or
+function root. Bitmap callbacks visit at most one root per payload slot. Every frame makes
+positive progress, and each request term is no greater than its consumed-word term. Summing valid
+frames therefore bounds requests by **N consumed stack words**. The source eager-thunk classes
+have the analogous object-word bound: ordinary thunks request at most pointer-count + 1,
+application closures at most argument-count + 1, selectors/indirections at most one, and the
+already-blackholed arm zero. These are source/affine bounds under valid metadata, spans and helper
+contracts, not complete native-equivalence or physical-allocation proofs.
+
+The large-bitmap walker uses **uint32_t** block/slot counters. The proof explicitly requires a
+requested span **n ≤ 4,294,967,295**, agreeing with valid stack-size/payload metadata. With
+j = min(n − i, 64), each step has i + j ≤ n and cannot wrap; the block count is at most
+**67,108,864**. The validity contract also requires bitmap storage to cover the requested span,
+correct frame/argument metadata and every frame to stay within its input stack range. Larger or
+inconsistent metadata is outside this proof; no large allocation or exhaustion search is used.
+
+A compiled fixture includes the actual captured
+[HeapUtils.h](https://raw.githubusercontent.com/ghc/ghc/ghc-9.12.4-release/rts/sm/HeapUtils.h)
+walker and passes **50** cases: ten sizes **0/1/2/63/64/65/127/128/129/130**, each with five
+pointer/nonpointer patterns. Declared bitmaps extend beyond the requested span. Callback checks
+prove exact selected indices, at most one visit per slot, exact counts and unchanged bitmap/payload
+storage for those finite cases. The fixture uses a real flexible-array bitmap allocation; it does
+not substitute an aliased unrelated structure or link the whole collector.
+
+Eight selected native chunks independently check stack dispatch, small-bitmap step/shift/loop and
+SRT handling, the two-word update advance and function/large-bitmap entry anchors. Four exact
+push-call relocations and all **eleven** handled frame-kind routes match installed native/header
+constants. Complete native scans and queue internals remain open. All **70** installed header
+dependencies are captured. The affine proof, **180** fixed class/bitmap-count models, five
+compositions and **48** controls pass, including ten over-budget affine families, 26 removed source
+facts, eight changed native chunks and four substituted push targets. Mutated objects/headers are
+inspected only; only the original bitmap header is compiled and executed. The first checker refused
+a normalized function-definition lookup; the corrected lookup selects braced definitions.
+
+Final `semantic-context-trace-scan-bounds-final-validation-1.json` preserves the result, initial
+nonpass, pinned source/native/header identities, compiled fixture and terminal unchanged-input
+receipts with current operator identity. No queue-entry bytes, allocator growth, physical working
+set, full scan equivalence, invocation multiplicity, retention or ordinary admission is funded by
+this request bound. Production source, private context coefficients, limits and queue/phase state
+remain unchanged; gate **58** retains its executable scope and docs are checked separately. Sprint
+**6.5** stays active and later phases remain parked.
+
+**The installed native stack-tracer body passes finite root-selection fixtures.**
+`semantic-context-trace-native-2/validation-1.json` executes **1,865** installed `trace_stack_`
+instruction bytes through a qualification capsule. All **five** selected original code/read-only
+sections retain their bytes, and all **71** relocation records retain their types, offsets and
+addends under an explicit helper-symbol mapping. Internal frame dispatch stays within the copied
+body. The **232-byte** installed argument-bitmap table is copied independently from threaded
+`AutoApply.thr_o`. Queue declarations/constants are projected unchanged from the captured release
+[NonMovingMark.h](https://raw.githubusercontent.com/ghc/ghc/ghc-9.12.4-release/rts/sm/NonMovingMark.h),
+with the selected queue entry/head/top/flag layout checked by the fixture.
+
+The native run passes **767** fixed cases and observes **9,140** ordered root visits. The generic
+cohort comprises **420** small-frame metadata routes, **100** large-return bitmap cases,
+**50** BCO-return cases, **60** function-return generic-small cases, **100** generic-large function
+returns, four canned `ARG_NONE`/`ARG_P` cases and one update frame. Five pointer/nonpointer patterns
+and SRT absence/presence are combined where applicable; large payloads cross **64/128-word** bitmap
+boundaries and remain at most **130 words**. A further **28** cases use every captured native
+owner/preparer RET_SMALL bitmap, verified against the unchanged compiled owner object. Four
+compositions cover empty input, chained updates, mixed frame kinds and chained large frames.
+The largest synthetic stack is **1,048 words**; each case checks the word/request bound, exact
+root order/tags/origins and unchanged input frame words.
+
+These are finite synthetic metadata/interpreter fixtures. Generic route encodings do not prove
+actual runtime construction of those frames, heap membership or complete valid-span invariants.
+The external queue interpreter treats roots as retained static objects and records bounded queue
+entries. Actual allocator, lock, error and flush paths fail immediately if entered; the passing
+fixtures never enter them. A preallocated fixture queue supplies capacity, so no production queue
+allocation or growth bound follows. The native function's instruction bytes are preserved while
+external helper targets are deliberately interpreted; this is not the complete linked RTS running
+its collector.
+
+Two interpreter controls omit or duplicate the first external root; both return the intended
+fixture refusal. The positive run and both controls use the same linked binary. The independent
+`semantic-context-trace-native-verifier-1/validation-1.json` passes **78** nonexecuted mutations:
+seven copied code/data/table sections and every one of the 71 relocation addends. It also checks
+source-projected declarations, exact copied owner/argument bitmap tables, terminal producer/output
+identity and all consumed inputs. Altered native objects are never executed. The first build's
+fixture indentation warnings remain a retained nonpass; the corrected fixture builds with strict
+warnings enabled.
+
+Final `semantic-context-trace-native-final-validation-1.json` binds native/verifier evidence,
+original archive and owner-object identities, source/header projections, binary and terminal
+unchanged-input receipts to the current operator. Universal native scan/request proofs, eager-thunk
+processing, actual queue/allocator/collector behavior, invocation multiplicity, physical memory,
+retention and admission remain open. Production source, selected private coefficients, limits and
+queue/phase state are unchanged. Gate **58** retains its executable scope; docs are checked
+separately, Sprint **6.5** stays active and later phases remain parked.
+
+**Selected native small-bitmap scans have symbolic progress and request bounds.**
+`semantic-context-native-small-scan-5/validation-1.json` checks the two installed `trace_stack_`
+small-bitmap bodies for ordinary return frames and small function-return arguments. Eight symbolic
+transitions cover pointer/nonpointer bits and last/nonlast-slot relations. Under each loop's
+specified valid entry, every transition reads only its current slot, advances the cursor by exactly
+one word, shifts the bitmap once, preserves the end/queue origins and makes exactly zero or one
+payload queue request according to the bit. This is an arbitrary-index argument, not a sampled
+length comparison. Assuming normal helper return and a valid stable N-slot span, induction gives
+**N iterations and at most N payload requests**, with no repeated slot.
+
+Six local entry/exit bridges cover zero/nonzero spans for return metadata, generic function
+metadata and canned function bitmaps. Packed metadata's low six bits supply **0 ≤ N ≤ 63**; the
+remaining bits supply the bitmap. Empty spans bypass the body. Positive spans establish the cursor,
+end and bitmap invariants; both exits reconstruct the next frame from the saved payload base and
+count. Return frames advance by **1 + N** words; the checked function-return classes advance by
+**3 + N**. The payload argument assumes valid metadata/table selection, pointer arithmetic and
+frame bounds; it does not validate arbitrary runtime memory as a frame.
+
+Two acyclic SRT corridors allow at most **one** additional request before the next outer scan check
+or return boundary. The selected function-root corridor requests once; update frames request once
+and advance by **two** words. Thus the selected native small-return class requests at most
+**N + 1** for **N + 1** consumed words, small function returns at most **N + 2** for **N + 3**,
+and updates one for two. Valid sequences drawn from these classes inherit the request-per-consumed-
+word bound. These local proofs do not claim that all runtime stack frames belong to the subset,
+that every helper returns, or that queue requests are free.
+
+All **44** controls pass: twelve changed body semantics, eight changed entry/exit semantics,
+four changed root/SRT/update instructions, eighteen altered native sites and two substituted helper
+relocations. Changed objects are inspected only. The body-only and bridged predecessors pass with
+32 and 40 controls. One bridge control initially expected a later refusal although its empty-span
+case correctly refused the saved base earlier; that classifier nonpass is retained. An intermediate
+composition command did not create its checker file and the attempted QA launch refused with exit
+**2**; that terminal missing-file result is retained separately from producer success.
+
+Final `semantic-context-native-small-scan-final-validation-1.json` preserves the native object,
+source/semantic models, transition/bridge/corridor results, controls, predecessor/nonpass records
+and terminal unchanged-input receipts with current operator identity. Actual C-helper ABI/stable-
+span contracts, large-bitmap and eager-thunk native paths, queue/allocator costs, invocation
+multiplicity, collector/scheduler behavior, physical funding, retention and admission remain open.
+This follows the structural/containment distinction in Resource Scaling Doctrine §2D; it does not
+replace sufficiency with an RTS or cgroup cap. Production source, selected private coefficients,
+limits and queue/phase state are unchanged. Gate **58** retains its executable scope; docs are
+checked separately, Sprint **6.5** stays active and later phases remain parked.
+
+**Native large-bitmap payload scans have conditional slot/chunk bounds, including growth routes.**
+`semantic-context-native-large-scan-5/validation-1.json` checks installed `trace_stack_` corridors
+for BCO returns, large return bitmaps and generic-large function returns. Their symbolic traversals
+have **253/268/256 states**. Every normal slot route reaches the shared advance with the cursor,
+bitmap, chunk end, queue, total/processed counts and chunk index preserved. Selected caller metadata,
+stack-bottom and payload-base spill slots are preserved too. Each route reads at most one payload
+slot and completes either zero or one direct root/origin/head-update insertion triple.
+
+The graph includes filtering, available/full queue capacity, flush, fresh-group allocation and
+lock/error branches. A normal growth route calls either the flush helper or `allocGroup(16)` at
+most **once**; direct allocation routes have one balanced lock/unlock pair. Each helper is treated
+under its normal C ABI and valid disjoint structure/spill-slot contracts. Fatal helpers are terminal
+error routes, not successful progress. The fresh group's writable storage and the flush helper's
+returned capacity remain contracts. These local call counts do not fund helper internals, allocator
+growth or lock/service liveness.
+
+Every normal slot then advances the cursor **8 bytes**, shifts the bitmap once and compares the
+new cursor with the chunk end. The three chunk templates load the selected bitmap word and choose
+**J = min(64, N − K)**, where **0 ≤ K < N ≤ 4,294,967,295**. They preserve the native dataflow
+from processed count to remaining count, conditional minimum, next processed count and chunk-end
+address. Checkpoints copy the next processed count, increment the bitmap index once and repeat only
+while words remain. Payload exits reconstruct the cursor from the saved base and **8 × N**.
+The large-return route falls directly into SRT handling; the other two use explicit jumps.
+
+Five nonnegative affine certificates check the short/long remaining-span cases. For a short chunk,
+J is the positive remainder and completes the payload. For a long chunk, J is 64 and leaves a
+positive remainder. Both keep the next processed count at most N, so the 32-bit additions do not
+wrap. At most **67,108,864** bitmap chunks are needed. Combined with the slot progress proof,
+this gives at most **N direct queue insertions** for a valid N-word payload in these classes.
+Initial frame/metadata construction, zero-span bypass, bitmap storage validity and helper returns
+are explicit preconditions, not consequences of the traversal.
+
+All **58** controls pass: seventeen changed slot/growth/state semantics, twenty-one changed native
+sites, twelve substituted helper relocations and eight changed chunk/counter/exit instructions.
+Changed machine objects are inspected only. The earlier 35- and 50-control versions also pass.
+The first checker refused read-only error-message references; the corrected decoder retains them
+as data addresses. The first chunk template required a jump where the installed large-return path
+falls through. Both nonpasses remain retained with their exact sources/terminal receipts.
+Final `semantic-context-native-large-scan-final-validation-1.json` preserves the checks, affine
+certificates, native/archive identities and unchanged-input terminal receipts with current operator
+identity. Eager-thunk processing, actual frame/metadata admission, transitive queue/block/lock
+behavior, invocation multiplicity, collector/scheduler semantics, physical working set, retention
+and ordinary admission remain open. Production source, selected private coefficients, limits and
+queue/phase state are unchanged. Gate **58** retains its executable scope; docs are checked
+separately, Sprint **6.5** stays active and later phases remain parked.
+
+**Installed eager-thunk direct scanning has conditional dispatch, progress and handoff bounds.**
+`semantic-context-native-eager-thunk-3/validation-1.json` checks all ten supported native closure-kind
+routes: six ordinary thunk kinds, selector, application, indirection and blackhole. Five direct
+insertion corridors have **199/208/208/199/69 states** for pointer fields, indirection, selector,
+application function and optional SRT. Normal routes preserve the required capability, thunk,
+queue, metadata and index origins. Each corridor completes zero or one root/origin/head insertion
+triple, with at most one direct flush or `allocGroup(16)` call; allocation paths have balanced
+lock/unlock calls on normal continuation. Fatal helpers are error terminals, not successful progress.
+
+Ordinary thunks initialize their field index to zero, skip an empty pointer span, advance once per
+normal field route and stop at the stable metadata count. The 32-bit pointer count bounds the
+64-bit index, so **N ≤ 4,294,967,295** requires at most N field iterations and N direct field
+insertions. Optional SRT handling adds at most one. Selector/indirection routes insert at most one;
+the blackhole route returns without direct insertion. These are conditional local bounds under
+valid disjoint objects/queues, stable metadata and normal C-helper return/ABI contracts.
+
+The application route inserts at most one function root before the separate payload handoff.
+A filtered function keeps its original argument and skips the reload; an insertion path reloads
+the function after possible helper calls. Both routes preserve the application pointer needed by
+the checked function/argument-count/payload loads. The tail target is exactly `trace_PAP_payload`.
+The payload helper is checked separately below; this eager-thunk result alone does not bound it.
+
+The six saved-register slots and **56-byte** local C frame are restored on normal returns and
+the application tail. The selected direct bodies do not write the caller frame; valid disjoint
+structures and normal helper behavior remain required. Return addresses and callee frames/costs
+are excluded. The native header probe confirms 64-bit words, 32-bit halfwords, thunk/selector
+payload offsets **16/16**, indirection offset **8**, application function/payload/count offsets
+**24/32/20**, and the ten native kind constants. All **70** installed header dependencies are
+captured. Numeric capability queue offsets retain their separate private-layout contract.
+
+All **61** controls pass: twelve changed semantic/frame instructions, sixteen changed native sites,
+five substituted helper/tail references, eighteen changed ABI fields and ten changed kind routes.
+Changed machine objects are inspected only. The earlier 31-control version passes; the initial
+checker incorrectly continued into the application epilogue after a filtered function. Its
+nonpass is preserved, and the corrected model recognizes both application handoff entries.
+Final `semantic-context-native-eager-thunk-final-validation-1.json` preserves these results,
+archive/header/source identities, controls and terminal unchanged-input receipts with current
+operator identity. Delegated application tracing, private capability layout, actual helper/growth/
+lock behavior, concurrency, invocation frequency, physical working set, retention and ordinary
+admission remain open. Production source, selected private coefficients, limits and queue/phase
+state are unchanged. Gate **58** retains its executable scope; docs are checked separately,
+Sprint **6.5** stays active and later phases remain parked.
+
+**Installed application-payload tracing has conditional progress and direct-insertion bounds.**
+`semantic-context-native-pap-small-1/validation-1.json` checks the actual
+`trace_PAP_payload` small-bitmap loop for both bit classes and both final/nonfinal-slot relations.
+Its four symbolic transitions advance the cursor by one word, shift the bitmap once and request
+zero or one root with the original queue and zero origin. Checked generic/canned entry corridors
+load the bitmap, preserve the caller's argument count and bypass the body when it is zero.
+Under valid stable small metadata, **N ≤ 58** and a representable disjoint payload span, induction
+gives N iterations and at most N direct queue-push requests. The installed-header probe confirms
+word size **8**, bitmap/type distances **32/24** before the function info pointer and
+generic/generic-large/BCO tags **0/1/2**. All **70** header dependencies are captured.
+
+`semantic-context-native-pap-large-3/validation-1.json` checks the BCO and generic-large slot
+corridors in **256/241 symbolic states**, including filtered roots and queue growth. Each normal
+slot route preserves its cursor, bitmap, chunk end, total, processed count, chunk index and required
+metadata register/slot. It commits zero or one root/origin/head insertion triple, reads at most one
+payload root and calls at most one direct flush or `allocGroup(16)`; normal allocation routes have
+balanced lock/unlock calls. Fatal helpers are error terminals. Body instructions preserve the local
+stack pointer; helpers retain their normal C ABI and caller-frame contracts.
+
+Both large routes initialize their counters to zero, bypass an empty payload, choose
+**J = min(64, N − K)** and advance one word per completed slot. Checked chunk exits carry K+J
+into the next chunk or return. The existing five nonnegative affine certificates prove positive
+progress and no 32-bit counter wrap for **N ≤ 4,294,967,295**, with at most **67,108,864** chunks.
+Thus the conditional direct-insertion bound is N for either large payload route. Native bitmap
+address calculations are pinned; valid BCO/generic bitmap storage, legal canned indexes and
+complete function/frame metadata construction remain explicit contracts. A local request bound
+does not establish queue allocation bytes or a bound on helper invocations across the program.
+
+The small and both large normal return paths restore six saved registers and the **88-byte**
+local C frame. Return addresses and transitive callee frames are excluded. The small check passes
+**41** controls; the final combined check adds **53** semantic, native-byte and helper-reference
+controls. Changed objects are inspected only. The earlier 52-control combined check also passes;
+its predecessor failed because the private checker omitted its regular-expression import, and
+that nonpass is retained. Final `semantic-context-native-pap-final-validation-1.json` preserves
+the controls, archive/header/source identities and terminal unchanged-input receipts. Gate **58**
+retains its executable scope and docs are checked separately. Production source, selected private
+coefficients, limits and phase order remain unchanged. Actual queue/allocator/collector behavior,
+concurrency, whole-frame scheduling, invocation frequency, physical working set, retention and
+ordinary admission remain open; Sprint **6.5** stays active.
+
+**Installed stack tracing composes conditionally across complete frames.**
+`semantic-context-native-stack-frames-4/validation-1.json` checks all **29** native dispatch-table
+entries for types **29–57**. Eleven supported types select small-return, large-return, BCO,
+function-return or update paths; the remaining eighteen select the checked fatal default.
+Both native range guards and the exact table reference are bound to the installed object.
+Function-return setup requests its function root once, strips its tag, saves the payload base
+after three header words and dispatches through generic-small, generic-large or canned metadata.
+Its optional SRT still uses the original return info.
+
+Six symbolic large-frame entry bridges cover empty/nonempty BCO, large-return and large-function
+payloads. They establish the saved payload base, total N, bitmap origin, zero processed count and
+zero chunk index needed by the existing loop proofs. Empty payloads bypass those loops. BCO
+entry requests its BCO root once and advances past two header words; large returns advance past
+one, and function returns past three. The bridges retain the queue, stack bottom and required
+return-info origin. The installed-header probe confirms those layouts, large-bitmap size/word
+offsets **0/8**, BCO bitmap offset **40**, update size/updatee offset **16/8**, return-info
+bitmap/type/SRT distances **16/8/4**, function bitmap/type distances **32/24**, and all eleven tags.
+All **70** installed header dependencies are captured.
+
+The checker recomputes both small payload-loop proofs, all three large payload corridors,
+their chunk certificates, the six earlier small entry/exit bridges and root/SRT fees.
+Additional checks preserve the return-info register, small-loop total count and saved eight-byte
+metadata/base/bottom slots across payload scanning; direct spill writes cannot overlap those
+slots. The large-loop proofs reconstruct the next frame from the saved payload base plus N words.
+Small/update paths and both SRT tails likewise converge on the native bottom guards, which admit
+another frame exactly when its cursor is below the stack bottom. The six saved registers and
+**104-byte** local C frame are restored on normal return; direct body instructions cannot change
+the stack pointer. Helper frames and return addresses are excluded.
+
+For a **stable valid partition spanning W words**, each supported frame consumes at least one
+word and its direct root requests/inline insertions do not exceed its consumed words. Small/big
+returns charge at most **N+1** against **N+1** words; BCO charges **N+1** against **N+2**;
+function returns charge **N+2** against **N+3**; updates charge one against two. Nonnegative
+affine slack certificates and the checked next-frame/bottom transitions therefore bound one
+normally completing invocation by **W frame visits and W direct requests/insertions**. This is
+conditional scan composition, not proof that an actual runtime stack has the required partition,
+that helpers terminate, or that the tracer is invoked only once.
+
+All **108** controls pass: 21 semantic/frame controls, 28 changed native sites, five changed
+dispatch/helper/table references, all 29 changed dispatch entries and 25 changed ABI fields.
+Two controls specifically corrupt return-info preservation. Changed machine objects are inspected
+only. Earlier 105- and 106-control checks pass; the initial checker failed while classifying a
+removed counter initialization because it used a partial register lookup. That nonpass is retained
+and the corrected model returns a typed refusal. Final
+`semantic-context-native-stack-frames-final-validation-1.json` preserves these results, archive/
+header/source identities, negative controls and terminal unchanged-input receipts with the current
+operator identity. Gate **58** retains its executable scope; docs are checked separately.
+Production source, selected private coefficients, limits and phase order remain unchanged.
+Actual metadata construction/admission, full runtime scheduling and invocation frequency,
+transitive queue/allocator/collector behavior, physical working set, retention and ordinary
+admission remain open. Sprint **6.5** stays active; later phases remain parked.
+
+**Captured owner/preparer return headers have checked native construction.**
+`semantic-context-owner-frame-headers-2/validation-1.json` joins all **28** captured return maps
+to their unique native info-pointer stores, including the failure-only `c9Hx` map. Each info
+symbol aliases its code-entry symbol, its packed bitmap/`RET_SMALL` tag matches the captured Cmm,
+and its store has the exact `R_X86_64_32S` target. The checker follows each straight construction
+corridor from its Cmm block's native label to the first transfer, binds every traversed instruction
+to the captured object, and rejects intervening calls or unreviewed stack-pointer operations.
+
+All 28 header stores land at the final local Haskell stack pointer before that transfer.
+The native and Cmm net stack adjustments agree: a new header is stored before publishing an
+adjusted stack pointer, and a replaced header occupies the existing top. Direct payload stores
+are full words and cannot overwrite the newly installed header. The encoded payloads contain
+**0–5 words**, so each selected frame spans **1–6 words** and fits the installed tracer's
+small-bitmap contract. Its conditional per-frame direct-request/insertion allowance is therefore
+at most that frame's encoded word extent. Correct linker relocation application remains required.
+
+The existing Cmm stack-root replay is recomputed: **27** maps form valid local frame partitions
+at the selected call boundaries, with untraced pointer origins erased before continued origin
+checking. The failure-only map remains outside that replay even though its native header store
+is now checked. This does not prove native payload-value/kind agreement or the validity of
+inherited/external frames, nor does it establish the failure path's complete surrounding partition.
+
+All **133** controls pass: 28 displaced header stores, 28 changed native instruction sites,
+28 changed info relocations, 15 incorrect stack adjustments, and two controls for each of
+17 direct payload stores (narrow width and header overlap). Changed objects/models are inspected
+only. The preceding 99-control check also passes. Final
+`semantic-context-owner-frame-headers-final-validation-1.json` preserves the construction and
+root-replay results, controls, captured compiler/object identities and terminal unchanged-input
+receipts with the current operator identity. Gate **58** retains its executable scope and docs
+are checked separately. Production source, selected private coefficients, limits and phase order
+remain unchanged. Native payload agreement, sufficient stack space, caller/runtime metadata,
+collector/scheduler and callee behavior, invocation frequency, physical working set, retention and
+ordinary admission remain open. Sprint **6.5** stays active; later phases remain parked.
+
+**Captured owner/preparer payloads have local native/Cmm correspondence.**
+`semantic-context-owner-frame-payloads-4/validation-1.json` compares **17 direct payload writes**
+and **53 inherited payload slots** across the same **28** return-frame constructors. Independent
+Cmm and native straight-corridor interpreters start from corresponding Haskell argument registers
+and stack bits. Native register moves, field loads, stack loads/stores and local stack adjustments
+produce the same symbolic payload origins as Cmm. Each directly written slot's Cmm pointer/scalar
+kind matches its captured bitmap bit. Unwritten slots retain the same entry bits on both sides;
+their validity depends on the corresponding entry state, rather than a newly invented value.
+
+The scalar live into the four-slot preparer constructor is joined to its actual predecessor:
+the installed load reads the original R1 field at offset **23**, compares it with **1,048,576**
+and branches to that constructor. The native constructor preserves that scalar while preparing
+its other fields. Both source predecessors of the refusal-list dispatch establish its selected
+list alias from R1, and the dispatch leaves that source alias unchanged before the next constructor.
+Opaque external call-argument values cannot satisfy a payload-origin comparison.
+
+The existing Cmm root replay is recomputed for **27** maps; `c9Hx` remains outside that replay.
+Its zero-payload constructor is covered by local correspondence, which does not establish its
+surrounding runtime partition. The combined local result joins the 28 headers and bitmaps to
+their native payload bit origins **under matched entry registers/stack, field-kind, disjoint valid
+heap/stack and sufficient-space contracts**. It does not establish that arbitrary native callers,
+callees, GC or the scheduler preserve those contracts. Other caller/runtime frames remain separate.
+
+All **42** controls pass: seventeen wrong native payload sources, six changed native field/move/
+predecessor instructions, seventeen changed Cmm store kinds and two changed predecessor aliases.
+Changed models/Cmm are inspected only. The earlier 23-control check passes; two preceding private
+checker nonpasses are retained, covering unsupported tagged call arguments and the initially
+unmodelled list alias. Final `semantic-context-owner-frame-payloads-final-validation-1.json`
+preserves both local interpreters, root replay, controls, source/object identities and terminal
+unchanged-input receipts with current operator identity. Gate **58** retains its executable scope;
+docs are checked separately. Production source, selected private coefficients, limits and phase
+order remain unchanged. Cross-boundary entry-state preservation, complete runtime metadata/
+partition, invocation frequency, physical working set, retention and ordinary admission remain
+open. Sprint **6.5** stays active; later phases remain parked.
+
+**Launcher/query/scalar-GC and adapter frame boundaries join locally.**
+`semantic-context-launcher-frame-join-3/validation-1.json` adds the launcher's `c9JJ` map
+(`RET_SMALL`, one pointer word) and wrapper's `c9MP` map (`RET_SMALL`, empty payload) to the earlier
+28-map cohort. Both native constructors store their exact info pointer before the local stack
+adjustment and first transfer. The launcher's saved payload reproduces Cmm's original R2 cell at
+**Sp+8** after its **16-byte** adjustment. Its exact tail reference enters the installed
+`stg_getMaskingStatezh`, whose previously checked straight-line code leaves that frame unchanged
+and enters its continuation with masking word **0/1/2**.
+
+The launcher continuation's heap-check failure reaches the exact scalar-GC entry reference.
+The pinned installed scalar spill/return implementation is revalidated. For all three masking
+words, its two-word frame lies wholly below the original two-word launcher frame: it saves the
+scalar untraced, leaves the original header/cell slots intact, restores the scalar and original
+stack pointer, and enters `c9JJ` again under the collector's origin-preservation/normal-return
+contract. This joins the local instructions and frame layout; it does not prove collector or
+scheduler execution, heap-check retry multiplicity or physical memory funding.
+
+The wrapper continuation loads the cell into R2, removes its one-word return frame and tails
+to the exact launcher entry. The adapter's metadata agrees with Cmm: one captured pointer,
+zero nonpointer fields, `FUN_1_0`, arity one and **`ARG_NONE = 3`**. Its calling convention has
+no material argument word; its captured environment is a separate pointer. Its three native
+instructions load the tagged `mask3` restore function, load the claim closure from the captured
+field and tail to the exact claim entry without adding a stack frame. For a tag-one function
+entry, the **+7** load reaches payload offset **8** from the untagged base. The checked PC32
+address calculation supplies the restore-function tag **+2**.
+
+The installed-header probe confirms the return/function/header/payload layouts and calling/kind
+constants; all **70** header dependencies are captured. All **51** controls pass: six semantic
+instructions, seventeen changed native sites, nine changed return/adapter metadata fields, five
+changed constructor/query/GC/restore references and fourteen changed ABI fields. Changed objects
+and models are inspected only. Two earlier probe nonpasses are retained: a nonexistent canned
+argument constant and the subsequent incorrect pointer-argument constant. The corrected probe
+checks the actual `ARG_NONE` encoding. Final
+`semantic-context-launcher-frame-join-final-validation-1.json` preserves those nonpasses, current
+construction/query/GC/header identities, controls and terminal unchanged-input receipts with
+operator identity. Gate **58** retains its executable scope and docs are checked separately.
+Production source, selected private coefficients, limits and phase order remain unchanged.
+External entry/callee/collector/scheduler preservation, remaining runtime frames, invocation
+frequency, complete runtime partition, physical working set, retention and ordinary admission
+remain open. Sprint **6.5** stays active; later phases remain parked.
+
+**Force handoffs and pointer-GC caller/return boundaries join locally.**
+`semantic-context-owner-force-gc-1/validation-1.json` checks **20** selected force sites across
+the updater, preparer, claim, work and wrapper paths. Each source guard tests R1's three tag bits
+and selects either the installed return continuation or its matching indirect-entry block.
+Native guard instructions and targets match that choice. The corresponding native header
+constructor has already placed the exact continuation at the final local stack pointer before
+the guard. The untagged path consists of an info-entry load from R1 followed by a jump through
+that loaded value; it preserves R1, the stack pointer and the installed caller frame.
+
+All **160** site/tag combinations cover the complete three-bit domain: tags **1–7** reach the
+caller continuation directly, and tag **0** enters the loaded closure entry. These are local
+handoff facts under valid tags and stable aligned closure info. They do not establish the
+indirect callee's behavior, concurrent info/tag preservation or its eventual return.
+
+The Cmm root replay now additionally checks that every observed returning call finds its declared
+continuation in the top stack slot. All **33** distinct call/continuation/stack-position observations
+pass alongside the existing **27** visited return maps. This checks caller state before a call;
+it does not establish that a callee preserves that state or obeys the return contract.
+
+Seven native pointer-GC caller tails have the correct allocation-request store and exact
+`stg_gc_unpt_r1` reference. Six have a matching observed Cmm caller frame and join to the
+revalidated installed pointer spill/return instructions: a two-word traced-pointer frame is
+placed below the original caller frame, then restores R1's collector-preserved origin and the
+original stack pointer before entering that caller's continuation. The original frame slots are
+not overwritten by the local spill/return code. The seventh tail, failure-only `c9Hx`, has checked
+header reinstallation but remains outside surrounding Cmm root replay. The wrapper's local force
+handoff is checked; its whole-caller replay remains separate.
+
+All **109** controls pass: eighty changed force instructions, twenty changed native guard sites,
+seven incorrect GC allocation requests and two wrong Cmm return slots. The last two reach the
+new top-slot refusal before ordinary root scanning. Changed code/models/Cmm are inspected only.
+Current installed register macros confirm R1/Sp as **rbx/rbp**. Final
+`semantic-context-owner-force-gc-final-validation-1.json` preserves the local graphs, instrumented
+root replay, controls, source/object/archive identities and terminal unchanged-input receipts
+with operator identity. Gate **58** retains its executable scope and docs are checked separately.
+Production source, selected private coefficients, limits and phase order remain unchanged.
+Indirect callee implementation, function-entry/application joins, collector/scheduler preservation,
+concurrency, invocation frequency, complete runtime partition, physical working set, retention
+and ordinary admission remain open. Sprint **6.5** stays active; later phases remain parked.
+
+**Selected function-entry GC joins native callers to saved arguments and exact reentry.**
+`semantic-context-owner-entry-gc-join-4/validation-1.json` checks the updater, preparer, claim
+and work caller routes against Cmm. Their native entry guards check **8/48/24/40 bytes** of
+prospective stack use respectively, then select the matching failure block without changing Sp.
+The two static-function failures reload the exact function closure into R1; those closures' data
+references resolve to the expected info entries. Dynamic claim/work failures preserve their
+function pointer. R2 is preserved for the three `ARG_P` entries. Each failure tails through the
+native FunReg slot at **BaseReg−8**.
+
+The installed entry dispatch, function-type fields, canned argument bitmaps, save/apply tables
+and instruction sections are revalidated. Native instruction interpreters join each caller to
+the selected save and apply helper. `ARG_NONE` saves a **three-word** frame; `ARG_P` saves
+**four words**, including R2 in slot three. Both save the function in slot two and construct a
+`RET_FUN` header with the matching zero/one argument count. The installed resume prefix restores
+the function and advances past the three header words; the selected apply helper restores R2
+when required, removes its argument word and enters the same function with the original Sp.
+All original caller-frame slots remain untouched by those local instructions.
+
+The four joins retain the declared function origin/tag and pointer-argument origin under a
+collector/scheduler preservation and normal-return contract. The saved frame's SRT is zero,
+and its function/argument positions match the existing conditional `RET_FUN` tracing bound.
+The **32-byte** maximum local save frame is not a bound on collector or stack-growth costs.
+
+The installed-header probe confirms the return-frame offsets **8/16/24**, function-table field
+offset **16**, register-table offset **24** and resulting **−8** dispatch offset. Since the
+ordinary C header hides `PartCapability`, its exact installed two-field declaration is captured,
+checked and projected into this probe. Five current register macros confirm R1/R2/Sp/Base/SpLim
+as **rbx/r14/rbp/r13/r15**. All **70** header dependencies are captured. The maximum four-word
+save fits the declared **21-word** reserve arithmetically; actual stack-bound/reserve validity
+and initialization of the function pointer in that slot remain separate obligations.
+
+All **28** controls pass: eight changed caller guard/dispatch instructions, five changed save/
+apply instructions, four changed native entry sites and eleven changed ABI fields. Changed
+objects/models are inspected only. Three earlier nonpasses are retained: the hidden-struct probe
+failure, a missing checker file after an editing failure, and a partial lookup exposed by a
+displaced-slot control. The corrected model returns a typed refusal. Final
+`semantic-context-owner-entry-gc-join-final-validation-1.json` preserves the interpreter and
+caller/dispatch results, controls, source/object/archive/header identities and terminal
+unchanged-input receipts with operator identity. Gate **58** retains its executable scope;
+docs are checked separately. Production source, selected private coefficients, limits and phase
+order remain unchanged. Capability initialization, actual reserve/stack growth, collector/
+scheduler preservation, retry frequency, complete runtime partition, physical working set,
+retention and ordinary admission remain open. Sprint **6.5** stays active; later phases remain
+parked.
+
+**Capability initialization and the local BaseReg handoff connect the GC dispatch slot.**
+`semantic-context-capability-dispatch-2/validation-1.json` captures the installed threaded RTS
+`Capability`, `Schedule` and `StgCRun` objects directly from the pinned archive. The complete
+`initCapability` native graph shows that all three FunTable stores dominate both normal returns
+and cannot repeat on a path back through the graph. They write the eager-blackhole, GC-enter
+and **`__stg_gc_fun`** addresses at capability offsets **0/8/16**. RBP retains the original
+capability argument under normal helper C ABI; other direct capability stores cannot overlap
+the table. The remaining indirect array store retains its disjoint-allocation contract, and
+opaque helpers retain an explicit FunTable-preservation contract. This proves neither helper
+termination nor their transitive allocation or mutation behavior.
+
+Both capability-creation routes are checked locally: the dynamic path passes its newly allocated
+**0x580-byte**, **64-byte-aligned** object to `initCapability`, while the static route passes
+`MainCapability` with number zero. Both put a pointer in the global capability array **before**
+calling the initializer. This records the actual order; publication/synchronization/lifecycle
+admission is not inferred from those instructions.
+
+The scheduler's one native `StgRun` call loads its current capability slot, passes **capability+24**
+as the second C argument and selects `stg_returnToStackTop` as the first. The exact installed
+`StgRun` code assigns that second argument to **R13/BaseReg** before entering the selected Haskell
+entry. Together with the checked header offsets, **capability+16 = BaseReg−8**, whose initialized
+target is `__stg_gc_fun`. The scheduler's current slot must still name a live initialized
+capability; replacement/migration paths and global ordering remain separate contracts.
+
+The installed `StgRun`/`StgReturn` pair also has checked contiguous save/restore instructions for
+six C callee-saved registers. Its local native stack reservation is **16,432 bytes**: the declared
+**16,384-byte** C-stack reserve plus **48** saved-register bytes. Normal return restores the
+original native stack pointer and registers, copying Haskell R1 to C RAX first. This requires
+Haskell/native execution to return at the expected C-stack baseline and excludes return-address
+and transitive native/collector stack costs. It supplies no RSS or admission credit.
+
+The source-projected installed-header probe confirms the **16/24/−8** field/register-table/
+dispatch offsets and the C-stack reserve; all **70** header dependencies are captured. All
+**40** controls pass: nine changed semantic instructions, one repeated-store graph control,
+nineteen changed native sites, six changed init/dispatch references and five changed ABI fields.
+The two additional controls specifically refuse table overwrite and repeated initialization
+stores. The preceding 38-control check also passes. Changed objects/models are inspected only.
+Final `semantic-context-capability-dispatch-final-validation-1.json` preserves both checks,
+controls, installed archive/header/source identities and terminal unchanged-input receipts with
+operator identity. Gate **58** retains its executable scope and docs are checked separately.
+Production source, selected private coefficients, limits and phase order remain unchanged.
+Helper effects, initialized-capability lifecycle/publication/migration, actual stack reserve,
+collector/scheduler behavior, invocation frequency, complete runtime partition, physical working
+set, retention and ordinary admission remain open. Sprint **6.5** stays active; later phases
+remain parked.
+
+**Native startup and constructor bounds connect the selected local stack reserve.**
+`semantic-context-stack-reserve-3/validation-1.json` captures the installed threaded
+`StgStartup` object and joins its `stg_returnToStackTop` origin chain to the existing `Threads`
+capture. Startup loads the current TSO, its stack object and that object's saved Sp. It computes
+SpLim at **stack-object+192 bytes**, exactly **payload offset 24 + 21 eight-byte reserve words**.
+The complete startup instruction vocabulary has no intervening call or second Sp/SpLim write
+before entering the top continuation. Nursery/capability/TSO validity remains an entry contract.
+
+The constructor's native clamp, rounding, uint32 conversion, payload-size/SP initialization,
+TSO stack link and stop-frame stores are checked. For the explicit **uint32 input-size class**
+(matching the installed initial-stack flag's width), let the clamped request be S and allocated
+stack-object words be U. The unrounded arm has **U = S−17 ≥ 28**. The rounded arms use
+**y = S+2031 = q×131072+r** and produce **q×131072−2048** or **(q+1)×131072−2048**, selected by
+bit 16. Quotient/remainder bounds establish **28 ≤ U ≤ 2³²−2048**, so the native uint32
+conversion and subtraction of the three-word header retain at least **25 payload words**.
+This is arithmetic over size classes; no large stack allocation is run. Other Word-sized API
+inputs and allocator behavior remain separate, and the rounded extent is not claimed to equal
+the original request.
+
+Installing the one-word stop frame leaves at least **three words above SpLim**. A bootstrap that
+uses no more than those three words therefore reaches **Sp ≥ SpLim**; actual bootstrap paths
+must still establish that condition. Given such an entry and valid call/chunk preservation, a
+successful guard keeps the checked local accesses above SpLim. On failure, a maximum four-word
+entry-GC save starts at or above **payload+17 words**, within the declared reserve. Later helper
+effects must preserve or re-establish the constructed metadata and valid bounds.
+
+The selected Cmm extent analysis covers preparer, updater, claim, work, launcher, wrapper and
+adapter in **42/9/16/30/10/5/1 states**. Minimum local Sp deltas are
+**−48/−8/−24/−40/−16/−8/0 bytes**, matching their respective guards; local stack accesses respect
+the same floors, and the adapter has no stack access or added frame.
+Returning calls and entry-GC retries are modelled under their existing preservation/reentry
+contracts. This is a Cmm extent proof joined to checked native guard amounts and startup facts,
+not whole-runtime compiler/callee/collector or stack-growth equivalence.
+
+All **41** controls pass: eight semantic startup/constructor controls, six changed Cmm guards,
+two excess Cmm stack movements, eight changed native sites, three changed allocation/info/stop
+references and fourteen changed ABI fields. The source-motion controls exercise the extent bound;
+an inserted startup call is refused by the closed instruction vocabulary. The earlier 27- and
+40-control checks pass. Changed objects/models/Cmm are inspected only. All **70** installed
+header dependencies are captured. Final `semantic-context-stack-reserve-final-validation-1.json`
+preserves these checks, native archive/header/source identities, controls and terminal unchanged-
+input receipts with operator identity. Gate **58** retains its executable scope and docs are
+checked separately. Production source, selected private coefficients, limits and phase order
+remain unchanged. Actual bootstrap/chunk/callee/collector preservation, capability lifecycle,
+retry frequency, complete runtime partition, physical working set, retention and ordinary
+admission remain open. Sprint **6.5** stays active; later phases remain parked.
+
+**Three native thread bootstraps establish fresh partitions and first-handoff bounds.**
+`semantic-context-thread-bootstrap-2/validation-1.json` captures the installed threaded
+`RtsAPI` object and checks `createGenThread`, `createIOThread` and `createStrictIOThread` with a
+native instruction interpreter. Each calls `createThread` once with the original capability/size,
+preserves its closure argument under the constructor's normal C ABI, follows the returned
+TSO/stack association, pushes exact closure/info origins and returns that TSO while restoring the
+C caller's RBX. The post-constructor sequences contain no further call or conditional branch.
+
+The generic bootstrap pushes **two words** (closure and enter header), IO pushes **three**
+(void-apply header, closure and enter header), and strict IO pushes **four** (force-result header,
+void-apply header, closure and enter header). The inherited stop frame completes **three-/four-/
+five-word** fresh active partitions. Installed metadata for enter, void-apply, force-result and
+stop frames matches their exact payload lengths/types, with zero SRT and no relocated metadata.
+The enter frame's single payload is the supplied closure; the other frames have no payload.
+
+The minimum fresh post-stop headroom is three words. Consequently generic/IO bootstraps start
+**one/zero words above SpLim**, while strict IO starts **one word below SpLim**, still at payload
+index **20** in the minimum 25-word stack. The checked `stg_enter_info` graph has **33 states**
+and consumes **two words before every normal outward handoff**, with no interior allocation,
+call, stack push or SpLim change. Thus generic/IO/strict IO first handoffs have at least
+**three/two/one words above SpLim**, respectively. The indirection loop adds no stack words but
+has no iteration or liveness bound. This is the actual strict-IO sequence; an above-limit
+bootstrap entry was not assumed.
+
+The force-result graph has **29 states** and consumes one word before each normal handoff.
+The selected tag-one void-application path also consumes one word and loads the function entry
+without changing the tagged function value. Generic application behavior and indirect callee
+behavior remain separate. The preceding constructor/startup reserve facts are recomputed; the
+input-size class, valid live closure/stack origins, allocator/constructor preservation and absence
+of concurrent bootstrap rewrites remain explicit contracts.
+
+All **48** controls pass: eleven constructor/entry/application semantic changes, six changed
+constructor/info references, nine changed native sites, twelve changed metadata fields and ten
+changed ABI fields. The earlier 27-control check passes. Changed objects/models are inspected
+only; no native constructor or large allocation runs. All **70** installed header dependencies
+are captured. Final `semantic-context-thread-bootstrap-final-validation-1.json` preserves both
+checks, controls, installed source/object/archive/header identities and terminal unchanged-input
+receipts with operator identity. Gate **58** retains its executable scope and docs are checked
+separately. Production source, selected private coefficients, limits and phase order remain
+unchanged. Chunk growth, later application/callee/collector/scheduler behavior, concurrency,
+liveness, capability lifecycle, invocation frequency, physical working set, retention and ordinary
+admission remain open. Sprint **6.5** stays active; later phases remain parked.
+
+**Predecessor: selected compiled result/map thunk creation.**
+`semantic-context-selected-candidate-15/` adds **64 × B + 56** selected closure bytes, giving
+**11,288 × B + 316,952** for the context term. The two mutually exclusive successful result arms
+capture five pointer fields in ordinary updatable thunks: the pinned header **16** plus payload
+**40** gives **56** per invocation. The eventual **48-byte** context constructor retains its
+existing source-data owner. Current Base.map head/tail thunks each have two pointer fields and
+cost **32**; charge both per machine, with **M ≤ B** from the matching validated topology. Kind's
+one-pointer selector costs **24** in the controlled Cmm and fits the uniform per-ID allowance.
+These terms fund selected closure creation; evaluation multiplicity and all other runtime costs
+retain separate owners.
+
+Controlled strict **O1** compilation of the actual Settings module writes private Core/STG/Cmm
+outputs, preserving all installed Settings interface/object bytes. The two **38,630-line**
+displayed interfaces are identical except for the general build-flag fingerprint; ABI, source
+and optimization hashes agree. This comparison grants no whole-binary equivalence. A cold-value
+probe against the installed library validates **seven** cells, including Rke2/Eks result thunks
+and two map nodes' head/tail thunks. The synthetic fixture is Rke2; the retained predecessor's
+Kind expectation is corrected. Native checks remain at **128 MiB / N2**.
+
+The three worker Cmm groups have **160 / 2,088 / 352** bytes when their static heap-bump sites
+are merely summed. Those numbers are allocation-site inventories, not execution bounds. At this
+predecessor, local loop frequencies still required the later cadence proofs recorded above.
+Dynamic/native calls, other dependency code, CAF forcing and runtime overhead retain their separate
+obligations. `semantic-context-compiled-settings-2/allocation-inventory-1.json` preserves the exact
+extracted bindings and Cmm groups.
+
+The strict **109-module** assembly and **73** runtime groups pass, with pinned formatting/HLint.
+**23** assembly compiler refusals plus the producer refusal pass (**24** total). Missing/changed
+artifact controls use complete governed source fixtures and record their inputs and unchanged
+installed files; their initial mocks' earlier source-check failures remain non-passes. The factory
+guards **three** current interface artifacts: Settings static/dynamic interfaces and
+GHC.Internal.Base. All **32** other quote vectors, including the **30** SDK vectors, are exact.
+`semantic-context-compiled-source-review-1/review-1.json` and
+`semantic-context-compiled-validation-1.json` preserve source, compiler, cold-cell, guard and
+operator correlation. Canonical gate **58** remains the unchanged executable baseline.
+
+Other compiled closures, literal/static/CAF initialization, sharing/duplication/evaluation cadence,
+metadata/bound calculation, stack/update/GC/native, matching-value/lifetime enforcement, remaining
+semantic consumers, complete schedules and independent physical/Authority admission, ordinary
+integration and deployment qualification remain open. No ordinary caller consumes this private
+sum. Existing Sprint **6.5** subtree cleanup ownership covers these artifacts; later sprints remain
+parked.
+
+**Preserved decoded/context data composition; lifetime enforcement remains open.**
+`semantic-context-selected-candidate-14/` adds a pure composition of the existing decoded
+SettingsEnvelope normal-form allowance and the selected fresh context term, using usage from
+the opaque settings inspector. Both allowances remain charged. Its API accepts only the
+SettingsEnvelope semantic budget; an additional compiler control rejects a ConfigFile budget.
+The caller still owes the matching-value relation and lifetime enforcement in the closed program.
+No ordinary caller consumes this private sum, and its Natural result grants no admission.
+
+The strict **107-module** assembly passes **73** runtime groups: the **71** inherited groups plus
+two new groups covering three successful fixed fixtures and one fixed refusal. Every fixture
+encodes a typed envelope, inspects/checks those bytes, decodes that same checked wire through
+the actual SDK decoder and projects its context. Legacy registration, a padded raw scope and a
+Unicode endpoint each retain the decoded and context graphs simultaneously; the empty pin scope
+retains decoded data beside the forced refusal. The tests independently check the raw allowance,
+the fresh increment and their composition, charging the observer's **24-byte** tuple separately.
+The three successful observations add **168** context data bytes beyond that pair and decoded
+root; these are small root-graph observations, not a construction peak or runtime admission proof.
+
+All **33** quoted vectors are exact, including **11,224 × B + 316,896** and all **30** SDK vectors.
+The **21** inherited compiler refusals and one new composition-producer refusal pass (**22** total),
+as do pinned formatting/HLint at unchanged **128 MiB / N2**. The two retained fixture helper build
+failures are corrected by explicitly handling the SDK expected-type Validation before compiling
+the wire shape. `semantic-context-decoded-source-review-1/review-1.json` preserves source/quote,
+producer and native graph evidence; `semantic-context-decoded-validation-1.json` binds current
+source/operator identities. Canonical gate **58** remains the unchanged executable baseline.
+
+Literal initialization, matching-value/lifetime enforcement, descriptor/bound calculation,
+compiled sharing/duplication, metadata/dictionaries/functions/control/update/stack/GC/native,
+remaining semantic consumers, complete schedules and independent physical/Authority admission,
+ordinary integration and deployment qualification remain open. Existing Sprint **6.5** subtree
+cleanup ownership covers the new private artifacts; later sprints remain parked.
+
+**Preserved predecessor selected RPC generation/result funding.**
+`semantic-context-selected-candidate-11/` stages **11,224 × B + 316,896** selected context data
+bytes. Generation conversion/literal-value cohorts add **1,136** fixed bytes and scope guards,
+mappings, unless alternatives, mode results, six binds and the prospective empty digest-length
+result add **1,488**. These include both prospective one-word Integer magnitude values; literal
+address/static initialization retains its separate owner. No ordinary caller consumes this term.
+
+The strict **105-module** assembly, **71** inherited runtime groups and **21** compiler refusals
+pass, with pinned formatting/HLint and unchanged **128 MiB / N2**. All **33** quote positions
+remain; all **32** other vectors, including the **30** SDK vectors, are exact. The native observer
+confirms five constructor roots: coordinate errors **16 / 16 / 16 / 32** bytes and registered mode
+**32** bytes. These sizes exclude their referents. Template Haskell uses logical `ghc-bignum`
+names; the runner checks exact installed unit `ghc-bignum-1.3-f895`. The retained predecessor
+refuses the mistaken full-ID logical-name check, while the successor validates both identities.
+`semantic-context-rpc-complete-source-review-1/review-1.json` preserves source/coefficient and
+layout evidence; `semantic-context-rpc-complete-validation-1.json` binds current source/operator
+identities. Canonical gate **58** remains the unchanged executable baseline.
+
+**Retained context referents are inventoried; lifetime composition remains open.**
+The three retained context Text fields are stripped views of decoded backing arrays. The new
+machine-ID list borrows decoded topology Text values, and the registration field retains the
+original decoded union/pin/Text/Natural graph. In particular, a validated stripped scope length
+does not bound the stored raw scope: surrounding whitespace can remain in its original backing.
+`semantic-context-referents-source-review-1/review-1.json` maps all **five** fields to those owners.
+The matching decoded SettingsEnvelope normal-form term already models these payloads. Its charge
+must remain live through retained uses; this inventory does not prove that schedule or admission.
+
+Literal address/static initialization, compiled sharing/duplication, descriptor/getter and bound
+calculation data, remaining semantic consumers, compiler/control/update/stack/GC/native costs,
+full schedules, independent physical/Authority admission, ordinary integration and deployment
+qualification remain open. Existing Sprint **6.5** subtree cleanup ownership covers these private
+artifacts. Sprint **6.5** remains active; later sprints remain parked.
+
+**Preserved RPC generation conversion geometry.**
+Seven primary GHC sources replay against the pinned **9.12.4** archive, including newly captured
+BigNat and WordArray sources. Generic Word64-to-Natural conversion goes through Integer: the
+Word64 maximum uses `IP` with one word of magnitude, then Natural reduces it to `NS`. Against
+the zero and maximum `NS` limits, an incoming `NB` generation takes constant constructor arms;
+these comparisons do not traverse its limbs. Its decoded referent graph remains separately owned.
+
+The warning-clean native probe confirms an **8-byte** Integer magnitude at the limit, Natural
+`NS` at the limit and `NB` with **16-byte** magnitude at its successor. All **four** actual serving mode
+boundary cases pass at unchanged **128 MiB / N2**. The source/shape proof is preserved in
+`semantic-context-rpc-generation-source-review-1/review-1.json`. Word64 literal
+construction/initialization, the generic conversion's
+selected data, inner guard/result data and full runtime/admission ownership remain open. The
+private aggregate at that increment was **11,224 × B + 314,272**; no ordinary admission
+consumer changed.
+
+**Selected RPC label/length/equality data is privately funded and validated.**
+`semantic-context-selected-candidate-9/` adds **36,240** selected data bytes to the RPC term,
+giving **11,224 × B + 314,272** for the private aggregate. Both 15-character scope-label
+constructions contribute **33,760** through the inherited String/array and literal-scalar models.
+At most five `Text.length` calls contribute **2,160** (**432** each), covering selected recovered
+fields, the maximum-bound argument, empty guard, four generic conversion boundaries and negation.
+One scope equality contributes **320** selected bytes; pinned base **4.21.2.0** selects the
+`compareByteArrays#` path. Native scans, lookahead and workspace remain separately owned.
+
+The strict **103-module** assembly and **71** inherited runtime groups pass. All **21** compiler
+refusals are validated: the first pass retained two transient shared-library relink errors, and
+only those two controls were replayed against identical private inputs and the same probe binary.
+Both then produced their exact `OwnerSourceChanged` refusals. Pinned formatting/HLint pass;
+**128 MiB / N2**, all **33** quote positions and the other **32** quote vectors remain unchanged.
+The exact source/coefficient review and composed validation are in
+`semantic-context-rpc-boundary-source-review-1/review-1.json` and
+`semantic-context-rpc-boundary-validation-1.json`.
+
+Generation checks, inner guards/binds/maps/error/result data (including the prospective empty
+`measureOff` result literal), retained referenced state and complete semantic context ownership
+remain open. Compiler/runtime/native costs, complete schedules, independent physical/Authority
+admission, ordinary integration and deployment qualification remain open. This selected term has
+no ordinary consumer and grants no whole-operation memory claim. Existing Sprint **6.5** cleanup
+ownership covers the new private artifacts.
+
+**Preserved predecessor selected RPC trim/scan/refusal funding.**
+`semantic-context-selected-candidate-8/` passes a strict **102-module** assembly, **71** inherited
+runtime groups, **21** compiler refusals and pinned formatting/HLint at unchanged **128 MiB / N2**.
+The separate nominal SettingsEnvelope term becomes **11,224 × B + 278,032** selected data bytes.
+All **33** quote positions remain; the other **32** vectors, including all **30** SDK vectors, are
+exact. No ordinary caller consumes this private aggregate.
+
+The two matching scope fields contribute at most **B** characters together. Their two-pass trims
+and control/whitespace scans add **6,304 × B + 14,176**. The inherited category predicate allowance
+also covers the simpler control-character case. The digest all-scan is reached only after its
+length equals **64**: four ASCII comparisons and three Boolean choices cost **240** selected
+bytes per predicate, giving **800** per full stream entry and **52,184** for initialization plus
+65 prospective entries. Charging every fixed refusal name and one copied 26-character prefix
+adds **5,360**. These source-derived terms take no early-refusal, collection or static-sharing
+credit; they are not measurements of a complete runtime working set.
+
+The whole-owner guard grows from **19** to **21** by binding `Coordinate.hs` and
+`RpcAdmissionBirth.hs`. Two added compiler controls independently refuse altered copies of those
+owners. `semantic-context-rpc-source-review-1/review-1.json` replays pinned Text streaming sources,
+source schedules, coefficient arithmetic and quote preservation;
+`semantic-context-rpc-validation-1.json` binds the result to current source/operator identities.
+Scope-label construction, length/equality/FFI/native work, generation checks and inner
+bind/map/guard/error/result data remain open, along with retained referent ownership, other
+semantic consumers, full schedules, compiler/runtime costs, independent physical/Authority
+admission, ordinary integration and deployment qualification. The existing Sprint **6.5** subtree
+cleanup owner covers these private artifacts; later sprints remain parked.
+
+**Canonical gate 57 passes 10,736 cases; bounded endpoint scheme conversion is validated.**
+The case-insensitive scheme check lowercases at most **eight** input characters and returns the
+same complete stripped endpoint, with unchanged full-value whitespace checks and no new length
+limit. Strict library/operator/unit compilation and all **four** focused projection groups pass,
+including **36** endpoint field cases with mixed-case schemes, Unicode authorities/paths,
+dotted-I expansion, empty authorities and malformed prefixes. The full gate passes
+**9,766 + 27 + 35 + 908** cases with matching source/operator identities and terminal receipts in
+`endpoint-canonical-validation-1.json`.
+
+`endpoint-prefix-canonical-1/source-review-2.json` preserves whole-owner inverse replay and
+prefix equivalence against the exact archived Text sources. All **1,433** explicit lowercase
+mappings emit one or two characters; fallback arms copy their input character. Eight input
+characters therefore preserve every output character inspected by either scheme predicate.
+Conversion receives at most **32 UTF8 bytes** and produces at most **16** characters. This is
+conversion geometry, not a bound on native slicing lookahead over the original backing bytes.
+
+`endpoint-budget-candidate-1/` passes **71** bounded groups and **13** compiler refusals with
+pinned formatting/HLint, unchanged **128 MiB / N2**, and all fifteen SDK terms unchanged.
+`endpoint-budget-validation-1.json` preserves the refreshed Settings owner and both drift copies;
+**76** other Haskell files remain unchanged. Earlier gates and private executables retain their
+predecessor identities. No installed-limit, live-attempt or credential change occurs.
+
+**Selected context outer and machine-list data is privately funded and validated.**
+`semantic-context-selected-candidate-7/` extends the aggregate to
+**4,920 × B + 206,312** selected data bytes. The fixed outer increment first adds **8,176** to the
+predecessor's fixed **198,080**: guard choices **496**, wrapper/constructor data **600**,
+authority-empty data **352**, and fixed-label error prefix copies **6,728**. The native observer
+confirms the result constructor is **48 bytes**, without counting its referent graph or transient
+working set. The source review includes three outer binds, two sequences and both Unit tails;
+inner RPC binds/maps and fixed refusal rendering retain separate owners.
+
+The next increment adds **24 × B + 56** for new machine-ID list data. The context builder receives
+an already validated topology: every machine ID has nonempty Text, encoded through the Text
+newtype instance. Each contributes at least one byte to the matching checked value Text-token
+counter, so **M ≤ B**. The projected list costs **24 × M + 16** selected bytes; the uniform Kind
+singleton-input allowance adds **40**. Rke2 borrows its existing input list and Eks is empty.
+No new MachineId wrapper is allocated because it is a newtype. Selector/map thunks and referenced
+Machine/Text state remain outside this selected list term. The argument assumes the matching
+checked wire/settings pair; it grants no admission for unrelated usage/settings values.
+
+The strict **100-module** assembly, **71** inherited runtime groups, **19** compiler refusals and
+pinned formatting/HLint pass at **128 MiB / N2**. Each increment changes two predecessor modules
+and adds one pricing module. All **33** quote positions remain; the other **32** vectors are exact,
+including all **30** SDK vectors. `semantic-context-outer-source-review-1/review-1.json` preserves
+pinned Either/bind/sequence/String-copy and Text.empty sources plus the native constructor probe.
+`semantic-context-machine-source-review-1/review-1.json` binds the nonempty-ID/token accounting
+argument and list mapper. Both results are preserved in their corresponding
+`semantic-context-{outer,machine}-validation-1.json` records.
+
+Optional RPC scope/config validation and fixed rendering, retained referents, other semantic
+consumers, descriptors/getters/bound calculation, selector/map thunks and compiled sharing/
+duplication, metadata/static literals/dictionaries/functions/control/update/stack/GC/native and
+complete operation/admission/integration/qualification remain open. These are source-selected data
+and one native constructor observation, not complete context or working-set bounds. No ordinary
+caller consumes the private aggregate. Executable/operator bytes, gate **57 / 10,736**, installed
+limits and live-attempt count remain unchanged. Sprint **6.5** stays active; later rows stay parked,
+with existing subtree cleanup ownership.
+
+**Preserved predecessor selected semantic context literal value/pack funding.**
+`semantic-context-selected-candidate-5/` extends the aggregate to
+**4,896 × B + 198,080** selected data bytes. The byte coefficient is unchanged; the literal term
+adds **56,312** to the predecessor's fixed **141,768**. The exact source inventory has **12** sites:
+conditional builder/field/endpoint counts **1 / 3 / 2** give **14** String value constructions
+with **471** characters and **six** Text constructions with **32** characters. Every possible
+occurrence is charged, including error branches, without static/character/dictionary sharing credit.
+
+String values add **19,064** bytes using Nil/cons/Char data. Text literals add **37,248** bytes
+for their own input Strings, prospective pack arrays/MArray/final Array/Text data and selected
+pack/literal scalars. Each prefix has **7 / 8 / 1** characters; no direct-pack growth is needed
+from the pinned 64-byte initial capacity. Prices **8,048 / 9,152 / 1,424** per endpoint cover
+direct pack and all four literal rewrite routes without rule-firing credit. Text input Strings
+are excluded from the String-only inventory, so that ownership does not overlap.
+
+The strict **98-module** assembly, **71** inherited runtime groups, **19** compiler refusals and
+pinned formatting/HLint pass at **128 MiB / N2**. Two predecessor modules change and one pricing
+module is added. All **33** quote positions remain; the other **32** vectors are exact, including
+all **30** SDK vectors. `semantic-context-literal-source-review-1/review-1.json` preserves the new
+inventory, source-archive replay and five installed pack/literal interface replays. Its own source
+invocation counts replace the unrelated metadata-name schedule; only the inherited per-construction
+prices are reused. `semantic-context-literal-validation-1.json` preserves the result.
+
+These are selected value/pack data bounds, not compiled invocation, allocation-trace or complete
+literal/context working-set claims. Generated String unpacking/thunks/control, compiled/static
+literal residency and initialization, dynamic error concatenation, outer guards, RPC/returned/
+refusal data, other semantic consumers and full descriptor/bound-calculation/dictionary/function/
+control/update/stack/GC/native/schedule/admission/integration/qualification funding remain open.
+No ordinary caller consumes this private aggregate. Executable/operator bytes, gate **57 / 10,736**,
+installed limits and live-attempt count remain unchanged. Sprint **6.5** stays active; later rows
+stay parked, with existing subtree cleanup ownership.
+
+**Preserved predecessor selected semantic context slice boundary funding.**
+`semantic-context-selected-candidate-4/` extends the aggregate to
+**4,896 × B + 141,768** selected data bytes. The byte coefficient is unchanged; four possible
+slices add **3,264** to the predecessor's fixed **138,504**. Each endpoint takes eight characters
+and may drop seven or eight once. The uniform **816-byte** allowance per call charges recovered
+fields, its argument, five possible guards, four generic conversion boundaries, a returned view
+and offset/length arithmetic. Source backing and native workspace remain outside this term.
+
+The native ABI probe confirms eight-byte **CSize = Word64 / CSsize = Int64** on the pinned
+64-bit target. The selected carrier/intermediate allowance is **64 bytes per conversion**, rather
+than the ABI field's eight bytes. Reified types and compiled newtype dictionaries bind generic
+`fromIntegral = fromInteger . toInteger` to the known integer methods. Context ranges keep their
+intermediate Integers small without BigNat construction; no optimization-rule credit is taken.
+Compile-time ABI checks are strengthened. Seven GHC sources, the Text slicing/view helpers and
+two compiled interfaces are replayed or retained with hashes in
+`semantic-context-slice-source-review-1/review-2.json`.
+
+The strict **97-module** assembly, **71** inherited runtime groups, **19** compiler refusals and
+pinned formatting/HLint pass at **128 MiB / N2**. Two predecessor modules change and one pricing
+module is added. All **33** quote positions remain; the other **32** vectors are exact, including
+all **30** SDK vectors. `semantic-context-slice-validation-1.json` preserves both successful source
+reviews and the ABI/source/interface evidence. No ordinary caller consumes this private aggregate.
+
+Literal construction, outer context guards, RPC/returned/refusal data, other semantic consumers,
+descriptors/getters/bound calculation, compiled sharing/duplication, metadata/dictionaries/
+functions/control/update/stack/GC/native and complete operation/admission/integration/qualification
+remain open. These are selected source data and ABI claims, not allocation traces or complete
+context/working-set bounds. Executable/operator bytes, gate **57 / 10,736**, installed limits and
+live-attempt count remain unchanged. Sprint **6.5** stays active; later rows stay parked, with
+existing subtree cleanup ownership.
+
+**Preserved predecessor selected semantic context prefix stream funding.**
+`semantic-context-selected-candidate-3/` extends the aggregate to
+**4,896 × B + 138,504** selected data bytes. The byte coefficient is unchanged; prefix streams
+add **46,368** to the predecessor's fixed **92,136**. Each endpoint may try HTTP, HTTPS and
+leading-authority slash prefixes of **7 / 8 / 1** characters. The **six** calls reach at most
+**38** paired entries because neither source stream emits Skip. Each entry charges **1,152**
+selected bytes; every call also charges both **184-byte** stream initializations and its **64-byte**
+Text-level length/choice data. Per-prefix prices are **9,648 / 10,800 / 2,736** for each endpoint.
+Short-circuit, mismatch or length refusal can stop sooner; no such credit is taken.
+
+The strict **96-module** assembly, **71** inherited runtime groups, **19** compiler refusals and
+pinned formatting/HLint pass at **128 MiB / N2**. Two predecessor Haskell files change and one
+pricing module is added. All **33** quote positions remain, with the other **32** vectors exact,
+including all **30** SDK vectors. `semantic-context-prefix-source-review-1/review-1.json` preserves
+Text source-archive replay, exact paired-stream recursion and `ghc-prim-0.13.0-ec11`'s `Eq Char`
+source. The initial source capture searched the wrong module name; its missing-source diagnostic
+is preserved in `semantic-context-prefix-validation-1.json` alongside the successful capture.
+
+These are conditional source/data bounds, not allocation traces or a complete context bound.
+Slicing/FFI/native read-ahead, literal construction, RPC/returned/refusal data, other semantic
+consumers, descriptors/getters/bound calculation, compiled sharing/duplication, metadata/
+dictionaries/functions/control/update/stack/GC/native and complete operation/admission/
+integration/qualification remain open. No ordinary caller consumes the private aggregate.
+Executable/operator bytes, gate **57 / 10,736**, installed limits and live-attempt count remain
+unchanged. Sprint **6.5** stays active; later rows stay parked, with existing subtree cleanup ownership.
+
+**Preserved predecessor selected semantic context converter array funding.**
+`semantic-context-selected-candidate-2/` extends the selected context term to
+**4,896 × B + 92,136** data bytes. The byte coefficient is unchanged; two endpoint conversions
+add **3,168** prospective ByteArray bytes to the predecessor's fixed **88,968**. Each conversion
+has at most eight input characters and charges **1,584** bytes for its initial array and every
+possible resized array. No collection or in-place resize credit is taken. The inherited pinned
+converter bound is **(n + 1) × (16n + 48)**, including headers/alignment, and is rebound to the
+current context source rather than to the historical AWS-profile source owner.
+
+The strict **95-module** assembly, **71** inherited runtime groups, **19** compiler refusals and
+pinned formatting/HLint pass at **128 MiB / N2**. Only **two** private Haskell files change.
+All **33** quote positions remain; the other **32** vectors are exact, including all **30** SDK
+vectors. `semantic-context-arrays-source-review-3/review-1.json` preserves exact source-archive
+replay, the one-growth-per-character invariant and nine tiny arithmetic certificate rows for
+zero through eight characters. These are source/data checks, not a runtime exhaustion campaign
+or a complete allocation/working-set bound. The two inverse-replay layout diagnostics remain
+preserved in `semantic-context-arrays-validation-1.json`.
+
+The canonical AWS-profile array term, executable/operator bytes and gate **57 / 10,736** remain
+unchanged. Original source backing, slicing/prefix/native lookahead, RPC/returned/refusal data,
+other semantic consumers, descriptor/getter/bound calculation, compiled sharing/duplication,
+constants/dictionaries/functions/control/update/stack/GC/native and complete operation/admission/
+integration/qualification remain open. No ordinary caller consumes this private aggregate.
+Sprint **6.5** stays active; later rows stay parked. Its existing subtree cleanup ownership applies.
+
+**Preserved predecessor selected semantic context Text composition.**
+`semantic-context-selected-candidate-1/` passes **71** inherited runtime groups and **19** compiler
+refusals in a strict **95-module** assembly with pinned formatting/HLint. Its separate nominal
+SettingsEnvelope budget stages **4,896 × B + 88,968** selected data bytes, where **B** is checked
+global-minus-type Text-token bytes. Trim contributes **3,488 × B + 11,712**, whitespace streams
+**1,408 × B + 4,776**, and the two bounded scheme conversions **72,480** scalar bytes. All **30**
+SDK quote vectors and the two earlier semantic quotes remain exact; the aggregate quote adds
+only its two numeric literals. The **33** quotes are compile-time data, not complete runtime bounds.
+
+`semantic-context-read-source-review-1/review-1.json` retains five additional pinned Text sources
+and the exact non-developer Text unit. Its stream emits Yield/Done without Skip: each whitespace
+scan reaches at most one predicate per character and one closing step. Initial selected data is
+**184** per stream and entry data **1,408**. The three context fields have one shared strip
+expression each; two directional passes contribute the inherited iterator/reader/predicate/scalar
+prices. Actual compiled sharing/duplication still needs separate funding. Source-only price and
+schedule claims are preserved in `semantic-context-selected-validation-1.json`, alongside the
+**128 MiB / N2** controls. No ordinary caller consumes the aggregate.
+
+Conversion backing arrays, slicing/prefix/native lookahead, RPC validation, returned/refusal data,
+all other semantic consumers and complete runtime/admission/integration/qualification remain
+open. The subtree's existing Sprint **6.5** cleanup ownership covers these private aliases.
+Sprint **6.5** remains active; later rows remain parked. A passing gate and these partial terms
+do not establish activation or deployment qualification.
+
+**Canonical gate 56 passes 10,735 cases; topology reuse and its budget rebase are validated.**
+Complete settings validation carries a private validated-topology witness from its ordered local
+fold into the shared context builder, eliminating the second identical traversal. Standalone
+context construction still checks topology first. Whole-owner inverse replay preserves public
+settings/SDK declarations, normalization and all other validation code. Strict compilation and
+all **three** focused projection groups pass, including single/paired local refusals, complete
+context equality and standalone/full context refusal order. The canonical suite passes
+**9,765 + 27 + 35 + 908** cases. Its source identity, synchronized operator and exact terminal
+receipts are preserved in `topology-canonical-validation-1.json`.
+
+`topology-budget-candidate-1/` rebases the fifteen existing private SDK budgets to the changed
+Settings owner: **71** bounded groups, **13** intended compiler refusals, pinned formatting and
+HLint pass in a strict **90-module** assembly. Only the owner hash and two drift-test Settings
+copies change; **76** other Haskell files and all **30** numeric quote vectors remain unchanged.
+`topology-budget-validation-1.json` preserves that result. Preparation diagnostics for formatter
+layout and duplicate thread options remain retained alongside the frozen owner/tests and focused
+binary. Earlier gate and private executable records keep their predecessor source identities.
+
+`codec-prefix-audit-1/audit-1.json` records five conditional fixed-prefix schedules. Current public
+native load performs **one extraction / one embed**, expected-preparation reload **one / two**,
+and publication plus its synchronous reload **one / three**. Historical private `125` initial
+load performs **one / two** and captured recovery **zero / two**. Each prefix contains one direct
+semantic validation. Arbitrary callbacks, externally launched children, hidden preparation work,
+initialization and deep sharing remain outside those source counts; they are not complete
+operation or runtime allocation evidence.
+
+`semantic-consumers-audit-1/audit-1.json` preserves **14** ordered local edges across **eight**
+source owners. Capacity and uncertified compilation both check raw resource-plan shape; runtime
+profile compilation performs nested workload searches. Component map/edge/topology/capability
+work, retained-artifact parsing/inventory/catalog construction, context parsing and path/IO work
+still need their own complete funding. Neither this inventory nor the passing gate grants whole
+heap, admission, ordinary integration, activation or deployment qualification. Sprint **6.5**
+remains active; later rows remain parked. No live attempt, credential or installed-limit change
+occurs.
+
+**Preserved predecessor semantic-validation traversal audit, 2026-11-06 UTC.**
+`semantic-schedule-audit-1/audit-1.json` preserves the current settings, topology, controller and
+payload sources and successful-path assertions. One successful `validateConfigWithContext` call
+validates topology **twice**, through the local configuration fold and deployment-context builder.
+For each Kind/Rke2 home machine these add **two** MachineId trims after its SDK trim. Early
+refusals may stop sooner. The per-extraction budgets therefore cannot stand for the whole
+operation without a separate semantic-validation term.
+
+The same entrypoint runs `makeAbsolute` for the manual PV root before its pure validation fold.
+Capacity validation, resource-plan compilation, one-shot worker capacity and gateway emitter
+capacity are four distinct named consumers. Their internal work, context/coordinate parsing,
+component/artifact checks, filesystem/path construction and per-operation multiplicities remain
+open. This source audit proves those local edges only; it grants no complete memory, admission,
+integration or qualification claim. Runtime bytes, limits and the numerical queue stay unchanged.
+
+**Current codec call-site audit is preserved, 2026-11-06 UTC.**
+`codec-schedule-audit-1/audit-1.json` records three direct root sites and nine static edges across
+seven current/private source modules, with exact source slices and hashes. The public controller
+has separate publication and expected-preparation producer sites, plus settings reload. Successful
+settings decoding extracts, re-encodes for canonical readback, then invokes semantic validation.
+Private `125` instead separates initial decode from captured-settings revalidation through typed
+interpreter branches. Its earlier process counts therefore do not prove the current public
+schedule. `codec-schedule-audit-validation-1.json` preserves this distinction and terminal receipts.
+This is a static call-site result; complete invocation counts, deep codec initialization, metadata
+sharing, the downstream validation schedule and runtime/admission funding remain unproven.
+Executable/operator bytes, canonical gate **55 / 10,734**, installed limits and numerical queue
+remain unchanged. No live attempt or credentials are used.
+
+**Selected narrowing/trim/predicate scalar data is privately validated, 2026-11-06 UTC.**
+`narrowing-scalar-candidate-3/` passes **71** bounded groups and **13** compiler refusals with
+**19** inherited source-owner guards, pinned formatting/HLint and a strict **90-module** assembly.
+The fifteenth nominal producer/direction budget adds **3,904 × B + 4,480 × T + 390,016 × A** for
+decode, where **B** is checked global-minus-type Text-token bytes, **T** value Text leaves and
+**A** marked AWS profiles. Encoding adds zero. All **28** earlier quote vectors and component
+sources remain unchanged; the two new vectors each contain three numeric literals. The inherited
+**66** groups replay unchanged after their test-tree wrapper adjustment.
+
+The complete pinned Unicode category certificate has **314** branches, **315** leaves and **113**
+static address tables. Its maximum lookup depth is **nine**; table indices stay in range and all
+categories lie in **0–29**. Installed category and character predicates agree on **1,843** generated
+boundary/low-codepoint/category cases. The predicate recognizes **22** whitespace characters.
+Selected whitespace data costs at most **848 bytes** per call, loop scalars **128** per possible
+iteration and initial/exit scalars **144** per pass. Four passes give the two Text coefficients.
+**90** copied/sliced trim cases preserve the independent finite-set result and observe at most
+**3 / 22** forward/backward iterator reads.
+
+Thirteen explicit CIDR scalar families total **2,048 bytes** per possible scan step; initial data
+adds **160** and mask/shift-wrapper data **464**, giving **41,584** per call. The grammar permits
+at most **19** continuations, so the **20th** entry includes empty-input or malformed-suffix refusal.
+**Six** tiny source-counted cases agree with the actual public parser and confirm that closing
+bound. Eight possible CIDRs plus bounded general-token predicates give the profile coefficient.
+**28** append cases, **33** prefix masks and **132** network-bit cases agree with independent
+arithmetic; their scalar results retain **16 bytes**. Addresses/masks remain within unsigned
+32-bit values and small Integer representation on the pinned 64-bit runtime. Arbitrary-width
+Natural zero checks retain the existing accepted domain and inherited controls.
+
+Six GHC sources replay from their exact archive, alongside the earlier pinned Natural/Text
+sources. Complete character declarations, the CIDR arithmetic hook, scan-counter observer and
+mask helper replay after pinned formatting. Decoder/encoder descriptors retain **80 / 48 bytes**
+and getters **16**. These are source-cohort, control-flow and returned-data checks, not allocation
+traces or complete working-set measurements. The first new unit guard confused TH's wired
+`ghc-internal` package name with registry unit `ghc-internal-9.1204.0-9bb8`; its refusal and the
+initial formatting diagnostic remain preserved. The corrected guard retains full GHC **9.12.4**
+and source/unit checks. The positive **71-group** predecessor also remains preserved.
+`narrowing-scalar-source-review-1/review-1.json` and `narrowing-scalar-validation-1.json` retain
+sources, binaries, native observations, source/operator identities and terminal receipts.
+
+Canonical gate **55 / 10,734**, executable/operator bytes, **128 MiB** test heap, two capabilities,
+installed limits, numerical queue and live-attempt count remain unchanged. Constant initialization,
+remaining numeric/dictionary/literal/metadata invocation/sharing, compiler/function/control/update/
+stack/GC/native funding, typed outer reports, schedule composition, independent admission, complete
+ordinary integration, activation and deployment qualification remain open. No credentials,
+AWS/image attempt or exhaustion search occurs.
+
+**Selected guarded case-conversion data is privately validated, 2026-11-06 UTC.**
+`case-conversion-candidate-3/` passes **66** bounded groups and **13** compiler refusals with
+**19** inherited source-owner guards, pinned formatting/HLint and a strict **81-module** assembly.
+The fourteenth nominal producer/direction budget adds **1,295,232 × A** selected data bytes for
+decode, where **A** counts marked AWS profiles. Encoding adds zero. All **26** earlier quote
+vectors and component sources remain unchanged; the two new vectors each contain one numeric
+literal. The inherited **61** groups replay unchanged after their test-tree wrapper adjustment.
+
+For **n** guarded input characters, the converter performs at most **n** resizes and
+**2 × n + 1** guard attempts. Fixed data costs **240**, a guard **96**, a resize **112**, and the
+largest per-character arm **4,184 bytes**, including up to three mapped outputs. The selected
+per-call term is **336 + 4,488 × n**. Four calls at **64** characters and four at **8** yield the
+profile coefficient. The existing canonical **285,056-byte** prospective ByteArray term retains
+its separate owner; this component adds scalar, tuple, Unit and wrapper data. No sharing or
+collection credit is taken, and these partial terms grant no complete admission.
+
+Five pinned Text sources replay from their exact archive. The complete lowercase declaration
+contains **1,433** unique mappings and one zero fallback; the inventory stops before the adjacent
+titlecase table. Its actual maximum is **two** output characters, with **one** expansion, within
+the converter's three-character contract. All **1,433** mappings agree with installed Text, and
+**13** fallback controls pass. **48** whole conversions cover copied/nonzero-offset views, ASCII,
+Unicode/NUL and **64** dotted-I characters expanding to **128** output characters.
+
+The complete source-generated chop helper replays after moving its module boundary. Its mapping
+fixtures take **1,434** steps and return at most **56 bytes** per tuple/Char/Int64 graph. Numeric
+descriptors retain **32 / 32 bytes** and their getter **16**. These native observations concern
+returned data and semantics, not transient allocation or peaks. Initial generated-list and
+comprehension parser diagnostics remain preserved. The **66-group** predecessor passes all
+compiler controls but has one HLint hint; the final successor simplifies only the equivalent
+compile-time singleton comparison. `case-conversion-source-review-1/review-1.json` and
+`case-conversion-validation-1.json` retain sources, binaries, native observations, source/operator
+identities and terminal receipts.
+
+Canonical gate **55 / 10,734**, executable/operator bytes, **128 MiB** test heap, two capabilities,
+installed limits, numerical queue and live-attempt count remain unchanged. No ordinary reservation
+consumes this partial term. Remaining narrowing/trim-loop arithmetic, whitespace predicate,
+numeric/comparison/literal/dictionary/metadata invocation/sharing, compiler/function/control/update/
+stack/GC/native funding, typed outer reports, independent admission, complete ordinary integration,
+activation and deployment qualification remain open. No credentials, AWS/image attempt or
+exhaustion search occurs.
+
+**Selected UTF8 reader data is privately validated, 2026-11-06 UTC.**
+`utf8-read-candidate-3/` passes **61** bounded groups and **13** compiler refusals, with **19**
+inherited source-owner guards, pinned formatting/HLint and a strict **75-module** assembly. The
+thirteenth nominal producer/direction budget adds **2,848 × B + 2,848 × T + 299,040 × A** for decode,
+where **B** is checked global-minus-type Text-token bytes, **T** value Text leaves and **A** marked
+AWS profiles. Encoding adds zero. All **24** earlier quote vectors and component sources remain
+unchanged; the two new vectors contain only three numeric literals each. The inherited **56**
+runtime groups replay unchanged after their test-tree wrapper adjustment.
+
+Pinned UTF8 character decoding performs unboxed primitive arithmetic before returning Char.
+Selected prospective Array/Word8/Int/Char/Iter data totals **440** bytes for a forward reader and
+**712** for a backward reader; the common allowance charges **712** for every possible read.
+Four trim passes bound their reads by **4 × (B + T)**. Four general-token streams are each charged
+**65** complete reads and eight CIDR scans **20** each, giving **420** reads per profile. Terminal
+callbacks and mutually exclusive backward-width branches are conservatively charged together.
+These source-cohort allowances take no sharing/collection credit and grant no complete admission.
+
+**32** fixed valid Unicode scalars cover one through four UTF8 bytes, NUL, whitespace and encoding
+boundaries. Actual installed decoder primitives preserve every scalar and width; **96** copied or
+nonzero-offset Text views preserve forward/backward characters and signed deltas. Native scalar
+carriers retain **16 bytes** and Iter headers **24**; numeric descriptors retain **64 / 48 bytes**
+within **80 / 48-byte** prospective allowances. These observations concern returned data and
+semantics, not transient allocation or peak memory.
+
+Four pinned Text sources and one GHC Word source replay from their exact archives. The first
+fixture failed strict compilation for partial `head`, and HLint found two redundant mappings.
+The corrected fixture passed **59 / 61** groups: two expected arithmetic anchors had incorrectly
+totalled the backward allowance as 812. Its formula already calculated 712; the final successor
+changes only those expectations. Sources, diagnostics, predecessor binary and terminal receipts
+remain preserved. `utf8-read-source-review-1/review-1.json` and `utf8-read-validation-1.json` retain
+the completed source review, native observations, binaries and source/operator identities.
+
+Canonical gate **55 / 10,734**, executable/operator bytes, **128 MiB** test heap, two capabilities,
+installed limits, numerical queue and live-attempt count remain unchanged. No ordinary reservation
+consumes this partial term. Case conversion/remapping, remaining narrowing/trim-loop arithmetic,
+numeric/comparison/literal/dictionary/metadata invocation/sharing, compiler/function/control/update/
+stack/GC/native funding, typed outer reports, independent admission, complete ordinary integration,
+activation and deployment qualification remain open. No credentials, AWS/image attempt or
+exhaustion search occurs.
+
+**Selected narrowing-helper caller data is privately validated, 2026-11-06 UTC.**
+`narrowing-helper-candidate-2/` passes **56** bounded groups and **13** compiler refusals with
+**19** inherited source-owner guards, pinned formatting/HLint and a strict **71-module** assembly.
+The twelfth nominal producer/direction budget emits four numeric coefficients. Its selected decode
+term is **96 × R + 80 × T + 499,232 × A + 64 × E**, where **R** counts checked records, **T** Text
+leaves, **A** marked AWS profiles and **E** value-list elements. Encoding adds zero. All **22**
+earlier quote vectors and component sources remain unchanged; the two new vectors contain only
+numeric literals. No ordinary reservation consumes this partial term.
+
+Source review independently recovers the five list widths, **18** binds, **five** traversals over
+at most **14** elements and **seven** keyword spellings containing **26** ASCII characters. The
+normalized token-length guard bounds the all-predicate to **64** callbacks and **65** next calls.
+**42** finite observer cases agree with installed Text; **ten** native stream/scalar cases,
+**100** equalities, **seven** keyword cases, **three** positive-result and **12** topology cases
+support the selected representations. Decoder/encoder descriptors retain **104 / 56 bytes** and
+getters **16 bytes**. These are source-cohort and returned-data checks, not transient-allocation
+or peak-memory measurements.
+
+Seven pinned Text sources and three GHC sources replay from their exact archives. Complete
+source-generated all/positive declarations and the inherited test-tree wrapper replay after pinned
+formatting. Source review adds recovered Array wrappers from unpacked Text fields, increasing the
+prospective per-profile allowance by **18,240 bytes** over the first candidate. Its positive
+56-group result, first formatting diagnostic and corrected source-spacing assertion remain
+preserved. `narrowing-helper-source-review-1/review-2.json` and
+`narrowing-helper-validation-1.json` retain sources, binaries, observations, source/operator
+identities and terminal producer/launcher receipts.
+
+Canonical gate **55 / 10,734** and executable/operator bytes remain unchanged. The **128 MiB**
+test heap, two capabilities, installed limits, numerical queue and live-attempt count stay fixed.
+Remaining UTF8 decoding/remapping, numeric/comparison/dictionary internals beyond these selected
+cohorts, literal/metadata invocation/sharing, compiler/function/control/update/stack/GC/native
+funding, typed outer reports, independent admission, complete ordinary integration, activation and
+deployment qualification remain open. No credentials, AWS/image attempt or exhaustion search occurs.
+
+**Full canonical gate 55 passes 10,734 cases (9,764 + 27 + 35 + 908), 2026-11-06 UTC.**
+The strict library still registers **905** modules and operator/build bytes agree. AWS exact-list
+validation now decides from the required prefix plus one constructor. Its five widths
+**3, 3, 3, 2, 3** inspect at most **4, 4, 4, 3, 4** constructors, or **19** per profile. The complete
+actual count remains in the error payload when demanded; error fields remain strict and full
+error observation can still traverse the list. This is a guard-decision bound, not a bound on
+list decoding, complete extraction, peak memory or ordinary admission.
+
+**Six** new permanent groups cover **five** per-field unread-tail controls and **65** finite
+cardinality vectors. The unchanged gate-54 library fails exactly the five new prefix controls;
+the matrix and existing profile tests pass. The strict replacement focused suite passes all
+**17** groups. Exact whole-owner replay permits only the guard replacement and bounded helper;
+all ADTs, field strictness, validation order, normalization, metadata, provider projections,
+renderers and accepted finite/Natural domains remain unchanged. The first focused wrapper needed
+its suite-name argument, and the first formatter made an intended test-layout change before a
+stable pass. Both diagnostics remain preserved.
+
+`aws-list-guard-budget-candidate-1/` refreshes one whole-owner digest among the same **19** source
+guards and updates both drift source copies, retaining their exact intentional drift. **49**
+rebased eleven-budget/diagnostic-erasure groups and **13** compiler refusals pass with pinned style
+at the unchanged **128 MiB** heap/two capabilities. All **22** earlier quote vectors and borrowed
+components remain unchanged; the raw-settings error-erasure and wrapper-refusal checks pass again.
+`aws-list-guard-canonical-source-review-1/review-1.json` and
+`aws-list-guard-canonical-validation-1.json` preserve the frozen owner, red/green binaries, full
+gate, source/operator identities, rebase and terminal receipts. Resource-scaling doctrine records
+the bounded decision, and the phase owns its extended profile tests.
+
+The executable source key changes. Previous component and private `125` integration records
+retain their own identities; this rebase does not requalify complete ordinary integration.
+Installed runtime limits, ordinary reservations, numerical queue and live-attempt count are
+unchanged. No partial term is consumed by ordinary admission. Remaining narrowing/helper scalar,
+arithmetic/UTF8/literal/metadata/compiler/function/control/update/stack/GC/native funding, typed
+outer reports, independent admission, ordinary integration, activation and deployment qualification
+remain open. No credentials, AWS/image attempt or exhaustion-seeking search occurs.
+
+**Preserved canonical gate 54 passes 10,728 cases (9,758 + 27 + 35 + 908), 2026-11-06 UTC.**
+The strict library still registers **905** modules and operator/build bytes agree. AWS-profile and
+topology narrowing now pass diagnostic Text directly to the SDK. Existing String APIs unpack the
+same Text message source. Multi-fragment messages use Text.concat over field/value Text and scalar
+fragments, avoiding a whole intermediate diagnostic String on the SDK path. Decimal and fixed
+substrate-name conversions retain their own fragment costs; this is not complete error funding.
+
+**Six** new permanent groups preserve **235** AWS reference messages across all eight error
+families and **23** topology messages across all five error constructors/substrate combinations.
+Fixtures include Unicode/NUL, Int bounds and wide Naturals. Full current SDK diagnostics match
+frozen messages for **40** semantic refusals, including **five** multiple-invalid first-refusal
+cases; **ten** positive controls preserve narrowed values and raw MachineId spelling. **Four**
+fixed sliced-input controls retain compact Text data equal to Text.copy and smaller than the
+borrowed parent backing. These returned-data checks do not measure transient allocation or peaks.
+
+Exact whole-owner replay permits only the new Text exports, each SDK error call and renderer
+definitions. All ADTs,validation order,normalization,metadata,provider projections and other owner
+declarations remain unchanged. Pre-promotion prototype evidence is preserved separately: its pure
+candidate message/data checks passed,while its SDK cases still exercised the preserved baseline.
+The canonical gate now validates the supported replacement. The first formatter made its intended
+AWS/Main changes before a stable pass; a successful replay needed a distinct record filename.
+Both diagnostics remain preserved.
+
+`narrowing-error-text-budget-candidate-1/` refreshes both changed whole-owner digests among the
+same **19** source guards. **Twenty-eight** nine-budget groups and **nine** compiler refusals
+pass with pinned style at the unchanged **128 MiB** heap/two capabilities. Both drift fixtures
+carry current owner/package bytes and preserve their exact intended drift. All **eighteen**
+previous quote vectors and all data-component sources remain unchanged.
+
+`narrowing-error-text-canonical-source-review-1/review-1.json` and
+`narrowing-error-text-canonical-validation-1.json` preserve frozen/candidate/current source,
+full gate results,operator/source identities,budget rebase and terminal producer/launcher receipts.
+Documentation lint passes after ledger/ownership/doctrine reconciliation. The executable key
+changes; previous component and private `125` integration records retain their own identities.
+Installed runtime limits,ordinary scratch,ordinary reservations,numerical queue and live-attempt
+count do not change. No partial term is consumed by ordinary admission. Remaining narrowing
+arithmetic/UTF8/failure/literal work,metadata invocation/sharing,compiler/function/control/update/
+stack/GC/native funding,independent admission,ordinary integration,activation and deployment
+qualification remain open. No credentials,AWS/image attempt or exhaustion search occurs.
+
+
+**SDK diagnostic erasure is verified at the raw-settings seam, 2026-11-06 UTC.**
+The current canonical extraction function maps SDK errors with
+`first (const RpcBirthSettingsShapeInvalid)`. Its SDK error payload never reaches Show, Text.pack
+or serialization. This closes that specific diagnostic-rendering obligation without adding a
+twelfth budget; it does not make narrowing/error construction, typed outer reports or the complete
+working set free.
+
+`extraction-report-erasure-candidate-2/` passes **forty-nine** bounded groups and **thirteen** compiler
+refusals, with **19** inherited source-owner guards, pinned style and a strict **64-module** private
+assembly. A whole-function observer changes only the decoder parameter and names; a second body
+adds one deliberate diagnostic-forcing mutation. Both replay the current source exactly after
+pinned formatting. **Five** fixed unforced diagnostic forms return the typed refusal on the
+unchanged body, while all five reach their synthetic exception under the mutation.
+
+**Six** actual canonical structural refusals and **17** full-envelope semantic refusals return the
+same typed error. Each semantic fixture first passes canonical wire-shape inspection and produces
+its expected SDK ExtractError Text. **Three** full-envelope successes preserve the complete strict
+raw projection, including fixed wide Naturals and Unicode/NUL. **23** returned refusal graphs
+retain only **32 bytes** each. **Four** new compiler controls refuse Show and Serialise for both
+opaque raw wrappers. These are demand/returned-data checks, not transient-allocation or peak-memory
+measurements. The initial generated-file formatting-extension refusals remain preserved.
+
+All **22** earlier numeric quote vectors and borrowed components remain unchanged. The old private
+`125` extraction body matches after removing its exact decoder-call marker; this limited source
+relation does not revalidate its executable or ordinary integration under the current identity.
+`extraction-report-erasure-source-review-1/review-1.json` and
+`extraction-report-erasure-validation-1.json` preserve the source replays, negative controls, native
+observations, source/operator identities and terminal receipts. Configuration doctrine records the
+existing error-erasure and opaque-wrapper behavior; no public runtime source changes.
+
+Canonical executable/operator remain at gate **54** and **10,728** cases. The **128 MiB** test heap,
+two capabilities, installed limits, ordinary reservations, numerical queue and live-attempt count
+are unchanged. Remaining narrowing/arithmetic/UTF8/literal/metadata/compiler/function/control/
+update/stack/GC/native funding, typed outer reports, independent admission, ordinary integration,
+activation and deployment qualification remain open. No credentials, AWS/image attempt or
+exhaustion-seeking search occurs.
+
+**Selected SDK failure propagation data is privately validated, 2026-11-06 UTC.**
+`failure-propagation-candidate-6/` passes **forty-three** bounded groups and **nine** compiler
+refusals, with **19** source-owner guards, pinned style and a strict **60-module** private assembly.
+The eleventh nominal producer/direction budget covers selected Failure/Left result headers and
+ordered NonEmpty accumulation data on the successfully prepared, shape-checked closed decoder.
+All **twenty** prior quote vectors and borrowed component sources remain unchanged.
+
+Pinned NonEmpty append constructs **24 × (k + 1)** prospective data bytes for **k** left errors,
+within **48 × k**. Error payloads and the right tail are borrowed. A width-**25** record has at
+most **24** product merges on one leaf path; a list of **n** values has at most
+**4 × ceil(log2(n + 1)) + 5**. Charging each potential root error through the checked maximum
+depth **D** gives **48 × V × D × max(24, 4 × ceil(log2(E + 1)) + 5)** selected merge data bytes,
+where **V** counts checked value visits and **E** value-list elements. The separately reviewed
+header schedule adds **48 + 192 × V + 48 × F + 192 × U + 512 × (E + L)**, with **F** value record
+fields, **U** selected unions and **L** value-list roots. Encoding adds zero. These are prospective
+source-constructor allowances, not a complete allocation, working-set or admission bound.
+
+**64** actual merges preserve error order and retain at most **216** new data bytes. **16**
+installed Validation cases cover every success/failure branch; **120** fixed installed Seq traces
+and **72** product associations fit their source-derived copy bounds. **Six** nested actual SDK
+cases agree with matching Seq traces and the global wire-counter formula without invoking Show.
+Decoder/encoder numeric descriptors retain **136 / 88 bytes**; getters retain **16 bytes**.
+`failure-propagation-source-review-1/review-1.json` and `failure-propagation-validation-1.json`
+preserve pinned sources, native observations, source/operator identities and terminal receipts.
+Preparation diagnostics remain preserved, including the corrected GHC quote identity and use of
+an unmarked wire checker for list-root fixtures instead of a record-only AWS marker.
+
+Canonical executable/operator remain at gate **54** and **10,728** cases. The **128 MiB** test heap,
+two capabilities, installed limits, ordinary reservations, numerical queue and live-attempt count
+are unchanged. No ordinary reservation consumes this private term. Show/report serialization,
+remaining narrowing/arithmetic/UTF8/literal/metadata/compiler/function/control/update/stack/GC/native
+funding, independent admission, ordinary integration, activation and deployment qualification remain
+open. No credentials, AWS/image attempt or exhaustion-seeking search occurs.
+
+**Selected typed narrowing-failure data is privately validated, 2026-11-06 UTC.**
+`narrowing-failure-candidate-3/` passes **thirty-six** bounded groups and **nine** compiler refusals,
+with **19** source-owner guards, pinned style and a strict **55-module** private assembly.
+The tenth nominal producer/direction budget adds **B + 8,233 × R + 2,692 × T** selected decoding
+bytes; encoding adds zero. **B** is global minus type Text-token bytes, **R** counts value records
+and **T** value Text leaves. It covers eleven typed root-failure families in AWS/topology decoding;
+the two provider-only errors that render arbitrary-width Naturals remain outside this scope.
+
+An independent source inventory agrees with renderer-derived literal recipes, the **30-character**
+field-name maximum, **20-character** signed Int bound and **12-character** substrate bound.
+The source term reserves typed error/SDK wrapper data, literal/decimal/substrate String and pack
+arrays, concat argument/filter/length lists, selected boxing cohorts and prospective output data.
+Concat uses **240 bytes per fragment + 96 bytes** of selected scalar data beside its three list
+spines; output alignment adds at most seven bytes. Unsupported volume Text is the sole variable
+message payload. Input backing remains separately owned; no collection or sharing credit is taken.
+
+**199** fixed error/message graphs fit the selected allowances, including Int bounds, every schema
+field name and substrate combination, Unicode/NUL and short views of a fixed small backing.
+Nine actual String/pack fragment graphs also fit. A held typed-error/SDK/monadic/roundtrip graph
+adds **136 bytes**, within the **152-byte** source root term. Decoder/encoder descriptors retain
+**80 / 48 bytes**; scalar getters retain **16 bytes**. These are source/returned-data observations,
+not transient-allocation, peak-memory or admission evidence. The five-byte `None` value label may
+still be conservatively charged even when record/Text counts are zero.
+
+All **eighteen** prior numeric vectors and data-component sources remain unchanged. Both drift
+controls quote the new entrypoint. `narrowing-failure-source-review-1/review-1.json` and
+`narrowing-failure-validation-1.json` preserve the independent inventory, pinned source, native
+graphs, source/operator identities and terminal receipts. The first build refused an ambiguous
+test decoder type; an explicit Bool successor passed. Its initial concat term then gained the
+comparison/unpacked-copy cohorts identified by source review; all earlier evidence is preserved.
+
+Canonical executable/operator remain at gate **54** and **10,728** cases. The **128 MiB** test
+heap, two capabilities, installed limits, ordinary reservations, numerical queue and live-attempt
+count are unchanged. No ordinary reservation consumes this private term. Generic SDK failure
+accumulation/propagation, show/report serialization, other narrowing helpers, metadata invocation/
+sharing, remaining literal/arithmetic/UTF8/compiler/function/control/update/stack/GC/native funding,
+independent admission, ordinary integration, activation and deployment qualification remain open.
+No credentials, AWS/image attempt or exhaustion-seeking search occurs.
+
+**Preserved canonical gate 53 passes 10,722 cases (9,752 + 27 + 35 + 908), 2026-11-06 UTC.**
+The strict library registers **905** modules and operator/build bytes agree. The supported AWS
+profile CIDR parser now uses explicit octet/prefix states with a **20-read** budget after trimming.
+Four bounded octets and a one-to-three-digit prefix admit at most **19 characters**; the twentieth
+read covers end-of-input. Octet leading zeros remain refused, prefix spellings such as `/000` and
+`/032` remain accepted, and returned CIDR Text keeps the original stripped spelling. Numeric
+projection remains an Integer address and Int prefix. Other profile fields retain arbitrary-width
+Naturals. Whole-file source replay proves imports and the parser wrapper are the only AWS-owner
+changes, preserving smart-constructor order, typed first refusals, normalization and metadata.
+
+**Eight** new permanent groups compare the frozen earlier parser and independently reconstructed
+addresses: **4,000** octet cases, **3,000** prefix spellings, **25,344** address/prefix cases,
+**28** malformed forms, **48** whitespace cases and **nine** explicit examples. A separate private
+source-generated observer covers all **32,429** finite inputs and observes at most **20**
+`Text.uncons` calls, including the longest-valid and its overlong refusal. Its body replays exactly
+after reversing the single test-only observer substitution. Three native parsed graphs retain
+**24 bytes** each and no Text field. Trimming and remaining construction/scalar/compiler/control/
+GC/native work are outside this read bound; this is not complete parser funding or admission.
+
+`aws-cidr-budget-candidate-1/` refreshes the AWS owner hash and adds the scanner as the **19th**
+source-owner contract. Both drift fixtures carry the current owner/scanner/package manifest.
+**Twelve** seven-budget groups and **nine** compiler refusals pass with pinned style at the
+unchanged **128 MiB** heap/two capabilities. All **fourteen** numeric budget vectors remain
+unchanged, as do the bounded SDK profile/coexistence cases. Prior individual component records and
+private `125` remain evidence for their preserved executable identities; this step does not
+requalify the complete ordinary-integration fixture.
+
+`aws-cidr-canonical-source-review-1/review-1.json` and `aws-cidr-canonical-validation-1.json`
+preserve prototype/frozen code, exact source replay, the canonical gate, source identities,
+operator bytes, rebased source guards and terminal producer/launcher receipts. Documentation lint
+passes after ledger/ownership/doctrine reconciliation. The executable source identity changes;
+its policy, installed runtime limits, ordinary scratch declaration, numerical queue and
+live-attempt count do not. No partial new term is consumed by an ordinary reservation. Parser
+strip/construction/scalar/failure work, metadata invocation/sharing, remaining compiler/control/
+update/stack/GC/native funding, independent admission, ordinary integration, activation and
+deployment qualification remain open. No AWS/image attempt, credential access or exhaustion-seeking
+search occurs.
+
+**Selected CIDR constructor data is privately validated, 2026-11-06 UTC.**
+`cidr-constructor-candidate-4/` passes **twenty** bounded groups and **nine** compiler refusals,
+with **19** source-owner guards, pinned style and a strict **44-module** private assembly.
+The eighth nominal producer/direction budget adds **32,960 × A** bytes of selected decoding data,
+where **A** counts checked present AWS profiles; encoding adds zero. A profile reaches at most
+**eight** CIDR checks, each with the preserved **20-read** bound. The **4,120-byte** per-check
+term covers initial/successor states, prospective uncons/Iter data, parser and validation-result
+constructors, and the output views of both possible trim calls. Text input backing remains owned
+by the separate source term. Empty views reserve their independent empty backing and a prospective
+Array wrapper; shared backing and collection provide no credit.
+
+Native scanner states retain **32 / 32 bytes**, within the **40-byte** state allowance. Fixed
+empty/NUL/Unicode uncons graphs add at most **104 bytes**, within **120**; forward/reverse Iter
+data retains **24 bytes**. Trim-result view graphs and parsed Integer/prefix/result wrappers fit
+their separate source prices. All **fourteen** earlier numeric vectors remain unchanged.
+Decoder/encoder descriptors retain **32 bytes** each; their scalar getter retains **16 bytes**.
+`cidr-constructor-source-review-1/review-1.json` and `cidr-constructor-validation-1.json` preserve
+four installed Text interfaces, exact observer-body replay, source/operator identities, all
+terminal receipts and preceding style/import/layout-expectation refusals. These observations
+check source constructors and returned data, not transient allocation or peak working sets.
+
+Canonical source/operator remain at gate **53** and **10,722** cases. The **128 MiB** test heap,
+two capabilities, installed limits, ordinary reservations, numerical queue and live-attempt count
+are unchanged. No ordinary reservation consumes this private term. Remaining narrowing scalar/
+whitespace traversal/failure work, metadata invocation/sharing, literal/compiler/control/update/
+stack/GC/native funding, independent admission, ordinary integration, activation and qualification
+remain open. No credential access, AWS/image attempt or exhaustion-seeking search occurs.
+
+
+**Selected linear trim data is privately validated, 2026-11-06 UTC.**
+`trim-iteration-candidate-2/` passes **twenty-eight** bounded groups and **nine** compiler refusals,
+with **19** source-owner guards, pinned style and a strict **50-module** private assembly.
+The ninth nominal producer/direction budget adds **224 × B + 480 × T** selected decoding bytes,
+where **B** is global minus type Text-token bytes and **T** counts value Text leaves; encoding
+adds zero. During one reviewed decoder extraction, a Text leaf reaches at most **two** source
+trim calls, each with two directional passes. For **n** characters, these take at most
+**4 × (n + 1)** iterator visits. Each selected Iter/Char/Bool cohort reserves **56 bytes**;
+each of the four prospective output views reserves **64 bytes**, including empty backing.
+Input backing remains separately owned, and overlap with prior CIDR-view prices takes no credit.
+Later settings/topology revalidation retains its own schedule.
+
+**781** fixed inputs of at most **four characters** preserve actual Text strip/start/end behavior
+and the source read bound. Actual SDK canonical encodings and checked UTF8 token spans cover the
+same **781** inputs, and **781** actual MachineId extracts preserve raw Text or give the expected
+empty-ID refusal. The opaque usage counter increments type bytes only alongside global bytes,
+so subtraction cannot underflow. **B** can conservatively include value field/constructor labels:
+an absent AWS profile and independent bare `None Text` each retain the same **five-byte** `None`
+label, reserving **1,120 bytes** despite zero Text leaves. The larger type declaration is excluded.
+The failed predecessor assumed that label was absent; its positive results remain preserved.
+
+All **sixteen** preceding numeric vectors remain unchanged. Decoder/encoder descriptors retain
+**56 / 40 bytes**; scalar getters retain **16 bytes**. Both drift controls quote the new budget
+entrypoint and refuse changed owner/table source. `trim-iteration-source-review-1/review-2.json`
+and `trim-iteration-validation-1.json` preserve exact function-body replay through the pinned
+formatter, four installed Text interfaces, source/operator identities, terminal receipts and the
+preceding test/preparation/reviewer diagnostics. These are source/control-flow/returned-data
+checks, not allocation traces, peak-memory or admission evidence.
+
+Canonical source/operator remain at gate **53** and **10,722** cases. The **128 MiB** test heap,
+two capabilities, installed limits, ordinary reservations, numerical queue and live-attempt count
+are unchanged. No ordinary reservation consumes this private term. Remaining narrowing arithmetic/
+UTF8/failure work, literal and metadata invocation/sharing, compiler/function/control/update/
+stack/GC/native funding, independent admission, ordinary integration, activation and qualification
+remain open. No credentials, AWS/image attempt or exhaustion-seeking search is involved.
+
+The thirteen reviewed selected metadata data components now compose privately as described below.
+Shared literal field-name policies are canonical:
+four role-indexed tables preserve all **22** existing mappings and unknown-label identity, with
+one definition per policy and shared `NOINLINE` roots. Their **10,016-byte** selected
+constructor-data term joins both captured-input branches and the initial profile floor. The
+combined inspection-template and field-table data term is now a build-time **99,544-byte** scalar, so reading the
+reservation traverses neither templates nor tables. This is a necessary data floor, not a
+complete working-set bound.
+
+**Canonical envelope-codec roots and outer invocation schedule are validated.** The settings
+payload borrows explicit `NOINLINE` decoder/encoder roots from `RpcBirthSettingsCodec` for
+extraction, extracted-value readback and general settings publication. The evaluated syntax
+helper accepts that same encoder. Four permanent laws preserve actual SDK schemas/value behavior,
+root identity across GC/concurrent borrowers and source erasure, including AWS, Unicode/NUL and
+wide Natural fixtures. These roots belong to each process independently; their reuse does not
+prove inner function or allocation costs.
+
+**Preserved canonical gate 52 passes 10,714 cases (9,744 + 27 + 35 + 908).** The strict library build
+registers **904** modules, and operator/build bytes agree. Private `125` retains **45** modules;
+its **517-module** fixture assembly passes **205** cases/**4,032** SDK comparisons and **five**
+native processes under the existing **17 MiB** scratch, **128 MiB** heap and **256 MiB** outer
+declarations. A load consumes the decoder once and encoder twice; recovery consumes the encoder
+twice. Each observed codec root constructs at most once per fresh process. Fixture publication
+has already warmed one encoder root, which remains recorded. The tested original-scratch and
+actual-runtime early refusals consume neither codec after the observation reset. Exact source
+replay binds the private observers to canonical roots and the predecessor payload; no supported
+runtime imports those observers. `metadata-sharing-canonical-validation-1.json` preserves the
+gate, source identities, native observations and all diagnostics. A concurrent source-identity
+read saw the library during linking; the terminal-gate read succeeds without rerunning the gate.
+
+**Selected per-schema construction data now composes privately.**
+`metadata-construction-candidate-5/` passes **six** bounded groups and **seven** compiler
+refusals with pinned style and **16** owner guards. Thirteen reviewed components emit two typed
+envelope scalars: decode/encode **42,582,992 / 37,442,920** bytes for one schema construction.
+The numeric roots retain **16 bytes**; twelve component anchors per direction preserve earlier
+vectors, and independent actual SDK schema graphs fit the sums. These are selected source-derived
+data allowances, not measured heap use or complete bounds. The schedule keeps retained-root
+identities separate from separately charged per-consumer construction, taking no retirement or
+collection credit. Outer codec-root reuse does not certify inner or input-dependent compiler work.
+`metadata-sharing-source-review-1/review-1.json` records that boundary. Earlier formatter/parser
+and SDK schema-result fixture refusals remain preserved. No ordinary reservation uses these new
+private sums. Complete funding, independent admission, ordinary integration, activation and
+qualification remain open. The numerical queue, installed limits and live-attempt count do not change.
+
+**Selected value record-map and lookup data is privately validated, 2026-11-06 UTC.**
+`value-map-candidate-2/` passes **eight** fixed bounded groups and **seven** compiler refusals
+with pinned style and **18** source guards. Its closed **51-owner** Generic encoding catalogue
+contains **175** record recipes. Existing reviewed constructor/comparison/container/local terms
+cover singleton, from-list, insertion and union schedules; prospective RecordLit and RecordField
+data are charged separately. The envelope decoder reserves **1,896 bytes per value-record field**;
+the encoder reserves **108,762 bytes per value-record field**, plus **168 bytes per value record
+or union**. These are selected source-derived allowances, not measured peak memory or complete bounds.
+The union term covers a nullary payload's empty record even when final SDK syntax omits it.
+Checked global-minus-type field counters exclude declarations under absent optionals, empty lists
+and union annotations. Two staged numeric descriptors retain **56 bytes** each; their getters
+retain **16 bytes**. No runtime catalogue traversal is emitted.
+
+Actual SDK schemas and encode/extract results agree for named, bare and nullary fixtures, products
+of two through five fields, small lists/optionals and both union arms, including Unicode/NUL.
+**Seven** native SDK record graphs hold keys and payload expressions independently; their additional
+returned record data fits the allowance, including one fixed sliced-Text case. Intermediate
+construction is source-derived; returned graphs do not measure transient allocation or working sets.
+The **128 MiB** test heap is unchanged. `value-map-source-review-1/review-2.json` and
+`value-map-validation-1.json` preserve the derivation, executable, inputs and terminal receipts.
+The first fixture's omitted 32-byte singleton helper allowance, formatter stability refusal and
+source-review parser correction remain preserved. Canonical executable source/operator remain at
+gate **52**; no ordinary reservation consumes these terms. Complete SDK/compiler/control/GC/native
+funding, original admission, integration and qualification remain open. No exhaustion-seeking
+search, live attempt, limit change or queue advancement occurs.
+
+**Selected union-routing data and record-map composition are privately validated, 2026-11-06 UTC.**
+`value-union-candidate-4/` passes **twelve** bounded groups and **nine** compiler refusals with
+pinned style and **18** inherited source guards. The selected decoder routing term is
+**1,376 × U + 304 × N + 912 × H** bytes, where **U** counts selected value unions, **N** their
+checked alternative entries and **H** their checked height sum. It covers routing triples/pairs,
+prospective optional results, nullary record synthesis, temporary union headers, the branch-map
+lookup, two top-level member tests and bounded branch-list lookup. Existing extraction terms
+retain ownership of deletion/type-tree constructors. Their key comparisons and the structural or
+judgmental type-comparison paths remain separate.
+
+Generic embedding adds **168 bytes per selected sum layer** for Field/App/FieldSelection,
+annotations and optional-payload projection data, taking no intermediate-collection credit.
+The trusted envelope sum-depth maximum is **eight**, yielding **1,344 × U** bytes. Its record-map
+term separately covers the leaf empty-record test. The combined selected decode/encode terms are
+**1,896 × F + 1,376 × U + 304 × N + 912 × H** and
+**168 × R + 108,762 × F + 1,512 × U**, where **R** counts value records and **F** excludes
+type-only record fields. Composition requires the same nominal producer and direction; two new
+compiler controls reject mismatches. Type-only annotations contribute zero value-construction data.
+
+Fixed actual SDK schemas and encode/extract results agree for two-, three- and five-branch unions,
+nested/nullary/payload cases, Unicode/NUL, a wide Natural and synthetic SecretRef values. Hidden
+helper source slices replay exactly through the pinned formatter, and native observations confirm
+their tuple and SDK syntax-constructor sizes. **24** native SDK/strict-map/list query cases fit the
+callback-count bound. Numeric union descriptors have **80 / 64 bytes** of observed data, within an
+**80-byte** allowance; getters retain **16 bytes**. These are selected source/data checks, not
+transient-allocation, peak-memory or complete working-set proofs.
+
+`value-union-source-review-1/review-1.json` and `value-union-validation-1.json` preserve sources,
+executables and terminal receipts, including the initial lint and stale copied diagnostic refusals.
+The complete ten-group/seven-control predecessor remains preserved. Canonical executable/operator
+stay at gate **52**; the **128 MiB** test heap, installed limits, queue and live-attempt count are
+unchanged. No ordinary reservation consumes these terms. Complete SDK/compiler/control/GC/native
+funding, original admission, ordinary integration and qualification remain open.
+
+**Selected closed-type comparison/deletion scalar data is privately validated, 2026-11-06 UTC.**
+`type-work-candidate-3/` passes **twelve** bounded groups and **nine** compiler refusals with
+pinned style and **18** inherited source guards. Quotation inspects both actual SDK expected and
+declared schemas, refuses failed/unsupported metadata and emits five numeric coefficients per
+direction. Both complete envelope schemas compare equal and have maximum type-map width **25**.
+The raw constructor maximum of **13** measures a different structure. The failed predecessor's two
+test anchors assumed those widths were equal; its correctly derived costs and **124** passing
+deletion cases remain preserved beside the corrected replacement.
+
+The selected decoder term is **160 × T + 2,832 × E + 880 × U + 608 × N + 1,536 × H** bytes,
+where **T** counts type visits, **E** counts type record fields plus union alternatives, and
+**U/N/H** retain the selected-union meanings above. It reserves selected Boolean/size results,
+ordered equality and bounded structural lookups, outer union arithmetic and both potential SDK
+deletions' key comparisons/rebalancing scalars. Existing extraction terms retain ownership of
+deletion/key-list/ascending-list/type-tree constructors. SDK list and optional extraction do not
+perform type comparison; unused annotations may still be conservatively charged by this term.
+Encoder type-work coefficients are zero. The composed selected decode term is now
+**1,896 × F + 2,256 × U + 912 × N + 2,448 × H + 160 × T + 2,832 × E**; the prior encoder term
+is unchanged. Nominal producer/direction agreement remains required for all three budgets.
+
+**64** fixed public SDK/closed-helper type pairs, **18** ordered-map cases and **71** structural
+callback cases pass. **178** installed/source-observed deletion cases, including width **25**,
+agree on contents/key callbacks and fit the source-derived height bounds for balance calls.
+Both private helper recipes replay exactly; the **16** previously reviewed generated container
+observer sources are unchanged. Numeric descriptor data is **128 / 64 bytes**, within a
+**128-byte** allowance; getters retain **16 bytes**. These source/data and control-flow observations
+do not measure transient allocations, peak memory or complete working sets.
+
+`type-work-source-review-1/review-1.json` and `type-work-validation-1.json` preserve the derivation,
+executable, inputs and terminal receipts, including the initial formatter-stability refusal and
+both width-assumption fixture failures. Canonical executable/operator remain at gate **52**.
+The **128 MiB** test heap, installed limits, numerical queue and live-attempt count are unchanged;
+no ordinary reservation consumes these terms. Normalization construction, remaining extraction/
+narrowing/results, literal/compiler/dictionary/function/control/update/stack/GC/native funding,
+original admission, ordinary integration, activation and qualification remain open.
+
+**Selected decoder type-normalization construction data is privately validated, 2026-11-06 UTC.**
+`normalization-candidate-3/` passes **thirteen** fixed bounded groups and **nine** compiler
+refusals with pinned style and **18** inherited source guards. Record source erasure/evaluation
+uses the reviewed copy-map recipes; union source erasure uses the SDK's Original/Sorted Identity
+traversal before evaluation maps optional payloads and sorts. Prospective RecordField, syntax,
+primitive-function/tag, environment-argument and optional data receive separate prices. Function
+environments, compiler/control work and complete working sets remain independent obligations.
+
+Both type-comparison operands receive **752 × T + 496 × TR + 62,965 × TU** bytes of selected
+construction data, where **TR/TU** separately count checked type-record fields/union alternatives.
+Quotation derives the trusted maximum width **25** and emits numeric coefficients; no runtime
+schema-width traversal is emitted. The combined selected decoder term is
+**1,896 × F + 2,256 × U + 912 × N + 2,448 × H + 912 × T + 3,328 × TR + 65,797 × TU**.
+All four budgets require matching nominal producer/direction. The encoder contribution for this
+type-comparison category is zero, leaving **168 × R + 108,762 × F + 1,512 × U** unchanged;
+ordinary value source-erasure construction remains separate. Existing extraction terms retain
+ownership of returned type trees; conservative overlap takes no collection credit.
+
+**Twelve** fixed closed types preserve actual SDK source-erasure behavior. **Fourteen** actual
+SDK evaluated type graphs fit the independent occurrence-based structural data term, including
+both complete envelope schemas: syntax data **51,152 / 51,240 bytes**, evaluated data **36,472
+bytes** each. A separate fixed shared-input case has **3,360 bytes** of physical syntax and
+**3,488 bytes** after evaluation, both within its **22,875-byte** structural term. Evaluation
+need not preserve sharing: count encoded occurrences for structural bounds and observe input,
+output and their held pair independently. These graph observations do not measure transient
+allocation, peak memory or admission.
+
+A private bridge observes the actual pinned SDK's internal evaluated constructors without copying
+the evaluator or entering supported runtime. Primitive-function/tag/empty-environment headers are
+**24 / 16 / 16 bytes**. **Eighteen** Original/Sorted Identity cases agree with the unchanged
+source-generated observer; **16** generated container sources and the pinned microlens source/unit
+bind that comparison. Numeric descriptor data is **80 / 48 bytes**, within an **80-byte** allowance;
+getters retain **16 bytes**. The four-module smoke and twelve-group predecessor remain preserved.
+
+`normalization-source-review-1/review-3.json` and `normalization-validation-1.json` preserve sources,
+executables, inputs and terminal receipts. Two reviewer-wrapper failures (formatter line wrapping
+and an external registration path) remain preserved beside the corrected review; compiled tests
+passed throughout. Documentation lint passes. Canonical executable/operator remain at gate **52**
+and **10,714** cases. The **128 MiB** test heap, two capabilities, installed limits, numerical queue
+and live-attempt count are unchanged; no ordinary reservation consumes these terms. Value
+source-erasure construction, remaining extraction/narrowing/results, literal/compiler/dictionary/
+function/control/update/stack/GC/native funding, independent admission, ordinary integration,
+activation and qualification remain open. No exhaustion-seeking search or live attempt occurs.
+
+**Selected encoder value-source-erasure construction data is privately validated, 2026-11-06 UTC.**
+`value-erasure-candidate-4/` passes **twelve** fixed bounded groups and **nine** compiler refusals
+with pinned style and **18** inherited source guards; its strict assembly compiles **32** modules
+before linking. Each encoder consumer performs one source-erasure walk. The decoder borrows
+checked syntax through `renote` and receives zero contribution for this category. The independently
+observed outer schedule still charges both encoder consumers for load and recovery.
+
+The selected encoder term is
+**256 × (V + T) + 168 × G + 31,399 × TU + 128 × (E + L)** bytes. Here **V/T** count checked
+value/type visits, **G** all record fields, **TU** type-union alternatives, **E** list elements and
+**L** value-list roots. Source erasure rebuilds record fields/maps, optional union payloads and
+sequence spines while retaining scalar payloads. The node allowance covers outer selectors,
+local syntax wrappers and empty-map recipes; nonempty union recipes fit the staged maximum over
+trusted widths **1–25**. Existing returned-syntax terms retain their ownership; conservative overlap
+takes no collection credit. The combined selected encoder term becomes
+**168 × R + 108,930 × F + 1,512 × U + 256 × (V + T) + 168 × TR + 31,399 × TU + 128 × (E + L)**,
+with **G = F + TR** and the earlier **R/F/U/TR** meanings. The selected decoder term is unchanged.
+All five budgets require matching nominal producer/direction. Ten staged descriptors contain only
+numeric literals, without runtime schema traversal. Their new data is **64 / 112 bytes**, within a
+**128-byte** allowance; getters retain **16 bytes**.
+
+Pinned Dhall/containers source shows one reconstructed sequence tree/digit/node per corresponding
+input constructor, with erased Identity/Seq/Elem wrappers and unchanged unpacked cached sizes.
+The structural induction reserves **128 × (elements + 1)** bytes per spine. **36** native
+sequence traversals agree on results and exact leaf visits across three construction shapes at
+fixed lengths up to **511** elements. **29** actual SDK syntax fixtures cover scalars, wide Natural,
+Unicode/NUL, records, both union arms, nested lists/optionals and sharing. Independently observed
+input/output/held-pair data fits the occurrence-based structural terms. The shared-record input and
+erased output retain **952 / 1,240 bytes**, both within their **5,844-byte** structural term.
+These returned-data and control-flow observations do not measure transient allocation, peak memory,
+function environments or complete working sets.
+
+`value-erasure-source-review-1/review-1.json` and `value-erasure-validation-1.json` preserve the
+derivation, executable, sources and terminal receipts. Initial formatter/lint refusals, sourceful
+binary-fixture type errors and an incorrect empty-union price anchor (**232** instead of **152**)
+remain preserved beside the replacement. The corrected source index names the actual library
+components of the verified archives. Documentation lint passes; canonical executable/operator
+remain at gate **52** and **10,714** cases. The **128 MiB** test heap, two capabilities, installed
+limits, numerical queue and live-attempt count are unchanged; no ordinary reservation consumes these terms.
+Remaining extraction/narrowing/results, bound calculation, literal/compiler/dictionary/function/
+control/update/stack/GC/native funding, independent admission, ordinary integration, activation and
+qualification remain open. No exhaustion-seeking search or live attempt occurs.
+
+**Selected successful value-extraction result-header data is privately validated, 2026-11-06 UTC.**
+`value-results-candidate-2/` passes **twelve** bounded groups and **nine** compiler refusals with
+pinned style and **18** inherited source guards. Its strict assembly compiles **37** modules
+before linking. The closed traversal has **55** explicit scalar/owner instances plus list/Maybe
+delegation, without an arbitrary-leaf fallback. It derives the envelope's largest transparent
+unnamed singleton chain as **one**, separately from the existing Generic sum-depth maximum of
+**eight**. Containers and named record/sum boundaries reset the root chain while preserving nested
+maxima; a two-layer synthetic constructor fixture independently checks accumulation.
+
+The selected successful decoder result-header term is
+**48 + 192 × V + 48 × F + 192 × U + 512 × (E + L)** bytes, with the prior value-visit,
+value-record-field, selected-union and list element/root meanings. It covers prospective successful
+Generic maps/products, selected branch maps, optional/list maps, the narrowing adapter's three
+Validation/Either conversions and the payload extraction boundary's three `Right` roots.
+Three wrappers per value-record field overbound selectors and binary product applications;
+transparent constructors receive four maps per layer. Type-only declarations receive no value
+result charge. Metadata expected/declaration results retain their earlier owners, and their full
+invocation/sharing proof remains open. Narrowing smart-constructor internals, DTOs/parsers and
+their own results, errors and rendered failure messages remain separate.
+
+Pinned Validation and GHC sources confirm one prospective `Success` per map/application,
+two for default `liftA2`, and three for `liftA3`. At most four such results per sequence
+tree/digit/node, with the independent spine bound and minimum constructor size, yield
+**512 × (elements + 1)** bytes per list traversal. **36** installed sequence traversals compare
+a finite Applicative-call observer with actual SDK Validation results across three construction
+shapes and fixed lengths up to **511**. **25** actual SDK cases preserve scalar, record, union,
+list, optional and transparent-constructor values; each observed `Success`/`Right` adds exactly
+**16 bytes** to its independently observed payload data. These returned-data and control-flow
+checks do not measure transient allocation, peak memory, function environments or complete working sets.
+
+All six budgets require matching nominal producer/direction. Encoder result coefficients are zero,
+leaving its earlier selected term unchanged. The combined selected decoder term becomes
+**48 + 1,944 × F + 2,448 × U + 912 × N + 2,448 × H + 192 × V + 912 × T + 3,328 × TR + 65,797 × TU + 512 × (E + L)**.
+Twelve staged descriptors emit numeric literals only. New descriptor data is **104 / 72 bytes**,
+within a **152-byte** allowance; scalar getters retain **16 bytes**. No runtime Generic/schema
+traversal is emitted. The six borrowed normalization/erasure modules are unchanged.
+
+`value-results-source-review-2/review-1.json` and `value-results-validation-1.json` preserve the
+derivation, executable, inputs and terminal receipts. Two redundant-evaluate lint hints and an
+incorrect compiler-archive Bifunctor module name remain preserved beside their corrections;
+the compiled candidate passes throughout. Documentation lint passes. Canonical executable/operator
+remain at gate **52** and **10,714** cases. The **128 MiB** test heap, two capabilities, installed
+limits, numerical queue and live-attempt count are unchanged; no ordinary reservation consumes these terms.
+Internal narrowing DTO/parser/results, failure/error paths, metadata invocation/sharing, bound
+calculation, literal/compiler/dictionary/function/control/update/stack/GC/native funding,
+independent admission, ordinary integration, activation and qualification remain open. No
+exhaustion-seeking search or live attempt occurs.
+
+**Selected extra narrowing DTO/list data is privately validated, 2026-11-06 UTC.**
+`narrowing-dto-candidate-1/` passes **twelve** bounded groups and **nine** compiler refusals with
+pinned style and **18** inherited source guards; **39** modules compile before linking. The new
+decoder term is **32 × R + 616 × A** bytes, where **R** counts checked value records and **A**
+marked present AWS profiles. It composes with all six preceding budgets under the same nominal
+producer/direction. Encoder coefficients are zero. Existing raw-data terms retain one complete
+constructor/list cohort; this selected term funds coexistence with the extra cohort. Scalar
+payloads, case-converter arrays and parser/result/failure work retain their separate owners.
+
+Machine narrowing holds a **32-byte** triple beside its record; EKS narrowing holds a **24-byte**
+pair. Charging their maximum per value record is conservative. Kind constructs its record directly,
+RKE2 retains its decoded list, and MachineId is a newtype. A closed Generic root-field traversal
+derives **13** fields for the wide AWS DTO; actual wide/narrow headers are **112 bytes** each.
+The extra AWS construction includes six list spines with source lengths **[3, 3, 3, 3, 2, 3]**:
+validated instances, volume traversal, volume Text projection, size traversal and both subnet lists.
+Each spine receives **24 × elements + 16** bytes, totaling **504 bytes**; with one extra DTO this
+gives **616 bytes** per marked profile. The volume newtype contributes no element header.
+
+Pinned list traversal/map source constructs at most one new cons per element. Exact-length guards
+precede each validation traversal, so a later refusal can retain a prefix of these same bounded
+spines; an incorrectly sized original list retains its existing raw/input owner. No list fusion,
+collection or early retirement is assumed. The private observer borrows actual scalar payloads
+through Generic fields while excluding the DTO/list constructors being measured. **Eight** fixed
+coexistence cases each retain **448 bytes** of extra settled data within **616**; the intermediate
+volume list retains **72 bytes** within **88**. Actual SDK narrowing preserves **eight** valid
+profiles, including trimmed/uppercase/Kelvin, wide Natural and shared-token fixtures, and refuses
+**twelve** malformed profiles with the original direct typed first refusals. These observations do
+not measure transient allocation, peak memory or complete working sets.
+
+Checked markers exclude optional absence and its type-only profile declaration. Shape-valid
+semantic refusals still receive one record/profile allowance, **648 bytes**. Fourteen descriptors
+emit numeric literals only, without a runtime Generic/recipe walk. Executed descriptor assertions
+establish **56 / 40 bytes**, within a **56-byte** allowance; getters retain **16 bytes**. The **nine**
+borrowed normalization/erasure/result modules remain unchanged. All component validation scopes pass.
+
+`narrowing-dto-source-review-1/review-1.json` and `narrowing-dto-validation-1.json` preserve the
+derivation, executable, sources and terminal receipts. Documentation lint passes. Canonical
+executable/operator remain at gate **52** and **10,714** cases. The **128 MiB** test heap, two
+capabilities, installed limits, numerical queue and live-attempt count are unchanged; no ordinary
+reservation consumes these terms. Parser Text/views/scalars/results, failure/error rendering,
+metadata invocation/sharing, bound calculation, literal/compiler/dictionary/function/control/
+update/stack/GC/native funding, independent admission, ordinary integration, activation and
+qualification remain open. No live attempt, credential access or exhaustion-seeking search occurs.
+
+**Preserved predecessor gate 51 passes 10,710 cases (9,740 + 27 + 35 + 908).** All **168** affected cases, **13** shared
+observation clients, **508-module** strict assembly, five native environment cases and three actual
+schema fixtures pass. Seven frozen-function/actual-SDK/graph groups cover **1,066** comparisons;
+three compiler controls refuse mismatched nominal roles. Nine permanent cases cover table laws
+and retained metadata. Actual-source emission checks confirm literal tables and scalar totals.
+Private `124` retains **44** modules, **205** cases/**4,032** SDK comparisons and five native modes.
+Positive scratch remains **17 MiB**, with **128 MiB** heap and **256 MiB** outer limits; the original
+**16 MiB** fixture refuses its **17,334,159-byte** known data floor. Earlier style, missing direct
+unit dependency and stale copied getter failures are preserved alongside their corrected checks.
+`static-field-table-components-validation-2.json` also preserves the first aggregate's adapter
+whitespace assertion and its correction. `static-field-table-canonical-validation-1.json`
+preserves matching before/after source identities, terminal producer/launcher receipts, **903**
+registered library modules and synchronized operator/build bytes. The next manual SecretRef and
+SDK Original-order traversal obligations are pinned in
+`manual-metadata-source-review-1/review-1.json`. No sprint advances from component evidence;
+complete funding, admission, integration and qualification remain open.
+
+**Selected literal-unpacking and Generic name-reflection data is privately validated.**
+`metadata-reflection-candidate-4/` passes **nine** bounded groups and **seven** compiler refusals
+with pinned style. Three source files from the pinned GHC **9.12.4** archive expose CString,
+Generic singleton/name reflection and Symbol wrappers. Five installed interfaces and **16** owner
+guards bind the derivation. Literal helper extras receive **16 + 112 × characters** bytes;
+the existing original-name and Smart terms separately fund String cells and characters.
+Selected reflection data includes name singletons/Maybe/Proxy data and dictionary headers,
+without per-call sharing credit. Native Selector/Constructor headers cost **40 / 32 bytes**;
+Just, Proxy and Bool headers cost **16 bytes**. **Ten** native CString fixtures cover ASCII,
+all UTF-8 widths, mixed content and modified UTF-8 NUL. A separate compiler-generated NUL literal
+and **15** returned String/name graphs pass. Optimized Core and final STG retain both unpack
+primitives and dictionary-instance applications. Ten typed terms emit literals with **16-byte**
+numeric roots; envelope decode/encode terms are **1,586,688 / 1,608,528** bytes for one schema
+construction. `metadata-reflection-validation-1.json` preserves the vector, source/compiler
+evidence, primitive-byte-literal parser refusal, one-field wrapper pricing correction and later
+lint hint. The derivation is in `metadata-reflection-source-review-1/review-1.json`. Function
+fields and their captured environments remain separate; these header/returned-data checks do
+not establish transient allocation or peak memory. No ordinary reservation uses these terms yet.
+Actual invocation/sharing, remaining literal/dictionary/generated data, compiler/control/runtime
+funding, complete admission, ordinary integration and qualification remain open. Canonical gate
+**51**, installed limits, live-attempt count and numerical queue remain unchanged.
+
+**Selected SDK literal and local scalar data is privately validated.**
+`metadata-local-candidate-5/` passes **ten** bounded groups and **seven** compiler refusals with
+pinned style. The unchanged typed name/map/result programs now supply selected extra terms for
+Smart raw-name String/Bool predicates, initial/reset/increment counter literals, union descriptor
+pairs, empty-record predicates, ordered-builder terminal Bool and nullary empty-map construction.
+Independent price anchors and five fixed small String cases pass. Native pair/Bool headers and
+ten staged numeric terms are observed; the numeric roots retain **16 bytes**. Envelope decode/encode
+terms are **317,384 / 325,744** bytes for one schema construction. **Five** public SDK schema
+fixtures pass in both directions: named, anonymous singleton, nullary, anonymous pair and
+empty/text union. Because the SDK helper module is hidden, focused selector-state and
+empty-record checks use **two** source-bound helper copies; normalized bodies match the pinned
+archive, and public SDK schemas independently corroborate their behavior. **Eight** installed
+interfaces, exact SDK/Text/State/GHC units and **16** owner guards bind the review in
+`metadata-local-source-review-1/review-1.json`. `metadata-local-validation-1.json` preserves the
+ten-term vector and contributor census, plus earlier lint/format, boot-package lookup, hidden
+import and ambiguous-literal refusals. These selected source-derived data allowances and returned
+graph observations do not establish transient allocation or peak memory. No ordinary reservation
+uses them yet. Generated symbol/dictionary metadata, literal unpacking, compiler boxing/control,
+actual invocation/sharing, update/stack/GC/native funding, complete admission, ordinary integration
+and qualification remain open. Canonical gate **51**, installed limits, live-attempt count and
+numerical queue remain unchanged.
+
+**Selected container-helper operation data is privately validated.**
+`container-operation-candidate-6/` passes **11** bounded groups and **seven** compiler refusals
+with pinned style. Closed helper-call bounds now compose the reviewed primitive scalar terms for
+all typed map operations. They include ordered-builder recursion and exhausted-tail returns,
+strict/Set insertion, union's nested split/link paths and singleton bases, size projections and
+Original/Sorted traversal. **425** traced operation results match the installed libraries:
+**nine** fromList layouts, **54** insertions, **324** unions, **18** traversals, **18** value copies
+and two empty/singleton cases. Helper-family counts and independently priced trace totals fit;
+**seven** fixed boundary-price anchors pass. A positive control observes helper work. The private
+observer comes from pinned source archives; deterministic replay reproduces all **16** generated
+files. These are source-derived selected data allowances and control-flow checks, not allocation
+or peak-memory measurements. Ten producer/direction terms emit literals and retain **16-byte**
+roots; envelope decode/encode terms are **22,604,912 / 18,679,744** bytes for one schema construction.
+`container-operation-validation-1.json` preserves the vector, complete program census, earlier
+425-case pass, copied-language-baseline refusal and missing-control preparation refusal. **Seven**
+installed interfaces, exact SDK/Text/GHC units and **16** owner guards bind the derivation in
+`container-operation-source-review-1/review-3.json`. No supported runtime uses the observer or
+reserves these private terms yet. Remaining literal/local data, actual invocation/sharing,
+compiler/control/update/stack/GC/native funding, complete admission, ordinary integration and
+qualification remain open. Canonical gate **51**, installed limits, live-attempt count and
+numerical queue remain unchanged.
+
+**Selected per-call container primitive data is privately validated.**
+`container-primitive-candidate-3/` passes **eight** bounded groups and **four** compiler refusals
+with pinned style. **Ten** explicit successful rebalance branch recipes cost **32–448 bytes**;
+**20** native Map left/right cases preserve ordered contents and every stored subtree size.
+Map/Set size, singleton, node construction and link checks pass; link also checks balanced
+validity. The exact Map/Set rebalance size/operator traces agree. Each successful rebalance call
+gets a conservative **448-byte** selected scalar term; size and node construction get **32/128**
+bytes. Separate local recipes cover link, insertion/union pointer predicates and ordered-builder
+size/shift work. The full ten-term vector, parser refusal and explicit-Int fixture warning are
+preserved in `container-primitive-validation-1.json`. **20** Map/Set role-and-primitive terms emit
+numeric literals and retain **16-byte** roots. Three installed interfaces, the exact containers
+unit and GHC **9.12.4** bind `container-primitive-source-review-1/review-1.json`; this standalone
+library-helper component claims no codec-owner guard. These are per-call successful-path data
+allowances, not helper invocation counts, transient allocation or peak-memory observations.
+The operation terms above compose selected helper calls; remaining literal/local data, compiler/control/update/stack/GC/native
+funding, actual invocation/sharing, complete admission, ordinary integration and qualification
+remain open. No ordinary reservation uses these private terms yet. Canonical gate **51**, installed
+limits, live-attempt count and numerical queue remain unchanged.
+
+**Selected map comparison and query-result data is privately validated.**
+`metadata-map-comparison-candidate-2/` passes **12** bounded groups and **seven** compiler refusals
+with pinned style. The unchanged typed map-operation inventory retains its earlier **131** actual
+SDK map-graph checks. The new component charges **304 bytes** per Text equality/ordering callback
+and **32 bytes** per query result. Its source-derived call bounds include strict `fromList`,
+`nubOrd`'s Set searches, insertion, union split/singleton paths, Original-order key filtering, and
+ordered traversal's lookup/rebuild. Sorted operations fit the same conservative terms. A private
+counting key runs through the actual pinned libraries: **nine** layouts, **54** insertions,
+**324** unions, **18** traversals, **54** independent lookups and **18** value maps pass. A positive
+control observes comparison work; value mapping requires none. **13** short UTF-8 comparison
+fixtures include NUL, Unicode and slices; **52** closed operation recipes pass. These checks
+validate call counts and selected data, not allocation or peak memory. Ten producer/direction terms
+emit literals and retain **16-byte** roots; envelope decode/encode terms are
+**4,068,752 / 3,118,912** bytes. `metadata-map-comparison-validation-1.json` preserves the vector,
+operation census and the first formatter's unstable layout. Six installed interfaces, exact
+SDK/Text/GHC units and **16** owner guards bind the derivation in
+`metadata-map-comparison-source-review-1/review-1.json`. Other literal/container scalar data,
+compiler/control/update/stack/GC/native funding, actual invocation/sharing, complete admission,
+ordinary integration and qualification remain open. No ordinary reservation uses this private
+component yet. Canonical gate **51**, installed limits, live-attempt count and numerical queue
+remain unchanged.
+
+**Selected lower-first and camel-case body data is privately validated.**
+`metadata-transform-candidate-2/` passes **11** bounded groups and **ten** compiler refusals with
+pinned style. The typed inventory supplies **210** lower-first and **44** camel occurrences;
+seven actual SDK owners preserve their expected and declared field names. All **128** ASCII
+mappings and **11** fixed suffix cases pass, including empty, NUL and sliced values. The extra
+selected data terms are **1,728 + 400 × n** and **1,424 + 4,216 × n** bytes, respectively, for `n`
+suffix characters. Earlier String/list/array, prefix and result data retain their separate owners.
+Actual Iter/Just/pair headers are **24/16/24** bytes; the cons stream has bounded steps and an upper
+hint of `n+3`. Its `n+6` allocation needs no resize for nonempty ASCII suffixes. Camel conversion
+preserves byte length and needs at most one resize; its selected lookup allowance includes all
+**eight** threshold comparisons in GHC's ASCII uppercase bitmap path. These source derivations and
+returned-data checks do not measure peak memory. Ten producer/direction terms emit numeric
+literals and retain **16-byte** roots; envelope decode/encode each add **687,952** bytes.
+`metadata-transform-validation-1.json` preserves the full vector, original style refusal and
+preparation sources. The derivation binds **14** installed interfaces, exact Text/GHC units and
+the inherited **16** owner guards in `metadata-transform-source-review-1/review-1.json`.
+ASCII/prefix checks apply to code metadata; configuration-value domains remain unchanged.
+No ordinary reservation uses these private terms yet. Remaining literal/map/lookup data,
+compiler-generated boxing/tuples/dictionaries/functions/control/update/stack/GC/native funding,
+actual invocation/sharing, complete admission, ordinary integration and qualification remain open.
+Canonical gate **51**, installed limits, live-attempt count and numerical queue remain unchanged.
+
+**Selected prefix-stream and constructor-copy scalar data is privately validated.**
+`metadata-prefix-candidate-2/` passes **eight** bounded groups and **ten** compiler refusals with
+pinned style. Actual Text prefix checks use paired streams; their Stream/Size/Step/state data and
+scalar operations are now charged for **370** typed prefix sites. All **128** ASCII leader bytes,
+five native stream fixtures and **ten** matched, empty and mismatching cases pass. The extra term
+is the existing prefix packing scalar term plus **1,088 + 368 × p** bytes for `p` prefix characters;
+constructor copying adds **128** scalar bytes. Prefix String/array and Just/view data retain
+separate owners. Both streams get at most `p+1` prospective steps, including a possibly lazy extra
+name step. A conservative cold-empty allowance covers an empty suffix. Ten typed terms emit
+literals and retain **16-byte** roots; envelope decode/encode terms are **1,212,128 / 1,497,408**
+bytes. `metadata-prefix-validation-1.json` preserves the vector and the first run's missing
+control fixture plus the source-review preparation refusal. The derivation binds six installed
+interfaces and the inherited **16** source-owner guards in
+`metadata-prefix-source-review-1/review-1.json`. ASCII/prefix checks apply to code metadata;
+configuration-value domains remain unchanged. No ordinary reservation uses these private terms
+yet. The body terms above cover selected lower-first/camel data; other literal construction, map/lookup scalars,
+compiler/control/runtime funding, actual invocation/sharing, complete admission, ordinary
+integration and qualification remain open. Canonical gate **51**, installed limits, live-attempt
+count and numerical queue remain unchanged.
+
+**Selected callback data for field-name tables is privately validated.**
+`metadata-table-lookup-candidate-2/` passes **eight** bounded groups and **eight** compiler refusals
+with pinned style. A closed structural modifier inventory distinguishes **14**
+owners, including manual SecretRef decoding and the AWS wide-input projection. Only table
+comparison/argument data is funded by this component: **176 bytes** per equality, with a complete
+table scan reserved per callback. Envelope decode/encode terms are **7,920 / 37,664** bytes.
+All **22** mappings, **12** unknown fallbacks, six native equality/slice cases, eight owner record
+schemas and an independent **ten-schema** role census pass. Wire-equivalent AWS wide/narrow
+declarations retain distinct typed callback ownership. Ten producer/direction terms emit numeric
+literals and retain **16-byte** roots. **16** source-owner guards include the canonical table-policy
+definition; isolated owner/policy changes and an unnamed field under a named policy make actual
+typed splices refuse. `metadata-table-lookup-validation-1.json` preserves the complete vector,
+role counts and earlier diagnostic matching, dynamic object and style failures in the fixtures. The source and installed
+Text/Array interface derivation is in `metadata-table-lookup-source-review-1/review-1.json`.
+Trace counters validate lookup control flow, not allocation or peak memory. No ordinary
+reservation uses this private term yet. Other modifier/literal-construction/map/lookup scalar
+data, compiler/control/runtime funding, actual invocation/sharing, complete admission, ordinary
+integration and qualification remain open. Canonical gate **51**, installed limits, live-attempt
+count and numerical queue remain unchanged.
+
+**Selected metadata-packing scalar data is privately validated.**
+`metadata-pack-scalar-candidate-3/` passes **nine** bounded groups and **six** compiler refusals with
+pinned style. Source-visible Int/Integer/Bool/Char/Word8, tuple and Unit data cover the direct Text
+pack loop and all **four** literal rewrite routes. The uniform term is **160 + 1,064 × n + 112 × r**
+bytes for `n` source characters and at most `r` doublings from the initial **64-byte** capacity
+until it reaches `4*n`. Original String/array data retains its separate owner. All **1,698**
+original metadata names, **14** small packing fixtures, **ten** UTF-8 byte cases and **ten**
+literal/singleton cases pass. The GHC transcript confirms all four rewrite routes, including
+modified NUL, surrogate replacement, a non-surrogate ED lead and four-byte characters. Ten typed
+producer/direction terms emit literals and retain **16-byte** numeric roots; envelope decode/encode
+terms are **6,791,344 / 6,860,952** bytes. The complete vector and preserved predecessors/refusals
+are in `metadata-pack-scalar-validation-1.json`. The derivation binds **five** installed interfaces,
+the exact non-ASSERTS Text unit and GHC **9.12.4** in
+`metadata-pack-scalar-source-review-1/review-1.json`. The traced loop validates source control flow
+and helper parity, not allocation or peak memory. No ordinary reservation uses this private term
+yet. Other modifier/literal-construction/map/lookup scalar work, compiler/control/runtime funding,
+actual invocation/sharing, complete admission, ordinary integration and qualification remain
+open. Canonical gate **51**, installed limits, live-attempt count and numerical queue remain
+unchanged.
+
+**Selected anonymous-selector formatting data is privately validated.**
+`metadata-selector-candidate-3/` passes **eight** bounded groups and **six** compiler refusals with
+pinned style. The positive Int formatting derivation covers the extra digit String, underscore
+literal, selector/input roots and prospective predicate data; complete appended String/pack arrays
+and State results retain their separate terms. Ten producer/direction budgets emit numeric
+literals and retain **16-byte** data roots. Envelope decode/encode each add **7,392** bytes; the
+complete vector is in `metadata-selector-validation-1.json`. Six actual SDK fixture schemas cover
+ten-field numbering across **9/10**, sum-constructor counter resets and named selectors. Six small
+formatting/packing graph cases and early invalid-counter refusal pass. The source review preserves
+GHC **9.12.4** archive members and installed interfaces, with the inherited **15** owner/package
+contracts. Earlier logical-package, patch-version and formatter failures remain preserved.
+`metadata-selector-source-review-1/review-1.json` records the derivation. The Generic inventory can
+conservatively charge labels that manual or Smart-bare paths never demand; actual invocation and
+sharing still require composition. No ordinary reservation uses this private term yet. Other
+scalar/lookup construction, compiler/control/runtime funding, complete admission, ordinary
+integration and qualification remain open. Canonical gate **51**, installed limits, live-attempt
+count and numerical queue remain unchanged.
+
+**Selected metadata-result construction is privately validated.**
+`metadata-result-builder-candidate-3/` passes **eight** bounded groups and **six** compiler
+refusals with pinned style. Closed recipes cover selected Decoder/Encoder, strict State,
+Validation, Product and Expr data, including the manual SecretRef branch labels and fallback
+decoder. All ten decoder/encoder schemas pass an independent syntax census and complete returned
+data-graph checks. The envelope decode/encode terms are **195,280 / 200,408** bytes; the complete
+vector and comparisons are in `metadata-result-builder-validation-1.json`. Numeric queries retain
+**16-byte** data roots. Native constructor headers and fixed State/Validation behavior match the
+model. Source/interface evidence pins strict `transformers-0.6.3.0-bb92` and inherits the map
+prototype's **15** owner/package contracts. Fixture type, unused-import and style failures are
+preserved alongside the corrected checks. `metadata-result-source-review-1/review-1.json` records
+the derivation and conservative overlaps. These are selected data terms for one schema
+construction; anonymous-name formatting has its separate reviewed term above. Other scalar/lookup
+work, compiler/control/runtime funding and actual invocation/sharing remain open. No ordinary reservation uses these private
+terms yet. Canonical gate **51**, installed limits, live-attempt count and numerical queue remain
+unchanged; complete admission, ordinary integration and qualification are still required.
+
+**Selected metadata-map construction is privately validated.**
+`metadata-map-builder-candidate-3/` passes **11** bounded groups, **six** compiler refusals and
+**131** actual SDK map-graph checks with pinned style. Generic recipes distinguish product/sum
+`fromList`, `insert`, `union`, map-functor and traversal branches. Explicit overrides cover manual
+topology and SecretRef decoding, MachineId delegation/newtype encoding and wide AWS-profile
+decoding. **15** owner/runtime-policy source digests and exact SDK library unit IDs guard every
+splice; an isolated changed owner makes the actual typed splice refuse. The ten producer/direction
+terms are emitted as numeric literals and query as **16-byte** data roots. Envelope decode/encode
+terms are **4,638,096 / 3,936,024** bytes; the complete vector and operation rows live in
+`metadata-map-builder-validation-1.json`. The union derivation includes discarded split/link
+construction and the empty-left/singleton-right insertion path. Native Map/RecordField headers and
+manual record callbacks are checked. Earlier frontend/type and library-unit-selection errors,
+source-review preparation refusal and all corrected inputs are preserved. The source derivation
+is in `metadata-map-builder-source-review-2/review-1.json`. These are selected constructor-data
+terms for one schema construction, with borrowed key/value payloads; selected result/Expr data is
+reviewed separately above. Remaining scalar/lookup constructors, actual caller multiplicity,
+retained sharing and compiler/control/update/GC/native funding remain separate. No ordinary
+reservation uses these private terms yet. Canonical gate
+**51**, installed limits and the numerical queue remain unchanged.
+
+**Selected ordered-traversal data is privately validated.**
+`ordered-schema-traversal-candidate-5/` passes **10** bounded groups, **three** compiler refusals,
+**72** independent map-graph checks and **195** fixed tree-height checks with pinned style.
+The five actual decoder roots contain **59** union-map occurrences: envelope **29**, config **28**,
+context **1**, runtime profile **0** and SecretRef **1**. Their emitted numeric terms are
+**258,760 / 256,928 / 1,832 / 0 / 4,712** bytes, respectively. These cover selected successful
+Original-order list/pair/Maybe/Validation/Map construction with borrowed keys and payloads;
+Sorted-map fixtures also fit. The source/interface review counts both default `liftA2` wrappers,
+correcting the prospective Success count to **4*n+2** before integration. Native Success and
+four-tuple data sizes are checked. Earlier compiler and style refusals, all prototype generations,
+source/interface evidence and terminal receipts are preserved in
+`ordered-schema-traversal-validation-1.json`. No ordinary reservation uses these terms yet:
+other builder/result/scalar costs, invocation multiplicity, retained sharing and complete
+control/update/GC/native funding remain open. Canonical gate **51** and resource limits remain
+unchanged; complete admission, ordinary integration and qualification are still required.
+
+The corrected GC update-head observer retains gate **50** evidence in
+`gc-observer-canonical-validation-1.json`. Private packing `6` passes **11** fixed groups,
+**four** compiler refusals and **1,672** actual metadata names, including four pinned Text literal
+rewrites. Camel `2`, lower-first `1` and constructor-copy `1` pass **12** fixed groups and **10**
+compiler refusals against actual decoder/encoder roots. The ten-owner census correction and those
+private terms remain in `metadata-modifier-components-validation-2.json`; their invocation counts
+and ordinary-route reservations remain open. The shared literal-table term is now reserved
+separately as described above.
+
+Memory validation continues through source-derived bounds, fixed small fixtures and early typed
+refusals. The earlier content-withheld cybersecurity notice appeared during an exhaustion
+counterexample search; it does not identify its exact trigger. No renewed exhaustion search or
+live attempt is part of this increment. Complete runtime metadata construction, bound calculation,
+control/update/GC/native funding, independent admission, ordinary integration and deployment
+qualification remain open. The numerical queue and live-attempt count are unchanged.
+
+**Validated prototype predecessor.** Private
+`bounded-profile-metadata-candidate-8/` passes a fresh compilation, **nine** fixed bounded groups,
+**four** intended compiler refusals and pinned style. The certificate preserves the existing
+profile grammar and supplies no Text/scalar-byte, complete working-set or admission bound.
+`bounded-profile-metadata-candidate-validation-1.json` preserves both the successful checks and
+all preceding refusals. The GHC source review explains why evaluated blackholes retain update
+headers; the corrected observer is now staged and component-validated as described above.
+
+Staged canonical inspection metadata passes full gate **48**, including **150** affected cases,
+**503-module** strict assembly and private `123`'s **205** cases/**4,032** SDK comparisons plus five
+native modes. The shared canonical envelope replaces the frozen prototype's duplicate type.
+Both template constructor-data floors, including successful materialization wrappers, remain
+charged across input branches; pre-inspection runtime checks retain the original work end.
+`static-schema-canonical-validation-1.json` preserves identical before/after source manifests,
+terminal producer/launcher receipts and synchronized operator/build identity. Complete runtime
+decoder/encoder metadata, bound calculation, compiler/control/update/GC/native funding and
+independent admission remain open.
+
+**Validated predecessor.** Frozen `static-schema-candidate-6/` supplies the earlier **six** bounded
+groups, two nominal coercion refusals, source-rebuild controls and pinned style results in
+`static-schema-candidate-validation-1.json`. Its copied envelope remains archival prototype input;
+canonical integration uses the shared envelope owner and adds the materialization-result data term.
+The strict closed-shape compiler and its constructor-data term pass full gate `47`, including **138** affected cases,
+**499-module** assembly and unchanged private **204** cases/five native modes. Three permanent
+groups inspect returned graphs before sizing, preserve ordered refusal and cover returned `Either`
+data against the source-derived result budget. The complete settings envelope has **34,240**
+observed result-data bytes under a **92,912-byte** compiler-data bound. Exact source/operator
+correlation is in `shape-compiler-canonical-validation-1.json`. Declaration/key preparation,
+bound calculation, compiler/control/GC/native costs and pre-compilation admission remain open.
+Pinned declaration/expected builder sources and the next allocation classes are recorded in
+`schema-declaration-source-review-1/review-1.json`.
+The closed-union helper and literal SecretRef table retain their full gate `46` evidence;
+existing conservative resource reservations remain. Finish
+expected/declaration/shape construction, key packing/copying and the remaining
+union-evaluation/result/DTO schedule. Selected type-map data now passes full gate `44` in
+`settings-type-map-canonical-validation-1.json`. Then finish the
+remaining scalar/profile/settings construction, control/update/GC/native terms and independent
+admission before ordinary integration. Gate `43` covers the selected type-tree increment;
+gate `41` covers the shared graph-observer correction. The corrected observer counts
+indirection headers and referents separately, retains both in total-byte observations, and exposes
+the structural-data/update-header distinction explicitly. Four permanent regressions, all ten unit
+clients, native environment graphs, three schema fixtures and private/native compatibility pass;
+`heap-observer-components-validation-1.json` preserves the evidence and the failed first aggregate.
+Complete program funding still owes compiler/update-header costs. The latest reviewed composition is frozen at
+`reconstructed-draft-124/` under `.build/sprint-6.5/resume-20261102/`, with **44** private modules.
+The gate-`43` increment compacts all three constructor-prefix modifiers, measures type-only
+structure separately, and adds a selected five-tree data reservation retained across both
+captured-input branches. All **27** captured-input cases, **120** affected unit cases,
+**52** frozen-codec scenarios, **498-module** strict assembly and private **203** cases/**4,032**
+SDK comparisons/four native modes pass at the original limits. Full canonical gate `42` refused
+a nested case in a new test lambda; the named-helper correction passes full gate `43`.
+The next increment counts selected union-map deletions separately from type-only declarations
+and reserves both deletions plus ascending comparison-list data across both input branches.
+All **30** captured-input cases, **123** affected unit cases, **498-module** strict assembly and
+**204** private cases/five native modes pass. The original **16 MiB** scratch fixture now refuses
+its **17,234,615-byte** known data floor. The positive fixture recompiles its inner scratch share
+to **17 MiB** while keeping **128 MiB** heap and **256 MiB** outer limits. Full gate `44` passes.
+The schema-map traversal and compiled-shape data projection are now in canonical source with
+three new permanent cases. Warning-clean library/style checks, all **126** affected unit cases,
+**498-module** strict assembly and private **204** cases/five native modes pass; full gate `45` passes.
+Canonical source supplies **nine unique** unchanged aliases from draft `95` and the promoted
+fixed-profile reader, held-input data-policy components and String counter; frozen predecessors
+retain their sources for comparison. The ten-module checked-settings/input-data integration passes
+canonical gate `31`; the SDK token comparator and direct checked String decoder pass gate `33`.
+The ordinary request/controller composition remains private.
+The fixed-profile state machine and eight permanent actual-state/header and terminal tests pass
+canonical gate `24`, with **31** profile codec/reader groups. The private loader now checks its
+actual finite, single-capability RTS policy and minimum known data floor before opening inputs.
+Its held-source size check now precedes both payload allocations.
+The source-bound initial-profile check now reaches the declared/actual heap comparison before
+generic request construction for the canonical counterexample. Draft `104` closes the guarded
+deep malformed-root failure at the original **4 MiB** heap, including flat-array and repeated-tag
+members. The shared observer, eight permanent native modes and draft `105`'s delegation pass
+canonical gate `27`. The directory budget check now precedes String materialization, and the
+loader checks a source-bound upper bound for the complete returned raw-wire data against the actual
+runtime before both complete wire decodes. Closed Generic products, explicit scalar leaves and
+reviewed bounded coordinate codecs supply that data term; unsupported leaves and sum types have
+no fallback. Explicit data-runtime checkpoints also precede settings decoding, canonical
+readback and final request decoding, retaining the original work end. Recovery also checks the
+actual runtime before initial publication readback and freshly validated settings readback; exact
+publication matching still precedes settings revalidation and fresh physical preparation.
+Cold profile selection now scans bounded bytes and imports only the complete heap/application
+scalar tokens; it constructs no whole profile or canonical readback. Full declared-schema,
+semantic and canonical profile validation still precedes coordinate acceptance. The cold floor
+conservatively retains its predecessor and adds explicit scanner/selected-importer data.
+The reviewed composition now compares prepared SDK tokens directly with captured profile/settings
+bytes during readback, avoiding an encoded output buffer; byte-producing APIs retain the SDK
+writer. The pure comparison utility and seven permanent cases pass full canonical gate `33`.
+Readback adoption and the ordinary route remain private.
+The reviewed request path now also compares its actual SDK encoder tokens directly for decoding,
+publication and preparation checks. Generalized-UTF8 String decoding validates bytes, copies only
+the visible payload and invokes the same SDK array decoder without synthetic CBOR or reparsing.
+The binary-token extension and String decoder are canonical with four added permanent cases and
+`serialise ==0.2.6.1`; full gate `33` passes.
+The next settings-budget increment charges all duplicate-detection Set Bin construction from
+separate checked map counts and pins the selected `containers ==0.6.8` implementation.
+Its two added permanent cases, strict assembly, ordinary composition and full gate `34` pass.
+The following increment adds pinned Strict Map Bin/`create`-tuple construction data from the
+same separate map counts. A source-derived height recurrence replaces the coarse logarithmic
+weight for both Map and Set construction; actual tree-depth controls join the permanent graph
+case. Current component validation and full gate `35` pass.
+The latest increment retains local settings projections through validation and reuses them in
+the returned settings value. Its fixed 94-scenario predecessor comparison, permanent tables,
+strict assembly, native compatibility and full gate `36` pass.
+The current increment reserves the SDK list extractor's temporary evaluated `Seq` spines alongside
+raw settings data, before the later path/readback stages. All component validation passes;
+full gate `37` passes. The follow-up binds Generic product layout, SDK message laziness and
+union-schema evaluation; next compose those with the custom narrowing data schedule.
+The current narrowing increment bounds token conversion and CIDR splitting inputs before those
+operations, preserving padded-prefix compatibility and replacing decimal String/read parsing.
+The **887-case** frozen predecessor comparison, permanent cases, strict assembly, native
+compatibility and full gate `38` pass.
+The current reservation increment counts present AWS profiles in checked source bytes and
+composes guarded case-array and Generic-product data into the extraction stage. Validator and
+reservation limits are shared, and Text is pinned to its reviewed implementation. Component
+validation passes with private `120`; full gate `39` passes.
+The next increment derives Generic sum-spine depth from the same closed raw-field traversal and
+adds its selected-union wrappers and nullary leaves to the pre-decode extraction reservation.
+All **20** captured-input cases, strict assembly, compiler extension controls and private `121`'s
+four native modes and full gate `40` pass; complete result/dictionary and union-evaluation
+funding remain open.
+Finish scalar-scan/import construction/control/GC/native funding, the later guarded full-profile
+fixed-parser/fast-reader/control/view and readback costs, and settings input-phase costs
+(including other map construction, extractor/narrowing temporaries, canonical producer construction and validation),
+then caller/SDK/native funding and independent admission before ordinary-route integration. The
+profile retains its actual declared-schema check and the identical SDK wire format. Its necessary
+scratch floor charges both compact originating source-buffer graphs, then settings syntax with
+the larger of temporary SDK map data and returned raw typed settings plus the larger of marked-path
+String conversion data or both evaluated producer syntax trees, a prepared SDK token program and
+its measured output buffer, or typed profile
+data plus reader-step data, with separate serial phases for importing positive numeric and scalar-handoff data or holding a prepared
+atom/token program and one measured canonical readback buffer.
+Validation, writer/stack/GC/native memory and the remaining
+phase coexistence costs still need separate accounting.
+Then finish prompt/dispatcher, recovery/retirement and business-graph composition, qualify the home
+replacement, consume its activation witness and remove/requalify the legacy route.
+The canonical component baseline is gate **`51`**, with **10,710** passing cases, including guarded
+native submission, publication-birth and ordinary-scope String codecs and the standalone profile
+codec's **23** permanent groups and **eight** actual reader-state/header and terminal groups. The
+captured-input data group and its **31** permanent cases, the seven token-comparison cases and
+the two retained-settings projection tables are
+canonical; the ordinary request and
+controller remain in reconstruction. No sprint advances from these component results.
+**Sprint `6.5` integration checklist.** These are completion milestones for the existing sprint,
+not replacements for its deliverables or qualification criteria. Finish each milestone against
+its owned evidence before advancing the numerical queue.
+
+1. **Input pipeline — in progress.** Checks precede expanding materialization; every
+   initial/profile/settings/readback phase needs complete construction, control, GC and native
+   accounting, with accepted-domain and refusal validation. Directory preallocation and its
+   runtime checkpoint, settings-stage ordering and typed checkpoint refusals are validated; complete
+   returned raw-wire data bounds are also validated, while complete phase funding remains open.
+   Recovery readback has actual-runtime policy checks under the original work end.
+   Cold profile metadata no longer requires whole-profile decoding or encoding; complete profile
+   validation remains mandatory before coordinates are accepted.
+   The shared String counter and checked-settings/input-data helpers
+   are canonical; the ordinary loader and complete working-set accounting remain in reconstruction.
+2. **Caller and parent admission — in progress.** Fund the complete closed caller/SDK/native
+   schedule. Bind independently observed host, runtime-filesystem and original-parent capacity
+   to both process lanes. Foundations exist; complete composition remains open.
+3. **Ordinary execution — open.** Compose canonical modules, prompt handoff, dispatcher,
+   recovery/retirement and the business graph under the ordinary identity. Pass native and
+   frontend gates on that complete route.
+4. **Home qualification — pending implementation and live proof.** Two qualifying cycles under
+   one replacement identity cover the prescribed faults, restart/cancellation and exact cleanup
+   evidence.
+5. **Activation and removal — pending qualification.** Consume the matching witness to activate
+   the sole replacement writer, remove the owned legacy route and pass post-deletion qualification.
+
+**Closed-union strictness review, 2026-11-05 UTC.** Three fixed evaluation-order laws expose
+candidate `6` forcing a selected annotation, inspecting annotations before refusing an unknown
+constructor, and evaluating input before a failed expected schema. The failed nine-case run is
+retained. Candidate `7` compares only unselected alternatives, looks up the constructor first and
+checks expected-schema success before inspecting input; all nine groups and pinned style checks
+pass under unchanged limits. `closed-union-strictness-validation-1.json` preserves both sides.
+The corrected helper and literal SecretRef branch table are now staged in canonical source with
+nine permanent SDK compatibility groups. Warning-clean **894-module** library/style checks,
+**135** affected cases, frozen-reference comparison, **499-module** strict assembly and private
+**204** cases/**4,032** comparisons plus five native modes pass. Positive scratch remains
+**17 MiB**, the original **16 MiB** case still refuses its known data floor, and **128 MiB** heap /
+**256 MiB** outer limits stay fixed. `closed-union-components-validation-1.json` preserves the
+result; full gate `46` passes **10,682** cases (**9,712 + 27 + 35 + 908**) against **894** library modules.
+`closed-union-canonical-validation-1.json` preserves identical before/after source manifests,
+terminal producer/launcher receipts and synchronized operator/build identity. Existing conservative
+resource reservations stay in place. This is a correctness
+increment, with complete funding, admission, integration and qualification still open; the
+numerical queue and live-attempt count are unchanged.
+
+**Shape-compiler construction review, 2026-11-05 UTC.** Three fixed direct graph observations
+find constructor thunks in the frozen predecessor's returned record, union and complete-settings
+shapes before any size traversal. Candidate `2` uses strict map traversal, forces constructed
+shapes and forces union payload shapes. All seven probe groups pass, including **75** fixed
+variants/**29** counters, bounds/marks and **19** existing data graphs; unsupported-field refusal
+order is unchanged. A source-derived constructor-data term includes output and compile/map/
+alternative `Right` results without assuming collection. The pinned library sources and both
+observed sides are in `shape-compiler-candidate-validation-1.json`; the fixture's two shadowing
+warnings and first formatting refusal remain retained. The candidate and three permanent groups
+are now in canonical source. Warning-clean library/style checks, **138** affected cases,
+**499-module** assembly and private `121`'s **204** cases/**4,032** SDK comparisons plus five native
+modes pass. Its **17 MiB** positive scratch, original **16 MiB** typed refusal and **128 MiB** heap /
+**256 MiB** outer limits are unchanged. The complete settings envelope has **34,240** observed
+result-data bytes under the **92,912-byte** compiler constructor-data bound. Evidence is in
+`shape-compiler-components-validation-1.json`; full gate `47` passes **10,685** cases
+(**9,715 + 27 + 35 + 908**) against **894** library modules.
+`shape-compiler-canonical-validation-1.json` preserves identical before/after source manifests,
+terminal producer/launcher receipts and synchronized operator/build identity. Complete
+declaration/key preparation, bound calculation, compiler/control/GC/native funding and
+pre-compilation admission remain open. No limits, private modules, queue rows or live attempts change.
+
+**Validation approach after the supplied cybersecurity notice.** The pasted notice identifies an
+automated content-withholding check during exploration of larger inputs intended to reproduce
+memory exhaustion. That context suggests the exhaustion-oriented exploration was screened; the
+notice does not identify the exact trigger or establish a policy violation
+([official guidance](https://help.openai.com/en/articles/20001326)). Continue the remaining memory work through source-derived allocation bounds,
+fixed finite fixtures at the existing limits, typed refusals before expanding allocations and
+ordinary correctness tests. Keep exhaustion-seeking input searches out of this work. These checks
+leave complete working-set accounting, independent admission and the prescribed lifecycle
+qualification as separate obligations; they do not waive any integration milestone above.
+
+**Build-time inspection-metadata prototype, 2026-11-05 UTC.** Private
+`static-schema-candidate-6/` derives fixed shapes from a settings-envelope fixture using canonical
+field types and the actual runtime-profile type, and emits direct strict constructor trees.
+Promotion must replace the fixture with a shared canonical envelope owner. The prototype preserves
+the existing value-codec design, marks and
+semantic requirements. All **six** fixed bounded groups pass under **128 MiB** heap with static
+linking, including exact comparison with freshly declared schemas, all **15** shape constructors,
+non-ASCII metadata, quiescent returned graphs and refusal before metadata materialization. Two
+independent compiler controls reject cross-producer coercions. Numeric queries retain only their
+**16-byte** observed scalar graph; complete settings/profile result graphs have **24,984 / 1,848**
+observed data bytes under **85,896 / 3,472-byte** constructor-data floors. Emitted-code inspection
+finds direct map/Text literal construction, with declaration, shape compilation and marking absent
+from those generated runtime expressions. Pinned style checks pass. Actual GHC controls confirm a
+registered but unimported Haskell-source edit recompiles the staged module, whereas an unrelated
+text edit does not. `static-schema-candidate-validation-1.json` preserves source/tool identities,
+both terminal receipts, controlled fixture edits and the earlier shadowing refusal. This remains
+a private component result. Canonical promotion, pre-materialization checks, runtime
+decoder/encoder metadata, bound calculation, compiler/control/update/GC/native costs, complete
+funding, independent admission and lifecycle qualification remain open. Canonical gate **47**,
+private composition **121**, resource limits, the numerical queue and live-attempt count are unchanged.
+
+**Canonical inspection-metadata integration, 2026-11-05 UTC.** Staged settings/profile shapes
+now use the shared canonical envelope and actual runtime-profile type. Seven permanent groups
+cover fresh-producer equality, all constructors, non-ASCII/wide literals, quiescent shape/result
+graphs and pre-materialization typed refusal. All **150** affected cases pass. The returned
+settings/profile `Either` graphs have **25,000 / 1,864** observed data bytes under
+**85,912 / 3,488-byte** constructor-data floors; both floors plus fixed scalar-query/addition data
+supply an **89,528-byte** retained term. Canonical source-rebuild controls and both nominal
+coercion refusals pass. Private `123` retains **44** modules and adds the original-work-end
+inspection checkpoint before the capacity-checked settings inspector. **503-module** strict
+assembly, pinned style and **205** private cases/**4,032** SDK comparisons plus five native modes
+pass. The four native home checkpoints require **763,504 / 17,331,871 / 17,398,471 / 17,489,863**
+known data bytes; the present-AWS-profile fixture requires
+**763,624 / 17,287,532 / 17,355,748 / 17,447,140**. Positive scratch stays **17 MiB**; the
+original **16 MiB** case refuses its **17,324,143-byte** known floor. Heap and outer limits stay
+**128 / 256 MiB**. The failed first private assembly's unused import and generated FFI header
+are preserved; the corrected command directs stubs into its owned build directory, and the
+exact newly generated header is preserved before removal from `src`. The first style result's
+source-drift refusal is also retained. `static-schema-components-validation-1.json` preserves
+all results and source/artifact identities. Full canonical gate **48** passes **10,692** cases
+(**9,722 + 27 + 35 + 908**) in **1344.06 seconds** against **898** library modules.
+`static-schema-canonical-validation-1.json` preserves matching before/after source manifests,
+terminal producer/launcher receipts and synchronized operator/build identity. Runtime
+decoder/encoder metadata, bound calculation, control/update/GC/native costs, complete funding,
+independent admission, ordinary integration, activation and qualification remain open. No queue
+row or live-attempt count changes.
+
+**Finite-count certificate and update-header prototype, 2026-11-05 UTC.** Private
+`bounded-profile-metadata-candidate-8/` checks finite structural counts from the actual profile
+producer during compilation and carries the result in a nominal erased newtype. Its emitted
+metadata contains no runtime count-bound traversal; both existing ordinary profile clients still
+perform their old traversal until integration. Unrestricted list/profile declarations and
+constructor/producer coercions produce four intended compiler refusals. The fresh static build,
+all **nine** fixed groups and pinned style pass under the existing **128 MiB** heap limit.
+The returned profile graph remains **1,864** data bytes under its **3,488-byte** constructor-data
+floor. This property bounds structural counts, not Text/scalar payload bytes or complete memory.
+
+The prototype also exposes the current observer rejecting an evaluated `BLACKHOLE` update.
+Pinned GHC `9.12.4` sources distinguish a completed result indirection from an active
+TSO/blocking-queue owner. The candidate observer resolves update chains without entering targets,
+refuses cyclic or unsupported heads and counts headers separately from their data referents.
+Three actual graph/concurrency groups cover **48** dynamic-box data bytes plus a **16-byte**
+updated header, shared aliases and a still-evaluating worker whose owner refuses; the worker is
+released and joined. `bounded-profile-update-source-review-1/review-1.json` and
+`bounded-profile-metadata-candidate-validation-1.json` preserve sources, emitted code, binaries,
+exact scopes and the earlier type-default/import, fixture preparation, diagnostic and style
+refusals. This is private evidence only. Canonical observer promotion and requalification of
+all clients precede finite-count certificate integration. Complete construction/control/update/
+GC/native funding, independent admission, ordinary composition and lifecycle qualification
+remain open. No queue row, resource limit, private ordinary composition or live-attempt count changes.
+
+**Evaluated-update and finite-count integration, 2026-11-05 UTC.** The shared canonical observer
+now follows evaluated `BLACKHOLE` updates without entering targets and counts their headers
+separately. Four permanent cases cover completed dynamic updates, alias sharing, a completed CAF
+chain and a still-evaluating worker that is explicitly released and joined. The CAF fixture has
+**48** observed data bytes and **32** observed header bytes. All **12** shared unit clients,
+five native environment cases and three actual schema fixtures pass. The private frontend's
+superseded duplicate observer now delegates to the canonical complete-graph API; all prior
+resource assertions still pass without narrowing their byte observations.
+
+The profile owner now emits an opaque nominal finite-count certificate at build time from the
+actual producer and authored requirements. Three additional permanent groups cover unrestricted
+list/profile refusal, exact/empty-list rules and ordered structured preparation failures.
+**899-module** warning-clean library compilation, all **157** affected cases, pinned style and
+**504-module** strict assembly pass. Nine canonical certificate/runtime groups and four intended
+compiler refusals pass, and emitted code contains no runtime count-bound traversal.
+Private `124` retains **44** modules and changes only its request module, removing both discarded
+traversals. Its complete-graph frontend passes **205** cases/**4,032** SDK comparisons plus five
+native modes. The four home/AWS-profile checkpoint terms remain
+**763,504 / 17,331,871 / 17,398,471 / 17,489,863** and
+**763,624 / 17,287,532 / 17,355,748 / 17,447,140** bytes respectively. The original **16 MiB**
+scratch case still refuses **17,324,143** known bytes; the positive **17 MiB** scratch and
+**128 / 256 MiB** heap/outer envelopes are unchanged. The **89,528-byte** template term stays
+conservative. `blackhole-observer-components-validation-1.json` and
+`finite-profile-components-validation-1.json` preserve exact sources, artifacts and terminal
+receipts. Full gate **49** passes **10,699** cases (**9,729 + 27 + 35 + 908**) in **1,310.01 s**.
+`finite-profile-canonical-validation-1.json` preserves identical before/after source manifests,
+exact terminal producer/launcher receipts and synchronized operator/build identity. Complete
+runtime SDK metadata construction, bound calculation,
+compiler/control/update/GC/native funding, independent admission, ordinary integration,
+activation and lifecycle qualification remain open. No queue row or live-attempt count changes.
+
+**Original metadata-name inventory, 2026-11-05 UTC.** Private
+`metadata-name-inventory-candidate-1/` inventories Generic selector/constructor names without
+opening configuration values. Its explicit roster matches the **51** closed record/sum types and
+three scalar leaves in the existing raw-data registry, and adds the canonical settings envelope.
+Decoding uses the actual wide AWS-profile input DTO; encoding uses the narrow profile. Six fixed
+schema/direction summaries, warning-clean compilation, formatter and HLint pass under a
+**128 MiB** runtime heap. The envelope's original names have **6,302 / 6,367** characters in the
+two directions. Pinned Text `2.0.2` source shows direct `pack` beginning with **64** bytes,
+doubling temporary arrays before shrinking, while `cons` uses the separate fusion path and
+`copy` allocates the visible bytes. `metadata-name-inventory-validation-1.json` preserves sources,
+binary, exact receipts and the initial aggregate's scalar-roster comparison refusal, corrected
+without changing the candidate. This is an inventory/source-review result, not a complete SDK
+schedule or allocation/admission bound. Finish actual modifier paths, builder/result intermediates
+and invocation accounting before composing this term into ordinary input funding. No canonical
+implementation, queue row, resource limit or live-attempt count changes.
+
+**Packing data and collection-safe observation, 2026-11-05 UTC.** Private
+`metadata-name-packing-candidate-6/` emits eight producer/direction-indexed scalar terms from the
+closed original-name inventory. The nominal erased type and typed quotation prevent producer or
+direction substitution; unsupported leaves have no blanket fallback. The selected source-derived
+term retains each input String, every direct-packing array generation and its wrappers, and final
+Text data. All four pinned Text `2.0.2` literal rules allocate less selected data than that
+conservative schedule; compiler rule-firing records and bounded graph cases cover each path.
+The envelope's decode/encode terms are **346,896 / 350,264** bytes; the profile's are
+**17,416 / 17,416** bytes. Numeric retrieval retains only **16** observed data bytes, and emitted
+code contains literals rather than inventory traversal. These are per-inventory component terms,
+not actual SDK invocation counts, modifier budgets or complete packing/control/GC/native funding.
+
+The fixed **1,672-name** check exposed the observer's path-equality cycle inference rejecting a
+list constructor after collection. Pinned `ghc-heap` explicitly permits distinct boxes to become
+equal after GC. A controlled collection reproduces the frozen check's refusal; the corrected
+observer walks heads under the existing **100,000-step** limit, never entering a target, and
+preserves active-owner refusal and legal data cycles. Two canonical permanent cases and all
+**159** affected cases pass, covering all **12** shared unit clients. Five native environment
+cases, three actual schema fixtures and the unchanged private `124`'s **205** cases/**4,032** SDK
+comparisons plus five native modes pass. Packing `6` uses that canonical complete-graph observer;
+all **11** groups, four compiler refusals and pinned style pass under the unchanged **128 MiB**
+heap. The ordinary scratch/checkpoint terms and **128 / 256 MiB** heap/outer envelopes do not
+change. `metadata-name-packing-validation-1.json` and `gc-observer-components-validation-1.json`
+preserve sources, binaries, receipts, literal-rule records and preceding failures, including the
+generated compiler dump removed only after exact preservation and source-manifest restoration.
+Full gate **50** passes **10,701** cases (**9,731 + 27 + 35 + 908**) in **1,328.22 s**.
+`gc-observer-canonical-validation-1.json` preserves identical before/after source manifests,
+exact producer/launcher terminal receipts and synchronized operator/build identity. Finish actual
+modifiers, record/union/result builders, SDK invocation accounting and the remaining complete
+funding/admission/integration/qualification obligations.
+No queue row or live-attempt count changes.
+
+**Selected modifier data, 2026-11-05 UTC.** Private `metadata-camel-candidate-2/`,
+`metadata-lower-first-candidate-1/` and `metadata-constructor-copy-candidate-1/` validate selected
+constructor/list/array terms against the actual SDK decoder/encoder root labels. Each family
+passes **four** bounded groups and pinned style under **128 MiB** heap; the families have
+**three / three / four** intended compiler refusals. Typed quotations and nominal owners prevent
+substitution, and numeric retrieval retains only **16** observed data bytes. Emitted code contains
+numeric literals, with no runtime schema or metadata traversal for those queries.
+
+The three camel owners have **24,688 / 13,608 / 26,840-byte** terms. Their code selectors must
+be ASCII and match the reviewed prefixes before sizing; user Text values retain their domains.
+The term includes unpack/enumeration/zip/chunk/filter/length-list data and selected chunk/concat
+arrays. ASCII lower-casing preserves byte length: the pinned loop's logical buffer length starts
+at `l` despite allocating `l+12`, so it can request that same `l+12` capacity once more. Both
+prospective arrays and wrappers are charged without in-place or collection credit.
+
+The four lower-first owners have **2,568 / 1,640 / 1,376 / 1,976-byte** terms and support Unicode
+metadata. `cons` adds a four-byte code-point hint before `unstream` adds three bytes; one buffer
+of at most `4*n+3` bytes covers the suffix. The constructor-copy family's five admitted
+producer/direction pairs have **2,736 / 1,672 / 1,672 / 1,760 / 1,760-byte** terms. A compact copy
+requests only visible bytes. SecretRef's literal decoder has no copy-budget instance, and an
+independent compiler control refuses that role. Prefix packing/views remain charged separately
+from the original-name data term.
+
+`metadata-modifier-components-validation-2.json` preserves all sources, binaries, emitted code,
+source reviews and terminal receipts. A fresh ten-owner SDK census replaces handwritten
+cardinalities and corrects ElasticScalingBounds from three fields to **two** in the review note;
+its generated **1,376-byte** term already used the actual type and is unchanged. The superseded
+review remains preserved with the correction. These terms are not yet ordinary-route reservations.
+Literal-map/manual metadata, generic record/union/result construction, actual SDK invocation
+counts, iterator/stream/scalar/control/update/GC/native costs and complete admission/integration/
+qualification remain open. No queue row, resource limit or live-attempt count changes.
+
+The canonical profile reader preflights complete positive scalars before one strict SDK chunk;
+a separate **2,055-scalar** SDK matrix supports exclusion of split-token continuation paths.
+Draft `87` also funds the originating source-buffer headers/alignment and passes **93** component
+cases. These results do not supply the remaining construction/control/GC/native costs or admission.
+Draft `88` adds eager raw typed-settings data before readback and passes **103** component cases,
+with separate supported/unsupported field compiler controls. Its extended settings sizer is now a
+private override; the former canonical alias and every frozen predecessor remain preserved.
+Draft `91` adds evaluated canonical token-program and output-buffer data, passing **115** component
+cases. Construction/control/GC/native costs and independent admission remain separate obligations.
+It uses the solver-selected `primitive 0.9.1.0` package in
+private validation; canonical promotion must declare that library dependency explicitly.
+Draft `92` adds explicit evaluated embedding/erasure stages for checked settings readback and
+funds both syntax-data trees. All **121** component cases pass. General typed settings production
+retains its lazy size preflight; complete construction and working-set funding remain open.
+Draft `93` checks the actual finite, single-capability RTS policy against the known initial data
+floor before profile parsing, retaining the later exact declared-heap comparison. All **124**
+component cases and five native policy cases pass. This early refusal grants no startup working-set,
+free-heap, physical-parent or Authority admission proof.
+Draft `94` adds the separate **224-byte** scalar-handoff data term. All **148** component cases,
+including **24** native handoff graphs, and the five native policy cases pass. The existing encoding
+phase still determines the known data floor; complete reader/control/GC/native funding remains open.
+Draft `95` replaces the field decoder's `StateT` binders with strict finite states. All **156**
+component cases, **16,456** frozen-decoder comparisons, the existing **23** codec tests and five
+native policy cases pass. Its **368-byte** step-boundary data term leaves helper/SDK/compiler,
+stack/GC/native costs and complete admission separate. The alias count now uses unique paths;
+the older raw inventory listed the profile path twice.
+Canonical integration separates the shared fixed schema from the reader and preserves the writer
+and SDK scalar import bodies. Gate `24` validates that integration; gate `22` remains frozen
+predecessor evidence.
+Draft `96` removes that private reader override and passes **494-module** strict compilation,
+formatting/HLint, **156** behavior cases, **16,456** frozen-decoder comparisons and five native
+policy outcomes. The composition preserves the same test envelopes and initial data floor.
+Gate `23` stopped at formatting because the host's older formatter changed unrelated `Main.hs`
+layout. The repository's pinned formatter restored the gate-`22` file plus exactly the new import
+and suite registration. Its refusal record and all draft composition sources, binaries and receipts
+are preserved in `profile-machine-canonical-recomposition-validation-1.json`. Gate `24` now supplies
+the completed canonical component baseline.
+Draft `97` retains that composition and adds an actual RTS/minimum-data check before the input
+owner opens either payload. Its **272,504-byte** minimum is no larger than the existing later
+captured-size floor. All **156** component cases, **16,456** frozen comparisons, **494-module**
+strict compilation and **49-module** style checks pass. Three native invocations prove four
+entry-boundary outcomes. The frozen predecessor comparison covers preserved finite-policy input
+errors and earlier unlimited/multiple-capability refusals. Expired work also refuses before the input
+owner. Successful input capture, complete allocation/construction funding, physical/Authority
+admission and qualification remain separate obligations.
+
+Draft `98` checks both held file sizes against the actual RTS policy before either payload
+allocation. The **51-module** private composition passes **495-module** strict compilation,
+formatting/HLint, all **156** component cases and **16,456** frozen profile comparisons. The
+existing **22** native file/descriptor controls, five shared RTS outcomes and four loader-entry
+outcomes pass. Two native field fixtures cover seven and nine invocations, with **81** held-size
+pairs in the latter. Independent descriptor positions prove no reads on refusal and exact reads
+on success. Under the same **2 MiB** heap, the frozen unprotected reader exits **251** with heap
+exhaustion; the protected field route and production loader instead refuse the **2,369,656-byte**
+known data floor. Version drift, closed-owner and controller-kind refusals retain precedence.
+`held-input-floor-components-validation-1.json` preserves sources, binaries and actual receipts.
+Canonical integration of the field reader/observer passes full gate `26`: **886** library modules,
+all enabled targets and **10,624** registered tests. The permanent native field fixture passes
+**eight** modes, including all **four** refusal/precedence regressions and **81** held-size pairs.
+Gate `25` refused the initial unit placement because the file-owner modules are deliberately
+package-private. The regressions retain their complete coverage in the native fixture; ownership
+visibility stays unchanged. That fixture uses an explicit synthetic caller-data floor; the actual
+ordinary profile floor remains covered by the separately preserved private production-entry
+fixture. Draft `99` removes the two byte-identical private aliases, leaving **49** modules; strict
+compilation, style, **156** cases, **16,456** frozen comparisons and nine native modes pass.
+`held-input-floor-canonical-validation-2.json` and
+`held-input-floor-canonical-recomposition-validation-2.json` preserve the complete gate, relocated
+regressions and composition. Complete construction, other phase costs, independent admission and
+ordinary activation remain open.
+
+A separate current-revision probe confirms the next initial-construction gap. The normal
+**2,156-byte** request under an actual **4 MiB** heap reaches a typed exact-policy refusal. A
+canonical **1,002,033-byte** request stays within the existing **1 MiB** wire ceiling and passes
+coordinate inspection/exact RTS comparison at its declared **128 MiB** heap, but exhausts an actual
+**4 MiB** heap before that comparison. Its declared application data is **64 MiB**. The probe uses
+fresh original-window metadata and synthetic caller/domain identities; it grants no parent or
+Authority admission and exercises no business operation. Earlier compiler and noncanonical
+fixture observations remain preserved. `initial-wire-runtime-counterexample-validation-1.json`
+owns the frozen predecessor sources, generated input digests, binaries and terminal observations.
+The scoped repair below addresses this canonical mismatch; complete construction and qualification
+remain open.
+
+Initial-wire repair passes scoped validation in private draft `103` (**50** modules), with
+canonical runtime still at gate `26`. Its locator derives the unique profile and memory positions
+from the actual record types and skips definite CBOR with one bounded pending-item counter,
+without importing preceding String/Text/number values or constructing a nesting stack. The loader
+binds the selected declaration to the same immutable source and checks the actual heap under the
+original work end before generic request construction. Explicit retained/schema/header data joins
+the initial floor: **65,936 bytes**, raising the minimum known data floor to **338,440 bytes** and
+the two-one-MiB-source data floor to **2,435,592 bytes**. These are necessary data floors, not
+complete working-set budgets.
+
+The **496-module** assembly passes warning-clean compilation and all **50** private modules pass
+pinned formatting/HLint. All **157** component cases and **16,456** frozen profile comparisons
+pass. Eleven native invocations cover direct and production-loader early refusals at **4 MiB**,
+preserved generic decoding at the declared **128 MiB**, and unlimited, multiple-capability and
+expired-policy refusals. The funded production-loader fixtures proceed to their deliberately
+invalid settings and refuse there; they do not establish successful operation admission.
+Ten locator/domain groups cover moved Generic positions, scalar widths, definite collections,
+String/generalized-UTF8 variants, wide Naturals and **4,314** frozen-decoder prefix/mutation cases.
+Their accepted/rejected outcomes match; **three** malformed cases change error precedence.
+One positive and **six** negative compiler controls prove unique field selection and refusal of
+missing, duplicated or sum-constructor layouts.
+
+Four additional native invocations cover a **500,001-bit** heap declaration in a canonical
+**62,962-byte** profile, below its unchanged **64 KiB** ceiling. With the outer limit doubled to
+retain a coherent plan, frozen draft `99` accepts the complete coordinates and preserves that
+scalar. Both current native routes refuse the actual **4 MiB** and **128 MiB** heaps before
+generic construction. The preceding fixture correctly failed frozen validation when it changed
+the heap alone but retained the smaller outer limit; that fixture failure remains preserved.
+`initial-profile-preflight-wide-validation-1.json` owns this additional boundary and its actual
+receipts. No physical parent or Authority admits that authored envelope.
+
+A separately generated **900,000-level** malformed prefix still exhausts a **4 MiB** heap during
+traversal. This failure remains open. Under the original **128 MiB** test envelope and a
+**256 KiB** stack ceiling, the same traversal passes with **924,544 bytes** sampled maximum
+residency and **58,641,608 bytes** cumulative allocation. Those observations establish neither a
+complete transient bound nor funding at **4 MiB**. Initial-profile construction, loop/compiler,
+GC/native costs and independent admission remain separate obligations. Draft `100`'s `natVal`
+diagnostic, drafts `101`/`102`'s export/signature diagnostics, the first locator fixture's compiler
+failure and both small-heap nesting failures remain preserved.
+`initial-profile-preflight-components-validation-1.json` owns the sources, binaries, actual
+terminal receipts and scoped closure. No canonical runtime or sprint advances from this repair.
+
+The follow-up actual-request probe confirmed a regression beyond the synthetic locator
+fixture. Replacing the root String with **900,000** definite array layers produces a
+**902,035-byte** request inside the unchanged **1 MiB** ceiling. Frozen draft `99` returns its
+typed encoding refusal under **4 MiB**, one capability and a **256 KiB** stack ceiling; current
+draft `103`'s prefix and production loader each exit **251** with heap exhaustion under those
+same limits. Changing only the nursery setting to **256 KiB** lets both current paths reach
+typed heap-mismatch refusal. That diagnostic does not close the failure under the original GC
+policy. `initial-profile-preflight-deep-counterexample-validation-1.json` preserves the exact
+sources, generated bytes, binaries and actual terminal results for
+`INITIAL-PROFILE-DEEP-MALFORMED-ROOT-2026-11-04`. The guarded-path repair below closes that class;
+complete funding, admission and qualification remain open. Canonical gate `26` is
+unaffected.
+
+Draft `104` repairs the guarded traversal paths by comparing the trusted known-data floor plus
+the independently observed configured minimum allocation area against the actual finite heap.
+The pinned RTS header declares both sizes in blocks; `BLOCK_SIZE` comes from its C API. The
+observer keeps the original work end, refuses a zero nursery observation and grants no free-heap,
+complete GC/construction, physical-parent or Authority capacity. The pre-owner data-only check
+and held-size guard retain their separate paths.
+The **496-module** assembly, **50-module** style check, all **157** component cases and **16,456**
+frozen profile comparisons pass. Twenty native policy invocations include exact observed boundary,
+one-byte-over, unlimited, multiple-capability and expired refusals. The **28-invocation** class
+fixture preserves **six** frozen-`103` heap-exhaustion controls and proves **six** replacement typed
+refusals under identical **4 MiB / one-capability / 256 KiB-stack** arguments. At **128 MiB**, all
+six replacement routes retain typed encoding refusals. Deep, flat and repeated-tag inputs stay
+inside the original **1 MiB** wire ceiling. Smaller-nursery and eight-MiB diagnostics remain
+separately identified; neither supplies the original-envelope closure.
+All nine held-input modes and **81** size pairs pass; the production **2 MiB** entry still refuses
+before payloads with its exact **2,435,592-byte** data floor. Four additional wide-profile native
+invocations pass, including the **500,001-bit** scalar at **128 MiB**. The pure unguarded locator
+is not certified as a standalone funded API.
+`initial-traversal-policy-components-validation-1.json` preserves this scoped repair. Canonical
+promotion of the observer and a permanent private native fixture passes targeted checks; draft
+`105` delegates to it. All eight permanent native modes, **496-module** strict assembly,
+**50-module** style checks, **157** component cases, **16,456** frozen profile comparisons,
+twenty private policy invocations, the complete **28-invocation** class fixture and four additional
+wide-profile invocations pass. The original data-only observer body is byte-identical to its
+gate-`26` version. `initial-traversal-policy-recomposition-validation-1.json` preserves the sources,
+binaries and actual receipts. Full canonical gate `27` passes the warning-clean all-enabled build
+and **9,654 + 27 + 35 + 908 = 10,624** registered cases, with unchanged source bytes/modes
+throughout its **1,295.22-second** run and an actual **886-module** library inventory.
+`initial-traversal-policy-canonical-validation-1.json` preserves the gate, operator and native
+fixture evidence. The separately compiled documentation command also passes its finite-policy
+boundary mode. A field-only diagnostic captures both **1 MiB** payloads at **4 MiB** with the exact
+**2,435,592-byte** known data floor; it is not complete-program funding. Complete construction,
+GC/native accounting, independent admission, ordinary activation and qualification remain open;
+no sprint advances.
+
+Draft `106` moves the existing directory cons-budget check ahead of generic String construction.
+The source-bound initial operand retains strict heap and application scalars. Unique Generic
+metadata selects the actual Context/String field; validated generalized UTF8 is counted without
+constructing Text, String or Char objects. The complete decoder retains canonicality, actual-schema
+and semantic checks. The count-based refusal matches the existing streaming first-over diagnostic.
+The original String decoder/validator body stays byte-identical in its new private override;
+canonical promotion/removal ownership remains Sprint `6.5`.
+
+The recorded matching-heap case uses a coherent **8 MiB** heap and **4 MiB** application declaration.
+Earlier records preserve eight failed executions and normal positive controls. Replacement-only
+validation reuses those recorded fixture families: all eight paths now return the same typed
+**4,194,328 / 4,194,304-byte** refusal under the original heap, while short **8 MiB** and funded
+**128 MiB** controls retain their behavior. An earlier **1 MiB** application fixture had already
+returned intended typed refusals; its incorrect exhaustion expectation is preserved as a fixture
+failure, not a program counterexample.
+
+Draft `106` passes **496-module** strict compilation, **51-module** style checks, **162** component
+cases, **16,456** frozen profile comparisons and **4,314** frozen wire prefix/mutation comparisons.
+Accepted/rejected wire outcomes match; three malformed cases retain the recorded precedence
+change. Exact counting covers all **1,114,112** SDK Char values. Two positive and ten negative
+compiler controls verify unique field selection. All eight selected held-input modes and **81**
+size pairs pass, with the revised **2,435,840-byte** source-data floor.
+`wire-string-preallocation-components-validation-1.json` preserves sources, actual receipts,
+old observations and replacement results.
+
+Draft `107` makes inspection/materialization separate source-bound stages. Its closed loader
+runtime effect checks the existing source/profile data floor plus the full conservative String
+normal-form term against independently observed heap/nursery policy before complete wire decoding.
+All **164** component cases, **16,456** frozen profile comparisons and twelve replacement-native
+invocations pass, alongside strict compilation and style. The funded directory control's derived
+known-data term is **41,340,800 bytes**. Its additional opaque-stage data raises the minimum known
+input floor to **338,744 bytes**, and the two-one-MiB-source floor to **2,435,896 bytes**.
+`wire-construction-phase-components-validation-1.json` preserves this integration boundary.
+These remain necessary known-data policies; complete construction/GC/native funding, other input
+phases, independent admission, ordinary activation and qualification remain open. Canonical
+runtime stays at gate `27`; no sprint advances.
+
+Draft `109` extends the closed loader runtime effect to settings decoding, canonical readback and
+final request decoding. Necessary data terms include retained budget, coordinate and inspected
+settings metadata; decoded settings join the readback phase and the derived String data joins
+final request construction. Each checkpoint retains the original work end and uses the shared
+actual finite, single-capability heap/nursery observer. This does not fund the complete construction,
+validation, control, GC or native working set; settings inspection before these checkpoints and
+independent admission remain separate obligations.
+
+The **496-module** strict assembly, **51-module** style checks, all **169** component cases and
+**16,456** frozen profile comparisons pass. New cases verify all three checkpoints in order,
+typed refusal before each subsequent stage and independent retained-metadata heap observations.
+A fresh-window native run at **128 MiB / one capability** uses the actual runtime observer and
+production settings/request decoders, passes all three data checkpoints and reaches the fixture's
+preparation refusal without a host or business operation. Its observed requirements are
+**7,644,670**, **7,711,270** and **7,716,326 bytes**. Draft `108`'s strict pass and style refusals,
+and the first fixture's compiler warning refusal, remain preserved alongside the corrected results
+in `settings-phase-runtime-components-validation-1.json`. This step uses normal regression inputs;
+no new crash-input campaign or live attempt was run. Canonical source remains at gate `27`, and
+Sprint `6.5` stays active on the integration checklist above; `6.7` and `7.47` remain parked.
+
+**Canonical String-count integration passes gate `28`.** The source-bound loader's generalized
+UTF8 counter is promoted verbatim from draft `109` into `Prodbox.Config.SerialiseString`, retaining
+the existing SDK instance and byte-validator bodies. Its seven permanent codec groups compare
+counts with all **1,114,112** SDK Char values, mixed strings, sliced payloads and the existing
+malformed-token controls. Full `prodbox dev check` passes the all-enabled warning-clean build and
+**9,655 + 27 + 35 + 908 = 10,625** registered cases in **1,195.30 seconds**, with unchanged source
+bytes/modes and an actual producer terminal receipt. The registered library still has **886** modules.
+`wire-string-count-canonical-validation-1.json` preserves the gate, exact operator and source inputs.
+
+Draft `110` removes only that byte-identical private duplicate. Its **50-module** style checks,
+**496-module** strict assembly, all **169** component cases, **16,456** frozen profile comparisons
+and the fresh-window actual-runtime settings check pass. Every other private source byte matches
+draft `109`; `wire-string-count-recomposition-validation-1.json` preserves that recomposition.
+Complete input-phase construction/validation/control/GC/native funding, independent admission,
+ordinary execution and qualification remain open. No sprint advances from this component promotion.
+
+A dependency review identifies ten related checked-settings/input-data modules as a coherent future
+canonical integration group, including six new library modules and the required explicit `primitive`
+dependency. Prepared permanent coverage passes eight normal component cases and pinned
+formatter/HLint checks against draft `110`; the initial behavior source and a later style refusal
+remain preserved. `input-pipeline-canonical-preparation-validation-1.json` owns that evidence and
+`input-pipeline-canonical-controls-3/CapturedInputData.hs` is the validated proposed test source.
+That record covers preparation and supplies no complete phase-cost or admission claim. Sprint
+`6.5` retains the integration checklist above; the numerical queue is unchanged.
+
+**Checked-settings/input-data integration passes gate `31`.** Ten modules are copied verbatim
+from draft `110`, registering six new library modules and the exact `primitive ==0.9.1.0`
+dependency. The ten permanent `CapturedInputData` cases cover extraction, staged syntax/readback,
+token data and output bytes, typed refusals, authored shape requirements, finite/unbounded list
+structure, wide Naturals, Generic field selection and owned source/metadata data. Full
+`prodbox dev check` passes the all-enabled warning-clean build and
+**9,665 + 27 + 35 + 908 = 10,635** registered cases in **1,441.04 seconds**, with unchanged source
+bytes/modes and an actual producer terminal receipt. The registered library has **892** modules.
+`input-pipeline-canonical-validation-1.json` preserves that gate, operator and exact sources.
+
+Draft `111` removes only those ten byte-identical duplicates, leaving **40** private modules.
+Its **496-module** strict assembly, style checks, **169** component cases, **16,456** frozen profile
+comparisons and fresh-window actual-runtime settings check pass. Later changes are confined to
+permanent coverage, test style and documentation; runtime source correspondence is verified in
+`input-pipeline-canonical-recomposition-validation-1.json` and the canonical packet above.
+
+Gate `29` refused a direct lambda/case body; gate `30` refused the redundant application operator
+left by its named-helper extraction. Both sources and receipts remain preserved. Corrected pinned
+formatter/HLint and exported repository style-doctrine checks pass before the successful gate.
+The earlier interpreter-only **512 MiB** refusal and rejected focused-runner thread options remain
+separate source-QA observations. Complete input-phase construction/validation/control/GC/native
+funding, caller/parent admission, ordinary execution and qualification remain open. Sprint `6.5`
+retains the integration checklist above; no sprint advances and no live attempt was run.
+
+Draft `112` replaces the directory-only data term at both complete-wire runtime checkpoints with
+a source-bound upper bound for the complete returned raw-wire normal form. Record headers follow
+the actual closed Generic product shapes; scalar leaves are explicit, with no unsupported-leaf or
+sum fallback. The custom coordinate codecs supply separately reviewed fixed headers and bounded
+list structure. Variable payload data is bounded from the same immutable source length, and both
+checkpoints retain the original work end. This is prospective returned-data accounting, not a
+complete construction or working-set bound.
+
+The **496-module** strict assembly, **40-module** pinned style checks, **171** component cases and
+**16,456** frozen profile comparisons pass. Three compiler controls compile the supported record
+and refuse an unsupported leaf and a sum. Independent observations of two returned wire graphs
+fit both their projected data sizes and the prospective bound. Pinned decoder/UTF8 source review
+supports the selected-payload accounting. A fresh-window native settings run at **128 MiB / one
+capability** passes the actual runtime checkpoints and reaches its intended preparation refusal;
+the final checkpoint requires **7,802,662 bytes**. The first graph fixture's compiler refusal and
+the corrected successor remain preserved in `wire-data-runtime-components-validation-1.json`.
+Canonical runtime and test source remain at gate `31`, with **10,635** passing cases.
+
+Complete construction, Generic/SDK/control temporaries, failed normalization, encoding, stack,
+GC and native peaks remain open, as do caller/physical-parent/Authority admission, ordinary-route
+integration, home qualification and activation/removal. This step uses bounded normal regression
+inputs and existing failure evidence; no new crash-input campaign or live attempt was run. Sprint
+`6.5` stays active on the checklist above; `6.7` and `7.47` remain parked.
+
+Draft `113` closes the recovery path's missing actual-runtime checks before publication readback
+and before re-encoding freshly validated settings. Both use the captured request's memory plan
+and the original work end. Empty/oversized sources and foreign original bindings refuse before
+runtime observation. Exact publication comparison still precedes settings revalidation and fresh
+physical preparation; it grants no physical-parent or Authority admission.
+
+The **496-module** strict assembly, **40-module** pinned style checks, **181** component cases and
+**16,456** frozen profile comparisons pass. The added controls exercise the complete recovery
+fold through its internal admission interpreter, preserving successful readback, publication
+mismatch and validation/runtime refusals. Unevaluated settings sentinels confirm that runtime
+refusal precedes both encoders. These explicit host/storage/clock fixtures supply no independent
+physical observation evidence. Separate native recovery runs at **128 MiB** use the actual runtime
+observer: one capability reaches preparation, while two capabilities return the intended typed
+refusal before revalidation. The existing native settings-stage run also passes. Sources, binary,
+receipts and the initial runner/compiler refusals are preserved in
+`recovery-runtime-components-validation-1.json`.
+
+Canonical runtime and test source remain at gate `31`, with **10,635** passing cases. Complete
+construction/control/GC/native funding, independent admission, ordinary execution and qualification
+remain open. Sprint `6.5` stays active; no sprint advances, crash-input campaign or live attempt is
+added by this recovery change.
+
+Draft `115` replaces cold whole-profile schema checking, typed decoding and canonical re-encoding
+with provisional byte inspection. It scans the bounded profile with a fixed field count and one
+aggregate pending-item counter, then imports only the complete heap/application numeric spans.
+Ignored payloads are skipped without Text, arbitrary-width numeric values or expression graphs.
+Duplicate/missing selected fields and
+invalid selected scalar framing refuse. Provisional metadata grants no schema, canonicality,
+coordinate or admission witness: the complete declared-schema/semantic/canonical decoder is
+unchanged and still runs before accepted coordinates. Every cold input-owner/loader floor retains
+its prior conservative data term and adds the scanner states/views and selected-importer data.
+
+The **497-module** strict assembly, **41-module** pinned style checks, **194** component cases and
+**16,456** frozen full-profile comparisons pass. New cases cover ordinary/absent-deadline/wide/zero
+and multiword selected scalars, deferred complete validation of reordered or invalid ignored fields,
+selected-field ambiguity/framing refusals and independent returned-graph observations. An ignored
+numeric payload does not enlarge the returned scalar graph. Native first-load and recovery checks
+also pass at the existing **128 MiB** policies. `initial-profile-scalar-components-validation-1.json`
+preserves the successful source/binary/terminal receipts, the first ambiguous-import compiler refusal,
+and six pre-GC observer refusals. A conditional runner error prevented the failed graph fixture's
+private-input closing receipt; its outer failure and post-attempt sources/logs are retained with
+that limitation, alongside the initial correlation verifier refusal. The successful successor has
+matching entry/exit private inputs and the actual producer terminal receipt.
+
+This removes early whole-profile construction rather than claiming its costs are funded. Remaining
+scan/import/control/GC/native peaks, later full-profile/settings phases, caller/parent/Authority
+admission, ordinary integration and qualification stay open. Canonical runtime/test source remains
+at gate `31` with **10,635** passing cases. Sprint `6.5` remains active; later sprints stay parked,
+and this change adds no crash-input campaign or live attempt.
+
+Draft `116` replaces encoded-buffer equality with direct interpretation of the same prepared SDK
+tokens in full profile/settings decoding and cold/recovery settings readback. It compares definite
+headers, Text UTF8 slices and positive Integer limbs against the captured bytes; invalid views and
+unsupported tokens return structured refusals. Existing byte-producing APIs retain their SDK
+writer. Resource declarations are unchanged and conservatively retain their prior output-buffer
+terms; comparison/control/temporary/GC/native costs and complete funding still need review.
+
+The **498-module** strict assembly, **45-module** pinned style checks, **199** component cases,
+**133** SDK programs with **4,032** differential comparisons, **16,456** frozen full-profile cases
+and three native runtime invocations pass. The first existing mutation fixture exhausted its
+unchanged **128 MiB** heap while retaining every copied input for a later length calculation.
+The identical inputs, order, reference assertions and heap pass when generated serially. Its failed
+source/binary/terminal receipt, the successful successor, pinned writer/Text source review and
+compiler loop diagnostics are preserved in `canonical-token-match-components-validation-1.json`.
+This is no complete working-set or deployment proof.
+
+The exact pure token-comparison module is registered in canonical source with five permanent
+constructor/boundary/mutation, mismatch, unsupported-token, invalid-view and existing one-MiB Text
+tests. Full gate `32` passes. The profile/settings adoption remains private and activates no
+ordinary writer. Sprint `6.5` stays active; `6.7` and `7.47` remain parked.
+
+Draft `117` removes only that byte-identical token-comparison duplicate, leaving **44** private
+modules. Its **498-module** strict assembly, pinned style checks, **199** component cases,
+**4,032** SDK comparisons, **16,456** frozen profile cases and native runtime checks pass using
+the canonical source helper. Canonical preflight finds only the new permanent test's non-stable
+first formatting pass; extra-group HLint reports no hints. Its source/refusal remains preserved;
+two corrected pinned formatter checks and the focused HLint check now pass. Full gate `32` supplies
+the current canonical component baseline. Complete funding and qualification remain open.
+
+**Pure token-comparison integration passes gate `32`.** Full `prodbox dev check` completes the
+warning-clean all-target build and **9,670 + 27 + 35 + 908 = 10,640** registered cases in
+**1,415.80 seconds**. The registered library contains **893** modules. The command has an actual
+producer terminal receipt, matching source bytes/modes and matching before/after official source
+identities. `canonical-token-match-canonical-validation-1.json` preserves the gate, exact sources,
+operator and test artifacts, private recomposition, and earlier failed corpus/formatting/compiler
+diagnostics. These are component results; they establish no complete working-set, independent
+admission, ordinary activation or deployment-qualification claim. Sprint `6.5` remains active and
+the numerical queue is unchanged.
+
+Draft `118` removes whole-request encoded buffers from canonical readback, publication comparison
+and preparation confirmation. Its separate binary token interpreter handles definite byte fields;
+the Dhall interpreter still refuses them. Actual byte production and request digests retain their
+SDK path. The checked String decoder reuses the exact exposed SDK generalized-UTF8 routine after
+the unchanged payload validation, with one visible-payload array conversion and no synthetic CBOR
+field or second parser. Per-field encoding/marshalling, comparison control, GC and native peaks
+remain separate funding obligations; resource declarations stay unchanged and conservative.
+
+The **498-module** strict assembly, **46-module** pinned style checks, **203** component cases,
+**4,032** SDK comparisons, **16,456** frozen profile cases and three native runtime invocations
+pass. New controls exercise binary payload boundaries and views, exact complete-request byte
+mutation comparisons, and sliced/segmented generalized-UTF8 fields. Pinned source review confirms
+the same SDK decoder and payload-array conversion. Sources, binary, receipts and the initial
+preservation-launch refusal are retained in `request-readback-components-validation-1.json`.
+
+Both shared codec changes are copied verbatim to canonical source. Four new permanent cases cover
+binary fields and invalid views plus sliced and segmented String fields; the existing complete
+**1,114,112-Char** SDK-domain control remains mandatory. The direct internal SDK dependency is
+pinned to the already selected `serialise ==0.2.6.1`. Full gate `33` passes; ordinary request
+adoption, complete funding, independent admission and qualification remain open. No live attempt
+or new crash-input campaign is added; Sprint `6.5` remains first and active.
+
+Draft `119` removes exactly the two copied codec duplicates, leaving **44** private modules.
+Its **498-module** strict assembly, pinned style checks, **203** component cases, **4,032** SDK
+comparisons, **16,456** frozen profile cases and native runtime checks pass using canonical source.
+The two canonical codec modules and both permanent test files also pass two pinned formatter checks
+and extra-group HLint. Full gate `33` passes; complete funding and qualification remain open.
+
+The canonical **893-module** library, all enabled targets and **10,644** registered tests
+(**9,674 + 27 + 35 + 908**) pass `prodbox dev check` in **1,364.79 seconds**. The String suite has
+**nine** permanent cases, including its unchanged complete **1,114,112-Char** SDK-domain control;
+the token comparator has **seven**. Entry/exit source bytes and modes are identical, both source
+identity projections agree across the gate, and the installed operator matches the Cabal artifact.
+`request-readback-canonical-validation-1.json` preserves the source objects, actual terminal
+receipts, operator and private `119` recomposition evidence. Ordinary request readback adoption
+remains private; complete construction/marshalling/control/GC/native funding, independent admission,
+ordinary execution and deployment qualification remain open. Validation continues through bounded
+acceptance/refusal regressions; no new crash-input campaign or live attempt is added. Sprint `6.5`
+remains first and active, with `6.7` and `7.47` parked.
+
+The settings construction increment charges every duplicate-detection Set Bin allocation from
+the pinned insertion/balancing code, including replaced paths and rotations. Shape measurement
+sums `n * ceiling(log2(n + 1))` separately for each checked record/union map; the capacity term
+adds its entry count and charges the five-word nodes. The usage and budget records include their
+new strict scalar fields in normal-form accounting. Permanent controls retain actual insertion
+histories for fixed ordering/duplicate cases and check separate nested record/union counts.
+All **12** captured-input cases pass, including the **two** new cases, alongside the **498-module**
+strict assembly, pinned style checks, **203** composition cases, **4,032** SDK comparisons,
+**16,456** frozen profile cases and three native runtime modes. Original **128 MiB** test heaps
+and the fixture's **16 MiB** scratch declaration remain unchanged. The coarse global-count
+estimate's **21,605,779-byte** refusal and three test-compilation refusals remain preserved; the
+separate-map model's cold checkpoints are **8,398,483 / 8,465,083 / 8,556,475 bytes**.
+`settings-map-insertion-components-validation-1.json` preserves source review, source objects,
+both composition binaries and actual receipts. Full gate `34` passes. This funds Bin constructor
+data only; other map/compiler/control/stack/GC/native costs, complete independent admission,
+ordinary execution and deployment qualification remain open. Sprint `6.5` stays active and first.
+
+The complete **893-module** canonical library, all enabled targets and **10,646** registered tests
+(**9,676 + 27 + 35 + 908**) pass `prodbox dev check` in **1,157.94 seconds**. Entry/exit source
+bytes and modes are identical, both source identity projections agree across the gate, and the
+installed operator matches the Cabal artifact. `settings-map-insertion-canonical-validation-1.json`
+preserves those inputs, artifacts and the actual terminal receipt, alongside the unchanged private
+`119` composition evidence. The full gate validates the constructor-data increment; it supplies no
+complete working-set, independent admission, ordinary activation or deployment-qualification claim.
+No live attempt is added, and the numerical queue remains `6.5`, `6.7`, `7.47`.
+
+The Strict Map construction increment charges all pinned `fromList` Bin nodes and `create`
+result tuples, covering ordered-prefix construction and insertion fallback. The measured
+per-map weight now uses `h(n)=n` for `n<=2`, otherwise `1+h(floor(3*(n-1)/4))`, directly from
+the `delta=3` invariant. This replaces the coarse logarithmic counter for both Map and Set,
+with unchanged schema, wire format and input limits. The budget's additional strict scalar
+has its own normal-form storage. Native measurements confirm **48-byte** Bin and **32-byte**
+tuple headers; permanent controls check actual maps, retained histories and Map/Set depths.
+All **13** captured-input cases pass, including **one** added case, along with **498-module**
+strict compilation, pinned style checks, **203** composition cases, **4,032** SDK comparisons,
+**16,456** frozen profile cases and three native runtime modes. Original **128 MiB** heaps and
+the fixture's **16 MiB** scratch declaration stay unchanged. The cold checkpoints are
+**12,019,819 / 12,086,419 / 12,177,811 bytes**. The coarse estimate's **23,640,571-byte** refusal
+and both test-compilation refusals remain retained.
+`settings-map-construction-components-validation-1.json` preserves those scoped sources,
+binaries, source/ABI review and actual receipts. Full gate `35` passes. Other constructors,
+extractor/narrowing and producer/validation work, comparison/compiler/control/stack/GC/native
+costs, complete admission, ordinary integration and deployment qualification remain open.
+Sprint `6.5` stays first and active; no live attempt is added.
+
+The complete **893-module** canonical library, all enabled targets and **10,647** registered tests
+(**9,677 + 27 + 35 + 908**) pass `prodbox dev check` in **1,170.42 seconds**. Entry/exit source
+bytes and modes are identical, both source identity projections agree across the gate, and the
+installed operator matches the Cabal artifact. `settings-map-construction-canonical-validation-1.json`
+preserves those inputs, artifacts and actual terminal receipt. The archive verifier's initial
+predecessor-selection refusal is retained; its replacement compares against the closed gate-`34`
+publication. The separately bound `settings-validation-followup-1.json` identifies repeated
+settings/runtime-profile validation and derivative-construction review targets; it supplies no
+complete cost bound. Constructor data is locally validated; complete working-set accounting,
+independent admission, ordinary integration, activation and qualification remain open. The queue
+stays `6.5`, `6.7`, `7.47`, with no live attempt.
+
+Local settings validation now retains its coordinate/public-edge results in a private positional
+fold shared with the complete settings constructor. The checked AWS served host supplies the
+subzone, while region/IP validators return the values their checks established. The complete
+constructor no longer discards and rebuilds those projections. Standalone builders keep their
+contracts; raw configuration, optionality, credential-reference checks and first-refusal order
+are unchanged. Five obsolete private refusal wrappers are removed.
+The frozen predecessor and replacement agree byte-for-byte across **94** fixed scenarios:
+**three** valid configurations and **91** single/paired malformed configurations. **Two** new
+permanent table cases, the **498-module** strict assembly, pinned formatting/HLint, **203**
+composition cases, **4,032** SDK comparisons, **16,456** frozen profile cases and three native
+runtime modes pass at the original **128 MiB** heap and **16 MiB** scratch declaration.
+`settings-projection-components-validation-1.json` preserves both observation binaries, source
+objects, actual receipts and the early preparation/style refusals. The final stable-source build
+supplies compilation evidence after the formatter-preparation overlap. Full gate `36` passes.
+Partial-projection coexistence, the private wrapper and the remaining settings/initial-profile/
+caller/control/GC/native costs still need complete phase funding and independent admission.
+Ordinary integration, activation and qualification remain open; Sprint `6.5` stays first and active.
+
+The complete **893-module** canonical library, all enabled targets and **10,649** registered tests
+(**9,679 + 27 + 35 + 908**) pass `prodbox dev check` in **1,174.76 seconds**. Entry/exit source
+bytes and modes are identical, both source identity projections agree across the gate, and the
+installed operator matches the Cabal artifact. `settings-projection-canonical-validation-1.json`
+preserves those inputs, artifacts and the actual terminal receipt, including the private
+composition's documentation/test-only source delta. The separately scoped
+`settings-extraction-followup-2.json` binds the selected Dhall **1.42.3** sources and current
+extraction/validation owners: `renote` shares the existing expression, while generic extraction
+and custom AWS-profile narrowing retain temporary-data obligations. Next derive those closed
+extraction/narrowing terms and the remaining semantic-validation call graph; the source review
+supplies no complete working-set bound. Independent admission, ordinary integration, activation
+and deployment qualification remain open. The queue stays `6.5`, `6.7`, `7.47`, with no live attempt.
+
+The temporary settings-sequence increment adds the selected SDK's intermediate finger-tree data
+to the serial extraction stage. All **16** captured-input cases pass, including **three** new
+permanent cases with **13** actual SDK graph scenarios, nested lists, arbitrary-width Natural
+payloads and the serial settings reservation. The **498-module** strict assembly, pinned style,
+**203** compatibility cases and all three native runtime modes pass. The existing readback syntax
+reservation dominates this evaluated sequence term, so the original necessary scratch floor stays
+unchanged. The new strict budget scalar's separately charged **24 bytes** appear in the cold
+checkpoints: **12,019,843 / 12,086,443 / 12,177,835 bytes**. Original **128 MiB** heaps and the
+fixture's **16 MiB** scratch declaration stay unchanged.
+`settings-sequence-components-validation-1.json` preserves the selected SDK derivation, sources,
+binaries and actual receipts, including the initial hidden-package refusal and the subsequent
+explicit pinned test dependency. Full gate `37` passes. Traversal construction, generic
+products/results, narrowing/failure temporaries and compiler/control/GC/native costs retain
+complete-phase funding ownership. Accepted domains, schema and wire format are unchanged;
+complete admission, ordinary integration, activation and qualification remain open. Sprint `6.5`
+stays active and no later sprint advances.
+
+The complete **893-module** canonical library, all enabled targets and **10,652** registered tests
+(**9,682 + 27 + 35 + 908**) pass `prodbox dev check` in **1,176.68 seconds**. Entry/exit source
+bytes and modes are identical, both source identity projections agree across the gate, and the
+installed operator matches the Cabal artifact. `settings-sequence-canonical-validation-1.json`
+preserves the sources, binaries and actual terminal receipt, including the private composition's
+README-only source delta.
+
+The separately scoped follow-up observes **12** Generic product nodes occupying **288 bytes**
+beside shared raw fields for each of three valid current settings roots. This is a representation
+layout observation, not a full SDK extraction bound. Three fixed SDK refusal controls preserve
+latent error messages under the settings owner's constant-cause projection, including single and
+paired Generic-field failures. Their inputs, binaries and receipts are preserved in
+`settings-generic-products-followup-validation-1.json` and
+`settings-error-payload-followup-validation-1.json`.
+`settings-extraction-followup-3.json` binds the selected SDK and current owner sources: union
+extraction deletes selected alternatives and denotes/evaluates/compares the remaining schemas.
+Next derive that complete closed extraction schedule with Generic products/results and custom
+narrowing data; construction, compiler/control/GC/native costs and independent admission remain
+open. Ordinary integration, activation and deployment qualification remain open. The queue stays
+`6.5`, `6.7`, `7.47`, with no live attempt.
+
+The current AWS-profile narrowing increment adds pre-conversion bounds derived from the existing
+64-character token limit, supported EBS spellings and 19-character CIDR grammar, including padded
+prefixes. A bounded decimal fold replaces String/read parsing. The fixed predecessor baseline
+and replacement agree byte-for-byte across **887** scenarios: **119** accepted and **768** refused.
+All **11** permanent profile cases pass, including **three** added cases covering accepted decimal
+boundaries, Unicode normalization/expansion and preserved unsupported values. The **498-module**
+strict assembly, pinned style, **203** compatibility cases, **4,032** SDK comparisons and all
+three native runtime modes pass at the original **128 MiB** heaps and **16 MiB** scratch declaration.
+The native checkpoints remain **12,019,843 / 12,086,443 / 12,177,835 bytes**.
+`aws-narrowing-components-validation-1.json` preserves both observation binaries, the unchanged
+frozen reference, selected Text derivation, source snapshots and actual receipts. The formatter's
+preparation-only log-name collision and corrected preparation remain retained. Full gate `38`
+passes. The complete generic/union/DTO/narrowing schedule, construction/compiler/control/GC/native
+costs, admission, ordinary integration, activation and qualification remain open; Sprint `6.5`
+stays first and active, with no live attempt.
+
+The complete **893-module** canonical library, all enabled targets and **10,655** registered tests
+(**9,685 + 27 + 35 + 908**) pass `prodbox dev check` in **1,157.23 seconds**. Entry/exit source
+bytes and modes are identical, both source identity projections agree across the gate, and the
+installed operator matches the Cabal artifact. `aws-narrowing-canonical-validation-1.json`
+preserves the sources, binaries and actual terminal receipt, including the private composition's
+README-only source delta.
+
+The source-bound follow-up derives **285,056 bytes** for all prospective case-converter ByteArray
+data in one profile, without depending on collection between allocations. It distinguishes the
+converter's initial lookahead allocation from its logical growth budget. The term excludes
+wrappers, other narrowing/DTO/parser/result data and complete compiler/control/GC/native costs;
+it is not a workspace or admission proof. `aws-narrowing-case-array-derivation-1.json` preserves
+that derivation. The separately compiled final-STG diagnostic is preserved in
+`aws-narrowing-stg-review-validation-1.json` for complete worker/join-path and compiler-flag/object
+correlation; keyword presence and separate objects do not prove the linked operator's control flow.
+Next compose the bounded narrowing workspace with Generic products/results and union-schema
+evaluation, then close the remaining construction/control/GC/native and independent admission
+obligations. Ordinary integration, activation and deployment qualification remain open. The queue
+stays `6.5`, `6.7`, `7.47`, with no live attempt.
+
+The current extraction-reservation increment adds conditional AWS case-array construction data
+and Generic product spines beside complete raw data and temporary SDK sequences. Present-profile
+counting preserves wire grammar and ignores optional/type-only absence. Shared limits and list
+cardinalities bind the case-array term to the validator; the closed arity traversal covers its wide
+input DTO. All **19** captured-input cases pass, including **three** new cases covering measured
+Generic products, marker compatibility and conditional pre-decode reservations. The **887** frozen
+normalization/refusal comparisons, **498-module** strict assembly, public/private pinned style,
+**203** composition cases, **4,032** SDK comparisons and two field-extension compiler controls pass.
+Private `120` changes only its settings-reader override, adding the shared product helper and
+profile marker while preserving its token-match readback. All four native invocations pass at the
+original **128 MiB** heaps and **16 MiB** scratch declaration. Home checkpoint floors are
+**12,019,939 / 12,086,539 / 12,177,931 bytes**; the added present-profile mode observes
+**12,024,371 / 12,092,587 / 12,183,979 bytes**. These are necessary data floors, not measured RSS.
+`settings-extraction-reserve-components-validation-1.json` preserves sources, binaries, receipts
+and the unit-helper, private-alias, fixture-name and parser-option refusals with their corrections.
+Full canonical gate `39` passes **10,658** cases (**9,688 + 27 + 35 + 908**) in **1,171.82 seconds**
+against **893** library modules. `settings-extraction-reserve-canonical-validation-1.json`
+preserves the actual completion receipt, unchanged source projections, operator/build-artifact
+identity and component evidence. Sum/result/dictionary, DTO/parser/union-evaluation, other construction and
+compiler/control/GC/native costs, complete admission, ordinary integration and qualification remain
+open. Sprint `6.5` stays first and active; no later sprint advances and no live attempt is added.
+
+The Generic-branch increment separately reserves two-word `L1`/`R1` wrappers from the closed
+raw-field depth bound and one two-word `U1` leaf per record or selected value union. The complete
+current settings traversal has maximum depth **eight**, including nested readiness/component
+types. Its new permanent case checks **59** actual union/nullary representations and type-only
+absence; all **20** captured-input cases pass through a small current-source frontend. The
+**498-module** strict assembly, public/private pinned style, two compiler extension controls and
+private `121`'s **203** cases/**4,032** SDK comparisons/four native invocations pass at the original
+limits. `settings-sum-reserve-components-validation-1.json` preserves sources, binaries, receipts,
+the test-helper annotation refusal and the measured missing-`U1` regression with their corrections.
+Full canonical gate `40` passes **10,659** cases (**9,689 + 27 + 35 + 908**) in **1,298.81 seconds**
+against **893** library modules. `settings-sum-reserve-canonical-validation-1.json` preserves its
+actual completion receipt, unchanged source projections and operator/build-artifact identity.
+Result/dictionary, DTO/parser/union-evaluation, other construction and
+compiler/control/GC/native funding, complete admission, ordinary integration, activation and
+qualification remain open. Sprint `6.5` stays first and active; no live attempt is added.
+
+The fixed-schema follow-up checks ConfigFile, deployment context and the settings envelope through
+the public SDK. Expected/declared types preserve judgmental meaning; normalization sorts their
+field maps, so structural identity with the original types was an invalid fixture expectation.
+The same review exposes a shared graph-observer defect: a static indirection and its referent
+have equal stable names, allowing deduplication to skip the referent. On the fixed ConfigFile
+declaration, the old observer reports **16 bytes**; a separate observer that counts both headers
+and referents reports **48,968 bytes**. Its current captured-input audit passes **19/20**, including
+the new union/nullary case, and exposes the older exact Generic-product delta assertion:
+**336 bytes**, rather than **288**. At that review the extra update-header/data distinction and
+canonical observer correction remained open. `settings-union-schema-followup-validation-1.json` preserves all three
+schemas, sources, compiler-source evidence, receipts, corrections and the unresolved assertion.
+Revalidate affected graph assertions with correct sharing/header identity before using them for
+further funding. Hidden evaluator internals and complete union-extraction costs remain unmeasured;
+neither the fixed-schema observations nor gate `40` closes complete admission or qualification.
+
+The observer correction now uses box identity for indirection headers and a separate stable-name
+set for their referents. Total-byte observations retain both; explicit data/header observations
+support structural layout laws without hiding the complete graph. Three new captured-input
+regressions cover the frozen undercount, duplicate-root sharing and mutable-cell mode. A fourth
+primitive-law regression proves that a static Natural's data fits its structural term while its
+total graph exceeds it. The older product assertion retains both its **288-byte** data-node check
+and its complete additional-graph bound. All **23** captured-input cases, **116** cases across the
+ten observer clients, five native environment cases, three original schemas and private `121`'s
+**203** cases/**4,032** SDK comparisons/four native modes pass. The all-client run keeps **128 MiB**
+and **two** RTS capabilities, using the canonical unit runner's serial Tasty scheduling. The first
+aggregate omitted that scheduling, exposed three data/header contract mismatches and exited
+**251** at its heap cap; the failed record is preserved. The warning-clean canonical unit build
+also passes. Full canonical gate `41` passes **10,663** cases (**9,693 + 27 + 35 + 908**) in
+**1,158.34 seconds**, against **893** library modules. `heap-observer-canonical-validation-1.json`
+preserves its actual completion receipt, unchanged source projections and operator/build-artifact
+identity. Runtime source/formulas and all **44** private modules remain
+unchanged; complete construction/update/GC/native funding, independent admission, ordinary
+integration and qualification remain open. Sprint `6.5` stays first and active; no live attempt is added.
+
+The next selected-SDK source review checks expected and declared key origins for SecretRef,
+VaultSecretRef and PromptSpec: **18** fixed key observations across three trusted schemas.
+SecretRef's constructor-prefix modifier returns views with a **nine-byte** retained prefix on
+both SDK paths; the five visible bytes of `Vault` retain a **14-byte** array. The four constructor
+keys retain **32** additional word-aligned payload bytes per root; cross-root sharing is not inferred.
+The two record-schema fixtures instead return compact field labels. All three expected/declared
+schemas preserve judgmental meaning. `settings-union-key-origin-validation-1.json` preserves the
+sources, exact Text backing/offset observations, binary and receipt. Expected-type construction
+must fund those original backing allocations, or establish compact constructor-name outputs with
+compatibility and construction checks; visible serialized key lengths alone do not settle the
+expected-map/evaluator data term. Complete phase funding and admission remain open.
+
+The type-tree increment compacts constructor labels symmetrically in SecretRef, ScalingPolicy
+and RpcBirthConfig without changing schema bytes. Both complete expected/declared settings schemas
+have compact keys; **40** fixed accepted values and **12** invalid union inputs preserve codec
+results. Four new permanent cases cover origins, compatibility, exact type-only counters and
+selected-tree reservation. The selected `dhall ==1.42.3` source review funds five evaluated
+auxiliary type trees for the checked closed grammar. Because SDK metadata may be CAF-retained,
+the full term stays beside both serial input branches through profile/final-request checkpoints.
+All **27** captured-input cases, **120** cases across the ten observer clients, **498-module** strict
+assembly, warning-clean library/unit builds and private `121`'s **203** cases/**4,032** SDK
+comparisons/four native modes pass. The native modes keep **128 MiB** heaps and **16 MiB** scratch;
+the largest necessary data floors are **16,577,591 bytes** for home and **16,536,724 bytes** for the
+present AWS-profile fixture. These are model data floors, not measured whole working sets.
+`settings-type-tree-components-validation-1.json` preserves sources, binaries, receipts and three
+corrected fixture failures. Full canonical gate `42` stopped at the repository rule against a case
+inside a lambda (**111.37 seconds**). The named-helper correction passes focused validation and
+full gate `43`: **10,667** cases (**9,697 + 27 + 35 + 908**) in **1,305.81 seconds**, against **893**
+library modules. `settings-type-tree-canonical-validation-1.json` preserves the actual command
+receipt, identical source manifests and synchronized operator/build-artifact identity. The original
+launcher disconnected during a turn transition; its exit stays unobserved. The same producer's
+fsynced receipt, terminal systemd state and fresh observing scope establish the command result
+without restarting it. `settings-type-tree-style-refactor-validation-1.json` retains the failed gate
+and test-only correction. Key construction, dictionaries,
+results, map deletion/comparison temporaries and compiler/update/control/GC/native costs remain
+open, alongside complete admission, ordinary integration and qualification. The numerical queue
+is unchanged; no live attempt is added.
+
+The selected type-map increment reserves both SDK deletion paths, copied original-key spines,
+balance nodes and MinView/MaxView data, plus both ascending comparison lists. Two selected-value
+counts keep deletion work separate from type-only declarations; usage/budget metadata now cover
+**29/27** strict scalars. Three permanent cases cover exact counters, actual SDK map/list graphs
+under both map orderings, and retained scratch refusal. All **30** captured-input cases,
+**123** observer-client cases, **498-module** strict assembly and warning-clean library/style
+checks pass. Private `121`'s first run passes **194/203** cases and exposes the fixture's newly
+underfunded **16 MiB** scratch share. The replacement preserves that declaration as a separate
+typed refusal, before settings effects. Its positive fixture recompiles the inner share to
+**17 MiB**, the MiB ceiling of the observed necessary floor, within the unchanged **128 MiB** heap.
+The validated outer budget remains **256 MiB**, with identical child/native/kernel/margin terms
+and RTS arguments; no installed limit or physical envelope increases. All **204** component
+cases/**4,032** SDK comparisons and five native modes pass. Home checkpoint data floors are
+**17,242,343 / 17,308,943 / 17,400,335 bytes**; present AWS-profile floors are
+**17,198,004 / 17,266,220 / 17,357,612 bytes**. These are necessary model data floors, not complete
+working sets. The source-review fixture's type ambiguity and the first replacement helper's
+operator-precedence refusal remain retained. Full canonical gate `44` passes **10,670** cases
+(**9,700 + 27 + 35 + 908**) in **1,308.77 seconds**, against **893** library modules.
+`settings-type-map-canonical-validation-1.json` preserves the command/launcher receipts,
+identical source manifests and synchronized operator/build-artifact identity. Expected/declaration/
+shape and label construction, dictionary/result, comparison/compiler/control/GC/native costs,
+complete admission, ordinary integration and qualification remain open; no live attempt is added.
+
+The next private candidate traverses the existing underlying map when compiling record/union
+shapes, removing two unnecessary list/rebuild sites. Its reference comparison preserves all
+**29** public usage counters across **75** fixed accepted/refused variants, plus the closed profile
+bound and marked-path result. An explicit structural-data projection covers all shape constructors,
+complete Text backing arrays and exact requirement scalars. **19** fixed graph controls include
+the complete config/profile/settings-envelope schemas and both actual inspector marks. The complete
+envelope's data graph is **34,224 bytes**, and the marked graph is **34,240 bytes**; each fits its
+**56,320-byte** structural term. `settings-schema-map-candidate-validation-1.json` preserves all
+four preparation probes, sources, binaries and terminal receipts. The preparation source stays
+frozen in `settings-schema-map-candidate-4/` for comparison with the canonical promotion below.
+This preparation evidence supplies neither
+complete schema-construction funding nor admission/qualification evidence. The numerical queue
+remains `6.5`, `6.7`, `7.47`.
+
+The schema-map candidate is now promoted to the canonical compiler, with exact body equality after
+pinned formatter normalization. Three permanent cases cover both record/union key orderings and
+unsupported nested types, all shape constructors and complete trusted schemas, and noncompact
+Text requirement backings. The first all-client build refuses two shadowed test bindings; their
+rename leaves production source unchanged, and the failed record remains retained. All **126**
+cases across the ten observer clients pass, alongside warning-clean library/style checks and
+**498-module** strict assembly. The current canonical library also preserves all **29** usage
+counters across the **75** frozen-reference variants, the closed profile bound and marked-path
+comparison, and **19** shape graphs. Private `121` passes **204** cases/**4,032** SDK comparisons
+and five native modes, retaining **17 MiB** positive scratch, the original **16 MiB** refusal,
+**128 MiB** heap and **256 MiB** outer budget. No private module or resource floor changes.
+Full canonical gate `45` passes **10,673** cases (**9,703 + 27 + 35 + 908**) in
+**1,300.67 seconds**, against **893** library modules. `settings-schema-map-canonical-validation-1.json`
+preserves command/launcher receipts, identical source manifests and synchronized operator/build
+artifact identity. The projection is structural data only; complete construction,
+key packing/copying, dictionary/result, compiler/control/GC/native and admission/qualification
+costs remain open. No live attempt is added.
+
+The next private prototype uses exact closed structural type agreement to select the same SDK
+union leaf decoder, retaining the standard SDK union path for every other case. Its SecretRef
+table uses literal constructor labels; resolution, production validation and encoding remain
+unchanged. Six fixed probe groups pass **55** SecretRef result comparisons, **225** closed-type
+pairs, five predicate-negative cases and three duplicate-label/nullary edge scenarios. They cover
+decoded values and re-encoded bytes, complete error rendering, expected-schema ordering, general
+normalization fallback and the SDK's selected-schema behavior under the original **128 MiB**
+test heap. Pinned formatting and extra-group HLint also pass. `closed-union-candidate-validation-1.json`
+preserves `closed-union-candidate-6/`, its frozen reference, binaries, terminal receipts and the
+earlier fixture syntax/layout/style refusals. The reference reverses its namespace and formats
+back to the exact canonical SecretRef source. This is a private candidate, with source/strictness
+and table review, permanent laws, complete construction/control/GC/native funding, canonical
+integration and native recomposition still owed. It grants no admission or qualification; the
+numerical queue remains unchanged and no live attempt is added.
+
+The corrected union helper and literal SecretRef table are now canonical. The private shortcut's
+first strictness review retains three failed evaluation-order laws; its corrected candidate and
+nine permanent groups preserve SDK schema bytes/order, values/encoding, complete error rendering,
+normalization fallback, duplicate/nullary behavior and early refusal/evaluation order. Selected
+annotation absence and `Nothing` also match. Warning-clean **894-module** library/style checks,
+all **135** affected cases, **499-module** strict assembly and private `121`'s **204** cases /
+**4,032** SDK comparisons plus five native modes pass. Positive scratch remains **17 MiB**, the
+original **16 MiB** refusal and **128 MiB** heap / **256 MiB** outer limits are unchanged.
+Full canonical gate `46` passes **10,682** cases (**9,712 + 27 + 35 + 908**) in
+**1365.06 seconds**. `closed-union-canonical-validation-1.json` preserves exact
+source/operator correlation and the prior component/strictness records. Existing reservations
+remain conservative; complete helper/branch/declaration/shape/result/compiler/control/GC/native
+funding, independent admission, ordinary integration, activation and qualification remain open.
+No live attempt is added and the numerical queue remains `6.5`, `6.7`, `7.47`.
+
+The closed compiler now returns evaluated shape/map/union-payload data. Three permanent groups
+observe output before sizing, retain unsupported-field first-refusal order and validate a
+source-derived constructor-data term. The frozen predecessor independently retains constructor
+thunks on record, union and complete-settings schemas. All **138** affected cases,
+**499-module** strict assembly, frozen-reference **75** variants/**29** counters, bounds/marks and
+**19** existing graph controls pass. **16** result graphs fit the new term; the complete settings
+envelope has **34,240** observed data bytes under **92,912** compiler constructor-data bytes.
+Private `121` stays unchanged at **44** modules and passes **204** cases/**4,032** SDK comparisons
+plus five native modes, retaining **17 MiB** positive scratch, the original **16 MiB** refusal,
+**128 MiB** heap and **256 MiB** outer budget. Full canonical gate `47` passes **10,685** cases
+(**9,715 + 27 + 35 + 908**) in **1310.52 seconds** against **894** library modules.
+`shape-compiler-canonical-validation-1.json` preserves exact source/operator correlation and both
+component/candidate histories, including the test shadowing and first formatter refusals.
+Declaration/key preparation, bound calculation, compiler/control/GC/native costs and
+pre-compilation admission still need complete funding, alongside ordinary integration,
+activation and qualification. The numerical queue stays `6.5`, `6.7`, `7.47`; no live attempt is added.
+
+**Development resumed at the operator's request, 2026-11-02 UTC.** Sprint `6.5` is active and remains
+the first open sprint; `6.7` and `7.47` stay parked. At resumption, fresh worktree inspection found `.build/`
+absent, including the excluded preparation/request/controller drafts, archived executables,
+restoration helper and validation receipts named below. `.data/` is also absent; preserve surviving
+durable state and use the documented bootstrap/recovery entrypoints when needed. The tracked source tree was initially clean
+and the repository filesystem had about 147 GiB free. The operator confirms no draft backup is
+available. The historical narrative cannot substitute for missing source inputs or validation
+evidence. Static Haskell fragments recovered only from this conversation's earlier tool-call inputs
+are quarantined as unvalidated source candidates; no historical command, binary or test receipt is
+replayed as new evidence.
+
+The initial pinned canonical bootstrap compiles all **875** library modules and links the operator in
+**838.92 seconds**, within the existing **5-GiB** QA cap and with identical entry/exit source
+manifests (`bootstrap-1.json`). Fresh candidate controls under the original **128-MiB** test heap
+cover one concurrent winner among 128 claimants, permanent refusal, cancellation before/after
+claiming and owner failure. Four independent pointer-graph observations measure **48 bytes** for
+the complete quiescent cell, including the pinned Bool padding. These are component controls only.
+
+The canonical `HostOperationFamily` now uses the opaque direct atomic Bool-swap attempt, with eight
+permanent behavior/graph cases registered in the unit suite and a test-only exact `ghc-heap` pin.
+An independent disagreement control lowers only the candidate's cell term to 47 bytes: the fresh
+heap comparison refuses that underbound, while the unchanged 48-byte executable passes all controls.
+Pinned formatter/HLint preparation succeeds (`format-preparation-1.json`); its three intentional
+source rewrites are recorded as preparation, not immutable validation. The first full gate preserves
+unchanged inputs but exits 100 on a non-idempotent multiline record pattern in the new heap test,
+before the warning-clean build/tests. Its source bytes and diagnostics are retained. The observer
+now projects the same exact package/module/constructor/pointer/padding shapes through a finite
+table, without that formatting form; its accepted ABI shapes and all production behavior stay
+unchanged. Two consecutive targeted formatter checks are stable and extra-group HLint passes.
+The replacement canonical `prodbox dev check` **passes all 10,518 cases** (9,548 primary, plus
+27/35/908), including all eight new cases, after the warning-clean all-enabled build. Its complete
+**876-module** library includes the real intent-owner integration. The **1,733.76-second** gate
+retains identical entry/exit bytes and modes for **1,709** inputs and preserved source objects;
+`one-shot-component-validation-1.json` verifies those inputs and the closing operator/test artifacts.
+For that claim-cell revision, the operator is `8477addbaec4e022096d53925a955820ec51d4be8e53ada1f2fa2e88c4b8e7f4` and the official
+executable-source manifest is `ed73bca6d63f9ebee8f50cfd42843c8a3a18f6566d5ba620dd44e0ecdf78ec45`
+(no additional configured secret roots in that metadata capture).
+
+The next fresh ownership regression proves that successful public-key validation retained a
+**1-MiB** input allocation for a **32-byte** nonzero-offset view. The first two probe builds fail
+on package selection and a deprecated primitive respectively; neither supplies negative evidence.
+The corrected baseline preserves its executable and owner source, then observes the exact retention
+failure. The canonical constructor now forces a payload-sized copy before returning success;
+the signing-key factory shares that storage contract. The unchanged replacement probe observes
+**32 bytes** and a distinct backing allocation. The warning-clean library/unit build passes in
+**269.18 seconds** (`public-key-build-1.json`), three permanent allocation/eagerness cases pass
+under the original **128-MiB / two-capability** test envelope, and **310** existing Target-worker,
+signing-admission and epoch cases pass under the same envelope. Pinned formatter and extra-group
+HLint checks pass (`public-key-controls-1.json`, `public-key-compatibility-1.json`). These are
+component-local results for the newer source; the preceding full gate and installed operator
+retain their earlier source scope. Complete request ownership and controller funding remain open.
+
+Further static recovery finds **85** additional unique source fragments in earlier source-addition
+patches, including the ordinary request/body/admission and schedule foundations. Together with the
+shell-derived fragments, the inventory identifies **29** modules absent from canonical source.
+The immutable recovered fragments and `candidate-module-inventory-1.json` remain review candidates;
+they have no inherited compilation, test, resource-admission or deployment result.
+
+The broader recovery also preserves source-update fragments and conservative static projections
+of literal replacements/appends, including source helpers and script-relative paths. No historical
+script is executed. The first combined scratch assembly contains **44** candidate/override modules under
+`reconstructed-draft-8/`. Fresh warning-clean typecheck diagnostics retain unchanged public and
+declared scratch inputs (`reconstruction-typecheck-{1,3,6,7,8}.json`); all are unsuccessful
+reconstruction checks, not qualification results. They expose missing private retained-state
+interfaces, incomplete constructor edits and duplicate recovered declarations. Resolve those
+interfaces and the remaining caller/request/native-environment composition before integration;
+the candidate is neither installed nor admitted. The public-key documentation lint also passes
+with unchanged inputs (`public-key-docs-1.json`).
+
+**Reconstruction continued, 2026-11-03 UTC.** The intermediate assembly
+`reconstructed-draft-27/` follows the strict diagnostic
+`reconstruction-typecheck-26.json`. The joined home channel, shared counters, checked caller
+identity, native environment path, private quiescent owner projections and compact scope-binding
+payloads now typecheck as dependencies; the complete assembly still has unresolved request/body
+interfaces and no passing validation. The caller uses the canonical one-shot claim, compares the
+actual original lease as well as its key/window, and shares one manifest result across readers;
+a cancelled producer publishes refusal before cancellation escapes. The reconstructed request
+recompiles its resource declaration, checks command input through the physical interpreter's
+reserve validator, scans the closed profile shape before general Dhall decoding and owns copied
+byte payloads. Logical generation fields use `Natural` rather than an unfunded `Word64` cutoff.
+These are reviewed source changes in scratch, not native behavior or complete funding evidence.
+
+The recovered restart-count classifier initially admitted numbers outside the current Aeson
+`Natural` domain. Its explicit exponent refusal now preserves that domain. Against the selected
+**Aeson 2.2.5.0** instance, **150** fresh comparisons pass under **128 MiB / two capabilities**,
+including zero, wide coefficients and extreme exponents (`numeric-domain-2.json`); the initial
+probe's type-defaulting compilation failure is retained. The dependency source/member hashes are
+preserved alongside the controls. This component result grants no controller admission or
+deployment qualification. Complete retained/transient/native funding, original admission and
+business graph integration remain open; later sprints remain parked.
+
+The replacement scratch assembly `reconstructed-draft-31/` now passes the complete
+warning-clean typecheck of its **485-module** dependency graph in **20.47 seconds**, with unchanged
+public and declared scratch inputs (`reconstruction-typecheck-31.json`). This is the first passing
+reconstruction check. It includes the closed ordinary body, program-digest-before-submission
+journal path, credential tail, joined remote owners and local-only completion arm. It supplies no
+native behavior, full resource funding, Authority admission, installed routing or deployment
+evidence. Restore independent behavior/storage controls against this source before canonical
+integration; all earlier failed diagnostics remain preserved.
+
+Fresh native request/journal controls first reject an invalid synthetic Target Agent digest,
+then the fixture's incomplete command-output allowance. The corrected fixture preserves its
+**128-MiB** heap and **256-MiB** declared outer limit while funding the complete command domains
+within that heap. All **21** baseline controls pass (`request-behavior-4.json`), including
+program-digest conflict/retry, malformed/canonical wire handling, original-coordinate drift and an
+independent pointer-graph comparison. The request observes **23,208 bytes / 852 closures** against
+its **53,400-byte** quiescent structural term. These results do not admit that profile.
+
+The reviewed assembly `reconstructed-draft-32/` removes the caller's partial metadata-bound error
+and preserves logical `Natural` fields in the request and scope journal; native clocks retain
+their physical types and checks. Its complete **485-module** warning-clean typecheck passes in
+**19.77 seconds** (`reconstruction-typecheck-32.json`). Under identical tests and the original
+**128-MiB / two-capability** envelope, the preceding draft passes 23 of 26 controls and rejects
+three wide wire-level logical declarations (login count, Authority deadline and retention); the revised
+draft passes **26/26**. Large nonzero-offset key/nonce views detach from the request graph, and
+complete captured settings fit their independent graph comparison. The first expanded replacement
+run retains two observer refusals on pre-GC updated indirections; both sides of the corrected pair
+use the same explicit quiescence protocol. `request-controls-validation-1.json` verifies unchanged
+public/scratch inputs, shared test bytes and the four-module source delta. This is a local
+reconstruction comparison, not an admitted superseded-program or deployment counterexample.
+
+The reviewed boxed-storage primitives and complete settings projection are now registered in the
+library, with nine permanent independent graph cases. These helpers include actual Text backing capacity and arbitrary-width Natural limbs. The warning-clean
+**878-module** library/unit build passes in **175.75 seconds** (`normal-form-build-1.json`), and
+documentation lint passes. Both formatter checks and extra-group HLint pass. The first permanent
+preflight passes 18/20 cases but rejects two fixtures: fusion eliminated the intended large Text
+backing, and the existing registration-descriptor domain refuses a generation above `Word64`.
+The Text control now constructs a valid nonzero-offset UTF-8 view of the evaluated allocation;
+the valid-settings control uses the existing maximum descriptor generation. No production domain
+or limit changes. The corrected warning-clean build passes in **152.82 seconds**
+(`normal-form-build-2.json`); both consecutive formatter checks, extra-group HLint and all **20**
+claim/key/storage cases pass under **128 MiB / two capabilities** (`normal-form-preflight-2.json`).
+The first new full gate (`canonical-check-3.json`) preserves its complete inputs but stops at the
+repository's nested-case style rule in the existing public-key observer before build/test
+validation. Its failed source and diagnostics are retained. That test-only primitive case is
+extracted into a named helper; the production constructor and allocation check stay unchanged.
+The replacement canonical gate (`canonical-check-4.json`) **passes all 10,530 cases** (9,560
+primary, plus 27/35/908) in **1,257.95 seconds**, within the existing **5-GiB** QA cap and with
+identical entry/exit bytes and modes for **1,714** inputs. It includes the warning-clean **878-module**
+library and the corrected permanent tests. `normal-form-component-validation-1.json` independently
+verifies and preserves every source input and closing artifact. The installed and Cabal-built
+operator both hash to `bad4a1319e748340104ef6fe8734bfc8f8f0e7e5e5339f3ea1d5e383cd284ab6`;
+the official executable-source manifest is
+`25fc12c33f184c95fe0dfb445d5670fd01ef17b655fdbf3367824b8bd01fabf1`
+(no additional configured secret roots in that capture). This locally validates the claim-cell,
+public-key ownership and boxed/settings projection components. The ordinary request, caller and
+controller remain in scratch; complete funding and original admission remain open.
+
+A separate scratch probe freshly compiles and validates the closed-data Dhall normal-form term
+against the selected dependencies. All **11 groups / 45 values** pass under **128 MiB / two
+capabilities**, covering scalar encodings, wide integers, UTF-8, empty type annotations, sequences,
+unions, nested records and the complete synthetic configuration (`dhall-storage-controls-1.json`).
+The largest configuration graph observes **724,152 bytes / 21,679 closures** against **1,420,743
+bytes** declared; a 4,097-element list also fits its separate sequence term. The inputs and binaries
+remain unchanged. This validates tested quiescent graphs only; decoder, extraction, normalization,
+encoding and GC peaks, complete controller state and original admission remain open. The Dhall
+measurement/projection changes remain in scratch and are not installed by that probe.
+
+Ten additional scratch journal controls pass alongside the preceding request suite: **36/36**
+under **128 MiB / two capabilities** (`scope-journal-controls-2.json`). They cover closed-owner
+refusal, reopen, competing program digests, unsafe root/record modes, child/record symlinks,
+oversized records, orphan temporary recovery and held-directory continuity after pathname
+replacement. The initial callback's ambiguous test type is preserved as a failed strict build.
+These local filesystem results do not establish Authority persistence, full crash closure,
+retirement or original-operation qualification.
+
+The independent caller-cell probe first preserves a shadowing build refusal, then refuses an
+oversized fixture at the existing cost planner before cell allocation. With accepted counts, it
+observes the actual fresh payload as a **nine-word thunk**, normal `Remaining` records after
+each debit/settled contention, and one **three-word selector** after the 16 cancellation races
+(`caller-budget-storage-observation-3.json`). Its executable and declared inputs stay unchanged.
+This is a field-shape observation, not a complete graph bound, cancellation-correctness proof or
+unbounded-retention claim. Account for or normalize these states before deriving the full caller
+owner's reservation. The six source-grounded remaining funding/journal obligations are recorded
+in `ordinary-funding-review-1.json`; primary dependency members and matching package-archive hashes
+are retained under `dependency-storage-source-2/`.
+
+The proposed caller-cell normal-form contract is independently paired in
+`caller-cell-controls-1/validation-1.json`. Before adds only the proposed sizing API to unchanged
+canonical allocation/debit behavior: four controls pass and three refuse fresh/selector payloads.
+The replacement passes **7/7** at the same **128-MiB / two-capability** envelope; reducing only its
+term to **231 bytes** refuses all seven controls against the observed **232-byte / 11-closure**
+graph. This is a proposed component-contract comparison, not a qualified superseded-program
+counterexample. The canonical owner now forces the initial eight-counter record and finishes its
+closed atomic transition before cancellation escapes. Its critical section contains only the
+finite, validated `Word64`-bounded counter calculation. Eight permanent graph/behavior cases are
+registered, including valid large counts. The warning-clean **878-module** library/unit build
+passes in **191.07 seconds** (`caller-cell-library-build-1.json`). Two consecutive formatter
+checks, extra-group HLint and **66/66** permanent counter/traffic/native-Vault/storage compatibility
+cases pass under the same **128-MiB / two-capability** envelope
+(`caller-cell-compatibility-1.json`). The new canonical gate (`canonical-check-5.json`) **passes
+all 10,538 cases** (9,568 primary, plus 27/35/908) in **1,220.24 seconds**, under the unchanged
+**5-GiB** QA cap and with identical entry/exit bytes and modes for **1,715** inputs.
+`caller-cell-component-validation-1.json` independently verifies/preserves all source inputs and
+closing artifacts. The installed operator remains
+`bad4a1319e748340104ef6fe8734bfc8f8f0e7e5e5339f3ea1d5e383cd284ab6`;
+the new official executable-source manifest is
+`070fb820de143dbdbbc610d5b62c9ac2038acffe9b48d70f47788695bcd116d1`
+(no additional configured secret roots). This locally validates the shared cell; it supplies no
+complete caller/controller or original-admission proof. That reviewed scratch assembly is
+`reconstructed-draft-33/`, with **49** candidate/override modules; its complete **485-module** strict
+typecheck passes in **19.55 seconds** (`reconstruction-typecheck-33.json`). Complete
+caller/controller funding and original admission remain open.
+
+The next scratch assembly `reconstructed-draft-34/` adds a proposed quiescent environment term.
+Pinned **unix 2.8.8.0 / bytestring 0.11.5.4** source proves the closed pair origins: native raw-entry
+copies yield shared key/value views, while overlays own separate compact allocations. The joint
+pair term keeps that distinction and changes no environment behavior. All **five** standalone
+controls pass under **128 MiB / two capabilities**, with serial test execution for process-local
+environment mutation (`environment-storage-controls-1.json`). A native **1-MiB** value observes
+**1,048,840 bytes** against **1,048,872** declared; 256 overlay entries observe and declare
+**63,584 bytes**. Filtering/replacement drops the rejected large backing. The probe records no
+actual environment values. Its sources/binary stay unchanged. This candidate is not installed;
+full assembly typechecking, permanent integration and capture/encoding/exec/GC/native peaks remain
+open. Primary package/member hashes are preserved in `dependency-storage-source-3/index.json`.
+
+The environment projection and explicit empty data value are now registered in canonical source.
+Four permanent graph controls build overlays from that empty value and never read or mutate the
+unit process environment; the shared-origin native controls are retained separately in
+`test/qualification/ProcessEnvironmentStorage.hs` and require a synthetic-environment sentinel.
+Neither constructor grants a subprocess capability or changes supported tool environment policy.
+The warning-clean **878-module** library/unit build passes in **205.58 seconds**
+(`environment-library-build-1.json`), **70/70** focused permanent/compatibility cases pass under
+**128 MiB / two capabilities**, and pinned formatter/HLint checks pass
+(`environment-compatibility-1.json`). The separate canonical-source native graph and semantics
+executables pass **5 + 11** controls with an explicit synthetic environment
+(`environment-native-1.json`). The closing canonical gate is recorded below.
+
+The captured home kubeconfig probe finds an unevaluated successful payload and a **4,080-byte**
+backing for **2,343** visible bytes (`kubeconfig-storage-observation-1.json`). The paired proposed
+component contract adds only its sizing API before testing the old constructor: four storage
+checks refuse and the normalization check passes. The compact-copy replacement passes **5/5**
+under the same **128-MiB / two-capability** envelope, with unchanged public and declared scratch
+inputs (`kubeconfig-storage-pair-1.json`, `kubeconfig-storage-controls-1/validation-1.json`). Its
+canonical constructor and five permanent controls are integrated. The refreshed scratch assembly `reconstructed-draft-36/` contains **50** candidate/override
+modules, including both canonical environment/kubeconfig components; its complete **485-module**
+warning-clean typecheck passes in **19.13 seconds** with unchanged public and declared scratch
+inputs (`reconstruction-typecheck-36.json`). Parser,
+encoding/copy/GC peaks, full caller/controller funding and original admission remain open.
+
+The environment/kubeconfig canonical gate (`canonical-check-6.json`) **passes all 10,547 cases**
+(9,577 primary, plus 27/35/908) in **1,496.07 seconds**, under the unchanged
+**5-GiB** QA cap. It includes the warning-clean **878-module** library and preserves identical
+entry/exit bytes and modes for **1,718** public inputs.
+`environment-kubeconfig-component-validation-1.json` independently verifies and preserves every
+source input and closing artifact. The installed/Cabal operator is
+`4d4c4f256542722341160e23f9ec5d4412824f39b05c8ad96773a586e6b946c3`; the official executable-source manifest is
+`2b5b65f93d81ed8890a92b96a1a62d8b834ee4cec39acdbf29f8461f80b0838c`
+(no additional configured secret roots). This gate's scope closes before the following integration.
+
+The scratch journal passes **24** real SIGKILL points: **18** fsync, **three** link and **three** unlink
+occurrences (`journal-crash-control-1.json`). Each reopened owner preserves committed program and
+operation identities, converges its original retry and refuses replacement. **32** competing-process
+controls preserve one winner and its exact retry (`journal-process-races-1.json`); each losing initial
+contender observes the real `setLock` EAGAIN refusal. These are process-death/local-filesystem
+controls, not power-loss, Authority persistence or retirement proof. A separate component build
+uses only the proposed journal and canonical dependencies, then passes **14/14** permanent-ready
+security, reopen, conflict, arbitrary-width logical-field and heap-graph cases under **128 MiB /
+two capabilities** (`journal-component-control-2.json`). Initial fixture builds retain their hidden
+Epoch-constructor and shadowing refusals; no limit or public domain changes resolve them.
+
+The source review also finds that scratch `36` borrowed the entire command lane for token stages,
+instead of retaining the legacy **16-KiB per stream / 30-second** policy. Scratch `37` shares that
+policy with the existing caller and narrows its owned capture under the original work end; the
+complete **485-module** strict typecheck passes in **21.99 seconds**
+(`reconstruction-typecheck-37.json`). Its native compatibility vehicle passes **21/21** controls
+through the real bounded synthetic subprocess boundary, including exact/over-limit streams,
+Latin-1 token semantics, stage ordering/classification and actual **30-second** expiry
+(`token-stage-control-2.json`). The first fixture used incorrect synthetic ServiceAccount names;
+its **16/21** refusals and source/binary are preserved. Correcting those fixture names against the
+identity registry changes no production identity rule. These controls do not prove the ordinary
+caller's original-parent native borrowing or complete memory funding.
+
+The journal, **14** permanent unit cases and process-death vehicle are now integrated in canonical
+source. The legacy caller shares its unchanged stage policy through an explicit accessor; its
+native synthetic policy vehicle is retained in `test/qualification/CallerTokenStagePolicy.hs`.
+Two consecutive pinned formatter checks and extra-group HLint pass after extracting the policy
+fixture's unstable inline list and using its named stage inventory. Canonical-source native checks
+pass all **24** crash points, **32** competing-process cases and **21** token-policy cases at the
+same **128-MiB / two-capability** envelope (`journal-token-native-2.json`); public and declared
+fixture inputs remain unchanged. The permanent graph control now independently observes its
+large input-backing precondition. Its canonical-source warning-clean build and all **14/14**
+focused unit cases pass under **128 MiB / two capabilities**
+(`journal-component-canonical-1.json`). That revision's first full canonical gate (`canonical-check-7.json`) preserves unchanged inputs but
+stops at the unit component's private `SystemdIdentity` import after the warning-clean library
+build. Its failed source and diagnostics remain preserved. The permanent unit fixtures now use
+the public version-one codec, including a large encoded-input view; the native vehicle separately
+covers the factory without exposing its private manager-identity constructor. The warning-clean
+**879-module** library/unit Cabal build passes in **177.59 seconds**
+(`journal-cabal-build-1.json`); all **14/14** focused Cabal-built cases pass under **128 MiB / two
+capabilities** (`journal-cabal-controls-1.json`). The replacement canonical gate is recorded below.
+The closed ordinary caller/body/controller remain in scratch; no public cascade route is activated.
+`ordinary-funding-review-2.json` records the seven remaining ownership and phase obligations without claiming a complete resource certificate.
+
+The replacement canonical gate (`canonical-check-8.json`) **passes all 10,561 cases** (9,591
+primary, plus 27/35/908) in **1,481.01 seconds**, within the unchanged
+**5-GiB** QA cap. It includes the warning-clean **879-module** library and preserves identical
+entry/exit bytes and modes for **1,722** inputs.
+`journal-token-component-validation-1.json` independently verifies and preserves all source inputs
+and closing artifacts. The installed/Cabal operator is
+`424e3ba6a852fcce688330d20b62df9cfc4a68b813d782d616f007c12c63d4ba`; the official executable-source manifest is
+`2876d3e7c6eec50f1f3edcf0ae5091735b1ee4e1702928ffe9c6be3fde0e5228`
+(no additional configured secret roots). This locally validates the canonical journal/shared
+policy and preceding storage components; full ordinary-controller funding, original admission,
+frontend/live qualification and public cutover remain open.
+
+The refreshed reconstruction `reconstructed-draft-38/` incorporates the canonical journal and
+shared token policy. All **51** candidate/override modules pass two consecutive pinned formatter
+checks and extra-group HLint with explicit GHC2021 options (`reconstruction-style-38.json`);
+its full **485-module** strict typecheck passes in **25.63 seconds**
+(`reconstruction-typecheck-38.json`). The initial excluded-tree formatter lacked Cabal's language
+options; that preparation refusal is retained and no production extension changes resolve it.
+
+Pinned Dhall **1.42.3** decodes directly into `Expr`; its CBOR-Term comment is stale. The new
+returned-versus-evaluated graph probe passes **11 groups / 45 values** under **128 MiB / two
+capabilities** (`dhall-construction-observation-2.json`). For the complete synthetic config,
+the returned graph observes **626,632 bytes / 21,488 closures**, including **1,305 thunks / 31
+functions**; full evaluation observes **724,024 bytes / 21,675 closures**, below **1,420,743**
+declared for normal form. The first probe's missing explicit deepseq exposure is preserved.
+These observations do not measure construction or GC peaks. Record decoding temporarily builds
+field-pair lists before `Dhall.Map.fromList`; list decoding uses `Sequence.replicateA`. Those
+paths and typed extraction/validation still require their phase derivations.
+
+Scratch `reconstructed-draft-39/` adds an opaque checked-data operand tying the shape measurement
+to its exact immutable source. Its decoder uses the same pinned direct `Expr` instance once,
+without the generic version-wrapper fallback. It grants neither compact-backing ownership nor
+resource admission. **45** accepted-value and **270** mutated-input comparisons against the
+existing shape-check-plus-decoder pipeline pass at unchanged **128-MiB / two-capability** limits
+(`checked-dhall-control-2.json`); normal-form graph comparisons also pass. The initial probe's
+obsolete observer import is preserved. Its exact pre-format helper source is preserved by hash;
+only a formatter line break changes. The formatted replacement repeats those comparisons
+successfully (`checked-dhall-control-3.json`), and its full **486-module** strict typecheck passes
+in **46.07 seconds** (`reconstruction-typecheck-39.json`). Scratch `40` connects that checked operand
+to the ordinary profile decoder, retaining the byte ceiling, canonical readback and all semantic/
+resource/original checks. Its complete **486-module** typecheck passes in **25.60 seconds**;
+the existing **36/36** request/journal controls also pass under the original test envelope
+(`reconstruction-typecheck-40.json`, `request-controls-40-run-1.json`). No canonical decoder or
+public controller route changes.
+
+Source review then finds that the reconstructed loader declares its necessary captured-input
+scratch check but never invokes it before settings decoding. Scratch `reconstructed-draft-41/`
+wires that existing floor before the selected settings interpreter. Its full **486-module** strict
+typecheck passes in **26.75 seconds** (`reconstruction-typecheck-41.json`). Under the same
+**128-MiB / two-capability** profile, the preceding assembly passes **37/38** controls and exposes
+exactly one ordering refusal: a closed-shape, byte-bounded large list reaches the decoder callback
+despite exceeding the declared scratch term. The replacement passes **38/38**, including the
+healthy callback control. `input-floor-controls-1/validation-1.json` independently verifies the
+unchanged public inputs, shared authored fixture, single-module source delta and preserved
+private sources/binaries. Temporary directory coordinates vary; this is a proposed local ordering
+contract, not an independently admitted superseded program, actual decoder peak or full funding/
+original-operation qualification claim. Complete construction/extraction/canonical-producer/
+validation/GC and captured SDK/native funding remain open.
+
+Scratch `42` carries an opaque inspected settings operand from the early scan/floor to its
+settings-decoder effect. Its first strict assembly check preserves an incomplete import-list
+refusal. The corrected frozen assembly `reconstructed-draft-43/` passes the complete **486-module**
+strict typecheck in **21.52 seconds** (`reconstruction-typecheck-43.json`). It inspects settings
+once, retains those exact immutable bytes with their measured shape, and uses the direct `Expr`
+decoder once. Root, scope, schema, plaintext, canonical readback and validation checks remain.
+The existing repository-owned settings payload vehicle passes its complete synthetic roundtrip,
+malformed/deep/overflow, scope/root, plaintext and producer-limit matrix under **128 MiB / two
+capabilities** (`inspected-settings-controls-43.json`); all **38/38** request/journal/ordering
+controls also pass (`input-floor-controls-43-run-1.json`). This is local source composition only;
+construction/extraction/validation/GC/native funding and actual original admission remain open.
+
+The measured closed-shape checker, normal-form projection and opaque checked-data decoder are
+now copied into canonical library source, with **11** permanent groups covering **45** values and
+**270** mutation comparisons. The test-only exact `deepseq` pin supplies explicit normal-form
+forcing alongside the existing pinned graph observer. The ordinary settings operand, loader,
+caller and controller remain in scratch. Two consecutive pinned formatter checks and extra-group
+HLint pass. The warning-clean **881-module** library/unit Cabal build passes in **198.03 seconds**
+(`dhall-foundation-cabal-build-1.json`); all **11** new groups and **48** existing shape cases pass
+under **128 MiB / two capabilities** (`dhall-foundation-cabal-controls-1.json`,
+`dhall-shape-compatibility-1.json`). The repository-owned settings-payload vehicle also passes its
+complete matrix against the actual Cabal package, with no source-module overrides
+(`canonical-settings-payload-1.json`). The closing canonical gate (`canonical-check-9.json`)
+**passes all 10,572 cases** (9,602 primary, plus 27/35/908) in **1,207.43 seconds**, within the
+unchanged **5-GiB** QA cap. Its **1,725** source inputs retain identical entry/exit bytes and modes.
+`dhall-foundation-component-validation-1.json` independently verifies and preserves the sources
+and closing artifacts. The installed/Cabal operator is
+`5b49be2a1835d34ced2ba4a4b0af14da2870c00362cef2d709023436a445e47b`; the official executable-source manifest is
+`c8fd625e6896b5a543355278f62ac0dbc3bee331617851bb96e99a262d796a43`
+(no additional configured secret roots). This is canonical component validation only.
+
+The next proposed return contract requires the checked expression decoder to finish evaluating
+its syntax before reporting success. With identical fixture bytes and the original **128-MiB /
+two-capability** envelope, scratch `43` fails **6 of 11** groups because decoder thunks escape;
+scratch `44` passes all **11 groups / 45 values** without test-side forcing. The complete synthetic
+config observes **724,024 bytes / 21,675 closures** against its unchanged **1,420,743-byte**
+normal-form term. `eager-dhall-controls-1/validation-1.json` verifies the one-module delta, shared
+fixture, unchanged inputs and preserved source/binary objects. The replacement's complete
+**486-module** strict typecheck passes in **20.35 seconds** (`reconstruction-typecheck-44.json`),
+and both pinned formatter checks and extra-group HLint pass (`eager-dhall-style-44-1.json`).
+This paired result is a local proposed-contract comparison, not an independently admitted
+superseded-program counterexample. The eager decoder and inspected settings reader are now
+integrated in canonical source, with graph observations moved before any test-side encoding or
+forcing and four permanent settings-reader regression cases. The exact `deepseq` pin moves to
+the library that now uses it. The warning-clean **881-module** library/unit Cabal build passes in
+**180.56 seconds** (`eager-settings-cabal-build-2.json`); all **15** focused groups/cases and the
+complete repository-owned settings-payload matrix pass against the actual Cabal package under
+**128 MiB / two capabilities** (`eager-settings-cabal-controls-1.json`,
+`canonical-settings-payload-2.json`). Both pinned formatter checks and extra-group HLint pass
+(`eager-settings-style-1.json`). The first build launcher refused a concurrent source-store
+insertion before starting Cabal; that orchestration failure is recorded separately and supplies
+no component result. The closing canonical gate (`canonical-check-10.json`)
+**passes all 10,576 cases** (9,606 primary, plus 27/35/908) in **1,241.25 seconds**, within the
+unchanged **5-GiB** QA cap and with identical entry/exit bytes and modes for **1,726** inputs.
+`eager-settings-component-validation-1.json` independently verifies and preserves every source
+input and closing artifact. The installed/Cabal operator is
+`436c5e32f0203bb2a97eb4be14ed5331a85453d58671b270b8a14bc5ceb58be4`; the official executable-source manifest is
+`6dfd2608dfe2a08874251b6c780edf944fd8155801745748ba486526870cc9c0`
+(no additional configured secret roots). This validates the canonical component revision only.
+
+Scratch `45` refreshes the canonical decoder/reader and passes its complete **486-module** strict
+typecheck in **21.13 seconds** (`reconstruction-typecheck-45.json`). The captured-loader vehicle now
+runs the actual public settings reader, canonical source readback, request decoding and captured
+state checks up to a refusing physical-preparation seam. All **39** controls pass under the original
+**128-MiB / two-capability** envelope (`captured-input-native-decoder-1.json`), including the earlier
+underfunded-input refusal before decoder entry. Its independent preservation record is
+`captured-input-native-decoder-1/validation-and-preservation-1.json`. No host operation or Authority
+permit is admitted.
+
+Pinned-source review confirms `Core.renote` is a constant-time retag, not an expression copy.
+The canonical reader now uses it in place of the preceding `Core.denote` traversal. The selected
+normalizer already performs `denote` internally. Scratch `46` removes redundant preceding
+traversals from the trusted-shape and two typed producers. Its complete **486-module** strict
+typecheck passes in **24.83 seconds** (`reconstruction-typecheck-46.json`), and the unchanged
+captured-loader/request/journal vehicle passes **39/39** under **128 MiB / two capabilities**
+(`normalizer-production-controls-46.json`). Four paired synthetic settings cases retain identical
+canonical source/readback bytes (`normalizer-allocation-observation-1.json`). The observed baseline
+producer allocation falls from **6,264,272** to **4,803,392 bytes**; these are sampled cumulative
+allocations, not isolated phase maxima, RSS or a complete funding proof. The first separate
+allocation fixture incorrectly used a Prompt reference where AWS settings require Vault; both
+readers refused before decoding. The corrected fixture uses only synthetic Vault-reference
+metadata, with no production domain or limit change. Pinned dependency members and both fixture
+revisions remain preserved.
+
+The selected HTTP manager permits **512** idle connections, and its deprecated `closeManager`
+is a no-op. Scratch `47` adds one separate process-wide zero-idle manager and uses its otherwise
+unchanged bounded request policy for ephemeral home-channel probes and protocol calls. It neither
+creates a manager per request nor changes the default client's pooling. Its **53** candidate/override
+modules pass the complete **486-module** strict typecheck in **22.24 seconds**
+(`reconstruction-typecheck-47.json`). The first loopback vehicle preserves one failed assumption:
+the SDK's timeout bounds response headers, while the existing owned channel explicitly wraps the
+entire call in its original outer timeout. The corrected shared fixture uses that outer deadline;
+the preceding default client fails **5 of 8** proposed zero-idle groups, and the candidate passes
+**8/8**, including peer EOF, complete/bodyless/redirect/oversized replies, cancellation and unchanged
+default connection reuse (`http-idle-controls-2-run-1.json`). This is a proposed local native
+contract, not an independently admitted superseded-program counterexample. Active requests,
+manager/reaper/native state and whole-controller admission still need their own funding.
+`additional-controls-preservation-1.json` independently verifies and preserves all eight separately
+scoped assembly/allocation/HTTP records and their private inputs/binaries, including failed fixtures.
+Scratch `48` corrects the shared-manager ownership comment and uses the declared startup-response
+constant in the owned probe. All **53** modules pass two pinned formatter checks and extra-group
+HLint (`reconstruction-style-48.json`); its complete **486-module** strict typecheck passes in
+**33.07 seconds** (`reconstruction-typecheck-48.json`). The trusted-shape/settings producer
+simplification and zero-idle HTTP helper are now copied into canonical source, with the native
+vehicle retained at `test/qualification/HttpReleasedConnections.hs`. Cabal/package compatibility,
+native controls and the next full gate are owed for this newer canonical revision. Gate `10`
+retains its preceding frozen source/artifact scope. The ordinary profile producer and home-channel
+selection remain in scratch; original admission and deployment qualification remain open.
+
+The canonical **881-module** library/unit build passes in **462.53 seconds**
+(`normalizer-http-cabal-build-1.json`), both formatter checks and extra-group HLint pass, and the
+complete settings-payload vehicle passes against that package (`normalizer-http-style-1.json`,
+`canonical-settings-payload-3.json`). The first canonical native HTTP run passes **7/8** but its
+first request exceeds the fixture's three-second QA watchdog; the 63-case focused unit command
+expires at its separate 120-second QA limit without a completed result. Both preserve unchanged
+inputs (`canonical-http-released-connections-1.json`, `normalizer-http-unit-controls-1.json`).
+Concurrent host I/O pressure is observed. Pinned SDK review and a filtered native file trace show
+that manager creation initializes both TLS factories and opens the system certificate bundle
+twice even for plain HTTP (`http-tls-before-filetrace-1.json`). A later warm trace is not cold-start
+qualification. Deferred TLS initialization is being reconstructed separately; the first two strict
+drafts refuse the SDK's non-public proxy-factory selector import. Preserve those diagnostics and
+validate the corrected pinned adapter before promotion. The retained EOF/outer-deadline tests keep
+their existing limits; the subsequent paired vehicle separates its cold-setup QA watchdog from
+those assertions. No next full gate or complete controller/admission claim follows these failures.
+
+The corrected scratch `51` passes the complete **486-module** strict typecheck in **20.18 seconds**
+(`reconstruction-typecheck-51.json`). Both versions of the shared nine-case native vehicle pass
+under **128 MiB / two capabilities** (`http-deferred-tls-controls-2.json`), including an actual
+ClientHello before the test peer closes its handshake. Its 30-second whole-fixture QA watchdog
+allows cold setup; the asserted **300-ms** peer EOF, **100-ms** outer deadline and SDK request
+configuration remain unchanged. The matched first-HTTP-call trace observes **two** system bundle
+opens before and **zero** after deferring TLS setup. `http-deferred-tls-controls-2/validation-and-preservation-1.json`
+verifies the unchanged public/private inputs, shared fixture, pinned SDK members and preserved
+binaries/traces. These are functional and file-access observations, not cold-start performance,
+whole memory or original-operation qualification. Pinned formatter and extra-group HLint pass.
+The deferred adapter and nine-case vehicle are now copied into canonical source; Cabal build,
+package controls and the next full canonical gate remain owed for this newer revision.
+
+The replacement canonical **881-module** library/unit build passes in **212.87 seconds**
+(`deferred-tls-cabal-build-1.json`), with both formatter checks and extra-group HLint passing
+(`deferred-tls-style-1.json`). Sequential checks against that actual Cabal package pass **9/9**
+native HTTP cases, **63/63** focused cases and the complete settings-payload matrix
+(`canonical-http-released-connections-2.json`, `deferred-tls-unit-controls-1.json`,
+`canonical-settings-payload-4.json`). Their **128-MiB / two-capability** policy is unchanged.
+The focused unit command uses a separate 600-second QA watchdog after the earlier 120-second
+expiry; its assertions finish in **2.50 seconds**, with **43.54 seconds** for the guarded command.
+This supplies no cold-start performance comparison. `deferred-tls-component-preflight-1.json`
+verifies all **1,727** unchanged raw source inputs and preserves the current component binaries.
+The next full canonical gate remains owed; no sprint advances from this preflight.
+
+The closing canonical gate (`canonical-check-11.json`) **passes all 10,576 cases** (9,606 primary,
+plus 27/35/908) in **1,635.96 seconds**, within the unchanged **5-GiB** QA cap. The warning-clean
+library contains **881** modules, and all **1,727** raw inputs retain identical entry/exit bytes
+and modes. `normalizer-http-component-validation-1.json` independently verifies and preserves the
+source inputs and closing artifacts. The installed/Cabal operator is
+`d43c9b21868a07d2faad9296b183c46a95d71aed21dd1f11c5f672f62a3f692f`; the official executable-source manifest is
+`7f8dfab56eb63b8c367a6d15c9ca85be7a70214a2c365d131d7b5bc7cd4ae531`
+(no additional configured secret roots). This validates the canonical normalizer/HTTP and
+preceding component revision, not the complete ordinary controller or its deployment.
+
+Input-phase review finds another necessary precondition: `validateConfigWithContext` resolves the
+captured storage path into a linked `FilePath` before its post-decoding state check. The pinned
+`directory 1.3.10.1` implementation normalizes through `OsPath` and returns a `String`; a valid
+safe relative path retains its ordinary components. Scratch `52` adds a trusted-coordinate
+annotation to the existing shape scan, retaining only the longest ordinary component's character
+count. It checks that component's unavoidable **24-byte cons cells plus 16-byte Nil** against the
+declared application-state budget before selecting the settings decoder. No fixed path cutoff,
+SDK domain change or authority grant follows this deny-only check.
+
+The unchanged **128-MiB / two-capability** paired vehicle passes **40/41** against scratch `51`,
+exposing exactly one decoder-entry violation for a byte-bounded path that cannot fit its declared
+state, then **41/41** against `52`. The real resolved-path graph observes **789,880 / 789,896 bytes**
+in the two runs against the same **786,448-byte** component minimum; temporary coordinates vary.
+Four separate measurement groups pass coordinate/domain/Unicode/dot-component and independent
+numeric-graph controls. Metadata observes **256 bytes** beneath its **320-byte** structural term;
+no path value is retained. The first metadata probe's Tasty-name-shadowing compilation refusal is
+preserved, then corrected with an explicit import. Its **53** modules pass both pinned formatter
+checks and extra-group HLint, and its **486-module** strict typecheck passes in **28.25 seconds**
+(`captured-path-state-{before,after}-1.json`, `path-measurement-controls-2.json`,
+`reconstruction-style-52.json`, `reconstruction-typecheck-52.json`).
+`captured-path-state-controls-1/validation-and-preservation-1.json` independently verifies the
+four-module delta and preserves all private inputs/binaries. This local necessary-state/ordering
+result is neither a complete String/parser/producer/conversion/GC bound nor an independently
+admitted superseded-program or original-operation qualification. The trusted path annotation is
+now canonical; the ordinary request application-state check remains in scratch. Full input-phase
+and caller/SDK/native funding, original admission and composition
+remain open before live qualification or cutover; later sprints stay parked.
+
+The native held-input comparison preserves the existing serialized ceilings and original
+**128-MiB / two-capability** policy. Its preceding reader passes **21/22** controls but allocates
+**9,025,296 bytes** across four tiny-input reads; the exact-size reader passes **22/22** and
+allocates **632,888 bytes** in that matched fixture. The reader allocates the pinned file size
+once, probes EOF with one stack byte and preserves descriptor/version/expiry refusal. A separate
+canonical-source build also passes **22/22** (`input-read-canonical-1.json`). These cumulative
+allocation observations do not establish a whole-program peak or admission.
+
+Scratch `53` connects the existing actual RTS-policy observer before general settings decoding.
+Its **54** candidate/override modules pass both formatter checks and extra-group HLint; the full
+**486-module** strict typecheck passes in **29.31 seconds**. All **43** captured-loader/request/
+journal controls pass under the preceding test policy, including runtime-refusal propagation and
+original-work-end/declared-heap ordering. Separate native observations accept matching
+**128 MiB / one capability**, refuse mismatched heaps, two capabilities and an unlimited heap,
+and preserve all nine expired-work refusals. The first native launcher uses the unsupported RTS
+argument `-M0` and refuses before that case; the corrected unlimited case omits `-M`.
+`input-runtime-components-validation-1.json` independently verifies and preserves the component
+sources, binaries and results. This necessary runtime observation supplies no original-parent,
+physical-host or Authority capability; full input/caller/native funding remains open.
+
+The exact-size reader and trusted path measurement are copied into canonical source, with four
+permanent measurement groups and a settings-coordinate regression. Its warning-clean
+**881-module** library/unit build passes in **558.68 seconds** (`input-path-cabal-build-1.json`).
+The first targeted style preflight retains a formatter layout disagreement in the new test; its
+extra-group HLint check passes. A second formatting pass changes only that layout; the replacement validation follows below.
+
+The replacement library/unit build passes in **245.11 seconds**
+(`input-path-cabal-build-2.json`). Both pinned formatter checks and extra-group HLint pass;
+all **68** focused cases and the complete settings-payload matrix pass against the actual Cabal
+package, retaining **128 MiB / two capabilities** (`input-path-style-2.json`,
+`input-path-unit-controls-1.json`, `canonical-settings-payload-5.json`).
+`input-path-component-preflight-1.json` verifies all **1,728** unchanged raw inputs and preserves
+the current component binaries. At that preflight, the closing canonical gate was still owed;
+the complete ordinary route and its qualification remain open.
+
+The closing canonical gate (`canonical-check-12.json`) **passes all 10,581 cases** (9,611 primary,
+plus 27/35/908) in **1,303.86 seconds**, within the unchanged **5-GiB** QA cap.
+The warning-clean library contains **881** modules, and all **1,728** raw inputs retain
+identical entry/exit bytes and modes. `input-path-component-validation-1.json` independently
+verifies and preserves the source inputs and closing artifacts. The installed/Cabal operator is
+`8851af9b5835ac3aa69c58a91ac36b26ba3bb827b82202e2ea1e7ec07ec5bd31`; the official executable-source manifest is
+`7fa7889665538bf9db307955c7f76e2e9cd1bdd6419f66e0b814ca84a69f348c`
+(no additional configured secret roots). This validates the canonical input-reader/path-measurement
+and preceding components. Whole input/caller/native funding, original admission, the ordinary
+route and deployment qualification remain open.
+
+Scratch `54` removes the general evaluator/quotation phases from the two owned typed producers:
+the settings envelope and runtime-memory profile. Their pinned primitive/generic encoders already
+emit normal data. The settings schema takes the structural compiler; the existing general
+entrypoint retains normalization for aliases and other callers. Its full **486-module** strict
+typecheck passes in **20.16 seconds**; all **54** modules pass two formatter checks and extra-group
+HLint. The **13** compatibility groups cover **48** values, **288** mutation comparisons and a
+separate alias-domain control. All **43** captured-flow controls and the complete settings matrix
+pass under **128 MiB / two capabilities**. Four paired synthetic cases retain exact source and
+readback bytes. Baseline producer allocation observes **4,803,392 → 3,811,392 bytes**; the 4,096-item
+list observes **8,801,960 → 6,565,416 bytes**. These are cumulative samples, not isolated peaks or
+an input-phase certificate. `closed-producer-components-validation-1.json` verifies and preserves
+the private inputs, pinned helpers and binaries. The settings/schema changes and expanded permanent
+tests are now copied to canonical source; their package controls and closing full gate remain owed.
+The ordinary profile producer remains in scratch, alongside full funding and original admission.
+
+The warning-clean **881-module** canonical library/unit build passes in **187.51 seconds**
+(`closed-producer-cabal-build-1.json`). Both formatter checks and extra-group HLint pass. All
+**70** focused cases and the complete settings matrix pass against the actual package, retaining
+**128 MiB / two capabilities** (`closed-producer-style-1.json`,
+`closed-producer-unit-controls-1.json`, `canonical-settings-payload-6.json`).
+`closed-producer-component-preflight-1.json` verifies all **1,728** unchanged raw inputs and
+preserves the component binaries. At that preflight, the closing canonical gate was still owed.
+
+The closing canonical gate (`canonical-check-13.json`) **passes all 10,583 cases** (9,613 primary,
+plus 27/35/908) in **1,219.45 seconds**, within the unchanged **5-GiB** QA cap.
+The warning-clean library contains **881** modules; all **1,728** raw inputs retain identical
+entry/exit bytes and modes. `closed-producer-component-validation-1.json` independently verifies
+and preserves the inputs and closing artifacts. The installed/Cabal operator is
+`13ffe0268bf89b438eae1958800faf2e7c49c749530fce0ccd434c45fa1b1d9d`; the official executable-source manifest is
+`5b5b8a45e21605964c8bd62b50f92d57842f1fadb54de866912baa6daed728c3`
+(no additional configured secret roots). This validates the canonical settings/schema optimization
+and preceding components, without a complete ordinary-program or deployment claim.
+
+At scratch `59`, a necessary cons-spine check precedes
+canonical request re-encoding, preserves the existing root/key/manager bounds and stops before an
+unfunded suffix is forced. The decoded profile and its measurement are reused across initial
+budget, actual-RTS and settings-state checks. The same constructor/validator-authored matching
+settings and request fixtures pass **44/46** against `54`, exposing two proposed early-budget
+violations, then **46/46** against `56`; they are not independently physically admitted programs.
+Four additional prefix controls prove boundary and non-forcing behavior.
+
+Pinned `serialise 0.2.6.1` String fields also admit generalized UTF8 byte arrays. An isolated
+synthetic SDK probe observes **16 prefix characters from a one-byte truncated payload**. The
+new scalar wrapper validates that representation before the SDK's unchecked byte-array traversal;
+it preserves valid canonical String data, including surrogates. Six codec groups cover all
+**1,114,112** Char code points, mixed exact-wire cases, malformed bytes, canonicality and absent
+claimed one-GiB payloads under **128 MiB / two capabilities**. The first wrapper drafts preserve
+compiler projection errors; corrected scratch `59` passes its complete **487-module** strict
+typecheck in **25.87 seconds**, both formatter checks and extra-group HLint over **55** modules,
+and **53/53** captured-flow cases. The latter include all six request String positions and the
+retained noncanonical-byte refusal. `wire-string-components-validation-1.json` independently
+verifies and preserves these inputs, SDK sources and binaries. This is a private necessary-input
+boundary and codec result, with no whole-program funding, original-parent/Authority admission,
+installed routing or deployment qualification. Remaining native String entrypoints and complete
+parser/extraction/validation/GC and caller/SDK/native terms remain owned by this sprint.
+
+The native String audit finds five direct submission fields, three submitted paths and one
+publication-birth key. Scratch `60` applies the guarded codec without changing the public metadata
+representation; independent mirrored fixtures preserve exact valid bytes and fingerprints,
+including surrogate paths and the existing maximum path length. All seven refusal/compatibility
+groups pass. Its formatting check preserves a non-idempotent layout failure; scratch `61` corrects
+only that layout, passes the complete **487-module** strict assembly in **23.39 seconds**, both
+formatter checks and extra-group HLint across **56** modules, and **53/53** captured-flow cases.
+The first standalone fixture build preserves a warning-as-error name collision before its correction.
+
+The guarded scalar and two native record families are now canonical. The warning-clean
+**882-module** library/operator/unit build passes in **187.56 seconds**. Six permanent scalar groups
+cover all **1,114,112** Char code points at the unchanged **128-MiB / two-capability** test policy;
+all seven repository-owned native codec groups and all **22** native input controls pass against
+canonical source. Exact source/artifact preservation is recorded in
+`native-string-component-preflight-1.json`. The full canonical gate remains owed at this checkpoint.
+These results grant no complete input/parser/extraction/validation/GC funding, original native or
+Authority admission, installed ordinary route or deployment qualification.
+
+A broader input audit also finds four String fields in the ordinary scope binding. Its codec now
+retains the SDK's existing Generic encoder and in-memory field types, overriding only decoding of
+the same 21-field tagged product. Four permanent groups cover exact legacy bytes through
+**8,192-bit** logical values, all four malformed-field positions, existing noncanonical-byte refusal
+and product framing. The interim full gate `14` is deliberately stopped after **107.34 seconds**
+(exit 255, unchanged inputs) to include this newly found owner; it supplies no full-gate pass.
+
+Scratch `62` passes its complete **487-module** strict assembly in **35.22 seconds**, both
+formatter checks and extra-group HLint across **56** modules, and **57/57** captured-flow cases,
+including malformed nested scope bindings. The warning-clean **882-module** canonical
+library/operator/unit build passes in **219.64 seconds**. All **24** focused unit cases pass under
+the unchanged **128-MiB / two-capability** policy. The canonical repository-owned journal vehicle
+passes all **24** process-death and **32** competing-process cases. A preparation identity check
+preserves two missing-script failures before the canonical vehicle is selected; neither is behavioral
+evidence. `native-string-component-preflight-2.json` verifies this continuation and links the preceding
+native/scalar evidence. The closing full gate is still owed at this checkpoint. The source audit
+notes separately retain the persisted test-artifact FilePath codec for business-graph review;
+these results are scoped to the named input record families and do not assert a project-wide String
+codec closure or complete funding/admission/qualification.
+
+Full gate `15` preserves unchanged inputs and stops after **291.44 seconds** at the repository's
+`Avoid case inside lambda body` rule in a new journal fixture. The fixture now uses a named helper;
+its data matrix and production codec are unchanged. That failed gate supplies no build/test or
+qualification result. The closing canonical gate is rerun over the corrected test source.
+
+The closing canonical gate (`canonical-check-16.json`) **passes all 10,593 cases**
+(9,623 primary, plus 27/35/908) in **1,706.53 seconds**, under the unchanged
+**5-GiB** QA cap. All **1,731** raw inputs retain identical bytes and modes.
+`native-string-component-validation-1.json` independently verifies/preserves the source and closing
+artifacts for the **882-module** canonical library. The installed/Cabal operator is
+`26a4dba44118b54b0fc1bdfa078f16b4adc7cc560e0d421853818c34a3878ff9`; the official executable-source manifest is
+`c3da6bab8ff79b4ef34bb1c596d450a5beb4e9d8245b91044f92441bb8614ed3`
+(no additional configured secret roots). This closes local canonical validation of the named String
+record families and preceding components, with no complete ordinary-program or deployment claim.
+
+Scratch `64` moves the ordinary profile's already-required identity, present permit count two and
+exactly two child peaks into its closed byte-shape pass before general expression decoding. The
+later typed checks share those same constants; no byte ceiling or arbitrary-width scalar domain is
+reduced. A distinct requirement-mismatch error preserves the existing profile-refusal class.
+The complete **487-module** strict assembly passes in **33.57 seconds**; both formatter checks and
+extra-group HLint pass across **56** modules. Six groups compare **50** typed profile combinations,
+retain every accepted usage term through **8,192-bit** scalars, and distinguish header-only count
+refusal from an absent required payload. All **65/65** captured-flow and **13** existing closed-data
+compatibility groups pass at **128 MiB / two capabilities**. Earlier annotation/import and local-name
+fixture failures remain preserved. `profile-shape-components-validation-1.json` verifies these
+separate source and binary identities. The early inspector intentionally refuses invalid profiles
+earlier; this is not an unchanged coordinate-inspection-domain or independently admitted old-program
+claim. The profile checker remains private and unpromoted. `input-phase-review-1.json` records the
+next cost boundary: initial profile inspection precedes actual-runtime comparison, and settings path
+conversion precedes pure config validation. Neither later check retroactively funds earlier work.
+Parser/extraction/producer/validation/GC peaks, other live roots and native costs remain open.
+
+Scratch `65` derives prospective value/type/list/map/scalar counter maxima from the actual trusted
+closed shape. Unconstrained value lists return no static bound, including those beneath an optional
+or union. Counted empty lists still charge their entire element type; arbitrary-width list counts
+use `Natural`. Optional and union branches join conservatively. The existing measured and new
+prospective normal-form projections share the same pinned ABI pricing. Scalar token spans are
+disjoint and remain bounded by a separately enforced input-byte ceiling.
+
+Eight groups compare the prospective counters with the actual checker and independent pinned heap
+graphs over primitive, optional, union, nested-list and wide-value samples. The current constrained
+profile derives **74,496 bytes** of fully evaluated syntax for the existing **65,536-byte** input
+ceiling. These are normal-form bytes, not parser/construction/GC or process peaks. The first fixture
+preserves an ambiguous-numeric-type compile failure; its corrected version passes all eight groups.
+All **13** previous closed-data and **65** captured-flow controls pass at **128 MiB / two capabilities**.
+
+Scratch `66` consumes that derivation before the fixed profile expression decoder and refuses a
+newly unbounded schema or a measured/prospective syntax disagreement. Its prospective query uses
+the same schema and original byte ceiling. The complete **487-module** strict assembly passes in
+**24.87 seconds**; both formatter checks and extra-group HLint pass across **56** modules. All
+**66/66** captured-flow controls pass, including the derived syntax term fitting the unchanged
+**16-MiB** scratch declaration. `shape-bound-components-validation-1.json` independently verifies
+and preserves the sources, binaries and preceding failures. This one-term fit is not a complete
+scratch or initial-input grant. The canonical gate remains `16`; this reconstruction is unpromoted.
+The next work accounts for active parser state and phase coexistence beyond returned syntax.
+
+The fixed-input parser diagnostic subsequently samples five synthetic profiles through the pinned
+incremental SDK, including complete single-chunk and fragmented inputs. It observes function/thunk
+continuations and held source beyond final syntax. For a **60,429-byte** encoded profile, the largest
+sampled reachable graph is **123,912 bytes**; the independently observed decoded syntax is **63,264
+bytes**. These samples exclude interior fast-path maxima, stacks, unreachable garbage and native
+allocation and are not a parser-peak certificate. Early diagnostics preserve a qualifier collision,
+an unsupported blackhole, a fixture warning and an observation ceiling. The third run also crossed
+a README edit and has an invalid public snapshot; it supplies no immutable validation claim.
+The corrected observer traverses transparent aliases before semantic stable-name deduplication,
+charges aliases conservatively per path and checks final syntax against the independent quiescent
+observer after GC. `profile-parser-graphs-validation-1.json` preserves the five completed samples,
+the installed compiler source documentation and all failed revisions. General decoder support state
+and phase coexistence remain the next funding work; no installed route or qualification is advanced.
+
+The next frozen reconstruction, `reconstructed-draft-69/`, replaces only the closed ordinary
+memory-profile producer/decoder with strict typed CBOR in the **same canonical Dhall wire format**.
+It retains the **65,536-byte** ceiling, arbitrary-width Natural values, the existing identity/two-child
+semantics and the shape compiled from the actual declared record. The producer measures exact
+encoded size from pinned Natural limbs before expanding a scalar or allocating its encoded
+payload. The receiver builds no general expression/extraction graph. Its necessary input scratch
+floor now charges a conservative typed-profile bound of **66,304 bytes** at the unchanged byte
+ceiling, with parser, scalar conversion, producer, validation and GC costs still separate.
+
+The complete **488-module** strict assembly passes in **27.60 seconds**; both formatter checks and
+extra-group HLint pass for **57** candidate modules. All **11** direct-codec groups, **75**
+captured-request controls and **13** unchanged canonical-data compatibility cases pass under the
+original **128-MiB / two-capability** envelope. The codec checks include **3,075** scalar boundary
+comparisons with the actual pinned SDK, optional deadlines, simultaneous wide fields, exact
+64-KiB acceptance and unchanged refusal classes. An isolated oversized-scalar refusal allocates
+**50,422,992 bytes** through the superseded serialize-first path and **9,944 bytes** through
+preflight. That cumulative synthetic allocation comparison is neither a peak nor controller
+funding evidence. The first strict build's redundant import and first allocation fixture's
+concurrent-test contamination remain preserved; running allocation controls sequentially changes
+no RTS budget. `direct-profile-components-validation-1.json` verifies and preserves sources,
+binaries and failed revisions. This candidate is unpromoted; canonical gate `16` and the public
+writer remain the validation baseline.
+
+Draft `70` reuses the profile already decoded by the full request's inspection through that same
+closed validation, preserving byte compaction, settings/original-identity checks and recompilation.
+Its **488-module** strict assembly, **57-module** style checks and **75/75** captured-request controls
+pass. `direct-profile-reuse-validation-1.json` preserves those inputs and verifies that only the
+private request module changed; codec and structural-budget sources remain identical to draft `69`.
+This removes one duplicate pass and supplies no additional memory or admission certificate.
+
+Fresh native preparation controls against draft `70` pass **5/5** under **128 MiB / two
+capabilities**, using actual manager, clock, host and fixed user-runtime filesystem observations.
+They confirm the original runtime-storage binding/readback and reject a foreign manager, expired
+window and a **4-GiB** runtime-filesystem demand. The portable/default workload plan is correctly
+refused by actual capacity admission. This host reports **8,000 milliCPU / 15,930 MiB RAM**;
+the unchanged complete default workload minimum is **9,045 milliCPU / 17,482 MiB RAM**, before
+adding this controller. Its two storage projections share one device reporting **238,220 MiB**
+total capacity, while the runtime observation reports **1,670,324,224 bytes** available. These
+readings are dated observations, not capacity reservations or a production-config validation.
+
+`ordinary-native-preparation-validation-1.json` preserves sources, binary, five checks and three
+failed fixture revisions. The attempted tighter synthetic host declaration failed the unchanged
+complete workload validator before native preparation; no workload/controller limit was lowered to
+obtain a positive admission. The other fixture failures were an unused import and an incomplete
+argument-count edit. Two pinned formatter checks and extra-group HLint pass for the final native
+fixture. There is no healthy full-preparation, original-parent borrow, Authority permit, child
+launch, installed-route or deployment result. Validate the eventual in-force production config
+against actual capacity before treating this default-fixture refusal as that deployment's verdict.
+
+Draft `72` now gives profile canonical production an explicit single-buffer schedule. The pinned
+CBOR writer needs **nine bytes** of lookahead, including its terminal continuation; its selected GMP
+and UTF8 payload writers copy their exact lengths. The producer allocates measured encoded size
+plus nine bytes with the pinned untrimmed strategy, requires one completed chunk and returns it
+directly. Text sizing uses the pinned constant-time UTF8 byte-length accessor. The unchanged
+**65,536-byte** wire ceiling gives at most **65,545 bytes** of payload capacity and **65,616 bytes**
+including the conservative ByteString/backing headers and alignment. The necessary captured-input
+floor charges that canonical readback buffer concurrently with typed profile data and payload
+copies. Typed-profile plus canonical-buffer terms total at most **131,920 bytes**; this is not a
+complete parser/producer/GC/controller peak.
+
+The **488-module** strict assembly passes in **33.64 seconds**, and two formatter checks plus
+extra-group HLint pass for all **57** candidate modules. All **13** codec/storage groups and
+**75** captured-request controls pass under the original **128-MiB / two-capability** envelope.
+Native checks observe exactly encoded-size-plus-nine capacity across scalar and writer boundaries,
+including exact 64-KiB acceptance. A joint typed-profile/readback graph observes **130,968 bytes**;
+a declaration omitting the canonical buffer is independently exposed and refused. The complete
+SDK wire comparisons and accepted-domain/refusal controls still pass.
+`profile-buffer-components-validation-1.json` verifies and preserves sources, binaries, pinned
+primary dependency sources and the failed first candidate. That candidate used the wrong Text
+module for the byte-length accessor; the correction changes no limit or wire domain. Only the
+private codec and captured-input budget differ from draft `70`. Canonical gate `16`, installed
+routing, qualification state and sprint order remain unchanged.
+
+A separate read-only invocation of the actual installed operator, `.build/prodbox config show`,
+returns **1** and yields no usable numeric capacity projection. Its fixed diagnostic categories do
+not identify the cause. Earlier GHC helper reads have a different binary-sibling context and do
+not establish an authoritative-config result. `configuration-observation-index-1.json` preserves
+the operational probes and redacted records; raw configuration, error bytes and the admin fixture
+are neither retained nor hashed. The in-force production capacity verdict remains unproven.
+
+Draft `74` additionally returns an opaque, strictly constructed profile encoding plan after the
+same complete size preflight. Its evaluated atom/list storage is derived from the shared producer,
+both optional-deadline branches and disjoint Natural payloads. The prospective program term is at
+most **70,416 bytes** under the unchanged 64-KiB wire ceiling. It joins typed profile data and the
+canonical readback buffer in the necessary scratch phase; those three structural terms total at
+most **202,336 bytes**. Construction, CBOR tokens/writer continuations, scalar-conversion
+temporaries, GC and native state retain separate obligations.
+
+The **488-module** strict assembly passes in **25.69 seconds**, and the two formatter checks plus
+extra-group HLint pass across **57** modules. All **17** codec/storage groups and **75**
+captured-request controls pass under **128 MiB / two capabilities**. Graph observations precede
+either sizer: successful preparation contains evaluated data, and distinct wide scalar allocations
+observe **57,712 bytes**, within the **59,856-byte** structural term and **60,344-byte** prospective
+term for that input. The input check rejects an omitted encoding-program reservation. The first
+candidate (`73`) passed wire/request controls but failed three independent storage cases by
+returning a `THUNK_2_0`; forcing its constructor before success resolves those failures. A separate
+fixture preparation retained its extra-parenthesis parser failure without launching a control
+producer. `profile-program-components-validation-1.json` preserves the passing and failed sources,
+binaries and receipts. No installed route, full resource certificate, original admission or
+qualification is supplied by these private component results; canonical gate `16` remains in force.
+
+**Continued, 2026-11-04 UTC.** Draft `75` builds and evaluates the native CBOR token stream after
+size preflight, including its converted Integer fields, before returning the opaque encoding plan.
+The complete writer consumes that terminal stream directly; its input no longer retains the lazy
+Endo composition chain. The derived program term charges Natural and Integer payloads separately,
+including wrappers/limbs even when the pinned runtime shares their arrays. Its maximum is
+**140,088 bytes** at the unchanged 64-KiB wire ceiling; typed data, program and canonical-buffer
+terms total **272,008 bytes**. Construction/conversion transients, parser and writer control,
+stack, GC and native costs remain separate.
+
+The **488-module** strict assembly passes in **20.89 seconds**; two formatter checks and
+extra-group HLint pass across **57** modules. All **18** codec/storage groups and **75** request
+controls pass under **128 MiB / two capabilities**. Separate native token/Integer roots are
+observed before sizing, including both sides of the signed/unsigned machine-word boundaries,
+arbitrary-width values and optional deadlines. Distinct wide allocations observe **60,344 bytes**
+for the complete plan, within its **118,968-byte** structural and **119,944-byte** prospective
+terms. `profile-token-components-validation-1.json` preserves the sources, binaries and results.
+Only the private codec changes from draft `74`; this supplies no whole-memory or admission grant.
+
+Pinned optimized STG inspection also finds **215** printed closure forms and at most **eight**
+printed capture slots in this module. The compiler succeeded, but its collection wrapper looked
+for the dump in the wrong directory and remains failed; explicit recovery preserves the actual
+source-adjacent dump. `profile-token-compiler-diagnostic-1.json` owns that evidence. The catalogue
+does not distinguish every static/heap site or establish execution multiplicities, imported-library
+allocations, live stack, GC or native costs, so it is not a memory bound.
+
+The seed-load cause is now identified: the current binary-sibling file is the exact canonical
+unauthored template, whose empty `cluster_topology.machine_id` cannot decode. The existing harness
+already recognizes this state and owns its regeneration. The official fixture loader separately
+refused mode **0644**; an explicit descriptor/type/owner-checked permission correction restored
+**0600**, with no fixture content read/copied/hashed by that correction. The unchanged loader now
+succeeds. Earlier probe failures retain their Text package mismatch and invalid package selector;
+they occurred before fixture loading. Only documented non-secret identity/endpoint inputs leave
+the successful projection.
+
+Those explicit fixture inputs produce a separate, secret-free, validated home draft through the
+shared pure harness builders at `harness-home-draft-1.dhall` under the evidence root. The existing
+seed is unmodified and the draft is unapplied. Real native observation and the harness's same
+host-fitting derivation refuse the unchanged **9,045 milliCPU / 17,482 MiB** workload minimum on
+**8,000 milliCPU / 15,930 MiB** available hardware, before adding the controller. Execution capacity
+for later live qualification has been requested from the operator; independent implementation
+continues. `home-draft-and-fixture-observation-1.json` preserves the permitted operational source
+and records without archiving/hashing fixture or generated-config contents. This is a concrete
+planned harness capacity refusal, not an in-force-config or deployment verdict. No AWS/cluster
+mutation or live qualification has run. Canonical gate `16` remains the installed baseline;
+Sprint `6.5` stays active and later sprints stay parked.
+
+Draft `76` replaces the profile's whole-record SDK decoder with a fixed-grammar byte cursor.
+It checks lengths and compares the fixed ASCII field names and identity directly, without
+constructing input-sized Text. Definite CBOR headers retain nonminimal-width decoding for the same
+canonical-readback refusal. Only one arbitrary-width Integer at a time enters the selected SDK
+reader; numeric domains, the declared-schema check and the canonical readback remain unchanged.
+The preceding general declared-shape checker still owns its separate allocations. This change
+does not establish parser/control/scalar-import, construction, stack, GC or native memory bounds.
+
+The **488-module** strict assembly passes in **23.36 seconds**; both formatter checks and
+extra-group HLint pass across **57** modules. All **21** codec/storage groups and **75**
+captured-request controls pass under **128 MiB / two capabilities**. Comparisons with the frozen
+draft-75 decoder cover every truncation and selected single-byte mutations of small and wide
+profiles, alongside nonminimal headers and the existing exact SDK/64-KiB controls. A standalone
+61,000-character wrong-label case allocates **64,800 bytes** in the prior decoder and **1,896**
+in the cursor; these cumulative counts are neither working-set nor whole-loader bounds.
+`profile-cursor-components-validation-1.json` preserves sources, binaries, selected dependency
+sources and failed attempts. The first test fixture failed strict compilation on partial list
+functions; the second supplied length 30 instead of 31 and both decoders correctly refused it as
+malformed. Correcting those fixtures changes no production source. The first preservation verifier
+also assumed an exact allocation count from the earlier run; its replacement reads the passing
+run's actual counts and checks the same inequality. Installed gate `16`, routing, qualification,
+the pending execution-capacity request and sprint order remain unchanged.
+
+Draft `77` adds an explicit positive-scalar data term, derived from the GHC source at the installed
+compiler commit `44c6796f535d60861fa2510025ec79f27696a15e`. Import owns one rounded limb array;
+shrinking/freezing use that array, and Integer/Natural conversion shares it or collapses to a word.
+Two wrappers and the array header give **48 + 8 × ceil(wire bytes / 8)**, at most **65,584 bytes**
+under the unchanged wire ceiling. Conservatively holding the entire typed profile beside that
+scalar costs at most **131,888 bytes**. This phase is serial with canonical output, whose existing
+**272,008-byte** data term still dominates; the terms are not added as simultaneous work.
+SDK/control objects, views/copies, construction, stack, GC and native memory remain outside this
+numeric-object derivation. The private reader also refuses negative scalar tags before SDK
+bignum arithmetic; the preceding declared-shape checker retains its separate costs.
+
+The **488-module** strict assembly and **57-module** style checks pass. Fresh behavior validation
+passes all **24** codec/storage groups and **75** captured-request controls under **128 MiB / two
+capabilities**, including actual Integer/Natural graphs before sizing and the previous wire/domain
+controls. A standalone negative-bignum case allocates **130,968 bytes** in the prior cursor and
+**2,264** with the guard; these cumulative counts establish no whole-reader memory bound.
+`profile-scalar-components-validation-1.json` preserves source, binaries, matching compiler
+interfaces and failed attempts. One new test initially failed strict compilation on a shadowed
+binding. A later link was interrupted by the **2026-11-04 00:47:44 UTC** host reboot, and the
+captured-request build timed out during linking under high I/O pressure. Both units are now absent;
+the interrupted record remains incomplete. Source-identical post-boot producers pass in **10.08**
+and **8.79 seconds** respectively; neither earlier attempt supplies a test pass. Canonical gate
+`16`, installed routing, qualification, the pending execution-capacity request and sprint order
+remain unchanged.
+
+Draft `78` constructs the fixed profile atom prefix, optional deadline and suffix directly with
+cons cells, removing intermediate list appends. Its **488-module** strict assembly, **57-module**
+style checks, **24** codec/storage groups and **75** captured-request controls pass. A pinned `-O1`
+STG comparison finds **ten** append references in the former producer binding and **zero** in the
+replacement. The initial comparison used the entire module; two cursor error-formatting calls
+remain outside that producer. This compiler diagnostic supplies no dynamic multiplicity or
+construction/control/stack/GC/native memory bound. `profile-flat-components-validation-1.json`
+preserves both scoped diagnostics and all component sources, binaries and receipts.
+
+The standalone codec is now registered as `Prodbox.Config.OrdinaryMemoryProfile` in the canonical
+library, with **19** permanent unit groups for exact SDK wire/domain behavior, numeric data,
+strict returned storage and the owned writer buffer. The old decoder copies and cumulative
+allocation comparisons remain excluded evidence. Canonical gate **`17` failed** the repository's
+custom style rule at two case-inside-lambda sites, before building or running tests; its unchanged
+source inputs and diagnostics are preserved in `profile-gate-17-failure-preservation-1.json`.
+Draft `79` uses the existing transformer lift with a named scalar reader and a named test-fixture
+replacement helper. The wire/domain and resource terms are unchanged. Replacement full gate
+`18` then failed one HLint `Redundant evaluate` warning in the permanent scalar graph test, before
+building or running tests. Its complete source snapshots and diagnostics are preserved in
+`profile-gate-18-failure-preservation-1.json`. The test now binds its constructor directly after
+forcing both scalar operands; its independent graph observation and bound are unchanged.
+The warning-clean **883-module** library and unit-runner build passes in **406.74 seconds**.
+All **19** permanent codec/storage groups pass against that canonical binary in **2.06 seconds**,
+under the unchanged **128-MiB / two-capability** envelope. The first targeted wrapper duplicated
+the runner-owned thread option and executed no tests; its corrected replacement retains the same
+single test worker. `profile-canonical-targeted-validation-1.json` preserves the sources, binary,
+successful controls and failed wrapper. Gate **`19` is unobservable**: its user service manager
+and runtime directory disappeared without a host reboot, and its log ends in a connection reset.
+The launcher returned zero, but supplied no command completion or test summaries. The raw runner
+record remains immutable; `canonical-gate-19-observation-audit-1.json` explicitly rejects its
+`complete=true` as insufficient evidence. The command and launcher PIDs are absent.
+
+Excluded QA runner `5` now requires a terminal receipt from the actual command wrapper in addition
+to launcher success and unchanged inputs. Its transient unit uses the system manager with the
+effective unprivileged UID/GID, preserving **5 GiB / zero unit swap / 64 tasks**. The user manager
+was restored without enabling linger or changing persistent configuration. Success, real exit 7
+and deliberate loss of the receipt wrapper validate the reporter's refusal behavior in
+`qa-producer-receipt-validation-1.json`; these are QA controls, not product admission or
+qualification. Replacement full gate **`20` passes all 10,612 cases** (9,642 primary, plus
+27/35/908) in **2,001.96 seconds**, with the actual command's zero-exit receipt and unchanged bytes
+and modes for **1,733** inputs. Its warning-clean library contains **883** modules.
+`profile-canonical-components-validation-1.json` preserves complete source inputs, executable/test
+artifacts and failed attempts. The installed and Cabal-built operator both remain
+`26a4dba44118b54b0fc1bdfa078f16b4adc7cc560e0d421853818c34a3878ff9`; the official executable-source
+manifest is now `ae679e3ea59c6c6e6a0677c7b7c9fcb84305657b7d6af78c1f26a67efbf2e2e4`
+(no additional configured secret roots in that metadata capture). Source identity changes remain
+significant even when operator bytes match. This closes the standalone codec's canonical
+promotion, not complete ordinary-program funding or qualification. The partial captured-input
+floor and ordinary route are not promoted. Sprint `6.5` stays active; later sprints stay parked.
+
+Private draft `82` also moves actual-runtime denial before settings-shape inspection, after the
+existing byte-extent guards, and omits **13** byte-identical canonical aliases from its fresh
+**44-module** tree. All frozen predecessors remain intact. Its path measurement separately counts
+full characters and marked values; the settings scratch phase charges **40 bytes per character
+plus 16 per String** for evaluated raw FilePath data beside the syntax. The longest retained
+component remains a separate application-state floor. This changes no Text grammar, input ceiling
+or installed profile and does not fund extraction/control/validation/GC/native peaks as a whole.
+
+The **488-module** strict assembly, style checks across **44** modules and all **81** behavior
+controls pass under **128 MiB / two capabilities**. New controls cover runtime-denial ordering,
+unchanged Text grammar and actual FromDhall String graphs before sizing. A path with **524,288**
+characters and one-character components derives **20,971,536 bytes** of raw String data, exceeding
+the unchanged **16-MiB** scratch declaration; the former floor fit that fixture. The new floor
+refuses before typed settings decoding. These are derived data terms, not measured working-set
+peaks. `path-conversion-components-validation-1.json` preserves sources, binary, matching primary
+decoder source and failed fixture. That first fixture misused two decoder APIs and failed
+compilation before tests; only the replacement fixture changes. No physical or Authority admission,
+ordinary route, recovery/retirement/business composition or deployment qualification is supplied.
+
+Private draft `83` adds the pinned SDK's temporary record/union pair-list data term:
+**16 + 48 × (record fields + union alternatives) bytes**. The cons and tuple headers are
+additional to syntax storage; their keys, field wrappers and values share the syntax term.
+One shared Nil is reserved even for empty maps. The decoder fully evaluates syntax before typed
+extraction, so pair-list data and raw path conversion join by maximum beside the conservative
+complete syntax term. Map construction/control, key projection, duplicate-removal Sets and GC
+remain separate obligations.
+
+The fresh **488-module** strict assembly, **44-module** style checks and **88** component cases
+pass under **128 MiB / two capabilities**. Six native controls follow actual pinned decoder
+closures before forcing the map, covering empty, single-field, 2,048-field and nested records,
+a record type inside an empty list, and a union type. Their observed cons/tuple/Nil data rejects
+a one-byte reduced term; the scratch guard accepts its computed boundary and rejects one byte
+below it. `map-pair-components-validation-1.json` preserves sources, both executables, pinned
+primary decoder/map sources and receipts. The initial layout probe failed compilation on an
+unannotated numeric fixture under `-Werror`; its corrected replacement and original failure are
+retained. Canonical source is unchanged from gate `20`; no AWS or deployment operation runs.
+This remains component validation, and Sprint `6.5` remains active.
+
+Private draft `84` additionally charges a complete projected-key spine at **24 bytes per
+field/alternative**, even if the compiler fuses it, and one settled prefix Set per map at
+**40 bytes per entry plus one shared 16-byte Tip**. Keys share syntax payloads; the shared list
+Nil is already in the pair term. Together these map-data terms are
+**32 + 112 × (record fields + union alternatives) bytes**, beside prospective complete syntax
+and serial with raw path extraction. Old/new insertion versions, rotations, executable closures,
+update frames and GC still require separate peak funding.
+
+The **488-module** strict assembly, **44-module** style checks and all **92** component controls
+pass at **128 MiB / two capabilities**. Four new controls inspect actual SDK key prefixes
+`(fields, prefix) = (32, 1), (32, 16), (32, 32), (2048, 2047)`. Materialized pair lists,
+original-key cells and prefix Set nodes coexist; their independently observed headers exceed the
+pair-only predecessor and fit the replacement structural term. Observation collects updated
+indirections first and rejects unknown closures. The earlier uncollected exploratory probe's
+partial graph is explicitly `Unobservable` in `map-key-probe-observation-audit-1.json`; its zero
+execution exit supplies no heap bound. `map-key-components-validation-1.json` preserves both
+probes, all three binaries, source and receipts, including the pinned `containers-0.6.8` Set
+source. Canonical source remains at gate `20`; no deployment qualification or sprint closure is
+claimed.
+
+Private draft `85` preflights each complete positive scalar header/body before one strict-chunk
+submission to the pinned SDK reader. Its strict result contains only consumed offset and Integer;
+the scalar adapter constructs no lazy input/remainder chunks or returned input triple. Fixed ASCII
+labels use checked indexed comparison rather than constructing a byte view. Missing bignum bodies
+refuse before SDK entry; the existing 64-KiB ceiling, arbitrary-width values, SDK wire and canonical
+refusal classifications remain. This removes specific wrapper/control paths, without proving the
+remaining input-view, SDK/control, stack, writer, GC or native costs.
+
+The **488-module** strict assembly, **45-module** style checks and **25** profile controls pass;
+the extended EOF matrix passes **26**, all at **128 MiB / two capabilities**. Mutation and prefix
+outcomes match the frozen predecessor. Empty noncanonical positive bignums at EOF preserve their
+classification with all five definite length-header widths. The proposed permanent suite has
+**23** groups. `profile-single-chunk-components-validation-1.json` preserves both executables,
+source, primary SDK inputs and receipts. The reviewed codec and permanent tests are now copied
+into canonical source (`profile-single-chunk-promotion-1.json`). Gate `21` fails formatter stability
+before build/tests; its exact inputs and exit-100 receipt are retained in
+`profile-single-chunk-gate21-failure-preservation-1.json`. One formatter-only correction now passes
+two stable checks and focused extra-group HLint (`profile-single-chunk-format-correction-1.json`);
+replacement full gate `22` passes all **10,616** cases (**9,646 + 27 + 35 + 908**) in
+**1,563.09 seconds**, with the actual command's zero-exit receipt, unchanged bytes/modes for
+**1,733** inputs and the warning-clean **883-module** library.
+The complete ordinary program and independent admission remain open.
+
+Fresh draft `86` omits only the now byte-identical canonical profile reader, returning to **44**
+private modules and **14** canonical aliases. Its **488-module** strict assembly, style checks and
+all **92** ordinary captured-input/request controls pass at the original **128-MiB / two-capability**
+test envelope. `canonical-reader-alias-components-validation-1.json` preserves that scope and
+executable. Neither the alias removal nor the profile parser revision supplies whole-program
+funding, original physical/Authority admission or deployment qualification.
+
+`profile-single-chunk-canonical-validation-1.json` preserves gate `22`, its complete inputs,
+operator/unit artifacts and preceding private scopes. The installed and Cabal operator remain
+`26a4dba44118b54b0fc1bdfa078f16b4adc7cc560e0d421853818c34a3878ff9`; the executable-source
+manifest changes to `d196499ca27cbe19939319a323bf431c2d4a3d78f43b369ba3edaf7aec43e101`.
+Matching operator bytes do not erase that source identity change.
+
+The direct pinned-SDK matrix in `profile-sdk-single-feed-validation-1.json` covers **2,055**
+complete positive scalars: machine boundaries, bignum lengths through **65,000** bytes, zero/full
+byte patterns and all five definite length-header widths. One feed returns `Done` with the same
+value/consumed offset as the generic SDK driver. The reviewed completeness checks make
+`readBigUInt` take its complete-header/`Fits` branch, excluding the split-header/body
+continuations for these operands. This is a source-path inference and protocol observation,
+not a quantified control, allocation, working-set or admission proof. The initial preservation
+verifier's quoting error and corrected verifier are retained; the scalar matrix itself passes.
+
+Private draft `87` additionally charges the two originating source buffers at
+**128 + align8(command bytes) + align8(settings bytes)**. Its compact-origin premise is the
+canonical held-stat reader's exact-size `ByteString.create`, not an arbitrary byte view's visible
+length. The outer paired-input wrapper, file/stat/descriptor/control roots and construction/GC
+remain separate terms. The **488-module** strict assembly, **44-module** style checks and all
+**93** component controls pass at **128 MiB / two capabilities**. Eight native held-file cases
+observe actual buffer graphs before sizing across all word-alignment offsets and reject the
+payload-only predecessor. `source-buffer-components-validation-1.json` preserves the executable,
+sources, primary allocation source and receipts, including the preparation parser/early-launch
+failures. Only the private budget changes from draft `86`; the canonical reader remains shared.
+
+Private draft `88` adds six value-only constructor counts. Type declarations beneath `None`, empty
+lists and union types do not become returned Haskell values. A separate closed field traversal
+derives the current maximum raw record arity (**13**); unsupported leaves have no permissive
+fallback. A positive Bool/Natural/Maybe/list/Text fixture compiles, while `String` fails specifically
+through the missing `RawData Char` instance.
+
+The raw settings operand completes its structural projection before canonical readback, returning
+evaluated data without escaped extractor selectors. Its prospective data term covers record,
+list, optional, union, Bool, Text and arbitrary-width Natural storage plus its own small metadata.
+The settings phase becomes **syntax + max(map data, extracted raw data + path conversion)**.
+Pinned source and native observations show that `renote` reuses syntax and strict Text extraction
+shares its backing array; the budget does not add a second syntax tree for that retagging.
+
+The **489-module** strict assembly, **46-module** style checks and all **103** component controls
+pass under **128 MiB / two capabilities**. Graphs are observed before data sizers and cover a wide
+Natural, large independent Text values, repeated records, normalized AWS-profile fields and held
+syntax beside eager raw data. Final decoder results match the frozen predecessor for ordinary,
+schema-refusal, scope-refusal and normalization/readback cases. The initial 100-case result,
+extended result and two compiler controls remain separately scoped.
+`settings-extraction-components-validation-1.json` preserves source, both executables, pinned SDK
+and Text sources, receipts and both fixture-only compilation failures (shadowed names and a
+nonexistent guessed scope accessor). Canonical executable source remains at gate `22`.
+Extractor/narrowing/failure temporaries, canonical production, validation, stack/GC/native state,
+complete funding and original admission remain open; no sprint advances from this data component.
+
+Private draft `91` prepares a fully evaluated token program through the pinned SDK encoder, then
+writes it into one measured buffer with **nine** lookahead bytes. It keeps the supported total
+`Core.denote` conversion and the existing **1-MiB** wire domain. The prospective program-data term
+is **88 + 192 × (1 + T) + 2 × input bytes**, where **T** sums three times the checked containers,
+union alternatives, text tokens, integer tokens and Boolean values. Nullary union alternatives contribute null
+tokens independently of their container count. The output-buffer data term is
+**64 + align8(input bytes + 9)**. Settings scratch becomes **syntax + max(map data, raw data +
+max(path conversion, encoding program + encoding buffer))**. Producer syntax, construction,
+measurement, writer/control/stack/GC/native state and validation still require separate funding.
+
+The **490-module** strict assembly, **47-module** style checks and all **115** component controls
+pass under **128 MiB / two capabilities**. Actual wire bytes and decoder outcomes match the frozen
+predecessor; the exact 1-MiB encoding passes and one byte beyond refuses. An oversized first token
+refuses without evaluating its suffix. Native graphs precede sizers, cover the six raw-settings
+variants and verify the measured buffer capacity. A three-byte UTF-8 token slice retains an
+**8-KiB** backing array, which the data term charges in full.
+
+`settings-encoding-components-validation-1.json` preserves sources, executables, primary SDK
+inputs and terminal receipts. The first strict build needed an explicit erased source type;
+two fixture builds needed the pinned SDK's `encodeDouble` name and the same type annotation.
+Draft `90` then failed **25 of 114** behavioral cases by refusing the SDK's sliced UTF-8 tokens
+for built-in type names. Draft `91` supports that token and charges its full backing. Its first
+strict validation also lacked the explicit `primitive` package selection; the corrected private
+driver selects the existing solver package exactly. All failures remain frozen beside the passing
+replacement. Canonical executable source remains at gate `22`; complete funding, original
+admission and ordinary activation remain open. No sprint advances from these component results.
+
+Private draft `92` separates checked readback into evaluated SDK embedding and total source-erasure
+stages before token preparation. The selected closed encoders preserve the checked source's
+constructor/type shape and arbitrary-width Naturals; accepted AWS normalized Text does not grow
+its source span, and other Text is shared. The pinned generic field-label path returns shrunk
+`Text.pack` arrays. Selected constructor-label views retain at most **14** additional ASCII prefix
+bytes (`RpcBirthConfig`); the existing **80-byte** per-Text token allowance covers those bytes,
+the **48-byte** Text/array headers and at most seven padding bytes. The supported `denote` walk
+erases annotation slots without normalizing data.
+Both complete syntax trees plus their opaque wrappers therefore receive the conservative data term
+**32 + 2 × checked-source normal-form bytes**, beside raw settings, token data and output storage.
+Generic map/sequence construction, dictionaries, compiler closures, traversal stacks, dead
+allocation, GC and native state still require separate terms. This derivation is specific to the
+selected closed settings encoders.
+
+The **491-module** strict assembly, **48-module** style checks and all **121** component controls
+pass under **128 MiB / two capabilities**. Six native cases observe each evaluated stage before
+sizing, both stages together, and their coexistence with held input syntax and eager raw settings.
+Wide Naturals, large independent Text values, repeated records and normalized AWS values retain
+the frozen SDK wire. The general typed producer's lazy size-preflight implementation remains
+byte-identical to draft `91`; only checked readback takes these explicit stages.
+`settings-syntax-components-validation-1.json` preserves source, executable, primary SDK/NFData/Text
+inputs and terminal receipts. Canonical executable source remains at gate `22`; original admission,
+complete working-set funding and ordinary activation remain open. No sprint advances.
+
+Private draft `93` moves an actual RTS policy observation before initial profile parsing. Its known
+data floor covers both originating buffers, the complete existing **64-KiB** profile domain's typed
+data, and the larger of scalar import or prepared encoding data plus the owned output buffer.
+At **1 MiB** per source buffer, that floor is **2,369,288 bytes**. The guard checks a finite actual
+heap cap covering that floor, exactly one capability and the original work end. Existing input-size
+guards run first; the exact comparison with the decoded profile's declared heap still follows.
+The held buffers are already allocated here, so their read/capture peak and the guard's own state
+remain earlier obligations. This is a necessary data reservation check, not free-heap evidence or
+a complete startup, parser/control/stack/GC/native, parent or Authority admission result.
+
+All **124** component controls pass under **128 MiB / two capabilities**. The frozen loader returns
+a malformed-command error without reaching its runtime interpreter; the replacement's initial
+runtime denial precedes that parse. A successful initial observation still refuses malformed
+commands, and oversized commands stop before the observer. Three fresh native invocations cover
+five policy cases: finite/sufficient, insufficient, expired, multicore and unlimited. The default
+unlimited case positively observes zero `maxHeapSize` before checking refusal. The first native
+fixture's `-M0` was rejected by GHC before `Main`; its failure remains preserved beside the corrected
+fixture, which omits `-M` and removes ambient `GHCRTS` from its test environment.
+
+The **491-module** strict assembly and **48-module** style commands completed successfully before
+the host reboot, while their outer collectors were interrupted. Their terminal producer receipts
+and complete unchanged current source are preserved separately in
+`initial-profile-recovered-validation-2.json`; the original incomplete collectors retain that state.
+The first recovery rejected the changed boot; the replacement explicitly limits recovery to
+prior-boot source validation. Behavioral and native checks complete on the current boot.
+`initial-profile-components-validation-1.json` preserves both executables, sources, receipts,
+the frozen loader and collector/fixture failures. The two final collector corrections concern path
+ordering and an old fixture reference; runtime source remains frozen. Canonical executable source
+remains at gate `22`. Complete funding, original admission, activation and qualification stay open;
+no sprint advances.
+
+Private draft `94` separately charges the successful scalar handoff: SDK `Done` (**32 bytes**),
+two input/trailing view headers (**64**), strict scalar plus boxed offset (**40**), `Right` (**16**),
+cursor plus boxed offset (**40**) and empty-view owner/array metadata (**32**). The **224-byte**
+term keeps the known originating buffer and Integer/Natural/limb data separately funded, and charges
+boxing conservatively. Active SDK continuations, other views/state tuples, importer/compiler
+control, stacks, dead allocation, GC and native state retain their separate obligations.
+
+The fresh **492-module** strict assembly, **49-module** style checks and all **148** component
+controls pass at **128 MiB / two capabilities**. The **24** added cases hold the compact origin,
+actual SDK `Done`, strict result, cursor and converted Natural together before observing the graph.
+They cover machine boundaries and a wide bignum with empty, short and large trailing slices.
+The fixture exposes byte-identical production scalar/cursor definitions through a renamed module;
+the preservation verifier checks the body against canonical source. The numerical comparison uses
+the scalar's encoded span to show that the primitive numeric-data term alone omits the joint
+handoff graph. It supplies no complete-profile or whole-reader failure claim.
+
+The scalar term is added to the input and initial-profile phase models. The existing encoding
+program/buffer phase remains larger, so the known initial data floor stays **2,369,288 bytes** for
+two one-MiB sources. Three fresh native invocations retain all five policy outcomes under the
+original test envelope. `scalar-handoff-components-validation-1.json` preserves both executables,
+source, actual SDK/type-layout inputs and terminal receipts. The setup's missing expected import
+was corrected before compilation, with its preparation snapshot retained. Canonical executable
+source remains at gate `22`; complete funding, original admission, activation and qualification
+remain open. No sprint advances from these data-component results.
+
+Private draft `95` replaces the fixed profile field decoder's `StateT` chain with explicit strict
+phase, step and read-result data. The driver tail-calls one closed transition; states carry
+evaluated scalar/child data, with no field decoder callback. Checked ASCII labels, definite
+headers, complete-positive-scalar preflight and the actual SDK's one-feed integer reader retain
+their semantics. Producer code and the scalar SDK bridge are byte-identical to the predecessor.
+The ordinary request still checks the actual declared schema before calling this reader.
+
+A generic maximum over actual constructor fields derives step-boundary header storage. It charges
+current/next phases, step envelopes, cursor/offset graphs and helper result headers, plus an input
+view and error enum: **368 bytes**, with referenced typed profile data charged separately. Four
+native matrices observe **56** actual transitions before sizing. They follow large originating
+buffers, reject escaped functions, compare each closure header independently with its derived
+maximum and check the joint current/next graph. The matrices cover baseline, absent-deadline,
+wide-value and zero-value profiles. Truncation, suffix and per-byte mutation comparisons preserve
+both decoded values and error classes across **16,456** frozen-decoder inputs.
+
+The **492-module** strict assembly, **50-module** style checks, all **156** component controls and
+the existing **23** permanent codec tests pass at **128 MiB / two capabilities**. Three native
+invocations preserve all five runtime policy outcomes. The added step data raises the known
+initial data floor to **2,369,656 bytes** for two one-MiB sources; rendered runtime limits retain
+their original scope. This is step-boundary data evidence, with helper/SDK/compiler control,
+allocation/stack/GC/native peaks and complete initial construction/admission still open.
+`profile-machine-components-validation-1.json` preserves sources, executables, both native graph
+fixtures, permanent-suite results and receipts. That private checkpoint predates the canonical
+promotion below; its sources remain frozen for comparison.
+
+The alias audit in `profile-machine-alias-inventory-audit-1.json` finds **13 entries but 12 unique
+paths** in the earlier frozen inventory: `OrdinaryMemoryProfile.hs` appeared twice. Overriding that
+profile now leaves **11 unique** shared canonical paths. Earlier raw inventories remain preserved;
+the first collector's count assertion and its correction are retained. Source hashes, private
+module counts and validation case counts are unchanged by this bookkeeping correction. No sprint
+advances from these component results.
+
+Canonical reader integration passes full gate `24`: **885** library modules and all enabled
+targets build warning-clean, and the registered suites pass **9,654 + 27 + 35 + 908 = 10,624**
+cases. The **31** permanent profile groups include independent actual-state/header and absorbing
+terminal controls. Gate source bytes/modes remain unchanged throughout the run. The installed and
+Cabal-built operator share SHA-256 `26a4dba44118b54b0fc1bdfa078f16b4adc7cc560e0d421853818c34a3878ff9`. The official executable-source
+manifest is `14d10eff7d6293ed707e0222846dfff3e1e476bad44b7cef136a38b0e7d3765a`; the pre-publication full-source manifest is `99aa41e1005566b8732ed2817a2e8d26c4534397bbaf29c4cf1d2ef7f8dc9c0d`.
+`profile-machine-canonical-validation-1.json` preserves the complete gate and failed formatter
+predecessor. `pre-input-runtime-components-validation-1.json` separately preserves draft `97` and
+its native entry-boundary recordings. The exact captured-size check still follows payload capture;
+funding that allocation before it occurs remains open. Neither component result activates the
+ordinary route or advances a sprint.
+
+Canonical source-data policy integration passes gate `26` with **9,654 + 27 + 35 + 908 = 10,624**
+registered cases and an actual **886-module** library inventory. All source bytes/modes stay fixed
+during the gate. Its installed and Cabal-built operator share SHA-256
+`ef7a5b57378218666aabb5bf4b06f638cd399ed8327e2faeb7b8cf346e0439b7`. The official executable-source manifest is
+`afde9acd1013189d7e9bf80c3ac1e757a16192e9d98b6de9f938f8613b13266b`; its pre-publication full-source manifest is
+`9f3f85bbbb1f21f05209aea610459bd76a4c6ea29a974392eb0b3de46dfcfd9f`. The source-buffer data guard is integrated, while the initial-wire construction
+counterexample and the complete ordinary program remain open. No sprint advances.
+
+Canonical traversal-policy integration passes gate `27` with **10,624** registered cases and
+**eight** permanent native modes. Its installed and Cabal-built operator share SHA-256
+`636d1d2c7d44fe5928e98b6c2a1b0d52e90814b269947a2cc3309ca30dfa5b1b`. The official executable-source manifest is
+`a58b3bd8d63fdf90396e7d5d9525272c7ff33b7ee7b2741470cf0e73d641c334`; the pre-publication full-source manifest is
+`5679dce5ec3318655aad32061856e58d1eb388a89bb520a769a757925d88506d`. Draft `105` retains **50** private modules and the validated original-envelope
+malformed-input refusal. This is a component baseline; complete funding, independent admission,
+ordinary integration and deployment qualification remain open.
+
+The ordinary loader/caller/controller remain in scratch. Settings construction and typed extraction,
+canonical producer construction, validation, GC and the remaining caller/native costs still require funding.
+
+The local claim-cell, shared counter-cell, public-key, environment/kubeconfig, boxed/settings and standalone profile-codec components are
+canonically integrated and locally validated. Complete ordinary-controller reconstruction, retained/transient/native state funding, original admission,
+business graph wiring, runtime retirement, qualification and cutover remain open. Do not claim the
+missing staged preparation graph or any other old component as currently validated. Fresh
+recovery/build records live under `.build/sprint-6.5/resume-20261102/`.
+The earlier AWS inventory/cost observations below remain dated history; their local report files
+are also unavailable and must not qualify a new live operation. No phase is advanced by resumption.
+
+**Historical pause and operational handoff, 2026-11-01–02 UTC.** Development was paused at the
+operator's request while the following maintenance was performed. The separate
 operator-requested ephemeral AWS teardown still has **no supported completion receipt**. The
 refreshed admin credential now passes AWS STS. Independent read-only observations on 2026-11-02
 find no resources in the regional families queried below; the supported destroys still refuse the
 missing Authority config. Evidence is under `.build/session-handoff-20261101/`. The operator approved the
 temporary API/WebSocket reductions; both original replica counts are restored after every
-completed maintenance attempt. Vault is now positively observed **unsealed**. Development remains
-paused; no source implementation or phase queue has advanced and no qualification claim is made.
+completed maintenance attempt. Vault was positively observed **unsealed**. No source implementation
+or phase queue advanced during that pause and no qualification claim was made.
 
 Local recovery restored the exact registry manifest
 `sha256:258adf3c2fe04aefe6ea02f2a5a7d0bb5e0c488e948b899b8f13da284569f1c5`
@@ -97,7 +10983,7 @@ its guarded receipt preserves unchanged sources and binaries. Config recovery mu
 real admission failure and use canonical generated formatting before supported teardown/audits can
 close; do not recreate AWS resources merely to make a cleanup positive control pass. No operational
 credential generation is claimed revoked. Retain local RKE2, its durable root, shared SES/TLS/backup
-infrastructure and the operator-owned parent zone. Development and the phase queue remain paused.
+infrastructure and the operator-owned parent zone. Development remained paused during that retry.
 
 **Operator-requested independent AWS cost inspection, 2026-11-02 UTC.** The same official credential
 loader authenticates direct read-only account-wide inspection, without Authority admission or AWS
@@ -121,8 +11007,8 @@ the recent S3 storage charge is about **USD 0.021/day**, and November's hosted-z
 `report.json`, `bucket-detail.json` and both execution receipts preserve the exact scopes and
 terminal results. This inspection is independent evidence about the enumerated resources and
 costs, not an exhaustive AWS-service inventory or a supported teardown/credential-retirement
-receipt. The observed bucket/domain/DNS assets remain intact; no local deployment repair or
-development producer is resumed.
+receipt. That inspection left the observed bucket/domain/DNS assets intact and resumed no local
+deployment repair or development producer.
 
 Additional lossless compaction clears the recorded disk-pressure condition. **423** historical
 inactive executable paths are preserved in **26** verified gzip/zstd archives; both restore formats

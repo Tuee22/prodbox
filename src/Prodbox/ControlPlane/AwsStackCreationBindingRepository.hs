@@ -114,6 +114,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , ProviderStackConfigView (..)
   , ProviderStackRef
   , mkAwsEksProfileProviderStackConfig
+  , mkAwsEksProfileZoneProviderStackConfig
   , mkAwsEksProviderStackConfig
   , mkAwsEksSubzoneProviderStackConfig
   , mkAwsTestProfileProviderStackConfig
@@ -496,6 +497,9 @@ data ProviderConfigWire
   | -- | No admitted creation can contain this config; never alias it to a
     -- mutation config when projecting the wider Provider configuration type.
     PreviewOnlyProviderConfigWire
+  | -- | Append-only (after the preview form) so earlier constructor tags stay
+    -- stable: the profile form plus the exact per-run subzone hosted-zone id.
+    AwsEksProfileZoneProviderConfigWire !AwsSubstrateProfile !Natural !Text
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -1031,6 +1035,8 @@ providerConfigToWire config = case providerStackConfigView config of
   AwsEksProfileConfig profile desiredSize ->
     AwsEksProfileProviderConfigWire profile desiredSize
   AwsTestProfileConfig profile -> AwsTestProfileProviderConfigWire profile
+  AwsEksProfileZoneConfig profile desiredSize hostedZoneId ->
+    AwsEksProfileZoneProviderConfigWire profile desiredSize hostedZoneId
   AwsSesPreviewConfig {} -> PreviewOnlyProviderConfigWire
 
 providerConfigFromWire
@@ -1049,6 +1055,8 @@ providerConfigFromWire wire =
       mkAwsEksProfileProviderStackConfig profile desiredSize
     AwsTestProfileProviderConfigWire profile ->
       mkAwsTestProfileProviderStackConfig profile
+    AwsEksProfileZoneProviderConfigWire profile desiredSize hostedZoneId ->
+      mkAwsEksProfileZoneProviderStackConfig profile desiredSize hostedZoneId
 
 decodeBoundedKey
   :: Int -> Either AwsStackCreationBindingError RegisteredResourceKey

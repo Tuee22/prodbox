@@ -330,13 +330,20 @@ withHistory action = withSystemTempDirectory "prodbox-history-import" $ \root ->
       let scope = hostCleanupObservationEvidenceScope (hostCleanupScope intent)
       compiled <-
         expectRight
-          ( compileDesiredAbsenceGraphWithBindings
+          -- The fixture is a retained cascade run completed before the Sprint 7.47
+          -- cert-manager role family was registered, so it is recompiled over
+          -- exactly the keys that existed then; a later key is never acquired.
+          ( compileDesiredAbsenceGraphForRegisteredKeysWithBindings
               (hostCleanupRunId intent)
               (evidenceLinuxRke2Foundation scope)
               (evidenceAwsScope scope)
               (evidenceAwsDnsZone scope)
               (evidenceResourceScopeBindings scope)
               CascadeSurface
+              [ key
+              | key <- [minBound .. maxBound]
+              , key `notElem` [AwsEbsProductionRetainedKey, AwsEksCertManagerRoleFamilyKey]
+              ]
           )
       descriptor <- expectRight (captureCleanupProgramDescriptor compiled (hostCleanupRun intent))
       cleanupProgramDescriptorDigest descriptor

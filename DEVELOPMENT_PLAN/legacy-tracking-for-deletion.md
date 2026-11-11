@@ -11,6 +11,15 @@
 
 ## Ledger Status
 
+**2026-11-02 — Sprint `6.5` recovery evidence ownership.** The captured-input row also owns
+`.build/sprint-6.5/resume-20261102/`, its fresh bootstrap/source manifests and any reconstructed
+ordinary-controller fixtures. This includes component/storage, process-death, contention and
+token-policy vehicles, failed diagnostics, source objects and archived executable inputs. Preserve
+immutable evidence when withdrawing active scratch aliases. Removal of the earlier excluded draft directories does not prove
+their implementation was integrated or their validation remains reproducible. Promotion/removal
+obligations keep their existing owners; current artifact availability and resumption status live
+only in Resume Here. No cleanup row is closed merely because its old scratch directory is absent.
+
 **2026-11-01 — Sprint `6.5` extends captured-input ownership to preparation state.**
 Mechanical recount: **pending 81 → 81, unowned 16 → 16, completed 412 → 412**.
 The existing captured-input row owns `.build/sprint-6.5/ordinary-preparation-state-20261101/`,

@@ -119,6 +119,22 @@ Authority's scope; registered mode cannot install an EKS-local Authority. The ro
 changes the single-replica StatefulSet template when startup configuration changes. The process
 reads the required pin at startup; directory-mounted ConfigMap updates alone do not reload it.
 
+The closed controller settings envelope uses the retained SDK decoder and encoder roots in
+`Prodbox.ControlPlane.RpcBirthSettingsCodec`. Extraction, extracted-value readback and general
+settings publication borrow those same immutable roots within each process. The roots are
+`NOINLINE`; callers do not build independent envelope codecs at each entrypoint. Their metadata
+can remain reachable for the process lifetime. Budgeting still funds construction, retained data,
+function environments, update/GC/native work and independent admission separately; sharing a
+codec is not evidence of a complete memory bound or an admission receipt.
+
+Raw controller-settings extraction discards SDK diagnostics without rendering them and returns
+`RpcBirthSettingsShapeInvalid`. The SDK error payload does not enter that typed refusal. Both
+`InspectedRpcBirthSettings` and `ExtractedRpcBirthSettings` remain opaque and have no generic
+`Show` or `Serialise` instances. Explicit typed encoding stays behind the canonical
+extracted-value encoding functions. Error construction, outer typed reports and full resource
+admission retain their separate accounting obligations.
+
+
 Canonical Tier-0 writers use `Prodbox.Config.Tier0File`. Host authoring reads at most **1 MiB**
 through a non-symlink regular-file descriptor, verifies effective-user ownership and rejects
 hardlinks and group/other write access. A process-path guard and nonblocking POSIX record lock
@@ -801,6 +817,16 @@ transitive dependencies so the pinned `dhall ^>=1.42` bound continues to build c
 the newer GHC. The specific `allow-newer` set is owned by
 [dependency_management.md](./dependency_management.md).
 
+Literal field-name policies for AWS profiles, scaling-by-substrate and retained-artifact records
+are declared once in `Prodbox.Config.FieldNameTable.Stage`. Both SDK directions use the applicable
+generated `FieldNameTables` value; AWS profile decoding retains its existing wide input DTO.
+Lookup matches the whole source name and preserves unknown names unchanged. Preparation rejects
+duplicate source names before demanding target values. Typed role indices and hidden constructors
+separate the policies. The fixed canonical table roots are shared explicitly, and their generated
+numeric data term remains distinct from complete SDK
+construction, invocation accounting and admission. The value encoder and decoder remain the
+canonical Dhall SDK.
+
 ### What decoding does and does not validate
 
 Decoding produces a well-typed record. It does not produce a validated one, and the distinction is
@@ -829,8 +855,8 @@ The honest limits on that gate, which have accumulated rather than been designed
   of named checks over field accessors. It never mentioned the record, so `-Wall` had nothing to
   warn about and a field added to the config type was skipped by construction — four sections
   (`ses`, `pulumi_state_backend`, `storage`, `components`) had in fact accumulated no coverage at
-  all. It is now a **positional** constructor pattern, which makes a new field a compile error at
-  the one place that must decide whether it needs checking.
+  all. Its shared local projection builder uses a **positional** constructor pattern, which
+  makes a new field a compile error at the one place that must decide whether it needs checking.
 
   The positional form matters, and the reason was established by trying the alternative first: a
   *named* record pattern (`ConfigFile{ aws = a, … }`) is not a forcing function. It silently ignores
@@ -845,6 +871,14 @@ The honest limits on that gate, which have accumulated rather than been designed
   not that every field is *well-typed* — was true until Sprint `1.89` and is corrected below rather
   than left standing. The counts it carried ("~30 `Text` and ~40 `Natural`") were restatements and
   both were wrong; Sprint `1.88` measured 27 and 18.
+- **Local checking retains its coordinate results.** The complete settings constructor and
+  `validateLocalConfig` share one ordered projection fold. It keeps the public edge, TTL,
+  AWS region, substrate zone, SES, bootstrap IP, storage/backend and optional home/ACME
+  coordinates while performing the existing checks in order. The substrate subzone uses the
+  already checked AWS served host. Complete validation reuses these results; standalone
+  coordinate/public-edge builders retain their own contracts. Raw Dhall fields, optionality,
+  credential-reference rules and first-refusal order are preserved. The positional fold remains
+  private and returns its projections only after every local check succeeds.
 - **The payload renderer used to be partial too, and no longer is (Sprint `1.79`).**
   `renderConfigDhall` was a hand-written field-by-field emitter that produced `Config::{…}` and
   never emitted `components`; Dhall record completion then refilled the field from the schema
@@ -897,6 +931,18 @@ The honest limits on that gate, which have accumulated rather than been designed
   Before Sprint `1.89` this paragraph read "every other field rides along as the `Text` / `Natural` /
   `List` it decoded as, and is re-read raw at the point of use". That was accurate and is no longer,
   so it is corrected here rather than left to be quietly outgrown.
+
+  Complete settings validation also retains a private topology-validation witness from its
+  ordered local fold for deployment-context construction. The context helper consumes that
+  witness instead of repeating the same pure topology traversal. The standalone context builder
+  validates its raw topology before entering the same helper. This reuse preserves local/context
+  refusal order and does not establish resource admission or complete construction-memory bounds.
+
+  Context endpoint scheme matching lowercases only the first eight input characters, enough for
+  either accepted HTTP scheme. Unicode lowercase mappings do not erase characters. The original
+  stripped endpoint remains the returned value, including its complete authority and path;
+  whitespace checks still cover that complete value. This bounds the scheme-conversion input
+  without imposing an endpoint-length limit.
 
   **Three bounds, because the guarantee is narrower than "validated" suggests.** First, these are
   *shape* rules: an `AwsRegion` is a well-formed region name, not a region this account can reach.

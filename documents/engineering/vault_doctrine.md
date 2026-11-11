@@ -1254,12 +1254,11 @@ authority: `transit/hmac/prodbox-retained-material-commitment` and
 standing Authority calls the authenticated custody client and therefore neither probes nor gains
 the worker repository's Vault capability for readiness.
 
-For EKS DNS01, `aws-cert-manager-run` binds only ServiceAccount
-`aws-dns01-target-materializer` in namespace `cert-manager` and grants only
-`secret/aws/cert-manager/aws/dns01`. The sibling home role binds
-`home-dns01-secret-materializer` to `secret/aws/cert-manager/home/dns01`. Both workers use a
-pod-scoped memory volume and fixed-name Secret RBAC; neither credential can be rendered into a host
-manifest or substituted across substrates.
+For EKS DNS01 there is no Vault role, Vault path or materializer (Sprint `7.47`): cert-manager's own
+ServiceAccount assumes an IAM role through the cluster's OIDC provider, and that role may change records
+only in the one per-run subzone. The home role binds `home-dns01-secret-materializer` to
+`secret/aws/cert-manager/home/dns01`, using a pod-scoped memory volume and fixed-name Secret RBAC; no
+access key for either substrate can be rendered into a host manifest or substituted across substrates.
 
 For canonical `aws-ses` work, the Lifecycle-provider bootstrap credential is only an AssumeRole source for
 the exact-trust `prodbox-lifecycle-provider` role. The fenced provider worker receives a session

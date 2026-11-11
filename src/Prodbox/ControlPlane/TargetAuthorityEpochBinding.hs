@@ -11,6 +11,7 @@ module Prodbox.ControlPlane.TargetAuthorityEpochBinding
   , TargetEpochAgentRegistryError (..)
   , mkTargetEpochAgentRegistry
   , homeTargetEpochAgentRegistry
+  , targetEpochRegistrySubstrateForCluster
   , TargetEpochBindingEffect (..)
   , TargetEpochBindingInterpreter (..)
   , TargetEpochBindingQuery (..)
@@ -117,6 +118,22 @@ homeTargetEpochAgentRegistry
   -> AuthenticatedClientTransport 'TargetSecretAgentRuntime
   -> TargetEpochAgentRegistry
 homeTargetEpochAgentRegistry agent transport = TargetEpochAgentRegistry (Map.singleton CutoverHome (agent, transport))
+
+-- | The substrate and agent a registry holds for exactly this cluster identity,
+-- or 'Nothing'. A retained-delivery request names its target by cluster
+-- identity text; this is the closed-set membership test that replaces
+-- comparing it with one configured agent (Sprint 7.47, D6/D7). It matches the
+-- whole identity text, so a prefix, a different case or an empty string is not
+-- registered.
+targetEpochRegistrySubstrateForCluster
+  :: TargetEpochAgentRegistry -> Text -> Maybe (CutoverSubstrate, TargetAgentIdentity)
+targetEpochRegistrySubstrateForCluster (TargetEpochAgentRegistry rows) cluster =
+  case [ (substrate, agent)
+       | (substrate, (agent, _)) <- Map.toList rows
+       , targetAgentClusterIdentity agent == cluster
+       ] of
+    found : _ -> Just found
+    [] -> Nothing
 
 data TargetEpochBindingEffect result where
   ReadTargetBindingTime :: TargetEpochBindingEffect AuthorityTime

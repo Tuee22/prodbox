@@ -230,6 +230,10 @@ data RegisteredResourceKey
   | HomeDns01ChallengeRecordKey
   | SesInviteMailObjectsKey
   | AwsTestCanarySecurityGroupsKey
+  | -- | Sprint 7.47 (D5(a)): the cert-manager DNS01 IRSA role. A key of its own,
+    -- appended last, so the frozen coordinate of 'AwsEksIamRoleFamilyKey' and
+    -- every retained program that selected only earlier keys are unchanged.
+    AwsEksCertManagerRoleFamilyKey
   deriving (Bounded, Enum, Eq, Ord, Show)
 
 registeredResourceKeyText :: RegisteredResourceKey -> Text
@@ -251,6 +255,7 @@ registeredResourceKeyText key = case key of
   HomeDns01ChallengeRecordKey -> "dns-home-dns01-challenge-records"
   SesInviteMailObjectsKey -> "ses-invite-mail-data-versions"
   AwsTestCanarySecurityGroupsKey -> networkFamilyName TestCanarySecurityGroups
+  AwsEksCertManagerRoleFamilyKey -> "aws-eks-cert-manager-role-family"
 
 -- | Whether a registered family cannot be observed or removed without the
 -- hosted zone the run names.
@@ -280,6 +285,7 @@ registeredResourceKeyRequiresDnsZone key = case key of
   HomeDns01ChallengeRecordKey -> False
   SesInviteMailObjectsKey -> False
   AwsTestCanarySecurityGroupsKey -> False
+  AwsEksCertManagerRoleFamilyKey -> False
 
 -- | The inverse of 'registeredResourceKeyText', over the closed enumeration.
 --

@@ -594,7 +594,7 @@ mkAwsIamRoleFamilyRegisteredTargetReconcile
   authorization
   attempt = do
     validateStaticTarget target
-    if registeredTargetKey target == AwsEksIamRoleFamilyKey
+    if registeredTargetKey target `elem` [AwsEksIamRoleFamilyKey, AwsEksCertManagerRoleFamilyKey]
       then Right ()
       else
         Left

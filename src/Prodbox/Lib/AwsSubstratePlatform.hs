@@ -1373,13 +1373,21 @@ awsSubstrateCertManagerNamespace = "cert-manager"
 -- become ready. The downstream substrate-aware `ClusterIssuer` (rendered
 -- with `SubstrateAws` to target the per-substrate Route 53 subzone) is
 -- applied separately by the orchestrator in Sprint `7.5.b.ii.d.II.δ`.
-ensureAwsSubstrateCertManagerRuntime :: IO ExitCode
-ensureAwsSubstrateCertManagerRuntime = do
-  writeOutputLine
-    ( "Installing cert-manager "
-        ++ awsSubstrateCertManagerChartVersion
-        ++ " on the AWS-substrate EKS cluster"
-    )
+ensureAwsSubstrateCertManagerRuntime :: AwsEksTestStackSnapshot -> IO ExitCode
+ensureAwsSubstrateCertManagerRuntime snapshot
+  | null (eksSnapshotCertManagerDns01RoleArn snapshot) =
+      failWith
+        "cert-manager DNS01 role ARN is empty; the aws-eks stack must be reconciled at or after Sprint 7.47."
+  | otherwise = do
+      writeOutputLine
+        ( "Installing cert-manager "
+            ++ awsSubstrateCertManagerChartVersion
+            ++ " on the AWS-substrate EKS cluster"
+        )
+      certManagerInstall snapshot
+
+certManagerInstall :: AwsEksTestStackSnapshot -> IO ExitCode
+certManagerInstall snapshot = do
   repoExit <-
     ensureHelmRepoAdded awsSubstrateCertManagerRepoName awsSubstrateCertManagerRepoUrl
   case repoExit of
@@ -1405,6 +1413,15 @@ ensureAwsSubstrateCertManagerRuntime = do
                 , "10m0s"
                 , "--set"
                 , "crds.enabled=true"
+                , -- Sprint 7.47 (D5(a)): the DNS01 solver's identity is an IRSA
+                  -- role scoped to the one subzone, bound to this ServiceAccount.
+                  -- The dots in the annotation key are escaped for Helm's --set.
+                  "--set"
+                , "serviceAccount.annotations.eks\\.amazonaws\\.com/role-arn="
+                    ++ eksSnapshotCertManagerDns01RoleArn snapshot
+                , -- The projected web-identity token is group-readable only.
+                  "--set"
+                , "securityContext.fsGroup=1001"
                 ]
             , subprocessEnvironment = Nothing
             , subprocessWorkingDirectory = Nothing
@@ -1697,7 +1714,7 @@ runAwsSubstratePlatformStep repoRoot settings prodboxId labelValue snapshot endp
     StepAwsImageMirror -> applyEksImageMirrorJob repoRoot
     StepAwsRuntimeImage -> ensureRuntimeImageForSubstrate SubstrateAws repoRoot prodboxId
     StepAwsRegistryReady -> pure ExitSuccess
-    StepAwsCertManagerRuntime -> ensureAwsSubstrateCertManagerRuntime
+    StepAwsCertManagerRuntime -> ensureAwsSubstrateCertManagerRuntime snapshot
     StepAwsCertManagerReady -> pure ExitSuccess
     StepAwsBootstrapBroker ->
       ensureInternalControlPlaneChartReady

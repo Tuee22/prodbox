@@ -30,6 +30,10 @@ module Prodbox.ControlPlane.AuthenticatedTransport
   , authenticatedClientTransportAtEpoch
   , resolveAuthenticatedClientTransportDeadline
   , callAuthenticatedClientTransport
+  , callAuthenticatedTargetTransportWithSignedRequest
+  , callAuthenticatedAuthorityObservationWithSignedRequest
+  , callAuthenticatedPeerObservationWithSignedRequest
+  , callAuthenticatedRpcBirthRegistryWithSignedRequest
   , callAuthenticatedPeerObservation
   , callAuthenticatedControlPlane
 
@@ -72,7 +76,12 @@ import Prodbox.ControlPlane.Client
   ( ControlPlaneClient
   , ControlPlaneClientError
   , ControlPlaneResponse
-  , ControlPlaneRouteFor (LifecycleAuthorityPeerObserveRoute)
+  , ControlPlaneRouteFor
+    ( LifecycleAuthorityControlRoute
+    , LifecycleAuthorityPeerObserveRoute
+    , LifecycleMigrationApplyRoute
+    , TargetSecretTrustInstallRoute
+    )
   , callControlPlane
   , controlPlaneRouteForValue
   )
@@ -125,7 +134,7 @@ import Prodbox.Lifecycle.Lease
   , authorityTimeFromMicros
   , authorityTimeMicros
   )
-import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
+import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime, TargetSecretAgentRuntime))
 
 data AuthenticatedTransportBounds = AuthenticatedTransportBounds
   { maximumAuthenticatedFrameBytes :: !Int
@@ -444,6 +453,47 @@ callAuthenticatedClientTransport
   (AuthenticatedClientTransport bounds providers client) =
     callAuthenticatedControlPlane bounds providers client
 
+-- | Retain the exact signed request only for the Target trust route, so an
+-- opt-in response verifier can bind the reply to that request. Callers own the
+-- request/body lifetime and must enforce a single deadline over the full call.
+callAuthenticatedTargetTransportWithSignedRequest
+  :: AuthenticatedClientTransport 'TargetSecretAgentRuntime
+  -> ByteString
+  -> IO (Either AuthenticatedClientError (SignedControlPlaneRequest, ControlPlaneResponse))
+callAuthenticatedTargetTransportWithSignedRequest (AuthenticatedClientTransport bounds providers client) =
+  callAuthenticatedControlPlaneWithSignedRequest bounds providers client TargetSecretTrustInstallRoute
+
+-- | Keep only these Authority read requests for response verification. The
+-- caller owns their lifetime and the original complete-operation deadline.
+callAuthenticatedAuthorityObservationWithSignedRequest
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> ByteString
+  -> IO (Either AuthenticatedClientError (SignedControlPlaneRequest, ControlPlaneResponse))
+callAuthenticatedAuthorityObservationWithSignedRequest (AuthenticatedClientTransport bounds providers client) =
+  callAuthenticatedControlPlaneWithSignedRequest
+    bounds
+    providers
+    client
+    LifecycleAuthorityControlRoute
+
+callAuthenticatedPeerObservationWithSignedRequest
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> ByteString
+  -> IO (Either AuthenticatedClientError (SignedControlPlaneRequest, ControlPlaneResponse))
+callAuthenticatedPeerObservationWithSignedRequest (AuthenticatedClientTransport bounds providers client) =
+  callAuthenticatedControlPlaneWithSignedRequest
+    bounds
+    (providers {provideAuthenticatedClientEpoch = pure (Right authorityEpochGenesis)})
+    client
+    LifecycleAuthorityPeerObserveRoute
+
+callAuthenticatedRpcBirthRegistryWithSignedRequest
+  :: AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> ByteString
+  -> IO (Either AuthenticatedClientError (SignedControlPlaneRequest, ControlPlaneResponse))
+callAuthenticatedRpcBirthRegistryWithSignedRequest (AuthenticatedClientTransport bounds providers client) =
+  callAuthenticatedControlPlaneWithSignedRequest bounds providers client LifecycleMigrationApplyRoute
+
 -- | Resolve once so a caller can physically bound signing, refresh and HTTP
 -- by the same deadline that the resulting transport will sign.
 -- | A verified peer refresh changes only the epoch. Identity, scope,
@@ -558,7 +608,81 @@ callAuthenticatedControlPlane bounds providers client indexedRoute body
             Left err -> pure (Left (AuthenticatedClientFrameFailed err))
             Right framed -> do
               result <- callControlPlane client indexedRoute (LazyByteString.toStrict framed)
-              pure (either (Left . AuthenticatedClientTransportFailed) Right result)
+              pure
+                (either (Left . AuthenticatedClientTransportFailed) Right result)
+
+-- The opt-in Target variant retains its signed request until verification.
+-- Keep the existing transport above independent of that extra lifetime.
+callAuthenticatedControlPlaneWithSignedRequest
+  :: AuthenticatedTransportBounds
+  -> AuthenticatedClientProviders IO
+  -> ControlPlaneClient r
+  -> ControlPlaneRouteFor r
+  -> ByteString
+  -> IO (Either AuthenticatedClientError (SignedControlPlaneRequest, ControlPlaneResponse))
+callAuthenticatedControlPlaneWithSignedRequest bounds providers client indexedRoute body
+  | ByteString.length body > bodyMaximum =
+      pure $
+        Left $
+          AuthenticatedClientFrameFailed
+            (AuthenticatedRequestBodyTooLarge (ByteString.length body) bodyMaximum)
+  | otherwise = do
+      signerResult <- provideAuthenticatedClientSigner providers
+      case signerResult of
+        Left detail -> pure (Left (AuthenticatedClientSignerUnavailable detail))
+        Right signer -> do
+          scopeResult <- provideAuthenticatedClientScope providers
+          case scopeResult of
+            Left detail -> pure (Left (AuthenticatedClientScopeUnavailable detail))
+            Right scope -> do
+              epochResult <- provideAuthenticatedClientEpoch providers
+              case epochResult of
+                Left detail -> pure (Left (AuthenticatedClientEpochUnavailable detail))
+                Right epoch -> do
+                  deadlineResult <- provideAuthenticatedClientDeadline providers
+                  case deadlineResult of
+                    Left detail -> pure (Left (AuthenticatedClientDeadlineUnavailable detail))
+                    Right deadline -> do
+                      nonceResult <- provideAuthenticatedClientNonce providers
+                      case nonceResult of
+                        Left detail -> pure (Left (AuthenticatedClientNonceUnavailable detail))
+                        Right nonce -> send signer scope epoch deadline nonce
+ where
+  bodyMaximum = min (maximumAuthenticatedFrameBytes bounds) (maximumSignedEnvelopeBytes bounds)
+  send signer scope epoch deadline nonce = do
+    let route = controlPlaneRouteForValue indexedRoute
+        callee = controlPlaneRouteRole route
+    case authenticatedRequestFootprint
+      bounds
+      signer
+      route
+      callee
+      scope
+      epoch
+      deadline
+      nonce
+      (fromIntegral (ByteString.length body)) of
+      Left cause -> pure (Left cause)
+      Right _ -> do
+        signedResult <-
+          signControlPlaneRequestWith
+            signer
+            route
+            callee
+            scope
+            epoch
+            deadline
+            nonce
+            body
+        case signedResult of
+          Left (Left err) -> pure (Left (AuthenticatedClientBindingFailed err))
+          Left (Right err) -> pure (Left (AuthenticatedClientSigningFailed err))
+          Right signed -> case encodeAuthenticatedFrame bounds deadline nonce signed of
+            Left err -> pure (Left (AuthenticatedClientFrameFailed err))
+            Right framed -> do
+              result <- callControlPlane client indexedRoute (LazyByteString.toStrict framed)
+              pure
+                (either (Left . AuthenticatedClientTransportFailed) (\response -> Right (signed, response)) result)
 
 data RouteTrustRegistry = RouteTrustRegistry
   { routeTrustRole :: !RuntimeRole

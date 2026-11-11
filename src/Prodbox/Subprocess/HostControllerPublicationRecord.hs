@@ -28,6 +28,7 @@ import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as Lazy
 import Data.Word (Word64, Word8)
+import Prodbox.Config.SerialiseString (SerialiseString (..))
 import Prodbox.Subprocess.HostControllerInputs qualified as Inputs
 import Prodbox.Subprocess.SystemdIdentity qualified as Identity
 import System.Posix.Files
@@ -122,7 +123,7 @@ encodePublicationBirth (PublicationBirth kind key ending observed identity) = ca
       <> Lazy.toStrict
         ( serialise
             ( 2 :: Word8
-            , Identity.hostExecutionKeyText key
+            , SerialiseString (Identity.hostExecutionKeyText key)
             , ending
             , Inputs.encodeHostControllerAnonymousPayloads observed
             , identity
@@ -152,7 +153,7 @@ decodeRegistrationBirth :: ByteString -> Maybe PublicationBirth
 decodeRegistrationBirth bytes = do
   unless (BS.length bytes <= 8192) Nothing
   payload <- BS.stripPrefix birthPrefix bytes
-  (version, keyText, ending, encoded, identity@(dev, ino, uid, group, mode)) <-
+  (version, SerialiseString keyText, ending, encoded, identity@(dev, ino, uid, group, mode)) <-
     either (const Nothing) Just (deserialiseOrFail (Lazy.fromStrict payload))
   unless (version == (2 :: Word8) && ending > 0) Nothing
   key <- Identity.hostExecutionKeyFromText keyText

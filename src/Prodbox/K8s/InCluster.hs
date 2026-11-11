@@ -61,7 +61,15 @@ data InClusterCredentials = InClusterCredentials
   , inClusterCredentialsCaCertPath :: FilePath
   , inClusterCredentialsNamespace :: Text
   }
-  deriving (Eq, Show)
+  deriving (Eq)
+
+instance Show InClusterCredentials where
+  show credentials =
+    "InClusterCredentials {inClusterCredentialsToken = <redacted>, inClusterCredentialsCaCertPath = "
+      ++ show (inClusterCredentialsCaCertPath credentials)
+      ++ ", inClusterCredentialsNamespace = "
+      ++ show (inClusterCredentialsNamespace credentials)
+      ++ "}"
 
 -- | Canonical in-pod ServiceAccount mount directory.
 inClusterServiceAccountDir :: FilePath

@@ -397,6 +397,7 @@ eksOutputs =
     , ("aws_lb_controller_role_arn", "arn:aws:iam::123456789012:role/lbc")
     , ("aws_lb_controller_role_name", "lbc")
     , ("retained_ebs_availability_zone", Text.pack (fixtureAwsRegion FixtureCaCentral1) <> "a")
+    , ("cert_manager_dns01_role_arn", "arn:aws:iam::123:role/cm-dns01")
     ]
 
 testOutputs :: Map.Map Text Text

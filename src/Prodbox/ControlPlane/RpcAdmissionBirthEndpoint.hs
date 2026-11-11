@@ -3,13 +3,18 @@
 
 module Prodbox.ControlPlane.RpcAdmissionBirthEndpoint
   ( rpcBirthVerifiedHandler
+  , rpcBirthSignedRegistryHandler
+  , rpcBirthSignedDescriptorHandler
   , rpcBirthOwnBindingInterpreter
   , rpcBirthOwnBindingReadMaximumMicros
   , isRpcBirthObservationForRole
   , RpcBirthClientError (..)
   , requestRpcBirthWithin
+  , requestRpcBirthWithVerifiedPeer
   , requestRpcBirthDescriptorWithin
+  , requestRpcBirthDescriptorWithVerifiedResponses
   , requestRpcBirthRegistryWithin
+  , requestRpcBirthRegistryWithVerifiedResponses
   , rpcBirthRegistryResponseMaximumBytes
   )
 where
@@ -28,11 +33,18 @@ import Prodbox.ControlPlane.AuthenticatedTransport
   , AuthenticatedClientTransport
   , authenticatedClientTransportAtEpoch
   , callAuthenticatedClientTransport
+  , callAuthenticatedRpcBirthRegistryWithSignedRequest
   , resolveAuthenticatedClientTransportDeadline
   )
-import Prodbox.ControlPlane.AuthorityPeerContext (peerContextEpoch)
+import Prodbox.ControlPlane.AuthorityAuthenticatedResponse
+  ( AuthorityAuthenticatedResponseError
+  , signAuthorityAuthenticatedResponse
+  , verifyAuthorityAuthenticatedResponse
+  )
+import Prodbox.ControlPlane.AuthorityPeerContext (AuthorityPeerContext, peerContextEpoch)
 import Prodbox.ControlPlane.AuthorityPeerContextClient
   ( AuthorityPeerContextClientError
+  , requestAuthorityPeerContextWithVerifiedResponse
   , requestAuthorityPeerContextWithin
   )
 import Prodbox.ControlPlane.Client
@@ -42,7 +54,9 @@ import Prodbox.ControlPlane.Client
 import Prodbox.ControlPlane.Codec (decodeControlPlaneResponse, encodeControlPlaneResponse)
 import Prodbox.ControlPlane.Coordinate (AuthorityScope)
 import Prodbox.ControlPlane.RequestAuthentication
-  ( VerifiedControlPlaneRequest
+  ( RequestSigningCapability
+  , TrustedRequestKey
+  , VerifiedControlPlaneRequest
   , verifiedRequestBody
   , verifiedRequestRoute
   )
@@ -50,14 +64,18 @@ import Prodbox.ControlPlane.Route (ControlPlaneRoute (LifecycleMigrationApply))
 import Prodbox.ControlPlane.RpcAdmissionBirth
 import Prodbox.ControlPlane.RpcAdmissionBirthExecution
 import Prodbox.ControlPlane.RpcAdmissionBirthNative
-import Prodbox.ControlPlane.RpcAdmissionBirthWire (rpcBirthRegistryResponseMaximumBytes)
+import Prodbox.ControlPlane.RpcAdmissionBirthWire
+  ( rpcBirthRegistryResponseMaximumBytes
+  , rpcBirthSignedDescriptorRequest
+  , rpcBirthSignedRegistryRequest
+  )
 import Prodbox.ControlPlane.RpcOwnBindingHint
   ( decodeRpcOwnBindingQuery
   , encodeRpcOwnBindingHint
   , isRpcOwnBindingQuery
   )
 import Prodbox.ControlPlane.Server (RoleInterpreter (..))
-import Prodbox.Http.ReplyStatus (ReplyStatus (..))
+import Prodbox.Http.ReplyStatus (ReplyStatus (..), replyStatusCode)
 import Prodbox.Lifecycle.Lease (AuthorityTime, authorityTimeFromMicros, authorityTimeMicros)
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 import System.Timeout (timeout)
@@ -143,6 +161,58 @@ rpcBirthVerifiedHandler scope mode backend request
             (executeRpcBirth (rpcBirthNativeInterpreter backend) context)
       pure (Just (rpcBirthResponse result))
 
+-- | Opt-in signed response for the exact registry read. Caller owns the
+-- original deadline around this handler and signing, plus replay capacity.
+rpcBirthSignedRegistryHandler
+  :: AuthorityScope
+  -> RpcBirthServingMode
+  -> RpcBirthNativeBackend
+  -> RequestSigningCapability IO
+  -> VerifiedControlPlaneRequest
+  -> IO (Maybe (Either AuthorityAuthenticatedResponseError ByteString))
+rpcBirthSignedRegistryHandler scope mode backend signer request
+  | verifiedRequestRoute request /= LifecycleMigrationApply
+      || verifiedRequestBody request /= rpcBirthSignedRegistryRequest =
+      pure Nothing
+  | otherwise = do
+      result <- rpcBirthVerifiedHandler scope mode backend request
+      case result of
+        Nothing -> pure Nothing
+        Just (status, body) ->
+          Just
+            <$> signAuthorityAuthenticatedResponse
+              rpcBirthRegistryResponseMaximumBytes
+              signer
+              request
+              (fromIntegral (replyStatusCode status))
+              body
+
+-- | This narrow handler signs only the descriptor observation, never a birth
+-- mutation. The caller must establish the signer independently.
+rpcBirthSignedDescriptorHandler
+  :: AuthorityScope
+  -> RpcBirthServingMode
+  -> RpcBirthNativeBackend
+  -> RequestSigningCapability IO
+  -> VerifiedControlPlaneRequest
+  -> IO (Maybe (Either AuthorityAuthenticatedResponseError ByteString))
+rpcBirthSignedDescriptorHandler scope mode backend signer request
+  | verifiedRequestRoute request /= LifecycleMigrationApply
+      || verifiedRequestBody request /= rpcBirthSignedDescriptorRequest =
+      pure Nothing
+  | otherwise = do
+      result <- rpcBirthVerifiedHandler scope mode backend request
+      case result of
+        Nothing -> pure Nothing
+        Just (status, body) ->
+          Just
+            <$> signAuthorityAuthenticatedResponse
+              ReplayBudget.authorityMetadataResponseMaximumBytes
+              signer
+              request
+              (fromIntegral (replyStatusCode status))
+              body
+
 runRpcBirthWithin
   :: AuthorityTime -> IO (Either RpcBirthError value) -> IO (Either RpcBirthError value)
 runRpcBirthWithin deadline effect = do
@@ -177,10 +247,18 @@ isRpcBirthObservationForRole :: RuntimeRole -> ControlPlaneRoute -> ByteString -
 isRpcBirthObservationForRole role route body =
   role == LifecycleAuthorityRuntime
     && route == LifecycleMigrationApply
-    && (isRpcBirthObservation body || body == rpcBirthDescriptorRequest || body == rpcBirthRegistryRequest)
+    && ( isRpcBirthObservation body
+           || body
+             `elem` [ rpcBirthDescriptorRequest
+                    , rpcBirthRegistryRequest
+                    , rpcBirthSignedDescriptorRequest
+                    , rpcBirthSignedRegistryRequest
+                    ]
+       )
 
 data RpcBirthClientError
   = RpcBirthClientTransport !AuthenticatedClientError
+  | RpcBirthClientResponseAuthentication !AuthorityAuthenticatedResponseError
   | RpcBirthClientPeer !AuthorityPeerContextClientError
   | RpcBirthClientClockUnavailable
   | RpcBirthClientDeadlineReached
@@ -205,6 +283,25 @@ requestRpcBirthWithin readTime parent scope transport command =
     parent
     scope
     transport
+    (encodeRpcBirthCommand command)
+    decodeRpcBirthClientResponse
+
+-- | The submission acknowledgement is still checked by a later authenticated
+-- descriptor observation; this authenticates the peer refresh before sending.
+requestRpcBirthWithVerifiedPeer
+  :: IO (Either Text AuthorityTime)
+  -> AuthorityTime
+  -> AuthorityScope
+  -> TrustedRequestKey
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> RpcBirthCommand
+  -> IO (Either RpcBirthClientError RpcBirthStatus)
+requestRpcBirthWithVerifiedPeer readTime parent scope trusted transport command =
+  requestRpcBirthPayloadUsing
+    readTime
+    parent
+    transport
+    (\_ bounded -> requestAuthorityPeerContextWithVerifiedResponse scope trusted bounded)
     (encodeRpcBirthCommand command)
     decodeRpcBirthClientResponse
 
@@ -249,6 +346,98 @@ requestRpcBirthRegistryWithin readTime parent scope transport =
     bytes <- decodeRpcBirthClientResponseWithMaximum rpcBirthRegistryResponseMaximumBytes response
     first (const RpcBirthClientResponseInvalid) (decodeRpcBirthRegistryObservation scope bytes)
 
+-- | Both peer refresh and registry response must verify under the independently
+-- supplied key. The caller owns the trusted-key read and full resource budget.
+requestRpcBirthRegistryWithVerifiedResponses
+  :: IO (Either Text AuthorityTime)
+  -> AuthorityTime
+  -> AuthorityScope
+  -> TrustedRequestKey
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> IO (Either RpcBirthClientError RpcBirthRegistryObservation)
+requestRpcBirthRegistryWithVerifiedResponses readTime parent scope trusted transport = do
+  result <-
+    requestRpcBirthVerifiedPayload
+      readTime
+      parent
+      scope
+      trusted
+      transport
+      rpcBirthSignedRegistryRequest
+      rpcBirthRegistryResponseMaximumBytes
+  pure
+    (result >>= first (const RpcBirthClientResponseInvalid) . decodeRpcBirthRegistryObservation scope)
+
+requestRpcBirthDescriptorWithVerifiedResponses
+  :: IO (Either Text AuthorityTime)
+  -> AuthorityTime
+  -> AuthorityScope
+  -> TrustedRequestKey
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> IO (Either RpcBirthClientError RpcBirthDescriptorObservation)
+requestRpcBirthDescriptorWithVerifiedResponses readTime parent scope trusted transport = do
+  result <-
+    requestRpcBirthVerifiedPayload
+      readTime
+      parent
+      scope
+      trusted
+      transport
+      rpcBirthSignedDescriptorRequest
+      ReplayBudget.authorityMetadataResponseMaximumBytes
+  pure
+    (result >>= first (const RpcBirthClientResponseInvalid) . decodeRpcBirthDescriptorObservation scope)
+
+requestRpcBirthVerifiedPayload
+  :: IO (Either Text AuthorityTime)
+  -> AuthorityTime
+  -> AuthorityScope
+  -> TrustedRequestKey
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> ByteString
+  -> Int
+  -> IO (Either RpcBirthClientError ByteString)
+requestRpcBirthVerifiedPayload readTime parent scope trusted transport payload maximumResponse = before parent $ do
+  resolved <- resolveAuthenticatedClientTransportDeadline parent transport
+  case resolved of
+    Left cause -> pure (Left (RpcBirthClientTransport cause))
+    Right (deadline, boundedTransport) -> before deadline $ do
+      refreshed <- requestAuthorityPeerContextWithVerifiedResponse scope trusted boundedTransport
+      case refreshed of
+        Left cause -> pure (Left (RpcBirthClientPeer cause))
+        Right peer -> do
+          response <-
+            callAuthenticatedRpcBirthRegistryWithSignedRequest
+              (authenticatedClientTransportAtEpoch (peerContextEpoch peer) boundedTransport)
+              payload
+          pure $ do
+            (request, ControlPlaneResponse outerStatus envelope) <- first RpcBirthClientTransport response
+            if outerStatus == 200 then pure () else Left (RpcBirthClientHttpStatus outerStatus)
+            (status, body) <-
+              first
+                RpcBirthClientResponseAuthentication
+                (verifyAuthorityAuthenticatedResponse maximumResponse trusted request envelope)
+            decodeRpcBirthClientResponseWithMaximum
+              maximumResponse
+              (ControlPlaneResponse (fromIntegral status) body)
+ where
+  before deadline effect = do
+    observed <- readTime
+    case observed of
+      Left _ -> pure (Left RpcBirthClientClockUnavailable)
+      Right now
+        | now >= deadline -> pure (Left RpcBirthClientDeadlineReached)
+        | otherwise -> do
+            let remaining = authorityTimeMicros deadline - authorityTimeMicros now
+                limit = fromIntegral (min remaining (fromIntegral (maxBound :: Int)))
+            attempted <- timeout limit (effect >>= evaluate)
+            closing <- readTime
+            pure $ case closing of
+              Left _ -> Left RpcBirthClientClockUnavailable
+              Right after
+                | after >= deadline -> Left RpcBirthClientDeadlineReached
+                | otherwise -> maybe (Left RpcBirthClientTimedOut) id attempted
+
 -- The parent covers provider resolution, peer refresh, signing, HTTP and the
 -- canonical decode. A coordinator can resolve its transport once before using
 -- either operation, preserving the original deadline across all later steps.
@@ -260,12 +449,30 @@ requestRpcBirthPayloadWithin
   -> ByteString
   -> (ControlPlaneResponse -> Either RpcBirthClientError result)
   -> IO (Either RpcBirthClientError result)
-requestRpcBirthPayloadWithin readTime parent scope transport body decode = before parent $ do
+requestRpcBirthPayloadWithin readTime parent scope transport =
+  requestRpcBirthPayloadUsing
+    readTime
+    parent
+    transport
+    (\bound -> requestAuthorityPeerContextWithin readTime bound scope)
+
+requestRpcBirthPayloadUsing
+  :: IO (Either Text AuthorityTime)
+  -> AuthorityTime
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> ( AuthorityTime
+       -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+       -> IO (Either AuthorityPeerContextClientError AuthorityPeerContext)
+     )
+  -> ByteString
+  -> (ControlPlaneResponse -> Either RpcBirthClientError result)
+  -> IO (Either RpcBirthClientError result)
+requestRpcBirthPayloadUsing readTime parent transport refresh body decode = before parent $ do
   resolved <- resolveAuthenticatedClientTransportDeadline parent transport
   case resolved of
     Left cause -> pure (Left (RpcBirthClientTransport cause))
     Right (deadline, boundedTransport) -> before deadline $ do
-      refreshed <- requestAuthorityPeerContextWithin readTime deadline scope boundedTransport
+      refreshed <- refresh deadline boundedTransport
       case refreshed of
         Left cause -> pure (Left (RpcBirthClientPeer cause))
         Right peer -> do

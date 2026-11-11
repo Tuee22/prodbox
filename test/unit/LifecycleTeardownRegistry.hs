@@ -40,9 +40,10 @@ lifecycleTeardownRegistrySuite = do
                    , (HomeDns01ChallengeRecordKey, Just PerRun, DnsRecordFamily)
                    , (SesInviteMailObjectsKey, Just PerRun, MailObjectFamily)
                    , (AwsTestCanarySecurityGroupsKey, Just PerRun, ControllerFamily)
+                   , (AwsEksCertManagerRoleFamilyKey, Just PerRun, ControllerFamily)
                    ]
       map registeredIdentityAuthority lifecycleRegistry
-        `shouldBe` replicate 16 LinuxRke2LifecycleAuthority
+        `shouldBe` replicate 17 LinuxRke2LifecycleAuthority
       lifecycleRegistryValidation `shouldBe` Right ()
 
     it "keeps the two EBS families on distinct exact coordinates and fixed classes" $ do
@@ -91,10 +92,12 @@ lifecycleTeardownRegistrySuite = do
                    , HomeDns01ChallengeRecordKey
                    , SesInviteMailObjectsKey
                    , AwsTestCanarySecurityGroupsKey
+                   , AwsEksCertManagerRoleFamilyKey
                    , LocalLinuxRke2Key
                    ]
       map cleanupTargetLifecycleClass (cleanupTargetsForSurface CascadeSurface)
         `shouldBe` [ Just PerRun
+                   , Just PerRun
                    , Just PerRun
                    , Just PerRun
                    , Just PerRun

@@ -368,6 +368,7 @@ resource cannot be added to the registry without this inventory updating in lock
 | `dns-home-dns01-challenge-records` | PerRun |
 | `ses-invite-mail-data-versions` | PerRun |
 | `aws-eks-iam-role-family` | PerRun |
+| `aws-eks-cert-manager-role-family` | PerRun |
 | `aws-eks-load-balancer-controller-family` | PerRun |
 | `aws-eks-vpc-cni-interfaces` | PerRun |
 | `aws-test-vpc-cni-interfaces` | PerRun |
@@ -538,7 +539,7 @@ broad scan or operator investigation for resources it can create.
 |----------|------------|----------|--------------|
 | Fixed `prodbox-ses-lease-session` IAM role (+ exact inline policy) | Operator-material-mode Credential Provisioner through `prodbox aws setup` / cluster post-genesis setup / the test-harness permit path when the public SES scope is configured | typed `iam get-role` + `iam get-role-policy` observation in `Prodbox.Infra.AwsSesLeaseRole` | `prodbox aws teardown` (`reconcileAbsent`, before the trusted Lifecycle-provider identity, followed by authoritative absence re-observation) |
 | Lifecycle-provider IAM identity/key/policy plus `secret/aws/lifecycle-provider` generation | Durable setup operation using the ephemeral admin prompt, then Target-Agent sealing/CAS delivery | exact IAM principal/key/policy plus Vault generation/opaque Agent-HMAC commitment/read-back | dependency-ordered provider cleanup, IAM/key deletion, then Vault tombstone |
-| AWS cert-manager-DNS01 IAM identity/key/policy plus `secret/aws/cert-manager/aws/dns01` generation | AWS-run setup operation | exact IAM principal/key/policy plus Vault generation/opaque Agent-HMAC commitment/read-back | after EKS Certificate/Challenge/TXT and cluster cleanup, delete IAM/key then commit Vault tombstone |
+| AWS cert-manager-DNS01 IRSA role and managed policy (`aws-eks-cert-manager-role-family`) | `aws-eks` stack creates it; no Vault generation | exact IAM role and policy names, read back absent | removed by the registered role-family backstop before the EKS stack destroy |
 
 Access-key creation is journaled before AWS mutation. If the one-time secret response is lost
 before Target-Agent sealing, the uncommitted key ID is discovered, deleted, and observed stably

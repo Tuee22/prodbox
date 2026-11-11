@@ -11,6 +11,7 @@ module Prodbox.Test.Qualification.SourceManifest
   ( SourceManifestCaptureError (..)
   , captureSourceIdentity
   , captureSourceIdentityPair
+  , captureAwsLifecycleSourceIdentity
   , captureCommittedSourceIdentity
   )
 where
@@ -38,6 +39,7 @@ import Prodbox.Test.Qualification.SourceIdentity
   , SourceScope (..)
   , WorktreeState (..)
   , classifySourcePath
+  , mkAwsLifecycleSourceIdentity
   , mkGitHead
   , mkScopedSourceIdentity
   , mkSourceIdentity
@@ -86,6 +88,22 @@ captureSourceIdentityPair repoRoot configuredSecretRoots = do
     full <- identityOver FullSurface configuredSecretRoots captured
     executable <- identityOver ExecutableSurface configuredSecretRoots captured
     Right (full, executable)
+
+-- | The AWS stack lifecycle's scoped identity of the current worktree. Every
+-- candidate is classified exactly as for the full identity; only the scoped
+-- paths are hashed.
+captureAwsLifecycleSourceIdentity
+  :: FilePath
+  -> [Text]
+  -> IO (Either SourceManifestCaptureError SourceIdentity)
+captureAwsLifecycleSourceIdentity repoRoot configuredSecretRoots = do
+  inputs <- captureWorktreeInputs repoRoot configuredSecretRoots
+  pure $ do
+    (gitHead, worktree, candidates) <- inputs
+    either
+      (Left . SourceManifestIdentityRejected)
+      Right
+      (mkAwsLifecycleSourceIdentity gitHead worktree configuredSecretRoots candidates)
 
 identityOver
   :: SourceScope

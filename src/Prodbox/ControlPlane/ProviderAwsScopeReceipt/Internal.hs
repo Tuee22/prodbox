@@ -21,6 +21,8 @@ module Prodbox.ControlPlane.ProviderAwsScopeReceipt.Internal
   , lifecycleAuthorityProviderAwsScopeReaderInternal
   , readBackVerifiedAuthorityProviderAwsScope
   , readBackVerifiedAuthorityProviderAwsScopeInternal
+  , verifyRegisteredAuthorityProviderAwsScope
+  , readRegisteredAuthorityProviderAwsScopeReceipt
   , verifySettledAuthorityProviderAwsScopeReceipt
   , verifyAuthorityProviderAwsScopeCompletion
   )
@@ -42,20 +44,35 @@ import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.ControlPlane.AuthorityAdmissionEndpoint
   ( AuthorityAdmissionRepository (readAuthorityAdmission)
   , AuthorityAdmissionSnapshot (authorityAdmissionSnapshotState)
+  , registeredGenerationForSlot
   )
+import Prodbox.ControlPlane.CallerPrincipal (CallerPrincipal)
 import Prodbox.ControlPlane.ProviderWorkerExecution
   ( ExecutedProviderIntent
   , ProviderIntentExecutionResult (..)
   , executedProviderIntentAction
   , executedProviderIntentResult
   )
+import Prodbox.ControlPlane.RequestAuthentication
+  ( VerifiedCallerSlot
+  , verifiedCallerSlotPrincipal
+  )
 import Prodbox.Lifecycle.Authority.Admission
-  ( AuthorityProviderOperation (..)
+  ( AuthorityAdmissionAggregate
+  , AuthorityProviderOperation (..)
   , ProviderOperationCleanupOwner (ProviderOperationUnownedByCleanupRun)
   , authorityAggregateProviderOperations
+  , observeRegisteredAuthoritySubmission
+  )
+import Prodbox.Lifecycle.Authority.ClientRegistry
+  ( ClientSubmissionKey
+  , RegisteredClientGeneration
+  , RegisteredSubmissionObservation (..)
   )
 import Prodbox.Lifecycle.Authority.Submission
   ( OperationId
+  , SubmissionStatus (StatusSettled)
+  , TerminalOutcome (OperationCompletedOutcome)
   , operationIdClient
   , operationIdDigest
   , operationIdSequence
@@ -149,6 +166,7 @@ data ProviderAwsScopeReceiptError
   | ProviderAwsScopeRetainedIntentMismatch
   | ProviderAwsScopeRetainedDigestMismatch
   | ProviderAwsScopeRetainedOperationMismatch
+  | ProviderAwsScopeCallerBindingUnresolved
   deriving stock (Eq, Show)
 
 data WireProviderAwsScopeReceipt = WireProviderAwsScopeReceipt
@@ -259,6 +277,62 @@ readBackVerifiedAuthorityProviderAwsScopeInternal repository expectedOperation =
             )
         )
     verifyAuthorityProviderAwsScopeCompletion expectedOperation retained
+
+-- | Join a registered caller's exact submission and the Provider completion
+-- from the same aggregate. This is a non-authorizing building block for an
+-- authenticated observation route; it neither submits nor executes work.
+verifyRegisteredAuthorityProviderAwsScope
+  :: AuthorityAdmissionAggregate
+  -> CallerPrincipal
+  -> RegisteredClientGeneration
+  -> ClientSubmissionKey
+  -> OperationId
+  -> Either ProviderAwsScopeReceiptError VerifiedAuthorityProviderAwsScope
+verifyRegisteredAuthorityProviderAwsScope aggregate caller generation key expected = do
+  observation <-
+    first
+      (const ProviderAwsScopeCallerBindingUnresolved)
+      (observeRegisteredAuthoritySubmission aggregate caller generation key)
+  case observation of
+    RegisteredSubmissionObserved actual (StatusSettled OperationCompletedOutcome)
+      | actual == expected -> Right ()
+    _ -> Left ProviderAwsScopeCallerBindingUnresolved
+  retained <-
+    maybe (Left ProviderAwsScopeRetainedOperationMissing) Right $
+      Map.lookup
+        (operationIdClient expected, operationIdSequence expected)
+        (authorityAggregateProviderOperations aggregate)
+  verifyAuthorityProviderAwsScopeCompletion expected retained
+
+-- | Observe exactly one Authority snapshot. The retained receipt is returned
+-- only after the authenticated caller's registration and the Provider scope
+-- completion have both been verified against that same immutable snapshot.
+readRegisteredAuthorityProviderAwsScopeReceipt
+  :: (Monad m)
+  => AuthorityAdmissionRepository m revision
+  -> VerifiedCallerSlot
+  -> ClientSubmissionKey
+  -> OperationId
+  -> m (Either ProviderAwsScopeReceiptError Text)
+readRegisteredAuthorityProviderAwsScopeReceipt repository caller key expected = do
+  observed <- readAuthorityAdmission repository
+  pure $ do
+    generation <-
+      first (const ProviderAwsScopeCallerBindingUnresolved) (registeredGenerationForSlot caller)
+    snapshot <- first ProviderAwsScopeAuthorityReadUnavailable observed
+    let aggregate = authorityAdmissionSnapshotState snapshot
+    _ <-
+      verifyRegisteredAuthorityProviderAwsScope
+        aggregate
+        (verifiedCallerSlotPrincipal caller)
+        generation
+        key
+        expected
+    case Map.lookup
+      (operationIdClient expected, operationIdSequence expected)
+      (authorityAggregateProviderOperations aggregate) of
+      Just (AuthorityProviderCompleted _ _ receipt _) -> Right receipt
+      _ -> Left ProviderAwsScopeRetainedOperationMissing
 
 -- | Remint the Authority proof only from the exact retained completed
 -- operation selected by an independent aggregate read.  This function remains

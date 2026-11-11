@@ -16,7 +16,9 @@ module Prodbox.ControlPlane.AuthorityPeerContext
   , AuthorityPeerContextInterpreter (..)
   , authorityPeerContextMaximumBytes
   , authorityPeerContextRequest
+  , signedAuthorityPeerContextRequest
   , isAuthorityPeerContextRequest
+  , isSignedAuthorityPeerContextRequest
   , encodeAuthorityPeerContextResponse
   , decodeAuthorityPeerContextResponse
   , observeAuthorityPeerContext
@@ -102,7 +104,7 @@ newtype AuthorityPeerContextInterpreter m = AuthorityPeerContextInterpreter
       -> m (Either AuthorityPeerContextError result)
   }
 
-data PeerContextRequest = ObserveAuthorityPeerContext
+data PeerContextRequest = ObserveAuthorityPeerContext | ObserveSignedAuthorityPeerContext
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -118,11 +120,18 @@ authorityPeerContextMaximumBytes = 1024
 authorityPeerContextRequest :: ByteString
 authorityPeerContextRequest = LazyByteString.toStrict (encodeControlPlaneRequest ObserveAuthorityPeerContext)
 
+signedAuthorityPeerContextRequest :: ByteString
+signedAuthorityPeerContextRequest = LazyByteString.toStrict (encodeControlPlaneRequest ObserveSignedAuthorityPeerContext)
+
 isAuthorityPeerContextRequest :: ByteString -> Bool
 isAuthorityPeerContextRequest bytes =
   case decodeControlPlaneRequest 64 (LazyByteString.fromStrict bytes) of
     Right ObserveAuthorityPeerContext -> True
+    Right ObserveSignedAuthorityPeerContext -> True
     Left _ -> False
+
+isSignedAuthorityPeerContextRequest :: ByteString -> Bool
+isSignedAuthorityPeerContextRequest bytes = bytes == signedAuthorityPeerContextRequest
 
 encodeAuthorityPeerContextResponse
   :: Either AuthorityPeerContextError AuthorityPeerContext -> ByteString

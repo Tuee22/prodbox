@@ -11,6 +11,7 @@ module Prodbox.Infra.AwsEksTestStack
   , awsEksProviderReceiptLabel
   , awsEksDesiredNodeCount
   , loadAwsEksProviderConfig
+  , loadAwsEksCreateProviderConfig
   , ensureAwsEksTestStackResources
   , ensureAwsEksTestStackResourcesWithAuthentication
   , destroyAwsEksTestStack
@@ -83,6 +84,7 @@ import Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , ProviderRunMarker
   , ProviderStackConfig
   , mkAwsEksProfileProviderStackConfig
+  , mkAwsEksProfileZoneProviderStackConfig
   , mkProviderRevision
   , mkProviderStackRef
   )
@@ -92,6 +94,7 @@ import Prodbox.Lifecycle.Teardown.EphemeralKubectl
   , withEphemeralKubeconfigPath
   )
 import Prodbox.Lifecycle.Teardown.Registry qualified as Registry
+import Prodbox.PublicEdge (resolveSubstrateHostedZoneId)
 import Prodbox.Settings
   ( ConfigFile (..)
   , Credentials (..)
@@ -105,6 +108,7 @@ import Prodbox.Settings.AwsSubstrateProfile
   , awsSubstrateEksMinimumNodeCount
   )
 import Prodbox.Settings.Coordinate (awsRegionText)
+import Prodbox.Substrate (Substrate (SubstrateAws))
 import Prodbox.Supervision (withSupervisedChild)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 
@@ -146,6 +150,7 @@ data AwsEksTestStackSnapshot = AwsEksTestStackSnapshot
   , eksSnapshotAwsLbControllerRoleArn :: String
   , eksSnapshotAwsLbControllerRoleName :: String
   , eksSnapshotRetainedEbsAvailabilityZone :: String
+  , eksSnapshotCertManagerDns01RoleArn :: String
   }
   deriving (Eq, Show)
 
@@ -165,7 +170,7 @@ ensureAwsEksTestStackResourcesWithAuthentication
   -> FilePath
   -> IO ExitCode
 ensureAwsEksTestStackResourcesWithAuthentication authentication repoRoot = do
-  configResult <- loadAwsEksProviderConfig repoRoot
+  configResult <- loadAwsEksCreateProviderConfig repoRoot
   case (mkProviderStackRef "aws-eks", mkProviderRevision 1, configResult) of
     (Right ref, Right revision, Right config) -> do
       -- Sprint 4.84: creation goes through the submitting lane, which commits
@@ -230,6 +235,29 @@ loadAwsEksProviderConfig repoRoot = do
     case mkAwsEksProfileProviderStackConfig authoredProfile desiredSize of
       Left err -> Left (show err)
       Right config -> Right config
+
+-- | The create-side configuration: the destroy/observation form plus the exact
+-- per-run subzone hosted-zone id the cluster's cert-manager role is scoped to
+-- (Sprint 7.47, D5(a) option (i)). The id is resolved by the same resolver the
+-- ACME step uses, so a create with no converged subzone refuses before any
+-- Provider intent is minted instead of granting a role over a zone that is not
+-- there.
+loadAwsEksCreateProviderConfig :: FilePath -> IO (Either String ProviderStackConfig)
+loadAwsEksCreateProviderConfig repoRoot = do
+  settingsResult <- validateAndLoadSettings repoRoot
+  case settingsResult of
+    Left err -> pure (Left err)
+    Right settings -> do
+      zoneResult <- resolveSubstrateHostedZoneId repoRoot settings SubstrateAws
+      pure $ do
+        hostedZoneId <- zoneResult
+        authoredProfile <- requireAwsSubstrateProfile settings
+        let desiredSize =
+              awsEksDesiredNodeCount
+                authoredProfile
+                (cluster_topology (validatedConfig settings))
+        either (Left . show) Right $
+          mkAwsEksProfileZoneProviderStackConfig authoredProfile desiredSize hostedZoneId
 
 -- | The desired node count of the @aws-eks@ stack.
 --
@@ -361,6 +389,7 @@ parseAwsEksTestStackFromOutputs outputs =
     <*> requireOutputString outputs "aws_lb_controller_role_arn"
     <*> requireOutputString outputs "aws_lb_controller_role_name"
     <*> requireOutputString outputs "retained_ebs_availability_zone"
+    <*> requireOutputString outputs "cert_manager_dns01_role_arn"
 
 requireOutputString
   :: Map.Map Text.Text Text.Text -> Text.Text -> Either String String
@@ -399,6 +428,7 @@ renderAwsEksTestStackReport snapshot objectCount =
     , "AWS_LB_CONTROLLER_ROLE_ARN=" ++ eksSnapshotAwsLbControllerRoleArn snapshot
     , "AWS_LB_CONTROLLER_ROLE_NAME=" ++ eksSnapshotAwsLbControllerRoleName snapshot
     , "RETAINED_EBS_AVAILABILITY_ZONE=" ++ eksSnapshotRetainedEbsAvailabilityZone snapshot
+    , "CERT_MANAGER_DNS01_ROLE_ARN=" ++ eksSnapshotCertManagerDns01RoleArn snapshot
     ]
 
 assertNoAwsEksTestStackResidue

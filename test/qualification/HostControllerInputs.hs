@@ -2,14 +2,17 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 -- Native file/descriptor controls. These grant no manager or Authority receipt.
+-- Run with +RTS -T so the tiny-input allocation regression can observe the RTS.
 module Main (main) where
 
 import Control.Concurrent (threadDelay)
-import Control.Monad (forM_, unless, void)
+import Control.Exception (SomeException, try)
+import Control.Monad (forM, forM_, unless, void)
 import Data.ByteString qualified as BS
 import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Word (Word64)
 import GHC.Clock (getMonotonicTimeNSec)
+import GHC.Stats (RTSStats (allocated_bytes), getRTSStats, getRTSStatsEnabled)
 import Prodbox.Subprocess.HostControllerInputs
 import System.Directory
   ( createDirectory
@@ -22,6 +25,7 @@ import System.Directory
 import System.Environment (getArgs)
 import System.FilePath ((</>))
 import System.IO (IOMode (WriteMode), hSetFileSize, withBinaryFile)
+import System.Mem (performGC)
 import System.Posix.Files (createLink, createNamedPipe, createSymbolicLink, setFileMode)
 
 right :: (Show error) => Either error value -> IO value
@@ -40,7 +44,7 @@ main = do
   [supplied] <- getArgs
   root <- makeAbsolute supplied
   setFileMode root 0o700
-  forM_ controls $ \name -> do
+  results <- forM controls $ \name -> do
     let directory = root </> name
         configuration = directory </> "config.dhall"
         request = directory </> "request"
@@ -50,8 +54,11 @@ main = do
     BS.writeFile request requestBytes
     mapM_ (`setFileMode` 0o600) [configuration, request]
     ending <- deadline
-    exercise name directory configuration request ending
-    putStrLn ("PASS " ++ name)
+    result <- try (exercise name directory configuration request ending)
+    case result of
+      Left cause -> putStrLn ("FAIL " ++ name ++ ": " ++ show (cause :: SomeException)) >> pure False
+      Right () -> putStrLn ("PASS " ++ name) >> pure True
+  unless (and results) (fail "one or more native input controls failed")
   putStrLn ("PASS all " ++ show (length controls) ++ " native input controls")
 
 controls :: [String]
@@ -71,6 +78,9 @@ controls =
   , "hardlink"
   , "parent-permissions"
   , "oversized"
+  , "empty-read"
+  , "read-boundaries"
+  , "small-read-allocation"
   , "exact-ceiling"
   , "expired"
   , "held-expiry"
@@ -218,6 +228,39 @@ exercise name directory configuration request ending = case name of
         request
         (const (fail "oversized input entered decoder"))
     expectLeft (== ControllerInputTooLarge ControllerConfiguration) refused
+  "empty-read" -> do
+    mapM_ (`BS.writeFile` BS.empty) [configuration, request]
+    void $
+      right =<< withHostControllerInputs ending configuration request (checkBytes BS.empty BS.empty)
+  "read-boundaries" ->
+    forM_ [1, 8191, 8192, 8193, 65535, 1048575] $ \size -> do
+      let left = BS.pack (take size (cycle [0, 255, 17, 198]))
+          other = BS.reverse left
+      BS.writeFile configuration left
+      BS.writeFile request other
+      void $ right =<< withHostControllerInputs ending configuration request (checkBytes left other)
+  "small-read-allocation" ->
+    void $
+      right
+        =<< withHostControllerInputs
+          ending
+          configuration
+          request
+          ( \inputs -> do
+              enabled <- getRTSStatsEnabled
+              unless enabled (fail "allocation control requires +RTS -T")
+              -- Warm the same path before sampling; this is cumulative allocation,
+              -- independently observed by the RTS, not an admitted heap/peak bound.
+              checkBytes configBytes requestBytes inputs
+              performGC
+              before <- getRTSStats
+              forM_ [1 .. 4 :: Int] (const (checkBytes configBytes requestBytes inputs))
+              performGC
+              after <- getRTSStats
+              let allocated = allocated_bytes after - allocated_bytes before
+              putStrLn ("tiny_read_four_allocated_bytes=" ++ show allocated)
+              unless (allocated < 1048576) (fail "tiny inputs allocated the serialized rejection ceiling")
+          )
   "exact-ceiling" -> do
     mapM_
       (\path -> withBinaryFile path WriteMode (\file -> hSetFileSize file (1024 * 1024)))

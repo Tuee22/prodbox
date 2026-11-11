@@ -5,6 +5,7 @@ module Prodbox.ControlPlane.AuthorityPeerContextClient
   ( AuthorityPeerContextClientError (..)
   , requestAuthorityPeerContext
   , requestAuthorityPeerContextWithin
+  , requestAuthorityPeerContextWithVerifiedResponse
   , decodeAuthorityPeerContextClientResponse
   )
 where
@@ -15,17 +16,24 @@ import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientError
   , AuthenticatedClientTransport
   , callAuthenticatedPeerObservation
+  , callAuthenticatedPeerObservationWithSignedRequest
   , resolveAuthenticatedClientTransportDeadline
+  )
+import Prodbox.ControlPlane.AuthorityAuthenticatedResponse
+  ( AuthorityAuthenticatedResponseError
+  , verifyAuthorityAuthenticatedResponse
   )
 import Prodbox.ControlPlane.AuthorityPeerContext
 import Prodbox.ControlPlane.Client (ControlPlaneResponse (..))
 import Prodbox.ControlPlane.Coordinate (AuthorityScope)
+import Prodbox.ControlPlane.RequestAuthentication (TrustedRequestKey)
 import Prodbox.Lifecycle.Lease (AuthorityTime, authorityTimeMicros)
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 import System.Timeout (timeout)
 
 data AuthorityPeerContextClientError
   = PeerContextClientTransportFailed !AuthenticatedClientError
+  | PeerContextClientResponseAuthenticationFailed !AuthorityAuthenticatedResponseError
   | PeerContextClientHttpStatus !Int
   | PeerContextClientRejected !AuthorityPeerContextError
   | PeerContextClientScopeMismatch
@@ -43,6 +51,26 @@ requestAuthorityPeerContext scope transport = do
   pure $
     first PeerContextClientTransportFailed result
       >>= decodeAuthorityPeerContextClientResponse scope
+
+-- | The caller selects the Authority key independently and owns a complete
+-- original deadline and capacity envelope around signing and verification.
+requestAuthorityPeerContextWithVerifiedResponse
+  :: AuthorityScope
+  -> TrustedRequestKey
+  -> AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+  -> IO (Either AuthorityPeerContextClientError AuthorityPeerContext)
+requestAuthorityPeerContextWithVerifiedResponse scope trusted transport = do
+  attempted <-
+    callAuthenticatedPeerObservationWithSignedRequest transport signedAuthorityPeerContextRequest
+  pure $ do
+    (request, ControlPlaneResponse outerStatus envelope) <-
+      first PeerContextClientTransportFailed attempted
+    if outerStatus == 200 then pure () else Left (PeerContextClientHttpStatus outerStatus)
+    (status, body) <-
+      first
+        PeerContextClientResponseAuthenticationFailed
+        (verifyAuthorityAuthenticatedResponse authorityPeerContextMaximumBytes trusted request envelope)
+    decodeAuthorityPeerContextClientResponse scope (ControlPlaneResponse (fromIntegral status) body)
 
 -- | A caller's original absolute deadline covers deadline-provider resolution,
 -- signing, nonce generation, HTTP and response decoding. An earlier transport

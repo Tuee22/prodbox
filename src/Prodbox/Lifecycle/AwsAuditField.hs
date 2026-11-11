@@ -80,7 +80,9 @@ import Prodbox.Lifecycle.TaggedResourceQuery
   , taggedResourceQueryArgs
   )
 import Prodbox.Lifecycle.Teardown.Registry
-  ( awsEksIamManagedPolicyNames
+  ( awsEksCertManagerPolicyNames
+  , awsEksCertManagerRoleNames
+  , awsEksIamManagedPolicyNames
   , awsEksIamRoleNames
   , awsEksProvisionedClusterName
   , awsEksProvisionedNodeGroupName
@@ -601,8 +603,8 @@ registeredAnswers
   -> ProviderNativeStackFamilyRef
   -> m (Map AuditClass AuditAnswer)
 registeredAnswers runner ref = do
-  roles <- traverse roleRow awsEksIamRoleNames
-  policies <- traverse policyRow awsEksIamManagedPolicyNames
+  roles <- traverse roleRow (awsEksIamRoleNames <> awsEksCertManagerRoleNames)
+  policies <- traverse policyRow (awsEksIamManagedPolicyNames <> awsEksCertManagerPolicyNames)
   volumes <- volumeAnswer
   providers <- oidcAnswer
   pure
@@ -960,7 +962,7 @@ auditReadOnlyScript stack bucket controlRegion =
         ]
           <> map (scriptCommand . eksReadinessArgs) eksReadinessQueries
           <> [ scriptCommand ["iam", "get-role", "--role-name", Text.unpack name, "--output", "json"]
-             | name <- awsEksIamRoleNames
+             | name <- awsEksIamRoleNames <> awsEksCertManagerRoleNames
              ]
           <> [ scriptCommand
                  [ "iam"
@@ -970,7 +972,7 @@ auditReadOnlyScript stack bucket controlRegion =
                  , "--output"
                  , "json"
                  ]
-             | name <- awsEksIamManagedPolicyNames
+             | name <- awsEksIamManagedPolicyNames <> awsEksCertManagerPolicyNames
              ]
           <> [ scriptWords (oidcProviderListing Nothing)
              , scriptCommand (ebsDescribeVolumesArgs (EbsPerRunTest (Text.unpack awsEksProvisionedClusterName)))

@@ -7,6 +7,8 @@
 module Prodbox.ControlPlane.RpcAdmissionBirthBootstrap
   ( RpcBirthBootstrapError (..)
   , observeRpcBirthBootstrapRegistry
+  , observeRpcBirthBootstrapRegistryWithVerifiedResponses
+  , observeRpcBirthBootstrapRegistryWithPinnedManifest
   ) where
 
 import Control.Monad (unless)
@@ -14,8 +16,11 @@ import Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE)
 import Data.Bifunctor (first)
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Word (Word64)
+import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.AuthenticatedTransport
   ( AuthenticatedClientProviders (..)
+  , AuthenticatedClientTransport
   , AuthenticatedTransportBounds
   , mkAuthenticatedClientTransport
   )
@@ -33,7 +38,14 @@ import Prodbox.ControlPlane.RegisteredRpcSigning
   , NativeRpcSigningProgram (..)
   , RegisteredRpcSigningError
   )
-import Prodbox.ControlPlane.RequestAuthentication (RequestNonce, mkRequestSigningCapability)
+import Prodbox.ControlPlane.RequestAuthentication
+  ( CallerPrincipal (CallerService)
+  , RequestNonce
+  , TrustedRequestKey
+  , mkRequestSigningCapability
+  , mkSigningKeyGeneration
+  , mkTrustedRequestKey
+  )
 import Prodbox.ControlPlane.RpcAdmissionBirth
   ( RpcBirthServingMode
   , rpcBirthServingModeMatches
@@ -41,6 +53,7 @@ import Prodbox.ControlPlane.RpcAdmissionBirth
   )
 import Prodbox.ControlPlane.RpcAdmissionBirthEndpoint
   ( RpcBirthClientError
+  , requestRpcBirthRegistryWithVerifiedResponses
   , requestRpcBirthRegistryWithin
   )
 import Prodbox.ControlPlane.RpcAdmissionBirthExecution
@@ -57,6 +70,12 @@ import Prodbox.ControlPlane.RpcKeyRegistry
   )
 import Prodbox.ControlPlane.RpcOwnBindingHint
 import Prodbox.Lifecycle.Authority.Genesis (authorityEpochGenesis)
+import Prodbox.Lifecycle.Decommission.Frame (FrameDigest)
+import Prodbox.Lifecycle.Decommission.Manifest
+  ( ManifestPublicKey
+  , manifestPublicKeyBytes
+  , manifestPublicKeyDigest
+  )
 import Prodbox.Lifecycle.Lease (AuthorityTime, authorityTimeMicros)
 import Prodbox.Runtime.Role (RuntimeRole (LifecycleAuthorityRuntime))
 import System.Timeout (timeout)
@@ -70,6 +89,9 @@ data RpcBirthBootstrapError
   | RpcBirthBootstrapRegistry !RpcBirthClientError
   | RpcBirthBootstrapPinMismatch
   | RpcBirthBootstrapCapabilityInvalid
+  | RpcBirthBootstrapAuthorityKeyUnavailable
+  | RpcBirthBootstrapAuthorityKeyMismatch
+  | RpcBirthBootstrapAuthorityKeyInvalid
   | RpcBirthBootstrapClockUnavailable
   | RpcBirthBootstrapDeadlineReached
   | RpcBirthBootstrapTimedOut
@@ -86,6 +108,111 @@ observeRpcBirthBootstrapRegistry
   -> ControlPlaneClient 'LifecycleAuthorityRuntime
   -> IO (Either RpcBirthBootstrapError RpcBirthRegistryObservation)
 observeRpcBirthBootstrapRegistry native readTime nonce scope mode deadline bounds client =
+  observeRpcBirthBootstrapRegistryUsing
+    native
+    readTime
+    nonce
+    scope
+    mode
+    deadline
+    bounds
+    client
+    (requestRpcBirthRegistryWithin readTime deadline scope)
+
+-- | The trusted Authority key must come from a separately authenticated
+-- source, with rotation, revocation and complete deadline admission owned by
+-- the caller. No unsigned peer or registry fallback is attempted.
+observeRpcBirthBootstrapRegistryWithVerifiedResponses
+  :: NativeRpcSigningInterpreter IO
+  -> IO (Either Text AuthorityTime)
+  -> IO (Either Text RequestNonce)
+  -> AuthorityScope
+  -> RpcBirthServingMode
+  -> AuthorityTime
+  -> AuthenticatedTransportBounds
+  -> ControlPlaneClient 'LifecycleAuthorityRuntime
+  -> TrustedRequestKey
+  -> IO (Either RpcBirthBootstrapError RpcBirthRegistryObservation)
+observeRpcBirthBootstrapRegistryWithVerifiedResponses native readTime nonce scope mode deadline bounds client trusted =
+  observeRpcBirthBootstrapRegistryUsing
+    native
+    readTime
+    nonce
+    scope
+    mode
+    deadline
+    bounds
+    client
+    (requestRpcBirthRegistryWithVerifiedResponses readTime deadline scope trusted)
+
+-- | The digest is an independently provisioned pin, never a value obtained
+-- from this exchange. Key reads and the exchange share the original timeout;
+-- later use still requires rotation and CAS fencing.
+observeRpcBirthBootstrapRegistryWithPinnedManifest
+  :: NativeRpcSigningInterpreter IO
+  -> IO (Either Text AuthorityTime)
+  -> IO (Either Text RequestNonce)
+  -> AuthorityScope
+  -> RpcBirthServingMode
+  -> AuthorityTime
+  -> AuthenticatedTransportBounds
+  -> ControlPlaneClient 'LifecycleAuthorityRuntime
+  -> FrameDigest
+  -> IO (Either Text (Natural, ManifestPublicKey))
+  -> IO (Either RpcBirthBootstrapError RpcBirthRegistryObservation)
+observeRpcBirthBootstrapRegistryWithPinnedManifest native readTime nonce scope mode deadline bounds client expected readPublic =
+  withinBootstrap readTime deadline $ runExceptT $ do
+    firstKey <- ExceptT (first (const RpcBirthBootstrapAuthorityKeyUnavailable) <$> readPublic)
+    trusted <- either throwE pure (trustedManifestKey expected firstKey)
+    result <-
+      ExceptT
+        ( observeRpcBirthBootstrapRegistryWithVerifiedResponses
+            native
+            readTime
+            nonce
+            scope
+            mode
+            deadline
+            bounds
+            client
+            trusted
+        )
+    lastKey <- ExceptT (first (const RpcBirthBootstrapAuthorityKeyUnavailable) <$> readPublic)
+    unless (lastKey == firstKey) (throwE RpcBirthBootstrapAuthorityKeyMismatch)
+    _ <- either throwE pure (trustedManifestKey expected lastKey)
+    pure result
+
+trustedManifestKey
+  :: FrameDigest
+  -> (Natural, ManifestPublicKey)
+  -> Either RpcBirthBootstrapError TrustedRequestKey
+trustedManifestKey expected (generation, public)
+  | manifestPublicKeyDigest public /= expected = Left RpcBirthBootstrapAuthorityKeyMismatch
+  | generation == 0 || generation > fromIntegral (maxBound :: Word64) =
+      Left RpcBirthBootstrapAuthorityKeyInvalid
+  | otherwise = do
+      wireGeneration <-
+        first (const RpcBirthBootstrapAuthorityKeyInvalid) (mkSigningKeyGeneration generation)
+      first (const RpcBirthBootstrapAuthorityKeyInvalid) $
+        mkTrustedRequestKey
+          (CallerService LifecycleAuthorityRuntime)
+          wireGeneration
+          (manifestPublicKeyBytes public)
+
+observeRpcBirthBootstrapRegistryUsing
+  :: NativeRpcSigningInterpreter IO
+  -> IO (Either Text AuthorityTime)
+  -> IO (Either Text RequestNonce)
+  -> AuthorityScope
+  -> RpcBirthServingMode
+  -> AuthorityTime
+  -> AuthenticatedTransportBounds
+  -> ControlPlaneClient 'LifecycleAuthorityRuntime
+  -> ( AuthenticatedClientTransport 'LifecycleAuthorityRuntime
+       -> IO (Either RpcBirthClientError RpcBirthRegistryObservation)
+     )
+  -> IO (Either RpcBirthBootstrapError RpcBirthRegistryObservation)
+observeRpcBirthBootstrapRegistryUsing native readTime nonce scope mode deadline bounds client readRegistry =
   withinBootstrap readTime deadline $ runExceptT $ do
     unless
       (rpcBirthServingModeRequiresRegistration mode)
@@ -130,7 +257,7 @@ observeRpcBirthBootstrapRegistry native readTime nonce scope mode deadline bound
         transport = mkAuthenticatedClientTransport bounds providers client
     registry <-
       ExceptT
-        (first RpcBirthBootstrapRegistry <$> requestRpcBirthRegistryWithin readTime deadline scope transport)
+        (first RpcBirthBootstrapRegistry <$> readRegistry transport)
     let birth = rpcBirthRegistryBirth registry
     descriptor <- maybe (throwE RpcBirthBootstrapPinMismatch) pure (rpcBirthObservationDescriptor birth)
     unless

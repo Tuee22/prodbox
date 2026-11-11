@@ -82,6 +82,7 @@ module Prodbox.Lifecycle.ProviderWorker.ProviderWork
   , mkAwsEksSubzoneProviderStackConfig
   , mkAwsSesPreviewStackConfig
   , mkAwsEksProfileProviderStackConfig
+  , mkAwsEksProfileZoneProviderStackConfig
   , mkAwsTestProfileProviderStackConfig
   , providerStackConfigRef
   , providerStackConfigView
@@ -496,6 +497,7 @@ data ProviderStackConfig
   | AwsEksProfileProviderStackConfig !AwsSubstrateProfile !Natural
   | AwsTestProfileProviderStackConfig !AwsSubstrateProfile
   | AwsSesPreviewStackConfig !Text !Text !Text
+  | AwsEksProfileZoneProviderStackConfig !AwsSubstrateProfile !Natural !Text
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
@@ -508,6 +510,7 @@ data ProviderStackConfigView
   | AwsEksProfileConfig !AwsSubstrateProfile !Natural
   | AwsTestProfileConfig !AwsSubstrateProfile
   | AwsSesPreviewConfig !Text !Text !Text
+  | AwsEksProfileZoneConfig !AwsSubstrateProfile !Natural !Text
   deriving stock (Eq, Show)
 
 data ProviderStackConfigError
@@ -715,6 +718,21 @@ mkAwsEksProfileProviderStackConfig profile desiredSize = do
     Left _ -> Left (ProviderStackConfigFieldInvalid "aws-substrate-profile")
     Right _ -> Right (AwsEksProfileProviderStackConfig profile desiredSize)
 
+-- | Append-only successor of 'mkAwsEksProfileProviderStackConfig' that also
+-- carries the exact per-run subzone hosted-zone id the cluster's cert-manager
+-- role is scoped to (Sprint 7.47, D5(a) option (i)). It is the only
+-- applyable EKS form; the zone-less profile form is observation-only.
+mkAwsEksProfileZoneProviderStackConfig
+  :: AwsSubstrateProfile
+  -> Natural
+  -> Text
+  -> Either ProviderStackConfigError ProviderStackConfig
+mkAwsEksProfileZoneProviderStackConfig profile desiredSize hostedZoneId = do
+  validateOpaqueField "hosted-zone-id" hostedZoneId
+  case awsEksStackConfiguration profile desiredSize of
+    Left _ -> Left (ProviderStackConfigFieldInvalid "aws-substrate-profile")
+    Right _ -> Right (AwsEksProfileZoneProviderStackConfig profile desiredSize hostedZoneId)
+
 mkAwsTestProfileProviderStackConfig
   :: AwsSubstrateProfile -> Either ProviderStackConfigError ProviderStackConfig
 mkAwsTestProfileProviderStackConfig profile = do
@@ -732,6 +750,8 @@ providerStackConfigView config = case config of
     AwsEksProfileConfig profile desiredSize
   AwsTestProfileProviderStackConfig profile -> AwsTestProfileConfig profile
   AwsSesPreviewStackConfig sender receive bucket -> AwsSesPreviewConfig sender receive bucket
+  AwsEksProfileZoneProviderStackConfig profile desiredSize hostedZoneId ->
+    AwsEksProfileZoneConfig profile desiredSize hostedZoneId
 
 providerStackConfigRef :: ProviderStackConfig -> ProviderStackRef
 providerStackConfigRef config = ProviderStackRef $ case config of
@@ -741,6 +761,7 @@ providerStackConfigRef config = ProviderStackRef $ case config of
   AwsTestProviderStackConfig _ -> "aws-test"
   AwsEksSubzoneProviderStackConfig _ _ -> "aws-eks-subzone"
   AwsEksProfileProviderStackConfig _ _ -> "aws-eks"
+  AwsEksProfileZoneProviderStackConfig {} -> "aws-eks"
   AwsTestProfileProviderStackConfig _ -> "aws-test"
   AwsSesPreviewStackConfig {} -> "aws-ses"
 
@@ -762,6 +783,8 @@ validateProviderStackConfig expected config = do
       mkAwsTestProfileProviderStackConfig profile
     AwsSesPreviewStackConfig sender receive bucket ->
       mkAwsSesPreviewStackConfig sender receive bucket
+    AwsEksProfileZoneProviderStackConfig profile desiredSize hostedZoneId ->
+      mkAwsEksProfileZoneProviderStackConfig profile desiredSize hostedZoneId
   let actual = providerStackConfigRef rebuilt
   if actual == expected
     then Right ()
@@ -1713,6 +1736,14 @@ providerStackConfigCoordinate config = case providerStackConfigView config of
       <> Text.pack (show profile)
       <> ":desired:"
       <> Text.pack (show desiredSize)
+  AwsEksProfileZoneConfig profile desiredSize hostedZoneId ->
+    awsSubstrateOperatorCidr profile
+      <> ":profile:"
+      <> Text.pack (show profile)
+      <> ":desired:"
+      <> Text.pack (show desiredSize)
+      <> ":zone:"
+      <> hostedZoneId
   AwsTestProfileConfig profile ->
     awsSubstrateOperatorCidr profile <> ":profile:" <> Text.pack (show profile)
   AwsSesPreviewConfig sender receive bucket ->

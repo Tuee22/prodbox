@@ -67,6 +67,7 @@ tableCases = do
                  , (HomeDns01ChallengeRecordKey, DerivedStandalone)
                  , (SesInviteMailObjectsKey, DerivedStandalone)
                  , (AwsTestCanarySecurityGroupsKey, DerivedControllerFamily AwsTestKey)
+                 , (AwsEksCertManagerRoleFamilyKey, DerivedControllerFamily AwsEksKey)
                  ]
 
   it "projects the per-run programs from the table and keeps the retained one off the lane" $ do

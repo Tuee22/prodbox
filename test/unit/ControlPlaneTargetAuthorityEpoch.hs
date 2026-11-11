@@ -2,7 +2,13 @@
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-module ControlPlaneTargetAuthorityEpoch (controlPlaneTargetAuthorityEpochSuite) where
+module ControlPlaneTargetAuthorityEpoch
+  ( controlPlaneTargetAuthorityEpochSuite
+  , AuthenticatedEpochFixture (..)
+  , EpochFixture (..)
+  , newAuthenticatedEpochFixtureWithSignedResponses
+  , newEpochFixture
+  ) where
 
 import Control.Concurrent.MVar (newEmptyMVar, readMVar)
 import Control.Exception (AsyncException (ThreadKilled), throwIO, try)
@@ -19,6 +25,11 @@ import Data.Text.Encoding qualified as TextEncoding
 import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.AuthenticatedRoleInterpreter qualified as Role
 import Prodbox.ControlPlane.AuthenticatedTransport qualified as Transport
+import Prodbox.ControlPlane.AuthenticationRegistry
+  ( controlPlaneSigningKeyRefFor
+  , trustedCallersForRoute
+  )
+import Prodbox.ControlPlane.AuthorityAdmissionEndpoint (AuthorityAdmissionSnapshot (..))
 import Prodbox.ControlPlane.Client qualified as Client
 import Prodbox.ControlPlane.Codec qualified as Codec
 import Prodbox.ControlPlane.Coordinate (AuthorityEpoch (..))
@@ -26,11 +37,18 @@ import Prodbox.ControlPlane.Coordinate qualified as Coordinate
 import Prodbox.ControlPlane.RequestAuthentication qualified as Authentication
 import Prodbox.ControlPlane.RequestReplay qualified as Replay
 import Prodbox.ControlPlane.Route
-  ( ControlPlaneRoute (TargetMaterialObserve, TargetSecretTrustInstall)
+  ( ControlPlaneRoute (LifecycleOperationSubmit, TargetMaterialObserve, TargetSecretTrustInstall)
   , routesForRole
   )
+import Prodbox.ControlPlane.RpcKeyRegistry
 import Prodbox.ControlPlane.Server qualified as Server
+import Prodbox.ControlPlane.TargetAuthenticatedResponse qualified as TargetResponse
 import Prodbox.ControlPlane.TargetAuthorityEpoch
+import Prodbox.ControlPlane.TargetAuthorityEpochBinding
+  ( TargetEpochBindingEffect (..)
+  , TargetEpochBindingFailure (..)
+  , TargetEpochBindingInterpreter (..)
+  )
 import Prodbox.ControlPlane.TargetAuthorityEpochClient
 import Prodbox.ControlPlane.TargetAuthorityEpochCodec
 import Prodbox.ControlPlane.TargetAuthorityEpochEndpoint
@@ -57,12 +75,29 @@ import Prodbox.ControlPlane.TargetSecretWorkerRuntime
   ( TargetSecretWorkerRuntimeError (TargetSecretWorkerTrustUnavailable)
   , decodeTargetWorkerAcceptedAuthority
   )
+import Prodbox.ControlPlane.TargetSignedEpochBinding
+import Prodbox.ControlPlane.TargetSnapshotObservation
 import Prodbox.Http.Client
   ( HttpBoundedError (HttpBoundedTransport)
   , HttpError (HttpConnectionFailure)
   )
-import Prodbox.Http.ReplyStatus (replyStatusCode)
-import Prodbox.Lifecycle.Authority.EpochTopology (mkCutoverDigest)
+import Prodbox.Http.ReplyStatus (ReplyStatus (ReplyOk, ReplyServiceUnavailable), replyStatusCode)
+import Prodbox.Lifecycle.Authority.Admission
+  ( initialCleanInstallAuthorityWithRegisteredClients
+  , retireAuthorityRpcKey
+  , seedAuthorityRpcKeyRegistry
+  )
+import Prodbox.Lifecycle.Authority.ClientRegistry
+  ( clientPrincipalForCaller
+  , mkRegisteredClientGeneration
+  , mkRegisteredClientSlot
+  , mkRegisteredClientSpec
+  , mkRegisteredClientTable
+  )
+import Prodbox.Lifecycle.Authority.EpochTopology
+  ( CutoverSubstrate (CutoverAws, CutoverHome)
+  , mkCutoverDigest
+  )
 import Prodbox.Lifecycle.Authority.Genesis qualified as Genesis
 import Prodbox.Lifecycle.Lease
 import Prodbox.Runtime.Role
@@ -82,6 +117,186 @@ import TestSupport
 controlPlaneTargetAuthorityEpochSuite :: SuiteBuilder ()
 controlPlaneTargetAuthorityEpochSuite =
   describe "Sprint 6.5 staged Target authority trust" $ do
+    it "binds a Target response to the authenticated request and pinned signer" $ do
+      let generation = mustRight (Authentication.mkSigningKeyGeneration 1)
+          authoritySigner =
+            mustRight
+              ( Authentication.mkRequestSigner
+                  (Authentication.CallerService LifecycleAuthorityRuntime)
+                  generation
+                  (ByteString.pack [0 .. 31])
+              )
+          targetSigner =
+            mustRight
+              ( Authentication.mkRequestSigner
+                  (Authentication.CallerService TargetSecretAgentRuntime)
+                  generation
+                  (ByteString.pack [32 .. 63])
+              )
+          otherSigner =
+            mustRight
+              ( Authentication.mkRequestSigner
+                  (Authentication.CallerService TargetSecretAgentRuntime)
+                  generation
+                  (ByteString.pack [33 .. 64])
+              )
+          scope = mustRight (Coordinate.mkAuthorityScope "home")
+          epoch = fromJust (Genesis.authorityEpochFromValue 1)
+          requestEnd = authorityTimeFromMicros 2000
+          nonce = mustRight (Authentication.mkRequestNonce (ByteString.replicate 16 1))
+          otherNonce = mustRight (Authentication.mkRequestNonce (ByteString.replicate 16 2))
+          requestFor value =
+            mustRight
+              ( Authentication.signControlPlaneRequest
+                  authoritySigner
+                  TargetSecretTrustInstall
+                  TargetSecretAgentRuntime
+                  scope
+                  epoch
+                  requestEnd
+                  value
+                  "staging-control"
+              )
+          verified = verifiedEpochRequest LifecycleAuthorityRuntime "home" TargetSecretTrustInstall 1 2000
+          capability = Authentication.localRequestSigningCapability targetSigner
+          trusted = Authentication.trustedRequestKeyFromSigner targetSigner
+      signed <-
+        TargetResponse.signTargetAuthenticatedResponse 128 localAgent capability verified 200 "prepared"
+      let encoded = mustRight signed
+          verify key request = TargetResponse.verifyTargetAuthenticatedResponse 128 localAgent key request encoded
+      verify trusted (requestFor nonce) `shouldBe` Right (200, "prepared")
+      let otherRollout = mustRight (mkTargetAgentRolloutIdentity "home" ("sha256:" <> Text.replicate 64 "b"))
+          otherCluster = mustRight (mkTargetAgentRolloutIdentity "aws" ("sha256:" <> Text.replicate 64 "a"))
+      TargetResponse.verifyTargetAuthenticatedResponse 128 otherRollout trusted (requestFor nonce) encoded
+        `shouldBe` Left TargetResponse.TargetResponseClaimsMismatch
+      TargetResponse.signTargetAuthenticatedResponse 128 otherCluster capability verified 200 "prepared"
+        `shouldReturn` Left TargetResponse.TargetResponseRequestRefused
+      verify trusted (requestFor otherNonce) `shouldSatisfy` isLeft
+      verify (Authentication.trustedRequestKeyFromSigner otherSigner) (requestFor nonce)
+        `shouldSatisfy` isLeft
+      TargetResponse.verifyTargetAuthenticatedResponse
+        128
+        localAgent
+        trusted
+        (requestFor nonce)
+        "prepared"
+        `shouldSatisfy` isLeft
+      let altered = ByteString.init encoded <> ByteString.singleton (ByteString.last encoded + 1)
+      TargetResponse.verifyTargetAuthenticatedResponse 128 localAgent trusted (requestFor nonce) altered
+        `shouldSatisfy` isLeft
+      TargetResponse.signTargetAuthenticatedResponse
+        128
+        localAgent
+        (Authentication.localRequestSigningCapability authoritySigner)
+        verified
+        200
+        "prepared"
+        `shouldReturn` Left TargetResponse.TargetResponseSignerRefused
+      TargetResponse.verifyTargetAuthenticatedResponse
+        maxBound
+        localAgent
+        trusted
+        (requestFor nonce)
+        encoded
+        `shouldBe` Left TargetResponse.TargetResponseInvalidLimit
+      TargetResponse.signTargetAuthenticatedResponse 128 localAgent capability verified 600 "prepared"
+        `shouldReturn` Left TargetResponse.TargetResponseStatusInvalid
+      TargetResponse.signTargetAuthenticatedResponse 2 localAgent capability verified 200 "prepared"
+        `shouldReturn` Left TargetResponse.TargetResponseBodyTooLarge
+
+    it "signs an actual Target observation only for the verified request" $ do
+      fixture <- newEpochFixture prepared
+      let generation = mustRight (Authentication.mkSigningKeyGeneration 1)
+          authoritySigner =
+            mustRight
+              ( Authentication.mkRequestSigner
+                  (Authentication.CallerService LifecycleAuthorityRuntime)
+                  generation
+                  (ByteString.pack [0 .. 31])
+              )
+          targetSigner =
+            mustRight
+              ( Authentication.mkRequestSigner
+                  (Authentication.CallerService TargetSecretAgentRuntime)
+                  generation
+                  (ByteString.pack [32 .. 63])
+              )
+          scope = mustRight (Coordinate.mkAuthorityScope "home")
+          epoch = fromJust (Genesis.authorityEpochFromValue 1)
+          requestEnd = authorityTimeFromMicros 2000
+          nonce = mustRight (Authentication.mkRequestNonce (ByteString.replicate 16 1))
+          otherNonce = mustRight (Authentication.mkRequestNonce (ByteString.replicate 16 2))
+          inner = mustRight (encodeTargetEpochRequest (TargetEpochObserve TargetAcmeEab))
+          body = LazyByteString.toStrict (Codec.encodeControlPlaneRequest (TargetAuthorityTrustRequest inner))
+          signedFor value =
+            mustRight
+              ( Authentication.signControlPlaneRequest
+                  authoritySigner
+                  TargetSecretTrustInstall
+                  TargetSecretAgentRuntime
+                  scope
+                  epoch
+                  requestEnd
+                  value
+                  body
+              )
+          verification =
+            mustRight
+              ( Authentication.mkRequestVerificationContext
+                  (Authentication.trustedRequestKeyFromSigner authoritySigner)
+                  TargetSecretTrustInstall
+                  TargetSecretAgentRuntime
+                  scope
+                  epoch
+                  requestEnd
+                  nonce
+                  now
+                  (mustRight (authorityDurationFromMicros 3000))
+              )
+          verified =
+            mustRight
+              ( Authentication.decodeAndVerifyControlPlaneRequest
+                  65536
+                  verification
+                  (Authentication.encodeSignedControlPlaneRequest (signedFor nonce))
+              )
+          capability = Authentication.localRequestSigningCapability targetSigner
+          trusted = Authentication.trustedRequestKeyFromSigner targetSigner
+      handled <-
+        targetEpochSignedObservationHandler
+          65536
+          65536
+          localAgent
+          (epochInterpreter fixture)
+          capability
+          verified
+      let envelope = mustRight (fromJust handled)
+          (status, response) =
+            mustRight
+              (TargetResponse.verifyTargetAuthenticatedResponse 65536 localAgent trusted (signedFor nonce) envelope)
+      decodeTargetEpochClientResponse
+        (TargetEpochObserve TargetAcmeEab)
+        (Client.ControlPlaneResponse (fromIntegral status) response)
+        `shouldBe` Right (TargetEpochObserved TargetAcmeEab (Just (1, prepared)))
+      TargetResponse.verifyTargetAuthenticatedResponse
+        65536
+        localAgent
+        trusted
+        (signedFor otherNonce)
+        envelope
+        `shouldSatisfy` isLeft
+      rejected <-
+        targetEpochSignedObservationHandler
+          65536
+          65536
+          localAgent
+          (epochInterpreter fixture)
+          (Authentication.localRequestSigningCapability authoritySigner)
+          verified
+      rejected `shouldBe` Just (Left TargetResponse.TargetResponseSignerRefused)
+      fixtureRecord (epochRows fixture) `shouldReturn` prepared
+      readIORef (rowWrites (epochRows fixture)) `shouldReturn` 0
+
     it "retains the predecessor without admitting old or pending workers during preparation" $ do
       targetEpochRecordActive prepared `shouldBe` Just (authorityAt 1 1)
       targetEpochRecordTransition prepared `shouldBe` TargetEpochPrepared preparation
@@ -688,6 +903,14 @@ epochResponse status response =
 
 epochAuthenticatedSuite :: SuiteBuilder ()
 epochAuthenticatedSuite = do
+  it
+    "binds a verified Target observation to the Authority snapshot that selected its key"
+    snapshotSignedControl
+
+  it
+    "authenticates Target observations and refuses substitution and fresh-nonce replay"
+    supportedSignedControl
+
   it "prepares and promotes through the authenticated client and actual staging handler" $ do
     fixture <- newEpochFixture initial
     boundary <- newAuthenticatedEpochFixture fixture
@@ -860,6 +1083,9 @@ data AuthenticatedEpochFixture = AuthenticatedEpochFixture
   , authenticatedEpochSend
       :: ByteString.ByteString -> IO (Either HttpBoundedError (Int, ByteString.ByteString))
   , authenticatedEpochLoseResponse :: IORef Bool
+  , fixtureTargetKey :: Authentication.TrustedRequestKey
+  , fixtureTamper :: IORef Bool
+  , fixtureReplay :: IORef Bool
   }
 
 capturedEpochFrame :: AuthenticatedEpochFixture -> IO ByteString.ByteString
@@ -870,11 +1096,32 @@ capturedEpochFrame boundary = do
     [] -> expectationFailure "authenticated transport did not capture a frame" >> pure ByteString.empty
 
 newAuthenticatedEpochFixture :: EpochFixture -> IO AuthenticatedEpochFixture
-newAuthenticatedEpochFixture fixture = do
+newAuthenticatedEpochFixture = newAuthenticatedEpochFixtureWithSignedResponses False
+
+newAuthenticatedEpochFixtureWithSignedResponses
+  :: Bool -> EpochFixture -> IO AuthenticatedEpochFixture
+newAuthenticatedEpochFixtureWithSignedResponses signedMode =
+  newAuthenticatedEpochFixtureForAgent signedMode localAgent
+
+newAuthenticatedEpochFixtureForAgent
+  :: Bool -> TargetAgentIdentity -> EpochFixture -> IO AuthenticatedEpochFixture
+newAuthenticatedEpochFixtureForAgent signedMode respondingAgent fixture = do
   nonceCounter <- newIORef (0 :: Natural)
   frames <- newIORef []
   loseResponse <- newIORef False
-  let duration = mustRight (authorityDurationFromMicros 3000)
+  tamper <- newIORef False
+  replayReply <- newIORef False
+  saved <- newIORef Nothing
+  let targetSigner =
+        mustRight
+          ( Authentication.mkRequestSigner
+              (Authentication.CallerService TargetSecretAgentRuntime)
+              (mustRight (Authentication.mkSigningKeyGeneration 1))
+              (ByteString.pack [32 .. 63])
+          )
+      targetCapability = Authentication.localRequestSigningCapability targetSigner
+      targetKey = Authentication.trustedRequestKeyFromSigner targetSigner
+      duration = mustRight (authorityDurationFromMicros 3000)
       bounds = mustRight (Transport.mkAuthenticatedTransportBounds 65536 1024 64512)
       replayLimits = mustRight (Replay.mkRequestReplayLimits 64 targetAuthorityTrustResponseMaximumBytes duration)
       signer =
@@ -945,7 +1192,23 @@ newAuthenticatedEpochFixture fixture = do
       interpreter =
         Role.authenticatedRoleInterpreterWithVerifiedHandler
           (isTargetEpochObservationForRole 65536)
-          (targetEpochVerifiedHandler 65536 localAgent (epochInterpreter fixture))
+          ( \verified ->
+              if signedMode
+                then do
+                  outcome <-
+                    targetEpochSignedObservationHandler
+                      65536
+                      targetAuthorityTrustResponseMaximumBytes
+                      respondingAgent
+                      (epochInterpreter fixture)
+                      targetCapability
+                      verified
+                  pure $ case outcome of
+                    Nothing -> Nothing
+                    Just (Left _) -> Just (ReplyServiceUnavailable, "signed-observation-refused")
+                    Just (Right envelope) -> Just (ReplyOk, envelope)
+                else targetEpochVerifiedHandler 65536 respondingAgent (epochInterpreter fixture) verified
+          )
           bounds
           duration
           ( Role.AuthenticatedRoleProviders
@@ -967,15 +1230,40 @@ newAuthenticatedEpochFixture fixture = do
             else case response of
               Just (status, bytes) -> Right (replyStatusCode status, bytes)
               Nothing -> Right (500, "missing response")
+      intercept frame = do
+        reply <- send frame
+        case reply of
+          Left failure -> pure (Left failure)
+          Right (status, bytes) -> do
+            prior <- readIORef saved
+            case prior of Nothing -> writeIORef saved (Just bytes); Just _ -> pure ()
+            replace <- readIORef tamper
+            replay <- readIORef replayReply
+            let fake = case epochResponse 200 (TargetEpochObserved TargetAcmeEab (Just (1, prepared))) of
+                  Client.ControlPlaneResponse _ forged -> forged
+            pure (Right (status, if replace then fake else if replay then maybe bytes id prior else bytes))
       raw =
         mustRight
           ( Client.controlPlaneClientWithTransport
-              targetAuthorityTrustResponseMaximumBytes
+              ( if signedMode
+                  then targetAuthorityTrustResponseMaximumBytes + 1024
+                  else targetAuthorityTrustResponseMaximumBytes
+              )
               (mustRight (Client.mkTargetSecretAgentEndpoint "http://target-agent.test"))
-              (\_ _ _ -> send)
+              (\_ _ _ -> intercept)
           )
       transport = Transport.mkAuthenticatedClientTransport bounds clientProviders raw
-  pure (AuthenticatedEpochFixture (targetEpochClient transport) transport frames send loseResponse)
+  pure
+    ( AuthenticatedEpochFixture
+        (targetEpochClient transport)
+        transport
+        frames
+        send
+        loseResponse
+        targetKey
+        tamper
+        replayReply
+    )
 
 data EpochFixture = EpochFixture
   { epochRows :: RowFixture
@@ -1198,3 +1486,128 @@ deadline = authorityTimeFromMicros 1000
 
 mustRight :: (Show failure) => Either failure value -> value
 mustRight = either (error . show) id
+
+supportedSignedControl :: IO ()
+supportedSignedControl = do
+  fixture <- newEpochFixture initial
+  boundary <- newAuthenticatedEpochFixtureWithSignedResponses True fixture
+  let observe =
+        observeTargetAuthorityEpochWithVerifiedResponse
+          (authenticatedEpochTransport boundary)
+          localAgent
+          (fixtureTargetKey boundary)
+          TargetAcmeEab
+  observe `shouldReturn` Right (Just (1, initial))
+  let otherRollout = mustRight (mkTargetAgentRolloutIdentity "home" ("sha256:" <> Text.replicate 64 "b"))
+  otherBoundary <- newAuthenticatedEpochFixtureForAgent True otherRollout fixture
+  wrongRollout <-
+    observeTargetAuthorityEpochWithVerifiedResponse
+      (authenticatedEpochTransport otherBoundary)
+      localAgent
+      (fixtureTargetKey otherBoundary)
+      TargetAcmeEab
+  wrongRollout
+    `shouldBe` Left (TargetEpochClientResponseAuthenticationFailed TargetResponse.TargetResponseClaimsMismatch)
+  writeIORef (fixtureTamper boundary) True
+  observe >>= (`shouldSatisfy` isLeft)
+  writeIORef (fixtureTamper boundary) False
+  writeIORef (fixtureReplay boundary) True
+  observe >>= (`shouldSatisfy` isLeft)
+  fixtureRecord (epochRows fixture) `shouldReturn` initial
+  readIORef (rowWrites (epochRows fixture)) `shouldReturn` 0
+  readIORef (authenticatedEpochFrames boundary) >>= ((`shouldBe` 3) . length)
+
+-- The fixture deliberately supplies the registry and transport locally; the
+-- supported runtime must independently authenticate both and CAS this snapshot.
+snapshotSignedControl :: IO ()
+snapshotSignedControl = do
+  fixture <- newEpochFixture initial
+  boundary <- newAuthenticatedEpochFixtureWithSignedResponses True fixture
+  let scope = mustRight (Coordinate.mkAuthorityScope "home")
+      vault = mustRight (mkRpcVaultIncarnation "11111111-1111-1111-1111-111111111111")
+      agent = Authentication.CallerService TargetSecretAgentRuntime
+      origin principal = mkRpcKeyOrigin scope vault (controlPlaneSigningKeyRefFor principal)
+      seedKey principal =
+        let source =
+              mustRight
+                ( Authentication.mkRequestSigner
+                    principal
+                    (mustRight (Authentication.mkSigningKeyGeneration 1))
+                    (ByteString.replicate 32 (fromIntegral (Authentication.callerPrincipalCode principal) + 31))
+                )
+            public =
+              if principal == agent
+                then Authentication.trustedRequestPublicKeyBytes (fixtureTargetKey boundary)
+                else Authentication.requestSignerPublicKeyBytes source
+         in mustRight (mkRpcObservedKey (origin principal) 1 public)
+      registry = mustRight (seedLegacyRpcKeyRegistry scope (map seedKey Authentication.allCallerPrincipals))
+      clientSpec principal =
+        mustRight
+          ( mkRegisteredClientSpec
+              (clientPrincipalForCaller principal)
+              (mustRight (mkRegisteredClientSlot (fromIntegral (Authentication.callerPrincipalCode principal))))
+              (mustRight (mkRegisteredClientGeneration 1))
+              4
+          )
+      clients =
+        mustRight
+          (mkRegisteredClientTable 16 (map clientSpec (trustedCallersForRoute LifecycleOperationSubmit)))
+      base = mustRight (initialCleanInstallAuthorityWithRegisteredClients 4 8 clients)
+      aggregate = mustRight (seedAuthorityRpcKeyRegistry scope registry base)
+      snapshot = AuthorityAdmissionSnapshot (11 :: Int) aggregate
+      call snap targetOrigin =
+        observeTargetFromSnapshot
+          scope
+          targetOrigin
+          localAgent
+          snap
+          (authorityTimeFromMicros 2000)
+          (authenticatedEpochTransport boundary)
+          TargetAcmeEab
+  selected <- call snapshot (origin agent)
+  let observed = mustRight selected
+  targetSnapshotObservationValue observed `shouldBe` Just (1, initial)
+  authorityAdmissionRevision (targetSnapshotObservationAuthoritySnapshot observed) `shouldBe` 11
+  before <- length <$> readIORef (authenticatedEpochFrames boundary)
+  rejected <- call snapshot (origin (Authentication.CallerService ProviderWorkerRuntime))
+  rejected `shouldSatisfy` isLeft
+  let retiredAggregate =
+        mustRight
+          (retireAuthorityRpcKey agent (mustRight (Authentication.mkSigningKeyGeneration 1)) aggregate)
+  retiredResult <- call (AuthorityAdmissionSnapshot 12 retiredAggregate) (origin agent)
+  retiredResult `shouldSatisfy` isLeft
+  readIORef (authenticatedEpochFrames boundary) >>= (`shouldBe` before) . length
+  let entry = (CutoverHome, localAgent, origin agent, authenticatedEpochTransport boundary)
+      signedAgents = mustRight (mkTargetSignedAgentRegistry [entry])
+      fallback = TargetEpochBindingInterpreter (\_ -> pure (Left TargetBindingEpochUnavailable))
+      signedInterpreter snap = targetSignedEpochBindingInterpreter scope snap signedAgents fallback
+  mkTargetSignedAgentRegistry [] `shouldSatisfy` isLeft
+  mkTargetSignedAgentRegistry [entry, entry] `shouldSatisfy` isLeft
+  let transport = authenticatedEpochTransport boundary
+      wrongRoleOrigin = origin (Authentication.CallerService ProviderWorkerRuntime)
+      foreignScope = mustRight (Coordinate.mkAuthorityScope "aws")
+      foreignOrigin = mkRpcKeyOrigin foreignScope vault (controlPlaneSigningKeyRefFor agent)
+  mkTargetSignedAgentRegistry [(CutoverHome, localAgent, wrongRoleOrigin, transport)]
+    `shouldSatisfy` isLeft
+  mkTargetSignedAgentRegistry [(CutoverHome, localAgent, foreignOrigin, transport)]
+    `shouldSatisfy` isLeft
+  mkTargetSignedAgentRegistry [entry, (CutoverAws, localAgent, foreignOrigin, transport)]
+    `shouldSatisfy` isLeft
+  runTargetEpochBindingEffect (signedInterpreter snapshot) (ReadTargetBindingAgent CutoverHome)
+    `shouldReturn` Right localAgent
+  runTargetEpochBindingEffect
+    (signedInterpreter snapshot)
+    (ReadTargetBindingRow (authorityTimeFromMicros 2000) CutoverHome TargetAcmeEab)
+    `shouldReturn` Right (Just (1, initial))
+  writeIORef (fixtureTamper boundary) True
+  runTargetEpochBindingEffect
+    (signedInterpreter snapshot)
+    (ReadTargetBindingRow (authorityTimeFromMicros 2000) CutoverHome TargetAcmeEab)
+    `shouldReturn` Left (TargetBindingRowUnavailable TargetAcmeEab)
+  writeIORef (fixtureTamper boundary) False
+  signedBeforeRetirement <- length <$> readIORef (authenticatedEpochFrames boundary)
+  runTargetEpochBindingEffect
+    (signedInterpreter (AuthorityAdmissionSnapshot 12 retiredAggregate))
+    (ReadTargetBindingRow (authorityTimeFromMicros 2000) CutoverHome TargetAcmeEab)
+    `shouldReturn` Left (TargetBindingRowUnavailable TargetAcmeEab)
+  readIORef (authenticatedEpochFrames boundary) >>= (`shouldBe` signedBeforeRetirement) . length

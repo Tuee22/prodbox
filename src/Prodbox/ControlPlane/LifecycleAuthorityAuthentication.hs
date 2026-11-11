@@ -37,6 +37,7 @@ module Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   , externalCallerTokenRequestArguments
   , ExternalCallerTokenStage (..)
   , externalCallerTokenStageArguments
+  , externalCallerTokenStageLimits
   , mintExternalCallerTokenUsing
   , validateExternalCallerServiceAccountReadBack
   , ServiceAccountObservationFailure (..)
@@ -218,7 +219,7 @@ renderLifecycleAuthorityAuthenticationError err = case err of
   LifecycleAuthoritySigningCapabilityUnavailable detail ->
     "resolve caller-bound Lifecycle Authority Transit signer: " ++ Text.unpack detail
   LifecycleAuthorityManifestSignerUnavailable detail ->
-    "resolve pinned Authority decommission manifest signer: " ++ Text.unpack detail
+    "resolve Authority decommission manifest signer: " ++ Text.unpack detail
   LifecycleAuthorityLocalTransportUnavailable detail ->
     "open caller-bound Lifecycle Authority transport: " ++ show detail
   ProviderWorkerLocalTransportUnavailable detail ->
@@ -268,6 +269,8 @@ withHostLifecycleAuthorityAuthentication caller repoRoot action = do
                 )
             Right signer ->
               do
+                -- This is an observation from the configured Vault session,
+                -- not an independently provisioned bootstrap trust anchor.
                 manifestSignerResult <-
                   readAuthorityManifestPublicKey
                     (vaultAuthorityManifestSigner session)
@@ -540,7 +543,7 @@ mintExternalCallerToken environment repoRoot caller =
  where
   run stage =
     captureSubprocessBounded
-      tokenRequestLimits
+      (externalCallerTokenStageLimits stage)
       Subprocess
         { subprocessPath = "kubectl"
         , subprocessArguments = externalCallerTokenStageArguments caller stage
@@ -553,6 +556,14 @@ data ExternalCallerTokenStage
   | CheckExternalCallerTokenEligibility
   | RequestExternalCallerToken
   deriving stock (Eq, Show)
+
+-- The shared stage policy preserves the legacy command's complete stream and
+-- elapsed-time domain when borrowing an original operation command lane.
+externalCallerTokenStageLimits :: ExternalCallerTokenStage -> BoundedSubprocessLimits
+externalCallerTokenStageLimits stage = case stage of
+  ObserveExternalCallerServiceAccount -> tokenRequestLimits
+  CheckExternalCallerTokenEligibility -> tokenRequestLimits
+  RequestExternalCallerToken -> tokenRequestLimits
 
 externalCallerTokenStageArguments
   :: ExternalLifecycleAuthorityCaller -> ExternalCallerTokenStage -> [String]

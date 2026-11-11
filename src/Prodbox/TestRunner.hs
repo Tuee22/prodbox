@@ -2184,6 +2184,7 @@ gatewayRuntimeValidationBoundary substrate validation =
     ValidationCleanRoomHandoff -> GatewayRuntimeNoBoundary
     ValidationCascadeQualification -> GatewayRuntimeNoBoundary
     ValidationCascadeQualificationReceipt -> GatewayRuntimeNoBoundary
+    ValidationAwsLifecycleReceipt -> GatewayRuntimeNoBoundary
     ValidationChartsPlatform -> GatewayRuntimeNoBoundary
     ValidationResourceGuardrails -> GatewayRuntimeNoBoundary
     ValidationDaemonBootstrap -> GatewayRuntimeNoBoundary

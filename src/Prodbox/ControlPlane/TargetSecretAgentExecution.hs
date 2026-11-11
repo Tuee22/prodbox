@@ -156,14 +156,19 @@ mkTargetIntentPublicKey
   -> Either TargetIntentSigningKeyError TargetIntentPublicKey
 mkTargetIntentPublicKey bytes = case Ed25519.publicKey bytes of
   CryptoFailed _ -> Left TargetIntentSigningKeyInvalid
-  CryptoPassed _ -> Right (TargetIntentPublicKey bytes)
+  CryptoPassed _ -> Right $! ownedTargetIntentPublicKey bytes
+
+-- The caller may supply a small view of a much larger allocation. Force the
+-- copy before returning successful validation so the result owns only its key.
+ownedTargetIntentPublicKey :: ByteString -> TargetIntentPublicKey
+ownedTargetIntentPublicKey = TargetIntentPublicKey . ByteString.copy
 
 targetIntentPublicKeyBytes :: TargetIntentPublicKey -> ByteString
 targetIntentPublicKeyBytes (TargetIntentPublicKey bytes) = bytes
 
 targetIntentSigningPublicKey :: TargetIntentSigningKey -> TargetIntentPublicKey
 targetIntentSigningPublicKey (TargetIntentSigningKey privateKey) =
-  TargetIntentPublicKey (ByteArray.convert (Ed25519.toPublic privateKey))
+  ownedTargetIntentPublicKey (ByteArray.convert (Ed25519.toPublic privateKey))
 
 newtype TargetIssuerKeyGeneration = TargetIssuerKeyGeneration Natural
   deriving stock (Eq, Ord, Show)

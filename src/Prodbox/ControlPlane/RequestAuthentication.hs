@@ -984,6 +984,7 @@ routeCode route = case route of
   LifecycleExternalMaterialIngress -> 24
   LifecycleAdminAction -> 25
   LifecycleProviderDispatch -> 26
+  LifecycleProviderScopeObserve -> 67
   TargetTlsPrepareExchange -> 27
   TargetTlsRetain -> 28
   TargetTlsHomeWrap -> 29
@@ -1065,6 +1066,7 @@ routeFromCode code = case code of
   24 -> Just LifecycleExternalMaterialIngress
   25 -> Just LifecycleAdminAction
   26 -> Just LifecycleProviderDispatch
+  67 -> Just LifecycleProviderScopeObserve
   27 -> Just TargetTlsPrepareExchange
   28 -> Just TargetTlsRetain
   29 -> Just TargetTlsHomeWrap

@@ -100,7 +100,7 @@ cleanRoomHandoffSuite =
         [("src/Example.hs", "import Prodbox.ControlPlane.TargetMaterialEndpoint")]
         `shouldBe` []
 
-    it "keeps exactly one writer across the type-indexed cutover" $ do
+    it "models exactly one writer in each type-indexed cutover state" $ do
       input <- QualificationEvidence.validInput
       let replacement = evidenceReplacementIdentity input
           pre = initialCutoverState replacement
@@ -119,6 +119,15 @@ cleanRoomHandoffSuite =
       cutoverStatePhase complete `shouldBe` PostActivationQualified
       cutoverStateHasLegacyWriter complete `shouldBe` False
       cutoverStateHasReplacementWriter complete `shouldBe` True
+
+    it "does not consume a retained pre-activation model value" $ do
+      input <- QualificationEvidence.validInput
+      let replacement = evidenceReplacementIdentity input
+          pre = initialCutoverState replacement
+      passed <- witnessFor replacement
+      active <- accepted (activateReplacement passed pre)
+      cutoverStateHasLegacyWriter (rollbackLegacy pre) `shouldBe` True
+      cutoverStateHasReplacementWriter active `shouldBe` True
 
     it "refuses a deletion that leaves the source identity unchanged" $ do
       -- The deletion is what returns the deployment to qualification-pending.

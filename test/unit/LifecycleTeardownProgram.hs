@@ -242,6 +242,7 @@ lifecycleTeardownProgramSuite = do
           ("target/aws-ebs-volumes-per-run-test/read-back-absent", CleanupRequiresSuccess)
         , ("target/aws-eks-iam-role-family/read-back-absent", CleanupRequiresSuccess)
         , ("target/aws-eks-load-balancer-controller-family/read-back-absent", CleanupRequiresSuccess)
+        , ("target/aws-eks-cert-manager-role-family/read-back-absent", CleanupRequiresSuccess)
         ]
       assertProgramDependencies
         cascade
@@ -262,6 +263,7 @@ lifecycleTeardownProgramSuite = do
         , ("target/aws-eks-load-balancer-controller-family/read-back-absent", CleanupRequiresSuccess)
         , ("target/aws-eks-vpc-cni-interfaces/read-back-absent", CleanupRequiresSuccess)
         , ("target/aws-eks-cluster-security-groups/read-back-absent", CleanupRequiresSuccess)
+        , ("target/aws-eks-cert-manager-role-family/read-back-absent", CleanupRequiresSuccess)
         ]
       assertProgramDependencies
         cascade
@@ -285,6 +287,7 @@ lifecycleTeardownProgramSuite = do
         , ("target/dns-home-dns01-challenge-records/read-back-absent", CleanupRequiresTerminal)
         , ("target/ses-invite-mail-data-versions/read-back-absent", CleanupRequiresTerminal)
         , ("target/aws-test-canary-security-groups/read-back-absent", CleanupRequiresTerminal)
+        , ("target/aws-eks-cert-manager-role-family/read-back-absent", CleanupRequiresTerminal)
         ]
       assertProgramDependencies
         cascade
@@ -307,6 +310,7 @@ lifecycleTeardownProgramSuite = do
         , ("target/dns-home-dns01-challenge-records/read-back-absent", CleanupRequiresSuccess)
         , ("target/ses-invite-mail-data-versions/read-back-absent", CleanupRequiresSuccess)
         , ("target/aws-test-canary-security-groups/read-back-absent", CleanupRequiresSuccess)
+        , ("target/aws-eks-cert-manager-role-family/read-back-absent", CleanupRequiresSuccess)
         ]
       assertProgramDependencies
         cascade
@@ -391,7 +395,7 @@ lifecycleTeardownProgramSuite = do
       forM_ surfaceCases checkSurface
       cascade <- expectGraph fixtureRunId CascadeSurface
       cleanupDigestText (cleanupGraphDigest (compiledDesiredAbsenceGraph cascade))
-        `shouldBe` "2e4a12378afa743db67b987b4d294a2f7d811b184a7cb1cf6495fcc7ce739f5c"
+        `shouldBe` "873b25bbee346a03a5200dfca5d522d62257d9949e7b49a42e05e38ae51b4f53"
       preBinding <-
         expectCompiledGraph
           ( compileDesiredAbsenceGraphForRegisteredKeys
@@ -843,8 +847,8 @@ surfaceCases =
   [ SurfaceCase LocalOnlySurface 4 []
   , -- Sprint 7.36: DNS01 and the two exact controller-owned families each add
     -- an observe, reconcile, and mandatory read-back triple.
-    SurfaceCase CascadeSurface 77 perRunTargetKeys
-  , SurfaceCase ExplicitPerRunSurface 72 perRunTargetKeys
+    SurfaceCase CascadeSurface 80 perRunTargetKeys
+  , SurfaceCase ExplicitPerRunSurface 75 perRunTargetKeys
   , -- Sprint 4.85 (2026-08-18): the operational surface gained its credential
     -- revocation and that revocation's own read-back, which is what
     -- OrdinaryLifecycleProviderRevocationUnavailable named as missing.
@@ -854,7 +858,7 @@ surfaceCases =
     -- and its read-back are ordered strictly between the terminal audit and the
     -- home uninstall, which is the audit-then-dispose order the disposition
     -- blockers said no surface could express.
-    SurfaceCase TotalDecommissionSurface 80 allManagedTargetKeys
+    SurfaceCase TotalDecommissionSurface 83 allManagedTargetKeys
   ]
 
 nonLocalSurfaceCases :: [SurfaceCase]
@@ -876,6 +880,7 @@ perRunTargetKeys =
   , HomeDns01ChallengeRecordKey
   , SesInviteMailObjectsKey
   , AwsTestCanarySecurityGroupsKey
+  , AwsEksCertManagerRoleFamilyKey
   ]
 
 allManagedTargetKeys :: [RegisteredResourceKey]
@@ -885,6 +890,7 @@ allManagedTargetKeys =
        , HomeDns01ChallengeRecordKey
        , SesInviteMailObjectsKey
        , AwsTestCanarySecurityGroupsKey
+       , AwsEksCertManagerRoleFamilyKey
        ]
 
 expectedOperationTags

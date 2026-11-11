@@ -3,6 +3,7 @@
 -- | Staging interception after request authentication and replay admission.
 module Prodbox.ControlPlane.TargetAuthorityEpochEndpoint
   ( targetEpochVerifiedHandler
+  , targetEpochSignedObservationHandler
   , isTargetEpochObservationForRole
   )
 where
@@ -11,11 +12,16 @@ import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LazyByteString
 import Prodbox.ControlPlane.Codec (decodeControlPlaneRequest, encodeControlPlaneResponse)
 import Prodbox.ControlPlane.RequestAuthentication
-  ( VerifiedControlPlaneRequest
+  ( RequestSigningCapability
+  , VerifiedControlPlaneRequest
   , verifiedRequestBody
   , verifiedRequestRoute
   )
 import Prodbox.ControlPlane.Route (ControlPlaneRoute (TargetSecretTrustInstall))
+import Prodbox.ControlPlane.TargetAuthenticatedResponse
+  ( TargetAuthenticatedResponseError (TargetResponseRequestRefused)
+  , signTargetAuthenticatedResponse
+  )
 import Prodbox.ControlPlane.TargetAuthorityEpochExecution
 import Prodbox.ControlPlane.TargetAuthorityEpochProtocol
 import Prodbox.ControlPlane.TargetAuthorityTrustEndpoint
@@ -23,7 +29,7 @@ import Prodbox.ControlPlane.TargetAuthorityTrustEndpoint
   , TargetAuthorityTrustResponse (..)
   )
 import Prodbox.ControlPlane.TargetSecretAgentExecution (TargetAgentIdentity)
-import Prodbox.Http.ReplyStatus (ReplyStatus (..))
+import Prodbox.Http.ReplyStatus (ReplyStatus (..), replyStatusCode)
 import Prodbox.Runtime.Role (RuntimeRole (TargetSecretAgentRuntime))
 
 targetEpochVerifiedHandler
@@ -54,6 +60,41 @@ targetEpochVerifiedHandler maximumBytes localAgent interpreter verified
         Right response -> case encodeTargetEpochResponse response of
           Left _ -> TargetAuthorityTrustUnavailableResponse "epoch-staging/response-invalid"
           Right encoded -> TargetAuthorityEpochResponse encoded
+
+-- | Opt-in composition for an authenticated observation. It does not alter
+-- the existing route or replay policy; its caller must keep the original
+-- deadline over observation, signing, and delivery and admit the larger wire.
+targetEpochSignedObservationHandler
+  :: (Monad m)
+  => Int
+  -> Int
+  -> TargetAgentIdentity
+  -> TargetEpochExecutionInterpreter m
+  -> RequestSigningCapability m
+  -> VerifiedControlPlaneRequest
+  -> m (Maybe (Either TargetAuthenticatedResponseError ByteString))
+targetEpochSignedObservationHandler maximumRequest maximumResponse localAgent interpreter signer verified
+  | not
+      ( isTargetEpochObservationForRole
+          maximumRequest
+          TargetSecretAgentRuntime
+          (verifiedRequestRoute verified)
+          (verifiedRequestBody verified)
+      ) =
+      pure Nothing
+  | otherwise = do
+      handled <- targetEpochVerifiedHandler maximumRequest localAgent interpreter verified
+      case handled of
+        Nothing -> pure (Just (Left TargetResponseRequestRefused))
+        Just (status, body) ->
+          Just
+            <$> signTargetAuthenticatedResponse
+              maximumResponse
+              localAgent
+              signer
+              verified
+              (fromIntegral (replyStatusCode status))
+              body
 
 renderResponse :: TargetAuthorityTrustResponse -> (ReplyStatus, ByteString)
 renderResponse response =

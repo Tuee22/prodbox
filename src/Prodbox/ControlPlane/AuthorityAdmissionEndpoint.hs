@@ -211,6 +211,7 @@ authorityControlPayloadRoute payload = case payload of
     AuthorityControlProviderRecoveryObservationRoute
   AuthorityControlObserveProviderBootstrapPredecessor -> AuthorityControlProviderBootstrapPredecessorRoute
   AuthorityControlObserveEpochPromotion -> AuthorityControlEpochPromotionObservationRoute
+  AuthorityControlObserveSignedEpochPromotion -> AuthorityControlEpochPromotionObservationRoute
 
 -- | The aggregate command one externally admissible payload issues.
 authorityControlPayloadCommand
@@ -235,6 +236,7 @@ authorityControlPayloadCommand payload = case payload of
     ObserveProviderAdmissionRecovery binding
   AuthorityControlObserveProviderBootstrapPredecessor -> ObserveProviderBootstrapPredecessor
   AuthorityControlObserveEpochPromotion -> ObserveAuthorityEpochPromotion
+  AuthorityControlObserveSignedEpochPromotion -> ObserveAuthorityEpochPromotion
 
 data AuthorityOperationSubmitPayload = AuthorityOperationSubmitPayload
   { authorityOperationSubmitKey :: !Text
@@ -812,7 +814,7 @@ serveAuthorityControlRequest maximumBytes repository body =
                     ObserveProviderBootstrapPredecessor
                 )
             )
-    Right AuthorityControlObserveEpochPromotion -> do
+    Right payload | payload `elem` [AuthorityControlObserveEpochPromotion, AuthorityControlObserveSignedEpochPromotion] -> do
       observed <- readAuthorityAdmission repository
       pure $ case observed of
         Left detail -> AuthorityTransitionReadFailed detail

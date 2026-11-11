@@ -87,6 +87,8 @@ import Data.Text qualified as Text
 import Dhall (FromDhall (..), ToDhall (..))
 import Dhall qualified
 import GHC.Generics (Generic)
+import Prodbox.Config.FieldNameTable (modifyFieldName)
+import Prodbox.Config.FieldNameTables (retainedDeclarationFieldNames, retainedSectionFieldNames)
 
 -- ---------------------------------------------------------------------------
 -- Versioned retained artifact inventory
@@ -563,16 +565,9 @@ instance ToDhall RetainedArtifactDeclaration where
     Dhall.genericToDhallWith
       Dhall.defaultInterpretOptions {Dhall.fieldModifier = declarationFieldName}
 
--- | Written out rather than derived from the prefix, so the wire names are
--- readable in one place and a renamed selector is a visible edit here.
+-- | Both SDK directions use the shared closed table of literal wire names.
 declarationFieldName :: Text -> Text
-declarationFieldName = \case
-  "radKind" -> "kind"
-  "radVersion" -> "version"
-  "radDigest" -> "digest"
-  "radRetainedPath" -> "retained_path"
-  "radSourceUrl" -> "source_url"
-  other -> other
+declarationFieldName = modifyFieldName retainedDeclarationFieldNames
 
 -- | Sprint 4.86: the retained artifacts an ordinary-teardown repair may
 -- reinstall the local substrate and the recovery closure's images from.
@@ -602,10 +597,7 @@ instance ToDhall RetainedArtifactsSection where
       Dhall.defaultInterpretOptions {Dhall.fieldModifier = sectionFieldName}
 
 sectionFieldName :: Text -> Text
-sectionFieldName = \case
-  "rasArchitecture" -> "architecture"
-  "rasArtifacts" -> "artifacts"
-  other -> other
+sectionFieldName = modifyFieldName retainedSectionFieldNames
 
 -- | The declaration a repository that retains nothing carries.
 --

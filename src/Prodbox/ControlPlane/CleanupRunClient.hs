@@ -26,6 +26,7 @@ module Prodbox.ControlPlane.CleanupRunClient
   , deriveDescriptorBoundRecoveryRequirementAtCompletedOperation
   , cleanupRunClient
   , descriptorBoundCleanupRunClient
+  , observeDescriptorBoundCleanupRunCompletionForGraph
   )
 where
 
@@ -108,6 +109,7 @@ import Prodbox.Lifecycle.CleanupRun
   , decodeCleanupRunReport
   , mkCleanupDigest
   , mkCleanupRunId
+  , validateCleanupRunReportBinding
   )
 import Prodbox.Lifecycle.Teardown.CleanupProgramDescriptor
   ( CleanupProgramDescriptor
@@ -203,6 +205,29 @@ data CleanupRunClientError
   | CleanupRunClientDescriptorRecoveryRequirementFailed
       !RecoveryRequirementError
   deriving stock (Eq, Show)
+
+-- | Recheck the complete terminal node field against the caller's compiled
+-- graph after the descriptor-bound client observes a completion. A missing
+-- report stays missing; a malformed report never becomes a completion.
+observeDescriptorBoundCleanupRunCompletionForGraph
+  :: (Monad m)
+  => DescriptorBoundCleanupRunClient m
+  -> CleanupRunId
+  -> CleanupDigest
+  -> CleanupGraph
+  -> m (Either CleanupRunClientError (Maybe CleanupRunReport))
+observeDescriptorBoundCleanupRunCompletionForGraph client runId descriptorDigest graph = do
+  result <- observeDescriptorBoundCleanupRunCompletion client runId descriptorDigest
+  pure $ do
+    report <- result
+    traverse
+      ( \value -> do
+          first
+            (CleanupRunClientDescriptorBindingMismatch . Text.pack . show)
+            (validateCleanupRunReportBinding runId graph value)
+          Right value
+      )
+      report
 
 -- | Opaque authenticated join of a positively read-back committed cleanup
 -- descriptor and the exact independently observed per-run aggregate.

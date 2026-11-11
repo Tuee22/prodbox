@@ -379,7 +379,7 @@ captureSubprocessWithInputBounded limits input spec
                     timeout
                       (boundedSubprocessTimeoutMicros limits)
                       (collectBoundedProcess process stdoutReader stderrReader)
-          _ <- try (Typed.stopProcess process) :: IO (Either IOException ())
+                      `finally` killBoundedChild process
           pure $ case result of
             Nothing -> Left (boundedSubprocessError boundedSubprocessTimeoutDetail)
             Just bounded -> bounded
@@ -389,6 +389,34 @@ captureSubprocessWithInputBounded limits input spec
       || boundedSubprocessMaximumStdoutBytes limits <= 0
       || boundedSubprocessMaximumStderrBytes limits <= 0
       || boundedSubprocessTimeoutMicros limits <= 0
+
+-- | Stop the direct child of a bounded capture on every exit path (normal,
+-- timeout and asynchronous cancellation). SIGKILL cannot be ignored, so
+-- unlike a SIGTERM-then-wait stop this cannot wait past the caller's deadline
+-- on a child that ignores termination; the reap wait is itself bounded.
+-- Scope: the DIRECT child only. A descendant that left the child's process
+-- group is not signalled and its absence is not established here.
+killBoundedChild :: Typed.Process stdin stdout stderr -> IO ()
+killBoundedChild process = do
+  maybePid <- Typed.getPid process
+  case maybePid of
+    Nothing -> pure ()
+    Just pid -> do
+      exited <- Typed.getExitCode process
+      when (exited == Nothing) $ do
+        _ <- try (signalProcess sigKILL pid) :: IO (Either IOException ())
+        waitReaped (boundedKillReapPolls :: Int)
+ where
+  waitReaped 0 = pure ()
+  waitReaped remaining = do
+    exited <- Typed.getExitCode process
+    case exited of
+      Just _ -> pure ()
+      Nothing -> threadDelay 10000 >> waitReaped (remaining - 1)
+
+-- | At most 200 polls of 10 ms: a 2 s reap bound after SIGKILL.
+boundedKillReapPolls :: Int
+boundedKillReapPolls = 200
 
 -- | Run a long-lived child, such as a Pulumi destroy, under a wall-clock
 -- bound.  The child leads its own process group.  That group does NOT hold
@@ -926,7 +954,7 @@ readBoundedHandle maximumBytes handle = go maximumBytes []
  where
   go remaining chunks = do
     readResult <-
-      try (ByteString.hGetSome handle (min 4096 (remaining + 1)))
+      try (ByteString.hGetSome handle (min 4095 remaining + 1))
         :: IO (Either IOException ByteString)
     case readResult of
       Left err -> pure (BoundedStreamReadFailed err)

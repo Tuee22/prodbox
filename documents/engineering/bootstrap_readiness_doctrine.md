@@ -882,24 +882,16 @@ operation would hold the Lease live indefinitely, no successor could ever retire
 permanent wedge § 3.3.1 closes would return. For the same reason the derived TTL is the *tightest*
 value satisfying the invariant: a longer one only delays the instant a successor may act.
 
-#### 3.3.3 An acquisition that cannot establish its Lease releases the fence it created (Sprint `2.48`)
+#### 3.3.3 An unconfirmed Lease retains the acquired fence
 
-Acquisition is two steps — CAS the durable fence, then establish the Lease — and a failure at the
-second step must not leave the first standing. The compensating release is an **exact-value CAS back
-to vacant with the released generation as the high-water floor**, so the generation is burned rather
-than reusable and a fence this call did not write can never be vacated by it.
-
-**It requires no observation of an owner, and that is the point.** Retirement must prove three things
-about a predecessor it cannot see. This releases a fence created moments earlier by the same call, on
-a path where no Lease witness was obtained — and since every effect permit requires a confirmed
-witness, a fence that never carried one cannot have authorized anything. Retirement could not serve
-here in any case: it requires the durable operation deadline to have elapsed, and a freshly acquired
-fence's has not.
-
-Only a **freshly CAS'd** fence may be released this way. A resumed fence pre-existed the call, and an
-earlier attempt of the same request may already have confirmed its Lease and run effects under it.
-The release is best-effort and never masks its cause: the original Lease refusal reaches the caller
-either way.
+Acquisition first CASes the durable fence and then establishes the Kubernetes Lease. A lost or
+invalid Lease response cannot establish that the server made no write, even when the fence was
+freshly acquired and the response arrived before the request deadline. The Broker reports the
+Lease refusal and retains the fence for recovery. The same rule applies to resumed fences. An
+early release needs positive no-dispatch or no-effect evidence and must exclude another attempt
+using the same fence, not merely observe the absence of a Lease witness. Recovery must reconcile
+the exact fence and Lease before a successor acts; the remaining
+clock and remote-settlement work is tracked in [Sprint 2.147](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md#sprint-2147-validate-bootstrap-broker-clock-observations).
 
 #### 3.3.4 A pre-receipt checkpoint from a superseded generation is rolled, not refused (Sprint `2.50`)
 
@@ -957,6 +949,11 @@ ambiguity and validates it against the prepared root metadata before cleanup. Co
 positive evidence is preserved and refused. Missing/unbound checkpoints, replaced Pods,
 unavailable observations and lost CAS replies preserve the recoverable state; absence alone
 never recreates a checkpoint or invents a response.
+While a request occupies the worker-result coordinate, the publisher accepts an identical retry
+and refuses a different result for that request. It also refuses a replacement from a strictly
+older fence generation than the recorded result. The coordinate is shared across requests, so
+these checks do not order same-generation requests, make the result immutable across replacement,
+or provide custody for a response that was never published.
 
 The same index separation applies to private roles: `AuthorityBackupCommitReadBack` cannot execute
 TLS-prefix work; `TlsRetentionCommitReadBack` cannot address Authority backup; Provider apply cannot

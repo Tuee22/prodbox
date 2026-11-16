@@ -1411,6 +1411,7 @@ data AuthorityAdmissionCommandRefusal
   | AuthorityMigrationNotStarted
   | AuthorityMigrationBeforeGenesis
   | AuthorityMigrationDuringBackupRepair
+  | AuthorityMigrationDuringDecommission
   | AuthorityMigrationEpochRegressed !AuthorityEpoch !AuthorityEpoch
   | AuthorityMigrationEpochPredecessorMismatch !AuthorityEpoch !Word
   | AuthorityProviderAdmissionRecoveryRefused !ProviderAdmissionRecoveryRefusal
@@ -1428,6 +1429,7 @@ authorityAdmissionCommandRefusalToken refusal = case refusal of
   AuthorityCascadeCredentialRevokeRefused _ -> "cascade-credential-revoke-refused"
   AuthorityMigrationBeforeGenesis -> "before-genesis"
   AuthorityMigrationDuringBackupRepair -> "during-backup-repair"
+  AuthorityMigrationDuringDecommission -> "during-decommission"
   AuthorityMigrationAlreadyStarted -> "already-started"
   AuthorityMigrationNotStarted -> "not-started"
   AuthorityMigrationEpochRegressed {} -> "epoch-regressed"
@@ -1473,20 +1475,22 @@ stepAuthorityAdmission aggregate command = case command of
      in ( AuthorityBackupRepairDecided decision
         , aggregate {authorityAggregateAdmission = nextAdmission}
         )
-  BeginAuthorityMigration ->
-    case authorityAggregateAdmission aggregate of
-      GenesisFrozen -> refuse AuthorityMigrationBeforeGenesis
-      EstablishingBackup _ -> refuse AuthorityMigrationBeforeGenesis
-      BackupRepairFrozen _ _ -> refuse AuthorityMigrationDuringBackupRepair
-      BackupEstablished {} -> case authorityAggregateMigration aggregate of
-        AuthorityCleanInstall ->
-          ( AuthorityMigrationStarted
-          , aggregate
-              { authorityAggregateMigration =
-                  AuthorityMigrationControlled initialImportingMigrationState
-              }
-          )
-        AuthorityMigrationControlled _ -> refuse AuthorityMigrationAlreadyStarted
+  BeginAuthorityMigration
+    | authorityAggregateDecommission aggregate /= AuthorityServing ->
+        refuse AuthorityMigrationDuringDecommission
+    | otherwise -> case authorityAggregateAdmission aggregate of
+        GenesisFrozen -> refuse AuthorityMigrationBeforeGenesis
+        EstablishingBackup _ -> refuse AuthorityMigrationBeforeGenesis
+        BackupRepairFrozen _ _ -> refuse AuthorityMigrationDuringBackupRepair
+        BackupEstablished {} -> case authorityAggregateMigration aggregate of
+          AuthorityCleanInstall ->
+            ( AuthorityMigrationStarted
+            , aggregate
+                { authorityAggregateMigration =
+                    AuthorityMigrationControlled initialImportingMigrationState
+                }
+            )
+          AuthorityMigrationControlled _ -> refuse AuthorityMigrationAlreadyStarted
   ApplyAuthorityMigration migrationCommand ->
     applyMigrationTransition
       aggregate
@@ -1630,32 +1634,34 @@ applyMigrationTransition
   :: AuthorityAdmissionAggregate
   -> (MigrationState -> (AuthorityAdmissionDecision, MigrationState))
   -> (AuthorityAdmissionDecision, AuthorityAdmissionAggregate)
-applyMigrationTransition aggregate transition =
-  case authorityAggregateAdmission aggregate of
-    GenesisFrozen -> refuse AuthorityMigrationBeforeGenesis
-    EstablishingBackup _ -> refuse AuthorityMigrationBeforeGenesis
-    BackupRepairFrozen _ _ -> refuse AuthorityMigrationDuringBackupRepair
-    BackupEstablished currentEpoch targetReceipt backupReceipt ->
-      case authorityAggregateMigration aggregate of
-        AuthorityCleanInstall -> refuse AuthorityMigrationNotStarted
-        AuthorityMigrationControlled currentMigration ->
-          let (decision, nextMigration) = transition currentMigration
-           in case newlyPreparedPredecessor currentMigration nextMigration of
-                Just predecessor
-                  | fromIntegral predecessor /= authorityEpochValue currentEpoch ->
-                      refuse (AuthorityMigrationEpochPredecessorMismatch currentEpoch predecessor)
-                _
-                  | requiresMigrationQuiescence currentMigration nextMigration
-                  , Just refusal <- migrationQuiescenceRefusal aggregate ->
-                      refuse refusal
-                _ ->
-                  applyEpochTransition
-                    currentEpoch
-                    targetReceipt
-                    backupReceipt
-                    decision
-                    currentMigration
-                    nextMigration
+applyMigrationTransition aggregate transition
+  | authorityAggregateDecommission aggregate /= AuthorityServing =
+      (AuthorityAdmissionCommandRefused AuthorityMigrationDuringDecommission, aggregate)
+  | otherwise = case authorityAggregateAdmission aggregate of
+      GenesisFrozen -> refuse AuthorityMigrationBeforeGenesis
+      EstablishingBackup _ -> refuse AuthorityMigrationBeforeGenesis
+      BackupRepairFrozen _ _ -> refuse AuthorityMigrationDuringBackupRepair
+      BackupEstablished currentEpoch targetReceipt backupReceipt ->
+        case authorityAggregateMigration aggregate of
+          AuthorityCleanInstall -> refuse AuthorityMigrationNotStarted
+          AuthorityMigrationControlled currentMigration ->
+            let (decision, nextMigration) = transition currentMigration
+             in case newlyPreparedPredecessor currentMigration nextMigration of
+                  Just predecessor
+                    | fromIntegral predecessor /= authorityEpochValue currentEpoch ->
+                        refuse (AuthorityMigrationEpochPredecessorMismatch currentEpoch predecessor)
+                  _
+                    | requiresMigrationQuiescence currentMigration nextMigration
+                    , Just refusal <- migrationQuiescenceRefusal aggregate ->
+                        refuse refusal
+                  _ ->
+                    applyEpochTransition
+                      currentEpoch
+                      targetReceipt
+                      backupReceipt
+                      decision
+                      currentMigration
+                      nextMigration
  where
   applyEpochTransition currentEpoch targetReceipt backupReceipt decision currentMigration nextMigration =
     case activatedAuthorityEpoch currentMigration nextMigration of

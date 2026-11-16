@@ -367,6 +367,7 @@ authorityRefusalStatus refusal = case refusal of
   AuthorityCascadeCredentialRevokeRefused _ -> ReplyConflict
   AuthorityMigrationBeforeGenesis -> ReplyServiceUnavailable
   AuthorityMigrationDuringBackupRepair -> ReplyServiceUnavailable
+  AuthorityMigrationDuringDecommission -> ReplyConflict
   AuthorityMigrationAlreadyStarted -> ReplyConflict
   AuthorityMigrationNotStarted -> ReplyConflict
   AuthorityMigrationEpochRegressed {} -> ReplyConflict

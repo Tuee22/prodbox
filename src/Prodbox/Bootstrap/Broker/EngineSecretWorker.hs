@@ -110,7 +110,8 @@ import Prodbox.Bootstrap.Broker.StoreBoundary
 import Prodbox.Bootstrap.Broker.Types (ArtifactDigest, VaultStorageGeneration)
 import Prodbox.ControlPlane.AuthorityClock (OperationDeadline)
 import Prodbox.ControlPlane.Deadline
-  ( MonotonicInstant
+  ( Deadline
+  , MonotonicInstant
   , deadlineExpired
   )
 import Prodbox.Lifecycle.Lease (OwnerNonce)
@@ -134,9 +135,23 @@ data EngineSecretWorkerBoundary m boundaryError = EngineSecretWorkerBoundary
       :: SecretFreeWorkerRequest
       -> SecretWorkerInterruption
       -> m (Either boundaryError ())
+  , discardUnreceiptedSecretWorkerBefore
+      :: Deadline
+      -> SecretFreeWorkerRequest
+      -> SecretWorkerInterruption
+      -> m (Either boundaryError ())
+  , observeAuthoritativeRecoveryBefore
+      :: forall result. Deadline -> m result -> m (Maybe result)
   , withSecretWorkerCheckpointPermit
       :: forall result
        . BootstrapSessionFence
+      -> BootstrapStoreMutation
+      -> (MonotonicInstant -> BootstrapStoreMutationPermit -> m result)
+      -> m (Either boundaryError result)
+  , withSecretWorkerCheckpointPermitBefore
+      :: forall result
+       . Deadline
+      -> BootstrapSessionFence
       -> BootstrapStoreMutation
       -> (MonotonicInstant -> BootstrapStoreMutationPermit -> m result)
       -> m (Either boundaryError result)
@@ -250,6 +265,7 @@ data EngineSecretWorkerError boundaryError
       !BootstrapStoreMutation
   | EngineSecretWorkerCheckpointPermitFenceMismatch
   | EngineSecretWorkerCheckpointPermitDeadlineElapsed
+  | EngineSecretWorkerRecoveryDeadlineElapsed
   | EngineSecretWorkerCheckpointWriteConflict
   | EngineSecretWorkerCheckpointWriteMismatch
   | EngineSecretWorkerCheckpointReadBackMismatch
@@ -278,17 +294,11 @@ data PersistedCheckpoint = PersistedCheckpoint
 -- allocated request. Success is returned only after the absent checkpoint is
 -- durably read back.
 --
--- Sprint 2.50 added exactly one exception to the identical-binding rule, and
--- bounded it three ways. A __pre-receipt__ checkpoint — one carrying no receipt
--- and no result — whose stored fence generation is __strictly older__ than the
--- fence this invocation holds is discarded through a UID-preconditioned delete
--- and CAS-rolled to a freshly allocated request. Within one fence generation
--- nothing changes, and a checkpoint that carries a receipt is never discarded
--- on any binding. Before this, a bring-up abandoned after its first worker was
--- created left a durable checkpoint that no later invocation could match — two
--- of the seven compared fields being freshly minted per acquisition by
--- construction, and the operation deadline a third — so the host refused
--- @StoredRequestBindingMismatch@ forever. See the arm itself for the argument.
+-- A historical exception rolls an older unreceipted checkpoint after deleting
+-- its worker. That checkpoint alone does not prove that no result was published
+-- separately or that an already-dispatched effect settled. Sprint 2.147 owns
+-- the remaining ordering and settlement work before this is a complete recovery
+-- proof.
 driveSecretWorker
   :: (Monad m)
   => EngineSecretWorkerBoundary m boundaryError
@@ -357,62 +367,77 @@ reconcileAuthoritativeSecretWorkerResult
   -> SecretWorkerInterruption
   -> SecretWorkerOperation
   -> BootstrapSessionFence
+  -> Deadline
   -> SecretWorkerDurableResult
   -> m (Either (EngineSecretWorkerError boundaryError) ())
-reconcileAuthoritativeSecretWorkerResult boundary interruption operation fence authoritativeResult
+reconcileAuthoritativeSecretWorkerResult boundary interruption operation fence requestDeadline authoritativeResult
   | secretWorkerDurableResultOperation authoritativeResult /= operation =
       pure (Left EngineSecretWorkerAuthoritativeResultMismatch)
   | otherwise = do
-      loaded <- loadCheckpoint boundary
-      case loaded of
-        Left failure -> pure (Left failure)
-        Right StoreObjectAbsent ->
-          pure (Left EngineSecretWorkerAuthoritativeCheckpointMissing)
-        Right (StoreObjectPresent version _ checkpoint) ->
-          case secretWorkerCheckpointRequest checkpoint of
-            Left refusal ->
-              pure (Left (EngineSecretWorkerRecoveryRefused refusal))
-            Right request
-              | mismatched <- requestBindingMismatch operation fence request
-              , not (authoritativeBindingMatches fence request mismatched) ->
-                  pure
-                    ( Left
-                        ( EngineSecretWorkerStoredRequestBindingMismatch
-                            AuthoritativeStoredRequestBinding
-                            mismatched
-                        )
-                    )
-              | otherwise ->
-                  reconcileRequest
-                    request
-                    PersistedCheckpoint
-                      { persistedVersion = version
-                      , persistedCheckpoint = checkpoint
-                      }
+      observed <-
+        observeAuthoritativeRecoveryBefore boundary requestDeadline reconcile
+      pure (maybe (Left EngineSecretWorkerRecoveryDeadlineElapsed) id observed)
  where
+  reconcile = do
+    loaded <- loadCheckpoint boundary
+    case loaded of
+      Left failure -> pure (Left failure)
+      Right StoreObjectAbsent ->
+        pure (Left EngineSecretWorkerAuthoritativeCheckpointMissing)
+      Right (StoreObjectPresent version _ checkpoint) ->
+        case secretWorkerCheckpointRequest checkpoint of
+          Left refusal ->
+            pure (Left (EngineSecretWorkerRecoveryRefused refusal))
+          Right request
+            | mismatched <- requestBindingMismatch operation fence request
+            , not (authoritativeBindingMatches fence request mismatched) ->
+                pure
+                  ( Left
+                      ( EngineSecretWorkerStoredRequestBindingMismatch
+                          AuthoritativeStoredRequestBinding
+                          mismatched
+                      )
+                  )
+            | otherwise ->
+                reconcileRequest
+                  request
+                  PersistedCheckpoint
+                    { persistedVersion = version
+                    , persistedCheckpoint = checkpoint
+                    }
   reconcileRequest request persisted =
     case ( secretWorkerCheckpointReceipt (persistedCheckpoint persisted)
          , secretWorkerCheckpointResult (persistedCheckpoint persisted)
          ) of
       (Nothing, Nothing) -> do
-        discarded <- discardUnreceiptedSecretWorker boundary request interruption
-        case discarded of
-          Left boundaryError ->
-            pure (Left (EngineSecretWorkerBoundaryRefused boundaryError))
-          Right () ->
-            case authoritativelyRecoveredWorkerCheckpoint
-              request
-              authoritativeResult of
-              Left refusal ->
-                pure (Left (EngineSecretWorkerReceiptRefused refusal))
-              Right terminal -> do
-                persistedTerminal <-
-                  persistCheckpointCas
-                    boundary
-                    fence
-                    (persistedVersion persisted)
-                    terminal
-                pure (void persistedTerminal)
+        before <- observeSecretWorkerMonotonicNow boundary
+        case before of
+          Left boundaryError -> pure (Left (EngineSecretWorkerBoundaryRefused boundaryError))
+          Right now
+            | deadlineExpired now requestDeadline -> pure (Left EngineSecretWorkerRecoveryDeadlineElapsed)
+            | otherwise -> do
+                discarded <- discardUnreceiptedSecretWorkerBefore boundary requestDeadline request interruption
+                case discarded of
+                  Left boundaryError ->
+                    pure (Left (EngineSecretWorkerBoundaryRefused boundaryError))
+                  Right () -> do
+                    after <- observeSecretWorkerMonotonicNow boundary
+                    case after of
+                      Left boundaryError -> pure (Left (EngineSecretWorkerBoundaryRefused boundaryError))
+                      Right finished
+                        | deadlineExpired finished requestDeadline -> pure (Left EngineSecretWorkerRecoveryDeadlineElapsed)
+                        | otherwise ->
+                            case authoritativelyRecoveredWorkerCheckpoint request authoritativeResult of
+                              Left refusal -> pure (Left (EngineSecretWorkerReceiptRefused refusal))
+                              Right terminal -> do
+                                persistedTerminal <-
+                                  persistCheckpointCasBefore
+                                    boundary
+                                    requestDeadline
+                                    fence
+                                    (persistedVersion persisted)
+                                    terminal
+                                pure (void persistedTerminal)
       (Nothing, Just observedResult)
         | observedResult == authoritativeResult -> pure (Right ())
         | otherwise -> pure (Left EngineSecretWorkerAuthoritativeResultMismatch)
@@ -539,56 +564,12 @@ recoverStoredWorker boundary interruption operation fence refreshVaultPermit per
                         )
                     )
               | otherwise -> rollToFreshWorker Nothing
-            -- Sprint 2.50: this arm now sits ABOVE the binding guard, and takes
-            -- a guard of its own. That guard is the whole behavioural change.
-            --
-            -- __Three independent facts, mirroring Sprint 2.47's retirement,
-            -- and refusing closed on ambiguity in each.__
-            --
-            -- 1. __No result exists to lose.__ The bound Sprint 2.50 was scoped
-            --    by is that a fence is an exclusion record while a checkpoint is
-            --    a /result/ record — retiring an exclusion loses nothing,
-            --    discarding a result can lose work that already happened. That
-            --    bound is a statement about checkpoints which carry a result.
-            --    This decision is returned only for @InternalNoWorkerReceipt@,
-            --    whose entire meaning is that no receipt was captured: its
-            --    receipt and its result are both 'Nothing' by construction. The
-            --    caution that motivated the refusal is measurably inapplicable
-            --    to the state that was actually stuck.
-            --
-            -- 2. __The checkpoint belongs to a strictly superseded fence.__ Not
-            --    merely "some compared field differs". Within one fence
-            --    generation the identical-binding requirement is __unchanged__:
-            --    an incomplete checkpoint for a /different operation/ under the
-            --    same fence still fails closed, because the worker operations of
-            --    one bootstrap session are ordered and discarding an interrupted
-            --    predecessor could skip a stage. A checkpoint from a /newer/
-            --    generation than the one held is likewise refused — that would
-            --    mean this invocation is the stale one, and the strict
-            --    comparison makes it fail closed rather than roll.
-            --
-            -- 3. __The predecessor's worker is destroyed, not assumed absent.__
-            --    'discardUnreceiptedSecretWorker' issues a UID-preconditioned
-            --    delete and then waits for absence, refusing outright if a
-            --    replacement worker occupies the fixed coordinate. That is
-            --    stronger than the worker-absence /observation/ Sprint 2.47
-            --    built: it does not infer absence, it causes it. Holding the
-            --    current fence is what makes it safe to do so — every Vault
-            --    effect and durable mutation re-reads that exact fence
-            --    immediately before acting, so a surviving predecessor bound to
-            --    an earlier generation fails closed at its next effect.
-            --
-            -- __What stays refused.__ Every checkpoint that carries a receipt.
-            -- Those are result records mid-cleanup, and their cleanup binding
-            -- names a Pod UID, session id and session accessor a successor
-            -- cannot reconstruct; discarding one could leak a live Vault
-            -- session. They fall through to the binding guard below.
-            --
-            -- The replay hazard is unchanged and still gated where it was:
-            -- 'interruptionRequiresRefusal' decides whether an un-receipted
-            -- worker may be re-prompted at all, and a refusing interruption
-            -- yields 'SecretWorkerRecoveryDestroyAndRefuse' instead, which this
-            -- arm never sees.
+            -- This historical rollover permits a matching or older unreceipted
+            -- checkpoint to be discarded before a fresh worker is allocated.
+            -- The checkpoint does not prove that the separate result object is
+            -- absent, and Pod deletion does not settle already-dispatched
+            -- store or Vault requests. Sprint 2.147 owns those unresolved
+            -- ordering and settlement gaps; this guard is not such a proof.
             SecretWorkerRecoveryDestroyAndReprompt oldRequest _
               | bindingMatches
                   || supersededByHeldFence
@@ -1173,6 +1154,24 @@ persistCheckpointCas boundary fence expectedVersion checkpoint =
     )
     checkpoint
 
+persistCheckpointCasBefore
+  :: (Monad m)
+  => EngineSecretWorkerBoundary m boundaryError
+  -> Deadline
+  -> BootstrapSessionFence
+  -> StoreVersion
+  -> SecretWorkerDurableCheckpoint
+  -> m (Either (EngineSecretWorkerError boundaryError) PersistedCheckpoint)
+persistCheckpointCasBefore boundary deadline fence expectedVersion checkpoint =
+  persistCheckpointWith
+    (withSecretWorkerCheckpointPermitBefore boundary deadline)
+    (Just deadline)
+    boundary
+    fence
+    BootstrapStoreCasSecretWorkerCheckpoint
+    (\permit -> casSecretWorkerCheckpoint boundary permit expectedVersion checkpoint)
+    checkpoint
+
 persistCheckpoint
   :: (Monad m)
   => EngineSecretWorkerBoundary m boundaryError
@@ -1187,10 +1186,40 @@ persistCheckpoint
      )
   -> SecretWorkerDurableCheckpoint
   -> m (Either (EngineSecretWorkerError boundaryError) PersistedCheckpoint)
-persistCheckpoint boundary fence mutation write checkpoint = do
+persistCheckpoint boundary =
+  persistCheckpointWith (withSecretWorkerCheckpointPermit boundary) Nothing boundary
+
+persistCheckpointWith
+  :: (Monad m)
+  => ( forall result
+        . BootstrapSessionFence
+       -> BootstrapStoreMutation
+       -> (MonotonicInstant -> BootstrapStoreMutationPermit -> m result)
+       -> m (Either boundaryError result)
+     )
+  -> Maybe Deadline
+  -> EngineSecretWorkerBoundary m boundaryError
+  -> BootstrapSessionFence
+  -> BootstrapStoreMutation
+  -> ( BootstrapStoreMutationPermit
+       -> m
+            ( Either
+                StoreBoundaryError
+                (StoreWriteResult SecretWorkerDurableCheckpoint)
+            )
+     )
+  -> SecretWorkerDurableCheckpoint
+  -> m (Either (EngineSecretWorkerError boundaryError) PersistedCheckpoint)
+persistCheckpointWith withPermit callerDeadline boundary fence mutation write checkpoint = do
   attempted <-
-    withSecretWorkerCheckpointPermit boundary fence mutation $ \now permit -> do
-      let permitValidation = validateCheckpointPermit now fence mutation permit
+    withPermit fence mutation $ \now permit -> do
+      let permitValidation = do
+            validateCheckpointPermit now fence mutation permit
+            case callerDeadline of
+              Just limit
+                | storeMutationPermitDeadline permit > limit ->
+                    Left EngineSecretWorkerRecoveryDeadlineElapsed
+              _ -> Right ()
       case permitValidation of
         Left failure -> pure (Left failure)
         Right () -> do

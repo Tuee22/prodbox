@@ -7,12 +7,17 @@ module Prodbox.ControlPlane.TargetSecretWorkerKubernetes
   ( targetWorkerContainerName
   , targetWorkerAnnotations
   , renderTargetSecretWorkerJob
+  , TargetWorkerPreparedJob
+  , prepareTargetSecretWorkerJob
+  , targetWorkerPreparedJobBytes
   , targetWorkerPodDeleteOptions
   )
 where
 
 import Control.Monad (unless)
-import Data.Aeson (Value, object, (.=))
+import Data.Aeson (Value, encode, object, (.=))
+import Data.ByteString (ByteString)
+import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Int (Int64)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
@@ -47,6 +52,29 @@ import Prodbox.Lifecycle.TargetCommitIntent (targetValueDigestText)
 
 targetWorkerContainerName :: Text
 targetWorkerContainerName = "target-secret-worker"
+
+-- The manifest can only be constructed by the renderer and is bound to the
+-- exact signed request and deterministic Job name used to create it.
+data TargetWorkerPreparedJob = TargetWorkerPreparedJob !Text !Text !ByteString
+
+prepareTargetSecretWorkerJob
+  :: Text -> Natural -> TargetWorkerIntent -> Either Text TargetWorkerPreparedJob
+prepareTargetSecretWorkerJob image runtime intent = do
+  manifest <- renderTargetSecretWorkerJob image runtime intent
+  pure
+    ( TargetWorkerPreparedJob
+        (targetValueDigestText (targetWorkerIntentRequestDigest intent))
+        (targetWorkerIntentJobName intent)
+        (LazyByteString.toStrict (encode manifest))
+    )
+
+targetWorkerPreparedJobBytes
+  :: TargetWorkerIntent -> TargetWorkerPreparedJob -> Either Text ByteString
+targetWorkerPreparedJobBytes intent (TargetWorkerPreparedJob digest jobName manifest)
+  | digest == targetValueDigestText (targetWorkerIntentRequestDigest intent)
+      && jobName == targetWorkerIntentJobName intent =
+      Right manifest
+  | otherwise = Left "Target worker prepared Job binding mismatch"
 
 -- The union runtime image deliberately has root metadata, so this one-shot
 -- role owns its non-root identity in the Pod rather than inheriting an image

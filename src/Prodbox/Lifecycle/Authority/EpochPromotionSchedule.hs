@@ -8,6 +8,8 @@ module Prodbox.Lifecycle.Authority.EpochPromotionSchedule
   , promotionSchedule
   ) where
 
+import Data.Map.Strict (Map)
+import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import Numeric.Natural (Natural)
 import Prodbox.Capacity.RegisteredCallerTraffic
@@ -22,6 +24,7 @@ data PromotionSchedule = PromotionSchedule
   { scheduleAuthorityObservations :: !Natural
   , scheduleAuthoritySubmissions :: !Natural
   , schedulePhysicalActions :: !Natural
+  , scheduleTargetBindingReadbacks :: !(Map CutoverSubstrate Natural)
   , scheduleWithPeerRefresh :: !RegisteredCallerTraffic
   }
   deriving stock (Eq, Show)
@@ -49,4 +52,36 @@ promotionSchedule topology intent phase = do
       -- Each Authority call is preceded by one independently authenticated peer
       -- context read. One cached signer and one Authority channel are assumed.
       signedFrames = 2 * (observations + submissions)
-  pure (PromotionSchedule observations submissions physical (registeredCallerTraffic signedFrames 1))
+      targetReadbacks =
+        Map.fromList
+          [ (substrate, count)
+          | PendingAcceptedAuthorityBinding substrate <- Set.toAscList (epochTopologyBindings topology)
+          , let old = Set.member (PendingAcceptedAuthorityBinding substrate) (epochTopologyOldWriterBindings topology)
+                count = targetReadbackCount intent phase old
+          , count > 0
+          ]
+  pure
+    ( PromotionSchedule
+        observations
+        submissions
+        physical
+        targetReadbacks
+        (registeredCallerTraffic signedFrames 1)
+    )
+
+-- Counts one successful coordinator pass; retries and physical actions remain
+-- outside this projection. Old-writer observations are independent readbacks.
+targetReadbackCount :: PromotionIntent -> EpochPromotionPhase -> Bool -> Natural
+targetReadbackCount intent phase hasOldWriter = case (intent, phase) of
+  (CompletePromotion, EpochPrepared) -> 2 + old 2
+  (CompletePromotion, EpochFrozen) -> 1 + old 1
+  (CompletePromotion, EpochAdmissionOpen) -> 0
+  (CompletePromotion, EpochPreparedRollback) -> 0
+  (CompletePromotion, EpochPreparedBindingsRetired) -> 0
+  (RetirePreparation, EpochPrepared) -> 1
+  (RetirePreparation, EpochPreparedRollback) -> 1
+  (RetirePreparation, EpochPreparedBindingsRetired) -> 0
+  (RetirePreparation, EpochFrozen) -> 0
+  (RetirePreparation, EpochAdmissionOpen) -> 0
+ where
+  old count = if hasOldWriter then count else 0

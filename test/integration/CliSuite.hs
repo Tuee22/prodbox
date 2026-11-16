@@ -134,6 +134,44 @@ import Tier0Fixture
 integrationCliSuite :: SuiteBuilder ()
 integrationCliSuite = do
   describe "native Haskell config CLI" $ do
+    it "reports cluster resources from the authored configuration" $
+      withSystemTempDirectory "prodbox-hs-status" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        let section = Settings.capacity validConfig
+            plan = Capacity.resource_plan section
+            host = Capacity.host_capacity plan
+            configured =
+              validConfig
+                { Settings.storage =
+                    Settings.StorageSection {Settings.manual_pv_host_root = Text.pack ".data-status-fixture"}
+                , Settings.capacity =
+                    section
+                      { Capacity.resource_plan =
+                          plan {Capacity.host_capacity = host {Capacity.milli_cpu = 12000, Capacity.memory_mib = 24000}}
+                      }
+                }
+        createDirectoryIfMissing True (tmpDir </> ".data-status-fixture")
+        writeTier0Fixture tmpDir (tier0FixtureWithParameters configured)
+        (exitCode, stdoutText, stderrText) <-
+          runInstalledWithFakeAuthority tmpDir binary ["cluster", "status"]
+        when (exitCode /= ExitSuccess) (expectationFailure (stdoutText ++ stderrText))
+        stdoutText `shouldContain` "RESOURCE_HOST_AUTHORED=cpu=12000m,memory=24000Mi"
+        stdoutText `shouldContain` "RESOURCE_HOST_OBSERVED="
+
+    it "does not report default resources as authored when configuration is missing" $
+      withSystemTempDirectory "prodbox-hs-status" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
+        writeRepoMarkers tmpDir
+        environment <- fakeRke2Environment tmpDir
+        (exitCode, stdoutText, _) <-
+          readCreateProcessWithExitCode
+            (proc binary ["cluster", "status"]) {cwd = Just tmpDir, env = Just environment}
+            ""
+        exitCode `shouldBe` ExitFailure 1
+        stdoutText `shouldContain` "RESOURCE_PLAN=unavailable:configuration"
+        stdoutText `shouldNotContain` "RESOURCE_HOST_AUTHORED="
+
     it "shows masked settings from a repo-root Dhall config" $
       withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
@@ -216,7 +254,7 @@ integrationCliSuite = do
           binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
           environment <-
             generationHostEnvironment
-              "milli_cpu=10000,memory_mib=20480,ephemeral_storage_mib=100000,durable_storage_mib=180000"
+              "milli_cpu=8000,memory_mib=15930,ephemeral_storage_mib=100000,durable_storage_mib=180000"
 
           (exitCode, stdoutText, stderrText) <-
             readCreateProcessWithExitCode
@@ -243,7 +281,7 @@ integrationCliSuite = do
         writeRepoMarkers tmpDir
         generationEnvironment <-
           generationHostEnvironment
-            "milli_cpu=10000,memory_mib=20480,ephemeral_storage_mib=100000,durable_storage_mib=180000"
+            "milli_cpu=8000,memory_mib=15930,ephemeral_storage_mib=100000,durable_storage_mib=180000"
         (generationExit, _, generationError) <-
           readCreateProcessWithExitCode
             (proc binary ["config", "generate"]) {cwd = Just tmpDir, env = Just generationEnvironment}
@@ -263,20 +301,20 @@ integrationCliSuite = do
         harnessError `shouldNotContain` "machine_id"
 
     it
-      "LOCAL-PLATFORM-SCHEDULER-BASELINE-OMITTED-2026-10-24 refuses undersized generation before writing config"
+      "host fitting refuses a CPU deficit before writing config"
       $ withSystemTempDirectory "prodbox-platform-sizing-refusal"
       $ \tmpDir -> do
         binary <- resolveBinaryPath >>= \built -> installOperatorBinaryInDir built tmpDir
         writeRepoMarkers tmpDir
         environment <-
           generationHostEnvironment
-            "milli_cpu=8000,memory_mib=15872,ephemeral_storage_mib=100000,durable_storage_mib=180000"
+            "milli_cpu=7094,memory_mib=15872,ephemeral_storage_mib=100000,durable_storage_mib=180000"
         (exitCode, _, stderrText) <-
           readCreateProcessWithExitCode
             (proc binary ["config", "generate"]) {cwd = Just tmpDir, env = Just environment}
             ""
         exitCode `shouldBe` ExitFailure 1
-        stderrText `shouldContain` "below the plan's required 9045"
+        stderrText `shouldContain` "below the plan's required 7095"
         doesFileExist (tmpDir </> "prodbox.dhall") `shouldReturn` False
 
     it "runs native host info directly from the built Haskell frontend" $ do

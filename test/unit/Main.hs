@@ -178,6 +178,7 @@ import ControlPlaneRetainedMaterialWorker
   )
 import ControlPlaneRetainedSesLease (controlPlaneRetainedSesLeaseSuite)
 import ControlPlaneRoleInterpreters (controlPlaneRoleInterpretersSuite)
+import ControlPlaneRoughtime (controlPlaneRoughtimeSuite)
 import ControlPlaneRoute (controlPlaneRouteSuite)
 import ControlPlaneRpcAdmissionBirth (rpcAdmissionBirthSuite, rpcBirthChartDescriptorFixture)
 import ControlPlaneRpcBirthBootstrap (rpcBirthBootstrapSuite)
@@ -736,6 +737,7 @@ import Prodbox.CLI.Rke2
   , classifyGatewayFullModeProbe
   , classifyKubernetesReadiness
   , classifyRegistryStorageEdgeProbe
+  , clusterResourceStatusWith
   , componentReadinessRetryPolicyFor
   , decideCascadeUninstallGate
   , decideRke2ImageImport
@@ -816,6 +818,7 @@ import Prodbox.CheckCode
   , awsCreateVerbs
   , boundSectionCitationsInLine
   , brokerReadinessProjectionViolations
+  , checkDoctrineSectionCitations
   , citedSourcePathsInDoc
   , compareSprintIds
   , destructivePlanOptionsArms
@@ -3147,6 +3150,7 @@ unitSuite = do
   capabilityReadinessBarrierSuite
   certScopeSuite
   controlPlaneAuthorityClockSuite
+  controlPlaneRoughtimeSuite
   controlPlaneAdminActionAuthorityExecutionEndpointSuite
   controlPlaneAuthorityObservationSuite
   controlPlaneCapabilitySuite
@@ -4368,6 +4372,11 @@ unitSuite = do
             document
               `shouldContain` "path \"sys/policies/acl/prodbox-bootstrap-provisioner\""
             document `shouldContain` "\"sudo\""
+            document
+              `shouldContain` ( "allowed_parameters = { \"policy\" = ["
+                                  ++ BL8.unpack (encode (vaultPolicySpecDocument bootstrapProvisionerPolicySpec))
+                                  ++ "] }"
+                              )
             document `shouldNotContain` "sys/policies/acl/*"
             document `shouldNotContain` "sys/policies/acl/prodbox-bootstrap-policy-repair"
             vaultKubernetesRoleSpecTokenType repairRole
@@ -4378,6 +4387,27 @@ unitSuite = do
         vaultReconcilePolicies provisionerVaultReconcilePlan `shouldBe` []
         vaultReconcileKubernetesRoles provisionerVaultReconcilePlan
           `shouldBe` roles
+    it "limits Bootstrap provisioner KV access to its exact seed inventory" $ do
+      let document = vaultPolicySpecDocument bootstrapProvisionerPolicySpec
+          seedPaths =
+            map VaultInventory.vaultSecretObjectPath (vaultReconcileSecretObjects provisionerVaultReconcilePlan)
+          expected =
+            Set.fromList
+              [ VaultInventory.vaultSecretPathMount path <> "/data/" <> VaultInventory.vaultSecretPathLogical path
+              | path <- seedPaths
+              ]
+          granted =
+            Set.fromList
+              [ Text.takeWhile (/= '"') path
+              | line <- Text.lines document
+              , Just path <- [Text.stripPrefix "path \"" line]
+              , "/data/" `Text.isInfixOf` path || "/metadata/" `Text.isInfixOf` path
+              ]
+      granted `shouldBe` expected
+      document `shouldSatisfy` (not . Text.isInfixOf "secret/data/*")
+      document `shouldSatisfy` (not . Text.isInfixOf "secret/metadata/*")
+      document `shouldSatisfy` (not . Text.isInfixOf "secret/data/control-plane/service-sessions/")
+      document `shouldSatisfy` (not . Text.isInfixOf "secret/data/aws/lifecycle-provider")
     it "keeps each adapter workload policy and Kubernetes identity on its exact credential path" $ do
       let policies = vaultReconcilePolicies defaultVaultReconcilePlan
           roles = vaultReconcileKubernetesRoles defaultVaultReconcilePlan
@@ -10353,11 +10383,11 @@ unitSuite = do
               [ "items"
                   .= Array
                     ( Vector.fromList
-                        [ resourceGuardrailQuota "keycloak" "1330m" "2736Mi" "4448Mi" "1825m" "3936Mi" "8896Mi" "60Gi"
-                        , resourceGuardrailQuota "vscode" "1880m" "3888Mi" "5728Mi" "2525m" "5472Mi" "11456Mi" "110Gi"
-                        , resourceGuardrailQuota "api" "500m" "512Mi" "1024Mi" "500m" "768Mi" "1024Mi" storage
+                        [ resourceGuardrailQuota "keycloak" "630m" "1840Mi" "4448Mi" "1825m" "3936Mi" "8896Mi" "60Gi"
+                        , resourceGuardrailQuota "vscode" "780m" "2480Mi" "5728Mi" "2525m" "5472Mi" "11456Mi" "110Gi"
+                        , resourceGuardrailQuota "api" "150m" "512Mi" "1024Mi" "500m" "768Mi" "1024Mi" storage
                         , resourceGuardrailQuota "websocket" "300m" "768Mi" "1536Mi" "450m" "768Mi" "1536Mi" "0"
-                        , resourceGuardrailQuota "gateway" "1750m" "1536Mi" "2048Mi" "2000m" "3072Mi" "5120Mi" "20Gi"
+                        , resourceGuardrailQuota "gateway" "1550m" "1024Mi" "2048Mi" "2000m" "3072Mi" "5120Mi" "20Gi"
                         ]
                     )
               ]
@@ -10467,27 +10497,27 @@ unitSuite = do
       -- 750m emitters, one Pulsar and three 1024Mi journal claims on EKS, two
       -- emitters and one Pulsar on the home, Keycloak placed with vscode.
       hardOf SubstrateAws "gateway"
-        `shouldBe` [ ("requests.cpu", "2500m")
+        `shouldBe` [ ("requests.cpu", "2300m")
                    , ("limits.cpu", "2750m")
-                   , ("requests.memory", "1792Mi")
+                   , ("requests.memory", "1280Mi")
                    , ("limits.memory", "3584Mi")
                    , ("requests.ephemeral-storage", "2560Mi")
                    , ("limits.ephemeral-storage", "5632Mi")
                    , ("requests.storage", "23552Mi")
                    ]
       hardOf SubstrateHomeLocal "gateway"
-        `shouldBe` [ ("requests.cpu", "1750m")
+        `shouldBe` [ ("requests.cpu", "1550m")
                    , ("limits.cpu", "2000m")
-                   , ("requests.memory", "1536Mi")
+                   , ("requests.memory", "1024Mi")
                    , ("limits.memory", "3072Mi")
                    , ("requests.ephemeral-storage", "2048Mi")
                    , ("limits.ephemeral-storage", "5120Mi")
                    , ("requests.storage", "20480Mi")
                    ]
       hardOf SubstrateAws "vscode"
-        `shouldBe` [ ("requests.cpu", "1880m")
+        `shouldBe` [ ("requests.cpu", "780m")
                    , ("limits.cpu", "2525m")
-                   , ("requests.memory", "3888Mi")
+                   , ("requests.memory", "2480Mi")
                    , ("limits.memory", "5472Mi")
                    , ("requests.ephemeral-storage", "5728Mi")
                    , ("limits.ephemeral-storage", "11456Mi")
@@ -12840,7 +12870,7 @@ unitSuite = do
                   expectResourceEnvelope
                     payload
                     "pulsar"
-                    ("250m", "1024Mi", "1024Mi")
+                    ("50m", "512Mi", "1024Mi")
                     ("500m", "2048Mi", "4096Mi")
                 Right _ -> expectationFailure "expected pulsar values object"
                 Left err -> expectationFailure err
@@ -12869,7 +12899,7 @@ unitSuite = do
               expectResourceEnvelope
                 payload
                 "vscode"
-                ("500m", "1024Mi", "1024Mi")
+                ("100m", "512Mi", "1024Mi")
                 ("600m", "1280Mi", "2048Mi")
               case KeyMap.lookup (Key.fromString "resourceGuardrails") payload of
                 Just (Object guardrailsPayload) -> do
@@ -12878,7 +12908,7 @@ unitSuite = do
                   expectQuotaHard guardrailsPayload "limits.memory" "5472Mi"
                   expectQuotaHard guardrailsPayload "requests.storage" "112640Mi"
                   expectLimitRangeDefault guardrailsPayload "cpu" "600m"
-                  expectLimitRangeDefaultRequest guardrailsPayload "memory" "1024Mi"
+                  expectLimitRangeDefaultRequest guardrailsPayload "memory" "512Mi"
                 _ -> expectationFailure "expected vscode resourceGuardrails payload"
             Just (Right _) -> expectationFailure "expected vscode values object"
             Just (Left err) -> expectationFailure err
@@ -12888,7 +12918,7 @@ unitSuite = do
               expectResourceEnvelope
                 payload
                 "postgres"
-                ("250m", "512Mi", "1024Mi")
+                ("150m", "384Mi", "1024Mi")
                 ("350m", "768Mi", "2048Mi")
               expectResourceEnvelope
                 payload
@@ -21818,6 +21848,16 @@ unitSuite = do
         boundSectionCitationsInLine "[README.md](./README.md); \167 4.1 is retained"
           `shouldBe` []
 
+      it "reports missing sections across files while ignoring fenced citations" $
+        withSystemTempDirectory "prodbox-doctrine-citations" $ \root -> do
+          writeFile (root </> "doctrine.md") "## 1. Present\n"
+          writeFile
+            (root </> "consumer.md")
+            (unlines ["doctrine.md \167 1", "doctrine.md \167 2", "```", "doctrine.md \167 3", "```"])
+          checkDoctrineSectionCitations root
+            `shouldReturn` [ "consumer.md cites `doctrine.md section 2`, which is not a heading in that document (documentation_standards.md \167 4)."
+                           ]
+
     describe "Sprint 0.24 Tier-0 sibling drift gate" $ do
       -- The gate compares the generator's canonical rendering of the record a
       -- file decodes to against the bytes on disk. These cases pin the pure
@@ -24044,6 +24084,55 @@ unitSuite = do
         violations `shouldSatisfy` any ("test.resolvefintech" `isInfixOf`)
         violations `shouldSatisfy` any ("matthewnowak@gmail" `isInfixOf`)
 
+    describe "Sprint 1.100 cluster capacity status" $ do
+      it "uses each validated plan and its resolved storage root" $ do
+        let mkConfig root cpu memory =
+              let base = defaultConfigFile
+                  section = capacity base
+                  plan = Capacity.resource_plan section
+                  host = Capacity.host_capacity plan
+               in base
+                    { storage = StorageSection {manual_pv_host_root = root}
+                    , capacity =
+                        section
+                          { Capacity.resource_plan =
+                              plan {Capacity.host_capacity = host {Capacity.milli_cpu = cpu, Capacity.memory_mib = memory}}
+                          }
+                    }
+        first <-
+          validateConfigWithContext "." testDeploymentContextInput (mkConfig ".data-alpha" 8000 16000)
+        second <-
+          validateConfigWithContext "." testDeploymentContextInput (mkConfig ".data-beta" 12000 24000)
+        paths <- newIORef []
+        let observe repo root = do
+              modifyIORef' paths (++ [(repo, root)])
+              pure (Left "fixture host unavailable")
+        firstLines <- clusterResourceStatusWith observe "." first
+        secondLines <- clusterResourceStatusWith observe "." second
+        first `shouldSatisfy` isRight
+        second `shouldSatisfy` isRight
+        firstLines `shouldSatisfy` any (isPrefixOf "RESOURCE_HOST_AUTHORED=cpu=8000m,memory=16000Mi")
+        secondLines `shouldSatisfy` any (isPrefixOf "RESOURCE_HOST_AUTHORED=cpu=12000m,memory=24000Mi")
+        firstLines `shouldSatisfy` elem "RESOURCE_HOST_OBSERVED=unavailable:fixture host unavailable"
+        secondLines `shouldSatisfy` elem "RESOURCE_HOST_OBSERVED=unavailable:fixture host unavailable"
+        observed <- readIORef paths
+        case (first, second) of
+          (Right firstSettings, Right secondSettings) -> do
+            observed
+              `shouldBe` [ (".", resolvedManualPvHostRoot firstSettings)
+                         , (".", resolvedManualPvHostRoot secondSettings)
+                         ]
+            resolvedManualPvHostRoot firstSettings `shouldNotBe` resolvedManualPvHostRoot secondSettings
+          other -> expectationFailure ("valid status fixtures refused: " ++ show other)
+
+      it "does not probe or report default capacity when configuration is unavailable" $ do
+        probes <- newIORef (0 :: Int)
+        let observe _ _ = modifyIORef' probes (+ 1) >> pure (Left "unexpected")
+        forM_ ["missing", "invalid"] $ \reason ->
+          clusterResourceStatusWith observe "." (Left reason)
+            `shouldReturn` ["RESOURCE_PLAN=unavailable:configuration"]
+        readIORef probes `shouldReturn` 0
+
     describe "Sprint 1.88 ValidatedSettings minting boundary" $ do
       it "admits validateConfig's own module and refuses every other src module" $ do
         Prodbox.CheckCode.validatedSettingsMinterViolations
@@ -25467,7 +25556,7 @@ unitSuite = do
     it "freezes the packaged AWS schema OOM and transfers only declared idle headroom" $ do
       let counterexample = ProviderWorkerBudget.frozenProviderWorkerSchemaMemoryCounterexample
           frozenCapacityPlan =
-            Capacity.defaultResourcePlan
+            Capacity.preHostFitResourcePlan
               { Capacity.host_capacity = Capacity.ResourceVector 8000 15872 100000 180000
               , Capacity.platform_scheduler_requests = Just (Capacity.ResourceVector 0 0 0 0)
               }
@@ -27077,11 +27166,11 @@ resourceGuardrailQuotaFixture =
     [ "items"
         .= Array
           ( Vector.fromList
-              [ resourceGuardrailQuota "keycloak" "1330m" "2736Mi" "4448Mi" "1825m" "3936Mi" "8896Mi" "61440Mi"
-              , resourceGuardrailQuota "vscode" "1880m" "3888Mi" "5728Mi" "2525m" "5472Mi" "11456Mi" "112640Mi"
-              , resourceGuardrailQuota "api" "500m" "512Mi" "1024Mi" "500m" "768Mi" "1024Mi" "0Mi"
+              [ resourceGuardrailQuota "keycloak" "630m" "1840Mi" "4448Mi" "1825m" "3936Mi" "8896Mi" "61440Mi"
+              , resourceGuardrailQuota "vscode" "780m" "2480Mi" "5728Mi" "2525m" "5472Mi" "11456Mi" "112640Mi"
+              , resourceGuardrailQuota "api" "150m" "512Mi" "1024Mi" "500m" "768Mi" "1024Mi" "0Mi"
               , resourceGuardrailQuota "websocket" "300m" "768Mi" "1536Mi" "450m" "768Mi" "1536Mi" "0Mi"
-              , resourceGuardrailQuota "gateway" "1750m" "1536Mi" "2048Mi" "2000m" "3072Mi" "5120Mi" "20480Mi"
+              , resourceGuardrailQuota "gateway" "1550m" "1024Mi" "2048Mi" "2000m" "3072Mi" "5120Mi" "20480Mi"
               ]
           )
     ]
@@ -27092,13 +27181,13 @@ resourceGuardrailCanonicalQuotaFixture =
     [ "items"
         .= Array
           ( Vector.fromList
-              [ resourceGuardrailQuota "keycloak" "1330m" "2736Mi" "4448Mi" "1825m" "3936Mi" "8896Mi" "60Gi"
-              , resourceGuardrailQuota "vscode" "1880m" "3888Mi" "5728Mi" "2525m" "5472Mi" "11456Mi" "110Gi"
+              [ resourceGuardrailQuota "keycloak" "630m" "1840Mi" "4448Mi" "1825m" "3936Mi" "8896Mi" "60Gi"
+              , resourceGuardrailQuota "vscode" "780m" "2480Mi" "5728Mi" "2525m" "5472Mi" "11456Mi" "110Gi"
               , -- The API server canonicalizes a zero quantity to a bare "0", whatever unit the
                 -- chart applied it in; the namespaces with no durable storage carry it.
-                resourceGuardrailQuota "api" "500m" "512Mi" "1024Mi" "500m" "768Mi" "1024Mi" "0"
+                resourceGuardrailQuota "api" "150m" "512Mi" "1024Mi" "500m" "768Mi" "1024Mi" "0"
               , resourceGuardrailQuota "websocket" "300m" "768Mi" "1536Mi" "450m" "768Mi" "1536Mi" "0"
-              , resourceGuardrailQuota "gateway" "1750m" "1536Mi" "2048Mi" "2000m" "3072Mi" "5120Mi" "20Gi"
+              , resourceGuardrailQuota "gateway" "1550m" "1024Mi" "2048Mi" "2000m" "3072Mi" "5120Mi" "20Gi"
               ]
           )
     ]
@@ -27129,11 +27218,11 @@ resourceGuardrailLimitRangeFixture =
     [ "items"
         .= Array
           ( Vector.fromList
-              [ resourceGuardrailLimitRange "keycloak" "500m" "1024Mi" "1024Mi" "600m" "1280Mi" "2048Mi"
-              , resourceGuardrailLimitRange "vscode" "500m" "1024Mi" "1024Mi" "600m" "1280Mi" "2048Mi"
-              , resourceGuardrailLimitRange "api" "250m" "256Mi" "512Mi" "250m" "384Mi" "512Mi"
+              [ resourceGuardrailLimitRange "keycloak" "150m" "512Mi" "1024Mi" "600m" "1280Mi" "2048Mi"
+              , resourceGuardrailLimitRange "vscode" "150m" "512Mi" "1024Mi" "600m" "1280Mi" "2048Mi"
+              , resourceGuardrailLimitRange "api" "75m" "256Mi" "512Mi" "250m" "384Mi" "512Mi"
               , resourceGuardrailLimitRange "websocket" "100m" "256Mi" "512Mi" "150m" "256Mi" "512Mi"
-              , resourceGuardrailLimitRange "gateway" "750m" "1024Mi" "1024Mi" "750m" "2048Mi" "4096Mi"
+              , resourceGuardrailLimitRange "gateway" "750m" "512Mi" "1024Mi" "750m" "2048Mi" "4096Mi"
               ]
           )
     ]
@@ -27144,11 +27233,11 @@ resourceGuardrailCanonicalLimitRangeFixture =
     [ "items"
         .= Array
           ( Vector.fromList
-              [ resourceGuardrailLimitRange "keycloak" "500m" "1Gi" "1Gi" "600m" "1280Mi" "2Gi"
-              , resourceGuardrailLimitRange "vscode" "500m" "1Gi" "1Gi" "600m" "1280Mi" "2Gi"
-              , resourceGuardrailLimitRange "api" "250m" "256Mi" "512Mi" "250m" "384Mi" "512Mi"
+              [ resourceGuardrailLimitRange "keycloak" "150m" "512Mi" "1Gi" "600m" "1280Mi" "2Gi"
+              , resourceGuardrailLimitRange "vscode" "150m" "512Mi" "1Gi" "600m" "1280Mi" "2Gi"
+              , resourceGuardrailLimitRange "api" "75m" "256Mi" "512Mi" "250m" "384Mi" "512Mi"
               , resourceGuardrailLimitRange "websocket" "100m" "256Mi" "512Mi" "150m" "256Mi" "512Mi"
-              , resourceGuardrailLimitRange "gateway" "750m" "1024Mi" "1Gi" "750m" "2Gi" "4Gi"
+              , resourceGuardrailLimitRange "gateway" "750m" "512Mi" "1Gi" "750m" "2Gi" "4Gi"
               ]
           )
     ]

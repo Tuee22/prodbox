@@ -50,6 +50,8 @@ module Prodbox.Bootstrap.Broker.Settings
   , childRecoveryJournalKey
   , postUnsealHandoffKey
   , secretWorkerCheckpointKey
+  , transitRotationJournalKeyFromCheckpoint
+  , secretWorkerResultKeyFromCheckpoint
   , BrokerLimits
   , brokerQueueCapacity
   , brokerMaximumRequestBodyBytes
@@ -319,7 +321,7 @@ renderBootstrapBrokerSettingsError err = case err of
       ++ ", got "
       ++ show observed
   BrokerStorageKeysNotDistinct ->
-    "bootstrap-broker storage keys must be pairwise distinct"
+    "bootstrap-broker authored and derived storage keys must be pairwise distinct"
   BrokerParentRegistrationSelfReference ->
     "bootstrap-broker parent registration cluster must differ from the local cluster"
   BrokerParentRegistrationEndpointNotExternal observed ->
@@ -577,6 +579,8 @@ validateStore storeDto = do
         , childRecoveryJournal
         , postUnsealHandoff
         , secretWorkerCheckpoint
+        , transitRotationJournalKeyFromCheckpoint secretWorkerCheckpoint
+        , secretWorkerResultKeyFromCheckpoint secretWorkerCheckpoint
         ]
   if length (nub keys) /= length keys
     then Left BrokerStorageKeysNotDistinct
@@ -602,6 +606,14 @@ validateStore storeDto = do
                 , secretWorkerCheckpointKey = secretWorkerCheckpoint
                 }
           }
+
+-- | The two fixed child coordinates share the checkpoint prefix but must not
+-- alias any independently authored coordinate in the same bucket.
+transitRotationJournalKeyFromCheckpoint :: Text -> Text
+transitRotationJournalKeyFromCheckpoint checkpoint = checkpoint <> ".transit-rotation-v1"
+
+secretWorkerResultKeyFromCheckpoint :: Text -> Text
+secretWorkerResultKeyFromCheckpoint checkpoint = checkpoint <> ".result-v1"
 
 validateLimits
   :: BrokerLimitsDhall

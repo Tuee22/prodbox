@@ -19,9 +19,12 @@ module Prodbox.Minio.ObjectStoreNative
   ( getObject
   , getObjectVersioned
   , putIfAbsentObserved
+  , putIfAbsentObservedBefore
   , putIfVersionObserved
+  , putIfVersionObservedBefore
   , deleteObject
   , deleteIfVersionObserved
+  , deleteIfVersionObservedBefore
   , listKeys
   , ensureObjectStoreBucket
   , S3Timestamp (..)
@@ -39,7 +42,7 @@ module Prodbox.Minio.ObjectStoreNative
   )
 where
 
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeAsyncException, SomeException, fromException, tryJust)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as BS
 import Data.ByteString.Char8 qualified as BS8
@@ -63,6 +66,8 @@ import Network.HTTP.Client
 import Network.HTTP.Types.Header (Header)
 import Network.HTTP.Types.Status (statusCode)
 import Prodbox.Aws.SigV4
+import Prodbox.ControlPlane.Deadline (Deadline, deadlineExpired)
+import Prodbox.ControlPlane.Interpreter (realMonotonicNow)
 import Prodbox.Http.Client (sharedTlsManager)
 import Prodbox.Minio.ObjectStoreTypes
 
@@ -274,8 +279,20 @@ performS3
   -> [(ByteString, ByteString)]
   -- ^ extra headers to sign
   -> IO (Either String (Int, [Header], BS.ByteString))
-performS3 config httpMethod rawPath rawQuery body extraHeaders = do
-  baseResult <- try (parseRequest (objectStoreEndpoint config)) :: IO (Either SomeException Request)
+performS3 = performS3WithDeadline Nothing
+
+performS3WithDeadline
+  :: Maybe Deadline
+  -> ObjectStoreConfig
+  -> ByteString
+  -> ByteString
+  -> [(ByteString, ByteString)]
+  -> ByteString
+  -> [(ByteString, ByteString)]
+  -> IO (Either String (Int, [Header], BS.ByteString))
+performS3WithDeadline deadline config httpMethod rawPath rawQuery body extraHeaders = do
+  baseResult <-
+    trySynchronous (parseRequest (objectStoreEndpoint config)) :: IO (Either SomeException Request)
   case baseResult of
     Left err -> pure (Left ("invalid object-store endpoint: " ++ show err))
     Right base -> do
@@ -305,16 +322,32 @@ performS3 config httpMethod rawPath rawQuery body extraHeaders = do
               , requestHeaders = [(CI.mk name, value) | (name, value) <- signed]
               , requestBody = RequestBodyBS body
               }
-      sendResult <-
-        try (httpLbs request sharedTlsManager) :: IO (Either SomeException (Response BL.ByteString))
-      pure $ case sendResult of
-        Left err -> Left ("object-store request failed: " ++ show err)
-        Right response ->
-          Right
-            ( statusCode (responseStatus response)
-            , responseHeaders response
-            , BL.toStrict (responseBody response)
-            )
+      expired <- case deadline of
+        Nothing -> pure False
+        Just limit -> (`deadlineExpired` limit) <$> realMonotonicNow
+      if expired
+        then pure (Left "object-store request deadline expired before dispatch")
+        else do
+          sendResult <-
+            trySynchronous (httpLbs request sharedTlsManager)
+              :: IO (Either SomeException (Response BL.ByteString))
+          pure $ case sendResult of
+            Left err -> Left ("object-store request failed: " ++ show err)
+            Right response ->
+              Right
+                ( statusCode (responseStatus response)
+                , responseHeaders response
+                , BL.toStrict (responseBody response)
+                )
+
+trySynchronous :: IO value -> IO (Either SomeException value)
+trySynchronous = tryJust synchronousFailure
+
+synchronousFailure :: SomeException -> Maybe SomeException
+synchronousFailure failure =
+  case fromException failure :: Maybe SomeAsyncException of
+    Just _ -> Nothing
+    Nothing -> Just failure
 
 objectPath :: ObjectStoreConfig -> Text -> ByteString
 objectPath config key =
@@ -370,10 +403,25 @@ putIfAbsentObserved
   :: ObjectStoreConfig -> Text -> ByteString -> IO (Either String ConditionalPutResult)
 putIfAbsentObserved config key bytes = putConditional config key bytes [("If-None-Match", "*")]
 
+putIfAbsentObservedBefore
+  :: Deadline -> ObjectStoreConfig -> Text -> ByteString -> IO (Either String ConditionalPutResult)
+putIfAbsentObservedBefore deadline config key bytes =
+  putConditionalWithDeadline (Just deadline) config key bytes [("If-None-Match", "*")]
+
 putIfVersionObserved
   :: ObjectStoreConfig -> Text -> ObjectVersion -> ByteString -> IO (Either String ConditionalPutResult)
 putIfVersionObserved config key version bytes =
   putConditional config key bytes [("If-Match", ifMatchValue version)]
+
+putIfVersionObservedBefore
+  :: Deadline
+  -> ObjectStoreConfig
+  -> Text
+  -> ObjectVersion
+  -> ByteString
+  -> IO (Either String ConditionalPutResult)
+putIfVersionObservedBefore deadline config key version bytes =
+  putConditionalWithDeadline (Just deadline) config key bytes [("If-Match", ifMatchValue version)]
 
 ifMatchValue :: ObjectVersion -> ByteString
 ifMatchValue version = "\"" <> TextEncoding.encodeUtf8 (objectVersionEtag version) <> "\""
@@ -386,12 +434,23 @@ putConditional
   -> ByteString
   -> [(ByteString, ByteString)]
   -> IO (Either String ConditionalPutResult)
-putConditional config key bytes extraHeaders = do
-  ensured <- ensureObjectStoreBucket config
+putConditional = putConditionalWithDeadline Nothing
+
+putConditionalWithDeadline
+  :: Maybe Deadline
+  -> ObjectStoreConfig
+  -> Text
+  -> ByteString
+  -> [(ByteString, ByteString)]
+  -> IO (Either String ConditionalPutResult)
+putConditionalWithDeadline deadline config key bytes extraHeaders = do
+  ensured <- case deadline of
+    Nothing -> ensureObjectStoreBucket config
+    Just _ -> requireExistingObjectStoreBucket config
   case ensured of
     Left err -> pure (Left err)
     Right () -> do
-      result <- performS3 config "PUT" (objectPath config key) [] bytes extraHeaders
+      result <- performS3WithDeadline deadline config "PUT" (objectPath config key) [] bytes extraHeaders
       pure $ case result of
         Left err -> Left err
         Right (status, headers, body)
@@ -423,9 +482,26 @@ deleteIfVersionObserved
   -> Text
   -> ObjectVersion
   -> IO (Either String ConditionalDeleteResult)
-deleteIfVersionObserved config key version = do
+deleteIfVersionObserved = deleteIfVersionObservedWithDeadline Nothing
+
+deleteIfVersionObservedBefore
+  :: Deadline
+  -> ObjectStoreConfig
+  -> Text
+  -> ObjectVersion
+  -> IO (Either String ConditionalDeleteResult)
+deleteIfVersionObservedBefore deadline = deleteIfVersionObservedWithDeadline (Just deadline)
+
+deleteIfVersionObservedWithDeadline
+  :: Maybe Deadline
+  -> ObjectStoreConfig
+  -> Text
+  -> ObjectVersion
+  -> IO (Either String ConditionalDeleteResult)
+deleteIfVersionObservedWithDeadline deadline config key version = do
   result <-
-    performS3
+    performS3WithDeadline
+      deadline
       config
       "DELETE"
       (objectPath config key)
@@ -454,6 +530,16 @@ listKeys config = do
     Right (status, _, body)
       | status >= 200 && status < 300 -> parseListKeysXml body
       | otherwise -> Left ("object-store list failed (" ++ show status ++ "): " ++ shortBody body)
+
+-- Permit-bound writes must never create a missing retained bucket.
+requireExistingObjectStoreBucket :: ObjectStoreConfig -> IO (Either String ())
+requireExistingObjectStoreBucket config = do
+  result <- performS3 config "HEAD" (bucketPath config) [] "" []
+  case result of
+    Left err -> pure (Left err)
+    Right (status, _, _)
+      | status >= 200 && status < 300 -> verifyListable config
+      | otherwise -> pure (Left ("object-store head-bucket failed (" ++ show status ++ ")"))
 
 ensureObjectStoreBucket :: ObjectStoreConfig -> IO (Either String ())
 ensureObjectStoreBucket config = do

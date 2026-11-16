@@ -18,33 +18,50 @@ module BootstrapBrokerEnginePhysical
 where
 
 import Codec.Serialise (deserialiseOrFail, serialise)
+import Control.Concurrent
+  ( forkIO
+  , modifyMVar
+  , newEmptyMVar
+  , newMVar
+  , readMVar
+  , threadDelay
+  , tryPutMVar
+  )
+import Control.Concurrent.Async qualified as Async
 import Control.Exception
   ( AsyncException (ThreadKilled)
+  , IOException
   , SomeException
   , bracket
+  , evaluate
   , fromException
   , throwIO
   , try
   )
-import Control.Monad (forM_, void, when)
+import Control.Monad (forM_, forever, void, when)
 import Data.Aeson (eitherDecodeStrict', withObject, (.:))
 import Data.Aeson.Types (parseEither)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Base64 qualified as Base64
+import Data.ByteString.Char8 qualified as ByteString8
 import Data.ByteString.Lazy qualified as LazyByteString
+import Data.Char (toLower)
 import Data.IORef
   ( IORef
+  , atomicModifyIORef'
   , modifyIORef'
   , newIORef
   , readIORef
+  , writeIORef
   )
-import Data.List (nub)
+import Data.List (find, nub)
 import Data.Map.Strict qualified as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Network.Socket
   ( Family (AF_INET)
   , HostAddress
@@ -59,6 +76,8 @@ import Network.Socket
   , tupleToHostAddress
   , withSocketsDo
   )
+import Network.Socket qualified as Socket
+import Network.Socket.ByteString qualified as SocketBytes
 import Numeric.Natural (Natural)
 import Prodbox.Aws.SigV4 (hexSha256)
 import Prodbox.Bootstrap.Broker.Client qualified as Client
@@ -134,6 +153,7 @@ import Prodbox.Cluster.FederationRegistration
 import Prodbox.ControlPlane.AuthorityClock
   ( AuthorityClockObservation (..)
   , clockUncertaintyFromMicros
+  , operationDeadlineFromMicros
   , operationDeadlineMicros
   )
 import Prodbox.ControlPlane.CapabilityKind (CapabilityOp)
@@ -161,6 +181,7 @@ import Prodbox.ControlPlane.Deadline
   , monotonicInstantFromMicros
   , monotonicInstantMicros
   )
+import Prodbox.ControlPlane.Interpreter (realMonotonicNow)
 import Prodbox.Http.Client (HttpError (..))
 import Prodbox.Lifecycle.Lease
   ( OwnerNonce
@@ -180,6 +201,44 @@ main = mainWithSuite "BootstrapBrokerEnginePhysical" enginePhysicalSuite
 enginePhysicalSuite :: SuiteBuilder ()
 enginePhysicalSuite =
   describe "Sprint 2.33 physical Bootstrap Broker composition" $ do
+    it
+      "Sprint 2.147 leaves a timed-out applied Transit journal write unconfirmed"
+      transitJournalDeadlineRegression
+    it
+      "Sprint 2.147 bounds the worker Transit journal observation"
+      transitJournalReadDeadlineRegression
+    it
+      "Sprint 2.147 preserves the retained generation and bounds fence mutations"
+      fenceReleasePermitRegression
+    it
+      "Sprint 2.147 grants one Transit claim when matching writers race"
+      transitClaimRaceRegression
+    it "Sprint 2.147 preserves the Transit journal wire encoding" $ do
+      let fixtureDigest = mustRight (Request.mkRequestDigest (Text.replicate 64 "a"))
+          generation = mustRight (mkVaultStorageGeneration "fixture-generation")
+          cases =
+            [
+              ( "hQCCAHhAYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYYIAcmZpeHR1cmUtZ2VuZXJhdGlvbmtmaXh0dXJlLWtleQc="
+              , ProductionStore.ProductionTransitRotationPlanned fixtureDigest generation "fixture-key" 7
+              )
+            ,
+              ( "hgGCAHhAYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYYIAcmZpeHR1cmUtZ2VuZXJhdGlvbmtmaXh0dXJlLWtleQcI"
+              , ProductionStore.ProductionTransitRotationApplied fixtureDigest generation "fixture-key" 7 8
+              )
+            ,
+              ( "hQKCAHhAYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYYIAcmZpeHR1cmUtZ2VuZXJhdGlvbmtmaXh0dXJlLWtleQc="
+              , ProductionStore.ProductionTransitRotationClaimed fixtureDigest generation "fixture-key" 7
+              )
+            ,
+              ( "hgOCAHhAYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYYIAcmZpeHR1cmUtZ2VuZXJhdGlvbmtmaXh0dXJlLWtleQcI"
+              , ProductionStore.ProductionTransitRotationCompleted fixtureDigest generation "fixture-key" 7 8
+              )
+            ]
+      forM_ cases $ \(encoded, expected) -> do
+        let bytes = LazyByteString.fromStrict (mustRight (Base64.decode encoded))
+        deserialiseOrFail bytes `shouldBe` Right expected
+        serialise expected `shouldBe` bytes
+
     it "Sprint 2.67 renders only the closed baseline stage at the protected route" $ do
       let stages = [minBound .. maxBound] :: [BaselinePhysicalStage]
           rendered = map renderBaselinePhysicalStage stages
@@ -1896,6 +1955,7 @@ enginePhysicalSuite =
               InitRecovery.observeRootInitRecoveryEvidence
                 store
                 (pristineStorageBinding (fixturePristine fixture))
+                (\_ -> pure (Right Nothing))
             result `shouldBe` Left BootstrapStoreUnavailable
 
       it "resumes the authoritative terminal checkpoint after its CAS reply is lost" $
@@ -3101,6 +3161,1320 @@ requireEngine :: Fixture -> Harness -> IO (BrokerEngine IO)
 requireEngine fixture harness = case physicalEngine fixture harness of
   Left failure -> throwIO (userError failure)
   Right engine -> pure engine
+
+-- The fixture retains the conditional write while withholding its response.
+transitJournalDeadlineRegression :: Expectation
+transitJournalDeadlineRegression = withSocketsDo $ bracket open Socket.close $ \listener -> do
+  address <- Socket.getSocketName listener
+  port <- case address of
+    SockAddrInet value _ -> pure value
+    _ -> fail "Transit deadline fixture requires IPv4"
+  applied <- newIORef False
+  let reply connection code body =
+        SocketBytes.sendAll connection $
+          ByteString8.pack
+            ( "HTTP/1.1 "
+                ++ code
+                ++ "\r\nContent-Length: "
+                ++ show (ByteString.length body)
+                ++ "\r\nConnection: close\r\n\r\n"
+            )
+            <> body
+      serveOne = bracket (Socket.accept listener) (Socket.close . fst) $ \(connection, _) -> do
+        received <- receiveClaimHeaders connection ByteString.empty
+        let (header, rest) = ByteString.breakSubstring "\r\n\r\n" received
+            lowerHeader = ByteString8.map toLower header
+        if "HEAD " `ByteString.isPrefixOf` header
+          then reply connection "200 OK" ""
+          else
+            if "GET " `ByteString.isPrefixOf` header
+              then
+                if ".transit-rotation-v1" `ByteString.isInfixOf` header
+                  then reply connection "404 Not Found" ""
+                  else reply connection "200 OK" "<ListBucketResult/>"
+              else
+                if "PUT " `ByteString.isPrefixOf` header
+                  then do
+                    let lengthHeader = find ("content-length:" `ByteString.isPrefixOf`) (ByteString8.lines lowerHeader)
+                        bodyLength =
+                          lengthHeader
+                            >>= (fmap fst . ByteString8.readInt . ByteString8.dropWhile (== ' ') . ByteString8.drop 15)
+                    size <- maybe (fail "Transit deadline PUT lacks content length") pure bodyLength
+                    _ <- receiveClaimBody connection size (ByteString.drop 4 rest)
+                    writeIORef applied True
+                    threadDelay 4_000_000
+                  else fail "unexpected Transit deadline fixture method"
+      rawConfig = settingsConfig port
+      rawStore = Settings.bootstrap_store rawConfig
+      config =
+        rawConfig
+          { Settings.bootstrap_store =
+              rawStore {Settings.store_endpoint = Text.pack ("http://127.0.0.1:" ++ show port)}
+          }
+      settings = mustRight (Settings.validateBootstrapBrokerConfig config)
+  Async.withAsync (forever serveOne) $ \server -> do
+    Async.link server
+    wall <- getPOSIXTime
+    now <- realMonotonicNow
+    let fence =
+          mustRight $
+            reloadBootstrapSessionFence
+              1
+              (mustRight (mkOwnerNonce "fixture-owner"))
+              (digestOf 'a')
+              (mustRight (Request.mkRequestDigest (Text.replicate 64 "b")))
+              (mustRight (mkVaultStorageGeneration "fixture-vault"))
+              (floor (wall * 1_000_000) + 30_000_000)
+        request =
+          mkSecretFreeWorkerRequest
+            SecretWorkerRotateTransitKey
+            (mustRight (mkWorkerPodUid "fixture-pod"))
+            (mustRight (mkWorkerImageDigest ("sha256:" <> Text.replicate 64 "c")))
+            (mustRight (mkWorkerServiceAccount "fixture-worker"))
+            (mustRight (mkWorkerSessionId "fixture-session"))
+            workerSessionNotIssued
+            fence
+        deadline = deadlineAtOffset now (RemainingDuration 1_000_000)
+        clock =
+          AuthorityTimeTrusted
+            (authorityTimeFromMicros (floor (wall * 1_000_000)))
+            (clockUncertaintyFromMicros 0)
+        lease = BootstrapLeaseObserved (bootstrapLeaseBindingForFence fence) deadline "fixture-rv"
+        permit =
+          mustRight
+            ( authorizeBootstrapStoreMutation
+                now
+                deadline
+                clock
+                fence
+                (BootstrapFenceStoreHeld fence)
+                lease
+                BootstrapStorePlanTransitRotation
+            )
+    result <-
+      timeout 2_500_000 $
+        ProductionStore.planProductionTransitRotation settings permit request "prodbox-active-config" 7
+    case result of
+      Just (Left BootstrapStoreUnavailable) -> pure ()
+      _ -> expectationFailure "timed-out Transit journal write was not reported unavailable"
+    readIORef applied `shouldReturn` True
+ where
+  open = do
+    listener <- Socket.socket AF_INET Stream defaultProtocol
+    Socket.setSocketOption listener Socket.ReuseAddr 1
+    Socket.bind listener (SockAddrInet 0 literalIpv4Loopback)
+    Socket.listen listener 4
+    pure listener
+
+transitJournalReadDeadlineRegression :: Expectation
+transitJournalReadDeadlineRegression = withSocketsDo $ bracket open Socket.close $ \listener -> do
+  address <- Socket.getSocketName listener
+  port <- case address of
+    SockAddrInet value _ -> pure value
+    _ -> fail "Transit deadline fixture requires IPv4"
+  let serveOne = bracket (Socket.accept listener) (Socket.close . fst) $ \(connection, _) -> do
+        received <- receiveClaimHeaders connection ByteString.empty
+        let (header, _) = ByteString.breakSubstring "\r\n\r\n" received
+        if "GET " `ByteString.isPrefixOf` header
+          then threadDelay 4_000_000
+          else fail "unexpected Transit read fixture method"
+      rawConfig = settingsConfig port
+      rawStore = Settings.bootstrap_store rawConfig
+      config =
+        rawConfig
+          { Settings.bootstrap_store =
+              rawStore {Settings.store_endpoint = Text.pack ("http://127.0.0.1:" ++ show port)}
+          }
+      settings = mustRight (Settings.validateBootstrapBrokerConfig config)
+  Async.withAsync (forever serveOne) $ \server -> do
+    Async.link server
+    wall <- getPOSIXTime
+    now <- realMonotonicNow
+    let fence =
+          mustRight $
+            reloadBootstrapSessionFence
+              1
+              (mustRight (mkOwnerNonce "fixture-owner"))
+              (digestOf 'a')
+              (mustRight (Request.mkRequestDigest (Text.replicate 64 "b")))
+              (mustRight (mkVaultStorageGeneration "fixture-vault"))
+              (floor (wall * 1_000_000) + 30_000_000)
+        request =
+          mkSecretFreeWorkerRequest
+            SecretWorkerRotateTransitKey
+            (mustRight (mkWorkerPodUid "fixture-pod"))
+            (mustRight (mkWorkerImageDigest ("sha256:" <> Text.replicate 64 "c")))
+            (mustRight (mkWorkerServiceAccount "fixture-worker"))
+            (mustRight (mkWorkerSessionId "fixture-session"))
+            workerSessionNotIssued
+            fence
+        deadline = deadlineAtOffset now (RemainingDuration 1_000_000)
+        clock =
+          AuthorityTimeTrusted
+            (authorityTimeFromMicros (floor (wall * 1_000_000)))
+            (clockUncertaintyFromMicros 0)
+        lease = BootstrapLeaseObserved (bootstrapLeaseBindingForFence fence) deadline "fixture-rv"
+        permit =
+          mustRight
+            ( authorizeBootstrapStoreMutation
+                now
+                deadline
+                clock
+                fence
+                (BootstrapFenceStoreHeld fence)
+                lease
+                BootstrapStorePlanTransitRotation
+            )
+        otherRequest =
+          mkSecretFreeWorkerRequest
+            SecretWorkerUnseal
+            (mustRight (mkWorkerPodUid "fixture-pod"))
+            (mustRight (mkWorkerImageDigest ("sha256:" <> Text.replicate 64 "c")))
+            (mustRight (mkWorkerServiceAccount "fixture-worker"))
+            (mustRight (mkWorkerSessionId "fixture-session"))
+            workerSessionNotIssued
+            fence
+    ProductionStore.observeProductionTransitRotationJournalWithinPermit settings permit otherRequest
+      `shouldReturn` Left BootstrapStoreBindingMismatch
+    result <-
+      timeout 2_500_000 $
+        ProductionStore.observeProductionTransitRotationJournalWithinPermit settings permit request
+    case result of
+      Just (Left BootstrapStoreUnavailable) -> pure ()
+      _ -> expectationFailure "timed-out Transit journal read was not reported unavailable"
+ where
+  open = do
+    listener <- Socket.socket AF_INET Stream defaultProtocol
+    Socket.setSocketOption listener Socket.ReuseAddr 1
+    Socket.bind listener (SockAddrInet 0 literalIpv4Loopback)
+    Socket.listen listener 4
+    pure listener
+
+-- Real production-store calls against a local in-memory S3 endpoint.
+fenceReleasePermitRegression :: Expectation
+fenceReleasePermitRegression = withSocketsDo $ bracket open Socket.close $ \listener -> do
+  address <- Socket.getSocketName listener
+  port <- case address of
+    SockAddrInet value _ -> pure value
+    _ -> fail "fence release fixture requires IPv4"
+  objects <- newIORef Map.empty
+  writes <- newIORef (0 :: Int)
+  delayPut <- newIORef False
+  delayDelete <- newIORef False
+  deleteApplied <- newIORef False
+  delayFenceRead <- newIORef False
+  delayGenerationRead <- newIORef False
+  delayJournalRead <- newIORef False
+  delayWorkerResultRead <- newIORef False
+  bucketMissing <- newIORef False
+  requests <- newIORef (0 :: Int)
+  let serveOne = bracket (Socket.accept listener) (Socket.close . fst) $ \(connection, _) -> do
+        received <- receiveClaimHeaders connection ByteString.empty
+        modifyIORef' requests (+ 1)
+        let (header, rest) = ByteString.breakSubstring "\r\n\r\n" received
+            lowerHeader = ByteString8.map toLower header
+            path = case ByteString8.words header of
+              _ : value : _ -> value
+              _ -> ""
+            reply code extra body =
+              SocketBytes.sendAll connection $
+                ByteString8.pack
+                  ( "HTTP/1.1 "
+                      ++ code
+                      ++ "\r\nContent-Length: "
+                      ++ show (ByteString.length body)
+                      ++ "\r\nConnection: close\r\n"
+                  )
+                  <> extra
+                  <> "\r\n"
+                  <> body
+        if "HEAD " `ByteString.isPrefixOf` header
+          then do
+            missing <- readIORef bucketMissing
+            reply (if missing then "404 Not Found" else "200 OK") "" ""
+          else
+            if "GET " `ByteString.isPrefixOf` header
+              then do
+                missing <- readIORef bucketMissing
+                if missing
+                  then reply "404 Not Found" "" ""
+                  else
+                    if "bootstrap-session-fence" `ByteString.isInfixOf` path
+                      || "vault-storage-generation" `ByteString.isInfixOf` path
+                      || "prepared-init-envelope" `ByteString.isInfixOf` path
+                      || "encrypted-init-response" `ByteString.isInfixOf` path
+                      || "secret-worker-checkpoint.result-v1" `ByteString.isInfixOf` path
+                      then do
+                        delayed <- readIORef delayFenceRead
+                        when (delayed && "bootstrap-session-fence" `ByteString.isInfixOf` path) $
+                          threadDelay 2_000_000
+                        delayedGeneration <- readIORef delayGenerationRead
+                        when (delayedGeneration && "vault-storage-generation" `ByteString.isInfixOf` path) $
+                          threadDelay 800_000
+                        journalDelayed <- readIORef delayJournalRead
+                        let isJournalPath =
+                              "prepared-init-envelope" `ByteString.isInfixOf` path
+                                || "encrypted-init-response" `ByteString.isInfixOf` path
+                        when (journalDelayed && isJournalPath) (threadDelay 800_000)
+                        resultDelayed <- readIORef delayWorkerResultRead
+                        when (resultDelayed && "secret-worker-checkpoint.result-v1" `ByteString.isInfixOf` path) $
+                          threadDelay 800_000
+                        value <- Map.lookup path <$> readIORef objects
+                        let respond = case value of
+                              Nothing -> reply "404 Not Found" "" ""
+                              Just body -> reply "200 OK" "ETag: \"fixture-etag\"\r\n" body
+                        void (try respond :: IO (Either IOException ()))
+                      else reply "200 OK" "" "<ListBucketResult/>"
+              else
+                if "PUT " `ByteString.isPrefixOf` header
+                  then do
+                    let lengthHeader = find ("content-length:" `ByteString.isPrefixOf`) (ByteString8.lines lowerHeader)
+                        bodyLength =
+                          lengthHeader
+                            >>= (fmap fst . ByteString8.readInt . ByteString8.dropWhile (== ' ') . ByteString8.drop 15)
+                    size <- maybe (fail "fence PUT lacks content length") pure bodyLength
+                    body <- receiveClaimBody connection size (ByteString.drop 4 rest)
+                    existing <- Map.member path <$> readIORef objects
+                    if existing && "if-none-match: *" `ByteString.isInfixOf` lowerHeader
+                      then reply "412 Precondition Failed" "" ""
+                      else do
+                        modifyIORef' objects (Map.insert path body)
+                        modifyIORef' writes (+ 1)
+                        delayed <- readIORef delayPut
+                        if delayed
+                          then do
+                            threadDelay 2_000_000
+                            void (try (reply "200 OK" "ETag: \"fixture-etag\"\r\n" "") :: IO (Either IOException ()))
+                          else reply "200 OK" "ETag: \"fixture-etag\"\r\n" ""
+                  else
+                    if "DELETE " `ByteString.isPrefixOf` header
+                      then do
+                        modifyIORef' objects (Map.delete path)
+                        writeIORef deleteApplied True
+                        delayed <- readIORef delayDelete
+                        when delayed (threadDelay 800_000)
+                        void (try (reply "204 No Content" "" "") :: IO (Either IOException ()))
+                      else fail "unexpected fence release fixture method"
+      rawConfig = settingsConfig port
+      rawStore = Settings.bootstrap_store rawConfig
+      config =
+        rawConfig
+          { Settings.bootstrap_store =
+              rawStore {Settings.store_endpoint = Text.pack ("http://127.0.0.1:" ++ show port)}
+          }
+      settings = mustRight (Settings.validateBootstrapBrokerConfig config)
+  Async.withAsync (forever serveOne) $ \server -> do
+    Async.link server
+    wall <- getPOSIXTime
+    now <- realMonotonicNow
+    let wallMicros = floor (wall * 1_000_000)
+        deadline = deadlineAtOffset now (RemainingDuration 20_000_000)
+        storage = mustRight (mkVaultStorageGeneration "fixture-vault")
+        ownerA = mustRight (mkOwnerNonce "owner-a")
+        ownerB = mustRight (mkOwnerNonce "owner-b")
+        fenceA =
+          mustRight
+            ( reloadBootstrapSessionFence
+                1
+                ownerA
+                (digestOf 'a')
+                (mustRight (Request.mkRequestDigest (Text.replicate 64 "b")))
+                storage
+                (wallMicros + 30_000_000)
+            )
+        requestB =
+          mkBootstrapFenceAcquireRequest
+            ownerB
+            (bootstrapFenceActionDigest fenceA)
+            (bootstrapFenceRequestDigest fenceA)
+            storage
+            (bootstrapFenceOperationDeadline fenceA)
+        clock = AuthorityTimeTrusted (authorityTimeFromMicros wallMicros) (clockUncertaintyFromMicros 0)
+        planB = case decideBootstrapFenceAcquire now deadline clock requestB (BootstrapFenceStoreVacant 0) of
+          BootstrapFenceAcquireCas plan -> plan
+          _ -> error "fixture fence B was not admitted"
+        fenceB = fenceCasProposedFence planB
+        reload generation owner action request generationStorage expiry =
+          mustRight (reloadBootstrapSessionFence generation owner action request generationStorage expiry)
+        requestDigestB = bootstrapFenceRequestDigest fenceB
+        expiryB = wallMicros + 30_000_000
+        mismatchedFences =
+          [ reload 2 ownerB (digestOf 'a') requestDigestB storage expiryB
+          , reload 1 ownerA (digestOf 'a') requestDigestB storage expiryB
+          , reload 1 ownerB (digestOf 'c') requestDigestB storage expiryB
+          , reload
+              1
+              ownerB
+              (digestOf 'a')
+              (mustRight (Request.mkRequestDigest (Text.replicate 64 "d")))
+              storage
+              expiryB
+          , reload
+              1
+              ownerB
+              (digestOf 'a')
+              requestDigestB
+              (mustRight (mkVaultStorageGeneration "other-vault"))
+              expiryB
+          , reload 1 ownerB (digestOf 'a') requestDigestB storage (expiryB + 1)
+          ]
+        permit fence =
+          mustRight
+            ( authorizeBootstrapStoreMutation
+                now
+                deadline
+                clock
+                fence
+                (BootstrapFenceStoreHeld fence)
+                (BootstrapLeaseObserved (bootstrapLeaseBindingForFence fence) deadline "fixture-rv")
+                BootstrapStoreReleaseSessionFence
+            )
+    writeIORef bucketMissing True
+    missingBucket <- ProductionStore.productionExistingBootstrapStoreBoundary settings
+    case missingBucket of
+      Left BootstrapStoreUnavailable -> pure ()
+      _ -> expectationFailure "worker store created or accepted a missing bucket"
+    readIORef writes `shouldReturn` 0
+    writeIORef bucketMissing False
+    missingGeneration <- ProductionStore.productionExistingBootstrapStoreBoundary settings
+    case missingGeneration of
+      Left BootstrapStoreReadBackMismatch -> pure ()
+      _ -> expectationFailure "worker store created or accepted a missing generation"
+    readIORef writes `shouldReturn` 0
+    let fixtureFencePath = "/physical-engine-state/bootstrap-session-fence"
+    modifyIORef' objects (Map.insert fixtureFencePath "opaque-retained-fence")
+    opaqueFence <- ProductionStore.productionBootstrapStoreBoundary settings
+    case opaqueFence of
+      Left BootstrapStoreCorrupt -> pure ()
+      _ -> expectationFailure "controller accepted an opaque fence with no generation"
+    readIORef writes `shouldReturn` 0
+    modifyIORef' objects (Map.delete fixtureFencePath)
+    store <- mustRight <$> ProductionStore.productionBootstrapStoreBoundary settings
+    generation <- mustRight <$> observeVaultStorageGeneration store
+    workerStore <- mustRight <$> ProductionStore.productionExistingBootstrapStoreBoundary settings
+    observeVaultStorageGeneration workerStore `shouldReturn` Right generation
+    let generationPath = "/physical-engine-state/vault-storage-generation"
+    savedGeneration <- Map.lookup generationPath <$> readIORef objects
+    generationBytes <- maybe (fail "fixture generation object is missing") pure savedGeneration
+    beforeMissing <- readIORef writes
+    modifyIORef' objects (Map.delete generationPath)
+    observeVaultStorageGeneration store `shouldReturn` Left BootstrapStoreReadBackMismatch
+    workerMissing <- ProductionStore.productionExistingBootstrapStoreBoundary settings
+    case workerMissing of
+      Left BootstrapStoreReadBackMismatch -> pure ()
+      _ -> expectationFailure "worker startup recreated a missing generation"
+    readIORef writes `shouldReturn` beforeMissing
+    modifyIORef' objects (Map.insert generationPath generationBytes)
+    observeVaultStorageGeneration store `shouldReturn` Right generation
+    generationNow <- realMonotonicNow
+    let generationFence =
+          mustRight
+            ( reloadBootstrapSessionFence
+                1
+                ownerB
+                (digestOf 'a')
+                requestDigestB
+                (rootInitStorageGeneration generation)
+                (wallMicros + 30_000_000)
+            )
+        generationPermit at limit =
+          mustRight
+            ( authorizeBootstrapStoreMutation
+                at
+                limit
+                clock
+                generationFence
+                (BootstrapFenceStoreHeld generationFence)
+                (BootstrapLeaseObserved (bootstrapLeaseBindingForFence generationFence) deadline "fixture-rv")
+                BootstrapStoreAdvanceVaultStorageGeneration
+            )
+        replacementGeneration =
+          generation {rootInitStorageGeneration = mustRight (mkVaultStorageGeneration "fixture-next-vault")}
+    advanceVaultStorageGeneration
+      store
+      (generationPermit generationNow deadline)
+      generation
+      replacementGeneration
+      `shouldReturn` Right replacementGeneration
+    observeVaultStorageGeneration store `shouldReturn` Right replacementGeneration
+    modifyIORef' objects (Map.insert generationPath generationBytes)
+    permitStart <- realMonotonicNow
+    let shortLimit = deadlineAtOffset permitStart (RemainingDuration 200_000)
+        journalState = newRootInitState (productionPristineStorageProof generation)
+        journalPermit mutation =
+          mustRight
+            ( authorizeBootstrapStoreMutation
+                permitStart
+                shortLimit
+                clock
+                fenceB
+                (BootstrapFenceStoreHeld fenceB)
+                (BootstrapLeaseObserved (bootstrapLeaseBindingForFence fenceB) deadline "fixture-rv")
+                mutation
+            )
+        -- The production generation is independently random; use its binding
+        -- for the payload while the held fixture fence names its generation.
+        journalBinding = (rootInitStateBinding journalState) {rootInitStorageGeneration = storage}
+        journalValue = newRootInitState (productionPristineStorageProof journalBinding)
+        workerRequestForFence fence =
+          mkSecretFreeWorkerRequest
+            SecretWorkerInitialize
+            (mustRight (mkWorkerPodUid "fixture-pod"))
+            (mustRight (mkWorkerImageDigest ("sha256:" <> Text.replicate 64 "c")))
+            (mustRight (mkWorkerServiceAccount "fixture-worker"))
+            (mustRight (mkWorkerSessionId "fixture-session"))
+            workerSessionNotIssued
+            fence
+        workerRequest = workerRequestForFence fenceB
+        recoveryFixture = mustRight buildFixture
+        originalPrepared = fixturePrepared recoveryFixture
+        originalResponse = fixtureEncryptedResponse recoveryFixture
+        recoveryPrepared =
+          mkPreparedInitEnvelope
+            (mkPristineStorageProof journalBinding (preparedInitPristineObservationDigest originalPrepared))
+            (preparedInitSchemaVersion originalPrepared)
+            (preparedInitSealedRecoveryPrivateKey originalPrepared)
+            (preparedInitRecipientCommitment originalPrepared)
+            (preparedInitEnvelopeDigest originalPrepared)
+        recoveryResponse =
+          mustRight
+            ( mkEncryptedInitResponseReceipt
+                recoveryPrepared
+                (encryptedResponseShares originalResponse)
+                (encryptedResponseBurnToken originalResponse)
+                (encryptedResponseReceiptDigest originalResponse)
+            )
+        workerResult = encryptedInitializationWorkerResult recoveryResponse
+        workerReceipt =
+          (workerReceiptFor workerRequest)
+            { rawWorkerReceiptDigest =
+                mustRight (ProductionStore.productionSecretWorkerReceiptDigest workerRequest workerResult)
+            }
+        timelyPublishPermit =
+          mustRight
+            ( authorizeBootstrapStoreMutation
+                permitStart
+                deadline
+                clock
+                fenceB
+                (BootstrapFenceStoreHeld fenceB)
+                (BootstrapLeaseObserved (bootstrapLeaseBindingForFence fenceB) deadline "fixture-rv")
+                BootstrapStorePublishSecretWorkerResult
+            )
+    timelyPublication <-
+      ProductionStore.publishProductionSecretWorkerResult
+        settings
+        timelyPublishPermit
+        workerRequest
+        workerReceipt
+        workerResult
+    case timelyPublication of
+      Right _ -> pure ()
+      Left failure -> expectationFailure ("timely worker publication failed: " ++ show failure)
+    let recoveryStore =
+          store
+            { Store.readEncryptedInitResponse = \_ -> pure (Right StoreObjectAbsent)
+            , Store.readSecretWorkerCheckpoint =
+                pure
+                  ( Right
+                      (StoreObjectPresent (StoreVersion 1) (digestOf 'f') (noSecretWorkerReceipt workerRequest))
+                  )
+            }
+        observePublished request = do
+          observed <-
+            ProductionStore.observeProductionSecretWorkerResultForRecovery
+              deadline
+              settings
+              request
+          pure (Just <$> observed)
+    recovered <-
+      InitRecovery.observeRootInitRecoveryEvidence recoveryStore journalBinding observePublished
+    recovered `shouldBe` Right (InitRecovery.RootInitRecoveredWorkerResult workerResult)
+    beforeExpiredRecovery <- readIORef requests
+    ProductionStore.observeProductionSecretWorkerResultForRecovery
+      (deadlineFromInstant permitStart)
+      settings
+      workerRequest
+      `shouldReturn` Left BootstrapStoreUnavailable
+    readIORef requests `shouldReturn` beforeExpiredRecovery
+    recoveryReadStart <- realMonotonicNow
+    let recoveryReadLimit = deadlineAtOffset recoveryReadStart (RemainingDuration 200_000)
+    writeIORef delayWorkerResultRead True
+    delayedRecovery <-
+      timeout 1_000_000 $
+        ProductionStore.observeProductionSecretWorkerResultForRecovery
+          recoveryReadLimit
+          settings
+          workerRequest
+    delayedRecovery `shouldBe` Just (Left BootstrapStoreUnavailable)
+    threadDelay 900_000
+    writeIORef delayWorkerResultRead False
+    unavailableRecovery <-
+      InitRecovery.observeRootInitRecoveryEvidence recoveryStore journalBinding $ \_ ->
+        pure (Left BootstrapStoreUnavailable)
+    unavailableRecovery `shouldBe` Left BootstrapStoreUnavailable
+    let foreignOperationRequest =
+          mkSecretFreeWorkerRequest
+            SecretWorkerUnseal
+            (mustRight (mkWorkerPodUid "foreign-pod"))
+            (mustRight (mkWorkerImageDigest ("sha256:" <> Text.replicate 64 "c")))
+            (mustRight (mkWorkerServiceAccount "fixture-worker"))
+            (mustRight (mkWorkerSessionId "foreign-session"))
+            workerSessionNotIssued
+            fenceB
+        foreignStore =
+          recoveryStore
+            { Store.readSecretWorkerCheckpoint =
+                pure
+                  ( Right
+                      (StoreObjectPresent (StoreVersion 1) (digestOf 'f') (noSecretWorkerReceipt foreignOperationRequest))
+                  )
+            }
+    foreignRecovery <-
+      InitRecovery.observeRootInitRecoveryEvidence foreignStore journalBinding $ \_ ->
+        fail "foreign operation must not trigger result observation"
+    foreignRecovery `shouldBe` Left BootstrapStoreBindingMismatch
+    wrongResult <-
+      InitRecovery.observeRootInitRecoveryEvidence recoveryStore journalBinding $ \_ ->
+        pure (Right (Just (finalizedInitializationWorkerResult (fixtureFinalBundle recoveryFixture))))
+    wrongResult `shouldBe` Left BootstrapStoreBindingMismatch
+    modifyIORef' objects (Map.delete "/physical-engine-state/secret-worker-checkpoint.result-v1")
+    staleAbsence <-
+      InitRecovery.observeRootInitRecoveryEvidence recoveryStore journalBinding $ \request -> do
+        observed <- observePublished request
+        published <-
+          ProductionStore.publishProductionSecretWorkerResult
+            settings
+            timelyPublishPermit
+            workerRequest
+            workerReceipt
+            workerResult
+        case published of
+          Right _ -> pure ()
+          Left failure -> expectationFailure ("late fixture publication failed: " ++ show failure)
+        pure observed
+    staleAbsence `shouldBe` Left BootstrapStoreUnavailable
+    retried <-
+      InitRecovery.observeRootInitRecoveryEvidence recoveryStore journalBinding observePublished
+    retried `shouldBe` Right (InitRecovery.RootInitRecoveredWorkerResult workerResult)
+    beforeIdenticalRetry <- readIORef writes
+    identicalRetry <-
+      ProductionStore.publishProductionSecretWorkerResult
+        settings
+        timelyPublishPermit
+        workerRequest
+        workerReceipt
+        workerResult
+    identicalRetry `shouldBe` timelyPublication
+    readIORef writes `shouldReturn` beforeIdenticalRetry
+    beforeForeignRequests <- readIORef requests
+    beforeForeignWrites <- readIORef writes
+    forM_ mismatchedFences $ \foreignFence -> do
+      let foreignRequest = workerRequestForFence foreignFence
+          foreignReceipt =
+            (workerReceiptFor foreignRequest)
+              { rawWorkerReceiptDigest =
+                  mustRight (ProductionStore.productionSecretWorkerReceiptDigest foreignRequest workerResult)
+              }
+      ProductionStore.publishProductionSecretWorkerResult
+        settings
+        timelyPublishPermit
+        foreignRequest
+        foreignReceipt
+        workerResult
+        `shouldReturn` Left BootstrapStoreBindingMismatch
+    readIORef requests `shouldReturn` beforeForeignRequests
+    readIORef writes `shouldReturn` beforeForeignWrites
+    beforeMissingBucketWrite <- readIORef writes
+    writeIORef bucketMissing True
+    ProductionStore.publishProductionSecretWorkerResult
+      settings
+      timelyPublishPermit
+      workerRequest
+      workerReceipt
+      workerResult
+      `shouldReturn` Left BootstrapStoreUnavailable
+    readIORef writes `shouldReturn` beforeMissingBucketWrite
+    writeIORef bucketMissing False
+    let replacementResult = classifiedAmbiguousInitializationWorkerResult InitializationObservedBeforeCall
+        replacementReceipt =
+          workerReceipt
+            { rawWorkerReceiptDigest =
+                mustRight (ProductionStore.productionSecretWorkerReceiptDigest workerRequest replacementResult)
+            }
+    beforeContradictoryWrite <- readIORef writes
+    ProductionStore.publishProductionSecretWorkerResult
+      settings
+      timelyPublishPermit
+      workerRequest
+      replacementReceipt
+      replacementResult
+      `shouldReturn` Left BootstrapStoreVersionConflict
+    readIORef writes `shouldReturn` beforeContradictoryWrite
+    preserved <- ProductionStore.observeProductionSecretWorkerResult settings workerRequest
+    case preserved of
+      Right (Just recorded) ->
+        ProductionStore.productionSecretWorkerResultValue recorded `shouldBe` workerResult
+      _ -> expectationFailure "contradictory worker result displaced the original"
+    let newerFence = reload 2 ownerB (digestOf 'a') requestDigestB storage expiryB
+        newerRequest = workerRequestForFence newerFence
+        newerReceipt =
+          (workerReceiptFor newerRequest)
+            { rawWorkerReceiptDigest =
+                mustRight (ProductionStore.productionSecretWorkerReceiptDigest newerRequest workerResult)
+            }
+        newerPermit =
+          mustRight
+            ( authorizeBootstrapStoreMutation
+                permitStart
+                deadline
+                clock
+                newerFence
+                (BootstrapFenceStoreHeld newerFence)
+                (BootstrapLeaseObserved (bootstrapLeaseBindingForFence newerFence) deadline "fixture-rv")
+                BootstrapStorePublishSecretWorkerResult
+            )
+    newerPublication <-
+      ProductionStore.publishProductionSecretWorkerResult
+        settings
+        newerPermit
+        newerRequest
+        newerReceipt
+        workerResult
+    case newerPublication of
+      Right _ -> pure ()
+      Left failure -> expectationFailure ("newer worker publication failed: " ++ show failure)
+    beforeStaleWrite <- readIORef writes
+    ProductionStore.publishProductionSecretWorkerResult
+      settings
+      timelyPublishPermit
+      workerRequest
+      workerReceipt
+      workerResult
+      `shouldReturn` Left BootstrapStoreVersionConflict
+    readIORef writes `shouldReturn` beforeStaleWrite
+    retainedNewer <- ProductionStore.observeProductionSecretWorkerResult settings newerRequest
+    case retainedNewer of
+      Right (Just recorded) ->
+        ProductionStore.productionSecretWorkerResultValue recorded `shouldBe` workerResult
+      _ -> expectationFailure "stale worker displaced the newer result"
+    createPermit <- evaluate (journalPermit BootstrapStoreCreateRootInitJournal)
+    casPermit <- evaluate (journalPermit BootstrapStoreCasRootInitJournal)
+    deletePermit <- evaluate (journalPermit BootstrapStoreDeletePreparedInitEnvelope)
+    promotionPermit <- evaluate (journalPermit BootstrapStorePromoteFinalUnlockBundle)
+    publishPermit <- evaluate (journalPermit BootstrapStorePublishSecretWorkerResult)
+    expiredGenerationPermit <- evaluate (generationPermit permitStart shortLimit)
+    threadDelay 300_000
+    beforeExpiredJournal <- readIORef writes
+    beforeExpiredRequests <- readIORef requests
+    advanceVaultStorageGeneration store expiredGenerationPermit generation replacementGeneration
+      `shouldReturn` Left BootstrapStoreUnavailable
+    ProductionStore.publishProductionSecretWorkerResult
+      settings
+      publishPermit
+      workerRequest
+      workerReceipt
+      workerResult
+      `shouldReturn` Left BootstrapStoreUnavailable
+    createRootInitJournal store createPermit journalValue `shouldReturn` Left BootstrapStoreUnavailable
+    casRootInitJournal store casPermit (StoreVersion 1) journalValue
+      `shouldReturn` Left BootstrapStoreUnavailable
+    deletePreparedInitEnvelope store deletePermit journalBinding (StoreVersion 1)
+      `shouldReturn` Left BootstrapStoreUnavailable
+    let promotionFixture = mustRight buildFixture
+    promoteFinalUnlockBundle
+      store
+      promotionPermit
+      (fixtureEncryptedResponse promotionFixture)
+      (fixtureFinalBundle promotionFixture)
+      `shouldReturn` Left BootstrapStoreUnavailable
+    readIORef writes `shouldReturn` beforeExpiredJournal
+    readIORef requests `shouldReturn` beforeExpiredRequests
+    generationReadStart <- realMonotonicNow
+    let generationReadLimit = deadlineAtOffset generationReadStart (RemainingDuration 300_000)
+    writeIORef delayGenerationRead True
+    generationReadResult <-
+      timeout 1_000_000 $
+        advanceVaultStorageGeneration
+          store
+          (generationPermit generationReadStart generationReadLimit)
+          generation
+          replacementGeneration
+    generationReadResult `shouldBe` Just (Left BootstrapStoreUnavailable)
+    threadDelay 900_000
+    writeIORef delayGenerationRead False
+    readIORef writes `shouldReturn` beforeExpiredJournal
+    delayedStart <- realMonotonicNow
+    let delayedLimit = deadlineAtOffset delayedStart (RemainingDuration 300_000)
+        delayedPermit mutation =
+          mustRight
+            ( authorizeBootstrapStoreMutation
+                delayedStart
+                delayedLimit
+                clock
+                fenceB
+                (BootstrapFenceStoreHeld fenceB)
+                (BootstrapLeaseObserved (bootstrapLeaseBindingForFence fenceB) deadline "fixture-rv")
+                mutation
+            )
+    delayedDeletePermit <- evaluate (delayedPermit BootstrapStoreDeletePreparedInitEnvelope)
+    writeIORef delayJournalRead True
+    delayedDelete <-
+      timeout
+        1_000_000
+        (deletePreparedInitEnvelope store delayedDeletePermit journalBinding (StoreVersion 1))
+    delayedDelete `shouldBe` Just (Left BootstrapStoreUnavailable)
+    threadDelay 900_000
+    delayedPromotionStart <- realMonotonicNow
+    let delayedPromotionLimit = deadlineAtOffset delayedPromotionStart (RemainingDuration 300_000)
+        delayedPromotionPermit =
+          mustRight
+            ( authorizeBootstrapStoreMutation
+                delayedPromotionStart
+                delayedPromotionLimit
+                clock
+                fenceB
+                (BootstrapFenceStoreHeld fenceB)
+                (BootstrapLeaseObserved (bootstrapLeaseBindingForFence fenceB) deadline "fixture-rv")
+                BootstrapStorePromoteFinalUnlockBundle
+            )
+    delayedPromotion <-
+      timeout 1_000_000 $
+        promoteFinalUnlockBundle
+          store
+          delayedPromotionPermit
+          (fixtureEncryptedResponse promotionFixture)
+          (fixtureFinalBundle promotionFixture)
+    delayedPromotion `shouldBe` Just (Left BootstrapStoreUnavailable)
+    threadDelay 900_000
+    writeIORef delayJournalRead False
+    readIORef writes `shouldReturn` beforeExpiredJournal
+    let prepared = fixturePrepared promotionFixture
+        preparedBinding = preparedInitBinding prepared
+        preparedFence =
+          mustRight
+            ( reloadBootstrapSessionFence
+                1
+                ownerB
+                (digestOf 'a')
+                (mustRight (Request.mkRequestDigest (Text.replicate 64 "b")))
+                (rootInitStorageGeneration preparedBinding)
+                (wallMicros + 30_000_000)
+            )
+        preparePermit at limit mutation =
+          mustRight
+            ( authorizeBootstrapStoreMutation
+                at
+                limit
+                clock
+                preparedFence
+                (BootstrapFenceStoreHeld preparedFence)
+                (BootstrapLeaseObserved (bootstrapLeaseBindingForFence preparedFence) deadline "fixture-rv")
+                mutation
+            )
+    prepareNow <- realMonotonicNow
+    createdPrepared <-
+      createPreparedInitEnvelope
+        store
+        (preparePermit prepareNow deadline BootstrapStoreCreatePreparedInitEnvelope)
+        prepared
+    preparedVersion <- case createdPrepared of
+      Right (StoreWriteApplied version _ _) -> pure version
+      _ -> fail "fixture prepared envelope was not created"
+    deleteNow <- realMonotonicNow
+    let deleteLimit = deadlineAtOffset deleteNow (RemainingDuration 300_000)
+    writeIORef delayDelete True
+    deleteResult <-
+      timeout 1_000_000 $
+        deletePreparedInitEnvelope
+          store
+          (preparePermit deleteNow deleteLimit BootstrapStoreDeletePreparedInitEnvelope)
+          preparedBinding
+          preparedVersion
+    deleteResult `shouldBe` Just (Left BootstrapStoreUnavailable)
+    readIORef deleteApplied `shouldReturn` True
+    threadDelay 900_000
+    writeIORef delayDelete False
+    readPreparedInitEnvelope store preparedBinding `shouldReturn` Right StoreObjectAbsent
+    readNow <- realMonotonicNow
+    let readDeadline = deadlineAtOffset readNow (RemainingDuration 700_000)
+        delayedReadPlan = case decideBootstrapFenceAcquire readNow readDeadline clock requestB (BootstrapFenceStoreVacant 0) of
+          BootstrapFenceAcquireCas plan -> plan
+          _ -> error "fixture delayed-read fence was not admitted"
+    beforeRead <- readIORef writes
+    writeIORef delayFenceRead True
+    delayedRead <- timeout 1_500_000 (casBootstrapSessionFence store delayedReadPlan)
+    case delayedRead of
+      Just (Right (BootstrapFenceCasUnobservable _)) -> pure ()
+      _ -> expectationFailure "delayed fence read did not return an unobservable CAS"
+    readIORef writes `shouldReturn` beforeRead
+    threadDelay 1_500_000
+    writeIORef delayFenceRead False
+    casResult <- casBootstrapSessionFence store planB
+    casResult `shouldBe` Right (BootstrapFenceCasAppliedReadBack fenceB)
+    beforeRestart <- readIORef writes
+    modifyIORef' objects (Map.delete generationPath)
+    retainedFence <- ProductionStore.productionBootstrapStoreBoundary settings
+    case retainedFence of
+      Left BootstrapStoreBindingMismatch -> pure ()
+      _ -> expectationFailure "controller recreated a generation beside a retained fence"
+    readIORef writes `shouldReturn` beforeRestart
+    modifyIORef' objects (Map.insert generationPath generationBytes)
+    before <- readIORef writes
+    releaseBootstrapSessionFence store (permit fenceA) fenceB
+      `shouldReturn` Left BootstrapStoreBindingMismatch
+    forM_ mismatchedFences $ \otherFence ->
+      releaseBootstrapSessionFence store (permit fenceB) otherFence
+        `shouldReturn` Left BootstrapStoreBindingMismatch
+    let earlier = monotonicInstantFromMicros (monotonicInstantMicros now - 1)
+        expiredDeadline = deadlineFromInstant now
+        expiredPermit =
+          mustRight
+            ( authorizeBootstrapStoreMutation
+                earlier
+                expiredDeadline
+                clock
+                fenceB
+                (BootstrapFenceStoreHeld fenceB)
+                (BootstrapLeaseObserved (bootstrapLeaseBindingForFence fenceB) expiredDeadline "fixture-rv")
+                BootstrapStoreReleaseSessionFence
+            )
+    releaseBootstrapSessionFence store expiredPermit fenceB
+      `shouldReturn` Left BootstrapStoreUnavailable
+    readIORef writes `shouldReturn` before
+    observeBootstrapSessionFence store `shouldReturn` Right (BootstrapFenceStoreHeld fenceB)
+    releaseBootstrapSessionFence store (permit fenceB) fenceB
+      `shouldReturn` Right (BootstrapFenceStoreVacant 1)
+    later <- realMonotonicNow
+    let nextDeadline = deadlineAtOffset later (RemainingDuration 700_000)
+        planB2 = case decideBootstrapFenceAcquire later nextDeadline clock requestB (BootstrapFenceStoreVacant 1) of
+          BootstrapFenceAcquireCas plan -> plan
+          _ -> error "fixture fence B successor was not admitted"
+        fenceB2 = fenceCasProposedFence planB2
+    writeIORef delayPut True
+    delayedCas <- timeout 1_500_000 (casBootstrapSessionFence store planB2)
+    case delayedCas of
+      Just (Right (BootstrapFenceCasUnobservable _)) -> pure ()
+      _ -> expectationFailure "applied fence CAS did not remain unobservable"
+    threadDelay 1_500_000
+    writeIORef delayPut False
+    observeBootstrapSessionFence store `shouldReturn` Right (BootstrapFenceStoreHeld fenceB2)
+    permitNow <- realMonotonicNow
+    let shortDeadline = deadlineAtOffset permitNow (RemainingDuration 1_000_000)
+        shortPermit =
+          mustRight
+            ( authorizeBootstrapStoreMutation
+                permitNow
+                shortDeadline
+                clock
+                fenceB2
+                (BootstrapFenceStoreHeld fenceB2)
+                (BootstrapLeaseObserved (bootstrapLeaseBindingForFence fenceB2) shortDeadline "fixture-rv")
+                BootstrapStoreReleaseSessionFence
+            )
+    writeIORef delayPut True
+    timeout 2_500_000 (releaseBootstrapSessionFence store shortPermit fenceB2)
+      `shouldReturn` Just (Left BootstrapStoreUnavailable)
+    threadDelay 1_300_000
+    observeBootstrapSessionFence store `shouldReturn` Right (BootstrapFenceStoreVacant 2)
+    writeIORef delayPut False
+    retiringWall <- getPOSIXTime
+    retiringNow <- realMonotonicNow
+    let retiringMicros = floor (retiringWall * 1_000_000)
+        retiringClock = AuthorityTimeTrusted (authorityTimeFromMicros retiringMicros) (clockUncertaintyFromMicros 0)
+        retiringRequest =
+          mkBootstrapFenceAcquireRequest
+            ownerB
+            (digestOf 'a')
+            requestDigestB
+            storage
+            (operationDeadlineFromMicros (retiringMicros + 3_000_000))
+        retiringAcquire = case decideBootstrapFenceAcquire
+          retiringNow
+          (deadlineAtOffset retiringNow (RemainingDuration 5_000_000))
+          retiringClock
+          retiringRequest
+          (BootstrapFenceStoreVacant 2) of
+          BootstrapFenceAcquireCas plan -> plan
+          _ -> error "fixture retiring fence was not admitted"
+        retiringFence = fenceCasProposedFence retiringAcquire
+    casBootstrapSessionFence store retiringAcquire
+      `shouldReturn` Right (BootstrapFenceCasAppliedReadBack retiringFence)
+    threadDelay 3_200_000
+    retiredWall <- getPOSIXTime
+    retiredNow <- realMonotonicNow
+    let retiredClock =
+          AuthorityTimeTrusted
+            (authorityTimeFromMicros (floor (retiredWall * 1_000_000)))
+            (clockUncertaintyFromMicros 0)
+        retireDeadline = deadlineAtOffset retiredNow (RemainingDuration 700_000)
+        retirePlan =
+          mustRight
+            ( decideBootstrapFenceRetire
+                retiredNow
+                retireDeadline
+                retiredClock
+                retiringFence
+                BootstrapLeaseMissing
+                (BootstrapFenceOwnerAbsent retiringFence (digestOf 'e'))
+            )
+    writeIORef delayPut True
+    delayedRetire <- timeout 1_500_000 (casRetireBootstrapSessionFence store retirePlan)
+    case delayedRetire of
+      Just (Right (BootstrapFenceRetireCasUnobservable _)) -> pure ()
+      _ -> expectationFailure "applied fence retirement did not remain unobservable"
+    threadDelay 1_500_000
+    observeBootstrapSessionFence store `shouldReturn` Right (BootstrapFenceStoreVacant 3)
+ where
+  open = do
+    listener <- Socket.socket AF_INET Stream defaultProtocol
+    Socket.setSocketOption listener Socket.ReuseAddr 1
+    Socket.bind listener (SockAddrInet 0 literalIpv4Loopback)
+    Socket.listen listener 4
+    pure listener
+
+-- Two readers are held until both have observed absence, so the loser must
+-- encounter the real conditional-write conflict rather than an earlier read.
+transitClaimRaceRegression :: Expectation
+transitClaimRaceRegression = withSocketsDo $ bracket open Socket.close $ \listener -> do
+  address <- Socket.getSocketName listener
+  port <- case address of
+    SockAddrInet value _ -> pure value
+    _ -> fail "Transit claim fixture requires IPv4"
+  stored <- newMVar Nothing
+  initialReads <- newIORef (0 :: Int)
+  bothRead <- newEmptyMVar
+  writes <- newIORef (0 :: Int)
+  conflicts <- newIORef (0 :: Int)
+  vaultVersion <- newIORef (7 :: Int)
+  vaultPosts <- newIORef (0 :: Int)
+  let serveConnection connection = do
+        request <- receiveClaimHeaders connection ByteString.empty
+        let (header, rest) = ByteString.breakSubstring "\r\n\r\n" request
+            lowerHeader = ByteString8.map toLower header
+            reply code extra body =
+              SocketBytes.sendAll connection $
+                ByteString8.pack
+                  ( "HTTP/1.1 "
+                      ++ code
+                      ++ "\r\nContent-Length: "
+                      ++ show (ByteString.length body)
+                      ++ "\r\nConnection: close\r\n"
+                  )
+                  <> extra
+                  <> "\r\n"
+                  <> body
+        if "POST /v1/transit/keys/prodbox-active-config/rotate " `ByteString.isPrefixOf` header
+          then do
+            modifyIORef' vaultPosts (+ 1)
+            modifyIORef' vaultVersion (+ 1)
+            reply "204 No Content" "" ""
+          else
+            if "GET /v1/transit/keys/prodbox-active-config " `ByteString.isPrefixOf` header
+              then do
+                version <- readIORef vaultVersion
+                reply
+                  "200 OK"
+                  ""
+                  ( ByteString8.pack
+                      ("{\"data\":{\"type\":\"aes256-gcm96\",\"latest_version\":" ++ show version ++ "}}")
+                  )
+              else
+                if "HEAD " `ByteString.isPrefixOf` header
+                  then reply "200 OK" "" ""
+                  else
+                    if "GET " `ByteString.isPrefixOf` header
+                      then
+                        if ".transit-rotation-v1" `ByteString.isInfixOf` header
+                          then do
+                            value <- readMVar stored
+                            first <- atomicModifyIORef' initialReads $ \n -> (n + 1, n < 2)
+                            when first $ do
+                              count <- readIORef initialReads
+                              when (count >= 2) (void (tryPutMVar bothRead ()))
+                              released <- timeout 3_000_000 (readMVar bothRead)
+                              when (released == Nothing) (fail "Transit claim readers did not meet")
+                            case value of
+                              Nothing -> reply "404 Not Found" "" ""
+                              Just body -> reply "200 OK" "ETag: \"fixture-etag\"\r\n" body
+                          else reply "200 OK" "" "<ListBucketResult/>"
+                      else
+                        if "PUT " `ByteString.isPrefixOf` header
+                          then do
+                            let lengthHeader = find ("content-length:" `ByteString.isPrefixOf`) (ByteString8.lines lowerHeader)
+                                bodyLength =
+                                  lengthHeader
+                                    >>= (fmap fst . ByteString8.readInt . ByteString8.dropWhile (== ' ') . ByteString8.drop 15)
+                            size <- maybe (fail "Transit claim PUT lacks content length") pure bodyLength
+                            body <- receiveClaimBody connection size (ByteString.drop 4 rest)
+                            applied <- modifyMVar stored $ \existing ->
+                              if (existing == Nothing && "if-none-match: *" `ByteString.isInfixOf` lowerHeader)
+                                || (existing /= Nothing && "if-match: \"fixture-etag\"" `ByteString.isInfixOf` lowerHeader)
+                                then pure (Just body, True)
+                                else pure (existing, False)
+                            if applied
+                              then do
+                                modifyIORef' writes (+ 1)
+                                reply "200 OK" "ETag: \"fixture-etag\"\r\n" ""
+                              else do
+                                modifyIORef' conflicts (+ 1)
+                                reply "412 Precondition Failed" "" ""
+                          else fail "unexpected Transit claim fixture method"
+      serve = forever $ do
+        (connection, _) <- Socket.accept listener
+        void (forkIO (bracket (pure connection) Socket.close serveConnection))
+      rawConfig = settingsConfig port
+      rawStore = Settings.bootstrap_store rawConfig
+      config =
+        rawConfig
+          { Settings.vault_address = Text.pack ("http://127.0.0.1:" ++ show port)
+          , Settings.bootstrap_store =
+              rawStore {Settings.store_endpoint = Text.pack ("http://127.0.0.1:" ++ show port)}
+          }
+      settings = mustRight (Settings.validateBootstrapBrokerConfig config)
+  Async.withAsync serve $ \server -> do
+    Async.link server
+    wall <- getPOSIXTime
+    now <- realMonotonicNow
+    let fence =
+          mustRight $
+            reloadBootstrapSessionFence
+              1
+              (mustRight (mkOwnerNonce "fixture-owner"))
+              (digestOf 'a')
+              (mustRight (Request.mkRequestDigest (Text.replicate 64 "b")))
+              (mustRight (mkVaultStorageGeneration "fixture-vault"))
+              (floor (wall * 1_000_000) + 30_000_000)
+        request =
+          mkSecretFreeWorkerRequest
+            SecretWorkerRotateTransitKey
+            (mustRight (mkWorkerPodUid "fixture-pod"))
+            (mustRight (mkWorkerImageDigest ("sha256:" <> Text.replicate 64 "c")))
+            (mustRight (mkWorkerServiceAccount "fixture-worker"))
+            (mustRight (mkWorkerSessionId "fixture-session"))
+            workerSessionNotIssued
+            fence
+        deadline = deadlineAtOffset now (RemainingDuration 10_000_000)
+        clock =
+          AuthorityTimeTrusted
+            (authorityTimeFromMicros (floor (wall * 1_000_000)))
+            (clockUncertaintyFromMicros 0)
+        lease = BootstrapLeaseObserved (bootstrapLeaseBindingForFence fence) deadline "fixture-rv"
+        permit =
+          mustRight
+            ( authorizeBootstrapStoreMutation
+                now
+                deadline
+                clock
+                fence
+                (BootstrapFenceStoreHeld fence)
+                lease
+                BootstrapStorePlanTransitRotation
+            )
+        claim = ProductionStore.planProductionTransitRotation settings permit request "prodbox-active-config" 7
+        completionPermit =
+          mustRight
+            ( authorizeBootstrapStoreMutation
+                now
+                deadline
+                clock
+                fence
+                (BootstrapFenceStoreHeld fence)
+                lease
+                BootstrapStoreCompleteTransitRotation
+            )
+        effectPermit effect =
+          mustRight
+            ( authorizeBootstrapVaultEffect
+                now
+                deadline
+                clock
+                fence
+                (BootstrapFenceStoreHeld fence)
+                lease
+                effect
+            )
+        token = Vault.VaultToken "fixture-token"
+    invalidClaim <- ProductionStore.planProductionTransitRotation settings permit request "" 7
+    case invalidClaim of
+      Left BootstrapStoreBindingMismatch -> pure ()
+      _ -> expectationFailure "empty Transit claim was admitted"
+    foreignKey <-
+      ProductionStore.planProductionTransitRotation settings permit request "unregistered-key" 7
+    case foreignKey of
+      Left BootstrapStoreBindingMismatch -> pure ()
+      _ -> expectationFailure "unregistered Transit key was admitted"
+    readIORef initialReads `shouldReturn` 0
+    result <- timeout 10_000_000 (Async.concurrently claim claim)
+    fresh <- case result of
+      Just (Right winner, Left BootstrapStoreVersionConflict) -> pure winner
+      Just (Left BootstrapStoreVersionConflict, Right winner) -> pure winner
+      _ -> fail "Transit claim race did not yield one fresh claimant"
+    readIORef writes `shouldReturn` 1
+    readIORef conflicts `shouldReturn` 1
+    again <- claim
+    case again of
+      Left BootstrapStoreVersionConflict -> pure ()
+      _ -> expectationFailure "an observed claim granted fresh authority"
+    wrongEffect <-
+      ProductionStore.dispatchProductionTransitRotation (effectPermit BootstrapVaultSeal) fresh token
+    case wrongEffect of
+      Left BootstrapStoreBindingMismatch -> pure ()
+      _ -> expectationFailure "wrong Vault effect was admitted"
+    readIORef vaultPosts `shouldReturn` 0
+    dispatched <-
+      Async.concurrently
+        ( ProductionStore.dispatchProductionTransitRotation
+            (effectPermit BootstrapVaultRotateTransitKey)
+            fresh
+            token
+        )
+        ( ProductionStore.dispatchProductionTransitRotation
+            (effectPermit BootstrapVaultRotateTransitKey)
+            fresh
+            token
+        )
+    successful <- case dispatched of
+      (Right winner, Left BootstrapStoreVersionConflict) -> pure winner
+      (Left BootstrapStoreVersionConflict, Right winner) -> pure winner
+      _ -> fail "copied claim did not yield exactly one Vault dispatch"
+    readIORef vaultPosts `shouldReturn` 1
+    writeIORef vaultVersion 10
+    invalidConfirmation <-
+      ProductionStore.confirmProductionTransitRotation
+        (effectPermit BootstrapVaultRotateTransitKey)
+        successful
+        token
+    case invalidConfirmation of
+      Left BootstrapStoreReadBackMismatch -> pure ()
+      _ -> expectationFailure "incorrect Vault version created a completion witness"
+    readIORef writes `shouldReturn` 1
+    preserved <- ProductionStore.observeProductionTransitRotationJournal settings
+    case preserved of
+      Right (StoreObjectPresent _ _ ProductionStore.ProductionTransitRotationClaimed {}) -> pure ()
+      other -> expectationFailure ("invalid completion damaged claim: " ++ show other)
+    writeIORef vaultVersion 8
+    confirmed <-
+      ProductionStore.confirmProductionTransitRotation
+        (effectPermit BootstrapVaultRotateTransitKey)
+        successful
+        token
+    witness <- case confirmed of
+      Right value -> pure value
+      Left failure -> fail (show failure)
+    completed <- ProductionStore.completeProductionTransitRotation completionPermit witness
+    case completed of
+      Right ProductionStore.ProductionTransitRotationCompleted {} -> pure ()
+      other -> expectationFailure ("valid completion did not succeed: " ++ show other)
+    readIORef writes `shouldReturn` 2
+    now2 <- realMonotonicNow
+    let fence2 =
+          mustRight $
+            reloadBootstrapSessionFence
+              2
+              (mustRight (mkOwnerNonce "fixture-owner-2"))
+              (digestOf 'a')
+              (mustRight (Request.mkRequestDigest (Text.replicate 64 "d")))
+              (mustRight (mkVaultStorageGeneration "fixture-vault"))
+              (floor (wall * 1_000_000) + 30_000_000)
+        request2 =
+          mkSecretFreeWorkerRequest
+            SecretWorkerRotateTransitKey
+            (mustRight (mkWorkerPodUid "fixture-pod-2"))
+            (mustRight (mkWorkerImageDigest ("sha256:" <> Text.replicate 64 "c")))
+            (mustRight (mkWorkerServiceAccount "fixture-worker"))
+            (mustRight (mkWorkerSessionId "fixture-session-2"))
+            workerSessionNotIssued
+            fence2
+        deadline2 = deadlineAtOffset now2 (RemainingDuration 5_000_000)
+        shortDeadline = deadlineAtOffset now2 (RemainingDuration 100_000)
+        lease2 = BootstrapLeaseObserved (bootstrapLeaseBindingForFence fence2) deadline2 "fixture-rv-2"
+        planPermit2 =
+          mustRight
+            ( authorizeBootstrapStoreMutation
+                now2
+                deadline2
+                clock
+                fence2
+                (BootstrapFenceStoreHeld fence2)
+                lease2
+                BootstrapStorePlanTransitRotation
+            )
+        completionPermit2 =
+          mustRight
+            ( authorizeBootstrapStoreMutation
+                now2
+                deadline2
+                clock
+                fence2
+                (BootstrapFenceStoreHeld fence2)
+                lease2
+                BootstrapStoreCompleteTransitRotation
+            )
+        effectPermit2 limit =
+          mustRight
+            ( authorizeBootstrapVaultEffect
+                now2
+                limit
+                clock
+                fence2
+                (BootstrapFenceStoreHeld fence2)
+                lease2
+                BootstrapVaultRotateTransitKey
+            )
+    wrongFenceDispatch <-
+      ProductionStore.dispatchProductionTransitRotation (effectPermit2 deadline2) fresh token
+    case wrongFenceDispatch of
+      Left BootstrapStoreBindingMismatch -> pure ()
+      _ -> expectationFailure "a different fence authorized the claim"
+    wrongFenceCompletion <- ProductionStore.completeProductionTransitRotation completionPermit2 witness
+    wrongFenceCompletion `shouldBe` Left BootstrapStoreBindingMismatch
+    secondClaim <-
+      ProductionStore.planProductionTransitRotation
+        settings
+        planPermit2
+        request2
+        "prodbox-active-config"
+        8
+    fresh2 <- case secondClaim of
+      Right value -> pure value
+      Left failure -> fail (show failure)
+    threadDelay 200_000
+    expired <-
+      ProductionStore.dispatchProductionTransitRotation (effectPermit2 shortDeadline) fresh2 token
+    case expired of
+      Left BootstrapStoreUnavailable -> pure ()
+      _ -> expectationFailure "expired permit dispatched or produced a witness"
+    retry <- ProductionStore.dispatchProductionTransitRotation (effectPermit2 deadline2) fresh2 token
+    case retry of
+      Left BootstrapStoreVersionConflict -> pure ()
+      _ -> expectationFailure "an expired attempt reused its consumed claim"
+    readIORef vaultPosts `shouldReturn` 1
+ where
+  open = do
+    listener <- Socket.socket AF_INET Stream defaultProtocol
+    Socket.setSocketOption listener Socket.ReuseAddr 1
+    Socket.bind listener (SockAddrInet 0 literalIpv4Loopback)
+    Socket.listen listener 8
+    pure listener
+
+receiveClaimHeaders :: Socket.Socket -> ByteString -> IO ByteString
+receiveClaimHeaders connection bytes
+  | "\r\n\r\n" `ByteString.isInfixOf` bytes = pure bytes
+  | otherwise = do
+      chunk <- SocketBytes.recv connection 4096
+      if ByteString.null chunk
+        then fail "Transit claim fixture ended before headers"
+        else receiveClaimHeaders connection (bytes <> chunk)
+
+receiveClaimBody :: Socket.Socket -> Int -> ByteString -> IO ByteString
+receiveClaimBody connection size bytes
+  | ByteString.length bytes >= size = pure (ByteString.take size bytes)
+  | otherwise = do
+      chunk <- SocketBytes.recv connection 4096
+      if ByteString.null chunk
+        then fail "Transit claim fixture ended before body"
+        else receiveClaimBody connection size (bytes <> chunk)
 
 requireSettings :: PortNumber -> Settings.BootstrapBrokerSettings
 requireSettings port = mustRight (settingsForPort port)
@@ -4656,7 +6030,12 @@ workerDriverBoundary harness =
           harness
           (WorkerDiscarded (secretWorkerRequestOperation request))
         pure (Right ())
+    , discardUnreceiptedSecretWorkerBefore = \_ request interruption ->
+        discardUnreceiptedSecretWorker (workerDriverBoundary harness) request interruption
+    , observeAuthoritativeRecoveryBefore = \_ action -> Just <$> action
     , withSecretWorkerCheckpointPermit =
+        withWorkerCheckpointPermit harness
+    , withSecretWorkerCheckpointPermitBefore = \_ ->
         withWorkerCheckpointPermit harness
     , readSecretWorkerCheckpoint =
         readSlot
@@ -5775,15 +7154,18 @@ runLocalCall
   -> BrokerLocalCall result
   -> IO (Either EngineBoundaryError result)
 runLocalCall fixture harness call = case call of
-  LocalRecoverRootInitCall binding -> do
+  LocalRecoverRootInitCall binding _ -> do
     recordEvent harness (LocalExecuted "recover-root-init-call")
     if binding /= pristineStorageBinding (fixturePristine fixture)
       then refused "root init recovery binding mismatch"
       else do
+        -- This in-memory worker completes synchronously; it has no later
+        -- publication or remote effect after the simulated crash.
         observed <-
           InitRecovery.observeRootInitRecoveryEvidence
             (physicalStoreBoundary fixture harness)
             binding
+            (\_ -> pure (Right Nothing))
         pure $ case observed of
           Left _ -> Left (EngineBoundaryUnavailable "root init recovery store unavailable")
           Right result -> Right result

@@ -1,20 +1,30 @@
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module VaultSessionSafety (vaultSessionSafetySuite) where
 
+import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
 import Control.Exception
   ( AsyncException (ThreadKilled)
   , throwIO
   , try
   )
+import Control.Monad (forM_)
 import Data.Aeson (encode, object, (.=))
+import Data.ByteString qualified as ByteString
 import Data.ByteString.Base64.URL qualified as Base64Url
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
+import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Data.Word (Word16)
+import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.ControlPlane.AuthenticationRegistry (targetSecretWorkerVaultRole)
 import Prodbox.ControlPlane.ProjectedServiceAccountIdentity
   ( decodeProjectedServiceAccountIdentity
   , projectedServiceAccountIdentityMatches
@@ -36,6 +46,7 @@ import Prodbox.ControlPlane.VaultAccessorAudit
   , VaultAccessorSubject (..)
   , classifyVaultAccessorLookupResponse
   , isBoundedBatchAuditorLogin
+  , isBoundedServiceTokenLogin
   , isExactBoundedBatchAuditorLogin
   , revokeAndProveVaultAccessorSubjectAbsent
   , revokeAndProveVaultAccessorSubjectAbsentDetailed
@@ -45,17 +56,150 @@ import Prodbox.Lifecycle.AdminAction.Runner
   ( AdminActionRunnerError (..)
   , finishAdminActionRunnerSession
   )
+import Prodbox.Lifecycle.Lease (mkOwnerNonce)
+import Prodbox.Lifecycle.TargetCommitIntent (sha256TargetValueDigest, targetValueDigestText)
 import Prodbox.Vault.Client
   ( TokenAccessorInfo (..)
   , VaultKubernetesLoginResult (..)
   , VaultToken (..)
+  , VaultTokenSelfObservation (..)
   , vaultAccessorLookupVanished
   )
 import TestSupport
 
+-- Independent copy of the v1 wire shape; constructor names are not encoded.
+data LegacySessionPhase
+  = LegacySessionVacant !Natural
+  | LegacySessionAcquiring !ServiceSessionBinding
+  | LegacySessionPrecleaned !ServiceSessionBinding
+  | LegacySessionLoginAttemptCommitted !ServiceSessionBinding
+  | LegacySessionActive !ServiceSessionBinding !Text
+  | LegacySessionCleanupRequired !ServiceSessionBinding !(Maybe Text)
+  | LegacySessionCleanupProven !ServiceSessionBinding
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data LegacySessionJournal = LegacySessionJournal !Word16 !Text !LegacySessionPhase
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+-- Frozen version-2 shape, including the workload constructor at index seven.
+data LegacyV2Phase
+  = LegacyV2Vacant !Natural
+  | LegacyV2Acquiring !ServiceSessionBinding
+  | LegacyV2Precleaned !ServiceSessionBinding
+  | LegacyV2LoginAttemptCommitted !ServiceSessionBinding
+  | LegacyV2Active !ServiceSessionBinding !Text
+  | LegacyV2CleanupRequired !ServiceSessionBinding !(Maybe Text)
+  | LegacyV2CleanupProven !ServiceSessionBinding
+  | LegacyV2WorkloadOwned !LegacyV2Phase !ServiceSessionWorkload
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data LegacyV2Journal = LegacyV2Journal !Word16 !Text !LegacyV2Phase
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+-- Frozen version-4 shape, including the pre-create reservation at index nine.
+data LegacyV4Phase
+  = LegacyV4Vacant !Natural
+  | LegacyV4Acquiring !ServiceSessionBinding
+  | LegacyV4Precleaned !ServiceSessionBinding
+  | LegacyV4LoginAttemptCommitted !ServiceSessionBinding
+  | LegacyV4Active !ServiceSessionBinding !Text
+  | LegacyV4CleanupRequired !ServiceSessionBinding !(Maybe Text)
+  | LegacyV4CleanupProven !ServiceSessionBinding
+  | LegacyV4WorkloadOwned !LegacyV4Phase !ServiceSessionWorkload
+  | LegacyV4VerifiedWorkloadOwned !LegacyV4Phase !ServiceSessionWorkloadEvidence
+  | LegacyV4CreationReserved !ServiceSessionCreationReservation
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data LegacyV4Journal = LegacyV4Journal !Word16 !Text !LegacyV4Phase
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+-- Frozen version-5 shape, including dispatch ownership at index ten.
+data LegacyV5Phase
+  = LegacyV5Vacant !Natural
+  | LegacyV5Acquiring !ServiceSessionBinding
+  | LegacyV5Precleaned !ServiceSessionBinding
+  | LegacyV5LoginAttemptCommitted !ServiceSessionBinding
+  | LegacyV5Active !ServiceSessionBinding !Text
+  | LegacyV5CleanupRequired !ServiceSessionBinding !(Maybe Text)
+  | LegacyV5CleanupProven !ServiceSessionBinding
+  | LegacyV5WorkloadOwned !LegacyV5Phase !ServiceSessionWorkload
+  | LegacyV5VerifiedWorkloadOwned !LegacyV5Phase !ServiceSessionWorkloadEvidence
+  | LegacyV5CreationReserved !ServiceSessionCreationReservation
+  | LegacyV5DispatchOwned !LegacyV5Phase !ServiceSessionWorkloadEvidence !ServiceSessionDispatchState
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data LegacyV5Journal = LegacyV5Journal !Word16 !Text !LegacyV5Phase
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+-- Frozen version-6 dispatch state and envelope, before cleanup ownership.
+data LegacyV6DispatchState
+  = LegacyV6Ready
+  | LegacyV6Issued
+  | LegacyV6Settled
+  | LegacyV6Retired
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data LegacyV6Phase
+  = LegacyV6Vacant !Natural
+  | LegacyV6Acquiring !ServiceSessionBinding
+  | LegacyV6Precleaned !ServiceSessionBinding
+  | LegacyV6LoginAttemptCommitted !ServiceSessionBinding
+  | LegacyV6Active !ServiceSessionBinding !Text
+  | LegacyV6CleanupRequired !ServiceSessionBinding !(Maybe Text)
+  | LegacyV6CleanupProven !ServiceSessionBinding
+  | LegacyV6WorkloadOwned !LegacyV6Phase !ServiceSessionWorkload
+  | LegacyV6VerifiedWorkloadOwned !LegacyV6Phase !ServiceSessionWorkloadEvidence
+  | LegacyV6CreationReserved !ServiceSessionCreationReservation
+  | LegacyV6DispatchOwned !LegacyV6Phase !ServiceSessionWorkloadEvidence !LegacyV6DispatchState
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+data LegacyV6Journal = LegacyV6Journal !Word16 !Text !LegacyV6Phase
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
+legacySessionAccepts :: ByteString.ByteString -> Bool
+legacySessionAccepts bytes = case deserialiseOrFail (LazyByteString.fromStrict bytes) of
+  Left _ -> False
+  Right (LegacySessionJournal version _ _) -> version == 1
+
 vaultSessionSafetySuite :: SuiteBuilder ()
 vaultSessionSafetySuite =
   describe "Sprint 4.50 finite one-shot Vault-session cleanup" $ do
+    it "requires the issued service token's matching explicit hard cap" $ do
+      let login =
+            validBatchLogin
+              { vaultLoginTokenType = "service"
+              , vaultLoginAccessor = "accessor"
+              , vaultLoginLeaseSeconds = 300
+              , vaultLoginRenewable = True
+              }
+          observed = VaultTokenSelfObservation "accessor" "service" 299 300 True
+          rejected =
+            [ (0, login, observed)
+            , (300, login, observed {vaultTokenSelfExplicitMaxTtlSeconds = 0})
+            , (300, login, observed {vaultTokenSelfExplicitMaxTtlSeconds = 301})
+            , (300, login, observed {vaultTokenSelfTtlSeconds = 0})
+            , (300, login, observed {vaultTokenSelfTtlSeconds = 301})
+            , (300, login {vaultLoginLeaseSeconds = 301}, observed)
+            , (300, login {vaultLoginAccessor = " accessor"}, observed)
+            , (300, login, observed {vaultTokenSelfAccessor = "other"})
+            , (300, login, observed {vaultTokenSelfType = "batch"})
+            , (300, login, observed {vaultTokenSelfRenewable = False})
+            ]
+      isBoundedServiceTokenLogin 300 login observed `shouldBe` True
+      forM_ rejected $ \(limit, issued, actual) ->
+        isBoundedServiceTokenLogin limit issued actual `shouldBe` False
+
     it "accepts only a bounded non-renewable batch auditor with no accessor" $ do
       isBoundedBatchAuditorLogin 300 validBatchLogin `shouldBe` True
       isBoundedBatchAuditorLogin
@@ -117,6 +261,201 @@ vaultSessionSafetySuite =
         `shouldBe` ServiceSessionActive binding "worker-accessor"
       decodeServiceSessionJournal (encodeServiceSessionJournal active)
         `shouldBe` Right active
+
+    it "reads frozen version-5 and version-6 workload records" $ do
+      let operation = Text.replicate 64 "a"
+          job = "target-secret-" <> Text.take 40 operation
+          workload = mustRight (mkServiceSessionWorkload job "job-uid" "target-pod" "pod-uid" "sa-uid")
+          attempt =
+            WireTargetWorkerAttemptBinding
+              1
+              "agent"
+              "deployment-uid"
+              1
+              1
+              "rollout"
+              job
+              "job-uid"
+              "target-pod"
+              "pod-uid"
+              targetSecretWorkerVaultRole
+              "sa-uid"
+              "image"
+          digest = targetValueDigestText (sha256TargetValueDigest (LazyByteString.toStrict (serialise attempt)))
+          binding = mustRight (mkServiceSessionBinding targetSecretWorkerVaultRole operation digest 1)
+          evidence = mustRight (mkServiceSessionWorkloadEvidence workload attempt)
+          oldRecords =
+            [ LegacyV5DispatchOwned (LegacyV5LoginAttemptCommitted binding) evidence ServiceSessionDispatchIssued
+            , LegacyV5DispatchOwned
+                (LegacyV5Active binding "worker-accessor")
+                evidence
+                ServiceSessionDispatchSettled
+            ]
+          oldBytes =
+            map (LazyByteString.toStrict . serialise . LegacyV5Journal 5 targetSecretWorkerVaultRole) oldRecords
+          checkRecord (bytes, expectedState) = case decodeServiceSessionJournal bytes of
+            Left err -> expectationFailure (show err)
+            Right journal -> do
+              serviceSessionJournalDispatchState journal `shouldBe` Just expectedState
+              serviceSessionJournalWorkload journal `shouldBe` Just workload
+              encodeServiceSessionJournal journal `shouldBe` bytes
+      forM_ (zip oldBytes [ServiceSessionDispatchIssued, ServiceSessionDispatchSettled]) checkRecord
+      let oldV6 =
+            LazyByteString.toStrict
+              ( serialise
+                  ( LegacyV6Journal
+                      6
+                      targetSecretWorkerVaultRole
+                      (LegacyV6DispatchOwned (LegacyV6Active binding "worker-accessor") evidence LegacyV6Retired)
+                  )
+              )
+      case decodeServiceSessionJournal oldV6 of
+        Left err -> expectationFailure (show err)
+        Right journal -> do
+          serviceSessionJournalDispatchState journal `shouldBe` Just ServiceSessionWorkloadRetired
+          serviceSessionJournalRecoverableRetirement journal `shouldBe` Nothing
+          serviceSessionJournalWorkload journal `shouldBe` Just workload
+          encodeServiceSessionJournal journal `shouldBe` oldV6
+          let owner = mustRight (mkOwnerNonce "fixture-cleanup-owner")
+              claimed = mustRight (stepServiceSessionJournal (ClaimServiceSessionCleanup binding owner) journal)
+              newBytes = encodeServiceSessionJournal claimed
+              oldReader bytes = case deserialiseOrFail (LazyByteString.fromStrict bytes) of
+                Left _ -> False
+                Right (LegacyV6Journal version _ _) -> version == 6
+          serviceSessionJournalDispatchState claimed
+            `shouldBe` Just (ServiceSessionDispatchCleanupOwned owner)
+          oldReader newBytes `shouldBe` False
+          decodeServiceSessionJournal newBytes `shouldBe` Right claimed
+
+    it "reads frozen version-4 reservations and rejects newer versions in the old reader" $ do
+      let reservation =
+            mustRight
+              ( mkServiceSessionCreationReservation
+                  (Text.replicate 64 "a")
+                  ("target-secret-" <> Text.replicate 40 "a")
+                  1
+              )
+          oldBytes =
+            LazyByteString.toStrict
+              (serialise (LegacyV4Journal 4 targetSecretWorkerVaultRole (LegacyV4CreationReserved reservation)))
+          oldV7Bytes =
+            LazyByteString.toStrict
+              (serialise (LegacyV4Journal 7 targetSecretWorkerVaultRole (LegacyV4CreationReserved reservation)))
+          malformedV8Bytes =
+            LazyByteString.toStrict
+              (serialise (LegacyV4Journal 8 targetSecretWorkerVaultRole (LegacyV4Vacant 1)))
+          initial = mustRight (mkInitialServiceSessionJournal targetSecretWorkerVaultRole)
+          newJournal = step (ReserveServiceSessionCreation reservation) initial
+          newBytes = encodeServiceSessionJournal newJournal
+          oldReader bytes = case deserialiseOrFail (LazyByteString.fromStrict bytes) of
+            Left _ -> False
+            Right (LegacyV4Journal version _ _) -> version == 4
+      case decodeServiceSessionJournal oldBytes of
+        Left err -> expectationFailure (show err)
+        Right oldJournal -> do
+          serviceSessionJournalPhase oldJournal `shouldBe` ServiceSessionCreationReserved reservation
+          encodeServiceSessionJournal oldJournal `shouldBe` oldBytes
+      oldReader oldBytes `shouldBe` True
+      oldReader newBytes `shouldBe` False
+      decodeServiceSessionJournal newBytes `shouldBe` Right newJournal
+      decodeServiceSessionJournal malformedV8Bytes `shouldBe` Left ServiceSessionJournalInvariantInvalid
+      serviceSessionJournalPhase newJournal `shouldBe` ServiceSessionCreationPrepared reservation
+      case decodeServiceSessionJournal oldV7Bytes of
+        Left err -> expectationFailure (show err)
+        Right oldV7 -> do
+          serviceSessionJournalPhase oldV7 `shouldBe` ServiceSessionCreationReserved reservation
+          encodeServiceSessionJournal oldV7 `shouldBe` oldV7Bytes
+          stepServiceSessionJournal (ReleasePreparedServiceSessionCreation reservation) oldV7
+            `shouldSatisfy` either (const True) (const False)
+      let issued = step (IssueServiceSessionCreation reservation) newJournal
+          released = step (ReleasePreparedServiceSessionCreation reservation) newJournal
+      decodeServiceSessionJournal (encodeServiceSessionJournal issued) `shouldBe` Right issued
+      decodeServiceSessionJournal (encodeServiceSessionJournal released) `shouldBe` Right released
+      serviceSessionJournalPhase issued `shouldBe` ServiceSessionCreationReserved reservation
+      serviceSessionJournalPhase released `shouldBe` ServiceSessionVacant 1
+
+    it "retains exact Target workload with its session and preserves legacy wire bytes" $ do
+      let initial = mustRight (mkInitialServiceSessionJournal targetSecretWorkerVaultRole)
+          binding =
+            mustRight (mkServiceSessionBinding targetSecretWorkerVaultRole (Text.replicate 64 "a") "attempt" 1)
+          workload =
+            mustRight
+              ( mkServiceSessionWorkload
+                  ("target-secret-" <> Text.replicate 40 "a")
+                  "job-uid"
+                  "target-pod"
+                  "pod-uid"
+                  "sa-uid"
+              )
+          acquired = step (BeginServiceSessionWorkload binding workload) initial
+          precleaned = step (CommitServiceSessionPrecleaned binding) acquired
+          attempted = step (CommitServiceSessionLoginAttempt binding) precleaned
+          active = step (CommitServiceSessionActive binding "worker-accessor") attempted
+          required = step (RequireServiceSessionCleanup binding) active
+          proven = step (CommitServiceSessionCleanupProven binding) required
+          released = step (ReleaseServiceSession binding) proven
+          legacy = LegacySessionJournal 1 targetSecretWorkerVaultRole (LegacySessionVacant 0)
+          legacyActive =
+            LegacySessionJournal 1 targetSecretWorkerVaultRole (LegacySessionActive binding "worker-accessor")
+          oldAcquired = step (BeginServiceSessionAcquisition binding) initial
+          oldPrecleaned = step (CommitServiceSessionPrecleaned binding) oldAcquired
+          oldAttempted = step (CommitServiceSessionLoginAttempt binding) oldPrecleaned
+          oldActive =
+            step (CommitServiceSessionActive binding "worker-accessor") oldAttempted
+          oldRequired = step (RequireServiceSessionCleanup binding) oldActive
+          oldProven = step (CommitServiceSessionCleanupProven binding) oldRequired
+          oldPhases =
+            [ LegacySessionVacant 0
+            , LegacySessionAcquiring binding
+            , LegacySessionPrecleaned binding
+            , LegacySessionLoginAttemptCommitted binding
+            , LegacySessionActive binding "worker-accessor"
+            , LegacySessionCleanupRequired binding (Just "worker-accessor")
+            , LegacySessionCleanupProven binding
+            ]
+      encodeServiceSessionJournal initial `shouldBe` LazyByteString.toStrict (serialise legacy)
+      encodeServiceSessionJournal oldActive `shouldBe` LazyByteString.toStrict (serialise legacyActive)
+      map
+        encodeServiceSessionJournal
+        [initial, oldAcquired, oldPrecleaned, oldAttempted, oldActive, oldRequired, oldProven]
+        `shouldBe` map
+          (LazyByteString.toStrict . serialise . LegacySessionJournal 1 targetSecretWorkerVaultRole)
+          oldPhases
+      map serviceSessionJournalWorkload [acquired, precleaned, attempted, active, required, proven]
+        `shouldBe` replicate 6 (Just workload)
+      serviceSessionJournalWorkload released `shouldBe` Nothing
+      serviceSessionJournalPhase released `shouldBe` ServiceSessionVacant 1
+      map
+        (decodeServiceSessionJournal . encodeServiceSessionJournal)
+        [initial, acquired, active, released]
+        `shouldBe` map Right [initial, acquired, active, released]
+      encodeServiceSessionJournal released
+        `shouldNotBe` LazyByteString.toStrict
+          (serialise (LegacySessionJournal 1 targetSecretWorkerVaultRole (LegacySessionVacant 1)))
+      encodeServiceSessionJournal acquired
+        `shouldBe` LazyByteString.toStrict
+          ( serialise
+              ( LegacyV2Journal
+                  2
+                  targetSecretWorkerVaultRole
+                  (LegacyV2WorkloadOwned (LegacyV2Acquiring binding) workload)
+              )
+          )
+      encodeServiceSessionJournal released
+        `shouldBe` LazyByteString.toStrict
+          (serialise (LegacyV2Journal 2 targetSecretWorkerVaultRole (LegacyV2Vacant 1)))
+      legacySessionAccepts (encodeServiceSessionJournal acquired) `shouldBe` False
+      legacySessionAccepts (encodeServiceSessionJournal released) `shouldBe` False
+      stepServiceSessionJournal (BeginServiceSessionAcquisition binding) released
+        `shouldBe` Left ServiceSessionJournalInvariantInvalid
+      decodeServiceSessionJournal
+        ( LazyByteString.toStrict
+            (serialise (LegacySessionJournal 2 targetSecretWorkerVaultRole (LegacySessionAcquiring binding)))
+        )
+        `shouldBe` Left ServiceSessionJournalInvariantInvalid
+      let wrongWorkload = mustRight (mkServiceSessionWorkload "different-job" "job-uid" "target-pod" "pod-uid" "sa-uid")
+      stepServiceSessionJournal (BeginServiceSessionWorkload binding wrongWorkload) initial
+        `shouldBe` Left ServiceSessionJournalInvariantInvalid
 
     it "forces an ambiguous login attempt through cleanup before a greater fenced successor" $ do
       let initial = mustRight (mkInitialServiceSessionJournal workerRole)

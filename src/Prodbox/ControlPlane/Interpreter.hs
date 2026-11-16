@@ -21,10 +21,15 @@ module Prodbox.ControlPlane.Interpreter
   , CommitRequest (..)
   , CapabilityClient (..)
   , runCapability
+  , DeadlineEffectResult (..)
+  , observeDeadlineEffect
+  , observeDeadlineEffectWithin
+  , trySynchronous
   , realMonotonicNow
   )
 where
 
+import Control.Exception (SomeAsyncException, SomeException, fromException, tryJust)
 import Data.Text (Text)
 import GHC.Clock (getMonotonicTimeNSec)
 import Prodbox.ControlPlane.CapabilityKind (CapabilityOp)
@@ -44,7 +49,7 @@ import Prodbox.ControlPlane.Deadline
   ( Deadline
   , DeadlineObservation (DeadlineExpired, DeadlineOpen)
   , MonotonicInstant
-  , RemainingDuration
+  , RemainingDuration (..)
   , RetryAfter
   , deadlineObservation
   , monotonicInstantFromMicros
@@ -73,6 +78,50 @@ import Prodbox.ControlPlane.Program
   )
 import Prodbox.Lifecycle.Lease (AuthorityTime)
 import Prodbox.Lifecycle.TargetCommitIntent (CredentialGeneration)
+import System.Timeout (timeout)
+
+-- | Propagate exceptions in the standard async-exception hierarchy while
+-- translating other interpreter failures.
+trySynchronous :: IO a -> IO (Either SomeException a)
+trySynchronous = tryJust onlySynchronous
+ where
+  onlySynchronous failure = case fromException failure :: Maybe SomeAsyncException of
+    Just _ -> Nothing
+    Nothing -> Just failure
+
+-- | A late completion does not establish that an effect failed or was undone.
+data DeadlineEffectResult a
+  = DeadlineEffectNotStarted
+  | DeadlineEffectCompletedLate a
+  | DeadlineEffectCompleted MonotonicInstant a
+  deriving (Eq, Show)
+
+-- | Check both sides of an effect. This does not cancel or bound the action;
+-- callers must retain ownership and reconcile a potentially applied late effect.
+observeDeadlineEffect
+  :: (Monad m) => m MonotonicInstant -> Deadline -> m a -> m (DeadlineEffectResult a)
+observeDeadlineEffect now deadline effect = do
+  before <- now
+  case deadlineObservation before deadline of
+    DeadlineExpired -> pure DeadlineEffectNotStarted
+    DeadlineOpen _ -> do
+      result <- effect
+      after <- now
+      case deadlineObservation after deadline of
+        DeadlineExpired -> pure (DeadlineEffectCompletedLate result)
+        DeadlineOpen _ -> pure (DeadlineEffectCompleted after result)
+
+-- | Limit the interruptible local wait using the sampled remaining budget and
+-- check both sides. Scheduling and remote settlement are not bounded here.
+observeDeadlineEffectWithin :: Deadline -> IO a -> IO (Maybe (DeadlineEffectResult a))
+observeDeadlineEffectWithin deadline effect = do
+  now <- realMonotonicNow
+  case deadlineObservation now deadline of
+    DeadlineExpired -> pure (Just DeadlineEffectNotStarted)
+    DeadlineOpen (RemainingDuration remaining) ->
+      timeout
+        (fromIntegral (min remaining (fromIntegral (maxBound :: Int))))
+        (observeDeadlineEffect realMonotonicNow deadline effect)
 
 -- | Flat interpreter failure — strictly "could not get an outcome". A successful
 -- observation of an unreachable target is NOT here (it is 'EvidenceUnreachable'

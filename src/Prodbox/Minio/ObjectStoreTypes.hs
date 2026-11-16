@@ -81,9 +81,9 @@ data ObjectStoreBackend
   | ObjectStoreNative
   deriving (Eq, Show)
 
--- | Opaque object generation returned by the S3-compatible store.  Callers
--- may compare or feed it back to a conditional put, but cannot manufacture a
--- generation from untrusted payload data.
+-- | ETag returned by the S3-compatible store and used for conditional writes.
+-- It is not a monotone revision or proof of history; callers must establish
+-- provenance and rollback protection at their own boundary.
 newtype ObjectVersion = ObjectVersion {objectVersionEtag :: Text}
   deriving (Eq, Ord, Show)
 

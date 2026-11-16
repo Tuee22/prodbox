@@ -534,6 +534,11 @@ classifies each on-disk change as a BootConfig change (drain + exit so kubelet r
 Pod) or a LiveConfig change (atomic STM swap, no restart), and acts accordingly. SIGHUP is no
 longer the canonical reload trigger.
 
+Bootstrap Broker's mounted store configuration must give every authored object key a distinct
+coordinate from the worker result and Transit journal keys derived from the checkpoint key. The
+validator rejects an alias before opening the store; existing retained objects require recovery,
+not deletion, if a previously accepted configuration collides.
+
 One further inversion governs *what the file means*. The in-force cluster configuration is not
 the on-disk Dhall — it is the immutable Vault-Transit-enveloped blob named by schema, digest,
 reference, and generation in the Lifecycle Authority aggregate. The filesystem `prodbox.dhall` is

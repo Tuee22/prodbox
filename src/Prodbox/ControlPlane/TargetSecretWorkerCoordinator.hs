@@ -10,10 +10,12 @@
 -- This coordinator is never installed in the long-lived Target HTTP runtime.
 module Prodbox.ControlPlane.TargetSecretWorkerCoordinator
   ( TargetWorkerCreateRecovery (..)
+  , TargetWorkerPreparedJob
   , TargetWorkerProvisionalOutcome (..)
   , TargetWorkerSessionPrepareCause (..)
   , TargetWorkerKubernetesBoundary (..)
   , TargetWorkerExecutionBoundary (..)
+  , TargetWorkerCoordinatorClockFailure (..)
   , TargetWorkerCoordinatorError (..)
   , coordinateDirectTargetMaterialization
   , coordinateRewrappedTargetMaterialization
@@ -22,7 +24,7 @@ module Prodbox.ControlPlane.TargetSecretWorkerCoordinator
 where
 
 import Control.Exception
-  ( AsyncException
+  ( SomeAsyncException
   , SomeException
   , fromException
   , mask
@@ -30,10 +32,15 @@ import Control.Exception
   , try
   )
 import Data.ByteString (ByteString)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Prodbox.ControlPlane.ServiceSessionJournal (ServiceSessionBinding)
+import Prodbox.ControlPlane.ServiceSessionJournal
+  ( ServiceSessionBinding
+  , ServiceSessionCreationReservation
+  , ServiceSessionWorkload
+  )
 import Prodbox.ControlPlane.TargetMaterialRegistry
   ( TargetSecretId
   , TargetSecretPayload
@@ -64,6 +71,7 @@ import Prodbox.ControlPlane.TargetSecretWorker
   , mkTargetWorkerPodUid
   , prepareTargetWorkerIntent
   , targetWorkerAttestedIntent
+  , targetWorkerIntentDeadline
   , targetWorkerIntentSchema
   , targetWorkerOperationResultMatchesSchema
   , targetWorkerProvisionalAccessor
@@ -71,6 +79,7 @@ import Prodbox.ControlPlane.TargetSecretWorker
   , targetWorkerProvisionalResult
   , targetWorkerReceiptMatchesAttestation
   )
+import Prodbox.ControlPlane.TargetSecretWorkerKubernetes (TargetWorkerPreparedJob)
 import Prodbox.ControlPlane.TargetSecretWorkerProtocol
   ( TargetWorkerIngressError
   , TargetWorkerOperationInput
@@ -133,13 +142,17 @@ data TargetWorkerSessionPrepareCause
   | TargetWorkerSessionPrepareCleanupJournalFailed
   | TargetWorkerSessionPrepareActionFailed
   | TargetWorkerSessionPrepareUnhandledException
+  | TargetWorkerSessionPrepareRecoveryCompletedRetryRequired
   deriving stock (Bounded, Enum, Eq, Show)
 
 data TargetWorkerKubernetesBoundary m = TargetWorkerKubernetesBoundary
   { observeSelectedTargetAgentRollout
       :: m (Either TargetAgentRolloutObservationCause TargetAgentRolloutEvidence)
+  , prepareTargetWorkerJob
+      :: TargetWorkerIntent -> m (Either Text TargetWorkerPreparedJob)
   , createTargetWorkerIntent
       :: TargetWorkerIntent
+      -> TargetWorkerPreparedJob
       -> m (Either Text TargetWorkerJobUid)
   , recoverTargetWorkerIntent
       :: TargetWorkerIntent
@@ -162,6 +175,8 @@ data TargetWorkerKubernetesBoundary m = TargetWorkerKubernetesBoundary
                TargetWorkerCoordinatorError
                TargetWorkerProvisionalOutcome
            )
+  , observeRetiredTargetWorkerAbsent
+      :: ServiceSessionWorkload -> m (Either Text Bool)
   , deleteTargetWorkerIntent
       :: TargetWorkerIntent
       -> TargetWorkerJobUid
@@ -179,8 +194,15 @@ data TargetWorkerKubernetesBoundary m = TargetWorkerKubernetesBoundary
 -- return until @LoginAttemptCommitted@ is durable; close must prove role-wide
 -- absence and release the retained lane.
 data TargetWorkerExecutionBoundary m = TargetWorkerExecutionBoundary
-  { prepareTargetWorkerSessionAttempt
-      :: TargetAgentRolloutEvidence
+  { reserveTargetWorkerCreation
+      :: TargetWorkerIntent -> m (Either TargetWorkerSessionPrepareCause ServiceSessionCreationReservation)
+  , issueTargetWorkerCreation
+      :: ServiceSessionCreationReservation -> m (Either TargetWorkerSessionPrepareCause ())
+  , recoverRetiredTargetWorker
+      :: (ServiceSessionWorkload -> m (Either Text Bool)) -> m (Either Text Bool)
+  , prepareTargetWorkerSessionAttempt
+      :: ServiceSessionCreationReservation
+      -> TargetAgentRolloutEvidence
       -> TargetWorkerAttestation
       -> m (Either TargetWorkerSessionPrepareCause ServiceSessionBinding)
   , authorizeTargetWorkerExecution
@@ -189,15 +211,25 @@ data TargetWorkerExecutionBoundary m = TargetWorkerExecutionBoundary
       -> TargetWorkerAttestation
       -> ServiceSessionBinding
       -> m (Either Text SignedTargetWorkerExecutionPermit)
+  , beginTargetWorkerDispatch :: ServiceSessionBinding -> m (Either Text ())
+  , settleTargetWorkerDispatch :: ServiceSessionBinding -> m (Either Text ())
   , activateTargetWorkerSessionAttempt
       :: TargetWorkerAttestation
       -> ServiceSessionBinding
       -> Text
       -> m (Either Text ())
+  , recordTargetWorkerRetirement
+      :: TargetWorkerAttestation -> ServiceSessionBinding -> m (Either Text ())
   , closeTargetWorkerSessionAttempt
       :: ServiceSessionBinding
       -> m (Either Text ())
   }
+
+data TargetWorkerCoordinatorClockFailure
+  = TargetWorkerClockUnavailable
+  | TargetWorkerClockRegressed
+  | TargetWorkerClockDeadlineReached
+  deriving stock (Eq, Show)
 
 data TargetWorkerCoordinatorError
   = TargetWorkerCoordinatorAgentIdentityUnavailable !TargetAgentRolloutObservationCause
@@ -205,6 +237,7 @@ data TargetWorkerCoordinatorError
   | TargetWorkerCoordinatorIntentRejected !TargetWorkerIntentError
   | TargetWorkerCoordinatorCreateFailed !Text
   | TargetWorkerCoordinatorObservationFailed !Text
+  | TargetWorkerCoordinatorClockFailed !TargetWorkerCoordinatorClockFailure
   | TargetWorkerCoordinatorWorkloadAbsent
   | TargetWorkerCoordinatorCleanupBindingInvalid
   | TargetWorkerCoordinatorAttestationFailed !TargetWorkerAttestationError
@@ -230,6 +263,7 @@ coordinateDirectTargetMaterialization
   -> TargetWorkerExecutionBoundary IO
   -> AcceptedTargetAuthority
   -> AuthorityTime
+  -> IO (Either Text AuthorityTime)
   -> TargetAgentIdentity
   -> TargetSecretId
   -> TargetWorkerIngressSchema
@@ -237,13 +271,14 @@ coordinateDirectTargetMaterialization
   -> ByteString
   -> TargetSecretPayload
   -> IO (Either TargetWorkerCoordinatorError TargetWorkerReceipt)
-coordinateDirectTargetMaterialization boundary execution accepted now agentIdentity target schema image signed payload =
+coordinateDirectTargetMaterialization boundary execution accepted now readTime agentIdentity target schema image signed payload =
   fmap materialReceipt $ do
     coordinate
       boundary
       execution
       accepted
       now
+      readTime
       agentIdentity
       target
       schema
@@ -256,6 +291,7 @@ coordinateRewrappedTargetMaterialization
   -> TargetWorkerExecutionBoundary IO
   -> AcceptedTargetAuthority
   -> AuthorityTime
+  -> IO (Either Text AuthorityTime)
   -> TargetAgentIdentity
   -> TargetSecretId
   -> TargetWorkerIngressSchema
@@ -263,13 +299,14 @@ coordinateRewrappedTargetMaterialization
   -> ByteString
   -> ByteString
   -> IO (Either TargetWorkerCoordinatorError TargetWorkerReceipt)
-coordinateRewrappedTargetMaterialization boundary execution accepted now agentIdentity target schema image signed envelope =
+coordinateRewrappedTargetMaterialization boundary execution accepted now readTime agentIdentity target schema image signed envelope =
   fmap materialReceipt $ do
     coordinate
       boundary
       execution
       accepted
       now
+      readTime
       agentIdentity
       target
       schema
@@ -282,6 +319,7 @@ coordinateTargetOneShotOperation
   -> TargetWorkerExecutionBoundary IO
   -> AcceptedTargetAuthority
   -> AuthorityTime
+  -> IO (Either Text AuthorityTime)
   -> TargetAgentIdentity
   -> TargetSecretId
   -> TargetWorkerIngressSchema
@@ -289,12 +327,13 @@ coordinateTargetOneShotOperation
   -> ByteString
   -> TargetWorkerOperationInput
   -> IO (Either TargetWorkerCoordinatorError TargetWorkerOperationResult)
-coordinateTargetOneShotOperation boundary execution accepted now agentIdentity target schema image signed operation =
+coordinateTargetOneShotOperation boundary execution accepted now readTime agentIdentity target schema image signed operation =
   coordinate
     boundary
     execution
     accepted
     now
+    readTime
     agentIdentity
     target
     schema
@@ -317,6 +356,7 @@ coordinate
   -> TargetWorkerExecutionBoundary IO
   -> AcceptedTargetAuthority
   -> AuthorityTime
+  -> IO (Either Text AuthorityTime)
   -> TargetAgentIdentity
   -> TargetSecretId
   -> TargetWorkerIngressSchema
@@ -327,7 +367,7 @@ coordinate
        -> Either TargetWorkerIngressError ByteString
      )
   -> IO (Either TargetWorkerCoordinatorError TargetWorkerOperationResult)
-coordinate boundary execution accepted now agentIdentity target schema image signed encodeIngress = do
+coordinate boundary execution accepted now readTime agentIdentity target schema image signed encodeIngress = do
   observedAgent <- observeSelectedTargetAgentRollout boundary
   case observedAgent of
     Left detail -> pure (Left (TargetWorkerCoordinatorAgentIdentityUnavailable detail))
@@ -338,9 +378,58 @@ coordinate boundary execution accepted now agentIdentity target schema image sig
           Left err -> pure (Left (TargetWorkerCoordinatorIntentRejected err))
           Right intent -> runIntent actualRollout intent
  where
-  runIntent rollout intent =
+  runIntent rollout intent = do
+    reserved <- reserveTargetWorkerCreation execution intent
+    case reserved of
+      Left TargetWorkerSessionPrepareRoleOccupied -> do
+        recovered <- recoverRetiredTargetWorker execution (observeRetiredTargetWorkerAbsent boundary)
+        case recovered of
+          Right True ->
+            pure
+              ( Left
+                  (TargetWorkerCoordinatorSessionPrepareFailed TargetWorkerSessionPrepareRecoveryCompletedRetryRequired)
+              )
+          _ -> pure (Left (TargetWorkerCoordinatorSessionPrepareFailed TargetWorkerSessionPrepareRoleOccupied))
+      Left cause -> pure (Left (TargetWorkerCoordinatorSessionPrepareFailed cause))
+      Right reservation -> do
+        prepared <- tryAny (prepareTargetWorkerJob boundary intent)
+        case prepared of
+          Left exception
+            | isAsyncException exception -> throwIO exception
+            | otherwise -> pure (Left TargetWorkerCoordinatorUnhandledException)
+          Right (Left _) -> pure (Left (TargetWorkerCoordinatorCreateFailed "Target worker Job preparation failed"))
+          Right (Right job) -> do
+            fresh <- freshTime now intent
+            case fresh of
+              Left err -> pure (Left err)
+              Right beforeIssue -> do
+                issued <- issueTargetWorkerCreation execution reservation
+                case issued of
+                  Left cause -> pure (Left (TargetWorkerCoordinatorSessionPrepareFailed cause))
+                  Right () -> do
+                    afterIssue <- freshTime beforeIssue intent
+                    case afterIssue of
+                      Left err -> pure (Left err)
+                      Right createTime -> runReserved reservation rollout intent job createTime
+
+  freshTime previous intent = do
+    observed <- tryAny readTime
+    case observed of
+      Left exception
+        | isAsyncException exception -> throwIO exception
+        | otherwise ->
+            pure (Left (TargetWorkerCoordinatorClockFailed TargetWorkerClockUnavailable))
+      Right (Left _) -> pure (Left (TargetWorkerCoordinatorClockFailed TargetWorkerClockUnavailable))
+      Right (Right current)
+        | current < previous ->
+            pure (Left (TargetWorkerCoordinatorClockFailed TargetWorkerClockRegressed))
+        | current >= targetWorkerIntentDeadline intent ->
+            pure (Left (TargetWorkerCoordinatorClockFailed TargetWorkerClockDeadlineReached))
+        | otherwise -> pure (Right current)
+
+  runReserved reservation rollout intent job createTime =
     mask $ \restore -> do
-      created <- tryAny (restore (createTargetWorkerIntent boundary intent))
+      created <- tryAny (restore (createTargetWorkerIntent boundary intent job))
       recovered <- case created of
         Right (Right jobUid) ->
           pure (Right (Right (TargetWorkerCreateRecovered jobUid)))
@@ -349,64 +438,30 @@ coordinate boundary execution accepted now agentIdentity target schema image sig
         Left (Just asyncException) -> throwIO asyncException
         Left Nothing -> pure (Left (createFailure created recovered))
         Right jobUid -> case asyncFromCreate created of
-          Just exception -> do
-            _ <-
-              tryAny
-                (finishWithCleanup boundary intent jobUid Nothing (Right ()))
-            throwIO exception
+          Just exception -> throwIO exception
           Nothing -> do
             observed <- tryAny (restore (observeTargetWorkerIntent boundary intent))
             case observed of
-              Left exception -> do
-                _ <-
-                  tryAny
-                    ( finishWithCleanup
-                        boundary
-                        intent
-                        jobUid
-                        Nothing
-                        (Right ())
-                    )
+              Left exception ->
                 if isAsyncException exception
                   then throwIO exception
                   else pure (Left TargetWorkerCoordinatorUnhandledException)
-              Right (Left detail) ->
-                finishWithCleanup
-                  boundary
-                  intent
-                  jobUid
-                  Nothing
-                  (Left (TargetWorkerCoordinatorObservationFailed detail))
-              Right (Right Nothing) ->
-                finishWithCleanup
-                  boundary
-                  intent
-                  jobUid
-                  Nothing
-                  (Left TargetWorkerCoordinatorWorkloadAbsent)
+              Right (Left detail) -> pure (Left (TargetWorkerCoordinatorObservationFailed detail))
+              Right (Right Nothing) -> pure (Left TargetWorkerCoordinatorWorkloadAbsent)
               Right (Right (Just raw)) ->
                 case cleanupBinding raw of
-                  Left err ->
-                    finishWithCleanup boundary intent jobUid Nothing (Left err)
+                  Left err -> pure (Left err)
                   Right (observedJobUid, podName, podUid)
-                    | observedJobUid /= jobUid ->
-                        finishWithCleanup
-                          boundary
-                          intent
-                          jobUid
-                          Nothing
-                          (Left TargetWorkerCoordinatorCleanupBindingInvalid)
-                    | otherwise ->
-                        case attestTargetWorkerPod now intent raw of
-                          Left attestationError ->
-                            finishWithCleanup
-                              boundary
-                              intent
-                              jobUid
-                              (Just (podName, podUid))
-                              (Left (TargetWorkerCoordinatorAttestationFailed attestationError))
-                          Right attestation ->
-                            runAttested rollout intent jobUid podName podUid attestation
+                    | observedJobUid /= jobUid -> pure (Left TargetWorkerCoordinatorCleanupBindingInvalid)
+                    | otherwise -> do
+                        current <- freshTime createTime intent
+                        case current of
+                          Left err -> pure (Left err)
+                          Right attestationTime ->
+                            case attestTargetWorkerPod attestationTime intent raw of
+                              Left attestationError -> pure (Left (TargetWorkerCoordinatorAttestationFailed attestationError))
+                              Right attestation ->
+                                runAttested reservation rollout intent jobUid podName podUid attestation attestationTime
 
   resolveCreatedJob created recovered = case recovered of
     Right (Right (TargetWorkerCreateRecovered jobUid)) -> Right jobUid
@@ -437,16 +492,30 @@ coordinate boundary execution accepted now agentIdentity target schema image sig
     Right (Right TargetWorkerCreateStablyAbsent) -> "job-stably-absent"
     Right (Right (TargetWorkerCreateRecovered _)) -> "job-recovered"
 
-  runAttested rollout intent jobUid podName podUid attestation =
+  runAttested reservation rollout intent jobUid podName podUid attestation attestationTime =
     mask $ \restore -> do
       prepared <-
         tryAny
           ( restore
-              (prepareTargetWorkerSessionAttempt execution rollout attestation)
+              (prepareTargetWorkerSessionAttempt execution reservation rollout attestation)
           )
       case prepared of
-        Left exception -> do
-          _ <-
+        -- Preparation may have lost a CAS reply, or another coordinator may
+        -- already own this same observed Job and Pod. Neither outcome grants
+        -- this caller authority to retire that workload.
+        Left exception ->
+          if isAsyncException exception
+            then throwIO exception
+            else pure (Left TargetWorkerCoordinatorUnhandledException)
+        Right (Left cause) ->
+          pure (Left (TargetWorkerCoordinatorSessionPrepareFailed cause))
+        Right (Right sessionBinding) -> do
+          dispatchStarted <- newIORef False
+          attempted <-
+            tryAny (restore (dispatch dispatchStarted rollout attestation sessionBinding attestationTime))
+          started <- readIORef dispatchStarted
+          let settled = not started
+          cleaned <-
             tryAny
               ( finishWithCleanup
                   boundary
@@ -455,47 +524,37 @@ coordinate boundary execution accepted now agentIdentity target schema image sig
                   (Just (podName, podUid))
                   (Right ())
               )
-          if isAsyncException exception
-            then throwIO exception
-            else pure (Left TargetWorkerCoordinatorUnhandledException)
-        Right (Left cause) ->
-          finishWithCleanup
-            boundary
-            intent
-            jobUid
-            (Just (podName, podUid))
-            (Left (TargetWorkerCoordinatorSessionPrepareFailed cause))
-        Right (Right sessionBinding) -> do
-          attempted <- tryAny (restore (dispatch rollout attestation sessionBinding))
-          closed <- tryAny (closeTargetWorkerSessionAttempt execution sessionBinding)
-          let outcome = case (attempted, closed) of
-                (_, Left _) -> Left (TargetWorkerCoordinatorSessionCleanupFailed "cleanup-threw")
-                (_, Right (Left detail)) ->
-                  Left (TargetWorkerCoordinatorSessionCleanupFailed (Text.take 256 detail))
-                (Left _, Right (Right ())) -> Left TargetWorkerCoordinatorUnhandledException
-                (Right result, Right (Right ())) -> result
-          cleaned <-
-            tryAny
-              ( finishWithCleanup
-                  boundary
-                  intent
-                  jobUid
-                  (Just (podName, podUid))
-                  outcome
-              )
+          closed <- case cleaned of
+            Right (Right ())
+              | settled ->
+                  Just
+                    <$> tryAny
+                      ( do
+                          recorded <- recordTargetWorkerRetirement execution attestation sessionBinding
+                          case recorded of
+                            Left detail -> pure (Left detail)
+                            Right () -> closeTargetWorkerSessionAttempt execution sessionBinding
+                      )
+            _ -> pure Nothing
           case attempted of
             Left exception
               | isAsyncException exception -> throwIO exception
-            _ -> case closed of
+            _ -> case cleaned of
               Left exception
                 | isAsyncException exception -> throwIO exception
-              _ -> case cleaned of
-                Left exception
+              Left _ -> pure (Left TargetWorkerCoordinatorUnhandledException)
+              Right (Left err) -> pure (Left err)
+              Right (Right ()) -> case closed of
+                Just (Left exception)
                   | isAsyncException exception -> throwIO exception
-                Left _ -> pure (Left TargetWorkerCoordinatorUnhandledException)
-                Right result -> pure result
+                Just (Left _) -> pure (Left (TargetWorkerCoordinatorSessionCleanupFailed "cleanup-threw"))
+                Just (Right (Left detail)) ->
+                  pure (Left (TargetWorkerCoordinatorSessionCleanupFailed (Text.take 256 detail)))
+                Just (Right (Right ())) ->
+                  pure (either (const (Left TargetWorkerCoordinatorUnhandledException)) id attempted)
+                Nothing -> pure (either (const (Left TargetWorkerCoordinatorUnhandledException)) id attempted)
    where
-    dispatch rolloutEvidence attested sessionBinding = do
+    dispatch dispatchStarted rolloutEvidence attested sessionBinding previousTime = do
       authorized <-
         authorizeTargetWorkerExecution
           execution
@@ -507,32 +566,56 @@ coordinate boundary execution accepted now agentIdentity target schema image sig
         Left detail ->
           pure
             (Left (TargetWorkerCoordinatorPermitUnavailable (Text.take 256 detail)))
-        Right signedPermit ->
-          case verifyTargetWorkerExecutionPermit accepted now intent signedPermit of
-            Left err -> pure (Left (TargetWorkerCoordinatorPermitRejected err))
-            Right permit
-              | not
-                  ( targetWorkerExecutionPermitMatchesObservation
-                      rolloutEvidence
-                      attested
-                      sessionBinding
-                      permit
-                  ) ->
-                  pure (Left TargetWorkerCoordinatorPermitBindingMismatch)
-              | otherwise -> case encodeIngress permit attested of
-                  Left err -> pure (Left (TargetWorkerCoordinatorFrameRejected err))
-                  Right ingress -> do
-                    attached <-
-                      attachTargetWorkerIngress
-                        boundary
-                        attested
-                        ingress
-                        (classifyAndActivateProvisional attested sessionBinding)
-                    pure $ case attached of
-                      Left err -> Left err
-                      Right (TargetWorkerProvisionalSucceeded result) -> Right result
-                      Right (TargetWorkerProvisionalRefused detail) ->
-                        Left (TargetWorkerCoordinatorMaterializationRefused detail)
+        Right signedPermit -> do
+          current <- freshTime previousTime intent
+          case current of
+            Left err -> pure (Left err)
+            Right permitTime -> verifyPermit permitTime signedPermit
+     where
+      verifyPermit permitTime signedPermit =
+        case verifyTargetWorkerExecutionPermit accepted permitTime intent signedPermit of
+          Left err -> pure (Left (TargetWorkerCoordinatorPermitRejected err))
+          Right permit
+            | not
+                ( targetWorkerExecutionPermitMatchesObservation
+                    rolloutEvidence
+                    attested
+                    sessionBinding
+                    permit
+                ) ->
+                pure (Left TargetWorkerCoordinatorPermitBindingMismatch)
+            | otherwise -> case encodeIngress permit attested of
+                Left err -> pure (Left (TargetWorkerCoordinatorFrameRejected err))
+                Right ingress -> do
+                  writeIORef dispatchStarted True
+                  begun <- beginTargetWorkerDispatch execution sessionBinding
+                  case begun of
+                    Left _ -> pure (Left (TargetWorkerCoordinatorAttachFailed "worker dispatch journal unavailable"))
+                    Right () -> do
+                      current <- freshTime permitTime intent
+                      case current of
+                        Left err -> pure (Left err)
+                        Right dispatchTime ->
+                          case verifyTargetWorkerExecutionPermit accepted dispatchTime intent signedPermit of
+                            Left err -> pure (Left (TargetWorkerCoordinatorPermitRejected err))
+                            Right _ -> do
+                              attached <-
+                                attachTargetWorkerIngress
+                                  boundary
+                                  attested
+                                  ingress
+                                  (classifyAndActivateProvisional attested sessionBinding)
+                              case attached of
+                                Left err -> pure (Left err)
+                                Right outcome -> do
+                                  committed <- settleTargetWorkerDispatch execution sessionBinding
+                                  case committed of
+                                    Left _ -> pure (Left (TargetWorkerCoordinatorAttachFailed "worker completion journal unavailable"))
+                                    Right () -> do
+                                      writeIORef dispatchStarted False
+                                      pure $ case outcome of
+                                        TargetWorkerProvisionalSucceeded result -> Right result
+                                        TargetWorkerProvisionalRefused detail -> Left (TargetWorkerCoordinatorMaterializationRefused detail)
 
     classifyAndActivateProvisional attested sessionBinding provisionalBytes =
       case decodeTargetWorkerProvisionalCompletion provisionalBytes of
@@ -626,4 +709,4 @@ tryAny = try
 
 isAsyncException :: SomeException -> Bool
 isAsyncException exception =
-  isJust (fromException exception :: Maybe AsyncException)
+  isJust (fromException exception :: Maybe SomeAsyncException)

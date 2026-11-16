@@ -32,6 +32,7 @@ import Prodbox.Bootstrap.Broker.Fence
   ( BootstrapFenceGeneration
   , BootstrapFenceOwnerWorkerObservation (..)
   , BootstrapLeaseObservation (..)
+  , BootstrapLeaseRefusal (..)
   , BootstrapSessionFence
   , bootstrapFenceGeneration
   , confirmBootstrapLease
@@ -57,7 +58,10 @@ import Prodbox.Bootstrap.Broker.KubernetesWorker
   , WorkerPodDecodeReason (..)
   , bootstrapLeaseAnnotationsForFence
   , bootstrapLeaseFromResponse
+  , bootstrapLeaseFromResponseWithBounds
   , bootstrapLeaseManifestForFence
+  , bootstrapLeaseManifestForFenceWithWriterBound
+  , bootstrapLeaseReplacementResourceVersion
   , brokerPodsUrl
   , controllerImageFromResponse
   , decodeWorkerPod
@@ -602,7 +606,141 @@ bootstrapBrokerProductionBoundarySuite = do
       observed 500 `shouldBe` BootstrapLeaseUnobservable "Bootstrap Lease request returned HTTP 500"
       observed 400 `shouldNotBe` observed 500
 
+    it "decodes conservative Lease intervals when both clock bounds are supplied" $ do
+      let renew = wallNow
+          expiry = addUTCTime (fromIntegral bootstrapFenceLeaseDurationSeconds) renew
+          body =
+            LazyByteString.toStrict
+              ( encode
+                  ( mustRight
+                      (bootstrapLeaseManifestForFenceWithWriterBound 100000 namespace renew (Just "rv-123") canonicalFence)
+                  )
+              )
+          legacyBody =
+            LazyByteString.toStrict
+              (encode (bootstrapLeaseManifestForFence namespace renew (Just "rv-123") canonicalFence))
+          corruptBody =
+            TextEncoding.encodeUtf8 $
+              Text.replace
+                "\"bootstrap.prodbox.dev/writer-clock-uncertainty-micros\":\"100000\""
+                "\"bootstrap.prodbox.dev/writer-clock-uncertainty-micros\":\"invalid\""
+                (TextEncoding.decodeUtf8 body)
+          before = monotonicInstantFromMicros 100
+          after = monotonicInstantFromMicros 101
+          observedAt wall = bootstrapLeaseFromResponseWithBounds 100000 100000 namespace before wall after 200 body
+          at = deadlineFromInstant . monotonicInstantFromMicros
+      case observedAt (addUTCTime (-0.1) expiry) of
+        BootstrapLeaseObservedBounded _ safe certain version -> do
+          safe `shouldBe` at 100
+          certain `shouldBe` at 300103
+          version `shouldBe` "rv-123"
+        observation -> expectationFailure (show observation)
+      case observedAt (addUTCTime (-0.5000005) expiry) of
+        observation@(BootstrapLeaseObservedBounded _ safe certain _) -> do
+          safe `shouldBe` at 300100
+          certain `shouldBe` at 700104
+          confirmBootstrapLease (monotonicInstantFromMicros 300099) canonicalFence observation
+            `shouldSatisfy` isRight
+          confirmBootstrapLease (monotonicInstantFromMicros 300100) canonicalFence observation
+            `shouldBe` Left (BootstrapLeaseObservationUnobservable "Lease expiry is uncertain")
+          confirmBootstrapLease (monotonicInstantFromMicros 700102) canonicalFence observation
+            `shouldBe` Left (BootstrapLeaseObservationUnobservable "Lease expiry is uncertain")
+          confirmBootstrapLease (monotonicInstantFromMicros 700103) canonicalFence observation
+            `shouldBe` Left (BootstrapLeaseObservationUnobservable "Lease expiry is uncertain")
+          confirmBootstrapLease (monotonicInstantFromMicros 700104) canonicalFence observation
+            `shouldBe` Left BootstrapLeaseExpired
+        observation -> expectationFailure (show observation)
+      case observedAt (addUTCTime 1 expiry) of
+        BootstrapLeaseObservedBounded _ safe certain _ -> do
+          safe `shouldBe` at 100
+          certain `shouldBe` at 101
+        observation -> expectationFailure (show observation)
+      bootstrapLeaseFromResponseWithBounds 100000 100000 namespace after wallNow before 200 body
+        `shouldBe` BootstrapLeaseUnobservable "Bootstrap Lease response is invalid"
+      bootstrapLeaseFromResponseWithBounds
+        100000
+        100000
+        namespace
+        before
+        (addUTCTime (-1) wallNow)
+        after
+        200
+        body
+        `shouldBe` BootstrapLeaseUnobservable "Bootstrap Lease response is invalid"
+      bootstrapLeaseFromResponseWithBounds
+        100000
+        100000
+        namespace
+        before
+        wallNow
+        after
+        404
+        ByteString.empty
+        `shouldBe` BootstrapLeaseMissing
+      bootstrapLeaseFromResponseWithBounds 100000 100000 namespace before wallNow after 200 legacyBody
+        `shouldBe` BootstrapLeaseUnobservable "Bootstrap Lease response is invalid"
+      bootstrapLeaseFromResponseWithBounds 99999 100000 namespace before wallNow after 200 body
+        `shouldBe` BootstrapLeaseUnobservable "Bootstrap Lease response is invalid"
+      corruptBody `shouldNotBe` body
+      bootstrapLeaseFromResponseWithBounds 100000 100000 namespace before wallNow after 200 corruptBody
+        `shouldBe` BootstrapLeaseUnobservable "Bootstrap Lease response is invalid"
+      bootstrapLeaseFromResponse namespace before wallNow after 200 body
+        `shouldBe` BootstrapLeaseUnobservable "Bootstrap Lease response is invalid"
+      bootstrapLeaseFromResponse namespace before wallNow after 200 corruptBody
+        `shouldBe` BootstrapLeaseUnobservable "Bootstrap Lease response is invalid"
+      case bootstrapLeaseFromResponse namespace before wallNow after 200 legacyBody of
+        BootstrapLeaseObserved {} -> pure ()
+        observation -> expectationFailure (show observation)
+      bootstrapLeaseManifestForFenceWithWriterBound
+        (10 ^ (32 :: Int))
+        namespace
+        renew
+        Nothing
+        canonicalFence
+        `shouldSatisfy` isLeft
+
   describe "Sprint 2.48 fence Lease TTL derives from the request budget" $ do
+    it "never replaces an observed newer or conflicting fence Lease" $ do
+      let fenceAtStorageGeneration storage value =
+            mustRight
+              ( reloadBootstrapSessionFence
+                  value
+                  (mustRight (mkOwnerNonce "broker-owner"))
+                  (mustRight (mkArtifactDigest (digest 'a')))
+                  (mustRight (mkRequestDigest (digest 'c')))
+                  (mustRight (mkVaultStorageGeneration storage))
+                  5_000
+              )
+          fenceAtGeneration = fenceAtStorageGeneration "vault-pv-generation-a"
+          bodyFor observed =
+            LazyByteString.toStrict
+              (encode (bootstrapLeaseManifestForFence namespace wallNow (Just "rv-123") observed))
+          boundedBody observed =
+            LazyByteString.toStrict $
+              encode $
+                mustRight
+                  (bootstrapLeaseManifestForFenceWithWriterBound 100000 namespace wallNow (Just "rv-123") observed)
+          decide =
+            bootstrapLeaseReplacementResourceVersion
+              namespace
+              (monotonicInstantFromMicros 100)
+              wallNow
+              canonicalFence
+      decide (bodyFor canonicalFence) `shouldBe` Right "rv-123"
+      forM_ [canonicalFence, fenceAtGeneration 6, fenceAtGeneration 8] $ \observed ->
+        decide (boundedBody observed)
+          `shouldBe` Left "Kubernetes Lease writer clock evidence requires a bounded renewal"
+      decide (bodyFor (fenceAtGeneration 6)) `shouldBe` Right "rv-123"
+      decide (bodyFor (fenceAtGeneration 8)) `shouldSatisfy` isLeft
+      decide (bodyFor (fenceAtStorageGeneration "vault-pv-generation-b" 6)) `shouldSatisfy` isLeft
+      decide (bodyFor alternateFence) `shouldSatisfy` isLeft
+      decide ByteString.empty `shouldSatisfy` isLeft
+      decide
+        ( LazyByteString.toStrict
+            (encode (bootstrapLeaseManifestForFence namespace wallNow Nothing canonicalFence))
+        )
+        `shouldSatisfy` isLeft
+
     -- Sprint 2.48 recorded this as an undeclared coupling and left the choice
     -- open; this closes it. The Lease TTL was the literal 300 in the manifest builder while
     -- `maximumBrokerRequestDeadlineMilliseconds` was 5 * 60 * 1000 in another

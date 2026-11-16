@@ -25,10 +25,10 @@ import Prodbox.Capacity.Config
   , WorkloadConcurrency (ExclusiveWindow)
   , WorkloadDemandSpec (..)
   , WorkloadResourceProfile (..)
-  , defaultResourcePlan
   , oneShotSecretWorkerEnvelope
   , oneShotSecretWorkerWindow
   , plusResourceVector
+  , preHostFitResourcePlan
   , resources
   )
 import Prodbox.Capacity.Placement (concurrentWorkloadDraws)
@@ -115,10 +115,10 @@ frozenOneShotWorkerSchedulerCounterexample =
 -- Later replay sizing changes the production profile, not this causal profile.
 frozenSchedulerResourcePlan :: ResourcePlan
 frozenSchedulerResourcePlan =
-  defaultResourcePlan
+  preHostFitResourcePlan
     { host_capacity = expectedHost
     , platform_scheduler_requests = Just zeroVector
-    , workload_profiles = map freezeReplayMemory (workload_profiles defaultResourcePlan)
+    , workload_profiles = map freezeReplayMemory (workload_profiles preHostFitResourcePlan)
     }
  where
   freezeReplayMemory profile = case originalMemory (profile_id profile) of

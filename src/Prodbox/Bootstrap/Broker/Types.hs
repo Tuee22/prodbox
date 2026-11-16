@@ -1069,6 +1069,7 @@ data BaselineTarget
   | BaselineLifecycleAuthorityAwsAdminJournalObserver
   | BaselineCredentialProvisionerCompletionPrincipal
   | BaselineCredentialProvisionerAuditorLeaseContainment
+  | BaselineBootstrapProvisionerExactSeedPolicy
   deriving stock (Eq, Ord, Show, Enum, Bounded)
 
 requiredRootBaselineTargets :: [BaselineTarget]

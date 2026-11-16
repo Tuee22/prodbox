@@ -237,7 +237,12 @@ appear explicitly. The production plan carries one `bootstrap-secret-worker` slo
 `credential-provisioner-secret-workers` phase (credential worker plus Target materializer). Both
 profiles are Guaranteed QoS and share `ExclusiveWindow "one-shot-secret-workers"`; bootstrap
 recovery and credential delivery cannot overlap, so placement takes the two-slot maximum
-(`500m / 512Mi / 512Mi`) rather than summing both phases.
+(`500m / 512Mi / 512Mi`) rather than summing both phases. The Target worker's projected files
+are read under descriptor and byte bounds, while its framed input, Vault response decoding and
+audit polling can coexist with other worker state. The 256-MiB per-Pod envelope is not by itself
+proof of that combined peak or of the audit deadline; the pending measurements, response bounds
+and constructed deadline counterexample are tracked in the
+[active development ledger](../../DEVELOPMENT_PLAN/README.md#resume-here).
 
 | Platform capacity refusal | Supported remedy |
 |---------------------------|------------------|
@@ -320,6 +325,17 @@ abstract Haskell-default `host_capacity` for host-agnostic generation (the image
 config is overwritten from the ConfigMap at runtime); the derivation lives in
 `Prodbox.Capacity.HostProbe`, shared with the reconcile-time Ring-3 reader. Ring 3 remains
 authoritative — the host can shrink between generate and deploy.
+
+`prodbox cluster status` reports the authored capacity and derived allocatable capacity from the
+validated configuration, and observes storage at that configuration's resolved retained-PV root.
+If configuration is unavailable or invalid, status reports that the resource plan is unavailable;
+it must not present the portable default as an authored or observed capacity.
+
+Scheduler requests and authored host reserves are not measurements of physical working sets.
+Qualification of concurrent operation must also account for host-side development tools and
+other processes outside the scheduled workload, together with observed memory pressure and
+swap behavior. A static fit alone does not establish that those processes and a loaded cluster
+can run together; current measurements and outstanding evidence are in the Development Plan.
 
 ## 2C. Enforcement Rings
 
@@ -909,13 +925,17 @@ historical imports and credential recovery; the shared producer enforces metadat
 completion. The 288 MiB Vault listener covers the largest Base64/JSON request. September scheduler
 counterexamples freeze their original four role-memory profiles and unchanged causal totals;
 production replay sizing does not rewrite that historical evidence.
-The default workload draw is `6210m / 11538 MiB / 15456 MiB / 155648 MiB`. Standing
+The provisional host-sized default workload draw is `4260m / 9490 MiB / 15456 MiB / 155648 MiB`. Standing
 platform requests add `1835m / 3384 MiB / 0 MiB / 0 MiB` exactly once. Host/RKE2 reservation
-and eviction headroom add `1000m / 2560 MiB / 19968 MiB / 2048 MiB`, so the complete physical
-host demand is `9045m / 17482 MiB / 35424 MiB / 157696 MiB`. Admission compares that complete
+and eviction headroom add `1000m / 2560 MiB / 19968 MiB / 2048 MiB`, so the complete declared
+host demand is `7095m / 15434 MiB / 35424 MiB / 157696 MiB`. Admission compares that complete
 demand with the observed host; the workload-only calculation cannot establish available headroom.
-The memory total, about 17.07 GiB, is a configured capacity requirement rather than a measured
-aggregate working-set minimum. The separate 45 GiB image/live admission threshold concerns free
+The selected Burstable application requests are reduced to fit the home host while their containment
+limits and the Guaranteed control-plane envelopes remain unchanged. These default application
+requests are also used on AWS, subject to its substrate-specific replica projection. This provisional profile is
+not a measured aggregate working-set minimum or a service-sufficiency claim; it must be tested
+under the actual concurrent workload for scheduling, memory, throttling, queues and deadlines.
+The separate 45 GiB image/live admission threshold concerns free
 disk space. Qualification status and the recorded native scheduler failure remain in the
 [development-plan ledger](../../DEVELOPMENT_PLAN/README.md#resume-here).
 The Lifecycle Authority's Provider-route HTTP response budget is derived from the same admitted

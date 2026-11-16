@@ -22,6 +22,7 @@ module Prodbox.Vault.Reconcile
   , provisionerVaultReconcilePlan
   , bootstrapBrokerRotatableTransitKeys
   , bootstrapProvisionerRole
+  , bootstrapProvisionerMaximumLeaseSeconds
   , bootstrapProvisionerPolicySpec
   , bootstrapPolicyRepairRole
   , bootstrapPkiOperatorRole
@@ -44,11 +45,15 @@ module Prodbox.Vault.Reconcile
   )
 where
 
-import Data.Char (isDigit)
+import Data.Aeson qualified as Aeson
+import Data.ByteString.Lazy qualified as LazyByteString
+import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.AuthenticationRegistry
   ( adminActionRunnerAuditorVaultRole
@@ -360,7 +365,6 @@ defaultVaultReconcilePlan =
             externalMaterialIngressAuditorVaultRole
             ( narrowTokenAccessorAuditorPolicy
                 <> serviceSessionJournalPolicy externalMaterialIngressVaultRole
-                <> serviceSessionJournalPolicy targetSecretWorkerVaultRole
             )
         , VaultPolicySpec
             credentialProvisionerAuditorVaultRole
@@ -395,7 +399,7 @@ defaultVaultReconcilePlan =
             targetSecretWorkerAuditorPolicy
         , VaultPolicySpec
             targetSecretControllerAuditorVaultRole
-            ( targetSecretWorkerAuditorPolicy
+            ( tokenAccessorAuditorPolicy
                 <> serviceSessionJournalPolicy targetSecretWorkerVaultRole
             )
         ]
@@ -428,7 +432,7 @@ defaultVaultReconcilePlan =
             ["bootstrap-broker"]
             [bootstrapProvisionerRole]
             Nothing
-            "5m"
+            (Text.pack (show bootstrapProvisionerLeaseMinutes) <> "m")
             VaultKubernetesServiceToken
         , VaultKubernetesRoleSpec
             bootstrapPolicyRepairRole
@@ -1295,6 +1299,12 @@ bootstrapBrokerPolicy =
 bootstrapProvisionerRole :: Text
 bootstrapProvisionerRole = "prodbox-bootstrap-provisioner"
 
+bootstrapProvisionerLeaseMinutes :: Int
+bootstrapProvisionerLeaseMinutes = 5
+
+bootstrapProvisionerMaximumLeaseSeconds :: Int
+bootstrapProvisionerMaximumLeaseSeconds = bootstrapProvisionerLeaseMinutes * 60
+
 bootstrapProvisionerPolicySpec :: VaultPolicySpec
 bootstrapProvisionerPolicySpec =
   VaultPolicySpec bootstrapProvisionerRole bootstrapProvisionerPolicy
@@ -1441,18 +1451,48 @@ bootstrapProvisionerPolicy =
     , "path \"sys/auth/kubernetes\" { capabilities = [\"create\", \"read\", \"update\"] }"
     , "path \"auth/kubernetes/config\" { capabilities = [\"create\", \"read\", \"update\"] }"
     , "path \"transit/keys/prodbox-*\" { capabilities = [\"create\", \"read\", \"update\"] }"
-    , "path \"secret/data/*\" { capabilities = [\"create\", \"read\", \"update\"] }"
-    , "path \"secret/metadata/*\" { capabilities = [\"read\"] }"
     , "path \"pki/issuers\" { capabilities = [\"list\"] }"
     , "path \"pki/root/generate/internal\" { capabilities = [\"update\"] }"
     , "path \"pki/roles/prodbox-bootstrap-test\" { capabilities = [\"create\", \"read\", \"update\"] }"
     , "path \"pki/issue/prodbox-bootstrap-test\" { capabilities = [\"update\"] }"
     ]
+    <> provisionerSecretPolicyStanzas
     <> Text.concat
       ( map
           provisionerKubernetesRolePolicyStanza
           (vaultReconcileKubernetesRoles defaultVaultReconcilePlan)
       )
+
+-- The baseline fold reads and CAS-writes only these compiled KV v2 objects.
+-- Refuse to generate any seed grants if a future path could change ACL syntax.
+provisionerSecretPolicyStanzas :: Text
+provisionerSecretPolicyStanzas =
+  if all safeSeedPath paths
+    then Text.concat (map seedPolicy paths)
+    else ""
+ where
+  paths =
+    Set.toAscList
+      (Set.fromList (map vaultSecretObjectPath (vaultReconcileSecretObjects defaultVaultReconcilePlan)))
+  safeSeedPath path =
+    all safeSegment (Text.splitOn "/" (vaultSecretPathMount path))
+      && all safeSegment (Text.splitOn "/" (vaultSecretPathLogical path))
+  safeSegment segment =
+    not (Text.null segment)
+      && segment /= "."
+      && segment /= ".."
+      && Text.all safeCharacter segment
+  safeCharacter character =
+    isAsciiLower character
+      || isAsciiUpper character
+      || isDigit character
+      || character `elem` ['-', '_', '.']
+  seedPolicy path =
+    "path \""
+      <> vaultSecretPathMount path
+      <> "/data/"
+      <> vaultSecretPathLogical path
+      <> "\" { capabilities = [\"create\", \"read\", \"update\"] }\n"
 
 provisionerKubernetesRolePolicyStanza :: VaultKubernetesRoleSpec -> Text
 provisionerKubernetesRolePolicyStanza role =
@@ -1467,8 +1507,12 @@ bootstrapPolicyRepairPolicy =
   Text.unlines
     [ "path \"sys/policies/acl/prodbox-bootstrap-provisioner\" {"
     , "  capabilities = [\"create\", \"read\", \"update\", \"sudo\"]"
+    , "  allowed_parameters = { \"policy\" = [" <> encodedProvisionerPolicy <> "] }"
     , "}"
     ]
+ where
+  encodedProvisionerPolicy =
+    TextEncoding.decodeUtf8 (LazyByteString.toStrict (Aeson.encode bootstrapProvisionerPolicy))
 
 bootstrapPkiOperatorPolicy :: Text
 bootstrapPkiOperatorPolicy =
@@ -1810,7 +1854,12 @@ targetSecretWorkerPolicy =
 targetSecretWorkerAuditorPolicy :: Text
 targetSecretWorkerAuditorPolicy =
   tokenAccessorAuditorPolicy
-    <> serviceSessionJournalPolicy targetSecretWorkerVaultRole
+    <> readOnlyKvPolicy
+      ("secret/data/control-plane/service-sessions/" <> targetSecretWorkerVaultRole)
+    <> Text.concat (fmap trustRule targetWorkerAuthorizationIds)
+ where
+  trustRule target =
+    readOnlyKvPolicy ("secret/data/target-agent/trust/" <> targetSecretIdToken target)
 
 -- Gateway is a client of Lifecycle Authority observation/submission routes but
 -- owns no authenticated server route, so it receives no replay-object access

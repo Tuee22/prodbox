@@ -18,6 +18,7 @@ module Prodbox.ControlPlane.TargetSecretWorkerProduction
   , targetWorkerKubernetesBoundary
   , recoverTargetWorkerCreateWith
   , terminalTargetWorkerObservation
+  , classifyTargetWorkerObjectAbsence
   , parseTargetAgentRolloutObservation
   , classifyTargetAgentRolloutExit
   , parseTargetWorkerServiceAccountObservation
@@ -63,13 +64,26 @@ import Prodbox.ControlPlane.AuthenticationRegistry
   )
 import Prodbox.ControlPlane.ServiceSessionJournal
   ( ServiceSessionJournalRepository
+  , mkServiceSessionBinding
+  , mkServiceSessionWorkload
+  , mkServiceSessionWorkloadEvidence
+  , serviceSessionCreationFence
+  , serviceSessionWorkloadJobName
+  , serviceSessionWorkloadJobUid
+  , serviceSessionWorkloadPodName
+  , serviceSessionWorkloadPodUid
   )
 import Prodbox.ControlPlane.ServiceSessionLifecycle
   ( ServiceSessionLifecycleError (..)
   , activateFencedServiceSessionDispatch
-  , allocateNextServiceSessionBinding
+  , beginReservedServiceSessionDispatch
   , closeFencedServiceSessionDispatch
-  , prepareFencedServiceSessionDispatch
+  , issueServiceSessionCreation
+  , prepareReservedServiceSessionDispatch
+  , recoverRetiredServiceSessionDispatch
+  , reserveServiceSessionCreation
+  , retireReservedServiceSessionWorkload
+  , settleReservedServiceSessionDispatch
   )
 import Prodbox.ControlPlane.TargetIntentAuthorityClient
   ( TargetIntentAuthorityClient
@@ -90,7 +104,9 @@ import Prodbox.ControlPlane.TargetSecretWorker
   , mkTargetWorkerJobUid
   , mkTargetWorkerServiceAccountUid
   , targetWorkerAttestedIntent
+  , targetWorkerAttestedJobUid
   , targetWorkerAttestedPodName
+  , targetWorkerAttestedPodUid
   , targetWorkerAttestedServiceAccountUid
   , targetWorkerCleanupAuthorization
   , targetWorkerCleanupCompletion
@@ -112,16 +128,18 @@ import Prodbox.ControlPlane.TargetSecretWorkerCoordinator
   , TargetWorkerSessionPrepareCause (..)
   )
 import Prodbox.ControlPlane.TargetSecretWorkerKubernetes
-  ( renderTargetSecretWorkerJob
+  ( prepareTargetSecretWorkerJob
   , targetWorkerAnnotations
   , targetWorkerContainerName
   , targetWorkerPodDeleteOptions
+  , targetWorkerPreparedJobBytes
   )
 import Prodbox.ControlPlane.TargetSecretWorkerProtocol
   ( targetWorkerIngressMaximumBytes
   )
 import Prodbox.ControlPlane.TargetWorkerExecutionPermit
-  ( targetWorkerSessionAttemptId
+  ( targetWorkerSessionAttemptEvidence
+  , targetWorkerSessionAttemptId
   , targetWorkerSessionOperationId
   )
 import Prodbox.ControlPlane.VaultAccessorAudit
@@ -242,10 +260,12 @@ targetWorkerKubernetesBoundary
 targetWorkerKubernetesBoundary connection =
   TargetWorkerKubernetesBoundary
     { observeSelectedTargetAgentRollout = observeAgentIdentity
-    , createTargetWorkerIntent = createIntent
+    , prepareTargetWorkerJob = prepareJob
+    , createTargetWorkerIntent = createManifest
     , recoverTargetWorkerIntent = recoverIntent
     , observeTargetWorkerIntent = observeIntent
     , attachTargetWorkerIngress = attachIngress
+    , observeRetiredTargetWorkerAbsent = observeRetired
     , deleteTargetWorkerIntent = deleteIntent
     , observeTargetWorkerIntentAbsent = observeAbsent
     }
@@ -263,15 +283,19 @@ targetWorkerKubernetesBoundary connection =
           parseTargetAgentRolloutObservation
             (ByteString8.pack (processStdout output))
 
-  createIntent intent = do
+  prepareJob intent = do
     imageResult <- observeTargetAgentImageReference
-    case imageResult >>= \imageReference ->
-      renderTargetSecretWorkerJob
-        imageReference
-        (targetWorkerJobMaximumRuntimeSeconds connection)
-        intent of
-      Left detail -> pure (Left detail)
-      Right jobManifest -> createManifest intent jobManifest
+    pure $ do
+      imageReference <- imageResult
+      job <-
+        prepareTargetSecretWorkerJob
+          imageReference
+          (targetWorkerJobMaximumRuntimeSeconds connection)
+          intent
+      encoded <- targetWorkerPreparedJobBytes intent job
+      if ByteString8.length encoded > boundedSubprocessMaximumInputBytes createLimits
+        then Left "Target worker Job manifest is too large"
+        else Right job
 
   observeTargetAgentImageReference = do
     attempted <- captureSubprocessBounded observeLimits (targetWorkerObserveAgentSubprocess connection)
@@ -284,30 +308,32 @@ targetWorkerKubernetesBoundary connection =
               (targetWorkerJobImageRepository connection)
               (ByteString8.pack (processStdout output))
 
-  createManifest intent manifest = do
-    attempted <-
-      captureSubprocessWithInputBounded
-        createLimits
-        (LazyByteString.toStrict (encode manifest))
-        (targetWorkerCreateSubprocess connection)
-    case attempted of
-      Left _ -> pure (Left "Target worker Job create response is unavailable")
-      Right output -> case processExitCode output of
-        ExitSuccess ->
-          pure
-            ( parseJobBinding
-                (targetWorkerJobImageRepository connection)
-                intent
-                (ByteString8.pack (processStdout output))
-            )
-        ExitFailure _
-          | isAlreadyExists output -> do
-              observed <- observeJob intent
-              pure $ case observed of
-                Right (Just jobUid) -> Right jobUid
-                Right Nothing -> Left "Target worker Job already exists but is not yet visible"
-                Left detail -> Left detail
-          | otherwise -> pure (Left "Target worker Job creation failed")
+  createManifest intent job = case targetWorkerPreparedJobBytes intent job of
+    Left detail -> pure (Left detail)
+    Right manifest -> do
+      attempted <-
+        captureSubprocessWithInputBounded
+          createLimits
+          manifest
+          (targetWorkerCreateSubprocess connection)
+      case attempted of
+        Left _ -> pure (Left "Target worker Job create response is unavailable")
+        Right output -> case processExitCode output of
+          ExitSuccess ->
+            pure
+              ( parseJobBinding
+                  (targetWorkerJobImageRepository connection)
+                  intent
+                  (ByteString8.pack (processStdout output))
+              )
+          ExitFailure _
+            | isAlreadyExists output -> do
+                observed <- observeJob intent
+                pure $ case observed of
+                  Right (Just jobUid) -> Right jobUid
+                  Right Nothing -> Left "Target worker Job already exists but is not yet visible"
+                  Left detail -> Left detail
+            | otherwise -> pure (Left "Target worker Job creation failed")
 
   recoverIntent intent =
     recoverTargetWorkerCreateWith
@@ -394,6 +420,19 @@ targetWorkerKubernetesBoundary connection =
               ( TargetWorkerCoordinatorAttachFailed
                   "Target worker terminal status is inconsistent"
               )
+
+  observeRetired workload = do
+    job <-
+      observeExactUid
+        connection
+        (jobRawPathByName (serviceSessionWorkloadJobName workload))
+        (serviceSessionWorkloadJobUid workload)
+    pod <-
+      observeExactUid
+        connection
+        (podRawPath (serviceSessionWorkloadPodName workload))
+        (serviceSessionWorkloadPodUid workload)
+    pure ((&&) <$> job <*> pod)
 
   deleteIntent intent jobUid maybePod = do
     jobResult <-
@@ -812,27 +851,50 @@ targetWorkerRetainedExecutionBoundary
   -> TargetWorkerExecutionBoundary IO
 targetWorkerRetainedExecutionBoundary repository auditOps authorityClient =
   TargetWorkerExecutionBoundary
-    { prepareTargetWorkerSessionAttempt = \rollout attestation -> do
-        allocated <-
-          allocateNextServiceSessionBinding
-            repository
-            targetSecretWorkerVaultRole
-            ( targetWorkerSessionOperationId
-                (targetWorkerAttestedIntent attestation)
-            )
-            (targetWorkerSessionAttemptId rollout attestation)
-        case allocated of
-          Left err -> pure (Left (classifyTargetWorkerSessionPrepareError err))
-          Right binding -> do
+    { reserveTargetWorkerCreation = \intent ->
+        fmap
+          (either (Left . classifyTargetWorkerSessionPrepareError) Right)
+          ( reserveServiceSessionCreation
+              repository
+              targetSecretWorkerVaultRole
+              (targetWorkerSessionOperationId intent)
+              (targetWorkerIntentJobName intent)
+          )
+    , issueTargetWorkerCreation = \reservation ->
+        fmap
+          (either (Left . classifyTargetWorkerSessionPrepareError) Right)
+          (issueServiceSessionCreation repository reservation)
+    , recoverRetiredTargetWorker = \observeAbsent ->
+        fmap
+          (either (Left . boundedShow) Right)
+          ( recoverRetiredServiceSessionDispatch
+              repository
+              auditOps
+              targetWorkerRoleWideAccessorSubject
+              observeAbsent
+          )
+    , prepareTargetWorkerSessionAttempt = \reservation rollout attestation -> do
+        let intent = targetWorkerAttestedIntent attestation
+            binding =
+              mkServiceSessionBinding
+                targetSecretWorkerVaultRole
+                (targetWorkerSessionOperationId intent)
+                (targetWorkerSessionAttemptId rollout attestation)
+                (serviceSessionCreationFence reservation)
+        case (binding, workloadFor rollout attestation) of
+          (Right validBinding, Right workload) -> do
             prepared <-
-              prepareFencedServiceSessionDispatch
+              prepareReservedServiceSessionDispatch
                 repository
                 auditOps
                 targetWorkerRoleWideAccessorSubject
-                binding
+                reservation
+                validBinding
+                workload
             pure $ case prepared of
               Left err -> Left (classifyTargetWorkerSessionPrepareError err)
-              Right () -> Right binding
+              Right () -> Right validBinding
+          _ -> pure (Left TargetWorkerSessionPrepareBindingInvalid)
     , authorizeTargetWorkerExecution = \_ rollout attestation binding ->
         fmap
           (either (Left . boundedShow) Right)
@@ -842,6 +904,10 @@ targetWorkerRetainedExecutionBoundary repository auditOps authorityClient =
               attestation
               binding
           )
+    , beginTargetWorkerDispatch = \binding ->
+        fmap (either (Left . boundedShow) Right) (beginReservedServiceSessionDispatch repository binding)
+    , settleTargetWorkerDispatch = \binding ->
+        fmap (either (Left . boundedShow) Right) (settleReservedServiceSessionDispatch repository binding)
     , activateTargetWorkerSessionAttempt = \attestation binding accessor ->
         fmap
           (either (Left . boundedShow) Right)
@@ -852,6 +918,7 @@ targetWorkerRetainedExecutionBoundary repository auditOps authorityClient =
               binding
               accessor
           )
+    , recordTargetWorkerRetirement = recordRetirement
     , closeTargetWorkerSessionAttempt = \binding ->
         fmap
           (either (Left . boundedShow) Right)
@@ -862,6 +929,25 @@ targetWorkerRetainedExecutionBoundary repository auditOps authorityClient =
               binding
           )
     }
+ where
+  recordRetirement attestation binding = case retiredWorkloadFor attestation of
+    Left _ -> pure (Left "Target worker retirement identity is invalid")
+    Right workload ->
+      fmap
+        (either (Left . boundedShow) Right)
+        (retireReservedServiceSessionWorkload repository binding workload)
+
+  workloadFor rollout attestation = do
+    workload <- retiredWorkloadFor attestation
+    mkServiceSessionWorkloadEvidence workload (targetWorkerSessionAttemptEvidence rollout attestation)
+
+  retiredWorkloadFor attestation =
+    mkServiceSessionWorkload
+      (targetWorkerIntentJobName (targetWorkerAttestedIntent attestation))
+      (targetWorkerJobUidText (targetWorkerAttestedJobUid attestation))
+      (targetWorkerAttestedPodName attestation)
+      (targetWorkerPodUidText (targetWorkerAttestedPodUid attestation))
+      (targetWorkerServiceAccountUidText (targetWorkerAttestedServiceAccountUid attestation))
 
 -- | Erase interpreter detail at the production boundary while retaining the
 -- exact closed stage needed to diagnose a retained one-shot session refusal.
@@ -1060,9 +1146,19 @@ observeExactUid connection rawPath expectedUid = do
       ExitFailure _
         | isNotFound output -> Right True
         | otherwise -> Left "Target worker absence is unobservable"
-      ExitSuccess -> case eitherDecodeStrict' (ByteString8.pack (processStdout output)) of
-        Left _ -> Left "Kubernetes Target worker object response is invalid"
-        Right (ObjectUidDto currentUid) -> Right (currentUid /= expectedUid)
+      ExitSuccess -> classifyTargetWorkerObjectAbsence expectedUid (ByteString8.pack (processStdout output))
+
+-- A malformed or noncanonical returned UID is not evidence of replacement.
+classifyTargetWorkerObjectAbsence :: Text -> ByteString -> Either Text Bool
+classifyTargetWorkerObjectAbsence expectedUid body = do
+  ObjectUidDto currentUid <-
+    first (const "Kubernetes Target worker object response is invalid") (eitherDecodeStrict' body)
+  validUid <-
+    first (const "Kubernetes Target worker object UID is invalid") (mkTargetWorkerJobUid currentUid)
+  let canonicalUid = targetWorkerJobUidText validUid
+  if canonicalUid /= currentUid
+    then Left "Kubernetes Target worker object UID is invalid"
+    else Right (canonicalUid /= expectedUid)
 
 jobDeleteOptions :: TargetWorkerJobUid -> Value
 jobDeleteOptions jobUid =
@@ -1075,11 +1171,14 @@ jobDeleteOptions jobUid =
     ]
 
 jobRawPath :: TargetWorkerIntent -> String
-jobRawPath intent =
+jobRawPath = jobRawPathByName . targetWorkerIntentJobName
+
+jobRawPathByName :: Text -> String
+jobRawPathByName name =
   "/apis/batch/v1/namespaces/"
     <> targetWorkerNamespace
     <> "/jobs/"
-    <> Text.unpack (targetWorkerIntentJobName intent)
+    <> Text.unpack name
 
 podRawPath :: Text -> String
 podRawPath podName =

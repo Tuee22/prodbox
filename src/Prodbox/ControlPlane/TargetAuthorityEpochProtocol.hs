@@ -46,6 +46,7 @@ import Prodbox.ControlPlane.TargetMaterialRegistry (TargetSecretId)
 data TargetEpochRequest
   = TargetEpochMutate !TargetAuthorityEpochAction
   | TargetEpochObserve !TargetSecretId
+  | TargetEpochObserveSigned !TargetSecretId
   deriving stock (Eq, Show)
 
 data TargetEpochResponse
@@ -77,6 +78,7 @@ data WireRequest
   | WirePromote !ByteString
   | WireRetire !ByteString
   | WireObserve !TargetSecretId
+  | WireObserveSigned !TargetSecretId
   deriving stock (Generic)
   deriving anyclass (Serialise)
 
@@ -94,6 +96,7 @@ encodeTargetEpochRequest :: TargetEpochRequest -> Either TargetEpochProtocolErro
 encodeTargetEpochRequest request = do
   wire <- case request of
     TargetEpochObserve target -> pure (WireObserve target)
+    TargetEpochObserveSigned target -> pure (WireObserveSigned target)
     TargetEpochMutate action -> case action of
       PrepareTargetAuthorityEpoch preparation -> WirePrepare <$> encodePreparation preparation
       PromoteTargetAuthorityEpoch preparation -> WirePromote <$> encodePreparation preparation
@@ -115,6 +118,7 @@ decodeTargetEpochRequest bytes = do
       (decodeControlPlaneRequest targetEpochRequestMaximumBytes (LazyByteString.fromStrict payload))
   case wire of
     WireObserve target -> pure (TargetEpochObserve target)
+    WireObserveSigned target -> pure (TargetEpochObserveSigned target)
     WirePrepare encoded -> TargetEpochMutate . PrepareTargetAuthorityEpoch <$> decodePreparation encoded
     WirePromote encoded -> TargetEpochMutate . PromoteTargetAuthorityEpoch <$> decodePreparation encoded
     WireRetire encoded -> TargetEpochMutate . RetireTargetAuthorityEpoch <$> decodePreparation encoded

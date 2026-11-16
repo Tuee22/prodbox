@@ -1833,6 +1833,7 @@ physicalCallSecretWorkerOperation call = case call of
 data BrokerLocalCall result where
   LocalRecoverRootInitCall
     :: RootInitBinding
+    -> Deadline
     -> BrokerLocalCall RootInitRecoveryObservation
   LocalAcknowledgeRecoveryCustody
     :: FinalUnlockBundle
@@ -3560,7 +3561,8 @@ driveRootInitializationFrom engine attempt reference proof loadInitial = do
                     Right (RootInitAppliedWithoutResponse cause) ->
                       persistRootAmbiguity cause armedVersion armedState
         RootPlanAwaitVaultInitResponse binding -> do
-          recovered <- runLocal engine (LocalRecoverRootInitCall binding)
+          recovered <-
+            runLocal engine (LocalRecoverRootInitCall binding (mutationAttemptRequestDeadline attempt))
           case recovered of
             Left failure -> pure (Left failure)
             Right recoveredResult ->
@@ -3584,6 +3586,7 @@ driveRootInitializationFrom engine attempt reference proof loadInitial = do
                               SecretWorkerControllerRestarted
                               SecretWorkerInitialize
                               (mutationAttemptFence attempt)
+                              (mutationAttemptRequestDeadline attempt)
                               durableResult
                           case reconciled of
                             Left failure ->

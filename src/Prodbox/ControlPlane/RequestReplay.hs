@@ -51,6 +51,10 @@ module Prodbox.ControlPlane.RequestReplay
   , encodeRequestReplayProjection
   , decodeRequestReplayProjection
   , requestReplayCodec
+  , requestReplayStagedCodec
+  , RequestReplayMigrationResult (..)
+  , RequestReplayMigrationRefusal (..)
+  , migrateRequestReplayStaged
 
     -- * Exact-revision repository
   , RequestReplaySnapshot (..)
@@ -125,6 +129,7 @@ import Prodbox.Lifecycle.CheckpointAuthority
   , ModelBCasRequest (..)
   , ModelBCasResult (..)
   , ModelBCodec (..)
+  , ModelBLeaseGuard
   , ModelBObjectCoordinate
   , ModelBObjectVersion
   , ModelBObservation (..)
@@ -543,13 +548,21 @@ encodeRequestReplayProjection
   -> RequestReplayLimits
   -> RequestReplayProjection
   -> Either RequestReplayCodecError ByteString
-encodeRequestReplayProjection maximumBytes expectedLimits projection = do
+encodeRequestReplayProjection = encodeReplayProjectionVersion requestReplayCodecVersion
+
+encodeReplayProjectionVersion
+  :: Word16
+  -> Int
+  -> RequestReplayLimits
+  -> RequestReplayProjection
+  -> Either RequestReplayCodecError ByteString
+encodeReplayProjectionVersion version maximumBytes expectedLimits projection = do
   validateReplayProjection expectedLimits projection
   let bytes =
         LazyByteString.toStrict
           ( serialise
               RequestReplayEnvelope
-                { replayEnvelopeVersion = requestReplayCodecVersion
+                { replayEnvelopeVersion = version
                 , replayEnvelopeCapacity = requestReplayCapacity expectedLimits
                 , replayEnvelopeMaximumResponseBytes =
                     requestReplayMaximumResponseBytes expectedLimits
@@ -582,20 +595,28 @@ decodeRequestReplayProjection maximumBytes expectedLimits bytes
       if envelopeLimitsCompatible expectedLimits envelope
         then pure ()
         else Left RequestReplayLimitsMismatch
-      decodedEntries <- traverse (entryFromWire expectedLimits) (replayEnvelopeEntries envelope)
-      let entries = Map.fromList decodedEntries
-      if Map.size entries == length decodedEntries
-        then pure ()
-        else Left RequestReplayDuplicateKey
-      let projection =
-            RequestReplayProjection
-              { internalReplayLimits = expectedLimits
-              , internalReplayEntries = entries
-              }
-      validateReplayProjection expectedLimits projection
-      if LazyByteString.toStrict (serialise envelope) == bytes
-        then Right projection
-        else Left RequestReplayEnvelopeNonCanonical
+      decodeReplayEnvelope expectedLimits bytes envelope
+
+decodeReplayEnvelope
+  :: RequestReplayLimits
+  -> ByteString
+  -> RequestReplayEnvelope
+  -> Either RequestReplayCodecError RequestReplayProjection
+decodeReplayEnvelope expectedLimits bytes envelope = do
+  decodedEntries <- traverse (entryFromWire expectedLimits) (replayEnvelopeEntries envelope)
+  let entries = Map.fromList decodedEntries
+  if Map.size entries == length decodedEntries
+    then pure ()
+    else Left RequestReplayDuplicateKey
+  let projection =
+        RequestReplayProjection
+          { internalReplayLimits = expectedLimits
+          , internalReplayEntries = entries
+          }
+  validateReplayProjection expectedLimits projection
+  if LazyByteString.toStrict (serialise envelope) == bytes
+    then Right projection
+    else Left RequestReplayEnvelopeNonCanonical
 
 requestReplayCodec
   :: Int -> RequestReplayLimits -> ModelBCodec RequestReplayProjection
@@ -608,6 +629,157 @@ requestReplayCodec maximumBytes expectedLimits =
         either (Left . show) Right
           . decodeRequestReplayProjection maximumBytes expectedLimits
     }
+
+-- | An uninstalled successor codec for an explicitly fenced migration. It
+-- reads the current codec using the exact predecessor limits, including that
+-- codec's supported legacy forms, and writes version 20 with exact successor
+-- limits. This does not fence older writers, select runtime capacity, or
+-- budget decoding/encoding; callers must establish those independently.
+requestReplayStagedCodec
+  :: Int
+  -> RequestReplayLimits
+  -> RequestReplayLimits
+  -> Either RequestReplayCodecError (ModelBCodec RequestReplayProjection)
+requestReplayStagedCodec maximumBytes previousLimits nextLimits
+  | requestReplayCapacity nextLimits < requestReplayCapacity previousLimits =
+      Left RequestReplayLimitsMismatch
+  | requestReplayMaximumResponseBytes nextLimits > requestReplayMaximumResponseBytes previousLimits =
+      Left RequestReplayLimitsMismatch
+  | requestReplayClockSkew nextLimits /= requestReplayClockSkew previousLimits =
+      Left RequestReplayLimitsMismatch
+  | otherwise =
+      Right
+        ModelBCodec
+          { encodeModelBValue =
+              either (Left . show) Right . encodeReplayProjectionVersion 20 maximumBytes nextLimits
+          , decodeModelBValue =
+              either (Left . show) Right . decodeStagedReplayProjection maximumBytes previousLimits nextLimits
+          }
+
+decodeStagedReplayProjection
+  :: Int
+  -> RequestReplayLimits
+  -> RequestReplayLimits
+  -> ByteString
+  -> Either RequestReplayCodecError RequestReplayProjection
+decodeStagedReplayProjection maximumBytes previousLimits nextLimits bytes
+  | maximumBytes < 0 || ByteString.length bytes > maximumBytes =
+      Left (RequestReplayEnvelopeTooLarge (ByteString.length bytes) maximumBytes)
+  | otherwise = do
+      envelope <- case deserialiseOrFail (LazyByteString.fromStrict bytes) of
+        Left _ -> Left RequestReplayEnvelopeInvalid
+        Right decoded -> Right decoded
+      if replayEnvelopeVersion envelope == 20
+        then do
+          if replayEnvelopeCapacity envelope == requestReplayCapacity nextLimits
+            && replayEnvelopeMaximumResponseBytes envelope == requestReplayMaximumResponseBytes nextLimits
+            && replayEnvelopeClockSkewMicros envelope
+              == authorityDurationMicros (requestReplayClockSkew nextLimits)
+            then decodeReplayEnvelope nextLimits bytes envelope
+            else Left RequestReplayLimitsMismatch
+        else do
+          previous <- decodeRequestReplayProjection maximumBytes previousLimits bytes
+          let rebased = previous {internalReplayLimits = nextLimits}
+          validateReplayProjection nextLimits rebased
+          pure rebased
+
+data RequestReplayMigrationRefusal
+  = ReplayMigrationLimitsInvalid
+  | ReplayMigrationMissing
+  | ReplayMigrationCorrupt
+  | ReplayMigrationBudgetExceeded
+  | ReplayMigrationResponseInvalid
+  | ReplayMigrationUnsupportedVersion !Word16
+  | ReplayMigrationUnobservable
+  | ReplayMigrationConflict
+  | ReplayMigrationReadbackChanged
+  deriving stock (Eq, Show)
+
+data RequestReplayMigrationResult
+  = ReplayMigrationObservedCurrent !ModelBObjectVersion
+  | ReplayMigrationApplied !ModelBObjectVersion
+  | ReplayMigrationRecovered !ModelBObjectVersion
+  | ReplayMigrationRefused !RequestReplayMigrationRefusal
+  deriving stock (Eq, Show)
+
+-- | An uninstalled, single-attempt guarded replacement over an existing exact
+-- coordinate. The result is a point observation, not a writer-fence receipt.
+-- The caller must establish and retain the old-writer fence, authenticate the
+-- adapter and guard, and bound the complete operation and its allocations.
+migrateRequestReplayStaged
+  :: (Monad m)
+  => Int
+  -> RequestReplayLimits
+  -> RequestReplayLimits
+  -> ModelBCasAdapter 'ClusterRetained m ByteString
+  -> ModelBObjectCoordinate 'ClusterRetained
+  -> ModelBLeaseGuard
+  -> m RequestReplayMigrationResult
+migrateRequestReplayStaged maximumBytes previousLimits nextLimits adapter coordinate guard =
+  case requestReplayStagedCodec maximumBytes previousLimits nextLimits of
+    Left failure -> pure (ReplayMigrationRefused (migrationCodecRefusal failure))
+    Right _ -> do
+      observed <- modelBObserve adapter coordinate
+      case observed of
+        ModelBMissing -> pure (ReplayMigrationRefused ReplayMigrationMissing)
+        ModelBCorrupt _ -> pure (ReplayMigrationRefused ReplayMigrationCorrupt)
+        ModelBEndpointUnready _ -> pure (ReplayMigrationRefused ReplayMigrationUnobservable)
+        ModelBUnobservable _ -> pure (ReplayMigrationRefused ReplayMigrationUnobservable)
+        ModelBObserved revision bytes -> case decodeStagedReplayProjection maximumBytes previousLimits nextLimits bytes
+          >>= encodeReplayProjectionVersion 20 maximumBytes nextLimits of
+          Left failure -> pure (ReplayMigrationRefused (migrationCodecRefusal failure))
+          Right next
+            | next == bytes -> pure (ReplayMigrationObservedCurrent revision)
+            | otherwise -> do
+                attempted <- modelBCompareAndSwap adapter (ModelBReplaceGuarded coordinate revision guard next)
+                case attempted of
+                  ModelBCasRefusedCorrupt _ -> pure (ReplayMigrationRefused ReplayMigrationCorrupt)
+                  ModelBCasConflict _ -> pure (ReplayMigrationRefused ReplayMigrationConflict)
+                  ModelBCasApplied nextRevision returned
+                    | nextRevision == revision || returned /= next ->
+                        pure (ReplayMigrationRefused ReplayMigrationReadbackChanged)
+                    | otherwise -> confirmApplied nextRevision next
+                  ModelBCasEndpointUnready _ -> confirmUnobservable revision next
+                  ModelBCasUnobservable _ -> confirmUnobservable revision next
+ where
+  confirmApplied expected bytes = do
+    observed <- modelBObserve adapter coordinate
+    pure $ case observed of
+      ModelBObserved actual current
+        | actual == expected && current == bytes -> ReplayMigrationApplied actual
+        | otherwise -> ReplayMigrationRefused ReplayMigrationReadbackChanged
+      ModelBCorrupt _ -> ReplayMigrationRefused ReplayMigrationCorrupt
+      ModelBMissing -> ReplayMigrationRefused ReplayMigrationReadbackChanged
+      ModelBEndpointUnready _ -> ReplayMigrationRefused ReplayMigrationUnobservable
+      ModelBUnobservable _ -> ReplayMigrationRefused ReplayMigrationUnobservable
+  confirmUnobservable previous bytes = do
+    observed <- modelBObserve adapter coordinate
+    pure $ case observed of
+      ModelBObserved actual current
+        | actual /= previous && current == bytes -> ReplayMigrationRecovered actual
+        | otherwise -> ReplayMigrationRefused ReplayMigrationUnobservable
+      ModelBCorrupt _ -> ReplayMigrationRefused ReplayMigrationCorrupt
+      ModelBMissing -> ReplayMigrationRefused ReplayMigrationUnobservable
+      ModelBEndpointUnready _ -> ReplayMigrationRefused ReplayMigrationUnobservable
+      ModelBUnobservable _ -> ReplayMigrationRefused ReplayMigrationUnobservable
+
+migrationCodecRefusal :: RequestReplayCodecError -> RequestReplayMigrationRefusal
+migrationCodecRefusal failure = case failure of
+  RequestReplayEnvelopeTooLarge {} -> ReplayMigrationBudgetExceeded
+  RequestReplayLimitsMismatch -> ReplayMigrationLimitsInvalid
+  RequestReplayResponseInvalid _ -> ReplayMigrationResponseInvalid
+  RequestReplayEnvelopeUnsupportedVersion version -> ReplayMigrationUnsupportedVersion version
+  RequestReplayEnvelopeInvalid -> ReplayMigrationCorrupt
+  RequestReplayEnvelopeNonCanonical -> ReplayMigrationCorrupt
+  RequestReplayEntriesOverCapacity {} -> ReplayMigrationCorrupt
+  RequestReplayDuplicateKey -> ReplayMigrationCorrupt
+  RequestReplayScopeInvalid _ -> ReplayMigrationCorrupt
+  RequestReplayEpochInvalid -> ReplayMigrationCorrupt
+  RequestReplayCallerPrincipalInvalid _ -> ReplayMigrationCorrupt
+  RequestReplaySigningGenerationInvalid _ -> ReplayMigrationCorrupt
+  RequestReplayNonceInvalid _ -> ReplayMigrationCorrupt
+  RequestReplayDigestWidthInvalid {} -> ReplayMigrationCorrupt
+  RequestReplayAttemptInvalid _ -> ReplayMigrationCorrupt
 
 validateReplayProjection
   :: RequestReplayLimits

@@ -11,6 +11,25 @@
 
 ## Phase Status
 
+✅ **Reclosed 2026-11-13 on Sprint `1.101` (Standards A/N/O).** The native object-store client
+propagates recognized cancellation while retaining structured synchronous errors. Local fake-S3
+controls, the canonical gate and the full installed frontend suite pass; interrupted remote writes
+remain unresolved until independently settled.
+
+✅ **Reclosed 2026-11-12 on Sprint `1.100` (Standards A/N/O).** Cluster status reports the
+validated operator resource plan and resolved storage root, and reports missing configuration
+without presenting the portable default as authored. Previous host-fit evidence remains scoped.
+
+✅ **Reclosed 2026-11-11 on Sprint `1.99` (Standards A/N/O).** The host-sized request
+profile passes its code-local capacity, rendering, canonical and installed frontend checks;
+the recorded historical scheduler evidence is preserved. Live service sufficiency and
+deployment qualification remain pending under Sprint `6.5`.
+
+🔄 **Reopened 2026-11-11 on Sprint `1.99` (Standards A/N).** The operator requested a
+host-sized capacity profile. Phase 1 owns the default resource plan and host-fit proof; the new
+profile and its code-local validation reopen that surface. The original scheduler evidence is
+retained, and deployment qualification remains separate in Sprint `6.5`.
+
 ✅ **Reclosed 2026-10-25 on Sprint `1.98` (Standards A/N).** The CLI's file-lint driver
 evaluates each complete source-check finding payload before loading the next corpus. All checks,
 predicates and finding order remain intact. Frozen and replacement actual operators establish the
@@ -7524,6 +7543,170 @@ does not imply deployment qualification. Exact results and closure checks are in
 None on the code-owned surface. Native lifecycle composition and qualification remain Sprint
 `6.5` work. Current execution and evidence live only in
 [README.md → Resume Here](README.md#resume-here).
+
+## Sprint 1.99: Fit the Default Request Profile to the Operator Host [✅ Done]
+
+**Status**: Done
+**Implementation**: `src/Prodbox/Capacity/Config.hs`, `src/Prodbox/Capacity/OneShotWorkerSchedulerBudget.hs`, `test/unit/PlatformSchedulerCapacity.hs`, `test/unit/Allocation.hs`, `test/unit/Main.hs`, `test/integration/CliSuite.hs`
+**Deployment qualification**: pending
+**Live-proof**: pending
+**Independent Validation**: preserve the recorded scheduler counterexamples; prove the host-fit,
+controller headroom, unchanged limits and rendered namespace projections with unit and installed
+frontend tests, then run `prodbox dev check`.
+**Docs to update**: `documents/engineering/resource_scaling_doctrine.md`, `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`.
+
+### Objective
+
+Give the current operator host a complete, explicitly budgeted default request profile without
+silently omitting platform demand or weakening the retained control-plane envelopes.
+
+### Deliverables
+
+Reduce selected Burstable application requests while retaining their limits, host reserves and
+the historical scheduler vectors. Project the new requests consistently into generated schemas,
+quotas, LimitRanges and both substrate renderers. Include the host-controller draw in the
+independent capacity check.
+
+### Validation
+
+Exercise exact demand and one-unit deficits, the historical scheduler and provider controls,
+rendered-resource projections, host-fitting generation, the full canonical gate and the
+installed frontend. Record live service sufficiency independently under Standard P.
+
+### Remaining Work
+
+None on the code-owned surface. The reduced requests remain provisional for deployment until the
+separate live concurrent-load, memory/OOM, CPU-throttling, queue and deadline proof succeeds.
+
+## Sprint 1.100: Report Configured Cluster Capacity Status [✅ Done]
+
+**Status**: Done
+**Implementation**: `src/Prodbox/CLI/Rke2.hs` and focused unit/frontend fixtures.
+**Independent Validation**: exercise the actual status selection using validated non-default plans
+and storage roots, missing and invalid configuration, and unavailable host observation; run the
+canonical gate without a live cluster or later-phase dependencies.
+**Live-proof**: pending.
+**Deployment qualification**: unchanged by this read-only status correction.
+**Docs to update**: `documents/engineering/resource_scaling_doctrine.md`, this phase,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Report resource capacity from the operator's validated configuration and resolved storage root.
+When configuration or host observation is unavailable, say so without presenting the portable
+fallback as an authored plan or observed capacity.
+
+### Deliverables
+
+- Select `validatedAllocatedPlan` and `resolvedManualPvHostRoot` from the same validated settings
+  used by status; preserve the independent RKE2 service observation and failure exit semantics.
+- Do not emit `RESOURCE_HOST_AUTHORED` or an allocatable figure from a fabricated default when
+  configuration is absent or invalid; name the configuration failure instead.
+- Verify different authored capacities and storage roots affect their reported values and host
+  probe, and a missing configuration cannot emit the portable plan as authored.
+
+### Validation
+
+Exercise the real selection path and native CLI behavior with distinct configuration fixtures,
+missing/invalid settings and failed host observations. Run focused regressions and
+`prodbox dev check`; keep host-fit and live concurrent-load qualification separate.
+
+### Remaining Work
+
+The status path now selects the validated plan and resolved root, and omits authored capacity
+when settings cannot be loaded. The focused unit tests passed for two independently validated
+plans and roots, failed host observation, and missing/invalid settings; two installed-frontend
+tests passed for an authored plan and missing settings. A read-only status invocation on this
+host reports `RESOURCE_PLAN=unavailable:configuration` and exits 1 because the binary-sibling
+configuration is absent. The full CLI integration run recorded a failure in the unrelated Vault
+status/initialization fixture after 62 seconds; its isolated rerun passed in 21 seconds. The full
+run also recorded config setup and environment-fixture Authority connection refusals, and two
+cases reached a Vault-mount failure earlier than their expected result. It finished with 7 failures
+out of 107; these failures are not erased by the isolated pass. The canonical gate passed with
+9,916, 27, 35, and 935 tests and no HLint hints; its log is
+`.build/sprint-1.100/status-config-gate-retry.log` (SHA-256
+`2d82564462af4cf4c86a01513352251eca3ba8cf572988b986154bb67cd43d55`). The full frontend log is
+`.build/sprint-1.100/full-cli-frontend.log` (SHA-256
+`44cbfe7c2ca4939cff67841b10b5d7994c3f36f53eca156b2bf41f5687ba0452`). All seven failed cases
+passed when rerun together without the concurrent gate; the log is
+`.build/sprint-1.100/frontend-failures-isolated.log` (SHA-256
+`2285852a817732986025ebda2618aabcb944f8ac7bc45a3a763d484a489c6817`). This does not establish
+why the full run failed. A complete frontend rerun without concurrent gate load passed all 107
+tests; `.build/sprint-1.100/full-cli-frontend-retry.log` has SHA-256
+`ced0080355da02f4beccea5195900c2308cdede4b7ef395897a3cfdf590aa489`. No code-local work remains.
+
+## Sprint 1.101: Preserve Native Object-Store Cancellation [✅ Done]
+
+**Status**: Done
+**Implementation**: `src/Prodbox/Minio/ObjectStoreNative.hs` and native client tests.
+**Independent Validation**: run the actual native client against a local fake S3 endpoint;
+interrupt an in-flight request and verify propagation, while checking ordinary transport errors
+remain structured. Run the canonical quality gate and installed frontend suite without later phases.
+**Live-proof**: not required for the local cancellation boundary; no real object-store mutation was made.
+**Deployment qualification**: pending.
+**Docs to update**: `documents/engineering/haskell_code_guide.md`, this phase,
+`DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`, and `DEVELOPMENT_PLAN/system-components.md`.
+
+### Objective
+
+Preserve asynchronous cancellation at the native S3 interpreter while retaining structured
+errors for ordinary synchronous failures.
+
+### Deliverables
+
+- Replace broad exception catches around endpoint parsing and HTTP execution with a boundary
+  that rethrows asynchronous exceptions and translates synchronous failures.
+- Exercise interruption during an actual local fake-S3 request and a synchronous failure control;
+  prove that cancellation cannot be mistaken for an ordinary unavailable result.
+- Preserve conditional write behavior and do not infer remote write absence from interruption.
+
+### Validation
+
+Run focused native-client cancellation and transport tests, the canonical gate, and the complete
+installed CLI integration suite. Keep physical remote settlement and deployment qualification
+separate.
+
+### Closure Evidence
+
+The prior `performS3WithDeadline` caught `SomeException` around parsing and `httpLbs`. A local
+fake-server probe observed `ThreadKilled` converted into an ordinary unavailable result. The
+implementation now excludes `SomeAsyncException` from those catches. An interim local probe also
+observed an outer `System.Timeout` fire during a blocked request; its source, fake fixture, and
+log are `.build/sprint-2.147/NativeStoreTimeoutProbe.hs`,
+`.build/sprint-1.101/native-store-timeout-fixture.py`, and
+`.build/sprint-1.101/native-store-timeout-interim.log`, SHA-256
+`19a4b2e3ff6b99d2719cf916da09402096a0cc08766659289c08882153756ccd`,
+`4283dc49bb060fed69f9b6e7ca1a8fbe19fb7e46767af82fc26e232cb2e28916`, and
+`c6e5d6f0283a4c8d3567a011dcae283db20e36488bd090b6262c5cace76cd67b`. The corrected actual-client
+probe propagated `ThreadKilled`; its log `.build/sprint-1.101/native-store-cancellation-corrected.log`
+has SHA-256 `1471ae1bf61198002bd822c750743fc90d88357e7b6753dd6ad199e67b6189b6`. Permanent
+cancellation, outer-timeout, synchronous-error, and preflight controls passed; the focused log
+`.build/sprint-1.101/cancellation-focused.log` has SHA-256
+`a803fa96e4fec61ec9dc9e1b31fd5193def8c9d83f8209b0cf529ab4a8a0dc3f`. The canonical gate and
+complete frontend validation remain outstanding.
+
+A separate actual-native-client fixture accepted and retained the fake conditional PUT before
+delaying its response; `ThreadKilled` propagated while the fake object remained present. The
+fixture and log are `.build/sprint-1.101/native-store-cancelled-put-fixture.py` and
+`.build/sprint-1.101/native-store-cancelled-put.log`, SHA-256
+`2f2b13b8274a0f8fab7421a42dab96d9967ab4791a054fc2b18a6a2d68ad0af1` and
+`a80acd5015e4ad78eb8388811e4dc1aed6a8adee96c9a188bb43d585b0dbaa06`. This is a local fake-S3
+counterexample to treating cancellation as absence, not a real MinIO mutation or a general
+settlement proof. The permanent applied-before-cancellation fixture now passes with the other
+controls; `.build/sprint-1.101/cancel-after-put-focused.log` has SHA-256
+`a803fa96e4fec61ec9dc9e1b31fd5193def8c9d83f8209b0cf529ab4a8a0dc3f`. The replacement canonical
+gate passed, with 9,922, 27, 35, and 935 tests in its gated suites. Its log
+`.build/sprint-1.101/cancellation-final-gate-third.log` has SHA-256
+`2e9f136bac0def49ffcc3aaecf4d12142f052ab94b8aa9c6cc515f9db686461d`. The separately run full
+frontend suite passed all 107 tests; `.build/sprint-1.101/cancellation-final-frontend.log` has
+SHA-256 `fccecc844214262d03037f91892a1ffe342c0e31fd379ec6137e2d69151942fa`.
+
+The first replacement gate stopped at the Haskell style rule against a case inside a lambda
+(`.build/sprint-1.101/cancellation-final-gate.log`). The exception selector was extracted to a
+named helper and the gate restarted before the frontend suite.
+The second gate stopped at a formatter layout difference in the added fake-server test
+(`.build/sprint-1.101/cancellation-final-gate-retry.log`); that layout was corrected before
+restarting validation.
 
 ## Related Documents
 

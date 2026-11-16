@@ -382,10 +382,14 @@ or change refuses without creating a journal. Ambiguity retains the explicit aud
 route, while foreign, inconsistent and cancelled custody remains preserved. Closed producer
 causes distinguish observation failure from refusal without exposing persisted values.
 In-flight observation reads the retained worker result when the separate encrypted-response
-object is absent. Production and physical fixtures share this observer. A worker's encrypted
-response must match the prepared root binding, schema and recipient commitment; classified
-ambiguity keeps its original cause. A response that never reached either durable location
-remains ambiguity, and an unavailable read cannot select that result.
+object is absent. An unreceipted checkpoint supplies the exact worker request for that lookup;
+the production observer preserves an absent or unavailable result for retry while the worker
+may still publish. A worker's encrypted response must match the prepared root binding, schema
+and recipient commitment; classified ambiguity keeps its original cause. An absent published
+result alone does not establish that the worker has settled or select ambiguity.
+Authoritative recovery bounds its local wait by the current attempt deadline and carries that
+deadline to unreceipted-worker deletion and its terminal checkpoint permit. A timeout leaves
+any dispatched remote effect unresolved; it does not prove that deletion or a write failed.
 
 Authoritative settlement preserves the exact worker operation/action/request/storage identity
 and durable result. A strictly older predecessor may differ only on fence generation, owner
@@ -718,10 +722,22 @@ remain inside that same outer scope.
   revoked and observed absent inside the Broker transaction. Generated-root share submission and
   encrypted-token recovery cross the fenced one-shot worker boundary; the controller receives only
   the typed ciphertext and decrypts it inside the already-bound ephemeral PGP scope.
+  Before accepting a provisioner service login, the Broker reads its token metadata within the
+  effect permit and requires the same accessor and a positive explicit maximum TTL within the
+  compiled role limit. An initial lease alone does not bound a renewable token. An invalid or
+  unobservable result enters session cleanup; a client timeout does not establish that a Vault
+  request has settled.
   The provisioner policy derives one exact `auth/kubernetes/role/<canonical-name>` path for each
   Kubernetes role in the compiled reconcile plan. It contains no role-path glob and no `sudo`;
   the ordinary plan writes and reads back exactly that same closed role set. ACL-policy writes stay
   absent from the ordinary plan and remain isolated in the separate repair authority below.
+  Its KV grants are exact `data` paths derived from the compiled seed inventory, without a
+  wildcard KV data or metadata grant. The [KV v2 data read](https://developer.hashicorp.com/vault/api-docs/secret/kv/kv-v2#read-secret-version)
+  carries the version metadata needed for CAS without a separate metadata-endpoint read. A
+  The repair policy restricts its policy-write parameter to the exact compiled provisioner
+  policy; changing that policy requires a new baseline revision and generated-root reapplication
+  before ordinary repair can install the new document. These restrictions do not settle
+  already-authorized requests or fence role-reconciliation work.
   Transit-key creation preserves each compiled desired type exactly. HMAC-only commitment keys
   encode `type=hmac` with an explicit 32-byte `key_size`, which is Vault's 256-bit HMAC size;
   AES and Ed25519 requests omit `key_size`. Read-back still requires the exact desired key type,

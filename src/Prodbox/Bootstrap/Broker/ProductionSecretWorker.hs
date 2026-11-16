@@ -18,7 +18,7 @@ where
 
 import Codec.Serialise (Serialise, serialise)
 import Control.Concurrent (threadDelay)
-import Control.Exception (IOException, try)
+import Control.Exception (IOException, evaluate, try)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Data.Aeson
   ( FromJSON (..)
@@ -52,6 +52,7 @@ import Prodbox.Bootstrap.Broker.Fence
   , bootstrapFenceOwnerNonce
   , bootstrapFenceRequestDigest
   , bootstrapFenceStorageGeneration
+  , vaultEffectPermitDeadline
   )
 import Prodbox.Bootstrap.Broker.KubernetesWorker
   ( KubernetesWorkerBoundary (..)
@@ -82,8 +83,10 @@ import Prodbox.Bootstrap.Broker.ProductionPgp
 import Prodbox.Bootstrap.Broker.ProductionStore
   ( ProductionTransitRotationBoundary (..)
   , ProductionTransitRotationJournal (..)
-  , observeProductionTransitRotationJournal
-  , productionBootstrapStoreBoundary
+  , confirmProductionTransitRotation
+  , dispatchProductionTransitRotation
+  , observeProductionTransitRotationJournalWithinPermit
+  , productionExistingBootstrapStoreBoundary
   , productionSecretWorkerReceiptDigest
   , productionTransitRotationBoundary
   , publishProductionSecretWorkerResult
@@ -168,14 +171,21 @@ import Prodbox.ControlPlane.AuthorityClock
   )
 import Prodbox.ControlPlane.Deadline
   ( Deadline
+  , DeadlineObservation (..)
   , RemainingDuration (..)
   , deadlineAtOffset
+  , deadlineObservation
   )
-import Prodbox.ControlPlane.Interpreter (realMonotonicNow)
+import Prodbox.ControlPlane.Interpreter
+  ( DeadlineEffectResult (..)
+  , observeDeadlineEffect
+  , observeDeadlineEffectWithin
+  , realMonotonicNow
+  )
 import Prodbox.ControlPlane.VaultAccessorAudit
   ( isBoundedBatchAuditorLogin
   )
-import Prodbox.Http.Client (HttpError (..))
+import Prodbox.Http.Client (HttpConfig (..), HttpError (..), defaultHttpConfig)
 import Prodbox.Lifecycle.Lease
   ( authorityTimeFromMicros
   )
@@ -189,6 +199,7 @@ import Prodbox.Vault.RoleId
   )
 import System.Exit (ExitCode (..))
 import System.IO (stdin)
+import System.Timeout (timeout)
 
 maximumIngressBytes :: Natural
 maximumIngressBytes = 64 * 1024
@@ -202,7 +213,7 @@ runProductionSecretWorker configPath operation = do
   case loaded of
     Left failure -> failWorker (renderBootstrapBrokerSettingsError failure)
     Right settings -> do
-      storeResult <- productionBootstrapStoreBoundary settings
+      storeResult <- productionExistingBootstrapStoreBoundary settings
       kubernetesResult <- productionKubernetesWorkerBoundary
       case (storeResult, kubernetesResult) of
         (Right store, Right kubernetes) ->
@@ -293,8 +304,11 @@ prepareInitialization settings store kubernetes binding request payload = do
       BootstrapVaultInitialize
   status <- case authorized of
     Left failure -> pure (Left failure)
-    Right _ ->
-      mapVaultFailure "Vault seal status is unavailable" <$> Vault.vaultSealStatus (vaultAddress settings)
+    Right permit ->
+      vaultCallWithinPermit
+        permit
+        "Vault seal status is unavailable"
+        (\config -> Vault.vaultSealStatusWith config (vaultAddress settings))
   case status of
     Right observed
       | Vault.sealStatusInitialized observed ->
@@ -368,7 +382,9 @@ initializeVault settings store kubernetes binding request payload = do
         Left failure -> pure (Left failure)
         Right recipients -> do
           before <-
-            authorizedVaultCall BootstrapVaultInitialize (Vault.vaultSealStatus (vaultAddress settings))
+            authorizedVaultCall
+              BootstrapVaultInitialize
+              (\config -> Vault.vaultSealStatusWith config (vaultAddress settings))
           case before of
             Right observed
               | Vault.sealStatusInitialized observed ->
@@ -388,29 +404,40 @@ initializeVault settings store kubernetes binding request payload = do
                   BootstrapVaultInitialize
               case authorized of
                 Left failure -> pure (Left failure)
-                Right _ -> do
+                Right permit -> do
                   initialized <-
-                    Vault.vaultInitEncrypted (vaultAddress settings) recipients
+                    observeDeadlineEffect
+                      realMonotonicNow
+                      (vaultEffectPermitDeadline permit)
+                      (Vault.vaultInitEncrypted (vaultAddress settings) recipients)
                   case initialized of
-                    Right response ->
-                      pure
-                        ( encryptedInitializationWorkerResult
-                            <$> encryptedReceipt envelope response
-                        )
-                    Left httpFailure -> do
-                      after <-
-                        authorizedVaultCall BootstrapVaultInitialize (Vault.vaultSealStatus (vaultAddress settings))
-                      pure $ case classifyInitializationCallOutcome httpFailure after of
-                        InitializationApplied cause ->
-                          Right (classifiedAmbiguousInitializationWorkerResult cause)
-                        InitializationUnobserved cause followUp ->
-                          Left (initializationUnobservedDiagnostic cause followUp)
+                    DeadlineEffectNotStarted -> pure (Left "Vault initialization permit expired before call")
+                    DeadlineEffectCompleted _ response -> handleInitialization envelope response
+                    DeadlineEffectCompletedLate response -> handleInitialization envelope response
  where
+  -- Initialization can return the only encrypted recovery material. Preserve
+  -- a late response for publication instead of dropping it at this boundary.
+  handleInitialization envelope initialized = case initialized of
+    Right response ->
+      pure
+        ( encryptedInitializationWorkerResult
+            <$> encryptedReceipt envelope response
+        )
+    Left httpFailure -> do
+      after <-
+        authorizedVaultCall
+          BootstrapVaultInitialize
+          (\config -> Vault.vaultSealStatusWith config (vaultAddress settings))
+      pure $ case classifyInitializationCallOutcome httpFailure after of
+        InitializationApplied cause ->
+          Right (classifiedAmbiguousInitializationWorkerResult cause)
+        InitializationUnobserved cause followUp ->
+          Left (initializationUnobservedDiagnostic cause followUp)
   authorizedVaultCall effect action = do
     authorized <- authorizeWorkerVaultEffect store kubernetes request effect
     case authorized of
       Left failure -> pure (Left failure)
-      Right _ -> mapVaultFailure "Vault initialization call failed" <$> action
+      Right permit -> vaultCallWithinPermit permit "Vault initialization call failed" action
 
 classifyInitializationAmbiguity :: HttpError -> InitializationAmbiguityCause
 classifyInitializationAmbiguity httpFailure = case httpFailure of
@@ -619,11 +646,13 @@ rotateTransitKey settings store kubernetes request payload =
               Right jwt -> do
                 loggedIn <-
                   authorizedTransitCall
-                    ( Vault.vaultKubernetesLoginWithLease
-                        (vaultAddress settings)
-                        "kubernetes"
-                        (vaultRoleIdText VaultRoleBootstrapBroker)
-                        jwt
+                    ( \config ->
+                        Vault.vaultKubernetesLoginWithLeaseConfig
+                          config
+                          (vaultAddress settings)
+                          "kubernetes"
+                          (vaultRoleIdText VaultRoleBootstrapBroker)
+                          jwt
                     )
                 case loggedIn of
                   Left _ -> pure (Left "Bootstrap worker Vault login failed")
@@ -640,7 +669,7 @@ rotateTransitKey settings store kubernetes request payload =
                             )
                     revoked <-
                       authorizedTransitCall
-                        (Vault.vaultRevokeSelf (vaultAddress settings) token)
+                        (\config -> Vault.vaultRevokeSelfWith config (vaultAddress settings) token)
                     pure $ case revoked of
                       Left _ ->
                         Left "Bootstrap worker Vault session revoke-self failed"
@@ -663,29 +692,44 @@ rotateTransitKey settings store kubernetes request payload =
         BootstrapVaultRotateTransitKey
     case authorized of
       Left failure -> pure (Left failure)
-      Right _ -> mapVaultFailure "Bootstrap worker Vault call failed" <$> action
+      Right permit -> vaultCallWithinPermit permit "Bootstrap worker Vault call outcome was not confirmed" action
 
   rotateFromJournal token keyName = do
     currentResult <-
       authorizedTransitCall
-        (Vault.vaultReadTransitKey (vaultAddress settings) token keyName)
+        (\config -> Vault.vaultReadTransitKeyWith config (vaultAddress settings) token keyName)
     case currentResult of
       Left _ -> pure (Left "Transit-key pre-rotation read-back failed")
       Right current -> do
-        observed <- observeProductionTransitRotationJournal settings
-        case observed of
-          Left _ -> pure (Left "Transit rotation journal is unavailable")
-          Right StoreObjectAbsent -> planAndContinue token keyName current
-          Right (StoreObjectPresent _ _ journal)
-            | transitRotationRequestDigest journal == secretWorkerRequestDigest request
-                && transitRotationStorageGeneration journal
-                  == secretWorkerRequestStorageGeneration request
-                && transitRotationKeyName journal == keyName ->
-                continueRotation token current journal
-            | otherwise -> case journal of
-                ProductionTransitRotationApplied {} -> planAndContinue token keyName current
-                ProductionTransitRotationPlanned {} ->
-                  pure (Left "An unfinished predecessor Transit rotation remains journaled")
+        permit <- authorizeWorkerStoreMutation store kubernetes request BootstrapStorePlanTransitRotation
+        case permit of
+          Left failure -> pure (Left failure)
+          Right authorized -> do
+            observed <- observeProductionTransitRotationJournalWithinPermit settings authorized request
+            case observed of
+              Left _ -> pure (Left "Transit rotation journal is unavailable")
+              Right StoreObjectAbsent -> planAndContinue token keyName current
+              Right (StoreObjectPresent _ _ journal)
+                | transitRotationRequestDigest journal == secretWorkerRequestDigest request
+                    && transitRotationStorageGeneration journal
+                      == secretWorkerRequestStorageGeneration request
+                    && transitRotationKeyName journal == keyName ->
+                    observeExistingRotation current journal
+                | otherwise -> case journal of
+                    ProductionTransitRotationCompleted {} -> planAndContinue token keyName current
+                    _ ->
+                      pure (Left "An unfinished predecessor Transit rotation remains journaled")
+
+  observeExistingRotation current journal = case journal of
+    ProductionTransitRotationCompleted
+      { transitRotationAfterVersion
+      , transitRotationKeyName
+      }
+        | Vault.transitKeyName current == transitRotationKeyName
+            && Vault.transitKeyLatestVersion current == transitRotationAfterVersion ->
+            pure (Right ())
+        | otherwise -> pure (Left "Completed Transit journal differs from Vault read-back")
+    _ -> pure (Left "Transit rotation outcome requires settlement before recovery")
 
   planAndContinue token keyName current = do
     permit <-
@@ -706,51 +750,29 @@ rotateTransitKey settings store kubernetes request payload =
             (Vault.transitKeyLatestVersion current)
         case planned of
           Left _ -> pure (Left "Transit rotation plan was not durably read back")
-          Right journal -> continueRotation token current journal
+          Right claim -> continueRotation token claim
 
-  continueRotation token current journal = case journal of
-    ProductionTransitRotationApplied
-      { transitRotationAfterVersion
-      , transitRotationKeyName
-      }
-        | Vault.transitKeyName current == transitRotationKeyName
-            && Vault.transitKeyLatestVersion current == transitRotationAfterVersion ->
-            pure (Right ())
-        | otherwise -> pure (Left "Applied Transit journal differs from Vault read-back")
-    ProductionTransitRotationPlanned
-      { transitRotationBeforeVersion
-      , transitRotationKeyName
-      }
-        | Vault.transitKeyName current /= transitRotationKeyName ->
-            pure (Left "Planned Transit journal key differs from Vault read-back")
-        | Vault.transitKeyLatestVersion current == transitRotationBeforeVersion -> do
-            applied <-
-              authorizedTransitCall
-                (Vault.vaultRotateTransitKey (vaultAddress settings) token transitRotationKeyName)
-            case applied of
-              Left _ -> pure (Left "Transit-key rotation response was unavailable")
-              Right () -> observeAndComplete token journal
-        | Vault.transitKeyLatestVersion current == transitRotationBeforeVersion + 1 ->
-            completeJournal journal (Vault.transitKeyLatestVersion current)
-        | otherwise ->
-            pure (Left "Planned Transit journal cannot be reconciled with Vault version")
+  continueRotation token claim = do
+    permit <- authorizeWorkerVaultEffect store kubernetes request BootstrapVaultRotateTransitKey
+    case permit of
+      Left failure -> pure (Left failure)
+      Right authorized -> do
+        dispatched <- dispatchProductionTransitRotation authorized claim token
+        case dispatched of
+          Left _ -> pure (Left "Transit-key rotation response was unavailable")
+          Right successful -> observeAndComplete token successful
 
-  observeAndComplete token journal = do
-    after <-
-      authorizedTransitCall
-        ( Vault.vaultReadTransitKey
-            (vaultAddress settings)
-            token
-            (transitRotationKeyName journal)
-        )
-    case after of
-      Right current
-        | Vault.transitKeyLatestVersion current
-            == transitRotationBeforeVersion journal + 1 ->
-            completeJournal journal (Vault.transitKeyLatestVersion current)
-      _ -> pure (Left "Transit-key post-rotation read-back was not exact")
+  observeAndComplete token successful = do
+    permit <- authorizeWorkerVaultEffect store kubernetes request BootstrapVaultRotateTransitKey
+    case permit of
+      Left failure -> pure (Left failure)
+      Right authorized -> do
+        confirmed <- confirmProductionTransitRotation authorized successful token
+        case confirmed of
+          Left _ -> pure (Left "Transit-key post-rotation read-back was not exact")
+          Right witness -> completeJournal witness
 
-  completeJournal journal afterVersion = do
+  completeJournal witness = do
     permit <-
       authorizeWorkerStoreMutation
         store
@@ -764,12 +786,9 @@ rotateTransitKey settings store kubernetes request payload =
           completeTransitRotation
             (productionTransitRotationBoundary settings)
             authorized
-            request
-            (transitRotationKeyName journal)
-            (transitRotationBeforeVersion journal)
-            afterVersion
+            witness
         pure $ case completed of
-          Right ProductionTransitRotationApplied {} -> Right ()
+          Right ProductionTransitRotationCompleted {} -> Right ()
           _ -> Left "Transit rotation completion was not durably read back"
 
 completeGeneratedRoot
@@ -960,15 +979,14 @@ authorizeWorkerStoreMutation
   -> SecretFreeWorkerRequest
   -> BootstrapStoreMutation
   -> IO (Either String BootstrapStoreMutationPermit)
-authorizeWorkerStoreMutation store kubernetes request mutation = do
-  now <- realMonotonicNow
-  let requestDeadline = deadlineAtOffset now (RemainingDuration (5 * 1000 * 1000))
-  clock <- authorityClockNow
+authorizeWorkerStoreMutation store kubernetes request mutation = withinWorkerAuthorization $ \requestDeadline -> do
   observedStore <- observeBootstrapSessionFence store
   case observedStore of
     Right observation@(BootstrapFenceStoreHeld fence)
       | workerRequestMatchesFence request fence -> do
           lease <- kubernetesObserveBootstrapLease kubernetes requestDeadline
+          clock <- authorityClockNow
+          now <- realMonotonicNow
           pure
             ( either
                 (Left . show)
@@ -992,15 +1010,14 @@ authorizeWorkerVaultEffect
   -> SecretFreeWorkerRequest
   -> BootstrapVaultEffect
   -> IO (Either String BootstrapVaultEffectPermit)
-authorizeWorkerVaultEffect store kubernetes request effect = do
-  now <- realMonotonicNow
-  let requestDeadline = deadlineAtOffset now (RemainingDuration (5 * 1000 * 1000))
-  clock <- authorityClockNow
+authorizeWorkerVaultEffect store kubernetes request effect = withinWorkerAuthorization $ \requestDeadline -> do
   observedStore <- observeBootstrapSessionFence store
   case observedStore of
     Right observation@(BootstrapFenceStoreHeld fence)
       | workerRequestMatchesFence request fence -> do
           lease <- kubernetesObserveBootstrapLease kubernetes requestDeadline
+          clock <- authorityClockNow
+          now <- realMonotonicNow
           pure
             ( either
                 (Left . show)
@@ -1017,6 +1034,22 @@ authorizeWorkerVaultEffect store kubernetes request effect = do
             )
     Right _ -> pure (Left "Bootstrap worker durable fence is not held")
     Left _ -> pure (Left "Bootstrap worker durable fence is unavailable")
+
+-- This guard covers observation and permit construction, not the later effect.
+-- An interrupted read supplies no absence or remote-settlement evidence.
+withinWorkerAuthorization
+  :: (Deadline -> IO (Either String permit)) -> IO (Either String permit)
+withinWorkerAuthorization action = do
+  started <- realMonotonicNow
+  let deadline = deadlineAtOffset started (RemainingDuration (5 * 1000 * 1000))
+  result <- observeDeadlineEffectWithin deadline $ do
+    authorized <- action deadline
+    case authorized of
+      Left failure -> evaluate failure >> pure authorized
+      Right permit -> evaluate permit >> pure authorized
+  pure $ case result of
+    Just (DeadlineEffectCompleted _ authorized) -> authorized
+    _ -> Left "Bootstrap worker authorization deadline elapsed or observation is unavailable"
 
 workerRequestMatchesFence
   :: SecretFreeWorkerRequest
@@ -1113,7 +1146,7 @@ submitUnsealShares
   -> [RecoveredUnsealShare]
   -> IO (Either String Bool)
 submitUnsealShares store kubernetes request address shares = do
-  initial <- authorizedUnsealCall (Vault.vaultSealStatus address)
+  initial <- authorizedUnsealCall (\config -> Vault.vaultSealStatusWith config address)
   case initial of
     Left _ -> pure (Left "Vault seal status is unavailable")
     Right status
@@ -1129,9 +1162,9 @@ submitUnsealShares store kubernetes request address shares = do
     case TextEncoding.decodeUtf8' bytes of
       Left _ -> pure (Left "A recovered Vault share was not UTF-8")
       Right key -> do
-        submitted <- authorizedUnsealCall (Vault.vaultSubmitUnseal address key)
+        submitted <- authorizedUnsealCall (\config -> Vault.vaultSubmitUnsealWith config address key)
         case submitted of
-          Left _ -> pure (Left "Vault refused a recovered unseal share")
+          Left _ -> pure (Left "Vault unseal share outcome was not confirmed")
           Right status
             | Vault.sealStatusSealed status -> go rest
             | otherwise -> pure (Right True)
@@ -1145,7 +1178,32 @@ submitUnsealShares store kubernetes request address shares = do
         BootstrapVaultSubmitUnsealShare
     case authorized of
       Left failure -> pure (Left failure)
-      Right _ -> mapVaultFailure "Vault unseal call failed" <$> action
+      Right permit -> vaultCallWithinPermit permit "Vault unseal call outcome was not confirmed" action
+
+-- | A late completion is not admissible evidence. For a submitted mutation,
+-- failure remains unconfirmed rather than proving the server did not apply it.
+vaultCallWithinPermit
+  :: BootstrapVaultEffectPermit
+  -> String
+  -> (HttpConfig -> IO (Either error value))
+  -> IO (Either String value)
+vaultCallWithinPermit permit detail action = do
+  now <- realMonotonicNow
+  case deadlineObservation now (vaultEffectPermitDeadline permit) of
+    DeadlineExpired -> pure (Left (detail ++ ": permit expired before call"))
+    DeadlineOpen (RemainingDuration remaining) -> do
+      let timeoutMicros = fromIntegral (min remaining (fromIntegral (httpRequestTimeoutMicros defaultHttpConfig)))
+          config = defaultHttpConfig {httpRequestTimeoutMicros = timeoutMicros}
+      observed <-
+        observeDeadlineEffect
+          realMonotonicNow
+          (vaultEffectPermitDeadline permit)
+          (timeout timeoutMicros (action config))
+      pure $ case observed of
+        DeadlineEffectNotStarted -> Left (detail ++ ": permit expired before call")
+        DeadlineEffectCompletedLate _ -> Left (detail ++ ": call completed after permit expiry")
+        DeadlineEffectCompleted _ Nothing -> Left (detail ++ ": call outcome was not observed within its budget")
+        DeadlineEffectCompleted _ (Just result) -> mapVaultFailure detail result
 
 mapVaultFailure :: String -> Either error value -> Either String value
 mapVaultFailure detail = either (const (Left detail)) Right

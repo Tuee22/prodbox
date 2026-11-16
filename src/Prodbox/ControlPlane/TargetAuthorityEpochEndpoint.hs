@@ -4,17 +4,22 @@
 module Prodbox.ControlPlane.TargetAuthorityEpochEndpoint
   ( targetEpochVerifiedHandler
   , targetEpochSignedObservationHandler
+  , targetEpochNegotiatedHandler
+  , targetEpochDeadlineBoundedHandler
   , isTargetEpochObservationForRole
+  , isSignedTargetEpochObservationForRole
   )
 where
 
 import Data.ByteString (ByteString)
 import Data.ByteString.Lazy qualified as LazyByteString
+import Data.Text (Text)
 import Prodbox.ControlPlane.Codec (decodeControlPlaneRequest, encodeControlPlaneResponse)
 import Prodbox.ControlPlane.RequestAuthentication
   ( RequestSigningCapability
   , VerifiedControlPlaneRequest
   , verifiedRequestBody
+  , verifiedRequestDeadline
   , verifiedRequestRoute
   )
 import Prodbox.ControlPlane.Route (ControlPlaneRoute (TargetSecretTrustInstall))
@@ -30,7 +35,9 @@ import Prodbox.ControlPlane.TargetAuthorityTrustEndpoint
   )
 import Prodbox.ControlPlane.TargetSecretAgentExecution (TargetAgentIdentity)
 import Prodbox.Http.ReplyStatus (ReplyStatus (..), replyStatusCode)
+import Prodbox.Lifecycle.Lease (AuthorityTime, authorityTimeMicros)
 import Prodbox.Runtime.Role (RuntimeRole (TargetSecretAgentRuntime))
+import System.Timeout (timeout)
 
 targetEpochVerifiedHandler
   :: (Monad m)
@@ -39,7 +46,17 @@ targetEpochVerifiedHandler
   -> TargetEpochExecutionInterpreter m
   -> VerifiedControlPlaneRequest
   -> m (Maybe (ReplyStatus, ByteString))
-targetEpochVerifiedHandler maximumBytes localAgent interpreter verified
+targetEpochVerifiedHandler = targetEpochHandler False
+
+targetEpochHandler
+  :: (Monad m)
+  => Bool
+  -> Int
+  -> TargetAgentIdentity
+  -> TargetEpochExecutionInterpreter m
+  -> VerifiedControlPlaneRequest
+  -> m (Maybe (ReplyStatus, ByteString))
+targetEpochHandler allowSigned maximumBytes localAgent interpreter verified
   | verifiedRequestRoute verified /= TargetSecretTrustInstall = pure Nothing
   | otherwise = case decodeControlPlaneRequest maximumBytes (LazyByteString.fromStrict (verifiedRequestBody verified)) of
       Left _ -> pure Nothing
@@ -55,6 +72,11 @@ targetEpochVerifiedHandler maximumBytes localAgent interpreter verified
         TargetEpochObserve target ->
           fmap (TargetEpochObserved target)
             <$> observeTargetAuthorityEpoch localAgent interpreter verified target
+        TargetEpochObserveSigned target
+          | allowSigned ->
+              fmap (TargetEpochObserved target)
+                <$> observeTargetAuthorityEpoch localAgent interpreter verified target
+          | otherwise -> pure (Left TargetEpochRequestBindingInvalid)
       pure $ case result of
         Left err -> executionFailure err
         Right response -> case encodeTargetEpochResponse response of
@@ -75,7 +97,7 @@ targetEpochSignedObservationHandler
   -> m (Maybe (Either TargetAuthenticatedResponseError ByteString))
 targetEpochSignedObservationHandler maximumRequest maximumResponse localAgent interpreter signer verified
   | not
-      ( isTargetEpochObservationForRole
+      ( isSignedTargetEpochObservationForRole
           maximumRequest
           TargetSecretAgentRuntime
           (verifiedRequestRoute verified)
@@ -83,7 +105,7 @@ targetEpochSignedObservationHandler maximumRequest maximumResponse localAgent in
       ) =
       pure Nothing
   | otherwise = do
-      handled <- targetEpochVerifiedHandler maximumRequest localAgent interpreter verified
+      handled <- targetEpochHandler True maximumRequest localAgent interpreter verified
       case handled of
         Nothing -> pure (Just (Left TargetResponseRequestRefused))
         Just (status, body) ->
@@ -95,6 +117,75 @@ targetEpochSignedObservationHandler maximumRequest maximumResponse localAgent in
               verified
               (fromIntegral (replyStatusCode status))
               body
+
+-- | Staged dispatch for peers which can sign. Legacy requests retain their
+-- original response; a failed signature never falls back to an unsigned reply.
+-- Runtime installation must still provide a trusted signer, enforce the
+-- original deadline and admit the signed response and replay costs.
+targetEpochNegotiatedHandler
+  :: (Monad m)
+  => Int
+  -> Int
+  -> TargetAgentIdentity
+  -> TargetEpochExecutionInterpreter m
+  -> RequestSigningCapability m
+  -> VerifiedControlPlaneRequest
+  -> m (Maybe (ReplyStatus, ByteString))
+targetEpochNegotiatedHandler maximumRequest maximumResponse localAgent interpreter signer verified = do
+  result <-
+    targetEpochSignedObservationHandler
+      maximumRequest
+      maximumResponse
+      localAgent
+      interpreter
+      signer
+      verified
+  case result of
+    Nothing -> targetEpochVerifiedHandler maximumRequest localAgent interpreter verified
+    Just (Left _) -> pure (Just (ReplyServiceUnavailable, "signed-observation-refused"))
+    Just (Right envelope) -> pure (Just (ReplyOk, envelope))
+
+-- | Bound the complete signed observation, including signing and the closing
+-- clock observation, by the verified request's original deadline. The caller
+-- supplies a local bounded clock and still owns traffic and physical identity
+-- admission. Legacy requests retain their existing handler.
+targetEpochDeadlineBoundedHandler
+  :: Int
+  -> Int
+  -> TargetAgentIdentity
+  -> TargetEpochExecutionInterpreter IO
+  -> RequestSigningCapability IO
+  -> IO (Either Text AuthorityTime)
+  -> VerifiedControlPlaneRequest
+  -> IO (Maybe (ReplyStatus, ByteString))
+targetEpochDeadlineBoundedHandler maximumRequest maximumResponse localAgent interpreter signer readTime verified
+  | not
+      ( isSignedTargetEpochObservationForRole
+          maximumRequest
+          TargetSecretAgentRuntime
+          (verifiedRequestRoute verified)
+          (verifiedRequestBody verified)
+      ) =
+      targetEpochVerifiedHandler maximumRequest localAgent interpreter verified
+  | otherwise = do
+      opening <- readTime
+      case opening of
+        Left _ -> pure refusal
+        Right now
+          | now >= deadline -> pure refusal
+          | otherwise -> do
+              let remaining = min (authorityTimeMicros deadline - authorityTimeMicros now) (fromIntegral (maxBound :: Int))
+              result <- timeout (fromIntegral remaining) $ do
+                response <-
+                  targetEpochNegotiatedHandler maximumRequest maximumResponse localAgent interpreter signer verified
+                closing <- readTime
+                pure $ case closing of
+                  Right finished | finished < deadline -> response
+                  _ -> refusal
+              pure (maybe refusal id result)
+ where
+  deadline = verifiedRequestDeadline verified
+  refusal = Just (ReplyServiceUnavailable, "signed-observation-refused")
 
 renderResponse :: TargetAuthorityTrustResponse -> (ReplyStatus, ByteString)
 renderResponse response =
@@ -136,5 +227,17 @@ isTargetEpochObservationForRole maximumBytes role route body =
     Left _ -> False
     Right (TargetAuthorityTrustRequest inner) -> case decodeTargetEpochRequest inner of
       Right (TargetEpochObserve _) -> True
+      Right (TargetEpochObserveSigned _) -> True
       Right (TargetEpochMutate _) -> False
       Left _ -> False
+
+isSignedTargetEpochObservationForRole
+  :: Int -> RuntimeRole -> ControlPlaneRoute -> ByteString -> Bool
+isSignedTargetEpochObservationForRole maximumBytes role route body =
+  role == TargetSecretAgentRuntime
+    && route == TargetSecretTrustInstall
+    && case decodeControlPlaneRequest maximumBytes (LazyByteString.fromStrict body) of
+      Right (TargetAuthorityTrustRequest inner) -> case decodeTargetEpochRequest inner of
+        Right (TargetEpochObserveSigned _) -> True
+        _ -> False
+      _ -> False

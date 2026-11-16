@@ -21,6 +21,7 @@ module Prodbox.ControlPlane.TargetWorkerExecutionPermit
   , targetWorkerExecutionPermitMatchesObservation
   , targetWorkerSessionOperationId
   , targetWorkerSessionAttemptId
+  , targetWorkerSessionAttemptEvidence
   , verifiedPermitAgentRollout
   , verifiedPermitJobName
   , verifiedPermitJobUid
@@ -54,6 +55,7 @@ import Prodbox.ControlPlane.AuthenticationRegistry (targetSecretWorkerVaultRole)
 import Prodbox.ControlPlane.Coordinate (AuthorityEpoch (..))
 import Prodbox.ControlPlane.ServiceSessionJournal
   ( ServiceSessionBinding
+  , WireTargetWorkerAttemptBinding (..)
   , mkServiceSessionBinding
   , serviceSessionBindingAttemptId
   , serviceSessionBindingFence
@@ -194,24 +196,6 @@ data WireSignedTargetWorkerExecutionPermit = WireSignedTargetWorkerExecutionPerm
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
-data WireTargetWorkerAttemptBinding = WireTargetWorkerAttemptBinding
-  { wireAttemptVersion :: !Word16
-  , wireAttemptAgentIdentity :: !Text
-  , wireAttemptDeploymentUid :: !Text
-  , wireAttemptDeploymentGeneration :: !Natural
-  , wireAttemptObservedDeploymentGeneration :: !Natural
-  , wireAttemptObservedRolloutDigest :: !Text
-  , wireAttemptJobName :: !Text
-  , wireAttemptJobUid :: !Text
-  , wireAttemptPodName :: !Text
-  , wireAttemptPodUid :: !Text
-  , wireAttemptServiceAccount :: !Text
-  , wireAttemptServiceAccountUid :: !Text
-  , wireAttemptImageDigest :: !Text
-  }
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (Serialise)
-
 data SignedTargetWorkerExecutionPermit = SignedTargetWorkerExecutionPermit
   { signedPermitClaims :: !TargetWorkerExecutionPermitClaims
   , signedPermitSignature :: !ByteString
@@ -256,35 +240,36 @@ targetWorkerSessionAttemptId
 targetWorkerSessionAttemptId rollout attestation =
   targetValueDigestText
     ( sha256TargetValueDigest
-        ( LazyByteString.toStrict
-            ( serialise
-                WireTargetWorkerAttemptBinding
-                  { wireAttemptVersion = targetWorkerExecutionPermitVersion
-                  , wireAttemptAgentIdentity =
-                      targetAgentIdentityText (targetAgentRolloutEvidenceIdentity rollout)
-                  , wireAttemptDeploymentUid = targetAgentRolloutDeploymentUid rollout
-                  , wireAttemptDeploymentGeneration =
-                      targetAgentRolloutDeploymentGeneration rollout
-                  , wireAttemptObservedDeploymentGeneration =
-                      targetAgentRolloutObservedGeneration rollout
-                  , wireAttemptObservedRolloutDigest =
-                      targetAgentRolloutObservedDigest rollout
-                  , wireAttemptJobName = targetWorkerIntentJobName intent
-                  , wireAttemptJobUid =
-                      targetWorkerJobUidText (targetWorkerAttestedJobUid attestation)
-                  , wireAttemptPodName = targetWorkerAttestedPodName attestation
-                  , wireAttemptPodUid =
-                      targetWorkerPodUidText (targetWorkerAttestedPodUid attestation)
-                  , wireAttemptServiceAccount = targetWorkerIntentServiceAccount intent
-                  , wireAttemptServiceAccountUid =
-                      targetWorkerServiceAccountUidText
-                        (targetWorkerAttestedServiceAccountUid attestation)
-                  , wireAttemptImageDigest =
-                      targetWorkerImageDigestText (targetWorkerIntentImageDigest intent)
-                  }
-            )
-        )
+        (LazyByteString.toStrict (serialise (targetWorkerSessionAttemptEvidence rollout attestation)))
     )
+
+targetWorkerSessionAttemptEvidence
+  :: TargetAgentRolloutEvidence -> TargetWorkerAttestation -> WireTargetWorkerAttemptBinding
+targetWorkerSessionAttemptEvidence rollout attestation =
+  WireTargetWorkerAttemptBinding
+    { wireAttemptVersion = targetWorkerExecutionPermitVersion
+    , wireAttemptAgentIdentity =
+        targetAgentIdentityText (targetAgentRolloutEvidenceIdentity rollout)
+    , wireAttemptDeploymentUid = targetAgentRolloutDeploymentUid rollout
+    , wireAttemptDeploymentGeneration =
+        targetAgentRolloutDeploymentGeneration rollout
+    , wireAttemptObservedDeploymentGeneration =
+        targetAgentRolloutObservedGeneration rollout
+    , wireAttemptObservedRolloutDigest =
+        targetAgentRolloutObservedDigest rollout
+    , wireAttemptJobName = targetWorkerIntentJobName intent
+    , wireAttemptJobUid =
+        targetWorkerJobUidText (targetWorkerAttestedJobUid attestation)
+    , wireAttemptPodName = targetWorkerAttestedPodName attestation
+    , wireAttemptPodUid =
+        targetWorkerPodUidText (targetWorkerAttestedPodUid attestation)
+    , wireAttemptServiceAccount = targetWorkerIntentServiceAccount intent
+    , wireAttemptServiceAccountUid =
+        targetWorkerServiceAccountUidText
+          (targetWorkerAttestedServiceAccountUid attestation)
+    , wireAttemptImageDigest =
+        targetWorkerImageDigestText (targetWorkerIntentImageDigest intent)
+    }
  where
   intent = targetWorkerAttestedIntent attestation
 

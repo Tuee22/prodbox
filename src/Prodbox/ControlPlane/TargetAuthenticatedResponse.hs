@@ -24,9 +24,16 @@ import Data.ByteString.Lazy qualified as LazyByteString
 import Data.Text.Encoding qualified as TextEncoding
 import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
+import Prodbox.ControlPlane.Codec (decodeControlPlaneRequest)
 import Prodbox.ControlPlane.Coordinate (authorityScopeText)
 import Prodbox.ControlPlane.RequestAuthentication
 import Prodbox.ControlPlane.Route (ControlPlaneRoute (TargetSecretTrustInstall))
+import Prodbox.ControlPlane.TargetAuthorityEpochProtocol
+  ( TargetEpochRequest (TargetEpochObserveSigned)
+  , decodeTargetEpochRequest
+  , targetEpochRequestMaximumBytes
+  )
+import Prodbox.ControlPlane.TargetAuthorityTrustEndpoint (TargetAuthorityTrustRequest (..))
 import Prodbox.ControlPlane.TargetSecretAgentExecution
   ( TargetAgentIdentity
   , targetAgentClusterIdentity
@@ -98,6 +105,7 @@ signTargetAuthenticatedResponse maximumBody agent signer request status body
   | verifiedRequestRoute request /= TargetSecretTrustInstall
       || verifiedRequestCalleeRole request /= TargetSecretAgentRuntime
       || verifiedRequestCallerPrincipal request /= CallerService LifecycleAuthorityRuntime
+      || not (signedObservation (verifiedRequestBody request))
       || targetAgentClusterIdentity agent /= authorityScopeText (verifiedRequestAuthorityScope request) =
       pure (Left TargetResponseRequestRefused)
   | requestSigningCapabilityPrincipal signer /= CallerService TargetSecretAgentRuntime =
@@ -121,6 +129,14 @@ signTargetAuthenticatedResponse maximumBody agent signer request status body
            in if ByteString.length encoded > maximumBody + responseFrameOverhead
                 then Left TargetResponseFrameTooLarge
                 else Right encoded
+
+signedObservation :: ByteString -> Bool
+signedObservation body =
+  case decodeControlPlaneRequest (targetEpochRequestMaximumBytes + 1024) (LazyByteString.fromStrict body) of
+    Right (TargetAuthorityTrustRequest inner) -> case decodeTargetEpochRequest inner of
+      Right (TargetEpochObserveSigned _) -> True
+      _ -> False
+    _ -> False
 
 -- | The client must obtain the trusted Target key from an independently
 -- authenticated, current registry and retain the exact request it sent. This

@@ -6,6 +6,7 @@ module LifecycleAuthorityEpochReadback (lifecycleAuthorityEpochReadbackSuite) wh
 import Control.Exception (AsyncException (UserInterrupt), throwIO, try)
 import Control.Monad (forM_)
 import Data.ByteString (ByteString)
+import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
 import Data.IORef
 import Data.Map.Strict qualified as Map
@@ -22,6 +23,7 @@ import Prodbox.Lifecycle.Authority.EpochPromotion
 import Prodbox.Lifecycle.Authority.EpochTopology
 import Prodbox.Lifecycle.Authority.Genesis
 import Prodbox.Lifecycle.Authority.Migration
+import Prodbox.Lifecycle.Decommission.Frame (FrameDigest (..))
 import TestSupport
 
 lifecycleAuthorityEpochReadbackSuite :: SuiteBuilder ()
@@ -47,6 +49,43 @@ lifecycleAuthorityEpochReadbackSuite =
       (_, final) <- readIORef (retainedState fixture)
       final `shouldBe` apply prepared (ObservePreparedEpochBinding authenticationReadback)
       authorityAggregateAuthenticationEpoch final `shouldBe` authorityEpochGenesis
+
+    it "refuses migration and physical readback after decommission freezes or stops" $ do
+      let (_, decommissioned) = freezeAuthorityForDecommission prepared
+          (_, stopped) =
+            permanentlyStopAuthorityForDecommission
+              (FrameDigest (ByteString.replicate 32 1))
+              (FrameDigest (ByteString.replicate 32 2))
+              decommissioned
+          command =
+            ApplyAuthorityMigration
+              ( ApplyPreparedEpochPromotion
+                  (EpochPromotionRequest 2 topologyDigest (ObservePreparedEpochBinding authenticationReadback))
+              )
+      forM_ [decommissioned, stopped] $ \aggregate -> do
+        fixture <- newFixture aggregate (Right authorityEpochGenesis)
+        serve fixture (ObservePreparedEpochBinding authenticationReadback)
+          `shouldReturn` Just (ReplyConflict, "epoch-binding-readback/decommission-active")
+        readIORef (physicalReads fixture) `shouldReturn` 0
+        readIORef (casWrites fixture) `shouldReturn` 0
+        readIORef (retainedState fixture) `shouldReturn` (1, aggregate)
+        stepAuthorityAdmission aggregate command
+          `shouldBe` (AuthorityAdmissionCommandRefused AuthorityMigrationDuringDecommission, aggregate)
+        stepAuthorityAdmission aggregate BeginAuthorityMigration
+          `shouldBe` (AuthorityAdmissionCommandRefused AuthorityMigrationDuringDecommission, aggregate)
+        snd (stepAuthorityAdmission aggregate ObserveAuthorityEpochPromotion) `shouldBe` aggregate
+        fst (stepAuthorityAdmission aggregate ObserveAuthorityEpochPromotion)
+          `shouldSatisfy` isEpochPromotionObserved
+      fst
+        ( permanentlyStopAuthorityForDecommission
+            (FrameDigest (ByteString.replicate 32 1))
+            (FrameDigest (ByteString.replicate 32 2))
+            stopped
+        )
+        `shouldBe` AuthorityDecommissionStopAlreadyApplied
+      authorityAggregateDecommission stopped `shouldSatisfy` (/= AuthorityServing)
+      fst (freezeAuthorityForDecommission stopped)
+        `shouldBe` AuthorityDecommissionFreezeRefusedAlreadyStopped
 
     it "requires a fresh physical read even for an exact recorded preparation replay" $ do
       fixture <-
@@ -361,3 +400,7 @@ epoch2 = fromJust (authorityEpochFromValue 2)
 
 epoch3 :: AuthorityEpoch
 epoch3 = fromJust (authorityEpochFromValue 3)
+
+isEpochPromotionObserved :: AuthorityAdmissionDecision -> Bool
+isEpochPromotionObserved (AuthorityEpochPromotionObserved _) = True
+isEpochPromotionObserved _ = False

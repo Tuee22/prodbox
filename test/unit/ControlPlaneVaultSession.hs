@@ -56,6 +56,7 @@ import Prodbox.ControlPlane.LifecycleAuthorityAuthentication
 import Prodbox.ControlPlane.RetainedAuthentication
   ( controlPlaneAuthorityEpochPath
   , controlPlaneRequestReplayPath
+  , targetReplayVaultReadMaximumBytes
   )
 import Prodbox.ControlPlane.Route
   ( ControlPlaneRoute
@@ -70,6 +71,10 @@ import Prodbox.ControlPlane.Runtime
   , lifecycleAuthorityRetainedSubmissionCapacity
   , lifecycleAuthoritySubmissionCapacity
   , mkLifecycleAuthorityCoordinates
+  )
+import Prodbox.ControlPlane.TargetMaterialRegistry
+  ( targetSecretIdToken
+  , targetWorkerAuthorizationIds
   )
 import Prodbox.ControlPlane.VaultSession
 import Prodbox.Lifecycle.CheckpointAuthority
@@ -103,6 +108,14 @@ import TestSupport
 controlPlaneVaultSessionSuite :: SuiteBuilder ()
 controlPlaneVaultSessionSuite =
   describe "Sprint 4.50 standing-role cached Vault session config" $ do
+    it "bounds Target replay base64 and the Vault JSON envelope without overflow" $ do
+      targetReplayVaultReadMaximumBytes 0 `shouldBe` Just 131072
+      targetReplayVaultReadMaximumBytes 1 `shouldBe` Just 131076
+      targetReplayVaultReadMaximumBytes 3 `shouldBe` Just 131076
+      targetReplayVaultReadMaximumBytes 4 `shouldBe` Just 131080
+      targetReplayVaultReadMaximumBytes (208 * 1048576) `shouldBe` Just 290936152
+      targetReplayVaultReadMaximumBytes (-1) `shouldBe` Nothing
+      targetReplayVaultReadMaximumBytes maxBound `shouldBe` Nothing
     it "accepts exactly the compiled Vault role for every standing runtime" $
       mapM_ assertStandingRoleBinding standingRoleBindings
 
@@ -206,6 +219,46 @@ controlPlaneVaultSessionSuite =
         `shouldBe` Just VaultKubernetesBatchToken
       fromIntegral awsAdminTargetWorkerMaximumRuntimeSeconds
         `shouldSatisfy` (< credentialProvisionerAuditorMaximumLeaseSeconds)
+
+    it "grants the Target auditor only exact registered trust reads" $ do
+      let policies = vaultReconcilePolicies defaultVaultReconcilePlan
+          documentFor name =
+            case filter ((== name) . vaultPolicySpecName) policies of
+              [policy] -> Text.unpack (vaultPolicySpecDocument policy)
+              other -> error ("expected one policy for " <> show name <> ", got " <> show other)
+          auditor = documentFor "prodbox-target-secret-worker-auditor"
+          controller = documentFor "prodbox-target-secret-controller-auditor"
+      mapM_
+        ( \target ->
+            auditor
+              `shouldContain` ( "path \"secret/data/target-agent/trust/"
+                                  <> Text.unpack (targetSecretIdToken target)
+                                  <> "\" {\n  capabilities = [\"read\"]"
+                              )
+        )
+        targetWorkerAuthorizationIds
+      auditor `shouldNotContain` "secret/data/target-agent/trust/*"
+      controller `shouldNotContain` "secret/data/target-agent/trust/"
+
+    it "restricts Target journal mutation to the coordinating auditor roles" $ do
+      let policies = vaultReconcilePolicies defaultVaultReconcilePlan
+          documentFor name =
+            case filter ((== name) . vaultPolicySpecName) policies of
+              [policy] -> Text.unpack (vaultPolicySpecDocument policy)
+              other -> error ("expected one policy for " <> show name <> ", got " <> show other)
+          worker = documentFor "prodbox-target-secret-worker-auditor"
+          controller = documentFor "prodbox-target-secret-controller-auditor"
+          provisioner = documentFor credentialProvisionerAuditorVaultRole
+          ingress = documentFor "prodbox-external-material-ingress-auditor"
+          targetPath = "secret/data/control-plane/service-sessions/prodbox-target-secret-worker"
+          targetRule capabilities =
+            "path \"" <> targetPath <> "\" {\n  capabilities = [" <> capabilities <> "]\n}"
+      worker `shouldContain` targetRule "\"read\""
+      controller `shouldContain` targetRule "\"create\", \"read\", \"update\""
+      provisioner `shouldContain` targetRule "\"create\", \"read\", \"update\""
+      ingress `shouldNotContain` targetPath
+      ingress
+        `shouldContain` "secret/data/control-plane/service-sessions/prodbox-external-material-ingress"
 
     it "separates the AWS-admin worker data session from its accessor-free terminal signer" $ do
       let policies = vaultReconcilePolicies defaultVaultReconcilePlan

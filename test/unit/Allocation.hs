@@ -471,32 +471,32 @@ allocationSuite =
         Placement.planNamespaceAdmission SubstrateHomeLocal "vscode" C.defaultResourcePlan
           `shouldBe` Right
             ( C.ResourceEnvelope
-                (C.ResourceVector 1880 3888 5728 112640)
+                (C.ResourceVector 780 2480 5728 112640)
                 (C.ResourceVector 2525 5472 11456 112640)
             )
 
       it "Sprint 7.46 sizes the AWS gateway quota for the three emitters and their journal claims" $ do
         -- Independent anchors, not read back from the projection. The gateway
         -- profile is 750m / 256Mi / 512Mi request and 750m / 512Mi / 512Mi limit
-        -- per emitter, Pulsar is 250m / 1024Mi / 1024Mi request and
+        -- per emitter, Pulsar is 50m / 512Mi / 1024Mi request and
         -- 500m / 2048Mi / 4096Mi limit with a 20480Mi claim, and an AWS emitter
         -- claims a 1024Mi retained-EBS journal where a home emitter claims none.
-        --   home: 2 emitters   cpu 2*750+250 / 2*750+500, memory 2*256+1024 / 2*512+2048,
+        --   home: 2 emitters   cpu 2*750+50 / 2*750+500, memory 2*256+512 / 2*512+2048,
         --         ephemeral 2*512+1024 / 2*512+4096, durable 20480
-        --   AWS:  3 emitters   cpu 3*750+250 / 3*750+500, memory 3*256+1024 / 3*512+2048,
+        --   AWS:  3 emitters   cpu 3*750+50 / 3*750+500, memory 3*256+512 / 3*512+2048,
         --         ephemeral 3*512+1024 / 3*512+4096, durable 3*1024+20480
         let gatewayQuota substrate =
               Placement.planNamespaceAdmission substrate "gateway" C.defaultResourcePlan
         gatewayQuota SubstrateHomeLocal
           `shouldBe` Right
             ( C.ResourceEnvelope
-                (C.ResourceVector 1750 1536 2048 20480)
+                (C.ResourceVector 1550 1024 2048 20480)
                 (C.ResourceVector 2000 3072 5120 20480)
             )
         gatewayQuota SubstrateAws
           `shouldBe` Right
             ( C.ResourceEnvelope
-                (C.ResourceVector 2500 1792 2560 23552)
+                (C.ResourceVector 2300 1280 2560 23552)
                 (C.ResourceVector 2750 3584 5632 23552)
             )
 
@@ -573,14 +573,14 @@ allocationSuite =
             merged =
               Right
                 ( C.ResourceEnvelope
-                    (C.ResourceVector 1880 3888 5728 112640)
+                    (C.ResourceVector 780 2480 5728 112640)
                     (C.ResourceVector 2525 5472 11456 112640)
                 )
         vscode SubstrateAws `shouldBe` merged
         vscode SubstrateHomeLocal `shouldBe` merged
         -- The standalone namespace is not a rendered one anywhere: placement
         -- falls back to the profiles declared in it.
-        fmap (C.milli_cpu . C.request) (keycloakAlone SubstrateAws) `shouldBe` Right 1330
+        fmap (C.milli_cpu . C.request) (keycloakAlone SubstrateAws) `shouldBe` Right 630
         keycloakAlone SubstrateAws `shouldBe` keycloakAlone SubstrateHomeLocal
 
       it "renders the canonical seven-field quota spec from one function" $

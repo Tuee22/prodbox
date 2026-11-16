@@ -72,9 +72,11 @@ import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionAggregate
   , AuthorityAdmissionCommand (ApplyAuthorityMigration)
   , AuthorityAdmissionDecision (..)
+  , AuthorityDecommissionState (AuthorityServing)
   , AuthorityMigrationMode (..)
   , activeAuthorityEpoch
   , authorityAggregateAuthenticationEpoch
+  , authorityAggregateDecommission
   , authorityAggregateMigration
   , stepAuthorityAdmission
   )
@@ -117,6 +119,7 @@ data EpochBindingReadbackFailure
   | PhysicalAuthenticationEpochUnobservable
   | PhysicalRetainedEpochMismatch
   | PhysicalPromotionContextMismatch
+  | PhysicalAuthorityDecommissioning
   | PhysicalBindingWrongPhase
   | PhysicalOldWriterAdmitted
   | PhysicalBindingDigestMismatch
@@ -163,11 +166,14 @@ runEpochBindingReadbackProgram
   -> AuthorityAdmissionAggregate
   -> EpochBindingReadbackProgram result
   -> m (Either EpochBindingReadbackFailure result)
-runEpochBindingReadbackProgram backend aggregate program = case program of
-  ReadPreparedPhysicalBinding state binding -> observe state binding (observePrepared state)
-  ReadPromotedPhysicalBinding state binding -> observe state binding (observePromoted state)
-  ReadOldPhysicalWriterRejection state binding rejectedEpoch -> observe state binding (observeOldRejected state rejectedEpoch)
-  ReadPreparedPhysicalBindingAbsence state binding -> observe state binding (observeAbsence state)
+runEpochBindingReadbackProgram backend aggregate program
+  | authorityAggregateDecommission aggregate /= AuthorityServing =
+      pure (Left PhysicalAuthorityDecommissioning)
+  | otherwise = case program of
+      ReadPreparedPhysicalBinding state binding -> observe state binding (observePrepared state)
+      ReadPromotedPhysicalBinding state binding -> observe state binding (observePromoted state)
+      ReadOldPhysicalWriterRejection state binding rejectedEpoch -> observe state binding (observeOldRejected state rejectedEpoch)
+      ReadPreparedPhysicalBindingAbsence state binding -> observe state binding (observeAbsence state)
  where
   observePrepared state epoch = do
     validateCurrentPhase state epoch
@@ -266,22 +272,25 @@ runEpochBindingReadbackProgramWithTargets
   -> AuthorityAdmissionAggregate
   -> EpochBindingReadbackProgram result
   -> m (Either EpochBindingReadbackFailure result)
-runEpochBindingReadbackProgramWithTargets deadline authentication targets aggregate program = case program of
-  ReadPreparedPhysicalBinding state (PendingAcceptedAuthorityBinding substrate) ->
-    fmap
-      (fmap (EpochBindingReadback (PendingAcceptedAuthorityBinding substrate)))
-      (targetQuery state substrate ReadPreparedTargetBinding)
-  ReadPromotedPhysicalBinding state (PendingAcceptedAuthorityBinding substrate) ->
-    fmap
-      (fmap (EpochBindingReadback (PendingAcceptedAuthorityBinding substrate)))
-      (targetQuery state substrate ReadPromotedTargetBinding)
-  ReadOldPhysicalWriterRejection state (PendingAcceptedAuthorityBinding substrate) old ->
-    fmap
-      (fmap (EpochBindingReadback (PendingAcceptedAuthorityBinding substrate)))
-      (targetQuery state substrate (ReadRejectedTargetWriter old))
-  ReadPreparedPhysicalBindingAbsence state (PendingAcceptedAuthorityBinding substrate) ->
-    targetQuery state substrate ReadRetiredTargetBinding
-  _ -> runEpochBindingReadbackProgram authentication aggregate program
+runEpochBindingReadbackProgramWithTargets deadline authentication targets aggregate program
+  | authorityAggregateDecommission aggregate /= AuthorityServing =
+      pure (Left PhysicalAuthorityDecommissioning)
+  | otherwise = case program of
+      ReadPreparedPhysicalBinding state (PendingAcceptedAuthorityBinding substrate) ->
+        fmap
+          (fmap (EpochBindingReadback (PendingAcceptedAuthorityBinding substrate)))
+          (targetQuery state substrate ReadPreparedTargetBinding)
+      ReadPromotedPhysicalBinding state (PendingAcceptedAuthorityBinding substrate) ->
+        fmap
+          (fmap (EpochBindingReadback (PendingAcceptedAuthorityBinding substrate)))
+          (targetQuery state substrate ReadPromotedTargetBinding)
+      ReadOldPhysicalWriterRejection state (PendingAcceptedAuthorityBinding substrate) old ->
+        fmap
+          (fmap (EpochBindingReadback (PendingAcceptedAuthorityBinding substrate)))
+          (targetQuery state substrate (ReadRejectedTargetWriter old))
+      ReadPreparedPhysicalBindingAbsence state (PendingAcceptedAuthorityBinding substrate) ->
+        targetQuery state substrate ReadRetiredTargetBinding
+      _ -> runEpochBindingReadbackProgram authentication aggregate program
  where
   targetQuery
     :: EpochPromotionState
@@ -338,6 +347,9 @@ serveEpochBindingReadbackRequestUsing check runProgram maximumBytes repository b
           (fmap (either (const (Left PhysicalAuthorityUnobservable)) Right) (readAuthorityAdmission repository))
       let aggregate = authorityAdmissionSnapshotState snapshot
       ExceptT (check (Just aggregate))
+      unless
+        (authorityAggregateDecommission aggregate == AuthorityServing)
+        (throwE PhysicalAuthorityDecommissioning)
       state <- maybe (throwE PhysicalPromotionContextMismatch) pure (aggregatePromotion aggregate)
       unless
         ( promotionRequestEpoch request == epochPromotionTargetEpoch state
@@ -421,6 +433,7 @@ failureResponse failure = (status, "epoch-binding-readback/" <> token)
     PhysicalAuthenticationEpochUnobservable -> (ReplyServiceUnavailable, "authentication-epoch-unobservable")
     PhysicalRetainedEpochMismatch -> (ReplyConflict, "retained-epoch-mismatch")
     PhysicalPromotionContextMismatch -> (ReplyConflict, "context-mismatch")
+    PhysicalAuthorityDecommissioning -> (ReplyConflict, "decommission-active")
     PhysicalBindingWrongPhase -> (ReplyConflict, "wrong-phase")
     PhysicalOldWriterAdmitted -> (ReplyConflict, "old-writer-admitted")
     PhysicalBindingDigestMismatch -> (ReplyConflict, "binding-digest-mismatch")

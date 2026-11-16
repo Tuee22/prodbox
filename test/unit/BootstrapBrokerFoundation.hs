@@ -666,6 +666,31 @@ brokerSettingsSuite =
       validateBootstrapBrokerConfig validBrokerConfig {bootstrap_store = duplicateStore}
         `shouldBe` Left BrokerStorageKeysNotDistinct
 
+    it "rejects collisions between authored and derived worker storage keys" $ do
+      let checkpoint = secret_worker_checkpoint_key (bootstrap_store validBrokerConfig)
+          derived =
+            [ transitRotationJournalKeyFromCheckpoint checkpoint
+            , secretWorkerResultKeyFromCheckpoint checkpoint
+            ]
+          setKey =
+            [ \value store -> store {vault_storage_generation_key = value}
+            , \value store -> store {bootstrap_session_fence_key = value}
+            , \value store -> store {prepared_init_envelope_key = value}
+            , \value store -> store {encrypted_init_response_key = value}
+            , \value store -> store {final_unlock_bundle_key = value}
+            , \value store -> store {child_custody_receipt_key = value}
+            , \value store -> store {child_recovery_delivery_key = value}
+            , \value store -> store {root_init_journal_key = value}
+            , \value store -> store {root_session_journal_key = value}
+            , \value store -> store {child_custody_journal_key = value}
+            , \value store -> store {child_recovery_journal_key = value}
+            , \value store -> store {post_unseal_handoff_key = value}
+            ]
+      forM_ derived $ \key ->
+        forM_ setKey $ \update ->
+          validateBootstrapBrokerConfig (mapStore (update key) validBrokerConfig)
+            `shouldBe` Left BrokerStorageKeysNotDistinct
+
     it "decodes the literal mounted Dhall schema end to end" $ do
       result <- decodeBootstrapBrokerConfigDhall validBrokerConfigDhall
       case result of
@@ -868,6 +893,16 @@ brokerAdmissionSuite =
         `shouldBe` Admission.AdmissionRefused Admission.RefuseIdempotencyConflict
       snd (Admission.admitRequest testNow testServiceIdentity testLimits queuedLane changedOperation)
         `shouldBe` Admission.AdmissionRefused Admission.RefuseIdempotencyConflict
+
+    it "admits identical requests under different keys independently" $ do
+      let first = canonicalRequest Request.ReconcileVaultBaseline Request.HttpPost ExpectBody
+          second = withRequestKey "second-identical-request" first
+          (firstQueued, firstTicket) = mustNewAdmission (admitToEmpty first)
+      firstRunning <- mustRightIO (Admission.startAdmission firstTicket firstQueued)
+      let (secondQueued, secondTicket) =
+            mustNewAdmission (Admission.admitRequest testNow testServiceIdentity testLimits firstRunning second)
+      bothRunning <- mustRightIO (Admission.startAdmission secondTicket secondQueued)
+      Admission.activeAdmissions bothRunning `shouldBe` 2
 
     it "cancels only running tickets and permits the exact request to retry" $ do
       let request = canonicalRequest Request.EnsureVaultUnsealed Request.HttpPost ExpectBody

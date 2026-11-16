@@ -17,9 +17,9 @@
 --     WITHOUT extension — re-loading it after downtime yields the SAME absolute
 --     deadline, and downtime is charged against it, never reset.
 --
--- All arithmetic is non-wrapping 'Natural' micros; the module performs NO clock
--- read (it is 100% pure). Serialization is through the 'Natural' projections
--- (matching the Lease wire pattern), never an orphan instance on 'AuthorityTime'.
+-- All arithmetic is non-wrapping 'Natural' micros. The acceptance helper
+-- sequences caller-supplied observations; it owns no physical clock. Serialization
+-- uses 'Natural' projections, never an orphan instance on 'AuthorityTime'.
 module Prodbox.ControlPlane.AuthorityClock
   ( -- * Serializable authority instant (reuses Lease.AuthorityTime)
     AuthorityInstant
@@ -50,6 +50,8 @@ module Prodbox.ControlPlane.AuthorityClock
     -- * Stored operation deadline (survives restart WITHOUT extension)
   , OperationDeadline
   , deriveOperationDeadline
+  , OperationAcceptanceRefusal (..)
+  , observeOperationDeadline
   , operationDeadlineInstant
   , operationDeadlineMicros
   , operationDeadlineFromMicros
@@ -66,15 +68,18 @@ import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.Deadline
   ( Deadline
+  , DeadlineObservation (..)
   , MonotonicInstant
   , RemainingDuration (RemainingDuration)
   , deadlineAtOffset
+  , deadlineObservation
   , tightenDeadline
   )
 import Prodbox.Lifecycle.Lease
   ( AuthorityDuration
   , AuthorityTime
   , addAuthorityDuration
+  , authorityDurationFromMicros
   , authorityTimeFromMicros
   , authorityTimeMicros
   )
@@ -193,6 +198,39 @@ newtype OperationDeadline = OperationDeadline AuthorityInstant
 deriveOperationDeadline :: AuthorityInstant -> AuthorityDuration -> OperationDeadline
 deriveOperationDeadline acceptedAt budget =
   OperationDeadline (addAuthorityDuration acceptedAt budget)
+
+data OperationAcceptanceRefusal
+  = OperationAcceptanceClockUntrusted
+  | OperationAcceptanceRequestExpired
+  deriving stock (Eq, Show)
+
+-- | The authority sample precedes the monotonic budget sample, so time spent
+-- obtaining it cannot extend a persisted deadline. Use the lower edge of
+-- its uncertainty interval; this function does not validate the source.
+observeOperationDeadline
+  :: (Monad m)
+  => m AuthorityClockObservation
+  -> m MonotonicInstant
+  -> Deadline
+  -> m (Either OperationAcceptanceRefusal OperationDeadline)
+observeOperationDeadline observeClock observeMonotonic requestDeadline = do
+  before <- observeMonotonic
+  case deadlineObservation before requestDeadline of
+    DeadlineExpired -> pure (Left OperationAcceptanceRequestExpired)
+    DeadlineOpen _ -> do
+      clock <- observeClock
+      monotonic <- observeMonotonic
+      pure $ case (clock, deadlineObservation monotonic requestDeadline) of
+        (_, DeadlineExpired) -> Left OperationAcceptanceRequestExpired
+        (AuthorityTimeTrusted acceptedAt uncertainty, DeadlineOpen (RemainingDuration remaining)) ->
+          case authorityDurationFromMicros remaining of
+            Left _ -> Left OperationAcceptanceRequestExpired
+            Right duration ->
+              let acceptedMicros = authorityTimeMicros acceptedAt
+                  uncertaintyMicros = clockUncertaintyMicros uncertainty
+                  lowerBound = acceptedMicros - min acceptedMicros uncertaintyMicros
+               in Right (deriveOperationDeadline (authorityTimeFromMicros lowerBound) duration)
+        (_, DeadlineOpen _) -> Left OperationAcceptanceClockUntrusted
 
 operationDeadlineInstant :: OperationDeadline -> AuthorityInstant
 operationDeadlineInstant (OperationDeadline instant) = instant

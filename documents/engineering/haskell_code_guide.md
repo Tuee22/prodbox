@@ -1134,6 +1134,11 @@ hashSuffix input = T.take 8 . T.pack . show $
 
 ## Error Handling
 
+At an interpreter boundary, translate synchronous transport or decoding failures into domain
+errors while allowing asynchronous cancellation to propagate. The native object-store client
+must not turn cancellation into an ordinary unavailable result. Interruption of a dispatched
+write still leaves its remote outcome unresolved until read-back or another valid settlement proof.
+
 Define domain-level errors as ADTs:
 
 ```haskell

@@ -1334,6 +1334,10 @@ deriveAttemptDeadline
 `deriveAttemptDeadline` accepts only `AuthorityTimeTrusted` within the configured uncertainty
 bound. This makes the comparison between serialized authority time and process-local monotonic time
 an explicit, conservative boundary rather than an implicit comparison between unlike clocks.
+This early safe-use cutoff is not proof that another owner has expired. Bootstrap fence retirement
+requires the trusted observation's lower bound, `observedAuthorityTime - uncertainty`, to reach the
+predecessor's durable deadline. Readings in the intervening uncertainty interval keep the fence
+occupied. Both rules depend on a justified clock bound and neither proves a remote effect settled.
 
 **Landed (Sprint `1.62`, 2026-07-18).** This algebra is realized across two disjoint modules. The
 process-local monotonic layer is `src/Prodbox/ControlPlane/Deadline.hs`: `Deadline` is opaque and
@@ -1350,6 +1354,157 @@ only ever advances; `classifyAuthorityClock` is fail-closed (a reading below the
 (now + uncertainty), only ever shrinking) and cannot be reset by a restart or a rolled-back clock.
 The refusal/regression/restart tables are in `test/unit/ControlPlaneAuthorityClock.hs` and the
 tighten-only cancellation properties in `test/unit/ControlPlaneDeadline.hs`.
+
+Bootstrap Broker checkpoint and effect authorization samples the local monotonic and authority
+clocks after its store and Lease observations, so those observations' elapsed time is charged
+before the permit decision. Broker acquisition also samples again after store observation and
+after a retirement CAS. To derive the initial durable deadline, it reads the authority clock before
+sampling the remaining monotonic budget and uses the lower edge of the authority uncertainty
+interval. This charges clock-read delay and uncertainty rather than extending the operation's
+original budget. If the request deadline has elapsed before Lease ensure starts or before
+its response arrives, acquisition refuses and retains the durable fence for recovery: the CAS or
+ensure may already have taken effect. Its current authority-clock adapters still label local wall time trusted
+with a fixed 1 ms uncertainty and do not establish synchronization error or a retained clock
+high-water mark. Sprint `2.147` owns that remaining gap; re-sampling does not establish clock
+trust or settle an effect already issued.
+The private production acquisition composition accepts an explicit clock observation source.
+Its current runtime binding still supplies the unvalidated wall-clock adapter; the parameter
+itself provides no synchronization or persistence guarantee and does not expose a new
+acquisition entrypoint.
+The Broker has a retained-clock admission transaction for an already-established,
+rollback-protected store identity. It requires an exact revision CAS and read-back before
+admitting a sample. The admitted reading is opaque and re-samples its captured elapsed-clock
+action at each use, widening uncertainty under explicit rate and time-scale movement bounds. It
+also checks the separate process-monotonic deadline and refuses a sample before admission
+completed. It rejects an invalid elapsed-clock rate before store access. The source and elapsed
+clock must establish those bounds, and the store must supply
+linearizable, non-reused revisions and rollback protection. The transaction neither creates nor
+migrates a clock identity and is not connected to the current runtime or MinIO store. An
+interval-to-raw-sample conversion rounds outward but does not authenticate its input. Those
+contracts and the source remain open in Sprint `2.147`.
+Linux `timerfd` cancellation cannot alone prove clock continuity: concurrent opposing changes
+can leave no cancellation for an armed descriptor. Sprint `2.147` records the guest control and
+the unresolved source, ordering and retained-history requirements.
+The signed-time interval arithmetic is a separate pure helper: it widens a server claim by the
+entire sampled request interval and a caller-supplied elapsed-clock rate bound, including a
+microsecond for sample rounding. It also requires explicit caller-supplied bounds on the time
+scale's forward rate, cumulative forward steps and net backward movement: a signed radius at one
+instant does not establish those later bounds. It requires an elapsed clock that advances during
+suspend and meets its rate bound throughout the interval. It authenticates neither the claim nor its source,
+does not establish those clock assumptions, and is not connected to production authority time.
+Its elapsed samples use a distinct type from process-monotonic request deadlines, because a
+suspend-aware clock can have a different epoch and rate. That separation does not itself validate
+either clock.
+The Linux elapsed-sample reader uses `CLOCK_BOOTTIME` through the pinned Haskell `clock` package,
+which includes suspended time; it rejects invalid or negative samples. This supplies no physical
+rate bound, namespace continuity or admission evidence by itself.
+An RFC 10049 exchange boundary now generates a fresh nonce, verifies the signed response and
+Merkle proof, and applies the interval arithmetic within a locally bounded wait. It returns an
+opaque, process-local reading retaining its elapsed sample, original clock action and deadline;
+each interval read re-samples using that action and ages it under the supplied bounds. The action
+must continue to read the same continuous clock domain. A returned interval is still untrusted and
+must not be reused as a fresh reading. This boundary has no selected or
+authenticated operational server, no validated elapsed clock, no retained admission, and no
+production authority-time binding. Its timeout requires an interruptible transport and does not
+prove packet dispatch timing or remote settlement. Sprint `2.147` owns those remaining steps.
+Its native UDP interpreter resolves the endpoint, uses a connected datagram socket, limits the
+response read to one byte beyond the request length, and closes the socket on exit. Address errors
+can fall through to another resolved address; a silent first address may consume the whole query
+deadline. It does not establish DNS availability, server accuracy or a clock guarantee.
+The Lease decision model can carry separate local safe-use and certain-expiry deadlines. It
+refuses an inverted interval and treats the interval between those deadlines as unobservable for
+both use and retirement. The current Kubernetes decoder still produces the earlier single-deadline
+observation; it has not established the writer and observer uncertainty needed to produce the
+bounded form. A separate manifest can carry the writer bound with the fence identity, and the
+bounded decoder requires the Lease annotation to match the independently supplied writer bound
+before computing both cutoffs. The calculation accounts for the sampling bracket and MicroTime
+truncation and rounded monotonic sampling. Its caller must authenticate the writer evidence and establish both bounds, time-source
+continuity and applicable clock-rate assumptions. The live writer and reader still use the legacy
+format. The current legacy reader refuses an annotated Lease rather than treating it as a
+single-deadline observation; older binaries can still ignore the annotation. The bounded decoder
+and decision model are not a production clock or Lease-expiry guarantee.
+The current legacy renewal path refuses to replace a Lease carrying writer-clock-bound metadata,
+so it does not drop that field through its resource-versioned update. Older binaries and writes
+already dispatched are outside that guard; bounded renewal and mixed-version fencing remain open.
+When Lease creation conflicts, the Broker validates the observed Lease before a resource-versioned
+replacement: a newer generation or a different binding at the same generation is refused. An older
+generation in the same storage generation can be replaced after fence acquisition, and an exact
+binding can be resumed. A different storage generation is currently refused, including legitimate
+reset handoffs until durable predecessor evidence exists. Numeric generation order is scoped to one
+retained store; matching storage-generation text does not establish a common lineage. The guard also does not establish the
+expiry of an observed Lease or prevent an old caller from recreating an absent one. The remaining
+handoff work is tracked in [Sprint 2.147](../../DEVELOPMENT_PLAN/phase-2-gateway-dns.md#sprint-2147-validate-bootstrap-broker-clock-observations).
+
+Worker initialization seal-status reads derive a response timeout from the sampled remaining
+permit, apply an outer timeout to the read, and refuse a result observed after permit expiry.
+The initialization call samples its effect-permit deadline before invocation. A response that
+arrives late is retained in memory for the publication path because it may contain the only
+encrypted recovery material. Publication still requires a fresh store permit; retaining the
+response in memory is not durable custody when that permit is unavailable.
+The worker unseal path uses the same budget for its status read and share submissions; a missing
+or late response leaves the submission unconfirmed and stops further shares in that attempt.
+The pre-dispatch sample does not bound a subsequent scheduling pause, and timeout or cancellation
+does not establish that a remote mutation was absent. A later attempt must observe state again;
+that observation alone does not prove every possible partial replay safe.
+
+The Transit worker also derives a local HTTP wait budget from each effect permit for login,
+key reads, rotation, and revoke. A timed-out or late rotation is unconfirmed: the remote server
+may have applied it. The versioned journal admits dispatch only after the caller's own conditional
+claim was applied and read back; an existing claim, a matching conflict, and legacy records do not
+grant a dispatch right. An unconfirmed claim remains unresolved even if the observed Vault version
+has advanced. A supported settlement and recovery path remains open in Sprint `2.147`; a local
+timeout is not a remote settlement witness.
+The worker's store and Vault permit observations, the controller's checkpoint-permit observation,
+and the Broker's fence-use observation use a local deadline around their fence, Lease and clock
+reads and permit decisions. Fence acquisition also limits its initial clock and store observations;
+that observation guard does not cover its later conditional writes. Acquisition and retirement
+plans carry local deadlines to the store, which limits its interruptible wait and uses
+deadline-aware conditional PUTs. A timed-out CAS is unobservable even if the remote write applied.
+Retirement and reacquisition sample monotonic time after their authority-clock observation and
+limit that observation by the request deadline. These checks do not establish clock trust or
+settle a request already dispatched to Kubernetes or the object store.
+Fence release checks the permit's mutation, storage generation, fence generation, owner, action,
+request and operation deadline against the exact expected fence before accessing the store. It
+limits the interruptible local wait and conditional PUT by the permit deadline; a timed-out write
+remains unconfirmed and may have applied. Neither check settles a dispatched write.
+The checkpoint callback runs after that observation guard: a timeout on observation does not
+discard the result of a callback that has already started. These guards do not prove that a remote
+request has settled or supply a trusted clock bound.
+Kubernetes API calls apply their local deadline to projected-token acquisition and request setup as
+well as the HTTP exchange. If a mutating request was dispatched, an elapsed local wait leaves its
+remote outcome unconfirmed.
+General Bootstrap Broker store create and CAS operations carry the mutation permit deadline into
+the conditional-write boundary. General deletes and the final-bundle promotion pre-read also bound
+their local waits; the native conditional delete checks the deadline before its HTTP call.
+Permit-bound conditional PUTs require an existing listable bucket, rather than creating a missing
+one. Generation advance and worker-result publication bound their local reads and writes by the
+permit. Publication checks the request's fence fields against the permit before accessing the
+store, and the controller bounds the complete result-polling loop by the effect deadline. A timeout
+leaves a dispatched write or delete unconfirmed, and a pre-call check does not prove atomic dispatch
+or settlement.
+Bootstrap Broker configuration validates uniqueness across both authored object keys and the two
+fixed worker keys derived from the checkpoint key. A configuration that aliases a derived result or
+Transit journal coordinate with another retained object is refused before the store is opened.
+After the Broker store boundary opens, reading its Vault storage generation refuses a missing
+record rather than creating a replacement. A one-shot worker opens only an existing, listable
+store and generation; it cannot create the bucket or generation during startup. When the Broker
+starts with no generation, it also refuses creation if the fence record is present or cannot be
+decoded or observed. Fence absence is not a genesis witness: other records may have survived,
+and old writers or in-flight operations may race that check. The complete retained-genesis and
+mixed-version protocol remains tracked in Sprint `2.147`.
+The fresh claim is process-local and consumed once before the allowlisted dispatch. Only a
+successful Vault response followed by an exact read-back under matching effect permits produces
+the opaque witness accepted by journal completion; the witness retains the originating store and
+Vault settings. These observations do not prove settlement of a different in-flight request or
+validate the clock used to issue the permits.
+
+The Transit worker obtains a request-bound store permit before its initial journal observation.
+That read and journal planning and completion limit the interruptible local wait for reads and
+conditional create/CAS, including bucket preflight and read-back, to the sampled remaining
+store-mutation budget. They also recheck the deadline after the operation and before the
+conditional PUT. A timeout or late result returns unavailable because the write may have applied.
+These checks do not bound a scheduling pause or uninterruptible work, establish that a dispatched
+PUT has stopped, or make an unchanged Transit key version proof that an earlier rotation settled.
 
 ## 5. Lifecycle Authority Aggregate
 
@@ -1568,6 +1723,126 @@ prelude replies. Its encoded ceiling is **64 MiB**, with `3 * 64 + 48 = 240 MiB`
 Replay codec **v19** reads canonical v2–v18 entries without clearing or reinterpreting them; stored
 capacity may widen, response limits may narrow only when every retained response still validates,
 and skew remains exact. Current-version limits must match exactly.
+
+An uninstalled staged successor can read through the exact declared v19 predecessor limits,
+including that decoder's supported legacy forms, and rebind the complete retained projection to a
+non-shrinking capacity and unchanged clock skew. A narrower response ceiling is allowed only when
+every retained response validates. It writes v20 with exact successor limits; v19 readers refuse
+that version. Selecting this codec does not fence older writers or make the migrated projection
+durable: the caller must use the exact-revision CAS, establish writer fencing and recovery, and
+admit the full encoded and in-memory representations before rollout. No new production capacity
+follows from the codec alone.
+
+The uninstalled guarded migration observes the exact existing object and never initializes a
+missing replay ledger. It conditionally replaces the observed revision, then requires the exact
+successor bytes and returned revision on read-back. A lost response can recover only from the exact
+successor bytes at a different revision; a conflict is returned without retry. An already-current
+result is a point observation, not a completion receipt. The Model-B lease check is a cross-object
+guard, not an atomic fence on old unguarded writers. The caller must independently fence those
+writers, authenticate the adapter and guard, and bound the entire operation before using its result.
+The Lifecycle Authority uses a Model-B replay object, while the Target Agent uses its
+role-specific Vault KV-v2 replay object. The Model-B replacement cannot migrate the Target
+object: Target migration requires its own exact Vault path, version-conditional write and
+independent read-back, together with an independently established old-writer fence.
+An uninstalled Target-specific candidate selects that exact role path and Vault KV-v2 mount,
+refuses missing or malformed state, and attempts at most one version CAS. A successful or
+ambiguous write is accepted only on independent exact-field read-back at the next version;
+an already-current observation is not a completion receipt. The Vault read bounds the HTTP
+body to base64 expansion of the encoded ceiling plus 128 KiB for the JSON envelope. Responses
+with excessive metadata or escaping are refused as unobservable. This bound is not a decoded
+heap or complete transport-memory proof. The CAS response has a separate 128 KiB bound;
+complete UTF-8 Vault errors retain the existing conflict/refusal classification, while oversized,
+malformed and unavailable replies remain unobservable. The Vault session binding does not
+establish the old-writer fence, a bounded request representation, a deadline, or memory admission.
+The write acquires a session token once and does not use the shared helper's automatic 403
+re-login and retry: its one-CAS bound applies to the HTTP effect, not merely to the abstract
+store call. Token acquisition failure is unobservable. The read retains the normal session
+retry policy, which must be included in its separate traffic and resource accounting.
+The standing Target identity currently uses a shared Kubernetes service-account and Vault
+role with service tokens. Revoking a cached token alone cannot prove a writer fence because
+the old process can reauthenticate. Physical quiescence must also exclude old-identity
+re-authentication across successor admission and settle already-running Agent and worker
+effects; observing token absence alone does not prove those conditions.
+The materializer's data write uses KV version CAS, but its custom-metadata write is unconditional.
+An old worker can read its own data version, pause, then overwrite a successor's metadata after
+that successor advances the data. A later metadata readback mismatch detects the divergence only
+after the overwrite. The old-writer fence must also settle these already-started writes, or a
+replacement publication protocol must prevent the stale write atomically.
+Before using the generation, the materializer refuses an explicit metadata-version binding that
+does not match the observed current version. This protects that subsequent decision but does not
+undo or prevent a stale metadata write; legacy metadata without a binding still needs migration.
+The Vault client also provides a metadata read with a caller-supplied response-body ceiling.
+Crossing that ceiling, including on a 404 response, is unobservable rather than evidence of
+absence. A caller must establish its own bound for the retained version history; this API does
+not set a new global limit or make the candidate receipt protocol available for rollout.
+For a dispatched one-shot Target worker, the coordinator requests deletion and observes
+the exact Job/Pod absent before releasing its service-session lane. Failure to observe
+absence retains the lane. API absence is one required observation, not proof that a
+partitioned process or an already-sent Vault login has stopped; the retained recovery and
+physical fencing program must close those remaining conditions.
+An external worker dispatch may start only after its own acquisition CAS is acknowledged;
+observing the same journal state after a failed reply cannot distinguish the winner. An
+ambiguous predecessor remains occupied until its exact workload and credential recovery
+can be proven, rather than being retired through an accessor scan alone.
+An observation or attestation failure, preparation refusal, lost acquisition reply or
+interrupted preparation does not authorize the caller to delete the observed Job or Pod:
+another caller may own the same workload. The retained recovery program must resolve that
+ownership and retire the exact workload, including Jobs created before a journal entry.
+After dispatch begins, a failed or cancelled attach leaves the lane occupied even if the
+API reports the Job and Pod absent. A positively acknowledged worker completion, or a
+failure before dispatch, permits the normal post-retirement session cleanup path.
+Before creating a Target Job, the coordinator records its deterministic Job name, operation
+digest and fence in a version-8 prepared session journal. A second acknowledged CAS and exact
+read-back mark creation issued before authorizing it. Read-only image observation and bounded
+manifest rendering happen while the reservation is prepared; the resulting manifest is bound
+to the signed request and Job name. Recovery can release only a prepared
+reservation, retaining its fence. The issued state uses the existing version-7 reservation
+shape and remains occupied if its outcome is ambiguous. It then binds the observed Job name/UID, Pod name/UID, service-account UID
+and complete signed-permit attempt preimage to that reservation. The journal validates those
+fields and recomputes the attempt digest. Before attach, the coordinator records dispatch as
+issued; only acknowledged worker completion permits the issued state to settle.
+The coordinator reads its injected authority clock before and after create issuance, before
+Pod attestation, and before and after dispatch issuance. It refuses an unavailable or
+regressing observation and a reached intent deadline; permit verification uses the fresh
+observations. Failure after an issuance retains its ambiguous journal state. These checks
+do not bound an effect after its final sample or establish physical settlement. The current
+production source reads local wall time without an uncertainty bound; per-invocation
+non-regression does not establish issuer-clock accuracy or a cross-restart high-water mark.
+Before its
+initial role-wide auditor cleanup, the worker verifies the signed frame against the current
+Target trust and reads the exact issued journal binding. The auditor can read only registered
+Target trust paths for this check; its reconciled policy reads but does not write the Target
+session journal. The reconciled external-material auditor policy has no Target journal grant.
+The credential-provisioner auditor can
+still write that journal because it also coordinates Target workers. These auditors retain
+accessor-administration capabilities, so the policy narrowing does not fence their effects.
+After each worker accessor inventory, the worker re-reads its exact issued journal binding
+before that inventory may drive revocation. An unavailable or different binding refuses the
+inventory. This protects neither a revoke already issued from an earlier inventory nor a stale
+legacy worker, and it does not establish accessor uniqueness across generations. These checks
+do not fence the auditor-login recovery path, and their Vault readers are not yet
+response-bounded. The worker's projected token, Pod UID and Pod name are read through opened,
+nonblocking regular-file descriptors; symlinks to regular projected files remain supported. The
+raw UTF-8 byte ceilings derive from their existing character limits before content validation,
+with two additional raw characters allowed for Pod-identity line endings. This does not certify
+the worker's combined memory or deadline budget. After exact Job/Pod deletion and absence observations, the coordinator records retirement against the same
+workload identity. Session cleanup requires that retirement, refuses an issued state, and
+conflicts with a later dispatch transition. Cleanup claims an exclusive nonce-bound owner before
+role-wide audit; only that owner can advance and release the lane. Versions 1 through 6 remain
+readable; release retains version 7 so older readers cannot reuse the lane. An abandoned cleanup
+owner whose audit is unfinished still requires a physical fence and recovery. A completed audit
+recorded as `CleanupProven` can be released by an exact binding-and-owner CAS without rerunning
+the audit; a delayed former owner cannot release a newer reservation. A new coordinator may claim an unclaimed
+current-format retirement, re-observe exact Job/Pod UID absence, and audit/release the lane before
+requiring a new invocation with fresh authority and time evidence. Failure to observe leaves that claim occupied. This path does not
+recover unfinished dispatches, issued pre-create reservations, owners with unfinished audits or legacy
+records, and it does not establish the old-writer physical fence. Occupied older records remain unresolved until
+their exact ownership and execution state are independently recovered. The version-3 evidence is a recovery input, not a cleanup permit: exact
+physical observations and settlement of in-flight effects are still required.
+Prepared Target trust rows reject fresh worker authorization reads, but an existing worker
+may already hold a verified authority and attestation. A row readback therefore cannot
+stand in for settling and physically fencing in-flight worker effects; both observations
+must be joined to the retained cutover before admitting the successor.
 
 Descriptor-bound cleanup claim, primary, begin and complete transitions return a bounded metadata
 acknowledgement: run identity, committed descriptor digest and canonical run-state digest. The
@@ -1809,6 +2084,12 @@ the scan passes over it because the stable-zero proof rests on fresh inventories
 only the independent absence proof closes the session. Tokens, accessors, journal keys, Vault
 responses, operation identifiers, and receipt values cannot enter this diagnostic, and the
 classification changes no session, delivery, cleanup, completion, or receipt behavior.
+The Bootstrap Broker's worker-session audit uses an independently validated accessor-free,
+non-renewable batch auditor. Once the worker subject and any tracked invalid auditor accessors
+have passed stable-zero checks, it returns that audit result without requiring the batch token to
+revoke itself: Vault does not support batch-token revoke-self. The auditor remains usable until
+its bounded lease expires. This does not establish settlement of a worker request already accepted
+by Vault, or repair the separate Transit worker session and receipt path.
 For journal unavailability, binding allocation remains its own stage. After allocation, a closed
 two-state latch records only whether the worker action entry was observed. The terminal therefore
 distinguishes pre-action acquisition from post-entry finalization without recording a timestamp,
@@ -4115,6 +4396,26 @@ bounded canonical prefix inside the existing trust request and an appended respo
 all legacy wire indices. Ordinary clients explicitly refuse staging responses. Observation uses a
 fresh nonce so a cached mutation receipt cannot masquerade as a current physical binding fact.
 
+The opt-in authenticated Target observation uses a distinct append-only request form. A staged
+handler selects the signed response for that form and retains the legacy response for the earlier
+observation form; a signing failure cannot fall back to an unsigned response. A legacy handler
+refuses the new request, and both observation forms require fresh nonces. The response signer
+accepts only the signed-observation request, never a mutation or legacy observation. A bounded
+composition applies the verified request deadline to observation, signing and closing clock read;
+an unavailable or expired clock and a timed-out signer refuse without an unsigned fallback. The
+caller supplies a locally bounded opening clock, independently bounds any cancellation-resistant
+effect, and remains responsible for response delivery under the same deadline. This wire negotiation
+does not itself authenticate the signing-key source, attest a physical Agent, fund
+replay and response costs, or establish a deployed rollout. Production activation and current
+evidence remain in [the development plan](../../DEVELOPMENT_PLAN/README.md#resume-here).
+
+For one uninterrupted successful coordinator pass, each Target binding query reads the complete
+authorization inventory twice. The schedule derives per-substrate readbacks from the actual
+binding and old-writer projections: with the current nine coordinates, completion from prepared
+requires 72 row reads per substrate, completion from frozen requires 36, and pre-commit retirement
+requires 18. This term excludes physical mutations, retries, transport refresh, overlapping
+operations and all other replay traffic; it is not a complete capacity or admission bound.
+
 Physical Target binding observations cover the shared complete worker authorization inventory,
 including operation-only coordinates. An explicit substrate/Agent registration selects each
 authenticated transport; an unavailable registration cannot select a different substrate. Two
@@ -4395,6 +4696,16 @@ its registered remote peer/adapters and the remaining physical placement proof r
 | Prepared-binding absence readbacks missing | Resume exact prepared-binding retirement and positively read back every declared binding, including a lost creation response. |
 | Incomplete legacy projection imports or coarse compatibility activation | Complete the frozen import/topology program and use staged promotion; compatibility labels cannot open admission. |
 | Invalid or oversized topology/request/retained state | Preserve state and correct the bounded canonical plan or use its registered retained-state recovery; never shrink required scope or increase a limit to admit it. |
+| `migration-admission-refused:during-decommission` or `epoch-binding-readback/decommission-active` | Preserve the decommission freeze and resume the exact registered decommission export or external receipt recovery. A permanently stopped Authority never resumes migration or reopens. |
+| `ReplayMigrationMissing` | Preserve admission and restore the exact admitted replay ledger from its verified retained source; never seed an empty replacement. |
+| `ReplayMigrationCorrupt` or `ReplayMigrationUnsupportedVersion` | Preserve state and restore or upgrade from the exact verified source and supported codec. Do not rewrite unknown or corrupt bytes. |
+| `ReplayMigrationLimitsInvalid`, `ReplayMigrationBudgetExceeded` or `ReplayMigrationResponseInvalid` | Re-observe predecessor limits and retained responses, then admit a funded successor that preserves them. Do not truncate entries or silently widen limits. |
+| `ReplayMigrationConflict` or `ReplayMigrationReadbackChanged` | Preserve both revisions and re-observe the exact object and writer fence before retrying the registered migration. |
+| `ReplayMigrationUnobservable` | Preserve the fence and re-observe the exact object; a lost or unavailable reply alone proves neither a write nor its absence. |
+| `TargetReplayMissing` or `TargetReplayInvalid` | Preserve the Target fence and restore or inspect the exact admitted Vault replay object and declared predecessor limits; never initialize an empty ledger or truncate retained responses. |
+| `TargetReplayConflict` or `TargetReplayReadbackChanged` | Preserve the fence and re-observe the exact Vault path and version before resuming the registered transition. |
+| `TargetReplayWriteRefused` or `TargetReplayUnobservable` | Preserve the fence; repair the authenticated Vault access or observation and re-observe the exact object. An unavailable reply does not prove the write failed. |
+| `signed-observation-refused` | Preserve the current epoch fence. Restore the Target clock and exact authorized signer or issue a fresh observation within the original enclosing work deadline. A signing failure or timeout never permits an unsigned substitute. |
 | `epoch-binding-readback/unsupported-binding` | Preserve the freeze; compose and validate the exact role-owned physical adapter before resuming this binding. A caller echo cannot bypass it. |
 | `epoch-binding-readback/authority-unobservable` or `authentication-epoch-unobservable` | Restore the existing retained-store observation and retry the same request. No missing or unreadable result is absence. |
 | `epoch-binding-readback/retained-epoch-mismatch`, `context-mismatch`, `wrong-phase` or `binding-digest-mismatch` | Re-observe the exact aggregate and physical coordinate, then resume the matching epoch/topology and phase. Stale prepared targets require the declared retirement or greater-epoch recovery. |

@@ -18,6 +18,10 @@ Clean-room sequencing, completion status, remaining work, and cleanup ownership 
 - `prodbox.cabal` defines the Haskell library, the `prodbox` executable, and the Haskell test
   suites under `test/`.
 - `cabal.project` defines the repository Cabal package set.
+- The Linux signed-time elapsed-sample reader directly pins `clock ==0.8.4`; its `Boottime`
+  implementation maps to `CLOCK_BOOTTIME` and propagates clock-read errors. Changing the pin
+  requires reviewing that mapping and error behavior. Reading it does not establish a physical
+  rate bound, clock identity, or authority-time trust.
 - The canonical closed-data token program directly depends on `primitive ==0.9.1.0`.
   Its storage accounting uses that version's `ByteArray` representation alongside the selected
   CBOR writer. The direct token comparator also uses the selected Text UTF8 layout and positive

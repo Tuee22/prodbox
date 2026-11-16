@@ -177,6 +177,9 @@ identity mismatch fields and typed Pod/API observation causes while keeping comp
 provider details and parser bodies private. Startup admission, worker effects and exact cleanup
 retain their existing predicates and budgets; diagnostic closure supplies no semantic repair
 or deployment qualification.
+Sprint `2.147` owns validated Bootstrap Broker clock observations, uncertainty and
+cross-restart regression protection; the existing production adapters' fixed 1 ms assertion
+is not a measurement of synchronization error.
 Sprint `3.48` owns home Vault detection/rebinding of an unlinked retained mount before Broker
 initialization; ordinary reconcile never resets or deletes Vault's retained storage.
 `Prodbox.Infra.VaultRetainedMount` binds controller, Pod, claim, volume, exact Node UID and
@@ -187,6 +190,10 @@ The Tier-0 generator, sibling drift gate and test harness share one exact recogn
 for unauthored templates. Its only variable projection is the typed host-capacity vector;
 the complete text must equal the canonical rendering for that vector. It grants no deployment
 identity or runtime fallback. Sprint `1.95` owns adoption and validation.
+Sprint `1.100` closed capacity-status provenance: configured allocations and resolved storage
+roots are used in operator-visible status, and missing configuration is reported as unavailable.
+Sprint `1.101` closed native object-store cancellation propagation at its synchronous exception boundary;
+an interrupted dispatched write still requires independent settlement.
 
 The home MinIO bootstrap owns recovery of an obsolete unready `minio-0` Pod after its
 StatefulSet selects the verified source image. Controller and Pod observations bind the

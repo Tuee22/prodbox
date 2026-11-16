@@ -386,15 +386,18 @@ registerSecretWorkerBoundary boundary =
               createSecretWorkerWorkload driver `seq`
                 observeSecretWorkerAttestation driver `seq`
                   discardUnreceiptedSecretWorker driver `seq`
-                    withSecretWorkerCheckpointPermit driver `seq`
-                      EngineSecretWorker.readSecretWorkerCheckpoint driver `seq`
-                        EngineSecretWorker.createSecretWorkerCheckpoint driver `seq`
-                          EngineSecretWorker.casSecretWorkerCheckpoint driver `seq`
-                            revokeSecretWorkerSession driver `seq`
-                              observeSecretWorkerExit driver `seq`
-                                deleteSecretWorkerPod driver `seq`
-                                  observeSecretWorkerAbsence driver `seq`
-                                    workerBindings
+                    discardUnreceiptedSecretWorkerBefore driver `seq`
+                      observeAuthoritativeRecoveryBefore driver `seq`
+                        withSecretWorkerCheckpointPermit driver `seq`
+                          withSecretWorkerCheckpointPermitBefore driver `seq`
+                            EngineSecretWorker.readSecretWorkerCheckpoint driver `seq`
+                              EngineSecretWorker.createSecretWorkerCheckpoint driver `seq`
+                                EngineSecretWorker.casSecretWorkerCheckpoint driver `seq`
+                                  revokeSecretWorkerSession driver `seq`
+                                    observeSecretWorkerExit driver `seq`
+                                      deleteSecretWorkerPod driver `seq`
+                                        observeSecretWorkerAbsence driver `seq`
+                                          workerBindings
 
 registerPhysicalBoundary
   :: ( forall operation result

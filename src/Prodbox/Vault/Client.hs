@@ -69,8 +69,10 @@ module Prodbox.Vault.Client
   , defaultInitRequest
   , bootstrapAction
   , vaultSealStatus
+  , vaultSealStatusWith
   , vaultInitEncrypted
   , vaultSubmitUnseal
+  , vaultSubmitUnsealWith
   , vaultObserveGenerateRoot
   , vaultStartGenerateRoot
   , vaultSubmitGenerateRootShare
@@ -78,7 +80,10 @@ module Prodbox.Vault.Client
   , vaultListTokenAccessors
   , vaultRevokeTokenAccessor
   , vaultRevokeSelf
+  , vaultRevokeSelfWith
   , vaultLookupSelfAccessor
+  , VaultTokenSelfObservation (..)
+  , vaultLookupSelfTokenWith
   , vaultLookupTokenAccessorPolicies
   , vaultLookupTokenAccessorInfo
   , vaultAccessorLookupVanished
@@ -87,9 +92,12 @@ module Prodbox.Vault.Client
   , vaultKvReadV2
   , vaultKvReadVersionedV2
   , vaultKvReadVersionedV2Bounded
+  , vaultKvReadVersionedV2WithLimit
   , vaultKvReadExactVersionV2
   , vaultKvCasWriteV2
+  , vaultKvCasWriteV2Bounded
   , vaultKvReadMetadataV2
+  , vaultKvReadMetadataV2WithLimit
   , vaultKvWriteCustomMetadataV2
   , vaultKvMetadataExistsV2
   , vaultKvDeleteMetadataV2
@@ -101,8 +109,10 @@ module Prodbox.Vault.Client
   , vaultWritePolicy
   , vaultReadPolicy
   , vaultReadTransitKey
+  , vaultReadTransitKeyWith
   , vaultCreateTransitKey
   , vaultRotateTransitKey
+  , vaultRotateTransitKeyWith
   , vaultReadTransitSigningKey
   , vaultReadTransitSigningKeyVersion
   , vaultReadTransitSigningKeyBounded
@@ -118,6 +128,7 @@ module Prodbox.Vault.Client
   , vaultWriteKubernetesAuthConfig
   , vaultKubernetesLogin
   , vaultKubernetesLoginWithLease
+  , vaultKubernetesLoginWithLeaseConfig
   , VaultKubernetesLoginResult (..)
   , vaultWriteKubernetesRole
   , vaultWriteKubernetesBatchRole
@@ -129,6 +140,7 @@ module Prodbox.Vault.Client
   )
 where
 
+import Control.Exception (evaluate)
 import Data.Aeson
   ( FromJSON (..)
   , ToJSON (..)
@@ -156,6 +168,7 @@ import Data.String (fromString)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import Data.Word (Word64)
 import Network.HTTP.Types.Header (Header)
 import Numeric.Natural (Natural)
 import Prodbox.Bootstrap.Broker.PgpBoundary
@@ -168,6 +181,7 @@ import Prodbox.Bootstrap.Broker.PgpBoundary
 import Prodbox.Bootstrap.Broker.VaultWire (EncryptedVaultInitResponse)
 import Prodbox.Http.Client
   ( HttpBoundedError (..)
+  , HttpConfig (..)
   , HttpError (..)
   , defaultHttpConfig
   , httpGetJson
@@ -179,6 +193,7 @@ import Prodbox.Http.Client
   , httpRequestRawBounded
   , renderHttpError
   )
+import System.Timeout (timeout)
 import Text.Read (readMaybe)
 
 -- | The base URL of the Vault server, e.g.
@@ -427,6 +442,27 @@ instance FromJSON TokenLookupSelfResponse where
       body <- o .: "data"
       TokenLookupSelfResponse <$> body .: "accessor"
 
+-- | The non-secret subset needed to bind an issued service token to its hard
+-- server-side lifetime cap. The bearer and other response fields stay local.
+data VaultTokenSelfObservation = VaultTokenSelfObservation
+  { vaultTokenSelfAccessor :: !Text
+  , vaultTokenSelfType :: !Text
+  , vaultTokenSelfTtlSeconds :: !Natural
+  , vaultTokenSelfExplicitMaxTtlSeconds :: !Natural
+  , vaultTokenSelfRenewable :: !Bool
+  }
+  deriving (Eq, Show)
+
+instance FromJSON VaultTokenSelfObservation where
+  parseJSON = withObject "VaultTokenSelfObservation" $ \root -> do
+    body <- root .: "data"
+    VaultTokenSelfObservation
+      <$> body .: "accessor"
+      <*> body .: "type"
+      <*> body .: "ttl"
+      <*> body .: "explicit_max_ttl"
+      <*> body .: "renewable"
+
 data TokenAccessorInfo = TokenAccessorInfo
   { tokenAccessorInfoPolicies :: ![Text]
   , tokenAccessorInfoMetadata :: !(Map Text Text)
@@ -531,6 +567,39 @@ vaultSealStatus :: VaultAddress -> IO (Either HttpError SealStatus)
 vaultSealStatus address =
   httpGetJson defaultHttpConfig (vaultUrl address "/v1/sys/seal-status")
 
+-- | Bound the full read attempt as well as the response-header wait. A timeout
+-- is unobservable evidence, not a statement about remote server state.
+vaultSealStatusWith :: HttpConfig -> VaultAddress -> IO (Either HttpError SealStatus)
+vaultSealStatusWith config address =
+  boundedSealStatus config (httpGetJson config (vaultUrl address "/v1/sys/seal-status"))
+
+-- | A timeout of a submitted operation is unobservable; it does not prove
+-- that the server did not apply it.
+boundedSealStatus
+  :: HttpConfig -> IO (Either HttpError SealStatus) -> IO (Either HttpError SealStatus)
+boundedSealStatus config action
+  | httpRequestTimeoutMicros config <= 0 =
+      pure (Left (HttpTimeout "Vault request has no remaining budget"))
+  | otherwise = do
+      result <-
+        timeout
+          (httpRequestTimeoutMicros config)
+          (action >>= evaluate . forceSealStatus)
+      pure $ case result of
+        Nothing -> Left (HttpTimeout "Vault request outcome was not observed within its budget")
+        Just response -> response
+
+forceSealStatus :: Either HttpError SealStatus -> Either HttpError SealStatus
+forceSealStatus result = case result of
+  Left failure -> Left failure
+  Right status ->
+    sealStatusInitialized status `seq`
+      sealStatusSealed status `seq`
+        sealStatusThreshold status `seq`
+          sealStatusShares status `seq`
+            sealStatusProgress status `seq`
+              Right status
+
 -- | Target Broker initialization decoder. Vault's PGP outputs are projected
 -- directly into opaque custody values; no printable root-token result exists.
 vaultInitEncrypted
@@ -551,6 +620,11 @@ vaultSubmitUnseal address key =
     defaultHttpConfig
     (vaultUrl address "/v1/sys/unseal")
     (UnsealRequest key)
+
+vaultSubmitUnsealWith :: HttpConfig -> VaultAddress -> Text -> IO (Either HttpError SealStatus)
+vaultSubmitUnsealWith config address key =
+  boundedSealStatus config $
+    httpPostJsonResponseJson config (vaultUrl address "/v1/sys/unseal") (UnsealRequest key)
 
 -- | Observe an in-progress generated-root attempt.  No token is required;
 -- possession of the threshold unseal/recovery shares authorizes completion.
@@ -613,9 +687,12 @@ vaultRevokeTokenAccessor address token accessor =
 -- every post-login terminal path and before emitting any receipt, so Job
 -- deletion never intentionally leaves a usable Vault session behind.
 vaultRevokeSelf :: VaultAddress -> VaultToken -> IO (Either HttpError ())
-vaultRevokeSelf address token =
+vaultRevokeSelf = vaultRevokeSelfWith defaultHttpConfig
+
+vaultRevokeSelfWith :: HttpConfig -> VaultAddress -> VaultToken -> IO (Either HttpError ())
+vaultRevokeSelfWith config address token =
   httpRequestNoBody
-    defaultHttpConfig
+    config
     "POST"
     [vaultTokenHeader token]
     (vaultUrl address "/v1/auth/token/revoke-self")
@@ -631,6 +708,41 @@ vaultLookupSelfAccessor address token =
       defaultHttpConfig
       [vaultTokenHeader token]
       (vaultUrl address "/v1/auth/token/lookup-self")
+
+-- | Read only bounded token metadata. A timeout, malformed response or missing
+-- field is unobservable, and provider response bodies are not returned.
+vaultLookupSelfTokenWith
+  :: HttpConfig -> VaultAddress -> VaultToken -> IO (Either HttpError VaultTokenSelfObservation)
+vaultLookupSelfTokenWith config address token
+  | httpRequestTimeoutMicros config <= 0 =
+      pure (Left (HttpTimeout "Vault token lookup has no remaining budget"))
+  | otherwise = do
+      result <- timeout (httpRequestTimeoutMicros config) $ do
+        observed <-
+          httpRequestRawBounded
+            config
+            vaultControlPlaneResponseMaximumBytes
+            "GET"
+            [vaultTokenHeader token]
+            (vaultUrl address "/v1/auth/token/lookup-self")
+            Nothing
+        evaluate
+          (forceTokenSelfObservation (decodeControlPlaneVaultResponse VaultServiceTokenSelfResponse observed))
+      pure $ case result of
+        Nothing -> Left (HttpTimeout "Vault token lookup was not observed within its budget")
+        Just observed -> observed
+
+forceTokenSelfObservation
+  :: Either HttpError VaultTokenSelfObservation -> Either HttpError VaultTokenSelfObservation
+forceTokenSelfObservation result = case result of
+  Left failure -> Left failure
+  Right observed ->
+    vaultTokenSelfAccessor observed `seq`
+      vaultTokenSelfType observed `seq`
+        vaultTokenSelfTtlSeconds observed `seq`
+          vaultTokenSelfExplicitMaxTtlSeconds observed `seq`
+            vaultTokenSelfRenewable observed `seq`
+              Right observed
 
 -- | Resolve the policy names of one non-secret accessor. This is the only
 -- classifier used by the bootstrap accessor auditor; token values are never
@@ -742,7 +854,8 @@ instance FromJSON KvV2VersionedSecret where
       outer <- o .: "data"
       fields <- outer .: "data"
       metadata <- outer .: "metadata"
-      KvV2VersionedSecret fields <$> metadata .: "version"
+      version <- metadata .: "version" :: Parser Word64
+      pure (KvV2VersionedSecret fields (fromIntegral version))
 
 -- | One exact KV-v2 version, including Vault's physical-destruction bit.
 -- Vault returns @data: null@ for both soft-deleted and destroyed versions, so
@@ -760,12 +873,12 @@ instance FromJSON KvV2ExactVersionSecret where
       outer <- o .: "data"
       fields <- outer .:? "data"
       metadata <- outer .: "metadata"
-      version <- metadata .: "version"
+      version <- metadata .: "version" :: Parser Word64
       destroyed <- metadata .:? "destroyed" .!= False
       pure
         KvV2ExactVersionSecret
           { kvV2ExactVersionSecretData = fields
-          , kvV2ExactVersionSecretVersion = version
+          , kvV2ExactVersionSecretVersion = fromIntegral version
           , kvV2ExactVersionSecretDestroyed = destroyed
           }
 
@@ -778,7 +891,8 @@ instance FromJSON KvV2WriteResponse where
   parseJSON =
     withObject "KvV2WriteResponse" $ \o -> do
       metadata <- o .: "data"
-      KvV2WriteResponse <$> metadata .: "version"
+      version <- metadata .: "version" :: Parser Word64
+      pure (KvV2WriteResponse (fromIntegral version))
 
 -- | Non-secret KV-v2 metadata. The standing Target Agent may observe this
 -- response without receiving the secret data document.
@@ -792,9 +906,9 @@ instance FromJSON KvV2SecretMetadata where
   parseJSON =
     withObject "KvV2SecretMetadataResponse" $ \o -> do
       metadata <- o .: "data"
-      currentVersion <- metadata .: "current_version"
+      currentVersion <- metadata .: "current_version" :: Parser Word64
       custom <- metadata .:? "custom_metadata" .!= Map.empty
-      pure (KvV2SecretMetadata currentVersion custom)
+      pure (KvV2SecretMetadata (fromIntegral currentVersion) custom)
 
 newtype KvV2CustomMetadataRequest = KvV2CustomMetadataRequest (Map Text Text)
 
@@ -940,6 +1054,43 @@ vaultKvReadVersionedV2Bounded
 vaultKvReadVersionedV2Bounded address token mount path =
   readControlPlaneVaultJson VaultKvMetadataResponse address token (kvV2DataPath mount path)
 
+-- | Versioned KV read with a caller-owned complete HTTP body ceiling. A
+-- rejected response is unobservable; it is never evidence of missing state.
+vaultKvReadVersionedV2WithLimit
+  :: Int
+  -> VaultAddress
+  -> VaultToken
+  -> Text
+  -> Text
+  -> IO (Either HttpError KvV2VersionedSecret)
+vaultKvReadVersionedV2WithLimit maximumBytes address token mount path =
+  vaultKvReadJsonWithLimit maximumBytes address token (kvV2DataPath mount path)
+
+vaultKvReadJsonWithLimit
+  :: (FromJSON value)
+  => Int
+  -> VaultAddress
+  -> VaultToken
+  -> String
+  -> IO (Either HttpError value)
+vaultKvReadJsonWithLimit maximumBytes address token path = do
+  response <-
+    httpRequestRawBounded
+      defaultHttpConfig
+      maximumBytes
+      "GET"
+      [vaultTokenHeader token]
+      (vaultUrl address path)
+      Nothing
+  pure $ case response of
+    Left (HttpBoundedTransport err) -> Left err
+    Left (HttpBoundedResponseTooLarge _ _) -> Left (HttpDecode "Vault KV response exceeded its body bound")
+    Left (HttpBoundedResponseHeadersTooLarge {}) -> Left (HttpDecode "Vault KV response exceeded its retained-header bound")
+    Right (status, body)
+      | status < 200 || status >= 300 -> Left (HttpStatus status "Vault KV request failed")
+      | otherwise ->
+          first (const (HttpDecode "Vault KV response is not valid JSON")) (eitherDecodeStrict' body)
+
 -- | Read one exact KV-v2 generation.  Retained custody uses this for a
 -- receipt-committed predecessor; reading "current" would race rotation.
 vaultKvReadExactVersionV2
@@ -1051,6 +1202,39 @@ vaultKvCasWriteV2 address token mount path expectedVersion fields = do
         }
   pure (kvV2WriteResponseVersion <$> (result :: Either HttpError KvV2WriteResponse))
 
+-- | Perform one KV CAS with a bounded response body. Oversized, malformed or
+-- unavailable replies remain unobservable even if the write may have landed.
+-- Complete bounded non-success bodies retain the existing CAS classifier's
+-- conflict/refusal distinction.
+vaultKvCasWriteV2Bounded
+  :: VaultAddress
+  -> VaultToken
+  -> Text
+  -> Text
+  -> KvV2Cas
+  -> Map Text Text
+  -> IO (Either HttpError Natural)
+vaultKvCasWriteV2Bounded address token mount path expectedVersion fields = do
+  response <-
+    httpRequestRawBounded
+      defaultHttpConfig
+      vaultControlPlaneResponseMaximumBytes
+      "POST"
+      [vaultTokenHeader token, ("Content-Type", "application/json")]
+      (vaultUrl address (kvV2DataPath mount path))
+      (Just (encode (KvV2CasWriteRequest fields expectedVersion)))
+  pure $ case response of
+    Left (HttpBoundedTransport err) -> Left err
+    Left (HttpBoundedResponseTooLarge _ _) -> Left (HttpDecode "Vault KV CAS response exceeded its body bound")
+    Left (HttpBoundedResponseHeadersTooLarge {}) -> Left (HttpDecode "Vault KV CAS response exceeded its retained-header bound")
+    Right (status, body)
+      | status < 200 || status >= 300 -> case TextEncoding.decodeUtf8' body of
+          Left _ -> Left (HttpDecode "Vault KV CAS error response is not UTF-8")
+          Right message -> Left (HttpStatus status (Text.unpack message))
+      | otherwise ->
+          kvV2WriteResponseVersion
+            <$> first (const (HttpDecode "Vault KV CAS response is not valid JSON")) (eitherDecodeStrict' body)
+
 -- | Read only a KV-v2 coordinate's non-secret metadata document.
 vaultKvReadMetadataV2
   :: VaultAddress
@@ -1063,6 +1247,18 @@ vaultKvReadMetadataV2 address token mount path =
     defaultHttpConfig
     [vaultTokenHeader token]
     (vaultUrl address (kvV2MetadataPath mount path))
+
+-- | Read metadata with a caller-owned complete body ceiling. An oversized body
+-- or headers exceeding the HTTP header limits are unobservable, even on 404.
+vaultKvReadMetadataV2WithLimit
+  :: Int
+  -> VaultAddress
+  -> VaultToken
+  -> Text
+  -> Text
+  -> IO (Either HttpError KvV2SecretMetadata)
+vaultKvReadMetadataV2WithLimit maximumBytes address token mount path =
+  vaultKvReadJsonWithLimit maximumBytes address token (kvV2MetadataPath mount path)
 
 -- | Publish an opaque generation/commitment receipt into Vault custom
 -- metadata after a one-shot worker has completed and read back the data CAS.
@@ -1507,10 +1703,14 @@ vaultReadPolicy address token policyName =
 -- | @GET \/v1\/transit\/keys\/\<name\>@ — read Transit key metadata.
 vaultReadTransitKey
   :: VaultAddress -> VaultToken -> Text -> IO (Either HttpError TransitKeyInfo)
-vaultReadTransitKey address token keyName = do
+vaultReadTransitKey = vaultReadTransitKeyWith defaultHttpConfig
+
+vaultReadTransitKeyWith
+  :: HttpConfig -> VaultAddress -> VaultToken -> Text -> IO (Either HttpError TransitKeyInfo)
+vaultReadTransitKeyWith config address token keyName = do
   result <-
     httpGetJsonWithHeaders
-      defaultHttpConfig
+      config
       [vaultTokenHeader token]
       (vaultUrl address ("/v1/transit/keys/" ++ Text.unpack keyName))
   pure
@@ -1539,9 +1739,13 @@ vaultCreateTransitKey address token keyName keyType =
 -- | @POST \/v1\/transit\/keys\/\<name\>\/rotate@ — rotate a named Transit key
 -- to a new key version.
 vaultRotateTransitKey :: VaultAddress -> VaultToken -> Text -> IO (Either HttpError ())
-vaultRotateTransitKey address token keyName =
+vaultRotateTransitKey = vaultRotateTransitKeyWith defaultHttpConfig
+
+vaultRotateTransitKeyWith
+  :: HttpConfig -> VaultAddress -> VaultToken -> Text -> IO (Either HttpError ())
+vaultRotateTransitKeyWith config address token keyName =
   httpRequestNoBody
-    defaultHttpConfig
+    config
     "POST"
     [vaultTokenHeader token]
     (vaultUrl address ("/v1/transit/keys/" ++ Text.unpack keyName ++ "/rotate"))
@@ -1671,12 +1875,14 @@ data VaultControlPlaneResponsePurpose
   = VaultRpcKeyResponse
   | VaultKvMetadataResponse
   | VaultCallerLoginResponse
+  | VaultServiceTokenSelfResponse
 
 vaultControlPlaneResponseLabel :: VaultControlPlaneResponsePurpose -> String
 vaultControlPlaneResponseLabel purpose = case purpose of
   VaultRpcKeyResponse -> "Vault RPC key"
   VaultKvMetadataResponse -> "Vault control-plane KV metadata"
   VaultCallerLoginResponse -> "Vault Kubernetes login"
+  VaultServiceTokenSelfResponse -> "Vault service-token lookup"
 
 readRpcKeyJson
   :: (FromJSON response) => VaultAddress -> VaultToken -> String -> IO (Either HttpError response)
@@ -1822,10 +2028,19 @@ vaultKubernetesLoginWithLease
   -> Text
   -> Text
   -> IO (Either HttpError VaultKubernetesLoginResult)
-vaultKubernetesLoginWithLease address authPath role jwt = do
+vaultKubernetesLoginWithLease = vaultKubernetesLoginWithLeaseConfig defaultHttpConfig
+
+vaultKubernetesLoginWithLeaseConfig
+  :: HttpConfig
+  -> VaultAddress
+  -> Text
+  -> Text
+  -> Text
+  -> IO (Either HttpError VaultKubernetesLoginResult)
+vaultKubernetesLoginWithLeaseConfig config address authPath role jwt = do
   result <-
     httpRequestRawBounded
-      defaultHttpConfig
+      config
       vaultControlPlaneResponseMaximumBytes
       "POST"
       [("Content-Type", "application/json")]

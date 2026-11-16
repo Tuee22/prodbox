@@ -10,6 +10,16 @@
 
 ## Phase Status
 
+🔄 **Reopened 2026-11-12 on Sprint `4.114` (Standards A/N).** The Target one-shot
+coordinator's session-lane release precedes exact worker deletion and absence observation.
+This phase owns that cleanup and its restart recovery; the current queue and evidence are in
+[Resume Here](README.md#resume-here).
+
+✅ **Reclosed 2026-11-12 on Sprint `4.113` (Standards A/N/O).** The shared Authority
+aggregate and physical readback refuse migration during decommission, with observation and stop
+replay preserved. The frozen in-memory counterexample and code-local gates are recorded below;
+live qualification remains separate. Earlier closures retain their evidence.
+
 
 ✅ **Reclosed 2026-10-20 on Sprints `4.109`–`4.112` (Standards A/N/O).** The AWS destroy
 surface has budgeted waits, provider-enumerated absence verdicts and content-bearing receipts,
@@ -16683,6 +16693,306 @@ is green (Sprint `0.36`, Not Scheduled).
 
 - Ledger rows for the absence arm and for the narration gap, in
   [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
+
+## Sprint 4.113: Fence Migration During Authority Decommission [✅ Done]
+
+**Status**: Done (code-local)
+**Implementation**: `src/Prodbox/Lifecycle/Authority/Admission.hs`, `src/Prodbox/ControlPlane/EpochBindingReadback.hs`, `test/unit/LifecycleAuthorityEpochReadback.hs`
+**Deployment qualification**: pending
+**Live-proof**: pending
+**Independent Validation**: replay the frozen decommission/promotion counterexample, exercise
+frozen and stopped states alongside normal migration and exact replay, and run the canonical gate.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`, `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`.
+
+### Objective
+
+Prevent decommission and epoch migration from advancing conflicting Authority state while
+preserving explicitly authorized decommission recovery.
+
+### Deliverables
+
+Define the decommission/migration admission rule, enforce it at the retained aggregate and physical
+readback boundary, retain a typed refusal and remedy, and preserve read-only observations and the
+existing decommission protocol.
+
+### Validation
+
+The frozen pre-fix unit executable reproduced the decommission-frozen read and CAS (control and
+binary hashes are in Resume Here). The replacement endpoint and aggregate regression exercises
+frozen and permanently stopped states, unchanged state, zero physical reads/writes, read-only
+observation, and exact stop replay. The complete readback suite passes **50/50**. A warning-clean
+build passes. `prodbox dev check` passes **9,842** primary and **27/35/927** auxiliary tests;
+the pre/post gate diff hash is `81924b41f061435344ac9f35fe2b0ceb8ac4b91d9882e8ffd8356dd94abd862e`.
+Logs are under `.build/sprint-4.113/decommission-migration-20261111/`. The initial gate caught
+a test-style violation, corrected before the passing run. These are in-memory and code-local
+controls, not a live deployment or decommission claim.
+
+### Remaining Work
+
+None for code-local closure. Deployment qualification and live proof remain separate.
+
+## Sprint 4.114: Retire Target Worker Before Releasing Its Session Lane [🔄 Active]
+
+**Status**: Active
+**Implementation**: `src/Prodbox/ControlPlane/TargetSecretWorkerCoordinator.hs`, `src/Prodbox/ControlPlane/ServiceSessionLifecycle.hs`, `src/Prodbox/ControlPlane/ServiceSessionJournal.hs`, `src/Prodbox/ControlPlane/TargetSecretWorkerProduction.hs`, `test/unit/ControlPlaneTargetSecretWorker.hs`
+**Deployment qualification**: pending
+**Live-proof**: pending
+**Independent Validation**: reproduce the frozen callback-order counterexample and exercise
+normal, failure, cancellation, restart, lost-reply and unobservable cleanup on native fake
+Kubernetes and Vault boundaries, followed by the canonical gate.
+**Docs to update**: `documents/engineering/lifecycle_control_plane_architecture.md`, `DEVELOPMENT_PLAN/README.md`, `DEVELOPMENT_PLAN/00-overview.md`.
+
+### Objective
+
+Keep an ambiguous Target worker and its service-session lane owned until its exact workload
+retirement and credential cleanup have independently completed.
+
+### Deliverables
+
+Persist enough exact workload identity to recover each dispatched session attempt, retire and
+independently observe the exact Job and Pod, and only then revoke/read back its credential
+family and release the retained lane. Preserve unresolved ownership when any observation or
+cleanup is unavailable. Handle pre-dispatch, dispatched, lost-response, cancellation and
+restart paths without selecting a replacement or inferring absence from an exit status.
+
+### Validation
+
+The frozen in-memory coordinator callback trace and its identities are in Resume Here. It
+demonstrates the ordering, not a live leak or a complete physical-fence proof.
+
+### Remaining Work
+
+The normal dispatch cleanup now attempts Job/Pod deletion and observes exact absence before
+closing the session lane; failed or unobservable workload cleanup leaves it retained.
+Dispatch preparation no longer auto-releases an ambiguous predecessor from an accessor
+scan alone, and its external dispatch acquisition requires an acknowledged unique CAS rather
+than adopting identical state after a failed reply. The Target lane now records the attested
+Job, Pod and service-account identities and the full permit-attempt preimage in the
+acquisition CAS using a version-3 journal, which checks their binding to the attempt digest.
+Occupied version-1 and version-2 records still lack sufficient independently verifiable
+evidence and remain unresolved.
+An observation or attestation failure, or an occupied, ambiguous or interrupted session
+preparation, also retains the observed workload: before session acquisition the caller cannot
+establish exclusive authority to delete a concurrent winner's Job and Pod. Recovery must
+resolve ownership and retire that workload, including Jobs created before any journal entry.
+The coordinator now reserves the deterministic Job name and fence before creation in a
+versioned journal, then binds the exact attested workload to that reservation. Version 5
+records dispatch issued before attach and acknowledged settlement before cleanup; cleanup and
+dispatch transitions conflict on the same journal. Validate this path and implement recovery's
+mutually exclusive claim against future create and dispatch: a
+stale coordinator or delayed Kubernetes create must not revive work after recovery authorizes
+retirement. Preserve existing occupied v1–v6 sessions until their exact identity and execution
+state are independently resolved.
+A version-8 pre-create state distinguishes a reservation before issuance from
+an ambiguous issued create. An acknowledged CAS must authorize creation; recovery may release
+only the former, with the fence retained, while existing version-7 reservations remain ambiguous.
+The focused Target-worker and Vault-session suites and canonical gate pass; Resume Here records
+the evidence.
+This does not recover a create that was issued or replace the physical fence.
+An isolated production-lifecycle probe also covers an applied prepared-release CAS whose
+reply is lost; the retained regression now passes in the focused suite.
+Resume Here records the probe and its limitations.
+The coordinator now observes the image and prepares the bounded Job manifest
+before the issue CAS, so failure or cancellation during this read-only preparation retains a
+recoverable prepared state. Ordering, cancellation, lost-release and existing issued-create
+paths pass focused tests and the canonical gate; Resume Here records the evidence. This is not a fence for an already issued create. The prepared manifest is
+bound to its signed request and Job name and is capped by the existing 256-KiB create-input
+limit on successful preparation; it remains live across the issue CAS and must be included in
+coordinator memory funding. Rendering and JSON encoding occur before that size check, so their
+transient memory must also be accounted for rather than inferred from the accepted byte cap.
+An isolated production-boundary probe exercised an oversized rendered Job from a constructed
+deployment response and observed refusal before any create. Resume Here records the evidence;
+it is not a live Deployment observation or a whole-coordinator memory measurement.
+The current subprocess error type does not distinguish a definitely unstarted child from an
+ambiguous create. Pinned `typed-process` source starts the OS process before stream setup and
+the input writer; do not infer no create from a startup error without a stronger witnessed
+boundary. Resume Here records the source evidence and its limits.
+An injected custom-stream probe confirms the library can return a startup `IOException` after
+the child receives input. It does not reproduce the project's exact `createPipe` setup, so it
+does not establish that the same failure has occurred there.
+The pinned default `kubectl` source visits and submits decoded resources individually, so a
+future input-gating proof must cover decoder and partial-stream behavior rather than assume an
+atomic whole-stream create. The host's client version is different from the image default;
+runtime binary identity still needs observation. Resume Here records the source evidence.
+Loopback tests of the downloaded default binary observed no request during a five-second
+open-stdin hold for one complete or one truncated synthetic Job, and respectively a successful
+POST or EOF error after closing stdin. The tests used `--validate=false` and a fake API; they
+are not a production fence or a proof over all inputs and schedules. The default-validation
+variants also pass against the fake API using a read-only copy of this host's OpenAPI schema;
+they remain isolated samples, not real API mutations or a fence. Resume Here records the
+fixtures, hashes and intermediate fixture failures.
+The same client and fake API posted a larger 5,248-byte synthetic Job while stdin remained open
+and the process was alive. A recovery protocol cannot treat an open input pipe or a still-running
+child as evidence that creation has not occurred. Resume Here records the counterexample.
+Withholding the last byte of that same synthetic Job produced no POST in the paired sample.
+That observation alone does not authorize a staged-input protocol: executable identity, all
+admitted prefixes, pipe ownership and crash/cancellation behavior remain unproved, and the
+post-issue ambiguity remains.
+The pinned YAML-or-JSON decoder can fall back to YAML after JSON failure; any prefix proof
+must include that path.
+The issue transition adds a journal read, CAS and read-back before Job creation. Account for
+their latency and response memory in the complete coordinator deadline and host budget; the
+coordinator's earlier time observation was not a fresh expiry check at the create boundary.
+The coordinator now samples an injected clock before and after create issuance, before Pod
+attestation, and before and after dispatch issuance; it refuses unavailable, regressing or
+expired samples and verifies the permit at fresh times. The Target suite and stage-by-stage
+fault table pass for the previous source. The canonical gate was interrupted to widen
+cancellation recognition to `SomeAsyncException` and add a regression; the updated Target
+suite and replacement canonical gate pass. A failure after issuance retains the corresponding ambiguity;
+a clock check alone cannot settle an already admitted effect. The added observations and
+repeated permit verification consume coordinator time and CPU; include them in complete
+deadline and host-load qualification. The wired production source reads local wall time without
+an uncertainty bound, and the per-invocation non-regression check is not a cross-restart
+high-water mark. Establish bounded clock error against the issuer before treating these samples
+as a complete temporal proof.
+Reservation and issue each perform a journal read, CAS and read-back. A constructed schedule
+with each of those six HTTP calls taking nine seconds consumes 54 seconds before image
+observation or Job creation while staying below the configured ten-second response timeout on
+each call. This is arithmetic over the current call sequence, not a live latency measurement
+or a complete wall-clock bound.
+For an unclaimed current-format retirement, a new coordinator claims cleanup, independently
+re-observes the exact Job/Pod UIDs, audits the role and releases the lane, then returns a retry-required result for fresh authority
+and time evidence. Validate competing recoverers, failed observation, lost replies and cancellation;
+this route does not reclaim an issued worker, issued pre-create reservation, legacy record or abandoned
+cleanup owner and does not replace physical fencing.
+Version 7 requires an acknowledged, nonce-bound exclusive cleanup claim before role-wide
+audit and release. Validate competing callers and lost claim replies, then implement safe
+recovery of an abandoned owner without allowing its in-flight effects to race a successor.
+For an owned cleanup whose completed audit is already durably recorded as `CleanupProven`,
+recovery can release that exact binding and owner by CAS without issuing another audit; a
+delayed original owner's release cannot affect a newer binding. This does not authorize
+takeover of an owner still in `CleanupRequired` or settle in-flight worker effects.
+Version 6 durably records the exact observed Job/Pod retirement before session cleanup;
+it refuses retirement while dispatch is issued and unsettled and rejects a mismatched workload.
+Validate that transition and its lost-reply behavior; API absence alone is not a physical fence.
+A failed or cancelled attach now retains the lane even after API absence; acknowledged
+completion and failures before dispatch take the normal retirement and session cleanup path.
+This interim behavior can leave the lane occupied. Implement composed restart recovery and
+physical fencing, including partitioned-node and in-flight login cases, then complete
+adversarial controls and the code-local gate. The native delayed-write counterexample in Resume
+Here shows that an old unconditional Vault custom-metadata write can overwrite a successor
+after the old data readback; its subsequent mismatch report does not undo the write. Fence and
+settle that effect before successor admission, or replace its publication with an equivalently
+atomic protocol that prevents the stale overwrite. The materializer now refuses an explicit
+metadata data-version binding that differs from the observed current version before it uses the
+stored generation; the focused suite and canonical gate pass. This guard does not prevent the
+earlier stale metadata overwrite, and legacy metadata without an explicit binding remains a
+separate migration concern.
+One candidate is a separate secret-free, per-Target KV-v2 receipt whose own version is used for
+CAS. The writer must compare the receipt's bound data version before writing, refuse a newer
+one and refuse a different receipt for the same data version; a delayed receipt CAS then
+conflicts if a successor has already advanced it. Readers would
+join the receipt to the target's current data-version metadata without reading secret data.
+This candidate is not implemented or proven: it also needs exact role grants, retained-object
+cleanup ownership, migration without trusting stale legacy custom metadata, lost-reply handling,
+and a fence against already-running legacy writers before cutover. It does not itself settle
+Vault login, delayed Job creation, or other worker effects.
+The migration must update both the Target Agent's metadata-only observation and the Provider
+Worker's direct Lifecycle-provider metadata/exact-version join; updating just the former would
+leave AWS operations reading the old custom metadata. The receipt must be registered for exact
+teardown with its target, and same-data-version receipt conflicts need a new data version or an
+equivalent safe recovery rule rather than an unconditional overwrite.
+The existing operational-credential revoke deletes the target metadata coordinate. Its
+successor must independently reconcile both the target and its receipt even if the target is
+already missing, so a crash between deletions cannot strand a receipt or let the target's
+version reset while an old receipt is still authoritative. Receipt deletion also needs the
+old-writer fence: deleting it and reinitializing at CAS zero would otherwise admit a delayed
+predecessor CAS.
+The staged draft uses a strict, value-free subkeys observation for current target version and
+the shared caller-budgeted metadata response to distinguish receipt absence. Its subkeys
+prototype bounds Vault's current custom-metadata limits and the closed flat schemas without
+reading the history map. Focused probes cover wide custom metadata, duplicate keys, malformed
+values, deleted versions and unobservable responses. Before installation, single-source the
+schema, fund whole-process memory, grant exact subkeys paths, and qualify the pinned Vault
+behavior; a subkeys 404 is never target absence. Existing metadata histories and legacy receipt
+migration still need an explicit treatment.
+For the pinned single-replica Vault, Kubernetes-auth role deletion serializes against the plugin
+login callback, but not the subsequent Vault-core token creation. A candidate fence must pair
+admission closure with settlement of already-registered login and authenticated mutation
+requests, and must prevent stale reconcilers from recreating the role. A separate old auditor
+must not revoke a successor's accessor. These conditions need a production interpreter and
+adversarial validation; the role lock or an empty in-flight snapshot alone is not a witness.
+The pinned Vault core's state lock and seal path may provide a request-drain building block,
+but their coverage, reopening admission, effect settlement and availability are unproved;
+Resume Here records the source observation. A second seal can return while the first is still
+draining, and context cancellation is not a hard lock-acquisition deadline. Sealing alone is
+not a fence.
+The reconciled Target service role has a ten-minute explicit maximum TTL; its worker and
+controller auditor roles have five-minute explicit maximum TTLs. The controller-auditor role is
+shared by the Target Agent and Lifecycle Authority. Closing that role therefore affects both
+standing callers. The credential-provisioner auditor also coordinates Target workers using its
+own five-minute batch role and can mutate the same journal, so closing only the Target-named
+roles would leave an admitted coordinator outside the fence. The fence must prevent role
+reconciliation from reopening any closed admission before previously admitted logins and
+authenticated effects settle. These TTLs alone do not witness settlement or authorize a
+successor. The Bootstrap provisioner's compiled policy is being narrowed to the exact KV data
+paths in its seed inventory; the separate wildcard metadata read is removed. Validate the
+complete inventory and real Vault behavior. An isolated Vault 1.18.3 dev fixture passed all
+25 seed paths and denied the Target journal and other non-seed paths for a synthetic token
+without a default policy; this is not a deployed-token or in-flight-effect proof. Resume Here
+records the evidence. A separate isolated fixture observed the same existing token lose its
+journal access after narrowing, both without a default policy and with the stock dev default;
+it does not settle requests authorized before the update. Another isolated Vault fixture shows
+an existing batch token with the compiled policy-repair grant can widen the policy again and
+restore an existing provisioner token's journal access. This is not a deployed-token
+observation. Source now restricts the repair policy to the exact compiled provisioner policy
+and appends a baseline target for generated-root migration. The isolated compiled-policy probe,
+focused migration and policy tests, and canonical gate pass; Resume Here records their evidence.
+Existing
+authorized requests and the ability to reconcile each Kubernetes auth role still require fencing; this is a policy
+observation, not evidence that such a write occurred during recovery. The Target worker auditor
+now has read-only journal access, and the unrelated
+external-material auditor no longer has the Target journal grant. Their generic accessor
+administration remains a separate effect to account for in the fence; this policy narrowing
+alone is not a fence. The focused policy test and canonical gate pass; Resume Here records their
+evidence.
+The closed journal's 64-KiB codec and the pinned Vault plugin's custom-metadata limits give a
+candidate 333,918-byte data-response ceiling; a maximum-width escaped loopback fixture fits it.
+The derivation, isolated RSS sample and their limitations are recorded in Resume Here. A
+separate deeply nested constructed response fits the candidate ceiling and is accepted by the
+current decoder; it is not a valid pinned-Vault response or live observation. An uninstalled
+structural-guard probe rejects that input and other malformed shapes while accepting the wide
+fixture; it is neither a complete schema check nor whole-worker memory evidence. Establish
+the fixed envelope and historical-metadata treatment, bound decoder amplification, and fund the
+whole worker before using that ceiling. The 8-MiB framed ingress can remain live during these
+reads. The framed reader accumulates chunks then concatenates them, so an 8-MiB ingress can
+transiently retain up to 16 MiB of payload before list, decoder and allocator overhead. The
+Target worker now bounds projected-token, Pod-name and Pod-UID reads on an opened
+regular-file descriptor before validating their content. Focused tests and a non-threaded
+production-reader probe and canonical gate pass; Resume Here records the evidence. Account for their combined
+state before claiming a whole-worker memory bound. Other
+standing and one-shot projected-token readers still require separate treatment. The versioned-data, exact-read, metadata and CAS-response
+decoders now use Vault's `uint64` version domain; focused cross-shape tests and the canonical
+gate pass, with evidence in Resume Here.
+The development docs lint measured approximately 4.68 GiB peak host RSS on this worktree.
+Forcing each check's findings before the next reduced one subsequent measurement to 1.60 GiB;
+an isolated per-file citation-scan probe showed a further reduction, and the production checker
+now forces those results too. A whole docs lint then passed at approximately 947 MiB peak RSS;
+the combined change's canonical gate passes. Account for host tooling when qualifying concurrent cluster
+operation; these measurements are neither Pod requests nor healthy-cluster load tests. Resume
+Here records the runs and their evidence.
+The worker auditor also checks that its exact binding remains issued after each accessor
+inventory before allowing that inventory to drive revocations. The native delayed-inventory
+race and canonical gate pass; Resume Here records their evidence. Each of the preclean and terminal audits can issue up
+to 17 inventory-bound journal reads, in addition to the one initial admission read. Bound and
+account for those currently unbounded reads and their deadline impact. In a constructed schedule,
+34 successful audit reads taking nine seconds each consume 306 seconds, exceeding the 180-second
+worker deadline while each response remains below the ten-second HTTP timeout. A native probe
+of the actual audit loop reaches all 34 inventories with a virtual clock; Resume Here records it.
+This is not a live latency observation; the additional reads need a bounded deadline design.
+Kubernetes defines the [Job active deadline](https://kubernetes.io/docs/reference/kubernetes-api/batch/job-v1/)
+relative to the Job's `status.startTime`, and suspension can reset that time. A timer started by
+the worker process therefore cannot by itself establish the remaining Job interval; the design
+must bind the observed Job start and suspension state or establish an equivalent conservative
+bound. Kubernetes attempts termination at the deadline; that is not proof of physical
+termination on a partitioned node. It does not settle already-issued revokes,
+prove accessor uniqueness across generations, or fence already-running legacy workers.
+The worker now checks signed intent, permit and the exact issued journal binding before its
+initial role-wide auditor cleanup. The forged-frame and exact-policy tests pass, and the
+canonical gate passes 9,892 + 27 + 35 + 935 tests; the evidence is in Resume Here. This read cannot fence a previously admitted worker, and auditor
+login recovery also needs the physical fence. Exercise stale and forged frames against the
+actual runtime ordering, bound the new trust/journal reads, and account for whole-process memory.
+Keep live deployment qualification separate.
 
 ## Related Documents
 

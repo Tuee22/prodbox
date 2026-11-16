@@ -11,6 +11,7 @@ module BootstrapBrokerEngineSecretWorker
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Monad (forM_)
 import Data.Functor.Identity (Identity (..))
 import Data.IORef
@@ -18,6 +19,7 @@ import Data.IORef
   , modifyIORef'
   , newIORef
   , readIORef
+  , writeIORef
   )
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -57,6 +59,7 @@ import Prodbox.Lifecycle.Lease
   , authorityTimeFromMicros
   , mkOwnerNonce
   )
+import System.Timeout (timeout)
 import TestSupport
 
 main :: IO ()
@@ -232,6 +235,7 @@ engineSecretWorkerSuite =
           SecretWorkerControllerRestarted
           SecretWorkerUnseal
           canonicalFence
+          (deadline 800)
           (transitRotationWorkerResult staleReceipt)
       wrongConstructor
         `shouldBe` Left EngineSecretWorkerAuthoritativeResultMismatch
@@ -241,6 +245,7 @@ engineSecretWorkerSuite =
           SecretWorkerControllerRestarted
           SecretWorkerUnseal
           canonicalFence
+          (deadline 800)
           (unsealWorkerResult staleReceipt)
       staleBinding
         `shouldBe` Left EngineSecretWorkerAuthoritativeResultMismatch
@@ -249,6 +254,94 @@ engineSecretWorkerSuite =
       lifecycleEvents events `shouldBe` []
 
     describe "VAULT-INIT-AUTHORITATIVE-WORKER-SUPERSEDED-FENCE-2026-10-24" $ do
+      it "bounds a delayed checkpoint observation before cleanup" $ do
+        let request = workerRequest "authoritative-slow" '9' SecretWorkerInitialize canonicalFence
+            initial = Just (StoreVersion 7, checkpointDigest, noSecretWorkerReceipt request)
+        harness <- newHarness NoFault [] initial healthyTimes
+        let ordinary = boundaryFor harness
+            delayed =
+              ordinary
+                { readSecretWorkerCheckpoint =
+                    threadDelay 400_000 >> readSecretWorkerCheckpoint ordinary
+                , observeAuthoritativeRecoveryBefore = \_ action -> timeout 100_000 action
+                }
+        result <-
+          reconcileAuthoritativeSecretWorkerResult
+            delayed
+            SecretWorkerControllerRestarted
+            SecretWorkerInitialize
+            authoritativeRecoveryFence
+            (deadline 800)
+            ambiguousInitializationWorkerResult
+        result `shouldBe` Left EngineSecretWorkerRecoveryDeadlineElapsed
+        currentCheckpoint harness >>= (`shouldBe` initial)
+        events <- harnessEvents harness
+        countEvent WorkerDiscarded events `shouldBe` 0
+        checkpointWrites events `shouldBe` 0
+
+      it "refuses unreceipted cleanup when its attempt deadline has elapsed" $ do
+        let request = workerRequest "authoritative-deadline" '9' SecretWorkerInitialize canonicalFence
+            initial = Just (StoreVersion 7, checkpointDigest, noSecretWorkerReceipt request)
+        harness <- newHarness NoFault [] initial [deadlineNow]
+        result <- reconcileAuthoritative harness SecretWorkerControllerRestarted authoritativeRecoveryFence
+        result `shouldBe` Left EngineSecretWorkerRecoveryDeadlineElapsed
+        currentCheckpoint harness >>= (`shouldBe` initial)
+        events <- harnessEvents harness
+        countEvent WorkerDiscarded events `shouldBe` 0
+        checkpointWrites events `shouldBe` 0
+
+      it "preserves the checkpoint if cleanup finishes after the attempt deadline" $ do
+        let request = workerRequest "authoritative-late" '9' SecretWorkerInitialize canonicalFence
+            initial = Just (StoreVersion 7, checkpointDigest, noSecretWorkerReceipt request)
+        harness <- newHarness NoFault [] initial [freshNow, deadlineNow]
+        result <- reconcileAuthoritative harness SecretWorkerControllerRestarted authoritativeRecoveryFence
+        result `shouldBe` Left EngineSecretWorkerRecoveryDeadlineElapsed
+        currentCheckpoint harness >>= (`shouldBe` initial)
+        events <- harnessEvents harness
+        countEvent WorkerDiscarded events `shouldBe` 1
+        checkpointWrites events `shouldBe` 0
+
+      it "passes the attempt deadline to the terminal checkpoint permit" $ do
+        let request = workerRequest "authoritative-permit" '9' SecretWorkerInitialize canonicalFence
+            initial = Just (StoreVersion 7, checkpointDigest, noSecretWorkerReceipt request)
+        harness <- newHarness NoFault [] initial healthyTimes
+        passedDeadline <- newIORef Nothing
+        let ordinary = boundaryFor harness
+            bounded =
+              ordinary
+                { withSecretWorkerCheckpointPermitBefore = \limit fence mutation use -> do
+                    writeIORef passedDeadline (Just limit)
+                    withSecretWorkerCheckpointPermit ordinary fence mutation use
+                }
+        result <-
+          reconcileAuthoritativeSecretWorkerResult
+            bounded
+            SecretWorkerControllerRestarted
+            SecretWorkerInitialize
+            authoritativeRecoveryFence
+            (deadline 800)
+            ambiguousInitializationWorkerResult
+        result `shouldBe` Right ()
+        readIORef passedDeadline `shouldReturn` Just (deadline 800)
+
+      it "refuses a checkpoint permit that exceeds the attempt deadline" $ do
+        let request = workerRequest "authoritative-wide-permit" '9' SecretWorkerInitialize canonicalFence
+            initial = Just (StoreVersion 7, checkpointDigest, noSecretWorkerReceipt request)
+        harness <- newHarness NoFault [] initial healthyTimes
+        result <-
+          reconcileAuthoritativeSecretWorkerResult
+            (boundaryFor harness)
+            SecretWorkerControllerRestarted
+            SecretWorkerInitialize
+            authoritativeRecoveryFence
+            (deadline 100)
+            ambiguousInitializationWorkerResult
+        result `shouldBe` Left EngineSecretWorkerRecoveryDeadlineElapsed
+        currentCheckpoint harness >>= (`shouldBe` initial)
+        events <- harnessEvents harness
+        countEvent WorkerDiscarded events `shouldBe` 1
+        checkpointWrites events `shouldBe` 0
+
       forM_ [UnreceiptedPredecessor, AuthoritativeTerminalPredecessor] $ \stage ->
         it ("settles the exact successor-fence predecessor at " ++ show stage) $ do
           let request = workerRequest "authoritative-successor" '9' SecretWorkerInitialize canonicalFence
@@ -282,6 +375,7 @@ engineSecretWorkerSuite =
                   SecretWorkerControllerRestarted
                   operation
                   authoritativeRecoveryFence
+                  (deadline 800)
                   (durableResultFor operation)
               result `shouldBe` Right ()
               assertCompletedCheckpoint harness request receipt
@@ -422,6 +516,7 @@ engineSecretWorkerSuite =
             SecretWorkerControllerRestarted
             SecretWorkerUnseal
             authoritativeRecoveryFence
+            (deadline 800)
             foreignResult
         result `shouldBe` Left EngineSecretWorkerAuthoritativeResultMismatch
         currentCheckpoint harness >>= (`shouldBe` initial)
@@ -1028,6 +1123,7 @@ reconcileAuthoritative harness interruption fence =
     interruption
     SecretWorkerInitialize
     fence
+    (deadline 800)
     ambiguousInitializationWorkerResult
 
 thirdCheckpoint :: (version, digest, value) -> value
@@ -1265,6 +1361,9 @@ boundaryFor harness =
           DiscardUnobservable -> Left WorkerDiscardObservationUnavailable
           DiscardReplaced -> Left WorkerDiscardReplacementObserved
           _ -> Right ()
+    , discardUnreceiptedSecretWorkerBefore = \_ request interruption ->
+        discardUnreceiptedSecretWorker (boundaryFor harness) request interruption
+    , observeAuthoritativeRecoveryBefore = \_ action -> Just <$> action
     , withSecretWorkerCheckpointPermit = \fence mutation use -> do
         recordEvent harness (PermitRequested mutation)
         now <- takeTime harness
@@ -1278,6 +1377,8 @@ boundaryFor harness =
         case storePermitFor permitFence permitMutation of
           Left _ -> pure (Left PermitCouldNotBeMinted)
           Right permit -> Right <$> use now permit
+    , withSecretWorkerCheckpointPermitBefore = \_ fence mutation use ->
+        withSecretWorkerCheckpointPermit (boundaryFor harness) fence mutation use
     , readSecretWorkerCheckpoint = do
         recordEvent harness CheckpointRead
         state <- readIORef harness

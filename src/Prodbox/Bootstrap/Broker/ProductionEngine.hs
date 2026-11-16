@@ -44,7 +44,7 @@ import Control.Concurrent.STM
   , readTVarIO
   , writeTVar
   )
-import Control.Exception (SomeException, displayException, mask, throwIO, try)
+import Control.Exception (SomeException, displayException, evaluate, mask, throwIO, try)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Crypto.Random (getRandomBytes)
 import Data.ByteString (ByteString)
@@ -97,26 +97,26 @@ import Prodbox.Bootstrap.Broker.Fence
   ( BootstrapFenceAcquireDecision (..)
   , BootstrapFenceAcquireRefusal (..)
   , BootstrapFenceOwnerCleanupObservation (..)
-  , BootstrapFenceRetireConfirmationRefusal (..)
   , BootstrapFenceRetireRefusal (..)
   , BootstrapFenceStoreObservation
   , BootstrapLeaseObservation (..)
   , BootstrapLeaseRefusal (..)
   , BootstrapSessionFence
   , BootstrapStoreMutationPermit
+  , BootstrapVaultEffect (BootstrapVaultLoginProvisioner)
   , BootstrapVaultEffectPermit
-  , abandonFreshlyAcquiredFence
   , bootstrapFenceGeneration
   , bootstrapFenceGenerationValue
   , bootstrapFenceOwnerCleanupFromWorkerObservation
   , confirmBootstrapFenceCas
   , confirmBootstrapFenceRetireCas
-  , confirmBootstrapLease
   , decideBootstrapFenceAcquire
   , decideBootstrapFenceRetire
   , mkBootstrapFenceAcquireRequest
   , vaultEffectPermitActionDigest
   , vaultEffectPermitDeadline
+  , vaultEffectPermitEffect
+  , vaultEffectPermitStorageGeneration
   )
 import Prodbox.Bootstrap.Broker.InitializationEvidence
 import Prodbox.Bootstrap.Broker.InitializationRecovery qualified as InitRecovery
@@ -129,6 +129,10 @@ import Prodbox.Bootstrap.Broker.KubernetesWorker
   , readProjectedServiceAccountToken
   , renderVaultStorageIdentity
   , renderVaultStorageResetFailure
+  )
+import Prodbox.Bootstrap.Broker.LeaseConfirmation
+  ( LeaseConfirmationFailure (..)
+  , confirmLeaseEffect
   )
 import Prodbox.Bootstrap.Broker.Model
   ( PostUnsealHandoffPhase (..)
@@ -169,6 +173,7 @@ import Prodbox.Bootstrap.Broker.ProductionSecretWorkerBoundary
   )
 import Prodbox.Bootstrap.Broker.ProductionStore
   ( bootstrapStoreReady
+  , observeProductionSecretWorkerResultForRecovery
   , productionBootstrapStoreBoundary
   , productionTransitRotationBoundary
   )
@@ -280,7 +285,7 @@ import Prodbox.ControlPlane.AuthenticationRegistry
 import Prodbox.ControlPlane.AuthorityClock
   ( AuthorityClockObservation (..)
   , clockUncertaintyFromMicros
-  , deriveOperationDeadline
+  , observeOperationDeadline
   )
 import Prodbox.ControlPlane.BootstrapCustodyClient
   ( BootstrapCustodyClient
@@ -322,8 +327,15 @@ import Prodbox.ControlPlane.Deadline
   , deadlineExpired
   , deadlineObservation
   , monotonicInstantMicros
+  , tightenDeadline
   )
-import Prodbox.ControlPlane.Interpreter (realMonotonicNow)
+import Prodbox.ControlPlane.Interpreter
+  ( DeadlineEffectResult (..)
+  , observeDeadlineEffect
+  , observeDeadlineEffectWithin
+  , realMonotonicNow
+  , trySynchronous
+  )
 import Prodbox.ControlPlane.ListenPort (controlPlaneClusterServiceUrlText)
 import Prodbox.ControlPlane.RequestAuthentication (mkRequestNonce)
 import Prodbox.ControlPlane.RetainedAuthentication
@@ -340,11 +352,12 @@ import Prodbox.ControlPlane.VaultAccessorAudit
   , VaultAccessorSubject (..)
   , classifyVaultAccessorLookupResponse
   , isBoundedBatchAuditorLogin
+  , isBoundedServiceTokenLogin
   , revokeAndProveVaultAccessorSubjectAbsent
   , revokeAndProveVaultAccessorSubjectAbsentDetailed
   , vaultAccessorMatchesSubject
   )
-import Prodbox.Http.Client (HttpError (..), defaultHttpConfig)
+import Prodbox.Http.Client (HttpConfig (..), HttpError (..), defaultHttpConfig)
 import Prodbox.Lifecycle.Lease
   ( AuthorityTime
   , OwnerNonce
@@ -360,6 +373,7 @@ import Prodbox.Vault.Reconcile
   ( bootstrapControlPlaneClientRole
   , bootstrapPkiOperatorRole
   , bootstrapPolicyRepairRole
+  , bootstrapProvisionerMaximumLeaseSeconds
   , bootstrapProvisionerPolicySpec
   , bootstrapProvisionerRole
   , bootstrapSealRole
@@ -412,12 +426,11 @@ productionBrokerEngine settings = do
           productionBoundary settings owner store kubernetes clients provisionerTokens cache
         -- Sprint 2.134: the observer this refresh runs under is now a linked
         -- supervised child, so a pass that escaped would kill the broker
-        -- process on a transient backend blip. A raised pass is recorded as a
-        -- non-terminal unavailable instead, leaving the link to cover the loop
-        -- itself dying.
+        -- process on a transient backend blip. A synchronous failure is
+        -- recorded as unavailable; cancellation must reach the supervisor.
         refresh = do
           attempted <-
-            try (observeBrokerReadinessFacts capabilityRegistry settings kubernetes)
+            trySynchronous (observeBrokerReadinessFacts capabilityRegistry settings kubernetes)
           facts <- case attempted of
             Right observed -> pure observed
             Left (failure :: SomeException) -> do
@@ -593,7 +606,7 @@ productionBoundary settings owner store kubernetes clients provisionerTokens rea
               provisionerTokens
               readinessCache
           )
-          (runLocal store clients)
+          (runLocal settings store clients)
       boundary =
         BrokerEngineBoundary
           { engineEvidenceBoundary = evidence
@@ -618,7 +631,7 @@ productionBoundary settings owner store kubernetes clients provisionerTokens rea
                 clients
                 provisionerTokens
                 readinessCache
-          , engineRunLocalCall = runLocal store clients
+          , engineRunLocalCall = runLocal settings store clients
           , engineSecretWorkerBoundary = Just secretWorker
           , enginePgpBoundary = Just pgp
           , engineInMemoryBoundary = Nothing
@@ -987,30 +1000,6 @@ bootstrapFenceRetireRefusalName refusal = case refusal of
   BootstrapFenceRetireOwnerMismatch _ _ -> "BootstrapFenceRetireOwnerMismatch"
   BootstrapFenceRetireCleanupUnobservable _ -> "BootstrapFenceRetireCleanupUnobservable"
 
--- | Sprint 2.48: the same closed name-only rule for the retirement CAS's own
--- confirmation refusals, which the compensating release in 'acquireFence'
--- narrates. All three carry a 'BootstrapFenceStoreObservation', which carries
--- the owner nonce.
-bootstrapFenceRetireConfirmationRefusalName
-  :: BootstrapFenceRetireConfirmationRefusal -> String
-bootstrapFenceRetireConfirmationRefusalName refusal = case refusal of
-  BootstrapFenceRetireReadBackMismatch _ _ -> "BootstrapFenceRetireReadBackMismatch"
-  BootstrapFenceRetireCasConflictRefusal _ -> "BootstrapFenceRetireCasConflictRefusal"
-  BootstrapFenceRetireCasResultUnobservable _ ->
-    "BootstrapFenceRetireCasResultUnobservable"
-
--- | Sprint 2.48: how this invocation came to hold the fence it is establishing
--- a Lease for. It decides one thing only — whether a failed @ensureLease@ may
--- release the fence as its own side effect — and it is an ADT rather than a
--- 'Bool' because that is the question, not the answer.
-data FenceAcquisitionOrigin
-  = -- | This call CAS'd the fence into existence and nothing has used it.
-    FreshlyCasAcquired
-  | -- | The durable fence already held exactly this request; an earlier attempt
-    -- of the same request may already have confirmed its Lease.
-    ResumedExisting
-  deriving stock (Eq, Show)
-
 -- | Sprint 2.47: the same closed name-only rule again, for the Lease
 -- refusals. Two of the six carry a 'BootstrapLeaseBinding', which carries the
 -- owner nonce, so those two publish their constructor and nothing else.
@@ -1052,35 +1041,59 @@ acquireFence
   -> RequestDigest
   -> Deadline
   -> IO (Either EngineBoundaryError BootstrapSessionFence)
-acquireFence owner store kubernetes _ _ action requestDigest requestDeadline = do
-  monotonicNow <- realMonotonicNow
-  clock <- authorityClockNow
-  case (clock, deadlineObservation monotonicNow requestDeadline) of
-    (AuthorityTimeTrusted acceptedAt _, DeadlineOpen (RemainingDuration remaining)) -> do
-      case authorityDurationFromMicros remaining of
-        Left refusal -> boundaryRefused (Text.pack (show refusal))
-        Right duration -> do
-          let operationDeadline = deriveOperationDeadline acceptedAt duration
-              request =
-                mkBootstrapFenceAcquireRequest
-                  owner
-                  (brokerActionDigest action)
-                  requestDigest
-                  (brokerActionStorageGeneration action)
-                  operationDeadline
-          observed <- observeBootstrapSessionFence store
-          case observed of
-            Left failure -> pure (Left (storeBoundaryError failure))
-            Right observation ->
-              case decideBootstrapFenceAcquire monotonicNow requestDeadline clock request observation of
-                -- Sprint 2.47: the one refusal that has a supported remedy.
-                -- Every other arm still refuses immediately.
-                BootstrapFenceAcquireRefused (BootstrapFenceAcquireExpiredPredecessor held) ->
-                  retireExpiredPredecessor request held
-                BootstrapFenceAcquireRefused refusal -> refuseAcquire refusal
-                BootstrapFenceAcquireResume fence -> ensureLease ResumedExisting fence
-                BootstrapFenceAcquireCas plan -> applyAcquireCas plan
-    _ -> boundaryRefused "request deadline is expired or authority clock is unavailable"
+acquireFence = acquireFenceWithClock authorityClockNow
+
+-- | Compose the production acquisition and retirement path with an explicit
+-- authority-clock source. The caller must supply a validated source; this
+-- boundary does not make a reading trustworthy.
+acquireFenceWithClock
+  :: IO AuthorityClockObservation
+  -> OwnerNonce
+  -> BootstrapStoreBoundary IO
+  -> KubernetesWorkerBoundary
+  -> capability
+  -> BrokerRoute
+  -> BrokerActionRequest
+  -> RequestDigest
+  -> Deadline
+  -> IO (Either EngineBoundaryError BootstrapSessionFence)
+acquireFenceWithClock clockNow owner store kubernetes _ _ action requestDigest requestDeadline = do
+  deadlineResult <-
+    observeDeadlineEffectWithin requestDeadline $
+      observeOperationDeadline clockNow realMonotonicNow requestDeadline >>= evaluate
+  case deadlineResult of
+    Just (DeadlineEffectCompleted _ (Left _)) ->
+      boundaryRefused "request deadline is expired or authority clock is unavailable"
+    Just (DeadlineEffectCompleted _ (Right operationDeadline)) -> do
+      let request =
+            mkBootstrapFenceAcquireRequest
+              owner
+              (brokerActionDigest action)
+              requestDigest
+              (brokerActionStorageGeneration action)
+              operationDeadline
+      observed <- observeDeadlineEffectWithin requestDeadline $ do
+        storeResult <- observeBootstrapSessionFence store
+        case storeResult of
+          Left failure -> pure (Left failure)
+          Right observation -> do
+            _ <- evaluate observation
+            decisionClock <- clockNow >>= evaluate
+            decisionNow <- realMonotonicNow
+            pure (Right (observation, decisionNow, decisionClock))
+      case observed of
+        Just (DeadlineEffectCompleted _ (Left failure)) -> pure (Left (storeBoundaryError failure))
+        Just (DeadlineEffectCompleted _ (Right (observation, decisionNow, decisionClock))) ->
+          case decideBootstrapFenceAcquire decisionNow requestDeadline decisionClock request observation of
+            -- Sprint 2.47: the one refusal that has a supported remedy.
+            -- Every other arm still refuses immediately.
+            BootstrapFenceAcquireRefused (BootstrapFenceAcquireExpiredPredecessor held) ->
+              retireExpiredPredecessor request held
+            BootstrapFenceAcquireRefused refusal -> refuseAcquire refusal
+            BootstrapFenceAcquireResume fence -> ensureLease fence
+            BootstrapFenceAcquireCas plan -> applyAcquireCas plan
+        _ -> boundaryUnavailable "bootstrap fence acquisition observation deadline elapsed"
+    _ -> boundaryUnavailable "bootstrap authority clock observation deadline elapsed"
  where
   refuseAcquire refusal = do
     -- Sprint 2.46/2.47: name which of the five fence refusals fired.
@@ -1098,7 +1111,7 @@ acquireFence owner store kubernetes _ _ action requestDigest requestDeadline = d
       Left failure -> pure (Left (storeBoundaryError failure))
       Right result -> case confirmBootstrapFenceCas plan result of
         Left refusal -> boundaryRefused (Text.pack (show refusal))
-        Right fence -> ensureLease FreshlyCasAcquired fence
+        Right fence -> ensureLease fence
 
   -- Sprint 2.47: retire a positively-expired predecessor through the existing
   -- CAS, then re-acquire exactly once.
@@ -1112,15 +1125,12 @@ acquireFence owner store kubernetes _ _ action requestDigest requestDeadline = d
   --
   -- __The retirement is what makes takeover safe, not merely what follows it.__
   -- Absence of the predecessor's worker Pod does not prove absence of a Vault
-  -- session it may still hold — and no shape short of widening the durable
-  -- fence could prove that, because the predecessor's session id and accessor
-  -- are not recoverable from the record that survives it. They do not need to
-  -- be: every Vault effect and every durable mutation re-reads this exact fence
-  -- through 'authorizeBootstrapVaultEffect' /
-  -- 'authorizeBootstrapStoreMutation' immediately before acting. Retiring the
-  -- fence is therefore the positive revocation, and any surviving predecessor
-  -- fails closed at its next effect with @BootstrapFenceUseFenceLost@ or
-  -- @BootstrapFenceUseFenceStale@.
+  -- session it may still hold: the durable fence does not identify that
+  -- session. Retiring the fence prevents a predecessor from obtaining a fresh
+  -- effect permit, but does not revoke an issued Vault token or establish that
+  -- a previously dispatched request has settled. Transit service-token
+  -- recovery must account for those separate obligations before relying on
+  -- this retirement path.
   retireExpiredPredecessor request held = do
     leaseObservation <- kubernetesObserveBootstrapLease kubernetes requestDeadline
     workerObservation <-
@@ -1146,116 +1156,88 @@ acquireFence owner store kubernetes _ _ action requestDigest requestDeadline = d
     -- this arm still failed. More elapsed time is also strictly safer for the
     -- other two uses of this instant — the request deadline and the
     -- predecessor's expiry both only become more certain.
-    retireMonotonicNow <- realMonotonicNow
-    retireClock <- authorityClockNow
-    let cleanupObservation =
-          bootstrapFenceOwnerCleanupFromWorkerObservation held workerObservation
-    case decideBootstrapFenceRetire
-      retireMonotonicNow
-      requestDeadline
-      retireClock
-      held
-      leaseObservation
-      cleanupObservation of
-      Left retireRefusal -> do
-        writeDiagnosticLine
-          ( "bootstrap-broker expired-fence retirement refused: "
-              ++ bootstrapFenceRetireRefusalName retireRefusal
-          )
-        refuseAcquire (BootstrapFenceAcquireExpiredPredecessor held)
-      Right plan -> do
-        retired <- casRetireBootstrapSessionFence store plan
-        case retired of
-          Left failure -> pure (Left (storeBoundaryError failure))
-          Right result -> case confirmBootstrapFenceRetireCas plan result of
-            Left refusal -> boundaryRefused (Text.pack (show refusal))
-            Right vacated -> do
-              writeDiagnosticLine
-                ( "bootstrap-broker retired expired fence generation "
-                    ++ show (bootstrapFenceGenerationValue (bootstrapFenceGeneration held))
-                    ++ "; worker-absence receipt "
-                    ++ absenceReceiptName cleanupObservation
-                )
-              reacquireAfterRetirement
-                retireMonotonicNow
-                retireClock
-                request
-                vacated
+    clockSample <- sampleDecisionClock
+    case clockSample of
+      Nothing -> boundaryUnavailable "bootstrap retirement clock observation deadline elapsed"
+      Just (retireClock, retireMonotonicNow) -> do
+        let cleanupObservation =
+              bootstrapFenceOwnerCleanupFromWorkerObservation held workerObservation
+        case decideBootstrapFenceRetire
+          retireMonotonicNow
+          requestDeadline
+          retireClock
+          held
+          leaseObservation
+          cleanupObservation of
+          Left retireRefusal -> do
+            writeDiagnosticLine
+              ( "bootstrap-broker expired-fence retirement refused: "
+                  ++ bootstrapFenceRetireRefusalName retireRefusal
+              )
+            refuseAcquire (BootstrapFenceAcquireExpiredPredecessor held)
+          Right plan -> do
+            retired <- casRetireBootstrapSessionFence store plan
+            case retired of
+              Left failure -> pure (Left (storeBoundaryError failure))
+              Right result -> case confirmBootstrapFenceRetireCas plan result of
+                Left refusal -> boundaryRefused (Text.pack (show refusal))
+                Right vacated -> do
+                  writeDiagnosticLine
+                    ( "bootstrap-broker retired expired fence generation "
+                        ++ show (bootstrapFenceGenerationValue (bootstrapFenceGeneration held))
+                        ++ "; worker-absence receipt "
+                        ++ absenceReceiptName cleanupObservation
+                    )
+                  reacquireAfterRetirement request vacated
 
   -- Exactly one second pass, against the confirmed post-retirement read-back
   -- rather than a fresh store read. The bound is structural: this function has
   -- no path back into 'retireExpiredPredecessor', so a predecessor that somehow
   -- survives the CAS refuses instead of looping.
-  reacquireAfterRetirement retireMonotonicNow retireClock request vacated =
-    case decideBootstrapFenceAcquire
-      retireMonotonicNow
-      requestDeadline
-      retireClock
-      request
-      vacated of
-      BootstrapFenceAcquireRefused refusal -> refuseAcquire refusal
-      BootstrapFenceAcquireResume fence -> ensureLease ResumedExisting fence
-      BootstrapFenceAcquireCas plan -> applyAcquireCas plan
+  reacquireAfterRetirement request vacated = do
+    clockSample <- sampleDecisionClock
+    case clockSample of
+      Nothing -> boundaryUnavailable "bootstrap reacquisition clock observation deadline elapsed"
+      Just (clock, now) ->
+        case decideBootstrapFenceAcquire
+          now
+          requestDeadline
+          clock
+          request
+          vacated of
+          BootstrapFenceAcquireRefused refusal -> refuseAcquire refusal
+          BootstrapFenceAcquireResume fence -> ensureLease fence
+          BootstrapFenceAcquireCas plan -> applyAcquireCas plan
 
-  -- Sprint 2.48: compensate a fence this call CAS'd but never made usable.
-  --
-  -- Best-effort and never masking: the original Lease refusal is what the
-  -- caller receives whether the release lands or not, because the release is a
-  -- cleanup of this call's own side effect and not a second diagnosis. A failed
-  -- release is narrated and then falls back to exactly the behaviour that
-  -- existed before this arm — the leak, which Sprint 2.47's retirement path
-  -- already makes self-healing within one operation deadline.
-  releaseFreshlyAcquiredFence fence = do
-    released <- casRetireBootstrapSessionFence store (abandonFreshlyAcquiredFence fence)
-    let generation =
-          show (bootstrapFenceGenerationValue (bootstrapFenceGeneration fence))
-    case released of
-      Left _ ->
-        writeDiagnosticLine
-          ( "bootstrap-broker could not release unusable fence generation "
-              ++ generation
-              ++ "; it expires with its operation deadline"
-          )
-      Right result -> case confirmBootstrapFenceRetireCas (abandonFreshlyAcquiredFence fence) result of
-        Left refusal ->
-          writeDiagnosticLine
-            ( "bootstrap-broker unusable-fence release refused: "
-                ++ bootstrapFenceRetireConfirmationRefusalName refusal
-            )
-        Right _ ->
-          writeDiagnosticLine
-            ( "bootstrap-broker released unusable fence generation "
-                ++ generation
-                ++ " after its Lease could not be confirmed"
-            )
+  sampleDecisionClock = do
+    observed <- observeDeadlineEffectWithin requestDeadline $ do
+      clock <- clockNow >>= evaluate
+      now <- realMonotonicNow
+      pure (clock, now)
+    pure $ case observed of
+      Just (DeadlineEffectCompleted _ sample) -> Just sample
+      _ -> Nothing
 
-  ensureLease origin fence = do
-    observed <- kubernetesEnsureBootstrapLease kubernetes requestDeadline fence
-    now <- realMonotonicNow
-    case confirmBootstrapLease now fence observed of
-      Left refusal -> do
-        -- Sprint 2.47: this narrated the fixed string "lease not confirmed"
-        -- for all six refusals, which is the exact collapse Sprint 2.46 fixed
-        -- one level up for the acquire refusals and this function was missed
-        -- by. It matters beyond tidiness: the second blocker recorded behind
-        -- the stale-fence row is a Lease refusal whose constructor was never
-        -- captured, and the ledger holds a paraphrase — "no Lease present" —
-        -- where `BootstrapLeaseNotFound` and `BootstrapLeaseObservationUnobservable`
-        -- would have named different faults. The next reproduction names it.
+  ensureLease fence = do
+    observed <-
+      confirmLeaseEffect realMonotonicNow requestDeadline fence $
+        kubernetesEnsureBootstrapLease kubernetes requestDeadline fence
+    case observed of
+      Left LeaseConfirmationNotStarted ->
+        leaseDeadlineRefusal
+          "Bootstrap Lease ensure was not dispatched before the request deadline; fence retained for recovery"
+      Left LeaseConfirmationLate ->
+        leaseDeadlineRefusal
+          "Bootstrap Lease ensure completed after the request deadline; outcome unconfirmed and fence retained for recovery"
+      Left (LeaseConfirmationRefused refusal) -> do
         writeDiagnosticLine
           ( "bootstrap-broker fence acquire refused: lease not confirmed: "
               ++ bootstrapLeaseRefusalName refusal
           )
-        -- Sprint 2.48: only the freshly CAS'd fence is released. A resumed
-        -- fence pre-existed this call and an earlier attempt of the same
-        -- request may already have confirmed its Lease and run effects under
-        -- it, so releasing it would discard exactly the exclusion those effects
-        -- rely on.
-        case origin of
-          FreshlyCasAcquired -> releaseFreshlyAcquiredFence fence
-          ResumedExisting -> pure ()
-        pure (Left (EngineBoundaryRefused (Text.pack (show refusal))))
-      Right _ -> pure (Right fence)
+        pure (Left (EngineBoundaryRefused (Text.pack (show refusal) <> "; fence retained for recovery")))
+      Right () -> pure (Right fence)
+
+  leaseDeadlineRefusal message = pure (Left (EngineBoundaryRefused message))
 
 observeFenceUse
   :: BootstrapStoreBoundary IO
@@ -1263,20 +1245,28 @@ observeFenceUse
   -> BootstrapSessionFence
   -> IO (Either EngineBoundaryError EngineFenceUseObservation)
 observeFenceUse store kubernetes _ = do
-  now <- realMonotonicNow
-  let observationDeadline = deadlineAtOffset now (RemainingDuration (5 * 1000 * 1000))
-  clock <- authorityClockNow
-  storeObservation <- observeBootstrapSessionFence store
-  leaseObservation <- kubernetesObserveBootstrapLease kubernetes observationDeadline
-  pure $ do
-    observed <- mapLeft storeBoundaryError storeObservation
-    Right
-      EngineFenceUseObservation
-        { engineFenceMonotonicNow = now
-        , engineFenceAuthorityClock = clock
-        , engineFenceStoreObservation = observed
-        , engineFenceLeaseObservation = leaseObservation
-        }
+  started <- realMonotonicNow
+  let observationDeadline = deadlineAtOffset started (RemainingDuration (5 * 1000 * 1000))
+  result <- observeDeadlineEffectWithin observationDeadline $ do
+    storeObservation <- observeBootstrapSessionFence store
+    case storeObservation of
+      Left failure -> pure (Left (storeBoundaryError failure))
+      Right observed -> do
+        leaseObservation <- kubernetesObserveBootstrapLease kubernetes observationDeadline
+        clock <- authorityClockNow
+        now <- realMonotonicNow
+        observation <-
+          evaluate
+            EngineFenceUseObservation
+              { engineFenceMonotonicNow = now
+              , engineFenceAuthorityClock = clock
+              , engineFenceStoreObservation = observed
+              , engineFenceLeaseObservation = leaseObservation
+              }
+        pure (Right observation)
+  pure $ case result of
+    Just (DeadlineEffectCompleted _ observation) -> observation
+    _ -> Left (EngineBoundaryUnavailable "bootstrap fence observation deadline elapsed")
 
 releaseFence
   :: BootstrapStoreBoundary IO
@@ -1317,8 +1307,8 @@ runPhysical _capabilityRegistry settings store kubernetes clients provisionerTok
     startGeneratedRoot settings (generatedRootPublicKeyBase64 publicKey)
   PhysicalCleanupProvisionerSessions _ _ generation ->
     cleanupProvisionerSessions settings provisionerTokens generation
-  PhysicalLoginProvisioner _ _ generation ->
-    loginProvisioner settings provisionerTokens generation
+  PhysicalLoginProvisioner _ permit generation ->
+    loginProvisioner settings provisionerTokens permit generation
   PhysicalApplyProvisionerBaseline _ _ receipt ->
     applyProvisionerBaseline settings provisionerTokens receipt
   PhysicalReadBackProvisionerBaseline _ _ receipt expected ->
@@ -2501,34 +2491,39 @@ provisionerRoleAccessorsForAbsence settings token = do
 loginProvisioner
   :: BootstrapBrokerSettings
   -> ProvisionerTokenRegistry
+  -> BootstrapVaultEffectPermit
   -> VaultStorageGeneration
   -> IO (Either EngineBoundaryError ProvisionerLoginReceipt)
-loginProvisioner settings registry generation =
-  mask $ \restore -> do
-    attempted <- tryEngineAction (restore (loginVaultRole settings bootstrapProvisionerRole))
-    case attempted of
-      Left exception -> do
-        cleaned <- cleanupProvisionerSessions settings registry generation
-        case cleaned of
-          Left cleanupFailure -> pure (Left cleanupFailure)
-          Right _ -> throwIO exception
-      Right (Left loginFailure) -> do
-        cleaned <- cleanupProvisionerSessions settings registry generation
-        pure $ case cleaned of
-          Left cleanupFailure -> Left cleanupFailure
-          Right _ -> Left loginFailure
-      Right (Right login) ->
-        case provisionerReceiptFromLogin generation login of
-          Left refusal -> do
-            cleaned <- cleanupProvisionerSessions settings registry generation
-            pure $ case cleaned of
-              Left cleanupFailure -> Left cleanupFailure
-              Right _ -> Left refusal
-          Right receipt -> do
-            modifyIORef'
-              registry
-              (Map.insert (provisionerLoginAccessor receipt) (Vault.vaultLoginToken login))
-            pure (Right receipt)
+loginProvisioner settings registry permit generation
+  | vaultEffectPermitEffect permit /= BootstrapVaultLoginProvisioner =
+      pure (Left (EngineBoundaryRefused "provisioner login effect does not match its permit"))
+  | vaultEffectPermitStorageGeneration permit /= generation =
+      pure (Left (EngineBoundaryRefused "provisioner login generation does not match its permit"))
+  | otherwise = mask $ \restore -> do
+      attempted <- tryEngineAction (restore (loginVaultRole settings bootstrapProvisionerRole permit))
+      case attempted of
+        Left exception -> do
+          cleaned <- cleanupProvisionerSessions settings registry generation
+          case cleaned of
+            Left cleanupFailure -> pure (Left cleanupFailure)
+            Right _ -> throwIO exception
+        Right (Left loginFailure) -> do
+          cleaned <- cleanupProvisionerSessions settings registry generation
+          pure $ case cleaned of
+            Left cleanupFailure -> Left cleanupFailure
+            Right _ -> Left loginFailure
+        Right (Right login) ->
+          case provisionerReceiptFromLogin generation login of
+            Left refusal -> do
+              cleaned <- cleanupProvisionerSessions settings registry generation
+              pure $ case cleaned of
+                Left cleanupFailure -> Left cleanupFailure
+                Right _ -> Left refusal
+            Right receipt -> do
+              modifyIORef'
+                registry
+                (Map.insert (provisionerLoginAccessor receipt) (Vault.vaultLoginToken login))
+              pure (Right receipt)
 
 applyProvisionerBaseline
   :: BootstrapBrokerSettings
@@ -2824,37 +2819,54 @@ withVaultBatchRole settings role use = do
 loginVaultRole
   :: BootstrapBrokerSettings
   -> Text
+  -> BootstrapVaultEffectPermit
   -> IO (Either EngineBoundaryError Vault.VaultKubernetesLoginResult)
-loginVaultRole settings role = do
+loginVaultRole settings role permit = do
   projected <- readProjectedServiceAccountToken
   case projected of
     Left _ -> boundaryUnavailable "projected Bootstrap Broker token is unavailable"
     Right jwt -> do
-      loggedIn <- Vault.vaultKubernetesLoginWithLease address "kubernetes" role jwt
+      loggedIn <- observeProvisionerPermit permit $ \config ->
+        Vault.vaultKubernetesLoginWithLeaseConfig config address "kubernetes" role jwt
       case loggedIn of
-        Left _ -> boundaryUnavailable ("Vault Kubernetes login failed for role " <> role)
-        Right login
+        DeadlineEffectNotStarted -> boundaryUnavailable "Vault provisioner login permit expired before dispatch"
+        DeadlineEffectCompletedLate (Left _) -> boundaryUnavailable "Vault provisioner login outcome is unconfirmed"
+        DeadlineEffectCompletedLate (Right login) -> rejectIssued jwt login "Vault provisioner login completed after permit expiry"
+        DeadlineEffectCompleted _ (Left _) -> boundaryUnavailable ("Vault Kubernetes login failed for role " <> role)
+        DeadlineEffectCompleted _ (Right login)
           | Vault.vaultLoginTokenType login /= "service" -> do
-              cleaned <- cleanupInvalidSuccessfulVaultLogin settings jwt role login
-              pure
-                ( cleaned
-                    >> Left
-                      ( EngineBoundaryRefused
-                          "Vault Kubernetes login did not return a service token"
-                      )
-                )
+              rejectIssued jwt login "Vault Kubernetes login did not return a service token"
           | Text.null (Text.strip (Vault.vaultLoginAccessor login)) -> do
-              cleaned <- cleanupInvalidSuccessfulVaultLogin settings jwt role login
-              pure
-                ( cleaned
-                    >> Left
-                      ( EngineBoundaryRefused
-                          "Vault Kubernetes login omitted its session accessor"
-                      )
-                )
-          | otherwise -> pure (Right login)
+              rejectIssued jwt login "Vault Kubernetes login omitted its session accessor"
+          | otherwise -> do
+              self <- observeProvisionerPermit permit $ \config ->
+                Vault.vaultLookupSelfTokenWith config address (Vault.vaultLoginToken login)
+              case self of
+                DeadlineEffectCompleted _ (Right observed)
+                  | isBoundedServiceTokenLogin bootstrapProvisionerMaximumLeaseSeconds login observed ->
+                      pure (Right login)
+                _ -> rejectIssued jwt login "Vault provisioner token hard-cap evidence was unavailable or invalid"
  where
   address = Vault.VaultAddress (brokerVaultAddress settings)
+  rejectIssued jwt login detail = do
+    cleaned <- cleanupInvalidSuccessfulVaultLogin settings jwt role login
+    pure (cleaned >> Left (EngineBoundaryRefused detail))
+
+-- Preserve a late login value so the issued bearer can enter exact cleanup.
+-- This is a response/deadline guard, not proof that an unconfirmed login has
+-- stopped executing on Vault.
+observeProvisionerPermit
+  :: BootstrapVaultEffectPermit
+  -> (HttpConfig -> IO value)
+  -> IO (DeadlineEffectResult value)
+observeProvisionerPermit permit action = do
+  now <- realMonotonicNow
+  case deadlineObservation now (vaultEffectPermitDeadline permit) of
+    DeadlineExpired -> pure DeadlineEffectNotStarted
+    DeadlineOpen (RemainingDuration remaining) -> do
+      let timeoutMicros = fromIntegral (min remaining (fromIntegral (httpRequestTimeoutMicros defaultHttpConfig)))
+          config = defaultHttpConfig {httpRequestTimeoutMicros = timeoutMicros}
+      observeDeadlineEffect realMonotonicNow (vaultEffectPermitDeadline permit) (action config)
 
 loginVaultBatchRole
   :: BootstrapBrokerSettings
@@ -3050,16 +3062,32 @@ digestSerialised value =
     Left _ -> error "SHA-256 artifact digest invariant failed"
 
 runLocal
-  :: BootstrapStoreBoundary IO
+  :: BootstrapBrokerSettings
+  -> BootstrapStoreBoundary IO
   -> ProductionBrokerClients
   -> BrokerLocalCall result
   -> IO (Either EngineBoundaryError result)
-runLocal store clients call = case call of
-  LocalRecoverRootInitCall binding -> do
-    observed <- InitRecovery.observeRootInitRecoveryEvidence store binding
+runLocal settings store clients call = case call of
+  LocalRecoverRootInitCall binding requestDeadline -> do
+    observed <-
+      observeDeadlineEffectWithin requestDeadline $
+        InitRecovery.observeRootInitRecoveryEvidence
+          store
+          binding
+          ( \request -> do
+              now <- realMonotonicNow
+              published <-
+                observeProductionSecretWorkerResultForRecovery
+                  (tightenDeadline requestDeadline (deadlineAtOffset now (RemainingDuration (5 * 1000 * 1000))))
+                  settings
+                  request
+              pure (Just <$> published)
+          )
+          >>= evaluate
     pure $ case observed of
-      Left failure -> Left (storeBoundaryError failure)
-      Right result -> Right result
+      Just (DeadlineEffectCompleted _ (Left failure)) -> Left (storeBoundaryError failure)
+      Just (DeadlineEffectCompleted _ (Right result)) -> Right result
+      _ -> Left (EngineBoundaryUnavailable "initialization recovery observation deadline elapsed")
   LocalAcknowledgeRecoveryCustody bundle -> do
     observed <- readFinalUnlockBundle store (finalUnlockBundleBinding bundle)
     pure $ case observed of
@@ -3191,6 +3219,9 @@ leaseDependency :: BootstrapLeaseObservation -> BrokerDependencyObservation
 leaseDependency observation = case observation of
   BootstrapLeaseMissing -> BrokerDependencyReady
   BootstrapLeaseObserved {} -> BrokerDependencyReady
+  BootstrapLeaseObservedBounded _ safeUntil certainlyExpiredAt _
+    | safeUntil > certainlyExpiredAt -> BrokerDependencyUnavailable "Lease clock bounds are inverted"
+    | otherwise -> BrokerDependencyReady
   BootstrapLeaseUnobservable detail -> BrokerDependencyUnavailable detail
   BootstrapLeaseIdentityRejected detail -> BrokerDependencyIdentityRejected detail
 

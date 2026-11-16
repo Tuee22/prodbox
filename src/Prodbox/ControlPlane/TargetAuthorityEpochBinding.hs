@@ -17,6 +17,7 @@ module Prodbox.ControlPlane.TargetAuthorityEpochBinding
   , TargetEpochBindingQuery (..)
   , TargetEpochBindingFailure (..)
   , targetEpochBindingDigest
+  , targetEpochPromotionRowReadSchedule
   , runTargetEpochBindingQuery
   , vaultTargetEpochBindingInterpreter
   , renderTargetEpochBindingFailure
@@ -37,6 +38,7 @@ import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Numeric (showHex)
+import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.AuthenticatedTransport (AuthenticatedClientTransport)
 import Prodbox.ControlPlane.Coordinate (AuthorityEpoch (..))
 import Prodbox.ControlPlane.TargetAuthorityEpoch
@@ -75,10 +77,17 @@ import Prodbox.Lifecycle.Authority.EpochPromotion
   , EpochPromotionState (..)
   , validateEpochPromotionState
   )
+import Prodbox.Lifecycle.Authority.EpochPromotionCoordinator (PromotionIntent)
+import Prodbox.Lifecycle.Authority.EpochPromotionSchedule
+  ( PromotionSchedule (scheduleTargetBindingReadbacks)
+  , promotionSchedule
+  )
 import Prodbox.Lifecycle.Authority.EpochTopology
   ( CutoverDigest
   , CutoverSubstrate (..)
+  , EpochTopology
   , EpochTopologyBinding (PendingAcceptedAuthorityBinding)
+  , EpochTopologyError
   , epochTopologyBindingDigest
   , epochTopologyDigest
   , mkCutoverDigest
@@ -179,6 +188,20 @@ data TargetEpochBindingFailure
   | TargetBindingObservationChanged
   | TargetBindingOldWriterAdmitted
   deriving (Eq, Show)
+
+-- | Exact Target row reads for one uninterrupted successful coordinator pass.
+-- Every binding query reads the complete authorization inventory twice. This
+-- excludes retries, transport refresh, physical mutations and other traffic.
+targetEpochPromotionRowReadSchedule
+  :: EpochTopology
+  -> PromotionIntent
+  -> EpochPromotionPhase
+  -> Either EpochTopologyError (Map CutoverSubstrate Natural)
+targetEpochPromotionRowReadSchedule topology intent phase =
+  Map.map (* rowReadsPerQuery) . scheduleTargetBindingReadbacks
+    <$> promotionSchedule topology intent phase
+ where
+  rowReadsPerQuery = 2 * fromIntegral (length targetWorkerAuthorizationIds)
 
 -- | Public accepted-authority bytes bind exact issuer, key, epoch, fence,
 -- Agent and sink. Only predecessor/target/deadline are taken from the context;

@@ -42,6 +42,7 @@ module Prodbox.Bootstrap.Broker.Fence
   , BootstrapFenceStoreObservation (..)
   , BootstrapFenceCasPlan
   , fenceCasExpectedGenerationFloor
+  , fenceCasDeadline
   , fenceCasProposedFence
   , BootstrapFenceAcquireRefusal (..)
   , PredecessorLiveness (..)
@@ -58,13 +59,13 @@ module Prodbox.Bootstrap.Broker.Fence
   , bootstrapFenceOwnerCleanupFromWorkerObservation
   , BootstrapFenceRetirePlan
   , fenceRetireExpectedFence
+  , fenceRetireDeadline
   , fenceRetireVacantGenerationFloor
   , BootstrapFenceRetireRefusal (..)
   , decideBootstrapFenceRetire
   , BootstrapFenceRetireCasResult (..)
   , BootstrapFenceRetireConfirmationRefusal (..)
   , confirmBootstrapFenceRetireCas
-  , abandonFreshlyAcquiredFence
 
     -- * Matching Lease witness
   , BootstrapLeaseBinding
@@ -127,10 +128,12 @@ import Prodbox.Bootstrap.Broker.Types
   )
 import Prodbox.ControlPlane.AuthorityClock
   ( AttemptDeadlineRefusal (..)
-  , AuthorityClockObservation
+  , AuthorityClockObservation (..)
   , OperationDeadline
+  , clockUncertaintyMicros
   , deriveAttemptDeadline
   , operationDeadlineFromMicros
+  , operationDeadlineMicros
   )
 import Prodbox.ControlPlane.Deadline
   ( Deadline
@@ -139,6 +142,7 @@ import Prodbox.ControlPlane.Deadline
   )
 import Prodbox.Lifecycle.Lease
   ( OwnerNonce
+  , authorityTimeMicros
   )
 
 -- | Positive, monotonically increasing generation of the durable bootstrap
@@ -269,11 +273,15 @@ data BootstrapFenceStoreObservation
 data BootstrapFenceCasPlan = BootstrapFenceCasPlan
   { internalCasExpectedGenerationFloor :: !Natural
   , internalCasProposedFence :: !BootstrapSessionFence
+  , internalCasDeadline :: !Deadline
   }
   deriving stock (Eq, Show)
 
 fenceCasExpectedGenerationFloor :: BootstrapFenceCasPlan -> Natural
 fenceCasExpectedGenerationFloor = internalCasExpectedGenerationFloor
+
+fenceCasDeadline :: BootstrapFenceCasPlan -> Deadline
+fenceCasDeadline = internalCasDeadline
 
 fenceCasProposedFence :: BootstrapFenceCasPlan -> BootstrapSessionFence
 fenceCasProposedFence = internalCasProposedFence
@@ -300,23 +308,17 @@ data BootstrapFenceAcquireDecision
 -- >   Left _  -> True
 -- >   Right _ -> False
 --
--- which folds all three 'AttemptDeadlineRefusal' arms into /expired/. Two of
--- them — 'AttemptClockUnobservable' and 'AttemptClockRegressed' — mean *cannot
--- determine*, and only 'AttemptDeadlineElapsed' proves the predecessor's own
--- deadline algebra has stopped entitling it to write.
+-- which folds all three 'AttemptDeadlineRefusal' arms into /expired/. The
+-- caller's early safe-use cutoff also cannot prove another owner's expiry:
+-- positive expiry requires the observing clock's lower bound to reach the
+-- durable deadline.
 --
--- Today both arms refuse either way, so this is behaviour-preserving. It is
--- landed now because it is __fail-open in shape__: the moment a positive expiry
--- authorises anything — which is precisely what wiring
--- 'decideBootstrapFenceRetire' into acquisition would do — an unobservable or
--- regressed clock would authorise it too, and a live predecessor's fence could
--- be taken by a caller that could not read the time. Class-D distinguishability,
--- @chaos_hardening_doctrine.md § 21@.
---
--- 'decideBootstrapFenceRetire' below already draws exactly this distinction; the
--- acquire path is brought level with it rather than a second rule being invented.
+-- Acquisition refuses both an occupied fence and unobservable time. The
+-- retirement path uses the same classification because only positive expiry
+-- can authorize its CAS; an unobservable or regressed clock cannot authorize
+-- a takeover. Class-D distinguishability, @chaos_hardening_doctrine.md § 21@.
 data PredecessorLiveness
-  = -- | The predecessor's durable deadline has not elapsed on a trusted clock.
+  = -- | Expiry is not yet certain on the trusted clock.
     PredecessorLive
   | -- | Positively elapsed. The predecessor is no longer entitled to write by
     -- the same deadline algebra that binds it.
@@ -332,15 +334,15 @@ classifyPredecessorLiveness
   -> AuthorityClockObservation
   -> BootstrapSessionFence
   -> PredecessorLiveness
-classifyPredecessorLiveness monotonicNow requestDeadline clockObservation held =
-  case deriveAttemptDeadline
-    monotonicNow
-    requestDeadline
-    clockObservation
-    (bootstrapFenceOperationDeadline held) of
-    Right _ -> PredecessorLive
-    Left AttemptDeadlineElapsed {} -> PredecessorExpired
-    Left refusal -> PredecessorLivenessUnobservable refusal
+classifyPredecessorLiveness _ _ clockObservation held =
+  case clockObservation of
+    AuthorityTimeUnobservable failure -> PredecessorLivenessUnobservable (AttemptClockUnobservable failure)
+    AuthorityTimeRegressed observed highWater -> PredecessorLivenessUnobservable (AttemptClockRegressed observed highWater)
+    AuthorityTimeTrusted now uncertainty
+      | authorityTimeMicros now
+          >= operationDeadlineMicros (bootstrapFenceOperationDeadline held) + clockUncertaintyMicros uncertainty ->
+          PredecessorExpired
+      | otherwise -> PredecessorLive
 
 -- | Acquire a new monotonically increasing generation only from an observed
 -- vacant floor.  An exact duplicate resumes the held record.  A different or
@@ -362,9 +364,9 @@ decideBootstrapFenceAcquire monotonicNow requestDeadline clockObservation reques
       (fenceAcquireOperationDeadline request) of
       Left refusal ->
         BootstrapFenceAcquireRefused (BootstrapFenceAcquireDeadlineRefused refusal)
-      Right _ -> decideFromStore
+      Right attemptDeadline -> decideFromStore attemptDeadline
  where
-  decideFromStore = case observation of
+  decideFromStore attemptDeadline = case observation of
     BootstrapFenceStoreUnobservable detail ->
       BootstrapFenceAcquireRefused (BootstrapFenceAcquireStoreUnobservable detail)
     BootstrapFenceStoreVacant generationFloor ->
@@ -372,6 +374,7 @@ decideBootstrapFenceAcquire monotonicNow requestDeadline clockObservation reques
         BootstrapFenceCasPlan
           { internalCasExpectedGenerationFloor = generationFloor
           , internalCasProposedFence = fenceFromRequest generationFloor request
+          , internalCasDeadline = attemptDeadline
           }
     BootstrapFenceStoreHeld held
       | requestExactlyMatchesFence request held -> BootstrapFenceAcquireResume held
@@ -493,12 +496,20 @@ bootstrapLeaseStorageGeneration = internalLeaseStorageGeneration
 bootstrapLeaseOperationDeadline :: BootstrapLeaseBinding -> OperationDeadline
 bootstrapLeaseOperationDeadline = internalLeaseOperationDeadline
 
--- | Fresh raw Lease observation supplied by the Kubernetes boundary.  The
--- local deadline is a monotonic conservative expiry witness.
+-- | Fresh raw Lease observation supplied by the Kubernetes boundary. The
+-- current local deadline does not establish cross-node clock uncertainty;
+-- it is not by itself a conservative expiry witness.
 data BootstrapLeaseObservation
   = BootstrapLeaseMissing
   | BootstrapLeaseObserved
       !BootstrapLeaseBinding
+      !Deadline
+      !Text
+  | -- | The early deadline ends safe use; the later deadline proves expiry.
+    -- Their provenance must come from both writer and observer clock bounds.
+    BootstrapLeaseObservedBounded
+      !BootstrapLeaseBinding
+      !Deadline
       !Deadline
       !Text
   | BootstrapLeaseUnobservable !Text
@@ -561,6 +572,22 @@ confirmBootstrapLease now fence observation = case observation of
           BootstrapLeaseWitness
             { internalLeaseWitnessBinding = observedBinding
             , internalLeaseWitnessDeadline = leaseDeadline
+            , internalLeaseWitnessResourceVersion = resourceVersion
+            }
+  BootstrapLeaseObservedBounded observedBinding safeUntil certainlyExpiredAt resourceVersion
+    | observedBinding /= expectedBinding ->
+        Left (BootstrapLeaseBindingMismatch expectedBinding observedBinding)
+    | nullText resourceVersion -> Left BootstrapLeaseResourceVersionEmpty
+    | safeUntil > certainlyExpiredAt ->
+        Left (BootstrapLeaseObservationUnobservable (Text.pack "Lease clock bounds are inverted"))
+    | deadlineExpired now certainlyExpiredAt -> Left BootstrapLeaseExpired
+    | deadlineExpired now safeUntil ->
+        Left (BootstrapLeaseObservationUnobservable (Text.pack "Lease expiry is uncertain"))
+    | otherwise ->
+        Right
+          BootstrapLeaseWitness
+            { internalLeaseWitnessBinding = observedBinding
+            , internalLeaseWitnessDeadline = safeUntil
             , internalLeaseWitnessResourceVersion = resourceVersion
             }
  where
@@ -664,11 +691,15 @@ bootstrapFenceOwnerCleanupFromWorkerObservation held observation = case observat
 data BootstrapFenceRetirePlan = BootstrapFenceRetirePlan
   { internalRetireExpectedFence :: !BootstrapSessionFence
   , internalRetireVacantGenerationFloor :: !Natural
+  , internalRetireDeadline :: !Deadline
   }
   deriving stock (Eq, Show)
 
 fenceRetireExpectedFence :: BootstrapFenceRetirePlan -> BootstrapSessionFence
 fenceRetireExpectedFence = internalRetireExpectedFence
+
+fenceRetireDeadline :: BootstrapFenceRetirePlan -> Deadline
+fenceRetireDeadline = internalRetireDeadline
 
 fenceRetireVacantGenerationFloor :: BootstrapFenceRetirePlan -> Natural
 fenceRetireVacantGenerationFloor = internalRetireVacantGenerationFloor
@@ -687,10 +718,11 @@ data BootstrapFenceRetireRefusal
   deriving stock (Eq, Show)
 
 -- | Produce a retirement CAS only after all three independent facts hold:
--- the original durable deadline elapsed on a trusted authority clock, its
--- exact Lease is absent/expired, and the exact owner's worker/session/accessor
--- cleanup was read back absent.  Clock, Lease, and cleanup ambiguity all
--- refuse closed.
+-- the original durable deadline elapsed at the trusted clock's lower bound,
+-- its exact Lease is absent/expired, and the supplied owner-cleanup observation
+-- matches. The production owner observation currently covers worker absence;
+-- it does not by itself prove Vault session absence or remote settlement.
+-- Clock, Lease, and cleanup ambiguity all refuse closed.
 decideBootstrapFenceRetire
   :: MonotonicInstant
   -> Deadline
@@ -703,14 +735,10 @@ decideBootstrapFenceRetire monotonicNow requestDeadline clockObservation held le
   if deadlineExpired monotonicNow requestDeadline
     then Left BootstrapFenceRetireRequestDeadlineExpired
     else Right ()
-  case deriveAttemptDeadline
-    monotonicNow
-    requestDeadline
-    clockObservation
-    (bootstrapFenceOperationDeadline held) of
-    Right _ -> Left (BootstrapFenceRetirePredecessorStillLive held)
-    Left AttemptDeadlineElapsed {} -> Right ()
-    Left refusal -> Left (BootstrapFenceRetireDeadlineUnobservable refusal)
+  case classifyPredecessorLiveness monotonicNow requestDeadline clockObservation held of
+    PredecessorLive -> Left (BootstrapFenceRetirePredecessorStillLive held)
+    PredecessorExpired -> Right ()
+    PredecessorLivenessUnobservable refusal -> Left (BootstrapFenceRetireDeadlineUnobservable refusal)
   case confirmBootstrapLease monotonicNow held leaseObservation of
     Right witness -> Left (BootstrapFenceRetireLeaseStillLive witness)
     Left BootstrapLeaseNotFound -> Right ()
@@ -727,6 +755,7 @@ decideBootstrapFenceRetire monotonicNow requestDeadline clockObservation held le
               { internalRetireExpectedFence = held
               , internalRetireVacantGenerationFloor =
                   bootstrapFenceGenerationValue (bootstrapFenceGeneration held)
+              , internalRetireDeadline = requestDeadline
               }
       | otherwise -> Left (BootstrapFenceRetireOwnerMismatch held observed)
     BootstrapFenceOwnerCleanupUnobservable detail ->
@@ -760,51 +789,6 @@ confirmBootstrapFenceRetireCas plan result = case result of
     Left (BootstrapFenceRetireCasResultUnobservable detail)
  where
   expected = BootstrapFenceStoreVacant (fenceRetireVacantGenerationFloor plan)
-
--- | Sprint 2.48: the compensating release for an acquisition that CAS'd its
--- fence and then failed before that fence ever became usable.
---
--- __The defect this closes.__ @acquireFence@ CASes the durable fence and then
--- calls @ensureLease@. A Lease failure left the fence held with nothing
--- releasing it, so one fault cost a fence generation and refused every
--- successor with @BootstrapFenceAcquireOverlap@ until the operation deadline
--- elapsed. Measured live across five consecutive bring-ups on 2026-08-14, not
--- inferred. Sprint 2.47's retirement path made the leak self-healing rather
--- than permanent; this makes it not happen.
---
--- __Why this is not 'decideBootstrapFenceRetire', and why it needs no facts of
--- its own.__ Retirement takes over a __predecessor's__ fence, so it must prove
--- three independent things about an owner it cannot see. This releases a fence
--- __this invocation created moments ago__, and the safety argument is
--- structural rather than observational: @authorizeBootstrapVaultEffect@ and
--- @authorizeBootstrapStoreMutation@ both require a confirmed
--- 'BootstrapLeaseWitness' before any effect, and this compensation runs
--- precisely on the path where no witness was obtained. A fence that never
--- carried a witness cannot have authorized anything, so there is nothing to
--- lose and no owner to displace.
---
--- Retirement cannot serve here in any case: it requires the durable operation
--- deadline to have __elapsed__, and a freshly acquired fence's has not.
---
--- __No refusal constructor is invented for it.__ Every 'BootstrapLeaseRefusal'
--- justifies the release equally — including a Lease held by another binding,
--- which only makes abandoning this fence more clearly right. Sprint 2.47
--- deleted an unreachable refusal constructor rather than shipping one, and the
--- same rule applies to not adding one.
---
--- __The 'BootstrapFenceRetirePlan' is reused deliberately.__ It is a plan for a
--- physical value-conditional CAS — expected value, vacant high-water floor —
--- not a record of the justification that produced it. A parallel type carrying
--- the identical two fields would be the redundant-wrapper shape rather than a
--- distinction. The CAS is exact-value, so it can never clobber a fence this
--- invocation did not write.
-abandonFreshlyAcquiredFence :: BootstrapSessionFence -> BootstrapFenceRetirePlan
-abandonFreshlyAcquiredFence fence =
-  BootstrapFenceRetirePlan
-    { internalRetireExpectedFence = fence
-    , internalRetireVacantGenerationFloor =
-        bootstrapFenceGenerationValue (bootstrapFenceGeneration fence)
-    }
 
 data BootstrapVaultEffect
   = BootstrapVaultInitialize

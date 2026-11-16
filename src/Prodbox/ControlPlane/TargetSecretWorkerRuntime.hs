@@ -1,5 +1,6 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 
 -- | Production runtime for the one-shot Target Secret Agent materializer.
 --
@@ -19,7 +20,12 @@ module Prodbox.ControlPlane.TargetSecretWorkerRuntime
   , classifyTlsHomeRewrapWorkerResult
   , targetSecretWorkerCommitmentKey
   , targetSecretWorkerTrustPath
+  , readTargetWorkerPodUid
+  , readTargetWorkerPodName
+  , readTargetWorkerProjectedToken
   , decodeTargetWorkerAcceptedAuthority
+  , authenticateTargetWorkerFrame
+  , guardTargetWorkerAuditInventory
   , targetWorkerServiceLoginAccepted
   , TargetWorkerAuditorRecoveryBoundary (..)
   , acquireTargetWorkerAuditorWith
@@ -33,7 +39,7 @@ import Control.Exception
   ( AsyncException
   , IOException
   , SomeException
-  , displayException
+  , bracket
   , fromException
   , mask
   , throwIO
@@ -49,7 +55,7 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import Data.Text qualified as Text
-import Data.Text.IO qualified as TextIO
+import Data.Text.Encoding qualified as TextEncoding
 import Data.Time.Clock.POSIX (POSIXTime, getPOSIXTime)
 import Numeric.Natural (Natural)
 import Prodbox.CLI.Output (writeDiagnosticLine)
@@ -72,7 +78,14 @@ import Prodbox.ControlPlane.RetainedMaterialEnvelope
   )
 import Prodbox.ControlPlane.RoleReadiness (noRoleReadinessContribution)
 import Prodbox.ControlPlane.ServiceSessionJournal
-  ( serviceSessionBindingFence
+  ( ServiceSessionBinding
+  , ServiceSessionDispatchState (ServiceSessionDispatchIssued)
+  , ServiceSessionJournalRepository (readServiceSessionJournal)
+  , ServiceSessionJournalSnapshot (..)
+  , ServiceSessionPhase (ServiceSessionActive, ServiceSessionLoginAttemptCommitted)
+  , serviceSessionBindingFence
+  , serviceSessionJournalDispatchState
+  , serviceSessionJournalPhase
   )
 import Prodbox.ControlPlane.TargetAuthorityEpoch (targetEpochWorkerAuthority)
 import Prodbox.ControlPlane.TargetAuthorityEpochCodec (decodeTargetAuthorityEpochFields)
@@ -125,6 +138,7 @@ import Prodbox.ControlPlane.TargetSecretWorker
   , targetWorkerIntentServiceAccount
   , targetWorkerIntentTarget
   , targetWorkerJobUidText
+  , targetWorkerKubernetesUidMaximumCharacters
   , targetWorkerPodUidText
   , targetWorkerProvisionalCompletionMaximumBytes
   , targetWorkerSchemaToken
@@ -200,6 +214,7 @@ import Prodbox.ControlPlane.VaultAccessorAudit
   , isBoundedBatchAuditorLogin
   , revokeAndProveVaultAccessorSubjectAbsent
   )
+import Prodbox.ControlPlane.VaultServiceSessionJournal (vaultServiceSessionJournalRepository)
 import Prodbox.Http.Client (HttpError (HttpStatus), renderHttpError)
 import Prodbox.Lifecycle.Authority.RetainedMaterial
   ( SRetainedMaterialSchema (SRetainedAcmeEabMaterial, SRetainedSesSmtpMaterial)
@@ -252,6 +267,11 @@ import Prodbox.Vault.Session
   )
 import System.Exit (ExitCode (..))
 import System.IO (Handle, hFlush, stdin, stdout)
+import System.IO.Error (isEOFError)
+import System.Posix.Files (fileSize, getFdStatus, isRegularFile)
+import System.Posix.IO (OpenFileFlags (..), OpenMode (ReadOnly), closeFd, defaultFileFlags, openFd)
+import System.Posix.IO.ByteString qualified as Posix
+import System.Posix.Types (Fd)
 
 data TargetSecretWorkerOptions = TargetSecretWorkerOptions
   { targetSecretWorkerExpectedTarget :: !TargetSecretId
@@ -581,8 +601,8 @@ runWorker
        )
 runWorker rewrap options provisionalBoundary = do
   stdinResult <- readFramedHandleBounded targetWorkerIngressMaximumBytes stdin
-  podUidResult <- readPodUid (targetSecretWorkerPodUidFile options)
-  podNameResult <- readPodName (targetSecretWorkerPodNameFile options)
+  podUidResult <- readTargetWorkerPodUid (targetSecretWorkerPodUidFile options)
+  podNameResult <- readTargetWorkerPodName (targetSecretWorkerPodNameFile options)
   case (stdinResult, podUidResult, podNameResult) of
     (Left err, _, _) -> pure (Left err)
     (_, Left err, _) -> pure (Left err)
@@ -621,6 +641,12 @@ runWorker rewrap options provisionalBoundary = do
           (targetWorkerFrameServiceAccountUid binding)
           (targetWorkerFrameSessionFence binding)
           provisionalBoundary
+          ( authorizeWorkerPreclean
+              (targetSecretWorkerExpectedAgentIdentity options)
+              actualPodUid
+              actualPodName
+              binding
+          )
           ( \session ->
               executeAuthenticated
                 session
@@ -648,67 +674,75 @@ executeAuthenticated
            TargetWorkerOperationResult
        )
 executeAuthenticated session agentIdentity actualPodUid actualPodName binding operation rewrap = do
-  nowResult <- currentTime
   trustResult <- readAcceptedAuthority session (targetWorkerFrameTarget binding)
+  nowResult <- currentTime
   case (nowResult, trustResult) of
     (Left err, _) -> pure (Left err)
     (_, Left err) -> pure (Left err)
     (Right now, Right accepted) ->
-      case prepareTargetWorkerIntent
+      case authenticateTargetWorkerFrame now accepted agentIdentity actualPodUid actualPodName binding of
+        Left err -> pure (Left err)
+        Right (attestation, _) -> executeOperation session rewrap attestation operation
+
+-- This check is pure so callers can authenticate the same binding before
+-- entering any effectful session lifecycle as well as before materialization.
+authenticateTargetWorkerFrame
+  :: AuthorityTime
+  -> AcceptedTargetAuthority
+  -> TargetAgentIdentity
+  -> TargetWorkerPodUid
+  -> Text
+  -> TargetWorkerFrameBinding
+  -> Either TargetSecretWorkerRuntimeError (TargetWorkerAttestation, ServiceSessionBinding)
+authenticateTargetWorkerFrame now accepted agentIdentity actualPodUid actualPodName binding = do
+  intent <-
+    first (const TargetSecretWorkerIntentRejected) $
+      prepareTargetWorkerIntent
         accepted
         now
         agentIdentity
         (targetWorkerFrameTarget binding)
         (targetWorkerFrameSchema binding)
         (targetWorkerFrameImageDigest binding)
-        (targetWorkerFrameSignedIntent binding) of
-        Left _ -> pure (Left TargetSecretWorkerIntentRejected)
-        Right intent
-          | targetWorkerIntentRequestDigest intent
-              /= targetWorkerFrameRequestDigest binding ->
-              pure (Left TargetSecretWorkerFrameBindingMismatch)
-          | targetWorkerIntentServiceAccount intent
-              /= targetWorkerFrameServiceAccount binding ->
-              pure (Left TargetSecretWorkerFrameBindingMismatch)
-          | targetWorkerIntentDeadline intent /= targetWorkerFrameDeadline binding ->
-              pure (Left TargetSecretWorkerFrameBindingMismatch)
-          | otherwise -> case verifyTargetWorkerExecutionPermit
-              accepted
-              now
-              intent
-              (targetWorkerFrameExecutionPermit binding) of
-              Left err -> pure (Left (TargetSecretWorkerExecutionPermitRejected err))
-              Right permit
-                | verifiedPermitJobName permit /= targetWorkerFrameJobName binding
-                    || verifiedPermitJobUid permit /= targetWorkerFrameJobUid binding
-                    || verifiedPermitPodName permit /= targetWorkerFramePodName binding
-                    || verifiedPermitPodUid permit /= targetWorkerFramePodUid binding
-                    || verifiedPermitServiceAccount permit
-                      /= targetWorkerFrameServiceAccount binding
-                    || verifiedPermitServiceAccountUid permit
-                      /= targetWorkerFrameServiceAccountUid binding
-                    || verifiedPermitImageDigest permit
-                      /= targetWorkerFrameImageDigest binding
-                    || verifiedPermitRequestDigest permit
-                      /= targetWorkerFrameRequestDigest binding
-                    || serviceSessionBindingFence (verifiedPermitSessionBinding permit)
-                      /= targetWorkerFrameSessionFence binding ->
-                    pure (Left TargetSecretWorkerFrameBindingMismatch)
-                | otherwise ->
-                    case attestTargetWorkerPod
-                      now
-                      intent
-                      ( runtimeObservation
-                          agentIdentity
-                          intent
-                          (verifiedPermitJobUid permit)
-                          actualPodUid
-                          actualPodName
-                          (targetWorkerFrameServiceAccountUid binding)
-                      ) of
-                      Left _ -> pure (Left TargetSecretWorkerAttestationRejected)
-                      Right attestation ->
-                        executeOperation session rewrap attestation operation
+        (targetWorkerFrameSignedIntent binding)
+  if targetWorkerIntentRequestDigest intent /= targetWorkerFrameRequestDigest binding
+    || targetWorkerIntentServiceAccount intent /= targetWorkerFrameServiceAccount binding
+    || targetWorkerIntentDeadline intent /= targetWorkerFrameDeadline binding
+    then Left TargetSecretWorkerFrameBindingMismatch
+    else pure ()
+  permit <-
+    first TargetSecretWorkerExecutionPermitRejected $
+      verifyTargetWorkerExecutionPermit
+        accepted
+        now
+        intent
+        (targetWorkerFrameExecutionPermit binding)
+  if verifiedPermitJobName permit /= targetWorkerFrameJobName binding
+    || verifiedPermitJobUid permit /= targetWorkerFrameJobUid binding
+    || verifiedPermitPodName permit /= targetWorkerFramePodName binding
+    || verifiedPermitPodUid permit /= targetWorkerFramePodUid binding
+    || verifiedPermitServiceAccount permit /= targetWorkerFrameServiceAccount binding
+    || verifiedPermitServiceAccountUid permit /= targetWorkerFrameServiceAccountUid binding
+    || verifiedPermitImageDigest permit /= targetWorkerFrameImageDigest binding
+    || verifiedPermitRequestDigest permit /= targetWorkerFrameRequestDigest binding
+    || serviceSessionBindingFence (verifiedPermitSessionBinding permit)
+      /= targetWorkerFrameSessionFence binding
+    then Left TargetSecretWorkerFrameBindingMismatch
+    else pure ()
+  attestation <-
+    first (const TargetSecretWorkerAttestationRejected) $
+      attestTargetWorkerPod
+        now
+        intent
+        ( runtimeObservation
+            agentIdentity
+            intent
+            (verifiedPermitJobUid permit)
+            actualPodUid
+            actualPodName
+            (targetWorkerFrameServiceAccountUid binding)
+        )
+  pure (attestation, verifiedPermitSessionBinding permit)
 
 executeOperation
   :: VaultSession
@@ -1090,6 +1124,87 @@ targetWorkerServiceLoginAccepted login =
 -- token. The same projected identity obtains exactly one accessor-free batch
 -- auditor, correlates accessors by exact policy plus ServiceAccount UID,
 -- revokes them, and requires two fresh zero-member inventories.
+-- The auditor may only touch the role after verifying the current signed
+-- binding and observing its issued journal entry.  The durable physical fence
+-- is still needed to cover changes after this observation.
+authorizeWorkerPreclean
+  :: TargetAgentIdentity
+  -> TargetWorkerPodUid
+  -> Text
+  -> TargetWorkerFrameBinding
+  -> VaultKubernetesLoginResult
+  -> IO (Either TargetSecretWorkerRuntimeError ServiceSessionBinding)
+authorizeWorkerPreclean agent podUid podName binding auditor = do
+  session <-
+    newVaultSession
+      workerVaultAddress
+      realSessionClock
+      ( pure
+          ( Right
+              LoginLease
+                { loginLeaseToken = vaultLoginToken auditor
+                , loginLeaseSeconds = vaultLoginLeaseSeconds auditor
+                , loginLeaseRenewable = False
+                }
+          )
+      )
+  trustResult <- readAcceptedAuthority session (targetWorkerFrameTarget binding)
+  nowResult <- currentTime
+  case (nowResult, trustResult) of
+    (Left err, _) -> pure (Left err)
+    (_, Left err) -> pure (Left err)
+    (Right now, Right accepted) ->
+      case authenticateTargetWorkerFrame now accepted agent podUid podName binding of
+        Left err -> pure (Left err)
+        Right (_, expectedBinding) -> do
+          observed <-
+            readServiceSessionJournal
+              ( vaultServiceSessionJournalRepository
+                  workerVaultAddress
+                  (vaultLoginToken auditor)
+                  targetSecretWorkerVaultRole
+              )
+          pure $ case observed of
+            Right snapshot
+              | serviceSessionJournalRevision snapshot > 0
+              , let journal = serviceSessionJournalObserved snapshot
+              , serviceSessionJournalPhase journal == ServiceSessionLoginAttemptCommitted expectedBinding
+              , serviceSessionJournalDispatchState journal == Just ServiceSessionDispatchIssued ->
+                  Right expectedBinding
+            _ -> Left TargetSecretWorkerVaultSessionCleanupUnavailable
+
+-- An inventory must be authorized after Vault has returned it. A stale
+-- worker cannot use a newly obtained inventory after its binding changes.
+-- This does not settle earlier revokes, logins, or other in-flight effects.
+guardTargetWorkerAuditInventory
+  :: (Num revision, Ord revision)
+  => ServiceSessionJournalRepository IO revision
+  -> ServiceSessionBinding
+  -> VaultAccessorAuditOps IO
+  -> VaultAccessorAuditOps IO
+guardTargetWorkerAuditInventory repository binding ops =
+  ops
+    { auditListAccessors = do
+        inventory <- auditListAccessors ops
+        case inventory of
+          Left err -> pure (Left err)
+          Right accessors -> do
+            observed <- readServiceSessionJournal repository
+            pure $ case observed of
+              Right snapshot
+                | serviceSessionJournalRevision snapshot > 0
+                , let journal = serviceSessionJournalObserved snapshot
+                , serviceSessionJournalDispatchState journal == Just ServiceSessionDispatchIssued
+                , workerPhaseMatches binding (serviceSessionJournalPhase journal) ->
+                    Right accessors
+              _ -> Left "Target worker audit binding is unavailable or no longer issued"
+    }
+ where
+  workerPhaseMatches expected phase = case phase of
+    ServiceSessionLoginAttemptCommitted current -> current == expected
+    ServiceSessionActive current _ -> current == expected
+    _ -> False
+
 withClosedWorkerVaultSession
   :: TargetSecretWorkerOptions
   -> Text
@@ -1098,6 +1213,7 @@ withClosedWorkerVaultSession
   -> ( TargetWorkerProvisionalCompletion
        -> IO (Either TargetSecretWorkerRuntimeError ())
      )
+  -> (VaultKubernetesLoginResult -> IO (Either TargetSecretWorkerRuntimeError ServiceSessionBinding))
   -> ( VaultSession
        -> IO
             ( Either
@@ -1110,8 +1226,8 @@ withClosedWorkerVaultSession
            TargetSecretWorkerRuntimeError
            TargetWorkerOperationResult
        )
-withClosedWorkerVaultSession options serviceAccount serviceAccountUid _sessionFence provisionalBoundary action = mask $ \restore -> do
-  jwtResult <- readProjectedToken (targetSecretWorkerServiceAccountTokenFile options)
+withClosedWorkerVaultSession options serviceAccount serviceAccountUid _sessionFence provisionalBoundary authorizePreclean action = mask $ \restore -> do
+  jwtResult <- readTargetWorkerProjectedToken (targetSecretWorkerServiceAccountTokenFile options)
   case jwtResult of
     Left _ -> pure (Left TargetSecretWorkerVaultLoginUnavailable)
     Right jwt
@@ -1122,47 +1238,67 @@ withClosedWorkerVaultSession options serviceAccount serviceAccountUid _sessionFe
           case auditorResult of
             Left err -> pure (Left err)
             Right auditor -> do
-              precleaned <-
-                revokeAndProveVaultAccessorSubjectAbsent
-                  (workerAccessorAuditOps auditor)
-                  (workerAccessorSubject serviceAccountUid)
-                  Nothing
-              case precleaned of
-                Left _ -> pure (Left TargetSecretWorkerVaultSessionCleanupUnavailable)
-                Right () -> do
-                  acquired <- tryAny (restore (newWorkerVaultSession jwt))
-                  case acquired of
-                    Left exception -> do
-                      cleanup <- tryAny (auditWorkerSessions auditor serviceAccountUid Nothing)
-                      if isAsyncException exception
-                        then throwIO exception
-                        else pure (cleanupDominates TargetSecretWorkerVaultLoginUnavailable cleanup)
-                    Right (Left err) -> do
-                      cleanup <- tryAny (auditWorkerSessions auditor serviceAccountUid Nothing)
-                      pure (cleanupDominates err cleanup)
-                    Right (Right login) -> do
-                      attempted <- tryAny (restore (action (workerLoginSession login)))
-                      case attempted of
-                        Left _ ->
-                          finishLogin
-                            auditor
-                            login
-                            attempted
-                            (Right (Left TargetSecretWorkerUnhandledException))
-                            False
-                        Right outcome ->
-                          case provisionalCompletion (workerLoginAccessor login) outcome of
-                            Left err ->
-                              finishLogin
-                                auditor
-                                login
-                                attempted
-                                (Right (Left err))
-                                False
-                            Right completion -> do
-                              exchanged <- tryAny (restore (provisionalBoundary completion))
-                              finishLogin auditor login attempted exchanged True
+              admitted <- authorizePreclean auditor
+              case admitted of
+                Left err -> pure (Left err)
+                Right binding -> continueWithAuditor restore jwt auditor binding
  where
+  continueWithAuditor
+    :: (forall a. IO a -> IO a)
+    -> Text
+    -> VaultKubernetesLoginResult
+    -> ServiceSessionBinding
+    -> IO (Either TargetSecretWorkerRuntimeError TargetWorkerOperationResult)
+  continueWithAuditor restore jwt auditor binding = do
+    let auditOps =
+          guardTargetWorkerAuditInventory
+            ( vaultServiceSessionJournalRepository
+                workerVaultAddress
+                (vaultLoginToken auditor)
+                targetSecretWorkerVaultRole
+            )
+            binding
+            (workerAccessorAuditOps auditor)
+    precleaned <-
+      revokeAndProveVaultAccessorSubjectAbsent
+        auditOps
+        (workerAccessorSubject serviceAccountUid)
+        Nothing
+    case precleaned of
+      Left _ -> pure (Left TargetSecretWorkerVaultSessionCleanupUnavailable)
+      Right () -> do
+        acquired <- tryAny (restore (newWorkerVaultSession jwt))
+        case acquired of
+          Left exception -> do
+            cleanup <- tryAny (auditWorkerSessions auditOps serviceAccountUid Nothing)
+            if isAsyncException exception
+              then throwIO exception
+              else pure (cleanupDominates TargetSecretWorkerVaultLoginUnavailable cleanup)
+          Right (Left err) -> do
+            cleanup <- tryAny (auditWorkerSessions auditOps serviceAccountUid Nothing)
+            pure (cleanupDominates err cleanup)
+          Right (Right login) -> do
+            attempted <- tryAny (restore (action (workerLoginSession login)))
+            case attempted of
+              Left _ ->
+                finishLogin
+                  auditOps
+                  login
+                  attempted
+                  (Right (Left TargetSecretWorkerUnhandledException))
+                  False
+              Right outcome ->
+                case provisionalCompletion (workerLoginAccessor login) outcome of
+                  Left err ->
+                    finishLogin
+                      auditOps
+                      login
+                      attempted
+                      (Right (Left err))
+                      False
+                  Right completion -> do
+                    exchanged <- tryAny (restore (provisionalBoundary completion))
+                    finishLogin auditOps login attempted exchanged True
   provisionalCompletion accessor outcome = case outcome of
     Left err ->
       first
@@ -1179,7 +1315,7 @@ withClosedWorkerVaultSession options serviceAccount serviceAccountUid _sessionFe
             materialized
         )
 
-  finishLogin auditor login attempted exchanged provisionalEmitted = do
+  finishLogin auditOps login attempted exchanged provisionalEmitted = do
     _revoked <-
       tryAny
         ( fmap
@@ -1189,7 +1325,7 @@ withClosedWorkerVaultSession options serviceAccount serviceAccountUid _sessionFe
     absent <-
       tryAny
         ( auditWorkerSessions
-            auditor
+            auditOps
             serviceAccountUid
             (Just (workerLoginAccessor login))
         )
@@ -1402,14 +1538,14 @@ workerAccessorSubject serviceAccountUid =
     }
 
 auditWorkerSessions
-  :: VaultKubernetesLoginResult
+  :: VaultAccessorAuditOps IO
   -> TargetWorkerServiceAccountUid
   -> Maybe Text
   -> IO (Either TargetSecretWorkerRuntimeError ())
-auditWorkerSessions auditor serviceAccountUid maybeKnown =
+auditWorkerSessions auditOps serviceAccountUid maybeKnown =
   fmap (first (const TargetSecretWorkerVaultSessionCleanupUnavailable)) $
     revokeAndProveVaultAccessorSubjectAbsent
-      (workerAccessorAuditOps auditor)
+      auditOps
       (workerAccessorSubject serviceAccountUid)
       maybeKnown
 
@@ -1476,37 +1612,97 @@ currentTime = do
       | otherwise ->
           Right (authorityTimeFromMicros (fromInteger (floor (value * 1000000))))
 
-readPodUid
+readTargetWorkerPodUid
   :: FilePath -> IO (Either TargetSecretWorkerRuntimeError TargetWorkerPodUid)
-readPodUid path = do
-  attempted <- try (TextIO.readFile path) :: IO (Either IOException Text)
+readTargetWorkerPodUid path = do
+  attempted <-
+    readWorkerProjectedText (targetWorkerKubernetesUidMaximumCharacters + lineEndingCharacters) path
   pure $ case attempted of
+    Left WorkerProjectedFileTooLarge -> Left TargetSecretWorkerPodUidInvalid
     Left _ -> Left TargetSecretWorkerPodUidReadFailed
     Right raw ->
       first (const TargetSecretWorkerPodUidInvalid) (mkTargetWorkerPodUid (Text.strip raw))
 
-readPodName :: FilePath -> IO (Either TargetSecretWorkerRuntimeError Text)
-readPodName path = do
-  attempted <- try (TextIO.readFile path) :: IO (Either IOException Text)
+readTargetWorkerPodName :: FilePath -> IO (Either TargetSecretWorkerRuntimeError Text)
+readTargetWorkerPodName path = do
+  attempted <- readWorkerProjectedText (workerPodNameMaximumCharacters + lineEndingCharacters) path
   pure $ case attempted of
+    Left WorkerProjectedFileTooLarge -> Left TargetSecretWorkerPodNameInvalid
     Left _ -> Left TargetSecretWorkerPodNameReadFailed
     Right raw
-      | Text.null value || Text.length value > 253 -> Left TargetSecretWorkerPodNameInvalid
+      | Text.null value || Text.length value > workerPodNameMaximumCharacters ->
+          Left TargetSecretWorkerPodNameInvalid
       | Text.any (\character -> character <= ' ' || isControl character) value ->
           Left TargetSecretWorkerPodNameInvalid
       | otherwise -> Right value
      where
       value = Text.strip raw
 
-readProjectedToken :: FilePath -> IO (Either String Text)
-readProjectedToken path = do
-  attempted <- try (TextIO.readFile path) :: IO (Either IOException Text)
+readTargetWorkerProjectedToken :: FilePath -> IO (Either String Text)
+readTargetWorkerProjectedToken path = do
+  attempted <- readWorkerProjectedText workerProjectedTokenMaximumCharacters path
   pure $ case attempted of
-    Left err -> Left (displayException err)
+    Left WorkerProjectedFileTooLarge -> Left "projected token is too large"
+    Left WorkerProjectedFileInvalidUtf8 -> Left "projected token is not valid UTF-8"
+    Left WorkerProjectedFileNotRegular -> Left "projected token path is not a regular file"
+    Left WorkerProjectedFileUnavailable -> Left "projected token file is unavailable"
     Right raw
       | Text.null (Text.strip raw) -> Left "projected token is empty"
-      | Text.length raw > 32768 -> Left "projected token is too large"
       | otherwise -> Right (Text.strip raw)
+
+data WorkerProjectedFileError
+  = WorkerProjectedFileUnavailable
+  | WorkerProjectedFileNotRegular
+  | WorkerProjectedFileTooLarge
+  | WorkerProjectedFileInvalidUtf8
+
+workerProjectedTokenMaximumCharacters, workerPodNameMaximumCharacters, lineEndingCharacters :: Int
+workerProjectedTokenMaximumCharacters = 32768
+workerPodNameMaximumCharacters = 253
+lineEndingCharacters = Text.length "\r\n"
+
+-- Kubernetes projected files are regular files reached through symlinks.
+-- Check the opened descriptor, not the path, and never wait on a FIFO. Four
+-- bytes per Unicode character preserve the existing character-bound token.
+readWorkerProjectedText :: Int -> FilePath -> IO (Either WorkerProjectedFileError Text)
+readWorkerProjectedText maximumCharacters path = do
+  attempted <-
+    try
+      ( bracket
+          (openFd path ReadOnly (defaultFileFlags {nonBlock = True, cloexec = True}))
+          closeFd
+          readOpened
+      )
+      :: IO (Either IOException (Either WorkerProjectedFileError ByteString))
+  pure $ do
+    bytes <- either (const (Left WorkerProjectedFileUnavailable)) id attempted
+    raw <- first (const WorkerProjectedFileInvalidUtf8) (TextEncoding.decodeUtf8' bytes)
+    if Text.length raw > maximumCharacters
+      then Left WorkerProjectedFileTooLarge
+      else Right raw
+ where
+  maximumBytes = 4 * maximumCharacters
+  readOpened fd = do
+    status <- getFdStatus fd
+    if not (isRegularFile status)
+      then pure (Left WorkerProjectedFileNotRegular)
+      else
+        if fileSize status > fromIntegral maximumBytes
+          then pure (Left WorkerProjectedFileTooLarge)
+          else readWorkerProjectedBytes fd maximumBytes []
+
+readWorkerProjectedBytes
+  :: Fd -> Int -> [ByteString] -> IO (Either WorkerProjectedFileError ByteString)
+readWorkerProjectedBytes fd remaining chunks = do
+  attempted <- try (Posix.fdRead fd (fromIntegral (min 65536 (remaining + 1))))
+  case attempted of
+    Left err
+      | isEOFError err -> pure (Right (ByteString.concat (reverse chunks)))
+      | otherwise -> pure (Left WorkerProjectedFileUnavailable)
+    Right bytes
+      | ByteString.null bytes -> pure (Right (ByteString.concat (reverse chunks)))
+      | ByteString.length bytes > remaining -> pure (Left WorkerProjectedFileTooLarge)
+      | otherwise -> readWorkerProjectedBytes fd (remaining - ByteString.length bytes) (bytes : chunks)
 
 stdioProvisionalBoundary
   :: TargetWorkerProvisionalCompletion

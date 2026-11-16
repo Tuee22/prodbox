@@ -2,8 +2,10 @@ module LifecycleAuthorityEpochCoordinator (lifecycleAuthorityEpochCoordinatorSui
 
 import Control.Monad (unless)
 import Data.IORef
+import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
 import EpochPromotionFixture
+import Numeric.Natural (Natural)
 import Prodbox.Lifecycle.Authority.Admission
 import Prodbox.Lifecycle.Authority.EpochPromotion
 import Prodbox.Lifecycle.Authority.EpochPromotionCoordinator
@@ -36,6 +38,7 @@ data Fake = Fake
   , fakeDrift :: IORef Bool
   , fakeObservations :: IORef Int
   , fakeSubmissions :: IORef Int
+  , fakeTargetReadbacks :: IORef (Map.Map CutoverSubstrate Natural)
   }
 
 newFake :: IO Fake
@@ -48,6 +51,7 @@ newFake =
     <*> newIORef False
     <*> newIORef 0
     <*> newIORef 0
+    <*> newIORef Map.empty
 
 boundary :: Fake -> PromotionBoundary IO String
 boundary fake =
@@ -71,6 +75,9 @@ boundary fake =
     , boundaryPhysical = \_ transition _ -> modifyIORef' (fakePhysical fake) (<> [transition]) >> pure (Right ())
     , boundarySubmit = \_ request -> do
         modifyIORef' (fakeSubmissions fake) (+ 1)
+        case targetReadbackSubstrate (promotionRequestAction request) of
+          Nothing -> pure ()
+          Just substrate -> modifyIORef' (fakeTargetReadbacks fake) (Map.insertWith (+) substrate 1)
         aggregate <- readIORef (fakeAggregate fake)
         let (decision, next) = stepAuthorityAdmission aggregate (ApplyAuthorityMigration (ApplyPreparedEpochPromotion request))
         case decision of
@@ -83,6 +90,20 @@ boundary fake =
           AuthorityMigrationDecided MigrationAlreadyApplied -> pure (Right ())
           other -> pure (Left (show other))
     }
+
+targetReadbackSubstrate :: EpochPromotionAction -> Maybe CutoverSubstrate
+targetReadbackSubstrate action = case action of
+  ObservePreparedEpochBinding readback -> targetBinding (readbackBinding readback)
+  ObserveOldEpochRejected readback _ -> targetBinding (readbackBinding readback)
+  ObservePromotedEpochBinding readback -> targetBinding (readbackBinding readback)
+  ObservePreparedEpochBindingAbsent binding -> targetBinding binding
+  CommitFrozenEpoch -> Nothing
+  OpenEpochAdmission -> Nothing
+  BeginPreparedEpochRollback -> Nothing
+  FinishPreparedEpochRollback -> Nothing
+ where
+  targetBinding (PendingAcceptedAuthorityBinding substrate) = Just substrate
+  targetBinding _ = Nothing
 
 lifecycleAuthorityEpochCoordinatorSuite :: SuiteBuilder ()
 lifecycleAuthorityEpochCoordinatorSuite = describe "Sprint 6.5 staged epoch coordinator" $ do
@@ -103,6 +124,7 @@ coordinatorControls = do
     )
   observations <- readIORef (fakeObservations normal)
   submissions <- readIORef (fakeSubmissions normal)
+  targetReadbacks <- readIORef (fakeTargetReadbacks normal)
   let schedule =
         either
           (error . show)
@@ -113,6 +135,7 @@ coordinatorControls = do
     ( Schedule.scheduleAuthorityObservations schedule == fromIntegral observations
         && Schedule.scheduleAuthoritySubmissions schedule == fromIntegral submissions
         && Schedule.schedulePhysicalActions schedule == fromIntegral (length effects)
+        && Schedule.scheduleTargetBindingReadbacks schedule == targetReadbacks
     )
   assert
     "observation schedule omitted an expected boundary"
@@ -130,11 +153,13 @@ coordinatorControls = do
   beforeResume <- readIORef (fakePhysical interrupted)
   observationsBeforeResume <- readIORef (fakeObservations interrupted)
   submissionsBeforeResume <- readIORef (fakeSubmissions interrupted)
+  targetBeforeResume <- readIORef (fakeTargetReadbacks interrupted)
   resumed <- runPromotion (boundary interrupted) context CompletePromotion
   assert "frozen promotion did not resume" (resumed == Right PromotionAdmissionObserved)
   afterResume <- readIORef (fakePhysical interrupted)
   observationsAfterResume <- readIORef (fakeObservations interrupted)
   submissionsAfterResume <- readIORef (fakeSubmissions interrupted)
+  targetAfterResume <- readIORef (fakeTargetReadbacks interrupted)
   let frozenSchedule =
         either
           (error . show)
@@ -148,6 +173,13 @@ coordinatorControls = do
           == fromIntegral (submissionsAfterResume - submissionsBeforeResume)
         && Schedule.schedulePhysicalActions frozenSchedule
           == fromIntegral (length afterResume - length beforeResume)
+        && Schedule.scheduleTargetBindingReadbacks frozenSchedule
+          == Map.filter
+            (> 0)
+            ( Map.mapWithKey
+                (\key value -> value - Map.findWithDefault 0 key targetBeforeResume)
+                targetAfterResume
+            )
     )
   assert
     "resume repeated preparation"
@@ -161,6 +193,7 @@ coordinatorControls = do
   retiredEffects <- readIORef (fakePhysical rollback)
   retiredObservations <- readIORef (fakeObservations rollback)
   retiredSubmissions <- readIORef (fakeSubmissions rollback)
+  retiredTargetReadbacks <- readIORef (fakeTargetReadbacks rollback)
   let retireSchedule =
         either
           (error . show)
@@ -171,6 +204,7 @@ coordinatorControls = do
     ( Schedule.scheduleAuthorityObservations retireSchedule == fromIntegral retiredObservations
         && Schedule.scheduleAuthoritySubmissions retireSchedule == fromIntegral retiredSubmissions
         && Schedule.schedulePhysicalActions retireSchedule == fromIntegral (length retiredEffects)
+        && Schedule.scheduleTargetBindingReadbacks retireSchedule == retiredTargetReadbacks
     )
   assert
     "retirement did not cover exact topology"

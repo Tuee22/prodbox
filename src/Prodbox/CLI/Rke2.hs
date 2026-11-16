@@ -2,7 +2,8 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 module Prodbox.CLI.Rke2
-  ( acmeRuntimeManifestWith
+  ( clusterResourceStatusWith
+  , acmeRuntimeManifestWith
   , ensureAcmeRuntimeForSubstrate
   , acmeClusterIssuerSpec
   , acmeClusterIssuerSpecFor
@@ -1223,13 +1224,9 @@ runClusterStatus repoRoot = do
     Left err -> failWith err
     Right serviceOutput -> do
       writeOutputLine ("RKE2_SERVICE=" ++ serviceStatusLine serviceOutput)
-      statusLines <-
-        either
-          (\err -> pure ["RESOURCE_PLAN=unavailable:" ++ err])
-          (resourceStatusLines repoRoot defaultResourceStatusRoot)
-          defaultResourceStatusPlan
-      mapM_ writeOutputLine statusLines
       settingsResult <- validateAndLoadSettings repoRoot
+      statusLines <- clusterResourceStatusWith observeHostCapacity repoRoot settingsResult
+      mapM_ writeOutputLine statusLines
       case settingsResult of
         Left err -> failWith err
         Right settings -> do
@@ -1243,33 +1240,31 @@ runClusterStatus repoRoot = do
     case trimWhitespace (processStdout output) of
       "" -> trimWhitespace (outputDetail output)
       status -> status
-  -- Sprint 1.88: this used to fabricate a whole `ValidatedSettings` — the only
-  -- production site that constructed one without running `validateConfig` — so
-  -- that it could pass it to a function reading two of its four fields. Two
-  -- `error` calls on a `prodbox cluster status` path went with it. The status
-  -- reader now takes exactly what it reads, so there is nothing left to
-  -- fabricate and the compile failure is a value this arm renders.
-  defaultResourceStatusRoot = ".data"
-  defaultResourceStatusPlan =
-    mapLeftToString
-      CapacityAllocation.renderCompileError
-      (CapacityAllocation.compileResourcePlanUncertified Capacity.defaultResourcePlan)
 
-mapLeftToString :: (err -> String) -> Either err right -> Either String right
-mapLeftToString render value = case value of
-  Left err -> Left (render err)
-  Right result -> Right result
+-- | Project only the validated configuration used by the status command. A
+-- missing configuration cannot turn portable defaults into authored evidence.
+clusterResourceStatusWith
+  :: (FilePath -> FilePath -> IO (Either String ObservedHost.ObservedHostRoot))
+  -> FilePath
+  -> Either String ValidatedSettings
+  -> IO [String]
+clusterResourceStatusWith observe repoRoot settingsResult = case settingsResult of
+  Left _ -> pure ["RESOURCE_PLAN=unavailable:configuration"]
+  Right settings ->
+    resourceStatusLinesWith
+      observe
+      repoRoot
+      (resolvedManualPvHostRoot settings)
+      (validatedAllocatedPlan settings)
 
--- | Sprint 1.88: takes the allocated plan and the manual PV root it actually
--- reads, rather than a whole 'ValidatedSettings' of which it read two fields.
---
--- The narrowing is what lets `ValidatedSettings` have exactly one production
--- constructor: the wide signature was the entire reason
--- `prodbox cluster status` fabricated a record no validation had produced.
-resourceStatusLines
-  :: FilePath -> FilePath -> CapacityAllocation.SomeAllocatedPlan -> IO [String]
-resourceStatusLines repoRoot manualPvHostRoot allocatedPlan = do
-  observedResult <- observeHostCapacity repoRoot manualPvHostRoot
+resourceStatusLinesWith
+  :: (FilePath -> FilePath -> IO (Either String ObservedHost.ObservedHostRoot))
+  -> FilePath
+  -> FilePath
+  -> CapacityAllocation.SomeAllocatedPlan
+  -> IO [String]
+resourceStatusLinesWith observe repoRoot manualPvHostRoot allocatedPlan = do
+  observedResult <- observe repoRoot manualPvHostRoot
   let plan = case allocatedPlan of
         CapacityAllocation.SomeAllocatedPlan _ allocated ->
           CapacityAllocation.allocatedPlanSource allocated

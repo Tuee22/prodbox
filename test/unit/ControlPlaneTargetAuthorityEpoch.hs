@@ -1,4 +1,6 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -10,6 +12,7 @@ module ControlPlaneTargetAuthorityEpoch
   , newEpochFixture
   ) where
 
+import Codec.Serialise (Serialise)
 import Control.Concurrent.MVar (newEmptyMVar, readMVar)
 import Control.Exception (AsyncException (ThreadKilled), throwIO, try)
 import Control.Monad (forM_, void, when)
@@ -22,6 +25,7 @@ import Data.Map.Strict qualified as Map
 import Data.Maybe (fromJust)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
+import GHC.Generics (Generic)
 import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.AuthenticatedRoleInterpreter qualified as Role
 import Prodbox.ControlPlane.AuthenticatedTransport qualified as Transport
@@ -81,7 +85,10 @@ import Prodbox.Http.Client
   ( HttpBoundedError (HttpBoundedTransport)
   , HttpError (HttpConnectionFailure)
   )
-import Prodbox.Http.ReplyStatus (ReplyStatus (ReplyOk, ReplyServiceUnavailable), replyStatusCode)
+import Prodbox.Http.ReplyStatus
+  ( ReplyStatus (ReplyConflict, ReplyOk, ReplyServiceUnavailable)
+  , replyStatusCode
+  )
 import Prodbox.Lifecycle.Authority.Admission
   ( initialCleanInstallAuthorityWithRegisteredClients
   , retireAuthorityRpcKey
@@ -112,6 +119,7 @@ import Prodbox.Vault.Session
   , VaultSessionError (VaultSessionUnavailable)
   , newVaultSession
   )
+import System.Timeout (timeout)
 import TestSupport
 
 controlPlaneTargetAuthorityEpochSuite :: SuiteBuilder ()
@@ -145,6 +153,13 @@ controlPlaneTargetAuthorityEpochSuite =
           requestEnd = authorityTimeFromMicros 2000
           nonce = mustRight (Authentication.mkRequestNonce (ByteString.replicate 16 1))
           otherNonce = mustRight (Authentication.mkRequestNonce (ByteString.replicate 16 2))
+          signedBody =
+            LazyByteString.toStrict
+              ( Codec.encodeControlPlaneRequest
+                  ( TargetAuthorityTrustRequest
+                      (mustRight (encodeTargetEpochRequest (TargetEpochObserveSigned TargetAcmeEab)))
+                  )
+              )
           requestFor value =
             mustRight
               ( Authentication.signControlPlaneRequest
@@ -155,9 +170,16 @@ controlPlaneTargetAuthorityEpochSuite =
                   epoch
                   requestEnd
                   value
-                  "staging-control"
+                  signedBody
               )
-          verified = verifiedEpochRequest LifecycleAuthorityRuntime "home" TargetSecretTrustInstall 1 2000
+          verified =
+            verifiedEpochRequestWithBody
+              LifecycleAuthorityRuntime
+              "home"
+              TargetSecretTrustInstall
+              1
+              2000
+              signedBody
           capability = Authentication.localRequestSigningCapability targetSigner
           trusted = Authentication.trustedRequestKeyFromSigner targetSigner
       signed <-
@@ -203,6 +225,40 @@ controlPlaneTargetAuthorityEpochSuite =
         `shouldReturn` Left TargetResponse.TargetResponseStatusInvalid
       TargetResponse.signTargetAuthenticatedResponse 2 localAgent capability verified 200 "prepared"
         `shouldReturn` Left TargetResponse.TargetResponseBodyTooLarge
+      let unsignedBody =
+            LazyByteString.toStrict
+              ( Codec.encodeControlPlaneRequest
+                  ( TargetAuthorityTrustRequest
+                      (mustRight (encodeTargetEpochRequest (TargetEpochObserve TargetAcmeEab)))
+                  )
+              )
+          unsigned =
+            verifiedEpochRequestWithBody
+              LifecycleAuthorityRuntime
+              "home"
+              TargetSecretTrustInstall
+              1
+              2000
+              unsignedBody
+      TargetResponse.signTargetAuthenticatedResponse 128 localAgent capability unsigned 200 "prepared"
+        `shouldReturn` Left TargetResponse.TargetResponseRequestRefused
+      let mutationBody =
+            LazyByteString.toStrict
+              ( Codec.encodeControlPlaneRequest
+                  ( TargetAuthorityTrustRequest
+                      (mustRight (encodeTargetEpochRequest (TargetEpochMutate (PrepareTargetAuthorityEpoch preparation))))
+                  )
+              )
+          mutation =
+            verifiedEpochRequestWithBody
+              LifecycleAuthorityRuntime
+              "home"
+              TargetSecretTrustInstall
+              1
+              2000
+              mutationBody
+      TargetResponse.signTargetAuthenticatedResponse 128 localAgent capability mutation 200 "prepared"
+        `shouldReturn` Left TargetResponse.TargetResponseRequestRefused
 
     it "signs an actual Target observation only for the verified request" $ do
       fixture <- newEpochFixture prepared
@@ -226,7 +282,7 @@ controlPlaneTargetAuthorityEpochSuite =
           requestEnd = authorityTimeFromMicros 2000
           nonce = mustRight (Authentication.mkRequestNonce (ByteString.replicate 16 1))
           otherNonce = mustRight (Authentication.mkRequestNonce (ByteString.replicate 16 2))
-          inner = mustRight (encodeTargetEpochRequest (TargetEpochObserve TargetAcmeEab))
+          inner = mustRight (encodeTargetEpochRequest (TargetEpochObserveSigned TargetAcmeEab))
           body = LazyByteString.toStrict (Codec.encodeControlPlaneRequest (TargetAuthorityTrustRequest inner))
           signedFor value =
             mustRight
@@ -275,7 +331,7 @@ controlPlaneTargetAuthorityEpochSuite =
             mustRight
               (TargetResponse.verifyTargetAuthenticatedResponse 65536 localAgent trusted (signedFor nonce) envelope)
       decodeTargetEpochClientResponse
-        (TargetEpochObserve TargetAcmeEab)
+        (TargetEpochObserveSigned TargetAcmeEab)
         (Client.ControlPlaneResponse (fromIntegral status) response)
         `shouldBe` Right (TargetEpochObserved TargetAcmeEab (Just (1, prepared)))
       TargetResponse.verifyTargetAuthenticatedResponse
@@ -294,7 +350,137 @@ controlPlaneTargetAuthorityEpochSuite =
           (Authentication.localRequestSigningCapability authoritySigner)
           verified
       rejected `shouldBe` Just (Left TargetResponse.TargetResponseSignerRefused)
+      failedDispatch <-
+        targetEpochNegotiatedHandler
+          65536
+          65536
+          localAgent
+          (epochInterpreter fixture)
+          (Authentication.localRequestSigningCapability authoritySigner)
+          verified
+      fmap fst failedDispatch `shouldBe` Just ReplyServiceUnavailable
       fixtureRecord (epochRows fixture) `shouldReturn` prepared
+      readIORef (rowWrites (epochRows fixture)) `shouldReturn` 0
+
+    it "bounds signed observation and signing by the original request deadline" $ do
+      fixture <- newEpochFixture prepared
+      rowReads <- newIORef (0 :: Int)
+      writeIORef (rowReadHook (epochRows fixture)) (\_ -> modifyIORef' rowReads (+ 1))
+      let inner = mustRight (encodeTargetEpochRequest (TargetEpochObserveSigned TargetAcmeEab))
+          body = LazyByteString.toStrict (Codec.encodeControlPlaneRequest (TargetAuthorityTrustRequest inner))
+          verified = verifiedSignedEpochRequest 2000000 body
+          targetSigner =
+            mustRight
+              ( Authentication.mkRequestSigner
+                  (Authentication.CallerService TargetSecretAgentRuntime)
+                  (mustRight (Authentication.mkSigningKeyGeneration 1))
+                  (ByteString.replicate 32 41)
+              )
+          capability = Authentication.localRequestSigningCapability targetSigner
+          call clock signer =
+            targetEpochDeadlineBoundedHandler
+              65536
+              65536
+              localAgent
+              (epochInterpreter fixture)
+              signer
+              clock
+              verified
+          refusal = Just (ReplyServiceUnavailable, "signed-observation-refused")
+      success <- call (pure (Right now)) capability
+      fmap fst success `shouldBe` Just ReplyOk
+      readIORef rowReads `shouldReturn` 1
+      writeIORef rowReads 0
+      call (pure (Right (authorityTimeFromMicros 2000000))) capability `shouldReturn` refusal
+      call (pure (Left "clock unavailable")) capability `shouldReturn` refusal
+      readIORef rowReads `shouldReturn` 0
+      clockReads <- newIORef (0 :: Int)
+      let closingExpired = do
+            count <- atomicModifyIORef' clockReads (\value -> (value + 1, value))
+            pure (Right (if count == 0 then now else authorityTimeFromMicros 2000000))
+      call closingExpired capability `shouldReturn` refusal
+      readIORef rowReads `shouldReturn` 1
+      readIORef (rowWrites (epochRows fixture)) `shouldReturn` 0
+      let unsignedInner = mustRight (encodeTargetEpochRequest (TargetEpochObserve TargetAcmeEab))
+          unsignedBody =
+            LazyByteString.toStrict
+              (Codec.encodeControlPlaneRequest (TargetAuthorityTrustRequest unsignedInner))
+          unsignedRequest = verifiedSignedEpochRequest 2000000 unsignedBody
+      unsigned <-
+        targetEpochDeadlineBoundedHandler
+          65536
+          65536
+          localAgent
+          (epochInterpreter fixture)
+          capability
+          (throwIO ThreadKilled)
+          unsignedRequest
+      fmap fst unsigned `shouldBe` Just ReplyOk
+
+    it "times out a stalled signer and propagates cancellation" $ do
+      fixture <- newEpochFixture prepared
+      started <- newIORef (0 :: Int)
+      blocked <- newEmptyMVar
+      let inner = mustRight (encodeTargetEpochRequest (TargetEpochObserveSigned TargetAcmeEab))
+          body = LazyByteString.toStrict (Codec.encodeControlPlaneRequest (TargetAuthorityTrustRequest inner))
+          verified = verifiedSignedEpochRequest 50000 body
+          signer =
+            mustRight
+              ( Authentication.mkRequestSigner
+                  (Authentication.CallerService TargetSecretAgentRuntime)
+                  (mustRight (Authentication.mkSigningKeyGeneration 1))
+                  (ByteString.replicate 32 41)
+              )
+          makeCapability action =
+            mustRight
+              ( Authentication.mkRequestSigningCapability
+                  (Authentication.CallerService TargetSecretAgentRuntime)
+                  (mustRight (Authentication.mkSigningKeyGeneration 1))
+                  (Authentication.requestSignerPublicKeyBytes signer)
+                  action
+              )
+          call capability =
+            targetEpochDeadlineBoundedHandler
+              65536
+              65536
+              localAgent
+              (epochInterpreter fixture)
+              capability
+              (pure (Right now))
+              verified
+          stalled _ = modifyIORef' started (+ 1) >> readMVar blocked
+      old <-
+        timeout
+          30000
+          ( targetEpochNegotiatedHandler
+              65536
+              65536
+              localAgent
+              (epochInterpreter fixture)
+              (makeCapability stalled)
+              verified
+          )
+      old `shouldBe` Nothing
+      readIORef started `shouldReturn` 1
+      call (makeCapability stalled)
+        `shouldReturn` Just (ReplyServiceUnavailable, "signed-observation-refused")
+      readIORef started `shouldReturn` 2
+      cancelled <- try (call (makeCapability (\_ -> throwIO ThreadKilled)))
+      cancelled `shouldBe` Left ThreadKilled
+      readIORef (rowWrites (epochRows fixture)) `shouldReturn` 0
+
+    it "refuses a signed observation on the unsigned-only handler without reading the row" $ do
+      fixture <- newEpochFixture initial
+      readCount <- newIORef (0 :: Int)
+      writeIORef (rowReadHook (epochRows fixture)) (\_ -> modifyIORef' readCount (+ 1))
+      let inner = mustRight (encodeTargetEpochRequest (TargetEpochObserveSigned TargetAcmeEab))
+          body = LazyByteString.toStrict (Codec.encodeControlPlaneRequest (TargetAuthorityTrustRequest inner))
+          verified =
+            verifiedEpochRequestWithBody LifecycleAuthorityRuntime "home" TargetSecretTrustInstall 1 2000 body
+      response <- targetEpochVerifiedHandler 65536 localAgent (epochInterpreter fixture) verified
+      fmap fst response `shouldBe` Just ReplyConflict
+      readIORef readCount `shouldReturn` 0
+      fixtureRecord (epochRows fixture) `shouldReturn` initial
       readIORef (rowWrites (epochRows fixture)) `shouldReturn` 0
 
     it "retains the predecessor without admitting old or pending workers during preparation" $ do
@@ -768,8 +954,53 @@ epochExecutionSuite = do
     result <- execute fixture 1 (RetireTargetAuthorityEpoch preparation)
     targetEpochMutationRecord (mustRight result) `shouldBe` retired
 
+-- Frozen predecessor of the staging wire sum, retained independently of the
+-- production constructor list so an added request cannot rewrite old bytes.
+data FrozenTargetEpochWire
+  = FrozenPrepare !ByteString.ByteString
+  | FrozenPromote !ByteString.ByteString
+  | FrozenRetire !ByteString.ByteString
+  | FrozenObserve !TargetSecretId
+  deriving (Show, Generic, Serialise)
+
 epochProtocolSuite :: SuiteBuilder ()
 epochProtocolSuite = do
+  it "preserves the previous staging request bytes after adding signed observations" $ do
+    let payload = mustRight (encodeTargetAuthorityEpochPreparation preparation)
+        pairs =
+          [ (TargetEpochMutate (PrepareTargetAuthorityEpoch preparation), FrozenPrepare payload)
+          , (TargetEpochMutate (PromoteTargetAuthorityEpoch preparation), FrozenPromote payload)
+          , (TargetEpochMutate (RetireTargetAuthorityEpoch preparation), FrozenRetire payload)
+          , (TargetEpochObserve TargetAcmeEab, FrozenObserve TargetAcmeEab)
+          ]
+    forM_ pairs $ \(request, frozen) ->
+      encodeTargetEpochRequest request
+        `shouldBe` Right
+          ("prodbox-target-epoch\NUL" <> LazyByteString.toStrict (Codec.encodeControlPlaneRequest frozen))
+    let signed = mustRight (encodeTargetEpochRequest (TargetEpochObserveSigned TargetAcmeEab))
+        payloadBytes = ByteString.drop (ByteString.length "prodbox-target-epoch\NUL") signed
+        predecessorDecode =
+          Codec.decodeControlPlaneRequest 65536 (LazyByteString.fromStrict payloadBytes)
+            :: Either Codec.ControlPlaneRequestCodecError FrozenTargetEpochWire
+    predecessorDecode `shouldSatisfy` isLeft
+
+  it
+    "classifies both observation forms for fresh-nonce replay without signing legacy or mutation requests"
+    $ do
+      let body request =
+            LazyByteString.toStrict
+              ( Codec.encodeControlPlaneRequest
+                  (TargetAuthorityTrustRequest (mustRight (encodeTargetEpochRequest request)))
+              )
+          classified predicate request = predicate 65536 TargetSecretAgentRuntime TargetSecretTrustInstall (body request)
+          legacy = TargetEpochObserve TargetAcmeEab
+          signed = TargetEpochObserveSigned TargetAcmeEab
+          mutation = TargetEpochMutate (PrepareTargetAuthorityEpoch preparation)
+      map (classified isTargetEpochObservationForRole) [legacy, signed, mutation]
+        `shouldBe` [True, True, False]
+      map (classified isSignedTargetEpochObservationForRole) [legacy, signed, mutation]
+        `shouldBe` [False, True, False]
+
   it "preserves the banked legacy trust request encoding" $
     Base64.encode
       (LazyByteString.toStrict (Codec.encodeControlPlaneRequest (TargetAuthorityTrustRequest "accepted")))
@@ -792,6 +1023,7 @@ epochProtocolSuite = do
     , TargetEpochMutate (PromoteTargetAuthorityEpoch preparation)
     , TargetEpochMutate (RetireTargetAuthorityEpoch preparation)
     , TargetEpochObserve TargetAcmeEab
+    , TargetEpochObserveSigned TargetAcmeEab
     ]
     $ \request ->
       it "round-trips a bounded canonical staging request" $ do
@@ -903,6 +1135,15 @@ epochResponse status response =
 
 epochAuthenticatedSuite :: SuiteBuilder ()
 epochAuthenticatedSuite = do
+  it "records the legacy unsigned Target response-substitution counterexample" $ do
+    fixture <- newEpochFixture initial
+    boundary <- newAuthenticatedEpochFixture fixture
+    writeIORef (fixtureTamper boundary) True
+    observeTargetAuthorityEpochWithClient (authenticatedEpochClient boundary) TargetAcmeEab
+      `shouldReturn` Right (Just (1, prepared))
+    fixtureRecord (epochRows fixture) `shouldReturn` initial
+    readIORef (rowWrites (epochRows fixture)) `shouldReturn` 0
+
   it
     "binds a verified Target observation to the Authority snapshot that selected its key"
     snapshotSignedControl
@@ -910,6 +1151,43 @@ epochAuthenticatedSuite = do
   it
     "authenticates Target observations and refuses substitution and fresh-nonce replay"
     supportedSignedControl
+
+  it "serves both observation formats and refuses signed requests on the legacy handler" $ do
+    fixture <- newEpochFixture initial
+    readCount <- newIORef (0 :: Int)
+    writeIORef (rowReadHook (epochRows fixture)) (\_ -> modifyIORef' readCount (+ 1))
+    staged <- newAuthenticatedEpochFixtureWithSignedResponses True fixture
+    observeTargetAuthorityEpochWithClient (authenticatedEpochClient staged) TargetAcmeEab
+      `shouldReturn` Right (Just (1, initial))
+    observeTargetAuthorityEpochWithVerifiedResponse
+      (authenticatedEpochTransport staged)
+      localAgent
+      (fixtureTargetKey staged)
+      TargetAcmeEab
+      `shouldReturn` Right (Just (1, initial))
+    frames <- readIORef (authenticatedEpochFrames staged)
+    countBeforeReplay <- readIORef readCount
+    case reverse frames of
+      signedFrame : _ ->
+        authenticatedEpochSend staged signedFrame
+          `shouldReturn` Right (409, "authenticated-read-replay-requires-fresh-nonce\n")
+      [] -> expectationFailure "signed observation did not send a frame"
+    readIORef readCount `shouldReturn` countBeforeReplay
+    observeTargetAuthorityEpochWithVerifiedResponse
+      (authenticatedEpochTransport staged)
+      localAgent
+      (fixtureTargetKey staged)
+      TargetAcmeEab
+      `shouldReturn` Right (Just (1, initial))
+    readIORef readCount >>= (`shouldSatisfy` (> countBeforeReplay))
+    legacy <- newAuthenticatedEpochFixture fixture
+    observeTargetAuthorityEpochWithVerifiedResponse
+      (authenticatedEpochTransport legacy)
+      localAgent
+      (fixtureTargetKey legacy)
+      TargetAcmeEab
+      >>= (`shouldSatisfy` isLeft)
+    readIORef (rowWrites (epochRows fixture)) `shouldReturn` 0
 
   it "prepares and promotes through the authenticated client and actual staging handler" $ do
     fixture <- newEpochFixture initial
@@ -1194,19 +1472,14 @@ newAuthenticatedEpochFixtureForAgent signedMode respondingAgent fixture = do
           (isTargetEpochObservationForRole 65536)
           ( \verified ->
               if signedMode
-                then do
-                  outcome <-
-                    targetEpochSignedObservationHandler
-                      65536
-                      targetAuthorityTrustResponseMaximumBytes
-                      respondingAgent
-                      (epochInterpreter fixture)
-                      targetCapability
-                      verified
-                  pure $ case outcome of
-                    Nothing -> Nothing
-                    Just (Left _) -> Just (ReplyServiceUnavailable, "signed-observation-refused")
-                    Just (Right envelope) -> Just (ReplyOk, envelope)
+                then
+                  targetEpochNegotiatedHandler
+                    65536
+                    targetAuthorityTrustResponseMaximumBytes
+                    respondingAgent
+                    (epochInterpreter fixture)
+                    targetCapability
+                    verified
                 else targetEpochVerifiedHandler 65536 respondingAgent (epochInterpreter fixture) verified
           )
           bounds
@@ -1321,6 +1594,17 @@ verifiedEpochRequest
   -> Natural
   -> Authentication.VerifiedControlPlaneRequest
 verifiedEpochRequest caller scopeText route epochValue requestMicros =
+  verifiedEpochRequestWithBody caller scopeText route epochValue requestMicros "staging-control"
+
+verifiedEpochRequestWithBody
+  :: RuntimeRole
+  -> Text.Text
+  -> ControlPlaneRoute
+  -> Natural
+  -> Natural
+  -> ByteString.ByteString
+  -> Authentication.VerifiedControlPlaneRequest
+verifiedEpochRequestWithBody caller scopeText route epochValue requestMicros body =
   mustRight
     ( Authentication.decodeAndVerifyControlPlaneRequest
         65536
@@ -1349,7 +1633,7 @@ verifiedEpochRequest caller scopeText route epochValue requestMicros =
           epoch
           requestDeadline
           nonce
-          "staging-control"
+          body
       )
   context =
     mustRight
@@ -1363,6 +1647,53 @@ verifiedEpochRequest caller scopeText route epochValue requestMicros =
           nonce
           now
           (mustRight (authorityDurationFromMicros 3000))
+      )
+
+verifiedSignedEpochRequest
+  :: Natural -> ByteString.ByteString -> Authentication.VerifiedControlPlaneRequest
+verifiedSignedEpochRequest requestMicros body =
+  mustRight
+    ( Authentication.decodeAndVerifyControlPlaneRequest
+        65536
+        context
+        (Authentication.encodeSignedControlPlaneRequest signed)
+    )
+ where
+  signer =
+    mustRight
+      ( Authentication.mkRequestSigner
+          (Authentication.CallerService LifecycleAuthorityRuntime)
+          (mustRight (Authentication.mkSigningKeyGeneration 1))
+          (ByteString.pack [0 .. 31])
+      )
+  scope = mustRight (Coordinate.mkAuthorityScope "home")
+  epoch = fromJust (Genesis.authorityEpochFromValue 1)
+  requestEnd = authorityTimeFromMicros requestMicros
+  nonce = mustRight (Authentication.mkRequestNonce (ByteString.replicate 16 1))
+  signed =
+    mustRight
+      ( Authentication.signControlPlaneRequest
+          signer
+          TargetSecretTrustInstall
+          TargetSecretAgentRuntime
+          scope
+          epoch
+          requestEnd
+          nonce
+          body
+      )
+  context =
+    mustRight
+      ( Authentication.mkRequestVerificationContext
+          (Authentication.trustedRequestKeyFromSigner signer)
+          TargetSecretTrustInstall
+          TargetSecretAgentRuntime
+          scope
+          epoch
+          requestEnd
+          nonce
+          now
+          (mustRight (authorityDurationFromMicros 3000000))
       )
 
 data RowWriteMode = RowReplyReceived | RowReplyLost | RowPreparationWins

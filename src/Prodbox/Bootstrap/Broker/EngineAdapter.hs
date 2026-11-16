@@ -296,6 +296,7 @@ engineSecretWorkerErrorName failure = case failure of
     "CheckpointPermitMutationMismatch"
   EngineSecretWorkerCheckpointPermitFenceMismatch -> "CheckpointPermitFenceMismatch"
   EngineSecretWorkerCheckpointPermitDeadlineElapsed -> "CheckpointPermitDeadlineElapsed"
+  EngineSecretWorkerRecoveryDeadlineElapsed -> "RecoveryDeadlineElapsed"
   EngineSecretWorkerCheckpointWriteConflict -> "CheckpointWriteConflict"
   EngineSecretWorkerCheckpointWriteMismatch -> "CheckpointWriteMismatch"
   EngineSecretWorkerCheckpointReadBackMismatch -> "CheckpointReadBackMismatch"

@@ -883,14 +883,14 @@ runGeneratedArtifactLint repoRoot writeEnabled = do
 -- (@documents\/documentation_standards.md § 4@), not authored.
 runGovernedDocChecks :: FilePath -> IO [String]
 runGovernedDocChecks repoRoot = do
-  harmonyViolations <- checkGeneratedSectionsHarmony repoRoot
-  linkViolations <- checkGovernedDocRelativeLinks repoRoot
-  statusViolations <- checkGovernedDocStatusValues repoRoot
-  citedPathViolations <- checkPlanCitedSourcePaths repoRoot
-  sectionCitationViolations <- checkDoctrineSectionCitations repoRoot
-  sprintFieldViolations <- checkSprintRequiredFields repoRoot
-  dependencyDirectionViolations <- checkPlanDependencyDirection repoRoot
-  resumeLedgerViolations <- checkDevelopmentPlanResumeLedger repoRoot
+  harmonyViolations <- forceViolationFindings (checkGeneratedSectionsHarmony repoRoot)
+  linkViolations <- forceViolationFindings (checkGovernedDocRelativeLinks repoRoot)
+  statusViolations <- forceViolationFindings (checkGovernedDocStatusValues repoRoot)
+  citedPathViolations <- forceViolationFindings (checkPlanCitedSourcePaths repoRoot)
+  sectionCitationViolations <- forceViolationFindings (checkDoctrineSectionCitations repoRoot)
+  sprintFieldViolations <- forceViolationFindings (checkSprintRequiredFields repoRoot)
+  dependencyDirectionViolations <- forceViolationFindings (checkPlanDependencyDirection repoRoot)
+  resumeLedgerViolations <- forceViolationFindings (checkDevelopmentPlanResumeLedger repoRoot)
   pure
     ( harmonyViolations
         ++ linkViolations
@@ -10192,7 +10192,9 @@ checkDoctrineSectionCitations repoRoot = do
   sectionsByDoc <-
     forM docPaths $ \path -> do
       contents <- readFileStrict (repoRoot </> path)
-      pure (takeFileNameSimple path, documentSectionNumbers contents)
+      let numbers = documentSectionNumbers contents
+      _ <- evaluate (sum (map length numbers))
+      pure (takeFileNameSimple path, numbers)
   let lookupSections basename =
         [ numbers
         | (name, numbers) <- sectionsByDoc
@@ -10201,7 +10203,7 @@ checkDoctrineSectionCitations repoRoot = do
   fmap concat $
     forM scanPaths $ \relativePath -> do
       contents <- readFileStrict (repoRoot </> relativePath)
-      pure
+      forceViolationFindings . pure $
         [ relativePath
             ++ " cites `"
             ++ doc

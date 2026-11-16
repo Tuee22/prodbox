@@ -15,6 +15,7 @@ module Prodbox.ControlPlane.VaultAccessorAudit
   , VaultAccessorAuditOps (..)
   , VaultAccessorAuditDetailedOps (..)
   , isBoundedBatchAuditorLogin
+  , isBoundedServiceTokenLogin
   , isExactBoundedBatchAuditorLogin
   , vaultAccessorMatchesSubject
   , classifyVaultAccessorLookupResponse
@@ -35,6 +36,7 @@ import Prodbox.Vault.Client
   ( TokenAccessorInfo (..)
   , VaultAddress
   , VaultKubernetesLoginResult (..)
+  , VaultTokenSelfObservation (..)
   , vaultAccessorLookupVanished
   , vaultKubernetesLoginWithLease
   , vaultTokenAccessorAbsent
@@ -139,6 +141,29 @@ isBoundedBatchAuditorLogin maximumLeaseSeconds login =
     && not (vaultLoginRenewable login)
     && vaultLoginLeaseSeconds login > 0
     && vaultLoginLeaseSeconds login <= maximumLeaseSeconds
+
+-- | The initial lease is not a hard cap for a renewable service token. Bind
+-- Vault's self-observation to the issued accessor and its explicit maximum.
+isBoundedServiceTokenLogin
+  :: Int -> VaultKubernetesLoginResult -> VaultTokenSelfObservation -> Bool
+isBoundedServiceTokenLogin maximumLeaseSeconds login observed =
+  maximumLeaseSeconds > 0
+    && vaultLoginTokenType login == "service"
+    && not (Text.null accessor)
+    && Text.strip accessor == accessor
+    && vaultTokenSelfAccessor observed == accessor
+    && vaultTokenSelfType observed == "service"
+    && vaultLoginLeaseSeconds login > 0
+    && vaultLoginLeaseSeconds login <= maximumLeaseSeconds
+    && cap > 0
+    && cap <= fromIntegral maximumLeaseSeconds
+    && fromIntegral (vaultLoginLeaseSeconds login) <= cap
+    && vaultTokenSelfTtlSeconds observed > 0
+    && vaultTokenSelfTtlSeconds observed <= cap
+    && vaultTokenSelfRenewable observed == vaultLoginRenewable login
+ where
+  accessor = vaultLoginAccessor login
+  cap = vaultTokenSelfExplicitMaxTtlSeconds observed
 
 -- | Require both the safe batch-token shape and the exact compiled lease.
 -- This is for callers whose child runtime is contained by that lease; merely

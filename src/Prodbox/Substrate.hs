@@ -137,12 +137,12 @@ validateScalingPolicy fieldName substrate policy =
 -- retained emitter journal (Sprint 2.32 / 3.26 Increment E).
 --
 -- Sprint 3.26 reduces the HOME substrate from three emitter identities to two.
--- The home cluster is a single physical node whose allocatable budget was
--- already fully committed (6450m of 6500m); dropping one 750m Guaranteed-QoS
+-- At that time, the home cluster's planned CPU budget was nearly committed
+-- (6450m of 6500m); dropping one 750m Guaranteed-QoS
 -- gateway StatefulSet frees the 750m CPU / 512 MiB that funds the physically
 -- separated control-plane workloads (Lifecycle Authority, Authority Backup /
 -- TLS Retention Adapters, fenced Provider Worker, Target Secret Agent) on the
--- maxed single-node budget (operator-approved). The AWS substrate keeps three
+-- then-planned single-node budget (operator-approved). The AWS substrate keeps three
 -- identities across its EKS nodes with their own retained-EBS journals, so its
 -- gateway resilience and its Sprint 7.28 static retained EBS provisioning are
 -- unchanged.

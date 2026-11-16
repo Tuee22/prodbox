@@ -74,10 +74,11 @@ runDirectTargetMaterializationWorkflow
   :: TargetIntentAuthorityClient IO
   -> TargetWorkerKubernetesBoundary IO
   -> TargetWorkerExecutionBoundary IO
+  -> IO (Either Text AuthorityTime)
   -> TargetMaterializationRequest
   -> TargetSecretPayload
   -> IO (Either TargetMaterializationWorkflowError TargetWorkerReceipt)
-runDirectTargetMaterializationWorkflow issuer worker execution request payload =
+runDirectTargetMaterializationWorkflow issuer worker execution readTime request payload =
   runWorkflow
     issuer
     worker
@@ -89,6 +90,7 @@ runDirectTargetMaterializationWorkflow issuer worker execution request payload =
           execution
           accepted
           (targetMaterializationNow request)
+          readTime
           (targetMaterializationAgentIdentity request)
           (targetMaterializationTarget request)
           (targetMaterializationIngressSchema request)
@@ -101,10 +103,11 @@ runRewrappedTargetMaterializationWorkflow
   :: TargetIntentAuthorityClient IO
   -> TargetWorkerKubernetesBoundary IO
   -> TargetWorkerExecutionBoundary IO
+  -> IO (Either Text AuthorityTime)
   -> TargetMaterializationRequest
   -> ByteString
   -> IO (Either TargetMaterializationWorkflowError TargetWorkerReceipt)
-runRewrappedTargetMaterializationWorkflow issuer worker execution request destinationEnvelope =
+runRewrappedTargetMaterializationWorkflow issuer worker execution readTime request destinationEnvelope =
   runWorkflow
     issuer
     worker
@@ -116,6 +119,7 @@ runRewrappedTargetMaterializationWorkflow issuer worker execution request destin
           execution
           accepted
           (targetMaterializationNow request)
+          readTime
           (targetMaterializationAgentIdentity request)
           (targetMaterializationTarget request)
           (targetMaterializationIngressSchema request)

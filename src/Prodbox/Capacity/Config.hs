@@ -21,6 +21,7 @@ module Prodbox.Capacity.Config
   , defaultCapacitySection
   , defaultRuntimeMemoryProfiles
   , defaultResourcePlan
+  , preHostFitResourcePlan
   , guaranteedControlPlaneProfileIds
   , oneShotSecretWorkerEnvelope
   , oneShotSecretWorkerWindow
@@ -230,7 +231,9 @@ defaultResourcePlan =
     , eviction_floor = ResourceVector 750 1024 10240 1024
     , platform_scheduler_requests = Just PlatformScheduler.minimumPlatformSchedulerRequests
     , workload_profiles =
-        [ workload "keycloak" "keycloak" 1 (ResourceVector 500 1024 1024 1) (ResourceVector 600 1280 2048 1)
+        [ -- Provisional home-host requests. Limits and the measured control-plane
+          -- envelopes remain unchanged; live service sufficiency is not inferred.
+          workload "keycloak" "keycloak" 1 (ResourceVector 100 512 1024 1) (ResourceVector 600 1280 2048 1)
         , workload
             "keycloak-vault-secrets"
             "keycloak"
@@ -241,7 +244,7 @@ defaultResourcePlan =
             "keycloak-postgres"
             "keycloak"
             3
-            (ResourceVector 250 512 1024 1024)
+            (ResourceVector 150 384 1024 1024)
             (ResourceVector 350 768 2048 2048)
         , workload
             "keycloak-postgres-replica-cert-copy"
@@ -265,7 +268,7 @@ defaultResourcePlan =
             "vscode"
             "vscode"
             1
-            (ResourceVector 500 1024 1024 1024)
+            (ResourceVector 100 512 1024 1024)
             (ResourceVector 600 1280 2048 2048)
         , workload
             "vscode-vault-secrets"
@@ -279,7 +282,7 @@ defaultResourcePlan =
             1
             (ResourceVector 50 128 256 1)
             (ResourceVector 100 256 512 1)
-        , workload "api" "api" 2 (ResourceVector 250 256 512 1) (ResourceVector 250 384 512 1)
+        , workload "api" "api" 2 (ResourceVector 75 256 512 1) (ResourceVector 250 384 512 1)
         , workload "websocket" "websocket" 2 (ResourceVector 100 256 512 1) (ResourceVector 150 256 512 1)
         , workload "redis" "websocket" 1 (ResourceVector 100 256 512 1) (ResourceVector 150 256 512 1)
         , -- Sprint 1.65: interim authored gateway CPU bump 250m -> 750m
@@ -289,18 +292,18 @@ defaultResourcePlan =
           -- certification check. Sprint 3.26 (operator-approved) reduces the HOME
           -- emitter identity count 3 -> 2 (this replica count models the home
           -- single node; AWS keeps three via 'gatewayNodeIdsForSubstrate'), so the
-          -- gateway namespace draw is 2x 750m = 1500m + 500m pulsar = 2000m,
+          -- gateway namespace limit is 2x 750m + 500m pulsar = 2000m,
           -- matching the trimmed 2000m gateway quota and freeing budget for the
           -- physically separated control-plane workloads.
           workload "gateway" "gateway" 2 (ResourceVector 750 256 512 1) (ResourceVector 750 512 512 1)
-        , workload "pulsar" "gateway" 1 (ResourceVector 250 1024 1024 1) (ResourceVector 500 2048 4096 1)
+        , workload "pulsar" "gateway" 1 (ResourceVector 50 512 1024 1) (ResourceVector 500 2048 4096 1)
         , workload
             "minio"
             "prodbox"
             1
-            (ResourceVector 250 512 1024 1024)
+            (ResourceVector 50 384 1024 1024)
             (ResourceVector 500 1024 2048 2048)
-        , workload "harbor" "prodbox" 1 (ResourceVector 200 256 512 1024) (ResourceVector 300 512 1024 2048)
+        , workload "harbor" "prodbox" 1 (ResourceVector 100 256 512 1024) (ResourceVector 300 512 1024 2048)
         , workload
             "percona-postgres-operator"
             "prodbox"
@@ -445,6 +448,40 @@ oneShotSecretWorkerEnvelope =
     { request = ResourceVector 250 256 256 0
     , limit = ResourceVector 250 256 256 0
     }
+
+-- | Preserve the request vectors used by historical scheduler counterexamples.
+-- This is not the supported default profile.
+preHostFitResourcePlan :: ResourcePlan
+preHostFitResourcePlan =
+  defaultResourcePlan {workload_profiles = map restore (workload_profiles defaultResourcePlan)}
+ where
+  restore profile = case original (profile_id profile) of
+    Nothing -> profile
+    Just (cpu, memory) ->
+      let demand = workload_demand profile
+          oldCpu = cpu_demand demand
+          oldMemory = memory_demand demand
+          limits = limit (resources profile)
+       in profile
+            { workload_demand =
+                demand
+                  { cpu_demand = oldCpu {requests_per_second = cpu, bounded_cpu_burst_milli = milli_cpu limits - cpu}
+                  , memory_demand =
+                      oldMemory
+                        { steady_memory_terms_mib = [memory]
+                        , bounded_memory_burst_mib = memory_mib limits - memory
+                        }
+                  }
+            }
+  original name = case name of
+    "keycloak" -> Just (500, 1024)
+    "keycloak-postgres" -> Just (250, 512)
+    "vscode" -> Just (500, 1024)
+    "api" -> Just (250, 256)
+    "pulsar" -> Just (250, 1024)
+    "minio" -> Just (250, 512)
+    "harbor" -> Just (200, 256)
+    _ -> Nothing
 
 -- | Bootstrap recovery and credential-to-target delivery cannot execute at
 -- the same time. Placement therefore admits their maximum, never their sum.

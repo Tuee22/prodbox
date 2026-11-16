@@ -11,19 +11,25 @@ module Prodbox.Bootstrap.Broker.InitializationRecovery
 where
 
 import Prodbox.Bootstrap.Broker.SecretWorker
-  ( SecretWorkerDurableResult
+  ( SecretFreeWorkerRequest
+  , SecretWorkerDurableResult
+  , SecretWorkerOperation (SecretWorkerInitialize)
+  , secretWorkerCheckpointRequest
   , secretWorkerCheckpointResult
+  , secretWorkerDurableResultOperation
+  , secretWorkerRequestOperation
+  , secretWorkerRequestStorageGeneration
   )
 import Prodbox.Bootstrap.Broker.StoreBoundary
   ( BootstrapStoreBoundary
-  , StoreBoundaryError
+  , StoreBoundaryError (BootstrapStoreBindingMismatch)
   , StoreReadBack (..)
   , readEncryptedInitResponse
   , readSecretWorkerCheckpoint
   )
 import Prodbox.Bootstrap.Broker.Types
   ( EncryptedInitResponseReceipt
-  , RootInitBinding
+  , RootInitBinding (rootInitStorageGeneration)
   )
 
 data RootInitRecoveryObservation
@@ -32,12 +38,17 @@ data RootInitRecoveryObservation
   | RootInitRecoveredWorkerResult !SecretWorkerDurableResult
   deriving stock (Eq, Show)
 
+-- | A missing result may be returned as 'Nothing' only after the caller proves
+-- both exact absence and settlement of any publication already dispatched.
+-- Pod absence alone is insufficient. An unobservable or potentially in-flight
+-- result must be returned as an error.
 observeRootInitRecoveryEvidence
   :: (Monad m)
   => BootstrapStoreBoundary m
   -> RootInitBinding
+  -> (SecretFreeWorkerRequest -> m (Either StoreBoundaryError (Maybe SecretWorkerDurableResult)))
   -> m (Either StoreBoundaryError RootInitRecoveryObservation)
-observeRootInitRecoveryEvidence store binding = do
+observeRootInitRecoveryEvidence store binding observePublished = do
   response <- readEncryptedInitResponse store binding
   case response of
     Left failure -> pure (Left failure)
@@ -45,10 +56,25 @@ observeRootInitRecoveryEvidence store binding = do
       pure (Right (RootInitRecoveredResponse receipt))
     Right StoreObjectAbsent -> do
       worker <- readSecretWorkerCheckpoint store
-      pure $ case worker of
-        Left failure -> Left failure
-        Right StoreObjectAbsent -> Right RootInitRecoveredAmbiguity
+      case worker of
+        Left failure -> pure (Left failure)
+        Right StoreObjectAbsent -> pure (Right RootInitRecoveredAmbiguity)
         Right (StoreObjectPresent _ _ checkpoint) ->
-          Right $ case secretWorkerCheckpointResult checkpoint of
-            Nothing -> RootInitRecoveredAmbiguity
-            Just result -> RootInitRecoveredWorkerResult result
+          case secretWorkerCheckpointResult checkpoint of
+            Just result -> pure (Right (RootInitRecoveredWorkerResult result))
+            Nothing -> case secretWorkerCheckpointRequest checkpoint of
+              Left _ -> pure (Right RootInitRecoveredAmbiguity)
+              Right request
+                | secretWorkerRequestOperation request /= SecretWorkerInitialize ->
+                    pure (Left BootstrapStoreBindingMismatch)
+                | secretWorkerRequestStorageGeneration request /= rootInitStorageGeneration binding ->
+                    pure (Left BootstrapStoreBindingMismatch)
+                | otherwise -> do
+                    observed <- observePublished request
+                    pure $ case observed of
+                      Left failure -> Left failure
+                      Right Nothing -> Right RootInitRecoveredAmbiguity
+                      Right (Just result)
+                        | secretWorkerDurableResultOperation result == SecretWorkerInitialize ->
+                            Right (RootInitRecoveredWorkerResult result)
+                        | otherwise -> Left BootstrapStoreBindingMismatch

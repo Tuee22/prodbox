@@ -14,6 +14,7 @@ module Prodbox.Bootstrap.Broker.ProductionSecretWorkerBoundary
 where
 
 import Control.Concurrent (threadDelay)
+import Control.Exception (evaluate)
 import Crypto.Random (getRandomBytes)
 import Data.ByteString qualified as ByteString
 import Data.Foldable (traverse_)
@@ -108,8 +109,13 @@ import Prodbox.ControlPlane.Deadline
   , RemainingDuration (..)
   , deadlineAtOffset
   , deadlineExpired
+  , tightenDeadline
   )
-import Prodbox.ControlPlane.Interpreter (realMonotonicNow)
+import Prodbox.ControlPlane.Interpreter
+  ( DeadlineEffectResult (..)
+  , observeDeadlineEffectWithin
+  , realMonotonicNow
+  )
 import Prodbox.ControlPlane.VaultAccessorAudit
   ( VaultAccessorAuditOps (..)
   , VaultAccessorSubject (..)
@@ -145,20 +151,17 @@ productionBrokerSecretWorkerBoundary settings store kubernetes =
           mapLeftText <$> kubernetesCreateWorkerWorkload kubernetes deadline intent
       , observeSecretWorkerAttestation =
           observeAttestationUntil kubernetes workerStartupBudgetMicros
-      , discardUnreceiptedSecretWorker = \request _ -> do
-          deadline <- localDeadline workerCleanupBudgetMicros
-          discarded <-
-            mapLeftText
-              <$> kubernetesDiscardUnreceiptedWorker kubernetes deadline request
-          case discarded of
-            Left failure -> pure (Left failure)
-            Right ()
-              | secretWorkerRequestOperation request
-                  == SecretWorkerRotateTransitKey ->
-                  auditWorkerVaultRoleStableZero settings Nothing
-              | otherwise -> pure (Right ())
+      , discardUnreceiptedSecretWorker = \request _ -> discardWorker Nothing request
+      , discardUnreceiptedSecretWorkerBefore = \deadline request _ -> discardWorker (Just deadline) request
+      , observeAuthoritativeRecoveryBefore = \deadline action -> do
+          observed <- observeDeadlineEffectWithin deadline (action >>= evaluate)
+          pure $ case observed of
+            Just (DeadlineEffectCompleted _ result) -> Just result
+            _ -> Nothing
       , withSecretWorkerCheckpointPermit =
-          withCheckpointPermit store kubernetes
+          withCheckpointPermit store kubernetes Nothing
+      , withSecretWorkerCheckpointPermitBefore = \deadline ->
+          withCheckpointPermit store kubernetes (Just deadline)
       , readSecretWorkerCheckpoint = Store.readSecretWorkerCheckpoint store
       , createSecretWorkerCheckpoint = Store.createSecretWorkerCheckpoint store
       , casSecretWorkerCheckpoint = Store.casSecretWorkerCheckpoint store
@@ -178,6 +181,23 @@ productionBrokerSecretWorkerBoundary settings store kubernetes =
             (kubernetesObserveWorkerAbsence kubernetes)
             isAbsent
       }
+
+  discardWorker callerDeadline request = do
+    local <- localDeadline workerCleanupBudgetMicros
+    let deadline = maybe local (tightenDeadline local) callerDeadline
+    observed <- observeDeadlineEffectWithin deadline $ do
+      discarded <-
+        mapLeftText
+          <$> kubernetesDiscardUnreceiptedWorker kubernetes deadline request
+      case discarded of
+        Left failure -> pure (Left failure)
+        Right ()
+          | secretWorkerRequestOperation request == SecretWorkerRotateTransitKey ->
+              auditWorkerVaultRoleStableZero settings Nothing
+          | otherwise -> pure (Right ())
+    pure $ case observed of
+      Just (DeadlineEffectCompleted _ result) -> result
+      _ -> Left (EngineBoundaryUnavailable "unreceipted worker cleanup deadline elapsed")
 
   runPhysicalWorker
     :: forall scope operation result
@@ -277,8 +297,9 @@ revokeObservedWorkerSession settings binding =
 -- revoked provisionally even when a drifted Vault response gave it the wrong
 -- policy metadata; the shared subject scan then closes response-loss and
 -- unknown-accessor cases.  Every malformed successful auditor login is
--- self-revoked and its accessor is proved absent before the valid auditor is
--- itself revoked.
+-- self-revoked and its accessor is proved absent. A valid batch auditor has
+-- no accessor and cannot be revoked; its validated non-renewable lease bounds
+-- its remaining lifetime.
 auditWorkerVaultRoleStableZero
   :: BootstrapBrokerSettings
   -> Maybe Text
@@ -299,23 +320,11 @@ auditWorkerVaultRoleStableZero settings knownWorkerAccessor = do
               auditorToken
               bootstrapWorkerVaultSubject
               knownWorkerAccessor
-          auditorAudit <- case workerAudit of
+          case workerAudit of
             Left failure -> pure (Left failure)
             Right () ->
               auditInvalidAuditorAccessors auditorToken invalidAuditorAccessors
-          case auditorAudit of
-            Left failure -> pure (Left failure)
-            Right () -> do
-              revoked <- Vault.vaultRevokeSelf address auditorToken
-              pure $ case revoked of
-                Left _ ->
-                  Left
-                    ( EngineBoundaryUnavailable
-                        "bounded Vault accessor auditor revoke-self failed"
-                    )
-                Right () -> Right ()
  where
-  address = Vault.VaultAddress (brokerVaultAddress settings)
   unavailable = pure . Left . EngineBoundaryUnavailable
 
   auditInvalidAuditorAccessors _ [] = pure (Right ())
@@ -526,6 +535,7 @@ isAbsent observation = case observation of
 withCheckpointPermit
   :: BootstrapStoreBoundary IO
   -> KubernetesWorkerBoundary
+  -> Maybe Deadline
   -> BootstrapSessionFence
   -> BootstrapStoreMutation
   -> ( MonotonicInstant
@@ -533,33 +543,43 @@ withCheckpointPermit
        -> IO result
      )
   -> IO (Either EngineBoundaryError result)
-withCheckpointPermit store kubernetes fence mutation use = do
-  now <- realMonotonicNow
-  deadline <- localDeadline workerApiBudgetMicros
-  clock <- authorityClockNow
-  observedStore <- Store.observeBootstrapSessionFence store
-  observedLease <- kubernetesObserveBootstrapLease kubernetes deadline
-  case observedStore of
-    Left failure -> pure (Left (EngineBoundaryUnavailable (Text.pack (show failure))))
-    Right storeObservation ->
-      case authorizeBootstrapStoreMutation
-        now
-        deadline
-        clock
-        fence
-        storeObservation
-        observedLease
-        mutation of
-        Left refusal ->
-          pure (Left (EngineBoundaryRefused (Text.pack (show refusal))))
-        Right permit -> Right <$> use now permit
+withCheckpointPermit store kubernetes callerDeadline fence mutation use = do
+  local <- localDeadline workerApiBudgetMicros
+  let deadline = maybe local (tightenDeadline local) callerDeadline
+  observation <- observeDeadlineEffectWithin deadline $ do
+    observedStore <- Store.observeBootstrapSessionFence store
+    case observedStore of
+      Left failure -> pure (Left (EngineBoundaryUnavailable (Text.pack (show failure))))
+      Right storeObservation -> do
+        observedLease <- kubernetesObserveBootstrapLease kubernetes deadline
+        clock <- authorityClockNow
+        now <- realMonotonicNow
+        case authorizeBootstrapStoreMutation
+          now
+          deadline
+          clock
+          fence
+          storeObservation
+          observedLease
+          mutation of
+          Left refusal ->
+            pure (Left (EngineBoundaryRefused (Text.pack (show refusal))))
+          Right permit -> evaluate permit >> pure (Right (now, permit))
+  case observation of
+    Just (DeadlineEffectCompleted _ (Right (now, permit))) -> Right <$> use now permit
+    Just (DeadlineEffectCompleted _ (Left failure)) -> pure (Left failure)
+    _ -> pure (Left (EngineBoundaryUnavailable "checkpoint permit observation deadline elapsed"))
 
 pollPhysicalResult
   :: BootstrapBrokerSettings
   -> SecretWorkerEffectPermit
   -> BrokerPhysicalCall operation result
   -> IO (Either EngineBoundaryError (RawSecretWorkerReceipt, result))
-pollPhysicalResult settings permit call = go
+pollPhysicalResult settings permit call = do
+  observed <- observeDeadlineEffectWithin deadline (go >>= evaluate)
+  pure $ case observed of
+    Just (DeadlineEffectCompleted _ result) -> result
+    _ -> Left (EngineBoundaryUnavailable "secret-worker result observation deadline elapsed")
  where
   request = secretWorkerEffectPermitRequest permit
   deadline = secretWorkerEffectPermitDeadline permit

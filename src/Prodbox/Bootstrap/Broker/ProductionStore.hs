@@ -5,6 +5,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TupleSections #-}
 
 -- | Production fixed-coordinate MinIO interpreter for Bootstrap Broker state.
 -- Logical versions live inside a bounded canonical CBOR envelope; S3 ETags are
@@ -12,6 +13,7 @@
 -- reported until the exact logical value has been read back.
 module Prodbox.Bootstrap.Broker.ProductionStore
   ( productionBootstrapStoreBoundary
+  , productionExistingBootstrapStoreBoundary
   , bootstrapStoreReady
   , maximumBootstrapStoreObjectBytes
   , ProductionSecretWorkerResult
@@ -21,10 +23,17 @@ module Prodbox.Bootstrap.Broker.ProductionStore
   , productionSecretWorkerReceiptDigest
   , publishProductionSecretWorkerResult
   , observeProductionSecretWorkerResult
+  , observeProductionSecretWorkerResultForRecovery
   , ProductionTransitRotationJournal (..)
+  , FreshTransitRotationClaim
+  , DispatchedTransitRotation
+  , ConfirmedTransitRotation
+  , dispatchProductionTransitRotation
+  , confirmProductionTransitRotation
   , ProductionTransitRotationBoundary (..)
   , productionTransitRotationBoundary
   , observeProductionTransitRotationJournal
+  , observeProductionTransitRotationJournalWithinPermit
   , planProductionTransitRotation
   , completeProductionTransitRotation
 
@@ -43,11 +52,14 @@ module Prodbox.Bootstrap.Broker.ProductionStore
 where
 
 import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
+import Control.Exception (evaluate)
+import Control.Monad (void)
 import Crypto.Hash.SHA256 qualified as SHA256
 import Crypto.Random (getRandomBytes)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Lazy qualified as LazyByteString
+import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Proxy (Proxy (..))
 import Data.Text (Text)
 import Data.Text qualified as Text
@@ -72,16 +84,37 @@ import Prodbox.Bootstrap.Broker.Fence
   , BootstrapSessionFence
   , BootstrapStoreMutation (..)
   , BootstrapStoreMutationPermit
+  , BootstrapVaultEffect (BootstrapVaultRotateTransitKey)
+  , BootstrapVaultEffectPermit
+  , bootstrapFenceActionDigest
   , bootstrapFenceGeneration
   , bootstrapFenceGenerationValue
+  , bootstrapFenceOperationDeadline
+  , bootstrapFenceOwnerNonce
+  , bootstrapFenceRequestDigest
   , bootstrapFenceStorageGeneration
+  , fenceCasDeadline
   , fenceCasExpectedGenerationFloor
   , fenceCasProposedFence
+  , fenceRetireDeadline
   , fenceRetireExpectedFence
   , fenceRetireVacantGenerationFloor
+  , storeMutationPermitActionDigest
+  , storeMutationPermitDeadline
+  , storeMutationPermitFenceGeneration
   , storeMutationPermitMutation
+  , storeMutationPermitOperationDeadline
+  , storeMutationPermitOwnerNonce
   , storeMutationPermitRequestDigest
   , storeMutationPermitStorageGeneration
+  , vaultEffectPermitActionDigest
+  , vaultEffectPermitDeadline
+  , vaultEffectPermitEffect
+  , vaultEffectPermitFenceGeneration
+  , vaultEffectPermitOperationDeadline
+  , vaultEffectPermitOwnerNonce
+  , vaultEffectPermitRequestDigest
+  , vaultEffectPermitStorageGeneration
   )
 import Prodbox.Bootstrap.Broker.Model
   ( PostUnsealHandoffPhase (..)
@@ -101,9 +134,12 @@ import Prodbox.Bootstrap.Broker.SecretWorker
   , durableWorkerSessionAccessor
   , secretWorkerCheckpointInvariantViolations
   , secretWorkerDurableResultOperation
+  , secretWorkerRequestActionDigest
   , secretWorkerRequestDigest
   , secretWorkerRequestFenceGeneration
   , secretWorkerRequestOperation
+  , secretWorkerRequestOperationDeadline
+  , secretWorkerRequestOwnerNonce
   , secretWorkerRequestPodUid
   , secretWorkerRequestSessionAccessor
   , secretWorkerRequestSessionId
@@ -156,6 +192,19 @@ import Prodbox.Bootstrap.Broker.Types
   , rootInitStorageGeneration
   )
 import Prodbox.CLI.Output (writeDiagnosticLine)
+import Prodbox.ControlPlane.Deadline
+  ( Deadline
+  , DeadlineObservation (..)
+  , RemainingDuration (..)
+  , deadlineObservation
+  )
+import Prodbox.ControlPlane.Interpreter
+  ( DeadlineEffectResult (..)
+  , observeDeadlineEffect
+  , observeDeadlineEffectWithin
+  , realMonotonicNow
+  )
+import Prodbox.Http.Client (HttpConfig (..), defaultHttpConfig)
 import Prodbox.Minio.ObjectStoreNative qualified as Native
 import Prodbox.Minio.ObjectStoreTypes
   ( ConditionalDeleteResult (..)
@@ -168,6 +217,9 @@ import Prodbox.Minio.RootCredential
   ( minioRootPassword
   , minioRootUser
   )
+import Prodbox.Vault.Client qualified as Vault
+import Prodbox.Vault.Reconcile (bootstrapBrokerRotatableTransitKeys)
+import System.Timeout (timeout)
 
 maximumBootstrapStoreObjectBytes :: Int
 maximumBootstrapStoreObjectBytes = 32 * 1024 * 1024
@@ -195,10 +247,10 @@ data ProductionSecretWorkerResult = ProductionSecretWorkerResult
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
--- | Single fixed-coordinate write-ahead journal for Transit rotation. A
--- planned record is durable before the Vault rotate call. Recovery compares
--- Vault's exact current version with @before@/@before + 1@, so a lost HTTP
--- response cannot cause a second rotation.
+-- | Single fixed-coordinate write-ahead journal for Transit rotation. Legacy
+-- planned and applied values remain decodable but do not establish settlement.
+-- Only a freshly written claim authorizes dispatch; a claim observed later
+-- remains unresolved even if the Vault version has changed.
 data ProductionTransitRotationJournal
   = ProductionTransitRotationPlanned
       { transitRotationRequestDigest :: !RequestDigest
@@ -213,8 +265,34 @@ data ProductionTransitRotationJournal
       , transitRotationBeforeVersion :: !Natural
       , transitRotationAfterVersion :: !Natural
       }
+  | ProductionTransitRotationClaimed
+      { transitRotationRequestDigest :: !RequestDigest
+      , transitRotationStorageGeneration :: !VaultStorageGeneration
+      , transitRotationKeyName :: !Text
+      , transitRotationBeforeVersion :: !Natural
+      }
+  | ProductionTransitRotationCompleted
+      { transitRotationRequestDigest :: !RequestDigest
+      , transitRotationStorageGeneration :: !VaultStorageGeneration
+      , transitRotationKeyName :: !Text
+      , transitRotationBeforeVersion :: !Natural
+      , transitRotationAfterVersion :: !Natural
+      }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
+
+-- These values are process-local: neither a decoded journal nor a copied
+-- request can create a dispatch or completion witness. The shared latch
+-- prevents two aliases of one fresh claim from issuing two POSTs.
+data FreshTransitRotationClaim
+  = FreshTransitRotationClaim
+      !SecretFreeWorkerRequest
+      !ProductionTransitRotationJournal
+      !Settings.BootstrapBrokerSettings
+      !(IORef Bool)
+
+newtype DispatchedTransitRotation = DispatchedTransitRotation FreshTransitRotationClaim
+newtype ConfirmedTransitRotation = ConfirmedTransitRotation FreshTransitRotationClaim
 
 -- | The two independently authorized mutations of the fixed-coordinate
 -- Transit-rotation write-ahead journal.  Keeping them in an explicit record
@@ -228,13 +306,10 @@ data ProductionTransitRotationBoundary m = ProductionTransitRotationBoundary
       -> SecretFreeWorkerRequest
       -> Text
       -> Natural
-      -> m (Either StoreBoundaryError ProductionTransitRotationJournal)
+      -> m (Either StoreBoundaryError FreshTransitRotationClaim)
   , completeTransitRotation
       :: BootstrapStoreMutationPermit
-      -> SecretFreeWorkerRequest
-      -> Text
-      -> Natural
-      -> Natural
+      -> ConfirmedTransitRotation
       -> m (Either StoreBoundaryError ProductionTransitRotationJournal)
   }
 
@@ -244,7 +319,7 @@ productionTransitRotationBoundary
 productionTransitRotationBoundary settings =
   ProductionTransitRotationBoundary
     { planTransitRotation = planProductionTransitRotation settings
-    , completeTransitRotation = completeProductionTransitRotation settings
+    , completeTransitRotation = completeProductionTransitRotation
     }
 
 observeProductionTransitRotationJournal
@@ -266,83 +341,214 @@ planProductionTransitRotation
   -> SecretFreeWorkerRequest
   -> Text
   -> Natural
-  -> IO (Either StoreBoundaryError ProductionTransitRotationJournal)
+  -> IO (Either StoreBoundaryError FreshTransitRotationClaim)
 planProductionTransitRotation settings permit request keyName before =
   case requireTransitPermit BootstrapStorePlanTransitRotation permit request of
     Left failure -> pure (Left failure)
+    Right ()
+      | keyName `notElem` bootstrapBrokerRotatableTransitKeys -> pure (Left BootstrapStoreBindingMismatch)
+    Right () | not (validTransitRotationJournal proposed) -> pure (Left BootstrapStoreBindingMismatch)
     Right () -> do
-      observed <- observeProductionTransitRotationJournal settings
-      let proposed =
-            ProductionTransitRotationPlanned
-              (secretWorkerRequestDigest request)
-              (secretWorkerRequestStorageGeneration request)
-              keyName
-              before
-      case observed of
+      observed <- observeTransitJournalWithinPermit settings permit
+      written <- case observed of
         Left failure -> pure (Left failure)
         Right StoreObjectAbsent ->
-          exactJournalWrite proposed
-            <$> createValue config journalKey validTransitRotationJournal proposed
-        Right (StoreObjectPresent _ _ current)
-          | current == proposed -> pure (Right current)
-        Right (StoreObjectPresent _ _ current@ProductionTransitRotationApplied {})
-          | transitRotationRequestDigest current == secretWorkerRequestDigest request
-              && transitRotationKeyName current == keyName
-              && transitRotationBeforeVersion current == before ->
-              pure (Right current)
-        Right (StoreObjectPresent version _ ProductionTransitRotationApplied {}) ->
-          exactJournalWrite proposed
-            <$> casValue config journalKey validTransitRotationJournal version proposed
-        Right (StoreObjectPresent _ _ ProductionTransitRotationPlanned {}) ->
-          pure (Left BootstrapStoreVersionConflict)
+          freshJournalWrite proposed
+            <$> createValueBefore
+              (storeMutationPermitDeadline permit)
+              config
+              journalKey
+              validTransitRotationJournal
+              proposed
+        Right (StoreObjectPresent version _ current@ProductionTransitRotationCompleted {})
+          | transitRotationRequestDigest current /= secretWorkerRequestDigest request ->
+              freshJournalWrite proposed
+                <$> casValueBefore
+                  (storeMutationPermitDeadline permit)
+                  config
+                  journalKey
+                  validTransitRotationJournal
+                  version
+                  proposed
+        Right (StoreObjectPresent {}) -> pure (Left BootstrapStoreVersionConflict)
+      case written of
+        Left failure -> pure (Left failure)
+        Right journal -> do
+          latch <- newIORef False
+          pure
+            ( Right
+                ( FreshTransitRotationClaim
+                    request
+                    journal
+                    settings
+                    latch
+                )
+            )
  where
+  proposed =
+    ProductionTransitRotationClaimed
+      (secretWorkerRequestDigest request)
+      (secretWorkerRequestStorageGeneration request)
+      keyName
+      before
   config = objectStoreConfig settings
   journalKey = transitRotationJournalKey settings
 
-completeProductionTransitRotation
-  :: Settings.BootstrapBrokerSettings
-  -> BootstrapStoreMutationPermit
-  -> SecretFreeWorkerRequest
-  -> Text
-  -> Natural
-  -> Natural
-  -> IO (Either StoreBoundaryError ProductionTransitRotationJournal)
-completeProductionTransitRotation settings permit request keyName before after =
-  case requireTransitPermit BootstrapStoreCompleteTransitRotation permit request of
+dispatchProductionTransitRotation
+  :: BootstrapVaultEffectPermit
+  -> FreshTransitRotationClaim
+  -> Vault.VaultToken
+  -> IO (Either StoreBoundaryError DispatchedTransitRotation)
+dispatchProductionTransitRotation permit claim@(FreshTransitRotationClaim request journal settings latch) token =
+  case requireTransitEffectPermit permit request of
     Left failure -> pure (Left failure)
     Right () -> do
-      observed <- observeProductionTransitRotationJournal settings
-      let proposed =
-            ProductionTransitRotationApplied
-              (secretWorkerRequestDigest request)
-              (secretWorkerRequestStorageGeneration request)
-              keyName
-              before
-              after
-          exact current =
-            transitRotationRequestDigest current == secretWorkerRequestDigest request
-              && transitRotationStorageGeneration current
-                == secretWorkerRequestStorageGeneration request
-              && transitRotationKeyName current == keyName
-              && transitRotationBeforeVersion current == before
+      alreadyUsed <- atomicModifyIORef' latch (True,)
+      if alreadyUsed
+        then pure (Left BootstrapStoreVersionConflict)
+        else do
+          result <- transitVaultCallWithinPermit permit $ \config ->
+            either (const (Left BootstrapStoreUnavailable)) Right
+              <$> Vault.vaultRotateTransitKeyWith
+                config
+                (Vault.VaultAddress (Settings.brokerVaultAddress settings))
+                token
+                (transitRotationKeyName journal)
+          pure (DispatchedTransitRotation claim <$ result)
+
+confirmProductionTransitRotation
+  :: BootstrapVaultEffectPermit
+  -> DispatchedTransitRotation
+  -> Vault.VaultToken
+  -> IO (Either StoreBoundaryError ConfirmedTransitRotation)
+confirmProductionTransitRotation permit (DispatchedTransitRotation claim@(FreshTransitRotationClaim request journal settings _)) token =
+  case requireTransitEffectPermit permit request of
+    Left failure -> pure (Left failure)
+    Right () -> do
+      result <- transitVaultCallWithinPermit permit $ \config -> do
+        observed <-
+          Vault.vaultReadTransitKeyWith
+            config
+            (Vault.VaultAddress (Settings.brokerVaultAddress settings))
+            token
+            (transitRotationKeyName journal)
+        pure $ case observed of
+          Right current
+            | Vault.transitKeyName current == transitRotationKeyName journal
+                && Vault.transitKeyLatestVersion current == transitRotationBeforeVersion journal + 1 ->
+                Right ()
+          _ -> Left BootstrapStoreReadBackMismatch
+      pure (ConfirmedTransitRotation claim <$ result)
+
+-- Timeouts leave an issued mutation unresolved; they never mint a witness.
+transitVaultCallWithinPermit
+  :: BootstrapVaultEffectPermit
+  -> (HttpConfig -> IO (Either StoreBoundaryError value))
+  -> IO (Either StoreBoundaryError value)
+transitVaultCallWithinPermit permit action = do
+  now <- realMonotonicNow
+  case deadlineObservation now (vaultEffectPermitDeadline permit) of
+    DeadlineExpired -> pure (Left BootstrapStoreUnavailable)
+    DeadlineOpen (RemainingDuration remaining) -> do
+      let timeoutMicros = fromIntegral (min remaining (fromIntegral (httpRequestTimeoutMicros defaultHttpConfig)))
+          config = defaultHttpConfig {httpRequestTimeoutMicros = timeoutMicros}
+      observed <-
+        observeDeadlineEffect realMonotonicNow (vaultEffectPermitDeadline permit) $
+          timeout timeoutMicros (action config >>= evaluate)
+      pure $ case observed of
+        DeadlineEffectCompleted _ (Just result) -> result
+        DeadlineEffectNotStarted -> Left BootstrapStoreUnavailable
+        DeadlineEffectCompletedLate _ -> Left BootstrapStoreUnavailable
+        DeadlineEffectCompleted _ Nothing -> Left BootstrapStoreUnavailable
+
+requireTransitEffectPermit
+  :: BootstrapVaultEffectPermit
+  -> SecretFreeWorkerRequest
+  -> Either StoreBoundaryError ()
+requireTransitEffectPermit permit request
+  | vaultEffectPermitEffect permit /= BootstrapVaultRotateTransitKey =
+      Left BootstrapStoreBindingMismatch
+  | vaultEffectPermitFenceGeneration permit /= secretWorkerRequestFenceGeneration request =
+      Left BootstrapStoreBindingMismatch
+  | vaultEffectPermitOwnerNonce permit /= secretWorkerRequestOwnerNonce request =
+      Left BootstrapStoreBindingMismatch
+  | vaultEffectPermitActionDigest permit /= secretWorkerRequestActionDigest request =
+      Left BootstrapStoreBindingMismatch
+  | vaultEffectPermitRequestDigest permit /= secretWorkerRequestDigest request =
+      Left BootstrapStoreBindingMismatch
+  | vaultEffectPermitStorageGeneration permit /= secretWorkerRequestStorageGeneration request =
+      Left BootstrapStoreBindingMismatch
+  | vaultEffectPermitOperationDeadline permit /= secretWorkerRequestOperationDeadline request =
+      Left BootstrapStoreBindingMismatch
+  | secretWorkerRequestOperation request /= SecretWorkerRotateTransitKey =
+      Left BootstrapStoreBindingMismatch
+  | otherwise = Right ()
+
+completeProductionTransitRotation
+  :: BootstrapStoreMutationPermit
+  -> ConfirmedTransitRotation
+  -> IO (Either StoreBoundaryError ProductionTransitRotationJournal)
+completeProductionTransitRotation permit (ConfirmedTransitRotation (FreshTransitRotationClaim request journal settings _)) =
+  case requireTransitPermit BootstrapStoreCompleteTransitRotation permit request of
+    Left failure -> pure (Left failure)
+    Right () | not (validTransitRotationJournal proposed) -> pure (Left BootstrapStoreBindingMismatch)
+    Right () -> do
+      observed <- observeTransitJournalWithinPermit settings permit
       case observed of
         Left failure -> pure (Left failure)
         Right (StoreObjectPresent _ _ current)
           | current == proposed -> pure (Right current)
-        Right (StoreObjectPresent version _ current@ProductionTransitRotationPlanned {})
-          | exact current ->
+        Right (StoreObjectPresent version _ current@ProductionTransitRotationClaimed {})
+          | current == journal ->
               exactJournalWrite proposed
-                <$> casValue config journalKey validTransitRotationJournal version proposed
+                <$> casValueBefore
+                  (storeMutationPermitDeadline permit)
+                  config
+                  journalKey
+                  validTransitRotationJournal
+                  version
+                  proposed
         _ -> pure (Left BootstrapStoreBindingMismatch)
  where
+  proposed =
+    ProductionTransitRotationCompleted
+      (secretWorkerRequestDigest request)
+      (secretWorkerRequestStorageGeneration request)
+      (transitRotationKeyName journal)
+      (transitRotationBeforeVersion journal)
+      (transitRotationBeforeVersion journal + 1)
   config = objectStoreConfig settings
   journalKey = transitRotationJournalKey settings
 
 transitRotationJournalKey :: Settings.BootstrapBrokerSettings -> Text
 transitRotationJournalKey settings =
-  Settings.secretWorkerCheckpointKey
-    (Settings.bootstrapStorageKeys (Settings.brokerBootstrapStore settings))
-    <> ".transit-rotation-v1"
+  Settings.transitRotationJournalKeyFromCheckpoint $
+    Settings.secretWorkerCheckpointKey
+      (Settings.bootstrapStorageKeys (Settings.brokerBootstrapStore settings))
+
+-- | A journal read that outlives the permit cannot authorize a following
+-- write. Subsequent store preflight and the conditional PUT still need their
+-- own deadline and in-flight settlement guarantees.
+observeTransitJournalWithinPermit
+  :: Settings.BootstrapBrokerSettings
+  -> BootstrapStoreMutationPermit
+  -> IO (Either StoreBoundaryError (StoreReadBack ProductionTransitRotationJournal))
+observeTransitJournalWithinPermit settings permit =
+  storeResultBefore
+    (storeMutationPermitDeadline permit)
+    (observeProductionTransitRotationJournal settings)
+
+-- | The worker's pre-plan observation uses the same request-bound permit as
+-- planning, but does not itself authorize a journal mutation.
+observeProductionTransitRotationJournalWithinPermit
+  :: Settings.BootstrapBrokerSettings
+  -> BootstrapStoreMutationPermit
+  -> SecretFreeWorkerRequest
+  -> IO (Either StoreBoundaryError (StoreReadBack ProductionTransitRotationJournal))
+observeProductionTransitRotationJournalWithinPermit settings permit request =
+  case requireTransitPermit BootstrapStorePlanTransitRotation permit request of
+    Left failure -> pure (Left failure)
+    Right () -> observeTransitJournalWithinPermit settings permit
 
 validTransitRotationJournal :: ProductionTransitRotationJournal -> Bool
 validTransitRotationJournal journal =
@@ -352,14 +558,34 @@ validTransitRotationJournal journal =
       ProductionTransitRotationPlanned {} -> True
       ProductionTransitRotationApplied {transitRotationBeforeVersion, transitRotationAfterVersion} ->
         transitRotationAfterVersion == transitRotationBeforeVersion + 1
+      ProductionTransitRotationClaimed {} -> True
+      ProductionTransitRotationCompleted {transitRotationBeforeVersion, transitRotationAfterVersion} ->
+        transitRotationAfterVersion == transitRotationBeforeVersion + 1
 
 requireTransitPermit
   :: BootstrapStoreMutation
   -> BootstrapStoreMutationPermit
   -> SecretFreeWorkerRequest
   -> Either StoreBoundaryError ()
-requireTransitPermit mutation permit request
+requireTransitPermit mutation permit request = do
+  requireWorkerPermit mutation permit request
+  if secretWorkerRequestOperation request == SecretWorkerRotateTransitKey
+    then Right ()
+    else Left BootstrapStoreBindingMismatch
+
+requireWorkerPermit
+  :: BootstrapStoreMutation
+  -> BootstrapStoreMutationPermit
+  -> SecretFreeWorkerRequest
+  -> Either StoreBoundaryError ()
+requireWorkerPermit mutation permit request
   | storeMutationPermitMutation permit /= mutation = Left BootstrapStoreBindingMismatch
+  | storeMutationPermitFenceGeneration permit /= secretWorkerRequestFenceGeneration request =
+      Left BootstrapStoreBindingMismatch
+  | storeMutationPermitOwnerNonce permit /= secretWorkerRequestOwnerNonce request =
+      Left BootstrapStoreBindingMismatch
+  | storeMutationPermitActionDigest permit /= secretWorkerRequestActionDigest request =
+      Left BootstrapStoreBindingMismatch
   | storeMutationPermitStorageGeneration permit
       /= secretWorkerRequestStorageGeneration request =
       Left BootstrapStoreBindingMismatch
@@ -367,6 +593,8 @@ requireTransitPermit mutation permit request
       /= secretWorkerRequestDigest request =
       Left BootstrapStoreBindingMismatch
   | secretWorkerRequestSessionAccessor request /= workerSessionNotIssued =
+      Left BootstrapStoreBindingMismatch
+  | storeMutationPermitOperationDeadline permit /= secretWorkerRequestOperationDeadline request =
       Left BootstrapStoreBindingMismatch
   | otherwise = Right ()
 
@@ -380,6 +608,19 @@ exactJournalWrite expected written = do
     StoreWriteApplied _ _ actual | actual == expected -> Right actual
     StoreWriteConflict (StoreObjectPresent _ _ actual) | actual == expected -> Right actual
     StoreWriteConflict StoreObjectAbsent -> Left BootstrapStoreVersionConflict
+    _ -> Left BootstrapStoreReadBackMismatch
+
+-- A matching conflict proves only that another writer's claim exists. It
+-- cannot confer that writer's one-shot right to dispatch the Vault mutation.
+freshJournalWrite
+  :: ProductionTransitRotationJournal
+  -> Either StoreBoundaryError (StoreWriteResult ProductionTransitRotationJournal)
+  -> Either StoreBoundaryError ProductionTransitRotationJournal
+freshJournalWrite expected written = do
+  result <- written
+  case result of
+    StoreWriteApplied _ _ actual | actual == expected -> Right actual
+    StoreWriteConflict _ -> Left BootstrapStoreVersionConflict
     _ -> Left BootstrapStoreReadBackMismatch
 
 -- | Canonical request/result digest placed in the durable worker receipt.
@@ -403,22 +644,25 @@ publishProductionSecretWorkerResult settings permit request receipt result =
   let value = ProductionSecretWorkerResult request receipt result
       config = objectStoreConfig settings
       key = secretWorkerResultKey settings
-   in if storeMutationPermitMutation permit
-        /= BootstrapStorePublishSecretWorkerResult
-        || storeMutationPermitStorageGeneration permit
-          /= secretWorkerRequestStorageGeneration request
-        then pure (Left BootstrapStoreBindingMismatch)
-        else
+      deadline = storeMutationPermitDeadline permit
+   in case requireWorkerPermit BootstrapStorePublishSecretWorkerResult permit request of
+        Left failure -> pure (Left failure)
+        Right () ->
           if validWorkerResult value
-            then do
-              written <- createValue config key validWorkerResult value
+            then storeResultBefore deadline $ do
+              written <- createValueBefore deadline config key validWorkerResult value
               case written of
                 Left failure -> pure (Left failure)
                 Right (StoreWriteApplied _ _ actual) -> pure (Right actual)
                 Right (StoreWriteConflict (StoreObjectPresent version _ actual))
                   | actual == value -> pure (Right actual)
+                  | productionSecretWorkerResultRequest actual == request ->
+                      pure (Left BootstrapStoreVersionConflict)
+                  | secretWorkerRequestFenceGeneration (productionSecretWorkerResultRequest actual)
+                      > secretWorkerRequestFenceGeneration request ->
+                      pure (Left BootstrapStoreVersionConflict)
                   | otherwise -> do
-                      replaced <- casValue config key validWorkerResult version value
+                      replaced <- casValueBefore deadline config key validWorkerResult version value
                       pure $ case replaced of
                         Left failure -> Left failure
                         Right (StoreWriteApplied _ _ observed) | observed == value -> Right observed
@@ -448,11 +692,26 @@ observeProductionSecretWorkerResult settings request = do
       -- worker will CAS-replace it when its result is durable.
       | otherwise -> Right Nothing
 
+-- | An absent shared result does not prove that the exact worker has settled.
+-- Bound the whole local read and retain that absence as unavailable.
+observeProductionSecretWorkerResultForRecovery
+  :: Deadline
+  -> Settings.BootstrapBrokerSettings
+  -> SecretFreeWorkerRequest
+  -> IO (Either StoreBoundaryError SecretWorkerDurableResult)
+observeProductionSecretWorkerResultForRecovery deadline settings request =
+  storeResultBefore deadline $ do
+    observed <- observeProductionSecretWorkerResult settings request
+    case observed of
+      Left failure -> pure (Left failure)
+      Right Nothing -> pure (Left BootstrapStoreUnavailable)
+      Right (Just result) -> Right <$> evaluate (productionSecretWorkerResultValue result)
+
 secretWorkerResultKey :: Settings.BootstrapBrokerSettings -> Text
 secretWorkerResultKey settings =
-  Settings.secretWorkerCheckpointKey
-    (Settings.bootstrapStorageKeys (Settings.brokerBootstrapStore settings))
-    <> ".result-v1"
+  Settings.secretWorkerResultKeyFromCheckpoint $
+    Settings.secretWorkerCheckpointKey
+      (Settings.bootstrapStorageKeys (Settings.brokerBootstrapStore settings))
 
 validWorkerResult :: ProductionSecretWorkerResult -> Bool
 validWorkerResult value =
@@ -496,11 +755,29 @@ outcomeMatches operation outcome = case operation of
 productionBootstrapStoreBoundary
   :: Settings.BootstrapBrokerSettings
   -> IO (Either StoreBoundaryError (BootstrapStoreBoundary IO))
-productionBootstrapStoreBoundary settings = do
+productionBootstrapStoreBoundary = openBootstrapStore InitializeGeneration
+
+-- | A one-shot worker is admitted by an existing Broker fence and therefore
+-- cannot create either its bucket or its retained generation.
+productionExistingBootstrapStoreBoundary
+  :: Settings.BootstrapBrokerSettings
+  -> IO (Either StoreBoundaryError (BootstrapStoreBoundary IO))
+productionExistingBootstrapStoreBoundary = openBootstrapStore RequireExistingGeneration
+
+data BootstrapStoreOpenMode = InitializeGeneration | RequireExistingGeneration
+
+openBootstrapStore
+  :: BootstrapStoreOpenMode
+  -> Settings.BootstrapBrokerSettings
+  -> IO (Either StoreBoundaryError (BootstrapStoreBoundary IO))
+openBootstrapStore mode settings = do
   let config = objectStoreConfig settings
       keys = Settings.bootstrapStorageKeys (Settings.brokerBootstrapStore settings)
       generationKey = Settings.vaultStorageGenerationKey keys
-  bucket <- Native.ensureObjectStoreBucket config
+  bucket <- case mode of
+    InitializeGeneration -> Native.ensureObjectStoreBucket config
+    -- This checks listability only; the returned page is not an absence proof.
+    RequireExistingGeneration -> fmap void (Native.listKeys config)
   case bucket of
     -- The wire vocabulary is deliberately opaque -- a client learns only
     -- that the store is unavailable. The operator needs the cause, and
@@ -519,7 +796,10 @@ productionBootstrapStoreBoundary settings = do
         )
       pure (Left BootstrapStoreUnavailable)
     Right () -> do
-      generation <- observeOrCreateStorageGeneration config generationKey
+      generation <- case mode of
+        InitializeGeneration ->
+          observeOrCreateStorageGeneration config generationKey (Settings.bootstrapSessionFenceKey keys)
+        RequireExistingGeneration -> observeExistingStorageGeneration config generationKey
       pure $ case generation of
         Left failure -> Left failure
         Right _ -> Right (boundary config keys generationKey)
@@ -564,7 +844,7 @@ boundary config keys generationKey =
     , casRetireBootstrapSessionFence = retireFence config fenceKey
     , releaseBootstrapSessionFence = releaseFence config fenceKey
     , observeVaultStorageGeneration =
-        observeOrCreateStorageGeneration config generationKey
+        observeExistingStorageGeneration config generationKey
     , advanceVaultStorageGeneration = \permit expected replacement ->
         advanceStorageGeneration
           config
@@ -636,7 +916,7 @@ boundary config keys generationKey =
           value
     , readFinalUnlockBundle = \binding ->
         readBound config bundleKey validFinalUnlockBundle ((== binding) . finalUnlockBundleBinding)
-    , promoteFinalUnlockBundle = \permit response value -> do
+    , promoteFinalUnlockBundle = \permit response value -> storeResultBefore (storeMutationPermitDeadline permit) $ do
         observed <-
           readBound
             config
@@ -1056,7 +1336,7 @@ createBound
 createBound config key mutation permit generation valid value =
   case requirePermit mutation generation permit of
     Left failure -> pure (Left failure)
-    Right () -> createValue config key valid value
+    Right () -> createValueBefore (storeMutationPermitDeadline permit) config key valid value
 
 casBound
   :: (Eq value, Serialise value)
@@ -1072,7 +1352,7 @@ casBound
 casBound config key mutation permit generation valid version value =
   case requirePermit mutation generation permit of
     Left failure -> pure (Left failure)
-    Right () -> casValue config key valid version value
+    Right () -> casValueBefore (storeMutationPermitDeadline permit) config key valid version value
 
 deleteBound
   :: (Serialise value)
@@ -1087,7 +1367,9 @@ deleteBound
 deleteBound config key mutation permit generation version valueType =
   case requirePermit mutation generation permit of
     Left failure -> pure (Left failure)
-    Right () -> deleteValue config key version valueType
+    Right () ->
+      storeResultBefore (storeMutationPermitDeadline permit) $
+        deleteValue (storeMutationPermitDeadline permit) config key version valueType
 
 requirePermit
   :: BootstrapStoreMutation
@@ -1143,25 +1425,79 @@ createValue
   -> (value -> Bool)
   -> value
   -> IO (Either StoreBoundaryError (StoreWriteResult value))
-createValue config key valid value =
+createValue = createValueUsing Native.putIfAbsentObserved
+
+createValueBefore
+  :: (Eq value, Serialise value)
+  => Deadline
+  -> ObjectStoreConfig
+  -> Text
+  -> (value -> Bool)
+  -> value
+  -> IO (Either StoreBoundaryError (StoreWriteResult value))
+createValueBefore deadline config key valid value =
+  storeResultBefore deadline $
+    createValueUsing (Native.putIfAbsentObservedBefore deadline) config key valid value
+
+createValueUsing
+  :: (Eq value, Serialise value)
+  => (ObjectStoreConfig -> Text -> ByteString -> IO (Either String ConditionalPutResult))
+  -> ObjectStoreConfig
+  -> Text
+  -> (value -> Bool)
+  -> value
+  -> IO (Either StoreBoundaryError (StoreWriteResult value))
+createValueUsing put config key valid value =
   case encodeStoredEnvelope (StoreVersion 1) value of
     Left failure -> pure (Left failure)
     Right encoded -> do
-      attempted <- Native.putIfAbsentObserved config key encoded
+      attempted <- put config key encoded
       case attempted of
         Left _ -> pure (Left BootstrapStoreUnavailable)
         Right (ConditionalPutApplied _) -> confirmWrite config key valid (StoreVersion 1) value
         Right ConditionalPutConflict -> conflictResult config key valid
 
-casValue
+casValueBefore
   :: (Eq value, Serialise value)
-  => ObjectStoreConfig
+  => Deadline
+  -> ObjectStoreConfig
   -> Text
   -> (value -> Bool)
   -> StoreVersion
   -> value
   -> IO (Either StoreBoundaryError (StoreWriteResult value))
-casValue config key valid expected value = do
+casValueBefore deadline config key valid expected value =
+  storeResultBefore deadline $
+    casValueUsing (Native.putIfVersionObservedBefore deadline) config key valid expected value
+
+-- | A late result is unresolved. For a mutation the conditional write may
+-- already have taken effect, so expiry must not be reported as observed absence.
+storeResultBefore
+  :: Deadline
+  -> IO (Either StoreBoundaryError value)
+  -> IO (Either StoreBoundaryError value)
+storeResultBefore deadline action = do
+  observed <- observeDeadlineEffectWithin deadline $ do
+    result <- action
+    case result of
+      Left failure -> evaluate failure >> pure result
+      Right value -> evaluate value >> pure result
+  pure $ case observed of
+    Nothing -> Left BootstrapStoreUnavailable
+    Just DeadlineEffectNotStarted -> Left BootstrapStoreUnavailable
+    Just (DeadlineEffectCompletedLate _) -> Left BootstrapStoreUnavailable
+    Just (DeadlineEffectCompleted _ result) -> result
+
+casValueUsing
+  :: (Eq value, Serialise value)
+  => (ObjectStoreConfig -> Text -> ObjectVersion -> ByteString -> IO (Either String ConditionalPutResult))
+  -> ObjectStoreConfig
+  -> Text
+  -> (value -> Bool)
+  -> StoreVersion
+  -> value
+  -> IO (Either StoreBoundaryError (StoreWriteResult value))
+casValueUsing put config key valid expected value = do
   observed <- readPhysical config key valid
   case observed of
     Left failure -> pure (Left failure)
@@ -1173,7 +1509,7 @@ casValue config key valid expected value = do
            in case encodeStoredEnvelope proposed value of
                 Left failure -> pure (Left failure)
                 Right encoded -> do
-                  attempted <- Native.putIfVersionObserved config key etag encoded
+                  attempted <- put config key etag encoded
                   case attempted of
                     Left _ -> pure (Left BootstrapStoreUnavailable)
                     Right (ConditionalPutApplied _) -> confirmWrite config key valid proposed value
@@ -1182,12 +1518,13 @@ casValue config key valid expected value = do
 deleteValue
   :: forall value
    . (Serialise value)
-  => ObjectStoreConfig
+  => Deadline
+  -> ObjectStoreConfig
   -> Text
   -> StoreVersion
   -> Proxy value
   -> IO (Either StoreBoundaryError ())
-deleteValue config key expected (_ :: Proxy value) = do
+deleteValue deadline config key expected (_ :: Proxy value) = do
   observed <- readPhysical config key (const True :: value -> Bool)
   case observed of
     Left failure -> pure (Left failure)
@@ -1195,17 +1532,21 @@ deleteValue config key expected (_ :: Proxy value) = do
     Right (PhysicalPresent etag actual _ _)
       | actual /= expected -> pure (Left BootstrapStoreVersionConflict)
       | otherwise -> do
-          deleted <- Native.deleteIfVersionObserved config key etag
-          case deleted of
-            Left _ -> pure (Left BootstrapStoreUnavailable)
-            Right ConditionalDeleteConflict ->
-              pure (Left BootstrapStoreVersionConflict)
-            Right ConditionalDeleteApplied -> do
-              readBack <- Native.getObjectVersioned config key
-              pure $ case readBack of
-                Right Nothing -> Right ()
-                Right (Just _) -> Left BootstrapStoreReadBackMismatch
-                Left _ -> Left BootstrapStoreUnavailable
+          now <- realMonotonicNow
+          case deadlineObservation now deadline of
+            DeadlineExpired -> pure (Left BootstrapStoreUnavailable)
+            DeadlineOpen _ -> do
+              deleted <- Native.deleteIfVersionObservedBefore deadline config key etag
+              case deleted of
+                Left _ -> pure (Left BootstrapStoreUnavailable)
+                Right ConditionalDeleteConflict ->
+                  pure (Left BootstrapStoreVersionConflict)
+                Right ConditionalDeleteApplied -> do
+                  readBack <- Native.getObjectVersioned config key
+                  pure $ case readBack of
+                    Right Nothing -> Right ()
+                    Right (Just _) -> Left BootstrapStoreReadBackMismatch
+                    Left _ -> Left BootstrapStoreUnavailable
 
 confirmWrite
   :: (Eq value, Serialise value)
@@ -1290,38 +1631,61 @@ lowerHexBytes = Text.pack . concatMap renderHexByte . ByteString.unpack
     [digit] -> ['0', digit]
     digits -> digits
 
-observeOrCreateStorageGeneration
+-- | Once a boundary has started, losing the generation record is not evidence
+-- of a fresh installation and must never mint a replacement during a read.
+observeExistingStorageGeneration
   :: ObjectStoreConfig
   -> Text
   -> IO (Either StoreBoundaryError RootInitBinding)
-observeOrCreateStorageGeneration config key = do
+observeExistingStorageGeneration config key = do
+  observed <- readValue config key validRootInitBinding
+  pure $ case observed of
+    Left failure -> Left failure
+    Right StoreObjectAbsent -> Left BootstrapStoreReadBackMismatch
+    Right (StoreObjectPresent _ _ binding) -> Right binding
+
+observeOrCreateStorageGeneration
+  :: ObjectStoreConfig
+  -> Text
+  -> Text
+  -> IO (Either StoreBoundaryError RootInitBinding)
+observeOrCreateStorageGeneration config key fenceKey = do
   observed <- readValue config key validRootInitBinding
   case observed of
     Left failure -> pure (Left failure)
     Right (StoreObjectPresent _ _ binding) -> pure (Right binding)
     Right StoreObjectAbsent -> do
-      entropy <- getRandomBytes 32 :: IO ByteString
-      let rendered = lowerHexBytes entropy
-      case ( mkBootstrapTransactionId ("bootstrap-" <> rendered)
-           , mkVaultStorageGeneration ("vault-" <> rendered)
-           ) of
-        (Right transactionId, Right storageGeneration) -> do
-          created <-
-            createValue
-              config
-              key
-              validRootInitBinding
-              RootInitBinding
-                { rootInitTransactionId = transactionId
-                , rootInitStorageGeneration = storageGeneration
-                }
-          pure $ case created of
-            Right (StoreWriteApplied _ _ binding) -> Right binding
-            Right (StoreWriteConflict (StoreObjectPresent _ _ binding)) -> Right binding
-            Right (StoreWriteConflict StoreObjectAbsent) ->
-              Left BootstrapStoreReadBackMismatch
-            Left failure -> Left failure
-        _ -> pure (Left BootstrapStoreCorrupt)
+      fence <- readValue config fenceKey validFenceObservation
+      case fence of
+        Left failure -> pure (Left failure)
+        Right StoreObjectPresent {} -> pure (Left BootstrapStoreBindingMismatch)
+        Right StoreObjectAbsent -> createGeneration
+ where
+  -- Fence absence is only a necessary check. It cannot establish genesis:
+  -- other retained objects, partial loss, and concurrent old writers remain.
+  createGeneration = do
+    entropy <- getRandomBytes 32 :: IO ByteString
+    let rendered = lowerHexBytes entropy
+    case ( mkBootstrapTransactionId ("bootstrap-" <> rendered)
+         , mkVaultStorageGeneration ("vault-" <> rendered)
+         ) of
+      (Right transactionId, Right storageGeneration) -> do
+        created <-
+          createValue
+            config
+            key
+            validRootInitBinding
+            RootInitBinding
+              { rootInitTransactionId = transactionId
+              , rootInitStorageGeneration = storageGeneration
+              }
+        pure $ case created of
+          Right (StoreWriteApplied _ _ binding) -> Right binding
+          Right (StoreWriteConflict (StoreObjectPresent _ _ binding)) -> Right binding
+          Right (StoreWriteConflict StoreObjectAbsent) ->
+            Left BootstrapStoreReadBackMismatch
+          Left failure -> Left failure
+      _ -> pure (Left BootstrapStoreCorrupt)
 
 -- | Advance the single durable Vault-storage generation exactly once.  An
 -- exact replacement read-back is idempotent recovery for a response lost
@@ -1340,7 +1704,7 @@ advanceStorageGeneration config key permit expected replacement =
     (rootInitStorageGeneration expected)
     permit of
     Left failure -> pure (Left failure)
-    Right () -> do
+    Right () -> storeResultBefore (storeMutationPermitDeadline permit) $ do
       observed <- readValue config key validRootInitBinding
       case observed of
         Left failure -> pure (Left failure)
@@ -1349,7 +1713,14 @@ advanceStorageGeneration config key permit expected replacement =
           | actual == replacement -> pure (Right replacement)
           | actual /= expected -> pure (Left BootstrapStoreBindingMismatch)
           | otherwise -> do
-              written <- casValue config key validRootInitBinding version replacement
+              written <-
+                casValueBefore
+                  (storeMutationPermitDeadline permit)
+                  config
+                  key
+                  validRootInitBinding
+                  version
+                  replacement
               pure $ case written of
                 Left failure -> Left failure
                 Right (StoreWriteApplied _ _ actualReplacement)
@@ -1382,6 +1753,18 @@ casFence
   -> BootstrapFenceCasPlan
   -> IO (Either StoreBoundaryError BootstrapFenceCasResult)
 casFence config key plan = do
+  result <- storeResultBefore (fenceCasDeadline plan) (casFenceWithin config key plan)
+  pure $ case result of
+    Left BootstrapStoreUnavailable ->
+      Right (BootstrapFenceCasUnobservable "bootstrap fence CAS deadline elapsed or outcome unavailable")
+    other -> other
+
+casFenceWithin
+  :: ObjectStoreConfig
+  -> Text
+  -> BootstrapFenceCasPlan
+  -> IO (Either StoreBoundaryError BootstrapFenceCasResult)
+casFenceWithin config key plan = do
   observed <- readPhysical config key validFenceObservation
   case observed of
     Left BootstrapStoreUnavailable ->
@@ -1392,7 +1775,8 @@ casFence config key plan = do
         BootstrapFenceStoreVacant floorValue
           | floorValue == fenceCasExpectedGenerationFloor plan -> do
               written <-
-                writeFencePhysical
+                writeFencePhysicalBefore
+                  (fenceCasDeadline plan)
                   config
                   key
                   physical
@@ -1417,6 +1801,21 @@ retireFence
   -> BootstrapFenceRetirePlan
   -> IO (Either StoreBoundaryError BootstrapFenceRetireCasResult)
 retireFence config key plan = do
+  result <- storeResultBefore (fenceRetireDeadline plan) (retireFenceWithin config key plan)
+  pure $ case result of
+    Left BootstrapStoreUnavailable ->
+      Right
+        ( BootstrapFenceRetireCasUnobservable
+            "bootstrap fence retirement deadline elapsed or outcome unavailable"
+        )
+    other -> other
+
+retireFenceWithin
+  :: ObjectStoreConfig
+  -> Text
+  -> BootstrapFenceRetirePlan
+  -> IO (Either StoreBoundaryError BootstrapFenceRetireCasResult)
+retireFenceWithin config key plan = do
   observed <- readPhysical config key validFenceObservation
   case observed of
     Left BootstrapStoreUnavailable ->
@@ -1428,7 +1827,8 @@ retireFence config key plan = do
         BootstrapFenceStoreHeld held
           | held == fenceRetireExpectedFence plan -> do
               written <-
-                writeFencePhysical
+                writeFencePhysicalBefore
+                  (fenceRetireDeadline plan)
                   config
                   key
                   physical
@@ -1462,17 +1862,28 @@ releaseFence
 releaseFence config key permit expected
   | storeMutationPermitMutation permit /= BootstrapStoreReleaseSessionFence =
       pure (Left BootstrapStoreBindingMismatch)
+  | storeMutationPermitFenceGeneration permit /= bootstrapFenceGeneration expected =
+      pure (Left BootstrapStoreBindingMismatch)
+  | storeMutationPermitOwnerNonce permit /= bootstrapFenceOwnerNonce expected =
+      pure (Left BootstrapStoreBindingMismatch)
+  | storeMutationPermitActionDigest permit /= bootstrapFenceActionDigest expected =
+      pure (Left BootstrapStoreBindingMismatch)
+  | storeMutationPermitRequestDigest permit /= bootstrapFenceRequestDigest expected =
+      pure (Left BootstrapStoreBindingMismatch)
+  | storeMutationPermitOperationDeadline permit /= bootstrapFenceOperationDeadline expected =
+      pure (Left BootstrapStoreBindingMismatch)
   | storeMutationPermitStorageGeneration permit
       /= bootstrapFenceStorageGeneration expected =
       pure (Left BootstrapStoreBindingMismatch)
-  | otherwise = do
+  | otherwise = storeResultBefore (storeMutationPermitDeadline permit) $ do
       observed <- readPhysical config key validFenceObservation
       case observed of
         Left failure -> pure (Left failure)
         Right physical -> case fencePhysicalObservation physical of
           BootstrapFenceStoreHeld held
             | held == expected ->
-                writeFencePhysical
+                writeFencePhysicalBefore
+                  (storeMutationPermitDeadline permit)
                   config
                   key
                   physical
@@ -1488,13 +1899,27 @@ fencePhysicalObservation physical = case physical of
   PhysicalAbsent -> BootstrapFenceStoreVacant 0
   PhysicalPresent _ _ _ observation -> observation
 
-writeFencePhysical
-  :: ObjectStoreConfig
+writeFencePhysicalBefore
+  :: Deadline
+  -> ObjectStoreConfig
   -> Text
   -> PhysicalRead BootstrapFenceStoreObservation
   -> BootstrapFenceStoreObservation
   -> IO (Either StoreBoundaryError BootstrapFenceStoreObservation)
-writeFencePhysical config key physical proposed = do
+writeFencePhysicalBefore deadline =
+  writeFencePhysicalUsing
+    (Native.putIfAbsentObservedBefore deadline)
+    (Native.putIfVersionObservedBefore deadline)
+
+writeFencePhysicalUsing
+  :: (ObjectStoreConfig -> Text -> ByteString -> IO (Either String ConditionalPutResult))
+  -> (ObjectStoreConfig -> Text -> ObjectVersion -> ByteString -> IO (Either String ConditionalPutResult))
+  -> ObjectStoreConfig
+  -> Text
+  -> PhysicalRead BootstrapFenceStoreObservation
+  -> BootstrapFenceStoreObservation
+  -> IO (Either StoreBoundaryError BootstrapFenceStoreObservation)
+writeFencePhysicalUsing putAbsent putVersion config key physical proposed = do
   let logicalVersion = case physical of
         PhysicalAbsent -> StoreVersion 1
         PhysicalPresent _ version _ _ -> nextStoreVersion version
@@ -1502,9 +1927,9 @@ writeFencePhysical config key physical proposed = do
     Left failure -> pure (Left failure)
     Right encoded -> do
       attempted <- case physical of
-        PhysicalAbsent -> Native.putIfAbsentObserved config key encoded
+        PhysicalAbsent -> putAbsent config key encoded
         PhysicalPresent etag _ _ _ ->
-          Native.putIfVersionObserved config key etag encoded
+          putVersion config key etag encoded
       case attempted of
         Left _ -> pure (Left BootstrapStoreUnavailable)
         Right ConditionalPutConflict -> pure (Left BootstrapStoreVersionConflict)

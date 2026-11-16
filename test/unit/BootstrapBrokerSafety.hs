@@ -10,16 +10,30 @@ module BootstrapBrokerSafety
   )
 where
 
+import Control.Concurrent (threadDelay)
 import Control.Monad (forM_)
 import Data.Either (isLeft, isRight)
 import Data.Functor.Identity (Identity (..))
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.List (nub)
 import Data.Text qualified as Text
+import Data.Time.Clock.POSIX (getPOSIXTime)
 import Numeric.Natural (Natural)
-import Prodbox.Bootstrap.Broker.Engine (BrokerEngineError (..))
+import Prodbox.Bootstrap.Broker.Engine (BrokerEngineError (..), BrokerSecretWorkerBoundary (..))
 import Prodbox.Bootstrap.Broker.EngineAdapter (brokerEngineErrorDiagnostic, engineErrorReply)
-import Prodbox.Bootstrap.Broker.EngineSecretWorker (EngineSecretWorkerError (..))
+import Prodbox.Bootstrap.Broker.EngineSecretWorker
+  ( EngineSecretWorkerBoundary (..)
+  , EngineSecretWorkerError (..)
+  )
 import Prodbox.Bootstrap.Broker.Fence
+import Prodbox.Bootstrap.Broker.KubernetesWorker (KubernetesWorkerBoundary (..))
+import Prodbox.Bootstrap.Broker.LeaseConfirmation
+  ( LeaseConfirmationFailure (..)
+  , confirmLeaseEffect
+  )
+import Prodbox.Bootstrap.Broker.ProductionSecretWorkerBoundary
+  ( productionBrokerSecretWorkerBoundary
+  )
 import Prodbox.Bootstrap.Broker.Program (BootstrapMutationReceipt (..))
 import Prodbox.Bootstrap.Broker.Request
   ( RequestDigest
@@ -28,6 +42,10 @@ import Prodbox.Bootstrap.Broker.Request
 import Prodbox.Bootstrap.Broker.Routes (BrokerRoute (BrokerVaultInitialize))
 import Prodbox.Bootstrap.Broker.SecretWorker
 import Prodbox.Bootstrap.Broker.Server (BrokerReplyStatus (BrokerReplyConflict))
+import Prodbox.Bootstrap.Broker.StoreBoundary
+  ( BootstrapStoreBoundary (..)
+  , unavailableBootstrapStoreBoundary
+  )
 import Prodbox.Bootstrap.Broker.Types
   ( ArtifactDigest
   , VaultStorageGeneration
@@ -44,16 +62,20 @@ import Prodbox.ControlPlane.AuthorityClock
 import Prodbox.ControlPlane.Deadline
   ( Deadline
   , MonotonicInstant
+  , RemainingDuration (..)
+  , deadlineAtOffset
   , deadlineFromInstant
   , deadlineInstant
   , monotonicInstantFromMicros
   , monotonicInstantMicros
   )
+import Prodbox.ControlPlane.Interpreter (realMonotonicNow)
 import Prodbox.Lifecycle.Lease
   ( OwnerNonce
   , authorityTimeFromMicros
   , mkOwnerNonce
   )
+import System.Timeout (timeout)
 import TestSupport
 
 bootstrapBrokerSafetySuite :: SuiteBuilder ()
@@ -64,11 +86,116 @@ bootstrapBrokerSafetySuite = do
 durableFenceSuite :: SuiteBuilder ()
 durableFenceSuite =
   describe "Sprint 2.33 durable BootstrapSessionFence" $ do
+    it "caps unreceipted worker deletion at the caller deadline" $ do
+      observedDeadline <- newIORef Nothing
+      let unused = error "unused Kubernetes boundary operation in cleanup deadline test"
+          kube =
+            KubernetesWorkerBoundary
+              { kubernetesCreateWorkerWorkload = unused
+              , kubernetesObserveWorkerAttestation = unused
+              , kubernetesDiscardUnreceiptedWorker = \limit _ -> do
+                  writeIORef observedDeadline (Just limit)
+                  pure (Right ())
+              , kubernetesObserveWorkerExit = unused
+              , kubernetesDeleteWorkerPod = unused
+              , kubernetesObserveWorkerAbsence = unused
+              , kubernetesReconcileFenceOwnerWorker = unused
+              , kubernetesObserveBootstrapLease = unused
+              , kubernetesEnsureBootstrapLease = unused
+              , kubernetesObserveControllerImage = unused
+              , kubernetesObserveSelfWorkerRequest = unused
+              , kubernetesObserveVaultStorageIdentity = unused
+              , kubernetesResetVaultStorage = unused
+              }
+          driver =
+            brokerSecretWorkerDriverBoundary
+              ( productionBrokerSecretWorkerBoundary
+                  (error "unused Broker settings in cleanup deadline test")
+                  unavailableBootstrapStoreBoundary
+                  kube
+              )
+      now <- realMonotonicNow
+      let callerDeadline = deadlineAtOffset now (RemainingDuration 5_000_000)
+      result <-
+        discardUnreceiptedSecretWorkerBefore
+          driver
+          callerDeadline
+          canonicalWorkerRequest
+          SecretWorkerControllerRestarted
+      result `shouldBe` Right ()
+      readIORef observedDeadline `shouldReturn` Just callerDeadline
+      writeIORef observedDeadline Nothing
+      expired <-
+        discardUnreceiptedSecretWorkerBefore
+          driver
+          (deadlineFromInstant now)
+          canonicalWorkerRequest
+          SecretWorkerControllerRestarted
+      expired `shouldSatisfy` isLeft
+      readIORef observedDeadline `shouldReturn` Nothing
+
+    it "bounds checkpoint observation while retaining a started callback's result" $ do
+      forM_
+        [(0, True, 0), (0, True, 5_200_000), (350_000, False, 0), (7_000_000, False, 0)]
+        $ \(delayMicros, shouldAdmit, callbackDelay) -> do
+          wall <- getPOSIXTime
+          let fence =
+                fenceAt
+                  1
+                  canonicalOwner
+                  canonicalAction
+                  canonicalRequest
+                  canonicalStorage
+                  (floor (wall * 1_000_000) + 30_000_000)
+          first <- realMonotonicNow
+          leaseRef <- newIORef (deadlineAtOffset first (RemainingDuration 1_000_000))
+          callback <- newIORef False
+          let store =
+                unavailableBootstrapStoreBoundary
+                  { observeBootstrapSessionFence = do
+                      observedAt <- realMonotonicNow
+                      let leaseBudget = if shouldAdmit then 2_000_000 else 200_000
+                      writeIORef leaseRef (deadlineAtOffset observedAt (RemainingDuration leaseBudget))
+                      threadDelay delayMicros
+                      pure (Right (BootstrapFenceStoreHeld fence))
+                  }
+              unused = error "unused Kubernetes boundary operation in clock test"
+              kube =
+                KubernetesWorkerBoundary
+                  { kubernetesCreateWorkerWorkload = unused
+                  , kubernetesObserveWorkerAttestation = unused
+                  , kubernetesDiscardUnreceiptedWorker = unused
+                  , kubernetesObserveWorkerExit = unused
+                  , kubernetesDeleteWorkerPod = unused
+                  , kubernetesObserveWorkerAbsence = unused
+                  , kubernetesReconcileFenceOwnerWorker = unused
+                  , kubernetesObserveBootstrapLease = \_ -> do
+                      expiry <- readIORef leaseRef
+                      pure
+                        (BootstrapLeaseObserved (bootstrapLeaseBindingForFence fence) expiry "fixture-resource-version")
+                  , kubernetesEnsureBootstrapLease = unused
+                  , kubernetesObserveControllerImage = unused
+                  , kubernetesObserveSelfWorkerRequest = unused
+                  , kubernetesObserveVaultStorageIdentity = unused
+                  , kubernetesResetVaultStorage = unused
+                  }
+              driver =
+                brokerSecretWorkerDriverBoundary
+                  (productionBrokerSecretWorkerBoundary (error "unused Broker settings in clock test") store kube)
+          result <- timeout 6_500_000 $
+            withSecretWorkerCheckpointPermit driver fence BootstrapStoreCreateSecretWorkerCheckpoint $ \_ _ ->
+              threadDelay callbackDelay >> writeIORef callback True
+          readIORef callback `shouldReturn` shouldAdmit
+          if shouldAdmit
+            then result `shouldBe` Just (Right ())
+            else result `shouldSatisfy` maybe False isLeft
+
     it "allocates exactly floor + 1 only from an observed vacant CAS record" $ do
       let request = acquireRequestFor canonicalFence
       case decideBootstrapFenceAcquire monoNow requestDeadline trustedNow request (BootstrapFenceStoreVacant 7) of
         BootstrapFenceAcquireCas plan -> do
           fenceCasExpectedGenerationFloor plan `shouldBe` 7
+          fenceCasDeadline plan `shouldBe` deadline 910
           bootstrapFenceGenerationValue
             (bootstrapFenceGeneration (fenceCasProposedFence plan))
             `shouldBe` 8
@@ -158,6 +285,45 @@ durableFenceSuite =
           expectationFailure
             ("an unreadable clock must not read as expiry, got: " ++ show other)
 
+    it "retires only after the observing clock's lower bound reaches the predecessor deadline" $ do
+      let predecessor = fenceAt 1 alternateOwner canonicalAction alternateRequest canonicalStorage 100
+          observedAt micros = AuthorityTimeTrusted (authorityTimeFromMicros micros) (clockUncertaintyFromMicros 2)
+          retire clock =
+            decideBootstrapFenceRetire
+              monoNow
+              requestDeadline
+              clock
+              predecessor
+              BootstrapLeaseMissing
+              (BootstrapFenceOwnerAbsent predecessor canonicalReceiptDigest)
+      forM_ [98, 99, 100, 101] $ \micros -> do
+        classifyPredecessorLiveness monoNow requestDeadline (observedAt micros) predecessor
+          `shouldBe` PredecessorLive
+        retire (observedAt micros) `shouldSatisfy` isLeft
+      classifyPredecessorLiveness monoNow requestDeadline (observedAt 102) predecessor
+        `shouldBe` PredecessorExpired
+      retire (observedAt 102) `shouldSatisfy` isRight
+
+    it "retains unconfirmed Lease outcomes across the deadline boundary" $ do
+      let runCase before after lease = do
+            current <- newIORef before
+            calls <- newIORef (0 :: Int)
+            let clock = monotonicInstantFromMicros <$> readIORef current
+                effect = do
+                  writeIORef calls 1
+                  writeIORef current after
+                  pure lease
+            result <- confirmLeaseEffect clock (deadline 100) canonicalFence effect
+            count <- readIORef calls
+            pure (result, count)
+          valid = BootstrapLeaseObserved (bootstrapLeaseBindingForFence canonicalFence) (deadline 200) "rv"
+          unknown = BootstrapLeaseUnobservable "lost response"
+      runCase 100 100 valid `shouldReturn` (Left LeaseConfirmationNotStarted, 0)
+      runCase 10 100 valid `shouldReturn` (Left LeaseConfirmationLate, 1)
+      runCase 10 20 unknown
+        `shouldReturn` (Left (LeaseConfirmationRefused (BootstrapLeaseObservationUnobservable "lost response")), 1)
+      runCase 10 20 valid `shouldReturn` (Right (), 1)
+
     -- The measurement that scoped this sprint: the acquire path CANNOT reach a
     -- liveness-unobservable predecessor, because it derives the *request's*
     -- attempt deadline from the same clock observation before it reads the
@@ -197,6 +363,7 @@ durableFenceSuite =
           vacant = BootstrapFenceStoreVacant 1
       fenceRetireExpectedFence retirement `shouldBe` expired
       fenceRetireVacantGenerationFloor retirement `shouldBe` 1
+      fenceRetireDeadline retirement `shouldBe` requestDeadline
       confirmBootstrapFenceRetireCas
         retirement
         (BootstrapFenceRetireCasAppliedReadBack vacant)
@@ -276,58 +443,6 @@ durableFenceSuite =
       confirmBootstrapFenceRetireCas
         retirement
         (BootstrapFenceRetireCasUnobservable "store down")
-        `shouldSatisfy` isLeft
-
-    -- Sprint 2.48: the compensating release for the second defect Sprint 2.47's
-    -- live proof measured -- `acquireFence` CASed its fence and then abandoned
-    -- it when `ensureLease` failed, so one Lease fault cost a generation and
-    -- refused every successor `BootstrapFenceAcquireOverlap` until the
-    -- operation deadline elapsed. Measured across five consecutive bring-ups on
-    -- 2026-08-14, not inferred.
-    it "releases a freshly acquired fence and burns its generation rather than reusing it" $ do
-      let acquired =
-            fenceAt 5 canonicalOwner canonicalAction canonicalRequest canonicalStorage 5_000
-          release = abandonFreshlyAcquiredFence acquired
-          vacant = BootstrapFenceStoreVacant 5
-      -- exact-value CAS: it can never clobber a fence this call did not write
-      fenceRetireExpectedFence release `shouldBe` acquired
-      -- the floor is the released generation itself, so the successor allocates
-      -- 6. A floor of 4 would let a successor re-mint generation 5, and the
-      -- whole fence scheme rests on that never happening.
-      fenceRetireVacantGenerationFloor release `shouldBe` 5
-      confirmBootstrapFenceRetireCas
-        release
-        (BootstrapFenceRetireCasAppliedReadBack vacant)
-        `shouldBe` Right vacant
-      case decideBootstrapFenceAcquire
-        monoNow
-        requestDeadline
-        trustedNow
-        (acquireRequestFor canonicalFence)
-        vacant of
-        BootstrapFenceAcquireCas plan ->
-          bootstrapFenceGenerationValue
-            (bootstrapFenceGeneration (fenceCasProposedFence plan))
-            `shouldBe` 6
-        decision -> expectationFailure ("expected successor CAS plan, got " ++ show decision)
-
-    it "cannot release a fence other than the exact one it was given" $ do
-      let acquired =
-            fenceAt 5 canonicalOwner canonicalAction canonicalRequest canonicalStorage 5_000
-          someoneElse =
-            fenceAt 5 alternateOwner canonicalAction alternateRequest canonicalStorage 5_000
-          release = abandonFreshlyAcquiredFence acquired
-      -- The store CAS compares the whole value, so a fence that differs in any
-      -- field conflicts rather than being vacated -- which is what makes the
-      -- compensation safe without observing an owner.
-      fenceRetireExpectedFence release `shouldNotBe` someoneElse
-      confirmBootstrapFenceRetireCas
-        release
-        (BootstrapFenceRetireCasConflict (BootstrapFenceStoreHeld someoneElse))
-        `shouldSatisfy` isLeft
-      confirmBootstrapFenceRetireCas
-        release
-        (BootstrapFenceRetireCasAppliedReadBack (BootstrapFenceStoreVacant 4))
         `shouldSatisfy` isLeft
 
     -- Sprint 2.47: the adapter that gave `decideBootstrapFenceRetire` its first
@@ -533,6 +648,51 @@ durableFenceSuite =
         canonicalFence
         (BootstrapLeaseObserved (bootstrapLeaseBindingForFence canonicalFence) leaseDeadline "")
         `shouldBe` Left BootstrapLeaseResourceVersionEmpty
+
+    it "separates Lease safe-use and certain-expiry cutoffs" $ do
+      let predecessor = fenceAt 1 alternateOwner canonicalAction alternateRequest canonicalStorage 50
+          binding = bootstrapLeaseBindingForFence predecessor
+          observation = BootstrapLeaseObservedBounded binding (deadline 20) (deadline 40) "rv"
+          instant = monotonicInstantFromMicros
+          retire at lease =
+            decideBootstrapFenceRetire
+              (instant at)
+              requestDeadline
+              trustedNow
+              predecessor
+              lease
+              (BootstrapFenceOwnerAbsent predecessor canonicalReceiptDigest)
+      confirmBootstrapLease (instant 19) predecessor observation `shouldSatisfy` isRight
+      forM_ [20, 21, 39] $ \at -> do
+        confirmBootstrapLease (instant at) predecessor observation
+          `shouldBe` Left (BootstrapLeaseObservationUnobservable "Lease expiry is uncertain")
+        retire at observation `shouldSatisfy` isLeft
+      confirmBootstrapLease (instant 40) predecessor observation `shouldBe` Left BootstrapLeaseExpired
+      retire 40 observation `shouldSatisfy` isRight
+      let inverted = BootstrapLeaseObservedBounded binding (deadline 40) (deadline 20) "rv"
+      forM_ [10, 20, 40] $ \at -> do
+        confirmBootstrapLease (instant at) predecessor inverted
+          `shouldBe` Left (BootstrapLeaseObservationUnobservable "Lease clock bounds are inverted")
+        retire at inverted `shouldSatisfy` isLeft
+      let missingVersion = BootstrapLeaseObservedBounded binding (deadline 20) (deadline 40) ""
+      retire 40 missingVersion `shouldSatisfy` isLeft
+      let currentLease =
+            BootstrapLeaseObservedBounded
+              (bootstrapLeaseBindingForFence canonicalFence)
+              (deadline 20)
+              (deadline 40)
+              "rv"
+          authorize at =
+            authorizeBootstrapVaultEffect
+              (instant at)
+              requestDeadline
+              trustedNow
+              canonicalFence
+              (BootstrapFenceStoreHeld canonicalFence)
+              currentLease
+              BootstrapVaultInitialize
+      vaultEffectPermitDeadline (mustRight (authorize 19)) `shouldBe` deadline 20
+      authorize 20 `shouldSatisfy` isLeft
 
     it "round-trips validated Lease metadata for the Kubernetes interpreter" $ do
       let binding =

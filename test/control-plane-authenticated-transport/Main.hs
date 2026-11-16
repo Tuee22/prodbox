@@ -12,7 +12,9 @@ import Codec.Serialise (Serialise, deserialiseOrFail, serialise)
 import Control.Concurrent.STM (atomically)
 import Data.ByteString (ByteString)
 import Data.ByteString qualified as ByteString
+import Data.ByteString.Base64 qualified as Base64
 import Data.ByteString.Lazy qualified as LazyByteString
+import Data.Either (isLeft)
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Map.Strict qualified as Map
 import Data.Set qualified as Set
@@ -113,6 +115,12 @@ import Prodbox.ControlPlane.PulumiCheckpointEndpoint
   )
 import Prodbox.ControlPlane.RequestAuthentication
 import Prodbox.ControlPlane.RequestReplay
+import Prodbox.ControlPlane.RetainedAuthentication
+  ( TargetReplayMigrationResult (..)
+  , TargetReplayMigrationStore (..)
+  , controlPlaneRequestReplayPath
+  , migrateTargetReplayStagedWith
+  )
 import Prodbox.ControlPlane.RetainedSesLeaseEndpoint
   ( resolvingRetainedSesLeaseHandler
   )
@@ -165,6 +173,7 @@ import Prodbox.ControlPlane.Server
 import Prodbox.ControlPlane.TargetAuthorityEpochBinding qualified as TargetBinding
 import Prodbox.ControlPlane.TargetMaterialEndpoint qualified as TargetMaterial
 import Prodbox.ControlPlane.TargetMaterialRegistry (TargetSecretId (TargetSesSmtp))
+import Prodbox.Http.Client (HttpError (..))
 import Prodbox.Http.ReplyStatus (ReplyStatus (..), replyStatusCode)
 import Prodbox.Lifecycle.Authority.Admission
   ( AuthorityAdmissionAggregate
@@ -208,7 +217,18 @@ import Prodbox.Lifecycle.Authority.Submission
   , RequestDigest (RequestDigest)
   )
 import Prodbox.Lifecycle.CheckpointAuthority
-  ( ModelBCodec (encodeModelBValue)
+  ( ModelBCasAdapter (..)
+  , ModelBCasRequest (..)
+  , ModelBCasResult (..)
+  , ModelBCodec (decodeModelBValue, encodeModelBValue)
+  , ModelBLeaseGuard (..)
+  , ModelBObjectCoordinate
+  , ModelBObjectVersion
+  , ModelBObservation (..)
+  , StoreLifetime (ClusterRetained)
+  , mkClusterRetainedCoordinate
+  , mkLongLivedCheckpointAuthority
+  , mkModelBObjectVersion
   )
 import Prodbox.Lifecycle.CleanupRun
   ( CleanupNodeOutcome (CleanupNodeSucceeded)
@@ -250,6 +270,7 @@ import Prodbox.Lifecycle.Teardown.Program (cascadeProgramCheckpointOperationCoun
 import Prodbox.Runtime.Role
   ( RuntimeRole (..)
   )
+import Prodbox.Vault.Client (KvV2VersionedSecret (..), VaultCasOutcome (..))
 import ProviderScopeFixture qualified as ScopeFixture
 import Test.Tasty (TestTree, defaultMain, testGroup)
 import Test.Tasty.HUnit
@@ -903,6 +924,261 @@ replayCodecTests =
           @?= Left RequestReplayEnvelopeNonCanonical
         decodeRequestReplayProjection 65536 otherLimits encoded
           @?= Left RequestReplayLimitsMismatch
+    , testCase "stages v19 to v20 capacity migration without losing replay decisions" $ do
+        let nextLimits = mustRight (mkRequestReplayLimits 2 64 skew)
+            staged = mustRight (requestReplayStagedCodec 65536 replayLimits nextLimits)
+            completedBytes = mustRight (encodeRequestReplayProjection 65536 replayLimits completedReplay)
+            frozenV19 = LazyByteString.toStrict (serialise (previousReplayEnvelope 19 1))
+            migrated = mustRight (decodeModelBValue staged completedBytes)
+            reserved = replayReservationProjection (reserveVerifiedRequest now attemptA verifiedRequest emptyReplay)
+            reservedBytes = mustRight (encodeRequestReplayProjection 65536 replayLimits reserved)
+            migratedReserved = mustRight (decodeModelBValue staged reservedBytes)
+            tombstone = compactRequestReplayProjection deadline completedReplay
+            tombstoneBytes = mustRight (encodeRequestReplayProjection 65536 replayLimits tombstone)
+            migratedTombstone = mustRight (decodeModelBValue staged tombstoneBytes)
+            encodedNext = mustRight (encodeModelBValue staged migrated)
+        completedBytes @?= frozenV19
+        decodeModelBValue staged frozenV19 @?= Right migrated
+        requestReplayProjectionLimits migrated @?= nextLimits
+        requestReplayEntryCount migrated @?= 1
+        replayReservationDecision (reserveVerifiedRequest now attemptB verifiedRequest migrated)
+          @?= ReplayReservationDuplicateCompleted response
+        replayReservationDecision (reserveVerifiedRequest now attemptB verifiedOtherNonce migrated)
+          @?= ReplayReservationFresh
+        replayReservationDecision (reserveVerifiedRequest now attemptB verifiedRequest migratedReserved)
+          @?= ReplayReservationDuplicateInFlight
+        replayReservationDecision
+          (reserveVerifiedRequest deadline attemptB verifiedRequest migratedTombstone)
+          @?= ReplayReservationDuplicateTombstoned
+        decodeModelBValue staged encodedNext @?= Right migrated
+        decodeRequestReplayProjection 65536 nextLimits completedBytes @?= Left RequestReplayLimitsMismatch
+        decodeRequestReplayProjection 65536 replayLimits encodedNext
+          @?= Left (RequestReplayEnvelopeUnsupportedVersion 20)
+    , testCase "staged replay migration refuses drift, narrowing and malformed retained data" $ do
+        let nextLimits = mustRight (mkRequestReplayLimits 2 64 skew)
+            oldDrift = mustRight (mkRequestReplayLimits 3 64 skew)
+            shrinkingCapacity = mustRight (mkRequestReplayLimits 1 64 skew)
+            smallerPrevious = mustRight (mkRequestReplayLimits 2 64 skew)
+            greaterResponse = mustRight (mkRequestReplayLimits 2 65 skew)
+            narrowerResponse = mustRight (mkRequestReplayLimits 2 1 skew)
+            otherSkew = mustRight (mkRequestReplayLimits 2 64 (mustRight (authorityDurationFromMicros 101)))
+            staged = mustRight (requestReplayStagedCodec 65536 replayLimits nextLimits)
+            wrongPrevious = mustRight (requestReplayStagedCodec 65536 oldDrift oldDrift)
+            wrongNext = mustRight (requestReplayStagedCodec 65536 replayLimits oldDrift)
+            tiny = mustRight (requestReplayStagedCodec 1 replayLimits nextLimits)
+            responseNarrowed = mustRight (requestReplayStagedCodec 65536 replayLimits narrowerResponse)
+            encoded = mustRight (encodeRequestReplayProjection 65536 replayLimits completedReplay)
+            migrated = mustRight (decodeModelBValue staged encoded)
+            nextBytes = mustRight (encodeModelBValue staged migrated)
+            nextWire = decodePreviousReplayEnvelope nextBytes
+            changedCapacity = LazyByteString.toStrict (serialise (nextWire {previousReplayEnvelopeCapacity = 3}))
+            futureVersion = LazyByteString.toStrict (serialise (nextWire {previousReplayEnvelopeVersion = 21}))
+            legacy = LazyByteString.toStrict (serialise (previousReplayEnvelope 2 1))
+        assertBool
+          "refuses smaller capacity"
+          (isLeft (requestReplayStagedCodec 65536 smallerPrevious shrinkingCapacity))
+        assertBool
+          "refuses larger response ceiling"
+          (isLeft (requestReplayStagedCodec 65536 replayLimits greaterResponse))
+        assertBool "refuses skew drift" (isLeft (requestReplayStagedCodec 65536 replayLimits otherSkew))
+        assertBool
+          "refuses wrong current-version predecessor"
+          (isLeft (decodeModelBValue wrongPrevious encoded))
+        assertBool
+          "refuses narrowing across a retained response"
+          (isLeft (decodeModelBValue responseNarrowed encoded))
+        assertBool "refuses malformed data" (isLeft (decodeModelBValue staged "not-cbor"))
+        assertBool "bounds predecessor bytes" (isLeft (decodeModelBValue tiny encoded))
+        assertBool "bounds successor bytes" (isLeft (decodeModelBValue tiny nextBytes))
+        assertBool "bounds successor encoding" (isLeft (encodeModelBValue tiny migrated))
+        assertBool "refuses changed successor capacity" (isLeft (decodeModelBValue staged changedCapacity))
+        assertBool "refuses successor configuration drift" (isLeft (decodeModelBValue wrongNext nextBytes))
+        assertBool
+          "refuses encoding an unre-based predecessor"
+          (isLeft (encodeModelBValue staged completedReplay))
+        assertBool "refuses unknown successor version" (isLeft (decodeModelBValue staged futureVersion))
+        assertBool
+          "refuses trailing successor bytes"
+          (isLeft (decodeModelBValue staged (nextBytes <> "\0")))
+        assertBool
+          "refuses noncanonical predecessor"
+          (isLeft (decodeModelBValue staged (makeReplayVersionNonCanonical encoded)))
+        assertBool
+          "retains previously supported legacy input"
+          (not (isLeft (decodeModelBValue staged legacy)))
+    , testCase "Target Vault migration preserves replay and binds the exact path and version" $ do
+        let nextLimits = mustRight (mkRequestReplayLimits 2 64 skew)
+            previous = mustRight (encodeRequestReplayProjection 65536 replayLimits completedReplay)
+            staged = mustRight (requestReplayStagedCodec 65536 replayLimits nextLimits)
+        (store, stored, calls) <-
+          targetReplayMigrationFixture VaultMigrationApply (Just (vaultReplaySecret 7 previous))
+        migrateTargetReplayStagedWith 65536 replayLimits nextLimits store
+          >>= (@?= TargetReplayMigrated 8)
+        observed <- readIORef stored
+        case observed of
+          Just (KvV2VersionedSecret fields 8) -> do
+            let encoded = TextEncoding.encodeUtf8 (fields Map.! "projection_base64")
+                nextBytes = mustRight (Base64.decode encoded)
+                migrated = mustRight (decodeModelBValue staged nextBytes)
+            replayReservationDecision (reserveVerifiedRequest now attemptB verifiedRequest migrated)
+              @?= ReplayReservationDuplicateCompleted response
+            decodeRequestReplayProjection 65536 replayLimits nextBytes
+              @?= Left (RequestReplayEnvelopeUnsupportedVersion 20)
+          _ -> assertFailure "expected Vault successor version"
+        readIORef calls
+          >>= (@?= [("read", targetReplayPath), ("write:7", targetReplayPath), ("read", targetReplayPath)])
+        migrateTargetReplayStagedWith 65536 replayLimits nextLimits store
+          >>= (@?= TargetReplayObservedCurrent 8)
+        targetReplayMigrationWrite
+          store
+          targetReplayPath
+          7
+          (kvV2VersionedSecretData (vaultReplaySecret 7 previous))
+          >>= (@?= VaultCasConflict "stale version")
+    , testCase "Target Vault migration refuses missing, conflicts, refusals and changed readback" $ do
+        let nextLimits = mustRight (mkRequestReplayLimits 2 64 skew)
+            previous = mustRight (encodeRequestReplayProjection 65536 replayLimits completedReplay)
+            initial = Just (vaultReplaySecret 7 previous)
+            cases =
+              [ (VaultMigrationLostAfter, initial, TargetReplayRecovered 8, 1)
+              , (VaultMigrationLostBefore, initial, TargetReplayReadbackChanged, 1)
+              , (VaultMigrationConflict, initial, TargetReplayConflict, 1)
+              , (VaultMigrationRefused, initial, TargetReplayWriteRefused, 1)
+              , (VaultMigrationChanged, initial, TargetReplayReadbackChanged, 1)
+              , (VaultMigrationApply, Nothing, TargetReplayMissing, 0)
+              ,
+                ( VaultMigrationApply
+                , Just (KvV2VersionedSecret (Map.singleton "foreign" "value") 7)
+                , TargetReplayInvalid "invalid retained replay version or fields"
+                , 0
+                )
+              ,
+                ( VaultMigrationApply
+                , Just (KvV2VersionedSecret (Map.singleton "projection_base64" "!!") 7)
+                , TargetReplayInvalid "invalid retained replay base64"
+                , 0
+                )
+              ,
+                ( VaultMigrationApply
+                , Just (vaultReplaySecret 0 previous)
+                , TargetReplayInvalid "invalid retained replay version or fields"
+                , 0
+                )
+              ]
+        mapM_ (checkTargetReplayMigration nextLimits) cases
+    , testCase "guarded replay migration preserves state and refuses stale old writers" $ do
+        let nextLimits = mustRight (mkRequestReplayLimits 2 64 skew)
+            initialBytes = mustRight (encodeRequestReplayProjection 65536 replayLimits completedReplay)
+            staged = mustRight (requestReplayStagedCodec 65536 replayLimits nextLimits)
+        (adapter, stored, writes, _) <- replayMigrationFixture MigrationApply (Just initialBytes)
+        migrateRequestReplayStaged 65536 replayLimits nextLimits adapter migrationCoordinate migrationGuard
+          >>= (@?= ReplayMigrationApplied migrationNewVersion)
+        readIORef writes >>= (@?= 1)
+        observed <- readIORef stored
+        bytes <- case observed of
+          ModelBObserved version value -> do
+            version @?= migrationNewVersion
+            pure value
+          _ -> assertFailure "expected exact successor readback" >> pure ""
+        let migrated = mustRight (decodeModelBValue staged bytes)
+        replayReservationDecision (reserveVerifiedRequest now attemptB verifiedRequest migrated)
+          @?= ReplayReservationDuplicateCompleted response
+        decodeRequestReplayProjection 65536 replayLimits bytes
+          @?= Left (RequestReplayEnvelopeUnsupportedVersion 20)
+        migrateRequestReplayStaged 65536 replayLimits nextLimits adapter migrationCoordinate migrationGuard
+          >>= (@?= ReplayMigrationObservedCurrent migrationNewVersion)
+        readIORef writes >>= (@?= 1)
+        stale <-
+          modelBCompareAndSwap
+            adapter
+            (ModelBReplace migrationCoordinate migrationOldVersion initialBytes)
+        case stale of
+          ModelBCasConflict _ -> pure ()
+          _ -> assertFailure "stale predecessor revision did not conflict"
+        readIORef stored >>= (@?= observed)
+    , testCase "guarded replay migration distinguishes lost writes, conflicts and missing state" $ do
+        let nextLimits = mustRight (mkRequestReplayLimits 2 64 skew)
+            initialBytes = mustRight (encodeRequestReplayProjection 65536 replayLimits completedReplay)
+            cases =
+              [ (MigrationLostAfter, Just initialBytes, ReplayMigrationRecovered migrationNewVersion, 1)
+              , (MigrationLostBefore, Just initialBytes, ReplayMigrationRefused ReplayMigrationUnobservable, 1)
+              , (MigrationConflict, Just initialBytes, ReplayMigrationRefused ReplayMigrationConflict, 1)
+              ,
+                ( MigrationChangedReadback
+                , Just initialBytes
+                , ReplayMigrationRefused ReplayMigrationReadbackChanged
+                , 1
+                )
+              ,
+                ( MigrationUnavailableReadback
+                , Just initialBytes
+                , ReplayMigrationRefused ReplayMigrationUnobservable
+                , 1
+                )
+              , (MigrationApply, Nothing, ReplayMigrationRefused ReplayMigrationMissing, 0)
+              , (MigrationApply, Just "not-cbor", ReplayMigrationRefused ReplayMigrationCorrupt, 0)
+              ]
+        mapM_ (checkReplayMigrationCase nextLimits) cases
+    , testCase "guarded replay migration reports limits, size and format separately" $ do
+        let nextLimits = mustRight (mkRequestReplayLimits 2 64 skew)
+            wrongPrevious = mustRight (mkRequestReplayLimits 3 64 skew)
+            narrowResponse = mustRight (mkRequestReplayLimits 2 1 skew)
+            encoded = mustRight (encodeRequestReplayProjection 65536 replayLimits completedReplay)
+            future = LazyByteString.toStrict (serialise (previousReplayEnvelope 21 1))
+        (adapter, _, writes, readCount) <- replayMigrationFixture MigrationApply (Just encoded)
+        migrateRequestReplayStaged
+          65536
+          wrongPrevious
+          wrongPrevious
+          adapter
+          migrationCoordinate
+          migrationGuard
+          >>= (@?= ReplayMigrationRefused ReplayMigrationLimitsInvalid)
+        migrateRequestReplayStaged 1 replayLimits nextLimits adapter migrationCoordinate migrationGuard
+          >>= (@?= ReplayMigrationRefused ReplayMigrationBudgetExceeded)
+        migrateRequestReplayStaged
+          65536
+          replayLimits
+          narrowResponse
+          adapter
+          migrationCoordinate
+          migrationGuard
+          >>= (@?= ReplayMigrationRefused ReplayMigrationResponseInvalid)
+        readIORef writes >>= (@?= 0)
+        (futureAdapter, _, futureWrites, _) <- replayMigrationFixture MigrationApply (Just future)
+        migrateRequestReplayStaged
+          65536
+          replayLimits
+          nextLimits
+          futureAdapter
+          migrationCoordinate
+          migrationGuard
+          >>= (@?= ReplayMigrationRefused (ReplayMigrationUnsupportedVersion 21))
+        readIORef futureWrites >>= (@?= 0)
+        let shrinking = mustRight (mkRequestReplayLimits 1 64 skew)
+        beforeReads <- readIORef readCount
+        migrateRequestReplayStaged 65536 nextLimits shrinking adapter migrationCoordinate migrationGuard
+          >>= (@?= ReplayMigrationRefused ReplayMigrationLimitsInvalid)
+        readIORef readCount >>= (@?= beforeReads)
+    , testCase "guarded replay migration refuses successor encoding that exceeds its budget" $ do
+        let nextLimits = mustRight (mkRequestReplayLimits 65536 64 skew)
+            encoded = mustRight (encodeRequestReplayProjection 65536 replayLimits completedReplay)
+            staged = mustRight (requestReplayStagedCodec 65536 replayLimits nextLimits)
+            rebased = mustRight (decodeModelBValue staged encoded)
+            successor = mustRight (encodeModelBValue staged rebased)
+        assertBool
+          "fixture must cross the encoding boundary"
+          (ByteString.length successor > ByteString.length encoded)
+        (adapter, _, writes, _) <- replayMigrationFixture MigrationApply (Just encoded)
+        migrateRequestReplayStaged
+          (ByteString.length encoded)
+          replayLimits
+          nextLimits
+          adapter
+          migrationCoordinate
+          migrationGuard
+          >>= (@?= ReplayMigrationRefused ReplayMigrationBudgetExceeded)
+        readIORef writes >>= (@?= 0)
     , testCase
         "widens canonical v2 through v18 limits into v19 without dropping retained entries"
         $ do
@@ -3109,6 +3385,202 @@ data PreviousReplayValueWire
   | PreviousReplayTombstonedWire !ByteString !Natural
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
+
+data ReplayMigrationFixtureMode
+  = MigrationApply
+  | MigrationLostAfter
+  | MigrationLostBefore
+  | MigrationConflict
+  | MigrationChangedReadback
+  | MigrationUnavailableReadback
+  | MigrationSameRevision
+  | MigrationWrongEcho
+  deriving (Eq, Show)
+
+data VaultMigrationMode
+  = VaultMigrationApply
+  | VaultMigrationLostAfter
+  | VaultMigrationLostBefore
+  | VaultMigrationConflict
+  | VaultMigrationRefused
+  | VaultMigrationChanged
+  deriving (Eq, Show)
+
+targetReplayPath :: Text
+targetReplayPath = controlPlaneRequestReplayPath TargetSecretAgentRuntime
+
+vaultReplaySecret :: Natural -> ByteString -> KvV2VersionedSecret
+vaultReplaySecret version bytes =
+  KvV2VersionedSecret
+    (Map.singleton "projection_base64" (TextEncoding.decodeUtf8 (Base64.encode bytes)))
+    version
+
+targetReplayMigrationFixture
+  :: VaultMigrationMode
+  -> Maybe KvV2VersionedSecret
+  -> IO (TargetReplayMigrationStore IO, IORef (Maybe KvV2VersionedSecret), IORef [(Text, Text)])
+targetReplayMigrationFixture mode initial = do
+  stored <- newIORef initial
+  calls <- newIORef []
+  let readSecret path = do
+        modifyIORef' calls (<> [("read", path)])
+        current <- readIORef stored
+        pure (maybe (Left (HttpStatus 404 "missing")) Right current)
+      writeSecret path version fields = do
+        modifyIORef' calls (<> [("write:" <> Text.pack (show version), path)])
+        current <- readIORef stored
+        if fmap kvV2VersionedSecretVersion current /= Just version
+          then pure (VaultCasConflict "stale version")
+          else case mode of
+            VaultMigrationConflict -> pure (VaultCasConflict "conflict")
+            VaultMigrationRefused -> pure (VaultCasRefused 403 "refused")
+            VaultMigrationLostBefore -> pure (VaultCasUnobservable "lost")
+            _ -> do
+              let replacement = KvV2VersionedSecret fields (version + 1)
+              writeIORef
+                stored
+                ( Just
+                    ( if mode == VaultMigrationChanged
+                        then replacement {kvV2VersionedSecretVersion = version + 2}
+                        else replacement
+                    )
+                )
+              pure $
+                if mode == VaultMigrationLostAfter
+                  then VaultCasUnobservable "lost"
+                  else VaultCasApplied (version + 1)
+  pure (TargetReplayMigrationStore readSecret writeSecret, stored, calls)
+
+checkTargetReplayMigration
+  :: RequestReplayLimits
+  -> (VaultMigrationMode, Maybe KvV2VersionedSecret, TargetReplayMigrationResult, Int)
+  -> IO ()
+checkTargetReplayMigration nextLimits (mode, initial, expected, writes) = do
+  (store, _, calls) <- targetReplayMigrationFixture mode initial
+  migrateTargetReplayStagedWith 65536 replayLimits nextLimits store >>= (@?= expected)
+  observed <- readIORef calls
+  length (filter (Text.isPrefixOf "write:" . fst) observed) @?= writes
+  assertBool "all operations use the Target replay path" (all ((== targetReplayPath) . snd) observed)
+
+migrationCoordinate :: ModelBObjectCoordinate 'ClusterRetained
+migrationCoordinate = mustRight (mkClusterRetainedCoordinate authority "fixture/request-replay")
+ where
+  authority =
+    mustRight
+      (mkLongLivedCheckpointAuthority "cluster-a" "fixture-bucket" "fixture-prefix" "fixture-key")
+
+migrationOldVersion, migrationNewVersion, migrationConcurrentVersion :: ModelBObjectVersion
+migrationOldVersion = mustRight (mkModelBObjectVersion "revision-before")
+migrationNewVersion = mustRight (mkModelBObjectVersion "revision-after")
+migrationConcurrentVersion = mustRight (mkModelBObjectVersion "revision-concurrent")
+
+migrationLeaseCoordinate :: ModelBObjectCoordinate 'ClusterRetained
+migrationLeaseCoordinate = mustRight (mkClusterRetainedCoordinate authority "fixture/lease")
+ where
+  authority =
+    mustRight
+      (mkLongLivedCheckpointAuthority "cluster-a" "fixture-bucket" "fixture-prefix" "fixture-key")
+
+migrationGuard :: ModelBLeaseGuard
+migrationGuard = ModelBLeaseGuard migrationLeaseCoordinate migrationOldVersion "fixture-owner" 1
+
+replayMigrationFixture
+  :: ReplayMigrationFixtureMode
+  -> Maybe ByteString
+  -> IO
+       ( ModelBCasAdapter 'ClusterRetained IO ByteString
+       , IORef (ModelBObservation ByteString)
+       , IORef Int
+       , IORef Int
+       )
+replayMigrationFixture mode initial = do
+  stored <- newIORef (maybe ModelBMissing (ModelBObserved migrationOldVersion) initial)
+  writes <- newIORef 0
+  readCount <- newIORef 0
+  let observe coordinate = do
+        modifyIORef' readCount (+ 1)
+        currentReads <- readIORef readCount
+        if coordinate /= migrationCoordinate || (mode == MigrationUnavailableReadback && currentReads > 1)
+          then pure (ModelBUnobservable "fixture read unavailable")
+          else readIORef stored
+      replace request = do
+        modifyIORef' writes (+ 1)
+        case request of
+          ModelBReplaceGuarded coordinate revision suppliedGuard bytes
+            | coordinate == migrationCoordinate && suppliedGuard == migrationGuard -> do
+                current <- readIORef stored
+                case current of
+                  ModelBObserved currentRevision _
+                    | currentRevision == revision -> perform stored mode bytes
+                  _ -> pure (ModelBCasConflict current)
+          ModelBReplace coordinate revision _
+            | coordinate == migrationCoordinate -> do
+                current <- readIORef stored
+                case current of
+                  ModelBObserved currentRevision _
+                    | currentRevision == revision -> pure (ModelBCasRefusedCorrupt "unguarded migration")
+                  _ -> pure (ModelBCasConflict current)
+          _ -> pure (ModelBCasRefusedCorrupt "unexpected migration write")
+  pure (ModelBCasAdapter observe replace, stored, writes, readCount)
+ where
+  perform stored selected bytes = case selected of
+    MigrationApply -> commit stored bytes >> pure (ModelBCasApplied migrationNewVersion bytes)
+    MigrationLostAfter -> commit stored bytes >> pure (ModelBCasUnobservable "reply lost")
+    MigrationLostBefore -> pure (ModelBCasUnobservable "write unobservable")
+    MigrationConflict -> do
+      let competing = ModelBObserved migrationNewVersion migrationConcurrentPredecessor
+      writeIORef stored competing
+      pure (ModelBCasConflict competing)
+    MigrationChangedReadback -> do
+      let nextLimits = mustRight (mkRequestReplayLimits 2 64 skew)
+          staged = mustRight (requestReplayStagedCodec 65536 replayLimits nextLimits)
+          current = mustRight (decodeModelBValue staged bytes)
+          concurrent = replayReservationProjection (reserveVerifiedRequest now attemptA verifiedOtherNonce current)
+          concurrentBytes = mustRight (encodeModelBValue staged concurrent)
+      writeIORef stored (ModelBObserved migrationConcurrentVersion concurrentBytes)
+      pure (ModelBCasApplied migrationNewVersion bytes)
+    MigrationUnavailableReadback -> commit stored bytes >> pure (ModelBCasApplied migrationNewVersion bytes)
+    MigrationSameRevision -> pure (ModelBCasApplied migrationOldVersion bytes)
+    MigrationWrongEcho -> commit stored bytes >> pure (ModelBCasApplied migrationNewVersion "wrong-echo")
+  commit stored bytes = writeIORef stored (ModelBObserved migrationNewVersion bytes)
+
+checkReplayMigrationCase
+  :: RequestReplayLimits
+  -> (ReplayMigrationFixtureMode, Maybe ByteString, RequestReplayMigrationResult, Int)
+  -> IO ()
+checkReplayMigrationCase nextLimits (mode, initial, expected, expectedWrites) = do
+  (adapter, stored, writes, _) <- replayMigrationFixture mode initial
+  result <-
+    migrateRequestReplayStaged 65536 replayLimits nextLimits adapter migrationCoordinate migrationGuard
+  result @?= expected
+  readIORef writes >>= (@?= expectedWrites)
+  case mode of
+    MigrationConflict -> readIORef stored >>= (@?= ModelBObserved migrationNewVersion migrationConcurrentPredecessor)
+    MigrationChangedReadback -> do
+      observed <- readIORef stored
+      case observed of
+        ModelBObserved version bytes -> do
+          version @?= migrationConcurrentVersion
+          let staged = mustRight (requestReplayStagedCodec 65536 replayLimits nextLimits)
+              current = mustRight (decodeModelBValue staged bytes)
+          replayReservationDecision (reserveVerifiedRequest now attemptB verifiedOtherNonce current)
+            @?= ReplayReservationDuplicateInFlight
+          replayReservationDecision (reserveVerifiedRequest now attemptB verifiedRequest current)
+            @?= ReplayReservationDuplicateCompleted response
+        _ -> assertFailure "expected concurrent successor"
+    _ -> pure ()
+
+migrationConcurrentPredecessor :: ByteString
+migrationConcurrentPredecessor =
+  mustRight
+    ( encodeRequestReplayProjection
+        65536
+        replayLimits
+        (compactRequestReplayProjection deadline completedReplay)
+    )
+
+decodePreviousReplayEnvelope :: ByteString -> PreviousReplayEnvelope
+decodePreviousReplayEnvelope = mustRight . deserialiseOrFail . LazyByteString.fromStrict
 
 previousReplayEnvelope :: Word16 -> Natural -> PreviousReplayEnvelope
 previousReplayEnvelope version capacity =

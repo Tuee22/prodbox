@@ -944,6 +944,7 @@ retainedClosedBaselineViolations binding receipt =
            && targets /= preAwsAdminJournalObserverBaselineTargets
            && targets /= preCredentialProvisionerCompletionPrincipalBaselineTargets
            && targets /= preCredentialProvisionerAuditorLeaseBaselineTargets
+           && targets /= preBootstrapProvisionerExactSeedBaselineTargets
        ]
  where
   targets = baselineReadBackTargets receipt
@@ -1110,6 +1111,12 @@ preCredentialProvisionerAuditorLeaseBaselineTargets =
   , BaselineLifecycleAuthorityAwsAdminJournalObserver
   , BaselineCredentialProvisionerCompletionPrincipal
   ]
+
+-- The exact seed policy and its constrained repair grant require a fresh
+-- generated-root reconciliation for every previously completed baseline.
+preBootstrapProvisionerExactSeedBaselineTargets :: [BaselineTarget]
+preBootstrapProvisionerExactSeedBaselineTargets =
+  [minBound .. BaselineCredentialProvisionerAuditorLeaseContainment]
 
 baselineBindingViolations
   :: RootSessionBinding

@@ -42,6 +42,7 @@ import Prodbox.Http.ReplyStatus (ReplyStatus (ReplyConflict, ReplyOk, ReplyServi
 import Prodbox.Lifecycle.Authority.Admission
 import Prodbox.Lifecycle.Authority.ClientRegistry
 import Prodbox.Lifecycle.Authority.EpochPromotion
+import Prodbox.Lifecycle.Authority.EpochPromotionCoordinator (PromotionIntent (..))
 import Prodbox.Lifecycle.Authority.EpochTopology
 import Prodbox.Lifecycle.Authority.Genesis qualified as Genesis
 import Prodbox.Lifecycle.Authority.Migration
@@ -80,6 +81,40 @@ controlPlaneTargetAuthorityBindingSuite = describe "Sprint 6.5 complete physical
         `shouldBe` (targetWorkerAuthorizationIds <> targetWorkerAuthorizationIds)
       map (\(selected, _, _) -> selected) trace `shouldSatisfy` all (== substrate)
       map (\(_, _, deadline) -> deadline) (drop 1 trace) `shouldSatisfy` all (== preparationDeadline)
+
+  it "accounts for Target row reads across the coordinator phases" $ do
+    let cases =
+          [ (CompletePromotion, EpochPrepared, 72)
+          , (CompletePromotion, EpochFrozen, 36)
+          , (CompletePromotion, EpochAdmissionOpen, 0)
+          , (CompletePromotion, EpochPreparedRollback, 0)
+          , (CompletePromotion, EpochPreparedBindingsRetired, 0)
+          , (RetirePreparation, EpochPrepared, 18)
+          , (RetirePreparation, EpochPreparedRollback, 18)
+          , (RetirePreparation, EpochPreparedBindingsRetired, 0)
+          , (RetirePreparation, EpochFrozen, 0)
+          , (RetirePreparation, EpochAdmissionOpen, 0)
+          ]
+    forM_ cases $ \(intent, phase, count) -> do
+      let expected = if count == 0 then Map.empty else Map.fromList [(CutoverHome, count), (CutoverAws, count)]
+      targetEpochPromotionRowReadSchedule topology intent phase `shouldBe` Right expected
+    let home = Set.singleton CutoverHome
+        homeBindings = requiredEpochTopologyBindings home Set.empty Set.empty
+        homeTopology =
+          mustRight (mkEpochTopology home Set.empty Set.empty (Map.fromSet (const (digest 'a')) homeBindings))
+    targetEpochPromotionRowReadSchedule homeTopology CompletePromotion EpochPrepared
+      `shouldBe` Right (Map.singleton CutoverHome 72)
+    promotedFixture <- newFixture frozenAggregate RowsPromoted
+    query promotedFixture CutoverHome ReadPromotedTargetBinding
+      `shouldReturn` Right (bindingDigest CutoverHome)
+    (length <$> readIORef (targetReads promotedFixture)) `shouldReturn` 18
+    writeIORef (targetReads promotedFixture) []
+    query promotedFixture CutoverHome (ReadRejectedTargetWriter 1)
+      `shouldReturn` Right (bindingDigest CutoverHome)
+    (length <$> readIORef (targetReads promotedFixture)) `shouldReturn` 18
+    retiredFixture <- newFixture rollbackAggregate RowsRetired
+    query retiredFixture CutoverHome ReadRetiredTargetBinding `shouldReturn` Right ()
+    (length <$> readIORef (targetReads retiredFixture)) `shouldReturn` 18
 
   it "makes the binding digest independent of order and enclosing topology, but binds its deadline" $ do
     let original = preparations CutoverHome (digest 'a') preparationDeadline

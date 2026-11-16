@@ -558,6 +558,8 @@ Fixtures”](../documents/engineering/integration_fixture_doctrine.md#7-clean-ro
 `src/Prodbox/ControlPlane/AuthorityPeerContext{,Endpoint,Client}.hs`,
 `src/Prodbox/ControlPlane/{AuthorityAuthenticatedResponse,AuthorityManifestResponse,AuthorityResponseTrust,AuthoritySignedObservationEndpoint,AuthoritySnapshotObservation}.hs`,
 `src/Prodbox/ControlPlane/{TargetAuthenticatedResponse,TargetResponseTrust,TargetSnapshotObservation,TargetSignedEpochBinding}.hs`,
+`src/Prodbox/ControlPlane/TargetAuthorityEpoch{Protocol,Endpoint,Client}.hs`,
+`test/unit/ControlPlaneTargetAuthorityEpoch.hs`,
 `src/Prodbox/ControlPlane/{RpcKeyRegistry,RegisteredRpcSigning,RpcOwnBindingHint}.hs`, `src/Prodbox/Vault/Client.hs`,
 `src/Prodbox/ControlPlane/RpcBirthSettingsCodec.hs`, `test/unit/RpcBirthSettingsCodecTests.hs`,
 `src/Prodbox/ControlPlane/LocalClient.hs`, `src/Prodbox/Http/{BodyBufferBudget,Client}.hs`,
@@ -8745,6 +8747,50 @@ envelope unchanged. Frozen provenance and native controls remain under
 installed call-site checks, canonical and complete frontend gates precede any new image roll.
 
 ### Remaining Work
+
+Replace the unsigned Target observation route with independently authenticated, snapshot-fenced
+readback. An opt-in deadline-bounded Target signed handler is locally validated; its initial clock
+must be locally bounded, cancellation-resistant effects need their own bound, and its callers still
+own production identity, response delivery and resource admission. A one-pass per-substrate
+Target row-read schedule is locally validated; it does not yet price physical mutations, retries,
+concurrency, transport refresh or other retained replay traffic. Current v19 replay capacity must
+not be widened in place: its exact stored-capacity match requires a compatible versioned migration.
+The opt-in v20 successor codec is locally validated against the declared v19 predecessor and its
+supported legacy inputs; it preserves retained entries and writes exact new limits. An uninstalled
+single-attempt guarded exact-revision replacement is locally validated with independent read-back;
+missing state does not initialize and ambiguous writes recover only from exact new bytes and a new
+revision. Authenticate and bound its production adapter and guard, compose the full durable
+transition, and independently fence old writers. That replacement targets Model-B, used by
+the Lifecycle Authority; the Target Agent's installed replay repository is a separate
+role-specific Vault KV-v2 object. Implement and validate the Target's own exact-path,
+version-CAS and independent read-back migration, including its physical old-writer fence.
+An uninstalled Target-specific candidate now binds the exact role path and Vault session,
+performs one version CAS and independent read-back, and refuses missing, invalid or
+conflicting state. Its bound-session read now caps the complete HTTP body to canonical
+base64 expansion plus a 128 KiB envelope; excess or unusually escaped responses fail closed.
+Its CAS response is also bounded and classified; the physical write acquires one token and
+does not inherit the session helper's automatic 403 re-login and retry. Its large request and memory still require
+complete admission. It still needs a physical
+old-writer fence, and production cutover composition. The Model-B replacement is not the
+Target migration. Do not install
+it or choose a production capacity until the full traffic, representation and admission proofs
+are complete.
+The Target row's prepared state denies a fresh worker trust read; it does not revoke a worker
+that already obtained and verified its authority. Preserve the native in-memory counterexample
+and compose independent physical Agent/worker drain and credential fencing before treating
+the transition as quiescent. The current checkpoint and evidence are in Resume Here.
+Remove the legacy unsigned-response substitution control once its frozen
+counterexample and replacement proof remain auditable after deletion. Do not count a signed
+fixture key or an unsigned registry response as production trust provisioning.
+
+Validate the operator-requested host-sized application profile against the rendered Pods and
+actual node allocatable capacity. Eight fixture-rendered chart projections and a separate read-only
+node recheck are recorded in Resume Here; they do not cover controller-generated Pods or
+concurrent admission. Preserve the historical scheduler counterexamples and the
+unchanged control-plane envelopes; establish scheduler admission and run-wide memory, OOM,
+throttling, queue and deadline evidence under the full concurrent workload before claiming the
+profile is sufficient. Revise the provisional requests if that evidence shows a shortfall.
+Current observations and campaign admission remain in [Resume Here](README.md#resume-here).
 
 Derive compiled frame bounds from the exact executable and an explicit table-coverage argument.
 An exported-symbol census cannot substitute for local compiler return tables. Bind any private

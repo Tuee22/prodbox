@@ -25,9 +25,2005 @@ dependency licenses the deviation ([Standard N.2](development_plan_standards.md#
 
 | Order | Sprint | Phase | State | Dependency |
 |-------|--------|-------|-------|------------|
-| 1 | `6.5` | 6 | Next | — |
-| 2 | `6.7` | 6 | Parked | — |
-| 3 | `7.47` | 7 | Parked | — |
+| 1 | `2.147` | 2 | Next | — |
+| 2 | `4.114` | 4 | Parked | — |
+| 3 | `6.5` | 6 | Parked | — |
+| 4 | `6.7` | 6 | Parked | — |
+| 5 | `7.47` | 7 | Parked | — |
+
+**Native object-store cancellation, 2026-11-13.** Phase `1` reclosed on Sprint `1.101` for its own
+native S3 client. An actual-client probe against a local fake server sent `ThreadKilled` during a
+blocked HEAD request; the client returned an ordinary unavailable result instead of propagating
+the interruption. No real object-store mutation occurred. The probe, fixture, and log under
+`.build/sprint-2.147/` have SHA-256
+`6b050570c97fa69ff835482f0f1271a4fc5a4941b354bc58db574665ce033e45`,
+`7e24777a2b3dc84ae6324bd66235ce0bfc55659f2119d4f1a76c6d91d9d40d4a`, and
+`ba349cca45f23f0cb2936b66217346232085e7472c8deb9129fda98f6b17cba9`. Sprint `1.101` restored
+recognized cancellation propagation while retaining structured synchronous errors; Phase `2`
+is next in numerical order.
+The corrected actual-client probe propagated `ThreadKilled`, and permanent controls passed for
+interruption, an outer timeout, a synchronous connection failure, and delayed preflight. The
+focused log `.build/sprint-1.101/cancellation-focused.log` has SHA-256
+`a803fa96e4fec61ec9dc9e1b31fd5193def8c9d83f8209b0cf529ab4a8a0dc3f`. The final canonical gate
+passed 9,922 + 27 + 35 + 935 tests and the standalone frontend passed 107 tests; exact logs and
+hashes are in Sprint `1.101`.
+A separate local fake-S3 probe accepted a conditional PUT before cancellation. The corrected
+native client propagated `ThreadKilled`, while the fake object remained present; this demonstrates
+why cancellation is not absence evidence. The fixture and log hashes are in Sprint `1.101`.
+
+**Cluster capacity status provenance, 2026-11-12.** Phase `1` previously reclosed on Sprint `1.100`.
+The prior `cluster status` path rendered the compiled portable default plan and `.data` root before
+loading the operator configuration, even when an authored plan and different storage root are
+available. Its `RESOURCE_HOST_AUTHORED` label therefore did not prove that the reported value
+was authored. On this host, a read-only status call reported the portable `10000m / 18432Mi`
+figures, then failed because binary-sibling `prodbox.dhall` and `.data` were absent; it did not
+observe host capacity. The status output must instead use the validated configured allocation
+and resolved storage root, and name missing configuration without presenting defaults as
+authored. The implementation now selects the validated settings; focused unit and installed-CLI
+checks and the canonical gate pass. The broader frontend suite finished with seven failures in
+Authority and Vault fixtures; all seven passed in a targeted rerun without concurrent gate load,
+and the complete standalone frontend rerun passed all 107 tests. The cause of the initial failures
+is not established. The
+earlier read-only output is `.build/sprint-2.147/cluster-status-clock-investigation.log`,
+SHA-256 `6563f16c33f07e516b23eff9e1d9a1705ddf27329786abc9c0f738881f6962a3`.
+This does not change the provisional workload profile or its pending live proof.
+On a later read-only status check, RKE2 reported active but the resource plan was unobservable
+because Vault Kubernetes login returned 503. `.build/sprint-2.147/capacity-current-status.log` has
+SHA-256 `5df1acbd1988f2b976c7ae80fd84f29229b770acd38a6a498f3b25e4a16464d3`. This does not
+establish whether Vault is sealed or why it was unavailable, and it is not a workload-fit proof.
+On the same read-only inspection, Kubernetes reported node capacity `8000m / 16312648 KiB` and
+allocatable `7750m / 13691208 KiB`; 40 non-terminated Pods requested `6995m / 13236 MiB`, leaving
+`755m / 134.32 MiB` of scheduler headroom. The provisional target projects Pod requests of
+`6095m / 12874 MiB`, so the observed requests are `900m / 362 MiB` higher. The current Pods are
+not evidence that the new profile was reconciled, and the source of that difference has not been
+established. Requests are not actual usage, and this snapshot neither proves nor disproves the
+target workload's fit. At this snapshot's allocation, however, the `256 MiB` request of one
+secret-worker Pod exceeds the unallocated memory by `124600 KiB` (about `121.68 MiB`); the
+two-worker `512 MiB` phase exceeds it by `386744 KiB` (about `377.68 MiB`). Neither fits without
+changed allocations or preemption. The cause of the difference from the provisional plan and the
+effect of reconciliation remain unverified; do not treat the planned worker reserve as currently
+free. The node capacity, allocated-resource and Pod-request logs under
+`.build/sprint-2.147/` have SHA-256 respectively
+`153a77f7fc6f4e95a5139b30231582f561f7b8bea3d1452d99f220e006e03f2f`,
+`e56360a48b1f36df34146ba3337667bd1348e98be89ed75337d645d1161bb111`, and
+`a88b5d55d4c1d33a8ea3e9812fc3f3f06e221caac9f63b8c89391b9a2e019aba`.
+The observed second API Pod requests `250m / 256 MiB` and its scheduler event reports
+`Insufficient memory` with no preemption victim; the event spans 33 hours. The current VS Code
+and Keycloak Pods each request `500m / 1 GiB`, while the binary-sibling configuration's named
+profiles each describe `100m / 512 MiB`. The chart renderer maps those profiles into the
+corresponding container resource fields. If those two current Pods were replaced with Pods using
+the target requests and no other request dominated, their combined scheduler demand would fall by
+`800m / 1024 MiB`; this arithmetic is not a rollout, service-sufficiency or fit proof. The current
+`charts reconcile vscode --dry-run` fails at Authority Transit authentication with Vault login 503.
+A separate read-only `vault status` reports the bound Vault as uninitialized and sealed, consistent
+with the earlier retained-path recheck below; that status does not authorize initializing it or
+replacing retained data. The API request, scheduler-event, Pod-request, extracted profile,
+chart-plan failure and Vault-status logs have SHA-256 respectively
+`50c34d9ea437f4902288c956029529fbf5153788951f7cd73dc28c586a03b0e2`,
+`0fb8d04945a7da2395dd1d4a83e7faa173ca9051c2d3502cde5e01aacf3d3e33`,
+`a078369797733fee1a70a4519c92feb093ba5ba6f16c6f4e0ad42677942b6c65`,
+`5071267aa490c96f0ea80915ad491f452398c8e27909ffd9fb82c6ba6e7e63e6`,
+`53d91aab5781a3319c0ebb3f73f7557fd5d9cb9f60abcd2b7e41dbce07195c13`, and
+`785189b7e845e5154ceeeec98698d63fd24e8f377429c855407a8dab655c3510`.
+Grouping the observed Pod requests by the registered platform namespaces gives exactly
+`1835m / 3384 MiB`, matching the declared platform floor; the other 24 observed Pods account for
+`5160m / 9852 MiB`. That grouping does not prove a one-to-one match with the planned workload
+profiles. The current Keycloak Deployment has one replica with `RollingUpdate`, `maxSurge=25%`
+and `maxUnavailable=25%`; the current VS Code StatefulSet has one replica with `RollingUpdate`
+and `OrderedReady`. These controller settings alone do not prove that either replacement will
+roll out under the present conditions. The grouped-request and controller logs have SHA-256
+`8d80f9b903aa92f8fd02f5454a3f8635d625967eab01fc3cd5bfac18ef297c2d`,
+`d3af8b1cef0ec01602833d3a088fe3209d3d1f08679761c5deb91007f02f3ec7`, and
+`2822d8ab1d26367db1688b7095fe153aa90b49da1cc362347a48caedeaf4f7ee`.
+A contemporaneous `kubectl top node` sample reported `2058m` CPU and `7723 MiB` memory; the log
+`.build/sprint-2.147/node-metrics-current.log` has SHA-256
+`78b560519ef730612f50fcf3aa6b68f4da9aaef18f35b6f665da76ec11abb128`. This is a point-in-time
+metrics sample, not scheduler headroom, a peak measurement, or proof that the currently pending
+workloads can run within the proposed limits.
+`cluster reconcile --dry-run` itself exited zero and projected the host-sized plan, including a
+stricter `7000m` CPU allocatable budget than Kubernetes' observed `7750m`; the current `6995m`
+of Pod requests leaves only `5m` within that modeled budget before a worker is added. The plan
+includes retained-storage, Vault and Broker steps, but executing the dry run proves none of those
+steps or current workload fit. Its log `.build/sprint-2.147/cluster-plan-current.log` has SHA-256
+`a836af60bbb95aee8515edf618808709fb63c1709328a025924b1e26aa4c059a`.
+
+**Clock-step candidate rejected, 2026-11-15.** A disposable VM using the matching Ubuntu kernel
+package initially observed `timerfd` cancellation on sequential guest clock steps. A later
+concurrent opposing-step control returned no event in one trial after both guest adjustments
+completed. The unintegrated Haskell guard was removed: `timerfd` alone cannot establish clock
+continuity. Evidence and remaining requirements are in Sprint `2.147`; the host clock was not
+changed. After removing that candidate, the canonical gate exited zero with 9,943, 27, 35 and
+935 tests passed and no HLint hints. The log is
+`.build/sprint-2.147/clock-step-rejection-gate.log` (SHA-256
+`ed427ea01142ba96132c7378af37a9c000876f458fe9953465d82f4f74360c4f`).
+
+**Signed-time candidate, 2026-11-15.** An isolated upstream Roughtime client obtained a
+signature-verified legacy-format response reporting a one-second radius from Cloudflare; a wrong
+key was rejected. Its IETF-mode request was rejected by the client for a missing response field.
+This is a research control, not a production source: the RFC is experimental, the tested client
+warns against production use, and source trust, protocol compatibility, aging, deployment and
+retained history remain open. An isolated Haskell verifier candidate reproduced the RFC request
+bytes, accepted the three replacement examples in reported erratum `9238`, and refused the
+original examples' older signature contexts and several mutations. It remains scratch code, not
+an integrated or production-qualified clock source. A subsequent independent RFC 10049 server
+returned signed claims accepted by that scratch verifier over UDP and TCP, with a three-second
+reported radius; wrong keys and nonces were refused. Its operator offers no accuracy or uptime
+guarantee. See Sprint `2.147` for the limits of this observation.
+Pure signed-claim interval arithmetic now charges the full sampled request interval and a stated
+elapsed-clock rate bound. It is not connected to production time and establishes neither source
+trust nor suspend behavior. The three focused unit tests passed after correcting an initial filter
+that selected zero tests. A subsequent review separated suspend-aware elapsed samples from
+process-monotonic deadline instants at the type boundary. A further constructed control showed
+that a later time-scale jump can escape the resulting interval; the helper now requires explicit
+forward-rate, forward-step and backward-movement bounds. Two intermediate full gates were stopped
+for these corrections; the four revised focused tests passed. A third intermediate gate was
+stopped during lint to add the RFC 10049 exchange boundary and its permanent tests; the new
+boundary's five focused tests passed. Its first full gate found formatting drift caused by using
+the host formatter; the repository-pinned formatter corrected the entrypoint. The retry was stopped
+during lint to add the native UDP transport and its tests; eight focused tests passed. A Linux
+`CLOCK_BOOTTIME` sample reader and a cancellation regression have since been added; their build
+and 14 focused tests passed. The full gate was stopped during lint after a review found that the
+exchange discarded the elapsed-time anchor needed to age its interval; an opaque anchored-reading
+API and use-time re-sampling were added. Its 18 focused tests passed, then the reading was further
+changed to retain its original clock action instead of accepting a replacement at use; all 18
+revised focused tests also passed. The following full gate was stopped to replace the retained
+clock's process-monotonic aging with a separately bounded elapsed clock. A fake-store control also
+found that an invalid rate advanced the watermark before refusal; admission now checks that rate
+before store access. All 29 relevant focused tests passed. The canonical gate then passed 9,967,
+27, 35 and 935 tests with no HLint hints; its log SHA-256 is
+`4bee3488de87291c098b11485d3076943850973ca78c4746d9ec1bbe869beab1`. Production clock trust and
+concurrent ordering remain open.
+An isolated transformed-worker control also composed a late fake Vault initialization response
+with the current publication and authorization bodies: the fake Lease had expired, publication
+refused, and the encrypted result remained only in memory. It establishes a concrete custody
+gap in that fixture, not live data loss; the source and evidence hashes are in Sprint `2.147`.
+The fixed-key result publisher now refuses a contradictory result while the same request occupies
+that key and accepts an identical retry. The old-code control failed and the corrected production
+store fixture passed. The first canonical gate stopped on test formatting; that indentation is
+corrected and the gate must be rerun. This does not preserve an unpublished late response or
+protect the shared key across all different requests.
+An additional fake-store control showed an older fence could replace a newer fence's result;
+the publisher now refuses that observed generation regression. The corrected focused test passed;
+the canonical gate passed 9,967, 27, 35 and 935 tests with no HLint hints. Same-generation
+ordering and in-flight settlement remain open.
+An isolated production-publisher control now demonstrates the same-generation gap: a first
+request replaced a later request's result under a constructed common fence. The fixture does
+not prove that the interleaving occurred live; Sprint `2.147` records its evidence.
+Another local production-store fixture found an encrypted initialization result in the published
+worker-result object while the recovery observer returned ambiguity from an unreceipted
+checkpoint. Production recovery now attempts the exact checkpoint-bound lookup and refuses
+an absent or unavailable result. The warning-free build and focused regression passed; the first
+canonical gate stopped on an HLint suggestion, which is corrected. A settled-worker absence
+path and worker settlement remain open; the fixture is not a live recovery observation.
+Unreceipted-worker cleanup now receives the caller deadline and samples after checkpoint read
+and discard; the first build and 58 focused tests passed. A follow-up bounds the local recovery
+wait and caps the terminal checkpoint permit; its warning-free build, 61 focused tests and
+production deadline-forwarding control pass. Local timeout is not remote settlement, and other
+cleanup paths still need review. Deletion also needs a fresh fence witness; its time deadline
+alone is not cleanup authority. A fake-boundary control observed worker discard before a later
+checkpoint permit was refused for the wrong fence; it is not a live deletion observation.
+The canonical gate is running. The newly built executable is not yet copied into
+`.build/prodbox`; install and verify it after the gate terminates so the gate keeps one operator
+identity.
+A live native Haskell interoperability
+control used `CLOCK_BOOTTIME` with illustrative, unvalidated clock bounds. This is not yet an
+operational clock source.
+
+**Sprint `2.147` deadline progress.** The Transit journal now limits its local wait for reads and
+conditional writes, including preflight and read-back; an applied remote write remains unconfirmed
+on timeout. A production-store control against fake S3 reproduced calls lasting about two seconds
+under a one-second permit, including one applied fake write. Focused and corrected actual-store
+controls pass, including the outer-timeout regression. The canonical gate passed 9,932, 27, 35,
+and 935 tests with no HLint hints; probe scope and hashes are in Sprint `2.147`. A separate
+worker control exceeded a 700 ms Lease deadline on its earlier direct journal read; the worker now
+uses a request-bound, deadline-limited read and the matching control returns unavailable in about
+710 ms. Its permanent regression and the canonical gate passed; the gate covered 9,933, 27, 35,
+and 935 tests with no HLint hints. Exact evidence and the additional targeted lint checks are in
+Sprint `2.147`.
+The worker's preceding fence-store observation could itself outlast its five-second authorization
+deadline; a seven-second fake-store control reproduced this before any Vault call. Worker store
+and Vault authorization and the controller checkpoint-permit observation now limit their local
+waits; isolated worker controls pass for both delayed and timely observations. The focused
+checkpoint regression passes, including a callback that returns after the observation budget; the
+canonical gate passed 9,934, 27, 35 and 935 tests. The callback after checkpoint authorization
+is outside this observation guard; clock trust and remote settlement remain separate obligations.
+General Broker store create and CAS operations now use their mutation permit's deadline through the
+existing conditional-write guard. A production-store fixture passed for expired journal create and
+CAS permits with no fake writes; the canonical gate passed 9,942, 27, 35 and 935 tests. General
+deletes, the promotion pre-read and remote settlement were not covered by that change. General
+deletes and the promotion pre-read now have deadline-bounded local waits, and deletion samples
+again before calling the native conditional delete. Expired-permit and delayed-read fixture tests
+pass; the canonical gate passed 9,942, 27, 35 and 935 tests. Native dispatch timing and remote
+settlement remain open.
+An additional production-store fake-S3 test applied a conditional delete while withholding its
+response past the permit deadline. The caller returned unavailable and a later fixture read found
+the object absent. The focused test and canonical gate passed. This is not evidence
+about an in-flight live MinIO request or a general settlement protocol.
+The native conditional DELETE now also receives the permit deadline and checks it at the HTTP
+call boundary. A local fixture passed for expired and timely deadlines; the intermediate gate
+was stopped after finding that worker-result publication also omitted the permit deadline. The
+publisher now uses bounded create and replacement operations. A second intermediate gate was
+stopped after finding the same gap in storage-generation advance, which now bounds its read and
+conditional write; combined validation is pending.
+The third intermediate gate was stopped after the native PUT preflight was found able to recreate
+a missing bucket. Permit-bound conditional writes now refuse a missing bucket; local fixture
+regressions and the combined canonical gate pass.
+These checks cannot establish dispatch atomicity or remote settlement.
+The initialization worker now checks its effect permit immediately before invoking Vault and
+retains a late response for the publication path. The build and existing generic deadline-guard
+test pass. A transformed-worker control refused an expired permit and retained a late fake
+response; a matched old-path control dispatched after the delay. The canonical gate passed;
+permanent production-path coverage remains pending. Durable publication after authorization
+expires and remote settlement remain open.
+An actual production-store fixture found that a result-publication permit for one fence accepted
+a result bound to a different fence in the same storage generation. Publication now compares the
+permit to the request's fence fields; the focused production-store and Transit claim regressions
+pass. Its intermediate gate was stopped after a delayed result read showed the controller poller
+could exceed its permit deadline. The poll loop is now locally deadline-bounded; combined
+validation passes.
+After the initialization-permit gate and before the combined gate, a comment in
+`Prodbox.Substrate` was clarified to identify the former 6,500m budget as historical; it does not
+change the configured capacity.
+The Broker's own five-second fence-use observation also returned after a seven-second fake-store
+delay in an isolated control. It now returns unavailable at the local deadline in the matching
+control, while timely observations pass; a permanent composition regression remains pending.
+Initial acquisition observations now use the request deadline as well; isolated
+old/new controls reproduce and bound a delayed read, and a timely unconfirmed Lease retains its
+fence. Its permanent composition regression remains open. An actual-store control also showed an
+acquisition CAS dispatching after its 700 ms deadline; acquisition and retirement plans now carry
+deadlines into the production store. The corrected read-delay control returns unobservable without
+a fake fence write. The applied-write and retirement regressions and canonical gate passed; the
+gate covered 9,934, 27, 35 and 935 tests. Later clock and Kubernetes files also passed targeted
+formatter and HLint checks because the gate began linting before those refinements. Timeout is not
+remote settlement evidence.
+Retirement and reacquisition also now sample monotonic time after the clock read. Isolated delayed
+clock controls show the corrected decisions refusing before the fake retirement or successor CAS;
+their fake store intentionally ignores the plan deadline. Those clock waits are also locally
+limited by the request deadline; timely controls still reach the CAS paths. A temporary production
+composition regression exercised unavailable and regressed fixture readings at four clock points,
+a delayed post-retirement reading, and a timely control. It passed the canonical gate, but exposed
+the privileged acquisition entrypoint. That export and regression have been removed; the corrected
+revision passed the canonical gate with 9,935, 27, 35 and 935 tests. Replacement coverage must
+preserve the capability boundary. The private clock parameter does not validate the production
+wall-clock adapter or supply its retained high-water mark.
+Kubernetes request timing now includes projected-token acquisition: a delayed-token control
+returned at its local deadline, and timely HTTP and nested cancellation controls passed. These use
+transformed code and fake services; a permanent production-composition regression remains open.
+An isolated settings control also found that an authored object key could alias either worker key
+derived from the checkpoint coordinate. Settings now validate authored and derived coordinates
+together using the same derivation as the store; the focused regression and canonical gate passed.
+The gate covered 9,935, 27, 35 and 935 tests with no HLint hints. This does not yet supply the
+retained clock coordinate or its initialization protocol.
+An actual-store fake-S3 control showed the generation initializer creating a new binding while
+a separate fence object was already present. Controller startup now refuses a missing generation
+when that fence is present, corrupt or unobservable; the focused production-store regression and
+canonical gate passed. The gate covered 9,935, 27, 35 and 935 tests. Fence absence is not a
+trustworthy clock-genesis witness; the phase must account for partial loss, old writers and
+in-flight operations without removing data.
+Ordinary generation observations now refuse a missing record, and a one-shot worker opens only an
+existing, listable store and generation. A fake-store control confirmed that neither path recreates
+the deleted fixture record. The permanent regression and canonical gate passed; the gate covered
+9,935, 27, 35 and 935 tests with no HLint hints. Broker startup and old worker versions still need
+the separate genesis and mixed-version solution.
+An isolated server built from the repository-pinned MinIO source reused an ETag after exact bytes
+were restored, and the native client then applied a stale conditional PUT. This confirms that an
+ETag alone is insufficient as the clock watermark's rollback boundary in that source-build control;
+it does not establish the deployed image's identity or configuration.
+A disposable Chrony 4.5 observer also changed from synchronized to unsynchronized at the first
+one-second poll after a fixture injected a 30-second jump into its process-local realtime reads.
+The host clock and kernel packet timestamps were not changed, and the polling interval does not
+establish atomic detection. A separate upstream report describes a different Chrony 4.8 server
+configuration following host steps; a proposed independent clock is an open draft. Details and
+evidence are in Sprint `2.147`; neither observation qualifies a production clock source.
+The production fence-release store also accepted a permit for another owner in an isolated fake-S3
+control. It now checks the entire fence identity; a corrected control refuses the mismatch and
+accepts a matching release. The permanent regression and canonical gate passed, and release
+now uses its permit deadline for the local wait and conditional PUT. A fake-S3 control applied a
+release whose response timed out; the call reported unavailable and later read-back found vacancy.
+The permanent deadline regression passed in the gate; remote settlement remains open. The gate's
+lint phase began before the later Broker and release changes, so the final affected files also
+passed the pinned formatter and targeted HLint; details and the gate hash are in Sprint `2.147`.
+Fence acquisition now samples the remaining request budget
+after its authority-clock read and uses the observation's lower uncertainty bound to avoid extending
+the persisted deadline by clock-read delay. The focused test and canonical gate pass, including a
+subsequent pre-check for a request observed expired; the phase records the gate's timing and
+follow-up checks. The underlying production
+clock source and its one-millisecond assertion remain unvalidated. The production Broker readiness refresh now distinguishes
+standard asynchronous cancellation from synchronous observation failure; the latter still
+records unavailable readiness. A local timeout control reproduced the prior swallowed exception.
+Focused validation and the canonical gate pass, including a running worker's `AsyncCancelled`;
+this is not proof of remote request settlement. Details are in Sprint `2.147`.
+The Transit worker's Vault calls are being changed to use
+their effect permit's remaining time. The build and isolated fake-action and fake-HTTP probes
+pass, as does a permanent client-timeout regression. The canonical gate passed 9,923 + 27 + 35 +
+935 tests; a permanent worker-path regression remains pending. A versioned Transit claim now
+distinguishes a confirmed fresh journal write from adoption or conflict. Local fake-S3 race and
+transformed-worker controls pass, including a retry while the original fake rotation is still in
+flight. The later change and pre-write journal validation passed the canonical gate with 9,924 +
+27 + 35 + 935 tests. Legacy and interrupted records remain unresolved, and a supported settlement
+and recovery path is still required. Probe scope and hashes are in Sprint `2.147`.
+The completion boundary is being tightened further: an opaque fresh claim is consumed once by
+the allowlisted Vault dispatch, then an exact read-back produces the only completion witness.
+Focused tests and the canonical gate (9,924 + 27 + 35 + 935 tests) pass. Permit-derived timing
+and remote settlement remain separate open obligations.
+The worker also requires batch-token revoke-self after rotation. Inspected Vault v1.18.3 source
+rejects batch-token revocation, and a source-grounded fake reproduced a completed rotation reported
+as failure. An isolated disposable Vault using the digest reported by the retained Vault Pod
+confirmed HTTP 400 for batch revoke-self and 204 for a service-token control. The earlier fake
+success used an unrealistic revoke response. A transformed worker against the disposable real
+Vault, with fake S3 and Kubernetes login, reproduced rotation followed by revoke failure.
+Credential-lifecycle correction and an end-to-end Broker proof remain open in Sprint `2.147`.
+The separate stable-zero worker-session auditor no longer demands impossible batch-token
+revoke-self after a successful audit. An isolated disposable Vault control exercised the old and
+corrected paths with separate worker accessors; the batch auditors remained valid and are bounded
+by their leases. The canonical gate passed; a permanent production-composition regression and the
+Transit worker's own credential and result fixes remain pending.
+The separate provisioner service-login boundary now reads the issued token's explicit lifetime cap
+and binds it to the login accessor within the effect permit. Focused tests, isolated Vault and
+HTTP controls, and the canonical gate pass. This does not establish Transit-session cleanup or
+server-side request settlement. The host-sized workload profile still needs its combined live
+capacity proof.
+The binary-sibling `.build/prodbox.dhall` was initially generated on 2026-11-13 from the observed
+host: `8000m / 15930 MiB`, with `44280 MiB` ephemeral and `182030 MiB` durable storage in its
+fitted plan. It is a non-secret generated starting point with empty operator-specific fields, not
+deployment qualification. The initial file's SHA-256 was
+`81c9816766dd129e96553ed0397a507c502a6bb47f544cc5d163dfc02e9fc0de`. A read-only `cluster
+status` check with that file reports the local RKE2 service active but rejects the configuration
+because `cluster_topology.machine_id` is empty; it does not establish workload readiness. The
+status log has SHA-256 `6ffc77b64cf950861856efd29b626e2be53e596d9e922fbd0d40adb6c79e3d58`.
+The local Kubernetes node was then observed read-only as `bathurst` and that name was initially
+entered in the generated file. That intermediate file's SHA-256 was
+`48abb091057dcd494d85fea30858ca92e58bc0298af5c9c1811675d92ce3763d`. A second `cluster status`
+reports the RKE2 service active and refuses the remaining empty `domain.demo_fqdn`; its log has
+SHA-256 `8528a8290e2d789424a6d34672b7bf0f8456505e99999cb072b2760ed559a66a`. Subsequent read-only
+inspection found the running Authority cluster ID `prodbox-home`, an existing configuration with
+that logical machine ID, the currently served demo host and issuer contact, AWS region, and the
+Vault NodePort. Those observed coordinates were entered; the MinIO host endpoint remains blank
+at that intermediate step because the older configuration's endpoint was not reachable. That
+intermediate config SHA-256 was `93d53070b2a0b913abd758e9bf9320a6b30f2ffdbfa39bebfcaad74724b213c6`.
+A further status check
+reports RKE2 active and refuses because Vault is sealed or unavailable; its log SHA-256 is
+`5df1acbd1988f2b976c7ae80fd84f29229b770acd38a6a498f3b25e4a16464d3`. The active issuer's Route 53
+zone and the project's previously configured host MinIO port-forward coordinate were then entered;
+the latter is not currently listening and is not a readiness observation. That edited file had
+SHA-256 `b605bc99c41648e07d93b2a736fb187222402d88d6fbd5f2c9da211bc974e5da`, but the quality gate
+correctly rejected its noncanonical formatting. It was decoded and re-rendered with the repository's
+`renderProjectConfigDhall` generator, preserving its authored values. The current file's SHA-256 is
+`bc128b261b175f51f0187fed6c57abb05b44326393f8b42ac754f6499ac56423`; the one-off renderer source
+`.build/sprint-2.147/CanonicalizeHostConfig.hs` has SHA-256
+`7ad72c42c49559fc4dcfbf084f6d1ac33e7def7a2a6d2c264a026946b6aa6234`. Other operator fields remain
+unconfigured; this is not readiness or a live workload proof.
+A read-only `prodbox vault status` attempt failed because the Bootstrap Broker rollout timed out;
+the deployment had zero ready replicas, including one Pod in `ImagePullBackOff`. The status and
+read-only Pod observations are `.build/sprint-2.147/current-vault-status.log` and
+`current-broker-pods.log`, SHA-256 respectively
+`1d00665d2b971a319728e0aab3da8aebab7de32f84ac83036cd14316ea577805` and
+`53597c920b738c246d38b301838945119c3fc89bff5ccfe665d18ca43c093e3d2b`. These observations do not
+identify the image-pull cause or constitute a live qualification attempt.
+The Broker Pod's read-only status reports that the `127.0.0.1:30080` registry connection was
+refused; `.build/sprint-2.147/current-broker-imagepull.log` has SHA-256
+`82bcdc76b20aca292f6bcd7b45410c340a4513167e391b4938cff3382512d902`. An authorized local
+`prodbox cluster reconcile` then exited 1 after confirming the node and host capacity. Kubernetes
+rejected changing the retained MinIO and Vault PV host paths from the existing
+`.test-data/legacy-aggregate` root to the generated production `.data` root because the volume
+source is immutable. The command reported raising host inotify limits before its failure. Its log
+`.build/sprint-2.147/current-local-reconcile.log` has SHA-256
+`e15ee7c576192b9c7e0a32683f9a33fc3a7007988782ae82c7a0c50576bd62d7`. A subsequent read-only PV
+inventory shows all eight retained PVs bound under the test root; its log
+`.build/sprint-2.147/current-retained-pv-paths.log` has SHA-256
+`32ce398ab2e680984f2ed6900a188739ad813c89f1e68d03f07099b1cdf9bda9`. Preserve both roots and
+their retained capabilities. Production and test roots must not be conflated; this failed local
+attempt neither proves cleanup nor qualifies a deployment.
+The existing MinIO Pod also reports an image pull through the unavailable local registry;
+`.build/sprint-2.147/current-minio-imagepull.log` has SHA-256
+`5db2394810040e6ab2d353a302421f4b5e0688bcbb55b263443610282858f7e3`. The failed reconcile did
+not reach its later MinIO bootstrap-image seeding step, so this observation does not establish
+whether that supported step would recover the image pull once the storage conflict is resolved.
+A subsequent read-only node observation reported `6995m / 13236 MiB` in Kubernetes scheduled
+requests, while the metrics API sample reported `490m / 6993 MiB` in use. Only 12 Pods were
+Running and Ready; 28 were Pending, one was Running but not Ready, and the listing also contained
+52 Failed and 29 Succeeded Pods. These separate point observations demonstrate that reservations
+and current measured use differ on the partially available cluster; they do not measure a complete
+service set, its peak, or its sustained requirements. The request, metrics and Pod-count logs under
+`.build/sprint-2.147/` are `current-node-requests.log`, `current-node-metrics.log` and
+`current-pod-readiness.log`, SHA-256 respectively
+`f7be184706fb0f065318e5b851925818021f8617ecf5ba16383ccb46ca583f75`,
+`463d7455ddbf20d786e6d2352b6fdc61757c8535e063363e475c6d07746923e9`, and
+`d474d73be7de10d7c3aa3116b72a28b6b8d9cf4258c504f9308e4d4cd60bf7b1`.
+An additional Phase `2` correction makes fence retirement compare the trusted clock's lower
+uncertainty bound with the predecessor deadline, rather than using the early safe-use cutoff as
+proof of expiry. The boundary regression, finite model, and full gate pass.
+The rule still depends on the unimplemented trustworthy clock source and does not prove remote
+settlement.
+The Lease decision model now also accepts separate safe-use and certain-expiry cutoffs, refusing
+both use and retirement between them and rejecting inverted bounds. The focused regression and
+canonical gate passed; the gate covered 9,936, 27, 35 and 935 tests. The Kubernetes decoder still
+emits a single cutoff, so this model does not yet correct production Lease expiry or establish
+writer/reader clock bounds.
+The Kubernetes decoder also has an explicit-bounds path that converts a Lease response into those
+two cutoffs and exercises the decoded result through Lease confirmation. The focused regression
+and canonical gate passed; the gate covered 9,937, 27, 35 and 935 tests. The live interpreter
+does not use that path; supplied bounds, clock continuity and retained-writer provenance remain
+unproven.
+The bounded format can now carry the writer bound on the Lease and requires it to match a separately
+supplied bound. Focused tests refuse missing, malformed and mismatched metadata and showed that the
+prior legacy reader ignored the new annotation. The canonical gate passed 9,937, 27, 35 and 935 tests.
+The live writer and reader still use the legacy format; matching metadata alone does not
+authenticate clock accuracy.
+The current production renewal path now refuses a Lease carrying writer-clock-bound metadata
+instead of replacing it with a legacy manifest that drops the field. Focused generation cases and
+the canonical gate pass; the gate covered 9,937, 27, 35 and 935 tests. Old binaries,
+already-dispatched requests and bounded renewal still require a mixed-version protocol.
+The current legacy reader now also refuses annotated Leases instead of projecting them as a
+single deadline; its focused reader and renewal regressions and canonical gate pass. The gate
+covered 9,937, 27, 35 and 935 tests. Unannotated legacy Leases still use the existing path, and
+older binaries remain unguarded.
+The Broker now has a retained-clock admission transaction that requires exact versioned CAS and
+read-back before trusting a sample, and widens uncertainty for elapsed read-back time. Focused
+fixtures pass for restart regression, conflicts, unconfirmed writes and delayed read-back; the
+canonical gate passed 9,940, 27, 35 and 935 tests. It is not wired to production: a validated
+clock, a rollback-protected store identity, genesis, migration and a justified elapsed-time bound
+remain open. A later correction made the admitted reading opaque and requires a fresh monotonic
+time at each use, so its uncertainty continues to grow after read-back. The focused regression
+and canonical gate passed; the gate covered 9,941, 27, 35 and 935 tests.
+An additional fixture demonstrates that a later admission can advance the shared watermark while
+an earlier admitted reading still returns trusted. The transaction therefore does not establish
+current shared high-water ordering at use; an ordering or revocation protocol remains open. The
+canonical gate passed 9,942, 27, 35 and 935 tests with exit status 0.
+The retained reading now refuses a use-time from before admission completed and adds a microsecond
+for the rounded monotonic elapsed-time calculation. The bounded Lease decoder also adds a separate
+microsecond for its rounded monotonic endpoint. Both focused suites passed. The canonical gate's
+log reports 9,941, 27, 35 and 935 tests passed with no HLint hints; its process handle was lost,
+so its shell exit status was not recovered. Clock-rate and source assumptions remain unproven.
+The Broker's Lease ensure path also now refuses to replace an observed newer generation or a
+different same-generation binding. Focused and transformed-flow fake-API controls pass, including
+a simulated resource-version race, as does the canonical gate. This does not prevent an old
+caller from recreating an absent Lease or prove settlement of a request already dispatched.
+A further actual-decision probe showed that an older numeric generation from a different Vault
+storage generation was accepted. Because generation floors are store-local and a legitimate
+reset can change storage generation, the replacement needs durable predecessor/handoff evidence;
+the probe and scope are in Sprint `2.147`.
+The Lease replacement guard now refuses a different observed storage generation before comparing
+generation counters. This interim restriction also refuses legitimate reset handoff until its
+durable predecessor evidence exists; it does not prove same-identity store lineage or remote
+settlement. Focused tests and the canonical gate pass; evidence is in Sprint `2.147`.
+An additional actual-decision control gives two independent in-memory store histories the same
+storage identity: one acquires generation 6 and retains a live effect permit while the other
+acquires generation 7 and can replace its Lease. This demonstrates the remaining same-identity
+lineage gap in the model; it is not a live overlap or physical store-copy observation. Source,
+scope and hashes are in Sprint `2.147`.
+An encoding-evolution control found that appending a constructor preserved the current fence
+payload encodings and canonical round trips in a synthetic envelope, but the old decoder refused
+the new variant. It did not read retained objects or exercise the private production envelope
+decoder; mixed-version rollout, rollback, migration and durable handoff remain open. Source,
+scope and hashes are in Sprint `2.147`.
+A transformed-flow local fake API accepted a Lease create, then committed it after the client
+timed out and refused; the fixture does not demonstrate a live Kubernetes overlap. Its evidence
+is recorded in Sprint `2.147`.
+The acquisition path now retains even a freshly acquired fence when Lease confirmation fails,
+because a timely lost response can also hide an applied write. Transformed old/new acquisition
+controls, the focused fence suite, and the canonical gate pass. Recovery may require waiting for
+fence expiry; expiry alone does not settle the remote operation or complete recovery.
+Lease confirmation now uses a callback-and-clock boundary with no store
+or fence-release capability, so its deadline and observation cases have permanent coverage without
+exporting the privileged acquisition entrypoint. The focused test and transformed production-path
+control pass. Refusals distinguish an undispatched Lease request from a late completion while
+retaining the fence for both. A permanent admission test confirms identical requests under different
+keys can both be active; a matching request digest does not prove exclusive fence use. The full
+gate passes 9,928 + 27 + 35 + 935 tests; details are in Sprint `2.147`.
+Even under the earlier fake's successful revoke response, the worker's Transit result has no
+accessor and the production result store refuses to publish it; the issued-accessor receipt and
+crash cleanup must be repaired with the credential lifecycle rather than bypassed. A transformed
+service-token worker and bounded batch-auditor candidate passed scoped controls against disposable
+real Vault, but remain prototypes: expired-fence retirement currently sees worker-Pod absence
+without proving whether a service session was issued. The role change must also force baseline
+reconciliation and preserve sealed-Vault bootstrap recovery. An isolated real Vault
+Kubernetes-auth control issued a renewable service token despite the prototype's non-renewable
+predicate; its role read back 300-second TTL and hard caps. The acceptance rule must account for
+that actual behavior and establish the role's configuration, not assume the prototype is deployable.
+An isolated Vault control further showed that a 300-second initial service lease without an
+explicit hard cap renewed to 599 seconds, while a token issued with the 300-second explicit cap
+retained that cap after role drift. The issued-token observation must therefore check the hard cap,
+not only the login's initial lease.
+
+The production acquisition path now refuses a Lease
+ensure that finishes after the request deadline and retains the fence for recovery. It also
+refuses before starting ensure when its post-CAS pre-dispatch sample is already past the deadline;
+that sample cannot bound a later scheduling delay. A focused production-path test covers both
+constructed late cases, timely success, no premature release, and no ensure after the deliberately
+delayed CAS; the adjacent worker test covers a Lease expiring during a store read.
+Both passed in `.build/sprint-2.147/late-cas-focused.log` (SHA-256
+`d581422e5e63067f7f11285a3222a82188ff9388eb594f34ab87880e585134fe`). Those tests were removed
+when their test-only exports were found to widen private capability boundaries; permanent
+boundary-preserving regressions remain required. The gate on the exported test revision was
+stopped; the subsequent private-interface revision passed the canonical gate with 9,916, 27, 35,
+and 935 tests and no HLint hints. Its log is `.build/sprint-2.147/private-boundary-gate.log`
+(SHA-256 `add0f1be6f9bc024303c511729b40cd0896ac1c52a4fdd7a98509a2431ba7533`). These guards do
+not supply the missing clock evidence.
+
+The acquisition path now uses a generic interpreter guard with no privileged acquisition export.
+Its permanent focused test distinguishes a deadline already expired before effect start, timely
+completion, and completion at or beyond the deadline. It passed in
+`.build/sprint-2.147/private-deadline-guard-focused.log` (SHA-256
+`d0eb94e75b1ad42c54006da6d17324b94a8bca992d66cb7ca049630400eb8fbd`). The later canonical gate
+log records all four suites passing (9,917, 27, 35, and 935 tests); its process handle was lost
+across the session boundary, so its final exit status was not captured. The log is
+`.build/sprint-2.147/deadline-guard-gate.log` (SHA-256
+`5f8b16ad55550f1354bcc079433c1e2c4b891628dd3a731e3cfcb8297dc18b8f`). The test does not prove the surrounding acquisition recovery
+policy, physically bound an in-flight effect, or replace the missing worker-specific regression.
+The guard now preserves the value returned after expiry instead of discarding it: Vault
+initialization can return unique encrypted recovery material even after the deadline. This change
+only retains the value in memory; it does not establish a durable receipt or permission to
+continue. Its updated focused regression passed in
+`.build/sprint-2.147/deadline-late-value-focused.log` (SHA-256
+`31c67038091a8cf6aceb3aaa75cf2e88165096517194ed0b3471063b2748a820`); the full gate for this
+revision exited 0 with 9,917, 27, 35, and 935 tests passed and no HLint hints. Its log is
+`.build/sprint-2.147/deadline-late-value-gate.log` (SHA-256
+`2d5ad85613ff23bb1411e2b8700b68eee4f15441b5d472a45a41ddbccecefd4c`).
+The worker's initialization seal-status reads now check their permit deadline before and after
+the read. The pre-dispatch sample does not bound a subsequent scheduling delay. The build, 118 focused Broker/deadline tests, and a transformed-production-module
+fake-read probe passed; the probe verifies timely, late and already-expired cases without a Vault
+call. Details and source hashes are in Sprint `2.147`. This is read-only coverage, not a transport
+timeout, a mutation bound, or permanent integration coverage. The full gate on this later revision
+exited 0 with 9,917, 27, 35, and 935 tests passed and no HLint hints; its log is
+`.build/sprint-2.147/vault-read-gate.log` (SHA-256
+`a80339e9d98e9e740d045c173ba9b1f986a7a383b726f98fb4a8003d6fb111d4`).
+The initialization seal-status read now derives its HTTP response timeout from the sampled
+remaining permit, capped at the former default. A transformed-production worker probe passed
+for timely, late, and already-expired reads and observed a positive timeout no greater than the
+one-second fixture Lease: `.build/sprint-2.147/WorkerVaultReadTimeoutProbe.hs`,
+`.build/sprint-2.147/ProbeReadTimeoutWorker.hs`, and
+`.build/sprint-2.147/worker-vault-read-timeout-probe.log` have SHA-256
+`5f469af6e504bf0849fd8c7a8cb67ea12646526d2c2b3f666d32e8abb2a14b7b`,
+`8ddeed31fc02d228c224c5f244e6f9faf7b6320d0fd4e7bbb92160bf9ca05d40`, and
+`f1886858cb3c5bb8107c927302098012706f531dfb1e03bd00181938eb787025`. A separate local fake HTTP
+fixture accepted an immediate response and produced `HttpTimeout` on delayed headers; its Haskell
+client, ephemeral Python socket fixture, and log have SHA-256
+`b6863559a271c2d26467af0cc85dab9a3e9db0cb9dfd7dc89cdf8cc41cb7d1cb`,
+`50745589f0adb2ef953a43c8952c125c7d2bd93e26e3bca2a0d99a68d11adcac`, and
+`06806c9befff713a33c317b8cbb4841153467477cbc9d536be324779b9441919`, respectively, under
+`.build/sprint-2.147/`. This is response-timeout evidence only, not an absolute bound on every
+transport phase. The permanent local HTTP fixture and deadline-guard tests passed together;
+`.build/sprint-2.147/vault-read-timeout-permanent-focused.log` has SHA-256
+`f58b4d99daa3387edf816e787c408a71136afd84a54187ca63a9575b17c0322b`. The canonical gate for
+that intermediate revision was stopped after the delayed-body counterexample below.
+An independent local HTTP counterexample sent immediate headers and a body delayed 500 ms: the
+client accepted the body after 507,297 microseconds despite a 100,000-microsecond response
+timeout. Its `.build/sprint-2.147/VaultStatusBodyTimeoutClient.hs`,
+`.build/sprint-2.147/vault-status-body-timeout-fixture.py`, and
+`.build/sprint-2.147/vault-status-body-timeout-probe.log` have SHA-256
+`508198c3fa31e573a01f2ec98677f4d9053d89c087106ba3568c20554cbd62a3`,
+`588f0c9d161b2b531110f02e8804f62581febb97db7a531538568963a092cbf1`, and
+`6f023279063d0c97e473105ee849f4d9fd636ddfd8efe4699b5af01a7a2b0b71`. This is one local fake
+server run, not proof of every transport phase. The intermediate gate was stopped to correct the
+read path; it is not a passing result. The permit-aware status client now also applies an outer
+timeout around the full read and forces decoded fields within it. A permanent fixture covering
+delayed headers and body, non-positive budgets, and the deadline guard passed; its log SHA-256 is
+`34734ce6f2bcab490b92b9a16171f3a85941818e126b761fce3349b8ba8823a4`. The same local slow-body
+fixture returned `HttpTimeout` after 100,211 microseconds on the corrected client; its log SHA-256
+is `b49c2e5e758c20bd90281bfc05f960219b704acf6d1e4f404469cc1e19aba538`. Both logs are under
+`.build/sprint-2.147/`. The full gate exited 0 with 9,918, 27, 35, and 935 tests passed and no
+HLint hints; `.build/sprint-2.147/vault-read-total-timeout-gate.log` has SHA-256
+`843e1e0abaea28670625372d688b968b264cdfc52b769bd75e6a6f210f518f25`. This does not establish
+remote mutation absence or a hard bound on every possible transport implementation.
+
+The worker unseal path now uses the sampled permit budget for its initial status read and share
+submissions. A missing or late submission response is reported as unconfirmed, and no further
+share is submitted in that attempt. Three focused tests passed, including a fake server that saw
+the POST before its response timed out. A separate transformed-production-worker probe modeled a
+server becoming unsealed before its delayed reply: the first attempt reported unconfirmed and
+the next observed unsealed status before any new POST. The exact probes and hashes are in Sprint
+`2.147`; they do not prove behavior for every partially applied replay or a real Vault. The full
+gate exited 0 with 9,919, 27, 35, and 935 tests passed and no HLint hints; its log
+`.build/sprint-2.147/unseal-deadline-gate.log` has SHA-256
+`00d29cf404bf49b522a4bb818120acd3a4588a6e641eab4dd144d04c6a71613a`.
+The [upstream Vault v1.18.3 source](https://github.com/hashicorp/vault/blob/v1.18.3/vault/core.go)
+suppresses a duplicate share already held in one core's current in-memory unseal progress, but
+clears that progress after threshold processing. The downloaded source tag was not
+signature-verified or compared with the running image. This observation does not establish
+restart, multi-replica, threshold-failure, or in-flight request safety; the source and archive
+hashes are recorded in Sprint `2.147`.
+
+The transit-rotation journal currently retries when Vault still shows its before-version. A
+constructed schedule shows that this read can precede a delayed first rotation: a retry can then
+dispatch a second rotation before both apply. The later journal comparison refuses the resulting
+two-version advance; it does not prevent it. The pinned upstream source inspection and exact
+model artifacts are recorded in Sprint `2.147`. Neither a timeout nor the old-version read proves
+the earlier request settled, and no live double rotation was observed. The open work includes a
+durable settlement or equivalent prevention before relying on that retry.
+An isolated follow-up drove the actual Vault client against a fake backend that continued its
+first timed-out request: the client read version 7, timed out, read 7 again, issued a second POST,
+and observed version 9 after both fake operations completed. This is not a worker or live Vault
+run; the fixture and hashes are recorded in Sprint `2.147`.
+The current journal plan result also conflates a newly applied write with adoption of an identical
+existing record. A replacement cannot use that result alone as exclusive authority to dispatch,
+and legacy planned/applied records do not identify whether prior requests are still in flight.
+The source-grounded constructed control and its limits are recorded in Sprint `2.147`.
+A separate actual-production-store probe found that a delayed journal read could carry an expired
+permit into a conditional PUT. The plan and completion paths now reject a late journal read, and
+their native conditional writes re-sample the deadline after bucket preflight. Fake-S3 probes
+passed for timely and late reads, delayed preflight with no PUT, and a PUT applied before a late
+read-back that was returned as unavailable. This does not bound scheduling between the final
+sample and dispatch or prove in-flight remote settlement. A permanent native PUT fixture is
+now passing alongside the journal-wire and generic deadline tests; its log
+`.build/sprint-2.147/transit-store-put-guard-focused.log` has SHA-256
+`cbfa89f88ace6fb0e5924798d99f1a322fc9ca283c6982055f084a568e2261ce`. The full gate for these
+later changes exited 0 with 9,921, 27, 35, and 935 tests passed and no HLint hints;
+`.build/sprint-2.147/transit-store-put-guard-gate.log` has SHA-256
+`3618a7a68a46b290a07ff5b96d5e1a9ce71872a189589176b4fc2ca2b5ebd77f`.
+A permanent byte-exact regression for decoding and re-encoding the two existing journal
+constructors passed; `.build/sprint-2.147/transit-journal-wire-permanent-corrected.log` has
+SHA-256 `b595bee897f0878862db448bd1d70faf53de2fbbb2dfb98ccd488531071ac4db`. The first run
+failed due to incorrectly transcribed fixture bytes; those were regenerated from the captured
+encodings. This protects compatibility before any journal redesign but does not fix the retry.
+
+**Bootstrap clock uncertainty, 2026-11-12.** Phase `2` reopens on Sprint `2.147` for its
+own Broker fencing and worker clock interpreters. Three production `authorityClockNow`
+functions construct `AuthorityTimeTrusted` from `getPOSIXTime` with a constant 1,000-microsecond
+uncertainty; those functions do not measure synchronization error or use the existing
+`classifyAuthorityClock` high-water/uncertainty check. This is a source observation, not a
+measurement of actual host skew or proof of a live overlap. The lifecycle architecture requires
+a validated synchronized observation and a durable accepted high-water mark before time-sensitive
+successor admission. Sprint `2.147` owns replacing or justifying those assumptions with an
+observable, bounded source and fail-closed restart behavior; its independent fake-boundary
+validation does not require a later phase. It precedes the still-open `4.114` in numerical order.
+An additional constructed pair of worlds has the same reported renewal, observation, duration,
+and elapsed time with both clocks within 200 ms of the reference, equal elapsed rates, and no
+clock steps; at the decision point one Lease has 400 ms left and the other expired 400 ms earlier.
+A single classification from those
+reported values cannot establish either definite live use or definite expiry without an
+uncertainty interval. `.build/sprint-2.147/LeaseAmbiguousWorlds.hs` and its log have SHA-256
+`7b576beab0d7045ef4b6277c553519f292473c05c27df73739742abf5e9855cf` and
+`cff2293dbca921ba5378d1246d6b4291c345ca1ab79c6079ba05def36ae8bc08`, respectively. Both worlds
+also satisfy observation after the actual renewal; the first draft did not enforce that causal
+ordering and was corrected. This is a constructed counterexample, not an observation of live skew
+or proof of worker settlement.
+At 2026-11-12 18:42 EST, read-only `timedatectl` reported `NTPSynchronized=yes`. A separate
+read-only Linux `adjtimex` sample returned clock state `0`, status `8193`, `maxerror=258000`
+microseconds and `esterror=0`; [Linux documents the maximum-error field and clock-state
+return](https://man7.org/linux/man-pages/man2/adjtimex.2.html). This reported field is not a
+direct measurement of actual skew, does not establish its provenance or a complete clock trust
+contract, and may change. It is nevertheless 258 times the uncertainty the Broker asserts.
+The probe source, log and binary are `.build/sprint-4.114/clock-kernel-readonly.c`,
+`.build/sprint-4.114/clock-kernel-readonly.log`, and `.build/sprint-4.114/clock-kernel-readonly`,
+SHA-256 respectively `e5e6627c1394422f5fad9016b25c78a924212df5b238cd70b3d3d5b0be6785c8`,
+`69457be80050ef322bf1bc8d2e50e972df517c8ca2784d59fb56de59852e4df6`, and
+`8c65085a4f29699d83341747167140712960e824efd5296b1d26a662a8cdc189`. `chronyc` and the
+`adjtimex` utility were not installed; the probe invoked the read-only kernel query directly.
+The Bootstrap Broker source search found high-water references for fence generations but no
+authority-clock high-water use; generation monotonicity is not a clock observation.
+The host reports `systemd 255 (255.4-1ubuntu8.18)` with `systemd-timesyncd` active. In
+[upstream systemd v255's time-adjustment code](https://github.com/systemd/systemd/blob/v255/src/timesync/timesyncd-manager.c),
+the `timex` structure selects `ADJ_MAXERROR` but does not initialize `maxerror` to a nonzero
+value, while NTP root distance is computed separately. This is evidence against assuming the
+kernel field alone includes the upstream synchronization error. The Ubuntu source package for
+the installed version has now been extracted: its patched `src/timesync/timesyncd-manager.c` also selects `ADJ_MAXERROR` with
+the field zero-initialized and calculates root distance separately. Its source file SHA-256 is
+`a02eeedf45a2285c72b75c9f6c9f98f54bf611fdc20d73ef9045f61fc827758f`; the source archive and
+patch archive hashes match the downloaded Ubuntu `.dsc`, whose signature was not independently
+verified: `gpgv` with the local Ubuntu archive keyring returned `No public key` for the uploader.
+The source version matches the installed package, but no reproducible-build comparison
+to the running binary was made. A separate read-only `timedatectl timesync-status` reported
+21.987 ms root distance, 31.592 ms delay and +1.364 ms offset for its current sample; its log
+`.build/sprint-2.147/timesync-status.log` has SHA-256
+`2c8e8fd45e6b2180f8a8ff0eb8938d5147ffb5efc38bf762809220abc88c67fd`. These values can change
+and are not a proof of true clock error. Validate provenance and the complete error bound before
+using any field as trusted uncertainty.
+The matching package's `timesyncd-bus.c` exposes root delay, root dispersion, four NTP
+timestamps, spike status, packet count and jitter in its `NTPMessage` property; the host's
+read-only system bus returned that property. The source SHA-256 is
+`1250afbdcd8c941c7571ad2025bde7ad1c790661b9e6d33fa1a1634ec7f05d8c`. These fields suggest a
+possible observation source, not a validated bound: freshness across steps/restarts, transport
+and peer authentication, drift, Pod availability and retained high-water handling remain open.
+In that source, the clock-change handler requests a resynchronization but does not clear the
+last `NTPMessage`; the property exposes the saved sample until a later response replaces it.
+Thus the property alone is not a witness that no wall-clock step occurred after that sample.
+This is source-level behavior, not an observed clock step on this host.
+Upstream Linux v7.0 clears NTP state when setting wall time and marks it unsynchronized; the
+matching systemd source adjusts the kernel before publishing its saved packet and still saves the
+packet when adjustment reports an error. Separate kernel and packet observations therefore need
+an ordering proof. This is source analysis, not proof about the running Ubuntu kernel or a live
+clock step; links and hashes are in Sprint `2.147`.
+An isolated, unprivileged `chronyd -x` control selected an NTS-authenticated source and reported a
+conditional bound of about **21.4 ms** after warm-up; its sampled daemon peak was **9,956 KiB** RSS
+and one CPU tick over about 40 seconds, excluding clients and container overhead. This is a candidate
+source observation, not a clock or capacity qualification. Source ownership, safe local access,
+steps and slews, restart and durable high-water handling remain open; details and hashes are in
+Sprint `2.147`.
+The Kubernetes Lease adapter separately writes `renewTime` from local wall time and derives a
+monotonic expiry from the observing node's local wall time without a clock-uncertainty input.
+It brackets that observation with monotonic samples, but that bracket does not bound skew
+between writer and observer. Sprint `2.147` must cover this cross-node comparison as well; no
+live skew or incorrect expiry has been observed.
+An isolated constructed Lease with 100 ms remaining on a reference clock is accepted as live
+by the production decoder at that reference time, but the same decoder reports it expired when
+the observer's wall clock is 200 ms ahead. This is a synthetic clock offset, not a live skew or
+overlap observation. `.build/sprint-2.147/LeaseSkewProbe.hs` and
+`.build/sprint-2.147/lease-skew-probe.log` have SHA-256 respectively
+`6e5134d5cf81551420aced369fab14bb17b7873f25fdd4ec1730cb20f0348879` and
+`5df18a12cda2e68f34a12dd7395079ccef5906759170168d4b3e4eb01a33d487`.
+A standalone finite interval model evaluates **19,404** constructed combinations of writer
+and observer error, Lease lifetime, sampling bracket and query time; **15,180** have at least
+one physically ordered writer/observer assignment, yielding 187 live, 5,039 uncertain and
+9,954 expired verdicts. Under its explicit
+equal-elapsed-rate, no-clock-step and bounded-input assumptions, it found no live verdict
+after possible expiry and no expired verdict before possible expiry when it used separate
+early `safeUntil` and late `certainAfter` points with an uncertain interval between them.
+The model is not integrated, establishes neither the bounds nor physical settlement, and
+does not cover clock steps or drift. `.build/sprint-2.147/LeaseIntervalModel.hs` and
+`.build/sprint-2.147/lease-interval-model.log` have SHA-256 respectively
+`0759d3edda7fb93820284618403a361720e70694f3e23d719ed4ecac7481800b` and
+`fe66c379c93122efa0cea3468e6cae6a8ef31f13f9a6282d3946afadee68141e`.
+The nonvacuity-counting version and log are `.build/sprint-2.147/LeaseIntervalModelV2.hs`
+and `.build/sprint-2.147/lease-interval-model-v2.log`, SHA-256 respectively
+`23124a9ab76ac9365c773d639591b6932a53157979d31802366104170913232c` and
+`0286220c293327b8c824546c0b53980a735bd0c00b5f1d879a812a68d1e3fbc4`.
+The production checkpoint boundary previously sampled `realMonotonicNow` before its store and
+Lease observations, then passed that same value to both permit authorization and the checkpoint
+callback. The callback's permit-deadline comparison therefore did not account for time spent in
+those observations. The production checkpoint store's binding checks do not inspect the permit
+deadline. No expired write has been observed. An isolated fake-store/Lease probe reproduces the actual
+production boundary invoking its callback with a permit whose deadline is already elapsed on a
+fresh monotonic sample; it performs no checkpoint write. The probe source and log are
+`.build/sprint-2.147/StaleCheckpointClockProbe.hs` and
+`.build/sprint-2.147/stale-checkpoint-clock-probe.log`, SHA-256 respectively
+`8426bf178d021a917669cb93d375bd00b7e11cad7b7c834b094390a7f8c58a42` and
+`3cb123647946c2fac72a17a60f849d49e8fae4ebbd617a2cc00d170081cd2552`. Sprint `2.147`
+now samples monotonic and wall time after store/Lease observations in the checkpoint, worker
+store authorization and Broker observation boundaries; acquisition also re-samples after its store
+read and again after retirement CAS before reacquisition. The same isolated checkpoint probe refuses with `BootstrapLeaseExpired` before invoking
+its callback. Its replacement source and log are
+`.build/sprint-2.147/FreshCheckpointClockProbe.hs` and
+`.build/sprint-2.147/fresh-checkpoint-clock-probe.log`, SHA-256 respectively
+`0c79d7b302bb610ffe5eec6f1c051b07b4f39bb014afc11c8ae155382552da93` and
+`27753232e205316e598a5f7b387d0cd03adeca00814effbe9efb8257586e91ff`. A permanent production-boundary
+regression with live and expired Lease controls passes, as do **27/27** focused fence tests.
+Their logs `.build/sprint-2.147/checkpoint-delay-focused.log` and
+`.build/sprint-2.147/fence-focused.log` have SHA-256 respectively
+`0d546c81df78a9eedc91b237a7c508667d8d5c7ce29dc88ff2f5a82e13c0ce27` and
+`5a21cb725bd2dbd4ff06847175f069556c239e16526564900a2fa7aa69fa7dd1`.
+Sibling paths need independent delayed-observation controls. The broader Broker selection passes
+**249/249** and targeted HLint reports no hints; the canonical gate passes **9,914 + 27 + 35 +
+935** tests. The gate log `.build/sprint-2.147/fresh-boundary-gate.log` has SHA-256
+`281f01023b6dc7a13c250f3b4a6a00b0731aed0642e315195f9ab315fce0b429`. The Broker log
+`.build/sprint-2.147/broker-focused.log` has SHA-256
+`d07e0911bb9c3f9725ae36587503893da84d365f2951849c3930d7850b8f3075`.
+Correction: the earlier description included worker Vault-effect authorization, but source
+inspection after that gate showed it had not been changed. It now also re-samples after the
+observations. An isolated delayed fake-store/Lease probe compiled copies of the original and
+corrected worker modules with only their module names and export lists changed: the original
+returned an already-expired Vault permit, and the corrected function refused the expired Lease.
+It made no Vault calls. The probe and log are
+`.build/sprint-2.147/WorkerVaultClockProbe.hs` and
+`.build/sprint-2.147/worker-vault-clock-probe.log`, SHA-256 respectively
+`e645f555fd2b9464de8db1e5015f2c782c1e962fc4d01d59d19c57c15c6faeff` and
+`bc05672888ca5c2c833c84593f95616145765dccafb284acf02ae0f2070426df`. Its original and
+corrected transformed modules are `.build/sprint-2.147/ProbeOldWorker.hs` and
+`.build/sprint-2.147/ProbeNewWorker.hs`, SHA-256 respectively
+`68fae6c3bf641399530e8fe06c46e2b57170d4ba0bbd2b733bda0c742c1da825` and
+`179eea54805eaf2eb2b40f040232d5578edb4dc0f9b05eaa4ac007d91cb751b6`. A regression against an
+exported production function admitted a live Lease and refused after a delayed store read crossed
+expiry; `.build/sprint-2.147/worker-vault-permanent-regression.log` has SHA-256
+`018b1c5c8d3c4082a09c5e204a8c6bce73bfbee4b16d5b8b7f737ce84ae549dd`. That export and test were
+removed to preserve the private capability boundary; a permanent regression remains required.
+The corrected source builds; focused fence tests pass **27/27**,
+the broader Broker selection passes **249/249**, and targeted HLint reports no hints. Their
+logs `.build/sprint-2.147/worker-vault-correction-fence.log` and
+`.build/sprint-2.147/worker-vault-correction-broker.log` have SHA-256 respectively
+`5a21cb725bd2dbd4ff06847175f069556c239e16526564900a2fa7aa69fa7dd1` and
+`2b4d315c843f9b9c03135702909e7d0f12e0833b98d9305b374ca2fc9956c3eb`. The canonical gate on
+the corrected source passes **9,914 + 27 + 35 + 935** tests with no HLint hints. Its log
+`.build/sprint-2.147/worker-vault-correction-gate.log` has SHA-256
+`91bf78a3ecd4194637ea376762d7ee7c8c7dd3e66abdd628fba1c97fb8d114b6`.
+This repair does not establish clock-source uncertainty or physical
+settlement. Source inspection also found worker Vault call sites that discard the returned
+effect permit before invoking the Vault action; sampling at authorization alone does not
+establish that the effect starts within the permit deadline. Their actual transport/deadline
+behavior and a delayed handoff need a separate regression before that path can close.
+The Broker acquisition's `ensureLease` also checks the returned Lease with a fresh monotonic
+sample but does not itself compare that sample with the request deadline. Test a delayed
+successful Lease response and its cleanup/ownership consequences before treating acquisition
+as deadline-bounded; this observation does not establish that a production response ran late.
+
+**Bootstrap provisioner scope in progress, 2026-11-12.** The compiled policy is being narrowed
+from wildcard KV access to exact data paths derived from the provisioner's own seed inventory;
+the separate wildcard metadata read is removed. The baseline uses versioned data reads and
+CAS writes for those seeds. Validation must cover the complete inventory and real Vault policy
+semantics. This does not settle requests already authorized, prevent an older policy repair or
+role reconciliation, or establish the physical fence; Sprint `4.114` remains active.
+An isolated loopback-only Vault 1.18.3 dev fixture, using a synthetic token with this policy
+and no default policy, confirmed missing-read, CAS-create, versioned-read and CAS-update for
+all 25 compiled seed paths. It returned 403 for reads and writes of the Target session journal,
+Lifecycle-provider credential and two non-seed descendants, and for a seed metadata read.
+The fixture did not contact or mutate the project Vault and does not establish the effective
+policy of a deployed token. `.build/sprint-4.114/bootstrap_policy_vault_probe.py`,
+`.build/sprint-4.114/bootstrap-policy-vault-probe.log`,
+`.build/sprint-4.114/BootstrapPolicyFixture.hs`, and
+`.build/sprint-4.114/bootstrap-policy-fixture.json` have SHA-256 values respectively
+`aca7528c728a90ce857ff9857247cd0fb88d6c4ad1dd7076617dbb55c724d076`,
+`cd2f1356e6fcef0b81452d734c1613bfe5d12728cf41e5f3eb85522b4a7ab106`,
+`d567397a72d8e3ca8244fdbd6d35f510987116002f0217f7b1094f6090276219`, and
+`b250febf51a4c4eddd9af0a8ed2c82498a1d1361fd3a3995c3aec191e7d19026`. The verified Vault
+release archive and binary SHA-256 values are
+`405ec904a45c2261e2c091640fb805bf5904fd2fe8a991ebc58d2eb64f9a269e` and
+`d20fac7c028c2762d6a7999d684be9c42d06a9550e8a40f34e60497979410ec0`. The first unit build
+stopped on assertion precedence; the assertions are corrected and the focused Vault reconcile
+suite passes **29/29**. `.build/sprint-4.114/bootstrap-policy-reconcile-focused-v2.log`
+SHA-256 is `380bb2bdf3ec4065709843ed9cc42a4e148e39a584c17b8276ac5d7cea2d6391`.
+An intermediate focused invocation used an invalid test pattern and ran no tests. The
+canonical gate remains required.
+Two further isolated Vault 1.18.3 runs first granted wildcard access, minted a synthetic token,
+confirmed that token could read and write the journal, and then replaced the policy with the
+exact grants. The same token was denied subsequent journal reads and writes while all seed
+operations still passed; one run attached no default policy and the other attached Vault's
+stock dev default policy. They do not cover an already-authorized request, a customized
+deployed policy, role reconciliation, or an old policy repair. The no-default and stock-default
+probe sources and logs are `.build/sprint-4.114/bootstrap_policy_update_probe.py`,
+`.build/sprint-4.114/bootstrap-policy-update-probe.log`,
+`.build/sprint-4.114/bootstrap_policy_update_default_probe.py`, and
+`.build/sprint-4.114/bootstrap-policy-update-default-probe.log`, SHA-256 respectively
+`2d92f186c93420ac2b4bf228714a86c5fe112015646be2c4c1423b37f36fc1a7`,
+`fb68fdcdccc7b2b350c2b11f4a258d32810934cab1e139007ecab0a35356dbda`,
+`828bb9b13f4ce0566522b192d1bed0e579c5864512a7a13cbfd34802f55d423e`, and
+`0ecc54af4faf03f4848231c395e39f730fc91c27b9629ab26233f4f49f16d7b1`.
+An isolated counterexample then used the compiled policy-repair grant on a synthetic batch
+token to widen the provisioner policy back to `secret/data/*`. A previously issued synthetic
+provisioner token regained journal read/write access. This demonstrates why the narrowed
+ordinary policy alone is not an admission fence; it is not an observation of a deployed
+repair token. The probe, log, policy-fixture source and fixture JSON are
+`.build/sprint-4.114/bootstrap_repair_reopen_probe.py`,
+`.build/sprint-4.114/bootstrap-repair-reopen-probe.log`,
+`.build/sprint-4.114/BootstrapRepairPolicyFixture.hs`, and
+`.build/sprint-4.114/bootstrap-repair-policy-fixture.json`, SHA-256 respectively
+`75d1dcce4795a150bc55b8441e071a02a5f6ae3a9b48945d47388e4602e01154`,
+`a240296ce86103c6187174ecec9682ec09d180c2f7c7bdb6b7538afd7145060e`,
+`0e213d1c45bd621cc57754c06f82a1ca035bb457125f3ede2dd9aeb830cb1c90`, and
+`a47ee1c5b3ff63e060b4c4314caed266fcf8de57d7879abd71c3ff9f9d0a06c0`.
+An isolated candidate repair grant with Vault `allowed_parameters` admitted only the exact
+compiled provisioner policy, still allowed readback, and rejected the widened policy, `rules`
+alias, and mixed-field variants. Missing policy returned 400. The source now includes this
+restriction and a new append-only baseline target so an existing closed receipt triggers
+generated-root reapplication. The code-local and isolated Vault checks below pass; they are
+not a deployed fence. The
+candidate probe and log are `.build/sprint-4.114/bootstrap_repair_restricted_alias_probe.py`
+and `.build/sprint-4.114/bootstrap-repair-restricted-alias-probe.log`, SHA-256 respectively
+`49f5bcc24c8e26115a60189ac935b16fd6b041e2dc0bdb9e864048beef9392ef` and
+`cb3da86b373c712d1b70effcf3e969d87a8a195746790a5eebf08fe5336ad7af`.
+The same isolated probe also passed against the updated Haskell-generated repair document:
+`.build/sprint-4.114/bootstrap_repair_compiled_probe.py`,
+`.build/sprint-4.114/bootstrap-repair-compiled-probe.log`, and
+`.build/sprint-4.114/bootstrap-repair-policy-compiled-v2.json` have SHA-256 respectively
+`127334383f6fcf757cca3a1972cc9f5b13812150becfb4ee3572740d277a737e`,
+`cb3da86b373c712d1b70effcf3e969d87a8a195746790a5eebf08fe5336ad7af`, and
+`adc3b0dcaaecd7894e519a68ce49abfad1ecd2566db30cd32be13e36132911bd`.
+The generated provisioner and repair documents are 7,591 and 8,446 UTF-8 bytes respectively;
+their serialized size is not a whole-process memory bound.
+The initial canonical gate for the preceding source was interrupted after this additional
+source change superseded it. The complete gate on the resulting source passes **9,909 + 27 +
+35 + 935** tests, with HLint reporting no hints. Its log
+`.build/sprint-4.114/bootstrap-policy-migration-gate.log` has SHA-256
+`58b7bf6df316f6e78a0ba3f030086fd255604c9c45776c81e7f416f4f058dd12`.
+Documentation lint and `git diff --check` also pass. A first
+build invocation used an invalid Cabal component name and ran no build; the corrected build
+passes. The focused baseline selection passes **20/20**, including restart of the previous
+closed target set and rejection of a partial set; the Vault reconcile selection passes
+**29/29**. Their logs are `.build/sprint-4.114/bootstrap-policy-migration-focused.log` and
+`.build/sprint-4.114/bootstrap-policy-reconcile-focused-v3.log`, SHA-256 respectively
+`67c6a96b8234d418e9b7ab40db77290a3e1550aa6f0ddf8020c3e5e49499c223` and
+`384497b18a2a7684eb33b7a3aa0dfc6d10ac53c9a6cfd4ce4f0b1ecd65bee27f`.
+
+**Coordinator clock gap, 2026-11-12.** The initial authority-time observation is reused for
+initial intent verification. The coordinator now accepts an explicit clock effect and samples
+it before and after create issuance, before Pod attestation, and before and after dispatch
+issuance. Each sample must be available, non-regressing and before the intent deadline; permit
+verification uses the fresh samples. The Target suite passes **90/90**, including a fault
+matrix across the five stages, retained-journal recovery checks, and thrown-clock/cancellation
+cases. The initial canonical gate was interrupted after source review found the coordinator's
+exception classifier recognized `AsyncException` rather than the full `SomeAsyncException`
+hierarchy; source now uses the latter, with an `AsyncCancelled` regression.
+The replacement build and **91/91** Target-worker suite pass; the canonical gate passes
+**9,913 + 27 + 35 + 935** tests with no HLint hints. Its log
+`.build/sprint-4.114/coordinator-fresh-clock-gate-v2.log` has SHA-256
+`119d37404ba7f7856a1f98fc93c97a5a7c3ef6283ea1a782857f151a91ee25ee`. The retained-journal
+cancellation test confirms `AsyncCancelled` is
+rethrown after create issuance while the issued reservation remains occupied. The updated
+suite and cancellation logs are
+`.build/sprint-4.114/coordinator-fresh-clock-target-suite-v2.log` and
+`.build/sprint-4.114/coordinator-fresh-clock-issued-cancel.log`, SHA-256 respectively
+`50e6e6736685ab9e1adb73e2d1f74bd3e9a41c6e3392dd0e8c0df7e5cca3abc4` and
+`71deb475c8c8677071e2ea95ef84581aa990e421d08ebdce604d5e174fd91ad9`.
+Checking time does not settle an already-issued Kubernetes create or
+dispatch; a failure after issuance retains the corresponding ambiguity. The first build was
+interrupted after the fault table changed; a second was interrupted for typed clock failures and
+their diagnostic; a third was interrupted to add thrown-clock and cancellation cases; a fourth
+was interrupted to add retained-journal assertions. The replacement build passes. For
+`clock/unavailable` or
+`clock/regressed`, restore a reliable clock and obtain fresh authority and intent; for
+`clock/deadline-reached`, obtain a fresh intent. A prepared reservation can use its existing
+pre-create recovery. An issued create or dispatch remains owned and requires the still-open
+fenced recovery before a successor; none of these diagnostics authorizes a lane reset.
+The suite, matrix, retained-journal and exception logs are
+`.build/sprint-4.114/coordinator-fresh-clock-target-suite.log`,
+`.build/sprint-4.114/coordinator-fresh-clock-matrix.log`,
+`.build/sprint-4.114/coordinator-fresh-clock-retained.log`, and
+`.build/sprint-4.114/coordinator-fresh-clock-exceptions-v2.log`, SHA-256 respectively
+`04694deec36b89cf7febfb5e0e3dedc1891ed933ae0c0410c6821347fe86721b`,
+`7e1b082386d94377398fd9452dfac3fba6867b9226d55f06ddacee8b4fe1ba8a`,
+`f0d441502cdcae262c6b005d9988213d13d013dc4aa634d6adbe59689e3d6ebc`, and
+`2a577569d2b746b2256236e80785f2c85d4297026b749e611b02ed6b817dfb86`. One exception-test
+invocation selected zero tests; the v2 invocation selected and passed the intended case.
+The production clock supplied to both call paths is `currentAuthorityTime`, which reads local
+wall time and supplies no clock-uncertainty bound. The checks compare observations in one
+invocation; they do not establish accuracy against the issuer or a cross-restart high-water
+mark. Bound that uncertainty and relate it to the operation deadline before treating these
+checks as a complete temporal proof.
+
+**Pre-create recovery in progress, 2026-11-12.** The Target coordinator now
+records a version-8 prepared reservation before an acknowledged issue CAS authorizes the
+Kubernetes create. Recovery may release only the prepared state and preserve its fence; an
+issued create and every existing version-7 reservation remain ambiguous. The focused Target
+suite passes **81/81**, including a stale issuer losing its CAS and a lost issue reply; the
+Vault-session suite passes **21/21**, including version-7 wire compatibility and malformed
+version-8 refusal. Their `.build/sprint-4.114/precreate-target-focused-v2.log` and
+`.build/sprint-4.114/precreate-vault-focused-v2.log` SHA-256 values are
+`77c66cec7c3877999096f36ef82f530526b3cae5ee438921c2ed4d69281992ef` and
+`8cb970324c014f70db95c756a0091488b48140566faf592c8a6f678e64634bdd`. The canonical gate
+first stopped at a nested-case style violation in the new test; after extracting the helper,
+the rerun passes **9,901 + 27 + 35 + 935** tests. The failed
+`.build/sprint-4.114/precreate-gate.log` SHA-256 is
+`70a0d18829403632530fb7c7a0b46b5ea8de438a14d41c75bd4df14e95c8c43b` and the passing
+`.build/sprint-4.114/precreate-gate-v2.log` SHA-256 is
+`a884b9d27a0b122ec16aa830225790ec85aebf47236313e9cfb40befc58c8922`. This does not fence a delayed issued create, a worker, or Vault effects.
+An independent native probe of the production lifecycle against an in-memory CAS repository
+also loses an applied prepared-release response, reserves a successor at the next fence, and
+refuses the stale issuer. Its source and log are
+`.build/sprint-4.114/PreparedReleaseLostProbe.hs` and
+`.build/sprint-4.114/prepared-release-lost-probe.log`, SHA-256
+`d097e03afe13b6c26ff6426143d9aa675adf18ff6fcce736c7133b4317fbb4a2` and
+`21e83b17d684f39acd3c797b131acb9f416536147a08be9884ffa34b388b5e9d`.
+Sprint `4.114` remains active. Both issue and prepared release deliberately encode the existing
+version-7 issued or vacant shape, respectively: older readers cannot decode version 8, and
+neither transition makes a version-7 reservation recoverable. The two transitions make six
+journal HTTP calls before creation; a constructed nine-second-per-call schedule consumes 54
+seconds before image observation or Job creation. The complete coordinator deadline and
+memory accounting remain open; this arithmetic is not a live latency observation.
+
+**Pre-issue preparation in progress, 2026-11-12.** The coordinator now observes
+the selected image and render the bounded, secret-free Job manifest while the reservation is
+still prepared. Only after that succeeds does it issue the creation CAS and invoke Kubernetes.
+This allows a later coordinator to reclaim preparation failures and cancellations without
+treating an unissued create as ambiguous. The change and permanent lost-release regression
+pass **87/87** focused Target-worker tests, including the production deployment read in an
+isolated fake-`kubectl` process, delayed preparation, cancellation and manifest binding. The
+first focused run failed because the fake PATH was supplied only to the child command; the
+test now isolates the test process's PATH and passes. The failed and corrected logs are
+`.build/sprint-4.114/preissue-preflight-focused.log` and
+`.build/sprint-4.114/preissue-preflight-focused-v2.log`, SHA-256
+`daa82550a43a5964a48d6f7eb05152f00925a8806c30984f80f3d3479abe969c` and
+`a7f9e2f213d083149f45ff6d1cd95d0fc7b9406ca5e8215df8071ac8c4ead94e`. The canonical gate
+passes **9,907 + 27 + 35 + 935** tests; `.build/sprint-4.114/preissue-preflight-gate.log`
+SHA-256 is `dee02b55e7e61568ebb651bc6083eeaea6143ea07b06958d4045d85ca1fb128a`. Issued
+creates and physical fencing remain open.
+An isolated production-boundary probe supplied a constructed 261,906-byte deployment response
+whose rendered Job exceeded the existing input limit. Preparation refused the manifest and the
+fake `kubectl` trace contained only the Deployment read, with no create. The source and log are
+`.build/sprint-4.114/PreflightOversizeProbe.py` and
+`.build/sprint-4.114/preflight-oversize-probe.log`, SHA-256
+`8e00e5b3dc05c283082600ae1b79f16d94f623a73cd795f8e41d097183401ee8` and
+`193db1060e6cec687ae3247afc8e552b8d48a75a622b4a8f94c9921cd9afb64a`. This artificial
+response is not a live Deployment observation or a whole-coordinator memory measurement.
+The current bounded subprocess helper collapses start, timeout and stream failures into
+`AppError`. In the pinned `typed-process` 0.2.13.0 source, `startProcess` calls
+`createProcess_` before initializing its streams, and `byteStringInput` starts an asynchronous
+writer during that initialization. Therefore a failure reported around startup must not be
+classified as proof that the child never received the manifest without a stronger boundary
+and evidence. The inspected Hackage archive has SHA-256
+`9400966013b541df2e54ac8d57c3a670fc28bde2be87767ce98f13bbe2aa43a0`; the source is staged
+under `.build/sprint-4.114/typed-process-source/`. This is a source-order observation, not an
+observed project post-spawn exception or a proof about every possible exception.
+An isolated native probe using the same pinned library injected an `IOException` in a custom
+stdout stream setup after a local child received all synthetic input; `startProcess` returned
+that exception after the child-side effect. The project uses `createPipe`, not that injected
+stream, so the probe demonstrates the library boundary rather than an observed failure of the
+project's exact stream configuration. Source and log are
+`.build/sprint-4.114/TypedProcessStartupProbe.hs` and
+`.build/sprint-4.114/typed-process-startup-probe.log`, SHA-256
+`6c7bc1ab62a69ad4dc2aa55c82b25f7cad46f234fe27de9122b0e23a134057ed` and
+`a6748ebf965737b054a7d170214a4db112cad75f1ae56a3793345b40dea00f15`.
+The container build defaults to `kubectl` v1.35.5; this host's read-only client version
+observation is v1.35.10 and is not evidence of the running image's binary. In the pinned
+v0.35.5 source, the stream visitor decodes individual resources and invokes the create callback
+for each decoded object; the create command then submits each object independently. This rules
+out assuming a whole-stream atomic create, but does not establish exactly when a partial or
+empty stream can reach a mutation. The inspected create and visitor copies are
+`.build/sprint-4.114/kubectl-create-v0.35.5.go` and
+`.build/sprint-4.114/kubectl-resource-visitor-v0.35.5.go`, SHA-256
+`6b1f9139e0a9ed396073a342cb4e823385265db3c0122e1f8f5b518c24f2ac6f` and
+`a4b307622fbf9801d348d5a09f601ff30c13e65375e41a45861457b3277cb122`.
+Two loopback-only probes used the downloaded v1.35.5 Linux binary, verified against its
+published SHA-256 `90f75ea6ecc9ea5633262e1c0b83a40560003b30fc94a04cb099404fcef0c224`, an
+explicit temporary kubeconfig, a fake API and `--validate=false`. With one complete synthetic
+Job held open for five seconds, the process stayed alive and sent no requests; after EOF it
+sent one Job POST and exited zero. With the final byte removed, it stayed alive during the
+same hold, then reported unexpected EOF and sent no requests. The probes' source and logs are
+`.build/sprint-4.114/kubectl_stdin_probe.py`, `.build/sprint-4.114/kubectl-stdin-probe-v3.log`,
+`.build/sprint-4.114/kubectl_partial_probe.py` and
+`.build/sprint-4.114/kubectl-partial-probe.log`, SHA-256 respectively
+`13a14f0404f2a310e6279e6598020bb54a19745f55db0045e2a99c1d5951396c`,
+`b894af86989d99da74940796b2fad6e6870ee38cc819a04447fd9caf50ea3dfd`,
+`3a2bb0aaef7e7566e2ee207a73d9848a9e0e1102bd3d7f53a676d5b15b116734`, and
+`d3cfb8a5a5f1070bae34c0e7cc96b7437ae597afeb01c474d21bc1bb5c0e87fd`. An intermediate
+probe's attempted pre-EOF discovery condition was not reached; it is not a product failure.
+The `--validate=false` samples do not prove behavior for every schedule, every partial frame,
+production's validation mode, the running image's identity, or a real API. In particular they do not turn
+an ambiguous issued create into a recoverable one.
+A follow-up using the default validation mode reached the fake API's OpenAPI endpoint after
+EOF but failed because the fixture returned JSON where this client expected protobuf; it sent
+no POST. This was an incomplete fixture, not a production failure or a no-create proof. The
+attempt is `.build/sprint-4.114/kubectl_default_validation_probe_v2.py` and
+`.build/sprint-4.114/kubectl-default-validation-probe-v2.log`, SHA-256
+`81fe1bb1f26c5a2492c7bd0464be1c36b69ca2b737b5f9f2dacda6dacdb21310` and
+`c8e1305aaca6e711a2583660b001345d053e5cf72fe5c4ab5c08dfa149b1c8d6`.
+After supplying the fake API with a read-only OpenAPI protobuf fetched from this host's
+v1.36.5 RKE2 API, the default-validation full-Job sample again sent no requests during a
+five-second open-stdin hold and sent one POST to the fake API after EOF. The one-byte-truncated
+sample returned an EOF error and sent no requests. The proxy used to read the schema was
+stopped, and neither probe sent a create to the real cluster. The complete and partial probe
+sources and logs are `.build/sprint-4.114/kubectl_default_validation_probe.py`,
+`.build/sprint-4.114/kubectl-default-validation-probe-v3.log`,
+`.build/sprint-4.114/kubectl_default_partial_probe.py`, and
+`.build/sprint-4.114/kubectl-default-partial-probe.log`, SHA-256 respectively
+`7c5c85b5b9bb292b0fbdf3ba4d1972878e9b4e4e5d553206644c7552e1f2f156`,
+`bed9404aec6f8f61dd35dc78fc03fda9bbab5424946c8c7b247f1335399725d`,
+`ac1bb5b25502b81a12c044697310a922197890635f80066e29c0d2829b8c75e7`, and
+`d3cfb8a5a5f1070bae34c0e7cc96b7437ae597afeb01c474d21bc1bb5c0e87fd`; the schema copy's
+SHA-256 is `527c0592b120610924df286b4826642ea8abea4571335a5170fc277e338210a8`. This is a
+single fake-API sample with a host schema, not proof of all schedules, inputs, image identity,
+or real API behavior.
+**Open-stdin create counterexample.** With the same verified v1.35.5 binary, default validation,
+fake API and host schema, a 5,248-byte valid synthetic Job produced a POST to the fake API
+while stdin was still open and the `kubectl` process was still alive. The complete manifest
+had already been written. Thus neither waiting for EOF nor observing a live child is a create
+fence, even though the smaller samples above did not post during their hold. The fixture did
+not mutate the real cluster, and it does not prove the running image's binary identity. Source
+and log are `.build/sprint-4.114/kubectl_default_large_probe.py` and
+`.build/sprint-4.114/kubectl-default-large-probe.log`, SHA-256
+`f4acdaf247ae4255be93e136b24fb70121541bb8b71b5d27f4c5bfe1eb868591` and
+`80f499ae8667720b6939a2e71b558f270c99689d46e310bd9a4e5b2ee862bf00`.
+For the same large Job with its final byte withheld, a separate five-second hold produced no
+request and EOF produced an unexpected-EOF error with no POST. Its source and log are
+`.build/sprint-4.114/kubectl_default_large_partial_probe.py` and
+`.build/sprint-4.114/kubectl-default-large-partial-probe.log`, SHA-256
+`d57013f697fe40edec5f1e16fada48e8a7ac399079137e76653e28a408865707` and
+`ddd12fdac65d1e2d0979df34132f78572ffca06b3c840220f726f7f6a399cb97`. Withholding a final
+byte is only an unimplemented candidate: a safe protocol must prove the deployed executable,
+all admitted manifest prefixes, pipe ownership and crash/cancellation behavior, and must still
+retain a create once its final byte may have been sent.
+The pinned Kubernetes YAML-or-JSON decoder can rewind and fall back to YAML after a JSON
+decoding error. A prefix proof must cover that fallback as well as the normal JSON path; the
+single truncation samples do not do so. The inspected decoder is
+`.build/sprint-4.114/kubectl-yaml-decoder-v0.35.5.go`, SHA-256
+`25cf5511af9221869d00f392149fa361773a00808bc3ce0577bd06c274c0d06e`.
+
+**Delayed metadata-write counterexample, 2026-11-12.** A native in-memory boundary around the
+actual Target materialization driver advances the data and metadata to a successor after the old
+worker's data readback but before its metadata write. The old unconditional write overwrites the
+successor's metadata; the old worker then returns a readback mismatch, after the damage. The
+focused Target suite passes **74/74** including this reproducer; its
+`.build/sprint-4.114/metadata-stale-write-focused.log` SHA-256 is
+`a38bb4a82830d6c8d06c5d56f58e504d205b3422b3195d2f81eb814a93baf739`. This is an in-memory
+ordering counterexample, not a live incident. The old-writer fence must settle already-started
+metadata writes as well as login and creation; a post-write mismatch does not prevent the effect.
+Vault's [KV v2 API](https://developer.hashicorp.com/vault/api-docs/secret/kv/kv-v2) specifies
+custom metadata on the metadata endpoint separately from the data endpoint's CAS parameter;
+the `cas_required` metadata setting governs data writes, not a version condition on metadata.
+The canonical gate below predates this new counterexample test; its follow-up at
+`.build/sprint-4.114/metadata-counterexample-gate.log` was stopped during lint when the
+materializer's explicit metadata-version check was added. That check refuses a stale or
+noncanonical version before interpreting its generation. The focused Target suite passes
+**75/75**, including stale-write follow-up refusal, malformed bindings and legacy replay; the
+`.build/sprint-4.114/stale-metadata-refusal-focused.log` SHA-256 is
+`5e63647c1f3e3d0ae5a11a1dff5d7deaac136b5d3b6fbb66328ce576d101d670`. Its canonical gate passed
+**9,889 + 27 + 35 + 935** tests; `.build/sprint-4.114/stale-metadata-refusal-gate.log` has
+SHA-256 `595a1a014990ddbe0136e53f0a5bf15610bc08d6841338394b82bef2b19b8cf8`. The check does not prevent the
+stale write. The active sprint records a candidate
+CAS-protected, secret-free receipt with explicit migration and cleanup obligations; it is not
+installed and does not replace the physical fence for old workers or other effects. An
+uninstalled draft writer and a native concurrency probe are staged at
+`.build/sprint-4.114/TargetMaterialReceipt.hs` and
+`.build/sprint-4.114/TargetMaterialReceiptProbe.hs`; the probe passes for a delayed old CAS,
+newer-version refusal, same-version conflict, exact replay, first creation, invalid input,
+target-version changes, a delayed CAS after a lost reply, closed Target selection and bounded
+metadata fault classification. The draft
+and probe SHA-256 values are respectively
+`8ac2caf2f5a3e440fba888db16f888cd7e79d4ab1742817a3a20deb2b8bfb33a` and
+`1d35c43bf1a29af0c91dc2c49f6da1e1b4c6293a872249af701a9ea15d32623a`; the passing
+`.build/sprint-4.114/receipt-probe.log` SHA-256 is
+`b6c96ab798b14513251fc4e70051ae3164295f926de57e84f05e9be8d093021c`. A separate native loopback
+HTTP probe exercises valid, exact-404, oversized 200/404, Vault-valid wide metadata, maximum-width
+subkeys and malformed responses through the bounded readers. Its
+`.build/sprint-4.114/TargetMaterialReceiptHttpProbe.hs` SHA-256 is
+`c42ef75f6439ce00c4110bba399d127e15fda6036f797b6ccbb5a80568bdbcbe` and its
+`.build/sprint-4.114/receipt-http-probe.log` SHA-256 is
+`429082e7e308458a6a6a35af126e8718a56c7c8349059647b9bc6d2978414584`. A scripted loopback Vault
+fixture also verifies the complete receipt CAS request, exact readback, and a closed connection
+after the write, without claiming a live Vault proof. Its
+`.build/sprint-4.114/TargetMaterialReceiptPublishHttpProbe.hs` SHA-256 is
+`5522eeb654e645b9797a54833f13db35db56b074f1d918de852fe06b9d959b57` and its
+`.build/sprint-4.114/receipt-publish-http-probe.log` SHA-256 is
+`d8252053d8bef18bbfadc06f629fffe5b27aa3c04eb65693b06bb5212d44b043`. This is isolated draft
+evidence, not a production receipt, a storage migration or a sprint closure.
+The shared Vault client now exposes a caller-budgeted metadata read, and the staged receipt
+uses it instead of a duplicate transport. The focused HTTP suite passes **20/20**, including
+the exact metadata path, complete 404 and oversized 404; its
+`.build/sprint-4.114/bounded-vault-metadata-focused.log` SHA-256 is
+`6fb4ee5157592f299fe108eda10e65ae7293c916e1b66f76dcbde61322e49d87`. All three staged receipt
+probes above were rerun against the shared helper. The canonical gate passed **9,890 + 27 + 35
++ 935** tests; `.build/sprint-4.114/bounded-vault-metadata-gate.log` has SHA-256
+`0b6cd5dccbad9ca5b698dd10034c920d624b597df740ee48b24d16fa346e73a2`. The caller's production
+ceiling and retained-history treatment remain open.
+The pinned KV plugin's [metadata reader](https://github.com/hashicorp/vault-plugin-secrets-kv/blob/v0.20.0/path_metadata.go)
+returns the retained version map, and its [write path](https://github.com/hashicorp/vault-plugin-secrets-kv/blob/v0.20.0/path_data.go)
+uses the greater of per-key and engine `max_versions`. The current project does not establish
+either maximum, so the draft's 128 KiB metadata ceiling is a fail-closed prototype bound, not a
+proved capacity for every retained target. The native fixture also constructs a valid 197,224-byte
+metadata JSON body with 64 permitted keys and 512 printable characters per value; the prototype
+refuses it. This is a constructed Vault-valid response, not an observation of this deployment.
+A production migration needs an observed, enforced
+history bound and an existing-history treatment before it can rely on that ceiling.
+The Target worker auditor now has read-only access to the Target session journal, and the
+external-material auditor's unused Target journal grant is removed. The credential-provisioner
+auditor remains a Target coordinator and journal writer; a role-closure fence must cover it as
+well as the Target-named roles. At that audit the bootstrap provisioner could also reach the
+journal through `secret/data/*` and reconcile the Kubernetes auth roles. The subsequent
+code-local scope change above is under validation; admitted sessions, older policy repair and
+in-flight writes still belong to the fence. The earlier focused policy test passes; its
+`.build/sprint-4.114/journal-policy-focused.log` SHA-256 is
+`9038a8d43b0f5c5942923e35ffb9fdc427b0799dcc0d93089ed872265712e755`. The canonical gate passes
+**9,893 + 27 + 35 + 935** tests; `.build/sprint-4.114/journal-policy-gate.log` SHA-256 is
+`c203be681a63400b96833e393ef0fed688e72277e26396ef501336d1c753cf42`. The remaining generic
+accessor administration is not physically fenced by this narrowing.
+**Journal-response sizing in progress, 2026-11-12.** The pinned KV plugin stores versions as
+[`uint64`](https://github.com/hashicorp/vault-plugin-secrets-kv/blob/v0.20.0/types.proto) and
+limits newly written custom metadata to 64 keys of 128 bytes and values of 512 bytes. For the
+closed 64-KiB CBOR journal, a candidate current-plugin JSON ceiling is **333,918 bytes**:
+391 bytes for a constructed maximum-width fixed envelope, 87,384 for base64 journal data, and
+246,143 for maximally escaped metadata entries and separators. An independent 333,918-byte
+maximum-width escaped fixture reaches that ceiling, passes through the shared bounded reader and an oversized fixture
+is refused. The fixture's 65,536 decoded zero bytes are not a valid session journal; this probes
+transport sizing and base64 only. The isolated loopback process had a 29,644-KiB maximum RSS; it includes the fixture
+server and is not a worker peak-memory measurement. The derivation and HTTP probe are staged at
+`.build/sprint-4.114/derive-journal-envelope.py` and
+`.build/sprint-4.114/JournalBoundHttpProbe.hs`; their logs have SHA-256 values
+`43a753436282c0dd313cf7979e190c06b571d4bf5e2cd2f0e8b238e59a8bf4c9` and
+`1b37baa440aadfc1e63f0ef1ffc9bc81210993658b86f4560064522917856594`. The fixed-envelope
+assumptions, pre-limit legacy metadata, structural parser bounds, whole-worker peak memory and
+deadline remain to be proved before that ceiling is installed. The worker's 8-MiB ingress can
+remain live during these reads. Its framed reader accumulates chunks and concatenates them, so
+the 8-MiB input can transiently retain both the chunks and the concatenated payload (up to 16 MiB
+of payload before list, decoder and allocator overhead); later slices may retain backing storage.
+The Target worker now opens its projected token and Pod-identity
+files nonblocking, verifies the opened descriptor is regular, and bounds UTF-8 bytes before
+character validation. Both focused tests pass; `.build/sprint-4.114/target-projected-file-focused.log`
+has SHA-256 `cb874f7f6d56b144f95963d990cde1c70e7331a535b9fb20fa80742041d29e2b`. A separate
+non-threaded executable linked to the production readers accepts a projected symlink and Pod
+line endings, and refuses an oversized token and a writerless FIFO; its source and log are
+`.build/sprint-4.114/TargetProjectedProductionProbe.hs` and
+`.build/sprint-4.114/target-projected-production-probe.log`, with SHA-256 values
+`217d7fddf29ba1847bbc82eb2f1c4b8bbee3bc75879b02b45873147adf6269d3` and
+`1cbb7e32cd9fa15d13463c3cd3add05fffec45a905b04b7326fa2a5061ea8793`. This is isolated reader
+evidence, not a complete worker memory measurement. The canonical gate passes
+**9,898 + 27 + 35 + 935** tests; `.build/sprint-4.114/target-projected-file-gate.log` SHA-256
+is `842c6d24b2312b5ec23406b7ac36f5cd968030212478797c412000fc7c1b5da2`. The
+existing token and identity character limits derive those byte ceilings, with two additional raw
+characters for Pod-identity line endings. Account for the combined worker state before claiming the memory
+budget; other standing and one-shot projected-token readers have not yet been changed. An uninstalled non-threaded file-read probe uses
+the existing 32,768-character token limit to derive 131,072 UTF-8 bytes, reads at most one extra
+byte, and refuses an oversized open pipe without waiting for EOF. It preserves the limit for a
+32,768-character four-byte UTF-8 fixture. Its
+`.build/sprint-4.114/BoundedWorkerFileProbe.hs` and
+`.build/sprint-4.114/bounded-worker-file-probe.log` SHA-256 values are
+`102ebe6db5139cf36dede5008d4de1555e18ddeb55631d1ed30d6c011353b07a` and
+`54cf0875c66682ba61364565c192fc78774978d0572439e34c4d33964cb39dc2`. A second uninstalled
+non-threaded probe opens with nonblocking flags, checks the opened descriptor is a regular file,
+follows a projected-token symlink, and rejects a writerless FIFO without waiting. It enforces the
+same character and derived byte limits on regular files. Its
+`.build/sprint-4.114/BoundedProjectedFileProbe.hs` and
+`.build/sprint-4.114/bounded-projected-file-probe.log` SHA-256 values are
+`ded6823f0646d24af4c9485f2e5d92e70a6ed64921d59c2c074e0d562783f1b9` and
+`4ed33c97dbee5f7a3ebb8f8163e656a31aaa854595871c443eaad26a6703d57a`; it remains a prototype.
+A separate constructed 333,885-byte
+response with 166,900 nested arrays in an ignored field is accepted by the current decoder; the
+isolated process reached 45,404 KiB RSS under a 64-MiB heap cap. This is not a valid pinned-Vault
+response or a worker OOM measurement. Its `.build/sprint-4.114/JournalJsonDepthProbe.hs` and
+`.build/sprint-4.114/journal-json-depth-max-probe.log` SHA-256 values are respectively
+`250cd7e90cb3386e2d99a7bf1e0bf7cbc24b83e432200bfc305883357b928e1e` and
+`8b0bbf3bd4dc89538c911919041575cbd774ed7df2b5055350cda3bba391c860`; a byte ceiling alone
+does not enforce the closed response shape. An uninstalled structural-guard probe accepts the
+wide fixture and refuses excessive nesting, duplicate keys, long numbers and trailing bytes; it
+reached 17,616 KiB RSS in isolation without HTTP or concurrent worker work. It does not enforce
+the complete response schema or resolve legacy metadata. Its
+`.build/sprint-4.114/JournalStrictShapeProbe.hs` and
+`.build/sprint-4.114/journal-strict-shape-probe.log` SHA-256 values are
+`527d41962f424c7e939fae612374b1dba6aaed3bb37c1d4d0a159c4b2bf87de1` and
+`f85ebeba02fb711f40224fd0cda775efc17990a6d7f3ded9ff1ce094d44b79ce`. The previous versioned reader
+also accepted a constructed 300,000-digit version even though Vault's type is `uint64`; its
+native `.build/sprint-4.114/JournalJsonNumberProbe.hs` and log have SHA-256 values
+`decfa304bd1376deff557f536012171e960fe023e292b2a36c6a161b5817b954` and
+`7b6b57531de96986651ca1336581522c1583325e08c3bd0cdf88e07cc97d2536`. The versioned decoder
+now parses that field as `Word64`, as do the exact-read, metadata and CAS-response decoders.
+The two focused tests pass; `.build/sprint-4.114/vault-uint64-focused.log` SHA-256 is
+`bba61d92427444f44b1563e0b3bd1e31a52ed48e8bcd5107956dbe4927ebc355`. The canonical gate passes
+**9,896 + 27 + 35 + 935** tests; `.build/sprint-4.114/vault-uint64-gate.log` SHA-256 is
+`a27b37502881b165fe755c3edd9f08bd28ed6675b67a9c903d8bd5a1d7c92c36`. This source-level
+counterexample is not a live observation.
+The worker auditor now re-reads its exact issued binding after each accessor inventory, before
+that inventory can drive revocations. The native delayed-inventory race test passes; its
+`.build/sprint-4.114/delayed-audit-inventory-focused.log` SHA-256 is
+`8bf81b337386b8ba90f78077602a5b89b6bfbd4dce266f9999b765e4253754b7`. The canonical gate
+passes **9,894 + 27 + 35 + 935** tests; its
+`.build/sprint-4.114/delayed-audit-inventory-gate.log` SHA-256 is
+`ae4e62087ba53aa3e33dcb0ad00a5dde4c1f3a357925866a3372f6a7f2031ac2`. Each audit can take one initial inventory and up to two inventories in
+each of eight polls: the initial admission read plus preclean and terminal audits can therefore
+issue up to 35 journal reads. Those reads are currently unbounded; response bounds, whole-process
+resource and deadline accounting remain open. In a constructed slow-response schedule, 34
+successful audit journal reads taking nine seconds each consume 306 seconds, beyond the
+180-second worker active deadline; nine seconds is below the HTTP client's ten-second response
+timeout. A native probe runs the actual audit algorithm twice, reaches 34 inventories and uses
+a virtual nine-second response for each; neither it nor the arithmetic is a live latency
+observation. Its `.build/sprint-4.114/AuditDeadlineProbe.hs` SHA-256 is
+`863074b338c6cde49fe089e5579248cedacff7fec100f6b33e1a3452602a173b`, and its
+`.build/sprint-4.114/audit-deadline-probe.log` SHA-256 is
+`58459d299eafe8300cad826aedcb87f1994846c12fdf9290f8f9916713711fe1`. The additional read
+schedule needs a bounded deadline design before qualification. This guard does
+not settle already-authorized revokes, allow an abandoned owner takeover, or replace the physical
+fence; accessor reuse and already-issued legacy workers remain in scope.
+The worker now verifies the signed frame and observes the exact issued journal binding before
+its initial role-wide accessor cleanup. The forged-frame and exact-policy tests pass; the canonical gate passed **9,892 + 27 + 35 +
+935** tests. Its `.build/sprint-4.114/worker-preclean-gate-pinned.log` SHA-256 is
+`80cb45719fe73628f73ed2da9d72875a580014817aca543d536785947486ce23`. This point-in-time admission does not fence
+a worker already admitted before a successor, and the auditor-login recovery path also remains
+within the physical-fence scope. Trust and journal reads currently use the existing unbounded
+Vault readers; bounded response and whole-process resource accounting remain open. The prior
+pre-verification cleanup ordering was a source observation, not a claim of a live incident.
+The pinned plugin also implements a [subkeys read](https://github.com/hashicorp/vault-plugin-secrets-kv/blob/v0.20.0/path_subkeys.go)
+that returns the selected version, custom metadata and keys with values removed, without the
+history map. This may provide a separately bounded current-version observation while preserving
+the no-secret-value boundary. It requires an exact `subkeys` policy, a bound derived from the
+closed payload schema and Vault's custom-metadata limits, and strict validation. The plugin
+also returns 404 for a deleted or destroyed current version, so that 404 is unobservable, not
+proof that the target is absent. An uninstalled strict reader and probe are staged at
+`.build/sprint-4.114/TargetWorkerSubkeys.hs` and `.build/sprint-4.114/TargetWorkerSubkeysProbe.hs`;
+their SHA-256 values are `7b353e26904371548604da135d4ed5668ef45cc0c302a43dd3198f0dce80075b`
+and `25c906a04c007873c6e5a05eac9ab5b76bfa6075a9d514f835ee28e1b6345aea`. The probe accepts a
+245,689-byte maximum-width constructed custom-metadata fixture below its 255,106-byte
+prototype ceiling and refuses duplicate keys, non-null secret fields, destroyed or scheduled
+deletion, excess nesting, oversized numeric tokens, exponent/decimal syntax and trailing input while allowing digits inside
+strings. Its `.build/sprint-4.114/subkeys-probe.log` SHA-256 is
+`4a04648afc7b1d7cb6b9914f7a0419b16fafc83de660d09832582d03de0a9e19`. The receipt draft uses this
+reader, but neither is installed. The prototype includes an 8,192-byte envelope allowance that
+has not yet been proven; its ceiling still needs a complete bound and process-memory accounting,
+schema single-sourcing, exact Vault grants, migration and live qualification.
+One isolated `-O1` run of that decoder probe allocated 6,344,576 heap bytes and reported one
+59,944-byte residency sample. Its `.build/sprint-4.114/subkeys-optimized-residency.log` SHA-256
+is `db732a67c85410422e8eba7e52527200c5a7d2ad0e374b34a67ce28dc58982de`. This single-sample
+process omits HTTP and concurrent work and does not establish a peak-memory or CPU budget.
+
+**Proven-cleanup restart recovery in progress, 2026-11-12.** A current Target journal whose
+exclusive owner has durably recorded `CleanupProven` can now be released by an exact CAS
+without rerunning the role audit. A delayed former owner cannot release a successor's
+reservation. The focused Target suite passed **73/73** before formatting-only changes; its
+log is `.build/sprint-4.114/proven-recovery-focused.log` (SHA-256
+`e0db21bf0adc688b580fe439e23488ffa1552a184ab9ae2500eef7acf741069a`). Two canonical gate
+attempts stopped at formatter checks; after applying the pinned formatter, the third passed
+**9,887 + 27 + 35 + 935** tests. Its `.build/sprint-4.114/proven-recovery-gate-v3.log`
+SHA-256 is `f0b7943e480fc331399bad4147c0302b8e903ce731862e562040aba542ac508d`. This does
+not reclaim an owner while audit is unfinished, fence a worker, or settle an ambiguous
+dispatch; Sprint `4.114` remains active.
+
+**Fence investigation, 2026-11-12.** Vault 1.18.3 exposes an in-flight request listing, but
+its HTTP handler registers a request only after it enters the handler and runs preliminary
+processing. An empty listing therefore cannot exclude a request delayed before registration;
+it is not by itself an admission fence or proof that an old login cannot arrive later. The
+upstream pinned-version [handler implementation](https://github.com/hashicorp/vault/blob/v1.18.3/http/handler.go)
+also removes the entry when the wrapped handler returns. Establish an independently enforced
+admission fence and settlement for all relevant in-flight effects before relying on any such
+observation; do not replace that proof with a timeout or API-object absence.
+For the pinned Kubernetes auth plugin v0.20.0, the
+[login callback](https://github.com/hashicorp/vault-plugin-auth-kubernetes/blob/v0.20.0/path_login.go)
+holds a read lock while validating the role and TokenReview, while
+[role deletion](https://github.com/hashicorp/vault-plugin-auth-kubernetes/blob/v0.20.0/path_role.go)
+takes its write lock. This may help establish an admission barrier on the single Vault instance,
+but the [Vault 1.18.3 core](https://github.com/hashicorp/vault/blob/v1.18.3/vault/request_handling.go)
+creates the token after the callback returns. A successful role deletion therefore does not
+itself settle a login that already passed the callback, and concurrent role reconciliation,
+in-flight effects, Vault restart and old cleanup owners remain separate obligations.
+The pinned [Vault core](https://github.com/hashicorp/vault/blob/v1.18.3/vault/core.go)
+offers a possible drain primitive worth investigating: the ordinary `HandleRequest` path
+holds the core state read lock through its handler, and `sealInternalWithOptions` marks the
+core sealed before taking the state write lock on its non-HA, lock-taking path. This source
+reading is not a production fence:
+it does not establish all relevant request paths, effects that outlive a handler, safe admission
+and token revocation while reopening, HA/restart behavior, or an authorized availability-safe
+seal/unseal workflow. No seal was attempted. The examined core and request-handling copies are
+`.build/sprint-4.114/vault-core-1.18.3.go` and
+`.build/sprint-4.114/vault-request-handling-1.18.3.go`, SHA-256
+`b439b4f005c63364b5255c4f1f79b73de1df557e00b380a318fde85ede74065c` and
+`7935202b3972f7492fddb3bcd557fff2002c16073e09d39871621ae45a36567f`.
+Moreover, `SealWithRequest` returns immediately when the sealed flag is already set, while the
+first caller can still be waiting for that write lock. A second successful seal response or
+the flag alone therefore does not witness completion of the first caller's drain. The pinned
+[HTTP handler](https://github.com/hashicorp/vault/blob/v1.18.3/http/sys_seal.go) returns a
+success response when `SealWithRequest` returns without error; the inspected copy is
+`.build/sprint-4.114/vault-http-seal-1.18.3.go`, SHA-256
+`9eb487fdf8266ec5cbcf165b24d46ec73364f6a9fececf2c6b14b5a0df20a951`.
+The same lock-taking path cancels the active context after the default request duration but
+continues waiting for the write lock; that timer is not a hard drain deadline.
+The rendered Vault configuration selects a local file storage backend. In the pinned
+[file-backend source](https://github.com/hashicorp/vault/blob/v1.18.3/sdk/physical/file/file.go),
+`Put` holds the backend lock and calls the file write and rename synchronously; cancellation is
+checked before that sequence, not after each file operation. This narrows one storage question
+but does not establish that the entire logical/plugin path waits for the physical write or
+that a crash makes it durable. The inspected copy is
+`.build/sprint-4.114/vault-file-backend-1.18.3.go`, SHA-256
+`af6aecdd218d1cbdf4eaa31e3d357ee825e2b53f63ec61c2c1d48e92533509a0`.
+On the pinned in-process route, the core's routing call, router backend call, and framework
+callback are synchronous; the KV plugin calls storage writes before returning. Core supplies
+`kv.Factory` as its default KV factory, but the actual mounted plugin identity and every
+intervening storage layer still need independent verification. These observations do not yet
+prove effect settlement. The inspected router and framework copies are
+`.build/sprint-4.114/vault-router-1.18.3.go` and
+`.build/sprint-4.114/vault-framework-backend-1.18.3.go`, SHA-256
+`0002eaa486511ca5da50a61412984836c7cca5df490c14b270e9cc0b71d56e9c` and
+`f4b705e947921c6327b3354b5a17374293b95beae585470f4f5f349174c2162f`.
+The inspected pinned barrier view, logical prefix view and AES barrier also delegate writes
+directly to their wrapped storage calls. This is source-level evidence for those layers, not
+proof that the configured runtime takes only those layers or that delayed filesystem effects
+are settled. Their copies are `.build/sprint-4.114/vault-barrier-view-1.18.3.go`,
+`.build/sprint-4.114/vault-logical-storage-view-1.18.3.go`, and
+`.build/sprint-4.114/vault-barrier-aes-1.18.3.go`, SHA-256 respectively
+`3b239832765e09e68722748cd63ee8b29dedae339070acec1271b9b924cc8ea9`,
+`97242be1ede83a84698bffbd7016de3c73d9921db58be5f91fc26412143c0991`, and
+`a5995b18842b836f327ee7c3a94587fb129311572dfa7ec771702780bab73d43`.
+
+**Retired-attempt recovery in progress, 2026-11-12.** When a new Target operation finds the
+role occupied, the coordinator now attempts recovery only for an unclaimed version-7 workload
+retirement. It claims a fresh cleanup owner by acknowledged CAS, independently re-observes the
+exact Job and Pod UIDs, and performs role-wide audit and release only after both are absent.
+A refused, malformed or unavailable observation leaves the claim occupied. On success the
+coordinator returns a retry-required result so the next invocation obtains fresh authority and
+time evidence. The focused suite passes **75/75**, covering concurrent recovery and original
+cleanup, lost claim replies, cancellation during re-observation and audit, invalid UIDs, and
+legacy/unsettled refusal. `.build/sprint-4.114/retired-recovery-focused-v3.log` SHA-256 is
+`5502b28fe38cb99e89aeb5d98db173821a588c5914cfbd422e6c217a823734f8`; the built operator
+SHA-256 is `3a7454734067b581c730b703b1062096a9d35c7a398294f2e57f31c6efcb4232`. The canonical
+gate passes **9,886 + 27 + 35 + 935** tests with pre/post diff SHA-256
+`37d0a170204aa828a971174364a4f9d05d05e050e4305db42e8f7b4453503456`; the log
+`.build/sprint-4.114/retired-recovery-gate.log` has SHA-256
+`823d19c026b8ced1b3925aeef1995123a4444b7310e4c4c0c9483fbd6f7c67d3`. This path does not
+recover unsettled dispatches, pre-create reservations, abandoned cleanup owners or legacy
+occupied records; it does not establish the remaining physical fence or close Sprint `4.114`.
+
+**Exclusive cleanup owner in progress, 2026-11-12.** Target cleanup now claims a fresh
+nonce-bound owner through an acknowledged journal CAS before it audits or revokes accessors.
+Only that owner can advance cleanup and release the lane; a competing caller or lost claim
+reply leaves the lane occupied without starting its own audit. New records use version 7 and
+older records remain readable. The focused suite passes **65/65**, including competing cleanup,
+lost claim response, wrong-owner refusal and a frozen version-6 upgrade fixture. The log
+`.build/sprint-4.114/cleanup-owner-focused.log` has SHA-256
+`9d7e3e0260b39a700a3c4c6d8a11ef5c4c607ee984896879a86e165566571abf` and the built operator
+SHA-256 is `df0d52966dcaeec2860d9c78e75eb8e5bf08df96aac30281245260db7e123ed5`. Repository
+policy lint passes. The canonical gate passes **9,876 + 27 + 35 + 935** tests with pre/post
+diff SHA-256 `0d44c431ddba8a0d5baf9fbf7332ffaebe55edb438f56bb865f249d0e1b8817f`; the log
+`.build/sprint-4.114/cleanup-owner-gate.log` has SHA-256
+`b9e8b20e6fcb94d83e1b00b5aa1a918b998d8ddda3a08c1c2c810d6a461e8443`. The nonce is a coordination
+identity, not proof that its holder has stopped. This does not yet recover an abandoned owner
+or provide the physical fence needed to take one over safely; Sprint `4.114` remains active.
+
+**Durable workload-retirement transition in progress, 2026-11-12.** The Target role journal
+now uses version 6 for new reservations. Session cleanup requires a retired state tied to the
+exact retained Job/Pod identities; the coordinator attempts that transition only after its
+UID-specific deletion and absence checks succeed. The transition competes with dispatch on
+the same CAS and refuses an issued, unsettled worker or a mismatched workload. The focused
+suite passes **63/63**, including failed absence, lost retirement reply and independent frozen
+version-5 records. `.build/sprint-4.114/durable-retirement-focused-v3.log` SHA-256 is
+`4ebf6653299de911e956c978592f69604253207f0b42c9bb0cec0ea30e24154b` and the built operator
+SHA-256 is `e03800dc15e5bca5def8ff4dab9fb99e8644cde0a03d17d3c8a3d2e795286e33`.
+The first canonical gate stopped at repository style lint on two case-inside-lambda findings;
+its `.build/sprint-4.114/durable-retirement-gate.log` SHA-256 is
+`69b383cb86747a728ab02f2ee59e25de7a978f0f4d6dc17e96149d47a48407dc`. The expressions were
+extracted into named helpers; repository policy lint and the repeated focused suite pass. The
+corrected canonical gate passes **9,874 + 27 + 35 + 935** tests, with pre/post diff SHA-256
+`8ead2aa1e27c22ea1ffe8ea1e8fd60a3c04d85e3faa33134d712dcc013de1fdb`. Its log
+`.build/sprint-4.114/durable-retirement-gate-v2.log` has SHA-256
+`aa81a93ee75e875f0001e72cf99a6f98044893d6002d6056477b3628411abfac`.
+A durable API-absence observation still does not fence a partitioned process, settle an
+in-flight request, or install restart recovery. Recovery must independently re-observe the
+workload and acquire exclusive cleanup ownership before acting on the marker. Existing occupied v1–v5 records are
+not automatically reclaimed; Sprint `4.114` remains active.
+
+**Durable dispatch state in progress, 2026-11-12.** The Target session journal now records
+ready, issued and acknowledged-settled dispatch states in version 5. The coordinator must
+positively acknowledge the issued CAS before attach and records settlement only after worker
+completion acknowledgement. An issued state rejects session cleanup; a pre-dispatch cleanup
+transition prevents a later dispatch CAS. Lost replies remain occupied. The focused suite
+passes **61/61**, including the production-boundary cleanup refusal, lost dispatch CAS,
+acknowledged worker refusal and an independent frozen version-4 reservation fixture. The log
+`.build/sprint-4.114/durable-dispatch-focused.log` has SHA-256
+`4363f5d83bf1f7701e85c8eaeec35e0586394926951db25ac30bbd30d733cfc3`; the built operator has
+SHA-256 `12a93ff4bbd4626077a66265188a744d69db83d7b5da9f6a21a9bc1b0f5436a7`. The canonical
+gate passes **9,872 + 27 + 35 + 935** tests with pre/post diff SHA-256
+`5d439051d094fae97f68c95a598d2f6f6325201880fcb429a9ed0a5a335f1f36`; the log
+`.build/sprint-4.114/durable-dispatch-gate.log` has SHA-256
+`e80498799468ec65172caff4438e1d03535788a336463d6f8ad988272dc3b2f2`.
+The earlier version-4 results below describe the previous snapshot. This does not install restart
+recovery, fence older workers or settle an ambiguous in-flight request.
+
+**Pre-create reservation implementation in progress, 2026-11-12.** The Target coordinator
+now attempts a version-4 role-journal reservation containing the operation digest, deterministic
+Job name and next fence before it invokes Job creation. Only an acknowledged CAS plus matching
+read-back authorizes creation. The observed Job/Pod and full attempt preimage then bind to the
+same reservation and fence before session preparation. Version-1 through version-3 records
+remain readable; a version-4 vacant journal cannot downgrade to an earlier writer. The focused
+suite passes **58/58**, including one retained-journal concurrent creator and lost-response
+controls. `.build/sprint-4.114/precreate-reservation-focused-v2.log` SHA-256 is
+`9d6febe942c730e7b97b56df6e6a81d8ff38af8da8f946ae847dbfb859477933` and the built operator SHA-256 is
+`2ddd8b0ecce2f0ee58e2f7eb985621aaee31b6011958fd441472187ac95afc7a`. The canonical gate
+passes **9,869 + 27 + 35 + 935** tests with pre/post diff SHA-256
+`0bea3f63417ed03cdcfe373155a2cadc5e542bebca3cef81b93e97118e7a30f6`; the gate log
+`.build/sprint-4.114/precreate-reservation-gate.log` has SHA-256
+`308c230c3637f7463a33890dcd490b055a72d004df3a17779b6d9d8f20d80af9`.
+This does not recover an occupied reservation, fence a stale or older-version creator, or
+settle an already-issued Kubernetes create, and it does not close Sprint `4.114`.
+
+**Concurrent preparation ownership correction in progress, 2026-11-12.** A coordinator
+whose session preparation is refused or whose acquisition reply is ambiguous could previously
+delete the same observed Job and Pod owned by a concurrent winner. Observation, attestation
+and preparation failure or cancellation now leave that workload untouched because this caller
+has no proved exclusive retirement authority. The focused suite passes **54/54**, including two coordinated concurrent
+caller controls. `.build/sprint-4.114/workload-ownership-focused.log` has SHA-256
+`28a20f8105360d4c87e902f12ae8ed7cf74fe7542919e476af6236664b68af6d` and the built operator
+SHA-256 is `937314e9999350bac1c8bec98d5c715fa97e18ee7cefec5ecdfa2559001dfff3`.
+The canonical gate passes **9,865 + 27 + 35 + 935** tests; its pre/post diff SHA-256 is
+`95a2a1ba4d8449e16f1891755a479c7124ec6782b61429eeec6bf50ea3e07336` and
+`.build/sprint-4.114/workload-ownership-gate.log` SHA-256 is
+`b43827842df9c5c0421a9f0c68d33c85d9fc13c571815b5d90edd469aa73425d`.
+This may retain a workload until the pending restart-recovery protocol resolves its owner;
+it does not close Sprint `4.114`.
+
+**Recovery-bound research, 2026-11-12.** Kubernetes documents that deletion invalidates a
+Pod-bound token when the relying party checks it with TokenReview; Vault documents a maximum
+request duration that cancels a request. See [Kubernetes service-account administration](https://kubernetes.io/docs/reference/access-authn-authz/service-accounts-admin/)
+and [Vault request limits](https://developer.hashicorp.com/vault/docs/internals/limits).
+These are candidate inputs, not a composed fence: cancellation is not yet shown to settle
+already-started backend effects, and the deployed Vault version, effective listener settings,
+TokenReview path, request queueing and elapsed-time evidence require exact verification.
+An accessor scan or API absence cannot fill those gaps.
+
+**Ambiguous attach correction in progress, 2026-11-12.** API absence alone still permitted
+lane release after a failed or cancelled attach. The coordinator now retains the lane once
+dispatch has started unless the worker positively acknowledges completion; a failure before
+dispatch still follows normal retirement and session cleanup. Focused controls pass **51/51**;
+`.build/sprint-4.114/ambiguous-attach-focused.log` SHA-256 is
+`4e531a6f89d99e05573fcff5ed9bd374f5c2c3296f221e87cd0611ba84a123a8`, and the built operator
+SHA-256 is `e31814dee326b354d0de2a590f0970d60cd0ab2701257e93e576c575f6a46291`.
+The canonical gate passes **9,862 + 27 + 35 + 935** tests on the corrected snapshot, with
+pre/post diff SHA-256 `9ebe40add2a8acb032454f9120ff1724162fab728f38698da8c4ce0514529461`
+and `.build/sprint-4.114/ambiguous-attach-gate.log` SHA-256
+`5916333678fade65b781c51658163fb878e93273b85f9a22164d5774341e9331`.
+This does not implement restart recovery or physical fencing. The previous gate was stopped
+because it was validating a superseded snapshot.
+
+**Attempt-evidence extension in progress, 2026-11-12.** The Target acquisition journal now
+stores the complete signed-permit attempt preimage in version 3 and verifies its digest and
+workload identities on every journal validation. Versions 1 and 2 remain readable, but an
+occupied older record cannot supply this proof and remains unresolved. This is code in
+validation; it does not establish physical fencing, settle in-flight login, implement restart
+recovery, or close Sprint `4.114`. The version-2 results below describe the previous state.
+
+**Target worker recovery identity in progress, 2026-11-12.** The Target dispatch path now
+records the attested Job name/UID, Pod name/UID and service-account UID in the same
+versioned journal CAS that acquires its lane. The record remains through session phases;
+release retains the newer journal version. Version-1 state remains supported. This supplies
+inputs for recovery but is not a recovery or physical-fence receipt: before acting on a
+record, recovery must independently validate its full attempt binding and exact physical
+observations, and settle in-flight login/effects. A legacy occupied lane without these fields
+must remain unresolved. The focused worker and independent legacy-wire fixture run passes
+**50/50**; `.build/sprint-4.114/workload-journal-focused.log` has SHA-256
+`02624af04c62639f2f5c980f9333d3e63d2308803f84fe2d4db6b0384d2f4117`, and the built operator
+SHA-256 is `f0ff94d7a5f0d8fd9c84e55df5e5287ed2ba4f655e8fc825677e0e806f231599`. This is
+partial local validation, not a live migration or phase closure.
+The canonical gate passes **9,861 + 27 + 35 + 935** tests, with pre/post diff SHA-256
+`c627ed389d629cc88aa38bcbedb9d62f97e2ec80cbdb4dac4b8f95de23c1b1a8`. The log
+`.build/sprint-4.114/workload-journal-gate.log` has SHA-256
+`55c51d85b9420401d4bd0e79096724426d973083ad4f722ca9aedc354acc7fde`.
+
+**Phase 4 own-surface reopen, 2026-11-12.** Sprint `4.114` owns the Target worker
+coordinator and service-session recovery ordering. A focused test of the current coordinator
+records `session-close`, `delete`, `absent` after attach refusal: the retained session lane
+can be released before exact Job/Pod absence. The worker's initial Vault login may still be
+in flight. This is an in-memory ordering counterexample, not proof of a live credential leak.
+Recovery also sees only the attempt digest, so a fix must preserve recoverable exact workload
+identity and must not release an ambiguous predecessor solely from an accessor scan. The
+pre-fix test executable SHA-256 is `c73e0230ead3d035de4d8d8b093880f4e50d14847cb1f8aa163f1a7d989eb60c`
+and its focused log SHA-256 is `9284edb314fb07356328631d395737c0ed8d0be8daf882cea5c0528c6e20ab4d`;
+both are under `.build/sprint-4.114/`. Work this earlier own-surface defect before `6.5`.
+
+The replacement in progress retires and observes the exact Job/Pod before closing the
+session lane; unsuccessful deletion or absence observation leaves the lane occupied.
+Automatic dispatch-preparation recovery no longer releases a predecessor using only an
+accessor scan. External dispatch acquisition now requires its own acknowledged CAS; an
+ambiguous CAS response cannot adopt another caller's identical state as dispatch authority.
+This is an interim fail-closed state: an occupied lane may remain blocked
+until exact workload recovery is implemented. Kubernetes API absence alone
+does not prove a partitioned process or in-flight Vault request has stopped. The new
+ordering still needs the registered restart recovery, physical fence and full validation.
+The earlier focused Target worker suite passed **48/48** before the acquisition change; its log SHA-256 is
+`92d32984cbbec83e4ad1b2cf39e1fcf01bc96d12000c6ea1d99af048dfaacd14`. The built operator
+SHA-256 is `44f0ebb39656835f09be68b5efee93d31956070e2ca1cd3750c13114719be6cb`.
+The acquisition change and its lost-reply control are included in a later focused **49/49**
+run; `.build/sprint-4.114/partial-target-suite-v2.log` has SHA-256
+`8d545e22ec3d58ae95e80897b5ebfff559b0c4c2c72bd4742bb89c52848f5115`, and its built
+operator SHA-256 is `d1b28159c74c6e61f06b0b7a74838ca92c1e6a8b7ca12ea2bcad9f3f08ea2965`.
+These are partial local controls, not phase closure or deployment qualification.
+The canonical gate also passes **9,860 + 27 + 35 + 935** tests for this partial state. Its
+pre/post diff SHA-256 is `59e870ec0838350b0b1d6b2044917beb3f028e8be31c7789d105677354de6495`;
+`.build/sprint-4.114/partial-gate.log` has SHA-256
+`00a82b2340616141fc713972703a4a8adb5171751a4b1a0249d715fc114adeff`. This gate does not
+close the sprint or validate unresolved restart recovery.
+
+**Target in-flight worker counterexample, 2026-11-12.** A native local test composes the
+existing worker trust decoder, signed-intent verification, attestation and materialization
+against an in-memory Vault boundary. A worker captures predecessor authority, the exact
+Target trust row enters preparation, and a fresh worker read is refused; the already-attested
+worker can nevertheless complete its target CAS. This demonstrates that the row's
+old-authority rejection proves a fresh-admission property, not settlement of work already
+past its trust read. The fixture does not exercise a real Vault, Kubernetes, or live race.
+Before using that readback as part of cutover, implement independent physical worker/Agent
+drain, credential and reauthentication fencing, and terminal absence/read-back under the
+same retained transition; test the actual composed fence against this schedule. Do not
+interpret row preparation alone as a quiescence receipt.
+
+The focused counterexample passes, as does the canonical gate (**9,855 + 27 + 35 + 935**
+tests). The pre/post diff SHA-256 is
+`f9c8d34f9e24574dc0b55c958d69a70d6b0f0d5a8bc238a9064ea60070995781`; the gate log
+`.build/target-worker-inflight-counterexample-gate.log` has SHA-256
+`39aff9ab350a70992a9a72b1c995047dc6d9dc3342d9d6d692be08589ed7f965`. The installed operator
+remains `88055e9b3c7b1feb989e7a28856074232276004cf1e9e19d7431b8fc65bad58b`.
+
+**Target replay CAS session retry correction, 2026-11-12.** The staged Vault binding used
+`withSessionToken` for its write, which silently re-logs in and invokes the write again on a
+403. The prior single-CAS evidence covered the injected store, not this physical session
+composition; it did not establish one HTTP attempt. The write now acquires the existing
+session token once and issues at most one CAS; acquisition failure is unobservable and a
+403 is returned without a hidden relogin. The read still uses the ordinary session retry
+policy. This correction does not provide a writer fence, deadline, memory admission or
+production cutover; the candidate remains uninstalled.
+
+The loopback regression invokes the real staged session composition: after the initial
+versioned read, Vault rejects the CAS with 403; the result is a refusal and exactly one
+session login occurred. The canonical gate passes **9,854 + 27 + 35 + 935** tests with
+pre/post diff SHA-256 `4dfbb500e248f93e8f4bd35ef6e5bd81bb076650392381fefb07b729edd93b23`.
+The log `.build/target-replay-single-cas-gate.log` has SHA-256
+`854336d776940a11c1dea882bb93c36d9bcfab363cbb292e8a0308263f8e3a1f`, and the operator
+SHA-256 is `88055e9b3c7b1feb989e7a28856074232276004cf1e9e19d7431b8fc65bad58b`.
+
+The current Target role binds a shared service-account/role identity and issues Vault
+service tokens; the ordinary session can reauthenticate after a 403. Revoking one cached
+token therefore does not establish a durable old-writer fence. The remaining transition
+must prevent old-identity reauthentication, distinguish successor admission, and account
+for already-running Agent and worker effects before asserting physical quiescence. These
+are source observations and requirements, not a live fence or absence proof.
+
+**Target replay Vault CAS response bound, 2026-11-12.** The uninstalled migration's
+session adapter now bounds the CAS response to 128 KiB and passes complete UTF-8 errors
+through the existing Vault CAS classifier. Oversized, malformed or unavailable replies
+are unobservable and require exact read-back; a complete version mismatch remains a
+conflict and a complete request refusal remains a refusal. This does not bound the large
+request body, decoded heap, complete execution time or simultaneous memory; it does not
+fence old writers or activate the migration. The installed runtime and live state remain
+unchanged.
+
+Three focused loopback cases cover the actual Target path and CAS payload, applied version,
+conflict versus refusal, and oversized, malformed or uncertain responses. The canonical gate
+passes **9,853 + 27 + 35 + 935** tests with pre/post diff SHA-256
+`4790a401a86ed08613e239bfabd443a0c87a8bdbdf32ebf408ef8a0909177b1f`; its log at
+`.build/target-replay-vault-write-bound-gate-final.log` has SHA-256
+`2eb34108b48d5f1f027acafc92b8958bec6b7d7c8578ca3ecad1c1f3f5fd7982`, and the operator
+SHA-256 is `83720b6bf421970b6f555201b7479e64e4d384ed6b2124da1d1f4cbf84197a0a`. An earlier
+gate stopped on a test style rule; the final run includes the named-helper correction.
+
+**Target replay Vault read bound, 2026-11-12.** The staged session binding now caps the
+entire Vault KV read response before JSON decoding. Its checked bound is canonical base64
+expansion plus 128 KiB for the JSON envelope; for the current 208 MiB projection ceiling it
+is 290,936,152 bytes. Excess metadata or escaping fails closed. This is not a complete heap
+or process-memory proof: HTTP buffering, JSON, base64, retained projections and writes
+require separate accounting. At this checkpoint Vault CAS write responses were unbounded;
+the subsequent bound is recorded above. Physical old-writer fencing and production cutover remain open. The installed runtime
+and live state are unchanged.
+
+Five focused tests pass, including loopback Vault responses for a valid versioned value,
+oversize, missing and malformed data and checked size arithmetic. The canonical gate passes
+**9,850 + 27 + 35 + 935** tests. Its pre/post diff SHA-256 is
+`2df6a994bbdd39fccf13511b9cccc0567e7028793db1fc4cd9ee01f8473ca5e7`, its log at
+`.build/target-replay-vault-read-bound-gate.log` has SHA-256
+`ec50c0ee722b39f32887487104fd8e5aee3e3c2b65bb143bd7b0ba900791efdd`, and the installed
+operator SHA-256 is `f3e64318928fd13379169b19201db246029817c3f93923d5f5d95e3f6b479`.
+
+**Staged Target Vault replay migration, 2026-11-12.** An uninstalled candidate now selects
+the Target Agent's exact Vault KV-v2 replay path, reads its existing version, writes at most
+once with that version as CAS, and requires exact successor fields and the next version on
+independent read-back. It refuses missing, malformed, refused and conflicting input; a lost
+reply is recoverable only through that same read-back. An already-current observation is
+not a cutover receipt. Local fixtures cover completed-response preservation, stale-version
+refusal, lost replies, malformed fields, changed read-back and the exact path. They do not
+establish Vault authentication or a physical old-writer fence. The installed runtime remains
+v19. Complete bounded Vault HTTP and memory admission, old-writer drain/fencing, and
+production transition composition before installing the candidate or choosing capacity.
+No live state was changed.
+
+The warning-clean build and canonical gate pass **9,845 + 27 + 35 + 935** tests. The
+pre/post gate diff SHA-256 is `e3458352c15e73b2abbada9e5758b39ff59cf25ac9f174565011167355d21fea`;
+the gate log at `.build/target-replay-vault-gate-pinned.log` has SHA-256
+`6409cdff51ac3b2efcde038353c8ae046efed77401a6e7bd117a830fa849e07f` and the operator
+SHA-256 is `e91a558a8a65f0c53753defb0efb992291ed69b35aea5d76760337c226081a18`.
+Two earlier gate attempts stopped on formatting drift; the second used an older system
+formatter, and the final gate uses the repository-pinned formatter.
+
+**Replay storage ownership correction, 2026-11-12.** The Target Agent's installed
+authenticated runtime uses its role-specific Vault KV-v2 replay object; the Lifecycle
+Authority uses the separate Model-B replay coordinate. The guarded Model-B replacement
+below therefore does not migrate Target replay state. The Target candidate above addresses
+the path, version CAS and read-back; the Target old-writer fence remains required;
+the shared v20 codec alone supplies none of those. This is a source inspection, not a
+live migration or qualification result.
+
+**Guarded staged replay replacement, 2026-11-12.** An uninstalled migration now observes an
+existing exact Model-B coordinate, decodes with the staged codec, and issues at most one guarded
+replacement against the observed revision. It never initializes a missing ledger. An applied
+reply requires exact successor bytes and the returned new revision on independent read-back; an
+unobservable reply recovers only from those exact bytes at a different revision. Conflicts do
+not retry or overwrite the competing revision. An already-current result is a point observation,
+not a writer-fence or migration-completion receipt. Codec limits, byte-budget exhaustion, invalid
+retained responses, unsupported versions, corrupt data and unobservable storage have distinct
+closed refusals with remedies.
+
+The in-memory adapter controls preserve completed replay decisions, reject an unguarded migration,
+show a stale unguarded v19 write conflicting after replacement, and cover a lost reply before or
+after write, missing and corrupt input, incompatible limits, encoding growth, read-back failure,
+invalid CAS receipts, and concurrent valid predecessor/successor changes. They preserve the
+competing successor's new reservation and old completed response. The supplied guard and storage
+are fixtures: this is not a live Model-B execution or evidence that a lease or old-writer fence is
+valid. The caller still owns exact coordinate and guard authentication, cancellation/deadline and
+resource bounds, a physical old-writer fence, and production cutover/read-back composition.
+
+The warning-clean operator/authenticated-transport build passes, as do **933** transport tests and
+the canonical gate (**9,845 + 27 + 35 + 933** tests). The gate's pre/post diff SHA-256 is
+`d5dbdfd2e102d5ede484a907f982338705c1a8024d2c54cc9a82134db5a95b97`, its log SHA-256 is
+`6c9e255295b25d4ea4deb2c9b0e78ea6755ffa9aafade1f2e160a74f1c4af1e8`, and the transport log is
+`f9fb456c5b6dc23b7f277b9d5581c26f6c7f1b0380bbd8848b44229cc5185a89`. The installed operator
+SHA-256 is `becc285a7002a64621d80536fcc16e330593d93990ca01b9c6e0961002a59925`; evidence is under
+`.build/sprint-6.5/replay-migration-20261112/`. Early builds were interrupted or refused test
+precedence/name-shadowing errors; only the final build and gate count. No live replay state or
+infrastructure changed.
+
+**Staged replay codec successor, 2026-11-12.** An uninstalled v20 codec now reads the exact
+declared v19 predecessor using the existing decoder, including its already-supported legacy
+forms, revalidates every retained entry under non-shrinking capacity and unchanged skew, and
+writes v20 with exact successor limits. A narrowed response ceiling refuses if any retained
+response no longer fits. The installed codec remains v19. An independent v19 wire fixture matches
+the existing encoder; tests preserve completed, in-flight and tombstoned replay decisions and
+reject predecessor/successor drift, response or capacity violations, malformed or oversized data,
+trailing bytes and unknown versions. The v19 reader refuses v20. These are codec controls only:
+the candidate does not install a capacity, commit a migration, fence older writers or prove
+memory/representation funding. A live cutover must bind the declared predecessor, use an exact
+revision CAS with read-back, fence and retire old writers, and fund the whole supported schedule.
+
+The warning-clean operator and authenticated-transport build passes; **929** transport tests pass.
+The canonical gate passes **9,845 + 27 + 35 + 929** tests with matching pre/post diff SHA-256
+`24ac35c96971a0073c502cf2260afe6f8a7c57bc681b35dc401eb3823ab231d1` and gate log SHA-256
+`100de35bbfbd147db1de1783a38aae21440a69b7d0cb57053dfee40760fc5ba9`. The transport log SHA-256 is
+`f09a319518f2aa09b6cc0932a63aa1176cebac4feb5ea7e076f765f84f2cc234`; the installed operator is
+`6b77684dfd3676b0fd3c35c84b05f1d6727657ca2cdb8097d1f1570ff469e654`. Evidence is under
+`.build/sprint-6.5/replay-staged-v20-20261112/`. Two earlier canonical runs were stopped before a
+terminal receipt to add explicit byte-limit controls and correct a test label that implied an
+unimplemented fence; neither is a gate result. No replay state or live infrastructure was changed.
+
+**Target promotion row-read schedule, 2026-11-12.** The coordinator's one-pass schedule now
+projects Target binding readbacks per substrate. The physical Target binding interpreter derives
+row reads from that projection and the actual complete authorization inventory, which currently
+has nine entries read twice per binding query. A successful uninterrupted pass requires **72**
+row reads per Target from prepared, **36** from frozen and **18** for pre-commit retirement;
+terminal and refused phases schedule none. Tests compare the prepared, frozen-resume and retirement
+counts with actual coordinator submissions, and compare all four successful query modes with the
+actual row interpreter. Home-only and home-plus-AWS topologies and all intent/phase combinations
+are covered. This excludes physical mutations, transport/peer refresh, retries, concurrent work,
+other replay entries, complete memory and signing costs; it is not an admission or rollout claim.
+
+The warning-clean operator/unit build passes, as do the coordinator control and **48** physical
+binding tests. The canonical gate passes **9,845 + 27 + 35 + 927** tests with matching pre/post
+diff SHA-256 `4c67ba9bcca0b343f3f4acd4eb6f992cdb5e1ec43bea482843ae226534cd5d3e` and gate log
+SHA-256 `87302635b71e7e693257eb0161ac393dad95fd8ae255c56d5760bcbc68b02ee8`. Focused logs are
+`7980ceea6f85d84a46feffc35e0e3d58bd0c1a49ccad30b547582513efd81e9a` and
+`9f6e15731c0c315766376c6edf1f49176335f5c46f0d6310db7bcc7f9b8e87da`; evidence is under
+`.build/sprint-6.5/target-read-traffic-20261112/`. The first build exposed incorrect test-assertion
+precedence and ran no tests; it was corrected before the passing build.
+
+The current Target replay declaration remains **242 slots**, and the current v19 replay codec
+requires an exact stored/current capacity match. The new term has not been added to that capacity:
+a safe production change first needs the whole supported traffic and representation bounds, a
+compatible versioned migration preserving retained entries, and independent memory/admission proof.
+No capacity or live state was changed by this increment.
+
+**Target signed-observation deadline boundary, 2026-11-12.** An opt-in Target handler now
+bounds signed row observation, signing and the closing clock read by the verified request's
+original deadline. Expiry or an unavailable clock refuses before reading when observed at entry;
+an expired closing clock, unavailable signer or timed-out effect yields
+`signed-observation-refused` and never falls back to unsigned. A retained control demonstrates
+that the preceding negotiated handler remains blocked in a stalled signing effect; the bounded
+handler refuses that effect and propagates asynchronous cancellation. The tests also preserve the
+legacy unsigned handler branch. The opening clock must itself be locally bounded; timeout cannot
+force an uninterruptible effect to terminate, and response delivery still needs the enclosing
+deadline. This is an opt-in code-local prerequisite, not production dispatch, independent trust,
+physical Agent attestation, complete resource admission or live proof.
+
+The warning-clean operator/unit build and **115** focused Target tests pass. The canonical gate
+passes **9,844 + 27 + 35 + 927** tests with matching pre/post diff SHA-256
+`55eb79ed62abf202838a11be44f39c378430b08659bf885ec1e640a638c5e704`; gate log SHA-256
+`cc1306e17e2ef9b11cd11db9a792dec947624237a125b52fc11168446999142a`. The focused log SHA-256 is
+`2ec989879a6e91b0c7f754cc67d1d2718c3a4c1cc53cb8cefbb5bbf26f51218b`, and the installed operator
+SHA-256 is `53189c8349372bb1b6b3eade5f05d9f13b1b1321cc15321e1ac64ef15d8d0e57`. Evidence is under
+`.build/sprint-6.5/target-signed-deadline-20261112/`. An earlier build found two shadowed test names
+and was stopped and corrected; it is not a passing build.
+
+**Host-fit fixture render and node recheck, 2026-11-12.** The production chart planner, using
+its non-secret unit-test settings and the current default resource plan, generated values for the
+`vscode` stack (`keycloak-postgres`, `keycloak`, `vscode`), `api`, `websocket` stack (`redis`,
+`websocket`) and `gateway` stack (`pulsar`, `gateway`). Helm `v4.3.0+gbec5b06` rendered all
+eight. A separate YAML reader checks each rendered application and materializer container's
+requests and limits against those generated values, the gateway's two one-replica StatefulSets,
+and the Percona custom-resource instance settings; ten altered-memory controls refuse. Evidence
+and synthetic fixture values are under `.build/sprint-6.5/rendered-host-fit-20261112/`: the check
+log SHA-256 is `a8351304173c8f0389ccb45e817ff995e5b05e563eb0df6b85ffb7111cd0f81e` and the
+extracted resource projection is `c54ceacd72886c81a280475ae622b293a5f67d0da3cdbdb2897c6ea1020d9a2b`.
+The selected regular application containers and three Percona primary-container declarations total
+**2,650m / 4,480 MiB**; this partial subtotal excludes init containers, Jobs, controller-added
+containers, platform, reservations and other owners. Percona's generated Pods were not observed.
+The first gateway plan lacked Tier-0; the repository's bracketed synthetic Tier-0 fixture made the
+second plan possible and was removed afterward. The first gateway Helm read failed because the
+inspection had written a byte-oriented Haskell string as UTF-8 text; restoring its original
+Latin-1 byte packing, matching the production writer, produced the successful render. These are
+fixture checks, not the missing operator configuration or a full-fit claim.
+
+A separate read-only node observation reports **7,750m / 13,691,208 KiB** allocatable and
+**6,995m / 13,236 MiB** requested by the currently installed workloads. The current workload set
+still uses older envelopes, so adding the fixture subtotal to those requests would double-count
+some workloads and does not answer admission for a replacement deployment. A cluster-wide Pod
+summary reports 12 Ready of 121 total, including 25 `ImagePullBackOff` and three `ErrImagePull`
+container states; completed and failed Pods are included in the total. Waiting image pulls span
+application, ingress and control-plane namespaces. A separate point-in-time status projection sees
+no `OOMKilled` last termination, which cannot rule out earlier OOMs or establish a load envelope;
+its SHA-256 is `09de72ea92b2529f420ac98848329abc61ae0c872566ad5fefc6a204bd73c1c7`.
+Node capacity and Pod-summary artifact SHA-256 values are `48e29988289ab0477fff527b96b5b7ed36be2e4384a0ba6ced975031e6eeb5ba`
+and `5ea3bc49b468bde8aa8273ca5b6a5c6e9c96113ef27af757dcfc107703d60f1c`. This proves
+neither full rendered-plan equivalence nor live scheduler admission, healthy service, sustained
+memory/CPU sufficiency, or deployment qualification. No cluster state was changed.
+
+**Decommission/promotion overlap, 2026-11-11.** A local test freezes decommission on a
+prepared epoch aggregate, then invokes the server-owned physical preparation readback. The
+pre-fix interpreter read the physical epoch and committed the promotion readback despite the
+decommission freeze. This is an in-memory counterexample, not a live observation or proof of
+an external effect. The frozen unit executable and control are in
+`.build/sprint-4.113/decommission-migration-20261111/`; their SHA-256 values are
+`2ce7c02fee7d206d0a894b7a772deaf9dbab68cfdc748afacb15217b04caa773` and
+`1e2569fae8b72f690c2ea9a90de3c0d8312d812432e10788794a7b3987a53cda`. Sprint `4.113` now
+fences migration at aggregate admission and physical readback during decommission. Frozen and stopped regression controls and the canonical gate pass; details and
+the limits of this code-local result are in the sprint closure.
+
+**Deleted-file path diagnostic, 2026-11-11.** A read-only host-wide `lsof +L1` query returned
+19 rows, with none displaying the exact missing `.test-data/legacy-aggregate/` path prefix; the
+pipeline exited zero. The positive row count demonstrates that the query returned records, but
+mount-namespace names, inaccessible or already-closed descriptors, and other storage paths can
+escape this exact-text filter. It is not evidence that retained data is absent or unrecoverable.
+The sanitized summary is `.build/sprint-6.5/storage-provenance-20261111/open-unlinked-path-summary.txt`
+(SHA-256 `6d5029d82fcdc8fa632b32597df92cce40e8aff4cbb4803e1f105762a21c5b72`). No file contents
+were read and no state was changed.
+
+**Vault open-file diagnostic, 2026-11-11.** A read-only `lsof` observation of the Vault server
+process whose cgroup matches the current `vault-0` Pod reports no open unlinked regular-file
+descriptors (exit 0); an unrestricted descriptor query reports one regular descriptor as a
+positive control. The sanitized type-only outputs and summary are under
+`.build/sprint-6.5/storage-provenance-20261111/`. This is a point observation of one process, not
+proof that retained data is absent, unrecoverable, or absent from another process or backup. The
+unlinked mount and retained-root provenance remain unresolved, and no data was read or changed.
+
+**Possible historical retained copy, 2026-11-11.** A read-only directory search found
+`/home/matthewnowak/prodbox-test-data-v3-skew-20260916/legacy-aggregate`, containing the same
+service-directory names as the missing root. Its Vault files have modification dates on
+2026-09-15 and 2026-09-16. A local 2026-10-22 storage-purge completion record separately lists
+the then-present checkout `.test-data` and the dated candidate as preserved paths, establishing
+that both existed at that observation. The record is
+`/home/matthewnowak/storage-purge-20261022T172644Z-f2vvoj7b/completion.json`, copied to
+`.build/sprint-6.5/storage-provenance-20261111/storage-purge-completion.json` (SHA-256
+`64823085e16840c3030bde81affec9910c918be856a25f49ebe9dab5483f0c79`); it does not bind the
+candidate to the current retained generation. The copy was not modified or restored. Its age
+and directory shape alone do not authorize adoption
+or prove any current Vault, Authority, checkpoint or AWS state. The date-only observation is
+`.build/sprint-6.5/storage-provenance-20261111/candidate-vault-dates.txt` (SHA-256
+`70fb70782624aa16be2505b6eeb2baed8f20991acc10827d10f61b25dde9932f`). The retained-root
+recovery and exact audit obligations below remain open.
+
+**Retained-path recheck, 2026-11-11.** Read-only Kubernetes PV observations show that the running
+cluster's bound home volumes name `.test-data/legacy-aggregate`, the same relative storage root
+in the older cleanup configuration. Both `.test-data/` and the named root are absent from the
+host namespace. `vault status` inside the current `vault-0` reports `initialized: false` and
+`sealed: true`; `stat` inside that Pod reports its `/vault/data` directory has **zero links**,
+so the mounted directory is unlinked from the host namespace. These are point observations of the
+current pod and PV declarations, not proof
+that retained data is absent or safe to replace. The path match corrects the earlier implication
+that the old cleanup configuration was unrelated to the running cluster; it does not establish
+that the file is the intended current operator configuration or authorize initialization. Resolve
+the retained-root provenance and exact recovery disposition before mutation. The read-only PV,
+mount and Vault-status outputs are retained under `.build/sprint-6.5/storage-provenance-20261111/`;
+the PV and mount output SHA-256 values are
+`baf77fb5ae43d6109573fb54e642d01e36beae0b9e20b738ab0cf4e713fd43ac` and
+`7f585c45527e041bec6f3d0b524c4c3c9529de6e2c0ee7d9d998434a6b05203d`. No live resource or Vault
+state was changed by this recheck.
+
+**Target observation wire negotiation, 2026-11-11.** A new
+append-only request form distinguishes signed observations from legacy observations. The
+verified-response client uses it; an unsigned-only handler refuses it before observing the row,
+and the signed handler accepts only that form. A negotiated handler selects either format and
+refuses a signing failure without unsigned fallback. The response signer also refuses unsigned and
+mutation requests. A frozen predecessor wire sum confirms that all four prior staging request
+encodings are unchanged and cannot decode the new request. Both read forms retain fresh-nonce
+classification; a repeated signed frame refuses without a row read and a fresh request re-observes.
+The warning-clean build and **113 + 47** focused tests pass; the operator SHA-256
+is `a4ccfc2f664c48139467ea3e2069b0d5ca74aa99a434b5ce03a7e75e0f1ad874` and logs are under
+`.build/sprint-6.5/target-wire-20261111/`. The initial builds caught a shadowed test variable and a
+redundant test import; the corrected build passes. The canonical gate passes **9,841 + 27 + 35 + 927**
+tests with unchanged pre-status-update diff SHA-256
+`a30d9f5ad4a1915ac00dd68625b209adb36f8618c0a3c4ad730ce398e21b5d43`; the gate log SHA-256 is
+`d4c8f1201f26da077d1055c9221e66f8e66815bbc546977fb7a9d6fb4a9697d1`.
+The first canonical run was stopped without a terminal receipt to add the actual signed-frame
+replay control; it is not a gate result.
+This is an opt-in protocol increment, not production dispatch, independently
+provisioned trust, physical Agent attestation, deployment qualification or a fix for the still
+supported unsigned route.
+
+**Maintained unsigned Target counterexample, 2026-11-11.** The actual legacy authenticated
+client and Target observation handler are now composed in a maintained transport fixture that
+replaces the response with a prepared row while the retained row remains initial. The client
+accepts the substituted row and no row write occurs. The warning-clean unit build and all **108**
+Target trust cases pass; focused HLint and documentation lint pass. Logs are under
+`.build/sprint-6.5/target-integrity-20261111/`; the unit executable SHA-256 is
+`f35bb90d9d5bd953ad4edcf33d04e4e1459f74df15db10300978d6e9514c36e0`. The canonical gate
+passes **9,836 + 27 + 35 + 927** tests; its log SHA-256 is
+`6ac11b99b7a924333ae1012b4cf65693decd001841d0b88e6e3293a5975be5be`, and the pre-status-update
+diff SHA-256 is `4f9e63a9ec394e2d873f97e76219f57f62973bc22fff2790bcad887b0c244267`.
+This is a local counterexample, not live interception or a fix: production
+trust provisioning, physical Agent identity, runtime cutover and removal of this legacy control
+remain open.
+
+**Sprint `6.5` resumed preflight, 2026-11-11.** The current host now passes the provisional
+static fit described below. `prodbox aws audit` exits **5 (Unobservable)** because the binary's
+Tier-0 `.build/prodbox.dhall` is absent. The read-only audit script can be emitted, but a separate
+read-only STS diagnostic exits **254** with credentials refused and supplies no provider
+observation or absence receipt.
+The only older configuration found belongs to a separate legacy cleanup root; it is not adopted as
+the current operator configuration. A read-only validation attempt with that old file reached an
+unavailable or sealed Vault, not a valid Authority receipt. Restore or reconstruct the current
+operator-owned configuration and retained access, then obtain the required AWS audit before a
+live campaign. `test-secrets.dhall` was changed from mode 644 to the required mode 600; its
+contents were not used as evidence. No AWS mutation or live qualification attempt was made.
+
+**Sprint `1.99` local closure, 2026-11-11.** The provisional host-sized requests and unchanged
+container limits pass **36** focused platform-capacity tests, **37** allocation/rendering tests,
+the retained provider control, and `prodbox dev check` (**9,835 + 27 + 35 + 927** tests).
+The installed frontend suite passes **105** tests, including host-sized generation and a
+one-unit CPU deficit. Both frontend commands route to the same suite; an unnecessary second run
+was stopped and is not counted. Native `config generate` also succeeds on the observed host.
+Evidence is in `.build/sprint-1.99/host-fit-20261111/`: the operator SHA-256 is
+`396786a30c6a99599b2f1a760b869571bac0a1d02046efadc215d1feb268c8c3`, canonical log
+`7c91ca7795aa52f7a4c57621cf6533bf686e32d905964ed06b57a8eab29bf5ce`, frontend log
+`62e3dfadf42be4bafc714ed1ea57c0d3ddba850b08a16242d818d31a4d33e329`; source checkout
+HEAD `aeeb36aa83516975b2f9d492cb7b098ac092e826` and pre-status-update diff SHA-256
+`2bd5624ee6dc5292b7bb18e0fe1022e522d8dccb6f0199c99cb5ab5b96e4697b`. The first full unit
+run had six stale schema/fixture failures; its log is retained and the corrected cases and
+canonical gate pass. **Live-proof and deployment qualification remain pending.** The reduced
+requests apply on both substrates and are not a demonstrated load envelope. Return to `6.5`;
+the first live attempt must honor Standard Q, audit AWS residue, and observe actual scheduler,
+memory, CPU, queue and deadline behavior.
+
+**Provisional host-sized profile, 2026-11-11.** At the operator's request, the default
+Burstable application requests were reduced to fit this host while preserving existing
+container limits, control-plane envelopes, platform requests and host reserves. The calculated
+complete demand is **7,095m / 15,434 MiB**, leaving **905m / 496 MiB** against the observed
+8,000m / 15,930 MiB host. The earlier **9,045m / 17,482 MiB** observations below describe
+the prior profile and remain historical evidence. The remaining budget can admit the declared
+**700m / 256 MiB** host-controller envelope in the static model, leaving **205m / 240 MiB**;
+this arithmetic does not prove its physical admission or sustained service. The previous scheduler counterexample keeps
+its original request vectors. Code-local validation is recorded above; live concurrent-load,
+scheduler, memory/OOM, CPU-throttling, queue and deadline observations remain required. A static
+fit is not qualification, and no live run is admitted solely by this provisional calculation.
+
+**Host development overhead, 2026-11-12.** Two runs of `prodbox dev lint docs` on this
+worktree peaked at 4,907,304 and 4,904,828 KiB RSS; the latter reported 2,395,275,760 bytes
+maximum sampled heap residency. Their logs are `.build/sprint-4.114/docs-lint-host-rss.log`
+and `.build/sprint-4.114/docs-lint-rts-profile.log`, with SHA-256 values
+`1bb9f864c878a95716e8e62d08b4729a16d5a30f286fcf41972263ebfadce59e` and
+`5d68b2ccbacd6e14f9dd88d16df212dbf7c32cba188dca520cc08b257cbc881a`. These are host
+process measurements, not Kubernetes requests or a concurrent healthy-cluster measurement.
+The 496 MiB static margin therefore does not establish that the development gate and a fully
+loaded cluster can run together. Investigate the lint allocation and include host tooling in
+concurrent physical-memory qualification. Isolated probes of the actual resume-ledger and
+doctrine-citation checks peaked at 942,248 and 1,538,796 KiB RSS respectively; neither is the
+whole command or a concurrent-cluster measurement. The former's source and log are
+`.build/sprint-4.114/ResumeLedgerMemoryProbe.hs` and
+`.build/sprint-4.114/resume-ledger-memory-probe.log`, SHA-256
+`67baecdc9c29c76e6e2d3b9ad708748f165ab3ef0448f03b72633a303a29ecc5` and
+`d8283802030f54602f15f73ec52189f3c5640f48e54952177233d47ff76aeef1`. The latter's source
+and log are `.build/sprint-4.114/DocsPartMemoryProbe.hs` and
+`.build/sprint-4.114/docs-citations-memory-probe.log`, SHA-256
+`a3f1c831d5474c6e59c98263a8ddeabd92b4708e826d8f5050d125f30f578f20` and
+`d8f2dc0c45072e7ca9d5a88d849fa15a754462c0af4031a8067f05c788a847a4`.
+The docs gate now forces each check's findings before starting the next, reusing the existing
+doctrine-lint boundary. A subsequent profiled docs lint passed at **1,679,912 KiB peak RSS**
+and 760,005,544 bytes maximum sampled heap residency; its log
+`.build/sprint-4.114/docs-lint-forced-profile.log` SHA-256 is
+`f0bc86cca64c8c6b65ef3cadffb5402c0e1015ed9d212216b38d0d028dc42d4f`. This is one
+post-change measurement, not a concurrent healthy-cluster test or a hard process bound. An
+isolated candidate that also forces each citation document and scan result returned the same
+zero findings and peaked at 157,900 KiB RSS; its source and log are
+`.build/sprint-4.114/StrictCitationMemoryProbe.hs` and
+`.build/sprint-4.114/strict-citation-memory-probe.log`, SHA-256
+`b062d8eb209b582775cbdfea395085c185b81278d07305cff9bb61d1b5ad5d79` and
+`42be65ca285711197f46f67a6ba5af7050f226e0fd002bf22b76b4d7dc5fcdbd`. This isolated probe is
+not the entire docs command. The production checker now also forces those per-file results; a
+subsequent whole docs lint passed at **970,176 KiB peak RSS** and 370,507,784 bytes maximum
+sampled heap residency. `.build/sprint-4.114/docs-lint-per-file-profile.log` SHA-256 is
+`a6146a58c9a31b1b7b3eca7436b6d37ce2a5c89cf2450830012f73aaae587c42`. The first gate for the
+earlier change was stopped during Haskell lint to incorporate this additional measured
+improvement. The combined change's canonical gate passes **9,899 + 27 + 35 + 935** tests;
+`.build/sprint-4.114/docs-lint-per-file-gate.log` SHA-256 is
+`569b34022dd65edddf14301c3094350c945d05d91e18f46f885d2406060c3961`.
+The new filesystem citation regression passes in the built unit executable; its log
+`.build/sprint-4.114/docs-citation-focused-rerun.log` SHA-256 is
+`2962ac60885fcf75928b97c2756aef47af6bf3fdc6031496e905ba5ffc5abcb2`. The preceding Cabal
+invocation split its pattern and ran no test; it is not counted.
+
+**Read-only host and scheduler recheck, 2026-11-11.** The local RKE2 service is active despite
+the absence of the checkout's `.data/` directory. The node reports **7,750m / 13,691,208 KiB**
+allocatable and **6,995m / 13,236 MiB** currently requested, leaving about **134 MiB** of
+unallocated scheduler memory. Its instantaneous metrics report **514m / 5,813 MiB**, but many
+application and control-plane Pods report image-pull failures, so this is not a healthy full-load
+measurement. The running Pod requests include older envelopes (for example TLS retention is
+80 MiB versus the current 282 MiB plan), so they are not the current-plan fit. The configured
+**9,045m / 17,482 MiB** remains a request-and-reservation projection, not a measured physical
+working-set minimum. A host-sized alternative requires actual rendered request changes and
+measured concurrent-load, throttling, OOM, queue and deadline evidence; changing the fit check
+alone would not make Pods schedulable. No resource profile or infrastructure was changed by this
+observation, and it does not admit or qualify the campaign.
+
+**Local rebuild and gate, 2026-11-11.** After the host recheck below, the operator was rebuilt
+with `cabal build -j4 --builddir=.build exe:prodbox` and installed at `.build/prodbox`
+(SHA-256 `b4c6bcf04754a12e6d25684ac882cc66b77846a8f614d28a41b190b4c82ab6e1`).
+`./.build/prodbox dev check` exited zero, with **9,833 + 27 + 35 + 927** gated tests
+passing. The build and gate logs are retained under `.build/sprint-6.5/rebuild-20261111/`;
+the gate log SHA-256 is
+`c14e4673c7d92645deba354e99fcedbecb58095a274209d809b3280d4ac3a6d8`.
+This is current local build and test evidence, not a restored historical receipt, physical
+binding proof, qualification campaign or cutover. Sprint `6.5` remains `Next`.
+
+**Host recheck, 2026-11-11.** This checkout reports **8 online CPUs**, **16,312,648 KiB**
+of physical memory and **157,903,069,184 bytes** free on the filesystem containing the
+checkout. The CPU and memory remain below the recorded **9,045 milliCPU / 17,482 MiB**
+workload minimum; the increased free space does not admit the campaign. Both `.data/` and
+`.build/` are absent, including the binary, generated configuration and local evidence paths
+referenced in the earlier entries below. Those earlier records are historical claims, not
+artifacts verified by this recheck. Restore or regenerate the required evidence and binary,
+establish the required host capacity and configuration, and audit AWS residue before admitting
+the campaign. No live attempt or qualification is claimed by this recheck.
 
 **Live-campaign admission attempt, 2026-11-09.** The operator asked for the Sprint `6.5` live
 campaign to start. Pre-flight stopped before any AWS or cluster mutation. Free space was
@@ -27444,7 +29440,7 @@ the prior authority-reached regression passes independently. All **4690** primar
 build and exact canonical `prodbox dev check` exit 0, and refreshed binary
 `sha256:0042eea999dd2e8e1b2c2608487bea8ec63519350e72248294813b841a97a2dd` leaves RKE2 active
 with zero service restarts and the node's False MemoryPressure transition unchanged. Generation 65
-publishes local image `sha256:40d8980aa4e601347bac31ed7e9c8daa909a84092b233e6476941679d6c1506d`,
+publishes local image `sha256:40d8980aa4e601347bac31ed7e9c8daa909a84092b233e6470941679d6c1506d`,
 registry digest `sha256:ddfa34edad155a10f6c653e88bee79c830cd2a5866e6c49c44ccc6d29b5f36fe`,
 and containerd OCI manifest
 `sha256:0d1d338b64f7e75221738d7120e2380a3f38c1aab5f52e172354249f3d6895d1`.
@@ -27851,7 +29847,7 @@ The fresh supported Generation-88 crossing is next.
 Generation 88 publishes local image
 `sha256:bacede1443d0ab5be8480ea5bf93b6b3dd7f5ab0bac3715eb1658b9be2a92bfb`, registry manifest
 `sha256:0fa90432116a435dd2fe418dfffb39c725ab3c75654b858e54db00c144cba575`, and containerd OCI
-manifest `sha256:8261c3fcfe76945815d9e846dfa47119079e820e9634eeab724287f23b4bf70c`.
+manifest `sha256:8261c3fcfe70945815d9e846dfa47119079e820e9634eeab724287f23b4bf70c`.
 It crosses the legacy outbox refusal and reaches the new proof boundary, where it fails closed at
 `attempt-recovery/journal-unobservable`. Live RBAC proves the exact Authority subject has only the
 required Job/Pod GETs and both workload kinds are absent. Stable counterexample
@@ -31431,14 +33427,15 @@ UID-preconditioned delete rather than observed absent — strictly stronger than
 absence observation, because it causes absence instead of inferring it. Exactly one of the seven cases
 in the pre-existing exhaustive mismatch table changes behaviour.
 
-**Sprint `2.48` closed the ledger row it owned rather than letting it outlive its owner.** A `Pending
+**Historical compensation, superseded by Sprint `2.147`.** Sprint `2.48` closed the ledger row it
+owned rather than letting it outlive its owner. A `Pending
 Removal` row whose owning sprint has gone ✅ is the orphan shape this plan has now caught three times,
 so the acquisition-path fence leak was fixed with the sprint that owned it. **Retirement could not
 have served, and recording that matters because it was the obvious reach**: it requires the durable
-operation deadline to have *elapsed*, and a freshly acquired fence's has not. The compensating release
-needs no observation of an owner at all — it releases a fence the same call created moments earlier,
-on a path where no Lease witness was obtained, and no witness means no effect can have been
-authorized.
+operation deadline to have *elapsed*, and a freshly acquired fence's has not. The former compensation
+released a fresh fence without observing an owner when no Lease witness was obtained. Later evidence
+showed that the Lease write itself could still apply after a lost response; the compensation has been
+removed and the unconfirmed fence is retained for recovery.
 
 **And the 300-second coupling was declared rather than removed, on an argument that inverts the
 obvious one.** Renewing the Lease looks like the cleaner fix, since then there is no relationship to

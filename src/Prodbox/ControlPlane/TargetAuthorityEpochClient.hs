@@ -110,6 +110,7 @@ decodeTargetEpochClientResponse request (ControlPlaneResponse status body) = do
 responseMatches :: TargetEpochRequest -> TargetEpochResponse -> Bool
 responseMatches request response = case (request, response) of
   (TargetEpochObserve target, TargetEpochObserved actual _) -> target == actual
+  (TargetEpochObserveSigned target, TargetEpochObserved actual _) -> target == actual
   (TargetEpochMutate action, TargetEpochMutated result) ->
     targetEpochRecordTransition record == transition
       && targetEpochRecordTarget record == acceptedTargetId (targetEpochPreparationAuthority preparation)
@@ -120,6 +121,7 @@ responseMatches request response = case (request, response) of
       PromoteTargetAuthorityEpoch value -> (value, TargetEpochPromoted value)
       RetireTargetAuthorityEpoch value -> (value, TargetEpochRetired value)
   (TargetEpochObserve _, TargetEpochMutated _) -> False
+  (TargetEpochObserveSigned _, TargetEpochMutated _) -> False
   (TargetEpochMutate _, TargetEpochObserved _ _) -> False
 
 mutateTargetAuthorityEpoch
@@ -184,4 +186,4 @@ observeTargetAuthorityEpochWithVerifiedResponse transport agent trusted target =
           TargetEpochObserved _ value -> Right value
           TargetEpochMutated _ -> Left TargetEpochClientReadBackMismatch
  where
-  request = TargetEpochObserve target
+  request = TargetEpochObserveSigned target

@@ -1,3 +1,4 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module PlatformSchedulerCapacity (platformSchedulerCapacitySuite) where
@@ -43,6 +44,19 @@ platformSchedulerCapacitySuite = describe "LOCAL-PLATFORM-SCHEDULER-BASELINE-OMI
   it "retains the native scheduler's positive memory deficit" $
     withRecording recordedDeficit $ \(allocatable, bound, pending) ->
       (bound + pending) `shouldSatisfy` (> allocatable)
+
+  it "preserves every prior container limit while reducing only selected requests" $ do
+    let previous = Capacity.workload_profiles Capacity.preHostFitResourcePlan
+        current = Capacity.workload_profiles Capacity.defaultResourcePlan
+        projection profiles = [(Capacity.profile_id p, Capacity.limit (Capacity.resources p)) | p <- profiles]
+        changed = ["keycloak", "keycloak-postgres", "vscode", "api", "pulsar", "minio", "harbor"]
+        requestFor name profiles =
+          [Capacity.request (Capacity.resources p) | p <- profiles, Capacity.profile_id p == name]
+    projection current `shouldBe` projection previous
+    filter ((`notElem` changed) . Capacity.profile_id) current
+      `shouldBe` filter ((`notElem` changed) . Capacity.profile_id) previous
+    forM_ changed $ \name ->
+      requestFor name current `shouldNotBe` requestFor name previous
 
   it "refuses the unchanged frozen physical host at the actual allocator" $
     Allocation.compileResourcePlanUncertified causalPlan `shouldSatisfy` isLeft
@@ -102,9 +116,25 @@ platformSchedulerCapacitySuite = describe "LOCAL-PLATFORM-SCHEDULER-BASELINE-OMI
       (Capacity.defaultResourcePlan {Capacity.host_capacity = exactDemand})
       `shouldSatisfy` isRight
 
+  it "leaves capacity for the 700m / 256Mi host controller on this host" $ do
+    let plan =
+          Capacity.defaultResourcePlan
+            { Capacity.host_capacity = Capacity.ResourceVector 8000 15930 100000 180000
+            }
+    case Allocation.compileResourcePlanUncertified plan of
+      Left failure -> expectationFailure (show failure)
+      Right (Allocation.SomeAllocatedPlan _ allocated) ->
+        case Allocation.allocate
+          (Allocation.allocatedPlanClusterBudget allocated)
+          (Capacity.ResourceVector 700 256 0 0) of
+          Left failure -> expectationFailure (show failure)
+          Right remaining -> do
+            Capacity.milli_cpu (Allocation.clusterBudgetRemaining remaining) `shouldBe` 205
+            Capacity.memory_mib (Allocation.clusterBudgetRemaining remaining) `shouldBe` 240
+
   forM_
-    [ ("CPU", exactDemand {Capacity.milli_cpu = 9044})
-    , ("memory", exactDemand {Capacity.memory_mib = 17481})
+    [ ("CPU", exactDemand {Capacity.milli_cpu = 7094})
+    , ("memory", exactDemand {Capacity.memory_mib = 15433})
     , ("ephemeral", exactDemand {Capacity.ephemeral_storage_mib = 35423})
     , ("durable", exactDemand {Capacity.durable_storage_mib = 157695})
     ]
@@ -123,13 +153,14 @@ platformSchedulerCapacitySuite = describe "LOCAL-PLATFORM-SCHEDULER-BASELINE-OMI
         plan = Capacity.defaultResourcePlan {Capacity.platform_scheduler_requests = Just baseline}
     case Allocation.compileResourcePlanUncertified plan of
       Left err -> expectationFailure (show err)
-      Right compiled -> Allocation.planTotalDraw compiled `shouldBe` Capacity.ResourceVector 8045 14922 15584 155904
+      Right compiled -> Allocation.planTotalDraw compiled `shouldBe` Capacity.ResourceVector 6095 12874 15584 155904
 
-  it "refuses the original host at generation before config can be authored"
+  it "fits the provisional profile on the original host"
     $ withObserved
       "milli_cpu=8000,memory_mib=15872,ephemeral_storage_mib=100000,durable_storage_mib=180000"
     $ \host ->
-      deriveHostFittingCapacity host Capacity.defaultResourcePlan `shouldSatisfy` isLeft
+      deriveHostFittingCapacity host Capacity.defaultResourcePlan
+        `shouldBe` Right (Capacity.ResourceVector 8000 15872 100000 180000)
 
   it "fits a sufficient observed host through the same demand projection"
     $ withObserved
@@ -288,12 +319,12 @@ platformSchedulerCapacitySuite = describe "LOCAL-PLATFORM-SCHEDULER-BASELINE-OMI
 
 causalPlan :: Capacity.ResourcePlan
 causalPlan =
-  Capacity.defaultResourcePlan
+  Capacity.preHostFitResourcePlan
     { Capacity.host_capacity = Capacity.ResourceVector 8000 15872 100000 180000
     }
 
 exactDemand :: Capacity.ResourceVector
-exactDemand = Capacity.ResourceVector 9045 17482 35424 157696
+exactDemand = Capacity.ResourceVector 7095 15434 35424 157696
 
 zero :: Capacity.ResourceVector
 zero = Capacity.ResourceVector 0 0 0 0

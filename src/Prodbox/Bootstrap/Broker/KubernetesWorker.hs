@@ -41,6 +41,8 @@ module Prodbox.Bootstrap.Broker.KubernetesWorker
   , imageDigestFromRuntimeId
   , bootstrapLeaseAnnotationsForFence
   , bootstrapLeaseManifestForFence
+  , bootstrapLeaseManifestForFenceWithWriterBound
+  , bootstrapLeaseReplacementResourceVersion
   , workerPodDeleteOptions
   , workerRequestDeleteOptions
   , workerAttestationFromResponse
@@ -51,6 +53,7 @@ module Prodbox.Bootstrap.Broker.KubernetesWorker
   , FenceOwnerWorkerCleanupDecision (..)
   , fenceOwnerWorkerCleanupFromResponse
   , bootstrapLeaseFromResponse
+  , bootstrapLeaseFromResponseWithBounds
   , kubernetesTransportFailureLabel
   , unobservableReason
   , imageReferenceRepository
@@ -63,6 +66,7 @@ import Control.Exception
   ( IOException
   , SomeAsyncException
   , SomeException
+  , evaluate
   , fromException
   , try
   , tryJust
@@ -136,6 +140,9 @@ import Prodbox.Bootstrap.Broker.Fence
   , bootstrapFenceOwnerNonce
   , bootstrapFenceRequestDigest
   , bootstrapFenceStorageGeneration
+  , bootstrapLeaseBindingForFence
+  , bootstrapLeaseFenceGeneration
+  , bootstrapLeaseStorageGeneration
   )
 import Prodbox.Bootstrap.Broker.KubernetesAttestation
   ( RawBootstrapLeaseObservation (..)
@@ -216,7 +223,11 @@ import Prodbox.ControlPlane.Deadline
   , deadlineFromInstant
   , deadlineObservation
   )
-import Prodbox.ControlPlane.Interpreter (realMonotonicNow)
+import Prodbox.ControlPlane.Interpreter
+  ( DeadlineEffectResult (..)
+  , observeDeadlineEffectWithin
+  , realMonotonicNow
+  )
 import Prodbox.K8s.InCluster
   ( inClusterCaCertPath
   , inClusterNamespacePath
@@ -535,9 +546,11 @@ productionKubernetesWorkerBoundary = do
                     (bootstrapLeaseUrl namespace)
                     Nothing
                 case current of
-                  Right (200, body) ->
-                    case eitherDecodeStrict' body of
-                      Right wire ->
+                  Right (200, body) -> do
+                    monotonicNow <- realMonotonicNow
+                    wallNow <- getCurrentTime
+                    case bootstrapLeaseReplacementResourceVersion namespace monotonicNow wallNow fence body of
+                      Right version ->
                         requestKubernetes
                           manager
                           deadline
@@ -547,11 +560,11 @@ productionKubernetesWorkerBoundary = do
                               ( bootstrapLeaseManifestForFence
                                   namespace
                                   now
-                                  (Just (leaseWireResourceVersion wire))
+                                  (Just version)
                                   fence
                               )
                           )
-                      _ -> pure (Left "Kubernetes Lease read-back is invalid")
+                      Left detail -> pure (Left detail)
                   Left detail -> pure (Left detail)
                   Right _ -> pure (Left "Kubernetes Lease read-back was refused")
               other -> pure other
@@ -1335,6 +1348,35 @@ bootstrapLeaseAnnotationsForFence fence =
       )
     ]
 
+-- | A resource-versioned replacement may not compare store-local generations
+-- across storage generations, regress a generation, or alter an equal binding.
+-- This is not a settlement witness or an authorized reset handoff.
+bootstrapLeaseReplacementResourceVersion
+  :: Text -> MonotonicInstant -> UTCTime -> BootstrapSessionFence -> ByteString -> Either Text Text
+bootstrapLeaseReplacementResourceVersion namespace now wallNow fence body = do
+  wire <-
+    either
+      (const (Left "Kubernetes Lease read-back is invalid or unobservable"))
+      Right
+      (eitherDecodeStrict' body)
+  if Map.member leaseWriterClockBoundAnnotation (leaseWireAnnotations wire)
+    then Left "Kubernetes Lease writer clock evidence requires a bounded renewal"
+    else legacyReplacement
+ where
+  legacyReplacement =
+    case bootstrapLeaseFromResponse namespace now wallNow now 200 body of
+      BootstrapLeaseObserved binding _ _
+        | bootstrapLeaseStorageGeneration binding /= bootstrapFenceStorageGeneration fence ->
+            Left "Kubernetes Lease storage generation requires an authenticated handoff"
+      BootstrapLeaseObserved binding _ version ->
+        case compare (bootstrapLeaseFenceGeneration binding) (bootstrapFenceGeneration fence) of
+          LT -> Right version
+          EQ
+            | binding == bootstrapLeaseBindingForFence fence -> Right version
+            | otherwise -> Left "Kubernetes Lease generation belongs to a different fence"
+          GT -> Left "Kubernetes Lease belongs to a newer fence generation"
+      _ -> Left "Kubernetes Lease read-back is invalid or unobservable"
+
 -- | Exact fixed-name Lease body.  The durable operation deadline remains in
 -- annotations and is checked independently; the Kubernetes TTL is only the
 -- short liveness witness and is renewed on an idempotent resume.
@@ -1351,6 +1393,33 @@ bootstrapLeaseManifestForFence
   -> BootstrapSessionFence
   -> Value
 bootstrapLeaseManifestForFence namespace renewTime resourceVersion fence =
+  bootstrapLeaseManifestWithAnnotations
+    namespace
+    renewTime
+    resourceVersion
+    fence
+    (bootstrapLeaseAnnotationsForFence fence)
+
+-- | Render a writer bound alongside the exact fence identity. The caller must
+-- establish that this bound describes the writer's actual renewal sample.
+bootstrapLeaseManifestForFenceWithWriterBound
+  :: Natural -> Text -> UTCTime -> Maybe Text -> BootstrapSessionFence -> Either Text Value
+bootstrapLeaseManifestForFenceWithWriterBound writerBound namespace renewTime resourceVersion fence
+  | Text.length renderedBound > 32 = Left "Lease writer clock bound is too large"
+  | otherwise =
+      Right $
+        bootstrapLeaseManifestWithAnnotations
+          namespace
+          renewTime
+          resourceVersion
+          fence
+          (Map.insert leaseWriterClockBoundAnnotation renderedBound (bootstrapLeaseAnnotationsForFence fence))
+ where
+  renderedBound = naturalText writerBound
+
+bootstrapLeaseManifestWithAnnotations
+  :: Text -> UTCTime -> Maybe Text -> BootstrapSessionFence -> Map Text Text -> Value
+bootstrapLeaseManifestWithAnnotations namespace renewTime resourceVersion fence annotations =
   object
     [ "apiVersion" .= ("coordination.k8s.io/v1" :: Text)
     , "kind" .= ("Lease" :: Text)
@@ -1358,7 +1427,7 @@ bootstrapLeaseManifestForFence namespace renewTime resourceVersion fence =
         .= object
           ( [ "name" .= bootstrapFenceLeaseName
             , "namespace" .= namespace
-            , "annotations" .= bootstrapLeaseAnnotationsForFence fence
+            , "annotations" .= annotations
             ]
               ++ maybe [] (\version -> ["resourceVersion" .= version]) resourceVersion
           )
@@ -1389,10 +1458,10 @@ bootstrapLeaseManifestForFence namespace renewTime resourceVersion fence =
 -- * @…37.123456Z@ (6 digits) — __accepted__
 -- * @…37Z@ (0 digits) — @BadRequest@, @cannot parse "Z" as ".000000"@
 --
--- Truncating toward the past is also the safe direction here: the rendered
--- instant is never later than the 'UTCTime' it came from, so the
--- @renewTime > wallNow@ guard in 'bootstrapLeaseFromResponse' cannot be tripped
--- by this encoding.
+-- Truncating toward the past makes the rendered instant no later than the
+-- writer's 'UTCTime'. It does not establish a bound between the writer's
+-- clock and a reader's clock, so it cannot by itself prevent the
+-- @renewTime > wallNow@ guard from refusing a cross-node observation.
 kubernetesMicroTime :: UTCTime -> Text
 kubernetesMicroTime =
   Text.pack . formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%S.%6qZ"
@@ -1689,7 +1758,34 @@ bootstrapLeaseFromResponse
   -> Int
   -> ByteString
   -> BootstrapLeaseObservation
-bootstrapLeaseFromResponse namespace monotonicBeforeWall wallNow monotonicAfterWall code body
+bootstrapLeaseFromResponse = bootstrapLeaseFromResponseUsing Nothing
+
+-- | Decode with independently established writer and observer uncertainty in
+-- microseconds. This function does not authenticate either bound or the wall
+-- sample; its caller must establish their provenance and clock continuity.
+bootstrapLeaseFromResponseWithBounds
+  :: Natural
+  -> Natural
+  -> Text
+  -> MonotonicInstant
+  -> UTCTime
+  -> MonotonicInstant
+  -> Int
+  -> ByteString
+  -> BootstrapLeaseObservation
+bootstrapLeaseFromResponseWithBounds writerBound observerBound =
+  bootstrapLeaseFromResponseUsing (Just (writerBound, observerBound))
+
+bootstrapLeaseFromResponseUsing
+  :: Maybe (Natural, Natural)
+  -> Text
+  -> MonotonicInstant
+  -> UTCTime
+  -> MonotonicInstant
+  -> Int
+  -> ByteString
+  -> BootstrapLeaseObservation
+bootstrapLeaseFromResponseUsing bounds namespace monotonicBeforeWall wallNow monotonicAfterWall code body
   | code == 404 = BootstrapLeaseMissing
   -- Keep this guard above the generic non-success guard or it is unreachable.
   -- 401 is the API server refusing the Pod's own projected ServiceAccount
@@ -1708,22 +1804,28 @@ bootstrapLeaseFromResponse namespace monotonicBeforeWall wallNow monotonicAfterW
         (Text.pack ("Bootstrap Lease request returned HTTP " ++ show code))
   | otherwise = case eitherDecodeStrict' body >>= validateLeaseWire namespace of
       Left _ -> BootstrapLeaseUnobservable "Bootstrap Lease response is invalid"
-      Right (wire, localDeadline) ->
-        observeBootstrapLease
-          RawBootstrapLeaseObserved
-            { observedLeaseFenceGeneration = annotationNatural workerFenceGenerationAnnotation annotations
-            , observedLeaseOwnerNonce = requiredAnnotation workerOwnerNonceAnnotation annotations
-            , observedLeaseActionDigest = requiredAnnotation workerActionDigestAnnotation annotations
-            , observedLeaseRequestDigest = requiredAnnotation workerRequestDigestAnnotation annotations
-            , observedLeaseStorageGeneration = requiredAnnotation workerStorageGenerationAnnotation annotations
-            , observedLeaseOperationDeadlineMicros =
-                annotationNatural workerOperationDeadlineAnnotation annotations
-            , observedLeaseLocalDeadline = localDeadline
-            , observedLeaseResourceVersion = leaseWireResourceVersion wire
-            }
+      Right (wire, localDeadline, certainDeadline) ->
+        boundedObservation certainDeadline $
+          observeBootstrapLease
+            RawBootstrapLeaseObserved
+              { observedLeaseFenceGeneration = annotationNatural workerFenceGenerationAnnotation annotations
+              , observedLeaseOwnerNonce = requiredAnnotation workerOwnerNonceAnnotation annotations
+              , observedLeaseActionDigest = requiredAnnotation workerActionDigestAnnotation annotations
+              , observedLeaseRequestDigest = requiredAnnotation workerRequestDigestAnnotation annotations
+              , observedLeaseStorageGeneration = requiredAnnotation workerStorageGenerationAnnotation annotations
+              , observedLeaseOperationDeadlineMicros =
+                  annotationNatural workerOperationDeadlineAnnotation annotations
+              , observedLeaseLocalDeadline = localDeadline
+              , observedLeaseResourceVersion = leaseWireResourceVersion wire
+              }
        where
         annotations = leaseWireAnnotations wire
  where
+  boundedObservation certain observation = case (certain, observation) of
+    (Just expiry, BootstrapLeaseObserved binding safe resourceVersion) ->
+      BootstrapLeaseObservedBounded binding safe expiry resourceVersion
+    _ -> observation
+
   validateLeaseWire expectedNamespace wire = do
     requireEqual "apiVersion" "coordination.k8s.io/v1" (leaseWireApiVersion wire)
     requireEqual "kind" "Lease" (leaseWireKind wire)
@@ -1739,11 +1841,27 @@ bootstrapLeaseFromResponse namespace monotonicBeforeWall wallNow monotonicAfterW
     _ <- requireBoundedAnnotation workerActionDigestAnnotation 128 annotations
     _ <- requireBoundedAnnotation workerRequestDigestAnnotation 128 annotations
     _ <- requireBoundedAnnotation workerStorageGenerationAnnotation 256 annotations
+    case bounds of
+      Nothing
+        | Map.member leaseWriterClockBoundAnnotation annotations ->
+            Left "Lease writer clock evidence requires bounded observation"
+        | otherwise -> Right ()
+      Just (writerBound, _) -> do
+        recordedBound <- requireNaturalAnnotation leaseWriterClockBoundAnnotation annotations
+        if recordedBound == writerBound
+          then Right ()
+          else Left "Lease writer clock bound does not match"
     if leaseWireDurationSeconds wire == 0
       || leaseWireDurationSeconds wire > fromIntegral (maxBound :: Int)
       then Left "Lease duration is invalid"
       else Right ()
-    if leaseWireRenewTime wire > wallNow
+    if monotonicAfterWall < monotonicBeforeWall
+      then Left "Lease observation monotonic bracket is inverted"
+      else Right ()
+    let uncertainty = maybe 0 (\(writerBound, observerBound) -> toInteger writerBound + toInteger observerBound) bounds
+        permittedFutureMicros = maybe 0 (const (uncertainty + 1)) bounds
+        renewFutureMicros = ceiling (diffUTCTime (leaseWireRenewTime wire) wallNow * 1000000) :: Integer
+    if renewFutureMicros > permittedFutureMicros
       then Left "Lease renewTime is in the future"
       else Right ()
     let authorityExpiry =
@@ -1752,17 +1870,28 @@ bootstrapLeaseFromResponse namespace monotonicBeforeWall wallNow monotonicAfterW
             (leaseWireRenewTime wire)
         remainingMicros :: Integer
         remainingMicros = floor (diffUTCTime authorityExpiry wallNow * 1000000)
+        safeRemaining = remainingMicros - uncertainty
         localDeadline
-          | remainingMicros <= 0 = deadlineFromInstant monotonicBeforeWall
+          | safeRemaining <= 0 = deadlineFromInstant monotonicBeforeWall
           | otherwise =
               deadlineAtOffset
                 monotonicBeforeWall
-                (RemainingDuration (fromIntegral remainingMicros))
+                (RemainingDuration (fromIntegral safeRemaining))
         conservativeDeadline
           | deadlineExpired monotonicAfterWall localDeadline =
               deadlineFromInstant monotonicBeforeWall
           | otherwise = localDeadline
-    Right (wire, conservativeDeadline)
+        -- One microsecond covers writer MicroTime truncation; another covers
+        -- rounding the after-wall monotonic sample down to microseconds.
+        certainRemaining = ceiling (diffUTCTime authorityExpiry wallNow * 1000000) + uncertainty + 2 :: Integer
+        certainDeadline = case bounds of
+          Nothing -> Nothing
+          Just _ ->
+            Just $
+              if certainRemaining <= 0
+                then deadlineFromInstant monotonicAfterWall
+                else deadlineAtOffset monotonicAfterWall (RemainingDuration (fromIntegral certainRemaining))
+    Right (wire, conservativeDeadline, certainDeadline)
 
 data ScaleWire = ScaleWire
   { scaleWireApiVersion :: !Text
@@ -2731,6 +2860,9 @@ workerStorageGenerationAnnotation = "bootstrap.prodbox.dev/storage-generation"
 workerOperationDeadlineAnnotation :: Text
 workerOperationDeadlineAnnotation = "bootstrap.prodbox.dev/operation-deadline-micros"
 
+leaseWriterClockBoundAnnotation :: Text
+leaseWriterClockBoundAnnotation = "bootstrap.prodbox.dev/writer-clock-uncertainty-micros"
+
 requiredAnnotation :: Text -> Map Text Text -> Text
 requiredAnnotation key annotations = Map.findWithDefault Text.empty key annotations
 
@@ -2816,6 +2948,23 @@ requestKubernetes
   -> Maybe Value
   -> IO (Either Text (Int, ByteString))
 requestKubernetes manager deadline httpMethod url maybeBody = do
+  observed <- observeDeadlineEffectWithin deadline $ do
+    result <- requestKubernetesWithin manager deadline httpMethod url maybeBody
+    case result of
+      Left detail -> evaluate detail >> pure result
+      Right (code, body) -> evaluate code >> evaluate body >> pure result
+  pure $ case observed of
+    Just (DeadlineEffectCompleted _ result) -> result
+    _ -> Left "Kubernetes API deadline elapsed or outcome is unconfirmed"
+
+requestKubernetesWithin
+  :: Manager
+  -> Deadline
+  -> ByteString
+  -> String
+  -> Maybe Value
+  -> IO (Either Text (Int, ByteString))
+requestKubernetesWithin manager deadline httpMethod url maybeBody = do
   tokenResult <- readProjectedToken
   case tokenResult of
     Left detail -> pure (Left detail)

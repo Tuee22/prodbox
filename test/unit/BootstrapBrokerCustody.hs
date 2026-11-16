@@ -280,6 +280,16 @@ data PreCredentialProvisionerAuditorLeaseBaselineReadBackReceipt
   deriving stock (Eq, Show, Generic)
   deriving anyclass (Serialise)
 
+-- Wire-compatible receipt written before exact seed policy containment.
+data PreExactSeedBaselineReadBackReceipt
+  = PreExactSeedBaselineReadBackReceipt
+      !RootSessionId
+      !VaultStorageGeneration
+      ![BaselineTarget]
+      !ArtifactDigest
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (Serialise)
+
 bootstrapBrokerCustodySuite :: SuiteBuilder ()
 bootstrapBrokerCustodySuite = do
   rootInitializationSuite
@@ -1481,7 +1491,7 @@ rootSessionSuite =
                   )
           expectRight (decodeReceipt previousTargets) $ \previousReceipt -> do
             baselineReadBackTargets previousReceipt
-              `shouldBe` init requiredRootBaselineTargets
+              `shouldBe` take (length previousTargets) requiredRootBaselineTargets
             let completed = last states
                 previousClosed =
                   completed
@@ -1508,6 +1518,49 @@ rootSessionSuite =
                 rootSessionStatePhase restarted
                   `shouldBe` RootSessionCancelIncompleteGenerateRoot
                 rootSessionInvariantViolations restarted `shouldBe` []
+          expectRight (decodeReceipt (drop 1 previousTargets)) $ \partialReceipt -> do
+            let partialClosed =
+                  (last states)
+                    { rootSessionStatePhase =
+                        RootSessionClosed partialReceipt (fixtureStaleAbsence fixture)
+                    }
+            rootSessionInvariantViolations partialClosed
+              `shouldBe` [RootSessionBaselineTargetsDiffer (baselineReadBackTargets partialReceipt)]
+
+    it "restarts the pre-exact-seed-policy completed baseline" $
+      withFixture $ \fixture ->
+        expectRight (rootSessionPrefixes fixture) $ \states -> do
+          let previousTargets = init requiredRootBaselineTargets
+              decodeReceipt targets =
+                deserialiseOrFail
+                  ( serialise
+                      ( PreExactSeedBaselineReadBackReceipt
+                          (fixtureSessionId fixture)
+                          (rootInitStorageGeneration (recoveryCustodyBinding (fixtureRecoveryCustody fixture)))
+                          targets
+                          (fixtureDigestA fixture)
+                      )
+                  )
+          expectRight (decodeReceipt previousTargets) $ \previousReceipt -> do
+            baselineReadBackTargets previousReceipt `shouldBe` previousTargets
+            let completed = last states
+                previousClosed =
+                  completed
+                    { rootSessionStatePhase =
+                        RootSessionClosed previousReceipt (fixtureStaleAbsence fixture)
+                    }
+                previousInProgress =
+                  completed
+                    { rootSessionStatePhase =
+                        RootSessionBaselineReadBack (fixtureCurrentAccessor fixture) previousReceipt
+                    }
+            rootSessionInvariantViolations previousClosed `shouldBe` []
+            rootSessionBaselineIsCurrent previousClosed `shouldBe` False
+            planBaselineSessionIdentity previousClosed `shouldBe` MintFreshRootSessionId
+            rootSessionInvariantViolations previousInProgress
+              `shouldBe` [RootSessionBaselineTargetsDiffer previousTargets]
+            expectRight (restartRootSession (fixtureReplacementSessionId fixture) previousClosed) $ \restarted ->
+              rootSessionStatePhase restarted `shouldBe` RootSessionCancelIncompleteGenerateRoot
           expectRight (decodeReceipt (drop 1 previousTargets)) $ \partialReceipt -> do
             let partialClosed =
                   (last states)

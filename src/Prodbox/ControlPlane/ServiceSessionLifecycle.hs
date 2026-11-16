@@ -2,17 +2,25 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Exception-safe interpreter for the retained per-role service-session
--- journal.  It performs at most one Kubernetes login for a committed attempt;
--- restart from a dispatched attempt always inventories and cleans before a
--- greater fenced successor can be admitted.
+-- journal. It performs at most one Kubernetes login for a committed attempt.
+-- Externally dispatched ambiguous attempts remain occupied pending workload
+-- retirement; in-process session cleanup has its own recovery protocol.
 module Prodbox.ControlPlane.ServiceSessionLifecycle
   ( ServiceSessionLoginBoundary (..)
   , ServiceSessionSubjects (..)
   , ServiceSessionLifecycleError (..)
   , allocateNextServiceSessionBinding
+  , reserveServiceSessionCreation
+  , issueServiceSessionCreation
+  , prepareReservedServiceSessionDispatch
+  , beginReservedServiceSessionDispatch
+  , settleReservedServiceSessionDispatch
+  , retireReservedServiceSessionWorkload
   , prepareFencedServiceSessionDispatch
+  , prepareFencedServiceSessionDispatchWithWorkload
   , activateFencedServiceSessionDispatch
   , closeFencedServiceSessionDispatch
+  , recoverRetiredServiceSessionDispatch
   , acquireFencedServiceSession
   , closeFencedServiceSession
   , withFencedServiceSession
@@ -36,19 +44,28 @@ import Data.Text qualified as Text
 import Numeric.Natural (Natural)
 import Prodbox.ControlPlane.ServiceSessionJournal
   ( ServiceSessionBinding
+  , ServiceSessionCreationReservation
+  , ServiceSessionDispatchState (..)
   , ServiceSessionEvent (..)
   , ServiceSessionJournal
   , ServiceSessionJournalError
   , ServiceSessionJournalRepository (..)
   , ServiceSessionJournalSnapshot (..)
-  , ServiceSessionJournalStoreError
+  , ServiceSessionJournalStoreError (..)
   , ServiceSessionPhase (..)
+  , ServiceSessionWorkload
+  , ServiceSessionWorkloadEvidence
   , applyServiceSessionJournalEvent
   , mkServiceSessionBinding
+  , mkServiceSessionCreationReservation
   , serviceSessionBindingFence
   , serviceSessionBindingRole
+  , serviceSessionCreationFence
+  , serviceSessionJournalDispatchState
   , serviceSessionJournalPhase
+  , serviceSessionJournalRecoverableRetirement
   , serviceSessionJournalRole
+  , stepServiceSessionJournal
   )
 import Prodbox.ControlPlane.VaultAccessorAudit
   ( VaultAccessorAuditError
@@ -57,6 +74,8 @@ import Prodbox.ControlPlane.VaultAccessorAudit
   , revokeAndProveVaultAccessorSubjectAbsent
   , vaultAccessorMatchesSubject
   )
+import Prodbox.Lifecycle.Lease (OwnerNonce)
+import Prodbox.Lifecycle.LeaseRuntime (generateSecureOwnerNonce)
 
 data ServiceSessionLoginBoundary login = ServiceSessionLoginBoundary
   { attemptServiceSessionLogin :: IO (Either Text login)
@@ -114,11 +133,66 @@ allocateNextServiceSessionBinding repository role operationId attemptId = do
                 Left err -> Left (ServiceSessionLifecycleBindingInvalid err)
                 Right binding -> Right binding
 
+-- | Claim the Target role before creating its deterministic Job. Only a
+-- positively acknowledged CAS authorizes the caller to issue a create.
+reserveServiceSessionCreation
+  :: ServiceSessionJournalRepository IO revision
+  -> Text
+  -> Text
+  -> Text
+  -> IO (Either ServiceSessionLifecycleError ServiceSessionCreationReservation)
+reserveServiceSessionCreation repository role operation job = mask_ $ do
+  observed <- readServiceSessionJournal repository
+  case observed of
+    Left detail -> pure (Left (ServiceSessionLifecycleJournalUnavailable detail))
+    Right snapshot
+      | serviceSessionJournalRole (serviceSessionJournalObserved snapshot) /= role ->
+          pure (Left ServiceSessionLifecycleBindingRoleMismatch)
+      | otherwise -> case serviceSessionJournalPhase (serviceSessionJournalObserved snapshot) of
+          ServiceSessionVacant previousFence ->
+            case mkServiceSessionCreationReservation operation job (previousFence + 1) of
+              Left err -> pure (Left (ServiceSessionLifecycleBindingInvalid err))
+              Right reservation -> do
+                committed <-
+                  commitExternalTransitionOnce repository snapshot (ReserveServiceSessionCreation reservation)
+                pure (reservation <$ committed)
+          _ -> pure (Left ServiceSessionLifecycleRoleOccupied)
+
+-- The acknowledged transition must precede the Kubernetes create. A lost
+-- reply is ambiguous and must not be adopted as permission to create.
+issueServiceSessionCreation
+  :: ServiceSessionJournalRepository IO revision
+  -> ServiceSessionCreationReservation
+  -> IO (Either ServiceSessionLifecycleError ())
+issueServiceSessionCreation repository reservation = mask_ $ do
+  observed <- readServiceSessionJournal repository
+  case observed of
+    Left detail -> pure (Left (ServiceSessionLifecycleJournalUnavailable detail))
+    Right snapshot ->
+      fmap Control.Monad.void $
+        commitExternalTransitionOnce repository snapshot (IssueServiceSessionCreation reservation)
+
+prepareReservedServiceSessionDispatch
+  :: ServiceSessionJournalRepository IO revision
+  -> VaultAccessorAuditOps IO
+  -> VaultAccessorSubject
+  -> ServiceSessionCreationReservation
+  -> ServiceSessionBinding
+  -> ServiceSessionWorkloadEvidence
+  -> IO (Either ServiceSessionLifecycleError ())
+prepareReservedServiceSessionDispatch repository auditOps subject reservation binding evidence =
+  prepareFencedServiceSessionDispatchWithEvent
+    repository
+    auditOps
+    subject
+    binding
+    (BindServiceSessionCreation reservation binding evidence)
+
 -- | Establish the durable boundary for a one-shot process that performs its
 -- own Kubernetes login. Success means the role was stably precleaned and
 -- @LoginAttemptCommitted@ was stored before stdin or attach may be released.
--- Re-entry at that committed phase is ambiguous and is cleaned instead of
--- dispatching a second login.
+-- Re-entry at that committed phase is ambiguous and remains occupied instead
+-- of dispatching a second login.
 prepareFencedServiceSessionDispatch
   :: ServiceSessionJournalRepository IO revision
   -> VaultAccessorAuditOps IO
@@ -126,48 +200,53 @@ prepareFencedServiceSessionDispatch
   -> ServiceSessionBinding
   -> IO (Either ServiceSessionLifecycleError ())
 prepareFencedServiceSessionDispatch repository auditOps cleanupSubject binding =
+  prepareFencedServiceSessionDispatchWithEvent
+    repository
+    auditOps
+    cleanupSubject
+    binding
+    (BeginServiceSessionAcquisition binding)
+
+-- | Atomically retain exact workload identity in the same CAS that claims
+-- the external dispatch lane, before any login attempt can be committed.
+prepareFencedServiceSessionDispatchWithWorkload
+  :: ServiceSessionJournalRepository IO revision
+  -> VaultAccessorAuditOps IO
+  -> VaultAccessorSubject
+  -> ServiceSessionBinding
+  -> ServiceSessionWorkloadEvidence
+  -> IO (Either ServiceSessionLifecycleError ())
+prepareFencedServiceSessionDispatchWithWorkload repository auditOps cleanupSubject binding evidence =
+  prepareFencedServiceSessionDispatchWithEvent
+    repository
+    auditOps
+    cleanupSubject
+    binding
+    (BeginServiceSessionVerifiedWorkload binding evidence)
+
+prepareFencedServiceSessionDispatchWithEvent
+  :: ServiceSessionJournalRepository IO revision
+  -> VaultAccessorAuditOps IO
+  -> VaultAccessorSubject
+  -> ServiceSessionBinding
+  -> ServiceSessionEvent
+  -> IO (Either ServiceSessionLifecycleError ())
+prepareFencedServiceSessionDispatchWithEvent repository auditOps cleanupSubject binding beginEvent =
   mask $ \_ -> do
     attempted <- tryAny drive
     case attempted of
-      Left exception -> do
-        _ <- cleanupIfOwned
-        if isAsyncException exception
-          then throwIO exception
-          else pure (Left ServiceSessionLifecycleUnhandledException)
-      Right (Right ()) -> pure (Right ())
-      Right (Left err) -> do
-        cleaned <- cleanupIfOwned
-        pure $ case cleaned of
-          Left cleanupError -> Left cleanupError
-          Right () -> Left err
+      Left exception
+        | isAsyncException exception -> throwIO exception
+        | otherwise -> pure (Left ServiceSessionLifecycleUnhandledException)
+      Right result -> pure result
  where
   drive = do
-    started <- beginOrResume repository binding
+    started <- case beginEvent of
+      BindServiceSessionCreation {} -> bindReservedDispatchOnce repository binding beginEvent
+      _ -> beginExternalDispatchOnce repository binding beginEvent
     case started of
-      Left ServiceSessionLifecycleRoleOccupied -> recoverPredecessor
       Left err -> pure (Left err)
       Right journal -> resume journal
-
-  recoverPredecessor = do
-    observed <- readServiceSessionJournal repository
-    case observed of
-      Left detail -> pure (Left (ServiceSessionLifecycleJournalUnavailable detail))
-      Right snapshot
-        | serviceSessionJournalRole (serviceSessionJournalObserved snapshot)
-            /= serviceSessionBindingRole binding ->
-            pure (Left ServiceSessionLifecycleBindingRoleMismatch)
-        | otherwise ->
-            case phaseBinding
-              (serviceSessionJournalPhase (serviceSessionJournalObserved snapshot)) of
-              Just predecessor
-                | predecessor /= binding
-                    && serviceSessionBindingFence binding
-                      > serviceSessionBindingFence predecessor -> do
-                    cleaned <- cleanupDispatch predecessor
-                    case cleaned of
-                      Left err -> pure (Left err)
-                      Right () -> drive
-              _ -> pure (Left ServiceSessionLifecycleRoleOccupied)
 
   resume journal = case serviceSessionJournalPhase journal of
     ServiceSessionAcquiring existing
@@ -184,41 +263,126 @@ prepareFencedServiceSessionDispatch repository auditOps cleanupSubject binding =
           committed <- commitDispatch (CommitServiceSessionLoginAttempt binding)
           pure (Control.Monad.void committed)
     ServiceSessionLoginAttemptCommitted existing
-      | existing == binding -> ambiguous
+      | existing == binding -> pure (Left ServiceSessionLifecycleRoleOccupied)
     ServiceSessionActive existing _
-      | existing == binding -> ambiguous
+      | existing == binding -> pure (Left ServiceSessionLifecycleRoleOccupied)
     ServiceSessionCleanupRequired existing _
-      | existing == binding -> ambiguous
+      | existing == binding -> pure (Left ServiceSessionLifecycleRoleOccupied)
     ServiceSessionCleanupProven existing
-      | existing == binding -> ambiguous
+      | existing == binding -> pure (Left ServiceSessionLifecycleRoleOccupied)
     _ -> pure (Left ServiceSessionLifecycleRoleOccupied)
-
-  ambiguous = do
-    cleaned <- cleanupDispatch binding
-    pure $ case cleaned of
-      Left err -> Left err
-      Right () -> Left ServiceSessionLifecycleLoginAmbiguityCleaned
-
-  cleanupIfOwned = do
-    observed <- readServiceSessionJournal repository
-    case observed of
-      Left detail -> pure (Left (ServiceSessionLifecycleJournalUnavailable detail))
-      Right snapshot
-        | serviceSessionJournalRole (serviceSessionJournalObserved snapshot)
-            /= serviceSessionBindingRole binding ->
-            pure (Left ServiceSessionLifecycleBindingRoleMismatch)
-        | phaseBinding (serviceSessionJournalPhase (serviceSessionJournalObserved snapshot))
-            == Just binding ->
-            cleanupDispatch binding
-      _ -> pure (Right ())
-
-  cleanupDispatch =
-    closeFencedServiceSessionDispatch repository auditOps cleanupSubject
 
   commitDispatch event =
     fmap
       (either (Left . ServiceSessionLifecycleJournalFailed) Right)
       (applyServiceSessionJournalEvent repository event)
+
+-- An exact read-back after a failed acquisition CAS cannot identify which
+-- caller won. Only a positively acknowledged CAS may authorize dispatch.
+beginExternalDispatchOnce
+  :: ServiceSessionJournalRepository IO revision
+  -> ServiceSessionBinding
+  -> ServiceSessionEvent
+  -> IO (Either ServiceSessionLifecycleError ServiceSessionJournal)
+beginExternalDispatchOnce repository binding beginEvent = do
+  observed <- readServiceSessionJournal repository
+  case observed of
+    Left detail -> pure (Left (ServiceSessionLifecycleJournalUnavailable detail))
+    Right snapshot
+      | serviceSessionJournalRole (serviceSessionJournalObserved snapshot)
+          /= serviceSessionBindingRole binding ->
+          pure (Left ServiceSessionLifecycleBindingRoleMismatch)
+      | otherwise -> case serviceSessionJournalPhase (serviceSessionJournalObserved snapshot) of
+          ServiceSessionVacant previousFence
+            | serviceSessionBindingFence binding > previousFence ->
+                case stepServiceSessionJournal
+                  beginEvent
+                  (serviceSessionJournalObserved snapshot) of
+                  Left failure -> pure (Left (ServiceSessionLifecycleBindingInvalid failure))
+                  Right expected -> do
+                    written <-
+                      compareAndSwapServiceSessionJournal repository (serviceSessionJournalRevision snapshot) expected
+                    case written of
+                      Left detail ->
+                        pure (Left (ServiceSessionLifecycleJournalFailed (ServiceSessionJournalStoreCommitFailed detail)))
+                      Right () -> do
+                        confirmed <- readServiceSessionJournal repository
+                        pure $ case confirmed of
+                          Left detail -> Left (ServiceSessionLifecycleJournalFailed (ServiceSessionJournalStoreUnavailable detail))
+                          Right actual
+                            | serviceSessionJournalObserved actual == expected -> Right expected
+                            | otherwise ->
+                                Left (ServiceSessionLifecycleJournalFailed ServiceSessionJournalStoreReadBackMismatch)
+          _ -> pure (Left ServiceSessionLifecycleRoleOccupied)
+
+bindReservedDispatchOnce
+  :: ServiceSessionJournalRepository IO revision
+  -> ServiceSessionBinding
+  -> ServiceSessionEvent
+  -> IO (Either ServiceSessionLifecycleError ServiceSessionJournal)
+bindReservedDispatchOnce repository binding event = do
+  observed <- readServiceSessionJournal repository
+  case observed of
+    Left detail -> pure (Left (ServiceSessionLifecycleJournalUnavailable detail))
+    Right snapshot
+      | serviceSessionJournalRole (serviceSessionJournalObserved snapshot)
+          /= serviceSessionBindingRole binding ->
+          pure (Left ServiceSessionLifecycleBindingRoleMismatch)
+      | otherwise -> commitExternalTransitionOnce repository snapshot event
+
+commitExternalTransitionOnce
+  :: ServiceSessionJournalRepository IO revision
+  -> ServiceSessionJournalSnapshot revision
+  -> ServiceSessionEvent
+  -> IO (Either ServiceSessionLifecycleError ServiceSessionJournal)
+commitExternalTransitionOnce repository snapshot event =
+  case stepServiceSessionJournal event (serviceSessionJournalObserved snapshot) of
+    Left failure -> pure (Left (ServiceSessionLifecycleBindingInvalid failure))
+    Right expected -> do
+      written <-
+        compareAndSwapServiceSessionJournal repository (serviceSessionJournalRevision snapshot) expected
+      case written of
+        Left detail ->
+          pure (Left (ServiceSessionLifecycleJournalFailed (ServiceSessionJournalStoreCommitFailed detail)))
+        Right () -> do
+          confirmed <- readServiceSessionJournal repository
+          pure $ case confirmed of
+            Left detail -> Left (ServiceSessionLifecycleJournalFailed (ServiceSessionJournalStoreUnavailable detail))
+            Right actual
+              | serviceSessionJournalObserved actual == expected -> Right expected
+              | otherwise ->
+                  Left (ServiceSessionLifecycleJournalFailed ServiceSessionJournalStoreReadBackMismatch)
+
+-- | Only an acknowledged transition grants authority to attach the worker.
+beginReservedServiceSessionDispatch
+  :: ServiceSessionJournalRepository IO revision
+  -> ServiceSessionBinding
+  -> IO (Either ServiceSessionLifecycleError ())
+beginReservedServiceSessionDispatch repository binding =
+  fmap
+    Control.Monad.void
+    (bindReservedDispatchOnce repository binding (BeginServiceSessionDispatch binding))
+
+-- | Record the worker's acknowledged terminal cleanup before lane cleanup.
+settleReservedServiceSessionDispatch
+  :: ServiceSessionJournalRepository IO revision
+  -> ServiceSessionBinding
+  -> IO (Either ServiceSessionLifecycleError ())
+settleReservedServiceSessionDispatch repository binding =
+  fmap
+    Control.Monad.void
+    (bindReservedDispatchOnce repository binding (SettleServiceSessionDispatch binding))
+
+-- | Record exact Job/Pod absence before session cleanup can begin.
+retireReservedServiceSessionWorkload
+  :: ServiceSessionJournalRepository IO revision
+  -> ServiceSessionBinding
+  -> ServiceSessionWorkload
+  -> IO (Either ServiceSessionLifecycleError ())
+retireReservedServiceSessionWorkload repository binding workload =
+  fmap
+    Control.Monad.void
+    (bindReservedDispatchOnce repository binding (RetireServiceSessionWorkload binding workload))
 
 -- | Bind a server-issued accessor to an externally executed login attempt.
 -- The one-shot worker must remain blocked until this returns: classification
@@ -277,24 +441,112 @@ closeFencedServiceSessionDispatch
   -> VaultAccessorSubject
   -> ServiceSessionBinding
   -> IO (Either ServiceSessionLifecycleError ())
-closeFencedServiceSessionDispatch repository auditOps cleanupSubject binding =
-  mask_ $ do
-    loginRef <- newIORef Nothing
-    cleanupFencedSession
-      repository
-      auditOps
-      cleanupSubject
-      binding
-      dispatchOnlyLoginBoundary
-      loginRef
+closeFencedServiceSessionDispatch repository auditOps cleanupSubject binding = mask_ $ do
+  ownerResult <- generateSecureOwnerNonce
+  case ownerResult of
+    Left _ -> pure (Left (ServiceSessionLifecycleActionFailed "cleanup owner generation failed"))
+    Right owner -> do
+      observed <- readServiceSessionJournal repository
+      case observed of
+        Left detail -> pure (Left (ServiceSessionLifecycleJournalUnavailable detail))
+        Right snapshot -> do
+          claimed <-
+            commitExternalTransitionOnce repository snapshot (ClaimServiceSessionCleanup binding owner)
+          case claimed of
+            Left err -> pure (Left err)
+            Right journal -> finishOwnedDispatchCleanup repository auditOps cleanupSubject binding owner journal
 
-dispatchOnlyLoginBoundary :: ServiceSessionLoginBoundary ()
-dispatchOnlyLoginBoundary =
-  ServiceSessionLoginBoundary
-    { attemptServiceSessionLogin = pure (Left "external one-shot login only")
-    , serviceSessionLoginAccessor = const ""
-    , revokeServiceSessionLogin = const (pure (Right ()))
-    }
+-- | Release a durably proven owned cleanup, or claim an unclaimed retirement.
+-- The latter claim precedes independent exact-UID observation and role audit.
+recoverRetiredServiceSessionDispatch
+  :: ServiceSessionJournalRepository IO revision
+  -> VaultAccessorAuditOps IO
+  -> VaultAccessorSubject
+  -> (ServiceSessionWorkload -> IO (Either Text Bool))
+  -> IO (Either ServiceSessionLifecycleError Bool)
+recoverRetiredServiceSessionDispatch repository auditOps cleanupSubject observeAbsent = mask_ $ do
+  attempted <-
+    tryAny (recoverRetiredServiceSessionDispatchOnce repository auditOps cleanupSubject observeAbsent)
+  case attempted of
+    Left exception
+      | isAsyncException exception -> throwIO exception
+      | otherwise -> pure (Left ServiceSessionLifecycleUnhandledException)
+    Right result -> pure result
+
+recoverRetiredServiceSessionDispatchOnce
+  :: ServiceSessionJournalRepository IO revision
+  -> VaultAccessorAuditOps IO
+  -> VaultAccessorSubject
+  -> (ServiceSessionWorkload -> IO (Either Text Bool))
+  -> IO (Either ServiceSessionLifecycleError Bool)
+recoverRetiredServiceSessionDispatchOnce repository auditOps cleanupSubject observeAbsent = do
+  observed <- readServiceSessionJournal repository
+  case observed of
+    Left detail -> pure (Left (ServiceSessionLifecycleJournalUnavailable detail))
+    Right snapshot -> recoverSnapshot snapshot
+ where
+  recoverSnapshot snapshot = case (serviceSessionJournalPhase journal, serviceSessionJournalDispatchState journal) of
+    (ServiceSessionCreationPrepared reservation, _) ->
+      fmap (fmap (const True)) $
+        commitExternalTransitionOnce repository snapshot (ReleasePreparedServiceSessionCreation reservation)
+    (ServiceSessionCleanupProven binding, Just (ServiceSessionDispatchCleanupOwned owner)) ->
+      fmap (fmap (const True)) $
+        commitExternalTransitionOnce repository snapshot (ReleaseOwnedServiceSession binding owner)
+    _ -> recoverRetirement snapshot
+   where
+    journal = serviceSessionJournalObserved snapshot
+
+  recoverRetirement snapshot = case serviceSessionJournalRecoverableRetirement (serviceSessionJournalObserved snapshot) of
+    Nothing -> pure (Right False)
+    Just (binding, workload) -> do
+      ownerResult <- generateSecureOwnerNonce
+      case ownerResult of
+        Left _ -> pure (Left (ServiceSessionLifecycleActionFailed "cleanup owner generation failed"))
+        Right owner -> do
+          claimed <-
+            commitExternalTransitionOnce repository snapshot (ClaimServiceSessionCleanup binding owner)
+          case claimed of
+            Left err -> pure (Left err)
+            Right journal -> do
+              absent <- tryAny (observeAbsent workload)
+              case absent of
+                Left exception | isAsyncException exception -> throwIO exception
+                Right (Right True) ->
+                  fmap
+                    (fmap (const True))
+                    (finishOwnedDispatchCleanup repository auditOps cleanupSubject binding owner journal)
+                _ -> pure (Left (ServiceSessionLifecycleActionFailed "retired workload absence unobservable"))
+
+finishOwnedDispatchCleanup
+  :: ServiceSessionJournalRepository IO revision
+  -> VaultAccessorAuditOps IO
+  -> VaultAccessorSubject
+  -> ServiceSessionBinding
+  -> OwnerNonce
+  -> ServiceSessionJournal
+  -> IO (Either ServiceSessionLifecycleError ())
+finishOwnedDispatchCleanup repository auditOps cleanupSubject binding owner journal = do
+  let knownAccessor = case serviceSessionJournalPhase journal of
+        ServiceSessionActive _ accessor -> Just accessor
+        _ -> Nothing
+      applyOwned event =
+        fmap
+          (either (Left . ServiceSessionLifecycleCleanupJournalFailed) Right)
+          (applyServiceSessionJournalEvent repository event)
+  required <- applyOwned (RequireOwnedServiceSessionCleanup binding owner)
+  case required of
+    Left err -> pure (Left err)
+    Right _ -> do
+      audited <- tryAny (revokeAndProveVaultAccessorSubjectAbsent auditOps cleanupSubject knownAccessor)
+      case audited of
+        Left exception | isAsyncException exception -> throwIO exception
+        Left _ -> pure (Left ServiceSessionLifecycleCleanupThrew)
+        Right (Left err) -> pure (Left (ServiceSessionLifecycleCleanupFailed err))
+        Right (Right ()) -> do
+          proven <- applyOwned (ProveOwnedServiceSessionCleanup binding owner)
+          case proven of
+            Left err -> pure (Left err)
+            Right _ -> fmap Control.Monad.void (applyOwned (ReleaseOwnedServiceSession binding owner))
 
 acquireFencedServiceSession
   :: ServiceSessionJournalRepository IO revision
@@ -685,6 +937,11 @@ phaseBinding phase = case phase of
   ServiceSessionActive binding _ -> Just binding
   ServiceSessionCleanupRequired binding _ -> Just binding
   ServiceSessionCleanupProven binding -> Just binding
+  ServiceSessionWorkloadOwned inner _ -> phaseBinding inner
+  ServiceSessionVerifiedWorkloadOwned inner _ -> phaseBinding inner
+  ServiceSessionCreationReserved _ -> Nothing
+  ServiceSessionCreationPrepared _ -> Nothing
+  ServiceSessionDispatchOwned inner _ _ -> phaseBinding inner
 
 phaseFence :: ServiceSessionPhase -> Natural
 phaseFence phase = case phase of
@@ -695,6 +952,11 @@ phaseFence phase = case phase of
   ServiceSessionActive binding _ -> serviceSessionBindingFence binding
   ServiceSessionCleanupRequired binding _ -> serviceSessionBindingFence binding
   ServiceSessionCleanupProven binding -> serviceSessionBindingFence binding
+  ServiceSessionWorkloadOwned inner _ -> phaseFence inner
+  ServiceSessionVerifiedWorkloadOwned inner _ -> phaseFence inner
+  ServiceSessionCreationReserved reservation -> serviceSessionCreationFence reservation
+  ServiceSessionCreationPrepared reservation -> serviceSessionCreationFence reservation
+  ServiceSessionDispatchOwned inner _ _ -> phaseFence inner
 
 tryAny :: IO value -> IO (Either SomeException value)
 tryAny = try

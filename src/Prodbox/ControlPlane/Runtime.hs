@@ -5507,6 +5507,7 @@ targetSecretAgentRuntimeHandler vaultConfig vaultSession clusterId agentIdentity
                                     )
                                     accepted
                                     verifiedNow
+                                    currentAuthorityTime
                                     agentIdentity
                                     target
                                     (targetWorkerOperationInputSchema operation)

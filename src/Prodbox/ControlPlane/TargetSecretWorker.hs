@@ -25,6 +25,7 @@ module Prodbox.ControlPlane.TargetSecretWorker
   , targetWorkerJobUidText
   , TargetWorkerPodUid
   , mkTargetWorkerPodUid
+  , targetWorkerKubernetesUidMaximumCharacters
   , targetWorkerPodUidText
   , TargetWorkerServiceAccountUid
   , mkTargetWorkerServiceAccountUid
@@ -311,12 +312,15 @@ targetWorkerServiceAccountUidText (TargetWorkerServiceAccountUid value) = value
 validatedKubernetesUid :: Text -> Text -> Either Text Text
 validatedKubernetesUid label raw
   | Text.null value = Left (label <> " is empty")
-  | Text.length value > 128 = Left (label <> " is over bound")
+  | Text.length value > targetWorkerKubernetesUidMaximumCharacters = Left (label <> " is over bound")
   | Text.any (\character -> isControl character || isSpace character) value =
       Left (label <> " is invalid")
   | otherwise = Right value
  where
   value = Text.strip raw
+
+targetWorkerKubernetesUidMaximumCharacters :: Int
+targetWorkerKubernetesUidMaximumCharacters = 128
 
 targetWorkerServiceAccount :: Text
 targetWorkerServiceAccount = "prodbox-target-secret-worker"
@@ -1455,20 +1459,27 @@ metadataGenerationCommitment
   -> Either TargetWorkerExecutionError (Maybe (Natural, Text))
 metadataGenerationCommitment observation = case observation of
   TargetWorkerMetadataMissing -> Right Nothing
-  TargetWorkerMetadataPresent _ custom -> case ( Map.lookup targetMaterialMetadataGenerationField custom
-                                               , Map.lookup targetMaterialMetadataCommitmentField custom
-                                               ) of
-    (Nothing, Nothing) -> Right Nothing
-    (Just generationText, Just commitment) -> do
-      generation <-
-        maybe
+  TargetWorkerMetadataPresent currentVersion custom -> do
+    case Map.lookup targetMaterialMetadataVaultVersionField custom of
+      Nothing -> pure ()
+      Just rawVersion ->
+        unless
+          (rawVersion == naturalText currentVersion && currentVersion > 0)
           (Left TargetWorkerExecutionMetadataInvalid)
-          Right
-          (readMaybe (Text.unpack generationText))
-      unless (generation > 0) (Left TargetWorkerExecutionMetadataInvalid)
-      _ <- first (const TargetWorkerExecutionMetadataInvalid) (validateCommitment commitment)
-      Right (Just (generation, commitment))
-    _ -> Left TargetWorkerExecutionMetadataInvalid
+    case ( Map.lookup targetMaterialMetadataGenerationField custom
+         , Map.lookup targetMaterialMetadataCommitmentField custom
+         ) of
+      (Nothing, Nothing) -> Right Nothing
+      (Just generationText, Just commitment) -> do
+        generation <-
+          maybe
+            (Left TargetWorkerExecutionMetadataInvalid)
+            Right
+            (readMaybe (Text.unpack generationText))
+        unless (generation > 0) (Left TargetWorkerExecutionMetadataInvalid)
+        _ <- first (const TargetWorkerExecutionMetadataInvalid) (validateCommitment commitment)
+        Right (Just (generation, commitment))
+      _ -> Left TargetWorkerExecutionMetadataInvalid
 
 naturalText :: Natural -> Text
 naturalText = Text.pack . show

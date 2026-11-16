@@ -11,9 +11,15 @@ module Prodbox.ControlPlane.RetainedAuthentication
   , reconcileRetainedAuthorityEpoch
   , authorityAdmissionWithRetainedEpoch
   , vaultRequestReplayRepository
+  , TargetReplayMigrationStore (..)
+  , TargetReplayMigrationResult (..)
+  , migrateTargetReplayStagedWith
+  , migrateTargetReplayStaged
+  , targetReplayVaultReadMaximumBytes
   )
 where
 
+import Data.ByteString qualified as ByteString
 import Data.ByteString.Base64 qualified as Base64
 import Data.Map.Strict qualified as Map
 import Data.Text (Text)
@@ -33,6 +39,7 @@ import Prodbox.ControlPlane.RequestReplay
   , decodeRequestReplayProjection
   , encodeRequestReplayProjection
   , initialRequestReplayProjection
+  , requestReplayStagedCodec
   )
 import Prodbox.Http.Client (HttpError (..), renderHttpError)
 import Prodbox.Lifecycle.Authority.Admission
@@ -44,7 +51,8 @@ import Prodbox.Lifecycle.Authority.Genesis
   , authorityEpochFromValue
   , authorityEpochValue
   )
-import Prodbox.Runtime.Role (RuntimeRole, runtimeRoleName)
+import Prodbox.Lifecycle.CheckpointAuthority (ModelBCodec (..))
+import Prodbox.Runtime.Role (RuntimeRole (TargetSecretAgentRuntime), runtimeRoleName)
 import Prodbox.Vault.Client
   ( KvV2Cas (..)
   , KvV2VersionedSecret (..)
@@ -52,12 +60,15 @@ import Prodbox.Vault.Client
   , classifyVaultCasOutcome
   , renderVaultCasOutcome
   , vaultKvCasWriteV2
+  , vaultKvCasWriteV2Bounded
   , vaultKvReadVersionedV2
   , vaultKvReadVersionedV2Bounded
+  , vaultKvReadVersionedV2WithLimit
   )
 import Prodbox.Vault.Session
   ( VaultSession
   , sessionAddress
+  , sessionToken
   , withSessionToken
   )
 
@@ -67,6 +78,124 @@ controlPlaneAuthorityEpochPath = "control-plane/authority-epoch"
 controlPlaneRequestReplayPath :: RuntimeRole -> Text
 controlPlaneRequestReplayPath role =
   "control-plane/request-replay/" <> Text.pack (runtimeRoleName role)
+
+-- | The path is selected by the migration, not by the caller. This boundary
+-- permits exercising the same versioned Vault operations without credentials.
+data TargetReplayMigrationStore m = TargetReplayMigrationStore
+  { targetReplayMigrationRead :: Text -> m (Either HttpError KvV2VersionedSecret)
+  , targetReplayMigrationWrite :: Text -> Natural -> Map.Map Text Text -> m VaultCasOutcome
+  }
+
+data TargetReplayMigrationResult
+  = TargetReplayObservedCurrent !Natural
+  | TargetReplayMigrated !Natural
+  | TargetReplayRecovered !Natural
+  | TargetReplayMissing
+  | TargetReplayInvalid !Text
+  | TargetReplayConflict
+  | TargetReplayWriteRefused
+  | TargetReplayUnobservable
+  | TargetReplayReadbackChanged
+  deriving (Eq, Show)
+
+-- | One exact Vault KV-v2 CAS, with independent readback. This candidate is
+-- not installed: the caller must first fence and drain all old writers, and
+-- separately bound the supplied transport, execution time and memory. An observed
+-- current version is not a fence or completion receipt.
+migrateTargetReplayStagedWith
+  :: (Monad m)
+  => Int
+  -> RequestReplayLimits
+  -> RequestReplayLimits
+  -> TargetReplayMigrationStore m
+  -> m TargetReplayMigrationResult
+migrateTargetReplayStagedWith maximumBytes previousLimits nextLimits store =
+  case requestReplayStagedCodec maximumBytes previousLimits nextLimits of
+    Left failure -> pure (TargetReplayInvalid (Text.pack (show failure)))
+    Right codec -> do
+      observed <- targetReplayMigrationRead store path
+      case observed of
+        Left (HttpStatus 404 _) -> pure TargetReplayMissing
+        Left _ -> pure TargetReplayUnobservable
+        Right secret -> case successor codec secret of
+          Left failure -> pure (TargetReplayInvalid failure)
+          Right fields
+            | fields == kvV2VersionedSecretData secret ->
+                pure (TargetReplayObservedCurrent (kvV2VersionedSecretVersion secret))
+            | otherwise -> do
+                let previous = kvV2VersionedSecretVersion secret
+                attempted <- targetReplayMigrationWrite store path previous fields
+                case attempted of
+                  VaultCasConflict _ -> pure TargetReplayConflict
+                  VaultCasRefused _ _ -> pure TargetReplayWriteRefused
+                  VaultCasApplied version
+                    | version /= previous + 1 -> pure TargetReplayReadbackChanged
+                    | otherwise -> confirm (TargetReplayMigrated version) version fields
+                  VaultCasUnobservable _ ->
+                    confirm (TargetReplayRecovered (previous + 1)) (previous + 1) fields
+ where
+  path = controlPlaneRequestReplayPath TargetSecretAgentRuntime
+  successor codec secret = do
+    let fields = kvV2VersionedSecretData secret
+    if kvV2VersionedSecretVersion secret == 0 || Map.keys fields /= [requestReplayField]
+      then Left "invalid retained replay version or fields"
+      else pure ()
+    encoded <- maybe (Left "missing retained replay field") Right (Map.lookup requestReplayField fields)
+    if maximumBytes < 0 || toInteger (Text.length encoded) > 4 * ((toInteger maximumBytes + 2) `div` 3)
+      then Left "retained replay exceeds byte budget"
+      else pure ()
+    let encodedBytes = TextEncoding.encodeUtf8 encoded
+    decoded <- either (const (Left "invalid retained replay base64")) Right (Base64.decode encodedBytes)
+    if Base64.encode decoded /= encodedBytes || ByteString.length decoded > maximumBytes
+      then Left "noncanonical or oversized retained replay"
+      else pure ()
+    projection <- either (Left . Text.pack) Right (decodeModelBValue codec decoded)
+    next <- either (Left . Text.pack) Right (encodeModelBValue codec projection)
+    pure (Map.singleton requestReplayField (TextEncoding.decodeUtf8 (Base64.encode next)))
+  confirm success version fields = do
+    observed <- targetReplayMigrationRead store path
+    pure $ case observed of
+      Right secret
+        | kvV2VersionedSecretVersion secret == version
+            && kvV2VersionedSecretData secret == fields ->
+            success
+        | otherwise -> TargetReplayReadbackChanged
+      Left _ -> TargetReplayUnobservable
+
+-- | Bind the candidate to the same authenticated Vault session and exact
+-- KV-v2 mount as the installed Target replay repository. This alone supplies
+-- neither the old-writer fence nor the separately required memory and time bounds.
+-- The wire ceiling admits the canonical base64 payload plus a bounded JSON
+-- envelope; additional escaping or metadata may be refused as unobservable.
+targetReplayVaultReadMaximumBytes :: Int -> Maybe Int
+targetReplayVaultReadMaximumBytes maximumBytes
+  | maximumBytes < 0 || ceilingBytes > toInteger (maxBound :: Int) = Nothing
+  | otherwise = Just (fromInteger ceilingBytes)
+ where
+  ceilingBytes = 4 * ((toInteger maximumBytes + 2) `div` 3) + 128 * 1024
+
+migrateTargetReplayStaged
+  :: VaultSession
+  -> Int
+  -> RequestReplayLimits
+  -> RequestReplayLimits
+  -> IO TargetReplayMigrationResult
+migrateTargetReplayStaged session maximumBytes previousLimits nextLimits =
+  case targetReplayVaultReadMaximumBytes maximumBytes of
+    Nothing -> pure (TargetReplayInvalid "invalid Vault replay read bound")
+    Just wireMaximum ->
+      migrateTargetReplayStagedWith maximumBytes previousLimits nextLimits $
+        TargetReplayMigrationStore
+          { targetReplayMigrationRead = \path -> withSessionToken session $ \token ->
+              vaultKvReadVersionedV2WithLimit wireMaximum (sessionAddress session) token "secret" path
+          , targetReplayMigrationWrite = \path version fields -> do
+              acquired <- sessionToken session
+              case acquired of
+                Left _ -> pure (VaultCasUnobservable "Vault session acquisition failed")
+                Right token ->
+                  classifyVaultCasOutcome
+                    <$> vaultKvCasWriteV2Bounded (sessionAddress session) token "secret" path (KvV2Cas version) fields
+          }
 
 authorityEpochField :: Text
 authorityEpochField = "epoch"

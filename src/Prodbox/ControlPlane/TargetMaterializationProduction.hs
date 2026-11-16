@@ -64,7 +64,8 @@ import Prodbox.ControlPlane.TargetSecretWorker
   , targetWorkerSchemaForTarget
   )
 import Prodbox.ControlPlane.TargetSecretWorkerCoordinator
-  ( TargetWorkerCoordinatorError (..)
+  ( TargetWorkerCoordinatorClockFailure (..)
+  , TargetWorkerCoordinatorError (..)
   , TargetWorkerSessionPrepareCause (..)
   )
 import Prodbox.ControlPlane.TargetSecretWorkerProduction
@@ -88,6 +89,7 @@ import Prodbox.Lifecycle.CredentialProvisioner.AwsAdminExecution
   , AwsAdminTargetIntentIssueCause (..)
   , AwsAdminTargetObservationCause (..)
   , AwsAdminTargetWorkerCause (..)
+  , AwsAdminTargetWorkerObservationCause (AwsAdminTargetWorkerObservationOther)
   , classifyAwsAdminTargetWorkerObservationFailure
   , mkAwsAdminDeliveryBoundary
   , renderAwsAdminTargetWorkerCause
@@ -204,6 +206,7 @@ productionAwsAdminPreparedTargetMaterializer boundary permit prepared payload =
                           (productionTargetJobConnection boundary)
                       )
                       execution
+                      (productionTargetReadTime boundary)
                       (buildAtTime now)
                       payload
                   pure (first classifyTargetMaterializationWorkflowError result)
@@ -247,6 +250,7 @@ productionRewrappedTargetMaterializer boundary request opening = do
                       (productionTargetJobConnection boundary)
                   )
                   execution
+                  (productionTargetReadTime boundary)
                   request
                   opening
               pure (first (Text.take 256 . Text.pack . show) result)
@@ -484,6 +488,7 @@ classifyTargetWorkerError err = case err of
   TargetWorkerCoordinatorObservationFailed detail ->
     AwsAdminTargetWorkerObservationFailed
       (classifyAwsAdminTargetWorkerObservationFailure detail)
+  TargetWorkerCoordinatorClockFailed _ -> AwsAdminTargetWorkerObservationFailed AwsAdminTargetWorkerObservationOther
   TargetWorkerCoordinatorWorkloadAbsent -> AwsAdminTargetWorkerWorkloadAbsent
   TargetWorkerCoordinatorCleanupBindingInvalid -> AwsAdminTargetWorkerCleanupBindingInvalid
   TargetWorkerCoordinatorAttestationFailed _ -> AwsAdminTargetWorkerAttestationFailed
@@ -505,6 +510,10 @@ classifyTargetWorkerError err = case err of
 
 renderTargetWorkerCoordinatorDiagnostic :: TargetWorkerCoordinatorError -> Text
 renderTargetWorkerCoordinatorDiagnostic err = case err of
+  TargetWorkerCoordinatorClockFailed failure -> case failure of
+    TargetWorkerClockUnavailable -> "clock/unavailable"
+    TargetWorkerClockRegressed -> "clock/regressed"
+    TargetWorkerClockDeadlineReached -> "clock/deadline-reached"
   TargetWorkerCoordinatorAttestationFailed attestationError ->
     "attestation-failed/" <> renderTargetWorkerAttestationError attestationError
   TargetWorkerCoordinatorAttachFailed detail ->
@@ -554,6 +563,7 @@ renderTargetWorkerSessionPrepareCause cause = case cause of
   TargetWorkerSessionPrepareCleanupJournalFailed -> "cleanup-journal-failed"
   TargetWorkerSessionPrepareActionFailed -> "action-failed"
   TargetWorkerSessionPrepareUnhandledException -> "unhandled-exception"
+  TargetWorkerSessionPrepareRecoveryCompletedRetryRequired -> "recovery-completed-retry-required"
 
 -- | Refine only the closed production attach failures. Arbitrary
 -- injected detail collapses before it reaches the protected diagnostic.

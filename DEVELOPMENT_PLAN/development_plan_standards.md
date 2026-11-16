@@ -3,558 +3,116 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Generated sections**: none
+**Applicability**: Adopted numerical execution and phase-completion contract.
 
-> **Purpose**: Define the maintenance rules for the prodbox development plan so the repository
-> keeps one coherent, execution-ordered plan and one explicit ledger of cleanup/removal work.
-
-## Core Principles
-
-### A. Continuous Clean-Room Narrative
-
-The plan must read as one sequential buildout from an empty checkout to the intended repository
-end state.
-
-- Every phase assumes the previous phase has already closed.
-- The plan should flow from plan ownership to CLI/runtime foundations to gateway and chart
-  delivery, then to cleanup, public-host proof, and final rerun.
-- A reader unfamiliar with the repository should be able to follow the plan from top to bottom
-  without reconstructing hidden dependencies from multiple documents.
-- The "previous phase has already closed" relationship is a *build* dependency (later phases
-  compose earlier deliverables), **not a validation gate** (Standard N): every phase stays
-  independently validatable on its owned surface while later phases are incomplete.
-- Reopening a closed phase is permitted only to expand that phase's **own** owned surface — never
-  to attach a later phase's dependency to an earlier phase (Standard N). When a phase reopens to
-  expand its own surface, the top-level docs say which phase reopened and why.
-
-### B. Detailed, Implementation-Oriented Content
-
-The plan is intentionally specific. It should not collapse into vague milestones or project
-management summaries.
-
-- Include concrete deliverables, canonical commands, validation gates, and exact blocked
-  prerequisites when they materially clarify closure.
-- Examples do not need to be verbatim copies of implementation files, but they must not contradict
-  the supported architecture or command surface.
-- Command examples must use the canonical binary name `prodbox`.
-- Deprecated aliases or legacy operator paths belong only in
-  [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md).
-
-### C. Honest Completion Tracking
-
-Status must describe reality, not intent.
-
-| Indicator | Meaning |
-|-----------|---------|
-| ✅ | Completed and validated |
-| 🔄 | Active and partially complete |
-| 📋 | Planned and ready to start |
-| ⏸️ | Blocked by an unmet prerequisite — an earlier-or-same-phase sprint, an external prerequisite, or a **declared backward dependency** admitted under Standard N.2. Never a pending live-infra proof (Standard O) |
-| 🧪 Live-proof pending | Code-owned surface `Done` and locally validated; a live-infra proof (live AWS / deployed cluster / unsealed Vault / operator credential) is outstanding. **Non-blocking** (Standard O) |
-
-- `Done` requires passing validation on the code-owned surface, aligned docs, and no remaining
-  sprint-owned code work; a pending live-infra proof does not prevent `Done` (track it as
-  Live-proof pending — Standard O).
-- `Active` requires a `Remaining Work` section.
-- `Blocked` requires a `Blocked by` line naming an earlier-or-same-phase sprint, an external
-  prerequisite, or a later sprint declared under Standard N.2 — and never a pending live-infra proof
-  (Standard O).
-- `Planned` means dependencies are already satisfied; it must not list unmet blockers.
-- Status is always scoped to the sprint or phase-owned surface. A later phase may remain `Done`
-  when an earlier phase reopens, but the reopened dependency must be called out explicitly in
-  `README.md` and `00-overview.md`. An earlier phase stays `Done` and independently validatable
-  while later phases are incomplete (Standard N); a later phase's incompleteness never reopens or
-  blocks it.
-- `Done` is not a synonym for deployment-qualified. Any claim that the current revision is
-  deployment-ready, supports a seamless aggregate suite, or has completed an operational cutover
-  is governed separately by Standard P.
-
-### D. Declarative Plan Language
-
-Phase documents should describe the intended architecture in present-tense declarative language.
-
-- Say what the repository uses, owns, validates, and removes.
-- Do not turn phase docs into migration diaries.
-- Cleanup history and compatibility residue belong in the explicit legacy-removal ledger, not as
-  the main narrative of a phase.
-
-### E. One Canonical Phase Model
-
-The development plan uses exactly this document structure:
-
-```text
-DEVELOPMENT_PLAN/
-├── development_plan_standards.md
-├── README.md
-├── 00-overview.md
-├── phase-0-planning-documentation.md
-├── phase-1-runtime-cli-aws-foundations.md
-├── phase-2-gateway-dns.md
-├── phase-3-chart-platform-vscode.md
-├── phase-4-lifecycle-canonical-paths.md
-├── phase-5-canonical-test-suite.md
-├── phase-6-clean-room-handoff.md
-├── phase-7-aws-substrate-foundations.md
-├── phase-8-email-invite-auth.md
-├── legacy-tracking-for-deletion.md
-├── substrates.md
-└── system-components.md
-```
-
-No phase may be skipped. No sprint may exist in two phases. Runtime ownership, gateway/DNS
-ownership, chart-delivery ownership, canonical test suite ownership, and substrate
-provision/teardown ownership must each live in one place only.
-
-### F. System Component Inventory
+> **Purpose**: Make implementing open phases in numerical order produce the accepted prodbox architecture, with real validation and explicit removal ownership.
 
-[system-components.md](system-components.md) is the authoritative component inventory for:
+## Execution order and authority
 
-- infrastructure services and platform components
-- CLI and runtime control surfaces
-- validation and proof surfaces
-- authority boundaries and state locations
+[README.md → Resume Here](README.md#resume-here) is the only current queue. Work the first incomplete numerical phase. Phase N may depend on completed phases 0 through N−1 and declared external prerequisites. It must not need code from N+1 to validate or close.
 
-When a phase changes the supported architecture, update the inventory in the same change.
+There are no backward dependencies, hidden queues, or indefinitely expanding decimal sprints. Use stable tasks inside the owning phase. If a real dependency points forward, correct the boundary/order before introducing a workaround. Later phases extend earlier contracts; they do not silently reverse delete scope, ownership, root isolation, credential ingress, or evidence semantics.
 
-### G. Phase Documentation Requirements
+The accepted engineering contracts describe the target. Current command availability comes from the actual registry/binary. Existing code and historical completion labels are reusable inputs, not proof of the replacement. Every implementation phase activates its completed public slice; the final phase is regression/migration, not the first operational cutover.
 
-Every phase document must contain a `Documentation Requirements` section that lists which governed
-documents need creation or update under
-[documents/documentation_standards.md](../documents/documentation_standards.md).
-
-Use this format:
-
-```markdown
-## Documentation Requirements
-
-**Engineering docs to create/update:**
-- `documents/engineering/X.md` - [description]
-
-**Product docs to create/update:**
-- None.
-
-**Cross-references to add:**
-- Add backlink from Z.md
-```
-
-Rules:
-
-- Architecture, operator workflow, validation, and boundary changes require engineering-document
-  updates.
-- The plan must not claim a sprint is done if the listed docs are stale.
-- If the repository has no product-doc ownership for a phase, say `None.` explicitly.
-
-### H. Sprint Status Format
-
-Every sprint should use the same basic structure:
-
-```markdown
-## Sprint X.Y: Name [STATUS]
-
-**Status**: Done | Active | Planned | Blocked
-**Implementation**: `path/to/file` (required for Done, recommended otherwise)
-**Blocked by**: sprint id(s) or external prerequisite (required for Blocked). Forward-only unless the same block declares the id under `**Backward dependency**` (Standard N.2)
-**Closure dependency**: sprint id(s) (optional; for a non-`Blocked` sprint whose *closure* — not its start — waits on another sprint). Same direction rule as `Blocked by` (Standard N.2)
-**Backward dependency**: the later sprint id(s) this block admits under Standard N.2, each followed by one sentence naming what would be destroyed, stranded, or left unreplaced without it (required whenever `Blocked by` or `Closure dependency` names a later sprint; forbidden otherwise)
-**Live-proof**: pending | proven (optional; the non-blocking live-infra axis — Standard O)
-**Deployment qualification**: pending | proven (required when the sprint changes a Standard-P
-production-composition surface)
-**Independent Validation**: how this sprint/phase is validated on its owned surface with no dependency on a later phase (Standard N)
-**Docs to update**: `file.md`, `other.md`
-
-### Objective
-
-### Deliverables
-
-### Validation
-
-### Remaining Work
-```
-
-Additional sections such as `Current Validation State`, `Current Blockers`, or `Architecture` are
-encouraged when they clarify design or closure.
-
-`**Blocked by**` and `**Closure dependency**` are the **only** fields in which a sprint may record a
-dependency on another sprint, and both carry the Standard-N.2 direction rule.
-`**Backward dependency**` does not record a dependency of its own — it *admits* one already recorded
-in those two, and the pair must agree in both directions (Standard N.2). A sprint that needs to say
-something about later work it does not depend on states it as a *disclaimer* instead — "this sprint
-makes no claim about X; Sprint `Y` owns it" — which is a statement about ownership rather than a
-dependency. Any other dependency-shaped field name (`Closure dependencies`, `Depends on`,
-`Waiting on`) is a defect: `prodbox dev check` cannot read it, so a dependency recorded there is
-invisible to the queue gate.
-
-### I. Explicit Cleanup and Removal Ledger
-
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) is mandatory and comprehensive.
-It is the authoritative list of all known compatibility helpers, deprecated paths, duplicate
-surfaces, and stale tooling residue that still need removal.
-
-- If a deprecated or compatibility feature still exists anywhere in the repository, it must appear
-  in the ledger.
-- Each ledger item must name its location, why it is slated for removal, and the sprint that owns
-  the cleanup.
-- A row whose removal waits on another sprint declares it as data, not prose, by writing a bold
-  **Prerequisite** field in the Notes cell followed by that sprint id — for example
-  `**Prerequisite**: Sprint 7.36` with the id in backticks. The prerequisite must be no later than
-  the Owning Sprint (Standard N): a row that would need a later sprint is **re-owned to that
-  sprint** instead, because a row nobody in the queue can close is a blocked earlier phase wearing a
-  ledger row. `prodbox dev check` enforces the direction.
-- If the supported replacement is done but the old helper still survives as a migration shim, the
-  replacement may stay in `Completed` while the surviving helper remains in `Pending Removal`.
-- When the cleanup lands, move the item from `Pending Removal` to `Completed`.
-- Phase docs should reference the owning sprint, not duplicate the full cleanup ledger.
-
-### J. Documentation Harmony
-
-The plan and governed documents must agree.
-
-- [README.md → Resume Here](README.md#resume-here) is the sole current-status and resumption
-  ledger. `00-overview.md`, phase files, and `system-components.md` may preserve dated history or
-  describe owned surfaces, but must not publish a competing current queue.
-- `Resume Here` contains exactly one simple queue table. Every open sprint appears exactly once, in
-  **execution order**; exactly the first runnable row is `Next`; later partial foundations are
-  `Parked`; and `Blocked` dependencies name only rows above them. Execution order is numerical order
-  **except where a declared backward dependency (Standard N.2) requires otherwise**: a numerically
-  out-of-order pair is admitted only when a row below depends on the higher-numbered row above it,
-  so the deviation is always licensed by a dependency a reader can see in the table. Sprint IDs are
-  unique across phase sprint headings, and every `Pending Removal` row names an existing owning
-  sprint or is explicitly `Unowned`.
-- Governed docs under `documents/engineering/` own stable target architecture. The execution plan
-  schedules its adoption and must not contradict or duplicate that doctrine.
-- Root guidance docs such as `README.md`, `AGENTS.md`, and `CLAUDE.md` must point to the canonical
-  development-plan entrypoint.
-- `prodbox dev lint docs` mechanically validates the unique `Resume Here` section, exact open-row
-  coverage and licensed execution order, dependency direction and its backward-dependency
-  bijection, unique phase sprint IDs, and valid or
-  explicit-`Unowned` Pending Removal ownership. A documentation change is not aligned when this
-  gate fails.
-
-### K. Mermaid Rendering Contract
-
-Mermaid diagrams in `DEVELOPMENT_PLAN/` must follow the repository-safe subset and authoring rules
-defined in
-[documents/documentation_standards.md](../documents/documentation_standards.md#8-mermaid-diagram-standards).
-
-If a change adds or edits a Mermaid block in this directory, closure requires:
-
-1. Rendering every Mermaid block in `DEVELOPMENT_PLAN/` through a standalone renderer.
-2. Failing the change on any render error.
-3. Verifying the edited diagram in the repository's target Markdown viewer.
-4. Running `prodbox dev check` after the documentation change.
-
-This standards document describes Mermaid rules with prose, inline code, or `markdown` examples
-only. Do not add live Mermaid blocks here.
-
-### L. CLI Doctrine Alignment
-
-[the engineering doctrine docs](../documents/engineering/README.md) is the authoritative CLI doctrine. Phase
-documents and sprint blocks that schedule adoption work must cite the doctrine sections they
-implement by name (for example, `CommandSpec`, `Plan / Apply`, `Long-Running Daemons in the Same
-Binary → Lifecycle`, `Lint, Format, and Code-Quality Stack → Forbidden Surfaces`,
-`Generated Artifacts → The generated-section registry`).
-
-- Governed engineering docs under `documents/engineering/` referenced from the doctrine's
-  `Supersedes` line must defer to the doctrine for the patterns it owns and retain only
-  project-specific elaborations such as exact file paths, retained-state roots, or named
-  validation flows.
-- When the doctrine prescribes a behavior that the implemented worktree does not yet honor, the
-  gap is scheduled through a new sprint in the appropriate phase. Closing the gap silently
-  without a sprint block is forbidden.
-- Doctrine-driven removals — superseded helpers, deprecated command aliases, parallel workflow
-  surfaces — flow through [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
-  like any other cleanup.
-- If a doctrine section changes, the same change updates every governed doc that references it.
-
-### M. Test Suite Substrates
-
-The plan describes one canonical test suite that runs against substrates rather than separate
-home-cluster and AWS validation surfaces. The substrate (planner, runner, prerequisite DAG, named
-validations) is substrate-agnostic in `src/`; the canonical phase model reflects that.
-
-#### Canonical test suite
-
-The canonical test suite is the named-validation set in `src/Prodbox/TestValidation.hs`, planned
-by `src/Prodbox/TestPlan.hs`, orchestrated by `src/Prodbox/TestRunner.hs`, and gated by the
-prerequisite DAG in `src/Prodbox/Prerequisite.hs`. The suite is substrate-agnostic; every
-validation is a member of this single suite and is described as suite content, not as a
-substrate-specific concern.
-
-#### Substrate coverage and independence (no fallback)
-
-The canonical test suite is composed of per-substrate runs against **both** supported
-substrates: the home local substrate and the AWS substrate. A canonical-suite proof is
-complete only when both per-substrate runs have been exercised against their own real
-infrastructure (DNS, TLS via cert-manager, ingress, charts, public-edge proofs). A run that
-exercises only one substrate is not a complete canonical-suite proof; the missing substrate
-stays suite-incomplete until its run lands.
-
-Each per-substrate run is independent. It targets exactly one workload substrate, consumes only
-that target's operator-supplied config and application/platform infrastructure, and fails fast if
-required target config (FQDN, hosted zone, kubeconfig, credentials, prerequisites) is missing.
-There is no silent substitution of home-workload values for missing AWS-target config, and no
-silent substitution of AWS values for missing home-workload config. Every AWS run additionally
-depends on the mandatory retained-home Lifecycle Authority and its home-only workers/adapters;
-that control-plane dependency is outside the target-config no-fallback rule. The substrate-aware
-helpers (`substratePublicFqdn`, `substrateHostedZoneId` in `src/Prodbox/PublicEdge.hs`,
-alongside `Prodbox.Infra.AwsEksTestStack.withEksKubeconfig` for substrate-aware kubeconfig
-materialization), the prerequisite DAG, and the lifecycle gates all enforce this
-contract.
-
-**Correction 2026-09-11 (Sprints `0.33`, `7.39`, `7.40`).** `withEksKubeconfig` does not enforce
-that contract and cannot be cited as enforcing it. Two of the three reasons are now closed and one
-is not. It was a third, undocumented statement of the ephemeral Kubernetes client machinery that
-Sprint `7.36` recorded as consolidated, and Sprint `7.40` routed it onto the one owning module and
-landed the gate that keeps it there; its bearer-token path had never authenticated, because the FIFO
-writer failed with `ENXIO` before `kubectl` started and died unobserved, and Sprint `7.39` replaced
-that delivery with a private file read back before the client exists. What remains true is the part
-that bears on this standard: it still raises rather than refusing on four of its arms, so it cannot
-be a no-fallback enforcement mechanism. The no-fallback contract is carried by the substrate-aware
-helpers, the prerequisite DAG, and the lifecycle gates. The surviving defect is owned by the
-Sprint-`7.36` removal row in
-[legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md), and this helper should leave the
-sentence above when that row closes.
-
-"Substrate-agnostic suite content" means validation logic does not branch on substrate
-identity. It does **not** mean substrates share defaults, and it does **not** reduce the
-suite to a single substrate's coverage. The aggregate command surface (`prodbox test all`) is
-the canonical entrypoint for exercising both substrates; running it on a single substrate
-covers only that substrate's row in the parity table in [substrates.md](substrates.md).
-
-#### Substrates
-
-A substrate is an environment that, for the lifetime of a suite run, stands up the same target
-application/platform set: DNS records, TLS certificates (real ZeroSSL via cert-manager), ingress
-(Envoy Gateway plus MetalLB or the substrate-equivalent), services, and workload charts. It
-provides the prerequisites declared in `src/Prodbox/Prerequisite.hs` and registers/schedules desired
-absence for every per-run artifact on suite exit. The mandatory retained local lifecycle plane is
-a cross-substrate dependency outside this duplicated set. A suite result may report cleanup
-complete only after exact absence is
-observed; a failed, partial, or unobservable cleanup remains explicitly incomplete.
-
-The authoritative substrate inventory is [substrates.md](substrates.md). Today's substrates are:
-
-| Substrate | Inventory | Suite-parity authority |
-|-----------|-----------|------------------------|
-| Home local | Local RKE2 on the operator host | Current status is tracked only in [README.md → Substrate Parity](README.md#substrate-parity) and the per-validation table in [substrates.md](substrates.md). |
-| AWS | Disposable Pulumi stacks `aws-eks`, `aws-eks-subzone`, and `aws-test` | Current status is tracked only in [README.md → Substrate Parity](README.md#substrate-parity) and the per-validation table in [substrates.md](substrates.md). |
-
-#### Substrate lifecycle
-
-The lifecycle for every substrate is provision → run canonical suite → teardown. Provision and
-teardown belong to the substrate. Suite content does not.
-
-#### Vocabulary
-
-`substrate` is the canonical term. The plan must not introduce `target`, `environment`, or
-`tier` as synonyms for substrate. The existing `fixture` term in
-[../documents/engineering/integration_fixture_doctrine.md](../documents/engineering/integration_fixture_doctrine.md)
-remains scoped to its existing meaning — fake-tool boundary fixtures and ephemeral resource
-ownership rules — and is cross-referenced from the substrate doctrine, not merged into it.
-
-#### Phase ownership rules
-
-A phase may own (a) canonical test suite content, (b) a substrate's provision and teardown, or
-(c) a substrate's foundations (such as AWS IAM and quota for the AWS substrate, or shared SES
-infrastructure for the email-invite auth path). A phase may not own a substrate-specific
-validation, because validations are suite content.
-
-#### Suite-content closure is home-substrate-scoped
-
-A suite-content sprint is `Done` when its validation exists and passes on the home local
-substrate; AWS-substrate coverage of that same validation is tracked only in the
-[substrates.md](substrates.md) parity table and never marks the suite-content sprint or its phase
-`Blocked` (Standards N/O).
-
-### N. Phase Independence and Execution Order
-
-Two different rules lived here under one name until 2026-08-21, and conflating them is what drove
-four real dependencies into prose. They are now separate, because only one of them was ever
-defensible as an absolute.
-
-#### N.1 Validation independence (unchanged, strict)
-
-A phase's **validation** never depends on another phase being complete. Forward build-order
-(Standard A — later phases compose earlier deliverables) remains the narrative spine, but it is
-**not a validation gate**.
-
-- **Independent validation.** Each phase is validatable on its owned surface even when any other phase is incomplete. Where a validation would touch a dependency owned by another phase, it is exercised against the home/local substrate, a fake, or a stub. Every phase document must carry an **Independent Validation** line stating how the phase is validated on its owned surface with no dependency on a later phase.
-- **Validation criteria are bound by the same rule.** A sprint's `Validation` items must be satisfiable on its owned surface. An item that can only pass once a later phase lands is re-scoped to the sprint that owns the composition it measures.
-- **No backward reopen.** An incomplete later phase never reopens or blocks an earlier phase. Reopening a closed phase (Standard A) is permitted only to expand that phase's **own** owned surface.
-
-#### N.2 Execution order (amended 2026-08-21)
-
-*Which sprint can be worked next* is a different question from *which phase can be validated*, and it
-is not required to follow sprint numbering.
-
-- **Forward-only by default.** A `**Blocked by**` or `**Closure dependency**` entry normally names an **earlier-or-same-phase** sprint or an **external** prerequisite.
-- **A backward dependency may be declared when it is physical.** It may name a **later** sprint when the earlier sprint's own deliverable would **destroy, strand, or leave unreplaced something real** that only the later sprint's capability supplies. Convenience, sequencing preference, and "it would be tidier afterwards" are not physical; re-scope those instead.
-- **A declared backward dependency requires the `**Backward dependency**` field**, naming the same later sprint id(s) and, for each, one sentence saying what would be stranded without it. The two directions must agree: a later id in `**Blocked by**`/`**Closure dependency**` that is not admitted there is a defect, and an admitted id that no dependency field names is an orphan declaration and equally a defect. `prodbox dev check` enforces the bijection.
-- **Dependencies are declared, never narrated.** Those fields (Standard H) and the ledger's `**Prerequisite**` marker (Standard I) are the only places a dependency may be recorded. Prose may *disclaim* later work — "this sprint makes no claim about X; Sprint `Y` owns it" — which states ownership rather than a dependency. A dependency written only in prose is invisible to `prodbox dev check`.
-
-**Why this replaced an outright prohibition.** The 2026-08-17 audit found a queue in which no row
-could reach `Done` while the gate reported it clean, and the 2026-08-18 remedy made the gate read the
-declared fields. The 2026-08-21 audit then found the prohibition had not removed a single real
-dependency — it had moved four of them into prose, where no gate could see them, including one on the
-queue head. Forbidding the *declaration* does not remove the *dependency*; it removes the record of
-it. A physical dependency is now sayable, gated, and visible in the queue.
-
-**The anti-deadlock property is preserved by the queue, not by the prohibition.** Standard J requires
-every `Blocked` row's dependencies to appear **above it** in `Resume Here`, so the queue stays
-acyclic and workable top-to-bottom by construction; and a numerically out-of-order pair is admitted
-only when it is licensed by exactly such a dependency. A cycle cannot be expressed, because two rows
-cannot each be above the other.
-
-### O. Code-Local Completion vs. Live-Infra Proof
-
-A sprint has two independent completion axes; keep them distinct.
-
-- **Code-owned surface.** A sprint is `✅ Done` on its code-owned surface once it builds and passes local validation (`prodbox dev check`, `prodbox test unit`, `prodbox test integration cli` / `env`). This axis determines phase closure.
-- **Live-infra proof.** A proof that requires live infrastructure (live AWS spend, a deployed cluster, an unsealed Vault, an operator-supplied credential) is tracked as a distinct, **non-blocking** `Live-proof: pending` note on the sprint. A pending live-infra proof is **not** `⏸️ Blocked` and never gates an earlier phase or the sprint's code-owned closure.
-- **`⏸️ Blocked` is reserved** strictly for a genuine unmet **earlier-phase or external** prerequisite — never for a pending live-infra proof, and never pointing at a later phase.
-
-Standard O is deliberately narrow. It permits optional environmental evidence to remain pending;
-it does not authorize a deployment-qualified claim, an operational cutover, or removal of the old
-path when the missing proof could falsify process topology, capability binding, deadline algebra,
-resource sufficiency, persistence safety, lifecycle recovery, or cleanup behavior. Those claims are
-governed by Standard P.
-
-### P. Deployment Qualification and Counterexample Closure
-
-Deployment qualification is a separate, revision-specific axis over the composed running system.
-It prevents locally green planners, fake interpreters, or isolated unit tests from being promoted
-into an unexercised claim about the aggregate deployment.
-
-- **Qualification states.** The only states are `pending` and `proven`. `pending` does not mark a
-  phase `Blocked`, preserving Standards N/O, but the repository must not describe the current
-  revision as deployment-ready, seamless, fully closed, or operationally cut over.
-- **Surfaces that invalidate qualification.** A change to process topology, capability wiring,
-  absolute-deadline composition, queueing/admission, resource envelopes, persistence protocol,
-  lifecycle orchestration, destructive cleanup, or substrate routing invalidates prior
-  qualification.
-- **Required evidence.** `proven` records two complete identities: the frozen superseded identity
-  and the replacement identity. Each independently records a complete `SourceIdentity` (Git HEAD,
-  clean/dirty flag, source-manifest policy identity, and deterministic full-manifest digest).
-  The qualification key binds the separately identified executable-surface manifest, secret-safe
-  generated-config identity, component-image, resolved topology/wiring, resource-envelope, and
-  authored-load digests. Git HEAD, clean/dirty state, the full manifest and the running binary digest
-  remain recorded provenance; they do not independently reset the consecutive-run count. Governed
-  documentation-only changes therefore retain the key, while changes to an admitted executable
-  input or to the key policy reset it. The frozen superseded artifact and its original manifest
-  policy remain unchanged. This policy was approved by the operator on 2026-10-21.
-  The record also names substrate, canonical commands, the normalized
-  old→new envelope mapping, production resource envelopes/load, counterexample results, complete
-  fault matrix, aggregate result, cleanup/residue result, start/completion timestamps, and evidence
-  digest. Historical runs remain evidence only for the complete identity they exercised.
-- **Source and evidence secrecy.** The source-manifest policy is an allowlist over repository code,
-  governed documentation, and non-secret schema/template inputs. Each frozen and replacement
-  `SourceIdentity` separately records the policy identifier, policy version, and digest of the
-  canonical policy as well as the resulting manifest digest. The manifest unconditionally excludes
-  `test-secrets.dhall`, all local or generated secret material, every configured secret root, and
-  every runtime or build root; relevant untracked files participate only when the allowlist admits
-  them. A generated-config identity digests only its canonical non-secret projection. Neither that
-  digest, the source manifest, nor the enclosing evidence digest may ingest or hash plaintext secret
-  bytes. A secret-dependent run is bound only by opaque Lifecycle Authority receipt/generation IDs
-  or by a keyed HMAC commitment produced under a Vault-held key; a public raw hash of secret
-  material is forbidden. A Git commit hash alone never identifies a dirty worktree.
-- **Counterexample rule.** Work opened by a live counterexample includes a stable named,
-  repository-owned reproducer. Its causal profile holds the background load, fault schedule, and
-  topology-normalized total CPU/memory/ephemeral/persistence budget constant; a split topology may
-  repartition but not increase that total. The artifact records the exact old→new envelope mapping,
-  expected failure against the frozen superseded implementation, and replacement pass. A separate
-  production profile then exercises the independently justified rendered envelopes. Both results
-  remain auditable after legacy code deletion; without them the replacement cannot be called
-  qualified.
-- **Cutover rule.** Operational legacy rows remain in `Pending Removal` until the replacement is the
-  sole supported writer/route, rollback is explicit, and current-revision deployment qualification
-  passes. A shadow reader may coexist during migration; dual writers may not.
-- **Interim escape-path guard.** While operational legacy rows remain in `Pending Removal`, every
-  legacy escape call site — gateway-hosted authority routes, the shared operational AWS credential,
-  host-direct Vault/MinIO seams, and the subprocess object-store and per-request login paths — must
-  be enumerated in a machine-readable registry consumed by `prodbox dev check`; an unregistered new
-  call site, or a registry entry with no surviving call site, fails the build. Qualification
-  remains non-blocking; escape-path drift is not. Sprint `1.63` landed the initial registry and its
-  declared-entry↔source-marker bijection; that historical mechanism does not prove comprehensive
-  coverage of an unmarked surviving seam. Current corrective ownership and closure evidence live in
-  [README.md](README.md#resume-here) and the
-  [deletion ledger](legacy-tracking-for-deletion.md#pending-removal).
-- **Aggregate rule.** A successful point probe or one successful aggregate run is insufficient for
-  a temporal or cleanup claim. The owning plan names the consecutive-run, saturation, restart,
-  cancellation, applied-but-response-lost, and residue checks appropriate to that surface.
-- **Scoped claims.** A qualification claim may be scoped to one named surface whose lifecycle can be
-  exercised without the rest of the composed system. A scoped claim has its own row in the
-  [README.md](README.md#deployment-qualification) ledger and its own source-manifest policy: the
-  allowlist names exactly the code and programs of that surface, so a change inside the surface
-  resets the claim and a change outside it does not. The digest of each component image a drill ran
-  against is recorded and reported with the drill; because one image carries code from outside the
-  surface, a digest change with an unchanged allowlist is reported and does not reset the count. The
-  row lists the components the claim does not cover and the components it depends on without
-  qualifying, is described as exactly its scope — never as deployment-ready, seamless, or
-  operationally cut over for the aggregate — and neither satisfies nor shortens any aggregate row. A
-  run that needed a hand action, a manual cleanup, or any repair outside the supported `prodbox`
-  surface does not count toward any claim, scoped or aggregate.
-- **Status ownership.** `DEVELOPMENT_PLAN/README.md` is the sole deployment-qualification ledger.
-  Engineering docs describe invariants and proof boundaries but do not carry a competing status.
-
-### Q. Live-Campaign Protocol and Class Closure
-
-A live run spends wall-clock and, on the AWS substrate, money, and it is the most expensive way to
-learn that a mechanism is wrong. The authorization to run live infrastructure
-([AGENTS.md](../AGENTS.md#live-infrastructure-deployment-is-authorized)) is not an instruction to
-rerun until green. This standard rations live runs, banks what each one teaches offline, and states
-when a defect class is closed.
-
-- **Rationing.** A working session makes at most three live attempts that spend on AWS unless a new
-  offline reproducer exists that fails on the behaviour the last live run exposed. Repeating a live
-  run to see whether a fix worked is the case this rule exists to stop.
-- **Review stop.** After three consecutive live runs that each end on a boundary no earlier run
-  reached, live runs stop until a review is filed in the owning sprint block that names the class,
-  says why the failure was not found offline, and lists the sibling states checked.
-- **Batching.** Fixes between live runs are batched per component-image roll. A fix that changes a
-  component image is not rolled alone while another fix for a known class is pending.
-- **Closure.** A defect class is closed only by (1) an offline law that cites a recording of the
-  provider's or tool's real behaviour, (2) a canary step that exercises that law against the real
-  provider, and (3) two consecutive audit-clean cycles under the owning claim. A landed fix, a green
-  `prodbox dev check`, and one passing live run each close nothing: a landing is evidence that code
-  changed, not that the class is gone.
-- **Hand actions.** A resource removed, or a state repaired, outside the supported `prodbox` surface
-  is recorded in the run's record
-  ([aws_test_environment.md → Out-Of-Band Diagnostic And The Manual Recovery Order](../documents/engineering/aws_test_environment.md#75-out-of-band-diagnostic-and-the-manual-recovery-order))
-  and the run never counts toward a claim. A recorded hand action is also a missing offline case: it
-  becomes a planted shape in the canary or a row in the remedy table before its class can close.
-- **Refusals carry remedies.** A durable fail-closed cause ships with one row in the
-  cause-to-remedy table: a bounded self-heal, a registered repair verb, or an explicit `NukeOnly`
-  entry with its reason. A refusal that names its cause and offers no row is a defect in the sprint
-  that added it.
-- **Honest statistics.** A claim built on `n` consecutive clean runs states the failure-rate bound it
-  supports. With no failure observed, the 95% upper bound on the failure rate is `1 - 0.05^(1/n)`:
-  about 78% for two runs, 63% for three, and 26% for ten. Two consecutive cycles are an entry ticket
-  to a soak, not a proof.
-
-These are review obligations. Only the remedy-row obligation has a mechanical check; its owner
-and status live only in
-[README.md → Resume Here](README.md#resume-here).
-
-## Related Documents
-
-- [README.md](README.md)
-- [substrates.md](substrates.md)
-- [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md)
-- [the engineering doctrine docs](../documents/engineering/README.md)
-
-## Cross-Reference Conventions
-
-- Links inside `DEVELOPMENT_PLAN/` use relative paths.
-- Links to governed docs under `documents/` use repository-relative paths.
-- File renames require same-change link updates everywhere the file is referenced.
-
-## Maintenance Guidelines
-
-1. Update the global control documents first: `README.md`, `00-overview.md`, and
-   `system-components.md`.
-2. Update the affected phase document next.
-3. Update the governed engineering docs listed in `Docs to update`.
-4. Update [legacy-tracking-for-deletion.md](legacy-tracking-for-deletion.md) whenever cleanup scope
-   changes.
-5. Run `prodbox dev check` before closing the work.
-6. If the change touched Mermaid, render every Mermaid block in `DEVELOPMENT_PLAN/` and verify the
-   edited diagram in the target viewer before closing the work.
+## Canonical plan structure
+
+| Surface | Owner |
+|---|---|
+| Current numerical queue and next action | `README.md` |
+| Static navigation | `00-overview.md` |
+| Phase contract and task/evidence status | `phase_00_...md` through `phase_10_...md` |
+| Product objective disposition | `objective_dispositions.md` |
+| Every existing command/meaningful option disposition | `command_dispositions.md` |
+| Required real acceptance cases | `acceptance_cases.md` |
+| Critical source mutation definitions and assertion bindings | `mutation_cases.md` |
+| Obsolete code/docs/artifact removal | `legacy_tracking_for_deletion.md` |
+| Target service and responsibility catalog | `system-components.md` |
+| Local/AWS projection and resource ownership | `substrates.md` |
+| Evidence storage, identities and availability | `evidence/README.md` |
+
+These Markdown manifests are canonical. Tooling may derive machine-readable views, but must not maintain competing inventories. The old hyphenated ledger and old phase filenames are temporary deprecated forwarding material only; their removal is owned in the new ledger.
+
+## States and closure
+
+| State | Meaning |
+|---|---|
+| `Planned` | Contract and owner exist; earlier phases may still be incomplete |
+| `Active` | Work has started; remaining tasks and next action are explicit |
+| `Blocked` | A named earlier-phase or external prerequisite currently prevents required work |
+| `Complete` | All declared acceptance, mutation, cleanup, documentation and owned removal obligations passed |
+
+Implementation task status is separate from phase completion. There is no `Complete, live proof pending` escape for a phase whose acceptance requires real infrastructure. Missing external credentials, quotas or provider availability may block that phase honestly; they do not justify fake closure or a dependency on unfinished later product code.
+
+A reproducible regression reopens its owning phase. Identify affected downstream evidence and rerun it before restoring those completion claims. Keep prior reports immutable and attributable. Do not overwrite a failed result with a narrative success or rename the same failure repeatedly as a new class.
+
+## Required phase contract
+
+Every phase file contains:
+
+- Phase number, state and owned product outcome.
+- Prior-phase and external prerequisites, with no larger-numbered phase dependency.
+- Stable tasks, actual implementation locations where known, and the public behavior activated.
+- Introduced resource families and their creation, observation, recovery and deletion obligations.
+- Real happy-path, adverse, interruption/resume and cleanup cases linked by acceptance ID.
+- Independent observers, negative controls and critical mutation IDs with expected assertion failures.
+- Source/build/config identity and evidence availability requirements excluding secret material.
+- Owned removal rows, documentation changes, completion criteria and remaining work.
+
+Do not give a task an implementation path that does not exist without marking it proposed. Do not list a removed test as current evidence. Optional later capabilities are outside a phase's claim, not skipped requirements counted as passed.
+
+## Real acceptance requirements
+
+Run the built public binary through the real interpreter and actual owned dependencies. Phase N exercises its real predecessors; it does not replace an incomplete future dependency with a fake and call the composition complete.
+
+Pure tests and protocol fixtures remain valuable, but cannot establish provider/Kubernetes behavior, persistence, actual credential retirement, network enforcement, resource fit, public TLS, or service readiness. Rendering a manifest, constructing a proof value, or receiving exit zero is insufficient for those claims.
+
+Each external mutation has an independently observed postcondition under the same deployment/account/region/resource scope. Record unanswered observations as incomplete. Positive controls establish that an apparently empty inventory can actually observe its field. Exact cleanup is required for every resource family introduced in that phase, including partial creation and lost replies.
+
+Independent observers require negative controls: wrong identity, wrong account/region, missing evidence, fabricated/stale receipt, withheld effect, retained residue and blind observation must fail the relevant assertion. The outer harness retains unmodified authority over isolation and cleanup.
+
+## Targeted source mutation gate
+
+[mutation_cases.md](mutation_cases.md) owns a small reviewed catalog of critical semantic source changes, extended around changed lifecycle code. Use one mutation per isolated non-secret source snapshot and a passing unchanged baseline. Exercise the actual mutated implementation with unchanged tests.
+
+`Killed` requires the designated behavioral assertion/test failure. Compilation errors are `Invalid`; unrelated crashes, unavailable dependencies and generic timeouts are `Inconclusive`. A surviving non-equivalent critical mutation blocks phase closure. Equivalence exclusions need a documented source/contract-bound review; replace meaningless candidates when possible. Silent skips and a global mutation percentage cannot satisfy the named cases.
+
+Bind results to baseline/build, patch, test selection, intended and actual assertion, duration and cleanup. Rerun affected cases when the implementation, tests, observer or mutation changes. Enforce fixed execution budgets.
+
+Mutants cannot receive real AWS/elevated fixture credentials, production roots, current kubeconfig, unrestricted container sockets, publication credentials, or provider egress. An unmodified outer runner may lend a reviewed disposable local interface. Real AWS/public-edge acceptance always uses the separately identified unmodified build. Mutation evidence supplements that acceptance.
+
+Phase 0 proves checker mutations manually in scratch copies using existing tooling. Phase 1 automates bounded mutation execution and verifies its outcome classification. Later phases use that completed capability; no phase waits for a future adapter to kill its own current critical mutations.
+
+## Resource and credential lifecycle
+
+Every introduced resource has one recorded owner and cleanup path before effects. Record provider/IAM intent before the first possible mutation, including credential bootstrap. Use stable operation identities for resume. Never infer resource absence from a missing checkpoint, directory or current Vault initialization state.
+
+Keep `.data/` production and `.test-data/` testing isolated by roots, cluster/context identities, endpoints, credentials and cloud ownership. Production/test SES resources are distinct. A campaign may reuse its own SES resources across cases; explicit deletion removes the owning campaign/deployment's resources.
+
+Elevated AWS input uses the real prompt or the `test-secrets.dhall` prompt simulator and remains ephemeral at runtime. Generated operational credentials live in scoped Vault state. Credentials and recovery capability outlive their dependants; verify IAM and Vault retirement independently. Tests cannot copy production configuration or use ambient auth as a substitute.
+
+Every durable refusal has a bounded self-heal, an exact input requirement, or an explicit supported recovery disposition. Missing evidence is not permission to reset identity or custody.
+
+## Evidence and live campaigns
+
+Evidence records scenario/case IDs, source-manifest and binary/image identities, non-secret config projection, environment/deployment/operation scope, commands, timestamps, observations, primary outcome and cleanup. Preserve failed evidence. Never ingest or publicly hash plaintext secrets.
+
+A session makes at most three AWS-spending attempts without a new offline reproducer for the last observed failure. Batch known fixes per image roll. After three consecutive live runs that each stop at a new boundary, review the failure class and sibling states before spending on another run. New-boundary progress is diagnosis, not phase closure.
+
+A defect class closes through a recorded real-behavior regression, the relevant real canary/acceptance, and the declared repeated clean cycles. Two clean cycles are an entry to reliability testing, not proof of permanent correctness. State the actual load, failure schedule, resource envelope, failure domain and repetition/soak budget supported by the evidence.
+
+Manual infrastructure changes explicitly requested by the operator remain hand actions. Record them; they do not qualify a supported lifecycle run. Ordinary test setup, cleanup, residue injection and recovery use registered prodbox paths.
+
+## Legacy removal ownership
+
+[legacy_tracking_for_deletion.md](legacy_tracking_for_deletion.md) is the sole active removal ledger. Every row has an ID, concrete locations, reason, replacement, numerical remover, earlier/current prerequisites, replacement acceptance, absence check and state. No row is unowned.
+
+The owner is the phase that removes the item. A phase cannot close while its rows remain pending. Split families with different removal conditions. A replacement cannot be called fully delivered while its ordinary predecessor remains a second writer. A narrowly fenced original-install migration lane can remain only under its explicit later removal owner.
+
+`Removed` requires both safe replacement evidence and absence of the old active route. Deleting a scratch directory or finding no source match does not prove resource cleanup. Preserve needed regression inputs before removing temporary aliases or historical codecs.
+
+## Documentation and adoption
+
+Change the owning contract first, then numerical task/acceptance/removal ownership, implementation, actual validation and closure. Follow [Documentation Standards](../documents/documentation_standards.md). Keep stable architecture free of dated implementation diaries.
+
+The current adoption request changes Markdown only. It completes the documentation subtask, not Phase 0's executable checker migration. `CheckCode.hs` still recognizes old paths, sprint grammar and generated-section rules; the first implementation session must migrate those rules and their negative/mutation tests before claiming `prodbox dev check` passes under this contract. Do not bypass or weaken the checker to obtain green output.

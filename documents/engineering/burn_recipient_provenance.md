@@ -1,11 +1,14 @@
 # Burn Recipient Provenance
 
-**Status**: Authoritative source
+**Status**: Reference only
 **Supersedes**: N/A
 **Generated sections**: none
+**Applicability**: Historical immutable security-ceremony provenance; not target setup instructions or new phase closure.
 
 > **Purpose**: Record the destructive generation ceremony, immutable public identity, packet
 > structure, and Vault-library compatibility evidence for the version-one burn recipient.
+
+The original ceremony/public-material record is retained for provenance and compatibility review. Do not repeat it, treat it as an available live credential, or infer that target initialization is implemented. [Accepted security](security_and_credentials.md) owns current target custody; [history](../history/README.md) binds the old source; numerical phases own actual validation.
 
 ## 1. Immutable public identity
 

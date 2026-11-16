@@ -1,16 +1,15 @@
-# CLI Command Registry
+# Current CLI Command Registry
 
 **Status**: Reference only
 **Supersedes**: N/A
 **Generated sections**: `command-registry.markdown`
+**Applicability**: Current unmodified pre-refactor binary; not the accepted target CLI.
 
-> **Purpose**: Provide the generated leaf-command registry derived from `src/Prodbox/CLI/Spec.hs`
-> plus a hand-maintained implementation-status note outside the generated marker.
+> **Purpose**: Preserve the source-generated current leaf inventory while the numerical phases implement its explicit dispositions.
 
-The generated summaries below describe the current pre-cutover binary. In particular, the one-
-user `aws setup|teardown` summaries and current Vault handler wiring are not target architecture.
-Their replacement/removal is tracked in the Development Plan; generated text changes only when the
-owning implementation change updates `CommandSpec` and regenerates this section.
+The generated payload below remains unchanged. It describes actual old command names, including RKE2-era lifecycle/runtime commands. Do not infer that accepted target commands already exist, or that obsolete surrounding doctrine still applies. Use actual binary help for current options.
+
+[Target CLI contract](../engineering/cli_command_surface.md), [all leaf/option dispositions](../../DEVELOPMENT_PLAN/command_dispositions.md), and [Resume Here](../../DEVELOPMENT_PLAN/README.md#resume-here) govern migration. The owning code change regenerates parser/help/manpages/completions/reference together; this Markdown-only adoption does not alter generated payloads to pretend success.
 
 <!-- prodbox:command-registry.markdown:start -->
 | Command | Summary |
@@ -154,20 +153,3 @@ owning implementation change updates `CommandSpec` and regenerates this section.
 | `prodbox vault pki issue-test-cert` | Issue a throwaway PKI cert |
 | `prodbox workload start` | Start internal workload runtime |
 <!-- prodbox:command-registry.markdown:end -->
-
-## `prodbox vault` command group
-
-The `prodbox vault` leaf commands are in the generated registry above. In the current pre-cutover
-implementation, `vault status` probes the in-cluster Vault and the mutating subcommands route
-through existing Vault handlers and the combined gateway/host transport. The target architecture
-keeps the public command names, binds observation, initialize/unseal/seal/rotation, baseline, and
-PKI to their distinct operation-indexed Bootstrap Broker references, and deletes the daemon
-NodePort and host fallback; sequencing lives only in the
-[Development Plan](../../DEVELOPMENT_PLAN/README.md). The
-[unlock bundle](../engineering/vault_doctrine.md#6-the-unlock-bundle-root-cluster) lives in the durable MinIO
-bucket (host disk holds no unseal material) and recovers a torn-down cluster's Vault. In the target,
-the initial root token is encrypted to a burn recipient and never usable; encrypted recovery-share
-receipt/custody precedes a separate short-lived baseline session. A sealed Vault fails closed; the
-model these commands operate against is owned by
-[`vault_doctrine.md`](../engineering/vault_doctrine.md) (see
-[§7 Vault lifecycle commands](../engineering/vault_doctrine.md#7-vault-lifecycle-commands)).

@@ -3,335 +3,104 @@
 **Status**: Authoritative source
 **Supersedes**: N/A
 **Generated sections**: none
+**Applicability**: Current agent rules for implementing the adopted refactor and operating the existing binary safely.
 
-> **Purpose**: Agent-facing repository rules for structure, tooling, and coding standards.
+> **Purpose**: Give agents one execution entrypoint, operating boundary and evidence standard.
 
-`DEVELOPMENT_PLAN/README.md#resume-here` is the sole current sprint-status and resumption ledger;
-the rest of the plan suite carries per-sprint closure and cleanup/removal ownership. Stable target
-architecture and doctrine are distributed
-across the per-surface engineering docs under
-[documents/engineering/](./documents/engineering/README.md): command
-topology and reconcilers in `cli_command_surface.md`; the target exact-keyed registry, separate
-resource/checkpoint/audit observations, closed teardown programs, and durable recover-to-clean
-graph in `lifecycle_reconciliation_doctrine.md` (§3); Plan / Apply and GADT-indexed state
-machines in `pure_fp_standards.md`; subprocesses, error handling, capability classes, and
-application environment in `haskell_code_guide.md`; generated artifacts and lint stack in
-`code_quality.md`; output rules and at-least-once event processing in `streaming_doctrine.md`;
-prerequisites as typed effects in `prerequisite_doctrine.md`; daemon lifecycle in
-`distributed_gateway_architecture.md`; testing doctrine in `unit_testing_policy.md`;
-toolchain pinning in `dependency_management.md`. The repository is Haskell-only on the
-supported path.
+## Start here
 
-## Live Infrastructure Deployment Is Authorized
+Read [DEVELOPMENT_PLAN/README.md → Resume Here](DEVELOPMENT_PLAN/README.md#resume-here). Implement the first incomplete phase in numerical order, following its tasks, acceptance cases, critical mutations and owned legacy removals. The [plan standards](DEVELOPMENT_PLAN/development_plan_standards.md) govern completion; [engineering/README.md](documents/engineering/README.md) indexes accepted contracts.
 
-**Agents are authorized to deploy, reconcile, and tear down live infrastructure from this
-project** — both the local RKE2 Kubernetes cluster on this host and the AWS substrate (EKS, IAM,
-Route 53, SES, S3, EC2/EBS) — through the documented `prodbox` entrypoints. This is expected and
-supported work; it makes real, persistent state changes to this host and incurs real live AWS
-spend, and it does **not** need separate approval beyond the user's original request.
+Do not resume the superseded fractional-sprint queue or import historical Done labels into the new phases. Reuse correct existing code and tests after validating their new owned scope. A future-phase dependency means the phase boundary needs correction, not a fake implementation or hidden alternate queue.
 
-The local RKE2 deployment is the mandatory retained control plane for supported operation. AWS is
-an optional target substrate: selecting it never moves lifecycle authority to EKS or to the host
-process. Except for the explicit total-decommission path, the local Lifecycle Authority and its
-bounded workers/adapters remain available for every AWS-targeted operation.
+A request restricted to Markdown authorizes Markdown edits only. It does not authorize changing Haskell, schemas, generated non-Markdown artifacts, runtime configuration or infrastructure. The documentation adoption leaves Phase 0 open for code-side checker/generated-artifact migration and its actual negative/mutation proof. A subsequent request to implement open phases includes that code work in order.
 
-- Local cluster: `prodbox cluster reconcile` (installs RKE2 if absent and reconciles),
-  `prodbox charts reconcile ...`, `prodbox gateway ...`, `prodbox cluster delete --yes`
-  and `prodbox cluster delete --cascade --yes`. Running these on this host is the supported,
-  expected operation, not an unauthorized state change. The current cascade is a pre-cutover
-  implementation, and **neither exit code is evidence about AWS**: a non-zero result is unresolved,
-  and a zero result is not a completion receipt. The no-install short-circuit belongs to local-only
-  delete alone: a cascade with no RKE2 install reaches no phase and exits non-zero, unless it asked
-  AWS read-only on that invocation and every condition of the
-  [no-install cascade conjunction](documents/engineering/lifecycle_reconciliation_doctrine.md#5a0-a-cascade-that-reaches-no-phase-may-still-query-aws)
-  held. Even that zero is evidence of no per-run tagged residue in the swept regions, not of an empty
-  account, so no cascade exit reports a success it did not observe. Neither exit licenses deleting
-  the retained root — see
-  [Retained Storage Lifecycle Doctrine § 7](documents/engineering/storage_lifecycle_doctrine.md#7-the-single-retained-operator-host-root)
-  rule 10 for what does. Target behavior and rollout status live in
-  [DEVELOPMENT_PLAN/README.md → Resume Here](DEVELOPMENT_PLAN/README.md#resume-here).
-- AWS substrate + end-to-end: `prodbox test all`, `prodbox test all --substrate aws`,
-  `prodbox test integration <name> --substrate aws`, and `prodbox aws stack <cli-verb>
-  reconcile` / `destroy --yes` (see [AWS Mutation Is Prodbox-Surface-Owned](#aws-mutation-is-prodbox-surface-owned)).
-- When a task needs a running cluster, an unsealed Vault, provisioned AWS, or a live serving/TLS
-  proof to validate or qualify, **stand up the live infrastructure through these entrypoints and
-  run it — do not report live infrastructure as an out-of-reach blocker.** A long-running
-  lifecycle command (a multi-hour `test all` or clean-room deployment-qualification run) is
-  in-scope work; launch it (background it if needed) and drive it to completion rather than
-  stopping short.
-- **Authorization is not an instruction to rerun until green.** Live runs are rationed by
-  [Development Plan Standard Q](DEVELOPMENT_PLAN/development_plan_standards.md#q-live-campaign-protocol-and-class-closure),
-  which owns the attempt limit, the review that follows consecutive new-boundary runs, and the
-  closure rule; read it before launching a second live attempt that spends on AWS. A resource
-  removed, or a state repaired, outside the `prodbox` surface is recorded as a hand action, and the
-  run never counts toward a qualification claim. This limits how often a lifecycle command is
-  launched; it does not relax the duty to drive the one in hand to completion.
+## Target versus current behavior
 
-This authorization is scoped to the `prodbox` command surface only. It does **not** relax
-the standing guardrails: ad-hoc `aws` / `pulumi` / `eksctl` / `terraform` / `kubectl` mutations
-that bypass `prodbox` stay forbidden (AWS) or confirmation-gated (see below), `prodbox nuke`
-stays operator-only and TTY-only, and the [Commit Guidelines](#commit-guidelines) (agents never
-commit or push) still apply.
+The accepted target retains local kind for Lifecycle Authority, Vault, MinIO and management roles. The canonical application service set remains available locally and on optional EKS. Target ordinary `prodbox delete --yes` removes all deployment-owned AWS resources, including SES/EBS/backing stores/generated IAM, and records absence on the retained control plane. Local control removal and local data purge are separate operations.
 
-## Current Worktree Structure
+These are adopted contracts, not a claim that the current executable has changed. The source/current binary still contains RKE2-era commands and legacy cleanup paths. Before a live operation, inspect the installed binary's actual help and supported handler. Do not run proposed target commands as if they were implemented, rewrite current help by hand, or delete an original-install recovery path before its owning migration/removal condition passes.
+
+If the unchanged checker rejects the new documentation grammar or paths, that is explicit Phase 0 work. Do not restore contradictory old doctrine, invent old phase status, disable checks, or make forbidden code edits merely to get green output.
+
+## Current worktree structure
 
 ```text
-prodbox/
-├── app/prodbox/Main.hs   # Haskell executable entrypoint
-├── src/Prodbox/          # Haskell runtime, CLI, infra, and library modules
-├── test/                 # Haskell unit and integration test suites
-├── documents/            # Engineering documentation
-├── DEVELOPMENT_PLAN/     # Plan, phase status, and cleanup ownership
-├── docker/               # Canonical container builds under /opt/build
-├── prodbox.cabal         # Cabal package definition
-├── cabal.project         # Cabal project config
+app/prodbox/Main.hs      Haskell executable entrypoint
+src/Prodbox/             Haskell CLI, runtime, lifecycle and interpreters
+test/                    Haskell tests and acceptance support
+prodbox.cabal            Cabal package
+cabal.project            Cabal project configuration
+docker/                  Canonical container builds
+documents/               Accepted architecture and operator documentation
+DEVELOPMENT_PLAN/        One numerical queue, contracts, evidence and removal ownership
 ```
 
-Do not describe removed Python directories as the current or target architecture.
+The supported implementation is Haskell-only. Do not describe removed Python runtime directories as current or target architecture.
 
-## Current Worktree Commands
+## Current worktree commands
+
+Build the existing operator binary through the current toolchain:
 
 ```bash
-# Build the operator binary
 cabal build --builddir=.build exe:prodbox
 mkdir -p .build
 cp "$(cabal list-bin --builddir=.build exe:prodbox)" .build/prodbox
 chmod +x .build/prodbox
-
-# Run the canonical quality gate
-./.build/prodbox dev check
-
-# Run tests
-./.build/prodbox test unit
-./.build/prodbox test integration cli
-./.build/prodbox test integration env
-./.build/prodbox test all
 ```
 
-`prodbox dev check` is the required single entrypoint for doctrine enforcement in local
-development.
+The canonical quality entrypoint remains `./.build/prodbox dev check`. Until command migration lands, the existing binary exposes `test unit`, `test integration cli`, `test integration env`, and `test all`; the target single `test run NAME` path is delivered by the owning phases. Inspect actual help before invoking other live commands.
 
-## Coding Style
+Run checks appropriate to the authorized change. Do not claim the full gate passed when only document structure was checked. A phase cannot close while its required real evidence, mutation cases, cleanup or removal obligations remain open.
 
-### Haskell Baseline
+## Live Infrastructure Deployment Is Authorized
 
-- Use explicit data types and pattern matches.
-- Keep side effects at command or interpreter boundaries.
-- Prefer small pure helpers around subprocess or rendering logic.
-- Add brief comments only when the control flow is non-obvious.
+When the user's implementation or validation request requires a real local cluster, Vault, AWS target or public TLS proof, establishing it through the documented **implemented prodbox entrypoint** is authorized. Expected AWS spend, EKS/EBS/NAT/load-balancer lifetime and DNS/SES provisioning do not require an extra permission request beyond the task. Drive an in-hand lifecycle operation through completion or an honestly observed recovery disposition.
 
-### Data And Control-Flow Doctrine
+Authorization is not an instruction to rerun until green. Follow the live-campaign limits in the [plan standards](DEVELOPMENT_PLAN/development_plan_standards.md#evidence-and-live-campaigns): batch fixes, bank reproducible failures, and stop for class review when the stated attempt/boundary limits are reached.
 
-> **SSoT**: [Pure FP Standards](documents/engineering/pure_fp_standards.md)
+Normal AWS mutation remains prodbox-surface-owned. Do not use ad-hoc `aws`, `pulumi up/destroy`, `eksctl`, Terraform or other provider mutations to work around a missing/failed implementation. Add the required resource adapter and recovery behavior in its owning phase. Read-only provider diagnostics are permitted and must report their actual scope.
 
-- Favor explicit ADTs over stringly-typed control flow.
-- Handle all known cases explicitly in pattern matches.
-- Return structured errors instead of relying on exceptions for ordinary control flow.
-- Keep configuration decoding and validation separate from command execution.
+A user may explicitly request an exceptional manual cleanup. Record it as a hand action and preserve exact scope/read-back; it does not qualify the supported lifecycle. Such a request is not standing authorization for later manual provisioning or cleanup.
 
-## Testing Guidelines
+Never automate the legacy operator-only/TTY-only `nuke` ceremony. New target delete, control removal and data purge do not become available by documentation alone. Ordinary deletion must not delete its own evidence or credentials before their dependants finish.
 
-### Unit Tests
+## Environment and credential isolation
 
-- Test pure helpers in isolation.
-- Keep mocks at the subprocess or interpreter boundary.
-- Prefer table-shaped assertions over incidental output snapshots.
+Production uses `.data/`; testing uses `.test-data/` under distinct deployment/run identities. Bind roots, mounts, kubeconfigs, endpoints, cloud names/tags and credentials to that scope. Never rewrite the production sibling config for tests, infer the target from ambient kubeconfig, or reuse a production SES identity/bucket as an unnamed test dependency.
 
-### Integration Tests
+The elevated AWS credential enters through the real operator prompt. Automation simulates that input only from the authorized `aws_admin_for_test_simulation` fixture in `test-secrets.dhall`, through the same bounded credential implementation. Keep the runtime elevated value ephemeral; never write it to configuration, Vault, MinIO, Kubernetes objects, argv, environment, logs or evidence. Generated least-privilege operational credentials live in scoped Vault state.
 
-- `test/integration/Main.hs` is the built-frontend Haskell suite entrypoint, with
-  `test/integration/CliSuite.hs` and `test/integration/EnvSuite.hs` covering the CLI and
-  repository-config proof surfaces.
-- Named `prodbox test integration ...` commands run real native Haskell validation flows through
-  `src/Prodbox/TestValidation.hs`.
-- Missing prerequisites must fail fast with actionable errors.
-- Use `./.build/prodbox test unit` when integration prerequisites are unavailable.
+`test-secrets.dhall` must be a regular, non-symlink file owned by the effective user with no group/other mode bits. Check and read the same descriptor; refuse unsafe files without changing their permissions. Never print its values or include it in source/evidence hashes. Ambient AWS environment/profile/host CLI credentials are not substitutes for either supported ingress.
 
-### AWS Mutation Is Prodbox-Surface-Owned
+Test-only MinIO self-unseal is permitted only in an explicitly bound test policy. Production uses protected configured unlock custody or requests input within the operation. Do not initialize Vault over missing/replaced retained storage or infer absence of AWS resources from an uninitialized Vault. Local non-secret lifecycle metadata may be readable to the authenticated operator; secrets remain protected.
 
-- The `prodbox` command surface is the **exclusive mutation boundary** for every prodbox-managed
-  AWS resource — IAM, ECR, S3, Route 53, SES, EKS, EC2/EBS, the lot. In the target lifecycle
-  design, the CLI, validation harness, recovery flow, cascade, and explicit stack commands are peer
-  clients of the registered lifecycle core and its role-specific interpreters. There is no second
-  supported mutation owner:
-  no "operator runs `aws` CLI on the side", ad-hoc `eksctl`, `terraform`, or `pulumi up`.
-- The operator-owned AWS account/domain, externally owned parent hosted zone, and one temporary
-  bootstrap credential source are narrow onboarding prerequisites, not prodbox-managed runtime
-  resources. Their documented account-console creation is permitted before Authority admission;
-  it is neither a Provider fallback nor harness-owned cleanup. Once onboarding hands control to
-  the retained Authority, every project-managed AWS mutation remains `prodbox`-surface-owned.
-- Every supported AWS command is an authenticated client submission to the retained local
-  Lifecycle Authority. Provider effects run only through the fenced Provider Worker or the exact
-  permit-indexed adapter/runner assigned to that operation. If the local control plane cannot
-  authenticate, durably register, or observe the operation, the command fails closed. It never
-  falls back to host-direct `pulumi`, `aws`, `eksctl`, or `terraform` mutation.
-- Supported entrypoints: `prodbox aws stack <cli-verb> reconcile` /
-  `prodbox aws stack <cli-verb> diff` (read-only resource and property names), and
-  `prodbox aws stack eks purge-dependents` (plan by default; apply with both `--yes` and
-  `--plan-digest <digest>` after positive cluster absence and unique exact-tagged VPC observation;
-  closing verdict covers the registered network families), alongside
-  `prodbox aws stack <cli-verb> destroy --yes` for every Pulumi-managed substrate stack:
-  `eks` for registry stack `aws-eks`, `aws-subzone` for `aws-eks-subzone`, `test` for
-  `aws-test`, and `aws-ses` for `aws-ses`; `prodbox aws audit [--stack eks|test]` for a read-only
-  provider inventory of a stack's declared field (exit 0 `Clean`, 4 `Residue`, 5 `Unobservable`;
-  `--emit-readonly-script` prints the same reads as `aws` describe, get, and list commands for
-  when the Authority is unreachable, and prints nothing that mutates); `prodbox aws setup` /
-  `prodbox aws teardown` for the IAM user provisioning loop; `prodbox test integration
-  ... --substrate aws` and `prodbox test all` for end-to-end substrate-aware runs.
-- Do not run `pulumi up`, `pulumi destroy`, `aws` CLI mutations, `eksctl`, or any other
-  ad-hoc tool to create, modify, or delete AWS resources outside the `prodbox` command
-  surface. If a needed resource isn't being created, that's a bug in the substrate-platform
-  install (extend `Prodbox.Lib.AwsSubstratePlatform`), not an invitation to fix it
-  manually.
-- Do not manually provision before, or clean up after, a harness run. Use the returned
-  `CleanupRunId`/recovery disposition where available, re-run the canonical harness operation, or
-  use `prodbox aws stack <stack> destroy --yes`. Invocation or provider exit alone is not a clean
-  result; only the command's exact terminal absence evidence proves cleanup. For the per-run `eks`
-  and `test` stacks that evidence is the destroy verb's closing provider inventory
-  (`AWS_FIELD_DIFF`): the verb exits zero only when it is `Clean`, and exits 4 or 5 for `Residue` or
-  an inventory it could not take. An audit that found nothing is evidence for its declared field and
-  no other, and the `Unobservable` exit is never rounded up to success. The destroy of a stack with
-  a VPC converges: when it cannot, it ends in a `blocked:` report that names what remains and keeps
-  the stack record, and the next safe command is the same destroy again (or `prodbox aws audit` to
-  read the field), never a hand deletion; a candidate outside the destroy's closed predicate stays
-  in the report until the operator decides what to do with it.
-- Read-only AWS diagnostics (`aws sts get-caller-identity`, `aws route53 list-hosted-zones`,
-  console inspection) are acceptable when investigating a harness-reported failure.
+Validate external input, especially FQDNs, IPs, roots and account/region identities. Daemon configuration comes from an explicit mounted Dhall file, not ambient secret environment fallbacks.
 
-When a `prodbox` AWS subcommand is the documented entrypoint — `prodbox aws stack
-<stack> reconcile`, `prodbox aws stack <stack> destroy --yes`, `prodbox aws setup`,
-`prodbox aws teardown`, `prodbox test integration ... --substrate aws`, or `prodbox
-test all` — invoking it does not need separate user approval beyond the original
-request. Live AWS spend, EBS / NAT / ALB provisioning, EKS cluster lifetime, and
-SES sending-identity creation are *expected* outcomes of asking `prodbox` to
-provision the AWS substrate, not separate gates. The "confirm before mutating
-shared infrastructure" rule applies only to ad-hoc tooling that bypasses the
-`prodbox` surface — not to invoking a documented `prodbox` command.
+## Coding style and implementation ownership
 
-The VPC CNI interface families for EKS and the test VPC, and the EKS cluster security-group family,
-are registry-declared per-run controller families. Their independent reapers follow the owning
-stack's destroy attempt; exact family absence gates checkpoint retirement and completion. Both
-destroy routes share their closed predicates and clear admitted dependents before subnet/VPC deletion.
+Use explicit ADTs, exhaustive matches, structured ordinary errors and small pure helpers. Keep side effects in command/interpreter boundaries. Decode and validate configuration separately from execution. Prefer one catalog/model with generated projections over duplicated renderer and test setup paths.
 
-Lifecycle classes and their exact cleanup owners are not restated here. See
-[DEVELOPMENT_PLAN/substrates.md → Resource Lifecycle Classes](DEVELOPMENT_PLAN/substrates.md#resource-lifecycle-classes)
-for the inventory and
-[Lifecycle Reconciliation Doctrine §3](documents/engineering/lifecycle_reconciliation_doctrine.md#3-exact-keyed-desired-absence-reconciliation)
-for the target completion contract. Entering a cleanup wrapper that schedules work on success,
-failure, or Ctrl-C does not turn a partial or unobservable result into proven absence.
+One retained Authority owns mutation admission for a deployment. Preserve write-before-effect, bounded execution, independent resource read-back, cancellation settlement and recoverable operation identity. Checkpoint readability, resource presence, credentials and audit scope are separate observations. A missing file, successful provider exit or global tag sweep cannot silently become exact resource absence.
 
-### Substrate Equivalence
+Keep all canonical application/platform services in the supported projection. Fix image distribution, service installation and networking at their owning substrate adapter; do not make tests pass through different images or omitted services on EKS. Bootstrap/recovery images must be available independently of the registry they recover.
 
-- The home local substrate and the AWS substrate stand up the **same application/platform service
-  set**:
-  the canonical chart set (`gateway`, `keycloak`, `keycloak-postgres`, `vscode`, `api`,
-  `redis`, `websocket`) plus the same supporting platform pieces — MinIO, the in-cluster
-  registry (single-binary `registry:2`), the Percona PostgreSQL operator, Envoy Gateway,
-  cert-manager, real ZeroSSL via
-  cert-manager DNS01. The two substrates differ in their load-balancer (MetalLB on home,
-  AWS Load Balancer Controller on EKS) and their Route 53 hosting (parent zone on home,
-  dedicated subzone provisioned by `prodbox aws stack aws-subzone reconcile` on AWS), plus their
-  block-storage volume source (`hostPath` on home, pre-created EBS on EKS). Nothing else differs
-  within that application/platform projection. Lifecycle control-plane placement is
-  intentionally outside this equivalence claim: Lifecycle Authority and Provider Worker remain on
-  mandatory local RKE2 while they provision and manage the optional AWS target.
-- The in-cluster registry (`registry:2`) + MinIO + Percona are installed on **both**
-  substrates. The AWS substrate is not a "no-registry" cluster. If
-  `prodbox charts reconcile ... --substrate aws` fails because chart pods can't reach
-  `127.0.0.1:30080/prodbox/...`, the fix is to bring the registry
-  (and its MinIO storage backend, and the Percona operator) up on EKS via the
-  substrate-platform install in `Prodbox.Lib.AwsSubstratePlatform` — not to render
-  different image references. The registry has no web UI (no admin route); for continuity
-  its namespace and front-door Service are still named `harbor`.
-- Chart templates and `Prodbox.Lib.ChartPlatform` use one set of image refs across both
-  substrates. Substrate-aware code is responsible for making `127.0.0.1:30080` resolve
-  on EKS too (via an EKS-side registry plus a node-local registry-mirror pattern
-  matching the home cluster's NodePort-on-127.0.0.1 layout).
-- When something on the AWS substrate looks "missing", the fix is almost always
-  "extend the harness's substrate-platform install" — never "operator workaround".
+## Testing and mutation discipline
 
-### Development Tooling Policy
+Run real owned composition through the public binary and independent observers. Fakes support pure/protocol tests and controlled fault cases; they cannot substitute for the real provider/Kubernetes behavior a phase claims. Every introduced resource family must have cleanup and postcondition evidence in the same phase.
 
-- Do not use `.github/` workflows or CI automation for this repository during active development.
-- Do not use git hooks (including pre-commit); run CLI entrypoints directly.
-- See [Code Quality Doctrine](documents/engineering/code_quality.md#2a-development-tooling-policy).
+Critical source mutations must trigger the expected unchanged assertion. Compilation errors, unrelated failures and timeouts do not count as kills. Mutants execute in isolated non-secret workspaces without production roots, current kubeconfig, unrestricted container sockets, elevated/AWS credentials, publication authority or provider egress. Actual cloud acceptance uses the separately identified unmodified build.
+
+Do not perform hand setup/cleanup to manufacture a passing run. Preserve primary and cleanup failures, incomplete observations and stable recovery IDs. Historic reports remain tied to the revisions they exercised.
+
+## Development tooling policy
+
+Do not add `.github/` workflows, repository CI automation or Git hooks during active development. Run the CLI checks directly. Do not add an alternate quality command that bypasses `prodbox dev check`.
 
 ## Commit Guidelines
 
-**CRITICAL: Agents NEVER commit or push.**
+**Agents never commit or push.** Leave changes uncommitted. Do not run `git add`, `git commit`, `git push`, or other Git commands that modify repository state. Read-only status, diff and history inspection are permitted.
 
-- Leave all changes as uncommitted working directory changes.
-- Do not run `git commit`, `git push`, or `git add`.
-- Do not run git commands that modify repository state.
+## Documentation handoff
 
-## Security
-
-- Elevated/admin AWS auth enters `prodbox` only through the interactive `SecretRef.Prompt`.
-  Automation may simulate that prompt only through the `aws_admin_for_test_simulation.*`
-  fixture in `test-secrets.dhall`; production config never contains that credential.
-- `test-secrets.dhall` must be a regular, non-symlink file owned by the effective user with no
-  group or other permission bits (`chmod 600 test-secrets.dhall`). The loader checks and reads
-  the same opened descriptor and never changes permissions on refusal. Its admin region must
-  match the configured Pulumi backend before a credential Job starts.
-- Generated operational `aws.*` credentials are written to Vault KV and referenced by typed
-  `SecretRef.Vault` values. Ambient AWS auth env vars, shared-profile discovery, and system
-  `aws` CLI host auth state are not valid auth sources for supported `prodbox` flows.
-- Daemon bootstrap config comes only from a mounted Dhall file at `--config <path>`;
-  env-var fallbacks (`PRODBOX_*`, `MINIO_*`, `AWS_*` on the daemon Pod) are forbidden on
-  supported paths. See [documents/engineering/config_doctrine.md](./documents/engineering/config_doctrine.md).
-- Validate all external input, especially FQDN and IP address values.
-- Keep IAM scopes least-privilege.
-
-## Command Selection: Automation vs Operator-Interactive
-
-`prodbox` has two parallel paths for AWS-substrate work. Automation contexts
-(CI, agents, scripted workflows) **must** use the automation column. The
-operator-interactive commands refuse to run when stdin is not a TTY and exit
-1 with a pointer to the automation equivalent — so if you see one of those
-prompts, you have picked the wrong command, not hit a blocker.
-
-| Task | Automation path (harness, non-interactive) | Operator-interactive path |
-|------|--------------------------------------------|----------------------------|
-| Drive a full AWS-substrate validation run | `prodbox test all --substrate aws` | (no single command — `aws setup` then per-validation, manual) |
-| Run one AWS-substrate validation | `prodbox test integration <name> --substrate aws` | (manual after `aws setup`) |
-| Initialize operational `aws.*` from `aws_admin_for_test_simulation.*` | exercised automatically by `prodbox test ...` preflight | `prodbox aws setup` |
-| Attempt operational `aws.*` + per-run cleanup and preserve/report unresolved results | exercised automatically by `prodbox test ...` postflight | `prodbox aws teardown` |
-| Provision a Pulumi stack | exercised by the harness; no standalone automation alias | `prodbox aws stack <cli-verb> reconcile` |
-| Destroy a Pulumi stack | `prodbox aws stack <cli-verb> destroy --yes` (already non-interactive) | same |
-| Author repo config | edit the binary-sibling `prodbox.dhall` against `prodbox-config-types.dhall` | `prodbox config setup` |
-| Inspect AWS state | `aws sts get-caller-identity`, `prodbox aws quotas check` (after `aws.*` populated) | same |
-
-The automation path simulates the operator admin-credential prompt from
-`aws_admin_for_test_simulation.*` in `test-secrets.dhall` through the Credential Provisioner
-(every harness-tier suite takes that one path), provisions the Lifecycle-provider credential into
-Vault KV, runs validations, and then uses its cleanup wrapper. The ordinary harness registers or
-adopts resource cleanup before credential preparation and re-establishes the credential on resume.
-After every resource result proves success, it destroys/read-backs the IAM family before the
-Provisioner-only Agent route removes/read-backs the exact Vault generation, then reports
-`OPERATIONAL_CREDENTIAL_DISPOSITION=revoked`. An incomplete cleanup preserves it for recovery;
-an unsuccessful revoke is unresolved, and either fails the suite. Cancellation attempts cleanup
-and the eligible credential tail before it is rethrown. Some preparation mutations still precede
-the wrapper, so this is not an every-exit durable-registration claim. The separate qualification
-runner now confirms credential retirement through the Credential Provisioner and a separately
-read-back revoked Authority epoch before removing the local control plane. Its retained handoff
-carries that metadata-only confirmation. Sprint `6.5` still owns next-bootstrap report import,
-intent retirement, attested successor admission and deployment qualification. Scheduling alone never proves resource absence; exact terminal evidence
-is required.
-The retained `aws-ses` long-lived stack remains intentionally present as cross-substrate shared
-infrastructure. Live AWS spend is
-expected; no separate approval needed beyond the user's original request.
-
-**Common mistake**: running `prodbox aws setup` from a non-TTY context and
-reporting the interactive prompt as a blocker. The correct response is to
-run `prodbox test all --substrate aws` (or the targeted integration
-command) — the harness handles credentials non-interactively. The
-interactive command will refuse with `exit 1` and the message names the
-automation equivalent.
-
-## Cross-References
-
-- **[CLAUDE.md](./CLAUDE.md)**: Claude-specific navigation and evidence posture; operational rules remain authoritative here
-- **[documents/engineering/README.md](./documents/engineering/README.md)**: Engineering docs index (canonical CLI doctrine is distributed across these per-surface docs)
-- **documents/documentation_standards.md**: Documentation rules
-- **documents/engineering/**: Architecture and doctrine documentation
-- **[DEVELOPMENT_PLAN/README.md → Resume Here](DEVELOPMENT_PLAN/README.md#resume-here)**: sole current sprint-status/resumption ledger and links to cleanup ownership
+Follow [Documentation Standards](documents/documentation_standards.md). Keep the queue in one place, use the canonical Markdown objective/command/acceptance/mutation manifests, and assign every obsolete path to a numerical remover in [legacy_tracking_for_deletion.md](DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md). Do not close a phase with pending owned rows or a private replacement that the public command cannot use.

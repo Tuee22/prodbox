@@ -3,6 +3,7 @@
 **Status**: Supporting document
 **Supersedes**: N/A
 **Generated sections**: none
+**Applicability**: Existing source fixtures; historical/current-code assertions do not qualify the adopted target until their owning phase reruns them.
 
 > **Purpose**: Identify each fixture's provenance and the boundary of the behaviour it supports.
 
@@ -38,3 +39,7 @@ The [SecurityGroup](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_S
 and [IpPermission](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_IpPermission.html)
 response contracts make these list fields optional. Identity, VPC and owned-tag projections stay
 required at the decoder; normalizing optional rule arrays does not relax those checks.
+
+## Refactor ownership
+
+These fixture bytes are unchanged by Markdown adoption. [Testing](../../../documents/engineering/testing.md), [acceptance cases](../../../DEVELOPMENT_PLAN/acceptance_cases.md) and [Phase 8](../../../DEVELOPMENT_PLAN/phase_08_eks_and_substrate_parity.md) own their actual real-provider claim and migration. Reuse useful regressions without treating a golden file as independent resource absence.

@@ -13,7 +13,7 @@
 --
 -- Field names match the `MeasuredResourceProfile` accessors in
 -- `src/Prodbox/Capacity/MeasuredProfile.hs` (generic FromDhall) and
--- `documents/engineering/resource_scaling_doctrine.md` § 2F. No real profile is
+-- `documents/engineering/resource_scaling_doctrine.md at revision 583443f` § 2F. No real profile is
 -- committed yet; the recorder that produces the first one is owned by Sprint
 -- 5.21. Committed profiles live beside this file as
 -- `dhall/capacity/measured/<profile_id>.dhall`.

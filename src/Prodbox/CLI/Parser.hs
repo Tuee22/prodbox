@@ -15,8 +15,11 @@ import Options.Applicative
   , info
   , infoOption
   , long
+  , metavar
+  , optional
   , progDesc
   , short
+  , strOption
   , switch
   , (<**>)
   )
@@ -31,6 +34,7 @@ import Prodbox.Subprocess.HostControllerArguments (parseHostControllerArguments)
 
 data Options = Options
   { optVerbose :: Bool
+  , optConfig :: Maybe FilePath
   , optRequest :: CommandRequest
   }
   deriving (Eq, Show)
@@ -65,6 +69,13 @@ optionsParser =
       ( long "verbose"
           <> short 'v'
           <> help "Enable verbose output"
+      )
+    <*> optional
+      ( strOption
+          ( long "config"
+              <> metavar "PATH"
+              <> help "Select a configuration for supported commands"
+          )
       )
     <*> commandRequestParser
 

@@ -8,10 +8,10 @@
 -- 'checkAll'. Every command in @{prodbox cluster delete, prodbox aws
 -- teardown, prodbox aws stack <stack> destroy, prodbox nuke}@ opens
 -- with @checkAll [...]@ over the appropriate set, per
--- @documents/engineering/lifecycle_reconciliation_doctrine.md § 5@.
+-- @documents/engineering/lifecycle_reconciliation_doctrine.md at 583443f, section 5@.
 --
 -- The doctrine inventory of every named precondition lives in
--- @documents/engineering/lifecycle_reconciliation_doctrine.md § 4@;
+-- @documents/engineering/lifecycle_reconciliation_doctrine.md at 583443f, section 4@;
 -- when a new resource class needs a precondition, add one
 -- @discover@ and one 'Precondition' here.
 module Prodbox.Lifecycle.Preconditions
@@ -124,7 +124,7 @@ renderLongLivedRefusal live =
       , "live resources."
       , ""
       , "Long-lived stacks are not part of `rke2 delete --cascade`'s scope (per"
-      , "documents/engineering/lifecycle_reconciliation_doctrine.md § 7). Run the"
+      , "documents/engineering/lifecycle_reconciliation_doctrine.md at 583443f, section 7). Run the"
       , "canonical destroy command for each stack below first, or use"
       , "`prodbox nuke` for total teardown:"
       , ""

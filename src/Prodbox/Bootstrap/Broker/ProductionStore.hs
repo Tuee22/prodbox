@@ -1144,7 +1144,7 @@ boundary config keys generationKey =
 -- records are persisted and read back through @Serialise@ (CBOR), which
 -- reconstructs each field positionally and __bypasses every smart constructor
 -- the type is otherwise built through__. That is the conversion class
--- [chaos_hardening_doctrine.md § 23](../../../../documents/engineering/chaos_hardening_doctrine.md)
+-- chaos_hardening_doctrine.md at 583443f, section 23
 -- names, and the same seam Sprint 1.86 closed for Dhall decoding of the cluster
 -- topology.
 --
@@ -1224,7 +1224,7 @@ validFinalUnlockBundle bundle =
 -- smart constructors, so a test could only reach it by crafting CBOR bytes.
 -- Exposing the decision over its two 'Natural' inputs makes the rule itself
 -- falsifiable, which the composed predicate over an unconstructible value would
--- not be ([unit_testing_policy.md](../../../../documents/engineering/unit_testing_policy.md)
+-- not be (unit_testing_policy.md (historical unit_testing_policy.md at revision `583443f`)
 -- canonical statement 10).
 validUnlockShareThreshold :: Natural -> Natural -> Bool
 validUnlockShareThreshold threshold shareCount =
@@ -1249,7 +1249,7 @@ validChildRecoveryDelivery delivery =
 -- their own, but one of them carries a free-text reason for an unobservable
 -- checkpoint — and a persisted \"cannot observe\" that says nothing is the
 -- distinguishability defect
--- [chaos_hardening_doctrine.md § 23](../../../../documents/engineering/chaos_hardening_doctrine.md)
+-- chaos_hardening_doctrine.md at 583443f, section 23
 -- names, durably recorded. Every other arm is accepted.
 validSecretWorkerCheckpoint :: SecretWorkerDurableCheckpoint -> Bool
 validSecretWorkerCheckpoint = null . secretWorkerCheckpointInvariantViolations

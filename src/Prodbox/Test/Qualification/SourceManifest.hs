@@ -1,5 +1,6 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TupleSections #-}
 
 -- | Filesystem recorder for the secret-safe Standard-P source identity.
 --
@@ -13,20 +14,28 @@ module Prodbox.Test.Qualification.SourceManifest
   , captureSourceIdentityPair
   , captureAwsLifecycleSourceIdentity
   , captureCommittedSourceIdentity
+  , captureSourceCandidate
+  , captureWorktreeInputs
+  , SourceCaptureLimits (..)
+  , captureWorktreeInputsBounded
   )
 where
 
+import Control.Exception (bracket)
 import Data.Bits ((.&.))
 import Data.ByteString qualified as ByteString
 import Data.ByteString.Char8 qualified as ByteString8
+import Data.Set qualified as Set
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.Encoding qualified as TextEncoding
 import Data.Word (Word32)
 import Prodbox.Result (Result (..))
 import Prodbox.Subprocess
-  ( ProcessOutput (..)
+  ( BoundedSubprocessLimits (..)
+  , ProcessOutput (..)
   , Subprocess (..)
+  , captureSubprocessBounded
   , captureSubprocessResult
   )
 import Prodbox.Test.Qualification.SourceIdentity
@@ -44,17 +53,31 @@ import Prodbox.Test.Qualification.SourceIdentity
   , mkScopedSourceIdentity
   , mkSourceIdentity
   )
+import System.Directory (makeAbsolute)
 import System.Exit (ExitCode (..))
-import System.FilePath ((</>))
-import System.IO.Error (tryIOError)
+import System.FilePath (normalise, splitDirectories, (</>))
+import System.IO.Error (isEOFError, tryIOError)
 import System.Posix.Files
   ( FileStatus
+  , deviceID
+  , fileID
   , fileMode
+  , fileOwner
+  , fileSize
+  , getFdStatus
   , getSymbolicLinkStatus
+  , isDirectory
   , isRegularFile
   , isSymbolicLink
+  , linkCount
+  , modificationTimeHiRes
   , readSymbolicLink
+  , statusChangeTimeHiRes
   )
+import System.Posix.IO qualified as Posix
+import System.Posix.IO.ByteString qualified as PosixBytes
+import System.Posix.Types (Fd (..))
+import System.Timeout (timeout)
 
 data SourceManifestCaptureError
   = SourceManifestGitFailed !String
@@ -62,6 +85,9 @@ data SourceManifestCaptureError
   | SourceManifestExcludedTrackedInput !Text
   | SourceManifestFileReadFailed !FilePath !String
   | SourceManifestUnsupportedFileType !FilePath
+  | SourceManifestUnsafeFile !FilePath
+  | SourceManifestBudgetExceeded
+  | SourceManifestCaptureTimedOut
   | SourceManifestTreeDecodeFailed !String
   | SourceManifestUnsupportedGitEntry !Text !Text !Text
   deriving stock (Eq, Show)
@@ -146,6 +172,80 @@ captureWorktreeInputs repoRoot configuredSecretRoots = do
             )
         )
 
+-- | Bounds for the mutation input capture. The timeout covers all Git calls
+-- and candidate reads; it does not establish descendant-process settlement.
+data SourceCaptureLimits = SourceCaptureLimits
+  { sourceCaptureMaximumFiles :: !Int
+  , sourceCaptureMaximumBytes :: !Int
+  , sourceCaptureMaximumGitBytes :: !Int
+  , sourceCaptureTimeoutMicros :: !Int
+  }
+  deriving stock (Eq, Show)
+
+captureWorktreeInputsBounded
+  :: SourceCaptureLimits
+  -> FilePath
+  -> [Text]
+  -> IO (Either SourceManifestCaptureError (GitHead, WorktreeState, [SourceCandidate]))
+captureWorktreeInputsBounded limits repoRoot secretRoots
+  | sourceCaptureMaximumFiles limits <= 0
+      || sourceCaptureMaximumBytes limits <= 0
+      || sourceCaptureMaximumGitBytes limits <= 0
+      || sourceCaptureTimeoutMicros limits <= 0 =
+      pure (Left SourceManifestBudgetExceeded)
+  | otherwise = do
+      result <- timeout (sourceCaptureTimeoutMicros limits) capture
+      pure (maybe (Left SourceManifestCaptureTimedOut) id result)
+ where
+  capture = do
+    headResult <- boundedGit ["rev-parse", "--verify", "HEAD"]
+    statusResult <- boundedGit ["status", "--porcelain=v1", "--untracked-files=all"]
+    pathsResult <- boundedGit ["ls-files", "-z", "--cached", "--others", "--exclude-standard"]
+    deletedResult <- boundedGit ["ls-files", "-z", "--deleted"]
+    case (headResult, statusResult, pathsResult, deletedResult) of
+      (Right rawHead, Right rawStatus, Right rawPaths, Right rawDeleted) ->
+        case mkGitHead (Text.pack (trim rawHead)) of
+          Left failure -> pure (Left (SourceManifestIdentityRejected failure))
+          Right headId -> do
+            let deleted = Set.fromList (nulSeparated rawDeleted)
+                present = filter (`Set.notMember` deleted) (nulSeparated rawPaths)
+            case selectCandidatePaths secretRoots present of
+              Left failure -> pure (Left failure)
+              Right selected
+                | length selected > sourceCaptureMaximumFiles limits -> pure (Left SourceManifestBudgetExceeded)
+                | otherwise -> do
+                    candidates <- collect [] 0 selected
+                    pure $
+                      fmap
+                        (headId,if null rawStatus then WorktreeClean else WorktreeDirty,)
+                        candidates
+      _ -> pure (Left (SourceManifestGitFailed "bounded git observation failed"))
+  boundedGit args = do
+    result <-
+      captureSubprocessBounded
+        ( BoundedSubprocessLimits
+            1
+            (sourceCaptureMaximumGitBytes limits)
+            (sourceCaptureMaximumGitBytes limits)
+            (sourceCaptureTimeoutMicros limits)
+        )
+        (Subprocess "git" args Nothing (Just repoRoot))
+    pure $ case result of
+      Right output | processExitCode output == ExitSuccess -> Right (processStdout output)
+      _ -> Left ()
+  collect captured used remaining = case remaining of
+    [] -> pure (Right (reverse captured))
+    path : rest -> do
+      candidate <-
+        captureSourceCandidateWithLimit (sourceCaptureMaximumBytes limits - used) repoRoot secretRoots path
+      case candidate of
+        Left failure -> pure (Left failure)
+        Right value
+          | ByteString.length (sourceCandidateBytes value) > sourceCaptureMaximumBytes limits - used ->
+              pure (Left SourceManifestBudgetExceeded)
+          | otherwise ->
+              collect (value : captured) (used + ByteString.length (sourceCandidateBytes value)) rest
+
 -- | Capture a clean historical tree without checking it out.  Git supplies the
 -- exact committed path/type/mode inventory and blob bytes; the same positive
 -- policy is applied to every path before any blob is opened.  This is the
@@ -205,7 +305,10 @@ selectCommittedEntries configuredSecretRoots rawTree =
       Right SourcePathExcludedByPolicy ->
         Left (SourceManifestExcludedTrackedInput (committedEntryPath entry))
       Right SourcePathOutsideAllowlist -> Right selected
-      Right SourcePathAdmitted -> Right (entry : selected)
+      Right SourcePathAdmitted
+        | hasPrivateDirectory (Text.unpack (committedEntryPath entry)) ->
+            Left (SourceManifestUnsafeFile (Text.unpack (committedEntryPath entry)))
+        | otherwise -> Right (entry : selected)
 
 parseCommittedTreeEntry
   :: ByteString.ByteString
@@ -293,7 +396,7 @@ captureCandidates repoRoot configuredSecretRoots rawPaths =
     [] -> pure (Right (reverse captured))
     relativePath : rest ->
       do
-        candidateResult <- captureCandidate (repoRoot </> relativePath) relativePath
+        candidateResult <- captureSourceCandidate repoRoot configuredSecretRoots relativePath
         case candidateResult of
           Left err -> pure (Left err)
           Right candidate -> go (candidate : captured) rest
@@ -313,34 +416,137 @@ selectCandidatePaths configuredSecretRoots = fmap reverse . foldl selectOne (Rig
       Right SourcePathOutsideAllowlist -> Right selected
       Right SourcePathAdmitted -> Right (relativePath : selected)
 
-captureCandidate
-  :: FilePath
-  -> FilePath
-  -> IO (Either SourceManifestCaptureError SourceCandidate)
-captureCandidate absolutePath relativePath = do
-  statusResult <- tryIo absolutePath (getSymbolicLinkStatus absolutePath)
-  case statusResult of
-    Left err -> pure (Left err)
-    Right status
-      | not (isSymbolicLink status || isRegularFile status) ->
-          pure (Left (SourceManifestUnsupportedFileType relativePath))
-      | otherwise -> do
-          bytesResult <-
-            if isSymbolicLink status
-              then do
-                targetResult <- tryIo absolutePath (readSymbolicLink absolutePath)
-                pure (TextEncoding.encodeUtf8 . Text.pack <$> targetResult)
-              else tryIo absolutePath (ByteString.readFile absolutePath)
-          pure $ do
-            bytes <- bytesResult
-            Right
-              SourceCandidate
-                { sourceCandidatePath = Text.pack relativePath
-                , sourceCandidateType =
-                    if isSymbolicLink status then ManifestSymbolicLink else ManifestRegularFile
-                , sourceCandidateMode = canonicalFileMode status
-                , sourceCandidateBytes = bytes
-                }
+-- | Read only a policy-admitted source candidate. Parent directories and the
+-- final file are opened without following links, and identity is rechecked
+-- after reading. A hard link is refused because it can alias private data.
+captureSourceCandidate
+  :: FilePath -> [Text] -> FilePath -> IO (Either SourceManifestCaptureError SourceCandidate)
+captureSourceCandidate = captureSourceCandidateWithLimit maximumSourceBytes
+
+captureSourceCandidateWithLimit
+  :: Int -> FilePath -> [Text] -> FilePath -> IO (Either SourceManifestCaptureError SourceCandidate)
+captureSourceCandidateWithLimit maximumBytes repoRoot secretRoots relativePath
+  | maximumBytes < 0 = pure (Left SourceManifestBudgetExceeded)
+  | hasPrivateDirectory relativePath =
+      pure (Left (SourceManifestUnsafeFile relativePath))
+  | otherwise =
+      case selectCandidatePaths secretRoots [relativePath] of
+        Left failure -> pure (Left failure)
+        Right [selected] -> do
+          absoluteRoot <- makeAbsolute repoRoot
+          captured <- tryIo relativePath $ withCandidateParent absoluteRoot selected $ \parent identities leaf -> do
+            let anchored = "/proc/self/fd/" ++ showFd parent </> leaf
+            before <- getSymbolicLinkStatus anchored
+            if linkCount before /= 1 || fileSize before < 0 || fileSize before > maximumSourceBytes
+              then pure (Left (SourceManifestUnsafeFile selected))
+              else
+                if fileSize before > fromIntegral maximumBytes
+                  then pure (Left SourceManifestBudgetExceeded)
+                  else do
+                    observed <-
+                      if isSymbolicLink before
+                        then do
+                          target <- readSymbolicLink anchored
+                          after <- getSymbolicLinkStatus anchored
+                          pure
+                            ( if sameSourceVersion before after
+                                then Just (ManifestSymbolicLink, TextEncoding.encodeUtf8 (Text.pack target))
+                                else Nothing
+                            )
+                        else
+                          if isRegularFile before
+                            then bracket (Posix.openFdAt (Just parent) leaf Posix.ReadOnly sourceFileFlags) Posix.closeFd $ \file -> do
+                              opened <- getFdStatus file
+                              if not (isRegularFile opened && sameSourceVersion before opened)
+                                then pure Nothing
+                                else do
+                                  bytes <- readSourceBytes maximumBytes file
+                                  after <- getFdStatus file
+                                  named <- getSymbolicLinkStatus anchored
+                                  pure $
+                                    if sameSourceVersion opened after
+                                      && sameSourceVersion after named
+                                      && fromIntegral (ByteString.length bytes) == fileSize after
+                                      then Just (ManifestRegularFile, bytes)
+                                      else Nothing
+                            else pure Nothing
+                    current <- withCandidateParent absoluteRoot selected $ \_ fresh _ -> pure fresh
+                    pure $ case observed of
+                      Just (kind, bytes)
+                        | current == identities ->
+                            Right (SourceCandidate (Text.pack selected) kind (canonicalFileMode before) bytes)
+                      _ -> Left (SourceManifestUnsafeFile selected)
+          pure (captured >>= id)
+        Right _ -> pure (Left (SourceManifestUnsafeFile relativePath))
+
+privateDirectoryNames :: [FilePath]
+privateDirectoryNames = [".build", ".data", ".git", ".prodbox-state", ".secrets", ".test-data", "dist-newstyle"]
+
+hasPrivateDirectory :: FilePath -> Bool
+hasPrivateDirectory = any (`elem` privateDirectoryNames) . splitDirectories
+
+maximumSourceBytes :: (Integral value) => value
+maximumSourceBytes = 128 * 1024 * 1024
+
+sourceDirectoryFlags :: Posix.OpenFileFlags
+sourceDirectoryFlags = Posix.defaultFileFlags {Posix.nofollow = True, Posix.cloexec = True, Posix.directory = True}
+
+sourceFileFlags :: Posix.OpenFileFlags
+sourceFileFlags = Posix.defaultFileFlags {Posix.nofollow = True, Posix.cloexec = True, Posix.nonBlock = True}
+
+withCandidateParent
+  :: FilePath -> FilePath -> (Fd -> [(Integer, Integer)] -> FilePath -> IO value) -> IO value
+withCandidateParent root relativePath action =
+  case reverse (splitDirectories relativePath) of
+    [] -> ioError (userError "empty source path")
+    leaf : reversedParents ->
+      bracket (Posix.openFd "/" Posix.ReadOnly sourceDirectoryFlags) Posix.closeFd $ \descriptor ->
+        descend
+          descriptor
+          (filter (/= "/") (splitDirectories (normalise root)) ++ reverse reversedParents)
+          []
+          leaf
+ where
+  descend descriptor remaining identities leaf = do
+    status <- getFdStatus descriptor
+    if not (isDirectory status)
+      then ioError (userError "source parent is not a directory")
+      else do
+        let nextIdentities = (toInteger (deviceID status), toInteger (fileID status)) : identities
+        case remaining of
+          [] -> action descriptor (reverse nextIdentities) leaf
+          part : rest ->
+            bracket (Posix.openFdAt (Just descriptor) part Posix.ReadOnly sourceDirectoryFlags) Posix.closeFd $ \next ->
+              descend next rest nextIdentities leaf
+
+showFd :: Fd -> String
+showFd (Fd value) = show value
+
+sameSourceVersion :: FileStatus -> FileStatus -> Bool
+sameSourceVersion left right =
+  deviceID left == deviceID right
+    && fileID left == fileID right
+    && fileSize left == fileSize right
+    && fileMode left == fileMode right
+    && fileOwner left == fileOwner right
+    && linkCount left == linkCount right
+    && modificationTimeHiRes left == modificationTimeHiRes right
+    && statusChangeTimeHiRes left == statusChangeTimeHiRes right
+
+readSourceBytes :: Int -> Fd -> IO ByteString.ByteString
+readSourceBytes maximumBytes descriptor = go [] 0
+ where
+  go chunks count
+    | count > maximumBytes = ioError (userError "source candidate exceeds size bound")
+    | otherwise = do
+        result <-
+          tryIOError (PosixBytes.fdRead descriptor (fromIntegral (min 65535 (maximumBytes - count) + 1)))
+        case result of
+          Left failure | isEOFError failure -> pure (ByteString.concat (reverse chunks))
+          Left failure -> ioError failure
+          Right bytes
+            | ByteString.null bytes -> pure (ByteString.concat (reverse chunks))
+            | otherwise -> go (bytes : chunks) (count + ByteString.length bytes)
 
 canonicalFileMode :: FileStatus -> Word32
 canonicalFileMode status

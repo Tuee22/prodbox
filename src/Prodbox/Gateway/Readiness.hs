@@ -5,7 +5,7 @@
 -- Readiness is never written unconditionally at serve-start. It is computed
 -- from the drain phase, the current durable emitter-authority witness, and the
 -- worker-started fact — exactly the cached state
--- [bootstrap_readiness_doctrine §0.7](../../../documents/engineering/bootstrap_readiness_doctrine.md)
+-- bootstrap_readiness_doctrine §0.7 (historical bootstrap_readiness_doctrine.md at revision `583443f`, section 0.7)
 -- permits @/readyz@ to project ("startup complete, not draining, required
 -- managed sessions available") — with zero backend I/O in the projection
 -- itself.
@@ -56,7 +56,7 @@ data EmitterAuthorityStatus
 -- A worker that died therefore never un-readied the Pod: the flag said
 -- @WorkersStarted@ because it had been set, not because anything was running.
 -- That is the *Staleness* class of
--- [chaos_hardening_doctrine.md § 21](../../../documents/engineering/chaos_hardening_doctrine.md).
+-- chaos_hardening_doctrine.md at 583443f, section 21.
 --
 -- The roster is keyed by a closed 'Bounded'/'Enum' worker identity, so adding a
 -- worker without giving it a roster entry does not type-check, and readiness

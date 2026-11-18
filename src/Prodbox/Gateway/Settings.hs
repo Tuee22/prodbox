@@ -5,7 +5,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Daemon Dhall settings module per
---   [config_doctrine.md §4](../../documents/engineering/config_doctrine.md#4-decoding).
+--   config_doctrine.md at 583443f, section 4.
 --
 -- Mirrors the host-CLI `Prodbox.Settings` pattern: a Dhall expression at the
 -- daemon's `--config <path>` is decoded in-process by the native Haskell

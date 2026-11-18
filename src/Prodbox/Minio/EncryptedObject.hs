@@ -59,8 +59,7 @@ import Prodbox.Minio.ObjectStore
   )
 
 data LogicalObject
-  = LogicalInForceConfig
-  | LogicalGatewayState Text
+  = LogicalGatewayState Text
   | LogicalPulumiStack Text
   | LogicalLongLivedState Text
   | LogicalDownstreamCluster Text
@@ -100,7 +99,6 @@ renderEncryptedObjectError err = case err of
 
 logicalObjectName :: LogicalObject -> Text
 logicalObjectName object = case object of
-  LogicalInForceConfig -> "in-force-config"
   LogicalGatewayState name -> "gateway-state/" <> Text.strip name
   LogicalPulumiStack stackId -> "pulumi-stack/" <> Text.strip stackId
   LogicalLongLivedState name -> "long-lived-state/" <> Text.strip name

@@ -2,7 +2,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 
 -- | Sprint 5.46: the @decode . encode == id@ properties
--- [Unit Testing Policy § 3.2](../../documents/engineering/unit_testing_policy.md#32-properties)
+-- Unit Testing Policy § 3.2 (historical unit_testing_policy.md at revision `583443f`, section 3.2)
 -- has required all along.
 --
 -- __Why here and why now.__ The policy's first property bullet is

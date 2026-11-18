@@ -33,7 +33,7 @@ they do not turn them into provider observations.
 
 Live recording acquisition and class-closure status belong to
 [the resumption ledger](../../../DEVELOPMENT_PLAN/README.md#resume-here) and
-[Sprint 5.59](../../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md).
+historical Sprint 5.59 at revision `583443f`.
 
 The [SecurityGroup](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_SecurityGroup.html)
 and [IpPermission](https://docs.aws.amazon.com/AWSEC2/latest/APIReference/API_IpPermission.html)

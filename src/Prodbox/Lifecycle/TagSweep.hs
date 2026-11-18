@@ -2,7 +2,7 @@
 
 -- | Sprint 4.11: postflight tag-sweep helpers for destructive
 -- lifecycle commands. The doctrine in
--- @documents/engineering/lifecycle_reconciliation_doctrine.md § 6@
+-- @documents/engineering/lifecycle_reconciliation_doctrine.md at 583443f, section 6@
 -- mandates that every destructive lifecycle command end with a call
 -- to 'discoverClusterTaggedAwsResources' (and, for the long-lived
 -- classes, the equivalent long-lived-tag query). A non-empty result
@@ -247,7 +247,7 @@ unionTaggedResources :: [[TaggedResource]] -> [TaggedResource]
 unionTaggedResources = nub . concat
 
 -- | Sprint 4.76: which sweep-owning surface is asking
--- (@lifecycle_reconciliation_doctrine.md § 5@ assigns the mandatory
+-- (@lifecycle_reconciliation_doctrine.md at 583443f, section 5@ assigns the mandatory
 -- sweep to exactly two commands). The scopes differ in one respect only:
 -- the cascade carves out intentionally-retained long-lived shared
 -- infrastructure, and @nuke@ does not, because destroying it is what
@@ -380,7 +380,7 @@ ebsClusterOwnedTagKey clusterName = "kubernetes.io/cluster/" ++ clusterName
 -- @cluster delete@ (even @--cascade@) by design and are destroyed only by their
 -- explicit long-lived lifecycle surface; the cascade postflight tag sweep must
 -- NOT flag them as escaped residue (Standard:
--- lifecycle_reconciliation_doctrine.md — Resource Lifecycle Classes). @nuke@'s
+-- lifecycle_reconciliation_doctrine.md at revision `583443f` — Resource Lifecycle Classes). @nuke@'s
 -- own sweep does NOT use this carve-out, since it exists to destroy these
 -- resources.
 longLivedRetentionMarkers :: [(String, String)]

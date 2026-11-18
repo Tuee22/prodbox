@@ -27,7 +27,7 @@ import Data.Text (Text)
 -- Agent. Each is a physically separate workload with its own ServiceAccount
 -- bound to a least-privilege Vault role of the same name (see
 -- @Prodbox.Vault.Reconcile.defaultVaultReconcilePlan@ for the policy sets and
--- @documents/engineering/secret_derivation_doctrine.md@ for the inventory). The
+-- @documents/engineering/secret_derivation_doctrine.md at revision `583443f`@ for the inventory). The
 -- production interpreters behind these workloads land in Phase 4.
 data VaultRoleId
   = VaultRoleGatewayDaemon

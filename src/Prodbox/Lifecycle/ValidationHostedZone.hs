@@ -265,7 +265,7 @@ deleteValidationHostedZone runAwsCli hostedZoneId = do
         -- Any other failure -- throttling, a dropped connection, an expired
         -- credential -- means the zone could not be observed, and
         -- cannot-observe is never absence
-        -- (lifecycle_reconciliation_doctrine.md section 3.1).
+        -- (lifecycle_reconciliation_doctrine.md at revision `583443f`, section 3.1).
         | zoneNotFound err -> Right ()
         | otherwise ->
             Left
@@ -341,7 +341,7 @@ destroyValidationHostedZones runAwsCli = do
   discovered <- discoverValidationHostedZones runAwsCli
   case discovered of
     -- Cannot observe is never silently treated as absent
-    -- (lifecycle_reconciliation_doctrine.md section 3.1).
+    -- (lifecycle_reconciliation_doctrine.md at revision `583443f`, section 3.1).
     Left _ -> pure (ExitFailure 1)
     Right zones -> foldM destroyOne ExitSuccess zones
  where

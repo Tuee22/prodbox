@@ -20,7 +20,7 @@
 --
 -- Fifteen separate patches would have left the eighteenth author free to forget
 -- again. This module is the single encoder
--- [Pure FP Standards § 2.3a](../../../../documents/engineering/pure_fp_standards.md)
+-- Pure FP Standards § 2.3a (historical pure_fp_standards.md at revision `583443f`, section 2.3a)
 -- already required.
 --
 -- __How a forgotten field becomes a build failure.__ Every projection here is

@@ -123,7 +123,7 @@ Examples:
 ## prodbox aws stack eks prune-corrupt-checkpoint
 prodbox aws stack eks prune-corrupt-checkpoint - Clear a corrupt eks per-run Pulumi checkpoint
 
-Recovery: clear a genuinely-corrupt (or empty) per-run encrypted Pulumi checkpoint for the eks stack from the Model-B object store, so a cluster carrying stale corrupt checkpoints (truncated leftovers from an interrupted run) can converge. Observes the checkpoint first and refuses to prune a valid (present) checkpoint  use `destroy` for that. Fail-closed on an unobservable backend.
+Recovery: clear a genuinely-corrupt (or empty) per-run encrypted Pulumi checkpoint for the eks stack from the Model-B object store, so a cluster carrying stale corrupt checkpoints (truncated leftovers from an interrupted run) can converge. Observes the checkpoint first and refuses to prune a valid (present) checkpoint — use `destroy` for that. Fail-closed on an unobservable backend.
 Options:
 - --yes, -y - Skip confirmation prompts
 
@@ -193,7 +193,7 @@ Examples:
 ## prodbox aws stack test prune-corrupt-checkpoint
 prodbox aws stack test prune-corrupt-checkpoint - Clear a corrupt test per-run Pulumi checkpoint
 
-Recovery: clear a genuinely-corrupt (or empty) per-run encrypted Pulumi checkpoint for the test stack from the Model-B object store, so a cluster carrying stale corrupt checkpoints (truncated leftovers from an interrupted run) can converge. Observes the checkpoint first and refuses to prune a valid (present) checkpoint  use `destroy` for that. Fail-closed on an unobservable backend.
+Recovery: clear a genuinely-corrupt (or empty) per-run encrypted Pulumi checkpoint for the test stack from the Model-B object store, so a cluster carrying stale corrupt checkpoints (truncated leftovers from an interrupted run) can converge. Observes the checkpoint first and refuses to prune a valid (present) checkpoint — use `destroy` for that. Fail-closed on an unobservable backend.
 Options:
 - --yes, -y - Skip confirmation prompts
 
@@ -251,7 +251,7 @@ Examples:
 ## prodbox aws stack aws-subzone prune-corrupt-checkpoint
 prodbox aws stack aws-subzone prune-corrupt-checkpoint - Clear a corrupt aws-subzone per-run Pulumi checkpoint
 
-Recovery: clear a genuinely-corrupt (or empty) per-run encrypted Pulumi checkpoint for the aws-subzone stack from the Model-B object store, so a cluster carrying stale corrupt checkpoints (truncated leftovers from an interrupted run) can converge. Observes the checkpoint first and refuses to prune a valid (present) checkpoint  use `destroy` for that. Fail-closed on an unobservable backend.
+Recovery: clear a genuinely-corrupt (or empty) per-run encrypted Pulumi checkpoint for the aws-subzone stack from the Model-B object store, so a cluster carrying stale corrupt checkpoints (truncated leftovers from an interrupted run) can converge. Observes the checkpoint first and refuses to prune a valid (present) checkpoint — use `destroy` for that. Fail-closed on an unobservable backend.
 Options:
 - --yes, -y - Skip confirmation prompts
 
@@ -538,7 +538,7 @@ Examples:
 ## prodbox cluster delete
 prodbox cluster delete - Delete the local cluster
 
-Delete the local cluster. Default mode is a PURE LOCAL UNINSTALL: it uninstalls RKE2 and preserves `.data/` (including the MinIO-backed per-run Pulumi state and the durable Vault PV) without querying, gating on, or destroying the per-run AWS Pulumi backend  so per-run AWS stacks (if any) are left untouched and remain destroyable afterward via `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`. With no RKE2 install present the default mode exits 0 having done nothing. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + postflight tag sweep + cluster uninstall) as one atomic operator action; the K8s drain phase skips gracefully within a reachable run, but a cascade with no RKE2 install present reaches no phase at all and exits non-zero unless it asked AWS read-only on this invocation (it may prompt for a temporary admin credential) and the no-install conjunction held: an authored AWS coordinate, a clean sweep over every authored region, the credential tied to the deployment's account, and every retained root examined. Even then it reports no per-run residue in the swept regions, not an empty account, and it never reports a success it did not observe. The uninstall runs only on a confirmed-empty sweep: an unconfirmed or non-empty sweep leaves the local control plane running, because it is the only surface permitted to mutate AWS and destroying it would leave the answer with nothing able to act on it. No cascade exit authorizes deleting the retained root.
+Delete the local cluster. Default mode is a PURE LOCAL UNINSTALL: it uninstalls RKE2 and preserves `.data/` (including the MinIO-backed per-run Pulumi state and the durable Vault PV) without querying, gating on, or destroying the per-run AWS Pulumi backend — so per-run AWS stacks (if any) are left untouched and remain destroyable afterward via `prodbox cluster delete --cascade` or `prodbox aws stack <name> destroy --yes`. With no RKE2 install present the default mode exits 0 having done nothing. `--cascade` orchestrates the full teardown (K8s drain + per-run Pulumi destroys + postflight tag sweep + cluster uninstall) as one atomic operator action; the K8s drain phase skips gracefully within a reachable run, but a cascade with no RKE2 install present reaches no phase at all and exits non-zero unless it asked AWS read-only on this invocation (it may prompt for a temporary admin credential) and the no-install conjunction held: an authored AWS coordinate, a clean sweep over every authored region, the credential tied to the deployment's account, and every retained root examined. Even then it reports no per-run residue in the swept regions, not an empty account, and it never reports a success it did not observe. The uninstall runs only on a confirmed-empty sweep: an unconfirmed or non-empty sweep leaves the local control plane running, because it is the only surface permitted to mutate AWS and destroying it would leave the answer with nothing able to act on it. No cascade exit authorizes deleting the retained root.
 Options:
 - --yes, -y - Confirm full cluster deletion
 - --cascade - Orchestrate the full teardown (K8s drain + per-run Pulumi destroys + postflight tag sweep + cluster uninstall) as one atomic operator action
@@ -612,13 +612,55 @@ Examples:
 - prodbox commands --tree  # Render the command registry as a tree.
 - prodbox commands --json  # Render the command registry as JSON.
 
+## prodbox control status
+prodbox control status - Inspect local control observations
+
+Observe the selected root, generation record, and Docker node inventory without mutation.
+Examples:
+- prodbox control status  # Inspect local control observations.
+
+## prodbox control plan
+prodbox control plan - Render the selected kind configuration
+
+Render candidate kind configuration without creating or inspecting resources.
+Examples:
+- prodbox control plan  # Review the candidate kind configuration.
+
+## prodbox control import-artifact
+prodbox control import-artifact - Import a declared bootstrap artifact
+
+Verify and retain the selected kind tool or node archive from an absolute local source.
+Examples:
+- prodbox control import-artifact kind-tool /path/to/kind  # Retain the declared kind executable.
+
+## prodbox control discard-artifact-staging
+prodbox control discard-artifact-staging - Discard the selected artifact staging file
+
+Remove only the selected declaration's incomplete artifact staging; retained artifacts are preserved.
+Examples:
+- prodbox control discard-artifact-staging kind-tool  # Discard incomplete kind-tool staging.
+
+## prodbox control inspect-node-archive
+prodbox control inspect-node-archive - Inspect the retained OCI node archive
+
+Read and verify the configured node image manifest and platform blobs without loading it.
+Examples:
+- prodbox control inspect-node-archive  # Inspect the retained node archive.
+
+## prodbox control inspect-image-attempt
+prodbox control inspect-image-attempt - Inspect a retained image attempt
+
+Rebuild the retained image stage and observe an exact image ID and local attempt marker without submitting or retrying an image load. Staging can consume several GiB of temporary space under the selected root.
+Examples:
+- prodbox control inspect-image-attempt bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb  # Inspect an existing image attempt.
+
 ## prodbox config setup
 prodbox config setup - Interactively author config
 
-Write or refresh the supported binary-sibling prodbox.dhall.
+Write or refresh the binary-sibling configuration; with --config, create a new bootstrap-only document.
 Options:
-- --dry-run - Render the config-setup plan without mutating state
-- --plan-file <PATH> - Write the rendered plan to a file
+- --dry-run - Render the binary-sibling setup plan without mutating state; unavailable with --config
+- --plan-file <PATH> - Write the binary-sibling setup plan to a file; unavailable with --config
 
 Examples:
 - prodbox config setup  # Create or refresh the config interactively.
@@ -874,6 +916,13 @@ Examples:
 - prodbox nuke --dry-run  # Render the total-teardown plan.
 - prodbox nuke --receipt /operator/decommission/prodbox.receipt --local-data delete  # Run with an operator-owned receipt outside every deletion root.
 
+## prodbox test list
+prodbox test list - List locally registered test suites
+
+List the built-in local suites; legacy topology-defined suites require a separate test topology.
+Examples:
+- prodbox test list  # List built-in local test suites.
+
 ## prodbox test init
 prodbox test init - Create prodbox.test.dhall
 
@@ -885,16 +934,16 @@ Examples:
 - prodbox test init  # Create the test-topology document.
 
 ## prodbox test run
-prodbox test run - Run a topology-declared suite
+prodbox test run - Run a named test suite
 
-Run one topology-declared suite, or every suite with `all`, using .test-data isolation.
+Run the local unit, env or CLI suites without a deployment configuration, or a topology-declared suite using .test-data isolation. The CLI suite refuses hosts with an existing RKE2 installation.
 Options:
 - --coverage - Enable coverage reporting for the selected test scope
 - --cov-fail-under <INTEGER> - Require a minimum coverage percentage
 - --substrate <SUBSTRATE> - Target substrate (home-local, aws); default home-local
 
 Examples:
-- prodbox test run unit  # Run the topology-declared unit suite.
+- prodbox test run unit  # Run the unit suites without a deployment topology.
 
 ## prodbox test all
 prodbox test all - Run the full test suite

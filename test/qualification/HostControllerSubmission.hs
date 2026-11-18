@@ -111,6 +111,8 @@ main = do
                           kind = case name of
                             "ordinary-roundtrip" -> I.OrdinaryCascadeController
                             "ordinary-schema" -> I.OrdinaryCascadeController
+                            "mutation-roundtrip" -> I.MutationController
+                            "mutation-schema" -> I.MutationController
                             _ -> I.RpcBirthController
                           open = withHostControllerInputs work configuration request
                           publish inputs = registerHostControllerSubmission kind inputs key window domain sender provider
@@ -137,7 +139,7 @@ main = do
                             assert "codec roundtrip changed metadata" (decodeHostControllerSubmission bytes == Right record)
                             pure record
                       case name of
-                        "ordinary-roundtrip" -> do
+                        named | named `elem` ["ordinary-roundtrip", "mutation-roundtrip"] -> do
                           record <- right =<< open checked
                           readRecord <- right =<< readBack
                           assert "ordinary read-back changed kind/provenance" (record == readRecord)
@@ -152,13 +154,16 @@ main = do
                                     (map (Family.hostOperationFieldUnitName field) roles)
                                 )
                             )
-                        "ordinary-schema" -> do
+                        named | named `elem` ["ordinary-schema", "mutation-schema"] -> do
                           record <- right =<< open checked
                           let encoded = encodeHostControllerSubmission record
                               prefix = "prodbox-host-controller-submission/kind/v1\NUL"
                           payload <- maybe (fail "ordinary kind prefix missing") pure (BS.stripPrefix prefix encoded)
                           (version, kindTag, original) <- right (deserialiseOrFail (Lazy.fromStrict payload))
-                          assert "ordinary kind version/tag changed" (version == (1 :: Word8) && kindTag == (1 :: Word8))
+                          let expectedTag = if kind == I.OrdinaryCascadeController then 1 else 2
+                          assert
+                            "controller kind version/tag changed"
+                            (version == (1 :: Word8) && kindTag == (expectedTag :: Word8))
                           birth <- right (decodeHostControllerSubmission original)
                           assert
                             "ordinary wrapper relabelled historical bytes"
@@ -168,7 +173,7 @@ main = do
                           forM_
                             [ prefix <> Lazy.toStrict (serialise (2 :: Word8, kindTag, original))
                             , prefix <> Lazy.toStrict (serialise (version, 0 :: Word8, original))
-                            , prefix <> Lazy.toStrict (serialise (version, 2 :: Word8, original))
+                            , prefix <> Lazy.toStrict (serialise (version, 3 :: Word8, original))
                             , prefix <> Lazy.toStrict (serialise (version, kindTag, encoded))
                             , encoded <> "\NUL"
                             ]
@@ -351,6 +356,8 @@ controls =
   [ "roundtrip"
   , "ordinary-roundtrip"
   , "ordinary-schema"
+  , "mutation-roundtrip"
+  , "mutation-schema"
   , "independent-race"
   , "legacy-schema"
   , "foreign-provider"

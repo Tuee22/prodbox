@@ -8,7 +8,7 @@
 -- | Sprint 4.86: the Authority's retained namespace for one cascade run's
 -- pre-uninstall report identity and its one-shot local-completion permit.
 --
--- [Lifecycle Reconciliation Doctrine § 5b node 7](../../../documents/engineering/lifecycle_reconciliation_doctrine.md#5b-canonical-recover-to-clean-cascade)
+-- Lifecycle Reconciliation Doctrine § 5b node 7 (historical lifecycle_reconciliation_doctrine.md at revision `583443f`, section 5b)
 -- puts two authority-bearing actions on the writing side of Stage C: the
 -- Authority commits the complete pre-uninstall cleanup report, and it signs the
 -- one-shot local-completion permit.  Neither existed as a durable surface, so

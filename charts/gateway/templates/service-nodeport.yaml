@@ -1,7 +1,7 @@
 {{- /*
 NodePort exposing the gateway daemon's REST port to the operator host on a
 stable port. The host CLI calls the gateway via 127.0.0.1:<nodePort> per
-@documents/engineering/secret_derivation_doctrine.md@ §5. External (LAN/WAN)
+@documents/engineering/secret_derivation_doctrine.md at revision 583443f@ §5. External (LAN/WAN)
 ingress is dropped at the host firewall by the iptables rule installed by
 `prodbox host firewall gateway-restrict --port <nodePort>` (Sprint 2.18).
 

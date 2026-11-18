@@ -144,23 +144,26 @@ hostExecutionStopEnd (HostExecutionWindow _ _ _ value _) = value
 hostExecutionFinishEnd (HostExecutionWindow _ _ _ _ value) = value
 
 -- Closed program identity, not physical placement or Authority admission.
-data HostControllerKind = RpcBirthController | OrdinaryCascadeController
+data HostControllerKind = RpcBirthController | OrdinaryCascadeController | MutationController
   deriving (Eq, Show)
 
 hostControllerKindEntrypoint :: HostControllerKind -> String
 hostControllerKindEntrypoint kind = case kind of
   RpcBirthController -> "internal-rpc-birth-controller"
   OrdinaryCascadeController -> "internal-cascade-controller"
+  MutationController -> "internal-mutation-controller"
 
 hostControllerKindSliceName :: HostControllerKind -> String
 hostControllerKindSliceName kind = case kind of
   RpcBirthController -> "prodboxrpcbirth.slice"
   OrdinaryCascadeController -> "prodboxcascade.slice"
+  MutationController -> "prodboxmutation.slice"
 
 hostControllerKindPrefix :: HostControllerKind -> String
 hostControllerKindPrefix kind = case kind of
   RpcBirthController -> "prodbox-rpc-birth-"
   OrdinaryCascadeController -> "prodbox-cascade-"
+  MutationController -> "prodbox-mutation-"
 
 -- The original parent-only controller slot on the retained operator host. The descriptor
 -- key and full original window bind its invocation metadata, not its name.

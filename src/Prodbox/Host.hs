@@ -1399,7 +1399,7 @@ gatewayNodePortFirewallDeleteArgs port =
 
 -- | The comment tag attached to the rule so operators can grep for it and
 -- so the install path can recognize an existing rule. Stable across
--- versions per the contract in secret_derivation_doctrine.md §5.
+-- versions per the contract in secret_derivation_doctrine.md at 583443f, section 5.
 gatewayNodePortFirewallRuleComment :: String
 gatewayNodePortFirewallRuleComment = "prodbox-gateway-nodeport-loopback-only"
 

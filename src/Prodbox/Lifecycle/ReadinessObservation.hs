@@ -52,7 +52,7 @@ import Prodbox.Retry
 -- landed. Keeping them apart is what stops a constant-time GET from satisfying a
 -- dependency whose declared evidence class is a conditional write plus
 -- authoritative read-back
--- ([bootstrap_readiness_doctrine.md § 2.3](../../../documents/engineering/bootstrap_readiness_doctrine.md)).
+-- (bootstrap_readiness_doctrine.md at 583443f, section 2.3).
 data ReadinessObservation
   = ReadyObserved
   | RoundTripObserved !RoundTripWitness

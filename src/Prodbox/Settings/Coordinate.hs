@@ -18,7 +18,7 @@
 --     or @pulumi_state_backend.key_prefix@ — and then returns @()@. The parse
 --     happened; the proof did not survive it. This is exactly the /Provenance/
 --     class of
---     [chaos_hardening_doctrine.md § 21](../../../../documents/engineering/chaos_hardening_doctrine.md)
+--     chaos_hardening_doctrine.md at 583443f, section 21
 --     that Sprint 1.83 closed for the public edge, and the same remedy applies:
 --     the one validation keeps the value.
 --

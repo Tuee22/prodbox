@@ -256,7 +256,7 @@ supportedDaemonConfigSchemaVersion = 1
 -- and its structured-vs-flat branches were removed. The supported decoder is
 -- `Prodbox.Gateway.Settings.loadDaemonConfig` built on
 -- `Dhall.inputFile auto` per
--- [config_doctrine.md §4](../../documents/engineering/config_doctrine.md#4-decoding).
+-- config_doctrine.md at 583443f, section 4.
 
 -- Sprint 2.20 closure: `validateIntervals`, `validateMaxSkew`, and
 -- `validateDrainDeadline` were JSON-parser helpers for the legacy

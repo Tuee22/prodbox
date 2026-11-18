@@ -22,7 +22,7 @@
 --     in the target architecture, so @(GatewayRuntime, SubstrateAws)@ mints
 --     nothing.
 --
--- What this does /not/ prove is stated in @chaos_hardening_doctrine.md § 22@: a
+-- What this does /not/ prove is stated in @chaos_hardening_doctrine.md at 583443f, section 22@: a
 -- ring-2 gate bounds a process, not a protocol.  It makes an unauthorized
 -- destroy unconstructible inside this binary; it says nothing about a second
 -- writer reaching Route 53 by another route.

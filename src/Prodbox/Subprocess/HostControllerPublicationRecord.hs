@@ -117,6 +117,8 @@ encodePublicationBirth (PublicationBirth kind key ending observed identity) = ca
   Identity.RpcBirthController -> legacy
   Identity.OrdinaryCascadeController ->
     kindPrefix <> Lazy.toStrict (serialise (1 :: Word8, 1 :: Word8, legacy))
+  Identity.MutationController ->
+    kindPrefix <> Lazy.toStrict (serialise (1 :: Word8, 2 :: Word8, legacy))
  where
   legacy =
     birthPrefix
@@ -139,10 +141,11 @@ decodePublicationBirth bytes = do
       (version, kind, original) <-
         either (const Nothing) Just (deserialiseOrFail (Lazy.fromStrict payload))
       unless
-        (version == (1 :: Word8) && kind == (1 :: Word8) && birthPrefix `BS.isPrefixOf` original)
+        (version == (1 :: Word8) && kind `elem` ([1, 2] :: [Word8]) && birthPrefix `BS.isPrefixOf` original)
         Nothing
       PublicationBirth _ key ending observed identity <- decodeRegistrationBirth original
-      let birth = PublicationBirth Identity.OrdinaryCascadeController key ending observed identity
+      let selected = if kind == 1 then Identity.OrdinaryCascadeController else Identity.MutationController
+          birth = PublicationBirth selected key ending observed identity
       unless (encodePublicationBirth birth == bytes) Nothing
       pure birth
 

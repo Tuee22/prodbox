@@ -5,7 +5,7 @@
 
 -- | Sprint 1.56: the typed component dependency/readiness graph that makes the
 -- class of bootstrap readiness races __unrepresentable__
--- ([bootstrap_readiness_doctrine.md](../../documents/engineering/bootstrap_readiness_doctrine.md)).
+-- (bootstrap_readiness_doctrine.md (historical bootstrap_readiness_doctrine.md at revision `583443f`)).
 --
 -- This module is the M2/M3 foundation the later phases project reconcile
 -- ordering from (Sprint `3.23` chart edges, Sprint `4.43` reconcile ordering +
@@ -386,7 +386,7 @@ renderComponentGraphError = \case
       ++ componentIdText dependency
       ++ "`. A backend-write edge is satisfiable only by "
       ++ "ProbeBackendRoundTrip through that exact dependency "
-      ++ "(bootstrap_readiness_doctrine.md M3)."
+      ++ "(control_plane.md)."
   ComponentGraphRequirementInvalid cid detail ->
     "Component `" ++ componentIdText cid ++ "` capability spec is invalid: " ++ detail
   ComponentGraphNoProvider consumer op ->
@@ -750,7 +750,7 @@ chartDeploymentFamily component = case component of
 -- on. A chart's dependency on such an operator becomes an "operator must report
 -- @Available@" deploy gate, replacing the retired @ChartRequiresPatroniPlatform@
 -- external-requirement literal with a graph edge
--- (bootstrap_readiness_doctrine.md M3: presence ≠ readiness).
+-- (bootstrap_readiness_doctrine.md at revision `583443f` M3: presence ≠ readiness).
 operatorAvailableGates :: ComponentDag -> [ComponentId] -> [ComponentId]
 operatorAvailableGates dag consumers =
   foldr dedup [] gates

@@ -35,6 +35,7 @@ module Prodbox.Capacity.RuntimeMemory
   , RuntimeMemoryInputs (..)
   , RuntimeMemoryPlan
   , validateRuntimeMemoryPlan
+  , reserveRuntimeMemory
   , runtimeMemoryRetainedHeapBytes
   , runtimeMemoryScratchBytes
   , runtimeMemoryOtherHeapReserveBytes
@@ -242,6 +243,22 @@ validateRuntimeMemoryPlan inputs = do
                 , validatedRuntimeOuterRequiredBytes = outerRequired
                 , validatedRuntimeHighWaterBytes = highWater
                 }
+
+-- | Add separate heap and kernel charges to an existing plan and revalidate
+-- both inequalities. The result is arithmetic only; it is not placement,
+-- measurement, concurrency control, or authority to start work.
+reserveRuntimeMemory
+  :: Natural -> Natural -> RuntimeMemoryPlan -> Either RuntimeMemoryError RuntimeMemoryPlan
+reserveRuntimeMemory heapExtra kernelExtra plan =
+  validateRuntimeMemoryPlan $
+    inputs
+      { runtimeOtherHeapReserve =
+          PositiveBytes (positiveBytesValue (runtimeOtherHeapReserve inputs) + heapExtra)
+      , runtimeKernelCgroupReserve =
+          PositiveBytes (positiveBytesValue (runtimeKernelCgroupReserve inputs) + kernelExtra)
+      }
+ where
+  inputs = validatedRuntimeInputs plan
 
 -- | Bounded application state plus bounded pending-persistence state.
 runtimeMemoryRetainedHeapBytes :: RuntimeMemoryPlan -> PositiveBytes

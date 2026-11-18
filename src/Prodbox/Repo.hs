@@ -25,7 +25,7 @@ import System.FilePath
 -- | Repo-root-relative Dhall paths the binary still resolves against the
 -- repository root: the GENERATED schema and the RETIRED legacy seed. The
 -- Tier-0 @prodbox.dhall@ is NOT here — it is binary-sibling
--- ('resolveTier0ConfigPath'), not repo-root (Sprint 1.48; config_doctrine.md
+-- ('resolveTier0ConfigPath'), not repo-root (Sprint 1.48; config_doctrine.md at revision `583443f`
 -- §2/§3).
 data ConfigPaths = ConfigPaths
   { configDhallPath :: FilePath
@@ -61,7 +61,7 @@ canonicalConfigPaths repoRoot =
     }
 
 -- | The Tier-0 config filename, identical in every context (host, container,
--- test harness) per config_doctrine.md §2/§3. The binary owns this file and
+-- test harness) per config_doctrine.md at 583443f, section 2 / config_doctrine.md at 583443f, section 3. The binary owns this file and
 -- resolves it beside its own executable.
 tier0ConfigFileName :: FilePath
 tier0ConfigFileName = "prodbox.dhall"
@@ -72,7 +72,7 @@ testTopologyConfigFileName = "prodbox.test.dhall"
 -- | Resolve the Tier-0 @prodbox.dhall@ at the BINARY-SIBLING path — the file
 -- beside the running executable (e.g. @.build\/prodbox.dhall@), the same
 -- filename in every context, never the repository root and never a @--config@
--- flag (config_doctrine.md §2 "Single Dhall surface per binary instance", §3
+-- flag (config_doctrine.md at 583443f, section 2 "Single Dhall surface per binary instance", config_doctrine.md at 583443f, section 3
 -- "Canonical paths"). @repoRoot@ is the fallback anchor, used only when the
 -- executable directory cannot be determined. Sprint 1.48.
 resolveTier0ConfigPath :: FilePath -> IO FilePath

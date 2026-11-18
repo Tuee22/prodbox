@@ -6,7 +6,7 @@
 -- | Sprint 4.86: the production answer to the host cleanup runner's injected
 -- Authority restore boundary.
 --
--- [Lifecycle Reconciliation Doctrine § 5b node 9](../../../documents/engineering/lifecycle_reconciliation_doctrine.md#5b-canonical-recover-to-clean-cascade)
+-- Lifecycle Reconciliation Doctrine § 5b node 9 (historical lifecycle_reconciliation_doctrine.md at revision `583443f`, section 5b)
 -- puts the Lifecycle Authority on the far side of the destructive host
 -- boundary: after local RKE2 is uninstalled the cascade re-establishes the
 -- Authority and reads its own accepted readiness back.

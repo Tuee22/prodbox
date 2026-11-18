@@ -30,6 +30,7 @@ extra-source-files:
     test/qualification/RPC-BIRTH-NATIVE-RUNTIME-FORMAT-FOLLOWUP-2026-10-25.json
     test/qualification/OwnedSubprocessFastSessionEscape.hs
     test/qualification/OwnedSubprocessExecSemantics.hs
+    test/qualification/KindHostPlacement.hs
     test/qualification/OWNED-KERNEL-RUNNER-2026-10-25.json
     test/qualification/OWNED-MANAGER-REFUSAL-JOIN-DELAY-2026-10-25.json
     test/qualification/RPC-BIRTH-HELD-CHART-CHECKSUM-DRIFT-2026-10-25.json
@@ -240,6 +241,53 @@ library
         Prodbox.Config.ClosedDhallUnion
         Prodbox.Config.SerialiseString
         Prodbox.Config.ComponentGraph
+        Prodbox.Config.DeploymentScope
+        Prodbox.Config.BootstrapProjection
+        Prodbox.Config.BootstrapSetup
+        Prodbox.Config.KindPlan
+        Prodbox.Config.KindVolume
+        Prodbox.Control.ArtifactImport
+        Prodbox.Control.NodeArchive
+        Prodbox.Control.NodeArchiveExport
+        Prodbox.Control.NodeArchiveStage
+        Prodbox.Control.NodeImageIntent
+        Prodbox.Control.KindNetworkIntent
+        Prodbox.Control.KindNodeCreateIntent
+        Prodbox.Control.KindNodeCreateOperation
+        Prodbox.Control.KindNodeCreateReadback
+        Prodbox.Control.KindNodeVolumeIntent
+        Prodbox.Control.KindNodeVolumeOperation
+        Prodbox.Control.KindNodeVolumeReadback
+        Prodbox.Control.KindNodeRemovalReadback
+        Prodbox.Control.KindNodeRemovalSampling
+        Prodbox.Control.KindNetworkRecovery
+        Prodbox.Control.KindNetworkReceipt
+        Prodbox.Control.NodeImageOperation
+        Prodbox.Control.DockerIdentity
+        Prodbox.Control.DockerPeer
+        Prodbox.Control.DockerConnectedInfo
+        Prodbox.Control.ImageIdObservation
+        Prodbox.Config.SelectedDhall
+        Prodbox.Control.Status
+        Prodbox.Control.KindDockerClient
+        Prodbox.Control.KindDockerEndpoint
+        Prodbox.Control.KindDockerFilesystem
+        Prodbox.Control.KindDockerWorker
+        Prodbox.Control.KindDockerWorkerPrepare
+        Prodbox.Control.KindDockerWorkerRoots
+        Prodbox.Control.KindDockerReadGate
+        Prodbox.Control.KindDockerReadProtocol
+        Prodbox.Control.KindIntent
+        Prodbox.Control.KindKubeconfig
+        Prodbox.Control.KindKubeconfigFile
+        Prodbox.Control.KindKubeconfigTls
+        Prodbox.Control.KindKubeconfigYaml
+        Prodbox.Control.KindKubernetesRead
+        Prodbox.Control.KindLease
+        Prodbox.Control.KindRuntimeConfig
+        Prodbox.Control.KindTool
+        Prodbox.Control.KindVolumeReadback
+        Prodbox.Control.SealedTool
         Prodbox.Config.FieldNameTable
         Prodbox.Config.FieldNameTable.Stage
         Prodbox.Config.FieldNameTables
@@ -257,8 +305,6 @@ library
         Prodbox.Config.SchemaDhall
         Prodbox.Config.Tier0
         Prodbox.Config.Tier0File
-        Prodbox.Config.InForce
-        Prodbox.Config.InForce.Core
         Prodbox.ContainerImage
         Prodbox.ControlPlane
         Prodbox.ControlPlane.CapabilityKind
@@ -915,6 +961,22 @@ library
         Prodbox.Test.CleanRoomHandoff
         Prodbox.Test.CleanRoomScan
         Prodbox.Test.LifecycleCleanupClient
+        Prodbox.Subprocess.ExecDescriptors
+        Prodbox.Subprocess.MutationFilesystem
+        Prodbox.Test.MutationOutputInventory
+        Prodbox.Test.MutationSnapshot
+        Prodbox.Test.MutationSnapshotObserve
+        Prodbox.Test.MutationSnapshotWrite
+        Prodbox.Subprocess.MutationWorker
+        Prodbox.Test.MutationWorkerSettlement
+        Prodbox.Test.MutationWorkspace
+        Prodbox.Test.MutationWorkspaceWorker
+        Prodbox.Test.MutationWorkspaceIntent
+        Prodbox.Subprocess.NetworkFilter
+        Prodbox.Test.MutationOutcome
+        Prodbox.Test.ReviewedMutation
+        Prodbox.Test.ScenarioEvidence
+        Prodbox.Test.ScenarioEvidenceStore
         Prodbox.Test.TemporalQualification
         Prodbox.Test.Qualification.CascadeCycleArtifact
         Prodbox.Test.Qualification.CascadeCycleIdentity
@@ -971,6 +1033,7 @@ library
 
     hs-source-dirs:   src
     other-modules:
+        Prodbox.Control.KindVolumePrepare
         Prodbox.ControlPlane.Roughtime.Protocol
         Prodbox.Lifecycle.Teardown.NamespaceUidDecoder
         Prodbox.Subprocess.SystemdBus
@@ -1058,12 +1121,14 @@ library
         cborg ^>=0.2.10.0,
         co-log ^>=0.7.0.0,
         co-log-core ^>=0.3.2.6,
+        conduit ^>=1.3.6,
         clock ==0.8.4,
         containers ==0.6.8,
         crypton ^>=1.0.6,
         memory ^>=0.18,
         cryptohash-sha1 ^>=0.11,
         cryptohash-sha256 ^>=0.11.102,
+        tar ^>=0.7.2,
         deepseq ==1.5.1.0,
         dhall ==1.42.3,
         either ^>=5.0.3,
@@ -1074,16 +1139,19 @@ library
         crypton-connection ^>=0.4,
         crypton-x509 ^>=1.7,
         crypton-x509-store ^>=1.6,
+        crypton-x509-validation ^>=1.6.14,
         hourglass ^>=0.2,
         http-client ^>=0.7.17,
         http-client-tls ^>=0.3.6.4,
         http-types ^>=0.12.4,
+        libyaml ^>=0.1.4,
         tls ^>=2.1,
         network ^>=3.1.4,
         optparse-applicative ^>=0.18.1.0,
         pem ^>=0.2,
         primitive ==0.9.1.0,
         process ^>=1.6.19.0,
+        resourcet ^>=1.3,
         scientific ^>=0.3.7,
         serialise ==0.2.6.1,
         stm ^>=2.5,
@@ -1096,7 +1164,8 @@ library
         unix ^>=2.8.8.0,
         vector ^>=0.13,
         websockets ^>=0.13,
-        wuss ^>=2.0
+        wuss ^>=2.0,
+        yaml ^>=0.11.11.2
 
 executable prodbox
     main-is:          Main.hs
@@ -1120,6 +1189,7 @@ test-suite prodbox-unit
         AdminActionLifecycle
         Allocation
         CanonicalDhallTokenMatchTests
+        DeploymentScopeTests
         CanonicalDhallValueShape
         CanonicalDhallPathMeasurement
         CanonicalDhallStorage
@@ -1450,6 +1520,7 @@ test-suite prodbox-unit
         QualificationFrozenCounterexample
         QualificationEvidence
         QualificationSourceIdentity
+        ScenarioEvidenceTests
         SealedConstructors
         QualificationCreateInterruptedCounterexample
         QualificationTeardownCounterexample
@@ -1558,6 +1629,7 @@ test-suite prodbox-integration
         aeson ^>=2.2.3.0,
         base64-bytestring ^>=1.2.1.0,
         bytestring ^>=0.11.5.3,
+        containers ==0.6.8,
         cryptonite ^>=0.30,
         directory ^>=1.3.8.5,
         filepath ^>=1.4.2.2,
@@ -1568,6 +1640,7 @@ test-suite prodbox-integration
         serialise ==0.2.6.1,
         prodbox,
         stm ^>=2.5.3,
+        tar ^>=0.7.2,
         time ^>=1.12,
         tasty ^>=1.5,
         tasty-golden ^>=2.3.5,

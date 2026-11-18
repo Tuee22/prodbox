@@ -21,7 +21,7 @@
 -- The constructor is hidden and the bound is not a parameter. It is computed by
 -- 'mkObservationSchedule' from the period and the budget, so a bound the
 -- observer cannot meet is not constructible. That is the /Containment/ class of
--- [chaos_hardening_doctrine.md § 21](../../../documents/engineering/chaos_hardening_doctrine.md):
+-- chaos_hardening_doctrine.md at 583443f, section 21:
 -- bounds are computed, never authored.
 module Prodbox.Readiness.ObservationSchedule
   ( ObservationSchedule

@@ -11,7 +11,19 @@
 
 Every result names phase/task/case/mutation IDs, baseline source-manifest policy and digest, built binary/component image digests, non-secret configuration projection, environment/deployment/operation/resource scope, command/arguments, bounded budgets, timestamps, real dependency endpoints, independent observations, primary outcome, cleanup outcome and retained-state disposition. Record unavailable observations explicitly.
 
+An evidence Markdown record linked from a completed phase declares its owning
+phase once as `**Phase**: N` and names the applicable case and mutation IDs.
+These fields let the checker reject unavailable or foreign-phase records; they
+are structural bindings and do not establish that the reported work occurred.
+
 Mutation results also bind the exact source patch/preconditions, unchanged selected tests, intended and actual assertion, baseline result, outcome category, duration, scratch/fixture cleanup and reviewed equivalence rationale. Invalid builds, generic timeouts, missing reports and unrelated failing tests are not kills.
+
+An inline current Haskell source or test path must resolve inside the
+repository, outside private runtime roots. To name a historical Git object,
+use one revision-qualified inline span such as
+`583443f:src/Prodbox/CheckCode.hs`; the checker verifies that exact object.
+Availability alone does not establish that a test ran or that its result
+qualifies the current implementation.
 
 Retain failed results. Do not overwrite them with a later success, reuse a stale result for changed implementation/tests or treat a stored JSON claim as independent observation. The unmodified outer validator requires source/scope bindings and adversarial missing/fabricated/wrong-scope controls. Phase 1 implements the runner; Phase 0 uses existing real tooling without that later dependency.
 

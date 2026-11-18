@@ -50,7 +50,8 @@ import Prodbox.CheckCode
   , runLintCommand
   )
 import Prodbox.Config.SchemaDhall
-  ( configTypesSchemaPath
+  ( bootstrapTypesSchemaPath
+  , configTypesSchemaPath
   , materializeSchemaFilesIfStale
   , testSecretsTypesSchemaPath
   , writeSchemaFiles
@@ -211,7 +212,7 @@ runtimeProjectionInvariantViolation =
 -- infrastructure (e.g. `charts reconcile --dry-run` renders without a
 -- cluster). This declaration is the SSoT that the apply paths and help/
 -- introspection consult; folding the per-handler prerequisite running onto it
--- is the remaining follow-up (see legacy-tracking-for-deletion.md).
+-- is the remaining follow-up (see DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md).
 commandPrerequisites :: NativeCommand -> [PrerequisiteId]
 commandPrerequisites command =
   case command of
@@ -381,6 +382,7 @@ runConfigCommand repoRoot configCommand =
             [ "Regenerated Dhall config schema from the Haskell source of truth:"
             , "  " ++ configTypesSchemaPath repoRoot
             , "  " ++ testSecretsTypesSchemaPath repoRoot
+            , "  " ++ bootstrapTypesSchemaPath repoRoot
             ]
         )
       pure ExitSuccess

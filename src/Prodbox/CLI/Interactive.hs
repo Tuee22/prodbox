@@ -135,8 +135,7 @@ awsSesMigrateBackendGuard =
     , guardAutomationHint =
         unlines
           [ "prodbox aws stack aws-ses migrate-backend is a one-shot operator"
-          , "migration. There is no automation equivalent; the migration is"
-          , "exercised end-to-end by the operator workflow documented in"
-          , "DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md (Sprint 4.10)."
+          , "migration. There is no automation equivalent. The original workflow is"
+          , "preserved in Git: git show 583443f:DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md"
           ]
     }

@@ -3749,7 +3749,7 @@ data SesDnsRecordPlan = SesDnsRecordPlan
 -- The observation that decides whether an apply is needed and the ensure that
 -- performs it both consume this, so they cannot disagree about a name, a TTL,
 -- or a value — the drift a second renderer would reintroduce
--- (@chaos_hardening_doctrine.md § 23@).
+-- (@chaos_hardening_doctrine.md at 583443f, section 23@).
 sesDnsRecordPlans
   :: ProviderProductionSession
   -> SesDnsInputs

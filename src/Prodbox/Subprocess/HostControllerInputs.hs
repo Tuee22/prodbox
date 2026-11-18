@@ -256,6 +256,7 @@ data HostControllerSubmissionRecord
       ![InputMetadata]
   | ProviderBoundSubmission !Provider.RecordedProviderBinding !HostControllerSubmissionRecord
   | OrdinaryCascadeSubmission !HostControllerSubmissionRecord
+  | MutationSubmission !HostControllerSubmissionRecord
   deriving stock (Eq)
 
 data SubmissionWire
@@ -278,26 +279,31 @@ hostControllerSubmissionKey :: HostControllerSubmissionRecord -> Identity.HostEx
 hostControllerSubmissionKey (HostControllerSubmissionRecord key _ _ _ _) = key
 hostControllerSubmissionKey (ProviderBoundSubmission _ record) = hostControllerSubmissionKey record
 hostControllerSubmissionKey (OrdinaryCascadeSubmission record) = hostControllerSubmissionKey record
+hostControllerSubmissionKey (MutationSubmission record) = hostControllerSubmissionKey record
 
 hostControllerSubmissionKind :: HostControllerSubmissionRecord -> Identity.HostControllerKind
 hostControllerSubmissionKind HostControllerSubmissionRecord {} = Identity.RpcBirthController
 hostControllerSubmissionKind (ProviderBoundSubmission _ record) = hostControllerSubmissionKind record
 hostControllerSubmissionKind (OrdinaryCascadeSubmission _) = Identity.OrdinaryCascadeController
+hostControllerSubmissionKind (MutationSubmission _) = Identity.MutationController
 
 hostControllerSubmissionWindow :: HostControllerSubmissionRecord -> Identity.HostExecutionWindow
 hostControllerSubmissionWindow (HostControllerSubmissionRecord _ window _ _ _) = window
 hostControllerSubmissionWindow (ProviderBoundSubmission _ record) = hostControllerSubmissionWindow record
 hostControllerSubmissionWindow (OrdinaryCascadeSubmission record) = hostControllerSubmissionWindow record
+hostControllerSubmissionWindow (MutationSubmission record) = hostControllerSubmissionWindow record
 
 hostControllerSubmissionDomain :: HostControllerSubmissionRecord -> Identity.HostManagerDomain
 hostControllerSubmissionDomain (HostControllerSubmissionRecord _ _ domain _ _) = domain
 hostControllerSubmissionDomain (ProviderBoundSubmission _ record) = hostControllerSubmissionDomain record
 hostControllerSubmissionDomain (OrdinaryCascadeSubmission record) = hostControllerSubmissionDomain record
+hostControllerSubmissionDomain (MutationSubmission record) = hostControllerSubmissionDomain record
 
 hostControllerSubmissionSender :: HostControllerSubmissionRecord -> Identity.HostBusUniqueName
 hostControllerSubmissionSender (HostControllerSubmissionRecord _ _ _ sender _) = sender
 hostControllerSubmissionSender (ProviderBoundSubmission _ record) = hostControllerSubmissionSender record
 hostControllerSubmissionSender (OrdinaryCascadeSubmission record) = hostControllerSubmissionSender record
+hostControllerSubmissionSender (MutationSubmission record) = hostControllerSubmissionSender record
 
 hostControllerSubmissionFingerprint
   :: HostControllerSubmissionRecord -> HostControllerInputFingerprint
@@ -305,17 +311,20 @@ hostControllerSubmissionFingerprint (HostControllerSubmissionRecord _ _ _ _ meta
   fingerprintMetadata metadata
 hostControllerSubmissionFingerprint (ProviderBoundSubmission _ record) = hostControllerSubmissionFingerprint record
 hostControllerSubmissionFingerprint (OrdinaryCascadeSubmission record) = hostControllerSubmissionFingerprint record
+hostControllerSubmissionFingerprint (MutationSubmission record) = hostControllerSubmissionFingerprint record
 
 hostControllerSubmissionProvider
   :: HostControllerSubmissionRecord -> Maybe Provider.RecordedProviderBinding
 hostControllerSubmissionProvider HostControllerSubmissionRecord {} = Nothing
 hostControllerSubmissionProvider (ProviderBoundSubmission binding _) = Just binding
 hostControllerSubmissionProvider (OrdinaryCascadeSubmission record) = hostControllerSubmissionProvider record
+hostControllerSubmissionProvider (MutationSubmission record) = hostControllerSubmissionProvider record
 
 submissionMetadata :: HostControllerSubmissionRecord -> [InputMetadata]
 submissionMetadata (HostControllerSubmissionRecord _ _ _ _ metadata) = metadata
 submissionMetadata (ProviderBoundSubmission _ record) = submissionMetadata record
 submissionMetadata (OrdinaryCascadeSubmission record) = submissionMetadata record
+submissionMetadata (MutationSubmission record) = submissionMetadata record
 
 data ControllerInputPosition = InputOriginal | InputQuarantine
   deriving stock (Eq, Show)
@@ -400,6 +409,9 @@ encodeHostControllerSubmission :: HostControllerSubmissionRecord -> ByteString
 encodeHostControllerSubmission (OrdinaryCascadeSubmission record) =
   "prodbox-host-controller-submission/kind/v1\NUL"
     <> Lazy.toStrict (serialise (1 :: Word8, 1 :: Word8, encodeHostControllerSubmission record))
+encodeHostControllerSubmission (MutationSubmission record) =
+  "prodbox-host-controller-submission/kind/v1\NUL"
+    <> Lazy.toStrict (serialise (1 :: Word8, 2 :: Word8, encodeHostControllerSubmission record))
 encodeHostControllerSubmission (ProviderBoundSubmission binding record) =
   "prodbox-host-controller-submission/v2\NUL"
     <> Lazy.toStrict
@@ -440,12 +452,12 @@ decodeHostControllerSubmission bytes
           (deserialiseOrFail (Lazy.fromStrict payload))
       unless
         ( version == (1 :: Word8)
-            && kind == (1 :: Word8)
+            && kind `elem` ([1, 2] :: [Word8])
             && "prodbox-host-controller-submission/v2\NUL" `BS.isPrefixOf` original
         )
         (Left ControllerSubmissionMalformed)
       record <- decodeHostControllerSubmission original
-      let bound = OrdinaryCascadeSubmission record
+      let bound = if kind == 1 then OrdinaryCascadeSubmission record else MutationSubmission record
       unless (encodeHostControllerSubmission bound == bytes) (Left ControllerSubmissionMalformed)
       pure bound
   | Just payload <- BS.stripPrefix "prodbox-host-controller-submission/v2\NUL" bytes = do
@@ -584,6 +596,7 @@ registerHostControllerSubmission kind inputs@(HostControllerInputs ending uid ex
   bindKind = case kind of
     Identity.RpcBirthController -> id
     Identity.OrdinaryCascadeController -> OrdinaryCascadeSubmission
+    Identity.MutationController -> MutationSubmission
   HeldInput _ requestPath parent _ expectedParent _ = request
   path = hostControllerSubmissionPath requestPath key
   publish bytes = mask $ \restore -> do

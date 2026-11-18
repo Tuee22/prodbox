@@ -19,7 +19,7 @@ ENV PATH=/root/.ghcup/bin:/root/.cabal/bin:$PATH
 # Default container locale is C/POSIX with no UTF-8 support. The prodbox binary's
 # Dhall decoder fails on UTF-8 byte sequences such as `§` (0xC2 0xA7) that
 # appear in chart-rendered config comments without this. See
-# documents/engineering/config_doctrine.md §6.
+# documents/engineering/config_doctrine.md at revision 583443f §6.
 ENV LANG=C.UTF-8
 ENV LC_ALL=C.UTF-8
 
@@ -167,14 +167,14 @@ COPY pulumi ./pulumi
 # `docker/default-prodbox.dhall`. After the binary is installed, RUN it to
 # generate the binary-sibling Tier-0 `prodbox.dhall` (beside the executable at
 # `/usr/local/bin/prodbox.dhall`), the same filename/resolution the host CLI
-# uses (config_doctrine.md §0, §3). This serves ephemeral in-container CLI
+# uses (config_doctrine.md at revision 583443f §0, §3). This serves ephemeral in-container CLI
 # commands; the long-running cluster daemon is configured by the
 # `gateway-config-<nodeId>` ConfigMap override (unchanged). It carries no secret
 # values — only `SecretRef.Vault` pointers. `--portable` keeps the baked
 # host_capacity host-agnostic (the build container is not the deploy host, and
 # the daemon overwrites this file from the ConfigMap at runtime); an operator
 # generating on a real deploy host omits it to fit the observed machine
-# (resource_scaling_doctrine.md §2B).
+# (resource_scaling_doctrine.md at revision 583443f §2B).
 RUN /usr/local/bin/prodbox config generate --portable
 
 # Bare `prodbox` under tini. Each chart supplies its own subcommand via the pod

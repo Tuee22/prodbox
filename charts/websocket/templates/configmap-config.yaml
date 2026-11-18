@@ -1,7 +1,7 @@
 {{- /*
 Sprint 3.14 (May 24, 2026): the websocket workload Pod's config is rendered
 as a Dhall expression (`config.dhall`) per
-@documents/engineering/config_doctrine.md §6@. The workload binary decodes
+@documents/engineering/config_doctrine.md at revision 583443f §6@. The workload binary decodes
 this file in-process via the native Haskell `dhall` library through
 `Prodbox.Workload.Settings.loadWorkloadConfig`.
 

@@ -27,8 +27,10 @@
 -- "Prodbox.Config.OrdinaryTeardownRepair" re-exports everything here, so the
 -- split is invisible to every consumer of the repair surface.
 module Prodbox.Config.RetainedArtifacts
-  ( -- * Versioned retained artifact inventory
-    RetainedArtifactArchitecture (..)
+  ( isCanonicalSha256Digest
+
+    -- * Versioned retained artifact inventory
+  , RetainedArtifactArchitecture (..)
   , retainedArtifactArchitectureText
   , RetainedArtifactKind (..)
   , retainedArtifactKindText

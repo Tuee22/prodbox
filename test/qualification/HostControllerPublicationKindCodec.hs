@@ -11,7 +11,7 @@ import Data.ByteString qualified as BS
 import Data.ByteString.Lazy qualified as Lazy
 import Data.Either (isLeft)
 import Data.Maybe (isNothing)
-import Data.Word (Word8)
+import Data.Word (Word64, Word8)
 import GHC.Clock (getMonotonicTimeNSec)
 import Prodbox.Subprocess.HostControllerInputRetirement qualified as Reaper
 import Prodbox.Subprocess.HostControllerPublication qualified as Publication
@@ -35,15 +35,18 @@ requireNeverSentDisposition disposition = case disposition of
 
 main :: IO ()
 main = do
-  [historical] <- getArgs
-  old <- BS.readFile historical
+  arguments <- getArgs
+  old <- case arguments of
+    [] -> captureRegistrationBirth
+    [historical] -> BS.readFile historical
+    _ -> fail "expected zero arguments or one historical birth record"
   original <- maybe (fail "historical producer rejected") pure (Record.decodePublicationBirth old)
   require
     "historical registration kind changed"
     (Record.publicationBirthKind original == Identity.RpcBirthController)
   require "historical producer bytes changed" (Record.encodePublicationBirth original == old)
-  putStrLn "PASS exact historical registration producer codec"
-  forM_ [Identity.RpcBirthController, Identity.OrdinaryCascadeController] $ \kind -> do
+  putStrLn "PASS exact registration producer codec"
+  forM_ [Identity.RpcBirthController, Identity.OrdinaryCascadeController, Identity.MutationController] $ \kind -> do
     nonce <- getRandomBytes 32
     key <-
       maybe
@@ -53,7 +56,8 @@ main = do
     ending <- (+ 3000000000) <$> getMonotonicTimeNSec
     let wrong = case kind of
           Identity.RpcBirthController -> Identity.OrdinaryCascadeController
-          Identity.OrdinaryCascadeController -> Identity.RpcBirthController
+          Identity.OrdinaryCascadeController -> Identity.MutationController
+          Identity.MutationController -> Identity.RpcBirthController
     (paths, ()) <-
       right
         =<< Publication.withPublishedHostControllerOwner
@@ -75,11 +79,12 @@ main = do
                   (isNothing (Record.decodePublicationBirth invalid))
               case kind of
                 Identity.RpcBirthController -> pure ()
-                Identity.OrdinaryCascadeController -> do
+                _ -> do
                   let prefix = "prodbox-host-controller-publication/birth/kind/v1\NUL"
                   payload <- maybe (fail "ordinary producer prefix missing") pure (BS.stripPrefix prefix bytes)
                   (version, tag, legacy) <- right (deserialiseOrFail (Lazy.fromStrict payload))
-                  require "ordinary version/tag changed" (version == (1 :: Word8) && tag == (1 :: Word8))
+                  let expectedTag = if kind == Identity.OrdinaryCascadeController then 1 else 2
+                  require "controller version/tag changed" (version == (1 :: Word8) && tag == (expectedTag :: Word8))
                   untagged <-
                     maybe
                       (fail "ordinary inner registration encoding rejected")
@@ -93,7 +98,7 @@ main = do
                   forM_
                     [ prefix <> Lazy.toStrict (serialise (2 :: Word8, tag, legacy))
                     , prefix <> Lazy.toStrict (serialise (version, 0 :: Word8, legacy))
-                    , prefix <> Lazy.toStrict (serialise (version, 2 :: Word8, legacy))
+                    , prefix <> Lazy.toStrict (serialise (version, 3 :: Word8, legacy))
                     , prefix <> Lazy.toStrict (serialise (version, tag, bytes))
                     ]
                     $ \invalid ->
@@ -137,6 +142,39 @@ main = do
     require "cold recovery retained payloads" (not configurationPresent && not requestPresent)
     putStrLn ("PASS producer codec, double kind guard and cold retirement " <> show kind)
   putStrLn "PASS all publication-kind codec and cold recovery controls"
+
+-- When no historical input is supplied, obtain current registration bytes
+-- from the real publisher and retire that fixture through its normal path.
+captureRegistrationBirth :: IO BS.ByteString
+captureRegistrationBirth = do
+  nonce <- getRandomBytes 32
+  key <-
+    maybe
+      (fail "fixture key")
+      pure
+      (Identity.hostExecutionKeyFromText (concatMap hexadecimal (BS.unpack nonce)))
+  ending <- (+ 3000000000) <$> getMonotonicTimeNSec
+  (bytes, ()) <-
+    right
+      =<< Publication.withPublishedHostControllerOwner
+        Identity.RpcBirthController
+        ending
+        key
+        "synthetic configuration"
+        "synthetic request"
+        ( \owner ->
+            BS.readFile
+              (takeDirectory (snd (Publication.hostPublicationPaths owner)) </> Record.publicationBirthName)
+        )
+        (retireCapturedBirth ending)
+  pure bytes
+
+retireCapturedBirth :: Word64 -> Publication.HostPublicationDisposition -> IO ()
+retireCapturedBirth ending disposition = case disposition of
+  Publication.PublicationNeverSent proof -> do
+    _ <- right =<< Reaper.retireNeverSentHostControllerInputs ending proof
+    pure ()
+  Publication.PublicationPossiblySent -> fail "fixture unexpectedly sent"
 
 hexadecimal :: (Integral byte) => byte -> String
 hexadecimal value = [digits !! (fromIntegral value `div` 16), digits !! (fromIntegral value `mod` 16)]

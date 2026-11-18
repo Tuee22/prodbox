@@ -851,7 +851,7 @@ data TargetSinkRecord payload = TargetSinkRecord
 -- Bounded to the durable decoder by @prodbox dev check@ rather than by type,
 -- because the arguments are exactly the record's fields and no type can
 -- separate "read these back" from "make these up". Per
--- [§ 22](../../../documents/engineering/chaos_hardening_doctrine.md) that bounds
+-- § 22 (historical chaos_hardening_doctrine.md at revision `583443f`, section 22) that bounds
 -- a process, not a protocol, and the bound is stated here rather than implied.
 targetSinkRecordFromStore
   :: OwnerNonce
@@ -885,7 +885,7 @@ data TargetSinkObservation payload
 -- holding raw data could assemble one — a request that looks exactly like an
 -- authorized one and carries no evidence of the decision that authorized it
 -- (/Provenance/ class,
--- [chaos_hardening_doctrine.md § 21](../../../documents/engineering/chaos_hardening_doctrine.md)).
+-- chaos_hardening_doctrine.md at 583443f, section 21).
 -- 'decideTargetSinkWrite' is the only minter, and it cannot be called without a
 -- 'PreparedTargetWritePermit'.
 --

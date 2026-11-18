@@ -222,6 +222,7 @@ commandRegistry =
         , chartsGroup
         , clusterGroup
         , commandsLeaf
+        , controlGroup
         , configGroup
         , devGroup
         , dnsGroup
@@ -240,6 +241,7 @@ commandRegistry =
     , options =
         [ flagOption "verbose" (Just 'v') Nothing "Enable verbose output"
         , flagOption "version" Nothing Nothing "Show version"
+        , flagOption "config" Nothing (Just "PATH") "Select a configuration for supported commands"
         ]
     , examples =
         [ example ["config", "validate"] "Validate the binary-sibling Dhall config."
@@ -296,6 +298,15 @@ renderCommandRequestParser prefix spec =
 parserForPath :: [String] -> Maybe (Parser CommandRequest)
 parserForPath path =
   case path of
+    ["control", "status"] -> Just (pure RunControlStatus)
+    ["control", "plan"] -> Just (pure RunControlPlan)
+    ["control", "import-artifact"] ->
+      Just (RunControlArtifactImport <$> strArgument (metavar "ROLE") <*> strArgument (metavar "SOURCE"))
+    ["control", "discard-artifact-staging"] ->
+      Just (RunControlArtifactDiscard <$> strArgument (metavar "ROLE"))
+    ["control", "inspect-node-archive"] -> Just (pure RunControlInspectNodeArchive)
+    ["control", "inspect-image-attempt"] ->
+      Just (RunControlInspectImageAttempt <$> strArgument (metavar "OPERATION"))
     ["internal-rpc-birth-controller"] -> Just internalRpcBirthControllerParser
     ["admin-action", "run"] ->
       Just (RunNative . NativeAdminAction <$> adminActionRunParser)
@@ -408,7 +419,7 @@ parserForPath path =
           <|> commandsJsonParser
           <|> pure (ShowCommands CommandsPlain)
     ["config", "setup"] ->
-      Just (fmap (RunNative . NativeConfig . ConfigSetup) planOptionsParser)
+      Just (fmap (RunNative . NativeConfig . ConfigSetup) configSetupPlanOptionsParser)
     ["config", "show"] ->
       Just (pure (RunNative (NativeConfig ConfigShow)))
     ["config", "validate"] -> Just (pure (RunNative (NativeConfig ConfigValidate)))
@@ -632,6 +643,7 @@ parserForPath path =
               )
           )
     ["test", "init"] -> Just testInitParser
+    ["test", "list"] -> Just (pure RunTestList)
     ["test", "run"] -> Just testRunParser
     ["test", "all"] -> Just (withCoverage TestAll)
     ["test", "lint"] ->
@@ -841,6 +853,21 @@ planOptionsParser =
           ( long "plan-file"
               <> metavar "PATH"
               <> help "Write the rendered plan to a file"
+          )
+      )
+
+configSetupPlanOptionsParser :: Parser PlanOptions
+configSetupPlanOptionsParser =
+  PlanOptions
+    <$> switch
+      ( long "dry-run"
+          <> help "Render the binary-sibling setup plan; unavailable with --config"
+      )
+    <*> optional
+      ( strOption
+          ( long "plan-file"
+              <> metavar "PATH"
+              <> help "Write the binary-sibling setup plan; unavailable with --config"
           )
       )
 
@@ -1603,18 +1630,84 @@ group nodeName nodeSummary nodeDescription nodeChildren nodeOptions nodeExamples
     , examples = nodeExamples
     }
 
+controlGroup :: CommandSpec
+controlGroup =
+  group
+    "control"
+    "Local control environment"
+    "Inspect and prepare the selected local control environment."
+    [ leaf
+        "status"
+        "Inspect local control observations"
+        "Observe the selected root, generation record, and Docker node inventory without mutation."
+        []
+        [example ["control", "status"] "Inspect local control observations."]
+    , leaf
+        "plan"
+        "Render the selected kind configuration"
+        "Render candidate kind configuration without creating or inspecting resources."
+        []
+        [example ["control", "plan"] "Review the candidate kind configuration."]
+    , leafWithArgs
+        "import-artifact"
+        "Import a declared bootstrap artifact"
+        "Verify and retain the selected kind tool or node archive from an absolute local source."
+        [ argument "role" "ROLE" "Either kind-tool or node-archive."
+        , argument "source" "SOURCE" "Absolute path to the local artifact."
+        ]
+        []
+        [ example
+            ["control", "import-artifact", "kind-tool", "/path/to/kind"]
+            "Retain the declared kind executable."
+        ]
+    , leafWithArgs
+        "discard-artifact-staging"
+        "Discard the selected artifact staging file"
+        "Remove only the selected declaration's incomplete artifact staging; retained artifacts are preserved."
+        [argument "role" "ROLE" "Either kind-tool or node-archive."]
+        []
+        [ example ["control", "discard-artifact-staging", "kind-tool"] "Discard incomplete kind-tool staging."
+        ]
+    , leaf
+        "inspect-node-archive"
+        "Inspect the retained OCI node archive"
+        "Read and verify the configured node image manifest and platform blobs without loading it."
+        []
+        [example ["control", "inspect-node-archive"] "Inspect the retained node archive."]
+    , leafWithArgs
+        "inspect-image-attempt"
+        "Inspect a retained image attempt"
+        "Rebuild the retained image stage and observe an exact image ID and local attempt marker without submitting or retrying an image load. Staging can consume several GiB of temporary space under the selected root."
+        [argument "operation" "OPERATION" "Exact retained operation identifier."]
+        []
+        [ example
+            ["control", "inspect-image-attempt", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]
+            "Inspect an existing image attempt."
+        ]
+    ]
+    []
+    []
+
 configGroup :: CommandSpec
 configGroup =
   group
     "config"
     "Configuration management"
-    "Binary-sibling Tier-0 Dhall configuration commands."
+    "Configuration commands for the binary-sibling document or an explicitly selected path."
     [ leaf
         "setup"
         "Interactively author config"
-        "Write or refresh the supported binary-sibling prodbox.dhall."
-        [ flagOption "dry-run" Nothing Nothing "Render the config-setup plan without mutating state"
-        , optionalOption "plan-file" Nothing "PATH" "Write the rendered plan to a file"
+        "Write or refresh the binary-sibling configuration; with --config, create a new bootstrap-only document."
+        [ flagOption
+            "dry-run"
+            Nothing
+            Nothing
+            "Render the binary-sibling setup plan without mutating state; unavailable with --config"
+        , optionalOption
+            "plan-file"
+            Nothing
+            "PATH"
+            "Write the binary-sibling setup plan to a file; unavailable with --config"
         ]
         [example ["config", "setup"] "Create or refresh the config interactively."]
     , leaf
@@ -2792,6 +2885,12 @@ testGroupSpec =
     "Named test suites"
     "Supported automated test commands."
     [ leaf
+        "list"
+        "List locally registered test suites"
+        "List the built-in local suites; legacy topology-defined suites require a separate test topology."
+        []
+        [example ["test", "list"] "List built-in local test suites."]
+    , leaf
         "init"
         "Create prodbox.test.dhall"
         "Create the executable-sibling prodbox.test.dhall test-topology document."
@@ -2799,10 +2898,10 @@ testGroupSpec =
         [example ["test", "init"] "Create the test-topology document."]
     , leaf
         "run"
-        "Run a topology-declared suite"
-        "Run one topology-declared suite, or every suite with `all`, using .test-data isolation."
+        "Run a named test suite"
+        "Run the local unit, env or CLI suites without a deployment configuration, or a topology-declared suite using .test-data isolation. The CLI suite refuses hosts with an existing RKE2 installation."
         coverageOptions
-        [example ["test", "run", "unit"] "Run the topology-declared unit suite."]
+        [example ["test", "run", "unit"] "Run the unit suites without a deployment topology."]
     , leaf
         "all"
         "Run the full test suite"

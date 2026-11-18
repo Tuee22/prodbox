@@ -3,7 +3,7 @@
 
 -- | Sprint 4.21: the IO-bearing managed-resource registry and the
 -- 'reconcileAbsent' teardown reconciler that
--- @documents\/engineering\/lifecycle_reconciliation_doctrine.md § 3.1@
+-- @documents\/engineering\/lifecycle_reconciliation_doctrine.md at 583443f, section 3.1@
 -- prescribes. Decorates the pure 'Prodbox.Lifecycle.ResourceClass'
 -- facts with the @destroy@ action for each resource.
 --
@@ -320,7 +320,7 @@ effectRegistryLifecycleClassViolations =
           ++ name
           ++ "` but resourceLifecycleClasses has no row for it; add it to "
           ++ "src/Prodbox/Lifecycle/ResourceClass.hs "
-          ++ "(lifecycle_reconciliation_doctrine.md \167\&3.1 totality)."
+          ++ "(lifecycle.md: resource totality)."
       ]
     Just flatClass
       | flatClass == registered -> []
@@ -332,7 +332,7 @@ effectRegistryLifecycleClassViolations =
               ++ " in the effect-bearing managed-resource registry but "
               ++ show flatClass
               ++ " in resourceLifecycleClasses; a resource has exactly one "
-              ++ "static lifecycle class (lifecycle_reconciliation_doctrine.md \167\&3.1)."
+              ++ "static lifecycle class (lifecycle.md)."
           ]
 
 -- | Sprint 4.26: the @aws-ses@ long-lived Pulumi stack as a managed
@@ -495,7 +495,7 @@ pairAwsSesResidue sesStatus = [(awsSesPulumiResource, sesStatus)]
 -- gone; 'ResidueUnreachable' has no destroy to run against it, because
 -- there is no readable checkpoint to destroy from (the cascade's
 -- graceful-degradation exception, per
--- @lifecycle_reconciliation_doctrine.md § 3@ / § 5b).
+-- @lifecycle_reconciliation_doctrine.md at 583443f, section 3@ / lifecycle_reconciliation_doctrine.md at 583443f, section 5b).
 --
 -- Sprint 4.76 states the bound that the pre-4.76 haddock overstated:
 -- skipping the destroy is **not** a judgement that "the state died with
@@ -521,7 +521,7 @@ resourcesObservedAbsent pairs =
 -- | Sprint 4.76 (pure): the resources whose state could not be read at
 -- all. 'reconcileAbsent' still skips their destroys — that is the
 -- cascade's documented per-run graceful degradation
--- (@lifecycle_reconciliation_doctrine.md § 3.1@ invariant 3) — but the
+-- (@lifecycle_reconciliation_doctrine.md at 583443f, section 3.1@ invariant 3) — but the
 -- skip is now carried out of the reconciler so the aggregate can
 -- withhold success instead of reporting an absence nobody observed.
 resourcesUnobserved :: [(ManagedResource, ResidueStatus)] -> [ManagedResource]
@@ -576,7 +576,7 @@ data AbsentReconcileOutcome = AbsentReconcileOutcome
   deriving (Eq, Show)
 
 -- | The reconcile's aggregate verdict: a failed destroy fails, and so
--- does an unresolved observation. @lifecycle_reconciliation_doctrine.md
+-- does an unresolved observation. @lifecycle_reconciliation_doctrine.md at revision `583443f`
 -- § 5b@ phase 1 — an unreachable checkpoint "records an unresolved
 -- cleanup failure … the aggregate cannot report success".
 absentReconcileExitCode :: AbsentReconcileOutcome -> ExitCode

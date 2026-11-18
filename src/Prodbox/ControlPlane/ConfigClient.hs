@@ -61,8 +61,8 @@ data ConfigClientError
     -- with it. Carrying only the status was the last conversion in the chain
     -- this sprint removes — the server now answers a decode failure with a 500
     -- naming the field, and dropping the body here would put the reason back
-    -- out of reach (chaos_hardening_doctrine.md section 23; a refusal retains
-    -- its structured reason, bootstrap_readiness_doctrine.md section 0.5).
+    -- out of reach (chaos_hardening_doctrine.md at revision `583443f`, section 23; a refusal retains
+    -- its structured reason, bootstrap_readiness_doctrine.md at revision `583443f`, section 0.5).
     ConfigClientHttpStatus !Int !Text
   | ConfigClientResponseInvalid !ControlPlaneResponseCodecError
   deriving stock (Eq, Show)

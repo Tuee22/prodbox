@@ -24,8 +24,10 @@ module Prodbox.Subprocess.KernelScope
   , killKernelScope
   , terminateKernelScope
   , HostPlacement
+  , HostPlacementProfile (..)
   , HostPlacementUse
   , withObservedHostPlacement
+  , withObservedHostPlacementFor
   , withHostPlacementSlot
   , verifyHostPlacementBeforeEffect
   , verifyHostPlacementBeforeAdmission
@@ -34,6 +36,7 @@ module Prodbox.Subprocess.KernelScope
   , hostPlacementWindow
   , hostPlacementSliceName
   , hostPlacementDescription
+  , hostPlacementDescriptionFor
   , hostPlacementRuntimeDirectory
   , OperationParent
   , withObservedOperationParent
@@ -43,6 +46,7 @@ module Prodbox.Subprocess.KernelScope
   , operationParentPlan
   , operationParentWindow
   , operationParentKey
+  , operationParentKind
   , OperationProcessUse
   , withOperationProcessSlot
   , withOperationProcessScope
@@ -422,12 +426,12 @@ preparePlacedGroup placement connection deadline child expected@(_, name, _) lim
       let path = expectedControlGroup uid name
       prepareGroup connection deadline child expected limits path (openGroup path) []
     HostChildPlacement
-      token@(HostPlacementUse host@(HostPlacement _ _ _ (HostGroup pool _) _ _ _ window _ _) _) ->
+      token@(HostPlacementUse host@(HostPlacement _ _ _ (HostGroup pool _) _ _ _ window _ _ profile) _) ->
         ExceptT $ withHostPlacementUse token $ do
           verifyHostChildLimits token name limits
           verifyHostPlacement HostChildAdmitted (Identity.hostExecutionWorkEnd window) host
           uid <- lift getEffectiveUserID
-          let path = hostControlGroup uid <> "/" <> name
+          let path = hostControlGroup uid profile <> "/" <> name
           prepareGroup connection deadline child expected limits path (openGroupAt pool name) [pool]
 
 prepareGroup
@@ -729,6 +733,26 @@ observeKernelScopeEmptyBefore bound scope@(KernelScope _ _ _ _ deadline _ _) = o
 -- Read-only handles never grant a kill capability over the parent or slice.
 data HostGroup = HostGroup !Fd !Fd
 
+-- Closed controller identities keep kind work out of the RPC-birth parent.
+-- Selecting a profile is not admission and does not launch its controller.
+data HostPlacementProfile = RpcBirthHostPlacement | KindHostPlacement | MutationHostPlacement
+  deriving (Eq, Show)
+
+profileUnit :: HostPlacementProfile -> String
+profileUnit RpcBirthHostPlacement = Identity.hostControllerUnitName
+profileUnit KindHostPlacement = "prodbox-kind-controller.service"
+profileUnit MutationHostPlacement = "prodbox-mutation-controller.service"
+
+profileSlice :: HostPlacementProfile -> String
+profileSlice RpcBirthHostPlacement = Identity.hostControllerSliceName
+profileSlice KindHostPlacement = "prodboxkind.slice"
+profileSlice MutationHostPlacement = "prodboxmutation.slice"
+
+profileDirectory :: HostPlacementProfile -> String
+profileDirectory RpcBirthHostPlacement = Identity.hostControllerRuntimeDirectoryName
+profileDirectory KindHostPlacement = "prodbox-kind"
+profileDirectory MutationHostPlacement = "prodbox-mutation"
+
 data HostPlacement
   = HostPlacement
       !BusConnection
@@ -741,32 +765,41 @@ data HostPlacement
       !Identity.HostExecutionWindow
       !HostRuntimeDirectory
       !(MVar Bool)
+      !HostPlacementProfile
 
 data HostRuntimeDirectory = HostRuntimeDirectory !FilePath !Fd
 
 hostPlacementRuntimeDirectory :: HostPlacement -> FilePath
-hostPlacementRuntimeDirectory (HostPlacement _ _ _ _ _ _ _ _ (HostRuntimeDirectory path _) _) = path
+hostPlacementRuntimeDirectory (HostPlacement _ _ _ _ _ _ _ _ (HostRuntimeDirectory path _) _ _) = path
 
 data HostPlacementUse = HostPlacementUse !HostPlacement !(MVar Bool)
 
 data HostPlacementPhase = HostSlotEmpty | HostChildWaiting !ProcessID | HostChildAdmitted
 
 hostPlacementPlan :: HostPlacementUse -> Host.HostExecutionPlan
-hostPlacementPlan (HostPlacementUse (HostPlacement _ _ _ _ _ plan _ _ _ _) _) = plan
+hostPlacementPlan (HostPlacementUse (HostPlacement _ _ _ _ _ plan _ _ _ _ _) _) = plan
 
 hostPlacementKey :: HostPlacementUse -> Identity.HostExecutionKey
-hostPlacementKey (HostPlacementUse (HostPlacement _ _ _ _ _ _ key _ _ _) _) = key
+hostPlacementKey (HostPlacementUse (HostPlacement _ _ _ _ _ _ key _ _ _ _) _) = key
 
 hostPlacementWindow :: HostPlacementUse -> Identity.HostExecutionWindow
-hostPlacementWindow (HostPlacementUse (HostPlacement _ _ _ _ _ _ _ window _ _) _) = window
+hostPlacementWindow (HostPlacementUse (HostPlacement _ _ _ _ _ _ _ window _ _ _) _) = window
 
 hostPlacementSliceName :: HostPlacementUse -> String
-hostPlacementSliceName _ = Identity.hostControllerSliceName
+hostPlacementSliceName (HostPlacementUse (HostPlacement _ _ _ _ _ _ _ _ _ _ profile) _) = profileSlice profile
 
 hostPlacementDescription
   :: Host.HostExecutionPlan -> Identity.HostExecutionKey -> Identity.HostExecutionWindow -> String
-hostPlacementDescription plan key window =
-  Identity.hostControllerDescription key window
+hostPlacementDescription = hostPlacementDescriptionFor RpcBirthHostPlacement
+
+hostPlacementDescriptionFor
+  :: HostPlacementProfile
+  -> Host.HostExecutionPlan
+  -> Identity.HostExecutionKey
+  -> Identity.HostExecutionWindow
+  -> String
+hostPlacementDescriptionFor profile plan key window =
+  profileDescription profile key window
     <> " resources "
     <> unwords
       ( map
@@ -792,6 +825,36 @@ hostPlacementDescription plan key window =
              ]
       )
 
+profileDescription
+  :: HostPlacementProfile -> Identity.HostExecutionKey -> Identity.HostExecutionWindow -> String
+profileDescription RpcBirthHostPlacement = Identity.hostControllerDescription
+profileDescription KindHostPlacement = \key window ->
+  "prodbox kind host v1 "
+    <> unwords
+      ( Identity.hostExecutionKeyText key
+          : map
+            (show . ($ window))
+            [ Identity.hostExecutionOuterEnd
+            , Identity.hostExecutionWorkEnd
+            , Identity.hostExecutionHardEnd
+            , Identity.hostExecutionStopEnd
+            , Identity.hostExecutionFinishEnd
+            ]
+      )
+profileDescription MutationHostPlacement = \key window ->
+  "prodbox mutation host v1 "
+    <> unwords
+      ( Identity.hostExecutionKeyText key
+          : map
+            (show . ($ window))
+            [ Identity.hostExecutionOuterEnd
+            , Identity.hostExecutionWorkEnd
+            , Identity.hostExecutionHardEnd
+            , Identity.hostExecutionStopEnd
+            , Identity.hostExecutionFinishEnd
+            ]
+      )
+
 -- This observes one already managed parent. It creates neither a process nor
 -- an Authority reservation. Only the outer interpreter can combine those proofs.
 withObservedHostPlacement
@@ -801,7 +864,17 @@ withObservedHostPlacement
   -> Identity.HostExecutionWindow
   -> (HostPlacement -> IO (Either KernelScopeError value))
   -> IO (Either KernelScopeError value)
-withObservedHostPlacement connection plan key window action = scopeIO $ mask $ \restore -> do
+withObservedHostPlacement = withObservedHostPlacementFor RpcBirthHostPlacement
+
+withObservedHostPlacementFor
+  :: HostPlacementProfile
+  -> BusConnection
+  -> Host.HostExecutionPlan
+  -> Identity.HostExecutionKey
+  -> Identity.HostExecutionWindow
+  -> (HostPlacement -> IO (Either KernelScopeError value))
+  -> IO (Either KernelScopeError value)
+withObservedHostPlacementFor profile connection plan key window action = scopeIO $ mask $ \restore -> do
   held <- newIORef []
   releaseFailure <- newIORef Nothing
   let admission = systemdBusWithin (Identity.hostExecutionWorkEnd window) connection
@@ -831,9 +904,9 @@ withObservedHostPlacement connection plan key window action = scopeIO $ mask $ \
               (Fd <$> throwErrnoIfMinus1Retry "owned parent pidfd" (openSelfDescriptor (fromIntegral current) 0))
               closeFd
               (\fd -> runExceptT (bus ScopeChildLookup (readChildIdentity admission fd)))
-        unless (name == Identity.hostControllerUnitName) (throwE KernelHostParentRefused)
+        unless (name == profileUnit profile) (throwE KernelHostParentRefused)
         reference name
-        reference Identity.hostControllerSliceName
+        reference (profileSlice profile)
         alias <-
           bus ScopeInvocationLookup $
             callManager
@@ -846,7 +919,7 @@ withObservedHostPlacement connection plan key window action = scopeIO $ mask $ \
             callManager
               admission
               GetUnit
-              (\message -> appendString message Identity.hostControllerSliceName)
+              (\message -> appendString message (profileSlice profile))
               (`readString` 'o')
         uid <- lift getEffectiveUserID
         let poolPath =
@@ -855,7 +928,7 @@ withObservedHostPlacement connection plan key window action = scopeIO $ mask $ \
                 <> ".slice/user@"
                 <> show uid
                 <> ".service/"
-                <> Identity.hostControllerSliceName
+                <> profileSlice profile
             parentPath = poolPath <> "/" <> name
         parentGroup <-
           hostProperty admission (invocationPathText alias) "Service" "ControlGroup" readVariantString
@@ -872,10 +945,10 @@ withObservedHostPlacement connection plan key window action = scopeIO $ mask $ \
           Left cause -> pure (Left cause)
           Right (alias, slice, poolPath) ->
             bracket (openHostGroup poolPath) closeHostGroup $ \pool@(HostGroup root _) ->
-              bracket (openHostGroupAt root Identity.hostControllerUnitName) closeHostGroup $ \parent ->
-                bracket openHostRuntimeDirectory closeHostRuntimeDirectory $ \runtimeDirectory -> do
+              bracket (openHostGroupAt root (profileUnit profile)) closeHostGroup $ \parent ->
+                bracket (openHostRuntimeDirectoryNamed (profileDirectory profile)) closeHostRuntimeDirectory $ \runtimeDirectory -> do
                   active <- newMVar True
-                  let placement = HostPlacement connection alias slice pool parent plan key window runtimeDirectory active
+                  let placement = HostPlacement connection alias slice pool parent plan key window runtimeDirectory active profile
                   initial <-
                     runExceptT (verifyHostPlacement HostSlotEmpty (Identity.hostExecutionWorkEnd window) placement)
                   case initial of
@@ -940,6 +1013,9 @@ operationParentWindow (OperationParent (OperationParentBase _ intent _ _ _ _ _ _
 
 operationParentKey :: OperationParent -> Identity.HostExecutionKey
 operationParentKey (OperationParent (OperationParentBase _ intent _ _ _ _ _ _ _ _) _ _ _ _ _) = Operation.hostOperationKey intent
+
+operationParentKind :: OperationParent -> Identity.HostControllerKind
+operationParentKind (OperationParent (OperationParentBase _ intent _ _ _ _ _ _ _ _) _ _ _ _ _) = Operation.hostOperationKind intent
 
 withObservedOperationParent
   :: BusConnection
@@ -1589,7 +1665,7 @@ withHostPlacementSlot
   :: HostPlacement
   -> (HostPlacementUse -> BusConnection -> IO (Either KernelScopeError value))
   -> IO (Either KernelScopeError value)
-withHostPlacementSlot placement@(HostPlacement connection _ _ _ _ _ _ window _ active) action = scopeIO $ mask $ \restore -> do
+withHostPlacementSlot placement@(HostPlacement connection _ _ _ _ _ _ window _ active _) action = scopeIO $ mask $ \restore -> do
   claimed <- tryTakeMVar active
   case claimed of
     Nothing -> pure (Left KernelHostPlacementBusy)
@@ -1663,7 +1739,7 @@ withHostPlacementUse (HostPlacementUse _ active) action = scopeIO $ withMVar act
   if open then runExceptT action else pure (Left KernelHostPlacementClosed)
 
 verifyHostPlacement :: HostPlacementPhase -> Word64 -> HostPlacement -> ScopeAction ()
-verifyHostPlacement phase bound (HostPlacement original alias slice pool parent plan key window runtimeDirectory _) = do
+verifyHostPlacement phase bound (HostPlacement original alias slice pool parent plan key window runtimeDirectory _ profile) = do
   checkDeadline bound
   current <- lift getProcessID
   flags <- lift Rts.getRTSFlags
@@ -1696,19 +1772,19 @@ verifyHostPlacement phase bound (HostPlacement original alias slice pool parent 
   _ <- service "ExecStop" readVariantNoExecStop
   _ <- service "ExecStopPost" readVariantNoExecStop
   unless
-    ( name == Identity.hostControllerUnitName
+    ( name == profileUnit profile
         && invocation == invocationPathId alias
-        && description == hostPlacementDescription plan key window
+        && description == hostPlacementDescriptionFor profile plan key window
         && state == "active"
         && transient
         && toInteger mainPid == toInteger current
         && kind == "exec"
         && not remain
-        && ownSlice == Identity.hostControllerSliceName
+        && ownSlice == profileSlice profile
         && mode == "control-group"
         && finalSignal == 9
         && sendKill
-        && directoryName == Identity.hostControllerRuntimeDirectoryName
+        && directoryName == profileDirectory profile
         && directoryMode == 0o700
         && directoryPreserve == "no"
     )
@@ -1737,8 +1813,8 @@ verifyHostPlacement phase bound (HostPlacement original alias slice pool parent 
     (throwE KernelHostWindowRefused)
   uid <- lift getEffectiveUserID
   verifyHostRuntimeDirectory uid runtimeDirectory
-  let poolPath = hostControlGroup uid
-      parentPath = poolPath <> "/" <> Identity.hostControllerUnitName
+  let poolPath = hostControlGroup uid profile
+      parentPath = poolPath <> "/" <> profileUnit profile
   actualParent <- service "ControlGroup" readVariantString
   actualSlice <- hostProperty connection slice "Slice" "ControlGroup" readVariantString
   sliceName <- hostProperty connection slice "Unit" "Id" readVariantString
@@ -1746,7 +1822,7 @@ verifyHostPlacement phase bound (HostPlacement original alias slice pool parent 
   unless
     ( actualParent == parentPath
         && actualSlice == poolPath
-        && sliceName == Identity.hostControllerSliceName
+        && sliceName == profileSlice profile
         && Bytes.lines membership == [Bytes.pack ("0::" <> parentPath)]
     )
     (throwE KernelScopeIdentityChanged)
@@ -1792,19 +1868,16 @@ verifyHostPlacement phase bound (HostPlacement original alias slice pool parent 
     (throwE KernelHostParentRefused)
   directories <- ExceptT (hostDirectories poolRoot)
   let field = "prodbox-owned-" <> Identity.hostExecutionKeyText key
-      ours = [Identity.hostControllerUnitName, field <> ".scope", field <> "-expiry.service"]
+      ours = [profileUnit profile, field <> ".scope", field <> "-expiry.service"]
   unless (all (`elem` ours) directories) (throwE KernelHostForeignGroup)
   let expected = case phase of
-        HostSlotEmpty -> [Identity.hostControllerUnitName]
-        HostChildWaiting _ -> [Identity.hostControllerUnitName]
-        HostChildAdmitted -> [Identity.hostControllerUnitName, field <> ".scope"]
+        HostSlotEmpty -> [profileUnit profile]
+        HostChildWaiting _ -> [profileUnit profile]
+        HostChildAdmitted -> [profileUnit profile, field <> ".scope"]
   unless
     (length directories == length expected && all (`elem` expected) directories)
     (throwE KernelHostFamilyPresent)
   checkDeadline bound
-
-openHostRuntimeDirectory :: IO HostRuntimeDirectory
-openHostRuntimeDirectory = openHostRuntimeDirectoryNamed Identity.hostControllerRuntimeDirectoryName
 
 openHostRuntimeDirectoryNamed :: String -> IO HostRuntimeDirectory
 openHostRuntimeDirectoryNamed name = do
@@ -1830,9 +1903,9 @@ verifyHostRuntimeDirectory uid (HostRuntimeDirectory path descriptor) = do
     )
     (throwE KernelScopeFilesystemRefused)
 
-hostControlGroup :: UserID -> String
-hostControlGroup uid =
-  hostManagerControlGroupPath uid <> "/" <> Identity.hostControllerSliceName
+hostControlGroup :: UserID -> HostPlacementProfile -> String
+hostControlGroup uid profile =
+  hostManagerControlGroupPath uid <> "/" <> profileSlice profile
 
 operationControlGroup :: UserID -> Operation.HostOperationIntent -> String
 operationControlGroup uid intent =

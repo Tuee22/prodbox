@@ -2,7 +2,7 @@
 
 -- | The Tier-1 bootstrap-secret object path for the root cluster's Vault unlock
 -- bundle, stored alongside host disk in the durable MinIO bucket
--- (config_doctrine.md §0 Tier 1; vault_doctrine.md §6, §6.1, §9).
+-- (config_doctrine.md at 583443f, section 0 Tier 1; vault_doctrine.md at 583443f, section 6, vault_doctrine.md at 583443f, section 6.1, vault_doctrine.md at 583443f, section 9).
 --
 -- This module owns:
 --
@@ -23,7 +23,7 @@
 -- ('Prodbox.Minio.RootCredential'), NOT password-derived: the security here is
 -- the password-AEAD seal on the bundle body — you need the operator password to
 -- decrypt it, not merely to read its ciphertext. It is nonetheless a real
--- credential, the registered bootstrap-floor entry of @vault_doctrine.md@ §6.1;
+-- credential, the registered bootstrap-floor entry of @vault_doctrine.md at 583443f, section 6.1;
 -- see "Prodbox.Minio.RootCredential" for its reachability and blast radius. Using
 -- the real (valid) root credential is also what makes the bundle round-trip
 -- through MinIO actually work (a derived made-up credential MinIO never

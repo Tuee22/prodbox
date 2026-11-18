@@ -268,6 +268,7 @@ import DecommissionRunner (decommissionRunnerSuite)
 import DecommissionTargetTombstone (decommissionTargetTombstoneSuite)
 import DecommissionVerifier (decommissionVerifierSuite)
 import DependencyAdmissionSuite (dependencyAdmissionSuite)
+import DeploymentScopeTests (deploymentScopeSuite)
 import DesiredPresentReconciliation (desiredPresentReconciliationSuite)
 import Dhall qualified
 import Dns01ChallengeSuite (dns01ChallengeSuite)
@@ -820,12 +821,14 @@ import Prodbox.CheckCode
   , brokerReadinessProjectionViolations
   , checkDoctrineSectionCitations
   , citedSourcePathsInDoc
-  , compareSprintIds
+  , commandDispositionViolations
+  , commandOptionDispositionViolations
+  , commandRequiredDispositionViolations
+  , completedPhaseViolations
+  , currentSourceObjectExists
   , destructivePlanOptionsArms
-  , developmentPlanResumeViolations
   , doctrineViolationsInPaths
   , documentSectionNumbers
-  , executionOrderViolations
   , extractMarkdownLinkTargets
   , extractStringLiterals
   , forceViolationFindings
@@ -833,6 +836,9 @@ import Prodbox.CheckCode
   , governedDocStatusValues
   , governedDocStatusViolations
   , headingSectionNumber
+  , historicalSectionCitationsInLine
+  , historicalSectionReferenceViolations
+  , historicalSourcePathsInDoc
   , iamCreateSiteViolations
   , iamCreateVerbs
   , inlineCodeSpansInLine
@@ -845,28 +851,27 @@ import Prodbox.CheckCode
   , listRepoOwnedPaths
   , managedResourceRegistryParityViolations
   , matchesSprintToken
+  , numericalPhaseContractViolations
+  , numericalPhaseDependencyViolations
+  , numericalQueueViolations
+  , numericalRemovalOwnerViolations
+  , objectiveDispositionViolations
+  , optionAliasDispositionViolations
   , parseGeneratedSectionsField
   , parseGovernedDocStatusField
-  , pendingRemovalPrerequisiteViolations
+  , phaseManifestBindingViolations
   , planOptionsHonoredViolations
   , planOptionsProjectionExemptions
-  , planSprintBlocks
   , prodboxMarkerKeysPresent
   , productionEnvVarNamesIn
   , productionEnvVarOwnersFor
   , productionEnvVarRegistry
   , pulumiCreateSiteViolations
   , relativeLinkResolves
-  , removedLegacyTransportSourcePaths
-  , retiredCitedSourcePaths
   , runFailFastPhases
   , scannedCredentialPatternsPresent
   , scannedCredentialViolations
   , serviceErrorRetryableLiteralViolations
-  , sprintBlockMissingFields
-  , sprintDependencyDirectionViolations
-  , sprintDependencyFields
-  , sprintLiveDependencyIds
   , stripFencedCodeBlocks
   , stripInlineCodeSpans
   , substrateImagePinningViolations
@@ -876,6 +881,7 @@ import Prodbox.CheckCode
   , tier0DriftFindings
   , tier0DriftLocation
   , tier0MalformedFinding
+  , unsupportedHistoricalRevisionCitationsInLine
   , validationHarnessClientModules
   )
 import Prodbox.CheckCode qualified
@@ -945,21 +951,6 @@ import Prodbox.Config.ComponentGraph
   , probeSatisfiesBackendWrite
   , resolveCapabilityProviders
   , validateComponentGraph
-  )
-import Prodbox.Config.InForce
-  ( ConfigSource (..)
-  , InForceConfigError (..)
-  , RootConfigWriteDecision (..)
-  , RootWriteAuthority (..)
-  , SeedProposeDecision (..)
-  , fetchInForceConfigWith
-  , openInForcePayload
-  , renderInForcePayload
-  , renderRootConfigWriteBlock
-  , rootConfigWriteDecision
-  , sealInForcePayload
-  , seedProposeDecision
-  , storeInForceConfigWith
   )
 import Prodbox.Config.RetainedArtifacts
   ( RetainedArtifactDeclaration (..)
@@ -1608,6 +1599,7 @@ import Prodbox.Subprocess
   ( BoundedSubprocessLimits (..)
   , ProcessOutput (..)
   , Subprocess (..)
+  , captureSubprocessBounded
   , captureSubprocessResult
   , renderSubprocess
   )
@@ -1675,6 +1667,7 @@ import Prodbox.TestRunner
   , testTopologyModeGate
   , topologyRunConfig
   , topologyVariantEnvironment
+  , writeTopologyVariantConfigWithSecrets
   )
 import Prodbox.TestTopology
   ( renderTestTopologyDhall
@@ -1879,6 +1872,7 @@ import RetainedSesTargetRecovery (retainedSesTargetRecoverySuite)
 import RoleReadinessSuite (roleReadinessSuite)
 import RpcBirthSettingsCodecTests (rpcBirthSettingsCodecSuite)
 import RuntimeImagePublication (runtimeImagePublicationSuite)
+import ScenarioEvidenceTests (scenarioEvidenceSuite)
 import ScopeCodecProperties (scopeCodecPropertiesSuite)
 import ScopeCodecWitness (scopeCodecWitnessSuite)
 import SealedConstructors (sealedConstructorsSuite)
@@ -1906,6 +1900,7 @@ import System.Directory
   , getPermissions
   , getTemporaryDirectory
   , listDirectory
+  , pathIsSymbolicLink
   , removeDirectoryRecursive
   , removeFile
   , setPermissions
@@ -1919,7 +1914,7 @@ import System.Environment
   , withArgs
   )
 import System.Exit (ExitCode (..))
-import System.FilePath (takeDirectory, (</>))
+import System.FilePath (isAbsolute, splitDirectories, takeDirectory, takeFileName, (</>))
 import System.IO (readFile')
 import System.IO.Temp (withSystemTempDirectory)
 import System.IO.Unsafe (unsafePerformIO)
@@ -1930,7 +1925,7 @@ import TemporalQualification (temporalQualificationSuite)
 import TestSecretsSecurity (testSecretsSecuritySuite)
 import TestSupport
 import Tier0Fixture
-  ( RawTier0Reason (ExercisesGeneratedSchemaImport, ExistenceIsWhatIsUnderTest)
+  ( RawTier0Reason (ExercisesGeneratedSchemaImport, ExistenceIsWhatIsUnderTest, MustNotTypeCheckAgainst)
   , Tier0Fixture
   , rawTier0Fixture
   , rawTier0Parameters
@@ -2234,7 +2229,7 @@ syntheticDaemonProjectConfig =
 
 -- | Sprint 1.82: a Tier-0 record whose __named__ fields carry a literal secret
 -- value, for the decode gate that must refuse it. The stand-in value is
--- unmistakably synthetic (vault_doctrine.md §20.1) and is deliberately built
+-- unmistakably synthetic (vault_doctrine.md at 583443f, section 20.1) and is deliberately built
 -- from the field name so a refusal that leaked it would be unambiguous about
 -- which one.
 poisonTier0 :: [Text.Text] -> ProdboxProjectConfig
@@ -3055,6 +3050,232 @@ main = do
     (journalHelperHandled || credentialHelperHandled || pinHelperHandled)
     (withArgs ("--num-threads=1" : arguments) (mainWithSuite "prodbox-unit" unitSuite))
 
+-- | Exercise the actual documentation command against separate repository
+-- copies. The deliberately completed plan below is only a checker fixture.
+numericalPlanCliFixtureSuite :: SuiteBuilder ()
+numericalPlanCliFixtureSuite =
+  describe "numerical plan public documentation checks" $
+    it "rejects each malformed repository fixture after its matching baseline" $ do
+      cleanedRoot <- withSystemTempDirectory "prodbox-plan-cli-fixtures" $ \fixtureRoot -> do
+        repoRoot <- getCurrentDirectory
+        inheritedPath <- maybe "/usr/bin:/bin" id <$> lookupEnv "PATH"
+        let environment = [("PATH", inheritedPath), ("HOME", fixtureRoot), ("LC_ALL", "C.UTF-8")]
+            binary = repoRoot </> ".build" </> "prodbox"
+        doesFileExist binary `shouldReturn` True
+        tracked <- fixtureCommand environment repoRoot "git" ["ls-files", "-z"]
+        processExitCode tracked `shouldBe` ExitSuccess
+        untracked <-
+          fixtureCommand environment repoRoot "git" ["ls-files", "-z", "--others", "--exclude-standard"]
+        processExitCode untracked `shouldBe` ExitSuccess
+        let listed output = filter (not . null) (map Text.unpack (Text.splitOn "\NUL" (Text.pack (processStdout output))))
+            paths = nub (listed tracked ++ filter fixtureUntrackedSource (listed untracked))
+        gitDirectory <- fixtureCommand environment repoRoot "git" ["rev-parse", "--absolute-git-dir"]
+        processExitCode gitDirectory `shouldBe` ExitSuccess
+        forM_ paths $ \relative -> do
+          unless (fixtureExcludedPath relative) $ do
+            let source = repoRoot </> relative
+                target = fixtureRoot </> relative
+            exists <- doesFileExist source
+            when exists $ do
+              symbolic <- pathIsSymbolicLink source
+              unless symbolic $ do
+                createDirectoryIfMissing True (takeDirectory target)
+                copyFile source target
+        writeFile
+          (fixtureRoot </> ".git")
+          ("gitdir: " ++ takeWhile (/= '\n') (processStdout gitDirectory) ++ "\n")
+        let run = fixtureCommand environment fixtureRoot binary ["dev", "lint", "docs"]
+            assertClean = do
+              output <- run
+              processExitCode output `shouldBe` ExitSuccess
+            assertRejected expected allowed = do
+              output <- run
+              processExitCode output `shouldBe` ExitFailure 1
+              let findings =
+                    filter
+                      (isPrefixOf "- ")
+                      (map (dropWhile (== ' ')) (lines (processStdout output ++ processStderr output)))
+              findings `shouldSatisfy` any (isInfixOf expected)
+              findings `shouldSatisfy` all (\finding -> any (`isInfixOf` finding) allowed)
+            withChanged relative edit action = do
+              let path = fixtureRoot </> relative
+              original <- readFile' path
+              changed <- edit original
+              writeFile path changed
+              action `finally` writeFile path original
+        assertClean
+        withChanged "DEVELOPMENT_PLAN/command_dispositions.md" fixtureWithoutFirstCommand $
+          assertRejected "Missing command disposition for " ["Missing command disposition for "]
+        withChanged
+          "DEVELOPMENT_PLAN/phase_03_authority_and_local_lifecycle.md"
+          (fixtureReplaceLine "**Prerequisites**:" "**Prerequisites**: Phases 1, 9.")
+          $ assertRejected "depends on phase 9" ["depends on phase 9"]
+        withChanged
+          "DEVELOPMENT_PLAN/README.md"
+          (pure . (++ "\n[missing fixture](phase0-no-such-control.md)\n"))
+          $ assertRejected "phase0-no-such-control.md" ["phase0-no-such-control.md"]
+        forM_
+          [ "src/Prodbox/NoSuchPhaseZeroFixture.hs"
+          , "test/unit/NoSuchPhaseZeroFixture.hs"
+          , "src/Prodbox/Host/Tool.hs"
+          , "src/Prodbox/../../OutsidePhaseZeroFixture.hs"
+          ]
+          $ \missingPath ->
+            withChanged
+              "DEVELOPMENT_PLAN/README.md"
+              (pure . (++ ("\nCurrent evidence: `" ++ missingPath ++ "`.\n")))
+              $ assertRejected missingPath [missingPath]
+        withChanged
+          "DEVELOPMENT_PLAN/README.md"
+          (pure . (++ "\nHistorical source: `583443f:src/Prodbox/CheckCode.hs`.\n"))
+          assertClean
+        withChanged
+          "DEVELOPMENT_PLAN/README.md"
+          ( pure
+              . (++ "\nHistorical source: `0000000000000000000000000000000000000000:src/Prodbox/CheckCode.hs`.\n")
+          )
+          $ assertRejected
+            "0000000000000000000000000000000000000000:src/Prodbox/CheckCode.hs"
+            ["0000000000000000000000000000000000000000:src/Prodbox/CheckCode.hs"]
+        withChanged "DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md" fixtureInvalidRemovalOwner $
+          assertRejected "Removal row L01 must have a numerical owner" ["L01"]
+        fixturePrepareSyntheticCompletion fixtureRoot paths
+        assertClean
+        withChanged
+          "DEVELOPMENT_PLAN/evidence/documentation_adoption.md"
+          (pure . fixtureReplace "A00-02" "A00-020")
+          $ assertRejected
+            "evidence does not mention required ID A00-02"
+            ["evidence does not mention required ID A00-02"]
+        pure fixtureRoot
+      doesDirectoryExist cleanedRoot `shouldReturn` False
+
+fixtureExcludedPath :: FilePath -> Bool
+fixtureExcludedPath path =
+  takeFileName path == "test-secrets.dhall"
+    || any (`isPrefixOf` path) [".data/", ".test-data/", ".build/", ".git/"]
+    || isAbsolute path
+    || ".." `elem` splitDirectories path
+
+fixtureUntrackedSource :: FilePath -> Bool
+fixtureUntrackedSource path =
+  any
+    (`isPrefixOf` path)
+    [ "app/"
+    , "src/"
+    , "test/"
+    , "documents/"
+    , "DEVELOPMENT_PLAN/"
+    , "charts/"
+    , "dhall/"
+    , "docker/"
+    , "pulumi/"
+    , "share/"
+    ]
+    && not (fixtureExcludedPath path)
+
+fixtureCommand :: [(String, String)] -> FilePath -> FilePath -> [String] -> IO ProcessOutput
+fixtureCommand environment directory executable arguments = do
+  result <-
+    captureSubprocessBounded
+      BoundedSubprocessLimits
+        { boundedSubprocessMaximumInputBytes = 1
+        , boundedSubprocessMaximumStdoutBytes = 8 * 1024 * 1024
+        , boundedSubprocessMaximumStderrBytes = 8 * 1024 * 1024
+        , boundedSubprocessTimeoutMicros = 120 * 1000 * 1000
+        }
+      Subprocess
+        { subprocessPath = executable
+        , subprocessArguments = arguments
+        , subprocessEnvironment = Just environment
+        , subprocessWorkingDirectory = Just directory
+        }
+  case result of
+    Left err -> ioError (userError ("fixture subprocess failed: " ++ show err))
+    Right output -> pure output
+
+fixtureReplace :: String -> String -> String -> String
+fixtureReplace old new = Text.unpack . Text.replace (Text.pack old) (Text.pack new) . Text.pack
+
+fixtureReplaceLine :: String -> String -> String -> IO String
+fixtureReplaceLine prefix replacement body = do
+  let original = lines body
+  length (filter (isPrefixOf prefix) original) `shouldBe` 1
+  pure (unlines [if prefix `isPrefixOf` line then replacement else line | line <- original])
+
+fixtureWithoutFirstCommand :: String -> IO String
+fixtureWithoutFirstCommand body = case break (isPrefixOf "| C") (lines body) of
+  (_, []) -> ioError (userError "command fixture has no disposition row")
+  (before, _ : after) -> pure (unlines (before ++ after))
+
+fixtureInvalidRemovalOwner :: String -> IO String
+fixtureInvalidRemovalOwner body = do
+  let replaceRow line
+        | "| L01 |" `isPrefixOf` line = fixtureReplace "| 0 |" "| 99 |" line
+        | otherwise = line
+      modified = unlines (map replaceRow (lines body))
+  when (modified == body) (ioError (userError "removal-owner fixture did not apply"))
+  pure modified
+
+fixturePrepareSyntheticCompletion :: FilePath -> [FilePath] -> IO ()
+fixturePrepareSyntheticCompletion root paths = do
+  let phases = [path | path <- paths, "DEVELOPMENT_PLAN/phase_" `isPrefixOf` path, ".md" `isSuffixOf` path]
+  forM_ phases $ \relative -> do
+    let path = root </> relative
+        number = takeWhile isDigit (drop (length ("DEVELOPMENT_PLAN/phase_" :: String)) relative)
+        state = case number of "00" -> "Complete"; "01" -> "Active"; _ -> "Planned"
+    original <- readFile' path
+    withState <- fixtureReplaceLine "**State**:" ("**State**: " ++ state) original
+    completed <-
+      if number == "00"
+        then
+          fixtureReplaceLine
+            "**Evidence**:"
+            "**Evidence**: [Synthetic fixture](evidence/documentation_adoption.md)"
+            (fixtureReplace "- [ ]" "- [x]" withState)
+        else pure withState
+    writeFile path completed
+  let readme = root </> "DEVELOPMENT_PLAN/README.md"
+  contents <- readFile' readme
+  writeFile readme (unlines (map fixtureQueueState (lines contents)))
+  let ledger = root </> "DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md"
+  ledgerContents <- readFile' ledger
+  writeFile ledger (unlines (map fixtureRemovedOwnerZero (lines ledgerContents)))
+  let evidence = root </> "DEVELOPMENT_PLAN/evidence/documentation_adoption.md"
+  evidenceContents <- readFile' evidence
+  writeFile
+    evidence
+    ( unlines (filter (not . isPrefixOf "**Phase**:") (lines evidenceContents))
+        ++ "\n**Phase**: 0\n\nSynthetic fixture IDs: A00-01 A00-02 A00-03 A00-04 M00\n"
+    )
+
+fixtureQueueState :: String -> String
+fixtureQueueState line = case splitFixtureRow line of
+  "" : number : contract : _ : rest
+    | trimmed number `elem` map show [0 :: Int .. 10] ->
+        let state = case trimmed number of "0" -> " Complete "; "1" -> " Active — Next "; _ -> " Planned "
+         in intercalate "|" ("" : number : contract : state : rest)
+  _ -> line
+
+fixtureRemovedOwnerZero :: String -> String
+fixtureRemovedOwnerZero line = case splitFixtureRow line of
+  "" : ident : label : owner : rest
+    | prefix : _ <- trimmed ident
+    , prefix `elem` ("LB" :: String)
+    , trimmed owner == "0"
+    , length rest >= 2 ->
+        let reverseRest = reverse rest
+         in case reverseRest of
+              lastCell : _ : remaining -> intercalate "|" ("" : ident : label : owner : reverse (lastCell : " Removed " : remaining))
+              _ -> line
+  _ -> line
+
+splitFixtureRow :: String -> [String]
+splitFixtureRow = map Text.unpack . Text.splitOn "|" . Text.pack
+
+trimmed :: String -> String
+trimmed = Text.unpack . Text.strip . Text.pack
+
 byteFailureCases :: [String]
 byteFailureCases =
   [ ""
@@ -3076,6 +3297,7 @@ unitSuite = do
   qualificationFrozenCounterexampleSuite
   qualificationEvidenceSuite
   qualificationSourceIdentitySuite
+  scenarioEvidenceSuite
   awsLifecycleDrillLedgerSuite
   sealedConstructorsSuite
   qualificationCreateInterruptedCounterexampleSuite
@@ -3124,6 +3346,7 @@ unitSuite = do
   capturedInputDataSuite
   settingsProjectionSuite
   canonicalDhallTokenMatchSuite
+  deploymentScopeSuite
   processEnvironmentStorageSuite
   embeddedHomeKubeconfigStorageSuite
   registeredCallerBudgetStorageSuite
@@ -3266,6 +3489,7 @@ unitSuite = do
   rpcBirthControllerSuite
   controlPlaneRpcBirthWireSuite
   generatedArtifactSectionsSuite
+  numericalPlanCliFixtureSuite
   rpcBirthRolloutSuite
   registeredRpcSigningSuite
   controlPlaneTargetIntentAdmissionSuite
@@ -3467,7 +3691,7 @@ unitSuite = do
   describe "vault Tier-1 bootstrap bundle (Sprint 7.19)" $ do
     it "pins the fixed, well-known bootstrap object key (not HMAC-opaque)" $ do
       -- The Tier-1 unlock-bundle object MUST sit at a fixed key a sealed Vault
-      -- can find pre-unseal (vault_doctrine.md §6.1, §9), never an opaque
+      -- can find pre-unseal (vault_doctrine.md at 583443f, section 6.1, vault_doctrine.md at 583443f, section 9), never an opaque
       -- objects/<hmac>.enc name.
       bootstrapUnlockBundleKey `shouldBe` "bootstrap/vault-unlock-bundle.v1"
       Text.isPrefixOf "objects/" bootstrapUnlockBundleKey `shouldBe` False
@@ -3849,7 +4073,7 @@ unitSuite = do
       -- chart-secret policy name across the cross-module VaultRoleId registry
       -- (Gateway Runtime, Bootstrap Broker) and the data-driven chart-secret
       -- consumers; a shared name would silently widen one workload's authority
-      -- (lifecycle_control_plane_architecture.md § 10.2). `prodbox dev check`
+      -- (lifecycle_control_plane_architecture.md at 583443f, section 10.2). `prodbox dev check`
       -- enforces the same invariant in its conformance tier.
       VaultInventory.vaultIdentityRegistryViolations `shouldBe` []
     it "keeps externally-owned Vault KV objects out of the automatic seed set" $ do
@@ -6226,7 +6450,7 @@ unitSuite = do
         -- The baked-in default ships the prodbox-home cluster id; the ConfigMap
         -- supplies a distinct binary context. With both present, the loader
         -- chooses the ConfigMap (overwrite), matching hostbootstrap's per-frame
-        -- context-init pattern (config_doctrine.md §0).
+        -- context-init pattern (config_doctrine.md at 583443f, section 0).
         let containerDefault = tmpDir </> "etc-prodbox" </> "prodbox.dhall"
             configMapDir = tmpDir </> "etc-gateway-config"
             overwritten =
@@ -6269,140 +6493,7 @@ unitSuite = do
       -- binary); only the `gateway-config-<nodeId>` ConfigMap override path
       -- remains canonical.
       daemonConfigMapTier0Path "/etc/gateway/config" `shouldBe` "/etc/gateway/config/prodbox.dhall"
-  describe "in-force config envelope (Sprint 1.38)" $ do
-    it "round-trips the in-force config payload through the envelope" $ do
-      let payload = renderInForcePayload defaultConfigFile
-      sealed <- sealInForcePayload insecureLocalDekCipher "cluster1" payload
-      case sealed of
-        Left err -> expectationFailure ("seal failed: " ++ show err)
-        Right envelope -> do
-          opened <- openInForcePayload insecureLocalDekCipher "cluster1" envelope
-          opened `shouldBe` Right payload
-    it "fails closed when opened under a different cluster id" $ do
-      sealed <- sealInForcePayload insecureLocalDekCipher "cluster1" "in-force-bytes"
-      case sealed of
-        Left err -> expectationFailure ("seal failed: " ++ show err)
-        Right envelope -> do
-          opened <- openInForcePayload insecureLocalDekCipher "cluster2" envelope
-          opened `shouldSatisfy` isLeft
-    it "fails closed on a tampered envelope" $ do
-      sealed <- sealInForcePayload insecureLocalDekCipher "cluster1" "in-force-bytes"
-      case sealed of
-        Left err -> expectationFailure ("seal failed: " ++ show err)
-        Right envelope -> do
-          opened <- openInForcePayload insecureLocalDekCipher "cluster1" (BS.snoc envelope 0x21)
-          opened `shouldSatisfy` isLeft
-    it "writes ciphertext that does not leak the config plaintext" $ do
-      let payload = renderInForcePayload defaultConfigFile
-      sealed <- sealInForcePayload insecureLocalDekCipher "cluster1" payload
-      case sealed of
-        Left err -> expectationFailure ("seal failed: " ++ show err)
-        Right envelope -> BS.isInfixOf "resolvefintech" envelope `shouldBe` False
-    it "decodes an in-force Dhall payload through the repository import resolver" $
-      withSystemTempDirectory "prodbox-in-force-decode" $ \tmpDir -> do
-        repoRoot <- getCurrentDirectory
-        copyFile
-          (repoRoot </> "prodbox-config-types.dhall")
-          (tmpDir </> "prodbox-config-types.dhall")
-        decodeConfigDhallBytes tmpDir (renderInForcePayload roundTripConfigFile)
-          `shouldReturn` Right roundTripConfigFile
-    it "fetchInForceConfigWith fetches, opens, and decodes the in-force config" $ do
-      sealed <-
-        sealInForcePayload insecureLocalDekCipher "cluster1" (renderInForcePayload roundTripConfigFile)
-      case sealed of
-        Left err -> expectationFailure ("seal failed: " ++ show err)
-        Right envelope -> do
-          result <-
-            fetchInForceConfigWith
-              (pure (Right envelope))
-              insecureLocalDekCipher
-              "cluster1"
-              ( \payload ->
-                  pure
-                    ( if payload == renderInForcePayload roundTripConfigFile
-                        then Right roundTripConfigFile
-                        else Left "unexpected payload"
-                    )
-              )
-          result `shouldBe` Right roundTripConfigFile
-    it "fetchInForceConfigWith maps fetch failures without decrypting" $ do
-      result <-
-        fetchInForceConfigWith
-          (pure (Left "minio unavailable"))
-          insecureLocalDekCipher
-          "cluster1"
-          (\_ -> pure (Right roundTripConfigFile))
-      result `shouldBe` Left (InForceConfigFetchFailed "minio unavailable")
-    it "storeInForceConfigWith seals and stores the in-force config envelope" $ do
-      storedRef <- newIORef Nothing
-      result <-
-        storeInForceConfigWith
-          (\envelope -> writeIORef storedRef (Just envelope) >> pure (Right ()))
-          insecureLocalDekCipher
-          "cluster1"
-          roundTripConfigFile
-      result `shouldBe` Right ()
-      stored <- readIORef storedRef
-      case stored of
-        Nothing -> expectationFailure "expected an envelope to be stored"
-        Just envelope -> do
-          opened <- openInForcePayload insecureLocalDekCipher "cluster1" envelope
-          opened `shouldBe` Right (renderInForcePayload roundTripConfigFile)
-    it "storeInForceConfigWith maps store failures after sealing" $ do
-      result <-
-        storeInForceConfigWith
-          (\_ -> pure (Left "bucket unavailable"))
-          insecureLocalDekCipher
-          "cluster1"
-          roundTripConfigFile
-      result `shouldBe` Left (InForceConfigStoreFailed "bucket unavailable")
-    -- Sprint 1.42 PART A: the seed -> read round-trip. The seed path
-    -- (storeInForceConfigWith) seals + PUTs the operator ConfigFile into a fake
-    -- object store; the read path (fetchInForceConfigWith over the same fake
-    -- store + decodeConfigDhallBytes) GETs + opens + decodes it back to the
-    -- IDENTICAL ConfigFile. A round-trip bug here would make the SSoT object
-    -- present-but-undecodable, which the production read path treats as a hard
-    -- error (not the absent-fallback), so this guards the load-bearing edge.
-    it "seed -> read round-trips the in-force config to the same ConfigFile" $
-      withSystemTempDirectory "prodbox-in-force-seed-roundtrip" $ \tmpDir -> do
-        repoRoot <- getCurrentDirectory
-        copyFile
-          (repoRoot </> "prodbox-config-types.dhall")
-          (tmpDir </> "prodbox-config-types.dhall")
-        -- The fake MinIO object store: one mutable slot keyed by the opaque key.
-        storeRef <- newIORef Nothing
-        let put envelope = writeIORef storeRef (Just envelope) >> pure (Right ())
-            get = readIORef storeRef
-        -- SEED: seal + store the operator config (mirrors the reconcile seed).
-        seedResult <-
-          storeInForceConfigWith put insecureLocalDekCipher "cluster1" roundTripConfigFile
-        seedResult `shouldBe` Right ()
-        -- READ: fetch + open + decode through the same store + cipher + decoder
-        -- the production read path uses, asserting the SSoT decodes back.
-        readResult <-
-          fetchInForceConfigWith
-            (maybe (Left "in-force config object missing") Right <$> get)
-            insecureLocalDekCipher
-            "cluster1"
-            (decodeConfigDhallBytes tmpDir)
-        readResult `shouldBe` Right roundTripConfigFile
-    -- Sprint 1.42 PART A: the classification PART A acts on. SSoT-absent +
-    -- file-present seeds; both present is a proposed update (NOT seeded by PART
-    -- A); SSoT-present (no file) is a no-op. Field semantics are explicit so the
-    -- positional-constructor order can never silently invert.
-    it "seedProposeDecision drives the PART A seed/no-op classification" $ do
-      seedProposeDecision
-        ConfigSource {configSourceFilePresent = True, configSourceInForcePresent = False}
-        `shouldBe` SeedInForce
-      seedProposeDecision
-        ConfigSource {configSourceFilePresent = True, configSourceInForcePresent = True}
-        `shouldBe` ProposeUpdate
-      seedProposeDecision
-        ConfigSource {configSourceFilePresent = False, configSourceInForcePresent = True}
-        `shouldBe` UseInForceAsIs
-      seedProposeDecision
-        ConfigSource {configSourceFilePresent = False, configSourceInForcePresent = False}
-        `shouldBe` NoConfigAvailable
+  describe "object store absence classification" $ do
     -- Sprint 1.42 fix: on first-ever bring-up the `prodbox-state` bucket does not
     -- exist yet, so the seed's presence probe (getObject) must read NoSuchBucket
     -- as ABSENT (-> Right Nothing -> SeedInForce -> the write creates the bucket),
@@ -6465,7 +6556,9 @@ unitSuite = do
     it "round-trips: the in-force payload resolver decodes against the GENERATED schema" $
       withSystemTempDirectory "prodbox-schema-roundtrip" $ \tmpDir -> do
         writeFile (tmpDir </> "prodbox-config-types.dhall") (Text.unpack renderConfigTypesDhall)
-        decodeConfigDhallBytes tmpDir (renderInForcePayload roundTripConfigFile)
+        decodeConfigDhallBytes
+          tmpDir
+          (TextEncoding.encodeUtf8 (Text.pack (renderConfigDhall roundTripConfigFile)))
           `shouldReturn` Right roundTripConfigFile
     it "round-trips: test-secrets against the GENERATED test schema decodes to defaultTestSecrets" $
       withSystemTempDirectory "prodbox-schema-roundtrip" $ \tmpDir -> do
@@ -6510,7 +6603,7 @@ unitSuite = do
         -- The values below are synthetic and structurally valid: a 20-character
         -- AKIA-prefixed id and a 40-character secret, assembled here rather than
         -- spelled contiguously so this tracked file does not itself carry a
-        -- scanned credential shape (vault_doctrine.md section 20.4).
+        -- scanned credential shape (vault_doctrine.md at revision `583443f`, section 20.4).
         let syntheticKeyId = "AKIA" ++ replicate 16 'Q'
             syntheticSecret = replicate 40 'z'
             fixture keyId secret =
@@ -6706,8 +6799,8 @@ unitSuite = do
               KeyMap.lookup (Key.fromString "key_version") decoded `shouldSatisfy` (/= Nothing)
             Right _ -> expectationFailure "expected envelope JSON object"
     it "derives deterministic opaque object keys that carry no logical name" $ do
-      let firstKey = objectKeyForOpaqueId (opaqueObjectId "vault-hmac-key" LogicalInForceConfig)
-          secondKey = objectKeyForOpaqueId (opaqueObjectId "vault-hmac-key" LogicalInForceConfig)
+      let firstKey = objectKeyForOpaqueId (opaqueObjectId "vault-hmac-key" (LogicalLongLivedState "config-test"))
+          secondKey = objectKeyForOpaqueId (opaqueObjectId "vault-hmac-key" (LogicalLongLivedState "config-test"))
       firstKey `shouldBe` secondKey
       firstKey `shouldSatisfy` Text.isPrefixOf "objects/"
       firstKey `shouldSatisfy` Text.isSuffixOf ".enc"
@@ -6720,10 +6813,10 @@ unitSuite = do
           insecureLocalDekCipher
           "vault-hmac-key"
           "cluster1"
-          LogicalInForceConfig
+          (LogicalLongLivedState "config-test")
           "in-force payload"
       putResult `shouldBe` Right ()
-      let expectedKey = objectKeyForOpaqueId (opaqueObjectId "vault-hmac-key" LogicalInForceConfig)
+      let expectedKey = objectKeyForOpaqueId (opaqueObjectId "vault-hmac-key" (LogicalLongLivedState "config-test"))
       stored <- readIORef storeRef
       Map.keys stored `shouldBe` [expectedKey]
       fetchResult <-
@@ -6732,7 +6825,7 @@ unitSuite = do
           insecureLocalDekCipher
           "vault-hmac-key"
           "cluster1"
-          LogicalInForceConfig
+          (LogicalLongLivedState "config-test")
       fetchResult `shouldBe` Right "in-force payload"
     it "fails closed when a logical object is opened under the wrong cluster AAD" $ do
       storeRef <- newIORef Map.empty
@@ -6742,7 +6835,7 @@ unitSuite = do
           insecureLocalDekCipher
           "vault-hmac-key"
           "cluster1"
-          LogicalInForceConfig
+          (LogicalLongLivedState "config-test")
           "in-force payload"
       putResult `shouldBe` Right ()
       stored <- readIORef storeRef
@@ -6752,7 +6845,7 @@ unitSuite = do
           insecureLocalDekCipher
           "vault-hmac-key"
           "cluster2"
-          LogicalInForceConfig
+          (LogicalLongLivedState "config-test")
       fetchResult `shouldBe` Left (EncryptedObjectOpenFailed EnvelopeAuthFailed)
     it "round-trips a per-run Pulumi stack object through the canonical envelope parameters" $ do
       -- The Authority repository must reopen an envelope it sealed with the
@@ -6795,14 +6888,6 @@ unitSuite = do
                    , "objects/decoy-0003.enc"
                    ]
   describe "config seed/propose (Sprint 1.38)" $ do
-    it "seeds the in-force SSoT when only the file is present" $ do
-      seedProposeDecision (ConfigSource True False) `shouldBe` SeedInForce
-    it "treats the file as a proposed update when both are present" $ do
-      seedProposeDecision (ConfigSource True True) `shouldBe` ProposeUpdate
-    it "uses the in-force SSoT as-is when only it is present" $ do
-      seedProposeDecision (ConfigSource False True) `shouldBe` UseInForceAsIs
-    it "reports no config available when neither is present" $ do
-      seedProposeDecision (ConfigSource False False) `shouldBe` NoConfigAvailable
     it "uses the filesystem config as the first-bring-up seed when not established" $
       withSystemTempDirectory "prodbox-config-loader" $ \tmpDir -> do
         repoRoot <- getCurrentDirectory
@@ -6810,11 +6895,7 @@ unitSuite = do
           (repoRoot </> "prodbox-config-types.dhall")
           (tmpDir </> "prodbox-config-types.dhall")
         writeTier0Fixture tmpDir (tier0FixtureWithParameters roundTripConfigFile)
-        -- Pure seed-decode layer (Sprint 1.48): the not-established branch reads
-        -- the Tier-0 `parameters` seed via `loadConfigFile`, exercised here
-        -- through its path seam (`loadConfigFileAtPath`). The not-established
-        -- branch selection itself is covered by the `seedProposeDecision` tests
-        -- above; the binary-sibling resolution is proven by the integration suite.
+        -- Decode the selected Tier-0 parameters through the loader path seam.
         result <- loadConfigFileAtPath (tmpDir </> "prodbox.dhall")
         result `shouldBe` Right roundTripConfigFile
     it "uses the Authority config loader whenever the Tier-0 floor is available" $
@@ -6837,20 +6918,6 @@ unitSuite = do
               (\_ -> pure (Left "Authority config is unobservable"))
               tmpDir
           result `shouldBe` Left "Authority config is unobservable"
-  describe "root-config write authority (Sprint 1.38)" $ do
-    it "blocks a root-cluster config write with no root token" $ do
-      rootConfigWriteDecision (RootWriteAuthority True False)
-        `shouldBe` RootWriteBlockNoRootToken
-    it "renders a fail-closed message for the blocked root write" $ do
-      case renderRootConfigWriteBlock (rootConfigWriteDecision (RootWriteAuthority True False)) of
-        Nothing -> expectationFailure "expected a fail-closed block message"
-        Just msg -> do
-          msg `shouldContain` "root"
-          msg `shouldContain` "No write was started"
-    it "allows a root-cluster config write with a root token" $ do
-      rootConfigWriteDecision (RootWriteAuthority True True) `shouldBe` RootWriteAllow
-    it "allows a child-cluster config write without a root token" $ do
-      rootConfigWriteDecision (RootWriteAuthority False False) `shouldBe` RootWriteAllow
   describe "cluster federation inventory (Sprint 4.50 custody cutover)" $ do
     it "derives only parent-owned metadata coordinates in the legacy inventory model" $ do
       childMetadataKvPath "Child A" `shouldBe` "secret/data/clusters/child-a/metadata"
@@ -7036,7 +7103,7 @@ unitSuite = do
   describe "CLI parser" $ do
     it "routes config show to the native Haskell command" $ do
       parseArgs ["config", "show"]
-        `shouldBe` Right (Options False (RunNative (NativeConfig ConfigShow)))
+        `shouldBe` Right (Options False Nothing (RunNative (NativeConfig ConfigShow)))
 
     it "Sprint 1.61: the config show --show-secrets reveal flag is removed" $
       -- The unrestricted secret-reveal path is gone; the flag is no longer a
@@ -7048,25 +7115,26 @@ unitSuite = do
 
     it "routes native host commands through the Haskell runtime" $ do
       parseArgs ["host", "info"]
-        `shouldBe` Right (Options False (RunNative (NativeHost HostInfo)))
+        `shouldBe` Right (Options False Nothing (RunNative (NativeHost HostInfo)))
 
     it "routes edge status through the native Haskell runtime" $ do
       parseArgs ["edge", "status"]
-        `shouldBe` Right (Options False (RunNative (NativeHost (HostPublicEdge SubstrateHomeLocal))))
+        `shouldBe` Right (Options False Nothing (RunNative (NativeHost (HostPublicEdge SubstrateHomeLocal))))
 
     it "routes edge status --substrate aws to the AWS-substrate diagnostic" $ do
       parseArgs ["edge", "status", "--substrate", "aws"]
-        `shouldBe` Right (Options False (RunNative (NativeHost (HostPublicEdge SubstrateAws))))
+        `shouldBe` Right (Options False Nothing (RunNative (NativeHost (HostPublicEdge SubstrateAws))))
 
     it "routes dns check through the native Haskell runtime" $ do
       parseArgs ["dns", "check"]
-        `shouldBe` Right (Options False (RunNative (NativeDns DnsCheck)))
+        `shouldBe` Right (Options False Nothing (RunNative (NativeDns DnsCheck)))
 
     it "routes gateway status through the native Haskell runtime" $ do
       parseArgs ["gateway", "status", "--config", "/tmp/gateway.json"]
         `shouldBe` Right
           ( Options
               False
+              Nothing
               (RunNative (NativeGateway (GatewayStatusCommand (DaemonStatusOptions (Just "/tmp/gateway.json")))))
           )
 
@@ -7075,6 +7143,7 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
+              Nothing
               ( RunNative
                   ( NativeGateway
                       ( GatewayDaemonCommand
@@ -7089,22 +7158,24 @@ unitSuite = do
 
     it "routes gateway config-gen through the native Haskell runtime" $ do
       parseArgs ["gateway", "config-gen", "/tmp/gateway.json", "--node-id", "node-a"]
-        `shouldBe` Right (Options False (RunNative (NativeGateway (GatewayConfigGen "/tmp/gateway.json" "node-a"))))
+        `shouldBe` Right
+          (Options False Nothing (RunNative (NativeGateway (GatewayConfigGen "/tmp/gateway.json" "node-a"))))
 
     it "routes config setup to the native Haskell runtime" $ do
       parseArgs ["config", "setup"]
         `shouldBe` Right
-          (Options False (RunNative (NativeConfig (ConfigSetup (PlanOptions False Nothing)))))
+          (Options False Nothing (RunNative (NativeConfig (ConfigSetup (PlanOptions False Nothing)))))
 
     it "routes aws policy to the native Haskell runtime" $ do
       parseArgs ["aws", "policy", "--tier", "full"]
-        `shouldBe` Right (Options False (RunNative (NativeAws (AwsPolicy PolicyFull))))
+        `shouldBe` Right (Options False Nothing (RunNative (NativeAws (AwsPolicy PolicyFull))))
 
     it "routes aws setup to the native Haskell runtime" $ do
       parseArgs ["aws", "setup", "--tier", "full"]
         `shouldBe` Right
           ( Options
               False
+              Nothing
               (RunNative (NativeAws (AwsSetup PolicyFull (PlanOptions False Nothing))))
           )
 
@@ -7113,6 +7184,7 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
+              Nothing
               ( RunNative
                   ( NativeAws
                       ( AwsTeardown
@@ -7127,6 +7199,7 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
+              Nothing
               ( RunNative
                   ( NativeAws
                       ( AwsTeardown
@@ -7141,6 +7214,7 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
+              Nothing
               ( RunNative
                   ( NativeAws
                       ( AwsTeardown
@@ -7153,66 +7227,68 @@ unitSuite = do
 
     it "routes aws check-quotas to the native Haskell runtime" $ do
       parseArgs ["aws", "quotas", "check"]
-        `shouldBe` Right (Options False (RunNative (NativeAws AwsCheckQuotas)))
+        `shouldBe` Right (Options False Nothing (RunNative (NativeAws AwsCheckQuotas)))
 
     it "routes aws request-quotas to the native Haskell runtime" $ do
       parseArgs ["aws", "quotas", "request", "--tier", "core"]
-        `shouldBe` Right (Options False (RunNative (NativeAws (AwsRequestQuotas PolicyCore))))
+        `shouldBe` Right (Options False Nothing (RunNative (NativeAws (AwsRequestQuotas PolicyCore))))
 
     it "routes aws ebs reap-test to the native Haskell runtime" $ do
       parseArgs ["aws", "ebs", "reap-test", "--yes"]
-        `shouldBe` Right (Options False (RunNative (NativeAws (AwsReapTestEbs True))))
+        `shouldBe` Right (Options False Nothing (RunNative (NativeAws (AwsReapTestEbs True))))
 
     it "routes aws audit to the native Haskell runtime, over both stacks unless one is named" $ do
       parseArgs ["aws", "audit"]
-        `shouldBe` Right (Options False (RunNative (NativeAws (AwsAudit Nothing False))))
+        `shouldBe` Right (Options False Nothing (RunNative (NativeAws (AwsAudit Nothing False))))
       parseArgs ["aws", "audit", "--stack", "eks"]
-        `shouldBe` Right (Options False (RunNative (NativeAws (AwsAudit (Just AwsAuditEks) False))))
+        `shouldBe` Right (Options False Nothing (RunNative (NativeAws (AwsAudit (Just AwsAuditEks) False))))
       parseArgs ["aws", "audit", "--stack", "test", "--emit-readonly-script"]
-        `shouldBe` Right (Options False (RunNative (NativeAws (AwsAudit (Just AwsAuditTest) True))))
+        `shouldBe` Right (Options False Nothing (RunNative (NativeAws (AwsAudit (Just AwsAuditTest) True))))
 
     it "refuses an audit of a stack it has no inventory for" $
       parseArgs ["aws", "audit", "--stack", "aws-ses"] `shouldSatisfy` isLeft
 
     it "routes tla-check through the native Haskell runtime" $ do
       parseArgs ["dev", "tla-check"]
-        `shouldBe` Right (Options False (RunNative NativeTlaCheck))
+        `shouldBe` Right (Options False Nothing (RunNative NativeTlaCheck))
 
     it "routes vault status through the native Haskell runtime" $ do
       parseArgs ["vault", "status"]
-        `shouldBe` Right (Options False (RunNative (NativeVault VaultStatus)))
+        `shouldBe` Right (Options False Nothing (RunNative (NativeVault VaultStatus)))
 
     it "routes vault unseal through the native Haskell runtime" $ do
       parseArgs ["vault", "unseal"]
-        `shouldBe` Right (Options False (RunNative (NativeVault VaultUnseal)))
+        `shouldBe` Right (Options False Nothing (RunNative (NativeVault VaultUnseal)))
 
     it "routes the confirmed ambiguous-initialization reset through the native Haskell runtime" $ do
       parseArgs ["vault", "reset-ambiguous-initialization", "--yes"]
         `shouldBe` Right
-          (Options False (RunNative (NativeVault (VaultResetAmbiguousInitialization True))))
+          (Options False Nothing (RunNative (NativeVault (VaultResetAmbiguousInitialization True))))
 
     it "keeps omitted reset confirmation explicit for the handler refusal" $ do
       parseArgs ["vault", "reset-ambiguous-initialization"]
         `shouldBe` Right
-          (Options False (RunNative (NativeVault (VaultResetAmbiguousInitialization False))))
+          (Options False Nothing (RunNative (NativeVault (VaultResetAmbiguousInitialization False))))
 
     it "routes vault rotate-transit-key with its key argument" $ do
       parseArgs ["vault", "rotate-transit-key", "prodbox-minio-envelope"]
         `shouldBe` Right
           ( Options
               False
+              Nothing
               (RunNative (NativeVault (VaultRotateTransitKey "prodbox-minio-envelope")))
           )
 
     it "routes vault pki issue-test-cert through the nested pki group" $ do
       parseArgs ["vault", "pki", "issue-test-cert"]
-        `shouldBe` Right (Options False (RunNative (NativeVault VaultPkiIssueTestCert)))
+        `shouldBe` Right (Options False Nothing (RunNative (NativeVault VaultPkiIssueTestCert)))
 
     it "routes nuke --dry-run through the native Haskell runtime" $ do
       parseArgs ["nuke", "--dry-run"]
         `shouldBe` Right
           ( Options
               False
+              Nothing
               ( RunNative
                   ( NativeNuke
                       ( NukeOptions
@@ -7231,6 +7307,7 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
+              Nothing
               ( RunNative
                   ( NativeNuke
                       ( NukeOptions
@@ -7249,6 +7326,7 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
+              Nothing
               ( RunNative
                   ( NativeNuke
                       ( NukeOptions
@@ -7267,6 +7345,7 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
+              Nothing
               ( RunNative
                   ( NativeNuke
                       ( NukeOptions
@@ -7283,6 +7362,7 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
+              Nothing
               ( RunNative
                   ( NativeNuke
                       ( NukeOptions
@@ -7308,6 +7388,7 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
+              Nothing
               ( RunNative
                   ( NativeRke2
                       ( Rke2Delete
@@ -7327,6 +7408,7 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
+              Nothing
               ( RunNative
                   ( NativeRke2
                       ( Rke2Delete
@@ -7346,6 +7428,7 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
+              Nothing
               ( RunNative
                   ( NativeRke2
                       ( Rke2FederationRegister
@@ -7367,23 +7450,28 @@ unitSuite = do
     it "routes aws stack commands through the native Haskell runtime" $ do
       parseArgs ["aws", "stack", "test", "reconcile"]
         `shouldBe` Right
-          (Options False (RunNative (NativePulumi (PulumiTestResources (PlanOptions False Nothing)))))
+          (Options False Nothing (RunNative (NativePulumi (PulumiTestResources (PlanOptions False Nothing)))))
 
       mapM_
         ( \target ->
             parseArgs ["aws", "stack", AwsRemedyPolicy.awsStackCliName target, "diff"]
-              `shouldBe` Right (Options False (RunNative (NativePulumi (PulumiStackDiff target))))
+              `shouldBe` Right (Options False Nothing (RunNative (NativePulumi (PulumiStackDiff target))))
         )
         [minBound .. maxBound]
       parseArgs ["aws", "stack", "eks", "purge-dependents"]
         `shouldBe` Right
-          (Options False (RunNative (NativePulumi (PulumiEksPurgeDependents RepairProvider.NetworkPurgePlan))))
+          ( Options
+              False
+              Nothing
+              (RunNative (NativePulumi (PulumiEksPurgeDependents RepairProvider.NetworkPurgePlan)))
+          )
       let repairArgs = ["aws", "stack", "eks", "purge-dependents"]
           repairDigest = replicate 64 'a'
       parseArgs (repairArgs ++ ["--yes", "--plan-digest", repairDigest])
         `shouldBe` Right
           ( Options
               False
+              Nothing
               ( RunNative
                   (NativePulumi (PulumiEksPurgeDependents (RepairProvider.NetworkPurgeApply (Text.pack repairDigest))))
               )
@@ -7395,6 +7483,7 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
+              Nothing
               (RunNative (NativePulumi (PulumiEksDestroy True (PlanOptions False Nothing))))
           )
 
@@ -7403,6 +7492,7 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
+              Nothing
               (RunNative (NativePulumi (PulumiPruneCorruptCheckpoint PrunePerRunEks True)))
           )
 
@@ -7410,6 +7500,7 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
+              Nothing
               (RunNative (NativePulumi (PulumiPruneCorruptCheckpoint PrunePerRunTest False)))
           )
 
@@ -7418,6 +7509,7 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
+              Nothing
               ( RunNative
                   (NativeCharts (ChartsDelete "gateway" SubstrateHomeLocal True (PlanOptions False Nothing)))
               )
@@ -7428,6 +7520,7 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
+              Nothing
               ( RunNative
                   ( NativeK8s
                       ( K8sLogs
@@ -7443,6 +7536,7 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
+              Nothing
               ( RunNative
                   ( NativeTest
                       ( TestCommand
@@ -7458,6 +7552,7 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
+              Nothing
               ( RunNative
                   ( NativeTest
                       ( TestCommand
@@ -7473,6 +7568,7 @@ unitSuite = do
         `shouldBe` Right
           ( Options
               False
+              Nothing
               ( RunNative
                   ( NativeTest
                       ( TestCommand
@@ -7606,17 +7702,24 @@ unitSuite = do
     goldenTest
       "renders the command tree deterministically"
       "test/golden/cli/commands-tree.txt"
-      (pure (BL8.pack (renderCommandTree commandRegistry)))
+      (pure (BL.fromStrict (TextEncoding.encodeUtf8 (Text.pack (renderCommandTree commandRegistry)))))
 
     goldenTest
       "renders the command registry JSON deterministically"
       "test/golden/cli/commands.json"
-      (pure (BL8.pack (renderCommandJson commandRegistry)))
+      (pure (BL.fromStrict (TextEncoding.encodeUtf8 (Text.pack (renderCommandJson commandRegistry)))))
 
     goldenTest
       "renders every leaf help page deterministically"
       "test/golden/cli/help-all.txt"
-      (pure (BL8.pack renderAllLeafHelpPages))
+      (pure (BL.fromStrict (TextEncoding.encodeUtf8 (Text.pack renderAllLeafHelpPages))))
+
+    it "renders valid UTF-8 JSON" $
+      ( eitherDecode
+          (BL.fromStrict (TextEncoding.encodeUtf8 (Text.pack (renderCommandJson commandRegistry))))
+          :: Either String Value
+      )
+        `shouldSatisfy` isRight
 
   describe "command-surface matrix renderer" $ do
     it "emits the §2 top-level table with a known command row" $ do
@@ -8935,7 +9038,7 @@ unitSuite = do
         , "sub/.python-version"
         , "pkg/__pycache__/module.pyc"
         , "src/Prodbox/Main.hs"
-        , "documents/engineering/pure_fp_standards.md"
+        , "documents/engineering/haskell_code_guide.md"
         ]
         `shouldBe` [ ForbiddenPythonArtifact "documents/engineering/probe.py"
                    , ForbiddenPythonArtifact "stubs/types.pyi"
@@ -8947,9 +9050,13 @@ unitSuite = do
     it "skips retained runtime state roots during doctrine scanning" $
       withSystemTempDirectory "prodbox-check-code" $ \tmpDir -> do
         let runtimeRoot = tmpDir </> ".data"
+            testRuntimeRoot = tmpDir </> ".test-data"
             workflowRoot = tmpDir </> ".github"
         createDirectoryIfMissing True runtimeRoot
+        createDirectoryIfMissing True testRuntimeRoot
         createDirectoryIfMissing True workflowRoot
+        writeFile (testRuntimeRoot </> "synthetic.hs") "not repository source"
+        writePrivateTestSecrets tmpDir "synthetic fixture"
         writeFile (workflowRoot </> "workflow.yml") "name: forbidden"
 
         originalPermissions <- getPermissions runtimeRoot
@@ -8960,6 +9067,9 @@ unitSuite = do
 
         repoPaths `shouldContain` [".github"]
         repoPaths `shouldSatisfy` notElem ".data"
+        repoPaths `shouldSatisfy` notElem ".test-data"
+        repoPaths `shouldSatisfy` notElem (".test-data" </> "synthetic.hs")
+        repoPaths `shouldSatisfy` notElem "test-secrets.dhall"
         doctrineViolationsInPaths repoPaths `shouldBe` [ForbiddenWorkflowDirectory ".github"]
 
     it "keeps the gateway chart on repo-rootless startup with Vault-backed gateway secrets" $ do
@@ -10695,14 +10805,11 @@ unitSuite = do
         readFile (repoRoot </> "charts" </> "websocket" </> "templates" </> "configmap-config.yaml")
 
       let renderedConfigDhall = renderConfigDhall roundTripConfigFile
-          renderedInForcePayload =
-            Text.unpack (TextEncoding.decodeUtf8 (renderInForcePayload roundTripConfigFile))
           renderedGatewayConfig =
             renderGatewayConfigTemplate (testValidatedSettings "/tmp/prodbox/.data") "node-a"
           gatewayChartArtifact = gatewayChartConfig ++ "\n" ++ gatewayChartHelpers
           artifacts =
             [ ("renderConfigDhall prodbox-config.dhall", True, renderedConfigDhall)
-            , ("renderInForcePayload config.dhall", True, renderedInForcePayload)
             , ("gateway config-gen config.dhall", True, renderedGatewayConfig)
             , ("api chart config.dhall template", False, apiChartConfig)
             , ("gateway chart config.dhall template", True, gatewayChartArtifact)
@@ -11362,7 +11469,7 @@ unitSuite = do
     -- Regression guard (demoted from the authoritative acyclicity gate): acyclicity is now
     -- enforced at construction time in `transitiveClosureIds`/`fromRootIds` (see the
     -- "construction-time acyclicity" group below). This static `hasCycle` scan over the shipped
-    -- registry remains as defense-in-depth per prerequisite_dag_system.md §3.
+    -- registry remains as defense-in-depth per prerequisite_dag_system.md at 583443f, section 3.
     it "regression guard: the shipped registry has no direct self-reference or dependency cycles" $ do
       all
         (\(key, node) -> key `notElem` effectNodePrerequisites node)
@@ -12829,7 +12936,8 @@ unitSuite = do
 
     it "renders the Pulsar workload chart as a retained gateway dependency" $ do
       result <-
-        buildChartDeploymentPlanForSubstrate
+        buildChartDeploymentPlanForSubstrateWithObservers
+          fixtureAwsChartPlanObservers
           SubstrateAws
           "/tmp/prodbox"
           (testValidatedSettings "/tmp/prodbox/.data")
@@ -13184,7 +13292,8 @@ unitSuite = do
 
     it "renders AWS gateway deployments with the AWS-substrate image tag" $ do
       result <-
-        buildChartDeploymentPlanForSubstrate
+        buildChartDeploymentPlanForSubstrateWithObservers
+          fixtureAwsChartPlanObservers
           SubstrateAws
           "/tmp/prodbox"
           (testValidatedSettings "/tmp/prodbox/.data")
@@ -13295,7 +13404,8 @@ unitSuite = do
 
     it "renders AWS public-edge workload charts with the AWS-substrate image tag" $ do
       result <-
-        buildChartDeploymentPlanForSubstrate
+        buildChartDeploymentPlanForSubstrateWithObservers
+          fixtureAwsChartPlanObservers
           SubstrateAws
           "/tmp/prodbox"
           (testValidatedSettings "/tmp/prodbox/.data")
@@ -13343,7 +13453,8 @@ unitSuite = do
 
     it "renders AWS websocket plans with internal Keycloak JWKS backchannel values" $ do
       result <-
-        buildChartDeploymentPlanForSubstrate
+        buildChartDeploymentPlanForSubstrateWithObservers
+          fixtureAwsChartPlanObservers
           SubstrateAws
           "/tmp/prodbox"
           (testValidatedSettings "/tmp/prodbox/.data")
@@ -16977,6 +17088,36 @@ unitSuite = do
               _ -> expectationFailure "defaultTestTopology should have exactly one variant"
           _ -> expectationFailure "defaultTestTopology should have exactly one suite"
 
+    it "writes a generated topology config at the selected run path without changing a sibling marker" $
+      withSystemTempDirectory "prodbox-topology-output" $ \repoRoot -> do
+        let runRoot = repoRoot </> ".test-data" </> "unit" </> "variant-1"
+            selectedPath = runRoot </> "prodbox.dhall"
+            productionMarker = repoRoot </> "prodbox.dhall"
+            relativeRoot = ".test-data" </> "unit" </> "variant-1"
+        createDirectoryIfMissing True runRoot
+        writeTier0Fixture
+          repoRoot
+          ( rawTier0Fixture
+              (MustNotTypeCheckAgainst "foreign marker is not a Tier-0 document")
+              "production marker"
+          )
+        case topologySuites defaultTestTopology of
+          [suite] -> case suiteVariants suite of
+            [variant] -> do
+              writeTopologyVariantConfigWithSecrets
+                repoRoot
+                selectedPath
+                relativeRoot
+                "test-unit-variant-1"
+                variant
+                populatedHarnessTestSecrets
+                `shouldReturn` Right ()
+              result <- loadConfigFileAtPath selectedPath
+              fmap (manual_pv_host_root . storage) result `shouldBe` Right (Text.pack relativeRoot)
+              readFile productionMarker `shouldReturn` "production marker"
+            _ -> expectationFailure "defaultTestTopology should have exactly one variant"
+          _ -> expectationFailure "defaultTestTopology should have exactly one suite"
+
     it "Sprint 5.11 passes the test data root and coverage flags through the variant environment" $ do
       let environment =
             topologyVariantEnvironment
@@ -17045,16 +17186,27 @@ unitSuite = do
                 }
           )
 
-    it "Sprint 5.11 guardTestDelete admits only generated config, .test-data, and PerRun residue" $
+    it "refuses unverified generated configs and run roots while preserving residue classifications" $
       withSystemTempDirectory "prodbox-test-delete-guard" $ \repoRoot -> do
         let generated = DeleteGeneratedRunConfig (repoRoot </> ".build" </> "prodbox.dhall")
             escapedGenerated = DeleteGeneratedRunConfig (repoRoot </> ".data" </> "prodbox.dhall")
+            unverifiedRunConfig = DeleteGeneratedRunConfig (repoRoot </> ".test-data" </> "unit" </> "config" </> "prodbox.dhall")
             testData = DeleteThisRunTestData (repoRoot </> ".test-data" </> "unit" </> "variant-1")
+            sharedRoot = DeleteThisRunTestData (repoRoot </> ".test-data")
             escapedData = DeleteThisRunTestData (repoRoot </> ".test-data" </> ".." </> ".data")
-        guardTestDelete repoRoot generated `shouldBe` Right generated
+        guardTestDelete repoRoot generated
+          `shouldBe` Left (TestGeneratedConfigUnverified (repoRoot </> ".build" </> "prodbox.dhall"))
         guardTestDelete repoRoot escapedGenerated
-          `shouldBe` Left (TestDeleteOutsideTestData (repoRoot </> ".data" </> "prodbox.dhall"))
-        guardTestDelete repoRoot testData `shouldBe` Right testData
+          `shouldBe` Left (TestGeneratedConfigUnverified (repoRoot </> ".data" </> "prodbox.dhall"))
+        guardTestDelete repoRoot unverifiedRunConfig
+          `shouldBe` Left
+            ( TestGeneratedConfigUnverified
+                (repoRoot </> ".test-data" </> "unit" </> "config" </> "prodbox.dhall")
+            )
+        guardTestDelete repoRoot testData
+          `shouldBe` Left (TestRunRootUnverified (repoRoot </> ".test-data" </> "unit" </> "variant-1"))
+        guardTestDelete repoRoot sharedRoot
+          `shouldBe` Left (TestRunRootUnverified (repoRoot </> ".test-data"))
         guardTestDelete repoRoot escapedData
           `shouldBe` Left (TestDeleteOutsideTestData (repoRoot </> ".test-data" </> ".." </> ".data"))
         guardTestDelete repoRoot (DeletePerRunResidue "aws-eks")
@@ -21230,7 +21382,7 @@ unitSuite = do
           ]
           `shouldBe` []
 
-      it "rejects a vague status value (documentation_standards.md § 9)" $
+      it "rejects a vague status value" $
         governedDocStatusViolations "doc.md" "**Status**: WIP\n"
           `shouldNotBe` []
 
@@ -21281,9 +21433,36 @@ unitSuite = do
           )
           `shouldBe` ["src/Prodbox/Lifecycle/ModelBCasTransport.hs"]
 
-      it "declares every removed legacy transport module as retired" $
-        filter (`notElem` retiredCitedSourcePaths) removedLegacyTransportSourcePaths
-          `shouldBe` []
+      it "recognizes revision-qualified source citations outside fenced blocks" $
+        historicalSourcePathsInDoc
+          ( unlines
+              [ "Historical source: `583443f:src/Prodbox/CheckCode.hs`."
+              , "Missing revision: `deadbeef:test/unit/NoSuchFixture.hs`."
+              , "```"
+              , "`583443f:src/Prodbox/Fenced.hs`"
+              , "```"
+              ]
+          )
+          `shouldBe` [("583443f", "src/Prodbox/CheckCode.hs"), ("deadbeef", "test/unit/NoSuchFixture.hs")]
+
+      it "refuses missing or escaping source paths" $
+        withSystemTempDirectory "prodbox-cited-source-root" $ \root ->
+          withSystemTempDirectory "prodbox-cited-source-foreign" $ \foreignRoot -> do
+            let sourceDirectory = root </> "src" </> "Prodbox"
+                foreignSource = foreignRoot </> "Synthetic.hs"
+                privateSource = root </> ".test-data" </> "Synthetic.hs"
+            createDirectoryIfMissing True sourceDirectory
+            createDirectoryIfMissing True (takeDirectory privateSource)
+            writeFile (sourceDirectory </> "Local.hs") "synthetic local source"
+            writeFile foreignSource "synthetic foreign source"
+            writeFile privateSource "synthetic private source"
+            createSymbolicLink foreignSource (sourceDirectory </> "Foreign.hs")
+            createSymbolicLink privateSource (sourceDirectory </> "Private.hs")
+            currentSourceObjectExists root "src/Prodbox/Local.hs" `shouldReturn` True
+            currentSourceObjectExists root "src/Prodbox/Foreign.hs" `shouldReturn` False
+            currentSourceObjectExists root "src/Prodbox/Private.hs" `shouldReturn` False
+            currentSourceObjectExists root "src/Prodbox/../../outside.hs" `shouldReturn` False
+            currentSourceObjectExists root "src/Prodbox/Host/Tool.hs" `shouldReturn` False
 
     describe "Sprint 0.28 widened check-code gate regions" $ do
       it "registers the six AWS create verbs that were outside the table" $
@@ -21335,6 +21514,12 @@ unitSuite = do
       it "resolves a registered name to its owner modules" $ do
         productionEnvVarOwnersFor "PRODBOX_PULUMI_METALLB_POOL"
           `shouldBe` Just ["src/Prodbox/CLI/Rke2.hs"]
+        productionEnvVarOwnersFor "PRODBOX_KIND_BRIDGE"
+          `shouldBe` Just
+            [ "src/Prodbox/Control/KindDockerClient.hs"
+            , "src/Prodbox/Control/KindTool.hs"
+            , "src/Prodbox/Subprocess.hs"
+            ]
         productionEnvVarOwnersFor "PRODBOX_NOT_REGISTERED" `shouldBe` Nothing
 
       it "registers all five Rke2 reads the guidance counted as four" $
@@ -21424,368 +21609,157 @@ unitSuite = do
               ]
          in length (nub pairs) `shouldBe` length pairs
 
-    describe "Sprint 0.27 Standard-H sprint field gate" $ do
-      let block heading fields = unlines (("## Sprint " ++ heading) : fields ++ ["", "### Objective", "body"])
+    describe "numerical phase plan contracts" $ do
+      it "checks canonical removal row owners and duplicate identities" $ do
+        let valid = "| L01 | Old route | 0 | Scope | Proof | Absence | Pending |\n"
+            invalid = "| B071 | Old route | 11 | Scope | Pending |\n"
+        numericalRemovalOwnerViolations valid `shouldBe` []
+        numericalRemovalOwnerViolations invalid `shouldSatisfy` any (isInfixOf "B071")
+        numericalRemovalOwnerViolations (valid ++ valid) `shouldSatisfy` any (isInfixOf "Duplicate")
+        numericalRemovalOwnerViolations "" `shouldSatisfy` any (isInfixOf "no removal rows")
 
-      it "splits a plan document into sprint blocks" $
-        map
-          fst
-          (planSprintBlocks (block "1.1: A" ["**Status**: Done"] ++ block "1.2: B" ["**Status**: Done"]))
-          `shouldBe` ["## Sprint 1.1: A", "## Sprint 1.2: B"]
+      it "rejects future numerical phase dependencies including range endpoints" $ do
+        let phase field = [("DEVELOPMENT_PLAN/phase_03_fixture.md", "**Prerequisites**: " ++ field)]
+        numericalPhaseDependencyViolations (phase "Phases 1–2 complete.") `shouldBe` []
+        numericalPhaseDependencyViolations (phase "Phases 1–4 complete.")
+          `shouldSatisfy` any (isInfixOf "phase 4")
+        numericalPhaseDependencyViolations (phase "Phases 1, 9 complete.")
+          `shouldSatisfy` any (isInfixOf "phase 9")
+        numericalPhaseDependencyViolations (phase "Phases 1 and `9`; account ready.")
+          `shouldSatisfy` any (isInfixOf "phase 9")
+        numericalPhaseDependencyViolations (phase "Phase 1; 9 instances allowed.") `shouldBe` []
+        numericalPhaseDependencyViolations (phase "Phase 3 complete.")
+          `shouldSatisfy` any (isInfixOf "phase 3")
+        numericalPhaseDependencyViolations (phase "Phase future complete.")
+          `shouldSatisfy` any (isInfixOf "numerical identity")
+        numericalPhaseDependencyViolations [("DEVELOPMENT_PLAN/phase_03_fixture.md", "")]
+          `shouldSatisfy` any (isInfixOf "prerequisites")
 
-      it "reports both fields missing when a block carries neither" $
-        sprintBlockMissingFields (block "1.1: A" ["**Status**: Done"])
-          `shouldBe` ["Implementation", "Docs"]
+      it "reconciles command disposition rows with registry leaves" $ do
+        let row = "| C001 | `prodbox example` | target | Replaced | 1 | Internal | `--verbose` | — |\n"
+            registry = [["example"]]
+        commandDispositionViolations registry row `shouldBe` []
+        commandDispositionViolations registry "" `shouldSatisfy` any (isInfixOf "Missing command")
+        commandDispositionViolations registry (row ++ row) `shouldSatisfy` any (isInfixOf "Duplicate")
+        commandDispositionViolations [] row `shouldSatisfy` any (isInfixOf "Unknown")
 
-      it "accepts the plain heading form" $
-        sprintBlockMissingFields
-          (block "1.1: A" ["**Implementation**: `src/X.hs`", "**Docs to update**: `d.md`"])
+      it "checks per-leaf and distinct option dispositions" $ do
+        let registry = [("prodbox example", ["--verbose", "--config"])]
+            row =
+              "| C001 | `prodbox example` | target | Replaced | 1 | Internal | `--verbose`, `--config` | `--config` |\n"
+            inventory = "| `--verbose` | -v | Keep |\n| `--config` | — | Keep |\n"
+        commandOptionDispositionViolations registry (row ++ inventory) `shouldBe` []
+        commandOptionDispositionViolations registry (row ++ "| `--verbose` | -v | Keep |\n")
+          `shouldSatisfy` any (isInfixOf "Missing option disposition --config")
+        commandOptionDispositionViolations
+          registry
+          (inventory ++ "| C001 | `prodbox example` | target | Replaced | 1 | Internal | `--verbose` | — |\n")
+          `shouldSatisfy` any (isInfixOf "Command option mismatch")
+        commandRequiredDispositionViolations [("prodbox example", ["--config"])] row `shouldBe` []
+        commandRequiredDispositionViolations [("prodbox example", [])] row
+          `shouldSatisfy` any (isInfixOf "Required option mismatch")
+
+      it "checks short option aliases against the registry" $ do
+        let registry = [("--verbose", Just 'v'), ("--config", Nothing)]
+            rows = "| `--verbose` | `-v` | Keep |\n| `--config` | — | Keep |\n"
+        optionAliasDispositionViolations registry rows `shouldBe` []
+        optionAliasDispositionViolations
+          registry
+          "| `--verbose` | `-x` | Keep |\n| `--config` | — | Keep |\n"
+          `shouldSatisfy` any (isInfixOf "--verbose")
+        optionAliasDispositionViolations
+          [("--yes", Nothing), ("--yes", Just 'y')]
+          "| `--yes` | —, `-y` where supported | Keep |\n"
           `shouldBe` []
 
-      it "accepts a qualifier after the closing bold, as Sprint 1.62 writes it" $
-        -- `**Implementation** (landed): …` names its paths. A stricter rule
-        -- would report a formatting difference as missing evidence, which is
-        -- how the ledger row this gate closes came to overcount.
-        sprintBlockMissingFields
-          (block "1.62: A" ["**Implementation** (landed): `src/X.hs`", "**Docs updated**: none."])
-          `shouldBe` []
+      it "rejects missing and mismatched numerical queue entries" $ do
+        let row :: Int -> String
+            row n =
+              "| "
+                ++ show n
+                ++ " | [Phase](phase_"
+                ++ (if n < 10 then "0" else "")
+                ++ show n
+                ++ "_fixture.md) | Planned"
+                ++ (if n == 0 then " — Next" else "")
+                ++ " | work |"
+            doc :: Int -> (FilePath, String)
+            doc n =
+              ( "DEVELOPMENT_PLAN/phase_" ++ (if n < 10 then "0" else "") ++ show n ++ "_fixture.md"
+              , "**Phase**: " ++ show n ++ "\n**State**: Planned\n"
+              )
+            fixture =
+              ("DEVELOPMENT_PLAN/README.md", unlines ("## Resume Here" : map row [0 :: Int .. 10]))
+                : map doc [0 :: Int .. 10]
+        numericalQueueViolations fixture `shouldBe` []
+        numericalQueueViolations (drop 1 fixture) `shouldSatisfy` any (isInfixOf "Resume Here")
+        numericalQueueViolations (take 11 fixture) `shouldSatisfy` any (isInfixOf "missing phase document")
+        let queue rows = ("DEVELOPMENT_PLAN/README.md", unlines ("## Resume Here" : rows)) : map doc [0 :: Int .. 10]
+        numericalQueueViolations (queue (row 1 : row 0 : map row [2 :: Int .. 10]))
+          `shouldSatisfy` any (isInfixOf "exactly once and in order")
+        numericalQueueViolations (queue (row 0 : row 0 : map row [2 :: Int .. 10]))
+          `shouldSatisfy` any (isInfixOf "exactly once and in order")
+        numericalQueueViolations (queue (map row [1 :: Int .. 10] ++ [row 0]))
+          `shouldSatisfy` any (isInfixOf "first incomplete phase as Next")
+        numericalQueueViolations
+          (take 1 fixture ++ [(fst (doc 0), "**Phase**: 0\n**State**: Active\n")] ++ drop 2 fixture)
+          `shouldSatisfy` any (isInfixOf "mismatched or invalid state")
 
-      it "accepts a qualifier inside the bold, as the Phase-7 increments write it" $
-        sprintBlockMissingFields
-          ( block
-              "4.50: A"
-              [ "**Implementation (Increment A, 2026-07-26)**: `src/X.hs`"
-              , "**Docs to update**: `d.md`"
-              ]
+      it "rejects missing and foreign phase manifest bindings" $ do
+        let path = "DEVELOPMENT_PLAN/phase_00_fixture.md"
+            body =
+              "**Acceptance**: A00-01\n**Critical mutations**: M00\n**Owned removals**: L01\n**Inherited removals**: B071\n"
+            cases = "| A00-01 | 0 | case |\n"
+            mutations = "| M00 | 0 | fault |\n"
+            removals = "| L01 | route | 0 | Pending |\n| B071 | route | 0 | Pending |\n"
+            check contents = phaseManifestBindingViolations [(path, contents)] cases mutations removals
+        check body `shouldBe` []
+        check
+          ( "**Acceptance**: A01-01\n**Critical mutations**: M00\n**Owned removals**: L01\n**Inherited removals**: B071\n"
           )
-          `shouldBe` []
-
-      it "rejects a heading that never closes its bold or reaches a colon" $ do
-        sprintBlockMissingFields (block "1.1: A" ["**Implementation `src/X.hs`", "**Docs**: d"])
-          `shouldBe` ["Implementation"]
-        sprintBlockMissingFields (block "1.1: A" ["**Implementation** `src/X.hs`", "**Docs**: d"])
-          `shouldBe` ["Implementation"]
-
-      it "does not accept a field mentioned only inside a fenced block" $
-        sprintBlockMissingFields
-          ( block
-              "1.1: A"
-              ["**Docs**: d", "```markdown", "**Implementation**: `src/X.hs`", "```"]
+          `shouldSatisfy` any (isInfixOf "missing or foreign")
+        check
+          ( "**Acceptance**: none\n**Critical mutations**: M00\n**Owned removals**: L01\n**Inherited removals**: B071\n"
           )
-          `shouldBe` ["Implementation"]
+          `shouldSatisfy` any (isInfixOf "omits owned")
 
-      it "does not confuse a prose line that merely starts with bold" $
-        sprintBlockMissingFields
-          (block "1.1: A" ["**Implementation notes are below**: see § 2", "**Docs**: d"])
-          `shouldBe` []
+      it "requires owned objective dispositions with contracts and evidence" $ do
+        let row = "| O00 | Outcome | 0 | [Contract](contract.md) | A00 proof |\n"
+        objectiveDispositionViolations row `shouldBe` []
+        objectiveDispositionViolations (row ++ row) `shouldSatisfy` any (isInfixOf "Duplicate")
+        objectiveDispositionViolations "| O00 | Outcome | 11 | contract | |\n"
+          `shouldSatisfy` any (isInfixOf "Invalid")
 
-    describe "Sprint 0.30 plan dependency direction" $ do
-      let phaseDoc sprintId dependencyLines =
-            ( "DEVELOPMENT_PLAN/phase-4-fixture.md"
-            , unlines
-                ( [ "# Phase 4"
-                  , ""
-                  , "## Sprint " ++ sprintId ++ ": Fixture"
-                  , ""
-                  , "**Status**: Active"
-                  ]
-                    ++ dependencyLines
-                )
-            )
-          directionViolations sprintId dependencyLines =
-            sprintDependencyDirectionViolations [phaseDoc sprintId dependencyLines]
+      it "requires available scoped evidence and removed owned rows before closure" $ do
+        let path = "DEVELOPMENT_PLAN/phase_00_fixture.md"
+            body =
+              "**State**: Complete\n**Acceptance**: A00-01\n**Critical mutations**: M00\n**Evidence**: [record](evidence/record.md)\n"
+            evidence = ("DEVELOPMENT_PLAN/evidence/record.md", "**Phase**: 0\nA00-01 M00")
+            missingAcceptance = ("DEVELOPMENT_PLAN/evidence/record.md", "**Phase**: 0\nA00-010 M00")
+            missingMutation = ("DEVELOPMENT_PLAN/evidence/record.md", "**Phase**: 0\nA00-01 M000")
+            foreignEvidence = ("DEVELOPMENT_PLAN/evidence/record.md", "**Phase**: 1\nA00-01 M00")
+            removed = "| L01 | old | 0 | details | Removed |\n"
+            pending = "| L01 | old | 0 | details | Pending |\n"
+        completedPhaseViolations [(path, body), evidence] removed `shouldBe` []
+        completedPhaseViolations [(path, body)] removed `shouldSatisfy` any (isInfixOf "no available")
+        completedPhaseViolations [(path, body), foreignEvidence] removed
+          `shouldSatisfy` any (isInfixOf "bound to phase")
+        completedPhaseViolations [(path, body), missingAcceptance] removed
+          `shouldSatisfy` any (isInfixOf "evidence does not mention required ID A00-01")
+        completedPhaseViolations [(path, body), missingMutation] removed
+          `shouldSatisfy` any (isInfixOf "evidence does not mention required ID M00")
+        completedPhaseViolations [(path, body), evidence] pending
+          `shouldSatisfy` any (isInfixOf "non-removed")
+        completedPhaseViolations [(path, body ++ "- [ ] task\n"), evidence] removed
+          `shouldSatisfy` any (isInfixOf "unfinished")
 
-      it "orders sprint ids numerically per segment, never as strings" $ do
-        -- String comparison would put `7.10` before `7.5` and `7.5.b.i`
-        -- before `7.5.b`, which is how a backward dependency could look
-        -- forward to a naive gate.
-        compareSprintIds "7.5" "7.10" `shouldBe` LT
-        compareSprintIds "7.10" "7.5" `shouldBe` GT
-        compareSprintIds "7.5.b" "7.5.b.i" `shouldBe` LT
-        compareSprintIds "4.85" "5.36" `shouldBe` LT
-        compareSprintIds "5.36" "6.5" `shouldBe` LT
-        compareSprintIds "6.5" "7.36" `shouldBe` LT
-        compareSprintIds "4.85" "4.85" `shouldBe` EQ
+      it "rejects incomplete numerical phase contracts" $ do
+        numericalPhaseContractViolations [("phase", "**Phase**: 0\n")]
+          `shouldSatisfy` any (isInfixOf "Prerequisites")
+        numericalPhaseContractViolations [("phase", "**State**: \n")]
+          `shouldSatisfy` any (isInfixOf "nonempty State")
 
-      it "fails a sprint that declares a later-sprint dependency" $ do
-        let violations = directionViolations "4.85" ["**Blocked by**: Sprint `7.36`"]
-        length violations `shouldBe` 1
-        violations `shouldSatisfy` any (isInfixOf "Sprint `4.85`")
-        violations `shouldSatisfy` any (isInfixOf "`7.36`")
-        violations `shouldSatisfy` any (isInfixOf "Standard N")
-        -- The same-phase and earlier-phase forms are exactly what the rule
-        -- permits, so they must stay silent.
-        directionViolations "4.85" ["**Blocked by**: Sprint `4.84`"] `shouldBe` []
-        directionViolations "5.36" ["**Closure dependency**: Sprint `4.85`"] `shouldBe` []
-        directionViolations "4.85" ["**Blocked by**: none."] `shouldBe` []
-
-      it "admits a declared backward dependency and refuses an undeclared one" $ do
-        -- Sprint 0.32: forbidding the declaration did not remove the
-        -- dependency, it removed the record of it. A later dependency is now
-        -- admissible when the same block says so and says why.
-        let justification =
-              "**Backward dependency**: Sprint `7.36` deleting the harness "
-                ++ "cleanup graph strands the only sweep that removes a "
-                ++ "billable zone until that adapter exists"
-        directionViolations
-          "5.36"
-          ["**Blocked by**: Sprint `7.36`", justification]
-          `shouldBe` []
-        -- Without the admission it still fails, which is the regression guard
-        -- on the rule this replaces.
-        directionViolations "5.36" ["**Blocked by**: Sprint `7.36`"]
-          `shouldSatisfy` any (isInfixOf "does not admit it")
-
-      it "refuses an orphan, a non-later, and an unjustified admission" $ do
-        let admits body = directionViolations "5.36" body
-        -- An admission with nothing to admit is a declaration that outlived
-        -- its dependency.
-        admits
-          [ "**Backward dependency**: Sprint `7.36` strands the only sweep "
-              ++ "that removes a billable hosted zone until it lands"
-          ]
-          `shouldSatisfy` any (isInfixOf "no `**Blocked by**`")
-        -- Only a backward dependency needs admitting.
-        admits
-          [ "**Blocked by**: Sprint `4.85`"
-          , "**Backward dependency**: Sprint `4.85` is earlier so this "
-              ++ "admission is meaningless and must be refused outright"
-          ]
-          `shouldSatisfy` any (isInfixOf "not a later sprint")
-        -- The justification is required, and its absence is its own arm.
-        admits
-          ["**Blocked by**: Sprint `7.36`", "**Backward dependency**: Sprint `7.36`."]
-          `shouldSatisfy` any (isInfixOf "without a justification")
-
-      it "does not let a justification void the admission it justifies" $ do
-        -- `sprintLiveDependencyIds` suppresses a whole field that reads as a
-        -- historical resolution note. Running it over an admission would have
-        -- silently voided the declaration and let the unadmitted dependency
-        -- through — the same shape as the prose hole this rule closes. The
-        -- justification below deliberately contains "unresolved".
-        directionViolations
-          "5.36"
-          [ "**Blocked by**: Sprint `7.36`"
-          , "**Backward dependency**: Sprint `7.36` leaves the billable zone "
-              ++ "sweep unresolved until its adapter lands, stranding it"
-          ]
-          `shouldBe` []
-
-      it "derives queue order rather than accepting an authored one" $ do
-        -- Sprint 0.32: order is a function of the declared graph. Row shape is
-        -- (order, sprintId, phase, state, dependencies).
-        let row order sprintId state deps = (order, sprintId, "x", state, deps)
-        -- With no declared dependency the derivation is ascending numerical
-        -- order, so this strictly generalises the rule it replaces.
-        executionOrderViolations
-          [row 1 "4.85" "Next" [], row 2 "5.36" "Parked" [], row 3 "7.36" "Parked" []]
-          `shouldBe` []
-        executionOrderViolations
-          [row 1 "7.36" "Next" [], row 2 "4.85" "Parked" []]
-          `shouldSatisfy` any (isInfixOf "execution order")
-        -- The live queue: 7.36 leads because 5.36 declares it, and 6.5 follows
-        -- 5.36. This exact order is required, not merely permitted.
-        let liveQueue =
-              [ row 1 "7.36" "Next" []
-              , row 2 "5.36" "Blocked" ["7.36"]
-              , row 3 "6.5" "Blocked" ["7.36", "5.36"]
-              , row 4 "7.37" "Parked" []
-              ]
-        executionOrderViolations liveQueue `shouldBe` []
-        -- Any permutation of it fails.
-        executionOrderViolations
-          [ row 1 "7.36" "Next" []
-          , row 2 "6.5" "Blocked" ["7.36", "5.36"]
-          , row 3 "5.36" "Blocked" ["7.36"]
-          , row 4 "7.37" "Parked" []
-          ]
-          `shouldSatisfy` any (isInfixOf "Expected")
-        -- A cycle is the case where no complete order exists, and is reported
-        -- as itself rather than as a deviation.
-        executionOrderViolations
-          [row 1 "5.36" "Blocked" ["6.5"], row 2 "6.5" "Blocked" ["5.36"]]
-          `shouldSatisfy` any (isInfixOf "cycle")
-
-      it "reads a historical line that records its own resolution as resolved" $ do
-        -- ~130 existing `**Blocked by**` lines annotate their own closure in
-        -- place. Treating those as live dependencies would make the gate fire
-        -- on the entire plan rather than on the defect.
-        directionViolations "4.85" ["**Blocked by**: ~~Sprint `7.36`~~ unblocked"] `shouldBe` []
-        directionViolations "4.85" ["**Blocked by**: Sprint `7.36` (closed)"] `shouldBe` []
-        directionViolations "4.85" ["**Blocked by**: Sprint `7.36` — resolved"] `shouldBe` []
-        sprintLiveDependencyIds " Sprint `1.38` (closed)" `shouldBe` []
-        sprintLiveDependencyIds " Sprint `7.36`" `shouldBe` ["7.36"]
-        sprintLiveDependencyIds " Sprint-`4.85` inputs" `shouldBe` ["4.85"]
-
-      it "rejects a dependency recorded under a field the gate cannot read" $ do
-        -- Three Active sprints declared theirs under this name, which no gate
-        -- parsed; the direction was unchecked whatever it said.
-        let violations =
-              directionViolations "4.86" ["**Closure dependencies**: Sprint `3.41`"]
-        length violations `shouldBe` 1
-        violations `shouldSatisfy` any (isInfixOf "Closure dependencies")
-        violations `shouldSatisfy` any (isInfixOf "not a Standard-H dependency field")
-        map fst (sprintDependencyFields "**Closure dependency**: Sprint `4.85`\n")
-          `shouldBe` ["Closure dependency"]
-
-      it "fails a Pending Removal row whose declared prerequisite is later than its owner" $ do
-        let ledger ownerCell notesCell =
-              unlines
-                [ "## Pending Removal"
-                , ""
-                , "| Item | Owning Sprint | Notes |"
-                , "|------|---------------|-------|"
-                , "| Debt | " ++ ownerCell ++ " | " ++ notesCell ++ " |"
-                ]
-            violations =
-              pendingRemovalPrerequisiteViolations
-                (ledger "Sprint `4.85`" "**Prerequisite**: Sprint `7.36`. Adapter first.")
-        length violations `shouldBe` 1
-        violations `shouldSatisfy` any (isInfixOf "`4.85`")
-        violations `shouldSatisfy` any (isInfixOf "`7.36`")
-        -- Re-owning the row to the sprint that supplies the prerequisite is
-        -- the remedy, and it must clear the violation.
-        pendingRemovalPrerequisiteViolations
-          (ledger "Sprint `7.36`" "**Prerequisite**: Sprint `7.36`. Adapter first.")
-          `shouldBe` []
-        -- A row that merely mentions a later sprint in narrative is not a
-        -- declared dependency; prose is deliberately not scanned.
-        pendingRemovalPrerequisiteViolations
-          (ledger "Sprint `4.85`" "Sprint `7.36` supplies the adapter eventually.")
-          `shouldBe` []
-
-    describe "development-plan Resume Here projection" $ do
-      let resumeHeader =
-            [ "| Order | Sprint | Phase | State | Dependency |"
-            , "|-------|--------|-------|-------|------------|"
-            ]
-          activeRow = "| 1 | `3.41` | 3 | Next | — |"
-          phaseDocument phaseNumber sprintId statusText =
-            ( "DEVELOPMENT_PLAN/phase-" ++ phaseNumber ++ "-fixture.md"
-            , unlines
-                [ "# Phase " ++ phaseNumber
-                , ""
-                , "## Sprint " ++ sprintId ++ ": Fixture"
-                , ""
-                , "**Status**: " ++ statusText
-                , "**Implementation**: `src/Fixture.hs`"
-                , "**Docs to update**: `DEVELOPMENT_PLAN/README.md`"
-                ]
-            )
-          fixture statusText rows owner =
-            [
-              ( "DEVELOPMENT_PLAN/README.md"
-              , unlines (["# Plan", "", "## Resume Here", ""] ++ resumeHeader ++ rows)
-              )
-            , ("DEVELOPMENT_PLAN/00-overview.md", "# Static overview\n")
-            ,
-              ( "DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md"
-              , unlines
-                  [ "# Legacy"
-                  , ""
-                  , "## Pending Removal"
-                  , ""
-                  , "| Item | Owning Sprint | Notes |"
-                  , "|------|---------------|-------|"
-                  , "| Fixture debt | " ++ owner ++ " | Remove it. |"
-                  , ""
-                  , "## Pending Removal Notes"
-                  ]
-              )
-            , phaseDocument "3" "3.41" statusText
-            ]
-          replaceDocument path replacement =
-            map
-              ( \(candidatePath, contents) ->
-                  if candidatePath == path
-                    then (candidatePath, replacement)
-                    else (candidatePath, contents)
-              )
-          hasViolation needle = any (needle `isInfixOf`) . developmentPlanResumeViolations
-
-      it "accepts an exact Active numerical queue" $
-        developmentPlanResumeViolations (fixture "Active" [activeRow] "Sprint `3.41`")
-          `shouldBe` []
-
-      it "classifies status by its leading token rather than later Done prose" $
-        developmentPlanResumeViolations
-          (fixture "Active (Done criteria remain open)." [activeRow] "Sprint `3.41`")
-          `shouldBe` []
-
-      it "allows the first Planned sprint to be Next" $
-        developmentPlanResumeViolations (fixture "Planned" [activeRow] "Sprint `3.41`")
-          `shouldBe` []
-
-      it "requires every Blocked row to name an earlier queue dependency" $ do
-        let documents =
-              fixture
-                "Active"
-                [activeRow, "| 2 | `4.84` | 4 | Blocked | — |"]
-                "Sprint `3.41`"
-                ++ [phaseDocument "4" "4.84" "Blocked"]
-        documents `shouldSatisfy` hasViolation "Blocked but names no earlier dependency"
-
-      it "rejects prose and duplicate ids in the dependency cell" $ do
-        let phaseFour = phaseDocument "4" "4.84" "Active"
-            proseDocuments =
-              fixture
-                "Active"
-                [activeRow, "| 2 | `4.84` | 4 | Parked | `3.41`, prose |"]
-                "Sprint `3.41`"
-                ++ [phaseFour]
-            duplicateDocuments =
-              fixture
-                "Active"
-                [activeRow, "| 2 | `4.84` | 4 | Parked | `3.41`, `3.41` |"]
-                "Sprint `3.41`"
-                ++ [phaseFour]
-        proseDocuments `shouldSatisfy` hasViolation "must spell dependencies exactly"
-        duplicateDocuments `shouldSatisfy` hasViolation "repeats dependency `3.41`"
-
-      it "rejects a missing Pending Removal table and a nonexistent owner" $ do
-        let baseDocuments = fixture "Active" [activeRow] "Sprint `3.41`"
-            noTableDocuments =
-              replaceDocument
-                "DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md"
-                "# Legacy\n\n## Pending Removal\n\nNo table.\n"
-                baseDocuments
-            phantomOwnerDocuments = fixture "Active" [activeRow] "Sprint `9.99`"
-        noTableDocuments `shouldSatisfy` hasViolation "must contain the table"
-        phantomOwnerDocuments `shouldSatisfy` hasViolation "nonexistent Sprint `9.99`"
-
-      it "accepts an explicitly Unowned Pending Removal row" $
-        developmentPlanResumeViolations
-          (fixture "Active" [activeRow] "**Unowned** — no canonical owner")
-          `shouldBe` []
-
-      it "ignores Resume and Sprint examples inside fenced Markdown" $ do
-        let fencedDocuments =
-              map
-                ( \(path, contents) ->
-                    if path == "DEVELOPMENT_PLAN/README.md"
-                      then
-                        ( path
-                        , contents
-                            ++ "\n```markdown\n## Resume Here\n| fake |\n```\n"
-                        )
-                      else
-                        if "DEVELOPMENT_PLAN/phase-" `isPrefixOf` path
-                          then
-                            ( path
-                            , contents
-                                ++ "\n```markdown\n## Sprint 9.99: Fake\n**Status**: Active\n```\n"
-                            )
-                          else (path, contents)
-                )
-                (fixture "Active" [activeRow] "Sprint `3.41`")
-        developmentPlanResumeViolations fencedDocuments `shouldBe` []
-
-      it "rejects duplicate real sprint identifiers across phase files" $ do
-        let documents =
-              fixture "Active" [activeRow] "Sprint `3.41`"
-                ++ [phaseDocument "3" "3.41" "Done"]
-        documents `shouldSatisfy` hasViolation "declared more than once"
-
+    describe "numerical plan current queue" $ do
       it "accepts the complete current DEVELOPMENT_PLAN projection" $ do
         repoRoot <- getCurrentDirectory
         repoPaths <- listRepoOwnedPaths repoRoot
@@ -21802,7 +21776,7 @@ unitSuite = do
                 pure (relativePath, contents)
             )
             planPaths
-        developmentPlanResumeViolations planDocuments `shouldBe` []
+        numericalQueueViolations planDocuments `shouldBe` []
 
     describe "Sprint 0.22 headingSectionNumber / documentSectionNumbers" $ do
       it "reads a plain numbered heading" $
@@ -21826,6 +21800,33 @@ unitSuite = do
           `shouldBe` ["1", "1.2"]
 
     describe "Sprint 0.22 boundSectionCitationsInLine" $ do
+      it "recognizes explicit historical section references" $ do
+        historicalSectionCitationsInLine "config_doctrine.md at 583443f, section 6."
+          `shouldBe` [("config_doctrine.md", "6")]
+        historicalSectionCitationsInLine "vault_doctrine.md at revision `583443f`, section 10"
+          `shouldBe` [("vault_doctrine.md", "10")]
+        historicalSectionCitationsInLine "\"config_doctrine.md at 583443f, section 6.\""
+          `shouldBe` [("config_doctrine.md", "6")]
+        historicalSectionCitationsInLine ("config_doctrine.md " ++ "at 583443f, section 9999.")
+          `shouldBe` [("config_doctrine.md", "9999")]
+        historicalSectionCitationsInLine ("config_doctrine.md " ++ "at 583443f, section bogus")
+          `shouldBe` [("config_doctrine.md", "bogus")]
+        historicalSectionCitationsInLine ("config_doctrine.md " ++ "at 583443f, section")
+          `shouldBe` [("config_doctrine.md", "")]
+        historicalSectionCitationsInLine ("config_doctrine.md at " ++ "1234567, section 6")
+          `shouldBe` []
+        unsupportedHistoricalRevisionCitationsInLine ("config_doctrine.md at " ++ "1234567, section 6")
+          `shouldBe` [("config_doctrine.md", "1234567")]
+        historicalSectionReferenceViolations
+          [("source.hs", "config_doctrine.md", "6")]
+          [("config_doctrine.md", Just ["6"])]
+          `shouldBe` []
+        historicalSectionReferenceViolations
+          [("source.hs", "config_doctrine.md", "7")]
+          [("config_doctrine.md", Just ["6"])]
+          `shouldSatisfy` any (isInfixOf "section 7")
+        historicalSectionReferenceViolations [("source.hs", "config_doctrine.md", "6")] []
+          `shouldSatisfy` any (isInfixOf "cannot resolve")
       it "binds a citation to an adjacent document name" $
         boundSectionCitationsInLine "see config_doctrine.md \167 7 for detail"
           `shouldBe` [("config_doctrine.md", "7")]
@@ -21855,7 +21856,7 @@ unitSuite = do
             (root </> "consumer.md")
             (unlines ["doctrine.md \167 1", "doctrine.md \167 2", "```", "doctrine.md \167 3", "```"])
           checkDoctrineSectionCitations root
-            `shouldReturn` [ "consumer.md cites `doctrine.md section 2`, which is not a heading in that document (documentation_standards.md \167 4)."
+            `shouldReturn` [ "consumer.md cites `doctrine.md section 2`, which is not a heading in that document (documentation_standards.md)."
                            ]
 
     describe "Sprint 0.24 Tier-0 sibling drift gate" $ do
@@ -22058,19 +22059,19 @@ unitSuite = do
     describe "relativeLinkResolves" $ do
       it "resolves a sibling link against the doc directory and strips the anchor" $
         relativeLinkResolves
-          "DEVELOPMENT_PLAN/phase-8-email-invite-auth.md"
+          "DEVELOPMENT_PLAN/phase_08_fixture.md"
           "substrates.md#cross-substrate-shared-resources"
           `shouldBe` Just "DEVELOPMENT_PLAN/substrates.md"
 
       it "resolves a parent-relative link normally (the corrected phase-8 link)" $
         relativeLinkResolves
-          "DEVELOPMENT_PLAN/phase-8-email-invite-auth.md"
-          "../documents/engineering/aws_integration_environment_doctrine.md"
-          `shouldBe` Just "documents/engineering/aws_integration_environment_doctrine.md"
+          "DEVELOPMENT_PLAN/phase_08_fixture.md"
+          "../documents/engineering/product_architecture.md"
+          `shouldBe` Just "documents/engineering/product_architecture.md"
 
       it "shows why the OLD `../substrates.md` link was broken from DEVELOPMENT_PLAN/" $
         relativeLinkResolves
-          "DEVELOPMENT_PLAN/phase-8-email-invite-auth.md"
+          "DEVELOPMENT_PLAN/phase_08_fixture.md"
           "../substrates.md"
           `shouldBe` Just "substrates.md"
 
@@ -23156,7 +23157,9 @@ unitSuite = do
       -- `components` left at `defaultComponentGraph`, dropping the field and
       -- emitting it produce the same decoded record.
       decoded <- withSystemTempDirectory "prodbox-sprint-1-79" $ \tmpDir ->
-        decodeConfigDhallBytes tmpDir (renderInForcePayload roundTripConfigFile)
+        decodeConfigDhallBytes
+          tmpDir
+          (TextEncoding.encodeUtf8 (Text.pack (renderConfigDhall roundTripConfigFile)))
       fmap components decoded `shouldBe` Right roundTripComponentGraph
       fmap ((== defaultComponentGraph) . components) decoded `shouldBe` Right False
 
@@ -23166,7 +23169,9 @@ unitSuite = do
       -- rather than `Config::{…}` over a schema import, which is the fix — so
       -- the stable thing is the RECORD, and that is what this pins.
       decoded <- withSystemTempDirectory "prodbox-sprint-1-79-default" $ \tmpDir ->
-        decodeConfigDhallBytes tmpDir (renderInForcePayload defaultConfigFile)
+        decodeConfigDhallBytes
+          tmpDir
+          (TextEncoding.encodeUtf8 (Text.pack (renderConfigDhall defaultConfigFile)))
       decoded `shouldBe` Right defaultConfigFile
 
     it "emits a self-contained payload with no schema import" $
@@ -23831,6 +23836,27 @@ unitSuite = do
         Prodbox.CheckCode.deploymentConfigOwnershipViolations mutated
           `shouldSatisfy` any ("deploymentMinioEndpoint" `isInfixOf`)
 
+    describe "retired host config guard" $ do
+      it "rejects retired module paths and the old object constructor" $ do
+        Prodbox.CheckCode.retiredHostConfigViolations [] [("src/Live.hs", "data T = Current")]
+          `shouldBe` []
+        Prodbox.CheckCode.retiredHostConfigViolations
+          ["src/Prodbox/Config/InForce.hs"]
+          []
+          `shouldSatisfy` any ("InForce.hs" `isInfixOf`)
+        Prodbox.CheckCode.retiredHostConfigViolations
+          ["src/Prodbox/Config/InForce/Core.hs"]
+          []
+          `shouldSatisfy` any ("InForce/Core.hs" `isInfixOf`)
+        Prodbox.CheckCode.retiredHostConfigViolations
+          []
+          [("src/Foreign.hs", "data T = LogicalInForceConfig")]
+          `shouldSatisfy` any ("LogicalInForceConfig" `isInfixOf`)
+        Prodbox.CheckCode.retiredHostConfigViolations
+          []
+          [("src/Live.hs", "-- LogicalInForceConfig\nvalue = \"LogicalInForceConfig\"")]
+          `shouldBe` []
+
     describe "Sprint 2.52 Gateway MinIO endpoint ownership gate" $ do
       let endpointPaths =
             [ "src/Prodbox/Gateway/Types.hs"
@@ -24083,6 +24109,22 @@ unitSuite = do
         violations `shouldSatisfy` any (("harness" ++ "AcmeEmail") `isInfixOf`)
         violations `shouldSatisfy` any ("test.resolvefintech" `isInfixOf`)
         violations `shouldSatisfy` any ("matthewnowak@gmail" `isInfixOf`)
+
+      it "requires the selected run path and rejects the sibling writer" $ do
+        sources <- loadRequiredSources
+        let alterRunner transform =
+              [ (path, if path == "src/Prodbox/TestRunner.hs" then transform contents else contents)
+              | (path, contents) <- sources
+              ]
+            selected = "writeOperatorDeploymentConfigToTier0AtPath generatedConfigPath generatedConfig contextInput"
+            sibling = "writeOperatorDeploymentConfigToTier0 repoRoot generatedConfig contextInput"
+            replace before after = Text.unpack . Text.replace (Text.pack before) (Text.pack after) . Text.pack
+            missingSelected =
+              Prodbox.CheckCode.harnessDeploymentConfigOwnershipViolations
+                (alterRunner (replace selected "missing selected writer"))
+            siblingWriter = Prodbox.CheckCode.harnessDeploymentConfigOwnershipViolations (alterRunner (<> ("\n" <> sibling)))
+        missingSelected `shouldSatisfy` any (selected `isInfixOf`)
+        siblingWriter `shouldSatisfy` any ("legacy binary-sibling config writer" `isInfixOf`)
 
     describe "Sprint 1.100 cluster capacity status" $ do
       it "uses each validated plan and its resolved storage root" $ do
@@ -24347,7 +24389,7 @@ unitSuite = do
     -- Every fixture below is assembled at run time from fragments.
     -- This module is itself a tracked file, so spelling a scanned shape
     -- contiguously here would make the repository fail its own gate --
-    -- which is the vault_doctrine.md section 20.4 discipline (do not
+    -- which is the vault_doctrine.md at revision `583443f`, section 20.4 discipline (do not
     -- have the shape) applied to the test that proves the gate works.
     let awsKey prefix body = prefix ++ body
         sixteen = replicate 16 'Q'
@@ -24406,7 +24448,7 @@ unitSuite = do
       scannedCredentialViolations "test/fixture.hs" (awsKey "AKIA" sixteen)
         `shouldBe` [ "test/fixture.hs contains a string matching the scanned "
                        ++ "AWS access key identifier pattern (see "
-                       ++ "documents/engineering/vault_doctrine.md § 20.5)."
+                       ++ "documents/engineering/security_and_credentials.md)."
                    ]
       -- Repeated occurrences of one pattern collapse to a single finding.
       scannedCredentialViolations
@@ -24796,7 +24838,7 @@ unitSuite = do
       -- Standard C. This assertion previously ran with the opposite
       -- polarity: `discoverClusterTaggedAwsResources` sat in the
       -- forbidden list above, pinning the absence of the sweep that
-      -- lifecycle_reconciliation_doctrine.md § 5 (the nuke row) and § 6b
+      -- lifecycle_reconciliation_doctrine.md at 583443f, section 5 (the nuke row) and lifecycle_reconciliation_doctrine.md at 583443f, section 6b
       -- ("appends terminal absence and the required scoped tag sweep")
       -- have always assigned to this command. The sweep is not one of the
       -- legacy five-command adapters; it is a terminal obligation, and it
@@ -26294,7 +26336,7 @@ unitSuite = do
       -- minted only by `mkFqdn`.
       --
       -- Asserting `not (isPrefixOf "https:///" rendered)` would be exactly the
-      -- shape unit_testing_policy.md canonical statements 10 and 11 forbid: an
+      -- shape unit_testing_policy.md at revision `583443f` canonical statements 10 and 11 forbid: an
       -- absence with no input that could produce it, asserted as though it were
       -- a property of the renderer. What licenses that absence is `mkFqdn`
       -- rejecting an empty name, and THAT is falsifiable — so it is what is
@@ -26829,7 +26871,7 @@ hasCycle visited prerequisiteId
 -- canonical encoder, not hand-authored Dhall. They used to be three separate
 -- text encoders of a record with a single decoder; Sprint @1.80@ retyped a
 -- field, updated the decoder, and every one of them silently became wrong
--- (chaos_hardening_doctrine.md section 23).
+-- (chaos_hardening_doctrine.md at revision `583443f`, section 23).
 validConfig :: ConfigFile
 validConfig =
   defaultConfigFile
@@ -27858,6 +27900,18 @@ fixtureChartPlanObservers imageResolver =
                 }
           )
     }
+
+fixtureAwsChartPlanObservers :: ChartPlanObservers
+fixtureAwsChartPlanObservers =
+  fixtureChartPlanObservers $ \_ ->
+    pure $
+      Right $
+        Just $
+          ResolvedCustomImage
+            "127.0.0.1:30080/prodbox/prodbox-runtime"
+            "prodbox-aws-substrate"
+            Nothing
+            Nothing
 
 expectBirthChartRight :: (Show e) => Either e a -> IO a
 expectBirthChartRight = either (fail . show) pure

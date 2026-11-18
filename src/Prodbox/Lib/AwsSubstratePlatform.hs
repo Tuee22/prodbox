@@ -25,7 +25,7 @@
 -- function `ensureAwsLoadBalancerControllerRuntime`. The corresponding
 -- Envoy Gateway + cert-manager install paths land in follow-up
 -- sub-sprints; see the deliverable inventory in
--- `DEVELOPMENT_PLAN/phase-7-aws-substrate-foundations.md`.
+-- the historical phase 7 plan at revision `583443f`.
 module Prodbox.Lib.AwsSubstratePlatform
   ( AwsPlatformPayload (..)
   , AwsPlatformStepId (..)
@@ -2283,7 +2283,7 @@ applyEksImageMirrorJob repoRoot = go eksImageMirrorMaxAttempts
                 -- name-resolution errors while endpoint programming settles. The
                 -- Job's own `backoffLimit=2` bounds in-Job retries; when the whole
                 -- Job fails we classify its logs and re-apply once more if the
-                -- failure is a retryable transient (bootstrap_readiness_doctrine.md
+                -- failure is a retryable transient (bootstrap_readiness_doctrine.md at revision `583443f`
                 -- §4). A non-retryable failure fails fast.
                 detail <- captureEksImageMirrorFailureDetail repoRoot jobNs jobNm
                 if isRetryableEksImageMirrorFailure detail

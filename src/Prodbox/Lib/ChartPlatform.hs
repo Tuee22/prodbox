@@ -990,7 +990,7 @@ renderChartStatus repoRoot settings chartName = do
 -- \"is this release installed and healthy?\" while being consumed as \"is this
 -- release at the desired revision?\". Those are different questions about
 -- different layers, which is
--- [chaos_hardening_doctrine.md § 24](../../../documents/engineering/chaos_hardening_doctrine.md)
+-- chaos_hardening_doctrine.md at 583443f, section 24
 -- exactly.
 --
 -- __The consequence was measured, not argued.__ @cluster reconcile@ built and
@@ -1117,7 +1117,7 @@ deployChartPlan plan = do
   -- @postgres.passwordSecretName@ projection. No host or Target Agent payload
   -- read/write is needed after Patroni becomes ready. PGO controls that Secret
   -- object; Vault owns the password value the chart hook materialized into it
-  -- (secret_derivation_doctrine.md 5.1).
+  -- (secret_derivation_doctrine.md at revision `583443f` 5.1).
   finishStagedPatroniRelease :: ChartReleasePlan -> IO (Either String ())
   finishStagedPatroniRelease = validateReleaseReady
 
@@ -2166,7 +2166,7 @@ chartStorageClassNameForSubstrate substrate =
 -- | Sprint 3.23: the chart deploy order (dependencies-before-dependents),
 -- sourced from the Tier-0 component dependency/readiness graph rather than the
 -- retired hardcoded @chartDefinitionDependencies@ literals
--- (bootstrap_readiness_doctrine.md M1/M2). Cycle rejection and the resulting
+-- (bootstrap_readiness_doctrine.md at revision `583443f` M1/M2). Cycle rejection and the resulting
 -- order are unchanged — the chart→chart edges of the default graph reproduce the
 -- historical order exactly. 'resolveChart' still validates the chart name.
 -- | Sprint 4.43: an empty config-sourced component graph means "no operator
@@ -4363,7 +4363,7 @@ ensureChartStorage plan = do
   -- The old mismatch probe exported the Target password to the host. The
   -- mismatch state is now structurally removed: Keycloak consumes the same
   -- PGO-adopted pguser Secret that PGO uses for the live role, and Vault is the
-  -- one authority for the value inside it (secret_derivation_doctrine.md 5.1).
+  -- one authority for the value inside it (secret_derivation_doctrine.md at revision `583443f` 5.1).
   resetPatroniStorageIfRequested :: IO (Either String ())
   resetPatroniStorageIfRequested = pure (Right ())
 
@@ -4661,7 +4661,7 @@ classifyPublicEdgeTlsRestoreSlotCreate output =
 -- coordinate matches nothing. @endpoints\/kubernetes@ reports the post-DNAT
 -- address and port together — the coordinate the policy engine actually sees.
 -- Deriving the two halves from one source is what
--- [chaos_hardening_doctrine.md § 24](../../../documents/engineering/chaos_hardening_doctrine.md)
+-- chaos_hardening_doctrine.md at 583443f, section 24
 -- requires: an observation has a layer, and observing the wrong layer from a
 -- single source fixes the encoder count and not the correctness.
 --
@@ -4785,7 +4785,7 @@ publicEdgeTlsCertificateName = publicEdgeTlsSecretName
 -- Replaces the prior silent @Right ()@-on-absent gap with an explicit,
 -- returned classification, so an unobservable owned certificate cannot
 -- collapse to "absent/clean"
--- (lifecycle_reconciliation_doctrine.md § 3 soundness).
+-- (lifecycle_reconciliation_doctrine.md at 583443f, section 3 soundness).
 data PublicEdgePreserveOutcome
   = -- | The plan does not own the public-edge certificate; nothing to do.
     PreserveNotOwned

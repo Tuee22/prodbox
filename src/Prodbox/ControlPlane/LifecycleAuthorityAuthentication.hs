@@ -15,6 +15,7 @@ module Prodbox.ControlPlane.LifecycleAuthorityAuthentication
   , LifecycleAuthorityAuthenticationError (..)
   , renderLifecycleAuthorityAuthenticationError
   , withHostLifecycleAuthorityAuthentication
+  , withHostLifecycleAuthorityAuthenticationAt
   , lifecycleAuthorityManifestSignerDigest
   , withLifecycleAuthorityAuthenticatedTransport
   , withLifecycleAuthorityProviderAuthenticatedTransport
@@ -238,6 +239,27 @@ withHostLifecycleAuthorityAuthentication
   -> IO (Either LifecycleAuthorityAuthenticationError value)
 withHostLifecycleAuthorityAuthentication caller repoRoot action = do
   kubeconfigResult <- resolveLocalKubeconfig
+  withHostLifecycleAuthorityAuthenticationResolved caller repoRoot kubeconfigResult action
+
+-- | Use the exact caller-selected kubeconfig without consulting ambient
+-- kubeconfig discovery. The caller must establish path custody and scope;
+-- selecting a path here does not itself authorize a cluster operation.
+withHostLifecycleAuthorityAuthenticationAt
+  :: ExternalLifecycleAuthorityCaller
+  -> FilePath
+  -> FilePath
+  -> (LifecycleAuthorityAuthentication -> IO value)
+  -> IO (Either LifecycleAuthorityAuthenticationError value)
+withHostLifecycleAuthorityAuthenticationAt caller repoRoot kubeconfig =
+  withHostLifecycleAuthorityAuthenticationResolved caller repoRoot (Right kubeconfig)
+
+withHostLifecycleAuthorityAuthenticationResolved
+  :: ExternalLifecycleAuthorityCaller
+  -> FilePath
+  -> Either String FilePath
+  -> (LifecycleAuthorityAuthentication -> IO value)
+  -> IO (Either LifecycleAuthorityAuthenticationError value)
+withHostLifecycleAuthorityAuthenticationResolved caller repoRoot kubeconfigResult action = do
   basicsResult <- loadUnencryptedBasics repoRoot
   case (kubeconfigResult, basicsResult, lifecycleAuthenticationConstants) of
     (Left detail, _, _) ->

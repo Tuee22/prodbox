@@ -11,7 +11,7 @@
 -- whose per-run registry names must match the @PerRun@ slice here).
 --
 -- The doctrine SSoT is
--- @documents\/engineering\/lifecycle_reconciliation_doctrine.md § 3.1@;
+-- @documents\/engineering\/lifecycle_reconciliation_doctrine.md at 583443f, section 3.1@;
 -- this list must match
 -- @DEVELOPMENT_PLAN\/substrates.md → Resource Lifecycle Classes@
 -- verbatim (Sprint 4.22 makes that parity machine-enforced).

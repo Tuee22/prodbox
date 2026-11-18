@@ -1112,7 +1112,7 @@ vaultKvReadExactVersionV2 address token mount path version =
 -- 'Prodbox.Lifecycle.CheckpointAuthority.ModelBCasResult' vocabulary landed;
 -- the Vault path answered every failure as one 'HttpError', so a lost race and
 -- an unreachable Vault arrived at the caller as the same @Left@.
--- Distinguishability class, @chaos_hardening_doctrine.md § 21@.
+-- Distinguishability class, @chaos_hardening_doctrine.md at 583443f, section 21@.
 --
 -- The three failure arms differ in exactly one respect that matters to a
 -- caller: whether a write happened.
@@ -1141,7 +1141,7 @@ data VaultCasOutcome
 -- 'vaultKvCasWriteV2' without also naming this function, so a new call site
 -- cannot quietly go back to matching on 'HttpStatus'. That is a compiled rule
 -- over a source region rather than a property of the type
--- (@chaos_hardening_doctrine.md § 22@) — it bounds this repository, not the
+-- (@chaos_hardening_doctrine.md at 583443f, section 22@) — it bounds this repository, not the
 -- Vault protocol.
 --
 -- Two classification decisions are worth stating, because the superseded

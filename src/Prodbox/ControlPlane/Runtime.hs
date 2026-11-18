@@ -5772,7 +5772,7 @@ mapLeft convert value = case value of
 --
 -- Sprint 4.68. These are __authored, not measured__, and saying so is the point:
 -- @rawServiceTimeMicros@ is the one field
--- [resource_scaling_doctrine.md § 2C](../../../documents/engineering/resource_scaling_doctrine.md)
+-- resource_scaling_doctrine.md at 583443f, section 2C
 -- calls uncertified-until-first-profile, and no measured control-plane profile
 -- exists. What the plan buys today is not a proven service rate; it is that the
 -- concurrency, the queue depth, and the rejection threshold are __finite and

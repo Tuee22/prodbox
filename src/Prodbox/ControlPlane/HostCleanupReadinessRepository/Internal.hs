@@ -6,7 +6,7 @@
 -- | Sprint 4.86: Authority-owned storage for one run's accepted pre-uninstall
 -- readiness.
 --
--- [Lifecycle Reconciliation Doctrine § 5b nodes 7 and 9](../../../../documents/engineering/lifecycle_reconciliation_doctrine.md#5b-canonical-recover-to-clean-cascade)
+-- Lifecycle Reconciliation Doctrine § 5b nodes 7 and 9 (historical lifecycle_reconciliation_doctrine.md at revision `583443f`, section 5b)
 -- put the Lifecycle Authority on both sides of the destructive host boundary:
 -- it accepts the readiness before local RKE2 is uninstalled, and after the
 -- cascade re-establishes it the same readiness must still be there to be read

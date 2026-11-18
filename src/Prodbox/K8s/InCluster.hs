@@ -157,7 +157,7 @@ loadInClusterCredentials = do
 --   complete for downstream @http-client@-style consumers; downstream
 --   defaults to @443@ but expressing it inline matches the doctrine
 --   §4 examples in
---   [Secret Derivation Doctrine](../../documents/engineering/secret_derivation_doctrine.md).
+--   Secret Derivation Doctrine (historical secret_derivation_doctrine.md at revision `583443f`).
 secretApiBaseUrl :: String
 secretApiBaseUrl = "https://kubernetes.default.svc.cluster.local:443"
 

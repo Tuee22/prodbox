@@ -402,7 +402,7 @@ data TestSecretsAdminCredentials = TestSecretsAdminCredentials
 -- shape — was written first and is not available: it refuses this repository's
 -- own integration fixtures, and those fixtures cannot be given a
 -- structurally-valid id, because @scannedCredentialViolations@ (Sprint @1.75@,
--- the @vault_doctrine.md@ § 20.5 mechanical outer ring) fails the build for any
+-- the @vault_doctrine.md at 583443f, section 20.5 mechanical outer ring) fails the build for any
 -- __tracked__ file carrying that shape. So the two rules are in direct
 -- opposition, and the credential scanner is the one that must win.
 --

@@ -9,7 +9,17 @@
 
 ## Source baseline
 
-Before adoption, the tracked documentation and source baseline was Git revision `583443f`. Inspect original text with `git show 583443f:PATH`. This is a read-only history lookup, not an instruction to restore old code or execute its commands. Original phase filenames, decimal statuses, closed claims and completed-removal history remain attributable to that revision.
+Before adoption, the tracked documentation and source baseline was Git revision
+`583443fbe233df3327b5be12a236b001622a1e66` (short form `583443f`). Inspect
+original text with `git show 583443f:PATH`. This is a read-only history lookup,
+not an instruction to restore old code or execute its commands. Original phase
+filenames, decimal statuses, closed claims and completed-removal history remain
+attributable to that revision.
+
+References to a section from that baseline identify the document, revision and
+section explicitly, for example `config_doctrine.md at 583443f, section 6`.
+The checker resolves the preserved document and section at that revision;
+missing Git history is an unavailable reference, not a successful check.
 
 - [Original refactor proposal](refactor_proposal_2026_11.md): the reviewed design before Markdown adoption. Its old queue, proposed YAML filenames and migration wording are historical, not the active plan.
 - [Every pending legacy obligation](legacy_pending_baseline.md): preserves all 81 original pending item/owner/note cells, mapped to B001–B081 in the [active ledger](../../DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md). Quoted historical links/locations are source evidence, not current navigation.

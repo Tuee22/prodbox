@@ -20,7 +20,7 @@
 -- (The value is deliberately not spelled in this comment. Sprint 3.35's
 -- @checkControlPlaneListenPortOwner@ named this file on its first run for
 -- exactly that — a comment restating a value is still a restatement, per
--- [pure_fp_standards.md § 1.4](../../../../documents/engineering/pure_fp_standards.md).)
+-- pure_fp_standards.md at 583443f, section 1.4.)
 --
 -- The port now has a compiled owner,
 -- 'Prodbox.ControlPlane.ListenPort.controlPlaneListenPort', which the binder,

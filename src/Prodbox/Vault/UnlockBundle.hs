@@ -8,7 +8,7 @@
 -- unseal/recovery keys, encrypted under an operator-supplied password. The
 -- initial root token is encrypted to the compiled burn recipient and is never
 -- retained or usable by prodbox. Per
--- @documents\/engineering\/vault_doctrine.md@ §6 the bundle uses a real
+-- @documents\/engineering\/vault_doctrine.md at 583443f, section 6 the bundle uses a real
 -- password-based KDF (Argon2id) feeding an authenticated cipher
 -- (ChaCha20-Poly1305) — never a bare hash. The operator password is the
 -- ephemeral root of the unlock chain (§6); its only cleartext home is

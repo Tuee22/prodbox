@@ -90,7 +90,7 @@ ports:
 # `.Values.resources.targetSecretAgent`, exactly like the gateway and broker
 # charts — the capacity plan is the single source of truth, so no chart-local
 # default is kept here. Control-plane demand therefore never hides behind a
-# combined envelope (resource_scaling_doctrine.md § 2E).
+# combined envelope (resource_scaling_doctrine.md at revision 583443f § 2E).
 
 # The mounted role Dhall (runtime role `target-secret-agent`, mounted at
 # /etc/target-secret-agent/config). The empty default lets generic lint/template

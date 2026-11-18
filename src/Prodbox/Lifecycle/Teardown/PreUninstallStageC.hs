@@ -4,7 +4,7 @@
 
 -- | Sprint 4.86: Stage C composed, from a converged run to readiness.
 --
--- [Lifecycle Reconciliation Doctrine § 5b node 7](../../../../documents/engineering/lifecycle_reconciliation_doctrine.md#5b-canonical-recover-to-clean-cascade)
+-- Lifecycle Reconciliation Doctrine § 5b node 7 (historical lifecycle_reconciliation_doctrine.md at revision `583443f`, section 5b)
 -- is one sentence with five surfaces under it, and by the time this module was
 -- written every one of them existed and none of them met:
 -- "Prodbox.Lifecycle.Teardown.PreUninstallReport" renders the bytes,

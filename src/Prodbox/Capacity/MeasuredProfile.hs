@@ -23,7 +23,7 @@
 -- owned by Sprint 5.21); until then it is a no-op. Certification rules are pure
 -- ('certifyMeasuredProfile') and unit tested with fixture profiles. The field
 -- set and rules mirror
--- [resource_scaling_doctrine.md § 2F](../../../documents/engineering/resource_scaling_doctrine.md).
+-- resource_scaling_doctrine.md at 583443f, section 2F.
 module Prodbox.Capacity.MeasuredProfile
   ( MeasuredResourceProfile (..)
   , MeasuredProfileDefect (..)
@@ -296,7 +296,7 @@ certifyMeasuredProfiles repoRoot now plan = do
 -- | Sprint 5.21: the minimum steady-window (30 minutes) a run must sustain
 -- before the recorder may commit a measured profile. A shorter window is not a
 -- representative sample of steady-state demand
--- ([resource_scaling_doctrine.md § 2F](../../../documents/engineering/resource_scaling_doctrine.md)).
+-- (resource_scaling_doctrine.md at 583443f, section 2F).
 recorderMinimumWindowSeconds :: Natural
 recorderMinimumWindowSeconds = 1800
 

@@ -283,7 +283,7 @@ runAnchoredStepOrder
   -- This used to end @refuse _ = ExitFailure 1@ — the refusal discarded with a
   -- wildcard, on a path that emitted nothing, so a refused reconcile exited 1
   -- having said no word about why. That is the conversion of
-  -- [chaos_hardening_doctrine.md § 23](../../../documents/engineering/chaos_hardening_doctrine.md)
+  -- chaos_hardening_doctrine.md at 583443f, section 23
   -- at the step boundary: 'renderAdmissionRefusal' already existed and was
   -- already exported — the crossing simply did not use it. @ExitCode@ carries
   -- one bit and has no room for a reason, so lowering into it here can only

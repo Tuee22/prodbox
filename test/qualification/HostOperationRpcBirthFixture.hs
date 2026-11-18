@@ -1,9 +1,17 @@
 {-# LANGUAGE ImportQualifiedPost #-}
 {-# LANGUAGE OverloadedStrings #-}
 
--- Native-only normalized 256 MiB / 700m / 56-task profile. The launch process
--- observes the real host once; the controller receives that fixed metadata.
-module HostOperationRpcBirthFixture (fixturePlan, fixturePlanFrom, observedValue, decodeObserved, right) where
+-- Native-only 700m / 56-task profile: 256 MiB normally and 320 MiB when
+-- funding a sealed mutation tool. The controller receives fixed host metadata.
+module HostOperationRpcBirthFixture
+  ( fixturePlan
+  , fixturePlanFrom
+  , fixtureMutationPlanFrom
+  , fixtureMutationTestPlanFrom
+  , observedValue
+  , decodeObserved
+  , right
+  ) where
 
 import Data.Aeson (Value, eitherDecode, object, withObject, (.:), (.=))
 import Data.Aeson.Types (parseEither)
@@ -14,6 +22,7 @@ import Prodbox.Capacity.HostExecution qualified as H
 import Prodbox.Capacity.HostProbe qualified as Probe
 import Prodbox.Capacity.ObservedHost qualified as Observed
 import Prodbox.Capacity.RuntimeMemory qualified as R
+import Prodbox.Control.SealedTool qualified as Sealed
 import System.Environment (unsetEnv)
 
 right :: (Show error) => Either error value -> IO value
@@ -30,7 +39,29 @@ fixturePlan = do
 fixturePlanFrom
   :: Observed.ObservedHostRoot
   -> IO H.HostExecutionTransportPlan
-fixturePlanFrom observed = do
+fixturePlanFrom observed = fst <$> fixturePlanWithBudget Nothing observed
+
+fixtureMutationPlanFrom
+  :: Observed.ObservedHostRoot -> IO (H.HostExecutionTransportPlan, Sealed.SealedToolBudget)
+fixtureMutationPlanFrom observed = do
+  (plan, budget) <- fixturePlanWithBudget (Just (False, 16 * 1048576)) observed
+  case budget of
+    Just value -> pure (plan, value)
+    Nothing -> fail "mutation fixture budget missing"
+
+fixtureMutationTestPlanFrom
+  :: Integer -> Observed.ObservedHostRoot -> IO (H.HostExecutionTransportPlan, Sealed.SealedToolBudget)
+fixtureMutationTestPlanFrom size observed = do
+  (plan, budget) <- fixturePlanWithBudget (Just (True, size)) observed
+  case budget of
+    Just value -> pure (plan, value)
+    Nothing -> fail "mutation test fixture budget missing"
+
+fixturePlanWithBudget
+  :: Maybe (Bool, Integer)
+  -> Observed.ObservedHostRoot
+  -> IO (H.HostExecutionTransportPlan, Maybe Sealed.SealedToolBudget)
+fixturePlanWithBudget requested observed = do
   let base = C.defaultResourcePlan
       isolated =
         base
@@ -55,15 +86,25 @@ fixturePlanFrom observed = do
           , R.runtimeRawChildSchedule = R.BoundedChildSchedule 2 (Just 60000000) [64 * 1048576, 16 * 1048576]
           , R.runtimeKernelCgroupReserve = bytes R.KernelCgroupReserve 8
           , R.runtimeSafetyMargin = bytes R.SafetyMargin 8
-          , R.runtimeContainerMemoryLimit = bytes R.ContainerMemoryLimit 256
+          , R.runtimeContainerMemoryLimit =
+              bytes
+                R.ContainerMemoryLimit
+                (case requested of Nothing -> 256; Just (False, _) -> 320; Just (True, _) -> 1024)
           }
-  right $
-    H.compileHostExecutionPlanWithTransport
-      observed
-      allocated
-      runtime
-      (H.HostExecutionDemand 300000 200000 100000 16 24 8 (48 * 1048576) (16 * 1048576) 1 0)
-      (H.HostTransportDemand 100000 8 (16 * 1048576))
+  budget <- case requested of
+    Nothing -> pure Nothing
+    Just (False, size) -> Just <$> right (Sealed.planSealedToolBudget runtime size 1048576)
+    Just (True, size) -> Just <$> right (Sealed.planSealedMutationTestBudget runtime size 1048576)
+  let funded = maybe runtime Sealed.sealedToolRuntimePlan budget
+  plan <-
+    right $
+      H.compileHostExecutionPlanWithTransport
+        observed
+        allocated
+        funded
+        (H.HostExecutionDemand 300000 200000 100000 16 24 8 (48 * 1048576) (16 * 1048576) 1 0)
+        (H.HostTransportDemand 100000 8 (16 * 1048576))
+  pure (plan, budget)
 
 observedValue :: Observed.ObservedHostRoot -> Value
 observedValue observed =

@@ -6,6 +6,7 @@
 module FixtureServer
   ( runBrokerFixtureServer
   , runAuthorityFixtureServer
+  , withAuthorityFixtureServerForConfig
   , runVaultFixtureServer
   , withVaultFixtureServer
   , withVaultFixtureServerSealStatus
@@ -13,7 +14,7 @@ module FixtureServer
 where
 
 import Codec.Serialise (DeserialiseFailure, Serialise, deserialiseOrFail, serialise)
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkFinally, forkIO, killThread, newEmptyMVar, putMVar, takeMVar)
 import Control.Exception (IOException, bracket, try)
 import Control.Monad (void)
 import Crypto.Error (CryptoFailable (..))
@@ -216,7 +217,25 @@ runBrokerFixtureServer port =
 runAuthorityFixtureServer :: Int -> IO ()
 runAuthorityFixtureServer port = do
   cleanupRunState <- newIORef Nothing
-  runFixtureServer port (authorityBody cleanupRunState)
+  runFixtureServerReplies port (authorityReply fixtureConfigBytes cleanupRunState)
+
+withAuthorityFixtureServerForConfig :: FilePath -> (Int -> IO value) -> IO value
+withAuthorityFixtureServerForConfig path action =
+  withSocketsDo $
+    bracket (openFixtureListener 0) close $ \listener -> do
+      address <- getSocketName listener
+      port <- case address of
+        SockAddrInet rawPort _ -> pure (fromIntegral rawPort)
+        _ -> ioError (userError "Authority fixture listener was not IPv4")
+      cleanupRunState <- newIORef Nothing
+      settled <- newEmptyMVar
+      bracket
+        ( forkFinally
+            (acceptForever listener (authorityReply (fixtureConfigBytesAtPath (Just path)) cleanupRunState))
+            (putMVar settled)
+        )
+        (\worker -> killThread worker >> void (takeMVar settled))
+        (\_ -> action port)
 
 runVaultFixtureServer :: Int -> IO ()
 runVaultFixtureServer port =
@@ -241,7 +260,7 @@ withVaultFixtureServerBody responseBody action =
       port <- case address of
         SockAddrInet rawPort _ -> pure (fromIntegral rawPort)
         _ -> ioError (userError "Vault fixture listener was not IPv4")
-      void (forkIO (acceptForever listener (pureBody responseBody)))
+      void (forkIO (acceptForever listener (fixtureSuccess (pureBody responseBody))))
       action port
 
 runFixtureServer
@@ -249,6 +268,22 @@ runFixtureServer
   -> (ByteString8.ByteString -> String -> IO ByteString.ByteString)
   -> IO ()
 runFixtureServer port responseBody =
+  runFixtureServerReplies port (fixtureSuccess responseBody)
+
+type FixtureReply = Either String ByteString.ByteString
+
+fixtureSuccess
+  :: (ByteString8.ByteString -> String -> IO ByteString.ByteString)
+  -> ByteString8.ByteString
+  -> String
+  -> IO FixtureReply
+fixtureSuccess handler request path = Right <$> handler request path
+
+runFixtureServerReplies
+  :: Int
+  -> (ByteString8.ByteString -> String -> IO FixtureReply)
+  -> IO ()
+runFixtureServerReplies port responseBody =
   withSocketsDo $
     bracket (openFixtureListener port) close (`acceptForever` responseBody)
 
@@ -262,7 +297,7 @@ openFixtureListener port = do
 
 acceptForever
   :: Socket
-  -> (ByteString8.ByteString -> String -> IO ByteString.ByteString)
+  -> (ByteString8.ByteString -> String -> IO FixtureReply)
   -> IO ()
 acceptForever listener responseBody = go
  where
@@ -283,7 +318,7 @@ acceptForever listener responseBody = go
 -- taking every later request in the test with it. A schema drift in a Tier-0
 -- fixture therefore presented as a network fault.
 serve
-  :: (ByteString8.ByteString -> String -> IO ByteString.ByteString)
+  :: (ByteString8.ByteString -> String -> IO FixtureReply)
   -> Socket
   -> IO ()
 serve responseBody connection =
@@ -292,11 +327,12 @@ serve responseBody connection =
     let path = case words (ByteString8.unpack (ByteString8.takeWhile (/= '\r') request)) of
           _method : rawPath : _ -> rawPath
           _ -> ""
-    body <- responseBody request path
-    let status
-          | path == "/v1/target-tls/retain" = "404 Not Found"
-          | otherwise = "200 OK"
-    pure (status, body)
+    reply <- responseBody request path
+    pure $ case reply of
+      Left detail -> ("500 Internal Server Error", ByteString8.pack ("fixture handler failed: " ++ detail))
+      Right body
+        | path == "/v1/target-tls/retain" -> ("404 Not Found", body)
+        | otherwise -> ("200 OK", body)
 
 -- | The fixture's obligation. Unlike the production control-plane server, the
 -- refusal body carries the exception text: a fixture's job is to name the
@@ -349,9 +385,49 @@ pureBody
   -> IO ByteString.ByteString
 pureBody body request path = pure (ByteString8.pack (body request path))
 
+authorityReply
+  :: IO FixtureReply -> IORef (Maybe CleanupRun) -> ByteString8.ByteString -> String -> IO FixtureReply
+authorityReply loadConfig cleanupRunState request path
+  | path == "/v1/authority/config/observe" = do
+      config <- loadConfig
+      pure $
+        fmap
+          ( \bytes ->
+              LazyByteString.toStrict
+                ( encodeControlPlaneResponse
+                    ( ConfigObservationObserved
+                        ConfigProjection
+                          { configProjectionIdentity = fixtureInForceConfigFor bytes
+                          , configProjectionScope = ConfigProjectionOperator
+                          , configProjectionBytes = bytes
+                          }
+                    )
+                )
+          )
+          config
+  | path == "/v1/authority/config/propose-cas" = do
+      config <- loadConfig
+      pure $
+        fmap
+          ( \bytes ->
+              LazyByteString.toStrict
+                (encodeControlPlaneResponse (ConfigProposalAlreadyCurrent (fixtureInForceConfigFor bytes)))
+          )
+          config
+  | path == "/v1/target-tls/exchange/prepare" = do
+      prepared <-
+        prepareTlsDekExchange
+          TlsDekTransitBoundary
+            { tlsDekTransitEncrypt = \_ -> pure (Right "vault:v1:fixture-private-key")
+            , tlsDekTransitDecrypt = \_ -> pure (Left TlsDekTransitUnexpectedException)
+            }
+      pure $ either (Left . show) (Right . LazyByteString.toStrict . encodeControlPlaneResponse) prepared
+  | path == "/v1/authority/cleanup-run" = cleanupRunBody cleanupRunState request
+  | otherwise = Right <$> authorityBody request path
+
 authorityBody
-  :: IORef (Maybe CleanupRun) -> ByteString8.ByteString -> String -> IO ByteString.ByteString
-authorityBody cleanupRunState request path
+  :: ByteString8.ByteString -> String -> IO ByteString.ByteString
+authorityBody request path
   | path == "/readyz" = pure "{}"
   | path == "/v1/authority/observe" =
       pure
@@ -371,28 +447,6 @@ authorityBody cleanupRunState request path
                         )
                   , observedAuthorityTimeMicros = 1
                   }
-            )
-        )
-  | path == "/v1/authority/config/observe" = do
-      config <- fixtureConfigBytes
-      pure
-        ( LazyByteString.toStrict
-            ( encodeControlPlaneResponse
-                ( ConfigObservationObserved
-                    ConfigProjection
-                      { configProjectionIdentity = fixtureInForceConfigFor config
-                      , configProjectionScope = ConfigProjectionOperator
-                      , configProjectionBytes = config
-                      }
-                )
-            )
-        )
-  | path == "/v1/authority/config/propose-cas" = do
-      config <- fixtureConfigBytes
-      pure
-        ( LazyByteString.toStrict
-            ( encodeControlPlaneResponse
-                (ConfigProposalAlreadyCurrent (fixtureInForceConfigFor config))
             )
         )
   | path == "/v1/authority/control" =
@@ -420,18 +474,7 @@ authorityBody cleanupRunState request path
         )
   | path == "/v1/authority/tls-retention/workflow" =
       pure (tlsRetentionWorkflowBody request)
-  | path == "/v1/target-tls/exchange/prepare" = do
-      prepared <-
-        prepareTlsDekExchange
-          TlsDekTransitBoundary
-            { tlsDekTransitEncrypt = \_ -> pure (Right "vault:v1:fixture-private-key")
-            , tlsDekTransitDecrypt = \_ -> pure (Left TlsDekTransitUnexpectedException)
-            }
-      case prepared of
-        Left detail -> ioError (userError (show detail))
-        Right value -> pure (LazyByteString.toStrict (encodeControlPlaneResponse value))
   | path == "/v1/target-tls/retain" = pure "fixture certificate is absent"
-  | path == "/v1/authority/cleanup-run" = cleanupRunBody cleanupRunState request
   | path == "/v1/authority-backup/observe" =
       pure
         ( LazyByteString.toStrict
@@ -455,20 +498,24 @@ awsAdminProvisionerFixtureResponse request =
       Right ObserveAwsAdminFirstReconcileRecovery -> AwsAdminFirstReconcileRecoveryObserved False
       _ -> AwsAdminProvisioningRefused "fixture-provisioner-request-unsupported"
 
-cleanupRunBody :: IORef (Maybe CleanupRun) -> ByteString.ByteString -> IO ByteString.ByteString
+cleanupRunBody :: IORef (Maybe CleanupRun) -> ByteString.ByteString -> IO FixtureReply
 cleanupRunBody state request =
   case authenticatedInnerBody request of
-    Left detail -> pure (ByteString8.pack detail)
+    Left detail -> pure (Right (ByteString8.pack detail))
     Right innerBody -> case decodeControlPlaneRequest cleanupRunMaximumBytes (LazyByteString.fromStrict innerBody) of
-      Left detail -> pure (ByteString8.pack (show detail))
+      Left detail -> pure (Right (ByteString8.pack (show detail)))
       Right command -> runCommand command
  where
   runCommand command = case command of
-    CleanupRunScan -> pure (LazyByteString.toStrict (serialise ([] :: [Text.Text])))
+    CleanupRunScan -> pure (Right (LazyByteString.toStrict (serialise ([] :: [Text.Text]))))
     CleanupRunCreate _ encoded ->
       case decodeCleanupRun cleanupRunMaximumBytes encoded of
-        Left detail -> pure (ByteString8.pack (show detail))
-        Right run -> writeIORef state (Just run) >> encodeFixtureCleanupRun run
+        Left detail -> pure (Right (ByteString8.pack (show detail)))
+        Right run -> do
+          encodedRun <- encodeFixtureCleanupRun run
+          case encodedRun of
+            Left detail -> pure (Left detail)
+            Right bytes -> writeIORef state (Just run) >> pure (Right bytes)
     CleanupRunObserve _ -> readFixtureCleanupRun state
     CleanupRunClaim _ rawOwner now expires ->
       transitionFixtureCleanupRun state $ \run -> do
@@ -496,34 +543,38 @@ cleanupRunBody state request =
         ( CleanupRunDescriptorRefused
             (CleanupRunDescriptorUnavailable "integration fixture does not implement descriptor-bound cleanup")
         ) of
-        Left detail -> ioError (userError (Text.unpack detail))
-        Right encoded -> pure encoded
+        Left detail -> pure (Left (Text.unpack detail))
+        Right encoded -> pure (Right encoded)
 
 transitionFixtureCleanupRun
   :: IORef (Maybe CleanupRun)
   -> (CleanupRun -> Either error CleanupRun)
-  -> IO ByteString.ByteString
+  -> IO FixtureReply
 transitionFixtureCleanupRun state transition = do
   observed <- readIORef state
   case observed of
-    Nothing -> pure ByteString.empty
+    Nothing -> pure (Right ByteString.empty)
     Just run -> case transition run of
-      Left _ -> pure ByteString.empty
-      Right next -> writeIORef state (Just next) >> encodeFixtureCleanupRun next
+      Left _ -> pure (Right ByteString.empty)
+      Right next -> do
+        encoded <- encodeFixtureCleanupRun next
+        case encoded of
+          Left detail -> pure (Left detail)
+          Right bytes -> writeIORef state (Just next) >> pure (Right bytes)
 
 fixtureEither :: (Show error) => Either error value -> Either String value
 fixtureEither = either (Left . show) Right
 
-readFixtureCleanupRun :: IORef (Maybe CleanupRun) -> IO ByteString.ByteString
+readFixtureCleanupRun :: IORef (Maybe CleanupRun) -> IO FixtureReply
 readFixtureCleanupRun state = do
   observed <- readIORef state
-  maybe (pure ByteString.empty) encodeFixtureCleanupRun observed
+  maybe (pure (Right ByteString.empty)) encodeFixtureCleanupRun observed
 
-encodeFixtureCleanupRun :: CleanupRun -> IO ByteString.ByteString
+encodeFixtureCleanupRun :: CleanupRun -> IO FixtureReply
 encodeFixtureCleanupRun run =
   case encodeCleanupRun cleanupRunMaximumBytes run of
-    Left detail -> ioError (userError (show detail))
-    Right encoded -> pure encoded
+    Left detail -> pure (Left (show detail))
+    Right encoded -> pure (Right encoded)
 
 httpRequestBody :: ByteString.ByteString -> ByteString.ByteString
 httpRequestBody request =
@@ -637,16 +688,18 @@ requestedProviderDispatchLane request =
         Left _ -> ProviderAdmitAndExecute
         Right payload -> providerDispatchLane payload
 
-fixtureConfigBytes :: IO ByteString.ByteString
-fixtureConfigBytes = do
-  maybePath <- lookupEnv "PRODBOX_TEST_AUTHORITY_CONFIG_PATH"
+fixtureConfigBytes :: IO FixtureReply
+fixtureConfigBytes = lookupEnv "PRODBOX_TEST_AUTHORITY_CONFIG_PATH" >>= fixtureConfigBytesAtPath
+
+fixtureConfigBytesAtPath :: Maybe FilePath -> IO FixtureReply
+fixtureConfigBytesAtPath maybePath = do
   case maybePath of
-    Nothing -> ioError (userError "PRODBOX_TEST_AUTHORITY_CONFIG_PATH is missing")
+    Nothing -> pure (Left "PRODBOX_TEST_AUTHORITY_CONFIG_PATH is missing")
     Just path -> do
       loaded <- loadConfigFileAtPath path
       case loaded of
-        Left detail -> ioError (userError detail)
-        Right config -> pure (TextEncoding.encodeUtf8 (Text.pack (renderConfigDhall config)))
+        Left detail -> pure (Left detail)
+        Right config -> pure (Right (TextEncoding.encodeUtf8 (Text.pack (renderConfigDhall config))))
 
 -- | The in-force identity of the exact bytes this fixture serves.
 --

@@ -5,7 +5,7 @@
 -- | Sprint 4.86: Stage C of the recover-to-clean cascade — the durability
 -- protocol that turns exact convergence into 'ReadyToUninstallEvidence'.
 --
--- [Lifecycle Reconciliation Doctrine § 5b node 7](../../../../documents/engineering/lifecycle_reconciliation_doctrine.md#5b-canonical-recover-to-clean-cascade)
+-- Lifecycle Reconciliation Doctrine § 5b node 7 (historical lifecycle_reconciliation_doctrine.md at revision `583443f`, section 5b)
 -- says the Lifecycle Authority commits the complete pre-uninstall cleanup
 -- report, the independent Backup Adapter reads back that exact report, and the
 -- Authority signs the one-shot local-completion permit; only readiness bound to

@@ -11,11 +11,11 @@
 -- follow-on has something to migrate onto.
 --
 -- Doctrine: exact-operation readiness
--- ([bootstrap_readiness_doctrine.md](../../documents/engineering/bootstrap_readiness_doctrine.md)),
+-- (bootstrap_readiness_doctrine.md (historical bootstrap_readiness_doctrine.md at revision `583443f`)),
 -- indexed operations + flat external evidence
--- ([pure_fp_standards.md](../../documents/engineering/pure_fp_standards.md)), and
+-- (pure_fp_standards.md (historical pure_fp_standards.md at revision `583443f`)), and
 -- the capability + evidence algebra
--- ([lifecycle_control_plane_architecture.md](../../documents/engineering/lifecycle_control_plane_architecture.md)).
+-- (lifecycle_control_plane_architecture.md (historical lifecycle_control_plane_architecture.md at revision `583443f`)).
 module Prodbox.ControlPlane
   ( module Prodbox.ControlPlane.CapabilityKind
   , module Prodbox.ControlPlane.Coordinate

@@ -3329,7 +3329,7 @@ credentialProvisionerAwsAdminAuthoritySuite =
       rendered `shouldSatisfy` either (const False) (ByteString.isInfixOf "\"--mode\",\"normal\"")
       rendered
         `shouldSatisfy` either (const False) (ByteString.isInfixOf (TextEncoding.encodeUtf8 imageDigest))
-      -- Leak canary (vault_doctrine.md §20.4): assert the absence of the fixture's
+      -- Leak canary (vault_doctrine.md at 583443f, section 20.4): assert the absence of the fixture's
       -- own values, not of a vendor prefix. A prefix assertion weakens silently as
       -- fixtures stop imitating credentials; this one fails whatever the fixture is.
       rendered
@@ -5480,7 +5480,7 @@ popPodConvergence observationsRef = do
       writeIORef observationsRef remaining
       pure observation
 
--- | Opaque fixture credential (vault_doctrine.md §20.1). Nothing here validates
+-- | Opaque fixture credential (vault_doctrine.md at 583443f, section 20.1). Nothing here validates
 -- shape — 'validateAdminCredentials' checks only non-emptiness — so both halves
 -- are descriptive slugs rather than imitations of production values. The leak
 -- canary above asserts their absence from the rendered Job.

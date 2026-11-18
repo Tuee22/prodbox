@@ -316,7 +316,7 @@ data BootstrapFenceAcquireDecision
 -- Acquisition refuses both an occupied fence and unobservable time. The
 -- retirement path uses the same classification because only positive expiry
 -- can authorize its CAS; an unobservable or regressed clock cannot authorize
--- a takeover. Class-D distinguishability, @chaos_hardening_doctrine.md § 21@.
+-- a takeover. Class-D distinguishability, chaos_hardening_doctrine.md at 583443f, section 21.
 data PredecessorLiveness
   = -- | Expiry is not yet certain on the trusted clock.
     PredecessorLive

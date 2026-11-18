@@ -13,4 +13,4 @@ Service-specific inventory covered all 17 then-enabled commercial regions and gl
 
 Local Kubernetes, `.data/`, `.test-data/`, configuration and Vault state were not reset. The report does not establish an empty AWS account, future absence, or usable local retained custody. Any later lifecycle admission takes fresh scoped observations.
 
-The non-secret local evidence is [summary.json](../../.build/manual-aws-cleanup/summary.json) and adjacent service inventories/deletion receipts. Those files are local operational evidence, not assumed present in another checkout; L20 governs retention if they are needed. No elevated key material was written into these reports.
+The recorded non-secret local evidence path was `.build/manual-aws-cleanup/summary.json`, with adjacent service inventories and deletion receipts. Those files are not present in this checkout; their availability must be established before relying on them, and L20 governs retention if they are needed. No elevated key material was written into these reports.

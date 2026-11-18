@@ -74,7 +74,7 @@ data EksCustomImagePushConfig = EksCustomImagePushConfig
 -- anonymous push — the same contract the home substrate relies on
 -- (@ensureCustomImageVariantsHomeLocal@ pushes with no @docker login@). The
 -- former hardcoded admin credential authenticated to nothing and was removed
--- under vault_doctrine.md §20.3.
+-- under vault_doctrine.md at 583443f, section 20.3.
 defaultEksCustomImagePushConfig :: EksCustomImagePushConfig
 defaultEksCustomImagePushConfig =
   EksCustomImagePushConfig

@@ -9,7 +9,7 @@
 -- | Sprint 4.86: package-private Authority endpoint for the cascade's three
 -- retained slot families.
 --
--- [Lifecycle Reconciliation Doctrine § 5b nodes 7, 9 and 10](../../../../documents/engineering/lifecycle_reconciliation_doctrine.md#5b-canonical-recover-to-clean-cascade)
+-- Lifecycle Reconciliation Doctrine § 5b nodes 7, 9 and 10 (historical lifecycle_reconciliation_doctrine.md at revision `583443f`, section 5b)
 -- put the Lifecycle Authority on both sides of the destructive host boundary,
 -- and "Prodbox.ControlPlane.HostCleanupReadinessRepository" and
 -- "Prodbox.ControlPlane.CascadeReportRepository" are the durable namespaces

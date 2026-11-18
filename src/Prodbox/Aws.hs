@@ -1727,7 +1727,7 @@ applyAwsTeardown repoRoot input = do
   -- fail-closed gate: if either operational resource's residue is
   -- 'ResidueUnreachable' (AWS IAM cannot be observed), teardown refuses
   -- rather than treating "cannot observe" as "destroyed"
-  -- (@lifecycle_reconciliation_doctrine.md § 3.1@). 'reconcileAbsent'
+  -- (@lifecycle_reconciliation_doctrine.md at 583443f, section 3.1@). 'reconcileAbsent'
   -- deliberately skips 'ResidueUnreachable' for cascade graceful
   -- degradation, so this gate is required here for the operational class.
   runTeardown :: IO (Either String IamTeardownResult)
@@ -1981,7 +1981,7 @@ discoverOperationalResidue repoRoot adminCreds = do
   -- 7.14), so observing it resolves the reference from host Vault. At harness
   -- \*preflight* the cluster is not up yet, so Vault is unreachable and the
   -- observation returns 'ResidueUnreachable'. The fail-closed gate
-  -- (lifecycle_reconciliation_doctrine.md §3.1) exists to avoid stranding the
+  -- (lifecycle_reconciliation_doctrine.md at 583443f, section 3.1) exists to avoid stranding the
   -- operational IAM USER — and that user is observed authoritatively via the
   -- admin credential ('operationalIamUserExists'), which is independent of
   -- Vault. When the user is CONFIRMED ABSENT, the aws-config block is a
@@ -2310,7 +2310,7 @@ applyAwsRequestQuotas repoRoot input =
 -- production @config setup@ ('applyConfigSetup') and the test harness
 -- ('Prodbox.TestRunner', Sprint 5.10) construct config through this ONE
 -- function, so the harness drives the same Tier-0 authoring flow against a
--- config it generated, not a fixture it carries (config_doctrine.md §0, "The
+-- config it generated, not a fixture it carries (config_doctrine.md at 583443f, section 0, "The
 -- test harness generates its run config"). Sensitive fields are never written
 -- here — they remain @SecretRef.Vault@ pointers in @currentConfig@; the region
 -- comes from the input's admin credential.
@@ -3250,7 +3250,7 @@ operationalAwsConfigResidueFromCredentialsResult credentialsResult =
 -- @operational-iam-user@ residue before the teardown fail-closed gate.
 --
 -- The aws-config block is the Vault-stored credential FOR the operational IAM
--- user. The fail-closed gate (lifecycle_reconciliation_doctrine.md §3.1) exists
+-- user. The fail-closed gate (lifecycle_reconciliation_doctrine.md at 583443f, section 3.1) exists
 -- so a resource that "cannot be observed" is never presumed gone — its purpose
 -- here is to avoid stranding the operational IAM USER. That user is observed
 -- authoritatively through the admin credential, which does not depend on Vault.

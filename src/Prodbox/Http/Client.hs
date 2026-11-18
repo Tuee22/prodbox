@@ -3,7 +3,7 @@
 -- | Native Haskell HTTP client wrapping 'Network.HTTP.Client' and
 -- 'Network.HTTP.Client.TLS'. Replaces the legacy curl subprocess pattern
 -- on the host side per Sprint 2.17 and the secret-derivation doctrine
--- (@documents/engineering/secret_derivation_doctrine.md@).
+-- (@documents/engineering/secret_derivation_doctrine.md at revision `583443f`@).
 module Prodbox.Http.Client
   ( HttpError (..)
   , HttpBoundedError (..)

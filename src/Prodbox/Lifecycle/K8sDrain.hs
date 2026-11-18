@@ -4,7 +4,7 @@
 -- commands.
 --
 -- Closes leak classes 2-5 from
--- @documents/engineering/lifecycle_reconciliation_doctrine.md § 1@
+-- @documents/engineering/lifecycle_reconciliation_doctrine.md at 583443f, section 1@
 -- (CSI volumes, LBC load balancers, cert-manager DNS01 records,
 -- direct-aws-CLI subprocess Route 53 records) by deleting the K8s
 -- resources whose controllers own the corresponding AWS objects, then
@@ -141,8 +141,7 @@ drainKubectlLimits =
 -- | Why one drain @kubectl@ call produced no answer.
 --
 -- Sprint 4.93. The two cases used to be one @String@, and the distinction is
--- the one [Lifecycle Reconciliation
--- Doctrine](../../../documents/engineering/lifecycle_reconciliation_doctrine.md)
+-- the one historical lifecycle_reconciliation_doctrine.md at revision `583443f`
 -- requires: a bounded refusal is __unobservable__ — the API server may or may
 -- not have acted, and the drain cannot claim otherwise — while a non-zero exit
 -- is the server answering and refusing. Collapsing them made a wedged child
@@ -229,7 +228,7 @@ drainKubectlArguments env arguments =
   ["--kubeconfig", drainKubeconfigPath env] ++ arguments
 
 -- | Outcome of the drain. Encodes the three-outcome ADT documented
--- in @documents/engineering/lifecycle_reconciliation_doctrine.md
+-- in @documents/engineering/lifecycle_reconciliation_doctrine.md at revision `583443f`
 -- § 3 layer 1@:
 --
 --   * 'DrainSucceeded' — cluster was reachable, the targeted K8s
@@ -274,7 +273,7 @@ data DrainResult
 -- names a cluster that no longer exists" alike, and the caller then
 -- read every one of them as "the cluster is gone" — the
 -- @IO Bool@ producer collapse
--- [chaos_hardening_doctrine.md § 23](chaos_hardening_doctrine.md) names
+-- chaos_hardening_doctrine.md at 583443f, section 23 names
 -- as where conversions fail.
 --
 -- A non-zero kubectl result cannot establish cluster absence. Connection

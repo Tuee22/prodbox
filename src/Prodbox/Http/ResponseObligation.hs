@@ -7,7 +7,7 @@
 -- expressible through this seam.
 --
 -- The defect this removes is a /conversion/, in the sense of
--- [chaos_hardening_doctrine.md § 23](../../../documents/engineering/chaos_hardening_doctrine.md):
+-- chaos_hardening_doctrine.md at 583443f, section 23:
 -- a handler's typed failure escaped as an exception and became a socket closed
 -- with zero bytes, which on the wire is indistinguishable from a network fault.
 -- The Bootstrap Broker has mapped a synchronous interpreter failure onto a reply
@@ -74,7 +74,7 @@ instance Show ResponseRefusal where
 -- Opaque, with 'mkResponseObligation' as its only constructor, so
 -- 'withResponseObligation' cannot be invoked without a refusal renderer having
 -- been supplied. This is the delivery mechanism the required-field rule of
--- [chaos_hardening_doctrine.md § 21](../../../documents/engineering/chaos_hardening_doctrine.md)
+-- chaos_hardening_doctrine.md at 583443f, section 21
 -- asks for: not a proof type somebody may pass, but an argument the call does
 -- not type-check without.
 data ResponseObligation reply = ResponseObligation
@@ -105,7 +105,7 @@ mkResponseObligation
   -- /reason/ nowhere: production must not put an exception's text on the wire,
   -- so after @4.60@ a `500` was the entire surviving record of any handler
   -- failure — a refusal that does not retain its structured reason, which
-  -- [bootstrap_readiness_doctrine.md § 0.5](../../../documents/engineering/bootstrap_readiness_doctrine.md)
+  -- bootstrap_readiness_doctrine.md at 583443f, section 0.5
   -- forbids.
   --
   -- A record field with a default would have made observation opt-in, and the

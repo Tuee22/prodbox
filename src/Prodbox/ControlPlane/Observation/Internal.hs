@@ -3,7 +3,7 @@
 -- A round-trip witness is the one value on the readiness path that claims
 -- something a read cannot establish: that a conditional __write__ reached the
 -- store and the store accepted it.
--- [bootstrap_readiness_doctrine.md § 2.3](../../../../documents/engineering/bootstrap_readiness_doctrine.md)
+-- bootstrap_readiness_doctrine.md at 583443f, section 2.3
 -- permits an object GET to prove only a read capability, so evidence of a write
 -- must come from the interpreter that performed one — never from a caller that
 -- decided it had happened.
@@ -23,7 +23,7 @@
 -- came to satisfy a write-shaped requirement with a string literal.
 --
 -- Note the bound this does /not/ deliver, per
--- [chaos_hardening_doctrine.md § 22](../../../../documents/engineering/chaos_hardening_doctrine.md):
+-- chaos_hardening_doctrine.md at 583443f, section 22:
 -- it constrains what a process can construct, not how old the constructed value
 -- may be by the time it is consumed. That is what 'roundTripWitnessLandedAt' and
 -- the freshness window are for — the witness carries the instant the write

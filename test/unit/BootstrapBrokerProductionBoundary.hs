@@ -1337,7 +1337,7 @@ bootstrapBrokerProductionBoundarySuite = do
     it "refuses a durably-recorded unobservable checkpoint that records no reason" $ do
       -- A persisted "cannot observe" that says nothing is indistinguishable
       -- from one whose reason was lost, which is the distinguishability class
-      -- chaos_hardening_doctrine.md section 23 names -- here written to the
+      -- chaos_hardening_doctrine.md at revision `583443f`, section 23 names -- here written to the
       -- store rather than to a log.
       secretWorkerCheckpointInvariantViolations
         (unobservableWorkerCheckpoint "Kubernetes API request failed: connection timed out")

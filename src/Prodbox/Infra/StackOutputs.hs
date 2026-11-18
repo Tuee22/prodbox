@@ -5,7 +5,7 @@
 -- Replaces the file-existence snapshot cache as the authoritative
 -- answer to \"is stack X present in its backend?\" and
 -- \"what outputs did stack X produce?\". Per
--- @documents\/engineering\/lifecycle_reconciliation_doctrine.md § 3@,
+-- @documents\/engineering\/lifecycle_reconciliation_doctrine.md at 583443f, section 3@,
 -- the snapshot file under
 -- @.prodbox-state\/\<stack>\/stack-snapshot.json@ was a
 -- doctrine-violating predicate proxy because it could drift from the

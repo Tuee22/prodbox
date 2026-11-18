@@ -7,7 +7,7 @@
 -- wiring in 'Prodbox.CLI.Pulumi' runs the probe and refuses before any real
 -- stack action starts. The live deployed-Vault proof lands after the
 -- in-cluster Vault is deployable (Sprint 3.17). See
--- @documents/engineering/vault_doctrine.md@ §10 (Pulumi backend under Vault).
+-- @documents/engineering/vault_doctrine.md at 583443f, section 10 (Pulumi backend under Vault).
 module Prodbox.Vault.Gate
   ( VaultGateDecision (..)
   , VaultGateOutcome (..)
@@ -48,7 +48,7 @@ vaultGateAllows decision = case decision of
   _ -> False
 
 -- | The fail-closed operator message for a blocked decision (per
--- vault_doctrine.md §10). 'Nothing' when the gate allows. The message never
+-- vault_doctrine.md at 583443f, section 10). 'Nothing' when the gate allows. The message never
 -- includes secret values and makes clear that no Pulumi command was started.
 renderVaultGateBlock :: VaultGateDecision -> Maybe String
 renderVaultGateBlock decision = case decision of

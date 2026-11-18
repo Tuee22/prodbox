@@ -512,7 +512,7 @@ mkTlsRetentionAuthorityClient transport substrate scope = do
       -- projection. This `where` clause used to hold a second, verbatim copy of
       -- `tlsAuthorityResponseHttpStatus` — a restatement that a change to the
       -- server would have made wrong rather than updated
-      -- ([chaos_hardening_doctrine.md § 23](../../../documents/engineering/chaos_hardening_doctrine.md)).
+      -- (chaos_hardening_doctrine.md at 583443f, section 23).
       -- The peer's status stays an `Int` because it is a byte off the wire and
       -- no type here bounds what a peer may send (§ 22); the comparison
       -- projects the expected value down to meet it.

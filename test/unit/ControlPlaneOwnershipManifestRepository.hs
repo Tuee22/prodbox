@@ -526,7 +526,7 @@ controlPlaneOwnershipManifestRepositorySuite =
       -- with no writer behind it.  The create lane now commits and reads back
       -- before the effect, so the licence for that absence is gone, and an
       -- absence assertion whose licence is gone has to be surfaced rather than
-      -- left to hold the defect in place (unit_testing_policy.md § 0, statement
+      -- left to hold the defect in place (unit_testing_policy.md at 583443f, section 0, statement
       -- 11).  What must still be absent is a *second* way in: no raw cluster
       -- coordinate, no host-side credential material.
       repositorySource <-

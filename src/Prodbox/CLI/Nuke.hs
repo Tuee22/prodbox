@@ -13,6 +13,7 @@
 module Prodbox.CLI.Nuke
   ( abortOrContinue
   , confirmationLiteral
+  , confirmationAccepted
   , defaultNukeOptions
   , ProductionDecommissionAvailability (..)
   , ProductionNukeRemoteCapabilities (..)
@@ -247,6 +248,11 @@ defaultNukeOptions =
 
 confirmationLiteral :: String
 confirmationLiteral = "NUKE EVERYTHING"
+
+-- | Interpret supplied confirmation text without performing the operator-only
+-- prompt or invoking decommission preparation.
+confirmationAccepted :: String -> Bool
+confirmationAccepted value = normalizeConfirmation value == confirmationLiteral
 
 newtype ProductionDecommissionAvailability
   = ProductionDecommissionReady NukeDecommissionComposition
@@ -1025,7 +1031,7 @@ runNukeInteractive availability repoRoot suppliedReceipt suppliedDisposition =
           writeOutput "> "
           hFlush stdout
           typed <- getLine
-          if normalizeConfirmation typed == confirmationLiteral
+          if confirmationAccepted typed
             then
               runNukeOrchestration
                 composition

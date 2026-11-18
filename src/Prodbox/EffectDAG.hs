@@ -115,7 +115,7 @@ orderedUnique = go Set.empty
 -- Tier-0 component dependency/readiness graph
 -- ("Prodbox.Config.ComponentGraph") reuses the __same__ back-edge cycle
 -- rejection and missing-node rejection as the prerequisite DAG above, honouring
--- [bootstrap_readiness_doctrine.md](../documents/engineering/bootstrap_readiness_doctrine.md)
+-- bootstrap_readiness_doctrine.md (historical bootstrap_readiness_doctrine.md at revision `583443f`)
 -- M1/M2 ("ordering is derived, not hand-written" over a config-sourced graph).
 --
 -- Unlike 'transitiveClosureIds' (which returns the closure as a text-sorted

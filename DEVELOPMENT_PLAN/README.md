@@ -13,8 +13,8 @@ Read [AGENTS.md](../AGENTS.md), the [Development Plan Standards](development_pla
 
 | Phase | Contract | State | Next work / entry condition |
 |---:|---|---|---|
-| 0 | [Contracts and documentation](phase_00_contracts_and_documentation.md) | Active — Next | Documentation adopted. Migrate code-side checker/generated-artifact expectations and prove the new grammar with negative and targeted source-mutation cases. |
-| 1 | [CLI contexts, kind and evidence](phase_01_cli_contexts_kind_and_evidence.md) | Planned | Phase 0 complete; actual kind mounts, isolation and bounded evidence/mutation runner. |
+| 0 | [Contracts and documentation](phase_00_contracts_and_documentation.md) | Complete | Checker, negative fixtures, M00 and owned removals validated; see [evidence](evidence/phase_00_validation.md). |
+| 1 | [CLI contexts, kind and evidence](phase_01_cli_contexts_kind_and_evidence.md) | Active — Next | Actual kind mounts, isolation and bounded evidence/mutation runner. |
 | 2 | [Vault, MinIO and bootstrap](phase_02_vault_minio_and_bootstrap.md) | Planned | Phase 1 complete; real protected-production and test self-unseal policies. |
 | 3 | [Authority and local lifecycle](phase_03_authority_and_local_lifecycle.md) | Planned | Phase 2 complete; shared public lifecycle engine and honest never-admitted/no-op deletion. |
 | 4 | [Ephemeral credentials](phase_04_ephemeral_credentials.md) | Planned | Phase 3 complete plus real AWS test account/elevated fixture. |
@@ -29,11 +29,17 @@ Read [AGENTS.md](../AGENTS.md), the [Development Plan Standards](development_pla
 
 The accepted target uses retained local kind with Vault, MinIO, the existing management roles and application services. Ordinary target `delete` removes all deployment-owned AWS resources and updates retained local state; it does not remove its own management cluster. Production/test roots and credentials are isolated. [Product architecture](../documents/engineering/product_architecture.md) owns these decisions.
 
-This Markdown adoption does not change the parser, current RKE2 implementation, runtime defaults, Haskell tests, generated files or infrastructure. The current binary may still expose the old commands and lifecycle behavior. Use its actual help for live operations until each replacement slice is delivered. Historical test totals and the recent manual AWS cleanup are not qualification of the target.
+The documentation adoption itself did not implement the target. Subsequent
+Phase 0 and Phase 1 work has changed code and tests, but the current binary
+still exposes legacy commands and lifecycle behavior alongside incomplete new
+work. Use its actual help for live operations until each replacement slice is
+delivered. Historical test totals and the recent manual AWS cleanup are not
+qualification of the target.
 
-**Phase 0 is intentionally open.** Its documentation subtask is adopted; its code/checker/generated-artifact migration and executable negative/mutation proof have not been performed. No phase is marked Complete from the documentation rewrite alone.
-
-The existing checker still hardcodes the old plan/ledger paths and sprint format. A failure caused by that known mismatch is owned by Phase 0. Do not restore old doctrine, manufacture old sprint statuses, disable checks, or edit code during a Markdown-only request to hide it.
+Phase 0 closed only after the checker migration, adverse fixtures, isolated
+mutation campaign, owned removals, and post-removal canonical gate. Phase 1 is
+the current implementation entrypoint. Historical snapshot availability limits
+remain recorded in the Phase 0 evidence; they are not new runtime qualification.
 
 ## Implementation inputs
 

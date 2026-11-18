@@ -109,7 +109,7 @@ ports:
 # `.Values.resources.bootstrapBroker`, exactly like the gateway chart — the
 # capacity plan is the single source of truth, so no chart-local default is kept
 # here. Control-plane demand therefore never hides behind a combined gateway
-# envelope (resource_scaling_doctrine.md § 2E).
+# envelope (resource_scaling_doctrine.md at revision 583443f § 2E).
 
 # The mounted broker Dhall (runtime role `bootstrap-broker`, config identity
 # `bootstrap-broker-config-v1`, mounted at /etc/bootstrap-broker/config). The

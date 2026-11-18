@@ -4,7 +4,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Workload-Pod Dhall settings module per
---   [config_doctrine.md §4](../../documents/engineering/config_doctrine.md#4-decoding).
+--   config_doctrine.md at 583443f, section 4.
 --
 -- The workload Pod binary reads its full configuration from
 -- @--config /etc/workload/config.dhall@, decoded in-process via the native
@@ -17,7 +17,7 @@
 -- workload binary. The Sprint 3.14 transitional @PRODBOX_*@ env-var fallback
 -- ladder in @Prodbox.Workload@ was deleted, so @--config@ is mandatory: a
 -- missing or unparseable @--config@ is a fast, structured failure, never a
--- silent env-var fallback (see config_doctrine.md § 10. Forbidden surfaces).
+-- silent env-var fallback (see config_doctrine.md at 583443f, section 10. Forbidden surfaces).
 module Prodbox.Workload.Settings
   ( WorkloadConfigDhall (..)
   , WorkloadModeDhall (..)

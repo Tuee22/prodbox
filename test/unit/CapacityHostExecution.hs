@@ -3,8 +3,11 @@
 module CapacityHostExecution (capacityHostExecutionSuite) where
 
 import Control.Monad (forM_)
+import Data.Either (isLeft)
+import Data.IORef (newIORef, readIORef, writeIORef)
 import Data.Maybe (isJust, isNothing)
 import Data.Word (Word64)
+import GHC.Clock (getMonotonicTimeNSec)
 import Numeric.Natural (Natural)
 import Prodbox.Capacity.Allocation qualified as Allocation
 import Prodbox.Capacity.Config qualified as Capacity
@@ -16,6 +19,35 @@ import TestSupport
 
 capacityHostExecutionSuite :: SuiteBuilder ()
 capacityHostExecutionSuite = describe "host execution budget and original window" $ do
+  it "does not enter prepared work from an ordinary unmanaged process" $ do
+    now <- getMonotonicTimeNSec
+    let plan = fixture (compile runtime demand)
+        key = maybe (error "invalid fixture key") id (Subprocess.hostExecutionKeyFromText (replicate 64 'a'))
+        window =
+          maybe (error "invalid fixture window") id $
+            Subprocess.hostExecutionWindow
+              (now + 12000000000)
+              (now + 2000000000)
+              (now + 3000000000)
+              (now + 4000000000)
+              (now + 5000000000)
+        limits = error "unmanaged placement must refuse before inspecting limits"
+    entered <- newIORef False
+    outcome <- Subprocess.withHostSubprocessPlacement plan key window $ \placement ->
+      Subprocess.withPreparedHostSubprocess placement runtime limits $ \_ -> do
+        writeIORef entered True
+        pure (Right ())
+    outcome `shouldSatisfy` isLeft
+    readIORef entered `shouldReturn` False
+    Subprocess.kindHostSubprocessDescription plan key window
+      `shouldNotBe` Subprocess.hostSubprocessDescription plan key window
+    kindOutcome <- Subprocess.withKindHostSubprocessPlacement plan key window $ \placement ->
+      Subprocess.withPreparedKindHostSubprocess placement runtime limits $ \_ -> do
+        writeIORef entered True
+        pure (Right ())
+    kindOutcome `shouldSatisfy` isLeft
+    readIORef entered `shouldReturn` False
+
   it "charges one shared slice and derives its parent ceiling after the child/helper reserve" $ do
     let plan = fixture (compile runtime demand)
     Host.hostExecutionSourcePlan plan `shouldBe` sourcePlan

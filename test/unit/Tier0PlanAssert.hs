@@ -2,7 +2,7 @@
 
 -- | Sprint 1.72: drift guard for the Ring-1 over-commit shim that
 -- 'renderProjectConfigDhall' bakes into a generated @prodbox.dhall@
--- (resource_scaling_doctrine.md §2C). The renderer emits the guarded body only
+-- (resource_scaling_doctrine.md at 583443f, section 2C). The renderer emits the guarded body only
 -- for a plan that itself compiles, so the threat the shim actually defends
 -- against is a hand-edit of an already-generated, valid file — exactly what the
 -- negative case below models. Three facts are pinned:

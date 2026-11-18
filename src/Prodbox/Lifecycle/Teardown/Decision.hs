@@ -67,8 +67,7 @@ data StackDecisionRefusal
 -- @retireAwsStackCheckpointReference@ re-observes the absence and the
 -- checkpoint pair itself and never consults this decision, so a payload minted
 -- on this arm would be read by nothing. A value that exists only to look like a
--- proof is the exact shape [Pure FP Standards
--- § 7.1](../../../../documents/engineering/pure_fp_standards.md) names, and
+-- proof is the exact shape pure_fp_standards.md at revision `583443f`, section 7.1 names, and
 -- adding one inside the sprint that repairs that shape would be self-defeating.
 -- The payload lands with the conversion that consumes it.
 data StackDesiredAbsenceDecision (surface :: CleanupSurface)

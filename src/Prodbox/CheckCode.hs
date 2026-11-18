@@ -80,6 +80,7 @@ module Prodbox.CheckCode
   , checkAwsCoordinateLiterals
   , checkDeploymentConfigOwnership
   , deploymentConfigOwnershipViolations
+  , retiredHostConfigViolations
   , checkGatewayMinioEndpointOwnership
   , gatewayMinioEndpointOwnershipViolations
   , checkChartDeploymentContextOwnership
@@ -120,16 +121,24 @@ module Prodbox.CheckCode
   , isCitedSourcePath
   , isRelativeLinkTarget
   , boundSectionCitationsInLine
+  , historicalSectionCitationsInLine
+  , unsupportedHistoricalRevisionCitationsInLine
+  , historicalSectionReferenceViolations
   , checkDoctrineSectionCitations
   , citedSourcePathsInDoc
-  , planSprintBlocks
-  , developmentPlanResumeViolations
-  , sprintBlockMissingFields
-  , sprintDependencyDirectionViolations
-  , executionOrderViolations
-  , sprintDependencyFields
-  , sprintLiveDependencyIds
-  , compareSprintIds
+  , currentSourceObjectExists
+  , historicalSourcePathsInDoc
+  , numericalRemovalOwnerViolations
+  , numericalPhaseDependencyViolations
+  , commandDispositionViolations
+  , commandOptionDispositionViolations
+  , commandRequiredDispositionViolations
+  , numericalQueueViolations
+  , phaseManifestBindingViolations
+  , objectiveDispositionViolations
+  , completedPhaseViolations
+  , optionAliasDispositionViolations
+  , numericalPhaseContractViolations
   , documentSectionNumbers
   , headingSectionNumber
   , governedDocStatusValues
@@ -137,10 +146,8 @@ module Prodbox.CheckCode
   , inlineCodeSpansInLine
   , parseGovernedDocStatusField
   , removedLegacyTransportSourcePaths
-  , retiredCitedSourcePaths
   , listRepoOwnedPaths
   , matchesSprintToken
-  , pendingRemovalPrerequisiteViolations
   , parseGeneratedSectionsField
   , planOptionsHonoredViolations
   , destructivePlanOptionsArms
@@ -200,7 +207,16 @@ where
 import Control.Exception (evaluate)
 import Control.Monad (filterM, foldM, forM)
 import Data.ByteString.Char8 qualified as ByteStringChar8
-import Data.Char (isAlpha, isAlphaNum, isAsciiLower, isAsciiUpper, isDigit, isSpace, toLower)
+import Data.Char
+  ( isAlpha
+  , isAlphaNum
+  , isAsciiLower
+  , isAsciiUpper
+  , isDigit
+  , isHexDigit
+  , isSpace
+  , toLower
+  )
 import Data.Either (rights)
 import Data.List
   ( dropWhileEnd
@@ -228,8 +244,6 @@ import Prodbox.CLI.Command
   )
 import Prodbox.CLI.Docs
   ( renderBashCompletion
-  , renderCommandSurfaceMatrix
-  , renderCommandSurfaceTopLevel
   , renderFishCompletion
   , renderGroupManpage
   , renderMarkdownCommandReference
@@ -240,7 +254,12 @@ import Prodbox.CLI.Output
   ( writeError
   , writeOutputLine
   )
-import Prodbox.CLI.Spec (CommandSpec (..), commandRegistry, leafCommandPaths)
+import Prodbox.CLI.Spec
+  ( CommandSpec (..)
+  , OptionSpec (longName, required, shortName)
+  , commandRegistry
+  , leafCommandPaths
+  )
 import Prodbox.Capacity.Allocation qualified as Allocation
 import Prodbox.Capacity.Config (defaultResourcePlan)
 import Prodbox.Capacity.MeasuredProfile (certifyMeasuredProfiles)
@@ -253,10 +272,6 @@ import Prodbox.ControlPlane.Runtime (controlPlaneCapacityPlan)
 import Prodbox.Error (fatalError)
 import Prodbox.Gateway.ChartStatics qualified as ChartStatics
 import Prodbox.Gateway.Probe (renderGatewayProbeDefaultsYaml)
-import Prodbox.Infra.StackDescriptor
-  ( renderStackCommandSurfaceMarkdown
-  , stackDescriptors
-  )
 import Prodbox.Legacy.EscapeRegistry
   ( escapeRegistryViolations
   , isLegacyEscapeScanFile
@@ -286,7 +301,6 @@ import Prodbox.Lifecycle.OwnedResourceTags
 import Prodbox.Lifecycle.ProviderWorker.ChartStatics qualified as ProviderWorkerStatics
 import Prodbox.Lifecycle.ResourceClass
   ( LifecycleClass (..)
-  , renderRegisteredResourcesMarkdown
   , resourceLifecycleClasses
   , resourceNamesOfClass
   )
@@ -372,7 +386,8 @@ import Prodbox.Tla
   , tlaModels
   )
 import System.Directory
-  ( copyFile
+  ( canonicalizePath
+  , copyFile
   , createDirectoryIfMissing
   , doesDirectoryExist
   , doesFileExist
@@ -383,7 +398,9 @@ import System.Exit
   ( ExitCode (..)
   )
 import System.FilePath
-  ( normalise
+  ( isAbsolute
+  , makeRelative
+  , normalise
   , splitDirectories
   , takeDirectory
   , takeExtension
@@ -424,14 +441,6 @@ generatedSectionRules =
       , generatedSectionEndMarker = "<!-- prodbox:command-registry.markdown:end -->"
       , generatedSectionRender = const (renderMarkdownCommandReference commandRegistry)
       , generatedSectionRendererSources = ["src/Prodbox/CLI/Docs.hs"]
-      }
-  , GeneratedSectionRule
-      { generatedSectionKey = "aws-lifecycle-remedies"
-      , generatedSectionPath = "documents/engineering/aws_test_environment.md"
-      , generatedSectionStartMarker = AwsRemedy.awsRemedySectionStart
-      , generatedSectionEndMarker = AwsRemedy.awsRemedySectionEnd
-      , generatedSectionRender = const AwsRemedy.renderAwsRemedyTable
-      , generatedSectionRendererSources = ["src/Prodbox/Lifecycle/AwsRemedy.hs"]
       }
   , GeneratedSectionRule
       { generatedSectionKey = "route-registry.api"
@@ -592,54 +601,6 @@ generatedSectionRules =
       , generatedSectionRender = const AuthorityStatics.renderLifecycleAuthorityRecoveryObserverYaml
       , generatedSectionRendererSources = ["src/Prodbox/Lifecycle/Authority/ChartStatics.hs"]
       }
-  , -- Sprint 4.22: the managed-resource registry's lifecycle-class facts
-    -- are rendered into substrates.md so `prodbox dev docs check` fails the
-    -- build if the doc drifts from the registry SSoT.
-    GeneratedSectionRule
-      { generatedSectionKey = "resource-lifecycle-classes"
-      , generatedSectionPath = "DEVELOPMENT_PLAN/substrates.md"
-      , generatedSectionStartMarker = "<!-- prodbox:resource-lifecycle-classes:start -->"
-      , generatedSectionEndMarker = "<!-- prodbox:resource-lifecycle-classes:end -->"
-      , generatedSectionRender = const (renderRegisteredResourcesMarkdown resourceLifecycleClasses)
-      , generatedSectionRendererSources = ["src/Prodbox/Lifecycle/ResourceClass.hs"]
-      }
-  , -- Sprint 4.27: the registry-name↔CLI-command table is rendered from
-    -- the `StackDescriptor` SSoT into substrates.md so `prodbox dev docs
-    -- check` fails the build if the doc drifts from the typed source.
-    -- This is the typed source Sprint 0.10 consumes for the
-    -- registry-name↔CLI-verb list and Sprint 5.6 consumes for
-    -- registry-generated golden coverage.
-    GeneratedSectionRule
-      { generatedSectionKey = "stack-command-surface"
-      , generatedSectionPath = "DEVELOPMENT_PLAN/substrates.md"
-      , generatedSectionStartMarker = "<!-- prodbox:stack-command-surface:start -->"
-      , generatedSectionEndMarker = "<!-- prodbox:stack-command-surface:end -->"
-      , generatedSectionRender = const (renderStackCommandSurfaceMarkdown stackDescriptors)
-      , generatedSectionRendererSources = ["src/Prodbox/Infra/StackDescriptor.hs"]
-      }
-  , -- Sprint 1.29: the §2 top-level command table and the §3 per-group
-    -- command matrix in cli_command_surface.md are rendered directly from
-    -- the typed `commandRegistry`, so `prodbox dev docs check` fails the build
-    -- if the operator command matrix drifts from the parser SSoT. The §2
-    -- table and §3 matrix are non-contiguous (substantial prose lives
-    -- between them and after the matrix), so they are two separate
-    -- generated sections.
-    GeneratedSectionRule
-      { generatedSectionKey = "command-surface-toplevel"
-      , generatedSectionPath = "documents/engineering/cli_command_surface.md"
-      , generatedSectionStartMarker = "<!-- prodbox:command-surface-toplevel:start -->"
-      , generatedSectionEndMarker = "<!-- prodbox:command-surface-toplevel:end -->"
-      , generatedSectionRender = const (renderCommandSurfaceTopLevel commandRegistry)
-      , generatedSectionRendererSources = ["src/Prodbox/CLI/Spec.hs", "src/Prodbox/CLI/Docs.hs"]
-      }
-  , GeneratedSectionRule
-      { generatedSectionKey = "command-surface-matrix"
-      , generatedSectionPath = "documents/engineering/cli_command_surface.md"
-      , generatedSectionStartMarker = "<!-- prodbox:command-surface-matrix:start -->"
-      , generatedSectionEndMarker = "<!-- prodbox:command-surface-matrix:end -->"
-      , generatedSectionRender = const (renderCommandSurfaceMatrix commandRegistry)
-      , generatedSectionRendererSources = ["src/Prodbox/CLI/Spec.hs", "src/Prodbox/CLI/Docs.hs"]
-      }
   ]
 
 trackingGeneratedPaths :: [TrackedGeneratedPath]
@@ -743,7 +704,7 @@ runCheckCode repoRoot = do
           -- covers the evidence surface. Without it `all` resolves to the library
           -- and the executable only, so `test/` was linted here and type-checked
           -- nowhere routine — see "The region of Ring 2" in
-          -- resource_scaling_doctrine.md section 2C.
+          -- resource_scaling_doctrine.md at revision `583443f`, section 2C.
           ["build", "--builddir=.build", "all", "--enable-tests", "--ghc-options=-Werror"]
       case buildExit of
         ExitFailure _ -> pure buildExit
@@ -880,7 +841,7 @@ runGeneratedArtifactLint repoRoot writeEnabled = do
 -- complete and ~8% wrong across all 62 governed documents, with no entry
 -- carrying anything @grep -rl@ could not reconstruct exactly. The reverse edge
 -- is now recovered by search
--- (@documents\/documentation_standards.md § 4@), not authored.
+-- (@documents\/documentation_standards.md at 583443f, section 4@), not authored.
 runGovernedDocChecks :: FilePath -> IO [String]
 runGovernedDocChecks repoRoot = do
   harmonyViolations <- forceViolationFindings (checkGeneratedSectionsHarmony repoRoot)
@@ -888,19 +849,733 @@ runGovernedDocChecks repoRoot = do
   statusViolations <- forceViolationFindings (checkGovernedDocStatusValues repoRoot)
   citedPathViolations <- forceViolationFindings (checkPlanCitedSourcePaths repoRoot)
   sectionCitationViolations <- forceViolationFindings (checkDoctrineSectionCitations repoRoot)
-  sprintFieldViolations <- forceViolationFindings (checkSprintRequiredFields repoRoot)
-  dependencyDirectionViolations <- forceViolationFindings (checkPlanDependencyDirection repoRoot)
-  resumeLedgerViolations <- forceViolationFindings (checkDevelopmentPlanResumeLedger repoRoot)
+  historicalCitationViolations <- forceViolationFindings (checkHistoricalSectionCitations repoRoot)
+  removalOwnerViolations <- forceViolationFindings (checkNumericalRemovalOwners repoRoot)
+  numericalDependencyViolations <- forceViolationFindings (checkNumericalPhaseDependencies repoRoot)
+  commandDispositionFindings <- forceViolationFindings (checkCommandDispositions repoRoot)
+  numericalQueueFindings <- forceViolationFindings (checkNumericalQueue repoRoot)
+  manifestBindingFindings <- forceViolationFindings (checkPhaseManifestBindings repoRoot)
+  objectiveFindings <- forceViolationFindings (checkObjectiveDispositions repoRoot)
+  completionFindings <- forceViolationFindings (checkCompletedPhases repoRoot)
+  phaseContractFindings <- forceViolationFindings (checkNumericalPhaseContracts repoRoot)
   pure
     ( harmonyViolations
         ++ linkViolations
         ++ statusViolations
         ++ citedPathViolations
         ++ sectionCitationViolations
-        ++ sprintFieldViolations
-        ++ dependencyDirectionViolations
-        ++ resumeLedgerViolations
+        ++ historicalCitationViolations
+        ++ removalOwnerViolations
+        ++ numericalDependencyViolations
+        ++ commandDispositionFindings
+        ++ numericalQueueFindings
+        ++ manifestBindingFindings
+        ++ objectiveFindings
+        ++ completionFindings
+        ++ phaseContractFindings
     )
+
+-- | Explicit historical citations are checked against the preserved revision,
+-- rather than being mistaken for claims about the adopted current document.
+historicalSectionCitationsInLine :: String -> [(String, String)]
+historicalSectionCitationsInLine = go . words . map clean
+ where
+  clean c | c `elem` ("`@(),\"" :: String) = ' '
+  clean c = c
+  go (doc : "at" : "revision" : "583443f" : "section" : number : rest) =
+    citation doc number ++ go rest
+  go (doc : "at" : "583443f" : "section" : number : rest) =
+    citation doc number ++ go rest
+  go [doc, "at", "revision", "583443f", "section"] = citation doc ""
+  go [doc, "at", "583443f", "section"] = citation doc ""
+  go (_ : rest) = go rest
+  go [] = []
+  citation doc number =
+    let basename = takeFileNameSimple doc
+        section = dropTrailingDot (takeWhile isSectionNumberChar number)
+        parsed = if any isDigit (take 1 section) then section else number
+     in [(basename, parsed) | ".md" `isSuffixOf` basename]
+
+unsupportedHistoricalRevisionCitationsInLine :: String -> [(String, String)]
+unsupportedHistoricalRevisionCitationsInLine = go . words . map clean
+ where
+  clean c | c `elem` ("`@(),\"" :: String) = ' '
+  clean c = c
+  go (doc : "at" : "revision" : revision : "section" : _ : rest) =
+    citation doc revision ++ go rest
+  go (doc : "at" : revision : "section" : _ : rest) =
+    citation doc revision ++ go rest
+  go (_ : rest) = go rest
+  go [] = []
+  citation doc revision =
+    [(takeFileNameSimple doc, revision) | ".md" `isSuffixOf` doc, revision /= "583443f"]
+
+checkHistoricalSectionCitations :: FilePath -> IO [String]
+checkHistoricalSectionCitations repoRoot = do
+  paths <- listRepoOwnedPaths repoRoot
+  let scanPaths = [path | path <- paths, ".md" `isSuffixOf` path || ".hs" `isSuffixOf` path]
+  scanned <- forM scanPaths $ \path -> do
+    contents <- readFileStrict (repoRoot </> path)
+    let lines' = stripFencedCodeBlocks (lines contents)
+    pure
+      ( [(path, doc, number) | line <- lines', (doc, number) <- historicalSectionCitationsInLine line]
+      , [ (path, doc, revision)
+        | line <- lines'
+        , (doc, revision) <- unsupportedHistoricalRevisionCitationsInLine line
+        ]
+      )
+  let references = concatMap fst scanned
+      unsupported = concatMap snd scanned
+  tree <-
+    Subprocess.captureSubprocessBounded
+      Subprocess.BoundedSubprocessLimits
+        { Subprocess.boundedSubprocessMaximumInputBytes = 1
+        , Subprocess.boundedSubprocessMaximumStdoutBytes = 2 * 1024 * 1024
+        , Subprocess.boundedSubprocessMaximumStderrBytes = 4096
+        , Subprocess.boundedSubprocessTimeoutMicros = 10 * 1000 * 1000
+        }
+      Subprocess.Subprocess
+        { Subprocess.subprocessPath = "git"
+        , Subprocess.subprocessArguments =
+            ["ls-tree", "-r", "-z", "--name-only", "583443f", "--", "documents", "DEVELOPMENT_PLAN"]
+        , Subprocess.subprocessEnvironment = Nothing
+        , Subprocess.subprocessWorkingDirectory = Just repoRoot
+        }
+  let docPaths = case tree of
+        Right output
+          | Subprocess.processExitCode output == ExitSuccess ->
+              splitOnNulByte (Subprocess.processStdout output)
+        _ -> []
+  historical <- forM (nub [doc | (_, doc, _) <- references]) $ \doc -> do
+    let candidates = [path | path <- docPaths, takeFileNameSimple path == doc]
+    case candidates of
+      [path] -> do
+        result <-
+          Subprocess.captureSubprocessBounded
+            Subprocess.BoundedSubprocessLimits
+              { Subprocess.boundedSubprocessMaximumInputBytes = 1
+              , Subprocess.boundedSubprocessMaximumStdoutBytes = 2 * 1024 * 1024
+              , Subprocess.boundedSubprocessMaximumStderrBytes = 4096
+              , Subprocess.boundedSubprocessTimeoutMicros = 10 * 1000 * 1000
+              }
+            Subprocess.Subprocess
+              { Subprocess.subprocessPath = "git"
+              , Subprocess.subprocessArguments = ["show", "583443f:" ++ path]
+              , Subprocess.subprocessEnvironment = Nothing
+              , Subprocess.subprocessWorkingDirectory = Just repoRoot
+              }
+        pure
+          ( doc
+          , case result of
+              Right output
+                | Subprocess.processExitCode output == ExitSuccess ->
+                    Just (documentSectionNumbers (Subprocess.processStdout output))
+              _ -> Nothing
+          )
+      _ -> pure (doc, Nothing)
+  pure
+    ( historicalSectionReferenceViolations references historical
+        ++ [ path ++ " cites unsupported historical revision " ++ revision ++ " for " ++ doc ++ "."
+           | (path, doc, revision) <- unsupported
+           ]
+    )
+
+historicalSectionReferenceViolations
+  :: [(FilePath, String, String)] -> [(String, Maybe [String])] -> [String]
+historicalSectionReferenceViolations references historical =
+  [ path ++ " cannot resolve historical citation " ++ doc ++ " at 583443f, section " ++ number ++ "."
+  | (path, doc, number) <- references
+  , maybe True (number `notElem`) (lookup doc historical >>= id)
+  ]
+
+-- | The phase template preserves the information needed to execute and review
+-- each owned slice. Empty or repeated fields do not satisfy the contract.
+numericalPhaseContractViolations :: [(FilePath, String)] -> [String]
+numericalPhaseContractViolations documents = concatMap check documents
+ where
+  fields =
+    [ "Phase"
+    , "State"
+    , "Prerequisites"
+    , "Acceptance"
+    , "Critical mutations"
+    , "Owned removals"
+    , "Inherited removals"
+    , "Evidence"
+    ]
+  headings =
+    [ "## Public outcome and scope"
+    , "## Implementation tasks"
+    , "## Real acceptance and independent observation"
+    , "## Critical source mutations"
+    , "## Resource scope and cleanup"
+    , "## Documentation and removal obligations"
+    , "## Completion record"
+    ]
+  check (path, body) =
+    [ path ++ " must have exactly one nonempty " ++ field ++ " field."
+    | field <- fields
+    , let values =
+            [ dropWhile isSpace value
+            | line <- lines body
+            , Just value <- [stripPrefix ("**" ++ field ++ "**:") line]
+            ]
+    , length values /= 1 || any null values
+    ]
+      ++ [ path ++ " must have exactly one " ++ heading ++ " section."
+         | heading <- headings
+         , length (filter (== heading) (lines body)) /= 1
+         ]
+
+checkNumericalPhaseContracts :: FilePath -> IO [String]
+checkNumericalPhaseContracts repoRoot = do
+  paths <- listRepoOwnedPaths repoRoot
+  documents <- forM [path | path <- paths, "DEVELOPMENT_PLAN/phase_" `isPrefixOf` path, ".md" `isSuffixOf` path] $ \path -> do
+    contents <- readFileStrict (repoRoot </> path)
+    pure (path, contents)
+  pure (numericalPhaseContractViolations documents)
+
+-- | Structural closure checks supplement, but cannot establish, real execution.
+-- A completion record must be available, cover declared case and mutation IDs,
+-- and leave neither unchecked tasks nor owned pending removal rows.
+completedPhaseViolations :: [(FilePath, String)] -> String -> [String]
+completedPhaseViolations documents ledger = concatMap checkPhase documents
+ where
+  ledgerRows =
+    [ cells
+    | line <- lines ledger
+    , let cells = markdownTableCells line
+    , length cells >= 5
+    , case firstCell cells of
+        prefix : digits -> prefix `elem` "LB" && not (null digits) && all isDigit digits
+        _ -> False
+    ]
+  checkPhase (path, body)
+    | not ("DEVELOPMENT_PLAN/phase_" `isPrefixOf` path) = []
+    | "**State**: Complete" `notElem` lines body = []
+    | otherwise = case stripPrefix "DEVELOPMENT_PLAN/phase_" path of
+        Just suffix -> case reads suffix :: [(Int, String)] of
+          [(owner, '_' : _)] -> validate owner path body
+          _ -> [path ++ " has an invalid phase number."]
+        Nothing -> []
+  validate owner path body =
+    let fields field = [value | line <- lines body, Just value <- [stripPrefix field line]]
+        evidenceLinks = concatMap extractMarkdownLinkTargets (fields "**Evidence**:")
+        evidencePaths = [resolved | link <- evidenceLinks, Just resolved <- [relativeLinkResolves path link]]
+        evidenceContents = [content | evidencePath <- evidencePaths, Just content <- [lookup evidencePath documents]]
+        scopedEvidence =
+          [ content
+          | content <- evidenceContents
+          , [show owner]
+              == [dropWhile isSpace value | line <- lines content, Just value <- [stripPrefix "**Phase**:" line]]
+          ]
+        declaredIds prefix field =
+          [ ident
+          | value <- fields field
+          , word <- words value
+          , let ident = takeWhile (\c -> isAlphaNum c || c == '-') word
+          , not (null ident)
+          , take 1 ident == [prefix]
+          , any isDigit ident
+          ]
+        ids = declaredIds 'A' "**Acceptance**:" ++ declaredIds 'M' "**Critical mutations**:"
+     in [path ++ " contains unfinished checkboxes." | any (isInfixOf "- [ ]") (lines body)]
+          ++ [path ++ " has no available linked evidence record." | null evidenceContents]
+          ++ [ path ++ " has no evidence record bound to phase " ++ show owner ++ "."
+             | not (null evidenceContents) && null scopedEvidence
+             ]
+          ++ [ path ++ " evidence does not mention required ID " ++ ident ++ "."
+             | ident <- ids
+             , not (any (elem ident . evidenceTokens) scopedEvidence)
+             ]
+          ++ [ path ++ " still owns non-removed ledger row " ++ firstCell cells ++ "."
+             | cells <- ledgerRows
+             , cellAt 2 cells == show owner
+             , firstCell (reverse cells) /= "Removed"
+             ]
+  evidenceTokens = words . map (\c -> if isAlphaNum c || c == '-' then c else ' ')
+
+checkCompletedPhases :: FilePath -> IO [String]
+checkCompletedPhases repoRoot = do
+  paths <- listRepoOwnedPaths repoRoot
+  documents <- forM [path | path <- paths, "DEVELOPMENT_PLAN/" `isPrefixOf` path, ".md" `isSuffixOf` path] $ \path -> do
+    contents <- readFileStrict (repoRoot </> path)
+    pure (path, contents)
+  let ledger = maybe "" id (lookup "DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md" documents)
+  pure (completedPhaseViolations documents ledger)
+
+-- | Every retained objective has a numerical owner, contract and evidence
+-- requirement. IDs are unique so later changes cannot silently shadow a row.
+objectiveDispositionViolations :: String -> [String]
+objectiveDispositionViolations contents = missing ++ malformed ++ duplicates
+ where
+  rows =
+    [ cells
+    | line <- lines contents
+    , let cells = markdownTableCells line
+    , ident : _ <- [cells]
+    , case ident of
+        'O' : digits -> not (null digits) && all isDigit digits
+        _ -> False
+    ]
+  missing = ["Objective dispositions contain no objective rows." | null rows]
+  malformed =
+    [ "Invalid objective disposition " ++ firstCell cells ++ "."
+    | cells <- rows
+    , length cells /= 5
+        || cellAt 2 cells `notElem` map show [0 :: Int .. 10]
+        || null (extractMarkdownLinkTargets (cellAt 3 cells))
+        || null (cellAt 4 cells)
+    ]
+  ids = map firstCell rows
+  duplicates =
+    [ "Duplicate objective disposition " ++ ident ++ "."
+    | ident <- nub ids
+    , length (filter (== ident) ids) > 1
+    ]
+
+checkObjectiveDispositions :: FilePath -> IO [String]
+checkObjectiveDispositions repoRoot = do
+  let path = repoRoot </> "DEVELOPMENT_PLAN/objective_dispositions.md"
+  exists <- doesFileExist path
+  if exists
+    then objectiveDispositionViolations <$> readFileStrict path
+    else pure ["Canonical objective dispositions are missing."]
+
+-- | Join phase-declared case and removal IDs to their canonical owners.
+-- Mutations may also be repeated by later phases, but never before their owner.
+phaseManifestBindingViolations :: [(FilePath, String)] -> String -> String -> String -> [String]
+phaseManifestBindingViolations phases acceptances mutations removals = concatMap checkPhase phases
+ where
+  catalog prefix ownerColumn contents =
+    [ (ident, owner)
+    | line <- lines contents
+    , let cells = markdownTableCells line
+    , length cells > ownerColumn
+    , let ident = firstCell cells
+    , validId prefix ident
+    , [(owner, "")] <- [reads (cellAt ownerColumn cells) :: [(Int, String)]]
+    ]
+  validId prefix ident = case ident of
+    first : rest -> first == prefix && not (null rest) && all (\c -> isDigit c || c == '-') rest
+    [] -> False
+  acceptanceCatalog = catalog 'A' 1 acceptances
+  mutationCatalog = catalog 'M' 1 mutations
+  removalCatalog = catalog 'L' 2 removals ++ catalog 'B' 2 removals
+  checkPhase (path, body) = case stripPrefix "DEVELOPMENT_PLAN/phase_" path of
+    Just suffix -> case reads suffix :: [(Int, String)] of
+      [(owner, '_' : _)] ->
+        checkField path owner body "**Acceptance**:" 'A' acceptanceCatalog False
+          ++ checkField path owner body "**Critical mutations**:" 'M' mutationCatalog True
+          ++ checkField path owner body "**Owned removals**:" 'L' removalCatalog False
+          ++ checkField path owner body "**Inherited removals**:" 'B' removalCatalog False
+      _ -> []
+    Nothing -> []
+  checkField path owner body field prefix entries allowEarlier =
+    let fields = [value | line <- lines body, Just value <- [stripPrefix field line]]
+        declared =
+          [ ident
+          | value <- fields
+          , word <- words value
+          , let ident = takeWhile (\c -> isAlphaNum c || c == '-') word
+          , validId prefix ident
+          ]
+        expected = [ident | (ident, entryOwner) <- entries, entryOwner == owner, take 1 ident == [prefix]]
+        validOwner ident = case lookup ident entries of
+          Just entryOwner -> entryOwner == owner || (allowEarlier && entryOwner < owner)
+          Nothing -> False
+     in [path ++ " must declare exactly one " ++ field ++ " field." | length fields /= 1]
+          ++ [ path ++ " has missing or foreign " ++ field ++ " ID " ++ ident ++ "."
+             | ident <- declared
+             , not (validOwner ident)
+             ]
+          ++ [ path ++ " omits owned " ++ field ++ " ID " ++ ident ++ "."
+             | ident <- expected
+             , ident `notElem` declared
+             ]
+          ++ [ path ++ " repeats " ++ field ++ " ID " ++ ident ++ "."
+             | ident <- nub declared
+             , length (filter (== ident) declared) > 1
+             ]
+
+checkPhaseManifestBindings :: FilePath -> IO [String]
+checkPhaseManifestBindings repoRoot = do
+  paths <- listRepoOwnedPaths repoRoot
+  let wanted path = ("DEVELOPMENT_PLAN/phase_" `isPrefixOf` path && ".md" `isSuffixOf` path)
+      manifests =
+        [ "DEVELOPMENT_PLAN/acceptance_cases.md"
+        , "DEVELOPMENT_PLAN/mutation_cases.md"
+        , "DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md"
+        ]
+  documents <- forM [path | path <- paths, wanted path || path `elem` manifests] $ \path -> do
+    contents <- readFileStrict (repoRoot </> path)
+    pure (path, contents)
+  let content path = maybe "" id (lookup path documents)
+      missing = ["Missing phase manifest " ++ path ++ "." | path <- manifests, lookup path documents == Nothing]
+  pure
+    ( missing
+        ++ phaseManifestBindingViolations
+          (filter (wanted . fst) documents)
+          (content "DEVELOPMENT_PLAN/acceptance_cases.md")
+          (content "DEVELOPMENT_PLAN/mutation_cases.md")
+          (content "DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md")
+    )
+
+-- | Reconcile the single resume table with the phase documents it names.
+numericalQueueViolations :: [(FilePath, String)] -> [String]
+numericalQueueViolations documents = headingErrors ++ shapeErrors ++ nextErrors ++ orderErrors ++ concatMap checkRow rows
+ where
+  readme = maybe "" id (lookup "DEVELOPMENT_PLAN/README.md" documents)
+  headings = filter (== "## Resume Here") (lines readme)
+  otherHeadings =
+    [ path
+    | (path, body) <- documents
+    , path /= "DEVELOPMENT_PLAN/README.md"
+    , "## Resume Here" `elem` lines body
+    ]
+  headingErrors =
+    [ "README must contain exactly one Resume Here heading and no other plan document may declare one."
+    | length headings /= 1 || not (null otherHeadings)
+    ]
+  section = takeWhile (not . isPrefixOf "## ") (drop 1 (dropWhile (/= "## Resume Here") (lines readme)))
+  rows =
+    [ cells
+    | line <- section
+    , let cells = markdownTableCells line
+    , length cells == 4
+    , not (null (firstCell cells))
+    , all isDigit (firstCell cells)
+    ]
+  linkedPaths =
+    [ "DEVELOPMENT_PLAN/" ++ target | cells <- rows, target <- extractMarkdownLinkTargets (cellAt 1 cells)
+    ]
+  phasePaths =
+    [ path | (path, _) <- documents, "DEVELOPMENT_PLAN/phase_" `isPrefixOf` path, ".md" `isSuffixOf` path
+    ]
+  shapeErrors =
+    [ "Resume queue must list phases 0 through 10 exactly once and in order."
+    | map firstCell rows /= map show [0 :: Int .. 10]
+    ]
+      ++ [ "Every numerical phase document must appear exactly once in the resume queue."
+         | sort linkedPaths /= sort phasePaths
+         ]
+  openRows = [cells | cells <- rows, takeWhile isAlpha (cellAt 2 cells) /= "Complete"]
+  nextRows = [cells | cells <- rows, "Next" `isInfixOf` (cellAt 2 cells)]
+  nextErrors =
+    [ "Resume queue must mark its first incomplete phase as Next."
+    | case openRows of
+        [] -> not (null nextRows)
+        first : _ -> map firstCell nextRows /= [firstCell first]
+    ]
+  orderErrors =
+    [ "Resume queue marks phase " ++ firstCell cells ++ " complete after an incomplete predecessor."
+    | (index, cells) <- zip [0 :: Int ..] rows
+    , takeWhile isAlpha (cellAt 2 cells) == "Complete"
+    , any ((/= "Complete") . takeWhile isAlpha . cellAt 2) (take index rows)
+    ]
+  checkRow cells =
+    let number = firstCell cells
+        state = takeWhile isAlpha (cellAt 2 cells)
+        targets = extractMarkdownLinkTargets (cellAt 1 cells)
+        expectedPrefix = "phase_" ++ (if length number == 1 then "0" else "") ++ number ++ "_"
+     in case targets of
+          [target] | expectedPrefix `isPrefixOf` target ->
+            case lookup ("DEVELOPMENT_PLAN/" ++ target) documents of
+              Nothing -> ["Queue phase " ++ number ++ " refers to a missing phase document."]
+              Just body ->
+                let values field = [dropWhile isSpace value | line <- lines body, Just value <- [stripPrefix field line]]
+                    evidence = values "**Evidence**:"
+                 in ["Phase " ++ number ++ " has a mismatched phase number." | values "**Phase**:" /= [number]]
+                      ++ [ "Phase " ++ number ++ " has a mismatched or invalid state."
+                         | state `notElem` ["Planned", "Active", "Blocked", "Complete"] || values "**State**:" /= [state]
+                         ]
+                      ++ [ "Complete phase " ++ number ++ " lacks a linked evidence record."
+                         | state == "Complete"
+                         , null evidence || null (extractMarkdownLinkTargets (unlines evidence))
+                         ]
+          _ -> ["Queue phase " ++ number ++ " must link its numerical phase document."]
+
+checkNumericalQueue :: FilePath -> IO [String]
+checkNumericalQueue repoRoot = do
+  paths <- listRepoOwnedPaths repoRoot
+  documents <- forM
+    [path | path <- paths, "DEVELOPMENT_PLAN/" `isPrefixOf` path, ".md" `isSuffixOf` path]
+    $ \path -> do
+      contents <- readFileStrict (repoRoot </> path)
+      pure (path, contents)
+  pure (numericalQueueViolations documents)
+
+-- | Compare the authored disposition rows to the actual command registry.
+-- A deleted row, duplicate path, unknown leaf or invalid owner is an error.
+commandDispositionViolations :: [[String]] -> String -> [String]
+commandDispositionViolations registry contents = malformed ++ missing ++ extra ++ duplicate ++ duplicateIds
+ where
+  rows =
+    [ cells
+    | line <- lines contents
+    , let cells = markdownTableCells line
+    , ident : _ <- [cells]
+    , case ident of
+        'C' : digits -> not (null digits) && all isDigit digits
+        _ -> False
+    ]
+  malformed =
+    [ "Invalid command disposition row " ++ firstCell cells ++ "."
+    | cells <- rows
+    , length cells /= 8
+        || cellAt 4 cells `notElem` map show [0 :: Int .. 10]
+        || cellAt 3 cells `notElem` ["Preserved", "Replaced", "Internalized", "Removed"]
+    ]
+  rowPaths = [dropWhileEnd (== '`') (dropWhile (== '`') (cellAt 1 cells)) | cells <- rows, length cells >= 2]
+  expected = map (unwords . ("prodbox" :)) registry
+  missing = ["Missing command disposition for " ++ path ++ "." | path <- expected, path `notElem` rowPaths]
+  extra = ["Unknown command disposition " ++ path ++ "." | path <- rowPaths, path `notElem` expected]
+  duplicate =
+    [ "Duplicate command disposition for " ++ path ++ "."
+    | path <- nub rowPaths
+    , length (filter (== path) rowPaths) > 1
+    ]
+  ids = map firstCell rows
+  duplicateIds =
+    [ "Duplicate command disposition ID " ++ ident ++ "."
+    | ident <- nub ids
+    , length (filter (== ident) ids) > 1
+    ]
+
+checkCommandDispositions :: FilePath -> IO [String]
+checkCommandDispositions repoRoot = do
+  let path = repoRoot </> "DEVELOPMENT_PLAN/command_dispositions.md"
+  exists <- doesFileExist path
+  if exists
+    then do
+      contents <- readFileStrict path
+      pure
+        ( commandDispositionViolations leafCommandPaths contents
+            ++ commandOptionDispositionViolations (registryLeafOptions commandRegistry) contents
+            ++ commandRequiredDispositionViolations (registryRequiredOptions commandRegistry) contents
+            ++ optionAliasDispositionViolations (registryOptionAliases commandRegistry) contents
+        )
+    else pure ["Canonical command dispositions are missing."]
+
+-- | Project inherited and leaf option names from the same registry used by
+-- the public command listing.
+registryLeafOptions :: CommandSpec -> [(String, [String])]
+registryLeafOptions = go [] []
+ where
+  go prefix inherited spec =
+    let path = prefix ++ [name spec]
+        flags = inherited ++ map (("--" ++) . longName) (options spec)
+     in case children spec of
+          [] -> [(unwords path, flags)]
+          nested -> concatMap (go path flags) nested
+
+registryOptionAliases :: CommandSpec -> [(String, Maybe Char)]
+registryOptionAliases spec =
+  [("--" ++ longName option, shortName option) | option <- options spec]
+    ++ concatMap registryOptionAliases (children spec)
+
+registryRequiredOptions :: CommandSpec -> [(String, [String])]
+registryRequiredOptions = go [] []
+ where
+  go prefix inherited spec =
+    let path = prefix ++ [name spec]
+        flags = inherited ++ ["--" ++ longName option | option <- options spec, required option]
+     in case children spec of
+          [] -> [(unwords path, flags)]
+          nested -> concatMap (go path flags) nested
+
+commandRequiredDispositionViolations :: [(String, [String])] -> String -> [String]
+commandRequiredDispositionViolations registry contents =
+  [ "Required option mismatch for "
+      ++ path
+      ++ ": registry "
+      ++ show (sort expected)
+      ++ "; manifest "
+      ++ show (sort actual)
+      ++ "."
+  | (path, expected) <- registry
+  , Just actual <- [lookup path rows]
+  , sort expected /= sort actual
+  ]
+ where
+  rows =
+    [ ( dropWhileEnd (== '`') (dropWhile (== '`') (cellAt 1 cells))
+      , inlineCodeSpansInLine (cellAt 7 cells)
+      )
+    | line <- lines contents
+    , let cells = markdownTableCells line
+    , length cells == 8
+    , case firstCell cells of
+        'C' : digits -> not (null digits) && all isDigit digits
+        _ -> False
+    ]
+
+optionAliasDispositionViolations :: [(String, Maybe Char)] -> String -> [String]
+optionAliasDispositionViolations registry contents =
+  [ "Option alias mismatch for "
+      ++ flag
+      ++ ": registry "
+      ++ show aliases
+      ++ "; manifest "
+      ++ show documented
+      ++ "."
+  | flag <- nub (map fst registry)
+  , let aliases = nub [alias | (name', alias) <- registry, name' == flag]
+  , let documented = [parseAliases (cellAt 1 cells) | cells <- rows, firstCell cells == "`" ++ flag ++ "`"]
+  , map sort documented /= [sort aliases]
+  ]
+ where
+  rows = [cells | line <- lines contents, let cells = markdownTableCells line, length cells == 3]
+  parseAliases cell =
+    [Nothing | "—" `isInfixOf` cell]
+      ++ [Just alias | ['-', alias] <- inlineCodeSpansInLine cell]
+
+-- | Check each inherited/leaf occurrence, as well as the distinct option
+-- inventory. Comparing both directions catches stale and omitted flags.
+commandOptionDispositionViolations :: [(String, [String])] -> String -> [String]
+commandOptionDispositionViolations registry contents = leafViolations ++ inventoryViolations
+ where
+  tableRows = map markdownTableCells (lines contents)
+  commandRows =
+    [ (unquote (cellAt 1 cells), inlineCodeSpansInLine (cellAt 6 cells))
+    | cells <- tableRows
+    , length cells == 8
+    , case firstCell cells of
+        'C' : digits -> not (null digits) && all isDigit digits
+        _ -> False
+    ]
+  unquote = dropWhileEnd (== '`') . dropWhile (== '`')
+  leafViolations =
+    [ "Command option mismatch for "
+        ++ path
+        ++ ": registry "
+        ++ show (sort flags)
+        ++ "; manifest "
+        ++ show (sort documented)
+        ++ "."
+    | (path, flags) <- registry
+    , Just documented <- [lookup path commandRows]
+    , sort flags /= sort documented
+    ]
+  optionRows =
+    [ flag
+    | cells <- tableRows
+    , length cells == 3
+    , [flag] <- [inlineCodeSpansInLine (firstCell cells)]
+    , "--" `isPrefixOf` flag
+    ]
+  expectedOptions = nub (concatMap snd registry)
+  inventoryViolations =
+    ["Missing option disposition " ++ flag ++ "." | flag <- expectedOptions, flag `notElem` optionRows]
+      ++ ["Unknown option disposition " ++ flag ++ "." | flag <- optionRows, flag `notElem` expectedOptions]
+      ++ [ "Duplicate option disposition " ++ flag ++ "."
+         | flag <- nub optionRows
+         , length (filter (== flag) optionRows) > 1
+         ]
+
+-- | Validate the owner and state of every removal row in the canonical ledger.
+-- Rows have stable L/B identifiers; other tables and prose are not inventory.
+numericalRemovalOwnerViolations :: String -> [String]
+numericalRemovalOwnerViolations contents = missing ++ malformed ++ duplicates
+ where
+  rows =
+    [ (ident, cells)
+    | line <- lines contents
+    , let cells = markdownTableCells line
+    , ident : _ <- [cells]
+    , case ident of
+        prefix : digits -> prefix `elem` "LB" && not (null digits) && all isDigit digits
+        _ -> False
+    ]
+  missing = ["Canonical removal ledger has no removal rows." | null rows]
+  malformed =
+    [ "Removal row " ++ ident ++ " must have a numerical owner from 0 to 10 and a valid state."
+    | (ident, cells) <- rows
+    , length cells < 5
+        || cellAt 2 cells `notElem` map show [0 :: Int .. 10]
+        || firstCell (reverse cells) `notElem` ["Pending", "Ready", "Removed"]
+    ]
+  duplicates =
+    [ "Duplicate removal row " ++ ident ++ "."
+    | ident <- nub (map fst rows)
+    , length (filter ((== ident) . fst) rows) > 1
+    ]
+
+checkNumericalRemovalOwners :: FilePath -> IO [String]
+checkNumericalRemovalOwners repoRoot = do
+  let path = repoRoot </> "DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md"
+  exists <- doesFileExist path
+  if exists
+    then numericalRemovalOwnerViolations <$> readFileStrict path
+    else pure ["Canonical removal ledger is missing."]
+
+-- | Phase prerequisites are checked against the owning phase, including the
+-- upper endpoint of ranges such as "Phases 1–2". Only the declared field is
+-- interpreted; prose elsewhere may discuss later work without depending on it.
+numericalPhaseDependencyViolations :: [(FilePath, String)] -> [String]
+numericalPhaseDependencyViolations documents = concatMap check documents
+ where
+  check (path, contents) = case stripPrefix "DEVELOPMENT_PLAN/phase_" path of
+    Nothing -> []
+    Just suffix -> case reads suffix :: [(Int, String)] of
+      [(owner, '_' : _)] ->
+        let fields = [value | line <- lines contents, Just value <- [stripPrefix "**Prerequisites**:" line]]
+         in case fields of
+              [field] ->
+                [ path ++ " depends on phase " ++ show dependency ++ ", which is not earlier than its owner."
+                | dependency <- phaseReferences (words field)
+                , dependency >= owner
+                ]
+                  ++ [ path ++ " has a phase prerequisite without a numerical identity."
+                     | malformedReferences (words field)
+                     ]
+              _ -> [path ++ " must declare exactly one prerequisites field."]
+      _ -> [path ++ " has an invalid numerical phase filename."]
+  phaseReferences (label : rest)
+    | label `elem` ["Phase", "Phases"] =
+        let (references, remaining) = collectReferences rest
+         in references ++ phaseReferences remaining
+  phaseReferences (_ : rest) = phaseReferences rest
+  phaseReferences [] = []
+  collectReferences [] = ([], [])
+  collectReferences input@(token : rest)
+    | token `elem` ["and", "or"] = collectReferences rest
+    | isReferenceToken token =
+        let values = numbersIn token
+         in if any (`elem` token) ";:"
+              then (values, rest)
+              else let (more, remaining) = collectReferences rest in (values ++ more, remaining)
+    | otherwise = ([], input)
+  isReferenceToken token =
+    any isDigit token && all (\c -> isDigit c || c `elem` (",.;:()[]-–—`" :: String)) token
+  malformedReferences (label : value : rest)
+    | label `elem` ["Phase", "Phases"] = null (numbersIn value) || malformedReferences rest
+  malformedReferences [label] = label `elem` ["Phase", "Phases"]
+  malformedReferences (_ : rest) = malformedReferences rest
+  malformedReferences [] = False
+  numbersIn :: String -> [Int]
+  numbersIn text =
+    [ number
+    | fragment <- words [if isDigit c then c else ' ' | c <- text]
+    , (number, "") <- reads fragment
+    ]
+
+checkNumericalPhaseDependencies :: FilePath -> IO [String]
+checkNumericalPhaseDependencies repoRoot = do
+  paths <- listRepoOwnedPaths repoRoot
+  documents <- forM
+    [path | path <- paths, "DEVELOPMENT_PLAN/phase_" `isPrefixOf` path, ".md" `isSuffixOf` path]
+    $ \path -> do
+      contents <- readFileStrict (repoRoot </> path)
+      pure (path, contents)
+  pure (numericalPhaseDependencyViolations documents)
+
+firstCell :: [String] -> String
+firstCell [] = ""
+firstCell (value : _) = value
+
+cellAt :: Int -> [String] -> String
+cellAt index = firstCell . drop index
 
 runTrackedGeneratedPathLint :: FilePath -> IO ExitCode
 runTrackedGeneratedPathLint repoRoot = do
@@ -911,8 +1586,8 @@ runTrackedGeneratedPathLint repoRoot = do
 
 -- | Sprint 1.63: the conformance tier — the pre-cluster, seconds-fast check
 -- family that proves cross-artifact agreement between compiled registries and
--- their projections (see @unit_testing_policy.md § The Conformance Tier@ and
--- @code_quality.md § 3@). It runs inside the fast file-lint phase of
+-- their projections (see @unit_testing_policy.md at revision `583443f` § The Conformance Tier@ and
+-- @code_quality.md at 583443f, section 3@). It runs inside the fast file-lint phase of
 -- @prodbox dev check@, before the warning-clean build, so cross-artifact drift
 -- fails in seconds rather than surfacing in the multi-hour aggregate suite.
 --
@@ -928,8 +1603,8 @@ runConformanceTier repoRoot =
         ( unlines
             ( ( "Resource-plan over-commit gate failed. The committed defaultResourcePlan "
                   ++ "must compile into an AllocatedResourcePlan proof — host_capacity ≥ "
-                  ++ "cluster allocatable ≥ Σ workload draw (see resource_scaling_doctrine.md "
-                  ++ "§§ 2B/2C, Sprints 1.68/1.69):"
+                  ++ "cluster allocatable ≥ Σ workload draw (see resource_governance.md "
+                  ++ "resource envelope):"
               )
                 : map ("- " ++) resourcePlanOverCommitViolations
                 ++ ["Correct capacity/Config.hs defaultResourcePlan so the nesting proof holds."]
@@ -985,8 +1660,8 @@ runConformanceTierChecks repoRoot = do
             ( ( "Tier-0 sibling-config drift gate failed. The binary-sibling "
                   ++ "prodbox.dhall is GENERATED and must equal what the generator "
                   ++ "emits for the record it decodes to, or for the canonical unauthored "
-                  ++ "template (config_doctrine.md § 3, "
-                  ++ "code_quality.md § 3, Sprint 0.24):"
+                  ++ "template (configuration.md, "
+                  ++ "code_quality.md, Sprint 0.24):"
               )
                 : map ("- " ++) tier0Violations
             )
@@ -1055,7 +1730,7 @@ tier0MalformedFinding path err =
 
 -- | Pure core of the drift gate: the generator's canonical rendering versus the
 -- bytes on disk. Reports the differing field rather than a whole-file diff, per
--- the @code_quality.md@ § 3 error-message contract (path, what drifted, remedy).
+-- the @code_quality.md at 583443f, section 3 error-message contract (path, what drifted, remedy).
 tier0DriftFindings
   :: FilePath
   -- ^ The binary-sibling path, reported verbatim.
@@ -1165,7 +1840,7 @@ runConformanceTierRegistryChecks repoRoot = do
         ( unlines
             ( ( "Legacy escape-registry bijection failed. The compiled registry "
                   ++ "src/Prodbox/Legacy/EscapeRegistry.hs must match the escape "
-                  ++ "markers in source one-to-one (see code_quality.md § 3):"
+                  ++ "markers in source one-to-one (see code_quality.md):"
               )
                 : map ("- " ++) escapeViolations
                 ++ ["Rerun `./.build/prodbox dev check` after reconciling the registry and markers."]
@@ -1193,7 +1868,7 @@ runConformanceTierRegistryChecks repoRoot = do
                 ( unlines
                     ( ( "Measured-capacity certification failed. Authored Guaranteed-QoS "
                           ++ "envelopes must be justified by their committed measured profiles "
-                          ++ "under dhall/capacity/measured/ (see resource_scaling_doctrine.md § 2F):"
+                          ++ "under dhall/capacity/measured/ (see resource_governance.md):"
                       )
                         : map ("- " ++) measuredViolations
                         ++ ["Recapture the profile (Sprint 5.21 recorder) or correct the authored envelope."]
@@ -1229,7 +1904,7 @@ runConformanceTierRegistryChecks repoRoot = do
                                       ++ "observation type must keep a DISTINCT non-terminal constructor "
                                       ++ "for the not-yet-ready state; collapsing it into a terminal or "
                                       ++ "absent bucket is the forbidden bring-up-dual / fail-open defect "
-                                      ++ "(bootstrap_readiness_doctrine.md §0/§2.4, Sprints 4.53/5.25):"
+                                      ++ "(control_plane.md, Sprints 4.53/5.25):"
                                   )
                                     : map ("- " ++) readinessViolations
                                     ++ [ "Restore the non-terminal readiness constructor; never collapse "
@@ -1243,7 +1918,7 @@ runConformanceTierRegistryChecks repoRoot = do
                             ( ( "Vault identity-registry conformance failed. Every Vault "
                                   ++ "Kubernetes-auth role name and chart-secret policy name must be "
                                   ++ "bound by exactly one identity across the VaultRoleId registry and "
-                                  ++ "the chart-secret consumers (lifecycle_control_plane_architecture.md § 10.2, "
+                                  ++ "the chart-secret consumers (control_plane.md, "
                                   ++ "Sprint 3.26):"
                               )
                                 : map ("- " ++) vaultViolations
@@ -1263,7 +1938,7 @@ runConformanceTierRegistryChecks repoRoot = do
                     )
 
 -- | Sprints 4.53 / 5.25: the typed three-valued-readiness doctrine
--- (bootstrap_readiness_doctrine.md §0/§2.4) requires every readiness/observation
+-- (bootstrap_readiness_doctrine.md at 583443f, section 0 / bootstrap_readiness_doctrine.md at 583443f, section 2.4) requires every readiness/observation
 -- type to keep a DISTINCT non-terminal "not-yet-ready" constructor.  Collapsing
 -- that third value back into a terminal (bring-up dual) or absent (fail-open)
 -- bucket is the forbidden defect the two readiness-race fixes remove.  This build
@@ -1380,12 +2055,9 @@ bootstrapIsolationSourcePaths =
   , "src/Prodbox/Bootstrap/Broker/Routes.hs"
   ]
 
--- | Sprint 0.21: the lifecycle transport modules Sprint @4.50@ removed. The
--- negative-space lint below requires each to stay absent (or empty), which
--- makes this list the SSoT for "deliberately deleted, and enforced deleted" —
--- so 'retiredCitedSourcePaths' derives from it rather than re-authoring the
--- same facts. A plan document citing one of these is recording history, not
--- asserting a live artifact.
+-- | Legacy transport modules that the negative-space lint requires to remain
+-- absent (or empty). This list does not exempt a current source citation from
+-- the separate existence check.
 removedLegacyTransportSourcePaths :: [FilePath]
 removedLegacyTransportSourcePaths =
   [ "src/Prodbox/Bootstrap/Broker/LegacyAdapter.hs"
@@ -1597,7 +2269,7 @@ runTerminalAuditFieldOfViewCheck repoRoot = do
                   ++ "a provisioning program declares must carry a tag the escape audit "
                   ++ "queries for; otherwise a leaked instance of it is never returned "
                   ++ "and a clean verdict says nothing about it "
-                  ++ "(lifecycle_reconciliation_doctrine.md § 3.1, Sprint 4.84):"
+                  ++ "(lifecycle.md, Sprint 4.84):"
               )
                 : map ("- " ++) (fieldOfViewViolations ++ provisioningViolations)
                 ++ [ "Author a queried tag onto the resource, or classify a genuinely "
@@ -1912,7 +2584,8 @@ checkMeasuredCapacityProfiles repoRoot = do
 
 -- | The ceiling comes from committed policy, never the dirty table being
 -- checked. The initial declaration is admitted only before the module exists
--- at HEAD; an existing module with a missing published table refuses.
+-- at HEAD; otherwise the preserved pre-refactor publication supplies the
+-- baseline because the former document is now a deprecated forwarding stub.
 checkAwsRemedyPolicy :: FilePath -> IO [String]
 checkAwsRemedyPolicy repoRoot = do
   tree <- readHead ["ls-tree", "--name-only", "HEAD", "--", remedyModule]
@@ -1921,11 +2594,11 @@ checkAwsRemedyPolicy repoRoot = do
     Right names -> case lines names of
       [] ->
         fmap (AwsRemedy.resolveAwsRemedyBaseline . AwsRemedy.RegisteredInitialRemedyBaseline)
-          <$> readHead ["show", "HEAD:DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md"]
+          <$> readHead ["show", "583443f:DEVELOPMENT_PLAN/phase-4-lifecycle-canonical-paths.md"]
       [name]
         | name == remedyModule ->
             fmap (AwsRemedy.resolveAwsRemedyBaseline . AwsRemedy.PublishedRemedyBaseline)
-              <$> readHead ["show", "HEAD:documents/engineering/aws_test_environment.md"]
+              <$> readHead ["show", "583443f:documents/engineering/aws_test_environment.md"]
       _ -> pure (Left "Git HEAD remedy-module inventory is malformed")
   pure $ case baseline of
     Left detail -> [detail]
@@ -2058,7 +2731,7 @@ runDoctrineAlignmentCheck repoRoot = do
   -- worktree must agree with, rather than a claim about it.
   productionEnvVarViolations <- forceViolationFindings (checkProductionEnvVarReads repoRoot)
   -- Sprint 1.91: the compiled-AWS-coordinate registry. Same register-or-fail
-  -- shape as the read registry above, over the partition config_doctrine.md § 0
+  -- shape as the read registry above, over the partition config_doctrine.md at 583443f, section 0
   -- draws between a value AWS fixes and a value an operator chooses.
   awsCoordinateViolations <- forceViolationFindings (checkAwsCoordinateLiterals repoRoot)
   -- Sprint 1.92: the closed audit of deployment-varying authoring fields and
@@ -2155,6 +2828,7 @@ haskellStyleViolations :: FilePath -> IO [String]
 haskellStyleViolations repoRoot = do
   thinMainResult <- verifyThinMainEntrypoint repoRoot
   parserModuleViolation <- checkParserModuleImports repoRoot
+  retiredHostConfigFindings <- forceViolationFindings (checkRetiredHostConfig repoRoot)
   nestedCaseViolations <- forceViolationFindings (checkNestedCaseViolations repoRoot)
   daemonRuntimeViolations <- forceViolationFindings (checkDaemonRuntimeImports repoRoot)
   daemonHookViolations <- forceViolationFindings (checkDaemonHookContract repoRoot)
@@ -2204,6 +2878,7 @@ haskellStyleViolations repoRoot = do
   pure
     ( either pure (const []) thinMainResult
         ++ maybeToList parserModuleViolation
+        ++ retiredHostConfigFindings
         ++ nestedCaseViolations
         ++ daemonRuntimeViolations
         ++ daemonHookViolations
@@ -2245,6 +2920,32 @@ haskellStyleViolations repoRoot = do
         ++ sealedConstructorFindings
         ++ facadeWithholdingFindings
     )
+
+-- | Prevent the retired host-side config store from becoming an alternate writer.
+checkRetiredHostConfig :: FilePath -> IO [String]
+checkRetiredHostConfig repoRoot = do
+  paths <- listRepoOwnedPaths repoRoot
+  sources <- forM
+    [ path
+    | path <- paths
+    , ("src/" `isPrefixOf` path || "test/" `isPrefixOf` path)
+    , ".hs" `isSuffixOf` path
+    ]
+    $ \path -> do
+      contents <- readFileStrict (repoRoot </> path)
+      pure (path, contents)
+  pure (retiredHostConfigViolations paths sources)
+
+retiredHostConfigViolations :: [FilePath] -> [(FilePath, String)] -> [String]
+retiredHostConfigViolations paths sources =
+  [ "Retired host config path reappeared: " ++ path
+  | path <- ["src/Prodbox/Config/InForce.hs", "src/Prodbox/Config/InForce/Core.hs"]
+  , path `elem` paths
+  ]
+    ++ [ path ++ " reintroduces the retired LogicalInForceConfig constructor."
+       | (path, contents) <- sources
+       , "LogicalInForceConfig" `elem` sourceIdentifiers contents
+       ]
 
 -- | Force a check's complete finding payload before its file-reading frame can
 -- leave scope. Most successful checks return @[]@; without this boundary their
@@ -2633,7 +3334,7 @@ providerSessionDurationLiteralViolations (path, contents) =
 -- so a reference built as @repo\@sha256:\<config digest\>@ is unpullable — and
 -- because the two are syntactically identical, no smart constructor over the
 -- digest text can tell them apart. That is
--- @chaos_hardening_doctrine.md@ § 24 exactly: an observation has a layer, and
+-- @chaos_hardening_doctrine.md at 583443f, section 24 exactly: an observation has a layer, and
 -- this one named the runtime's layer while being consumed as the registry's.
 --
 -- The separation therefore lives at the consuming boundary rather than in the
@@ -2711,7 +3412,7 @@ workerImagePullReferenceViolations (path, contents) =
 -- its own measurement to take. Scoped to @src\/@ for the same reason as the
 -- round-trip witness and the target-sink boundary: a test fixture may mint, and
 -- a test module cannot be imported by production code
--- (@resource_scaling_doctrine.md@ § 2C, "The region of Ring 2").
+-- (@resource_scaling_doctrine.md at 583443f, section 2C, "The region of Ring 2").
 checkValidatedSettingsMinter :: FilePath -> IO [String]
 checkValidatedSettingsMinter repoRoot = do
   repoPaths <- listRepoOwnedPaths repoRoot
@@ -3183,7 +3884,7 @@ checkHarnessDeploymentConfigOwnership repoRoot = do
 
 harnessDeploymentConfigOwnershipViolations :: [(FilePath, String)] -> [String]
 harnessDeploymentConfigOwnershipViolations sources =
-  missingPaths ++ missingReach ++ retiredCompiledInputs
+  missingPaths ++ missingReach ++ retiredCompiledInputs ++ legacySiblingWrite
  where
   missingPaths =
     [ scopedPathMissingViolation "harness deployment config ownership gate" path
@@ -3209,6 +3910,11 @@ harnessDeploymentConfigOwnershipViolations sources =
     , ".hs" `isSuffixOf` path
     , retired <- harnessDeploymentConfigRetiredFragments
     , map toLower retired `isInfixOf` map toLower contents
+    ]
+  legacySiblingWrite =
+    [ "src/Prodbox/TestRunner.hs selects the legacy binary-sibling config writer; test configuration must use its explicit run path."
+    | Just contents <- [lookup "src/Prodbox/TestRunner.hs" sources]
+    , "writeOperatorDeploymentConfigToTier0 repoRoot generatedConfig contextInput" `isInfixOf` contents
     ]
 
 harnessDeploymentConfigRequiredFragments :: [(FilePath, [String])]
@@ -3251,7 +3957,9 @@ harnessDeploymentConfigRequiredFragments =
       , "variantMinioEndpoint variant"
       , "topologyRunId"
       , "harnessGeneratedConfig"
-      , "writeOperatorDeploymentConfigToTier0 repoRoot generatedConfig contextInput"
+      , "generatedConfigPath = testDataPath </> \"prodbox.dhall\""
+      , "guardTestDelete repoRoot (DeleteGeneratedRunConfig generatedConfigPath)"
+      , "writeOperatorDeploymentConfigToTier0AtPath generatedConfigPath generatedConfig contextInput"
       ]
     )
   ,
@@ -3434,7 +4142,7 @@ checkDnsOwnerAuthorityBoundary repoRoot = do
 -- @4.58@ @TargetSinkVersion@ boundaries and Sprint @3.32@'s
 -- 'checkDnsOwnerAuthorityBoundary'.
 --
--- __The bound is stated__ (@chaos_hardening_doctrine.md § 22@): this is a
+-- __The bound is stated__ (@chaos_hardening_doctrine.md at 583443f, section 22@): this is a
 -- compiled rule over a source region, not a property of the type. It cannot
 -- prove that a permitted module named the /correct/ layer — only that a module
 -- with no observation boundary cannot name one at all.
@@ -3464,7 +4172,7 @@ residueObservationMinterOwners =
 -- a substring match, because that is the move that turns a diagnostic string
 -- into a claim about a resource.
 --
--- __The bound is stated__ (@chaos_hardening_doctrine.md § 22@): this is a
+-- __The bound is stated__ (@chaos_hardening_doctrine.md at 583443f, section 22@): this is a
 -- compiled rule over a source region, not a property of the type. It cannot
 -- prove that a permitted module consulted the layer it names -- only that a
 -- module with no observation boundary cannot mint absence at all, and that no
@@ -3528,7 +4236,7 @@ absenceMinterProvenanceViolations (path, contents)
           ++ ") outside an observation boundary. Absence evidence records which "
           ++ "authority observed the absence, so it must be minted where the "
           ++ "observation is made, not asserted by a consumer downstream "
-          ++ "(chaos_hardening_doctrine.md § 21 class-A, § 24). The modules "
+          ++ "(lifecycle.md). The modules "
           ++ "permitted to mint are: "
           ++ intercalate ", " absenceMinterOwners
           ++ ". If this module genuinely observes absence at a new authority, "
@@ -3545,7 +4253,7 @@ absenceMinterProvenanceViolations (path, contents)
           ++ "observation of a resource, and promoting one to absence is the "
           ++ "defect Sprint `4.98` closed. Return the typed failure and let the "
           ++ "caller decide, or observe the resource "
-          ++ "(lifecycle_reconciliation_doctrine.md § 3.0)."
+          ++ "(lifecycle.md)."
       | (lineNumber, _) <- grepLines
       ]
   | otherwise = []
@@ -3589,12 +4297,12 @@ absenceMinterProvenanceViolations (path, contents)
 -- Producers take 'providerEvidenceFromWireText' during migration, or the
 -- encoder afterwards.
 --
--- __The bound is stated__ (@chaos_hardening_doctrine.md § 22@): this is a
+-- __The bound is stated__ (@chaos_hardening_doctrine.md at 583443f, section 22@): this is a
 -- compiled rule over a source region. It cannot prove the owners use the seam
 -- correctly -- only that no module outside the seam can reach past it. That it
 -- lands after the migration rather than before is deliberate: a gate ratchets a
 -- completed migration shut and is not a substitute for one
--- (@chaos_hardening_doctrine.md § 23@).
+-- (@chaos_hardening_doctrine.md at 583443f, section 23@).
 providerEvidenceSealOwners :: [FilePath]
 providerEvidenceSealOwners =
   [ "src/Prodbox/Lifecycle/ProviderWorker/Evidence.hs"
@@ -3640,7 +4348,7 @@ providerEvidenceSealViolations (path, contents)
           ++ "nor re-derives evidence from bytes it rendered itself -- that is "
           ++ "the move six superseded encoders made, and it is why they could "
           ++ "disagree with the rule that refused them "
-          ++ "(chaos_hardening_doctrine.md § 22, § 23). Use "
+          ++ "(lifecycle.md). Use "
           ++ "`encodeProviderEvidence`, or `providerEvidenceFromWireText` at a "
           ++ "genuine wire boundary. The modules permitted past the seal are: "
           ++ intercalate ", " providerEvidenceSealOwners
@@ -3660,11 +4368,11 @@ providerEvidenceSealViolations (path, contents)
 -- Thirty-four sprints applied a type-level device to cleanup, absence and
 -- residue. Each makes a value unconstructible and each claim is true; none
 -- makes an outcome in a cloud account unconstructible, and
--- [Pure FP Standards](pure_fp_standards.md) now says so in as many words. The
+-- Pure FP Standards (historical pure_fp_standards.md at revision `583443f`) now says so in as many words. The
 -- residue those sprints left behind is a guard that is declared, tested, and
 -- called from nothing -- and before this rule the repository had no way to
 -- tell one from a live one. Two of the four rows in the
--- @DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md@ entry this gate closes
+-- the historical deletion ledger at revision @583443f@ entry this gate closes
 -- were found by reading; the other two were not.
 --
 -- The subject is deliberately narrow. It is not "a function whose name looks
@@ -3677,7 +4385,7 @@ providerEvidenceSealViolations (path, contents)
 -- retire it. Those are the claims a leak falsifies, and they are listed by
 -- name in 'typedGuardAuthorityTypes'.
 --
--- __The bound is stated__ (@chaos_hardening_doctrine.md § 22@): this is a
+-- __The bound is stated__ (@chaos_hardening_doctrine.md at 583443f, section 22@): this is a
 -- compiled rule over a source region, and three things are outside it.
 --
 -- It cannot see a guard whose authority travels in a type nobody registered
@@ -3754,9 +4462,8 @@ data UnconsumedTypedGuard = UnconsumedTypedGuard
   , unconsumedGuardOwner :: FilePath
   -- ^ The repo-relative module that declares it.
   , unconsumedGuardLedgerRow :: String
-  -- ^ The @Pending Removal@ row in
-  -- @DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md@ that owns the
-  -- consumption, quoted closely enough to find by search.
+  -- ^ The stable ID of the current numerical removal-ledger row that owns the
+  -- consumption.
   , unconsumedGuardConsumptionCondition :: String
   -- ^ What must become true before the symbol has a production consumer and
   -- this row is deleted.
@@ -3766,9 +4473,7 @@ data UnconsumedTypedGuard = UnconsumedTypedGuard
 -- | Sprint 5.47: every cleanup-authority guard the worktree declares and
 -- production does not consume, with the ledger row that owns its consumption.
 --
--- The rows are grouped by that ledger row rather than by module, because the
--- reason each guard is unconsumed is a scheduled sprint and not a property of
--- where it happens to live.
+-- The rows are grouped by their numerical removal owner rather than by module.
 unconsumedTypedGuardRegistry :: [UnconsumedTypedGuard]
 unconsumedTypedGuardRegistry =
   map
@@ -3896,10 +4601,9 @@ unconsumedTypedGuardRegistry =
     UnconsumedTypedGuard
       { unconsumedGuardSymbol = symbol
       , unconsumedGuardOwner = owner
-      , unconsumedGuardLedgerRow =
-          "The write-ahead ownership manifest has no production writer"
+      , unconsumedGuardLedgerRow = "B047"
       , unconsumedGuardConsumptionCondition =
-          "Sprint `7.41` commits the write-ahead manifest and reads it back "
+          "Phase 5 commits the write-ahead manifest and reads it back "
             ++ "between the generation commit and the execute, implements the "
             ++ "append so the manifest carries the identities the provider "
             ++ "returned, and makes the read-back witness the only way to "
@@ -3910,11 +4614,10 @@ unconsumedTypedGuardRegistry =
     UnconsumedTypedGuard
       { unconsumedGuardSymbol = symbol
       , unconsumedGuardOwner = owner
-      , unconsumedGuardLedgerRow =
-          "The AWS cascade adapter can still make a clean-completion"
+      , unconsumedGuardLedgerRow = "B046"
       , unconsumedGuardConsumptionCondition =
           "The typed recover-to-clean graph becomes the AWS teardown route, so "
-            ++ "the exact desired-absence adapters Sprint `7.36` built are "
+            ++ "the exact desired-absence adapters are "
             ++ "reached by a destroy rather than only by a table."
       }
 
@@ -3922,10 +4625,9 @@ unconsumedTypedGuardRegistry =
     UnconsumedTypedGuard
       { unconsumedGuardSymbol = symbol
       , unconsumedGuardOwner = owner
-      , unconsumedGuardLedgerRow =
-          "The surviving ad-hoc residue assembly and bespoke public teardown executor"
+      , unconsumedGuardLedgerRow = "B056"
       , unconsumedGuardConsumptionCondition =
-          "Sprint `6.5` activates the typed writer as the sole public route and "
+          "Phase 8 activates the typed writer as the sole public route and "
             ++ "deletes the bespoke public cascade executor, so the "
             ++ "restored-checkpoint, custody-discharge, managed-destroy and "
             ++ "report classifications are consumed by the route that replaces "
@@ -4176,11 +4878,11 @@ typedGuardConsumptionFindings registry scanned declarationsByPath consumptionsBy
         ++ "`, whose declared type names one of the repository's "
         ++ "cleanup-authority types, and no module under `src/` reads it. A value-level guard "
         ++ "with no production consumer is not a guard "
-        ++ "(pure_fp_standards.md, chaos_hardening_doctrine.md \167 22). Give it a "
+        ++ "(haskell_code_guide.md and testing.md). Give it a "
         ++ "caller, delete it, or register it in `unconsumedTypedGuardRegistry` "
         ++ "with the deletion-ledger row that owns its consumption -- never to "
         ++ "silence this rule, because the registry is an inventory of a defect "
-        ++ "and every row names a scheduled sprint."
+        ++ "and every row names a numerical removal owner."
     | (path, names) <- declarationsByPath
     , name <- names
     , name `notElem` consumed
@@ -4204,7 +4906,7 @@ typedGuardConsumptionFindings registry scanned declarationsByPath consumptionsBy
     [ "`unconsumedTypedGuardRegistry` records `"
         ++ unconsumedGuardSymbol entry
         ++ "` as consumed by no production path, and it is consumed now. "
-        ++ "Delete the entry in the same change that wires it, and close the "
+        ++ "Delete the entry in the same change that wires it, and reconcile the "
         ++ "deletion-ledger row it names: \""
         ++ unconsumedGuardLedgerRow entry
         ++ "\"."
@@ -4269,7 +4971,7 @@ checkTypedGuardConsumption repoRoot = do
 -- down. The worst spelling of it renders them as the empty string, so absence
 -- is implied where a cause was meant.
 --
--- __The bound is stated__ (@chaos_hardening_doctrine.md § 22@), and it is
+-- __The bound is stated__ (@chaos_hardening_doctrine.md at 583443f, section 22@), and it is
 -- larger here than for any other rule in this module, because the property
 -- that actually matters is not decidable from source text.
 --
@@ -4340,7 +5042,7 @@ wireFidelityExemptions =
              ++ "still-present and unobservable observations take the refusal "
              ++ "branch three lines earlier, where `bootstrapFenceRetireRefusalName` "
              ++ "narrates them apart -- so the distinction "
-             ++ "lifecycle_reconciliation_doctrine.md \167 3.0 requires is drawn "
+             ++ "lifecycle.md requires is drawn "
              ++ "where it licenses a decision."
          )
        ,
@@ -4430,8 +5132,8 @@ wireFidelityExemptions =
         ++ "refused, unavailable and ambiguous are three client decisions rather "
         ++ "than a lost cause. The exact constructor survives on the protected "
         ++ "baseline diagnostic through the matching `...CauseName` renderer in "
-        ++ "`src/Prodbox/Bootstrap/Broker/Engine.hs`, and vault_doctrine.md and "
-        ++ "bootstrap_readiness_doctrine.md both require the public arm to stay "
+        ++ "`src/Prodbox/Bootstrap/Broker/Engine.hs`, and the historical Vault and "
+        ++ "bootstrap contracts both require the public arm to stay "
         ++ "generic until live evidence licenses a behavior change."
     )
 
@@ -4717,7 +5419,7 @@ wireFidelityViolations exemptions sumTypes (path, contents) =
           ++ literal
           ++ ". A reader of that value cannot say which constructor happened, "
           ++ "which is the defect Sprints `2.46`-`2.49`, `4.97` and `4.99` each "
-          ++ "found again (chaos_hardening_doctrine.md \167 22). Give the arms "
+          ++ "found again (see testing.md). Give the arms "
           ++ "distinct values, carry the tag on a sibling field of the record "
           ++ "that crosses, or register the site in `wireFidelityExemptions` "
           ++ "naming what restores the distinction."
@@ -5347,7 +6049,7 @@ wireFidelityStaleExemptions exemptions unexemptedFindings =
 -- stanza no scope runs. The registry in "Prodbox.Tla" is now the authority and
 -- this rule holds the directory to it in both directions.
 --
--- __The bound is stated__ (@chaos_hardening_doctrine.md § 22@): it decides
+-- __The bound is stated__ (@chaos_hardening_doctrine.md at 583443f, section 22@): it decides
 -- whether a file is registered, never whether the model says anything true.
 -- What a model proves is the protocol and never the boundary implementation,
 -- which @tla_modelling_assumptions.md@ owns and no gate can check.
@@ -5434,7 +6136,7 @@ residueObservationMinterViolations (path, contents) =
       ++ " names `observeResidueAt` outside a residue-observation boundary. A "
       ++ "residue observation records which authority answered, so it must be "
       ++ "minted where the observation is made, not asserted by a consumer "
-      ++ "downstream (chaos_hardening_doctrine.md § 21 class-A, § 24). The "
+      ++ "downstream (lifecycle.md). The "
       ++ "modules permitted to mint are: "
       ++ intercalate ", " residueObservationMinterOwners
       ++ ". If this module genuinely observes residue at a new authority, add it "
@@ -5457,7 +6159,7 @@ residueObservationMinterViolations (path, contents) =
 -- that writes a CAS and does not classify it fails the build.
 --
 -- What this does not prove is the same thing
--- @chaos_hardening_doctrine.md § 22@ says of every ring-2 gate: it bounds this
+-- @chaos_hardening_doctrine.md at 583443f, section 22@ says of every ring-2 gate: it bounds this
 -- repository's source, not the Vault protocol.
 checkVaultCasClassification :: FilePath -> IO [String]
 checkVaultCasClassification repoRoot = do
@@ -5605,7 +6307,7 @@ ephemeralCredentialMachineryViolations (path, contents) =
 
 -- | Sprint 2.134: a spawned handle that is neither linked nor waited.
 --
--- [Chaos Hardening Doctrine](../../documents/engineering/chaos_hardening_doctrine.md)
+-- Chaos Hardening Doctrine (historical chaos_hardening_doctrine.md at revision `583443f`)
 -- rule R6 has always said that discarding a cancellation or join result
 -- "recreates unstructured ownership behind a structured API and is forbidden",
 -- and until this sprint nothing enforced it. What existed was Sprint 2.41's
@@ -5975,7 +6677,7 @@ brokerReadinessProjectionViolations sources =
         ++ moduleName
         ++ "`, which is not a pure module. The broker readiness projection folds"
         ++ " boundary-owned cached facts and must have no boundary in scope"
-        ++ " (bootstrap_readiness_doctrine.md § 0.7, Sprint 2.39)."
+        ++ " (control_plane.md, Sprint 2.39)."
     | moduleName <- importedModuleNames contents
     , not (any (`isPrefixOf` moduleName) pureModulePrefixes)
     , moduleName `notElem` pureProdboxModules
@@ -6172,7 +6874,7 @@ roundTripWitnessInternalSourceViolations (path, contents) =
         ++ " mints a round-trip witness outside its definition, the gateway "
         ++ "state decoder, or the registry storage-backend witness; a witness "
         ++ "must be evidence that a conditional write landed, not an authored "
-        ++ "value (bootstrap_readiness_doctrine.md § 2.3)."
+        ++ "value (control_plane.md)."
     | minterName `isInfixOf` contents
     , path `notElem` minterAllowedPaths
     ]
@@ -6186,7 +6888,7 @@ roundTripWitnessInternalSourceViolations (path, contents) =
 -- the only shape a second hand-maintained encoder can take. Four such encoders
 -- of a record with one decoder is how Sprint `1.80`'s type tightening broke
 -- twenty integration cases while updating only one of them
--- (chaos_hardening_doctrine.md section 23).
+-- (chaos_hardening_doctrine.md at revision `583443f`, section 23).
 --
 -- @writeTier0AtPath@ is deliberately not banned: it is the production writer,
 -- it renders through the canonical encoder, and tests of it are tests of the
@@ -6613,7 +7315,7 @@ recoveryClaimInternalSourceViolations (path, contents) =
 -- It cannot see a status computed arithmetically, and it says nothing about a
 -- status reaching the renderer from outside that namespace — a ring-2 gate
 -- bounds a process, not a protocol
--- ([chaos_hardening_doctrine.md § 22](../../documents/engineering/chaos_hardening_doctrine.md)).
+-- (chaos_hardening_doctrine.md at 583443f, section 22).
 -- What it does cover is the shape every producer in the namespace actually
 -- uses today, which is what let the gap open.
 checkControlPlaneReplyStatusCoverage :: FilePath -> IO [String]
@@ -6717,7 +7419,7 @@ dnsOwnerAuthorityInternalSourceViolations (path, contents) =
 -- rebuilds what the store __says__ it holds. No type separates them, because
 -- the arguments are identical — so the bound is a named path list rather than a
 -- signature, and per
--- [chaos_hardening_doctrine.md § 22](../../documents/engineering/chaos_hardening_doctrine.md)
+-- chaos_hardening_doctrine.md at 583443f, section 22
 -- it bounds this process and not the protocol.
 targetSinkRecordMinterViolations :: (FilePath, String) -> [String]
 targetSinkRecordMinterViolations (path, contents) =
@@ -6901,7 +7603,7 @@ testNamespaceImportViolations relativePath contents =
       ++ importedModule line
       ++ "). Only the harness itself and its enumerated clients may; express "
       ++ "the obligation in lifecycle-owned types instead "
-      ++ "(lifecycle_reconciliation_doctrine.md § 3.3)."
+      ++ "(lifecycle.md)."
   | line <- lines contents
   , "import Prodbox.Test." `isPrefixOf` line
   ]
@@ -7182,7 +7884,7 @@ checkErrorBoundaryViolations repoRoot = do
 
 -- | Sprint 1.28: refuse `lookupEnv` / `getEnv` / `getEnvironment` reads on
 -- supported config-loading paths, per
--- @documents/engineering/config_doctrine.md § 10. Forbidden surfaces@. The
+-- @documents/engineering/config_doctrine.md at 583443f, section 10. Forbidden surfaces@. The
 -- Dhall file passed via `--config <path>` is the sole source for binary
 -- configuration; no `PRODBOX_*` env-var precedence rule survives. Scope is
 -- the modules called out in Phase 1 Sprint 1.28 deliverables plus
@@ -7211,7 +7913,7 @@ checkEnvVarConfigReads repoRoot =
               pure $
                 [ relativePath
                     ++ " must not read configuration from environment variables. "
-                    ++ "See `documents/engineering/config_doctrine.md` § 10."
+                    ++ "See `documents/engineering/configuration.md`"
                 | not (null forbiddenTokens)
                 ]
       )
@@ -7331,7 +8033,7 @@ substrateImagePinningViolations relativePath contents =
       ++ "(e.g. `ContainerImage.envoyGatewayChartVersion` / "
       ++ "`ContainerImage.certManagerChartVersion`) instead of re-pinning "
       ++ "per substrate. See `DEVELOPMENT_PLAN/substrates.md` (substrate "
-      ++ "equivalence) and `documents/engineering/helm_chart_platform_doctrine.md`."
+      ++ "equivalence) and `documents/engineering/platform_and_services.md`."
   | rawLine <- lines contents
   , let codeLine = dropLineCommentTail rawLine
   , Just (bindingName, rhs) <- [splitDefinitionLine codeLine]
@@ -7485,7 +8187,7 @@ planOptionsHonoredViolations relativePath contents =
       ++ wildcardBinder
       ++ "), silently dropping --dry-run / --plan-file. Thread the options "
       ++ "into runPlanWithOptions (or read NukeOptions) instead. See "
-      ++ "lifecycle_reconciliation_doctrine.md § 3.1."
+      ++ "lifecycle.md"
   | (constructorName, optionsPosition) <- destructivePlanOptionsArms
   , (relativePath, constructorName) `notElem` exemptPairs
   , wildcardBinder <- wildcardBindersAt constructorName optionsPosition
@@ -7644,7 +8346,7 @@ inlineRetrySubstringListViolations relativePath contents =
       ++ classifierName
       ++ "`; delegate common transient classes to "
       ++ "`Prodbox.Service.isRetryableTransientFailure` and pass only "
-      ++ "operation-specific extensions. See bootstrap_readiness_doctrine.md §4."
+      ++ "operation-specific extensions. See control_plane.md"
   | (classifierName, classifierBody) <- topLevelRetryClassifierBodies contents
   , classifierUsesInlineSubstringList classifierBody
   ]
@@ -7791,7 +8493,7 @@ retryClassifierDefinitionName sourceLine
 
 -- | Sprint 4.22 follow-on: the create-call-site coverage scan that
 -- enforces the managed-resource registry totality invariant
--- (@documents/engineering/lifecycle_reconciliation_doctrine.md § 3.1@,
+-- (@documents/engineering/lifecycle_reconciliation_doctrine.md at 583443f, section 3.1@,
 -- invariant 1: "No prodbox code path may create an AWS or cluster
 -- resource that is not in the registry"). Registry ↔ doc parity is
 -- already machine-enforced via the @resource-lifecycle-classes@
@@ -7893,7 +8595,7 @@ forbidLintSelfPath = "src/Prodbox/CheckCode.hs"
 -- check. "Governed docs" are every @*.md@ under @documents/@ and
 -- @DEVELOPMENT_PLAN/@ plus the repo-root ALL-CAPS exceptions
 -- (@README.md@, @CLAUDE.md@, @AGENTS.md@) named by
--- @documents/documentation_standards.md § 2@.
+-- @documents/documentation_standards.md at 583443f, section 2@.
 isGovernedDocPath :: FilePath -> Bool
 isGovernedDocPath path =
   (".md" `isSuffixOf` path)
@@ -7941,7 +8643,7 @@ stripInlineCodeSpans = goOutside
 -- blocks and OUTSIDE inline-code spans. A key counts as present when a
 -- start or end marker for it appears in the cleaned content, in any of
 -- the host-syntax forms enumerated by
--- @documents/documentation_standards.md § 11@ (Markdown @<!-- ... -->@,
+-- @documents/documentation_standards.md at 583443f, section 11@ (Markdown @<!-- ... -->@,
 -- Helm/Go templates @{{\/* ... *\/}}@, YAML @# ...@, and the
 -- Haskell/PureScript/TypeScript @-- ...@ comment form). Returns the keys
 -- sorted and de-duplicated. Exposed for unit tests.
@@ -8066,7 +8768,7 @@ keyFromBody body =
 --   * @allRegistryKeys@ — every key in the @GeneratedSectionRule@
 --     registry (across all files).
 --
--- Three leg agreement is enforced (documentation_standards.md § 3 / § 11):
+-- Three leg agreement is enforced (documentation_standards.md at 583443f, section 3 / documentation_standards.md at 583443f, section 11):
 --
 --   1. Every registry key for this file must be declared in metadata AND
 --      have its markers physically present.
@@ -8091,7 +8793,7 @@ generatedSectionsReconcilerViolations
           ++ " is registered for generated-section key `"
           ++ key
           ++ "` but does not declare it in its `**Generated sections**:` "
-          ++ "metadata field (documentation_standards.md § 3)."
+          ++ "metadata field (documentation_standards.md)."
       | key <- registryKeysForFile
       , key `notElem` declaredKeys
       ]
@@ -8102,7 +8804,7 @@ generatedSectionsReconcilerViolations
           ++ "` but its `prodbox:"
           ++ key
           ++ ":start`/`:end` markers are not present in the file "
-          ++ "(documentation_standards.md § 11)."
+          ++ "(documentation_standards.md)."
       | key <- registryKeysForFile
       , key `notElem` markerKeys
       ]
@@ -8111,7 +8813,7 @@ generatedSectionsReconcilerViolations
           ++ " declares generated-section key `"
           ++ key
           ++ "` in its `**Generated sections**:` metadata field, but no "
-          ++ "`GeneratedSectionRule` registers it (documentation_standards.md § 11)."
+          ++ "`GeneratedSectionRule` registers it (documentation_standards.md)."
       | key <- declaredKeys
       , key `notElem` allRegistryKeys
       ]
@@ -8122,7 +8824,7 @@ generatedSectionsReconcilerViolations
           ++ ":start`/`:end` markers but does not declare `"
           ++ key
           ++ "` in its `**Generated sections**:` metadata field "
-          ++ "(documentation_standards.md § 3)."
+          ++ "(documentation_standards.md)."
       | key <- markerKeys
       , key `notElem` declaredKeys
       ]
@@ -8275,7 +8977,7 @@ checkGeneratedSectionsHarmony repoRoot = do
           Nothing ->
             [ relativePath
                 ++ " is missing the mandatory `**Generated sections**:` "
-                ++ "metadata field (documentation_standards.md § 3)."
+                ++ "metadata field (documentation_standards.md)."
             ]
           Just declaredKeys ->
             generatedSectionsReconcilerViolations
@@ -8312,12 +9014,12 @@ checkGovernedDocRelativeLinks repoRoot = do
                 ++ target
                 ++ "`; resolved target `"
                 ++ resolved
-                ++ "` does not exist (documentation_standards.md § 4)."
+                ++ "` does not exist (documentation_standards.md)."
             | not targetExists && not dirExists
             ]
 
 -- | Sprint 0.21 (pure). The four legal @**Status**:@ values enumerated by
--- @documents/documentation_standards.md § 3@. § 9 already names
+-- @documents/documentation_standards.md at 583443f, section 3@. documentation_standards.md at 583443f, section 9 already names
 -- @**Status**: WIP@ as an anti-pattern; this list is what makes that
 -- machine-checkable rather than review-enforced.
 governedDocStatusValues :: [String]
@@ -8330,7 +9032,7 @@ governedDocStatusValues =
 
 -- | Sprint 0.21 (pure). Read the first @**Status**:@ metadata value from a
 -- governed document, scanning only content OUTSIDE fenced code blocks so
--- the teaching example in @documentation_standards.md § 3@ (which spells
+-- the teaching example in @documentation_standards.md at 583443f, section 3@ (which spells
 -- the whole @[A | B | C | D]@ alternation inside a @```markdown@ fence) is
 -- not read as a real declaration. Exposed for unit tests.
 parseGovernedDocStatusField :: String -> Maybe String
@@ -8355,7 +9057,7 @@ governedDocStatusViolations relativePath contents =
     Nothing ->
       [ relativePath
           ++ " is missing the mandatory `**Status**:` metadata field "
-          ++ "(documentation_standards.md § 3)."
+          ++ "(documentation_standards.md)."
       ]
     Just value
       | value `elem` governedDocStatusValues -> []
@@ -8365,7 +9067,7 @@ governedDocStatusViolations relativePath contents =
               ++ value
               ++ "`, which is not one of the four legal values ("
               ++ intercalate " | " governedDocStatusValues
-              ++ ") (documentation_standards.md § 3)."
+              ++ ") (documentation_standards.md)."
           ]
 
 -- | Sprint 0.21 (IO wrapper). The @**Status**:@ legality check over every
@@ -8378,63 +9080,6 @@ checkGovernedDocStatusValues repoRoot = do
     forM governedPaths $ \relativePath -> do
       contents <- readFileStrict (repoRoot </> relativePath)
       pure (governedDocStatusViolations relativePath contents)
-
--- | Sprint 0.21 (pure). Source paths the development plan cites as
--- historical fact — each deleted by a named sprint that owns its removal —
--- so a citation to them records what the repository USED to contain rather
--- than asserting a live artifact. Every other cited path must exist.
---
--- Adding an entry here is a deliberate act: it says "this sprint deleted
--- this file, and the citation is history." It is NOT a place to silence a
--- stale evidence claim — Standard C requires status to describe reality,
--- and Sprints @4.53@/@4.54@ are the worked example of an Independent
--- Validation resting on a module a later sprint had already deleted.
-retiredCitedSourcePaths :: [FilePath]
-retiredCitedSourcePaths =
-  removedLegacyTransportSourcePaths
-    ++ [ "src/Prodbox/Host/Tool.hs" -- retired by Sprint 1.78 (zero production importers)
-       , "src/Prodbox/StateMachine.hs" -- retired by Sprint 1.32
-       , "src/Prodbox/SupportedRuntime.hs" -- retired by Sprints 6.3/7.3
-       , "src/Prodbox/Secret/Derive.hs" -- retired by Sprint 3.19 (master-seed removal)
-       , "src/Prodbox/Secret/EnsureNamespace.hs" -- retired by Sprint 3.19
-       , "src/Prodbox/Secret/HostBootstrap.hs" -- retired by Sprint 3.19
-       , "src/Prodbox/Secret/Inventory.hs" -- retired by Sprint 3.19
-       , "src/Prodbox/Secret/MasterSeed.hs" -- retired by Sprint 3.19
-       , "src/Prodbox/Secret/Wire.hs" -- retired by Sprint 3.19
-       , "src/Prodbox/Lifecycle/Teardown/CascadeCredentialRevocation.hs" -- retired by Sprint 6.5 (unused direct mutation choreography)
-       , "src/Prodbox/Lifecycle/Teardown/CascadeTerminalAuditLane.hs" -- retired by Sprint 6.5 (test-only composer)
-       , "test/unit/LifecycleTeardownCascadeTerminalAuditLane.hs" -- retired by Sprint 6.5 (actual boundary suites retained)
-       , -- Deleted by Sprint 4.50 with the host-direct store it was named for.
-         -- Its coverage did not disappear: Sprint 4.53 moved the differential
-         -- suite to test/unit/ModelBCasTransportAdapter.hs, whose own header
-         -- records the replacement.
-         "test/unit/HostDirectModelBAdapter.hs"
-       , -- Deleted by Sprint 4.59 together with the in-controller Target Agent
-         -- write lane it covered. No coverage moved with it: the suite was
-         -- listed in `other-modules` and never registered in test/unit/Main.hs,
-         -- so it compiled and never ran. The deployed writer's coverage is
-         -- unaffected — it lives on the TargetSecretWorker path.
-         "test/unit/ControlPlaneTargetSecretAgentExecution.hs"
-       , -- Deleted by Sprint 7.36 after the production drain interpreter and
-         -- DNS01 owner-delete interpreter converged on EphemeralKubectl.
-         --
-         -- Corrected by Sprint 7.40 (2026-09-11). This said the paired unit
-         -- module "exercised only this unreachable duplicate", which is false in
-         -- the way that mattered: the duplicate's token writer was identical to
-         -- the survivor's, and that module was the tree's only real-subprocess
-         -- executor of it. Deleting it removed the one surface that could have
-         -- observed the 'ENXIO' defect, and nothing replaced it for weeks. The
-         -- replacement exists now — `CredentialDeliveryHarness` asserts the
-         -- credential arrives byte-exact through a real child — and this note
-         -- records the gap rather than the claim that there was none.
-         "src/Prodbox/Lifecycle/Teardown/EksDrainRuntime.hs"
-       , "test/unit/LifecycleTeardownEksDrainRuntime.hs"
-       , -- Deleted by Sprint 5.36 when TestRunner selected the registered
-         -- ValidationHostedZone family through the closed lifecycle program.
-         -- Creation mechanics moved to Prodbox.Lifecycle.ValidationHostedZone;
-         -- the duplicate harness-owned sweep did not survive.
-         "src/Prodbox/Infra/Route53ValidationZone.hs"
-       ]
 
 -- | Sprint 0.21 (pure). The inline-code spans on one line, WITHOUT their
 -- delimiting backticks — the inverse of 'stripInlineCodeSpans'. An
@@ -8487,6 +9132,19 @@ citedSourcePathsInDoc contents =
     , isCitedSourcePath codeSpan
     ]
 
+-- | A revision-qualified source citation names a Git object, not a file in
+-- the current worktree. The IO check validates both the revision and object.
+historicalSourcePathsInDoc :: String -> [(String, FilePath)]
+historicalSourcePathsInDoc contents =
+  sort . nub $
+    [ (revision, path)
+    | lineText <- stripFencedCodeBlocks (lines contents)
+    , codeSpan <- inlineCodeSpansInLine lineText
+    , let (revision, suffix) = break (== ':') codeSpan
+    , ':' : path <- [suffix]
+    , isCitedSourcePath path
+    ]
+
 -- | Sprint 0.28: one registered production @PRODBOX_*@ environment read.
 data ProductionEnvVarRead = ProductionEnvVarRead
   { productionEnvVarName :: String
@@ -8516,6 +9174,15 @@ data ProductionEnvVarRead = ProductionEnvVarRead
 productionEnvVarRegistry :: [ProductionEnvVarRead]
 productionEnvVarRegistry =
   [ ProductionEnvVarRead
+      "PRODBOX_KIND_BRIDGE"
+      [ "src/Prodbox/Control/KindDockerClient.hs"
+      , "src/Prodbox/Control/KindTool.hs"
+      , "src/Prodbox/Subprocess.hs"
+      ]
+      "Carries the non-secret bridge directory to the sealed kind client. \
+      \The kind adapter supplies it, the launcher validates it, and the client reads it. \
+      \It selects a subprocess endpoint, not deployment configuration or authorization."
+  , ProductionEnvVarRead
       "PRODBOX_ALLOW_NON_TTY_INTERACTIVE"
       ["src/Prodbox/CLI/Interactive.hs"]
       "Operator escape for the TTY guard on interactive-only commands."
@@ -8631,7 +9298,7 @@ checkProductionEnvVarReads repoRoot = do
             ++ name
             ++ "`, which is not in `productionEnvVarRegistry`. Register it with "
             ++ "its owner module and the reason it is not Tier-0 configuration, "
-            ++ "or remove the read (config_doctrine.md § 10)."
+            ++ "or remove the read (configuration.md)."
         | (path, name) <- observed
         , productionEnvVarOwnersFor name == Nothing
         ]
@@ -8659,7 +9326,7 @@ checkProductionEnvVarReads repoRoot = do
 -- | Sprint 1.91: why one compiled AWS-coordinate literal is not a value an
 -- operator should have chosen.
 --
--- The first four are @config_doctrine.md@ § 0's four compiled classes, in
+-- The first four are @config_doctrine.md at 583443f, section 0's four compiled classes, in
 -- order. 'AwsCoordinateDocumentationExample' is deliberately __not__ a fifth
 -- compiled class: it marks a coordinate that appears inside operator-facing
 -- prose (a refusal message, a generated schema header) and is never a value the
@@ -8812,7 +9479,7 @@ awsCoordinateFindings registry scanned observedByPath symbolsByOwner =
         ++ "`. Complete region coordinates are forbidden in Haskell. Move a "
         ++ "deployment coordinate to operator-supplied Tier-0 Dhall, use the "
         ++ "named AWS protocol role in Prodbox.Aws.Region, or use TestSupport's "
-        ++ "synthetic region constructors (config_doctrine.md § 0)."
+        ++ "synthetic region constructors (configuration.md)."
     | (path, value) <- observed
     , not (awsCoordinateRegistered registry path value)
     ]
@@ -8880,591 +9547,6 @@ scopedPathMissingViolation gateName relativePath =
     ++ "moved or deleted the file, so the region stays a stated fact rather than "
     ++ "an accident of which files happen to exist."
 
--- | Sprint 0.27 (pure). The Standard-H header fields a sprint block is
--- missing, given that block's body.
---
--- Every sprint in the plan is @Done@, and
--- [Standard H](../../DEVELOPMENT_PLAN/development_plan_standards.md#h-sprint-status-format)
--- makes @**Implementation**@ required for @Done@ while
--- [Standard G](../../DEVELOPMENT_PLAN/development_plan_standards.md#g-phase-documentation-requirements)
--- makes the docs field the mechanism by which "the plan must not claim a sprint
--- is done if the listed docs are stale" can be checked at all. A block carrying
--- neither states a closure that cannot be audited against source.
---
--- The predicate deliberately accepts every heading form the plan actually uses
--- — @**Implementation**:@, @**Implementation** (landed):@, and
--- @**Implementation (Increment A, 2026-07-26)**:@ — because all three name
--- paths, and a stricter rule would report a formatting difference as missing
--- evidence. That distinction is not hypothetical: the ledger row this gate
--- closes counted 19 missing @Implementation@ fields where the measured figure
--- is 11 absent outright and 4 more carrying a non-standard heading, and it
--- named Sprint @4.50@ as an example when @4.50@ does name its paths.
-sprintBlockMissingFields :: String -> [String]
-sprintBlockMissingFields body =
-  [ name
-  | name <- ["Implementation", "Docs"]
-  , not (any (declaresField name) (stripFencedCodeBlocks (lines body)))
-  ]
- where
-  declaresField name lineText = case stripPrefix ("**" ++ name) lineText of
-    Nothing -> False
-    Just rest ->
-      -- The heading may carry a qualifier before or after the closing `**`;
-      -- what it may not do is omit the closing `**` or the colon.
-      case afterClosingBold rest of
-        Nothing -> False
-        Just afterBold -> ':' `elem` takeWhile (/= '`') afterBold
-
-  afterClosingBold text = case text of
-    [] -> Nothing
-    ('*' : '*' : remaining) -> Just remaining
-    (_ : remaining) -> afterClosingBold remaining
-
--- | Sprint 0.27 (pure). Split a plan document into @(sprint heading, body)@
--- pairs. Exposed for unit tests.
-planSprintBlocks :: String -> [(String, String)]
-planSprintBlocks contents = go (lines contents) Nothing []
- where
-  go [] current acc = reverse (close current acc)
-  go (lineText : rest) current acc
-    | "## Sprint " `isPrefixOf` lineText = go rest (Just (lineText, [])) (close current acc)
-    | otherwise = case current of
-        Nothing -> go rest Nothing acc
-        Just (heading, collected) -> go rest (Just (heading, lineText : collected)) acc
-  close Nothing acc = acc
-  close (Just (heading, collected)) acc = (heading, unlines (reverse collected)) : acc
-
--- | The development plan's one hand-maintained execution ledger.  The plan is
--- intentionally split into detailed phase documents, but "what should a fresh
--- session do next?" has exactly one answer: the numerically ordered
--- @DEVELOPMENT_PLAN/README.md#resume-here@ table.  This pure check keeps that
--- table a projection of the sprint blocks instead of a second plan that can
--- quietly diverge from them.
---
--- The input is the repo-relative path and contents of every Markdown document
--- under @DEVELOPMENT_PLAN/@.  Keeping the check pure makes the queue grammar
--- and its failure modes directly testable; 'checkDevelopmentPlanResumeLedger'
--- is the filesystem wrapper used by the documentation gate.
-developmentPlanResumeViolations :: [(FilePath, String)] -> [String]
-developmentPlanResumeViolations planDocuments =
-  requiredDocumentViolations
-    ++ resumeHeadingViolations
-    ++ competingLedgerViolations
-    ++ sprintIdentityViolations
-    ++ resumeParseViolations
-    ++ queueShapeViolations
-    ++ queueCoverageViolations
-    ++ pendingOwnerViolations
- where
-  requiredPaths =
-    [ "DEVELOPMENT_PLAN/README.md"
-    , "DEVELOPMENT_PLAN/00-overview.md"
-    , "DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md"
-    ]
-  requiredDocumentViolations =
-    [ "The development-plan resume gate cannot find `" ++ path ++ "`."
-    | path <- requiredPaths
-    , lookup path planDocuments == Nothing
-    ]
-  contentsAt path = maybe "" id (lookup path planDocuments)
-  readmeContents = contentsAt "DEVELOPMENT_PLAN/README.md"
-  ledgerContents = contentsAt "DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md"
-  phaseDocuments =
-    [ (path, contents)
-    | (path, contents) <- planDocuments
-    , "DEVELOPMENT_PLAN/phase-" `isPrefixOf` path
-    , ".md" `isSuffixOf` path
-    ]
-  sprintBlocks =
-    [ (path, heading, body)
-    | (path, contents) <- phaseDocuments
-    , (heading, body) <- planSprintBlocks (unlines (stripFencedCodeBlocks (lines contents)))
-    ]
-  sprintRecords =
-    [ (path, sprintId, uniqueSprintStatus body)
-    | (path, heading, body) <- sprintBlocks
-    , Just sprintId <- [sprintIdFromHeading heading]
-    ]
-  allSprintIds = [sprintId | (_, sprintId, _) <- sprintRecords]
-  openSprints =
-    [ (sprintId, status)
-    | (_, sprintId, Just status) <- sprintRecords
-    , status /= "Done"
-    ]
-
-  resumeOccurrences =
-    [ path
-    | (path, contents) <- planDocuments
-    , lineText <- stripFencedCodeBlocks (lines contents)
-    , lineText == "## Resume Here"
-    ]
-  resumeHeadingViolations = case resumeOccurrences of
-    ["DEVELOPMENT_PLAN/README.md"] -> []
-    [] ->
-      [ "The development plan has no `## Resume Here` ledger. "
-          ++ "Define it once in `DEVELOPMENT_PLAN/README.md`."
-      ]
-    occurrences ->
-      [ "The development plan must have exactly one `## Resume Here` ledger in "
-          ++ "`DEVELOPMENT_PLAN/README.md`; found it in "
-          ++ intercalate ", " (map (\path -> "`" ++ path ++ "`") occurrences)
-          ++ "."
-      ]
-
-  competingLedgerHeadings =
-    [ ("DEVELOPMENT_PLAN/README.md", "## Closure Status")
-    , ("DEVELOPMENT_PLAN/README.md", "## Phase Overview")
-    , ("DEVELOPMENT_PLAN/README.md", "## Current Plan Status")
-    , ("DEVELOPMENT_PLAN/00-overview.md", "## Clean-Room Sequence")
-    , ("DEVELOPMENT_PLAN/00-overview.md", "## Alignment Status")
-    , ("DEVELOPMENT_PLAN/00-overview.md", "## Current Execution State")
-    ]
-  competingLedgerViolations =
-    [ path
-        ++ " retains the competing current-state ledger `"
-        ++ heading
-        ++ "`. Keep current execution state only in "
-        ++ "`DEVELOPMENT_PLAN/README.md#resume-here`; make this section static "
-        ++ "reference material or remove it."
-    | (path, heading) <- competingLedgerHeadings
-    , heading `elem` stripFencedCodeBlocks (lines (contentsAt path))
-    ]
-
-  duplicateSprintIds =
-    [ sprintId
-    | sprintId <- nub allSprintIds
-    , length (filter (== sprintId) allSprintIds) > 1
-    ]
-  duplicateViolations =
-    [ "Sprint `" ++ sprintId ++ "` is declared more than once across the phase plan."
-    | sprintId <- duplicateSprintIds
-    ]
-  malformedHeadingViolations =
-    [ path
-        ++ " contains malformed sprint heading `"
-        ++ heading
-        ++ "`; use `## Sprint <phase>.<number>: <name>`."
-    | (path, heading, _) <- sprintBlocks
-    , sprintIdFromHeading heading == Nothing
-    ]
-  phasePrefixViolations =
-    [ path
-        ++ " declares Sprint `"
-        ++ sprintId
-        ++ "`, whose numeric prefix does not match the phase file."
-    | (path, sprintId, _) <- sprintRecords
-    , Just phaseNumber <- [phaseNumberFromPlanPath path]
-    , takeWhile isDigit sprintId /= phaseNumber
-    ]
-  statusViolations =
-    concat
-      [ sprintStatusViolations path sprintId body
-      | (path, heading, body) <- sprintBlocks
-      , Just sprintId <- [sprintIdFromHeading heading]
-      ]
-  sprintIdentityViolations =
-    malformedHeadingViolations
-      ++ duplicateViolations
-      ++ phasePrefixViolations
-      ++ statusViolations
-
-  (resumeParseViolations, resumeRows) = parseResumeQueue readmeContents
-  queueIds = [sprintId | (_, sprintId, _, _, _) <- resumeRows]
-  queueShapeViolations =
-    sequentialOrderViolations resumeRows
-      ++ executionOrderViolations resumeRows
-      ++ nextEntryViolations resumeRows
-      ++ rowPhaseViolations resumeRows
-      ++ rowStateViolations openSprints resumeRows
-      ++ rowDependencyViolations resumeRows
-      ++ [ "The Resume Here queue repeats Sprint `" ++ sprintId ++ "`."
-         | sprintId <- nub queueIds
-         , length (filter (== sprintId) queueIds) > 1
-         ]
-      ++ queueProjectionViolations
-  -- Sprint 0.32: the declared fields and the queue cells were two unrelated
-  -- channels — 'checkPlanDependencyDirection' reads only phase docs and never
-  -- opens the queue, and this ledger reads only the queue and never opens a
-  -- dependency field.  A dependency declared in a field but absent from its
-  -- queue cell therefore contributed nothing to the ordering proof, which is
-  -- what makes 'executionOrderViolations' a derivation over the real graph
-  -- rather than over whatever the author chose to restate.
-  --
-  -- Scoped to open sprints: a dependency on a `Done` sprint is not a queue row
-  -- and has nothing to project onto.
-  queueProjectionViolations =
-    [ "The Resume Here row for Sprint `"
-        ++ sprintId
-        ++ "` omits dependency `"
-        ++ dependencyId
-        ++ "`, which its phase block declares under `**"
-        ++ fieldName
-        ++ "**`. The queue's order proves workability only when it carries "
-        ++ "every declared dependency (Standards J/N.2)."
-    | (_, heading, body) <- sprintBlocks
-    , Just sprintId <- [sprintIdFromHeading heading]
-    , sprintId `elem` queueIds
-    , (fieldName, fieldText) <- sprintDependencyFields body
-    , fieldName `elem` planDependencyFieldNames
-    , dependencyId <- nub (sprintLiveDependencyIds fieldText)
-    , dependencyId `elem` openIds
-    , dependencyId `notElem` queueDependenciesOf sprintId
-    ]
-  queueDependenciesOf sprintId =
-    concat
-      [ dependencyIds
-      | (_, rowId, _, _, dependencyIds) <- resumeRows
-      , rowId == sprintId
-      ]
-  openIds = map fst openSprints
-  queueCoverageViolations =
-    [ "Open Sprint `"
-        ++ sprintId
-        ++ "` is missing from `DEVELOPMENT_PLAN/README.md#resume-here`."
-    | sprintId <- openIds
-    , sprintId `notElem` queueIds
-    ]
-      ++ [ "The Resume Here queue lists Sprint `"
-             ++ sprintId
-             ++ "`, but its phase block is not Active, Planned, or Blocked."
-         | sprintId <- queueIds
-         , sprintId `notElem` openIds
-         ]
-
-  pendingOwnerViolations =
-    pendingRemovalOwnerViolations allSprintIds ledgerContents
-
--- | Parse the sole current-plan table.  A row is @(order, sprint, phase,
--- state, dependencies)@.  The intentionally small grammar keeps a human edit
--- obvious in review and makes forward dependencies impossible to disguise in
--- prose.
-parseResumeQueue :: String -> ([String], [(Int, String, String, String, [String])])
-parseResumeQueue contents = case markdownHeadingSections "## Resume Here" contents of
-  [] -> ([], [])
-  [sectionLines] -> parseTable sectionLines
-  sections ->
-    (
-      [ "`DEVELOPMENT_PLAN/README.md` contains "
-          ++ show (length sections)
-          ++ " `## Resume Here` sections; exactly one is permitted."
-      ]
-    , []
-    )
- where
-  expectedHeader = ["Order", "Sprint", "Phase", "State", "Dependency"]
-
-  parseTable sectionLines = case map markdownTableCells tableLines of
-    [] ->
-      (
-        [ "`DEVELOPMENT_PLAN/README.md#resume-here` must contain the table "
-            ++ "`Order | Sprint | Phase | State | Dependency`."
-        ]
-      , []
-      )
-    [header]
-      | header /= expectedHeader ->
-          (
-            [ "The Resume Here table header must be exactly `Order | Sprint | Phase | "
-                ++ "State | Dependency`."
-            ]
-          , []
-          )
-      | otherwise ->
-          ( ["The Resume Here table is missing its Markdown separator row."]
-          , []
-          )
-    header : separator : remaining
-      | header /= expectedHeader ->
-          (
-            [ "The Resume Here table header must be exactly `Order | Sprint | Phase | "
-                ++ "State | Dependency`."
-            ]
-          , []
-          )
-      | length separator /= length expectedHeader || not (isMarkdownSeparatorRow separator) ->
-          ( ["The Resume Here table must place a Markdown separator directly below its header."]
-          , []
-          )
-      | otherwise -> foldRows remaining
-   where
-    tableLines =
-      [ lineText
-      | lineText <- sectionLines
-      , "|" `isPrefixOf` trimLine lineText
-      ]
-
-  foldRows rows =
-    let parsed = zipWith parseRow [1 :: Int ..] rows
-     in (concatMap fst parsed, [row | (_, Just row) <- parsed])
-
-  parseRow rowNumber cells = case cells of
-    [orderText, sprintText, phaseText, stateText, dependencyText] ->
-      case parseDecimal orderText of
-        Nothing ->
-          (
-            [ "Resume Here table row "
-                ++ show rowNumber
-                ++ " has non-numeric Order `"
-                ++ orderText
-                ++ "`."
-            ]
-          , Nothing
-          )
-        Just orderValue ->
-          let sprintId = stripSingleCodeSpan sprintText
-              dependencyIds =
-                filter isPlanSprintId (inlineCodeSpansInLine dependencyText)
-              canonicalDependencyText =
-                intercalate ", " (map (\dependencyId -> "`" ++ dependencyId ++ "`") dependencyIds)
-              rowViolations =
-                [ "Resume Here table row "
-                    ++ show rowNumber
-                    ++ " has invalid Sprint `"
-                    ++ sprintText
-                    ++ "`; use a backtick-quoted numeric id such as `3.41`."
-                | stripSingleCodeSpan sprintText == sprintText
-                    || numericSprintKey sprintId == Nothing
-                ]
-                  ++ [ "Resume Here table row "
-                         ++ show rowNumber
-                         ++ " must spell dependencies exactly as `—` or as a comma-separated "
-                         ++ "list of backtick-quoted sprint ids."
-                     | dependencyText /= "—"
-                     , dependencyText /= canonicalDependencyText
-                     ]
-                  ++ [ "Resume Here table row "
-                         ++ show rowNumber
-                         ++ " repeats dependency `"
-                         ++ dependencyId
-                         ++ "`."
-                     | dependencyId <- nub dependencyIds
-                     , length (filter (== dependencyId) dependencyIds) > 1
-                     ]
-           in ( rowViolations
-              , Just (orderValue, sprintId, phaseText, stateText, dependencyIds)
-              )
-    _ ->
-      (
-        [ "Resume Here table row "
-            ++ show rowNumber
-            ++ " has "
-            ++ show (length cells)
-            ++ " cells; exactly five are required."
-        ]
-      , Nothing
-      )
-
-sequentialOrderViolations :: [(Int, String, String, String, [String])] -> [String]
-sequentialOrderViolations rows =
-  [ "Resume Here Order values must be consecutive starting at 1; found `"
-      ++ intercalate ", " (map (show . firstOfFive) rows)
-      ++ "`."
-  | map firstOfFive rows /= [1 .. length rows]
-  ]
- where
-  firstOfFive (value, _, _, _, _) = value
-
--- | Sprint 0.32: the queue's order is a /derivation/ over the declared
--- dependency graph, not an authored sequence (Standards J and N.2).
---
--- Strict numerical order was the rule until 2026-08-21.  It was doing three
--- jobs: spelling Standard J's "in numerical order"; making the positional rule
--- in 'rowDependencyViolations' coincide with Standard N's numeric direction
--- rule; and making the order a function of the queue's contents, so nobody can
--- hand-promote a row to @Next@ or reorder until a dependency looks satisfied.
--- Standard N.2 gives up the second job deliberately.  This keeps the third,
--- which simply deleting the rule would have lost.
---
--- The order is: repeatedly emit the numerically smallest open sprint all of
--- whose declared dependencies are already emitted.  With no backward
--- dependency declared that is exactly ascending numerical order, so this
--- strictly generalises the rule it replaces rather than relaxing it.  A cycle
--- is the case in which no complete order exists, and is reported as itself.
-executionOrderViolations :: [(Int, String, String, String, [String])] -> [String]
-executionOrderViolations rows
-  | length canonical /= length rows =
-      [ "The Resume Here dependencies contain a cycle among `"
-          ++ intercalate ", " unresolvable
-          ++ "`; no row in that set can be worked first."
-      ]
-  | canonical /= sprintIds =
-      [ "Resume Here must list open sprints in execution order, which is "
-          ++ "derived from the declared dependencies rather than authored "
-          ++ "(Standard J). Expected `"
-          ++ intercalate " -> " canonical
-          ++ "`; found `"
-          ++ intercalate " -> " sprintIds
-          ++ "`."
-      ]
-  | otherwise = []
- where
-  sprintIds = [sprintId | (_, sprintId, _, _, _) <- rows]
-  dependenciesOf sprintId =
-    [ dependencyId
-    | (_, rowId, _, _, dependencyIds) <- rows
-    , rowId == sprintId
-    , dependencyId <- dependencyIds
-    , dependencyId `elem` sprintIds
-    ]
-  canonical = emit [] sprintIds
-  unresolvable = filter (`notElem` canonical) sprintIds
-  emit _ [] = []
-  emit done pending =
-    case filter ready pending of
-      [] -> []
-      candidates ->
-        let next = foldr1 smallest candidates
-         in next : emit (next : done) (filter (/= next) pending)
-   where
-    ready sprintId = all (`elem` done) (dependenciesOf sprintId)
-    smallest left right =
-      if compareSprintIds left right == GT then right else left
-
-nextEntryViolations :: [(Int, String, String, String, [String])] -> [String]
-nextEntryViolations rows =
-  [ "Resume Here must mark exactly its first row `Next`; found Next at order values `"
-      ++ intercalate ", " (map show nextOrders)
-      ++ "`."
-  | nextOrders /= [1]
-  ]
- where
-  nextOrders = [orderValue | (orderValue, _, _, state, _) <- rows, state == "Next"]
-
-rowPhaseViolations :: [(Int, String, String, String, [String])] -> [String]
-rowPhaseViolations rows =
-  [ "Resume Here Sprint `"
-      ++ sprintId
-      ++ "` must name Phase `"
-      ++ takeWhile isDigit sprintId
-      ++ "`, not `"
-      ++ phaseText
-      ++ "`."
-  | (_, sprintId, phaseText, _, _) <- rows
-  , phaseText /= takeWhile isDigit sprintId
-  ]
-
-rowStateViolations :: [(String, String)] -> [(Int, String, String, String, [String])] -> [String]
-rowStateViolations openSprints rows = concatMap checkRow rows
- where
-  checkRow (_, sprintId, _, queueState, _) = case lookup sprintId openSprints of
-    Nothing -> []
-    Just "Blocked"
-      | queueState == "Blocked" -> []
-      | otherwise -> [wrongState sprintId "Blocked" queueState]
-    Just "Active"
-      | queueState `elem` ["Next", "Parked"] -> []
-      | otherwise -> [wrongState sprintId "Next or Parked" queueState]
-    Just "Planned"
-      | queueState `elem` ["Next", "Parked"] -> []
-      | otherwise -> [wrongState sprintId "Next or Parked" queueState]
-    Just _ -> []
-  wrongState sprintId expected actual =
-    "Resume Here Sprint `"
-      ++ sprintId
-      ++ "` must have State `"
-      ++ expected
-      ++ "`, not `"
-      ++ actual
-      ++ "`."
-
-rowDependencyViolations :: [(Int, String, String, String, [String])] -> [String]
-rowDependencyViolations rows = concatMap checkRow (zip [0 :: Int ..] rows)
- where
-  checkRow (rowIndex, (_, sprintId, _, queueState, dependencyIds)) =
-    [ "Resume Here Sprint `"
-        ++ sprintId
-        ++ "` is Blocked but names no earlier dependency."
-    | queueState == "Blocked"
-    , null dependencyIds
-    ]
-      ++ [ "Resume Here Sprint `"
-             ++ sprintId
-             ++ "` depends on `"
-             ++ dependencyId
-             ++ "`, which is not an earlier row in the numerical queue."
-         | dependencyId <- dependencyIds
-         , dependencyId `notElem` earlierIds rowIndex
-         ]
-  earlierIds rowIndex =
-    [ sprintId
-    | (_, sprintId, _, _, _) <- take rowIndex rows
-    ]
-
-pendingRemovalOwnerViolations :: [String] -> String -> [String]
-pendingRemovalOwnerViolations knownSprintIds contents =
-  case markdownHeadingSections "## Pending Removal" contents of
-    [sectionLines] -> checkTable sectionLines
-    [] ->
-      [ "`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` has no exact "
-          ++ "`## Pending Removal` section."
-      ]
-    sections ->
-      [ "`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` contains "
-          ++ show (length sections)
-          ++ " exact `## Pending Removal` sections; exactly one is permitted."
-      ]
- where
-  expectedHeader = ["Item", "Owning Sprint", "Notes"]
-
-  checkTable sectionLines = case map markdownTableCells tableLines of
-    [] ->
-      [ "The Pending Removal section must contain the table "
-          ++ "`Item | Owning Sprint | Notes`."
-      ]
-    [header]
-      | header /= expectedHeader -> [wrongHeader]
-      | otherwise -> ["The Pending Removal table is missing its Markdown separator row."]
-    header : separator : remaining
-      | header /= expectedHeader -> [wrongHeader]
-      | length separator /= length expectedHeader || not (isMarkdownSeparatorRow separator) ->
-          ["The Pending Removal table must place a Markdown separator directly below its header."]
-      | otherwise -> concat (zipWith checkRow [1 :: Int ..] remaining)
-   where
-    tableLines =
-      [ lineText
-      | lineText <- sectionLines
-      , "|" `isPrefixOf` trimLine lineText
-      ]
-    wrongHeader =
-      "The Pending Removal table header must be exactly `Item | Owning Sprint | Notes`."
-
-  checkRow rowNumber cells = case cells of
-    [_, owner, _]
-      | explicitlyUnowned owner -> []
-      | otherwise ->
-          let ownerSprintIds = filter isPlanSprintId (inlineCodeSpansInLine owner)
-           in [ "A Pending Removal row has no sprint owner and is not explicitly "
-                  ++ "`Unowned`: `"
-                  ++ owner
-                  ++ "`."
-              | null ownerSprintIds
-              ]
-                ++ [ "A Pending Removal row names nonexistent Sprint `"
-                       ++ sprintId
-                       ++ "` as its owner. Register the sprint or mark the row "
-                       ++ "explicitly `Unowned`."
-                   | sprintId <- ownerSprintIds
-                   , sprintId `notElem` knownSprintIds
-                   ]
-    _ ->
-      [ "Pending Removal table row "
-          ++ show rowNumber
-          ++ " has "
-          ++ show (length cells)
-          ++ " cells; exactly three are required."
-      ]
-
-  explicitlyUnowned owner = case words (filter (/= '*') owner) of
-    "Unowned" : _ -> True
-    _ -> False
-
-markdownHeadingSections :: String -> String -> [[String]]
-markdownHeadingSections heading contents =
-  [ takeWhile (not . ("## " `isPrefixOf`)) remaining
-  | lineText : remaining <- tails (stripFencedCodeBlocks (lines contents))
-  , lineText == heading
-  ]
-
 markdownTableCells :: String -> [String]
 markdownTableCells lineText =
   map trimLine (dropTrailingEmpty (dropLeadingEmpty (splitMarkdownRow (trimLine lineText))))
@@ -9483,527 +9565,8 @@ splitMarkdownRow = go [] []
   go cells current ('|' : rest) = go (reverse current : cells) [] rest
   go cells current (character : rest) = go cells (character : current) rest
 
-isMarkdownSeparatorRow :: [String] -> Bool
-isMarkdownSeparatorRow cells =
-  not (null cells)
-    && all (\cell -> not (null cell) && all (`elem` ['-', ':']) cell) cells
-
-splitOnCharacter :: Char -> String -> [String]
-splitOnCharacter delimiter value = case break (== delimiter) value of
-  (before, []) -> [before]
-  (before, _ : after) -> before : splitOnCharacter delimiter after
-
-parseDecimal :: String -> Maybe Int
-parseDecimal value = case reads value of
-  [(parsed, "")] -> Just parsed
-  _ -> Nothing
-
-stripSingleCodeSpan :: String -> String
-stripSingleCodeSpan value = case value of
-  '`' : rest -> case reverse rest of
-    '`' : middleReversed -> reverse middleReversed
-    _ -> value
-  _ -> value
-
-numericSprintKey :: String -> Maybe [Int]
-numericSprintKey sprintId =
-  traverse parseDecimal (splitOnCharacter '.' sprintId)
-
-isPlanSprintId :: String -> Bool
-isPlanSprintId sprintId = case break (== '.') sprintId of
-  (phaseNumber, '.' : rest) ->
-    not (null phaseNumber)
-      && all isDigit phaseNumber
-      && not (null rest)
-      && all (\character -> isAlphaNum character || character == '.') rest
-      && any isDigit rest
-  _ -> False
-
-sprintIdFromHeading :: String -> Maybe String
-sprintIdFromHeading heading = do
-  rest <- stripPrefix "## Sprint " heading
-  let sprintId = takeWhile (/= ':') rest
-  if isPlanSprintId sprintId then Just sprintId else Nothing
-
-uniqueSprintStatus :: String -> Maybe String
-uniqueSprintStatus body = case sprintStatusDeclarations body of
-  [Just status] -> Just status
-  _ -> Nothing
-
-sprintStatusViolations :: FilePath -> String -> String -> [String]
-sprintStatusViolations path sprintId body = case sprintStatusDeclarations body of
-  [] -> [prefix ++ "has no `**Status**:` declaration."]
-  [Nothing] ->
-    [ prefix
-        ++ "has an unrecognized `**Status**:` value; the leading status must be "
-        ++ "Done, Active, Planned, or Blocked."
-    ]
-  [Just _] -> []
-  declarations ->
-    [ prefix
-        ++ "has "
-        ++ show (length declarations)
-        ++ " `**Status**:` declarations; exactly one is permitted."
-    ]
- where
-  prefix = path ++ " Sprint `" ++ sprintId ++ "` "
-
-sprintStatusDeclarations :: String -> [Maybe String]
-sprintStatusDeclarations body =
-  [ leadingSprintStatus statusText
-  | lineText <- stripFencedCodeBlocks (lines body)
-  , Just statusText <- [stripPrefix "**Status**:" lineText]
-  ]
-
-leadingSprintStatus :: String -> Maybe String
-leadingSprintStatus statusText = case statusWords of
-  status : _
-    | status `elem` ["Done", "Active", "Planned", "Blocked"] -> Just status
-  _ -> Nothing
- where
-  statusWords =
-    [ word
-    | token <- words statusText
-    , let word = takeWhile isAlpha (dropWhile (not . isAlpha) token)
-    , not (null word)
-    ]
-
-phaseNumberFromPlanPath :: FilePath -> Maybe String
-phaseNumberFromPlanPath path = do
-  rest <- stripPrefix "DEVELOPMENT_PLAN/phase-" path
-  let phaseNumber = takeWhile isDigit rest
-  if null phaseNumber then Nothing else Just phaseNumber
-
--- | Filesystem wrapper for 'developmentPlanResumeViolations'.
-checkDevelopmentPlanResumeLedger :: FilePath -> IO [String]
-checkDevelopmentPlanResumeLedger repoRoot = do
-  repoPaths <- listRepoOwnedPaths repoRoot
-  let planPaths =
-        [ path
-        | path <- repoPaths
-        , "DEVELOPMENT_PLAN/" `isPrefixOf` path
-        , ".md" `isSuffixOf` path
-        ]
-  planDocuments <-
-    forM planPaths $ \relativePath -> do
-      contents <- readFileStrict (repoRoot </> relativePath)
-      pure (relativePath, contents)
-  pure (developmentPlanResumeViolations planDocuments)
-
--- | Sprint 0.27 (IO wrapper). Every sprint block in @DEVELOPMENT_PLAN/phase-*.md@
--- carries its Standard-H @Implementation@ and docs fields.
---
--- Back-filling the debt once would have left it free to recur; this is the
--- gate that makes the plan's own closure requirement mechanical, in the same
--- idiom as Sprint @0.21@'s status-value and cited-path gates directly below.
-checkSprintRequiredFields :: FilePath -> IO [String]
-checkSprintRequiredFields repoRoot = do
-  repoPaths <- listRepoOwnedPaths repoRoot
-  let planPaths =
-        [ path
-        | path <- repoPaths
-        , "DEVELOPMENT_PLAN/phase-" `isPrefixOf` path
-        , ".md" `isSuffixOf` path
-        ]
-  fmap concat $
-    forM planPaths $ \relativePath -> do
-      contents <- readFileStrict (repoRoot </> relativePath)
-      pure
-        [ relativePath
-            ++ " "
-            ++ takeWhile (/= ':') (drop 3 heading)
-            ++ " is missing its Standard-H `**"
-            ++ missing
-            ++ "**` field. Every sprint in this plan is `Done`, and Standard H "
-            ++ "requires `Implementation` for `Done` while Standard G requires the "
-            ++ "docs list. Name what the sprint actually touched — never infer a "
-            ++ "path, because `checkPlanCitedSourcePaths` will either fail on a "
-            ++ "path that does not exist or silently point a reader at the wrong "
-            ++ "module."
-        | (heading, body) <- planSprintBlocks contents
-        , missing <- sprintBlockMissingFields body
-        ]
-
--- | Sprint 0.30: the two sprint-block fields in which a dependency may be
--- recorded (Standard H).
---
--- A dependency written anywhere else is invisible to this gate, which is
--- exactly how the 2026-08-17 plan-compliance audit found a queue in which no
--- row could reach @Done@ while @prodbox dev lint docs@ reported it clean: the
--- backward dependencies lived in prose, and three Active sprints declared
--- theirs under an invented field name no gate reads.
-planDependencyFieldNames :: [String]
-planDependencyFieldNames = ["Blocked by", "Closure dependency"]
-
--- | Sprint 0.31: the field in which a sprint /admits/ a backward dependency
--- already recorded in one of the two above (Standard N.2).
---
--- It records no dependency of its own.  Its whole job is to make a physical
--- backward dependency sayable: the 2026-08-21 audit found that forbidding the
--- declaration had not removed a single real dependency, it had moved four of
--- them into prose where no gate could see them — including one on the queue
--- head.  The two directions must agree, so neither an unadmitted backward
--- dependency nor an orphan admission can survive this gate.
-planBackwardDependencyFieldName :: String
-planBackwardDependencyFieldName = "Backward dependency"
-
--- | The minimum non-identifier text a `**Backward dependency**` field must
--- carry.
---
--- Standard N.2 requires one sentence naming what would be stranded.  This
--- checks that a justification was /written/, not that it is true — a bound
--- worth stating rather than implying, in the idiom of the other declaration
--- proofs in this module.
-minimumBackwardDependencyJustificationChars :: Int
-minimumBackwardDependencyJustificationChars = 40
-
--- | The sprint ids a `**Backward dependency**` field admits.
---
--- Deliberately not 'sprintLiveDependencyIds'. That function suppresses a whole
--- field when it reads as a historical resolution note, which is right for a
--- dependency field and wrong here: this field is /required/ to carry a
--- justification sentence in the same line, and a justification is ordinary
--- prose that may legitimately contain a word like @unresolved@. Running the
--- resolution scan over it would silently void the admission and let the
--- unadmitted dependency through — the same shape as the prose hole this whole
--- rule exists to close.
-backwardDependencyAdmittedIds :: String -> [String]
-backwardDependencyAdmittedIds = nub . sprintIdsInText . dropStruckSpans
-
--- | What is left of an admission once its sprint references are removed.
---
--- This proves a justification was written, not that it is true — a bound worth
--- stating rather than implying.
-backwardDependencyJustification :: String -> String
-backwardDependencyJustification fieldText =
-  filter
-    (\character -> isAlphaNum character || character == ' ')
-    (foldr removeToken fieldText tokens)
- where
-  tokens = "Sprints" : "Sprint" : backwardDependencyAdmittedIds fieldText
-  removeToken _ [] = []
-  removeToken token text@(character : rest) = case stripPrefix token text of
-    Just remainder -> removeToken token remainder
-    Nothing -> character : removeToken token rest
-
--- | Field names that look like a dependency but are not the two Standard-H
--- ones.  Named rather than pattern-matched loosely so a new spelling is a
--- deliberate addition here instead of a silent bypass.
-planRejectedDependencyFieldNames :: [String]
-planRejectedDependencyFieldNames =
-  [ "Closure dependencies"
-  , "Closure Dependency"
-  , "Closure Dependencies"
-  , "Depends on"
-  , "Dependency"
-  , "Dependencies"
-  , "Waiting on"
-  , "Waits on"
-  , "Blocked On"
-  , "Blocked on"
-  , "Blocked by dependency"
-  ]
-
--- | Sprint 0.30 (pure). Order two plan sprint ids the way the queue does:
--- phase number first, then each remaining segment numerically when it is
--- numeric and lexically otherwise, so @7.5.b.i@ sorts after @7.5.b@ and before
--- @7.6@ rather than by string comparison, which would put @7.10@ before @7.5@.
---
--- Exposed for unit tests.
-compareSprintIds :: String -> String -> Ordering
-compareSprintIds left right =
-  compare (sprintIdSortKey left) (sprintIdSortKey right)
-
-sprintIdSortKey :: String -> [(Int, Int, String)]
-sprintIdSortKey = map segmentKey . splitOnDots
- where
-  segmentKey segment = case span isDigit segment of
-    ([], _) -> (1, 0, segment)
-    (digits, rest) -> (0, read digits, rest)
-  splitOnDots value = case break (== '.') value of
-    (segment, '.' : rest) -> segment : splitOnDots rest
-    (segment, _) -> [segment]
-
--- | Sprint 0.30 (pure). The dependency fields a sprint body declares, as
--- @(fieldName, fieldText)@, including the rejected spellings so the caller can
--- report them.  Exposed for unit tests.
-sprintDependencyFields :: String -> [(String, String)]
-sprintDependencyFields body =
-  [ (name, fieldText)
-  | lineText <- stripFencedCodeBlocks (lines body)
-  , (name, fieldText) <- maybe [] pure (dependencyFieldOnLine lineText)
-  ]
- where
-  dependencyFieldOnLine lineText =
-    case [ (name, rest)
-         | name <-
-             planDependencyFieldNames
-               ++ [planBackwardDependencyFieldName]
-               ++ planRejectedDependencyFieldNames
-         , Just rest <- [stripPrefix ("**" ++ name ++ "**:") lineText]
-         ] of
-      -- Longest match wins so `Closure dependency` never shadows
-      -- `Closure dependencies`.
-      [] -> Nothing
-      matches -> Just (longestFieldName matches)
-  longestFieldName = foldr1 (\left right -> if length (fst left) >= length (fst right) then left else right)
-
--- | Sprint 0.30 (pure). The sprint ids a dependency field still asserts.
---
--- Historical lines record their own resolution in place — @~~Sprint 2.19~~
--- unblocked@, @Sprint `1.38` (closed)@, @Sprint 0.8 (...) — resolved@ — and
--- those are statements that the dependency is gone, not live dependencies. A
--- struck span is dropped outright; a parenthetical or dash-introduced
--- resolution note drops the ids it annotates. @none@ yields no ids.
---
--- Exposed for unit tests.
-sprintLiveDependencyIds :: String -> [String]
-sprintLiveDependencyIds fieldText
-  | resolvedInPlace = []
-  | otherwise = sprintIdsInText withoutStruck
- where
-  withoutStruck = dropStruckSpans fieldText
-  lowered = map toLower withoutStruck
-  resolvedInPlace =
-    any
-      (`isInfixOf` lowered)
-      ["(closed)", "(satisfied", "(all closed)", "(now done", "resolved", "unblocked", "n/a"]
-
-dropStruckSpans :: String -> String
-dropStruckSpans = go
- where
-  go [] = []
-  go ('~' : '~' : rest) = go (drop 2 (dropWhileNotStrike rest))
-  go (character : rest) = character : go rest
-  dropWhileNotStrike [] = []
-  dropWhileNotStrike ('~' : '~' : rest) = '~' : '~' : rest
-  dropWhileNotStrike (_ : rest) = dropWhileNotStrike rest
-
--- | Every @Sprint N.M@ / @Sprint `N.M`@ / @Sprint-`N.M`@ id in a fragment.
-sprintIdsInText :: String -> [String]
-sprintIdsInText = go
- where
-  go [] = []
-  go text@(_ : rest) = case stripPrefix "Sprint" text of
-    Just afterKeyword ->
-      let afterSeparator = dropWhile (\character -> character `elem` (" -s" :: String)) afterKeyword
-          candidate =
-            takeWhile
-              (\character -> isAlphaNum character || character == '.')
-              (dropWhile (== '`') afterSeparator)
-          trimmed = dropTrailingDots candidate
-       in if isPlanSprintId trimmed
-            then trimmed : go rest
-            else go rest
-    Nothing -> go rest
-  dropTrailingDots value = reverse (dropWhile (== '.') (reverse value))
-
--- | Sprint 0.30 (pure). Standard N, made mechanical over the declared fields.
---
--- Two violations: a live dependency that sorts later than the sprint declaring
--- it, and a dependency-shaped field this gate cannot read. Exposed for unit
--- tests.
-sprintDependencyDirectionViolations :: [(FilePath, String)] -> [String]
-sprintDependencyDirectionViolations planDocuments =
-  concat
-    [ fieldViolations path sprintId body
-    | (path, contents) <- planDocuments
-    , "DEVELOPMENT_PLAN/phase-" `isPrefixOf` path
-    , ".md" `isSuffixOf` path
-    , (heading, body) <- planSprintBlocks contents
-    , Just sprintId <- [sprintIdFromHeading heading]
-    ]
- where
-  fieldViolations path sprintId body =
-    concat
-      [ fieldViolation path sprintId admitted name fieldText
-      | (name, fieldText) <- dependencyFields
-      ]
-      ++ admissionViolations path sprintId dependencyFields backwardFields
-   where
-    allFields = sprintDependencyFields body
-    dependencyFields =
-      [field | field@(name, _) <- allFields, name /= planBackwardDependencyFieldName]
-    backwardFields =
-      [field | field@(name, _) <- allFields, name == planBackwardDependencyFieldName]
-    admitted = concatMap (backwardDependencyAdmittedIds . snd) backwardFields
-
-  fieldViolation path sprintId admitted name fieldText
-    | name `elem` planRejectedDependencyFieldNames =
-        [ path
-            ++ " Sprint `"
-            ++ sprintId
-            ++ "` records a dependency under `**"
-            ++ name
-            ++ "**`, which is not a Standard-H dependency field. Use `**Blocked by**` "
-            ++ "or `**Closure dependency**`; a dependency under any other name is "
-            ++ "invisible to this gate, which is how a backward dependency last "
-            ++ "reached the queue undetected (Standard N)."
-        ]
-    | otherwise =
-        [ path
-            ++ " Sprint `"
-            ++ sprintId
-            ++ "` declares `**"
-            ++ name
-            ++ "**: Sprint `"
-            ++ dependencyId
-            ++ "``, which is a later sprint, and does not admit it under `**"
-            ++ planBackwardDependencyFieldName
-            ++ "**`. Standard N.2 permits a backward dependency only when it is "
-            ++ "physical — the deliverable would destroy, strand, or leave "
-            ++ "unreplaced something only Sprint `"
-            ++ dependencyId
-            ++ "` supplies — and only when this block says so in that field. "
-            ++ "Otherwise re-scope this sprint so its owned surface is validatable "
-            ++ "now, or state the later work as a disclaimer rather than a "
-            ++ "dependency."
-        | dependencyId <- sprintLiveDependencyIds fieldText
-        , compareSprintIds dependencyId sprintId == GT
-        , dependencyId `notElem` admitted
-        ]
-
-  -- The other direction of the bijection: an admission with nothing to admit,
-  -- an admission of a sprint that is not later, and an admission carrying no
-  -- justification are each their own defect.
-  admissionViolations path sprintId dependencyFields backwardFields =
-    concat
-      [ orphanViolation path sprintId declaredId
-      | declaredId <- concatMap (backwardDependencyAdmittedIds . snd) backwardFields
-      , declaredId `notElem` declaredDependencyIds
-      ]
-      ++ concat
-        [ notLaterViolation path sprintId declaredId
-        | declaredId <- concatMap (backwardDependencyAdmittedIds . snd) backwardFields
-        , compareSprintIds declaredId sprintId /= GT
-        ]
-      ++ concat
-        [ justificationViolation path sprintId
-        | (_, fieldText) <- backwardFields
-        , not (null (backwardDependencyAdmittedIds fieldText))
-        , length (backwardDependencyJustification fieldText)
-            < minimumBackwardDependencyJustificationChars
-        ]
-   where
-    declaredDependencyIds =
-      concatMap (sprintLiveDependencyIds . snd) dependencyFields
-
-  orphanViolation path sprintId declaredId =
-    [ path
-        ++ " Sprint `"
-        ++ sprintId
-        ++ "` admits Sprint `"
-        ++ declaredId
-        ++ "` under `**"
-        ++ planBackwardDependencyFieldName
-        ++ "**`, but no `**Blocked by**` or `**Closure dependency**` field names "
-        ++ "it. An admission with nothing to admit is a claim nothing can "
-        ++ "consume (Standard N.2)."
-    ]
-
-  notLaterViolation path sprintId declaredId =
-    [ path
-        ++ " Sprint `"
-        ++ sprintId
-        ++ "` admits Sprint `"
-        ++ declaredId
-        ++ "` under `**"
-        ++ planBackwardDependencyFieldName
-        ++ "**`, which is not a later sprint. Only a backward dependency needs "
-        ++ "admitting; a forward one is the default and must not be declared "
-        ++ "here (Standard N.2)."
-    ]
-
-  justificationViolation path sprintId =
-    [ path
-        ++ " Sprint `"
-        ++ sprintId
-        ++ "` admits a backward dependency under `**"
-        ++ planBackwardDependencyFieldName
-        ++ "**` without a justification. Standard N.2 requires one sentence "
-        ++ "naming what would be destroyed, stranded, or left unreplaced without "
-        ++ "the later sprint."
-    ]
-
--- | Sprint 0.30 (pure). The ledger's declarable prerequisite direction
--- (Standard I).
---
--- A @Pending Removal@ row whose removal waits on a later sprint is a blocked
--- earlier phase wearing a ledger row: nobody in the queue can close it. The
--- row is re-owned to that sprint instead. Exposed for unit tests.
-pendingRemovalPrerequisiteViolations :: String -> [String]
-pendingRemovalPrerequisiteViolations contents =
-  case markdownHeadingSections "## Pending Removal" contents of
-    [sectionLines] -> concat (zipWith checkRow [1 :: Int ..] (dataRows sectionLines))
-    _ -> []
- where
-  dataRows sectionLines =
-    drop
-      2
-      [ cells
-      | lineText <- sectionLines
-      , "|" `isPrefixOf` trimLine lineText
-      , let cells = markdownTableCells lineText
-      ]
-  checkRow rowNumber cells = case cells of
-    [_, ownerCell, notesCell] ->
-      [ "`DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md` Pending Removal row "
-          ++ show rowNumber
-          ++ " is owned by Sprint `"
-          ++ ownerId
-          ++ "` but declares `**Prerequisite**: Sprint `"
-          ++ prerequisiteId
-          ++ "``, a later sprint. Re-own the row to Sprint `"
-          ++ prerequisiteId
-          ++ "`; a row whose prerequisite lands after its owner closes has no "
-          ++ "scheduled remover (Standards I/N)."
-      | ownerId <- take 1 (sprintIdsInText ownerCell)
-      , prerequisiteId <- prerequisiteIdsInNotes notesCell
-      , compareSprintIds prerequisiteId ownerId == GT
-      ]
-    _ -> []
-  prerequisiteIdsInNotes notesCell =
-    concat
-      [ take 1 (sprintIdsInText fragment)
-      | fragment <- prerequisiteFragments notesCell
-      ]
-  prerequisiteFragments notesCell = go notesCell
-   where
-    go [] = []
-    go text@(_ : rest) = case stripPrefix "**Prerequisite**:" text of
-      Just after -> take 64 after : go rest
-      Nothing -> go rest
-
--- | Sprint 0.30 (IO wrapper). Standard-N dependency direction over the plan
--- documents and the deletion ledger.
-checkPlanDependencyDirection :: FilePath -> IO [String]
-checkPlanDependencyDirection repoRoot = do
-  repoPaths <- listRepoOwnedPaths repoRoot
-  let planPaths =
-        [ path
-        | path <- repoPaths
-        , "DEVELOPMENT_PLAN/" `isPrefixOf` path
-        , ".md" `isSuffixOf` path
-        ]
-  planDocuments <-
-    forM planPaths $ \relativePath -> do
-      contents <- readFileStrict (repoRoot </> relativePath)
-      pure (relativePath, contents)
-  let ledgerContents =
-        maybe "" id (lookup "DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md" planDocuments)
-  pure
-    ( sprintDependencyDirectionViolations planDocuments
-        ++ pendingRemovalPrerequisiteViolations ledgerContents
-    )
-
--- | Sprint 0.21 (IO wrapper). The cited-source-path existence check over
--- @DEVELOPMENT_PLAN/@ — the mechanical form of the evidence sweep that has
--- repeatedly found real defects by hand (Sprints @4.51@, @4.53@, @5.18@,
--- @5.23@ each recorded a closure whose cited evidence did not exist).
---
--- A sprint may only claim @Done@ on evidence a reader can open, so a plan
--- document that cites a module which is not in the worktree fails the
--- build unless the path is a declared historical retirement.
+-- | Current source citations must exist in the worktree. An explicitly
+-- revision-qualified citation must resolve to the named Git object instead.
 checkPlanCitedSourcePaths :: FilePath -> IO [String]
 checkPlanCitedSourcePaths repoRoot = do
   repoPaths <- listRepoOwnedPaths repoRoot
@@ -10016,23 +9579,63 @@ checkPlanCitedSourcePaths repoRoot = do
   fmap concat $
     forM governedPaths $ \relativePath -> do
       contents <- readFileStrict (repoRoot </> relativePath)
-      let candidates =
-            [ cited
-            | cited <- citedSourcePathsInDoc contents
-            , cited `notElem` retiredCitedSourcePaths
-            ]
+      let candidates = citedSourcePathsInDoc contents
       missingPaths <-
-        filterM (fmap not . doesFileExist . (repoRoot </>)) candidates
+        filterM (fmap not . currentSourceObjectExists repoRoot) candidates
+      missingHistorical <-
+        filterM (fmap not . historicalSourceObjectExists repoRoot) (historicalSourcePathsInDoc contents)
       pure
-        [ relativePath
-            ++ " cites source path `"
-            ++ missingPath
-            ++ "`, which does not exist in the worktree. Correct the citation, or add "
-            ++ "the path to `retiredCitedSourcePaths` naming the sprint that removed it ("
-            ++ citedSourcePathStandard relativePath
-            ++ ")."
-        | missingPath <- missingPaths
-        ]
+        ( [ relativePath
+              ++ " cites source path `"
+              ++ missingPath
+              ++ "`, which does not exist in the worktree or leaves its root. Correct the citation or cite an available historical revision ("
+              ++ citedSourcePathStandard relativePath
+              ++ ")."
+          | missingPath <- missingPaths
+          ]
+            ++ [ relativePath ++ " cannot verify historical source `" ++ revision ++ ":" ++ path ++ "` in Git."
+               | (revision, path) <- missingHistorical
+               ]
+        )
+
+currentSourceObjectExists :: FilePath -> FilePath -> IO Bool
+currentSourceObjectExists repoRoot path
+  | ".." `elem` splitDirectories path = pure False
+  | otherwise = do
+      resolved <- tryIOError ((,) <$> canonicalizePath repoRoot <*> canonicalizePath (repoRoot </> path))
+      case resolved of
+        Left _ -> pure False
+        Right (root, target) -> do
+          let relative = makeRelative root target
+              components = splitDirectories relative
+              outside = isAbsolute relative || ".." `elem` components
+              private = any (`elem` [".data", ".test-data", ".build", ".git"]) components
+          if outside || private then pure False else doesFileExist target
+
+historicalSourceObjectExists :: FilePath -> (String, FilePath) -> IO Bool
+historicalSourceObjectExists repoRoot (revision, path)
+  | length revision < 7 || length revision > 64 || not (all isHexDigit revision) = pure False
+  | ".." `elem` splitDirectories path = pure False
+  | otherwise = do
+      result <-
+        Subprocess.captureSubprocessBounded
+          Subprocess.BoundedSubprocessLimits
+            { Subprocess.boundedSubprocessMaximumInputBytes = 1
+            , Subprocess.boundedSubprocessMaximumStdoutBytes = 1024
+            , Subprocess.boundedSubprocessMaximumStderrBytes = 4096
+            , Subprocess.boundedSubprocessTimeoutMicros = 10 * 1000 * 1000
+            }
+          Subprocess.Subprocess
+            { Subprocess.subprocessPath = "git"
+            , Subprocess.subprocessArguments = ["cat-file", "-t", revision ++ ":" ++ path]
+            , Subprocess.subprocessEnvironment = Nothing
+            , Subprocess.subprocessWorkingDirectory = Just repoRoot
+            }
+      pure $ case result of
+        Right output ->
+          Subprocess.processExitCode output == ExitSuccess
+            && words (Subprocess.processStdout output) == ["blob"]
+        Left _ -> False
 
 -- | Sprint 0.31. The region this check guarantees over. It was
 -- @DEVELOPMENT_PLAN/@ only from Sprint 0.21 until 2026-08-20, which left the
@@ -10049,13 +9652,9 @@ citedSourcePathRegion path =
 citedSourcePathStandard :: FilePath -> String
 citedSourcePathStandard relativePath
   | "documents/" `isPrefixOf` relativePath =
-      "documentation_standards.md " ++ sectionTwelveLabel ++ ": a cited artifact must resolve"
+      "documentation_standards.md: cited artifacts must resolve"
   | otherwise =
-      "development_plan_standards.md Standard C: status must describe reality"
-
--- | Spelled once so the section number is not restated at each refusal site.
-sectionTwelveLabel :: String
-sectionTwelveLabel = "section 12"
+      "development_plan_standards.md: cited source evidence must be available"
 
 -- | Sprint 0.22 (pure). The section numbers a document actually defines, read
 -- from its headings. The grammar is uniform across the doctrine set:
@@ -10209,7 +9808,7 @@ checkDoctrineSectionCitations repoRoot = do
             ++ doc
             ++ " section "
             ++ number
-            ++ "`, which is not a heading in that document (documentation_standards.md § 4)."
+            ++ "`, which is not a heading in that document (documentation_standards.md)."
         | lineText <- stripFencedCodeBlocks (lines contents)
         , (doc, number) <- boundSectionCitationsInLine lineText
         , numbers <- take 1 (lookupSections doc)
@@ -10529,7 +10128,7 @@ createRecordCoverageViolations rows corpus =
     [ "pulumi/"
         ++ directory
         ++ " has a Main.yaml but createRecordCoverage has no row for it; state whether "
-        ++ "it is on the write-ahead lane and why (lifecycle_reconciliation_doctrine.md section 3.2a)."
+        ++ "it is on the write-ahead lane and why (lifecycle.md)."
     | directory <- map fst (corpusPulumiMain corpus)
     , directory `notElem` [name | (name, _, _, _) <- programRows]
     ]
@@ -10867,7 +10466,7 @@ managedResourceRegistryParityViolations =
                 ++ name
                 ++ "` but resourceLifecycleClasses has no row for it; add it to "
                 ++ "src/Prodbox/Lifecycle/ResourceClass.hs "
-                ++ "(lifecycle_reconciliation_doctrine.md §3.1 totality)."
+                ++ "(lifecycle.md totality)."
             ]
           Just flatClass
             | flatClass == registered -> []
@@ -10879,7 +10478,7 @@ managedResourceRegistryParityViolations =
                     ++ " in the typed lifecycle registry but "
                     ++ show flatClass
                     ++ " in resourceLifecycleClasses; a resource has exactly one "
-                    ++ "static lifecycle class (lifecycle_reconciliation_doctrine.md §3.1)."
+                    ++ "static lifecycle class (lifecycle.md)."
                 ]
 
 checkCreateCallSiteCoverage :: FilePath -> IO [String]
@@ -10955,7 +10554,7 @@ pulumiCreateSiteViolations registeredNames commandContents =
     [ constructorName
         ++ " is a Pulumi stack-creation site with no registered managed resource; "
         ++ "add its stack to resourceLifecycleClasses and pulumiCreateSiteOwners "
-        ++ "(lifecycle_reconciliation_doctrine.md §3.1 totality)."
+        ++ "(lifecycle.md totality)."
     | constructorName <- creationConstructors
     , constructorName `notElem` map fst pulumiCreateSiteOwners
     ]
@@ -10965,7 +10564,7 @@ pulumiCreateSiteViolations registeredNames commandContents =
         ++ stackName
         ++ "`, which is not in the managed-resource registry; add `"
         ++ stackName
-        ++ "` to resourceLifecycleClasses (lifecycle_reconciliation_doctrine.md §3.1 totality)."
+        ++ "` to resourceLifecycleClasses (lifecycle.md totality)."
     | (constructorName, stackName) <- pulumiCreateSiteOwners
     , constructorName `elem` creationConstructors
     , stackName `notElem` registeredNames
@@ -11006,7 +10605,7 @@ pulumiCreateSiteViolations registeredNames commandContents =
 -- @request-service-quota-increase@ — so the gate was silent about them. Each is
 -- now registered against the owner module measured to contain it. The bound is
 -- unchanged in kind and only in extent: this is a substring allowlist over a
--- stated region ([chaos_hardening_doctrine.md § 22](../../documents/engineering/chaos_hardening_doctrine.md)),
+-- stated region (chaos_hardening_doctrine.md at 583443f, section 22),
 -- not a totality proof, and a verb nobody has thought of is still invisible to
 -- it. What the widening buys is that the six verbs already known to be outside
 -- it no longer are.
@@ -11101,7 +10700,7 @@ iamCreateSiteViolations :: FilePath -> String -> [String]
 iamCreateSiteViolations = awsCreateSiteViolations
 
 -- | Sprint 4.14: enforce the operator vocabulary contract defined in
--- @documents/engineering/cli_command_surface.md § 2A@. Sprint
+-- @documents/engineering/cli_command_surface.md at 583443f, section 2A@. Sprint
 -- identifiers (`Sprint <number>`, `Sprints <list>`) must not appear
 -- in any operator-facing surface. This check scans:
 --
@@ -11164,7 +10763,7 @@ checkOperatorVocabulary repoRoot = do
                   [ relativePath
                       ++ " contains sprint identifier in operator-facing "
                       ++ "artifact (see "
-                      ++ "documents/engineering/cli_command_surface.md § 2A)."
+                      ++ "documents/engineering/cli_command_surface.md)."
                   | any matchesSprintToken (lines contents)
                   ]
         )
@@ -11198,7 +10797,7 @@ shortenSprintLeak lit
 
 -- | Sprint 1.75: the mechanical outer ring of repository value hygiene,
 -- registered by Sprint 0.19 and generalized by Sprint 0.20. See
--- [vault_doctrine.md § 20.5] and [code_quality.md § Committed Values].
+-- vault_doctrine.md at 583443f, section 20.5 and [code_quality.md § Committed Values].
 --
 -- No tracked file may contain a string matching a scanned provider
 -- pattern that the scanner's own exclusions do not cover — whether or
@@ -11330,7 +10929,7 @@ scannedCredentialViolations relativePath contents =
   [ relativePath
       ++ " contains a string matching the scanned "
       ++ patternName
-      ++ " pattern (see documents/engineering/vault_doctrine.md § 20.5)."
+      ++ " pattern (see documents/engineering/security_and_credentials.md)."
   | patternName <- nub (scannedCredentialPatternsPresent contents)
   ]
 
@@ -12428,7 +12027,7 @@ chartTemplateResourceViolations chartDir = do
 -- template.
 --
 -- __Why the region is every template, not a filename list.__ Per
--- [resource_scaling_doctrine.md § 2C](../../documents/engineering/resource_scaling_doctrine.md)
+-- resource_scaling_doctrine.md at 583443f, section 2C
 -- a gate's region must cover the surface that carries its evidence, and before
 -- this check no gate read a chart @networkpolicy.yaml@ for content at all — the
 -- Kubernetes API egress coordinate lived in three independently-authored
@@ -12700,20 +12299,17 @@ listRepoOwnedPaths repoRoot = scanDirectory ""
                     then entry
                     else relativeRoot </> entry
                 absolutePath = repoRoot </> relativePath
-            isDirectory <- doesDirectoryExist absolutePath
-            if not isDirectory
-              then pure [relativePath]
-              else
-                if entry `elem` excludedDirectories
-                  then pure []
-                  else
-                    if entry `elem` forbiddenDirectories
-                      then pure [relativePath]
-                      else do
-                        descendants <- scanDirectory relativePath
-                        pure (relativePath : descendants)
+            if (null relativeRoot && entry == "test-secrets.dhall") || entry `elem` excludedDirectories
+              then pure []
+              else do
+                isDirectory <- doesDirectoryExist absolutePath
+                if not isDirectory || entry `elem` forbiddenDirectories
+                  then pure [relativePath]
+                  else do
+                    descendants <- scanDirectory relativePath
+                    pure (relativePath : descendants)
 
-  excludedDirectories = [".git", ".build", "dist-newstyle", ".prodbox-state", ".data"]
+  excludedDirectories = [".git", ".build", "dist-newstyle", ".prodbox-state", ".data", ".test-data"]
   forbiddenDirectories = [".github", ".githooks", ".husky"]
 
 renderDoctrineViolation :: DoctrineViolation -> String

@@ -2,6 +2,7 @@
 
 module Prodbox.TestRunner
   ( runTests
+  , renderNamedLocalTestList
   , ClusterEvidence (..)
   , TestGate (..)
   , TestDeleteTarget (..)
@@ -38,7 +39,9 @@ module Prodbox.TestRunner
   , testTopologyModeGate
   , testProductionConfigGate
   , testProductionClusterGate
+  , observeLegacyInstallMarkers
   , topologyRunConfig
+  , writeTopologyVariantConfigWithSecrets
   , topologyVariantEnvironment
   , testScopeForTopologySuite
   )
@@ -98,6 +101,7 @@ import Prodbox.CLI.Rke2
   , reconcileAcmeEabFixture
   , reconcileHarnessLifecycleProviderCredential
   , reconcileHarnessSesSmtpCredential
+  , rke2InstallMarkers
   , rke2InstallPresent
   , runNativeHarnessBootstrapFloor
   , runRke2Command
@@ -281,9 +285,11 @@ import System.FilePath
   , normalise
   , splitDirectories
   , takeDirectory
-  , takeFileName
   , (</>)
   )
+import System.IO.Error (isDoesNotExistError)
+import System.IO.Temp (withSystemTempDirectory)
+import System.Posix.Files (fileAccess, getSymbolicLinkStatus)
 
 phaseOneGateMessage :: String
 phaseOneGateMessage = "Phase 1/2: validating integration prerequisites"
@@ -345,9 +351,25 @@ data TestRefusal
   = ProductionConfigPresent FilePath
   | ProductionClusterRunning ClusterEvidence
   | TestDeleteOutsideTestData FilePath
+  | TestRunRootUnverified FilePath
+  | TestGeneratedConfigUnverified FilePath
   | TestDeleteLongLivedResource String
   | UnknownTopologySuite String
   deriving (Eq, Show)
+
+data NamedLocalSuite = NamedUnit | NamedEnvironment | NamedCli
+  deriving (Eq, Show)
+
+namedLocalSuites :: [(String, NamedLocalSuite)]
+namedLocalSuites = [("unit", NamedUnit), ("env", NamedEnvironment), ("cli", NamedCli)]
+
+renderNamedLocalTestList :: String
+renderNamedLocalTestList =
+  unlines
+    ( "Built-in local suites:"
+        : map (("  " ++) . fst) namedLocalSuites
+        ++ ["Legacy topology-defined suites require a separate test topology and are not listed here."]
+    )
 
 runTests :: FilePath -> TestCommand -> IO ExitCode
 runTests repoRoot command =
@@ -356,21 +378,136 @@ runTests repoRoot command =
     Right () ->
       case testScope command of
         TestInit force -> runTopologyTestInit repoRoot force
-        TestRun suiteName -> runTopologyTestRun repoRoot suiteName (testCoverage command) (testSubstrate command)
+        TestRun suiteName -> case lookup suiteName namedLocalSuites of
+          Just NamedUnit -> runNamedUnitTests repoRoot command
+          Just NamedEnvironment -> runNamedEnvironmentTests repoRoot command
+          Just NamedCli -> runNamedCliTests repoRoot command
+          Nothing
+            | suiteName == "all" || "phase-" `isPrefixOf` suiteName ->
+                failWith ("The cumulative scenario runner is not implemented yet: " ++ suiteName)
+            | otherwise -> runTopologyTestRun repoRoot suiteName (testCoverage command) (testSubstrate command)
         _ -> do
           preflightExit <- runTestModePreflight repoRoot
           case preflightExit of
             failure@(ExitFailure _) -> pure failure
             ExitSuccess -> runLegacyTestCommand repoRoot command
 
+-- Unit tests do not need a deployment topology or a generated deployment
+-- configuration. Preserve the production-sibling guard and refuse options the
+-- existing unit executor cannot honor rather than silently ignoring them.
+runNamedUnitTests :: FilePath -> TestCommand -> IO ExitCode
+runNamedUnitTests repoRoot command =
+  runNamedLocalTests "unit" repoRoot command $ \testHome ->
+    runTestCommandWithEnvironment
+      (namedUnitEnvironment testHome)
+      repoRoot
+      command {testScope = TestUnit}
+
+-- The environment integration suite contains local CLI and Helm render
+-- checks. Select it explicitly rather than running the full legacy CLI suite.
+runNamedEnvironmentTests :: FilePath -> TestCommand -> IO ExitCode
+runNamedEnvironmentTests repoRoot command =
+  runNamedLocalTests "env" repoRoot command (runNamedIntegrationTests "env" repoRoot)
+
+-- The legacy CLI suite exercises lifecycle paths with fake executables. Do
+-- not start it on a host with an existing RKE2 installation, even when a test
+-- override claims otherwise; an unreadable marker is also a refusal.
+runNamedCliTests :: FilePath -> TestCommand -> IO ExitCode
+runNamedCliTests repoRoot command =
+  runNamedLocalTests "cli" repoRoot command $ \testHome -> do
+    installed <- observeLegacyInstallMarkers rke2InstallMarkers
+    case installed of
+      Just False -> runNamedIntegrationTests "cli" repoRoot testHome
+      Just True -> failWith "Cannot run the named CLI suite on a host with an RKE2 installation."
+      Nothing -> failWith "Cannot run the named CLI suite while RKE2 installation markers are unobservable."
+
+observeLegacyInstallMarkers :: [FilePath] -> IO (Maybe Bool)
+observeLegacyInstallMarkers paths = case paths of
+  [] -> pure (Just False)
+  path : remaining -> do
+    status <- try (getSymbolicLinkStatus path)
+    case status of
+      Right _ -> pure (Just True)
+      Left failure
+        | isDoesNotExistError failure -> observeLegacyInstallMarkers remaining
+        | otherwise -> pure Nothing
+
+runNamedIntegrationTests :: String -> FilePath -> FilePath -> IO ExitCode
+runNamedIntegrationTests name repoRoot testHome = do
+  environment <-
+    getEnvironment >>= addBuildSupportEnvironment repoRoot . namedUnitEnvironment testHome
+  prepared <- ensureCanonicalOperatorBinary repoRoot environment
+  case prepared of
+    failure@(ExitFailure _) -> pure failure
+    ExitSuccess -> do
+      writeOutputLine ("Running prodbox test " ++ name ++ " (local integration suite)")
+      runCommandForExitCode
+        Subprocess
+          { subprocessPath = "cabal"
+          , subprocessArguments =
+              [ "test"
+              , "--builddir=.build"
+              , "test:prodbox-integration"
+              , "--test-show-details=direct"
+              , "--test-option=--prodbox-suite=" ++ name
+              ]
+          , subprocessEnvironment = Just environment
+          , subprocessWorkingDirectory = Just repoRoot
+          }
+
+runNamedLocalTests :: String -> FilePath -> TestCommand -> (FilePath -> IO ExitCode) -> IO ExitCode
+runNamedLocalTests name repoRoot command action
+  | coverageEnabled (testCoverage command) =
+      failWith ("Coverage is not supported by the named " ++ name ++ " runner yet.")
+  | testSubstrate command /= SubstrateHomeLocal =
+      failWith ("The named " ++ name ++ " runner does not select an AWS substrate.")
+  | otherwise = do
+      productionConfigPath <- resolveTier0ConfigPath repoRoot
+      gate <- testModePreflightAtPath productionConfigPath
+      case gate of
+        TestGateRefuse refusal -> failWith (renderTestRefusal refusal)
+        TestGateClear -> do
+          systemKubeconfig <-
+            try (fileAccess "/etc/rancher/rke2/rke2.yaml" True False False) :: IO (Either IOException Bool)
+          case systemKubeconfig of
+            Right False -> withSystemTempDirectory "prodbox-local-tests-home" action
+            _ ->
+              failWith
+                "Cannot run the named local suite while a system RKE2 kubeconfig is readable or unobservable."
+
+-- Keep the build tool's existing Cabal store, but give child tests an empty
+-- HOME so legacy home-kubeconfig discovery cannot select the caller's file.
+-- This environment is not an OS sandbox.
+namedUnitEnvironment :: FilePath -> [(String, String)] -> [(String, String)]
+namedUnitEnvironment testHome environment =
+  [ ("HOME", testHome)
+  , ("AWS_CONFIG_FILE", "/dev/null")
+  , ("AWS_SHARED_CREDENTIALS_FILE", "/dev/null")
+  , ("AWS_EC2_METADATA_DISABLED", "true")
+  , ("KUBECONFIG", "/dev/null")
+  , ("DOCKER_HOST", "unix:///nonexistent/prodbox.sock")
+  , ("DOCKER_CONFIG", "/nonexistent")
+  ]
+    ++ maybe [] (\home -> [("CABAL_DIR", home </> ".cabal")]) (lookup "HOME" environment)
+    ++ filter (\(name, _) -> name `elem` ["PATH", "LANG", "LC_ALL"]) environment
+
 runLegacyTestCommand :: FilePath -> TestCommand -> IO ExitCode
-runLegacyTestCommand repoRoot command = do
-  baseEnvironment <- getEnvironment
+runLegacyTestCommand = runTestCommandWithEnvironment id
+
+runTestCommandWithEnvironment
+  :: ([(String, String)] -> [(String, String)]) -> FilePath -> TestCommand -> IO ExitCode
+runTestCommandWithEnvironment selectEnvironment repoRoot command = do
+  baseEnvironment <- selectEnvironment <$> getEnvironment
   environment <- addBuildSupportEnvironment repoRoot baseEnvironment
   let plan = testExecutionPlan (testSubstrate command) (testScope command)
   writeOutputLine ("Running prodbox test " ++ testPlanLabel plan ++ " (Haskell entrypoint)")
   testExit <- case testScope command of
     TestLint -> runLintFirst repoRoot environment
+    TestUnit -> do
+      prepareExit <- ensureCanonicalOperatorBinary repoRoot environment
+      case prepareExit of
+        ExitSuccess -> runHaskellSuites repoRoot environment (testPlanHaskellSuites plan)
+        failure@(ExitFailure _) -> pure failure
     TestAll -> do
       lintExit <- runLintFirst repoRoot environment
       case lintExit of
@@ -441,8 +578,7 @@ renderTestRefusal refusal =
     ProductionConfigPresent path ->
       "Refusing to run tests while production binary-sibling config exists at `"
         ++ path
-        ++ "`. Remove or move that production `prodbox.dhall` before running the test harness; "
-        ++ "topology-driven tests may create a disposable per-run config only after this gate clears."
+        ++ "`. Tests require a separately isolated run configuration."
     ProductionClusterRunning evidence ->
       "Refusing to run topology-driven tests while a production cluster appears to be running ("
         ++ clusterEvidenceDescription evidence
@@ -452,6 +588,10 @@ renderTestRefusal refusal =
         ++ testDataRootRelative
         ++ "`: "
         ++ path
+    TestGeneratedConfigUnverified _ ->
+      "Cannot run this test until its generated configuration and cleanup are bound to an isolated test run."
+    TestRunRootUnverified _ ->
+      "Cannot remove test data until the exact run root and its ownership are verified."
     TestDeleteLongLivedResource resourceName ->
       "Refusing test cleanup of long-lived resource `" ++ resourceName ++ "`."
     UnknownTopologySuite suiteName ->
@@ -562,28 +702,32 @@ runTopologyVariant repoRoot environment coverage substrate scope suite ExitSucce
       testDataPath = repoRoot </> testDataRoot
       runId = topologyRunId (Text.unpack (suiteName suite)) variantIndex
       variantEnvironment = topologyVariantEnvironment testDataPath coverage environment
-  generatedConfigPath <- resolveTier0ConfigPath repoRoot
-  let cleanupTargets =
-        [ DeleteGeneratedRunConfig generatedConfigPath
-        , DeleteThisRunTestData testDataPath
-        ]
-  createDirectoryIfMissing True testDataPath
-  ( do
-      configWriteResult <- writeTopologyVariantConfig repoRoot testDataRoot runId variant
-      case configWriteResult of
-        Left err -> failWith err
-        Right () -> do
-          writeOutputLine
-            ( "Running topology suite `"
-                ++ Text.unpack (suiteName suite)
-                ++ "` variant "
-                ++ show variantIndex
-                ++ " with test data root "
-                ++ testDataPath
-            )
-          runPlannedTests repoRoot variantEnvironment (testExecutionPlan substrate scope)
-    )
-    `finally` cleanupTestDeleteTargets repoRoot cleanupTargets
+      generatedConfigPath = testDataPath </> "prodbox.dhall"
+  case guardTestDelete repoRoot (DeleteGeneratedRunConfig generatedConfigPath) of
+    Left refusal -> failWith (renderTestRefusal refusal)
+    Right _ -> do
+      let cleanupTargets =
+            [ DeleteGeneratedRunConfig generatedConfigPath
+            , DeleteThisRunTestData testDataPath
+            ]
+      createDirectoryIfMissing True testDataPath
+      ( do
+          configWriteResult <-
+            writeTopologyVariantConfig repoRoot generatedConfigPath testDataRoot runId variant
+          case configWriteResult of
+            Left err -> failWith err
+            Right () -> do
+              writeOutputLine
+                ( "Running topology suite `"
+                    ++ Text.unpack (suiteName suite)
+                    ++ "` variant "
+                    ++ show variantIndex
+                    ++ " with test data root "
+                    ++ testDataPath
+                )
+              runPlannedTests repoRoot variantEnvironment (testExecutionPlan substrate scope)
+        )
+        `finally` cleanupTestDeleteTargets repoRoot cleanupTargets
 
 topologyVariantEnvironment :: FilePath -> CoverageFlags -> [(String, String)] -> [(String, String)]
 topologyVariantEnvironment testDataPath coverage environment =
@@ -604,22 +748,36 @@ upsertEnv name value environment =
   (name, value) : filter ((/= name) . fst) environment
 
 writeTopologyVariantConfig
-  :: FilePath -> FilePath -> Text.Text -> RunVariant -> IO (Either String ())
-writeTopologyVariantConfig repoRoot testDataPath runId variant = do
+  :: FilePath -> FilePath -> FilePath -> Text.Text -> RunVariant -> IO (Either String ())
+writeTopologyVariantConfig repoRoot generatedConfigPath testDataPath runId variant = do
   secretsResult <- loadTestSecrets repoRoot
   case secretsResult of
     Nothing -> pure (Left "topology harness config generation requires test-secrets.dhall (absent).")
     Just (Left err) ->
       pure (Left ("topology harness config generation failed to decode test-secrets.dhall: " ++ err))
     Just (Right secrets) ->
-      case topologyRunConfig testDataPath runId variant secrets of
-        Left err -> pure (Left err)
-        Right (generatedConfig, contextInput) -> do
-          validationResult <- validateConfigWithContext repoRoot contextInput generatedConfig
-          case validationResult of
-            Left err -> pure (Left ("generated topology config is invalid before write: " ++ err))
-            Right _ ->
-              Tier0.writeOperatorDeploymentConfigToTier0 repoRoot generatedConfig contextInput
+      writeTopologyVariantConfigWithSecrets
+        repoRoot
+        generatedConfigPath
+        testDataPath
+        runId
+        variant
+        secrets
+
+-- This writer does not establish path ownership. The public runner must keep
+-- its generated-config refusal until the path and every consumer are bound to
+-- a verified run identity.
+writeTopologyVariantConfigWithSecrets
+  :: FilePath -> FilePath -> FilePath -> Text.Text -> RunVariant -> TestSecrets -> IO (Either String ())
+writeTopologyVariantConfigWithSecrets repoRoot generatedConfigPath testDataPath runId variant secrets =
+  case topologyRunConfig testDataPath runId variant secrets of
+    Left err -> pure (Left err)
+    Right (generatedConfig, contextInput) -> do
+      validationResult <- validateConfigWithContext repoRoot contextInput generatedConfig
+      case validationResult of
+        Left err -> pure (Left ("generated topology config is invalid before write: " ++ err))
+        Right _ ->
+          Tier0.writeOperatorDeploymentConfigToTier0AtPath generatedConfigPath generatedConfig contextInput
 
 -- | Pure topology-run config derivation. The topology and endpoints are read
 -- from one validated variant; cluster identity and storage root are derived
@@ -741,13 +899,12 @@ removeDirectoryIfPresent path = do
 guardTestDelete :: FilePath -> TestDeleteTarget -> Either TestRefusal TestDeleteTarget
 guardTestDelete repoRoot target =
   case target of
-    DeleteGeneratedRunConfig path ->
-      if pathWithinBuildRoot repoRoot path && takeFileName path == "prodbox.dhall"
-        then Right target
-        else Left (TestDeleteOutsideTestData path)
+    -- Until the runner carries a verified run identity and descriptor-bound
+    -- config path, no path is safe to delete as a generated run config.
+    DeleteGeneratedRunConfig path -> Left (TestGeneratedConfigUnverified path)
     DeleteThisRunTestData path ->
       if pathWithinTestDataRoot repoRoot path
-        then Right target
+        then Left (TestRunRootUnverified path)
         else Left (TestDeleteOutsideTestData path)
     DeletePerRunResidue resourceName ->
       if resourceName `elem` ResourceClass.resourceNamesOfClass ResourceClass.PerRun
@@ -766,29 +923,21 @@ pathWithinTestDataRoot repoRoot path =
            normalizedRoot = normalise (repoRoot </> testDataRootRelative)
         in normalized == normalizedRoot || (normalizedRoot ++ "/") `isPrefixOf` normalized
 
-pathWithinBuildRoot :: FilePath -> FilePath -> Bool
-pathWithinBuildRoot repoRoot path =
-  ".." `notElem` splitDirectories path
-    && let normalized =
-             normalise
-               ( if isAbsolute path
-                   then path
-                   else repoRoot </> path
-               )
-           normalizedRoot = normalise (repoRoot </> ".build")
-        in normalized == normalizedRoot || (normalizedRoot ++ "/") `isPrefixOf` normalized
-
 runPlannedTests :: FilePath -> [(String, String)] -> TestExecutionPlan -> IO ExitCode
 runPlannedTests repoRoot environment plan =
   case testPlanExecutionMode plan of
     DelegatedSuite _ ->
       runHaskellSuites repoRoot environment (testPlanHaskellSuites plan)
     NativeSuite suitePlan -> do
-      prepareExit <- ensureCanonicalOperatorBinary repoRoot environment
-      case prepareExit of
-        ExitSuccess ->
-          runNativeSuite repoRoot environment (testPlanHaskellSuites plan) suitePlan
-        failure@(ExitFailure _) -> pure failure
+      configPath <- resolveTier0ConfigPath repoRoot
+      case guardTestDelete repoRoot (DeleteGeneratedRunConfig configPath) of
+        Left refusal -> failWith (renderTestRefusal refusal)
+        Right _ -> do
+          prepareExit <- ensureCanonicalOperatorBinary repoRoot environment
+          case prepareExit of
+            ExitSuccess ->
+              runNativeSuite repoRoot environment (testPlanHaskellSuites plan) suitePlan
+            failure@(ExitFailure _) -> pure failure
 
 runLintFirst :: FilePath -> [(String, String)] -> IO ExitCode
 runLintFirst repoRoot environment = do
@@ -1375,7 +1524,7 @@ runbookActions repoRoot environment suitePlan =
 -- reconcile@ ended the run with no line of its own. When the child also fails
 -- quietly the whole run reports nothing at all — the operator sees the phase
 -- banner and then an exit status, which is the response-obligation defect of
--- [chaos_hardening_doctrine.md § 23](../../documents/engineering/chaos_hardening_doctrine.md)
+-- chaos_hardening_doctrine.md at 583443f, section 23
 -- in the runbook rather than on a socket. The step cannot supply the child's
 -- reason, but it can always supply its own.
 runRunbookCommand :: FilePath -> [(String, String)] -> [String] -> IO ExitCode
@@ -1757,7 +1906,7 @@ runAwsSubstrateBootstrap repoRoot environment suitePlan maybeGatewayStability =
           -- aws-eks-subzone Pulumi output via
           -- `Prodbox.PublicEdge.resolveSubstrateHostedZoneId`. No
           -- `PRODBOX_AWS_SUBSTRATE_HOSTED_ZONE_ID` env var is set or read
-          -- (config_doctrine.md § 10, no `PRODBOX_*` config reads).
+          -- (config_doctrine.md at 583443f, section 10, no `PRODBOX_*` config reads).
           runSequentially
             ( map
                 (runNativeCliCommandForExitCode repoRoot environment)

@@ -77,6 +77,13 @@ prodbox
     wait
     workload-logs
   commands
+  control
+    status
+    plan
+    import-artifact
+    discard-artifact-staging
+    inspect-node-archive
+    inspect-image-attempt
   config
     setup
     show
@@ -116,6 +123,7 @@ prodbox
   internal-rpc-birth-controller
   nuke
   test
+    list
     init
     run
     all

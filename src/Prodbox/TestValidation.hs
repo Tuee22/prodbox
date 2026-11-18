@@ -2066,7 +2066,7 @@ runSealedVaultValidation repoRoot environment = do
 -- The unset arm now probes the Bootstrap Broker's own route surface and builds
 -- the audit from what answered. When no daemon answers it is a typed refusal
 -- naming what was absent, per
--- @documents/engineering/bootstrap_readiness_doctrine.md § 0.5@ — never a
+-- @documents/engineering/bootstrap_readiness_doctrine.md at 583443f, section 0.5@ — never a
 -- canned pass. The fixture arms keep their fixture provenance, which the
 -- emitted block now states.
 runDaemonBootstrapValidation :: FilePath -> IO ExitCode
@@ -2605,7 +2605,7 @@ requireResourceQuotaForNamespace substrate plan items namespace = do
 -- from the same projection this validator compares against, rather than being a
 -- second hand-maintained copy of the numbers. A fake that restates a production
 -- value is an encoder of it
--- ([chaos_hardening_doctrine.md § 23](../../documents/engineering/chaos_hardening_doctrine.md)),
+-- (chaos_hardening_doctrine.md at 583443f, section 23),
 -- and this one had already drifted: the fixture declared the gateway at
 -- 250m × 3 replicas where the plan declares 750m × 2.
 namespaceResourceQuotaHardFields
@@ -6811,7 +6811,7 @@ failWith message = do
 -- | `ValidationKeycloakInvite` — Phase 8 canonical-suite validation that proves the
 -- operator-invited email-auth flow end-to-end on whichever substrate is active.
 --
--- The flow per [phase-8-email-invite-auth.md → Sprint 8.5](../../DEVELOPMENT_PLAN/phase-8-email-invite-auth.md):
+-- The flow per the historical Phase 8 plan at revision `583443f` (Sprint 8.5):
 --
 -- 1. Generate a unique recipient at `ses.receive_subdomain`.
 -- 2. Call `UsersAdmin.inviteUser` (live Keycloak admin API). Asserts the created

@@ -3,7 +3,7 @@
 
 -- | Sprint 4.86: the host cleanup runner's bootstrap recovery-plane arms.
 --
--- [Lifecycle Reconciliation Doctrine § 5b node 1](../../../documents/engineering/lifecycle_reconciliation_doctrine.md#5b-canonical-recover-to-clean-cascade)
+-- Lifecycle Reconciliation Doctrine § 5b node 1 (historical lifecycle_reconciliation_doctrine.md at revision `583443f`, section 5b)
 -- says that when local RKE2 is stopped the cascade repairs and starts it, and
 -- that when it is absent and the retained trust root is recoverable the cascade
 -- installs the minimal ordinary teardown profile against the preserved

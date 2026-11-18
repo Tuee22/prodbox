@@ -18,7 +18,7 @@
 --
 -- On any subprocess, credential, or parse failure the result is
 -- 'ResidueUnreachable'. Per
--- @documents/engineering/lifecycle_reconciliation_doctrine.md § 3@,
+-- @documents/engineering/lifecycle_reconciliation_doctrine.md at 583443f, section 3@,
 -- destructive teardown gates fail closed on 'ResidueUnreachable' via the
 -- single 'Prodbox.Lifecycle.ResidueStatus.residueBlocksTeardownGate'
 -- combinator ("present OR unreachable → block"; Sprint 4.20). The
@@ -488,7 +488,7 @@ data PerRunDestroyDecision
   | -- | Valid checkpoint: run the real destroy body.
     PerRunDestroyProceed
   | -- | Corrupt or unreadable checkpoint: refuse (fail-closed, per
-    -- @lifecycle_reconciliation_doctrine.md § 3.1@). The 'String' is the
+    -- @lifecycle_reconciliation_doctrine.md at 583443f, section 3.1@). The 'String' is the
     -- actionable refusal naming the prune recovery.
     PerRunDestroyRefuse String
   deriving (Eq, Show)
@@ -761,7 +761,7 @@ residueStatusFromMinioListingWithVaultGate gate stackName result
 -- | Sprint 7.21 (pure): map a per-run stack's checkpoint observability
 -- onto a 'ResidueStatus', applying the doctrine's
 -- present\/absent\/unreachable classification
--- (@lifecycle_reconciliation_doctrine.md § 3.1@):
+-- (@lifecycle_reconciliation_doctrine.md at 583443f, section 3.1@):
 --
 --   * 'CheckpointAbsent' — the object was never created or is already
 --     destroyed: 'ResidueAbsent' (nothing to destroy → SKIP). This is the

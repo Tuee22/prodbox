@@ -8,7 +8,7 @@
 -- constructor. The defect this module closes is one hop upstream, in the
 -- @String -> Bool@ producers that decide /which constructor is minted/ — the
 -- conversion class
--- [chaos_hardening_doctrine.md § 23](../../../documents/engineering/chaos_hardening_doctrine.md)
+-- chaos_hardening_doctrine.md at 583443f, section 23
 -- already names as "where this project's MISU work has actually failed".
 --
 -- Before this sprint eight such producers each authored their own marker list,

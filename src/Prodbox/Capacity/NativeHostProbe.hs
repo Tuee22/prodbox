@@ -11,6 +11,9 @@ module Prodbox.Capacity.NativeHostProbe
   , NativeHostProbeError (..)
   , observeNativeHostCapacityBefore
   , parseNativeHostMemoryMib
+  , NativeHostHeadroom (..)
+  , observeNativeHostHeadroomBefore
+  , parseNativeHostAvailableMemoryMib
   ) where
 
 import Control.Exception (IOException, bracket, try)
@@ -72,12 +75,47 @@ data NativeHostProbeError
   | NativeHostProbeCapacityInvalid
   deriving (Eq, Show)
 
+-- | Volatile host observations, not a reservation or a cgroup budget.
+data NativeHostHeadroom = NativeHostHeadroom
+  { hostAvailableMemoryMib :: !Natural
+  , hostAvailableRootStorageMib :: !Natural
+  , hostAvailableRetainedStorageMib :: !Natural
+  }
+  deriving (Eq, Show)
+
 foreign import ccall unsafe "sched_getaffinity"
   nativeAffinity :: CPid -> CSize -> Ptr Word8 -> IO CInt
 foreign import capi interruptible "sys/statvfs.h fstatvfs"
   nativeFilesystem :: CInt -> Ptr () -> IO CInt
 
 type Probe = ExceptT NativeHostProbeError IO
+
+observeNativeHostHeadroomBefore
+  :: Word64 -> FilePath -> IO (Either NativeHostProbeError NativeHostHeadroom)
+observeNativeHostHeadroomBefore ending retainedRoot
+  | not supportedAbi = pure (Left NativeHostProbeUnsupportedAbi)
+  | otherwise = do
+      now <- getMonotonicTimeNSec
+      if now >= ending || (ending - now) `div` 1000 == 0
+        then pure (Left NativeHostProbeExpired)
+        else do
+          result <- timeout (fromIntegral ((ending - now) `div` 1000)) (runExceptT observe)
+          closing <- getMonotonicTimeNSec
+          pure $
+            if closing >= ending
+              then Left NativeHostProbeExpired
+              else maybe (Left NativeHostProbeExpired) id result
+ where
+  observe = do
+    check ending
+    unless (validRoot retainedRoot) (throwE NativeHostProbeRootInvalid)
+    bytes <-
+      ioAt ProbeMemory (withBinaryFile "/proc/meminfo" ReadMode (\handle -> BS.hGet handle 65537))
+    memory <- either throwE pure (parseNativeHostAvailableMemoryMib bytes)
+    rootStorage <- availableFilesystemBefore ending ProbeEphemeral "/"
+    retainedStorage <- availableFilesystemBefore ending ProbeRetained retainedRoot
+    check ending
+    pure (NativeHostHeadroom memory rootStorage retainedStorage)
 
 observeNativeHostCapacityBefore
   :: Word64 -> FilePath -> IO (Either NativeHostProbeError ObservedHostRoot)
@@ -173,15 +211,26 @@ memoryBefore ending = do
   pure result
 
 parseNativeHostMemoryMib :: ByteString -> Either NativeHostProbeError Natural
-parseNativeHostMemoryMib bytes
+parseNativeHostMemoryMib = parseMemoryField "MemTotal:"
+
+parseNativeHostAvailableMemoryMib :: ByteString -> Either NativeHostProbeError Natural
+parseNativeHostAvailableMemoryMib = parseMemoryField "MemAvailable:"
+
+parseMemoryField :: ByteString -> ByteString -> Either NativeHostProbeError Natural
+parseMemoryField field bytes
   | BS.length bytes > 65536 = Left (NativeHostProbeMetadataInvalid ProbeMemory)
-  | otherwise = case filter (BS.isPrefixOf "MemTotal:") (Bytes.lines bytes) of
+  | otherwise = case filter (BS.isPrefixOf field) (Bytes.lines bytes) of
       [line] -> case Bytes.words line of
-        ["MemTotal:", digits, "kB"]
-          | not (BS.null digits) && BS.length digits <= 20 && BS.all (\byte -> byte >= 48 && byte <= 57) digits ->
+        [key, digits, "kB"]
+          | key == field
+              && not (BS.null digits)
+              && BS.length digits <= 20
+              && BS.all (\byte -> byte >= 48 && byte <= 57) digits ->
               let kib = BS.foldl' (\value byte -> value * 10 + fromIntegral (byte - 48)) 0 digits :: Natural
                   mib = kib `div` 1024
-               in if kib <= fromIntegral (maxBound :: Word64) && mib > 0 then Right mib else invalid
+               in if kib <= fromIntegral (maxBound :: Word64) && (field /= "MemTotal:" || mib > 0)
+                    then Right mib
+                    else invalid
         _ -> invalid
       _ -> invalid
  where
@@ -231,6 +280,56 @@ filesystemBefore ending stage path = do
 
 sameDirectory :: FileStatus -> FileStatus -> Bool
 sameDirectory initial other = isDirectory other && deviceID initial == deviceID other && fileID initial == fileID other
+
+availableFilesystemBefore :: Word64 -> NativeHostProbeStage -> FilePath -> Probe Natural
+availableFilesystemBefore ending stage path = do
+  check ending
+  result <- ioAt stage
+    $ bracket
+      ( Posix.openFd
+          path
+          Posix.ReadOnly
+          Posix.defaultFileFlags
+            { Posix.directory = True
+            , Posix.nofollow = True
+            , Posix.cloexec = True
+            , Posix.nonBlock = True
+            }
+      )
+      Posix.closeFd
+    $ \fd -> runExceptT $ do
+      initial <- ioAt stage (getFdStatus fd)
+      unless (isDirectory initial) (throwE (NativeHostProbeMetadataInvalid stage))
+      available <- ExceptT (filesystemAvailable stage fd)
+      check ending
+      closing <- ioAt stage (getFdStatus fd)
+      linked <- ioAt stage (getSymbolicLinkStatus path)
+      unless
+        (sameDirectory initial closing && sameDirectory initial linked)
+        (throwE (NativeHostProbeRootChanged stage))
+      pure available
+  either throwE pure result
+
+filesystemAvailable :: NativeHostProbeStage -> Fd -> IO (Either NativeHostProbeError Natural)
+filesystemAvailable stage (Fd descriptor) = allocaArray 32 $ \(buffer :: Ptr CULong) -> do
+  fillBytes buffer 0 128
+  fillBytes (buffer `plusPtr` 128) 165 128
+  code <- nativeFilesystem descriptor (castPtr buffer)
+  if code /= 0
+    then Left . NativeHostProbeSyscallRefused stage <$> errnoValue
+    else do
+      tailBytes <- BS.packCStringLen (castPtr (buffer `plusPtr` 128), 128)
+      fragment <- peekElemOff buffer 1
+      blocks <- peekElemOff buffer 2
+      free <- peekElemOff buffer 3
+      available <- peekElemOff buffer 4
+      pure $
+        if not (BS.all (== 165) tailBytes)
+          then Left NativeHostProbeUnsupportedAbi
+          else
+            if fragment == 0 || blocks == 0 || available > free || free > blocks
+              then Left (NativeHostProbeMetadataInvalid stage)
+              else Right ((fromIntegral fragment * fromIntegral available) `div` 1048576)
 
 filesystemCapacity :: NativeHostProbeStage -> Fd -> IO (Either NativeHostProbeError Natural)
 filesystemCapacity stage (Fd descriptor) = allocaArray 32 $ \(buffer :: Ptr CULong) -> do

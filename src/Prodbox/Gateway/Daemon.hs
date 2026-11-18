@@ -569,7 +569,7 @@ data DaemonEnv = DaemonEnv
   -- instant it landed. This is the daemon's only write-shaped evidence of the
   -- gateway->MinIO backend edge; the deep readiness probe reads it through
   -- @\/v1\/state@ rather than inferring a round trip from a constant-time
-  -- @\/readyz@ latch (bootstrap_readiness_doctrine.md 2.3).
+  -- @\/readyz@ latch (bootstrap_readiness_doctrine.md at revision `583443f` 2.3).
   , envDrainSignals :: TQueue DrainSignal
   , envReloadSignals :: TQueue ()
   , envHooks :: DaemonHooks
@@ -890,7 +890,7 @@ runGatewayDaemonWithRuntimeDependencies
       , field "log_level" logLevel
       , field "emitter_topology" (show emitterTopology)
       ]
-    -- Sprint 1.40: establish the Tier-0 binary context (config_doctrine.md §0).
+    -- Sprint 1.40: establish the Tier-0 binary context (config_doctrine.md at 583443f, section 0).
     -- The container ships a baked-in default `prodbox.dhall`; the
     -- `gateway-config-<nodeId>` ConfigMap mount OVERWRITES it (a `prodbox.dhall`
     -- sibling next to the runtime `config.dhall` in the same directory mount).
@@ -3715,7 +3715,7 @@ withSupervisedWorkers env = go
 -- daemon's `--config` Dhall path so kubelet `..data` symlink swaps trigger
 -- reloads. Feeds the existing `envReloadSignals` `TQueue ()` that the
 -- `config_reload` worker drains. See
--- [config_doctrine.md § 7](../../documents/engineering/config_doctrine.md#7-file-watch-reload-trigger).
+-- config_doctrine.md at 583443f, section 7.
 configFileWatchLoop :: DaemonEnv -> IO ()
 configFileWatchLoop env =
   case envConfigPath env of
@@ -3878,7 +3878,7 @@ reloadLiveConfig env =
             Right () ->
               if bootChanged
                 then do
-                  -- Per [config_doctrine.md § 8](../../documents/engineering/config_doctrine.md#8-boot-vs-live-split-and-the-restart-contract):
+                  -- Per config_doctrine.md at 583443f, section 8:
                   -- a BootConfig change triggers drain-and-exit so the kubelet
                   -- restarts the Pod against the new Dhall.
                   logForEnv env Warn (Text.pack "config_reload_boot_change_detected") []

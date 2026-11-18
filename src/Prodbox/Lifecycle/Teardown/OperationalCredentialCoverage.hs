@@ -251,7 +251,7 @@ renderOperationalCredentialCoverageError err = case err of
       ++ ") but is not a transitive predecessor of `"
       ++ Text.unpack cascadeTerminalAuditNodeName
       ++ "`; the terminal audit must run while the credential is still live \
-         \(lifecycle_reconciliation_doctrine.md § 3.3)."
+         \(lifecycle_reconciliation_doctrine.md at 583443f, section 3.3)."
   OperationalCredentialDispositionBlockerStale blocker ->
     "operational credential disposition blocker `"
       ++ show blocker

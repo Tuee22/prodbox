@@ -88,7 +88,7 @@ data RawServiceCapacityPlan = RawServiceCapacityPlan
   -- utilization 'mkServiceCapacityPlan' validates is therefore arithmetic over
   -- an authored number, which is a weaker guarantee than a validated plan
   -- sounds like. Certification is a recorder axis, tracked in
-  -- @DEVELOPMENT_PLAN\/legacy-tracking-for-deletion.md@ under Sprint @4.75@.
+  -- the historical deletion ledger at revision @583443f@ under Sprint @4.75@.
   , rawWorkerCount :: !Natural
   -- ^ concurrent servers
   , rawQueueCapacity :: !Natural

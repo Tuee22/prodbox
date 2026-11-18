@@ -102,7 +102,7 @@ engineBrokerInterpreter engine =
 -- detail on a boundary refusal is frequently @Text.pack . show@ over a typed
 -- error, and these are Vault bootstrap paths; a @show@ that one day carries
 -- token or share material would publish it to the pod log, which is the exact
--- class [vault_doctrine.md § 20](../../../documents/engineering/vault_doctrine.md)
+-- class vault_doctrine.md at 583443f, section 20
 -- forbids. Constructor names are a closed, authored, finite set and cannot
 -- carry a secret.
 --

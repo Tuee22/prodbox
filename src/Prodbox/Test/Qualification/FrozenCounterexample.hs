@@ -564,7 +564,7 @@ frozenTraceEnvelopeTotals =
 -- 'Prodbox.Test.CounterexampleValidation' then checked that the halves agreed
 -- with the dispositions this function had just written, and @complete@ was
 -- @True@ for every input. That is
--- [chaos_hardening_doctrine.md § 12](../../../../documents/engineering/chaos_hardening_doctrine.md)'s
+-- chaos_hardening_doctrine.md at 583443f, section 12's
 -- cardinal rule reached through the mechanism written to enforce it.
 simulateFrozenCounterexample
   :: FrozenCounterexampleTrace

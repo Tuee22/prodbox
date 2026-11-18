@@ -1,6 +1,6 @@
 -- | Sprint 2.134: the only constructor for a long-lived child thread.
 --
--- [Chaos Hardening Doctrine](../../documents/engineering/chaos_hardening_doctrine.md)
+-- Chaos Hardening Doctrine (historical chaos_hardening_doctrine.md at revision `583443f`)
 -- rule R6 already said that discarding a cancellation or join result "recreates
 -- unstructured ownership behind a structured API and is forbidden". Nothing
 -- enforced it, and five long-lived threads under @src\/@ discarded their handle:

@@ -267,7 +267,7 @@ mkReplayResponse limits status body =
 -- crossing where a raw code becomes a 'ReplyStatus', and it is a refusal rather
 -- than a widening: a stored code the closed set does not define is a decode
 -- failure, not a value that flows on to the renderer
--- ([chaos_hardening_doctrine.md § 23](../../../documents/engineering/chaos_hardening_doctrine.md)).
+-- (chaos_hardening_doctrine.md at 583443f, section 23).
 mkReplayResponseFromStoredCode
   :: RequestReplayLimits -> Int -> ByteString -> Either ReplayResponseError ReplayResponse
 mkReplayResponseFromStoredCode limits code body =

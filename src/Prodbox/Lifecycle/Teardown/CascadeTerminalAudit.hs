@@ -5,7 +5,7 @@
 -- | Sprint 4.86: the cascade's terminal escape audit, from issued queries to
 -- the observation the evidence constructor consumes.
 --
--- [Lifecycle Reconciliation Doctrine § 5b node 6](../../../../documents/engineering/lifecycle_reconciliation_doctrine.md#5b-canonical-recover-to-clean-cascade)
+-- Lifecycle Reconciliation Doctrine § 5b node 6 (historical lifecycle_reconciliation_doctrine.md at revision `583443f`, section 5b)
 -- says the global cluster\/ownership tag audit runs only after exact
 -- obligations have been re-observed, reports normalized distinct resources,
 -- partitions intentionally retained @LongLived@ resources, and fails on

@@ -8,6 +8,7 @@ module Prodbox.Config.Tier0File
   ( Tier0FileError (..)
   , Tier0FileUpdate (..)
   , modifyTier0File
+  , readTier0File
   , tier0FileMaximumBytes
   )
 where
@@ -94,6 +95,17 @@ data FileSnapshot = FileMissing | FilePresent !FileVersion !ByteString
 
 tier0FileMaximumBytes :: Int
 tier0FileMaximumBytes = 1024 * 1024
+
+-- | Read one bounded snapshot without creating a lock or altering the file.
+-- The bytes and metadata come from the same no-follow descriptor. This is a
+-- read-only observation, not proof that the parent path owns a deployment.
+readTier0File :: FilePath -> IO (Either Tier0FileError (Maybe ByteString))
+readTier0File path = do
+  snapshot <- readSnapshot path
+  pure $ fmap contents snapshot
+ where
+  contents FileMissing = Nothing
+  contents (FilePresent _ bytes) = Just bytes
 
 -- POSIX record locks belong to a process, not its individual threads. This
 -- registry only arbitrates local file access; it retains no config or authority.

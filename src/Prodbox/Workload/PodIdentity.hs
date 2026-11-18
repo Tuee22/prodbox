@@ -6,7 +6,7 @@
 -- runs in. That name is k8s *runtime metadata* injected by the kubelet via
 -- the @HOSTNAME@ environment variable (the downward API default), not part
 -- of the binary's configuration surface — so reading it does not violate
--- [config_doctrine.md §10](../../../documents/engineering/config_doctrine.md#10-forbidden-surfaces),
+-- config_doctrine.md at 583443f, section 10,
 -- which forbids reading *configuration* from environment variables.
 --
 -- The read is isolated in this dedicated module so that

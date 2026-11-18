@@ -98,7 +98,7 @@ recordEvent (EventStore storeVar) event =
 --
 -- This is the durable at-least-once REFERENCE port. The gateway peer-gossip
 -- anti-entropy commit log is intentionally the non-durable variant and must
--- not adopt this guard (per pure_fp_standards.md §6.3 / streaming_doctrine.md).
+-- not adopt this guard (per pure_fp_standards.md at 583443f, section 6.3 / streaming_doctrine.md).
 markEventProcessed :: EventStore -> EventId -> UTCTime -> IO ()
 markEventProcessed (EventStore storeVar) targetId processedAt =
   atomically $

@@ -9,7 +9,8 @@ module TypedGuardConsumption
   )
 where
 
-import Data.List (isInfixOf)
+import Control.Monad (forM_)
+import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
 import Prodbox.CheckCode
   ( UnconsumedTypedGuard (..)
   , checkTypedGuardConsumption
@@ -20,6 +21,8 @@ import Prodbox.CheckCode
   , unconsumedTypedGuardRegistry
   )
 import System.Directory (getCurrentDirectory)
+import System.FilePath ((</>))
+import System.IO (readFile')
 import TestSupport
 
 ownerPath :: FilePath
@@ -95,7 +98,7 @@ typedGuardConsumptionSuite =
           [(ownerPath, ["confirmFixtureAbsence"])]
           `shouldSatisfy` any ("it is consumed now" `isInfixOf`)
 
-      it "names the ledger row a consumed entry must close" $
+      it "names the ledger row a consumed entry must reconcile" $
         findingsFor
           [registeredGuard]
           [ownerPath, otherPath]
@@ -274,6 +277,15 @@ typedGuardConsumptionSuite =
       it "registers every row against a named deletion-ledger row" $
         filter (null . unconsumedGuardLedgerRow) unconsumedTypedGuardRegistry
           `shouldBe` []
+
+      it "binds every unconsumed guard to one still-open numerical ledger row" $ do
+        repoRoot <- getCurrentDirectory
+        ledger <- readFile' (repoRoot </> "DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md")
+        forM_ unconsumedTypedGuardRegistry $ \entry -> do
+          let prefix = "| " ++ unconsumedGuardLedgerRow entry ++ " |"
+              rows = filter (isPrefixOf prefix) (lines ledger)
+          length rows `shouldBe` 1
+          rows `shouldSatisfy` all (\row -> "| Pending |" `isSuffixOf` row || "| Ready |" `isSuffixOf` row)
 
       it "registers every row with a stated consumption condition" $
         filter (null . unconsumedGuardConsumptionCondition) unconsumedTypedGuardRegistry

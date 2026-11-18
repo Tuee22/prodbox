@@ -10,7 +10,7 @@
 -- @{ parameters, context, witness }@ record shaped to align with
 -- @hostbootstrap@'s binary-context contract, so the eventual refactor onto
 -- @hostbootstrap@ is a clean extension rather than a rewrite
--- (config_doctrine.md §0).
+-- (config_doctrine.md at 583443f, section 0).
 --
 -- This module folds two prior surfaces into one typed record:
 --
@@ -26,13 +26,13 @@
 -- It carries __only non-secret data__. Secrets are 'SecretRef.Vault' pointers
 -- (non-secret coordinates), never inline secret values — asserted by
 -- 'tier0CarriesNoSecretValues' and the Sprint 1.39 unit test
--- (config_doctrine.md §10).
+-- (config_doctrine.md at 583443f, section 10).
 --
 -- The dependency-free sealed-Vault bootstrap floor is __projected__ from this
 -- record's @context@ by the pure 'projectBasics'; that same projection is read
 -- straight off @prodbox.dhall@ by
 -- 'Prodbox.Config.FloorDhall.loadUnencryptedBasics' before Vault is reachable
--- (config_doctrine.md §1a). Sprint 7.18: there is no separate derived
+-- (config_doctrine.md at 583443f, section 1a). Sprint 7.18: there is no separate derived
 -- @prodbox-basics.json@ artifact — @prodbox.dhall@ is the sole floor source.
 module Prodbox.Config.Tier0
   ( -- * The Tier-0 binary-context record
@@ -475,7 +475,7 @@ defaultDaemonContext =
     , context_kind = Daemon
     }
 
--- | The Tier-0 gateway rendering template (config_doctrine.md §0, §3). It
+-- | The Tier-0 gateway rendering template (config_doctrine.md at 583443f, section 0, config_doctrine.md at 583443f, section 3). It
 -- reuses the shared non-secret 'defaultProdboxParameters' and the unauthored
 -- 'defaultDaemonContext'. A rendered file must exist at one of the explicit
 -- paths accepted by 'loadDaemonBinaryContext'; absence refuses.
@@ -501,7 +501,7 @@ data Tier0Source
 -- the container default. It is a sibling of the daemon's runtime
 -- @config.dhall@ in the same directory mount, so the kubelet's atomic @..data@
 -- symlink swap that already fires the daemon's fsnotify reload covers it too
--- (config_doctrine.md §6, §7).
+-- (config_doctrine.md at 583443f, section 6, config_doctrine.md at 583443f, section 7).
 daemonConfigMapTier0Path :: FilePath -> FilePath
 daemonConfigMapTier0Path configDir = configDir <> "/prodbox.dhall"
 
@@ -547,7 +547,7 @@ decodeProjectConfigDhall path = do
 -- It names the offending fields and never the values: the whole reason this
 -- refusal exists is that those bytes must not travel, and a diagnostic that
 -- quoted them would put a credential into every log that captured the failure
--- (config_doctrine.md §10, vault_doctrine.md §20).
+-- (config_doctrine.md at 583443f, section 10, vault_doctrine.md at 583443f, section 20).
 tier0SecretValueRefusal :: FilePath -> [Text] -> String
 tier0SecretValueRefusal path fields =
   "Tier-0 prodbox.dhall `"
@@ -558,7 +558,7 @@ tier0SecretValueRefusal path fields =
     ++ "SecretRef.Vault pointer. Regenerate it with `prodbox config generate`."
 
 -- | Load the gateway daemon's Tier-0 binary context using hostbootstrap's
--- per-frame context-init pattern (Sprint 1.40, config_doctrine.md §0):
+-- per-frame context-init pattern (Sprint 1.40, config_doctrine.md at 583443f, section 0):
 --
 --   1. If the @gateway-config-<nodeId>@ ConfigMap supplies a @prodbox.dhall@
 --      sibling next to the runtime @config.dhall@, decode it — the ConfigMap
@@ -643,7 +643,7 @@ toBasicsParentRef ref =
 -- This pure guard returns 'True' when no 'SecretRefTestPlaintext' (the only
 -- 'SecretRef' arm that carries a literal value) appears anywhere in the Tier-0
 -- parameters. The Sprint 1.39 secret-free unit test asserts it; a record with a
--- literal credential is rejected (config_doctrine.md §10).
+-- literal credential is rejected (config_doctrine.md at 583443f, section 10).
 tier0CarriesNoSecretValues :: ProdboxProjectConfig -> Bool
 tier0CarriesNoSecretValues = null . tier0SecretValueFields
 
@@ -751,7 +751,7 @@ isCanonicalUnauthoredProjectConfigDhall document
 -- ('planGuardedConfigBody') — an inlined @assert@ that recomputes the cluster
 -- allocatable from the file's OWN host numbers and fails to type-check (so the
 -- file no longer loads through 'decodeProjectConfigDhall') if the emitted plan
--- over-commits (resource_scaling_doctrine.md §2C, Ring 1). If the plan cannot be
+-- over-commits (resource_scaling_doctrine.md at 583443f, section 2C, Ring 1). If the plan cannot be
 -- compiled at all — an invalid plan the Haskell Ring-2 decode gate rejects
 -- regardless — the historical unguarded body is emitted so this renderer stays
 -- total and never forces the partial capacity projection.
@@ -833,7 +833,7 @@ sha256Hex = Text.pack . concatMap renderByte . ByteString.unpack . SHA256.hash
 -- text still derives the envelope around it, instead of restating
 -- 'ProdboxContext' as a second hand-maintained encoder — the shape that made
 -- Sprint @1.80@'s tightening a silent breakage
--- ([chaos_hardening_doctrine.md § 23](../../../documents/engineering/chaos_hardening_doctrine.md)).
+-- (chaos_hardening_doctrine.md at 583443f, section 23).
 renderProdboxContextDhall :: ProdboxContext -> Text
 renderProdboxContextDhall =
   Core.pretty . injectedValue (Dhall.inject @ProdboxContext)
@@ -968,7 +968,7 @@ tier0Header =
   Text.unlines
     [ "-- prodbox.dhall"
     , "-- Tier 0: the binary-owned, project-local NON-SECRET config"
-    , "-- (config_doctrine.md §0). Carries { parameters, context, witness } and"
+    , "-- (configuration.md). Carries { parameters, context, witness } and"
     , "-- NEVER a secret value — sensitive fields are SecretRef.Vault pointers"
     , "-- only. The sealed-Vault bootstrap floor is projected straight off this"
     , "-- file's `context` (Prodbox.Config.FloorDhall); there is no separate"
@@ -1043,18 +1043,21 @@ decodeAuthoringContext :: FilePath -> ByteString -> IO (Either String ProdboxCon
 decodeAuthoringContext path bytes = case TextEncoding.decodeUtf8' bytes of
   Left _ -> pure (Left "existing Tier-0 context is not UTF-8; restore it before authoring")
   Right source -> do
-    decoded <-
-      LegacyCapacity.decodeDhallSourceProjection Dhall.auto LegacyCapacity.ContextFromProject path source
-    pure
-      ( either
-          ( const
-              ( Left
-                  "existing Tier-0 context is undecodable; restore its complete schema and registration pin before authoring"
+    observed <- LegacyCapacity.decodeDhallRecordFieldFromSource Dhall.auto "context" path source
+    case observed of
+      Right (Just (names, decoded))
+        | all (`elem` ["parameters", "context", "witness"]) names -> do
+            pure
+              ( maybe
+                  ( Left
+                      "existing Tier-0 context is undecodable; restore its complete schema and registration pin before authoring"
+                  )
+                  Right
+                  decoded
               )
-          )
-          Right
-          decoded
-      )
+        | otherwise ->
+            pure (Left "existing Tier-0 contains fields that this legacy authoring path cannot preserve")
+      _ -> pure (Left "existing Tier-0 top-level record is unobservable; restore it before authoring")
 
 decodeAuthoringSource :: FilePath -> ByteString -> IO (Either String ProdboxProjectConfig)
 decodeAuthoringSource path bytes = case TextEncoding.decodeUtf8' bytes of

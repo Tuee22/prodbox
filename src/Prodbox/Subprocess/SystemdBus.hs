@@ -13,6 +13,8 @@ module Prodbox.Subprocess.SystemdBus
   , BusStage (..)
   , ManagerMethod (..)
   , withSystemdBus
+  , SystemDockerObservation (..)
+  , observeSystemDocker
   , callManager
   , managerPeerIdentity
   , observeManagerDomain
@@ -75,6 +77,7 @@ import Control.Exception
 import Control.Monad (unless, void, when)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT (..), runExceptT, throwE)
+import Data.Bits ((.&.))
 import Data.ByteString qualified as Bytes
 import Data.ByteString.Char8 qualified as ByteChars
 import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
@@ -91,7 +94,14 @@ import GHC.Clock (getMonotonicTimeNSec)
 import Prodbox.Subprocess.OwnedProcessTree (ProcessStat (..), parseProcessStat)
 import Prodbox.Subprocess.SystemdIdentity
 import System.Posix.DynamicLinker (DL, RTLDFlags (RTLD_NOW), dlclose, dlopen, dlsym)
-import System.Posix.Files (fileOwner, getSymbolicLinkStatus, isSocket)
+import System.Posix.Files
+  ( FileStatus
+  , fileMode
+  , fileOwner
+  , getSymbolicLinkStatus
+  , isDirectory
+  , isSocket
+  )
 import System.Posix.IO qualified as Posix
 import System.Posix.IO.ByteString qualified as NativeIO
 import System.Posix.Process (getProcessID)
@@ -341,11 +351,77 @@ withSystemdBus
   -> (BusConnection -> BusAction value)
   -> IO (Either BusError value)
 withSystemdBus deadline socket action = do
+  owner <- getEffectiveUserID
+  withSystemdBusFor (fromIntegral owner) deadline socket action
+
+-- Fixed root-manager observation. It does not expose a root-manager connection
+-- or mutation methods and does not authenticate the Docker endpoint.
+data SystemDockerObservation = SystemDockerObservation
+  { systemDockerManagerPid :: !Word32
+  , systemDockerSocketState :: !String
+  , systemDockerSocketTriggers :: ![String]
+  , systemDockerSocketListeners :: ![(String, String)]
+  , systemDockerSocketAccept :: !Bool
+  , systemDockerServiceState :: !String
+  , systemDockerServicePid :: !Word32
+  }
+  deriving (Eq, Show)
+
+observeSystemDocker :: Word64 -> IO (Either BusError SystemDockerObservation)
+observeSystemDocker deadline = do
+  safe <- try $ traverse getSymbolicLinkStatus ["/", "/run", "/run/dbus"]
+  case (safe :: Either IOException [FileStatus]) of
+    Left _ -> pure (Left BusSocketRefused)
+    Right directories
+      | all
+          (\entry -> isDirectory entry && fileOwner entry == 0 && fileMode entry .&. 0o022 == 0)
+          directories ->
+          withSystemdBusFor 0 deadline "/run/dbus/system_bus_socket" observe
+      | otherwise -> pure (Left BusSocketRefused)
+ where
+  observe connection = do
+    first <- sample connection
+    second <- sample connection
+    owner <- callNative connection ResolveManagerOwner (const (pure ())) (`readString` 's')
+    user <- callNative connection (ResolveManagerUser owner) (const (pure ())) readWord32
+    unless
+      (first == second && managerPeerIdentity connection == Just (owner, user))
+      (throwE BusManagerIdentityRefused)
+    pure second
+  sample connection = do
+    socketPath <-
+      callManager connection GetUnit (\message -> appendString message "docker.socket") (`readString` 'o')
+    servicePath <-
+      callManager
+        connection
+        GetUnit
+        (\message -> appendString message "docker.service")
+        (`readString` 'o')
+    socketId <- property connection socketPath "Unit" "Id" readVariantString
+    serviceId <- property connection servicePath "Unit" "Id" readVariantString
+    unless (socketId == "docker.socket" && serviceId == "docker.service") (throwE BusMalformedReply)
+    owner <- maybe (throwE BusManagerIdentityRefused) (pure . fst) (managerPeerIdentity connection)
+    managerPid <- callNative connection (ResolveManagerProcess owner) (const (pure ())) readWord32
+    unless (managerPid > 0 && managerPid <= 2147483647) (throwE BusManagerIdentityRefused)
+    SystemDockerObservation managerPid
+      <$> property connection socketPath "Unit" "ActiveState" readVariantString
+      <*> property connection socketPath "Unit" "Triggers" (readVariantStrings 16)
+      <*> property connection socketPath "Socket" "Listen" readVariantSocketListeners
+      <*> property connection socketPath "Socket" "Accept" readVariantBoolean
+      <*> property connection servicePath "Unit" "ActiveState" readVariantString
+      <*> property connection servicePath "Service" "MainPID" readVariantWord32
+  property connection path interface name = callManager connection (ReadUnitProperty path) $ \message -> do
+    appendString message ("org.freedesktop.systemd1." ++ interface)
+    appendString message name
+
+withSystemdBusFor
+  :: Word32 -> Word64 -> FilePath -> (BusConnection -> BusAction value) -> IO (Either BusError value)
+withSystemdBusFor expectedOwner deadline socket action = do
   entered <- getMonotonicTimeNSec
   if entered >= deadline
     then pure (Left (BusDeadlineReached BusConnect))
     else do
-      accepted <- try (validateSocket socket) :: IO (Either IOException Bool)
+      accepted <- try (validateSocket expectedOwner socket) :: IO (Either IOException Bool)
       case accepted of
         Left _ -> pure (Left BusSocketRefused)
         Right False -> pure (Left BusSocketRefused)
@@ -373,7 +449,7 @@ withSystemdBus deadline socket action = do
             checked BusConnect (setClient api bus 1)
             checked BusConnect (startBus api bus)
             awaitReady api bus deadline
-            pinned <- pinManager (BusConnection api bus deadline Nothing active)
+            pinned <- pinManager expectedOwner (BusConnection api bus deadline Nothing active)
             ExceptT $ do
               outcome <- tryIO (runExceptT (action pinned))
               pure $ case outcome of
@@ -404,14 +480,13 @@ withSystemdBus deadline socket action = do
 tryIO :: IO value -> IO (Either IOException value)
 tryIO = try
 
-validateSocket :: FilePath -> IO Bool
-validateSocket path
+validateSocket :: Word32 -> FilePath -> IO Bool
+validateSocket expectedOwner path
   | null path || not (lengthWithin 107 path) || not (all allowed path) = pure False
   | otherwise = case path of
       '/' : _ -> do
         status <- getSymbolicLinkStatus path
-        owner <- getEffectiveUserID
-        pure (isSocket status && fileOwner status == owner)
+        pure (isSocket status && toInteger (fileOwner status) == toInteger expectedOwner)
       _ -> pure False
  where
   allowed c = isAsciiLower c || isAsciiUpper c || isDigit c || c `elem` ("/._-" :: String)
@@ -668,6 +743,33 @@ readInvocationPath expected message = do
 readVariantString :: BusMessage -> BusAction String
 readVariantString context = readVariant context "s" (readString context 's')
 
+-- A finite list of systemd socket listener type/address pairs. This is
+-- manager-reported configuration, not an inode or socket ownership proof.
+readVariantSocketListeners :: BusMessage -> BusAction [(String, String)]
+readVariantSocketListeners context@(BusMessage api native deadline) =
+  readVariant context "a(ss)" $ do
+    _ <- remaining BusDecode deadline
+    entered <- lift (withCString "(ss)" (enterContainer api native (code 'a')))
+    unless (entered > 0) (throwE BusMalformedReply)
+    collect 0 []
+ where
+  collect count values = do
+    _ <- remaining BusDecode deadline
+    entered <- lift (withCString "ss" (enterContainer api native (code 'r')))
+    if entered < 0
+      then throwE BusMalformedReply
+      else
+        if entered == 0
+          then checked BusDecode (exitContainer api native) >> pure (reverse values)
+          else
+            if count >= (16 :: Int)
+              then throwE BusMalformedReply
+              else do
+                kind <- readString context 's'
+                address <- readString context 's'
+                checked BusDecode (exitContainer api native)
+                collect (count + 1) ((kind, address) : values)
+
 -- The managed workspace is exactly one directory. Exiting the array refuses
 -- any extra element rather than silently accepting a prefix of the property.
 readVariantSingleString :: BusMessage -> BusAction String
@@ -922,14 +1024,13 @@ appendRequestArguments requestKind message = case requestKind of
   ResolveNamePresence name -> appendString message (hostBusUniqueNameText name)
   ManagerRequest method -> appendMethodArguments method message
 
-pinManager :: BusConnection -> BusAction BusConnection
-pinManager connection@(BusConnection api bus deadline _ active) = do
+pinManager :: Word32 -> BusConnection -> BusAction BusConnection
+pinManager expected connection@(BusConnection api bus deadline _ active) = do
   name <- callNative connection ResolveManagerOwner (const (pure ())) (`readString` 's')
   unless (null (drop 255 name) && uniquePrefix name) (throwE BusManagerIdentityRefused)
   valid <- lift (withCString name (validServiceName api))
   unless (valid == 1) (throwE BusManagerIdentityRefused)
   user <- callNative connection (ResolveManagerUser name) (const (pure ())) readWord32
-  expected <- lift getEffectiveUserID
   unless (toInteger user == toInteger expected) (throwE BusManagerIdentityRefused)
   pure (BusConnection api bus deadline (Just (ManagerPeer name user)) active)
  where

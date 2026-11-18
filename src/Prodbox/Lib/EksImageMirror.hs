@@ -77,7 +77,7 @@ data EksImageMirrorConfig = EksImageMirrorConfig
 -- @registry:2@ whose rendered config has no @auth@ stanza, so it accepts
 -- anonymous push — the same contract the home substrate relies on. The former
 -- hardcoded admin credential authenticated to nothing and was removed under
--- vault_doctrine.md §20.3.
+-- vault_doctrine.md at 583443f, section 20.3.
 defaultEksImageMirrorConfig :: EksImageMirrorConfig
 defaultEksImageMirrorConfig =
   EksImageMirrorConfig
@@ -115,7 +115,7 @@ eksImageMirrorCopyScript config pairs =
 
 -- | Sprint 7.32: the EKS-side counterpart of
 -- 'Prodbox.CLI.Rke2.isRetryableHarborPublicationFailure'
--- (bootstrap_readiness_doctrine.md §4). The EKS crane push exercises the same
+-- (bootstrap_readiness_doctrine.md at 583443f, section 4). The EKS crane push exercises the same
 -- registry→MinIO S3 write edge as the home mirror, so its characteristic
 -- transient failure is a name-resolution error against
 -- @minio.prodbox.svc.cluster.local@ (or the internal Harbor Service) while

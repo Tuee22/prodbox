@@ -1,5 +1,5 @@
 -- | The STATIC MinIO root credential — the sole registered bootstrap-floor
--- credential. @vault_doctrine.md@ §6.1 is the registration and owns the full
+-- credential. @vault_doctrine.md at 583443f, section 6.1 is the registration and owns the full
 -- analysis; this header records only what a reader of this module needs.
 --
 -- It exists as a constant because it is needed /before/ Vault can be read: the

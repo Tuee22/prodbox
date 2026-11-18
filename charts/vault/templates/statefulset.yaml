@@ -1,7 +1,7 @@
 {{- /*
 Sprint 3.17: the in-cluster Vault server. A single-replica StatefulSet with a
 durable PVC on the retained `manual` StorageClass so Vault state survives
-cluster teardown (vault_doctrine.md §5). The readiness probe uses Vault's
+cluster teardown (vault_doctrine.md at revision 583443f §5). The readiness probe uses Vault's
 sys/health with sealedcode=204 / uninitcode=204 so a sealed-but-running Vault
 counts as Ready — the operator unseals it via `prodbox vault unseal`.
 */ -}}

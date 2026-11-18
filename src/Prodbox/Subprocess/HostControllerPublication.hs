@@ -129,6 +129,7 @@ publicationDirectoryPrefix :: Identity.HostControllerKind -> String
 publicationDirectoryPrefix kind = case kind of
   Identity.RpcBirthController -> "prodbox-rpc-birth-inputs-"
   Identity.OrdinaryCascadeController -> "prodbox-cascade-inputs-"
+  Identity.MutationController -> "prodbox-mutation-inputs-"
 
 publicationDirectoryName :: Identity.HostControllerKind -> Identity.HostExecutionKey -> String
 publicationDirectoryName kind key = publicationDirectoryPrefix kind <> Identity.hostExecutionKeyText key
@@ -141,7 +142,7 @@ hostControllerPublicationPathReserved = any reserved . splitDirectories
   reserved component =
     any
       (\kind -> publicationDirectoryPrefix kind `isPrefixOf` component)
-      [Identity.RpcBirthController, Identity.OrdinaryCascadeController]
+      [Identity.RpcBirthController, Identity.OrdinaryCascadeController, Identity.MutationController]
 
 hostControllerConfigurationName, hostControllerRequestName :: String
 hostControllerConfigurationName = "settings.cbor"
@@ -398,6 +399,8 @@ hostPublicationNeverSentMetadata
             Identity.RpcBirthController -> legacy
             Identity.OrdinaryCascadeController ->
               "prodbox-host-never-sent-unlinked/kind/v1\NUL" <> legacy
+            Identity.MutationController ->
+              "prodbox-host-never-sent-unlinked/mutation/v1\NUL" <> legacy
 
 hostPublicationNeverSentParentMatches :: HostPublicationNeverSent -> FileStatus -> Bool
 hostPublicationNeverSentParentMatches (HostPublicationNeverSent (HostPublicationOwner _ _ _ _ _ _ expected _ _ _ _ _ _) _ _) =

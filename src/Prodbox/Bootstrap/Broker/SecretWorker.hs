@@ -1490,7 +1490,7 @@ data SecretWorkerDurableCheckpoint
 -- arm carries a value those constructors would have constrained: an
 -- unobservable checkpoint's reason. A durably-recorded \"cannot observe\" that
 -- says nothing is the distinguishability defect
--- [chaos_hardening_doctrine.md § 23](../../../../documents/engineering/chaos_hardening_doctrine.md)
+-- chaos_hardening_doctrine.md at 583443f, section 23
 -- names, written to the store — the reader cannot tell it from a checkpoint
 -- whose reason was lost in transit.
 --

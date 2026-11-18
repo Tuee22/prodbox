@@ -2,17 +2,77 @@
 
 module QualificationSourceIdentity (qualificationSourceIdentitySuite) where
 
+import Control.Concurrent.Async (concurrently_)
+import Control.Monad (replicateM_)
 import Data.ByteString.Char8 qualified as BS8
 import Data.Either (isLeft)
 import Data.Text (Text)
 import Prodbox.CheckCode (qualificationIsolationViolations)
 import Prodbox.Test.Qualification.SourceIdentity
+import Prodbox.Test.Qualification.SourceManifest (captureSourceCandidate)
+import System.Directory (createDirectoryIfMissing, renameFile)
+import System.FilePath ((</>))
+import System.IO.Temp (withSystemTempDirectory)
+import System.Posix.Files (createLink, createSymbolicLink)
 import Test.Tasty.HUnit (assertBool, (@?=))
 import TestSupport (SuiteBuilder, describe, it)
 
 qualificationSourceIdentitySuite :: SuiteBuilder ()
 qualificationSourceIdentitySuite =
   describe "qualification source identity" $ do
+    it "reads admitted source without following parent links or hard links into private files" $
+      withSystemTempDirectory "prodbox-source-capture" $ \root ->
+        withSystemTempDirectory "prodbox-source-private" $ \foreignRoot -> do
+          let directory = root </> "src" </> "Prodbox"
+              private = foreignRoot </> "Secret.hs"
+              secret = "fixture-private-content"
+          createDirectoryIfMissing True directory
+          writeFile private secret
+          writeFile (directory </> "Local.hs") "module Local where\n"
+          createLink private (directory </> "HardLink.hs")
+          createSymbolicLink private (directory </> "LeafLink.hs")
+          createSymbolicLink foreignRoot (directory </> "Foreign")
+          captured <- captureSourceCandidate root [] "src/Prodbox/Local.hs"
+          case captured of
+            Right candidate -> sourceCandidateBytes candidate @?= "module Local where\n"
+            Left failure -> fail (show failure)
+          hardLink <- captureSourceCandidate root [] "src/Prodbox/HardLink.hs"
+          assertBool "hard-linked private data is refused" (isLeft hardLink)
+          parentLink <- captureSourceCandidate root [] "src/Prodbox/Foreign/Secret.hs"
+          assertBool "symlinked parent is refused" (isLeft parentLink)
+          privatePath <- captureSourceCandidate root [] "test-secrets.dhall"
+          assertBool "private file name is refused before reading" (isLeft privatePath)
+          nestedPrivate <- captureSourceCandidate root [] "src/.test-data/Private.hs"
+          assertBool "nested private runtime directories are refused" (isLeft nestedPrivate)
+          leafLink <- captureSourceCandidate root [] "src/Prodbox/LeafLink.hs"
+          case leafLink of
+            Right candidate -> do
+              sourceCandidateType candidate @?= ManifestSymbolicLink
+              assertBool "symlink target content was not read" (sourceCandidateBytes candidate /= BS8.pack secret)
+            Left failure -> fail (show failure)
+    it "never reads private bytes while an admitted source name is replaced" $
+      withSystemTempDirectory "prodbox-source-race" $ \root ->
+        withSystemTempDirectory "prodbox-source-race-private" $ \foreignRoot -> do
+          let directory = root </> "src"
+              selected = directory </> "Race.hs"
+              staged = directory </> "stage"
+              private = foreignRoot </> "Private.hs"
+              secret = "fixture-private-content"
+          createDirectoryIfMissing True directory
+          writeFile selected "module Race where\n"
+          writeFile private secret
+          let replace = replicateM_ 200 $ do
+                createSymbolicLink private staged
+                renameFile staged selected
+                writeFile staged "module Race where\n"
+                renameFile staged selected
+              observe = replicateM_ 200 $ do
+                result <- captureSourceCandidate root [] "src/Race.hs"
+                case result of
+                  Left _ -> pure ()
+                  Right candidate ->
+                    assertBool "private bytes were not captured" (sourceCandidateBytes candidate /= BS8.pack secret)
+          concurrently_ replace observe
     it "binds HEAD, dirty flag, policy, and deterministic manifest" $ do
       headId <- acceptedHead
       let candidates =

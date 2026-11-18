@@ -13,7 +13,7 @@
 -- eviction_floor + platform scheduler requests + Σ concurrent application draws@ — so the Haskell over-commit proof (Ring
 -- 2) admits it, and (b) fits the real device so the reconcile-time observed-host
 -- check (Ring 3, @compileResourcePlanAgainstObserved@) admits it, failing fast
--- when the host is too small. See resource_scaling_doctrine.md §2B.
+-- when the host is too small. See resource_scaling_doctrine.md at 583443f, section 2B.
 module Prodbox.Capacity.HostProbe
   ( observeHostCapacity
   , deriveHostFittingCapacity

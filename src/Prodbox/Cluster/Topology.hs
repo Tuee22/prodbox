@@ -125,7 +125,7 @@ data TopologyError
 -- exported abstractly to force their smart constructors and also derived
 -- @FromDhall@ — so decode was a second, unchecked constructor and the opacity
 -- stopped at the decode seam. That is the conversion class
--- [chaos_hardening_doctrine.md § 23](../../../documents/engineering/chaos_hardening_doctrine.md)
+-- chaos_hardening_doctrine.md at 583443f, section 23
 -- names: a typed guarantee handed across a boundary that does not honour it.
 --
 -- The ledger row proposed a @Raw*@ DTO narrowed after decode, the shape

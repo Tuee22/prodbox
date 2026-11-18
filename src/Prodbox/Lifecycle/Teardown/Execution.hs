@@ -799,7 +799,7 @@ runCompiledTeardownNodeWithPredecessors compiled descriptorDigest attempt succee
 -- point rather than duplication: with a single leading refusal arm the rest of
 -- the match would still be a catch-all over the result universe, which is the
 -- shape this sprint removes. Two exhaustive arms per helper is the exhaustive
--- match [Pure FP Standards § 2.2](../../../documents/engineering/pure_fp_standards.md#22-pattern-match-exhaustively)
+-- match Pure FP Standards § 2.2 (historical pure_fp_standards.md at revision `583443f`, section 2.2)
 -- asks for.
 validateNodeResult
   :: forall surface result

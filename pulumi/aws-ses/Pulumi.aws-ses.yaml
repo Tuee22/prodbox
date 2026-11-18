@@ -1,4 +1,4 @@
-# DECLARED REAL (vault_doctrine.md §20.1, registered real values).
+# DECLARED REAL (vault_doctrine.md at revision 583443f §20.1, registered real values).
 #
 # This is the one version-controlled Pulumi settings file: the aws-ses stack is
 # long-lived, so its settings are tracked rather than generated per run. Every

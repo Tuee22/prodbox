@@ -80,6 +80,13 @@ import System.Exit
 
 data CommandRequest
   = RunNative NativeCommand
+  | RunControlStatus
+  | RunControlPlan
+  | RunControlArtifactImport String FilePath
+  | RunControlArtifactDiscard String
+  | RunControlInspectNodeArchive
+  | RunControlInspectImageAttempt String
+  | RunTestList
   | ShowCommands CommandListingFormat
   | ShowHelp [String]
   deriving (Eq, Show)
@@ -310,7 +317,7 @@ data ConfigCommand
 -- that clears the reconcile-time observed-host check; @--portable@ selects
 -- 'PortableDefault' for host-agnostic generation (the image build, whose baked
 -- config is overwritten from the ConfigMap at runtime).
--- See resource_scaling_doctrine.md §2B.
+-- See resource_scaling_doctrine.md at 583443f, section 2B.
 data HostFitMode
   = FitObservedHost
   | PortableDefault

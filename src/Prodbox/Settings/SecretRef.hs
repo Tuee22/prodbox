@@ -5,7 +5,7 @@
 -- | Sprint 1.35: the typed secret-reference contract. Sensitive configuration
 -- fields carry a 'SecretRef' — a reference to where a secret lives — rather
 -- than a plaintext value, so @prodbox.dhall@ never holds secret
--- material (see @documents/engineering/vault_doctrine.md@ §3–§4).
+-- material (see @documents/engineering/vault_doctrine.md at 583443f, section 3 and vault_doctrine.md at 583443f, section 4).
 --
 -- The union has __no @FileSecret@ arm__: Secret-mounted plaintext Dhall
 -- fragments are removed, not bridged, and in-cluster consumers authenticate to

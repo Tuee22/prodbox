@@ -7,7 +7,7 @@
 
 -- | Sprint 4.86: the pre-uninstall cleanup report's bytes.
 --
--- [Lifecycle Reconciliation Doctrine § 5b node 7](../../../../documents/engineering/lifecycle_reconciliation_doctrine.md#5b-canonical-recover-to-clean-cascade)
+-- Lifecycle Reconciliation Doctrine § 5b node 7 (historical lifecycle_reconciliation_doctrine.md at revision `583443f`, section 5b)
 -- has the Authority commit "the complete pre-uninstall cleanup report" and the
 -- independent Backup Adapter read that exact report back.  Both halves of that
 -- exchange existed as protocol —

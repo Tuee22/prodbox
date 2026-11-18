@@ -9,6 +9,7 @@ module Prodbox.Capacity.LegacyDhall
   , decodeProjectParametersFileWithLegacyPlatformDemand
   , decodeDhallFileProjection
   , decodeDhallSourceProjection
+  , decodeDhallRecordFieldFromSource
   )
 where
 
@@ -18,6 +19,8 @@ import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Text.IO qualified as TextIO
 import Dhall qualified
+import Dhall.Core qualified as Core
+import Dhall.Map qualified as DhallMap
 import Prodbox.Capacity.Config (ResourceVector, WorkloadResourceProfile)
 import System.Directory (makeAbsolute)
 import System.FilePath (takeDirectory)
@@ -130,6 +133,31 @@ decodeDhallSourceProjection decoder projection path source = do
     Right absolutePath ->
       trySynchronous
         (Dhall.inputWithSettings (fileInputSettings absolutePath) decoder (projectSource projection source))
+
+-- | Resolve the supplied snapshot once, then inspect its normalized record
+-- keys and decode one field from that same resolved value. This does not
+-- reopen the selected top-level file or resolve its imports a second time.
+decodeDhallRecordFieldFromSource
+  :: Dhall.Decoder value
+  -> Text
+  -> FilePath
+  -> Text
+  -> IO (Either SomeException (Maybe ([Text], Maybe value)))
+decodeDhallRecordFieldFromSource decoder fieldName path source = do
+  absolute <- trySynchronous (makeAbsolute path)
+  case absolute of
+    Left failure -> pure (Left failure)
+    Right absolutePath -> trySynchronous $ do
+      expression <- Dhall.inputExprWithSettings (fileInputSettings absolutePath) source
+      case Core.normalize expression of
+        Core.RecordLit fields -> do
+          decoded <- case DhallMap.lookup fieldName fields of
+            Nothing -> pure Nothing
+            Just field -> do
+              result <- trySynchronous (Dhall.input decoder (Core.pretty (Core.recordFieldValue field)))
+              pure (either (const Nothing) Just result)
+          pure (Just (DhallMap.keys fields, decoded))
+        _ -> pure Nothing
 
 -- Paths remain filesystem values. Parsing retains the file's source name and
 -- relative-import directory, including spaces and quoted path components.

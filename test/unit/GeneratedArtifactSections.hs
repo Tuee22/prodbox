@@ -31,17 +31,17 @@ generatedArtifactSectionsSuite =
       withFixture $ \root path original _ -> do
         writeFile
           (root </> path)
-          (unlines (filter (/= "<!-- prodbox:command-surface-matrix:end -->") (lines original)))
+          (unlines (filter (/= "# prodbox:gateway-chart-statics.values:end") (lines original)))
         results <- processGeneratedArtifacts root True
         [target | Right (target, _, _) <- results, target == root </> path]
           `shouldBe` []
-        [err | Left err <- results, "command-surface-matrix:end" `isInfixOf` err]
+        [err | Left err <- results, "gateway-chart-statics.values:end" `isInfixOf` err]
           `shouldSatisfy` (not . null)
 
 withFixture :: (FilePath -> FilePath -> String -> String -> IO ()) -> IO ()
 withFixture action =
   withSystemTempDirectory "prodbox-generated-sections" $ \root -> do
-    let path = "documents/engineering/cli_command_surface.md"
+    let path = "charts/gateway/values.yaml"
         rules = [rule | rule <- generatedSectionRules, generatedSectionPath rule == path]
         document render = unlines ("Introduction." : concatMap (section render) rules ++ ["Conclusion."])
         section render rule =

@@ -12,7 +12,7 @@
 -- the local AEAD, and the AAD binding are unit-tested with a local cipher,
 -- while production injects a Vault-Transit-backed cipher (the in-cluster
 -- gateway daemon authenticates with Kubernetes auth). See
--- @documents/engineering/vault_doctrine.md@ §8 (Envelope encryption).
+-- @documents/engineering/vault_doctrine.md at 583443f, section 8 (Envelope encryption).
 --
 -- The local authenticated transform is shared with the emitter journal through
 -- "Prodbox.Crypto.Aead"; this module retains only envelope-specific wrapping.

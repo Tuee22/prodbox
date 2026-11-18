@@ -5,7 +5,7 @@
 -- carries -- owner nonce, fencing token, credential generation, value digest
 -- -- is opaque data the store never inspects.  The expected version is
 -- therefore the only value on this path for which
--- [chaos_hardening_doctrine.md § 21](../../../../documents/engineering/chaos_hardening_doctrine.md)
+-- chaos_hardening_doctrine.md at 583443f, section 21
 -- row C is literally implementable, and it must not be authorable by a
 -- caller that never read the store.
 --
@@ -18,7 +18,7 @@
 -- fabricated.
 --
 -- Note the bound this does /not/ deliver, per
--- [§ 22](../../../../documents/engineering/chaos_hardening_doctrine.md): it
+-- § 22 (historical chaos_hardening_doctrine.md at revision `583443f`, section 22): it
 -- constrains what a process can construct, not what two processes can do
 -- concurrently.  Two writers each holding a validly-decoded version both
 -- produce legal requests, and Vault's version compare only makes the loser

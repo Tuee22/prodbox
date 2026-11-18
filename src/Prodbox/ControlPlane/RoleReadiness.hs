@@ -16,12 +16,12 @@
 --     do not type-check where a source is required. The request path reads a
 --     latched record and folds it, against a chart-declared
 --     @timeoutSeconds: 1@ budget
---     ([bootstrap_readiness_doctrine.md § 0.7](../../../../documents/engineering/bootstrap_readiness_doctrine.md)).
+--     (bootstrap_readiness_doctrine.md at 583443f, section 0.7).
 --
 --   * __Four-valued, not @Bool@.__ An identity rejection is a distinct
 --     absorbing constructor and can never be read as "not up yet"
 --     (§ 0.5, and the /Distinguishability/ class of
---     [chaos_hardening_doctrine.md § 21](../../../../documents/engineering/chaos_hardening_doctrine.md)).
+--     chaos_hardening_doctrine.md at 583443f, section 21).
 --
 --   * __One snapshot, one instant.__ Layers compose with
 --     'layerRoleReadinessSource', which joins two @STM@ reads inside one

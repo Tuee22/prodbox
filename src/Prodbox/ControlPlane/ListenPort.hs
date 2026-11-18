@@ -53,7 +53,7 @@ controlPlaneListenPortNumber = fromIntegral controlPlaneListenPort
 --
 -- Nine call sites authored this string themselves, each repeating both the
 -- @.svc.cluster.local@ suffix and the port. One derived encoder, per
--- [chaos_hardening_doctrine.md § 23](../../../documents/engineering/chaos_hardening_doctrine.md).
+-- chaos_hardening_doctrine.md at 583443f, section 23.
 controlPlaneClusterServiceUrl :: String -> String -> String
 controlPlaneClusterServiceUrl service namespace =
   "http://"

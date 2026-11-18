@@ -70,6 +70,12 @@ The generated payload below remains unchanged. It describes actual old command n
 | `prodbox cluster wait` | Wait for deployments to be ready |
 | `prodbox cluster workload-logs` | Show recent workload logs |
 | `prodbox commands` | Render the command registry |
+| `prodbox control status` | Inspect local control observations |
+| `prodbox control plan` | Render the selected kind configuration |
+| `prodbox control import-artifact` | Import a declared bootstrap artifact |
+| `prodbox control discard-artifact-staging` | Discard the selected artifact staging file |
+| `prodbox control inspect-node-archive` | Inspect the retained OCI node archive |
+| `prodbox control inspect-image-attempt` | Inspect a retained image attempt |
 | `prodbox config setup` | Interactively author config |
 | `prodbox config show` | Display current config |
 | `prodbox config validate` | Validate current config |
@@ -99,8 +105,9 @@ The generated payload below remains unchanged. It describes actual old command n
 | `prodbox host firewall gateway-unrestrict` | Remove the gateway NodePort loopback restriction |
 | `prodbox internal-rpc-birth-controller` | Run the pinned operation-owned RPC birth controller |
 | `prodbox nuke` | Total teardown of every prodbox-owned AWS resource (operator-only) |
+| `prodbox test list` | List locally registered test suites |
 | `prodbox test init` | Create prodbox.test.dhall |
-| `prodbox test run` | Run a topology-declared suite |
+| `prodbox test run` | Run a named test suite |
 | `prodbox test all` | Run the full test suite |
 | `prodbox test lint` | Run lint and build checks |
 | `prodbox test unit` | Run unit tests |

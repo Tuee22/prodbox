@@ -232,7 +232,7 @@ data AuthorityLoadedCheckpoint = AuthorityLoadedCheckpoint
 
 -- | Sprint 7.21: the observability classes of a per-run Pulumi
 -- checkpoint, applying the
--- @documents\/engineering\/lifecycle_reconciliation_doctrine.md § 3.1@
+-- @documents\/engineering\/lifecycle_reconciliation_doctrine.md at 583443f, section 3.1@
 -- soundness invariant to the encrypted-checkpoint backend. A destructive
 -- teardown must distinguish a missing object from an object whose bytes cannot
 -- establish stack state, so it never silently skips a possibly-live stack and

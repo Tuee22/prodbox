@@ -174,7 +174,7 @@ productionAwsCredentialValidationBoundary context =
 
 -- | Interpreter-boundary memo of satisfied node effects within one `runEffectDAG` run.
 --
--- Per [prerequisite_dag_system.md](../../documents/engineering/prerequisite_dag_system.md) §3
+-- Per prerequisite_dag_system.md at 583443f, section 3
 -- ("no duplicate execution of the same satisfied node within one run") and pure_fp_standards
 -- §3.2 (mutable/threaded state is boundary-only), this is an immutable accumulator threaded
 -- through the IO scheduling loop — it never escapes the interpreter boundary and is keyed on

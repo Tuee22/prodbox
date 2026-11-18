@@ -4,7 +4,7 @@
 
 -- | Sprint 4.86: the production writer half of Stage C.
 --
--- [Lifecycle Reconciliation Doctrine § 5b node 7](../../../../documents/engineering/lifecycle_reconciliation_doctrine.md#5b-canonical-recover-to-clean-cascade)
+-- Lifecycle Reconciliation Doctrine § 5b node 7 (historical lifecycle_reconciliation_doctrine.md at revision `583443f`, section 5b)
 -- gives the Authority two acts on the writing side: it commits the complete
 -- pre-uninstall cleanup report, and it signs the one-shot local-completion
 -- permit.  "Prodbox.Lifecycle.Teardown.PreUninstallReadiness" states both as one

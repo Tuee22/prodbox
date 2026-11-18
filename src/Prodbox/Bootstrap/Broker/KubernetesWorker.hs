@@ -2333,7 +2333,7 @@ controllerImageObservationDetail observation = case observation of
 -- are @sha256:@ followed by sixty-four lower-hex characters — and
 -- distinguishable only by which endpoint resolves them. No smart constructor
 -- over the digest text can separate them, which is
--- [chaos_hardening_doctrine.md § 24](../../../../documents/engineering/chaos_hardening_doctrine.md)
+-- chaos_hardening_doctrine.md at 583443f, section 24
 -- exactly: an observation has a layer, and the runtime's @imageID@ names the
 -- runtime's layer while a pull names the registry's.
 --

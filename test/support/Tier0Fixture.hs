@@ -9,7 +9,7 @@
 -- closed union, updated one encoder, and the other three silently became wrong
 -- rather than being updated; twenty integration cases then failed to decode.
 -- That is the /Conversion/ class of
--- [chaos_hardening_doctrine.md § 23](../../documents/engineering/chaos_hardening_doctrine.md):
+-- chaos_hardening_doctrine.md at 583443f, section 23:
 -- a typed value crossing out of a region must be reconstructed by exactly one
 -- derived encoder, or the region's proofs end at the crossing.
 --
@@ -29,14 +29,14 @@
 --
 -- Both were exercised as mutations before this module was accepted; see Sprint
 -- @5.30@ in
--- [phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md).
+-- the historical Phase 5 plan at revision @583443f@.
 --
 -- Note the pairing this depends on: a compile error only gates if something
 -- compiles the module. `prodbox dev check`'s build is scoped @all@, which
 -- resolves to the library and the executable and no test suite, so Sprint
 -- @5.30@ also adds @--enable-tests@. Neither half alone would have caught
 -- Sprint @1.80@ — see "The region of Ring 2" in
--- [resource_scaling_doctrine.md § 2C](../../documents/engineering/resource_scaling_doctrine.md).
+-- resource_scaling_doctrine.md at 583443f, section 2C.
 module Tier0Fixture
   ( Tier0Fixture
   , tier0Fixture

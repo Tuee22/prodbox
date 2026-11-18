@@ -95,11 +95,15 @@ parserSuite =
     mapM_ happyCase (collectLeafExamples commandRegistry)
     mapM_ unhappyCase (collectLeafExamples commandRegistry)
     mapM_ forbiddenCase forbiddenArgvCases
+    it "preserves the explicit global configuration selection" $
+      parseArgs ["--config", "/tmp/run.dhall", "config", "validate"]
+        `shouldBe` Right (Options False (Just "/tmp/run.dhall") (RunNative (NativeConfig ConfigValidate)))
     it "limits --record-profile to the gateway-pods validation" $ do
       parseArgs ["test", "integration", "gateway-pods", "--record-profile"]
         `shouldBe` Right
           ( Options
               False
+              Nothing
               ( RunNative
                   ( NativeTest
                       TestCommand
@@ -133,6 +137,7 @@ parserSuite =
         `shouldBe` Right
           ( Options
               False
+              Nothing
               ( RunNative
                   ( NativeBootstrapBroker
                       ( BootstrapBrokerStart
@@ -357,6 +362,13 @@ isRight eitherValue =
 commandPathOfRequest :: CommandRequest -> [String]
 commandPathOfRequest request =
   case request of
+    RunTestList -> ["test", "list"]
+    RunControlStatus -> ["control", "status"]
+    RunControlPlan -> ["control", "plan"]
+    RunControlArtifactImport _ _ -> ["control", "import-artifact"]
+    RunControlArtifactDiscard _ -> ["control", "discard-artifact-staging"]
+    RunControlInspectNodeArchive -> ["control", "inspect-node-archive"]
+    RunControlInspectImageAttempt _ -> ["control", "inspect-image-attempt"]
     ShowCommands format ->
       case format of
         CommandsPlain -> ["commands"]

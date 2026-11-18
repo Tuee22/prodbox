@@ -17,7 +17,7 @@
 -- Vault unseal and a settings reload.
 --
 -- This is the /Staleness/ class of
--- [chaos_hardening_doctrine.md § 21](../../../documents/engineering/chaos_hardening_doctrine.md),
+-- chaos_hardening_doctrine.md at 583443f, section 21,
 -- and the fix is the @ValidatedSettings@ move applied to ordering: make the
 -- proof a required argument. It narrows the observe-to-act window; it does not
 -- make the pair atomic. Only a fence does that.

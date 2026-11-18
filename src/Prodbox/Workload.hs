@@ -140,7 +140,7 @@ data WorkloadMode
 
 -- | Sprint 3.15: the workload's Boot/Live split, mirroring the gateway
 -- daemon's @DaemonConfig@ → @LiveConfig@ separation
--- ([config_doctrine.md §8](../../documents/engineering/config_doctrine.md#8-boot-vs-live-split-and-the-restart-contract)).
+-- (config_doctrine.md at 583443f, section 8).
 --
 -- 'WorkloadBootConfig' carries the fields that cannot change without
 -- rebinding the listening socket or re-electing the request handler: the
@@ -321,7 +321,7 @@ runWorkloadServer options =
   case workloadConfigPath options of
     Nothing ->
       failWith
-        "Missing workload config path. Pass `--config <path>` to the workload binary; the mounted Dhall config is the sole config source (see documents/engineering/config_doctrine.md § 10)."
+        "Missing workload config path. Pass `--config <path>` to the workload binary; the mounted Dhall config is the sole config source (see documents/engineering/configuration.md)."
     Just configPath -> do
       dhallResult <- WorkloadSettings.loadWorkloadConfig configPath
       case dhallResult of
@@ -398,7 +398,7 @@ acceptLoop env boundSocket =
 -- a drain signal; this coordinator wakes, drains any websocket connections,
 -- and returns so the @race_@ in 'runWorkloadServer' tears down the accept /
 -- watch / reload children and the process exits for a kubelet restart, per
--- [config_doctrine.md §8](../../documents/engineering/config_doctrine.md#8-boot-vs-live-split-and-the-restart-contract).
+-- config_doctrine.md at 583443f, section 8.
 drainCoordinator :: WorkloadEnv -> IO ()
 drainCoordinator env = do
   atomically (readTQueue (workloadEnvDrainSignals env))
@@ -1317,7 +1317,7 @@ requireIntClaim claimName payload =
 -- handshake GUID published in RFC 6455 §1.3, identical in every WebSocket
 -- implementation. It is neither secret nor synthetic, and it must not be
 -- replaced with a placeholder — a different value produces a header no
--- browser will accept (vault_doctrine.md §20.1, the declared-real arm).
+-- browser will accept (vault_doctrine.md at 583443f, section 20.1, the declared-real arm).
 websocketAcceptKey :: HttpRequest -> Either String String
 websocketAcceptKey request =
   case Map.lookup "sec-websocket-key" (httpRequestHeaders request) of

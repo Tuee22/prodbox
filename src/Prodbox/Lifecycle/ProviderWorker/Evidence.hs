@@ -27,7 +27,7 @@
 -- * __Absence is stated.__  An empty row set renders as @absent@ and a
 --   @present:@ arm carrying nothing is refused.  A short listing and a listing
 --   of nothing are different facts
---   (@lifecycle_reconciliation_doctrine.md § 3.0@).
+--   (@lifecycle_reconciliation_doctrine.md at 583443f, section 3.0@).
 --
 -- * __Canonical.__  Rows are sorted and deduplicated by the encoder, and a
 --   decoder refuses bytes that are not.  One observation therefore renders to

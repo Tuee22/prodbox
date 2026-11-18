@@ -10,14 +10,14 @@
 -- fails it too. This keeps escape-path drift a seconds-fast build failure
 -- rather than a surprise discovered in the multi-hour aggregate suite.
 --
--- The surviving doctrine categories (see @code_quality.md § 3@) map onto the
+-- The surviving doctrine categories (see @code_quality.md at 583443f, section 3@) map onto the
 -- seams below. Each surviving call site carries a machine-readable marker comment
 -- of the exact form @LEGACY-ESCAPE[<marker>]@; this module is the sole SSoT for
 -- the marker set, the owning source file, and the removal-owner sprint. When a
 -- seam's cutover sprint lands, the marked call site and its registry entry are
 -- deleted together and the corresponding
--- [legacy ledger](../../../DEVELOPMENT_PLAN/legacy-tracking-for-deletion.md)
--- row moves to @Completed@.
+-- [legacy ledger](../../../DEVELOPMENT_PLAN/legacy_tracking_for_deletion.md)
+-- row moves to @Removed@.
 --
 -- Sprint @4.84@ closes the gap that made the bijection alone insufficient. A
 -- marker↔entry bijection proves that every /marked/ escape is registered; it

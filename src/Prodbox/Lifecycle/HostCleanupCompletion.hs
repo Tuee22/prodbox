@@ -9,7 +9,7 @@
 -- | Sprint 4.86: the local-completion half of the recover-to-clean cascade's
 -- terminal node.
 --
--- [Lifecycle Reconciliation Doctrine § 5b node 8](../../../documents/engineering/lifecycle_reconciliation_doctrine.md#5b-canonical-recover-to-clean-cascade)
+-- Lifecycle Reconciliation Doctrine § 5b node 8 (historical lifecycle_reconciliation_doctrine.md at revision `583443f`, section 5b)
 -- says that after exact host absence @prepareLocalCompletion@ binds the signed
 -- permit and the observed uninstall evidence to the stable local-completion
 -- operation reference, that the host interpreter idempotently appends it to the

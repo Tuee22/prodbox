@@ -46,7 +46,7 @@ resources:
 # credential from Vault at startup, so it depends only on the cluster + its
 # retained PV.
 #
-# This is the registered bootstrap-floor credential of vault_doctrine.md §6.1 —
+# This is the registered bootstrap-floor credential of vault_doctrine.md at revision 583443f §6.1 —
 # needed before Vault can be read, so it cannot be a Vault reference. It is a
 # real credential; see the `Prodbox.Minio.RootCredential` module header for its
 # reachability and blast radius. The bootstrap floor is the single registered

@@ -5,7 +5,7 @@
 -- | Sprint 4.86: the cascade's credential-disposition node, from issued
 -- observations to the observation the evidence constructor consumes.
 --
--- [Lifecycle Reconciliation Doctrine § 5b node 5](../../../../documents/engineering/lifecycle_reconciliation_doctrine.md#5b-canonical-recover-to-clean-cascade)
+-- Lifecycle Reconciliation Doctrine § 5b node 5 (historical lifecycle_reconciliation_doctrine.md at revision `583443f`, section 5b)
 -- says the test-scoped EBS and credential nodes reconcile absent only after
 -- their exact dependants are terminal, and the sprint requires that an
 -- incomplete run retain every credential a nonterminal obligation still needs.

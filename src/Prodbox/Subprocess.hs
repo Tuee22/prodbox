@@ -13,12 +13,23 @@ module Prodbox.Subprocess
   , OwnedSubprocessLimits
   , OwnedSubprocessResourceBounds
   , OwnedSubprocessError (..)
+  , OwnedSubprocessInterrupted (..)
+  , OwnedFileInputObservation (..)
+  , OwnedFileInputResult (..)
+  , combineOwnedSubprocessResult
+  , onOwnedExceptionWithCleanup
   , mkOwnedSubprocessResourceBounds
   , mkOwnedSubprocessLimits
   , captureOwnedSubprocess
+  , captureOwnedSubprocessWithInput
+  , captureOwnedSubprocessWithFileInput
   , HostSubprocessPlacement
+  , KindHostSubprocessPlacement
+  , MutationHostSubprocessPlacement
   , HostSubprocessError (..)
   , hostSubprocessExecutionKey
+  , mutationHostSubprocessExecutionKey
+  , mutationHostSubprocessFinishEnd
   , hostSubprocessWorkEnd
   , hostSubprocessOuterEnd
   , hostSubprocessRuntimeDirectory
@@ -29,8 +40,22 @@ module Prodbox.Subprocess
   , hostControllerUnitName
   , hostControllerSliceName
   , hostSubprocessDescription
+  , kindHostSubprocessDescription
+  , mutationHostSubprocessDescription
   , withHostSubprocessPlacement
+  , withKindHostSubprocessPlacement
+  , withMutationHostSubprocessPlacement
   , captureHostSubprocess
+  , withPreparedHostSubprocess
+  , withPreparedKindHostSubprocess
+  , withPreparedKindHostSubprocessWithInput
+  , withPreparedKindHostSubprocessWithSealedClient
+  , KindWorkerSandbox
+  , mkKindWorkerSandbox
+  , kindWorkerSandboxReady
+  , withPreparedConfinedKindHostSubprocess
+  , withPreparedMutationHostSubprocess
+  , withPreparedKindHostSubprocessWithFileInput
   , OperationStreamLimits
   , mkOperationStreamLimits
   , validateOperationStreamLimits
@@ -39,6 +64,8 @@ module Prodbox.Subprocess
   , operationSubprocesses
   , operationSubprocessExecutionKey
   , operationSubprocessWindow
+  , operationSubprocessRuntimeMemory
+  , operationSubprocessKind
   , operationSubprocessRuntimeDirectory
   , verifyOperationSubprocessesBeforeEffect
   , OperationSubprocessError (..)
@@ -48,6 +75,8 @@ module Prodbox.Subprocess
   , operationProcessStderr
   , captureOperationCommand
   , captureOperationCommandBefore
+  , captureMutationOperationCommandBefore
+  , captureSealedMutationOperationCommandBefore
   , captureOperationCommandWithCeilingsBefore
   , captureOperationCommandWithInputBefore
   , captureOperationNativeCommand
@@ -85,12 +114,15 @@ module Prodbox.Subprocess
   )
 where
 
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (isCurrentThreadBound, myThreadId, runInBoundThread, threadDelay)
 import Control.Concurrent.Async (Async, poll, wait, waitEither, withAsync)
 import Control.Concurrent.MVar (MVar, modifyMVar_, newMVar, withMVar)
 import Control.Exception
-  ( IOException
+  ( Exception
+  , IOException
   , SomeException
+  , bracket
+  , catch
   , displayException
   , finally
   , mask
@@ -119,6 +151,7 @@ import Data.IORef
   , readIORef
   , writeIORef
   )
+import Data.List (nub)
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Word (Word64)
@@ -126,12 +159,14 @@ import Foreign (Ptr, allocaArray, nullPtr, peekElemOff, plusPtr)
 import Foreign.C.Error (Errno (..), eAGAIN, throwErrnoIfMinus1Retry, throwErrnoIfMinus1_)
 import Foreign.C.Types (CInt (..), CLong (..), CUInt (..), CULong (..))
 import GHC.Clock (getMonotonicTimeNSec)
-import GHC.Conc (getNumCapabilities)
+import GHC.Conc (getNumCapabilities, threadWaitWrite)
 import GHC.Foreign qualified as GHCForeign
 import GHC.IO.Encoding (getFileSystemEncoding)
 import GHC.IO.Exception (ioe_errno)
 import Prodbox.Capacity.HostExecution qualified as Host
 import Prodbox.Capacity.RuntimeMemory qualified as RuntimeMemory
+import Prodbox.Control.KindDockerWorker qualified as KindWorker
+import Prodbox.Control.SealedTool qualified as SealedTool
 import Prodbox.Error
   ( AppError
   , errorMsg
@@ -142,6 +177,7 @@ import Prodbox.Result
   )
 import Prodbox.Subprocess.HostOperationFamily qualified as Operation
 import Prodbox.Subprocess.KernelScope qualified as Kernel
+import Prodbox.Subprocess.MutationWorker qualified as MutationWorker
 import Prodbox.Subprocess.OwnedProcessTree
   ( OwnedProcessRoot
   , recordOwnedProcessRoot
@@ -165,14 +201,17 @@ import System.Environment (getEnvironment)
 import System.Exit
   ( ExitCode (..)
   )
+import System.FilePath (isAbsolute, normalise, splitDirectories)
 import System.IO
   ( Handle
+  , SeekMode (AbsoluteSeek)
   , hClose
   , hFlush
   , hGetBufSome
   )
 import System.IO.Error (isEOFError)
 import System.Posix.Directory.ByteString qualified as PosixDirectory
+import System.Posix.Files qualified as PosixFiles
 import System.Posix.IO qualified as PosixIO
 import System.Posix.IO.ByteString qualified as PosixBytes
 import System.Posix.Process qualified as PosixProcess
@@ -1181,7 +1220,58 @@ data OwnedSubprocessError
   | OwnedSubprocessAlarmScopeUnobservable
   | OwnedSubprocessFamilyUnconfirmed
   | OwnedSubprocessIoRefused
-  deriving (Eq, Show, Enum, Bounded)
+  | OwnedSubprocessInputChanged
+  | OwnedSubprocessPrimaryAndCleanup !OwnedSubprocessError !OwnedSubprocessError
+  | OwnedSubprocessExitAndCleanup !ExitCode !OwnedSubprocessError
+  deriving (Eq, Show)
+
+-- | Preserve the original exception when cancellation or another exception
+-- coincides with an unconfirmed owned-child cleanup. The Show instance avoids
+-- rendering an arbitrary exception payload into logs.
+data OwnedSubprocessInterrupted = OwnedSubprocessInterrupted !SomeException !OwnedSubprocessError
+
+instance Show OwnedSubprocessInterrupted where
+  show (OwnedSubprocessInterrupted _ cleanup) = "owned subprocess interrupted; cleanup refused: " ++ show cleanup
+
+instance Exception OwnedSubprocessInterrupted
+
+onOwnedExceptionWithCleanup :: IO value -> IO (Either OwnedSubprocessError ()) -> IO value
+onOwnedExceptionWithCleanup action cleanup =
+  action `catch` \(original :: SomeException) -> do
+    result <- observeOwnedCleanup cleanup
+    case result of
+      Right () -> throwIO original
+      Left failure -> throwIO (OwnedSubprocessInterrupted original failure)
+
+observeOwnedCleanup :: IO (Either OwnedSubprocessError ()) -> IO (Either OwnedSubprocessError ())
+observeOwnedCleanup cleanup = do
+  attempted <- try cleanup
+  pure $
+    either
+      (const (Left OwnedSubprocessIoRefused))
+      id
+      (attempted :: Either IOException (Either OwnedSubprocessError ()))
+
+combineOwnedCleanup
+  :: Either OwnedSubprocessError value
+  -> Either OwnedSubprocessError ()
+  -> Either OwnedSubprocessError value
+combineOwnedCleanup primary cleanup = case (primary, cleanup) of
+  (Left cause, Left refusal) -> Left (OwnedSubprocessPrimaryAndCleanup cause refusal)
+  (Left cause, Right ()) -> Left cause
+  (Right _, Left refusal) -> Left refusal
+  (Right value, Right ()) -> Right value
+
+-- | Preserve both the command outcome and a separate cleanup refusal.
+combineOwnedSubprocessResult
+  :: Either OwnedSubprocessError ExitCode
+  -> Either OwnedSubprocessError ()
+  -> Either OwnedSubprocessError ExitCode
+combineOwnedSubprocessResult primary cleanup = case (primary, cleanup) of
+  (Left cause, Left refusal) -> Left (OwnedSubprocessPrimaryAndCleanup cause refusal)
+  (Left cause, Right ()) -> Left cause
+  (Right exit, Left refusal) -> Left (OwnedSubprocessExitAndCleanup exit refusal)
+  (Right exit, Right ()) -> Right exit
 
 -- | Total, graceful-stop, kill-confirmation and reader-settlement microseconds,
 -- followed by stdout/stderr byte ceilings. Cleanup is reserved before launch.
@@ -1229,7 +1319,19 @@ data OwnedNativeChild = OwnedNativeChild
   , nativeInput :: !(Maybe (Fd, IO ()))
   }
 
-data OwnedInput = OwnedClosedInput | OwnedPipeInput !ByteString
+data OwnedInput = OwnedClosedInput | OwnedPipeInput !ByteString | OwnedFileInput !Fd !Integer
+
+data OwnedFileInputObservation
+  = OwnedFileInputStable
+  | OwnedFileInputChanged
+  | OwnedFileInputUnobservable
+  deriving (Eq, Show)
+
+data OwnedFileInputResult value
+  = OwnedFileInputRefused !OwnedSubprocessError
+  | OwnedFileInputUnconfirmed !OwnedSubprocessError
+  | OwnedFileInputObserved !(Either OwnedSubprocessError value) !OwnedFileInputObservation
+  deriving (Eq, Show)
 
 data OwnedExec = OwnedExec !ByteString ![ByteString] !(Maybe ByteString) ![(ByteString, ByteString)]
 
@@ -1248,8 +1350,43 @@ data OwnedDeadlines = OwnedDeadlines
 data HostSubprocessPlacement
   = HostSubprocessPlacement !Kernel.HostPlacement !HostExecutionKey !HostExecutionWindow
 
+newtype KindHostSubprocessPlacement = KindHostSubprocessPlacement HostSubprocessPlacement
+newtype MutationHostSubprocessPlacement = MutationHostSubprocessPlacement HostSubprocessPlacement
+
+-- | Borrowed filesystem descriptors for one disposable kind worker. The
+-- caller must bind these to the selected operation, exclude external writers
+-- and prove that scratch cannot alias the read roots or bridge endpoints.
+data KindWorkerSandbox = KindWorkerSandbox !Fd ![Fd] !Fd !Fd !Fd !Fd
+
+mkKindWorkerSandbox :: Fd -> [Fd] -> Fd -> Fd -> Fd -> Fd -> Maybe KindWorkerSandbox
+mkKindWorkerSandbox scratch suppliedRoots lock request reply nullDevice =
+  let roots = take 33 suppliedRoots
+      descriptors = scratch : lock : request : reply : nullDevice : roots
+      valid (Fd raw) = raw >= 3
+   in if length roots <= 32 && all valid descriptors && length descriptors == length (nub descriptors)
+        then Just (KindWorkerSandbox scratch roots lock request reply nullDevice)
+        else Nothing
+
+kindWorkerSandboxDescriptors :: KindWorkerSandbox -> [Fd]
+kindWorkerSandboxDescriptors (KindWorkerSandbox scratch roots lock request reply nullDevice) =
+  scratch : lock : request : reply : nullDevice : roots
+
+data OwnedChildSetup
+  = OwnedChildUnrestricted
+  | OwnedChildSealedClient !Fd
+  | OwnedChildConfinedKind !KindWorkerSandbox !Fd !Fd
+  | OwnedChildConfinedMutation !Fd ![Fd]
+  | OwnedChildConfinedMutationSealed !Fd ![Fd] !Fd
+
 hostSubprocessExecutionKey :: HostSubprocessPlacement -> HostExecutionKey
 hostSubprocessExecutionKey (HostSubprocessPlacement _ key _) = key
+
+mutationHostSubprocessExecutionKey :: MutationHostSubprocessPlacement -> HostExecutionKey
+mutationHostSubprocessExecutionKey (MutationHostSubprocessPlacement placement) = hostSubprocessExecutionKey placement
+
+mutationHostSubprocessFinishEnd :: MutationHostSubprocessPlacement -> Word64
+mutationHostSubprocessFinishEnd (MutationHostSubprocessPlacement (HostSubprocessPlacement _ _ window)) =
+  Identity.hostExecutionFinishEnd window
 
 hostSubprocessWorkEnd :: HostSubprocessPlacement -> Word64
 hostSubprocessWorkEnd (HostSubprocessPlacement _ _ window) = Identity.hostExecutionWorkEnd window
@@ -1263,6 +1400,8 @@ hostSubprocessRuntimeDirectory (HostSubprocessPlacement placement _ _) = Kernel.
 data HostSubprocessError
   = HostSubprocessPlacementRefused !Kernel.KernelScopeError
   | HostSubprocessManagerRefused !Bus.BusError
+  | HostSubprocessRuntimePlanMismatch
+  | HostSubprocessRuntimePlanAndPlacementRefused !Kernel.KernelScopeError
   | HostSubprocessCommandRefused !OwnedSubprocessError
   | HostSubprocessCommandAndPlacementRefused !OwnedSubprocessError !Kernel.KernelScopeError
   deriving (Eq, Show)
@@ -1270,6 +1409,14 @@ data HostSubprocessError
 hostSubprocessDescription
   :: Host.HostExecutionPlan -> HostExecutionKey -> HostExecutionWindow -> String
 hostSubprocessDescription = Kernel.hostPlacementDescription
+
+kindHostSubprocessDescription
+  :: Host.HostExecutionPlan -> HostExecutionKey -> HostExecutionWindow -> String
+kindHostSubprocessDescription = Kernel.hostPlacementDescriptionFor Kernel.KindHostPlacement
+
+mutationHostSubprocessDescription
+  :: Host.HostExecutionPlan -> HostExecutionKey -> HostExecutionWindow -> String
+mutationHostSubprocessDescription = Kernel.hostPlacementDescriptionFor Kernel.MutationHostPlacement
 
 -- Observe this process's own managed PIDFD, resources and original window.
 -- There is no caller PID, host-direct fallback, or resource allocation here.
@@ -1279,11 +1426,52 @@ withHostSubprocessPlacement
   -> HostExecutionWindow
   -> (HostSubprocessPlacement -> IO (Either HostSubprocessError value))
   -> IO (Either HostSubprocessError value)
-withHostSubprocessPlacement plan key window action = do
+withHostSubprocessPlacement = withHostSubprocessPlacementFor Kernel.RpcBirthHostPlacement
+
+-- | Observe the kind controller's own managed parent and slice. This does not
+-- start a controller or grant permission for a kind or provider effect.
+withKindHostSubprocessPlacement
+  :: Host.HostExecutionPlan
+  -> HostExecutionKey
+  -> HostExecutionWindow
+  -> (KindHostSubprocessPlacement -> IO (Either HostSubprocessError value))
+  -> IO (Either HostSubprocessError value)
+withKindHostSubprocessPlacement plan key window action =
+  withHostSubprocessPlacementFor
+    Kernel.KindHostPlacement
+    plan
+    key
+    window
+    (action . KindHostSubprocessPlacement)
+
+-- The mutation controller has its own managed parent, slice and slot. This
+-- observation does not create that controller or authorize a mutant.
+withMutationHostSubprocessPlacement
+  :: Host.HostExecutionPlan
+  -> HostExecutionKey
+  -> HostExecutionWindow
+  -> (MutationHostSubprocessPlacement -> IO (Either HostSubprocessError value))
+  -> IO (Either HostSubprocessError value)
+withMutationHostSubprocessPlacement plan key window action =
+  withHostSubprocessPlacementFor
+    Kernel.MutationHostPlacement
+    plan
+    key
+    window
+    (action . MutationHostSubprocessPlacement)
+
+withHostSubprocessPlacementFor
+  :: Kernel.HostPlacementProfile
+  -> Host.HostExecutionPlan
+  -> HostExecutionKey
+  -> HostExecutionWindow
+  -> (HostSubprocessPlacement -> IO (Either HostSubprocessError value))
+  -> IO (Either HostSubprocessError value)
+withHostSubprocessPlacementFor profile plan key window action = do
   uid <- getEffectiveUserID
   managed <- Bus.withSystemdBus (Identity.hostExecutionOuterEnd window) ("/run/user/" <> show uid <> "/bus") $ \connection -> lift $ do
     observed <-
-      Kernel.withObservedHostPlacement connection plan key window $ \placement ->
+      Kernel.withObservedHostPlacementFor profile connection plan key window $ \placement ->
         Right <$> action (HostSubprocessPlacement placement key window)
     pure (either (Left . HostSubprocessPlacementRefused) id observed)
   pure (either (Left . HostSubprocessManagerRefused) id managed)
@@ -1296,9 +1484,284 @@ captureHostSubprocess
   -> OwnedSubprocessLimits
   -> Subprocess
   -> IO (Either HostSubprocessError ProcessOutput)
-captureHostSubprocess (HostSubprocessPlacement placement _ _) limits spec = mask $ \restore -> do
+captureHostSubprocess placement limits spec =
+  withPreparedHostSubprocessInternal
+    placement
+    Nothing
+    OwnedChildUnrestricted
+    limits
+    (\run -> run OwnedClosedInput spec)
+
+-- | Hold the observed parent placement and its single child slot while a
+-- caller prepares an input and invokes one child. The exact runtime plan must
+-- match the plan observed on that placement. This supplies neither lifecycle
+-- admission nor a measured proof of the caller's resource estimate.
+withPreparedHostSubprocess
+  :: HostSubprocessPlacement
+  -> RuntimeMemory.RuntimeMemoryPlan
+  -> OwnedSubprocessLimits
+  -> ( (Subprocess -> IO (Either OwnedSubprocessError ProcessOutput))
+       -> IO (Either OwnedSubprocessError value)
+     )
+  -> IO (Either HostSubprocessError value)
+withPreparedHostSubprocess placement expected limits prepare =
+  withPreparedHostSubprocessInternal placement (Just expected) OwnedChildUnrestricted limits $ \run ->
+    prepare (run OwnedClosedInput)
+
+withPreparedKindHostSubprocess
+  :: KindHostSubprocessPlacement
+  -> RuntimeMemory.RuntimeMemoryPlan
+  -> OwnedSubprocessLimits
+  -> ( (Subprocess -> IO (Either OwnedSubprocessError ProcessOutput))
+       -> IO (Either OwnedSubprocessError value)
+     )
+  -> IO (Either HostSubprocessError value)
+withPreparedKindHostSubprocess (KindHostSubprocessPlacement placement) =
+  withPreparedHostSubprocess placement
+
+-- | Run one child under the mutation controller's owned process family. The
+-- caller must authenticate and retain the workspace and read roots, exclude
+-- aliases and noncooperating writers, bind the selected command and public
+-- environment, and independently observe cleanup. This boundary applies the
+-- worker restrictions but is not mutation admission or proof of isolation.
+withPreparedMutationHostSubprocess
+  :: MutationHostSubprocessPlacement
+  -> RuntimeMemory.RuntimeMemoryPlan
+  -> Fd
+  -> [Fd]
+  -> OwnedSubprocessLimits
+  -> ( (Subprocess -> IO (Either OwnedSubprocessError ProcessOutput))
+       -> IO (Either OwnedSubprocessError value)
+     )
+  -> IO (Either HostSubprocessError value)
+withPreparedMutationHostSubprocess (MutationHostSubprocessPlacement placement) expected workspace roots limits prepare = do
+  bound <- isCurrentThreadBound
+  if not bound
+    then pure (Left (HostSubprocessCommandRefused OwnedSubprocessRuntimeUnsupported))
+    else withPreparedHostSubprocessInternal
+      placement
+      (Just expected)
+      (OwnedChildConfinedMutation workspace roots)
+      limits
+      $ \run ->
+        prepare $ \spec ->
+          if validMutationSpec spec
+            then run (OwnedPipeInput ByteString.empty) spec
+            else pure (Left OwnedSubprocessInvalidLimits)
+
+-- No ambient environment is copied into the disposable worker. The caller
+-- must still bind these non-secret values and all path roots to the workspace.
+validMutationSpec :: Subprocess -> Bool
+validMutationSpec spec = case (subprocessWorkingDirectory spec, subprocessEnvironment spec) of
+  (Just directory, Just environment) ->
+    not (null directory)
+      && all (\(key, value) -> key `elem` allowed && not (null value) && length value <= 4096) environment
+      && length (map fst environment) == length (nub (map fst environment))
+      && all (`elem` map fst environment) ["PATH", "HOME", "TMPDIR"]
+  _ -> False
+ where
+  allowed = ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"]
+
+-- | Prepare one kind-host child with bounded exact stdin using the same
+-- combined tool/input budget as the placement plan. The declared estimates
+-- still require measurement; placement does not authorize a kind effect.
+withPreparedKindHostSubprocessWithInput
+  :: KindHostSubprocessPlacement
+  -> SealedTool.SealedToolBudget
+  -> OwnedSubprocessLimits
+  -> ( (ByteString -> Subprocess -> IO (Either OwnedSubprocessError ProcessOutput))
+       -> IO (Either OwnedSubprocessError value)
+     )
+  -> IO (Either HostSubprocessError value)
+withPreparedKindHostSubprocessWithInput (KindHostSubprocessPlacement placement) budget limits prepare =
+  case SealedTool.sealedToolInputMaximum budget of
+    Nothing -> pure (Left (HostSubprocessCommandRefused OwnedSubprocessInvalidLimits))
+    Just maximumInput ->
+      withPreparedHostSubprocessInternal
+        placement
+        (Just (SealedTool.sealedToolRuntimePlan budget))
+        OwnedChildUnrestricted
+        limits
+        $ \run ->
+          prepare $ \input spec ->
+            if ByteString.length input > maximumInput
+              then pure (Left OwnedSubprocessInvalidLimits)
+              else run (OwnedPipeInput input) spec
+
+-- | Run one kind child with a bounded input and one sealed descriptor. The
+-- descriptor becomes inheritable only in the admitted child after fork; the
+-- caller must hold it, authenticate its bytes and exclude descriptor races.
+-- This is process confinement machinery, not lifecycle admission.
+withPreparedKindHostSubprocessWithSealedClient
+  :: KindHostSubprocessPlacement
+  -> SealedTool.KindWorkerSnapshots
+  -> Fd
+  -> OwnedSubprocessLimits
+  -> ( (ByteString -> Subprocess -> IO (Either OwnedSubprocessError ProcessOutput))
+       -> IO (Either OwnedSubprocessError value)
+     )
+  -> IO (Either HostSubprocessError value)
+withPreparedKindHostSubprocessWithSealedClient (KindHostSubprocessPlacement placement) budgets client limits prepare =
+  case SealedTool.sealedToolInputMaximum kindBudget of
+    Just maximumInput -> do
+      sealed <- SealedTool.isSealedToolDescriptor client
+      closeOnExec <-
+        try (PosixIO.queryFdOption client PosixIO.CloseOnExec) :: IO (Either IOException Bool)
+      let protected = case closeOnExec of Right True -> True; _ -> False
+      if not sealed || not protected
+        then pure (Left (HostSubprocessCommandRefused OwnedSubprocessInvalidLimits))
+        else withPreparedHostSubprocessInternal
+          placement
+          (Just (SealedTool.sealedToolRuntimePlan kindBudget))
+          (OwnedChildSealedClient client)
+          limits
+          $ \run ->
+            prepare $ \input spec ->
+              if ByteString.length input > maximumInput
+                then pure (Left OwnedSubprocessInvalidLimits)
+                else run (OwnedPipeInput input) spec
+    _ -> pure (Left (HostSubprocessCommandRefused OwnedSubprocessInvalidLimits))
+ where
+  kindBudget = SealedTool.kindWorkerKindBudget budgets
+
+-- | Prepare the admitted child on a bound thread, apply the worker's
+-- filesystem, network and metadata restrictions, then execute the held kind
+-- snapshot. The caller owns descriptor provenance, root disjointness, endpoint
+-- binding, daemon authentication and lifecycle admission. This boundary does
+-- not authorize Docker effects or settle any separately owned broker.
+withPreparedConfinedKindHostSubprocess
+  :: KindHostSubprocessPlacement
+  -> SealedTool.KindWorkerSnapshots
+  -> KindWorkerSandbox
+  -> Fd
+  -> Fd
+  -> OwnedSubprocessLimits
+  -> ( (ByteString -> Subprocess -> IO (Either OwnedSubprocessError ProcessOutput))
+       -> IO (Either OwnedSubprocessError value)
+     )
+  -> IO (Either HostSubprocessError value)
+withPreparedConfinedKindHostSubprocess (KindHostSubprocessPlacement placement) budgets sandbox kind client limits prepare =
+  runInBoundThread $ do
+    ready <- kindWorkerSandboxReady sandbox kind client
+    case (ready, SealedTool.sealedToolInputMaximum kindBudget) of
+      (True, Just maximumInput) ->
+        withPreparedHostSubprocessInternal
+          placement
+          (Just (SealedTool.sealedToolRuntimePlan kindBudget))
+          (OwnedChildConfinedKind sandbox kind client)
+          limits
+          $ \run ->
+            prepare $ \input spec ->
+              if ByteString.length input > maximumInput || not (validConfinedKindSpec kind spec)
+                then pure (Left OwnedSubprocessInvalidLimits)
+                else run (OwnedPipeInput input) spec
+      _ -> pure (Left (HostSubprocessCommandRefused OwnedSubprocessInvalidLimits))
+ where
+  kindBudget = SealedTool.kindWorkerKindBudget budgets
+
+-- | Check descriptor seals, close-on-exec flags and distinct identities before
+-- preparing a link. This observation does not authenticate bytes or prevent
+-- descriptor replacement; the caller must retain and exclude writers. The
+-- managed launcher repeats it immediately before use.
+kindWorkerSandboxReady :: KindWorkerSandbox -> Fd -> Fd -> IO Bool
+kindWorkerSandboxReady sandbox kind client = do
+  attempted <- try $ do
+    kindSealed <- SealedTool.isSealedToolDescriptor kind
+    clientSealed <- SealedTool.isSealedToolDescriptor client
+    kindProtected <- PosixIO.queryFdOption kind PosixIO.CloseOnExec
+    clientProtected <- PosixIO.queryFdOption client PosixIO.CloseOnExec
+    statuses <- traverse PosixFiles.getFdStatus (kind : client : kindWorkerSandboxDescriptors sandbox)
+    let identities = map (\status -> (PosixFiles.deviceID status, PosixFiles.fileID status)) statuses
+    pure
+      ( kindSealed
+          && clientSealed
+          && kindProtected
+          && clientProtected
+          && length identities == length (nub identities)
+      )
+  pure $ case attempted of
+    Right valid -> valid
+    Left (_ :: IOException) -> False
+
+validConfinedKindSpec :: Fd -> Subprocess -> Bool
+validConfinedKindSpec kind spec = case (subprocessWorkingDirectory spec, subprocessEnvironment spec) of
+  (Just scratch, Just environment) ->
+    let entries = take 17 environment
+        keys = map fst entries
+        arguments = take 65 (subprocessArguments spec)
+        boundedLength = length . take 4097
+        allowed =
+          [ "PATH"
+          , "HOME"
+          , "TMPDIR"
+          , "DOCKER_CONFIG"
+          , "KUBECONFIG"
+          , "KIND_EXPERIMENTAL_PROVIDER"
+          , "KIND_EXPERIMENTAL_DOCKER_NETWORK"
+          , "PRODBOX_KIND_BRIDGE"
+          ]
+        path value =
+          boundedLength value <= 4096
+            && isAbsolute value
+            && normalise value == value
+            && ".." `notElem` splitDirectories value
+            && '\0' `notElem` value
+     in subprocessPath spec == "/proc/self/fd/" <> show kind
+          && length arguments <= 64
+          && all ((<= 4096) . boundedLength) arguments
+          && sum (map boundedLength arguments) <= 32768
+          && length entries <= 16
+          && length keys == length (nub keys)
+          && all (`elem` allowed) keys
+          && all ((<= 4096) . boundedLength . snd) entries
+          && path scratch
+          && lookup "HOME" entries == Just scratch
+          && lookup "TMPDIR" entries == Just scratch
+          && lookup "DOCKER_CONFIG" entries == Just scratch
+          && lookup "KIND_EXPERIMENTAL_PROVIDER" entries == Just "docker"
+          && case (lookup "PRODBOX_KIND_BRIDGE" entries, lookup "PATH" entries, lookup "KUBECONFIG" entries) of
+            (Just bridge, Just executablePath, Just kubeconfig) ->
+              path bridge
+                && ':' `notElem` bridge
+                && path kubeconfig
+                && executablePath == bridge <> ":/usr/bin:/bin"
+            _ -> False
+  _ -> False
+
+-- | Stream a bounded held regular file through the owned child's input pipe.
+-- The caller retains responsibility for content identity and lifecycle admission.
+-- The shared descriptor offset is advanced, and input changes are reported even
+-- if the child exits successfully.
+withPreparedKindHostSubprocessWithFileInput
+  :: KindHostSubprocessPlacement
+  -> RuntimeMemory.RuntimeMemoryPlan
+  -> OwnedSubprocessLimits
+  -> ( (Integer -> Fd -> Subprocess -> IO (OwnedFileInputResult ProcessOutput))
+       -> IO (Either OwnedSubprocessError value)
+     )
+  -> IO (Either HostSubprocessError value)
+withPreparedKindHostSubprocessWithFileInput (KindHostSubprocessPlacement placement) expected limits prepare =
+  withPreparedHostSubprocessInternal placement (Just expected) OwnedChildUnrestricted limits $ \run ->
+    prepare $ \maximumBytes source spec ->
+      withBoundedOwnedFileInput maximumBytes source $ \input -> run input spec
+
+withPreparedHostSubprocessInternal
+  :: forall value
+   . HostSubprocessPlacement
+  -> Maybe RuntimeMemory.RuntimeMemoryPlan
+  -> OwnedChildSetup
+  -> OwnedSubprocessLimits
+  -> ( (OwnedInput -> Subprocess -> IO (Either OwnedSubprocessError ProcessOutput))
+       -> IO (Either OwnedSubprocessError value)
+     )
+  -> IO (Either HostSubprocessError value)
+withPreparedHostSubprocessInternal (HostSubprocessPlacement placement _ _) expected childSetup limits prepare = mask $ \restore -> do
   primaryFailure <- newIORef Nothing
+  mismatch <- newIORef False
   observed <- Kernel.withHostPlacementSlot placement $ \token connection -> do
+    owner <- myThreadId
+    used <- newIORef False
+    live <- newIORef True
     let window = Kernel.hostPlacementWindow token
         finish = Identity.hostExecutionFinishEnd window
         deadlines =
@@ -1306,64 +1769,85 @@ captureHostSubprocess (HostSubprocessPlacement placement _ _) limits spec = mask
             (Identity.hostExecutionWorkEnd window)
             (Identity.hostExecutionHardEnd window)
             (Identity.hostExecutionStopEnd window)
-        run = do
+        run suppliedInput spec = mask $ \_ -> do
+          caller <- myThreadId
+          first <- atomicModifyIORef' used (\prior -> (True, not prior))
+          active <- readIORef live
           capabilities <- getNumCapabilities
           now <- getMonotonicTimeNSec
-          if capabilities /= 1
-            then pure (Left OwnedSubprocessRuntimeUnsupported)
+          if caller /= owner || not first || not active
+            then pure (Left OwnedSubprocessInvalidLimits)
             else
-              if ownedSpecHasNul spec
-                then pure (Left OwnedSubprocessStartFailed)
+              if capabilities /= 1
+                then pure (Left OwnedSubprocessRuntimeUnsupported)
                 else
-                  if not (hostLimitsMatch token limits now)
-                    then pure (Left OwnedSubprocessInvalidLimits)
-                    else do
-                      family <- Family.hostScopeFamilyIntent (Kernel.hostPlacementKey token) window
-                      case family of
-                        Left _ -> pure (Left OwnedSubprocessDeadlineReached)
-                        Right intent -> do
-                          prior <-
-                            runExceptT
-                              (Family.observeScopeFamily (Bus.systemdBusWithin (ownedWorkEnd deadlines) connection) intent)
-                          case prior of
-                            Right inventory | Family.scopeFamilyAbsent inventory -> do
-                              executable <- encodeOwnedExec spec
-                              withOwnedNativeChild deadlines executable $ \child ->
-                                withAsync (readOwnedStream (stdoutCeiling limits) (nativeOut child)) $ \out ->
-                                  withAsync (readOwnedStream (stderrCeiling limits) (nativeErr child)) $ \err -> do
-                                    let stop = uninterruptibleMask_ (stopUnadmittedChild deadlines connection intent child)
-                                    result <-
-                                      ownKernelChild
-                                        (HostChildOwnership token)
-                                        restore
-                                        limits
-                                        deadlines
-                                        (ownedWorkEnd deadlines)
-                                        connection
-                                        intent
-                                        child
-                                        out
-                                        err
-                                        `onException` void stop
-                                    streams <- restore (settleOwned finish out err)
-                                    pure $ do
-                                      exit <- result
-                                      (stdoutBytes, stderrBytes) <- streams
-                                      Right (ProcessOutput exit (ByteStringChar8.unpack stdoutBytes) (ByteStringChar8.unpack stderrBytes))
-                            _ -> pure (Left OwnedSubprocessFamilyUnconfirmed)
-    attempted <- try run
+                  if ownedSpecHasNul spec
+                    then pure (Left OwnedSubprocessStartFailed)
+                    else
+                      if not (hostLimitsMatch token limits now)
+                        then pure (Left OwnedSubprocessInvalidLimits)
+                        else do
+                          family <- Family.hostScopeFamilyIntent (Kernel.hostPlacementKey token) window
+                          case family of
+                            Left _ -> pure (Left OwnedSubprocessDeadlineReached)
+                            Right intent -> do
+                              prior <-
+                                runExceptT
+                                  (Family.observeScopeFamily (Bus.systemdBusWithin (ownedWorkEnd deadlines) connection) intent)
+                              case prior of
+                                Right inventory | Family.scopeFamilyAbsent inventory -> do
+                                  executable <- encodeOwnedExec spec
+                                  withOwnedNativeChildInputPreserving childSetup suppliedInput deadlines executable $ \child ->
+                                    withAsync (readOwnedStream (stdoutCeiling limits) (nativeOut child)) $ \out ->
+                                      withAsync (readOwnedStream (stderrCeiling limits) (nativeErr child)) $ \err -> do
+                                        let stop = uninterruptibleMask_ (stopUnadmittedChild deadlines connection intent child)
+                                        result <-
+                                          ownKernelChild
+                                            (HostChildOwnership token)
+                                            suppliedInput
+                                            restore
+                                            limits
+                                            deadlines
+                                            (ownedWorkEnd deadlines)
+                                            connection
+                                            intent
+                                            child
+                                            out
+                                            err
+                                            `onOwnedExceptionWithCleanup` stop
+                                        streams <- restore (settleOwned finish out err)
+                                        let streamSettlement = case (result, streams) of
+                                              (Left primary, Left stream) | primary == stream -> Right ()
+                                              _ -> void streams
+                                        pure $ do
+                                          exit <- combineOwnedSubprocessResult result streamSettlement
+                                          (stdoutBytes, stderrBytes) <- streams
+                                          Right (ProcessOutput exit (ByteStringChar8.unpack stdoutBytes) (ByteStringChar8.unpack stderrBytes))
+                                _ -> pure (Left OwnedSubprocessFamilyUnconfirmed)
+    attempted <-
+      if maybe False (/= Host.hostExecutionRuntimeMemory (Kernel.hostPlacementPlan token)) expected
+        then writeIORef mismatch True >> pure Nothing
+        else
+          Just
+            <$> ( try (restore (prepare run) `finally` writeIORef live False)
+                    :: IO (Either IOException (Either OwnedSubprocessError value))
+                )
     finished <- getMonotonicTimeNSec
-    let result
-          | finished >= finish = Left OwnedSubprocessDeadlineReached
-          | otherwise =
-              either
-                (const (Left OwnedSubprocessIoRefused))
-                id
-                (attempted :: Either IOException (Either OwnedSubprocessError ProcessOutput))
+    let prior = case attempted of
+          Nothing -> Left OwnedSubprocessInvalidLimits
+          Just outcome -> either (const (Left OwnedSubprocessIoRefused)) id outcome
+        result
+          | finished < finish = prior
+          | otherwise = case prior of
+              Left OwnedSubprocessDeadlineReached -> Left OwnedSubprocessDeadlineReached
+              _ -> combineOwnedCleanup prior (Left OwnedSubprocessDeadlineReached)
     writeIORef primaryFailure (either Just (const Nothing) result)
     pure (Right result)
   primary <- readIORef primaryFailure
+  wrongPlan <- readIORef mismatch
   pure $ case observed of
+    Right _ | wrongPlan -> Left HostSubprocessRuntimePlanMismatch
+    Left cause | wrongPlan -> Left (HostSubprocessRuntimePlanAndPlacementRefused cause)
     Right result -> either (Left . HostSubprocessCommandRefused) Right result
     Left cause -> Left $ case primary of
       Just failure -> HostSubprocessCommandAndPlacementRefused failure cause
@@ -1414,6 +1898,13 @@ operationSubprocessExecutionKey (OperationSubprocesses parent _ _) = Kernel.oper
 
 operationSubprocessWindow :: OperationSubprocesses -> HostExecutionWindow
 operationSubprocessWindow (OperationSubprocesses parent _ _) = Kernel.operationParentWindow parent
+
+operationSubprocessRuntimeMemory :: OperationSubprocesses -> RuntimeMemory.RuntimeMemoryPlan
+operationSubprocessRuntimeMemory (OperationSubprocesses parent _ _) =
+  Host.hostExecutionRuntimeMemory (Kernel.operationParentPlan parent)
+
+operationSubprocessKind :: OperationSubprocesses -> Identity.HostControllerKind
+operationSubprocessKind (OperationSubprocesses parent _ _) = Kernel.operationParentKind parent
 
 operationSubprocessRuntimeDirectory :: OperationSubprocesses -> FilePath
 operationSubprocessRuntimeDirectory (OperationSubprocesses parent _ _) = Kernel.operationParentRuntimeDirectory parent
@@ -1612,10 +2103,82 @@ captureOperationInvocationBefore
   -> OperationInvocation
   -> IO (Either OperationSubprocessError OperationProcessOutput)
 captureOperationInvocationBefore input requested owned invocation = do
-  result <- runOperationProcess Nothing input owned Operation.OperationCommandProcess requested invocation $ \_ deadlines child _ out err _ ->
-    either (Left . OperationProcessRefused) Right
-      <$> superviseOperationCommandInput input deadlines child out err
+  result <- runOperationProcess
+    Nothing
+    OwnedChildUnrestricted
+    input
+    owned
+    Operation.OperationCommandProcess
+    requested
+    invocation
+    $ \_ deadlines child _ out err _ ->
+      either (Left . OperationProcessRefused) Right
+        <$> superviseOperationCommandInput input deadlines child out err
   pure $ fmap (\(code, out, err) -> OperationProcessOutput code out err) result
+
+-- | Run one restricted command in an observed mutation operation family. The
+-- caller must bind the source and output descriptors, tools, environment,
+-- admission and prior settlement; this is not authorization for a mutant.
+-- The calling thread must already be bound so cancellation reaches the owner.
+captureMutationOperationCommandBefore
+  :: Word64
+  -> OperationSubprocesses
+  -> Fd
+  -> [Fd]
+  -> Subprocess
+  -> IO (Either OperationSubprocessError OperationProcessOutput)
+captureMutationOperationCommandBefore requested owned output roots spec = do
+  captureMutationOperationCommandUsingBefore requested owned output roots Nothing spec
+
+-- | Execute only the supplied sealed descriptor under the mutation profile.
+-- Descriptor and budget custody remain caller obligations.
+captureSealedMutationOperationCommandBefore
+  :: Word64
+  -> OperationSubprocesses
+  -> Fd
+  -> [Fd]
+  -> Fd
+  -> Subprocess
+  -> IO (Either OperationSubprocessError OperationProcessOutput)
+captureSealedMutationOperationCommandBefore requested owned output roots tool@(Fd descriptor) spec = do
+  sealed <- SealedTool.isSealedToolDescriptor tool
+  if not sealed || subprocessPath spec /= "/proc/self/fd/" ++ show descriptor
+    then pure (Left (OperationProcessRefused OwnedSubprocessInvalidLimits))
+    else captureMutationOperationCommandUsingBefore requested owned output roots (Just tool) spec
+
+captureMutationOperationCommandUsingBefore
+  :: Word64
+  -> OperationSubprocesses
+  -> Fd
+  -> [Fd]
+  -> Maybe Fd
+  -> Subprocess
+  -> IO (Either OperationSubprocessError OperationProcessOutput)
+captureMutationOperationCommandUsingBefore requested owned@(OperationSubprocesses parent _ _) output roots sealedTool spec = do
+  bound <- isCurrentThreadBound
+  if not bound || Kernel.operationParentKind parent /= Identity.MutationController
+    then pure (Left (OperationProcessRefused OwnedSubprocessRuntimeUnsupported))
+    else
+      if not (validMutationSpec spec)
+        then pure (Left (OperationProcessRefused OwnedSubprocessInvalidLimits))
+        else do
+          let input = OwnedPipeInput ByteString.empty
+          result <- runOperationProcess
+            Nothing
+            ( maybe
+                (OwnedChildConfinedMutation output roots)
+                (OwnedChildConfinedMutationSealed output roots)
+                sealedTool
+            )
+            input
+            owned
+            Operation.OperationCommandProcess
+            requested
+            (StringOperationInvocation spec)
+            $ \_ deadlines child _ out err _ ->
+              either (Left . OperationProcessRefused) Right
+                <$> superviseOperationCommandInput input deadlines child out err
+          pure $ fmap (\(code, out, err) -> OperationProcessOutput code out err) result
 
 -- A client may borrow a smaller stream share from the original command lane.
 -- The parent, process slot, grace and absolute window are retained; copying the
@@ -1748,7 +2311,13 @@ superviseOperationCommandInput
 superviseOperationCommandInput input deadlines child out err = case (input, nativeInput child) of
   (OwnedClosedInput, Nothing) -> monitor
   (OwnedPipeInput bytes, Just (descriptor, closeInput)) ->
-    withAsync (writeOwnedInputBefore ending descriptor bytes `finally` closeInput) $ \writer ->
+    superviseWriter (writeOwnedInputBefore ending descriptor bytes `finally` closeInput)
+  (OwnedFileInput source size, Just (descriptor, closeInput)) ->
+    superviseWriter (writeOwnedFileBefore ending source descriptor size `finally` closeInput)
+  _ -> pure (Left OwnedSubprocessStartFailed)
+ where
+  superviseWriter writerAction =
+    withAsync writerAction $ \writer ->
       withAsync monitor $ \observer -> do
         first <- waitEither writer observer
         case first of
@@ -1758,10 +2327,26 @@ superviseOperationCommandInput input deadlines child out err = case (input, nati
           Right (Right code) -> do
             written <- wait writer
             pure (code <$ written)
-  _ -> pure (Left OwnedSubprocessStartFailed)
- where
   ending = ownedWorkEnd deadlines
   monitor = superviseKernelChild ending child out err
+
+writeOwnedFileBefore :: Word64 -> Fd -> Fd -> Integer -> IO (Either OwnedSubprocessError ())
+writeOwnedFileBefore ending source destination remaining
+  | remaining == 0 = pure (Right ())
+  | otherwise = do
+      now <- getMonotonicTimeNSec
+      if now >= ending
+        then pure (Left OwnedSubprocessDeadlineReached)
+        else do
+          chunk <- try (PosixBytes.fdRead source (fromInteger (min 32768 remaining)))
+          case chunk of
+            Left (_ :: IOException) -> pure (Left OwnedSubprocessIoRefused)
+            Right bytes | ByteString.null bytes -> pure (Left OwnedSubprocessInputChanged)
+            Right bytes -> do
+              written <- writeOwnedInputBefore ending destination bytes
+              case written of
+                Left failure -> pure (Left failure)
+                Right () -> writeOwnedFileBefore ending source destination (remaining - toInteger (ByteString.length bytes))
 
 writeOwnedInputBefore :: Word64 -> Fd -> ByteString -> IO (Either OwnedSubprocessError ())
 writeOwnedInputBefore ending descriptor bytes = do
@@ -1776,12 +2361,34 @@ writeOwnedInputBefore ending descriptor bytes = do
           case attempted of
             Left cause
               | fmap Errno (ioe_errno cause) == Just eAGAIN ->
-                  threadDelay 1000 >> writeOwnedInputBefore ending descriptor bytes
+                  do
+                    ready <- waitOwnedWritable ending descriptor
+                    case ready of
+                      Left failure -> pure (Left failure)
+                      Right () -> writeOwnedInputBefore ending descriptor bytes
             Left (_ :: IOException) -> pure (Left OwnedSubprocessIoRefused)
             Right written
               | written > 0 ->
                   writeOwnedInputBefore ending descriptor (ByteString.drop (fromIntegral written) bytes)
             Right _ -> pure (Left OwnedSubprocessIoRefused)
+
+-- Wait without periodic polling, but never beyond the original work deadline.
+-- A closed reader is handled by the next write; cancellation interrupts this
+-- wait and the owned-child cleanup remains responsible for settlement.
+waitOwnedWritable :: Word64 -> Fd -> IO (Either OwnedSubprocessError ())
+waitOwnedWritable ending descriptor = do
+  now <- getMonotonicTimeNSec
+  if now >= ending
+    then pure (Left OwnedSubprocessDeadlineReached)
+    else do
+      let micros =
+            fromInteger
+              (min (toInteger (maxBound :: Int)) ((toInteger ending - toInteger now + 999) `div` 1000))
+      observed <- try (timeout micros (threadWaitWrite descriptor))
+      pure $ case observed of
+        Left (_ :: IOException) -> Left OwnedSubprocessIoRefused
+        Right Nothing -> Left OwnedSubprocessDeadlineReached
+        Right (Just ()) -> Right ()
 
 withOperationTransport
   :: OperationSubprocesses
@@ -1835,6 +2442,7 @@ withOperationTransportInvocation startup owned@(OperationSubprocesses parent _ _
   let end = Identity.hostExecutionWorkEnd (Kernel.operationParentWindow parent)
   result <- runOperationProcess
     startup
+    OwnedChildUnrestricted
     OwnedClosedInput
     owned
     Operation.OperationTransportProcess
@@ -1857,6 +2465,7 @@ withOperationTransportInvocation startup owned@(OperationSubprocesses parent _ _
 -- This composition uses the observed role scope and retains the global alarm.
 runOperationProcess
   :: Maybe Startup.StartupLineExpectation
+  -> OwnedChildSetup
   -> OwnedInput
   -> OperationSubprocesses
   -> Operation.HostOperationProcessRole
@@ -1872,7 +2481,7 @@ runOperationProcess
        -> IO (Either OperationSubprocessError value)
      )
   -> IO (Either OperationSubprocessError (value, ByteString, ByteString))
-runOperationProcess startup input (OperationSubprocesses parent command transport) role requested invocation execute = mask $ \restore -> do
+runOperationProcess startup childSetup input (OperationSubprocesses parent command transport) role requested invocation execute = mask $ \restore -> do
   primaryFailure <- newIORef Nothing
   startupStatus <-
     newIORef (maybe Startup.StartupLineUnconfigured (const Startup.StartupLinePending) startup)
@@ -1913,7 +2522,7 @@ runOperationProcess startup input (OperationSubprocesses parent command transpor
                       then pure (Left (OperationProcessRefused OwnedSubprocessDeadlineReached))
                       else do
                         executable <- encodeOperationInvocation invocation
-                        native <- withOwnedNativeChildInput input deadlines executable $ \child ->
+                        native <- withOwnedNativeChildInputPreserving childSetup input deadlines executable $ \child ->
                           withAsync
                             ( readOperationStreamObserved
                                 outLimit
@@ -2080,7 +2689,81 @@ data ChildOwnership = StandaloneChildOwnership | HostChildOwnership !Kernel.Host
 
 captureOwnedSubprocess
   :: OwnedSubprocessLimits -> Subprocess -> IO (Either OwnedSubprocessError ProcessOutput)
-captureOwnedSubprocess limits spec = mask $ \restore -> do
+captureOwnedSubprocess limits = captureOwnedSubprocessInput limits OwnedClosedInput
+
+-- | Deliver at most 64 KiB of exact input after the child is placed in its
+-- owned scope. Input, output, shutdown and confirmation share one deadline.
+captureOwnedSubprocessWithInput
+  :: OwnedSubprocessLimits
+  -> Int
+  -> ByteString
+  -> Subprocess
+  -> IO (Either OwnedSubprocessError ProcessOutput)
+captureOwnedSubprocessWithInput limits maximumInput input spec
+  | maximumInput <= 0 || maximumInput > 65536 || ByteString.length input > maximumInput =
+      pure (Left OwnedSubprocessInvalidLimits)
+  | otherwise = captureOwnedSubprocessInput limits (OwnedPipeInput input) spec
+
+-- | The descriptor is borrowed for the operation; its shared offset advances.
+-- Metadata checks detect ordinary changes, not adversarial content replacement.
+captureOwnedSubprocessWithFileInput
+  :: OwnedSubprocessLimits
+  -> Integer
+  -> Fd
+  -> Subprocess
+  -> IO (OwnedFileInputResult ProcessOutput)
+captureOwnedSubprocessWithFileInput limits maximumBytes source spec =
+  withBoundedOwnedFileInput maximumBytes source $ \input -> captureOwnedSubprocessInput limits input spec
+
+withBoundedOwnedFileInput
+  :: forall value
+   . Integer
+  -> Fd
+  -> (OwnedInput -> IO (Either OwnedSubprocessError value))
+  -> IO (OwnedFileInputResult value)
+withBoundedOwnedFileInput maximumBytes source action
+  | maximumBytes <= 0 || maximumBytes > 4294967296 =
+      pure (OwnedFileInputRefused OwnedSubprocessInvalidLimits)
+  | otherwise = do
+      started <- newIORef False
+      returned <- newIORef Nothing
+      attempted <- try $ bracket (PosixIO.dup source) PosixIO.closeFd $ \held -> do
+        before <- PosixFiles.getFdStatus held
+        let size = toInteger (PosixFiles.fileSize before)
+        if not (PosixFiles.isRegularFile before) || size < 0 || size > maximumBytes
+          then pure (OwnedFileInputRefused OwnedSubprocessInvalidLimits)
+          else do
+            _ <- PosixIO.fdSeek held AbsoluteSeek 0
+            result <- mask $ \restore -> do
+              writeIORef started True
+              value <- restore (action (OwnedFileInput held size))
+              writeIORef returned (Just value)
+              pure value
+            after <- try (PosixFiles.getFdStatus held)
+            let observation = case after of
+                  Left (_ :: IOException) -> OwnedFileInputUnobservable
+                  Right status ->
+                    if PosixFiles.deviceID before == PosixFiles.deviceID status
+                      && PosixFiles.fileID before == PosixFiles.fileID status
+                      && PosixFiles.fileSize before == PosixFiles.fileSize status
+                      && PosixFiles.modificationTimeHiRes before == PosixFiles.modificationTimeHiRes status
+                      && PosixFiles.statusChangeTimeHiRes before == PosixFiles.statusChangeTimeHiRes status
+                      then OwnedFileInputStable
+                      else OwnedFileInputChanged
+            pure (OwnedFileInputObserved result observation)
+      case attempted :: Either IOException (OwnedFileInputResult value) of
+        Right result -> pure result
+        Left _ -> do
+          observed <- readIORef returned
+          didStart <- readIORef started
+          pure $ case observed of
+            Just result -> OwnedFileInputObserved result OwnedFileInputUnobservable
+            Nothing | didStart -> OwnedFileInputUnconfirmed OwnedSubprocessIoRefused
+            Nothing -> OwnedFileInputRefused OwnedSubprocessIoRefused
+
+captureOwnedSubprocessInput
+  :: OwnedSubprocessLimits -> OwnedInput -> Subprocess -> IO (Either OwnedSubprocessError ProcessOutput)
+captureOwnedSubprocessInput limits suppliedInput spec = mask $ \restore -> do
   started <- getMonotonicTimeNSec
   capabilities <- getNumCapabilities
   let endInteger = toInteger started + toInteger (totalMicros limits) * 1000
@@ -2104,7 +2787,7 @@ captureOwnedSubprocess limits spec = mask $ \restore -> do
                 family <- Family.newScopeFamilyIntent hardEnd stopEnd
                 case family of
                   Left _ -> pure (Left OwnedSubprocessDeadlineReached)
-                  Right intent -> withOwnedNativeChild deadlines executable $ \child ->
+                  Right intent -> withOwnedNativeChildInput suppliedInput deadlines executable $ \child ->
                     withAsync (readOwnedStream (stdoutCeiling limits) (nativeOut child)) $ \out ->
                       withAsync (readOwnedStream (stderrCeiling limits) (nativeErr child)) $ \err -> do
                         uid <- getEffectiveUserID
@@ -2113,6 +2796,7 @@ captureOwnedSubprocess limits spec = mask $ \restore -> do
                               admitted =
                                 ownKernelChild
                                   StandaloneChildOwnership
+                                  suppliedInput
                                   restore
                                   limits
                                   deadlines
@@ -2122,27 +2806,36 @@ captureOwnedSubprocess limits spec = mask $ \restore -> do
                                   child
                                   out
                                   err
-                          admitted `onException` void noGoCleanup
+                          admitted `onOwnedExceptionWithCleanup` noGoCleanup
                         result <- case managed of
                           Left _ -> do
-                            stopped <- uninterruptibleMask_ (stopNativeLeader stopEnd child)
-                            pure (stopped >> Left OwnedSubprocessManagerRefused)
+                            stopped <- observeOwnedCleanup (uninterruptibleMask_ (stopNativeLeader stopEnd child))
+                            pure (combineOwnedSubprocessResult (Left OwnedSubprocessManagerRefused) stopped)
                           Right value -> pure value
                         -- Kernel membership and every auxiliary unit settle before readers.
                         streams <- restore (settleOwned end out err)
+                        let streamSettlement = case (result, streams) of
+                              (Left primary, Left stream) | primary == stream -> Right ()
+                              _ -> void streams
                         pure $ do
-                          exit <- result
+                          exit <- combineOwnedSubprocessResult result streamSettlement
                           (stdoutBytes, stderrBytes) <- streams
                           Right (ProcessOutput exit (ByteStringChar8.unpack stdoutBytes) (ByteStringChar8.unpack stderrBytes))
               finished <- getMonotonicTimeNSec
-              pure $
-                if finished >= fromInteger endInteger
-                  then Left OwnedSubprocessDeadlineReached
-                  else
+              let result =
                     either
                       (const (Left OwnedSubprocessIoRefused))
                       id
                       (attempted :: Either IOException (Either OwnedSubprocessError ProcessOutput))
+              pure $
+                if finished < fromInteger endInteger
+                  then result
+                  else case result of
+                    Left OwnedSubprocessDeadlineReached -> Left OwnedSubprocessDeadlineReached
+                    Left failure -> case combineOwnedSubprocessResult (Left failure) (Left OwnedSubprocessDeadlineReached) of
+                      Left combined -> Left combined
+                      Right _ -> Left OwnedSubprocessDeadlineReached
+                    Right output -> Left (OwnedSubprocessExitAndCleanup (processExitCode output) OwnedSubprocessDeadlineReached)
 
 -- Encode all filesystem-facing values before fork. executeFile retains the
 -- parent's PATH search behavior while the child receives the declared env.
@@ -2167,20 +2860,22 @@ ownedSpecHasNul spec =
 
 -- Every descriptor starts CLOEXEC and above stdio. The parent owns a closing
 -- registry so a closed numeric descriptor can never be closed again after reuse.
-withOwnedNativeChild
-  :: OwnedDeadlines
-  -> OwnedExec
-  -> (OwnedNativeChild -> IO (Either OwnedSubprocessError value))
-  -> IO (Either OwnedSubprocessError value)
-withOwnedNativeChild = withOwnedNativeChildInput OwnedClosedInput
-
 withOwnedNativeChildInput
   :: OwnedInput
   -> OwnedDeadlines
   -> OwnedExec
   -> (OwnedNativeChild -> IO (Either OwnedSubprocessError value))
   -> IO (Either OwnedSubprocessError value)
-withOwnedNativeChildInput suppliedInput deadlines executable action = do
+withOwnedNativeChildInput = withOwnedNativeChildInputPreserving OwnedChildUnrestricted
+
+withOwnedNativeChildInputPreserving
+  :: OwnedChildSetup
+  -> OwnedInput
+  -> OwnedDeadlines
+  -> OwnedExec
+  -> (OwnedNativeChild -> IO (Either OwnedSubprocessError value))
+  -> IO (Either OwnedSubprocessError value)
+withOwnedNativeChildInputPreserving childSetup suppliedInput deadlines executable action = do
   descriptors <- newIORef []
   let register fd = modifyIORef' descriptors (fd :) >> pure fd
       close fd = do
@@ -2209,6 +2904,20 @@ withOwnedNativeChildInput suppliedInput deadlines executable action = do
     (goRead, goWrite) <- pair
     PosixIO.setFdOption goRead PosixIO.NonBlockingRead True
     PosixIO.setFdOption execRead PosixIO.NonBlockingRead True
+    let inputPipe = do
+          let Fd raw = goWrite
+          originalCapacity <-
+            throwErrnoIfMinus1Retry "owned Go pipe observation" (ownedDuplicate raw ownedGetPipeSize 0)
+          pageSize <- ownedSystemConfiguration ownedSystemPageSizeOption
+          unless (pageSize > 0) (ioError (userError "owned native page size unavailable"))
+          throwErrnoIfMinus1_ "owned input pipe capacity" (ownedDuplicate raw ownedSetPipeSize 1)
+          capacity <-
+            throwErrnoIfMinus1Retry "owned input pipe observation" (ownedDuplicate raw ownedGetPipeSize 0)
+          unless
+            (capacity > 0 && toInteger capacity == toInteger pageSize && capacity <= originalCapacity)
+            (ioError (userError "owned input pipe capacity refused"))
+          PosixIO.setFdOption goWrite PosixIO.NonBlockingRead True
+          pure (goRead, Just goWrite)
     (input, inputWriter) <- case suppliedInput of
       OwnedClosedInput -> do
         descriptor <-
@@ -2216,20 +2925,8 @@ withOwnedNativeChildInput suppliedInput deadlines executable action = do
             >>= register
             >>= above
         pure (descriptor, Nothing)
-      OwnedPipeInput _ -> do
-        let Fd raw = goWrite
-        originalCapacity <-
-          throwErrnoIfMinus1Retry "owned Go pipe observation" (ownedDuplicate raw ownedGetPipeSize 0)
-        pageSize <- ownedSystemConfiguration ownedSystemPageSizeOption
-        unless (pageSize > 0) (ioError (userError "owned native page size unavailable"))
-        throwErrnoIfMinus1_ "owned input pipe capacity" (ownedDuplicate raw ownedSetPipeSize 1)
-        capacity <-
-          throwErrnoIfMinus1Retry "owned input pipe observation" (ownedDuplicate raw ownedGetPipeSize 0)
-        unless
-          (capacity > 0 && toInteger capacity == toInteger pageSize && capacity <= originalCapacity)
-          (ioError (userError "owned input pipe capacity refused"))
-        PosixIO.setFdOption goWrite PosixIO.NonBlockingRead True
-        pure (goRead, Just goWrite)
+      OwnedPipeInput _ -> inputPipe
+      OwnedFileInput _ _ -> inputPipe
     owner <- PosixProcess.getProcessID
     now <- getMonotonicTimeNSec
     if now >= ownedWorkEnd deadlines
@@ -2241,6 +2938,7 @@ withOwnedNativeChildInput suppliedInput deadlines executable action = do
               (ownedWorkEnd deadlines)
               owner
               executable
+              childSetup
               input
               outRead
               outWrite
@@ -2294,6 +2992,7 @@ trustedOwnedChild
   :: Word64
   -> ProcessID
   -> OwnedExec
+  -> OwnedChildSetup
   -> Fd
   -> Fd
   -> Fd
@@ -2308,6 +3007,7 @@ trustedOwnedChild
   deadline
   owner
   (OwnedExec path arguments directory environment)
+  childSetup
   input
   outRead
   outWrite
@@ -2333,6 +3033,49 @@ trustedOwnedChild
       void (PosixIO.dupTo outWrite PosixIO.stdOutput)
       void (PosixIO.dupTo errWrite PosixIO.stdError)
       mapM_ PosixIO.closeFd [input, outWrite, errWrite]
+      case childSetup of
+        OwnedChildUnrestricted -> pure ()
+        OwnedChildSealedClient descriptor -> do
+          sealed <- SealedTool.isSealedToolDescriptor descriptor
+          initiallyClosed <- PosixIO.queryFdOption descriptor PosixIO.CloseOnExec
+          unless (sealed && initiallyClosed) (ioError (userError "kind client descriptor refused"))
+          PosixIO.setFdOption descriptor PosixIO.CloseOnExec False
+          closeOnExec <- PosixIO.queryFdOption descriptor PosixIO.CloseOnExec
+          unless (not closeOnExec) (ioError (userError "kind client descriptor unconfirmed"))
+        OwnedChildConfinedMutation workspace roots -> do
+          confined <- MutationWorker.prepareMutationWorker workspace roots
+          case confined of
+            Left _ -> ioError (userError "mutation worker confinement refused")
+            Right () -> pure ()
+        OwnedChildConfinedMutationSealed workspace roots tool -> do
+          confined <- MutationWorker.prepareMutationWorker workspace roots
+          case confined of
+            Left _ -> ioError (userError "mutation worker confinement refused")
+            Right () -> do
+              sealed <- SealedTool.isSealedToolDescriptor tool
+              closeOnExec <- PosixIO.queryFdOption tool PosixIO.CloseOnExec
+              unless (sealed && closeOnExec) (ioError (userError "mutation tool descriptor changed"))
+        OwnedChildConfinedKind
+          sandbox@(KindWorkerSandbox scratch roots lock request reply nullDevice)
+          kind
+          client -> do
+            ready <- kindWorkerSandboxReady sandbox kind client
+            unless ready (ioError (userError "kind worker descriptors refused"))
+            confined <-
+              KindWorker.prepareKindDockerWorkerWithSealedClient
+                scratch
+                roots
+                lock
+                request
+                reply
+                nullDevice
+                client
+            case confined of
+              Left _ -> ioError (userError "kind worker confinement refused")
+              Right () -> do
+                kindSealed <- SealedTool.isSealedToolDescriptor kind
+                kindProtected <- PosixIO.queryFdOption kind PosixIO.CloseOnExec
+                unless (kindSealed && kindProtected) (ioError (userError "kind tool descriptor changed"))
       maybe (pure ()) PosixDirectory.changeWorkingDirectory directory
       beforeExec <- getMonotonicTimeNSec
       unless (beforeExec < deadline) (ioError (userError "owned exec deadline reached"))
@@ -2358,6 +3101,7 @@ readOwnedGate deadline descriptor = do
 
 ownKernelChild
   :: ChildOwnership
+  -> OwnedInput
   -> (IO (Either OwnedSubprocessError ExitCode) -> IO (Either OwnedSubprocessError ExitCode))
   -> OwnedSubprocessLimits
   -> OwnedDeadlines
@@ -2368,7 +3112,7 @@ ownKernelChild
   -> Async OwnedStreamResult
   -> Async OwnedStreamResult
   -> IO (Either OwnedSubprocessError ExitCode)
-ownKernelChild ownership restore limits deadlines creationEnd connection intent child out err = do
+ownKernelChild ownership input restore limits deadlines creationEnd connection intent child out err = do
   let OwnedSubprocessResourceBounds
         memory
         tasks
@@ -2436,21 +3180,22 @@ ownKernelChild ownership restore limits deadlines creationEnd connection intent 
                             started <- awaitOwnedExec (ownedWorkEnd deadlines) (nativeExec child)
                             case started of
                               Left cause -> pure (Left cause)
-                              Right () -> superviseKernelChild (ownedWorkEnd deadlines) child out err
-          primary <- restore run `onException` void stop
-          stopped <- stop
-          pure (Right (stopped >> primary))
+                              Right () -> superviseOperationCommandInput input deadlines child out err
+          primary <- restore run `onOwnedExceptionWithCleanup` stop
+          stopped <- observeOwnedCleanup stop
+          pure (Right (combineOwnedSubprocessResult primary stopped))
       case observed of
         Left _ -> do
-          cleanup <- stopUnadmittedChild deadlines connection intent child
-          pure
-            ( cleanup
-                >> Left
+          cleanup <- observeOwnedCleanup (stopUnadmittedChild deadlines connection intent child)
+          pure $
+            combineOwnedSubprocessResult
+              ( Left
                   (either (const OwnedSubprocessManagerRefused) (const OwnedSubprocessScopeUnobservable) submitted)
-            )
+              )
+              cleanup
         Right primary -> do
-          closing <- awaitOwnedFamilyAbsent connection intent
-          pure (closing >> primary)
+          closing <- observeOwnedCleanup (awaitOwnedFamilyAbsent connection intent)
+          pure (combineOwnedSubprocessResult primary closing)
     _ -> pure (Left OwnedSubprocessInvalidLimits)
 
 familyAlarmReady :: Bus.BusConnection -> Family.ScopeFamilyIntent -> Word64 -> IO Bool
@@ -2583,9 +3328,9 @@ stopUnadmittedChild
   -> OwnedNativeChild
   -> IO (Either OwnedSubprocessError ())
 stopUnadmittedChild deadlines connection intent child = do
-  leader <- stopNativeLeader (ownedStopEnd deadlines) child
-  closing <- awaitOwnedFamilyAbsent connection intent
-  pure (leader >> closing)
+  leader <- observeOwnedCleanup (stopNativeLeader (ownedStopEnd deadlines) child)
+  closing <- observeOwnedCleanup (awaitOwnedFamilyAbsent connection intent)
+  pure (combineOwnedCleanup leader closing)
 
 -- A failed connection never reaches the family callback. Its trusted child
 -- still owns the pipe writers, so stop it before waiting for reader EOF.

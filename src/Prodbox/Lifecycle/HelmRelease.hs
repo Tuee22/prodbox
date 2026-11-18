@@ -67,7 +67,7 @@ data HelmReleaseCoordinateError
 -- @pending-rollback@, @uninstalling@, and @superseded@ collapsed into one
 -- constructor — while @--output json@ was already being requested and
 -- @.info.status@ discarded. That is the *Provenance* class of
--- [chaos_hardening_doctrine.md § 21](../../../documents/engineering/chaos_hardening_doctrine.md):
+-- chaos_hardening_doctrine.md at 583443f, section 21:
 -- a value whose legality depends on where it came from, decoded from the weakest
 -- available signal.
 data HelmReleaseStatus

@@ -169,7 +169,7 @@ vaultSecretConsumerByName name =
 -- silently widen one workload's authority to the other's ServiceAccounts; if two
 -- shared a policy name, one policy document would overwrite the other. This is
 -- the "identities exist exactly once as a compiled closed registry value"
--- invariant (lifecycle_control_plane_architecture.md § 10.2), previously
+-- invariant (lifecycle_control_plane_architecture.md at 583443f, section 10.2), previously
 -- unenforced between the two role-name sources. Returns a violation per
 -- colliding name; empty means the registry is collision-free.
 vaultIdentityRegistryViolations :: [String]

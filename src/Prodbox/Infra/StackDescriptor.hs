@@ -17,7 +17,7 @@
 -- @PerRun@\/@LongLived@-and-stack-backed subset).
 --
 -- The doctrine SSoT is
--- @documents\/engineering\/lifecycle_reconciliation_doctrine.md § 3.1@ and
+-- @documents\/engineering\/lifecycle_reconciliation_doctrine.md at 583443f, section 3.1@ and
 -- @DEVELOPMENT_PLAN\/substrates.md → Resource Lifecycle Classes@; the
 -- @registryName@ of every descriptor here must appear in
 -- 'Prodbox.Lifecycle.ResourceClass.resourceLifecycleClasses' with the

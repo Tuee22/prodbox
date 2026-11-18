@@ -43,6 +43,6 @@ data DnsRecordOwner
 -- Deliberately not a second copy of a coordinate's owner: a comparison between
 -- two caller-supplied owners proves the caller is self-consistent, not that it
 -- is entitled to act.  Provenance and Direction classes,
--- @chaos_hardening_doctrine.md § 21@.
+-- @chaos_hardening_doctrine.md at 583443f, section 21@.
 newtype DnsOwnerAuthority = DnsOwnerAuthority DnsRecordOwner
   deriving stock (Eq, Show)

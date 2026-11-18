@@ -8,7 +8,7 @@
 -- "Prodbox.Gateway.Readiness". A background observer owns every dependency
 -- observation; the request path folds the latched record and performs no
 -- backend work at all
--- ([bootstrap_readiness_doctrine §0.7/§2.1](../../../../documents/engineering/bootstrap_readiness_doctrine.md)).
+-- (bootstrap_readiness_doctrine §0.7/§2.1 (historical bootstrap_readiness_doctrine.md at revision `583443f`, section 0.7; bootstrap_readiness_doctrine.md at revision `583443f`, section 2.1)).
 --
 -- Two properties make the previous failure classes unrepresentable:
 --

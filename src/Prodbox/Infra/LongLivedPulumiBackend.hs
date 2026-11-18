@@ -9,7 +9,7 @@
 -- @rke2 delete + rke2 reconcile@ cycles and operator-machine churn.
 --
 -- The state-lifetime rule from
--- @documents/engineering/lifecycle_reconciliation_doctrine.md § 2@
+-- @documents/engineering/lifecycle_reconciliation_doctrine.md at 583443f, section 2@
 -- becomes the implemented behaviour: state lifetime matches resource
 -- lifetime per class.
 module Prodbox.Infra.LongLivedPulumiBackend

@@ -4,7 +4,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | The dependency-free sealed-Vault bootstrap __floor__ loader, decoded
--- directly from the binary-owned Tier-0 @prodbox.dhall@ (config_doctrine.md
+-- directly from the binary-owned Tier-0 @prodbox.dhall@ (config_doctrine.md at revision `583443f`
 -- §0, §1a).
 --
 -- The floor is the minimal, non-revealing bootstrap a host needs to reach and

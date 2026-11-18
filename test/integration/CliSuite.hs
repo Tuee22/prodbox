@@ -1,7 +1,9 @@
 {-# LANGUAGE ImportQualifiedPost #-}
+{-# LANGUAGE TupleSections #-}
 
 module CliSuite
   ( integrationCliSuite
+  , runSelectedAuthorityRefusalFixture
   , runInstalledWithFakeAuthority
   , runRke2AdmissionRefusalFixture
   , runRunbookFailureFixture
@@ -18,32 +20,65 @@ import BootstrapSourceFixture
   , readyVaultPodJson
   , writeBootstrapSourceFixture
   )
+import Codec.Archive.Tar qualified as Tar
+import Codec.Archive.Tar.Entry qualified as TarEntry
 import Codec.Serialise (serialise)
 import Control.Concurrent (forkIO, killThread, threadDelay)
 import Control.Concurrent.MVar
   ( MVar
   , modifyMVar
+  , modifyMVar_
   , newEmptyMVar
   , newMVar
   , putMVar
   , readMVar
   , takeMVar
+  , tryReadMVar
   )
-import Control.Exception (SomeException, bracket, finally, try)
-import Control.Monad (filterM, forM_, unless, void, when)
+import Control.Exception
+  ( AsyncException (ThreadKilled)
+  , IOException
+  , SomeException
+  , bracket
+  , finally
+  , fromException
+  , throwIO
+  , try
+  )
+import Control.Monad (filterM, forM_, forever, unless, void, when)
 import Data.Aeson qualified as Aeson
+import Data.Aeson.Key qualified as AesonKey
+import Data.Aeson.KeyMap qualified as AesonKeyMap
+import Data.ByteString qualified as BS
+import Data.ByteString.Base64 qualified as Base64
 import Data.ByteString.Char8 qualified as BS8
 import Data.ByteString.Lazy.Char8 qualified as LazyBS8
+import Data.Char (isDigit, toLower)
 import Data.Either (isLeft)
-import Data.List (find, findIndex, intercalate, isInfixOf, isPrefixOf, sort)
+import Data.IORef (atomicModifyIORef', newIORef, readIORef, writeIORef)
+import Data.List
+  ( find
+  , findIndex
+  , intercalate
+  , isInfixOf
+  , isPrefixOf
+  , isSuffixOf
+  , sort
+  , stripPrefix
+  )
+import Data.Map.Strict qualified as Map
 import Data.Text (Text)
 import Data.Text qualified as Text
 import Data.Time.Clock (nominalDiffTimeToSeconds)
 import Data.Time.Clock.POSIX (getPOSIXTime)
-import FixtureServer (withVaultFixtureServer, withVaultFixtureServerSealStatus)
+import FixtureServer
+  ( withAuthorityFixtureServerForConfig
+  , withVaultFixtureServer
+  , withVaultFixtureServerSealStatus
+  )
 import Network.Socket
-  ( Family (AF_INET)
-  , SockAddr (SockAddrInet)
+  ( Family (AF_INET, AF_UNIX)
+  , SockAddr (SockAddrInet, SockAddrUnix)
   , Socket
   , SocketOption (ReuseAddr)
   , SocketType (Stream)
@@ -65,11 +100,413 @@ import Prodbox.BuildSupport
   , canonicalOperatorBinaryPath
   , syncBuiltOperatorBinary
   )
+import Prodbox.CLI.Nuke qualified as Nuke
 import Prodbox.CLI.Rke2 qualified as Rke2
 import Prodbox.Capacity.Config qualified as Capacity
 import Prodbox.Capacity.RuntimeMemory qualified as RuntimeMemory
+import Prodbox.Config.BootstrapProjection
+  ( bootstrapKindPlan
+  , bootstrapScope
+  , readBootstrapProjection
+  )
 import Prodbox.Config.ComponentGraph qualified as ComponentGraph
+import Prodbox.Config.DeploymentScope
+  ( DeploymentEnvironment (Test)
+  , DeploymentScopeError
+  , FreshScopeResult (..)
+  , ScopeDescriptorInterrupted (..)
+  , ScopeDescriptorIoFailure (..)
+  , ScopeDescriptorOutcome (..)
+  , deploymentScope
+  , prepareFreshScope
+  , scopeRoot
+  , withScopeRootDescriptor
+  , withScopeRootDescriptorPreserving
+  )
+import Prodbox.Config.KindPlan (KindNodeCreateInput (..), kindNodeVarVolumeName)
 import Prodbox.Config.Tier0 qualified as Tier0
+import Prodbox.Control.DockerConnectedInfo
+  ( DockerConnectedInfo (..)
+  , DockerConnectedInfoFailure (..)
+  , DockerConnectedInfoResult (..)
+  , DockerImageLoadResult (..)
+  , DockerImageLoadStream (..)
+  , DockerImageReadback (..)
+  , DockerImageSubmissionObservation (..)
+  , DockerKindInfo (..)
+  , DockerKindStorage (..)
+  , DockerNetworkCreateResult (..)
+  , DockerNetworkDetails (..)
+  , DockerNetworkRemoveResult (..)
+  , DockerNodeConfigPath (..)
+  , DockerNodeConfigPathObservation (..)
+  , DockerNodeConfigReadback (..)
+  , DockerNodeConfigWriteResult (..)
+  , DockerNodeContainerCreateResult (..)
+  , DockerNodeContainerObservation (..)
+  , DockerNodeContainerRemoveResult (..)
+  , DockerNodeContainerStartResult (..)
+  , DockerNodeVarCreateResult (..)
+  , DockerNodeVarRemoveResult (..)
+  , DockerNodeVarVolumeObservation (..)
+  , classifyDockerImageLoadStream
+  , createDockerSessionKindNetwork
+  , createDockerSessionKindNode
+  , createDockerSessionNodeVarVolume
+  , inspectDockerSessionImage
+  , inspectDockerSessionKindNetwork
+  , inspectDockerSessionKindNode
+  , inspectDockerSessionNodeVarVolume
+  , loadAndObserveDockerSessionImage
+  , loadDockerSessionImage
+  , observeConnectedDockerInfo
+  , observeDockerSessionKindNodeConfigPath
+  , parseDockerBridgeMtu
+  , parseDockerKindNetworks
+  , parseDockerKindNodeAddresses
+  , parseDockerKindNodeConfigArchive
+  , parseDockerKindNodeVersionArchive
+  , parseDockerKindStorage
+  , parseDockerNetworkDetails
+  , parseDockerNodeContainer
+  , parseDockerNodeVarVolume
+  , pingDockerSession
+  , readDockerSessionKindNetworkId
+  , readDockerSessionKindNodeConfig
+  , removeDockerSessionKindNetwork
+  , removeDockerSessionKindNode
+  , removeDockerSessionNodeVarVolume
+  , startDockerSessionKindNode
+  , withConnectedDockerInfo
+  , writeDockerSessionKindNodeConfig
+  )
+import Prodbox.Control.DockerIdentity
+  ( DockerDaemonObservation (..)
+  , DockerSocketIdentity (..)
+  , observeDockerSocketIdentity
+  )
+import Prodbox.Control.DockerPeer
+  ( DockerPeer (..)
+  , DockerPeerFailure (..)
+  , DockerPeerResult (..)
+  , observeDockerPeer
+  , withConnectedDockerPeer
+  )
+import Prodbox.Control.ImageIdObservation (ImageIdObservation (..))
+import Prodbox.Control.KindDockerClient (prepareKindDockerRequest, validKindDockerBridgePath)
+import Prodbox.Control.KindDockerEndpoint
+  ( KindDockerBrokerExit (..)
+  , KindDockerEndpointResult (..)
+  , KindDockerRootIoFailure (..)
+  , KindDockerWorkerExit (..)
+  , endpointLock
+  , endpointReply
+  , endpointRequest
+  , exchangeBoundKindDockerRead
+  , exchangeBoundKindDockerRequest
+  , runBoundKindDockerReadWorker
+  , serveBoundKindDockerReads
+  , withKindDockerEndpoint
+  )
+import Prodbox.Control.KindDockerReadGate
+  ( KindDockerConnectedObservation (..)
+  , KindDockerReadResult (..)
+  , KindDockerReply (..)
+  , kindDockerInventoryObserved
+  , newKindDockerReadGate
+  , runConnectedKindDockerImageRead
+  , runConnectedKindDockerRead
+  , runConnectedKindDockerReply
+  )
+import Prodbox.Control.KindDockerReadProtocol
+  ( KindDockerClientFailure (..)
+  , KindDockerProtocolOutcome (..)
+  , KindDockerRequest (..)
+  , exchangeKindDockerRead
+  , exchangeKindDockerRequest
+  , exchangeSerializedKindDockerRead
+  , serveKindDockerInputRequestsWhile
+  , serveKindDockerReads
+  , serveKindDockerRequestsWhile
+  )
+import Prodbox.Control.KindDockerWorker
+  ( KindDockerWorkerError (KindDockerWorkerInvalidClientDescriptor)
+  , prepareKindDockerWorkerWithSealedClient
+  )
+import Prodbox.Control.KindDockerWorkerPrepare
+  ( KindDockerClientLinkPreparation (..)
+  , KindDockerClientLinkRemoval (..)
+  , KindDockerWorkerPreparation (..)
+  , prepareKindDockerClientLink
+  , prepareKindDockerWorkerPaths
+  , prepareNewKindDockerWorker
+  , removeKindDockerClientLink
+  )
+import Prodbox.Control.KindDockerWorkerRoots
+  ( withKindDockerWorkerRoots
+  , withRecoveredKindDockerWorkerRoots
+  , workerBridge
+  , workerLock
+  , workerReply
+  , workerRequest
+  , workerScratch
+  )
+import Prodbox.Control.KindIntent (KindIntentObservation (..), KindIntentResult (..))
+import Prodbox.Control.KindKubeconfigYaml
+  ( KindKubeconfigDecodeError (..)
+  , decodeBoundedYamlDocuments
+  , matchesKindKubeadmScope
+  , matchesPinnedKindKubeadmConfig
+  )
+import Prodbox.Control.KindLease
+  ( KindLeaseError (..)
+  , KindLeaseInterrupted (..)
+  , KindLeaseOutcome (..)
+  , KindOperationOutcome (..)
+  , KindOperationRefusal (..)
+  , withLockedKindScope
+  , withNewKindOperation
+  , withRecoveredKindOperation
+  )
+import Prodbox.Control.KindNetworkIntent
+  ( KindNetworkAttemptObservation (..)
+  , KindNetworkAttemptWrite (..)
+  , KindNetworkIntentObservation (..)
+  , KindNetworkIntentWrite (..)
+  , KindNetworkRecoveryObservation (..)
+  , KindNetworkRemovalObservation (..)
+  , KindNetworkRemovalRecovery (..)
+  , KindNetworkRemovalWrite (..)
+  , mkKindNetworkIntent
+  , observeKindNetworkAttempt
+  , observeKindNetworkIntent
+  , observeKindNetworkRemoval
+  , observeRecordedKindNetworkAttempt
+  , observeRecordedKindNetworkIntent
+  , observeRecordedKindNetworkRemoval
+  , recordKindNetworkAttempt
+  , recordKindNetworkIntent
+  , recordKindNetworkRemoval
+  , sameKindNetworkSubnet
+  )
+import Prodbox.Control.KindNetworkReceipt
+  ( NetworkReceiptKind (..)
+  , NetworkReceiptObservation (..)
+  , NetworkReceiptWrite (..)
+  , NetworkTransport (..)
+  , observeNetworkReceipt
+  , recordNetworkReceipt
+  )
+import Prodbox.Control.KindNetworkRecovery
+  ( KindNetworkAttemptAction (..)
+  , KindNetworkConfigurationObservation (..)
+  , KindNetworkIndependentIdObservation (..)
+  , KindNetworkIndependentObservation (..)
+  , KindNetworkRecordedTransport (..)
+  , KindNetworkRecoveryResult (..)
+  , KindNetworkRecoverySample (..)
+  , KindNetworkRemovalAction (..)
+  , compareKindNetworkConfiguration
+  , observeRecoveredKindNetwork
+  , runKindNetworkRecordedAttemptOnSession
+  , withNewConnectedKindNetworkAttempt
+  , withNewConnectedKindNetworkRecordedRemoval
+  , withNewConnectedKindNetworkRemoval
+  )
+import Prodbox.Control.KindNodeCreateIntent
+  ( KindNodeCandidateObservation (..)
+  , KindNodeCandidateWrite (..)
+  , KindNodeConfigAttemptObservation (..)
+  , KindNodeConfigAttemptWrite (..)
+  , KindNodeConfigResultObservation (..)
+  , KindNodeConfigResultWrite (..)
+  , KindNodeCreateAttemptObservation (..)
+  , KindNodeCreateAttemptWrite (..)
+  , KindNodeCreateIntentObservation (..)
+  , KindNodeCreateIntentWrite (..)
+  , KindNodeCreateRecoveryObservation (..)
+  , KindNodeCreateResultObservation (..)
+  , KindNodeCreateResultWrite (..)
+  , KindNodeRemoveAttemptObservation (..)
+  , KindNodeRemoveAttemptWrite (..)
+  , KindNodeRemoveControlObservation (..)
+  , KindNodeRemoveResultObservation (..)
+  , KindNodeRemoveResultWrite (..)
+  , KindNodeStartAttemptObservation (..)
+  , KindNodeStartAttemptWrite (..)
+  , KindNodeStartResultObservation (..)
+  , KindNodeStartResultWrite (..)
+  , mkKindNodeCreateIntent
+  , observeKindNodeConfigAttempt
+  , observeKindNodeConfigResult
+  , observeKindNodeCreateAttempt
+  , observeKindNodeCreateIntent
+  , observeKindNodeCreateResult
+  , observeKindNodeRemoveAttempt
+  , observeKindNodeRemoveControl
+  , observeKindNodeRemoveResult
+  , observeKindNodeStartAttempt
+  , observeKindNodeStartResult
+  , observeRecordedKindNodeCandidate
+  , observeRecordedKindNodeCreateIntent
+  , recordKindNodeCandidate
+  , recordKindNodeConfigAttempt
+  , recordKindNodeConfigResult
+  , recordKindNodeCreateAttempt
+  , recordKindNodeCreateIntent
+  , recordKindNodeCreateResult
+  , recordKindNodeRemoveAttempt
+  , recordKindNodeRemoveResult
+  , recordKindNodeStartAttempt
+  , recordKindNodeStartResult
+  )
+import Prodbox.Control.KindNodeCreateOperation
+  ( KindNodeCandidateAction (..)
+  , KindNodeConfigAction (..)
+  , KindNodeConfigCandidateObservation (..)
+  , KindNodeCreateAction (..)
+  , KindNodeRemoveAction (..)
+  , KindNodeRunAction (..)
+  , KindNodeStartAction (..)
+  , newKindNodeBroker
+  , newKindNodeBrokerWithConfig
+  , observeKindNodeBrokerConfigAction
+  , observeKindNodeBrokerConfigCandidate
+  , observeKindNodeBrokerResult
+  , runKindNodeBrokerInput
+  , runKindNodeBrokerRequest
+  , runKindNodeConfigOnSession
+  , runKindNodeStartOnSession
+  , serveKindNodeBroker
+  , withNewConnectedKindNodeCandidate
+  , withNewConnectedKindNodeCreate
+  , withNewConnectedKindNodeRemove
+  , withNewConnectedKindNodeStart
+  )
+import Prodbox.Control.KindNodeCreateReadback (NodeCreateCandidate (..), parseNodeCreateCandidate)
+import Prodbox.Control.KindNodeRemovalReadback
+  ( NodeRemovalInventory (..)
+  , NodeRemovalReadback (..)
+  , classifyNodeRemovalReadback
+  , nodeRemovalPositive
+  , parseNodeRemovalInventory
+  )
+import Prodbox.Control.KindNodeVolumeIntent
+  ( KindNodeVolumeAttemptWrite (..)
+  , KindNodeVolumeIntentWrite (..)
+  , KindNodeVolumeReceiptObservation (..)
+  , KindNodeVolumeReceiptWrite (..)
+  , KindNodeVolumeRemovalObservation (..)
+  , KindNodeVolumeRemovalReceiptObservation (..)
+  , KindNodeVolumeRemovalReceiptWrite (..)
+  , KindNodeVolumeRemovalWrite (..)
+  , mkKindNodeVolumeIntent
+  , observeKindNodeVolumeReceipt
+  , observeKindNodeVolumeRemoval
+  , observeKindNodeVolumeRemovalReceipt
+  , recordKindNodeVolumeAttempt
+  , recordKindNodeVolumeIntent
+  , recordKindNodeVolumeReceipt
+  , recordKindNodeVolumeRemoval
+  , recordKindNodeVolumeRemovalReceipt
+  )
+import Prodbox.Control.KindNodeVolumeOperation
+  ( KindNodeVolumeAction (..)
+  , KindNodeVolumeRemovalAction (..)
+  , withNewConnectedKindNodeVolumeAttempt
+  , withNewConnectedKindNodeVolumeRemoval
+  )
+import Prodbox.Control.KindNodeVolumeReadback
+  ( NodeVolumeInventory (..)
+  , NodeVolumeReadback (..)
+  , classifyNodeVolumeReadback
+  , parseNodeVolumeInventory
+  )
+import Prodbox.Control.KindRuntimeConfig (renderKindConfigForArchive)
+import Prodbox.Control.KindTool
+  ( ArchiveBoundConfinedKindInventory (..)
+  , ArchiveBoundConfinedKindNode (..)
+  , ConfinedKindInventory (..)
+  , ConfinedKindInventoryConclusion (..)
+  , ConfinedKindNodeAttempt (..)
+  , ConfinedKindSnapshotsAttempt (..)
+  , ConfinedKindSnapshotsObservation (..)
+  , ConfinedNodeImageObservation (..)
+  , ConfinedNodeNetworkObservation (..)
+  , ConnectedConfinedKindInventory (..)
+  , KindDockerMarkerObservation (..)
+  , RecordedConfinedKindInventory (..)
+  , interpretArchiveBoundConfinedKindInventory
+  , interpretConfinedKindInventory
+  , interpretConnectedConfinedKindInventory
+  , interpretVerifiedConfinedKindInventory
+  , kindNodeWorkerEnvironment
+  , observeArchiveBoundConfinedKindInventoryOnHost
+  , observeConfinedKindInventoryOnHost
+  , observeConfinedNodeImage
+  , observeConfinedNodeNetwork
+  , observeConnectedConfinedKindInventoryOnHost
+  , observeKindDockerMarker
+  , observeRecordedConfinedKindInventoryOnHost
+  , runArchiveBoundConfinedKindNodeOnHost
+  , runConfinedKindNodeOnHost
+  , runVerifiedConfinedKindNodeOnHost
+  )
+import Prodbox.Control.NodeArchive
+  ( ArchiveCallbackProgress (..)
+  , InspectedArchiveResult (..)
+  , NodeArchiveObservation (..)
+  , NodeLoadBlob (..)
+  , NodeLoadPlan (..)
+  , VerifiedNodeArchive (..)
+  , classifyArchiveInterruption
+  , withInspectedNodeArchive
+  )
+import Prodbox.Control.NodeArchiveExport
+  ( DockerArchiveFailure (..)
+  , DockerArchiveResult (..)
+  , maximumDockerArchiveBytes
+  , writeUntaggedDockerArchive
+  )
+import Prodbox.Control.NodeArchiveStage (StagedNodeResult (..), reserveStage, withStagedNodeArchive)
+import Prodbox.Control.NodeImageIntent
+  ( NodeImageAttemptObservation (..)
+  , NodeImageAttemptWrite (..)
+  , NodeImageIdentityObservation (..)
+  , NodeImageIntentObservation (..)
+  , NodeImageIntentWrite (..)
+  , NodeImageResultObservation (..)
+  , NodeImageResultWrite (..)
+  , bindNodeImageIntent
+  , mkNodeImageIntent
+  , observeNodeImageAttempt
+  , observeNodeImageIntent
+  , observeRecordedNodeImageAttempt
+  , observeRecordedNodeImageIdentity
+  , observeRecordedNodeImageIntent
+  , observeRecordedNodeImageResult
+  , recordNodeImageAttempt
+  , recordNodeImageIntent
+  , recordNodeImageResult
+  )
+import Prodbox.Control.NodeImageOperation
+  ( NodeImageAttemptAction (..)
+  , NodeImageConnectedObservation (..)
+  , NodeImageConnectionResult (..)
+  , NodeImageIndependentObservation (..)
+  , NodeImagePreparation (..)
+  , NodeImageRecordedSubmission (..)
+  , NodeImageRecovery (..)
+  , NodeImageRecoveryPoint (..)
+  , observeRecoveredConnectedNodeImage
+  , observeRecoveredNodeImagePreparation
+  , withConnectedNodeImageRecord
+  , withNewConnectedNodeImageAttempt
+  , withNewConnectedNodeImageRecordedAttempt
+  , withNewNodeImagePreparation
+  )
+import Prodbox.Control.SealedTool (planSealedToolBudget, withSealedTool)
+import Prodbox.ControlPlane.LifecycleAuthorityAuthentication qualified as AuthorityAuthentication
 import Prodbox.ControlPlane.LocalClient qualified as LocalClient
 import Prodbox.Http.Client
   ( HttpConfig (..)
@@ -94,6 +531,7 @@ import Prodbox.Settings.SecretRef
 import Prodbox.Subprocess qualified as Subprocess
 import Prodbox.Substrate (Substrate (..))
 import Prodbox.TestRunner qualified as TestRunner
+import Prodbox.TestTopology (defaultTestTopology, renderTestTopologyDhall)
 import Prodbox.TestValidation qualified as TestValidation
 import System.Directory
   ( Permissions (..)
@@ -104,6 +542,9 @@ import System.Directory
   , getCurrentDirectory
   , getPermissions
   , listDirectory
+  , removeFile
+  , renameDirectory
+  , renameFile
   , setPermissions
   )
 import System.Environment (getEnvironment, getExecutablePath)
@@ -111,7 +552,14 @@ import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.FilePath (takeDirectory, (</>))
 import System.IO qualified as IO
 import System.IO.Temp (withSystemTempDirectory)
-import System.Posix.Files (setFileMode)
+import System.Info qualified as SystemInfo
+import System.Posix.Files (createLink, createSymbolicLink, setFileMode)
+import System.Posix.Files qualified as PosixFiles
+import System.Posix.IO qualified as Posix
+import System.Posix.IO.ByteString qualified as PosixBytes
+import System.Posix.Process (getProcessID)
+import System.Posix.Types (Fd (..))
+import System.Posix.User (getEffectiveGroupID, getEffectiveUserID)
 import System.Process
   ( CreateProcess (create_group, cwd, env, std_err, std_out)
   , ProcessHandle
@@ -124,15 +572,6529 @@ import System.Process
   , terminateProcess
   , waitForProcess
   )
+import System.Timeout (timeout)
 import TestSupport
 import Tier0Fixture
-  ( tier0FixtureWithContext
+  ( RawTier0Reason (MustNotTypeCheckAgainst)
+  , rawTier0Fixture
+  , tier0FixtureWithContext
   , tier0FixtureWithParameters
   , writeTier0Fixture
   )
 
 integrationCliSuite :: SuiteBuilder ()
 integrationCliSuite = do
+  describe "selected bootstrap setup" $
+    it "authors a validated test document only inside its run config directory" $
+      withSystemTempDirectory "prodbox-bootstrap-setup" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \path -> installOperatorBinaryInDir path tmpDir
+        let runRoot = tmpDir </> ".test-data" </> "run"
+            selected = runRoot </> "config" </> "prodbox.dhall"
+            production = tmpDir </> "prodbox.dhall"
+            digest = "sha256:" ++ replicate 64 'a'
+            inputs =
+              unlines
+                [ tmpDir
+                , "/var/run/docker.sock"
+                , "test"
+                , "run"
+                , replicate 32 'b'
+                , "26443"
+                , "kindest/node@" ++ digest
+                , "28080"
+                , "30080"
+                , "28443"
+                , "30443"
+                , "127.0.0.1"
+                , "artifacts/node.tar"
+                , digest
+                , "4096"
+                , "artifacts/kind"
+                , digest
+                , "1048576"
+                ]
+            run arguments input = readCreateProcessWithExitCode (proc binary arguments) {cwd = Just tmpDir} input
+        writeTier0Fixture
+          tmpDir
+          (rawTier0Fixture (MustNotTypeCheckAgainst "foreign production marker") "production marker")
+        (helpExit, helpOutput, _) <- run ["config", "setup", "--help"] ""
+        helpExit `shouldBe` ExitSuccess
+        helpOutput `shouldContain` "unavailable"
+        helpOutput `shouldContain` "--config"
+        (foreignExit, _, foreignError) <- run ["--config", production, "config", "setup"] inputs
+        foreignExit `shouldBe` ExitFailure 1
+        foreignError `shouldContain` "BootstrapDraftUnsafeDestination"
+        readFile production `shouldReturn` "production marker"
+        (dryExit, _, dryError) <- run ["--config", selected, "config", "setup", "--dry-run"] ""
+        dryExit `shouldBe` ExitFailure 1
+        dryError `shouldContain` "does not support --dry-run"
+        (shortExit, _, shortError) <- run ["--config", selected, "config", "setup"] (tmpDir ++ "\n")
+        shortExit `shouldBe` ExitFailure 1
+        shortError `shouldContain` "input ended"
+        doesFileExist selected `shouldReturn` False
+        (declineExit, _, declineError) <- run ["--config", selected, "config", "setup"] (inputs ++ "no\n")
+        declineExit `shouldBe` ExitFailure 1
+        declineError `shouldContain` "BootstrapDraftRootUnavailable"
+        doesDirectoryExist runRoot `shouldReturn` False
+        (setupExit, setupOutput, setupError) <-
+          run ["--config", selected, "config", "setup"] (inputs ++ "yes\n")
+        setupExit `shouldBe` ExitSuccess
+        setupOutput `shouldContain` "Fresh selected root enrolled"
+        setupOutput `shouldContain` "Bootstrap configuration published"
+        setupError `shouldBe` ""
+        original <- BS8.readFile selected
+        (planExit, planOutput, planError) <- run ["--config", selected, "control", "plan"] ""
+        planExit `shouldBe` ExitSuccess
+        planError `shouldBe` ""
+        planOutput `shouldContain` "\"name\":\"prodbox-t-run\""
+        planOutput `shouldContain` ("\"hostPath\":\"" ++ runRoot ++ "\"")
+        planOutput `shouldContain` "no resources were changed"
+        doesDirectoryExist (runRoot </> "artifacts") `shouldReturn` False
+        (validateExit, _, _) <- run ["--config", selected, "config", "validate"] ""
+        validateExit `shouldBe` ExitSuccess
+        (againExit, _, againError) <- run ["--config", selected, "config", "setup"] inputs
+        againExit `shouldBe` ExitFailure 1
+        againError `shouldContain` "SelectedDhallDestinationExists"
+        BS8.readFile selected `shouldReturn` original
+        readFile production `shouldReturn` "production marker"
+        let pending = runRoot </> "config" </> ".prodbox.dhall.prodbox-v2-pending"
+        renameFile selected pending
+        (recoverExit, recoverOutput, recoverError) <-
+          run ["--config", selected, "config", "setup"] (inputs ++ "yes\n")
+        recoverExit `shouldBe` ExitSuccess
+        recoverOutput `shouldContain` "recover matching v2 document"
+        recoverError `shouldBe` ""
+        BS8.readFile selected `shouldReturn` original
+        doesFileExist pending `shouldReturn` False
+        (verifyExit, verifyOutput, verifyError) <-
+          run ["--config", selected, "config", "setup"] (inputs ++ "yes\n")
+        verifyExit `shouldBe` ExitSuccess
+        verifyOutput `shouldContain` "Existing bootstrap configuration matches the draft"
+        verifyOutput `shouldContain` "publication origin"
+        verifyError `shouldBe` ""
+        BS8.readFile selected `shouldReturn` original
+        let foreignRoot = tmpDir </> ".test-data" </> "foreign"
+            foreignSelected = foreignRoot </> "config" </> "prodbox.dhall"
+            foreignInputs = unlines (map (\value -> if value == "run" then "foreign" else value) (lines inputs))
+        createDirectoryIfMissing True foreignRoot
+        writeFile (foreignRoot </> "owner-marker") "preserve"
+        (existingExit, _, existingError) <-
+          run ["--config", foreignSelected, "config", "setup"] (foreignInputs ++ "yes\n")
+        existingExit `shouldBe` ExitFailure 1
+        existingError `shouldContain` "FreshScopeAlreadyExists"
+        readFile (foreignRoot </> "owner-marker") `shouldReturn` "preserve"
+        doesDirectoryExist (foreignRoot </> "config") `shouldReturn` False
+        let productionRoot = tmpDir </> ".data" </> "prod"
+            productionSelected = productionRoot </> "config" </> "prodbox.dhall"
+            productionInputs = unlines (map productionValue (lines inputs))
+            productionValue "test" = "production"
+            productionValue "run" = "prod"
+            productionValue value = value
+        (productionDeclined, _, _) <-
+          run ["--config", productionSelected, "config", "setup"] (productionInputs ++ "no\n")
+        productionDeclined `shouldBe` ExitFailure 1
+        doesDirectoryExist productionRoot `shouldReturn` False
+        (productionExit, productionOutput, productionError) <-
+          run ["--config", productionSelected, "config", "setup"] (productionInputs ++ "yes\n")
+        productionExit `shouldBe` ExitSuccess
+        productionOutput `shouldContain` "Fresh selected root enrolled"
+        productionError `shouldBe` ""
+        (productionPlanExit, productionPlan, _) <-
+          run ["--config", productionSelected, "control", "plan"] ""
+        productionPlanExit `shouldBe` ExitSuccess
+        productionPlan `shouldContain` "\"name\":\"prodbox-p-prod\""
+        productionPlan `shouldContain` ("\"hostPath\":\"" ++ productionRoot ++ "\"")
+        BS8.readFile selected `shouldReturn` original
+        readFile production `shouldReturn` "production marker"
+
+  describe "selected bootstrap artifact ingress" $
+    it "retains declared bytes, resumes a matching prefix and preserves conflicts" $
+      withSystemTempDirectory "prodbox-artifact-ingress" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \path -> installOperatorBinaryInDir path tmpDir
+        let root = tmpDir </> ".test-data" </> "artifact"
+            selected = root </> "config" </> "prodbox.dhall"
+            source = tmpDir </> "source"
+            wrong = tmpDir </> "wrong"
+            link = tmpDir </> "link"
+            protected = tmpDir </> "test-secrets.dhall"
+            hardlink = tmpDir </> "hardlink"
+            bytes = BS8.replicate 1048576 'a'
+            digest = BS8.unpack (hexSha256 bytes)
+            nodeBytes = BS8.replicate 524288 'b'
+            nodeDigest = BS8.unpack (hexSha256 nodeBytes)
+            nodeSource = tmpDir </> "node-source"
+            values =
+              unlines
+                [ tmpDir
+                , "/var/run/docker.sock"
+                , "test"
+                , "artifact"
+                , replicate 32 'a'
+                , "26443"
+                , "kindest/node@sha256:" ++ replicate 64 'b'
+                , "28080"
+                , "30080"
+                , "28443"
+                , "30443"
+                , "127.0.0.1"
+                , "artifacts/node.tar"
+                , "sha256:" ++ nodeDigest
+                , "1048576"
+                , "artifacts/kind"
+                , "sha256:" ++ digest
+                , "2097152"
+                , "yes"
+                ]
+            run arguments input = readCreateProcessWithExitCode (proc binary arguments) {cwd = Just tmpDir} input
+            importFile role path = run ["--config", selected, "control", "import-artifact", role, path] ""
+        BS8.writeFile source bytes
+        BS8.writeFile nodeSource nodeBytes
+        BS8.writeFile wrong (BS8.pack "wrong")
+        BS8.writeFile protected (BS8.pack "synthetic protected fixture")
+        mapM_ (`setFileMode` 0o600) [source, nodeSource, wrong, protected]
+        createSymbolicLink source link
+        createLink source hardlink
+        (setupExit, _, _) <- run ["--config", selected, "config", "setup"] values
+        setupExit `shouldBe` ExitSuccess
+        (wrongExit, _, wrongError) <- importFile "kind-tool" wrong
+        wrongExit `shouldBe` ExitFailure 1
+        wrongError `shouldContain` "ArtifactSourceMismatch"
+        doesDirectoryExist (root </> "artifacts") `shouldReturn` False
+        (linkExit, _, linkError) <- importFile "kind-tool" link
+        linkExit `shouldBe` ExitFailure 1
+        linkError `shouldContain` "ArtifactSourceUnsafe"
+        (protectedExit, _, protectedError) <- importFile "kind-tool" protected
+        protectedExit `shouldBe` ExitFailure 1
+        protectedError `shouldContain` "ArtifactSourceUnsafe"
+        (hardlinkExit, _, hardlinkError) <- importFile "kind-tool" hardlink
+        hardlinkExit `shouldBe` ExitFailure 1
+        hardlinkError `shouldContain` "ArtifactSourceUnsafe"
+        removeFile hardlink
+        (importExit, _, _) <- importFile "kind-tool" source
+        importExit `shouldBe` ExitSuccess
+        BS8.readFile (root </> "artifacts" </> "kind") `shouldReturn` bytes
+        (againExit, againOutput, _) <- importFile "kind-tool" source
+        againExit `shouldBe` ExitSuccess
+        againOutput `shouldContain` "already matches"
+        let staged = root </> ".prodbox-import" </> ("node-" ++ nodeDigest)
+        BS8.writeFile staged (BS8.pack "conflicting prefix")
+        setFileMode staged 0o600
+        (pendingExit, _, pendingError) <- importFile "node-archive" nodeSource
+        pendingExit `shouldBe` ExitFailure 1
+        pendingError `shouldContain` "ArtifactPendingConflict"
+        BS8.readFile staged `shouldReturn` BS8.pack "conflicting prefix"
+        (discardExit, discardOutput, _) <-
+          run ["--config", selected, "control", "discard-artifact-staging", "node-archive"] ""
+        discardExit `shouldBe` ExitSuccess
+        discardOutput `shouldContain` "staging discarded"
+        doesFileExist staged `shouldReturn` False
+        BS8.readFile (root </> "artifacts" </> "kind") `shouldReturn` bytes
+        let quarantine = root </> ".prodbox-import" </> (".discard-node-" ++ nodeDigest)
+        BS8.writeFile quarantine (BS8.pack "interrupted discard")
+        setFileMode quarantine 0o600
+        (quarantineImportExit, _, quarantineImportError) <- importFile "node-archive" nodeSource
+        quarantineImportExit `shouldBe` ExitFailure 1
+        quarantineImportError `shouldContain` "ArtifactImportIncomplete"
+        doesFileExist (root </> "artifacts" </> "node.tar") `shouldReturn` False
+        (retryDiscardExit, _, _) <-
+          run ["--config", selected, "control", "discard-artifact-staging", "node-archive"] ""
+        retryDiscardExit `shouldBe` ExitSuccess
+        doesFileExist quarantine `shouldReturn` False
+        BS8.writeFile staged (BS8.pack "old pending")
+        BS8.writeFile quarantine (BS8.pack "old quarantine")
+        setFileMode staged 0o600
+        setFileMode quarantine 0o600
+        (bothExit, _, bothError) <-
+          run ["--config", selected, "control", "discard-artifact-staging", "node-archive"] ""
+        bothExit `shouldBe` ExitFailure 1
+        bothError `shouldContain` "ArtifactStagingDiscardIncomplete"
+        BS8.readFile staged `shouldReturn` BS8.pack "old pending"
+        doesFileExist quarantine `shouldReturn` False
+        (secondDiscardExit, _, _) <-
+          run ["--config", selected, "control", "discard-artifact-staging", "node-archive"] ""
+        secondDiscardExit `shouldBe` ExitSuccess
+        doesFileExist staged `shouldReturn` False
+        BS8.writeFile staged (BS8.take 12345 nodeBytes)
+        setFileMode staged 0o600
+        (resumeExit, _, _) <- importFile "node-archive" nodeSource
+        resumeExit `shouldBe` ExitSuccess
+        BS8.readFile (root </> "artifacts" </> "node.tar") `shouldReturn` nodeBytes
+        doesFileExist staged `shouldReturn` False
+        createSymbolicLink nodeSource staged
+        (unsafeDiscardExit, _, _) <-
+          run ["--config", selected, "control", "discard-artifact-staging", "node-archive"] ""
+        unsafeDiscardExit `shouldBe` ExitFailure 1
+        BS8.readFile nodeSource `shouldReturn` nodeBytes
+        removeFile staged
+        BS8.writeFile (root </> "artifacts" </> "node.tar") (BS8.pack "foreign")
+        (conflictExit, _, conflictError) <- importFile "node-archive" nodeSource
+        conflictExit `shouldBe` ExitFailure 1
+        conflictError `shouldContain` "ArtifactDestinationConflict"
+        BS8.readFile (root </> "artifacts" </> "node.tar") `shouldReturn` BS8.pack "foreign"
+
+  describe "kind worker client descriptor" $ do
+    it "rejects ambiguous bridge paths before opening endpoints" $ do
+      validKindDockerBridgePath "/tmp/owned/bridge" `shouldBe` True
+      validKindDockerBridgePath "/tmp/owned/../bridge" `shouldBe` False
+      validKindDockerBridgePath "/tmp/bridge:other" `shouldBe` False
+      validKindDockerBridgePath "/tmp/bridge\0other" `shouldBe` False
+      validKindDockerBridgePath "relative/bridge" `shouldBe` False
+      validKindDockerBridgePath ("/" <> replicate 4097 'a') `shouldBe` False
+    it "refuses an unsealed descriptor before applying worker restrictions" $
+      withSystemTempDirectory "prodbox-kind-client" $ \directory -> do
+        let path = directory </> "client"
+            invalid = Fd (-1)
+        BS.writeFile path (BS8.pack "not a sealed executable")
+        bracket (Posix.openFd path Posix.ReadOnly Posix.defaultFileFlags) Posix.closeFd $ \client -> do
+          prepareKindDockerWorkerWithSealedClient invalid [] invalid invalid invalid invalid client
+            `shouldReturn` Left KindDockerWorkerInvalidClientDescriptor
+
+  describe "connected Docker peer observation" $
+    it "holds the socket, reports peer credentials and distinguishes interruption and replacement" $
+      withSystemTempDirectory "prodbox-peer" $ \directory -> do
+        let path = directory </> "docker.sock"
+            relocated = directory </> "relocated.sock"
+        bracket (socket AF_UNIX Stream defaultProtocol) close $ \listener -> do
+          bind listener (SockAddrUnix path)
+          listen listener 8
+          process <- getProcessID
+          user <- getEffectiveUserID
+          group <- getEffectiveGroupID
+          observed <- observeDockerPeer path
+          case observed of
+            DockerPeerCompleted (DockerPeer pid uid gid _) ->
+              (pid, uid, gid) `shouldBe` (toInteger process, toInteger user, toInteger group)
+            other -> expectationFailure ("peer observation failed: " ++ show other)
+          withConnectedDockerPeer 0 path (\_ _ _ -> pure ())
+            `shouldReturn` DockerPeerRefused DockerPeerInvalidInput
+          timed <- withConnectedDockerPeer 100000 path $ \_ _ _ -> threadDelay 300000
+          timed `shouldBe` DockerPeerUnconfirmed DockerPeerTimedOut
+          closed <- withConnectedDockerPeer 1000000 path $ \connection _ _ -> do
+            close connection
+            pure ("receipt" :: String)
+          closed `shouldBe` DockerPeerUnconfirmedAfter "receipt" DockerPeerIoFailure
+          changed <- withConnectedDockerPeer 1000000 path $ \_ _ stable -> do
+            stable `shouldReturn` True
+            renameFile path relocated
+            createSymbolicLink relocated path
+            stable `shouldReturn` False
+            pure ("receipt" :: String)
+          changed `shouldBe` DockerPeerChanged "receipt"
+          observeDockerPeer path `shouldReturn` DockerPeerRefused DockerPeerEndpointUnavailable
+
+  describe "connected Docker info observation" $ do
+    it "observes bounded container path metadata without treating a 404 as absence" $
+      withSystemTempDirectory "prodbox-config-path" $ \directory -> do
+        let encoded raw = Base64.encode (BS8.pack raw)
+            timestamp = Text.pack "2026-01-01T00:00:00Z"
+            directoryStat =
+              encoded
+                "{\"name\":\"kind\",\"size\":4096,\"mode\":2147484141,\"mtime\":\"2026-01-01T00:00:00Z\",\"linkTarget\":\"\"}"
+            linkStat =
+              encoded
+                "{\"name\":\"kind\",\"size\":4,\"mode\":134218239,\"mtime\":\"2026-01-01T00:00:00Z\",\"linkTarget\":\"/tmp\"}"
+            fileStat =
+              encoded
+                "{\"name\":\"kubeadm.conf\",\"size\":11,\"mode\":420,\"mtime\":\"2026-01-01T00:00:00Z\",\"linkTarget\":\"\"}"
+            duplicateStat =
+              encoded
+                "{\"name\":\"kind\",\"name\":\"foreign\",\"size\":1,\"mode\":2147484141,\"mtime\":\"2026-01-01T00:00:00Z\",\"linkTarget\":\"\"}"
+            header value = BS8.pack "X-Docker-Container-Path-Stat: " <> value <> BS8.pack "\r\n"
+            cases =
+              [
+                ( DockerNodeConfigDirectory
+                , "200 OK"
+                , header directoryStat
+                , Right (DockerNodeConfigDirectoryObserved 2147484141 4096 timestamp)
+                )
+              , (DockerNodeConfigDirectory, "200 OK", header linkStat, Right DockerNodeConfigOtherObserved)
+              ,
+                ( DockerNodeConfigFile
+                , "200 OK"
+                , header fileStat
+                , Right (DockerNodeConfigRegularObserved 420 11 timestamp)
+                )
+              , (DockerNodeConfigFile, "404 Not Found", BS8.empty, Right DockerNodeConfigNotFoundResponse)
+              , (DockerNodeConfigDirectory, "200 OK", header duplicateStat, Left DockerConnectedInfoInvalid)
+              ,
+                ( DockerNodeConfigDirectory
+                , "200 OK"
+                , header directoryStat <> header directoryStat
+                , Left DockerConnectedInfoInvalid
+                )
+              ]
+        forM_ (zip [(1 :: Int) ..] cases) $ \(number, (selected, status, fields, expected)) -> do
+          let socketPath = directory </> ("docker-" ++ show number ++ ".sock")
+          withDockerConfigPathFixture socketPath status fields $ do
+            outcome <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ ->
+              observeDockerSessionKindNodeConfigPath session (replicate 64 'c') selected
+            outcome `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted expected)
+
+    it "decodes bounded multi-document YAML without aliases or duplicate keys" $ do
+      let document = BS8.pack "kind: ClusterConfiguration\n---\nkind: InitConfiguration\n"
+      decoded <- decodeBoundedYamlDocuments document
+      case decoded of
+        Right [Aeson.Object _, Aeson.Object _] -> pure ()
+        _ -> fail "valid multi-document input refused"
+      forM_
+        [ "kind: ClusterConfiguration\n---\nkind: InitConfiguration\nkind: Other\n"
+        , "first: &anchor sample\nsecond: *anchor\n---\nkind: InitConfiguration\n"
+        , intercalate "\n---\n" (replicate 17 "kind: Item")
+        ]
+        $ \invalid -> do
+          result <- decodeBoundedYamlDocuments (BS8.pack invalid)
+          result `shouldSatisfy` isLeft
+      decodeBoundedYamlDocuments (BS.replicate 65537 42)
+        `shouldReturn` Left KindKubeconfigDocumentTooLarge
+
+    it "submits one bounded node configuration archive and independently compares its read-back" $
+      withSystemTempDirectory "prodbox-config-archive" $ \directory -> do
+        let contents = BS8.pack "synthetic configuration\n"
+            identifier = replicate 64 'c'
+            socketPath = directory </> "docker.sock"
+        path <- either fail pure (TarEntry.toTarPath False "kubeadm.conf")
+        wrongPath <- either fail pure (TarEntry.toTarPath False "other")
+        let entry = TarEntry.fileEntry path (LazyBS8.fromStrict contents)
+            wrong = TarEntry.fileEntry wrongPath (LazyBS8.fromStrict contents)
+            archive entries = LazyBS8.toStrict (Tar.write entries)
+        parseDockerKindNodeConfigArchive contents (archive [entry]) `shouldBe` Just DockerNodeConfigMatches
+        parseDockerKindNodeConfigArchive (BS8.pack "different") (archive [entry])
+          `shouldBe` Just DockerNodeConfigDiffers
+        parseDockerKindNodeConfigArchive contents (archive [entry, entry]) `shouldBe` Nothing
+        parseDockerKindNodeConfigArchive contents (archive [wrong]) `shouldBe` Nothing
+        withDockerConfigFixture socketPath (archive [entry]) True $ \received -> do
+          outcome <- withConnectedDockerInfo 10000000 socketPath $ \session _ stable -> do
+            writeDockerSessionKindNodeConfig session identifier contents (pure False)
+              `shouldReturn` DockerNodeConfigWriteNotStarted
+            writeDockerSessionKindNodeConfig session identifier (BS.replicate 65537 42) stable
+              `shouldReturn` DockerNodeConfigWriteNotStarted
+            writeDockerSessionKindNodeConfig session identifier contents stable
+              `shouldReturn` DockerNodeConfigWriteReply 200
+            readDockerSessionKindNodeConfig session identifier contents
+              `shouldReturn` Right DockerNodeConfigMatches
+            readMVar received `shouldReturn` archive [entry]
+          outcome `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+        let lostSocket = directory </> "lost.sock"
+        withDockerConfigFixture lostSocket (archive [entry]) False $ \received -> do
+          outcome <- withConnectedDockerInfo 10000000 lostSocket $ \session _ stable -> do
+            writeDockerSessionKindNodeConfig session identifier contents stable
+              `shouldReturn` DockerNodeConfigWriteUnconfirmed
+            readMVar received `shouldReturn` archive [entry]
+          outcome `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+
+    it "accepts only a single bounded regular version file in the node archive" $ do
+      path <- either fail pure (TarEntry.toTarPath False "version")
+      otherPath <- either fail pure (TarEntry.toTarPath False "other")
+      let entry = TarEntry.fileEntry path (LazyBS8.pack "v1.30.0\n")
+          other = TarEntry.fileEntry otherPath (LazyBS8.pack "other")
+          oversized = TarEntry.fileEntry path (LazyBS8.replicate 4097 'x')
+          archive = LazyBS8.toStrict . Tar.write
+      parseDockerKindNodeVersionArchive (archive [entry]) `shouldBe` Just (BS8.pack "v1.30.0\n")
+      parseDockerKindNodeVersionArchive (archive [other]) `shouldBe` Nothing
+      parseDockerKindNodeVersionArchive (archive [entry, entry]) `shouldBe` Nothing
+      parseDockerKindNodeVersionArchive (archive [oversized]) `shouldBe` Nothing
+      parseDockerKindNodeVersionArchive (BS8.pack "broken") `shouldBe` Nothing
+
+    it "reads bounded information and keeps the peer and subsequent request on one connection" $
+      withDockerInfoFixture (BS8.pack "{\"ID\":\"daemon-a\"}") True $ \path -> do
+        process <- getProcessID
+        user <- getEffectiveUserID
+        group <- getEffectiveGroupID
+        result <- withConnectedDockerInfo 2000000 path $ \session (DockerConnectedInfo identifier (DockerPeer pid uid gid _)) stable -> do
+          identifier `shouldBe` "daemon-a"
+          (pid, uid, gid) `shouldBe` (toInteger process, toInteger user, toInteger group)
+          stable `shouldReturn` True
+          pingDockerSession session `shouldReturn` Right ()
+          pure ("read-only receipt" :: String)
+        result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted "read-only receipt")
+
+    it "rejects duplicate keys, oversized bodies and invalid identifiers" $ do
+      let failures =
+            [ (BS8.pack "{\"ID\":\"daemon-a\",\"ID\":\"daemon-b\"}", DockerConnectedInfoInvalid)
+            , (BS8.pack "{\"ID\":\"bad id\"}", DockerConnectedInfoInvalid)
+            ,
+              ( BS8.pack "{\"ID\":\"daemon-a\",\"padding\":\"" <> BS8.replicate 65537 'x' <> BS8.pack "\"}"
+              , DockerConnectedInfoTooLarge
+              )
+            ]
+      forM_ failures $ \(body, failure) ->
+        withDockerInfoFixture body False $ \path ->
+          observeConnectedDockerInfo path
+            `shouldReturn` DockerPeerCompleted (DockerConnectedInfoRefused failure)
+
+    it "refuses a server-declared closing connection before the callback" $
+      withDockerInfoFixtureWithClose (BS8.pack "{\"ID\":\"daemon-a\"}") $ \path -> do
+        called <- newIORef False
+        result <- withConnectedDockerInfo 2000000 path $ \_ _ _ -> writeIORef called True
+        result
+          `shouldBe` DockerPeerCompleted (DockerConnectedInfoRefused DockerConnectedInfoConnectionClosing)
+        readIORef called `shouldReturn` False
+
+    it "refuses EOF-delimited responses before the callback" $
+      withDockerInfoFixtureUnframed (BS8.pack "{\"ID\":\"daemon-a\"}") $ \path -> do
+        called <- newIORef False
+        result <- withConnectedDockerInfo 2000000 path $ \_ _ _ -> writeIORef called True
+        result `shouldBe` DockerPeerCompleted (DockerConnectedInfoRefused DockerConnectedInfoFramingInvalid)
+        readIORef called `shouldReturn` False
+
+    it "does not discard bytes buffered after the info response" $
+      withDockerInfoFixtureTrailing (BS8.pack "{\"ID\":\"daemon-a\"}") $ \path -> do
+        result <- withConnectedDockerInfo 2000000 path $ \session _ _ -> pingDockerSession session
+        case result of
+          DockerPeerCompleted (DockerConnectedInfoCompleted pingResult) -> pingResult `shouldSatisfy` isLeft
+          other -> expectationFailure ("unexpected session result: " ++ show other)
+
+    it "reads one exact image ID on the held session and treats failures as unobservable" $
+      withSystemTempDirectory "prodbox-session-image" $ \directory -> do
+        let path = directory </> "docker.sock"
+            digest character = "sha256:" ++ replicate 64 character
+        withDockerDaemonFixture path False $ \requests -> do
+          result <- withConnectedDockerInfo 5000000 path $ \session _ stable -> do
+            stable `shouldReturn` True
+            inspectDockerSessionImage session "sha256:../bad" `shouldReturn` Left DockerConnectedInfoInvalid
+            inspectDockerSessionImage session (digest 'a')
+              `shouldReturn` Right (ImageIdObserved "linux" "amd64" 0)
+            inspectDockerSessionImage session (digest 'b') `shouldReturn` Left DockerConnectedInfoInvalid
+            inspectDockerSessionImage session (digest 'd') `shouldReturn` Left DockerConnectedInfoInvalid
+            inspectDockerSessionImage session (digest 'c') `shouldReturn` Left DockerConnectedInfoStatus
+            pingDockerSession session `shouldReturn` Right ()
+            pure ("image observations" :: String)
+          result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted "image observations")
+          observed <- readMVar requests
+          length observed `shouldBe` 6
+          observed `shouldSatisfy` all (not . isInfixOf "../bad")
+
+    it "gates connected image reads and never forwards a foreign request" $
+      withSystemTempDirectory "prodbox-gated-session-image" $ \directory -> do
+        let path = directory </> "docker.sock"
+            imageId = "sha256:" ++ replicate 64 'a'
+            otherId = "sha256:" ++ replicate 64 'b'
+        scope <- either (fail . show) pure (deploymentScope directory Test "run" 26443)
+        withDockerDaemonFixture path False $ \requests -> do
+          result <- withConnectedDockerInfo 5000000 path $ \session _ _ -> do
+            Just gate <- newKindDockerReadGate scope imageId
+            runConnectedKindDockerImageRead gate session ["inspect", "--type=image", imageId]
+              `shouldReturn` KindDockerReadCompleted (ImageIdObserved "linux" "amd64" 0)
+            runConnectedKindDockerImageRead gate session ["inspect", "--type=image", otherId]
+              `shouldReturn` KindDockerReadRefused
+            runConnectedKindDockerImageRead gate session ["inspect", "--type=image", imageId]
+              `shouldReturn` KindDockerReadRefused
+          result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+          observed <- readMVar requests
+          length observed `shouldBe` 2
+          observed `shouldSatisfy` all (not . isInfixOf otherId)
+
+    it "binds provider information to the held daemon and closes on mismatch" $
+      withSystemTempDirectory "prodbox-gated-session-info" $ \directory -> do
+        let path = directory </> "docker.sock"
+            imageId = "sha256:" ++ replicate 64 'a'
+            infoRequest = ["info", "--format", "{{json .}}"]
+            imageRequest = ["inspect", "--type=image", imageId]
+            listRequest = ["ps", "-a", "--filter", "label=io.x-k8s.kind.cluster=prodbox-t-run", "--format", "{{.Names}}"]
+        scope <- either (fail . show) pure (deploymentScope directory Test "run" 26443)
+        withDockerDaemonFixture path False $ \requests -> do
+          result <- withConnectedDockerInfo 5000000 path $ \session (DockerConnectedInfo identifier _) _ -> do
+            Just gate <- newKindDockerReadGate scope imageId
+            runConnectedKindDockerRead gate session identifier infoRequest
+              `shouldReturn` KindDockerReadCompleted (KindDockerProviderInfo (DockerKindInfo "systemd" "2" True True True []))
+            runConnectedKindDockerRead gate session identifier imageRequest
+              `shouldReturn` KindDockerReadCompleted (KindDockerImageInfo (ImageIdObserved "linux" "amd64" 0))
+            runConnectedKindDockerRead gate session identifier listRequest
+              `shouldReturn` KindDockerReadCompleted (KindDockerContainerNames [])
+            Just changed <- newKindDockerReadGate scope imageId
+            runConnectedKindDockerRead changed session "daemon-b" infoRequest
+              `shouldReturn` KindDockerReadFailed DockerConnectedInfoInvalid
+            runConnectedKindDockerRead changed session identifier imageRequest
+              `shouldReturn` KindDockerReadRefused
+          result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+          observed <- readMVar requests
+          length observed `shouldBe` 5
+          length (filter (isInfixOf "/images/") observed) `shouldBe` 1
+          filter (isInfixOf "/containers/json?") observed
+            `shouldSatisfy` \queries -> length queries == 1 && all (isInfixOf "prodbox-t-run") queries
+
+    it "closes the held-session gate when container inventory is foreign" $
+      withSystemTempDirectory "prodbox-gated-session-foreign-container" $ \directory -> do
+        let path = directory </> "docker.sock"
+            imageId = "sha256:" ++ replicate 64 'a'
+            listRequest = ["ps", "-a", "--filter", "label=io.x-k8s.kind.cluster=prodbox-t-run", "--format", "{{.Names}}"]
+            foreignBody =
+              BS8.pack $
+                "[{\"Id\":\""
+                  ++ replicate 64 'b'
+                  ++ "\",\"Names\":[\"/prodbox-t-run-control-plane\"],\"Labels\":{\"io.x-k8s.kind.cluster\":\"foreign\"}}]"
+        scope <- either (fail . show) pure (deploymentScope directory Test "run" 26443)
+        withDockerDaemonFixtureContainers path foreignBody $ \requests -> do
+          result <- withConnectedDockerInfo 5000000 path $ \session (DockerConnectedInfo identifier _) _ -> do
+            Just gate <- newKindDockerReadGate scope imageId
+            runConnectedKindDockerRead gate session identifier listRequest
+              `shouldReturn` KindDockerReadFailed DockerConnectedInfoInvalid
+            runConnectedKindDockerRead gate session identifier ["inspect", "--type=image", imageId]
+              `shouldReturn` KindDockerReadRefused
+          result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+          observed <- readMVar requests
+          length observed `shouldBe` 2
+          observed `shouldSatisfy` all (not . isInfixOf "/images/")
+
+    it "serves the pinned provider's security and storage info formats from the connected daemon" $
+      withSystemTempDirectory "prodbox-gated-storage-info" $ \directory -> do
+        let path = directory </> "docker.sock"
+            imageId = "sha256:" ++ replicate 64 'a'
+            storage driver statusRows =
+              Aeson.object
+                [ AesonKey.fromString "ID" Aeson..= ("daemon-a" :: String)
+                , AesonKey.fromString "Driver" Aeson..= (driver :: String)
+                , AesonKey.fromString "DriverStatus" Aeson..= statusRows
+                ]
+            rows = [["Backing Filesystem", "extfs"]] :: [[String]]
+        scope <- either (fail . show) pure (deploymentScope directory Test "run" 26443)
+        parseDockerKindStorage "daemon-a" (storage "overlay2" rows)
+          `shouldBe` Right (DockerKindStorage "overlay2" (Just rows))
+        parseDockerKindStorage "daemon-a" (storage "overlay2" Aeson.Null)
+          `shouldBe` Right (DockerKindStorage "overlay2" Nothing)
+        parseDockerKindStorage "daemon-b" (storage "overlay2" rows) `shouldSatisfy` isLeft
+        parseDockerKindStorage "daemon-a" (storage "overlay2" [["missing value"]]) `shouldSatisfy` isLeft
+        parseDockerKindStorage "daemon-a" (storage "" rows) `shouldSatisfy` isLeft
+        parseDockerKindStorage
+          "daemon-a"
+          ( Aeson.object
+              [ AesonKey.fromString "ID" Aeson..= ("daemon-a" :: String)
+              , AesonKey.fromString "Driver" Aeson..= ("overlay2" :: String)
+              ]
+          )
+          `shouldSatisfy` isLeft
+        withDockerDaemonFixture path False $ \requests -> do
+          result <- withConnectedDockerInfo 5000000 path $ \session (DockerConnectedInfo identifier _) _ -> do
+            Just gate <- newKindDockerReadGate scope imageId
+            runConnectedKindDockerReply
+              gate
+              session
+              identifier
+              ["info", "--format", "'{{json .SecurityOptions}}'"]
+              `shouldReturn` KindDockerReply 0 (BS8.pack "'[]'\n") BS8.empty
+            runConnectedKindDockerReply gate session identifier ["info", "-f", "{{.Driver}}"]
+              `shouldReturn` KindDockerReply 0 (BS8.pack "overlay2\n") BS8.empty
+            runConnectedKindDockerReply gate session identifier ["info", "-f", "{{json .DriverStatus }}"]
+              `shouldReturn` KindDockerReply 0 (BS8.pack "[[\"Backing Filesystem\",\"extfs\"]]\n") BS8.empty
+            runConnectedKindDockerRead gate session identifier ["info", "-f", "{{.Other}}"]
+              `shouldReturn` KindDockerReadRefused
+          result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+          observed <- readMVar requests
+          length (filter (isInfixOf "/info") observed) `shouldBe` 4
+
+    it "observes one derived node volume and refuses foreign or conflicting configuration" $
+      withSystemTempDirectory "prodbox-node-var-volume" $ \directory -> do
+        let path = directory </> "docker.sock"
+            selected = directory </> "selected.dhall"
+            generation = replicate 32 'a'
+            operation = replicate 32 'b'
+            document =
+              "{ bootstrap = { schema_version = 1, project_anchor = \""
+                ++ directory
+                ++ "\", runtime_socket = \""
+                ++ path
+                ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
+                ++ generation
+                ++ "\", api_port = 26443, node_image = \"kindest/node@sha256:"
+                ++ replicate 64 'a'
+                ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, listen_address = \"127.0.0.1\" } }"
+        writeFile selected document
+        bootstrap <- readBootstrapProjection selected >>= either (fail . show) pure
+        name <-
+          maybe
+            (fail "invalid volume name")
+            pure
+            (kindNodeVarVolumeName (bootstrapKindPlan bootstrap) generation operation)
+        let labels =
+              Aeson.object
+                [ AesonKey.fromString "io.prodbox.deployment" Aeson..= ("prodbox-t-run" :: String)
+                , AesonKey.fromString "io.prodbox.generation" Aeson..= generation
+                , AesonKey.fromString "io.prodbox.operation" Aeson..= operation
+                , AesonKey.fromString "io.prodbox.resource" Aeson..= ("kind-node-var" :: String)
+                ]
+            response volumeName driver options =
+              Aeson.object
+                [ AesonKey.fromString "Name" Aeson..= (volumeName :: String)
+                , AesonKey.fromString "Driver" Aeson..= (driver :: String)
+                , AesonKey.fromString "Scope" Aeson..= ("local" :: String)
+                , AesonKey.fromString "Labels" Aeson..= labels
+                , AesonKey.fromString "Options" Aeson..= options
+                ]
+        parseDockerNodeVarVolume bootstrap operation name (response name "local" Aeson.Null)
+          `shouldBe` Right DockerNodeVarVolumeMatching
+        let missingLabels = case response name "local" Aeson.Null of
+              Aeson.Object value -> Aeson.Object (AesonKeyMap.insert (AesonKey.fromString "Labels") (Aeson.object []) value)
+              value -> value
+        parseDockerNodeVarVolume bootstrap operation name missingLabels
+          `shouldBe` Right DockerNodeVarVolumeConflict
+        parseDockerNodeVarVolume bootstrap operation name (response name "foreign" Aeson.Null)
+          `shouldBe` Right DockerNodeVarVolumeConflict
+        parseDockerNodeVarVolume
+          bootstrap
+          operation
+          name
+          (response name "local" (Aeson.object [AesonKey.fromString "device" Aeson..= ("foreign" :: String)]))
+          `shouldBe` Right DockerNodeVarVolumeConflict
+        parseDockerNodeVarVolume bootstrap operation name (response "foreign" "local" Aeson.Null)
+          `shouldSatisfy` isLeft
+        withDockerDaemonFixture path False $ \requests -> do
+          result <- withConnectedDockerInfo 5000000 path $ \session _ _ -> do
+            inspectDockerSessionNodeVarVolume session bootstrap "invalid"
+              `shouldReturn` Left DockerConnectedInfoInvalid
+            inspectDockerSessionNodeVarVolume session bootstrap operation
+              `shouldReturn` Right DockerNodeVarVolumeNotFound
+          result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+          observed <- readMVar requests
+          length (filter (isInfixOf ("/volumes/" ++ name)) observed) `shouldBe` 1
+        let matchingPath = directory </> "docker-matching.sock"
+            matchingDocument = Text.unpack (Text.replace (Text.pack path) (Text.pack matchingPath) (Text.pack document))
+            matchingBody = LazyBS8.toStrict (Aeson.encode (response name "local" Aeson.Null))
+        writeFile selected matchingDocument
+        matchingBootstrap <- readBootstrapProjection selected >>= either (fail . show) pure
+        prepareFreshScope (bootstrapScope matchingBootstrap) generation `shouldReturn` FreshScopePrepared
+        withNewKindOperation matchingBootstrap operation (const (pure ()))
+          `shouldReturn` KindOperationCallbackReturned ()
+        binary <- resolveBinaryPath
+        tamper <- newIORef False
+        varyInventory <- newIORef False
+        volumeReads <- newIORef (0 :: Int)
+        let volumeList = do
+              varying <- readIORef varyInventory
+              count <- if varying then atomicModifyIORef' volumeReads (\value -> (value + 1, value)) else pure 0
+              let items = [Aeson.object [AesonKey.fromString "Name" Aeson..= name] | varying && count > 0]
+              pure
+                ( LazyBS8.toStrict
+                    ( Aeson.encode
+                        ( Aeson.object
+                            [ AesonKey.fromString "Volumes" Aeson..= items
+                            , AesonKey.fromString "Warnings" Aeson..= ([] :: [String])
+                            ]
+                        )
+                    )
+                )
+            tamperOnVolume request = when (("GET /volumes/" ++ name ++ " ") `isPrefixOf` request) $ do
+              enabled <- readIORef tamper
+              when
+                enabled
+                (writeFile (scopeRoot (bootstrapScope matchingBootstrap) </> "kind-intent.json") "damaged")
+            withMatchingVolume =
+              withDockerDaemonFixtureControlVolumeList
+                matchingPath
+                False
+                tamperOnVolume
+                (pure False)
+                (BS8.pack "[]")
+                (BS8.pack "[]")
+                (pure True)
+                (Just (name, matchingBody))
+                volumeList
+        withMatchingVolume $ \requests -> do
+          (exitCode, output, errors) <-
+            readCreateProcessWithExitCode (proc binary ["--config", selected, "control", "status"]) ""
+          (exitCode, errors) `shouldBe` (ExitSuccess, "")
+          output
+            `shouldContain` "Candidate node /var volume: configuration and labels match; provenance, admission and worker settlement unverified"
+          output `shouldContain` "volume proposal not found locally"
+          observed <- readMVar requests
+          length (filter (isInfixOf ("/volumes/" ++ name)) observed) `shouldBe` 1
+          recorded <- withRecoveredKindOperation matchingBootstrap operation $ \operationStable ->
+            withConnectedDockerInfo 5000000 matchingPath $ \_ (DockerConnectedInfo identifier (DockerPeer _ _ _ identity)) peerStable -> do
+              intent <-
+                maybe
+                  (fail "invalid node volume intent")
+                  pure
+                  (mkKindNodeVolumeIntent operation (DockerDaemonObserved identifier identity))
+              recordKindNodeVolumeIntent matchingBootstrap intent ((&&) <$> operationStable <*> peerStable)
+          recorded
+            `shouldBe` KindOperationCallbackReturned
+              (DockerPeerCompleted (DockerConnectedInfoCompleted NodeVolumeIntentRecorded))
+          (recordedCode, recordedOutput, recordedErrors) <-
+            readCreateProcessWithExitCode (proc binary ["--config", selected, "control", "status"]) ""
+          (recordedCode, recordedErrors) `shouldBe` (ExitSuccess, "")
+          recordedOutput
+            `shouldContain` "volume proposal matches current operation and daemon; effect and settlement unverified"
+          recordedOutput `shouldContain` "volume attempt not found locally; effect and settlement unverified"
+          attempt <- withRecoveredKindOperation matchingBootstrap operation $ \operationStable ->
+            withConnectedDockerInfo 5000000 matchingPath $ \_ (DockerConnectedInfo identifier (DockerPeer _ _ _ identity)) peerStable -> do
+              intent <-
+                maybe
+                  (fail "invalid node volume intent")
+                  pure
+                  (mkKindNodeVolumeIntent operation (DockerDaemonObserved identifier identity))
+              recordKindNodeVolumeAttempt matchingBootstrap intent ((&&) <$> operationStable <*> peerStable)
+          attempt
+            `shouldBe` KindOperationCallbackReturned
+              (DockerPeerCompleted (DockerConnectedInfoCompleted NodeVolumeAttemptRecorded))
+          (attemptCode, attemptOutput, attemptErrors) <-
+            readCreateProcessWithExitCode (proc binary ["--config", selected, "control", "status"]) ""
+          (attemptCode, attemptErrors) `shouldBe` (ExitSuccess, "")
+          attemptOutput `shouldContain` "volume attempt recorded; effect and settlement unverified"
+          attemptOutput `shouldContain` "volume result not found locally; effect and settlement unverified"
+          receipt <- withRecoveredKindOperation matchingBootstrap operation $ \operationStable ->
+            withConnectedDockerInfo 5000000 matchingPath $ \_ (DockerConnectedInfo identifier (DockerPeer _ _ _ identity)) peerStable -> do
+              intent <-
+                maybe
+                  (fail "invalid node volume intent")
+                  pure
+                  (mkKindNodeVolumeIntent operation (DockerDaemonObserved identifier identity))
+              recordKindNodeVolumeReceipt
+                matchingBootstrap
+                intent
+                DockerNodeVarCreateUnconfirmed
+                ((&&) <$> operationStable <*> peerStable)
+          receipt
+            `shouldBe` KindOperationCallbackReturned
+              (DockerPeerCompleted (DockerConnectedInfoCompleted NodeVolumeReceiptRecorded))
+          (receiptCode, receiptOutput, receiptErrors) <-
+            readCreateProcessWithExitCode (proc binary ["--config", selected, "control", "status"]) ""
+          (receiptCode, receiptErrors) `shouldBe` (ExitSuccess, "")
+          receiptOutput `shouldContain` "volume request outcome unconfirmed; settlement unverified"
+          receiptOutput `shouldContain` "volume removal not found locally; absence and settlement unverified"
+          removal <- withRecoveredKindOperation matchingBootstrap operation $ \operationStable ->
+            withConnectedDockerInfo 5000000 matchingPath $ \_ (DockerConnectedInfo identifier (DockerPeer _ _ _ identity)) peerStable -> do
+              intent <-
+                maybe
+                  (fail "invalid node volume intent")
+                  pure
+                  (mkKindNodeVolumeIntent operation (DockerDaemonObserved identifier identity))
+              let stable = (&&) <$> operationStable <*> peerStable
+              observeKindNodeVolumeRemoval matchingBootstrap intent stable `shouldReturn` NodeVolumeRemovalMissing
+              recordKindNodeVolumeRemoval matchingBootstrap intent stable `shouldReturn` NodeVolumeRemovalRecorded
+              observeKindNodeVolumeRemoval matchingBootstrap intent stable `shouldReturn` NodeVolumeRemovalMatches
+              recordKindNodeVolumeRemoval matchingBootstrap intent stable
+                `shouldReturn` NodeVolumeRemovalAlreadyExists
+          removal
+            `shouldBe` KindOperationCallbackReturned (DockerPeerCompleted (DockerConnectedInfoCompleted ()))
+          (removalCode, removalOutput, removalErrors) <-
+            readCreateProcessWithExitCode (proc binary ["--config", selected, "control", "status"]) ""
+          (removalCode, removalErrors) `shouldBe` (ExitSuccess, "")
+          removalOutput `shouldContain` "volume removal recorded; absence and settlement unverified"
+          removalOutput
+            `shouldContain` "volume removal result not found locally; absence and settlement unverified"
+          writeIORef varyInventory True
+          (inventoryCode, inventoryOutput, inventoryErrors) <-
+            readCreateProcessWithExitCode (proc binary ["--config", selected, "control", "status"]) ""
+          (inventoryCode, inventoryErrors) `shouldBe` (ExitSuccess, "")
+          inventoryOutput
+            `shouldContain` "Independent volume inventory: inventory or scope changed during observation; absence and settlement unverified"
+          readIORef volumeReads `shouldReturn` 2
+          writeIORef varyInventory False
+          resultRecord <- withRecoveredKindOperation matchingBootstrap operation $ \operationStable ->
+            withConnectedDockerInfo 5000000 matchingPath $ \_ (DockerConnectedInfo identifier (DockerPeer _ _ _ identity)) peerStable -> do
+              intent <-
+                maybe
+                  (fail "invalid node volume intent")
+                  pure
+                  (mkKindNodeVolumeIntent operation (DockerDaemonObserved identifier identity))
+              recordKindNodeVolumeRemovalReceipt
+                matchingBootstrap
+                intent
+                DockerNodeVarRemoveUnconfirmed
+                ((&&) <$> operationStable <*> peerStable)
+          resultRecord
+            `shouldBe` KindOperationCallbackReturned
+              (DockerPeerCompleted (DockerConnectedInfoCompleted NodeVolumeRemovalReceiptRecorded))
+          (resultCode, resultOutput, resultErrors) <-
+            readCreateProcessWithExitCode (proc binary ["--config", selected, "control", "status"]) ""
+          (resultCode, resultErrors) `shouldBe` (ExitSuccess, "")
+          resultOutput `shouldContain` "volume removal outcome unconfirmed; absence and settlement unverified"
+          let removalPath = scopeRoot (bootstrapScope matchingBootstrap) </> "kind-node-var-volume-removal.json"
+          writeFile removalPath "{\"kind\":1,\"kind\":1}"
+          (damagedCode, damagedOutput, damagedErrors) <-
+            readCreateProcessWithExitCode (proc binary ["--config", selected, "control", "status"]) ""
+          (damagedCode, damagedErrors) `shouldBe` (ExitSuccess, "")
+          damagedOutput `shouldContain` "volume removal is invalid or incomplete"
+          removeFile removalPath
+          writeFile (directory </> "foreign-removal") "foreign"
+          createSymbolicLink (directory </> "foreign-removal") removalPath
+          (linkCode, linkOutput, linkErrors) <-
+            readCreateProcessWithExitCode (proc binary ["--config", selected, "control", "status"]) ""
+          (linkCode, linkErrors) `shouldBe` (ExitSuccess, "")
+          linkOutput `shouldContain` "volume removal could not be safely observed"
+          readFile (directory </> "foreign-removal") `shouldReturn` "foreign"
+          writeIORef tamper True
+          (changedCode, changedOutput, changedErrors) <-
+            readCreateProcessWithExitCode (proc binary ["--config", selected, "control", "status"]) ""
+          (changedCode, changedErrors) `shouldBe` (ExitSuccess, "")
+          changedOutput
+            `shouldContain` "Candidate node /var volume: unobservable or changed; volume state and worker settlement unverified"
+
+    it "validates independent volume and container inventory without inferring absence" $ do
+      let name = "prodbox-t-run-var-" ++ replicate 32 'a' ++ "-" ++ replicate 32 'b'
+          first = replicate 64 'a'
+          second = replicate 64 'b'
+      parseNodeVolumeInventory name ("other\n" ++ name ++ "\n") (second ++ "\n" ++ first ++ "\n")
+        `shouldBe` Just (NodeVolumeInventory True [first, second])
+      parseNodeVolumeInventory name "other\n" "" `shouldBe` Just (NodeVolumeInventory False [])
+      parseNodeVolumeInventory name (name ++ "\n" ++ name ++ "\n") "" `shouldBe` Nothing
+      parseNodeVolumeInventory name "other\n" (first ++ "\n" ++ first ++ "\n") `shouldBe` Nothing
+      parseNodeVolumeInventory name "other\n" "short\n" `shouldBe` Nothing
+      parseNodeVolumeInventory name "invalid name\n" "" `shouldBe` Nothing
+      let daemon = DockerDaemonObserved "daemon-a" (DockerSocketIdentity 1 2 1000 0o140660)
+          differentDaemon = DockerDaemonObserved "daemon-b" (DockerSocketIdentity 1 2 1000 0o140660)
+          absent = NodeVolumeInventory False []
+          present = NodeVolumeInventory True []
+      classifyNodeVolumeReadback daemon daemon (Just True) (Just absent) (Just absent)
+        `shouldBe` NodeVolumeReadbackSampled absent
+      classifyNodeVolumeReadback daemon daemon (Just True) (Just absent) (Just present)
+        `shouldBe` NodeVolumeReadbackChanged
+      classifyNodeVolumeReadback daemon differentDaemon (Just True) (Just absent) (Just absent)
+        `shouldBe` NodeVolumeReadbackChanged
+      classifyNodeVolumeReadback daemon DockerDaemonChanged (Just True) (Just absent) (Just absent)
+        `shouldBe` NodeVolumeReadbackChanged
+      classifyNodeVolumeReadback daemon DockerDaemonUnobservable (Just True) (Just absent) (Just absent)
+        `shouldBe` NodeVolumeReadbackUnobservable
+      classifyNodeVolumeReadback daemon daemon Nothing (Just absent) (Just absent)
+        `shouldBe` NodeVolumeReadbackUnobservable
+      classifyNodeVolumeReadback daemon daemon (Just False) (Just absent) (Just absent)
+        `shouldBe` NodeVolumeReadbackUnobservable
+      classifyNodeVolumeReadback daemon daemon (Just True) Nothing (Just absent)
+        `shouldBe` NodeVolumeReadbackUnobservable
+
+    it "discovers only one consistently visible unconfirmed node candidate" $ do
+      let target = replicate 64 'a'
+          other = replicate 64 'b'
+      parseNodeCreateCandidate "" "" "" `shouldBe` Just NodeCandidateNone
+      parseNodeCreateCandidate (target ++ "\n") (target ++ "\n") (target ++ "\n")
+        `shouldBe` Just (NodeCandidateUnique target)
+      parseNodeCreateCandidate "" (target ++ "\n") (target ++ "\n") `shouldBe` Just NodeCandidateConflict
+      parseNodeCreateCandidate (target ++ "\n") (target ++ "\n") (other ++ "\n")
+        `shouldBe` Just NodeCandidateConflict
+      parseNodeCreateCandidate
+        (target ++ "\n" ++ other ++ "\n")
+        (target ++ "\n" ++ other ++ "\n")
+        (target ++ "\n")
+        `shouldBe` Just NodeCandidateConflict
+      parseNodeCreateCandidate "invalid\n" "" "" `shouldBe` Nothing
+
+    it "samples the exact node ID and refuses malformed or changing inventories" $ do
+      let target = replicate 64 'a'
+          foreignId = replicate 64 'b'
+          present = NodeRemovalInventory True [target] [target, foreignId]
+          empty = NodeRemovalInventory False [] []
+          daemon = DockerDaemonObserved "daemon-a" (DockerSocketIdentity 1 2 1000 0o140660)
+          otherDaemon = DockerDaemonObserved "daemon-b" (DockerSocketIdentity 1 2 1000 0o140660)
+      parseNodeRemovalInventory
+        target
+        (target ++ "\n")
+        (target ++ "\n")
+        (foreignId ++ "\n" ++ target ++ "\n")
+        `shouldBe` Just present
+      parseNodeRemovalInventory target "" "" "" `shouldBe` Just empty
+      nodeRemovalPositive target (NodeRemovalReadbackSampled present) `shouldBe` True
+      nodeRemovalPositive target (NodeRemovalReadbackSampled empty) `shouldBe` False
+      nodeRemovalPositive target NodeRemovalReadbackUnobservable `shouldBe` False
+      nodeRemovalPositive
+        target
+        (NodeRemovalReadbackSampled present {nodeRemovalNameIds = [target, foreignId]})
+        `shouldBe` False
+      parseNodeRemovalInventory target (target ++ "\n" ++ target ++ "\n") "" "" `shouldBe` Nothing
+      parseNodeRemovalInventory target "short\n" "" "" `shouldBe` Nothing
+      parseNodeRemovalInventory "bad" "" "" "" `shouldBe` Nothing
+      classifyNodeRemovalReadback daemon daemon (Just True) (Just present) (Just present)
+        `shouldBe` NodeRemovalReadbackSampled present
+      classifyNodeRemovalReadback daemon daemon (Just True) (Just empty) (Just present)
+        `shouldBe` NodeRemovalReadbackChanged
+      classifyNodeRemovalReadback daemon otherDaemon (Just True) (Just empty) (Just empty)
+        `shouldBe` NodeRemovalReadbackChanged
+      classifyNodeRemovalReadback daemon daemon Nothing (Just empty) (Just empty)
+        `shouldBe` NodeRemovalReadbackUnobservable
+      classifyNodeRemovalReadback daemon daemon (Just True) Nothing (Just empty)
+        `shouldBe` NodeRemovalReadbackUnobservable
+
+    it "sends one derived volume request and preserves uncertain outcomes" $
+      withSystemTempDirectory "prodbox-node-volume-create" $ \directory -> do
+        let generation = replicate 32 'a'
+            operation = replicate 32 'b'
+            name = "prodbox-t-run-var-" ++ generation ++ "-" ++ operation
+            selected = directory </> "selected.dhall"
+            socketPath = directory </> "docker.sock"
+            document =
+              "{ bootstrap = { schema_version = 1, project_anchor = \""
+                ++ directory
+                ++ "\", runtime_socket = \""
+                ++ socketPath
+                ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
+                ++ generation
+                ++ "\", api_port = 26443, node_image = \"kindest/node@sha256:"
+                ++ replicate 64 'a'
+                ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, listen_address = \"127.0.0.1\" } }"
+            labels =
+              Aeson.object
+                [ AesonKey.fromString "io.prodbox.deployment" Aeson..= ("prodbox-t-run" :: String)
+                , AesonKey.fromString "io.prodbox.generation" Aeson..= generation
+                , AesonKey.fromString "io.prodbox.operation" Aeson..= operation
+                , AesonKey.fromString "io.prodbox.resource" Aeson..= ("kind-node-var" :: String)
+                ]
+            response =
+              LazyBS8.toStrict $
+                Aeson.encode $
+                  Aeson.object
+                    [ AesonKey.fromString "Name" Aeson..= name
+                    , AesonKey.fromString "Driver" Aeson..= ("local" :: String)
+                    , AesonKey.fromString "Scope" Aeson..= ("local" :: String)
+                    , AesonKey.fromString "Labels" Aeson..= labels
+                    , AesonKey.fromString "Options" Aeson..= Aeson.Null
+                    ]
+        writeFile selected document
+        bootstrap <- readBootstrapProjection selected >>= either (fail . show) pure
+        let rootPath = scopeRoot (bootstrapScope bootstrap)
+            image = "sha256:" ++ replicate 64 'a'
+            tool = "sha256:50030de23cf40a18505f20426f6a8506bedf13c6e509244bd1fa9463721b0f54"
+            nodeArgs =
+              [ "run"
+              , "--name"
+              , "prodbox-t-run-control-plane"
+              , "--hostname"
+              , "prodbox-t-run-control-plane"
+              , "--label"
+              , "io.x-k8s.kind.role=control-plane"
+              , "--privileged"
+              , "--security-opt"
+              , "seccomp=unconfined"
+              , "--security-opt"
+              , "apparmor=unconfined"
+              , "--tmpfs"
+              , "/tmp"
+              , "--tmpfs"
+              , "/run"
+              , "--volume"
+              , "/var"
+              , "--volume"
+              , "/lib/modules:/lib/modules:ro"
+              , "-e"
+              , "KIND_EXPERIMENTAL_CONTAINERD_SNAPSHOTTER"
+              , "--detach"
+              , "--tty"
+              , "--label"
+              , "io.x-k8s.kind.cluster=prodbox-t-run"
+              , "--net"
+              , "prodbox-t-run"
+              , "--restart=on-failure:1"
+              , "--init=false"
+              , "--cgroupns=private"
+              , "--volume=" ++ rootPath ++ ":/var/lib/prodbox"
+              , "--publish=127.0.0.1:28080:30080/TCP"
+              , "--publish=127.0.0.1:28443:30443/TCP"
+              , "--publish=127.0.0.1:26443:6443/TCP"
+              , "-e"
+              , "KUBECONFIG=/etc/kubernetes/admin.conf"
+              , image
+              ]
+            nodeInput = KindNodeCreateInput tool image (replicate 64 'c') generation operation nodeArgs
+        let nodeInspect actualImage actualNetwork actualVolume volumeSource actualRoot =
+              Aeson.object
+                [ AesonKey.fromString "Id" Aeson..= replicate 64 'c'
+                , AesonKey.fromString "Name" Aeson..= ("/prodbox-t-run-control-plane" :: String)
+                , AesonKey.fromString "Image" Aeson..= actualImage
+                , AesonKey.fromString "Config"
+                    Aeson..= Aeson.object
+                      [ AesonKey.fromString "Hostname" Aeson..= ("prodbox-t-run-control-plane" :: String)
+                      , AesonKey.fromString "Tty" Aeson..= True
+                      , AesonKey.fromString "ExposedPorts"
+                          Aeson..= Aeson.object
+                            [ AesonKey.fromString "30080/tcp" Aeson..= Aeson.object []
+                            , AesonKey.fromString "30443/tcp" Aeson..= Aeson.object []
+                            , AesonKey.fromString "6443/tcp" Aeson..= Aeson.object []
+                            ]
+                      , AesonKey.fromString "Labels"
+                          Aeson..= Aeson.object
+                            [ AesonKey.fromString "io.x-k8s.kind.cluster" Aeson..= ("prodbox-t-run" :: String)
+                            , AesonKey.fromString "io.x-k8s.kind.role" Aeson..= ("control-plane" :: String)
+                            , AesonKey.fromString "io.prodbox.generation" Aeson..= generation
+                            , AesonKey.fromString "io.prodbox.operation" Aeson..= operation
+                            ]
+                      ]
+                , AesonKey.fromString "HostConfig"
+                    Aeson..= Aeson.object
+                      [ AesonKey.fromString "PublishAllPorts" Aeson..= False
+                      , AesonKey.fromString "Privileged" Aeson..= True
+                      , AesonKey.fromString "CgroupnsMode" Aeson..= ("private" :: String)
+                      , AesonKey.fromString "RestartPolicy"
+                          Aeson..= Aeson.object
+                            [ AesonKey.fromString "Name" Aeson..= ("on-failure" :: String)
+                            , AesonKey.fromString "MaximumRetryCount" Aeson..= (1 :: Int)
+                            ]
+                      , AesonKey.fromString "SecurityOpt"
+                          Aeson..= (["seccomp=unconfined", "apparmor=unconfined"] :: [String])
+                      , AesonKey.fromString "Tmpfs"
+                          Aeson..= Aeson.object
+                            [ AesonKey.fromString "/tmp" Aeson..= ("" :: String)
+                            , AesonKey.fromString "/run" Aeson..= ("" :: String)
+                            ]
+                      , AesonKey.fromString "Init" Aeson..= False
+                      , AesonKey.fromString "PortBindings"
+                          Aeson..= Aeson.object
+                            [ AesonKey.fromString "30080/tcp" Aeson..= [portBinding "127.0.0.1" "28080"]
+                            , AesonKey.fromString "30443/tcp" Aeson..= [portBinding "127.0.0.1" "28443"]
+                            , AesonKey.fromString "6443/tcp" Aeson..= [portBinding "127.0.0.1" "26443"]
+                            ]
+                      ]
+                , AesonKey.fromString "State"
+                    Aeson..= Aeson.object
+                      [ AesonKey.fromString "Running" Aeson..= True
+                      , AesonKey.fromString "Paused" Aeson..= False
+                      , AesonKey.fromString "Restarting" Aeson..= False
+                      , AesonKey.fromString "Dead" Aeson..= False
+                      , AesonKey.fromString "Status" Aeson..= ("running" :: String)
+                      ]
+                , AesonKey.fromString "Mounts"
+                    Aeson..= [ mount "volume" (Just actualVolume) volumeSource "/var" True
+                             , mount "bind" Nothing actualRoot "/var/lib/prodbox" True
+                             , mount "bind" Nothing "/lib/modules" "/lib/modules" False
+                             ]
+                , AesonKey.fromString "NetworkSettings"
+                    Aeson..= Aeson.object
+                      [ AesonKey.fromString "Networks"
+                          Aeson..= Aeson.object
+                            [ AesonKey.fromString "prodbox-t-run"
+                                Aeson..= Aeson.object
+                                  [ AesonKey.fromString "NetworkID" Aeson..= actualNetwork
+                                  , AesonKey.fromString "IPAddress" Aeson..= ("172.18.0.2" :: String)
+                                  , AesonKey.fromString "GlobalIPv6Address" Aeson..= ("fd00::2" :: String)
+                                  ]
+                            ]
+                      ]
+                ]
+            portBinding address port =
+              Aeson.object
+                [ AesonKey.fromString "HostIp" Aeson..= (address :: String)
+                , AesonKey.fromString "HostPort" Aeson..= (port :: String)
+                ]
+            changePorts change value = case value of
+              Aeson.Object node -> case AesonKeyMap.lookup (AesonKey.fromString "HostConfig") node of
+                Just (Aeson.Object host) -> case AesonKeyMap.lookup (AesonKey.fromString "PortBindings") host of
+                  Just (Aeson.Object ports) ->
+                    Aeson.Object
+                      ( AesonKeyMap.insert
+                          (AesonKey.fromString "HostConfig")
+                          ( Aeson.Object
+                              (AesonKeyMap.insert (AesonKey.fromString "PortBindings") (Aeson.Object (change ports)) host)
+                          )
+                          node
+                      )
+                  _ -> value
+                _ -> value
+              _ -> value
+            exposeApi =
+              changePorts
+                (AesonKeyMap.insert (AesonKey.fromString "6443/tcp") (Aeson.toJSON [portBinding "0.0.0.0" "26443"]))
+            addForeignPort =
+              changePorts
+                (AesonKeyMap.insert (AesonKey.fromString "22/tcp") (Aeson.toJSON [portBinding "0.0.0.0" "2222"]))
+            publishAllPorts value = case value of
+              Aeson.Object node -> case AesonKeyMap.lookup (AesonKey.fromString "HostConfig") node of
+                Just (Aeson.Object host) ->
+                  Aeson.Object
+                    ( AesonKeyMap.insert
+                        (AesonKey.fromString "HostConfig")
+                        (Aeson.Object (AesonKeyMap.insert (AesonKey.fromString "PublishAllPorts") (Aeson.Bool True) host))
+                        node
+                    )
+                _ -> value
+              _ -> value
+            mount kind volumeName source target writable =
+              Aeson.object
+                [ AesonKey.fromString "Type" Aeson..= (kind :: String)
+                , AesonKey.fromString "Name" Aeson..= (volumeName :: Maybe String)
+                , AesonKey.fromString "Source" Aeson..= (source :: String)
+                , AesonKey.fromString "Destination" Aeson..= (target :: String)
+                , AesonKey.fromString "RW" Aeson..= (writable :: Bool)
+                ]
+            addForeignMount value = case value of
+              Aeson.Object node -> case AesonKeyMap.lookup (AesonKey.fromString "Mounts") node of
+                Just (Aeson.Array mounts) ->
+                  Aeson.Object
+                    ( AesonKeyMap.insert
+                        (AesonKey.fromString "Mounts")
+                        (Aeson.Array (mounts <> pure (mount "bind" Nothing "/etc" "/host-etc" True)))
+                        node
+                    )
+                _ -> value
+              _ -> value
+            inspected = nodeInspect image (replicate 64 'c') name "/var/lib/docker/volumes/example/_data" rootPath
+            nodeId = replicate 64 'c'
+        withSystemTempDirectory "prodbox-node-intent" $ \intentDirectory -> do
+          let intentSocket = intentDirectory </> "docker.sock"
+              intentSelected = intentDirectory </> "selected.dhall"
+              intentDocument = Text.unpack (Text.replace (Text.pack directory) (Text.pack intentDirectory) (Text.pack document))
+          writeFile intentSelected intentDocument
+          intentBootstrap <- readBootstrapProjection intentSelected >>= either (fail . show) pure
+          prepareFreshScope (bootstrapScope intentBootstrap) generation `shouldReturn` FreshScopePrepared
+          let intentRoot = scopeRoot (bootstrapScope intentBootstrap)
+              intentArgs =
+                map
+                  ( \arg ->
+                      if arg == "--volume=" ++ rootPath ++ ":/var/lib/prodbox"
+                        then "--volume=" ++ intentRoot ++ ":/var/lib/prodbox"
+                        else arg
+                  )
+                  nodeArgs
+              selectedInput = nodeInput {nodeCreateArguments = intentArgs}
+          let intentNodeBody =
+                LazyBS8.toStrict
+                  ( Aeson.encode
+                      (nodeInspect image (replicate 64 'c') name "/var/lib/docker/volumes/example/_data" intentRoot)
+                  )
+          withDockerDaemonFixtureControlVolumeAndNode
+            intentSocket
+            False
+            (const (pure ()))
+            (pure False)
+            ( BS8.pack
+                ( "[{\"Id\":\""
+                    ++ replicate 64 'c'
+                    ++ "\",\"Names\":[\"/prodbox-t-run-control-plane\"],\"Image\":\"example\",\"ImageID\":\"sha256:"
+                    ++ replicate 64 'a'
+                    ++ "\",\"Command\":\"\",\"Created\":1,\"Ports\":[],\"Labels\":{},\"State\":\"running\",\"Status\":\"Up\",\"HostConfig\":{},\"NetworkSettings\":{\"Networks\":{}},\"Mounts\":[]}]"
+                )
+            )
+            (BS8.pack "[]")
+            (pure True)
+            Nothing
+            (pure (BS8.pack "{\"Volumes\":[],\"Warnings\":[]}"))
+            (Just (replicate 64 'c', intentNodeBody))
+            $ \_ -> do
+              socketIdentity <-
+                observeDockerSocketIdentity intentSocket >>= maybe (fail "missing fixture socket") pure
+              proposal <-
+                maybe
+                  (fail "invalid node intent")
+                  pure
+                  ( mkKindNodeCreateIntent
+                      intentBootstrap
+                      selectedInput
+                      (DockerDaemonObserved "daemon-a" socketIdentity)
+                  )
+              foreignProposal <-
+                maybe
+                  (fail "invalid foreign node intent")
+                  pure
+                  ( mkKindNodeCreateIntent
+                      intentBootstrap
+                      (selectedInput {nodeCreateNetworkId = replicate 64 'd'})
+                      (DockerDaemonObserved "daemon-a" socketIdentity)
+                  )
+              mkKindNodeCreateIntent
+                intentBootstrap
+                (selectedInput {nodeCreateGeneration = replicate 32 'e'})
+                (DockerDaemonObserved "daemon-a" socketIdentity)
+                `shouldBe` Nothing
+              withSystemTempDirectory "prodbox-node-foreign-scope" $ \foreignDirectory -> do
+                let foreignSelected = foreignDirectory </> "selected.dhall"
+                    foreignDocument =
+                      Text.unpack (Text.replace (Text.pack directory) (Text.pack foreignDirectory) (Text.pack document))
+                writeFile foreignSelected foreignDocument
+                foreignBootstrap <- readBootstrapProjection foreignSelected >>= either (fail . show) pure
+                prepareFreshScope (bootstrapScope foreignBootstrap) generation `shouldReturn` FreshScopePrepared
+                withNewKindOperation
+                  foreignBootstrap
+                  operation
+                  (recordKindNodeCreateIntent foreignBootstrap proposal)
+                  `shouldReturn` KindOperationCallbackReturned NodeCreateIntentRefused
+                doesFileExist (scopeRoot (bootstrapScope foreignBootstrap) </> "kind-node-create-intent.json")
+                  `shouldReturn` False
+              recorded <- withNewKindOperation intentBootstrap operation $ \stable -> do
+                observeKindNodeCreateIntent intentBootstrap proposal stable `shouldReturn` NodeCreateIntentMissing
+                recordKindNodeCreateIntent intentBootstrap proposal (pure False)
+                  `shouldReturn` NodeCreateIntentRefused
+                recordKindNodeCreateIntent intentBootstrap proposal stable `shouldReturn` NodeCreateIntentRecorded
+                observeKindNodeCreateIntent intentBootstrap proposal stable `shouldReturn` NodeCreateIntentMatches
+                observeKindNodeCreateIntent intentBootstrap foreignProposal stable
+                  `shouldReturn` NodeCreateIntentConflict
+                recordKindNodeCreateIntent intentBootstrap proposal stable
+                  `shouldReturn` NodeCreateIntentAlreadyExists
+                observeRecordedKindNodeCreateIntent intentBootstrap operation stable
+                  `shouldReturn` NodeCreateRecoveryRecorded proposal
+              recorded `shouldBe` KindOperationCallbackReturned ()
+              binary <- resolveBinaryPath
+              (statusCode, statusOutput, statusErrors) <-
+                readCreateProcessWithExitCode (proc binary ["--config", intentSelected, "control", "status"]) ""
+              (statusCode, statusErrors) `shouldBe` (ExitSuccess, "")
+              statusOutput
+                `shouldContain` "Node create proposal: matches the selected operation and daemon; admission and settlement unverified"
+              statusOutput `shouldContain` "node attempt not found locally; effect and settlement unverified"
+              withRecoveredKindOperation
+                intentBootstrap
+                operation
+                ( \stable -> do
+                    recordKindNodeCreateAttempt intentBootstrap proposal stable `shouldReturn` NodeCreateAttemptRecorded
+                    recordKindNodeStartAttempt intentBootstrap proposal (replicate 64 'c') stable
+                      `shouldReturn` NodeStartAttemptRefused
+                    recordKindNodeCreateResult
+                      intentBootstrap
+                      proposal
+                      (DockerNodeContainerCreateReply 201 (Just (replicate 64 'c')))
+                      stable
+                      `shouldReturn` NodeCreateResultRecorded
+                    recordKindNodeStartAttempt intentBootstrap proposal (replicate 64 'd') stable
+                      `shouldReturn` NodeStartAttemptRefused
+                    observeKindNodeStartAttempt intentBootstrap proposal (replicate 64 'c') stable
+                      `shouldReturn` NodeStartAttemptMissing
+                    recordKindNodeStartAttempt intentBootstrap proposal (replicate 64 'c') stable
+                      `shouldReturn` NodeStartAttemptRecorded
+                    observeKindNodeStartAttempt intentBootstrap proposal (replicate 64 'c') stable
+                      `shouldReturn` NodeStartAttemptMatches
+                    recordKindNodeStartAttempt intentBootstrap proposal (replicate 64 'c') stable
+                      `shouldReturn` NodeStartAttemptAlreadyExists
+                )
+                `shouldReturn` KindOperationCallbackReturned ()
+              (attemptCode, attemptOutput, attemptErrors) <-
+                readCreateProcessWithExitCode (proc binary ["--config", intentSelected, "control", "status"]) ""
+              (attemptCode, attemptErrors) `shouldBe` (ExitSuccess, "")
+              attemptOutput `shouldContain` "node attempt recorded; effect and settlement unverified"
+              attemptOutput `shouldContain` "node daemon replied 201; ownership and settlement unverified"
+              attemptOutput `shouldContain` "node start attempt recorded; effect and settlement unverified"
+              attemptOutput
+                `shouldContain` "node start result not found locally; readiness and settlement unverified"
+              withRecoveredKindOperation
+                intentBootstrap
+                operation
+                ( recordKindNodeStartResult
+                    intentBootstrap
+                    proposal
+                    (replicate 64 'c')
+                    DockerNodeContainerStartUnconfirmed
+                )
+                `shouldReturn` KindOperationCallbackReturned NodeStartResultRecorded
+              (startCode, startOutput, startErrors) <-
+                readCreateProcessWithExitCode (proc binary ["--config", intentSelected, "control", "status"]) ""
+              (startCode, startErrors) `shouldBe` (ExitSuccess, "")
+              startOutput `shouldContain` "node start outcome unconfirmed; readiness and settlement unverified"
+              startOutput
+                `shouldContain` "node identity, image, network, ports and mounts match; running; ownership and readiness unverified"
+              withRecoveredKindOperation
+                intentBootstrap
+                operation
+                ( \stable -> do
+                    recordKindNodeRemoveAttempt intentBootstrap proposal (replicate 64 'd') stable
+                      `shouldReturn` NodeRemoveAttemptRefused
+                    recordKindNodeRemoveAttempt intentBootstrap proposal (replicate 64 'c') stable
+                      `shouldReturn` NodeRemoveAttemptRecorded
+                    recordKindNodeRemoveResult
+                      intentBootstrap
+                      proposal
+                      (replicate 64 'c')
+                      DockerNodeContainerRemoveUnconfirmed
+                      stable
+                      `shouldReturn` NodeRemoveResultRecorded
+                )
+                `shouldReturn` KindOperationCallbackReturned ()
+              (removeCode, removeOutput, removeErrors) <-
+                readCreateProcessWithExitCode (proc binary ["--config", intentSelected, "control", "status"]) ""
+              (removeCode, removeErrors) `shouldBe` (ExitSuccess, "")
+              removeOutput
+                `shouldContain` "node removal positive control recorded; authenticity and settlement unverified"
+              removeOutput `shouldContain` "node removal attempt recorded; absence and settlement unverified"
+              removeOutput `shouldContain` "node removal outcome unconfirmed; absence and settlement unverified"
+              removeOutput
+                `shouldContain` "Independent node removal inventory: target listed, 1 name matches, 1 cluster-label matches in repeated reads; absence and settlement unverified"
+              let startResultPath = intentRoot </> "kind-node-start-result.json"
+              writeFile startResultPath "{\"kind\":1,\"kind\":1}"
+              withRecoveredKindOperation
+                intentBootstrap
+                operation
+                (observeKindNodeStartResult intentBootstrap proposal (replicate 64 'c'))
+                `shouldReturn` KindOperationCallbackReturned NodeStartResultInvalid
+              removeFile startResultPath
+              writeFile (intentDirectory </> "foreign-start-result") "foreign"
+              createSymbolicLink (intentDirectory </> "foreign-start-result") startResultPath
+              withRecoveredKindOperation
+                intentBootstrap
+                operation
+                (observeKindNodeStartResult intentBootstrap proposal (replicate 64 'c'))
+                `shouldReturn` KindOperationCallbackReturned NodeStartResultUnobservable
+              readFile (intentDirectory </> "foreign-start-result") `shouldReturn` "foreign"
+              let startPath = intentRoot </> "kind-node-start-attempt.json"
+              writeFile startPath "{\"kind\":1,\"kind\":1}"
+              withRecoveredKindOperation
+                intentBootstrap
+                operation
+                (observeKindNodeStartAttempt intentBootstrap proposal (replicate 64 'c'))
+                `shouldReturn` KindOperationCallbackReturned NodeStartAttemptInvalid
+              removeFile startPath
+              writeFile (intentDirectory </> "foreign-start") "foreign"
+              createSymbolicLink (intentDirectory </> "foreign-start") startPath
+              withRecoveredKindOperation
+                intentBootstrap
+                operation
+                (observeKindNodeStartAttempt intentBootstrap proposal (replicate 64 'c'))
+                `shouldReturn` KindOperationCallbackReturned NodeStartAttemptUnobservable
+              readFile (intentDirectory </> "foreign-start") `shouldReturn` "foreign"
+              let resultPath = intentRoot </> "kind-node-create-result.json"
+              writeFile resultPath "{\"kind\":1,\"kind\":1}"
+              withRecoveredKindOperation
+                intentBootstrap
+                operation
+                (observeKindNodeCreateResult intentBootstrap proposal)
+                `shouldReturn` KindOperationCallbackReturned NodeCreateResultInvalid
+              removeFile resultPath
+              writeFile (intentDirectory </> "foreign-result") "foreign"
+              createSymbolicLink (intentDirectory </> "foreign-result") resultPath
+              withRecoveredKindOperation
+                intentBootstrap
+                operation
+                (observeKindNodeCreateResult intentBootstrap proposal)
+                `shouldReturn` KindOperationCallbackReturned NodeCreateResultUnobservable
+              readFile (intentDirectory </> "foreign-result") `shouldReturn` "foreign"
+              let recordPath = intentRoot </> "kind-node-create-intent.json"
+              writeFile recordPath "{\"schema_version\":1,\"schema_version\":1}"
+              withRecoveredKindOperation
+                intentBootstrap
+                operation
+                (observeRecordedKindNodeCreateIntent intentBootstrap operation)
+                `shouldReturn` KindOperationCallbackReturned NodeCreateRecoveryInvalid
+              removeFile recordPath
+              writeFile (intentDirectory </> "foreign-intent") "foreign"
+              createSymbolicLink (intentDirectory </> "foreign-intent") recordPath
+              withRecoveredKindOperation
+                intentBootstrap
+                operation
+                (observeRecordedKindNodeCreateIntent intentBootstrap operation)
+                `shouldReturn` KindOperationCallbackReturned NodeCreateRecoveryUnobservable
+              readFile (intentDirectory </> "foreign-intent") `shouldReturn` "foreign"
+        withSystemTempDirectory "prodbox-config-status" $ \statusDirectory -> do
+          let statusSocket = statusDirectory </> "docker.sock"
+              statusSelected = statusDirectory </> "selected.dhall"
+              statusDocument = Text.unpack (Text.replace (Text.pack directory) (Text.pack statusDirectory) (Text.pack document))
+          writeFile statusSelected statusDocument
+          statusBootstrap <- readBootstrapProjection statusSelected >>= either (fail . show) pure
+          prepareFreshScope (bootstrapScope statusBootstrap) generation `shouldReturn` FreshScopePrepared
+          let statusRoot = scopeRoot (bootstrapScope statusBootstrap)
+              statusArgs =
+                map
+                  ( \arg ->
+                      if arg == "--volume=" ++ rootPath ++ ":/var/lib/prodbox"
+                        then "--volume=" ++ statusRoot ++ ":/var/lib/prodbox"
+                        else arg
+                  )
+                  nodeArgs
+              statusInput = nodeInput {nodeCreateArguments = statusArgs}
+              statusBody =
+                LazyBS8.toStrict
+                  (Aeson.encode (nodeInspect image nodeId name "/var/lib/docker/volumes/example/_data" statusRoot))
+              statusContainers =
+                BS8.pack
+                  ( "[{\"Id\":\""
+                      ++ nodeId
+                      ++ "\",\"Names\":[\"/prodbox-t-run-control-plane\"],\"Image\":\"example\",\"ImageID\":\"sha256:"
+                      ++ replicate 64 'a'
+                      ++ "\",\"Command\":\"\",\"Created\":1,\"Ports\":[],\"Labels\":{},\"State\":\"running\",\"Status\":\"Up\",\"HostConfig\":{},\"NetworkSettings\":{\"Networks\":{}},\"Mounts\":[]}]"
+                  )
+          withDockerDaemonFixtureControlVolumeAndNode
+            statusSocket
+            False
+            (const (pure ()))
+            (pure False)
+            statusContainers
+            (BS8.pack "[]")
+            (pure True)
+            Nothing
+            (pure (BS8.pack "{\"Volumes\":[],\"Warnings\":[]}"))
+            (Just (nodeId, statusBody))
+            $ \_ -> do
+              identity <- observeDockerSocketIdentity statusSocket >>= maybe (fail "missing status socket") pure
+              intent <-
+                maybe
+                  (fail "invalid status intent")
+                  pure
+                  (mkKindNodeCreateIntent statusBootstrap statusInput (DockerDaemonObserved "daemon-a" identity))
+              withNewKindOperation
+                statusBootstrap
+                operation
+                ( \stable -> do
+                    recordKindNodeCreateIntent statusBootstrap intent stable `shouldReturn` NodeCreateIntentRecorded
+                    recordKindNodeCreateAttempt statusBootstrap intent stable `shouldReturn` NodeCreateAttemptRecorded
+                    recordKindNodeCreateResult
+                      statusBootstrap
+                      intent
+                      (DockerNodeContainerCreateReply 201 (Just nodeId))
+                      stable
+                      `shouldReturn` NodeCreateResultRecorded
+                    recordKindNodeStartAttempt statusBootstrap intent nodeId stable
+                      `shouldReturn` NodeStartAttemptRecorded
+                    recordKindNodeStartResult statusBootstrap intent nodeId (DockerNodeContainerStartReply 204) stable
+                      `shouldReturn` NodeStartResultRecorded
+                    recordKindNodeConfigAttempt statusBootstrap intent nodeId stable
+                      `shouldReturn` NodeConfigAttemptRecorded
+                    recordKindNodeConfigResult statusBootstrap intent nodeId DockerNodeConfigWriteUnconfirmed stable
+                      `shouldReturn` NodeConfigResultRecorded
+                )
+                `shouldReturn` KindOperationCallbackReturned ()
+              binary <- resolveBinaryPath
+              let checkStatus = do
+                    (code, output, errors) <-
+                      readCreateProcessWithExitCode (proc binary ["--config", statusSelected, "control", "status"]) ""
+                    (code, errors) `shouldBe` (ExitSuccess, "")
+                    output `shouldContain` "node configuration attempt recorded; effect and settlement unverified"
+                    output `shouldContain` "node configuration write outcome unconfirmed; settlement unverified"
+              checkStatus
+              let removalMarker = statusRoot </> "kind-node-remove-attempt.json"
+              writeFile removalMarker "synthetic conflicting removal"
+              setFileMode removalMarker 0o600
+              checkStatus
+          removeFile statusSocket
+          binary <- resolveBinaryPath
+          (offlineCode, offlineOutput, offlineErrors) <-
+            readCreateProcessWithExitCode (proc binary ["--config", statusSelected, "control", "status"]) ""
+          offlineCode `shouldBe` ExitFailure 1
+          offlineErrors `shouldContain` "Cannot observe local control:"
+          offlineOutput
+            `shouldContain` "node configuration attempt recorded; effect and settlement unverified"
+          offlineOutput `shouldContain` "node configuration write outcome unconfirmed; settlement unverified"
+        parseDockerNodeContainer bootstrap nodeInput nodeId inspected
+          `shouldBe` Right (DockerNodeContainerMatching True)
+        parseDockerKindNodeAddresses bootstrap nodeInput nodeId inspected
+          `shouldBe` Right (BS8.pack "172.18.0.2,fd00::2\n")
+        parseDockerKindNodeAddresses bootstrap nodeInput nodeId (exposeApi inspected)
+          `shouldSatisfy` isLeft
+        let replaceNetwork field replacement value = case value of
+              Aeson.Object node ->
+                Aeson.Object
+                  (adjustKey (modifySettings field replacement) (AesonKey.fromString "NetworkSettings") node)
+              _ -> value
+            modifySettings field replacement value = case value of
+              Aeson.Object settings ->
+                Aeson.Object
+                  (adjustKey (modifyNetworks field replacement) (AesonKey.fromString "Networks") settings)
+              _ -> value
+            modifyNetworks field replacement value = case value of
+              Aeson.Object networks ->
+                Aeson.Object
+                  (adjustKey (modifyFields field replacement) (AesonKey.fromString "prodbox-t-run") networks)
+              _ -> value
+            modifyFields field replacement value = case value of
+              Aeson.Object fields ->
+                Aeson.Object
+                  (AesonKeyMap.insert (AesonKey.fromString field) (Aeson.toJSON (replacement :: String)) fields)
+              _ -> value
+            adjustKey update key object = case AesonKeyMap.lookup key object of
+              Just value -> AesonKeyMap.insert key (update value) object
+              Nothing -> object
+        parseDockerKindNodeAddresses
+          bootstrap
+          nodeInput
+          nodeId
+          (replaceNetwork "IPAddress" "172.18.0.2\nforeign" inspected)
+          `shouldSatisfy` isLeft
+        parseDockerKindNodeAddresses
+          bootstrap
+          nodeInput
+          nodeId
+          (replaceNetwork "GlobalIPv6Address" "172.18.0.2" inspected)
+          `shouldSatisfy` isLeft
+        parseDockerNodeContainer
+          bootstrap
+          nodeInput
+          nodeId
+          ( nodeInspect
+              ("sha256:" ++ replicate 64 'd')
+              (replicate 64 'c')
+              name
+              "/var/lib/docker/volumes/example/_data"
+              rootPath
+          )
+          `shouldBe` Right DockerNodeContainerConflict
+        parseDockerNodeContainer
+          bootstrap
+          nodeInput
+          nodeId
+          (nodeInspect image (replicate 64 'd') name "/var/lib/docker/volumes/example/_data" rootPath)
+          `shouldBe` Right DockerNodeContainerConflict
+        parseDockerNodeContainer
+          bootstrap
+          nodeInput
+          nodeId
+          (nodeInspect image (replicate 64 'c') "foreign" "/var/lib/docker/volumes/example/_data" rootPath)
+          `shouldBe` Right DockerNodeContainerConflict
+        parseDockerNodeContainer
+          bootstrap
+          nodeInput
+          nodeId
+          (nodeInspect image (replicate 64 'c') name "/var/lib/docker/volumes/example/_data" "/foreign")
+          `shouldBe` Right DockerNodeContainerConflict
+        parseDockerNodeContainer
+          bootstrap
+          nodeInput
+          nodeId
+          (nodeInspect image (replicate 64 'c') name "" rootPath)
+          `shouldBe` Right DockerNodeContainerConflict
+        parseDockerNodeContainer bootstrap nodeInput nodeId (addForeignMount inspected)
+          `shouldBe` Right DockerNodeContainerConflict
+        parseDockerNodeContainer bootstrap nodeInput nodeId (exposeApi inspected)
+          `shouldBe` Right DockerNodeContainerConflict
+        parseDockerNodeContainer bootstrap nodeInput nodeId (addForeignPort inspected)
+          `shouldBe` Right DockerNodeContainerConflict
+        let changeState fields = case inspected of
+              Aeson.Object node ->
+                Aeson.Object (AesonKeyMap.insert (AesonKey.fromString "State") (Aeson.object fields) node)
+              other -> other
+            state running paused restarting dead status =
+              [ AesonKey.fromString "Running" Aeson..= running
+              , AesonKey.fromString "Paused" Aeson..= paused
+              , AesonKey.fromString "Restarting" Aeson..= restarting
+              , AesonKey.fromString "Dead" Aeson..= dead
+              , AesonKey.fromString "Status" Aeson..= (status :: String)
+              ]
+        mapM_
+          ( \fields ->
+              parseDockerNodeContainer bootstrap nodeInput nodeId (changeState fields)
+                `shouldBe` Right DockerNodeContainerConflict
+          )
+          [ state True True False False "paused"
+          , state True True False False "running"
+          , state True False True False "restarting"
+          , state True False True False "running"
+          , state False False False True "dead"
+          , state False False False True "exited"
+          , state True False False False "exited"
+          , state False False False False "running"
+          , state False False False False "removing"
+          ]
+        parseDockerNodeContainer
+          bootstrap
+          nodeInput
+          nodeId
+          (changeState (state False False False False "created"))
+          `shouldBe` Right (DockerNodeContainerMatching False)
+        parseDockerNodeContainer bootstrap nodeInput nodeId (changeState []) `shouldSatisfy` isLeft
+        parseDockerNodeContainer bootstrap nodeInput nodeId (publishAllPorts inspected)
+          `shouldBe` Right DockerNodeContainerConflict
+        let changeHostField fieldName value = case inspected of
+              Aeson.Object node -> case AesonKeyMap.lookup (AesonKey.fromString "HostConfig") node of
+                Just (Aeson.Object host) ->
+                  Aeson.Object
+                    ( AesonKeyMap.insert
+                        (AesonKey.fromString "HostConfig")
+                        (Aeson.Object (AesonKeyMap.insert (AesonKey.fromString fieldName) value host))
+                        node
+                    )
+                _ -> inspected
+              _ -> inspected
+        forM_
+          [ ("Privileged", Aeson.Bool False)
+          , ("CgroupnsMode", Aeson.toJSON ("host" :: String))
+          ,
+            ( "RestartPolicy"
+            , Aeson.object
+                [ AesonKey.fromString "Name" Aeson..= ("no" :: String)
+                , AesonKey.fromString "MaximumRetryCount" Aeson..= (0 :: Int)
+                ]
+            )
+          , ("SecurityOpt", Aeson.toJSON (["seccomp=unconfined"] :: [String]))
+          , ("Tmpfs", Aeson.object [AesonKey.fromString "/tmp" Aeson..= ("" :: String)])
+          , ("Init", Aeson.Bool True)
+          ]
+          $ \(field, value) ->
+            parseDockerNodeContainer bootstrap nodeInput nodeId (changeHostField field value)
+              `shouldBe` Right DockerNodeContainerConflict
+        let missingPrivilege = case inspected of
+              Aeson.Object node -> case AesonKeyMap.lookup (AesonKey.fromString "HostConfig") node of
+                Just (Aeson.Object host) ->
+                  Aeson.Object
+                    ( AesonKeyMap.insert
+                        (AesonKey.fromString "HostConfig")
+                        (Aeson.Object (AesonKeyMap.delete (AesonKey.fromString "Privileged") host))
+                        node
+                    )
+                _ -> inspected
+              _ -> inspected
+        parseDockerNodeContainer bootstrap nodeInput nodeId missingPrivilege `shouldSatisfy` isLeft
+        let missingPorts = case inspected of
+              Aeson.Object node -> Aeson.Object (AesonKeyMap.delete (AesonKey.fromString "HostConfig") node)
+              value -> value
+        parseDockerNodeContainer bootstrap nodeInput nodeId missingPorts `shouldSatisfy` isLeft
+        let missingMounts = case inspected of
+              Aeson.Object value -> Aeson.Object (AesonKeyMap.delete (AesonKey.fromString "Mounts") value)
+              value -> value
+        parseDockerNodeContainer bootstrap nodeInput nodeId missingMounts `shouldSatisfy` isLeft
+        let changedGeneration = case inspected of
+              Aeson.Object node -> case AesonKeyMap.lookup (AesonKey.fromString "Config") node of
+                Just (Aeson.Object config) -> case AesonKeyMap.lookup (AesonKey.fromString "Labels") config of
+                  Just (Aeson.Object labelsObject) ->
+                    Aeson.Object
+                      ( AesonKeyMap.insert
+                          (AesonKey.fromString "Config")
+                          ( Aeson.Object
+                              ( AesonKeyMap.insert
+                                  (AesonKey.fromString "Labels")
+                                  ( Aeson.Object
+                                      ( AesonKeyMap.insert
+                                          (AesonKey.fromString "io.prodbox.generation")
+                                          (Aeson.toJSON (replicate 32 'e'))
+                                          labelsObject
+                                      )
+                                  )
+                                  config
+                              )
+                          )
+                          node
+                      )
+                  _ -> inspected
+                _ -> inspected
+              _ -> inspected
+        parseDockerNodeContainer bootstrap nodeInput nodeId changedGeneration
+          `shouldBe` Right DockerNodeContainerConflict
+        withDockerNodeInspectFixture socketPath nodeId (Just (LazyBS8.toStrict (Aeson.encode inspected))) $ \requests -> do
+          result <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ -> do
+            inspectDockerSessionKindNode session bootstrap nodeInput "invalid"
+              `shouldReturn` Left DockerConnectedInfoInvalid
+            inspectDockerSessionKindNode session bootstrap nodeInput nodeId
+              `shouldReturn` Right (DockerNodeContainerMatching True)
+          result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+          request <- takeMVar requests
+          request `shouldBe` ("GET /containers/" ++ nodeId ++ "/json HTTP/1.1")
+        removeFile socketPath
+        withDockerNodeInspectFixture socketPath nodeId Nothing $ \requests -> do
+          result <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ -> inspectDockerSessionKindNode session bootstrap nodeInput nodeId
+          result
+            `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted (Left DockerConnectedInfoStatus))
+          void (takeMVar requests)
+        removeFile socketPath
+        forM_ [False, True] $ \visible ->
+          withSystemTempDirectory "prodbox-node-create-uncertain" $ \recoveryDirectory -> do
+            let recoverySocket = recoveryDirectory </> "docker.sock"
+                recoverySelected = recoveryDirectory </> "selected.dhall"
+                recoveryDocument =
+                  Text.unpack (Text.replace (Text.pack directory) (Text.pack recoveryDirectory) (Text.pack document))
+            writeFile recoverySelected recoveryDocument
+            recoveryBootstrap <- readBootstrapProjection recoverySelected >>= either (fail . show) pure
+            prepareFreshScope (bootstrapScope recoveryBootstrap) generation `shouldReturn` FreshScopePrepared
+            let recoveryRoot = scopeRoot (bootstrapScope recoveryBootstrap)
+                recoveryArgs =
+                  map
+                    ( \arg ->
+                        if arg == "--volume=" ++ rootPath ++ ":/var/lib/prodbox"
+                          then "--volume=" ++ recoveryRoot ++ ":/var/lib/prodbox"
+                          else arg
+                    )
+                    nodeArgs
+                recoveryInput = nodeInput {nodeCreateArguments = recoveryArgs}
+                containerId = replicate 64 'c'
+                body =
+                  LazyBS8.toStrict
+                    ( Aeson.encode
+                        (nodeInspect image containerId name "/var/lib/docker/volumes/example/_data" recoveryRoot)
+                    )
+                listing =
+                  if visible
+                    then
+                      BS8.pack
+                        ( "[{\"Id\":\""
+                            ++ containerId
+                            ++ "\",\"Names\":[\"/prodbox-t-run-control-plane\"],\"Image\":\"example\",\"ImageID\":\"sha256:"
+                            ++ replicate 64 'a'
+                            ++ "\",\"Command\":\"\",\"Created\":1,\"Ports\":[],\"Labels\":{},\"State\":\"running\",\"Status\":\"Up\",\"HostConfig\":{},\"NetworkSettings\":{\"Networks\":{}},\"Mounts\":[]}]"
+                        )
+                    else BS8.pack "[]"
+            withDockerDaemonFixtureControlVolumeAndNode
+              recoverySocket
+              False
+              (const (pure ()))
+              (pure False)
+              listing
+              (BS8.pack "[]")
+              (pure True)
+              Nothing
+              (pure (BS8.pack "{\"Volumes\":[],\"Warnings\":[]}"))
+              (Just (containerId, body))
+              $ \_ -> do
+                socketIdentity <- observeDockerSocketIdentity recoverySocket >>= maybe (fail "missing socket") pure
+                proposal <-
+                  maybe
+                    (fail "invalid node intent")
+                    pure
+                    ( mkKindNodeCreateIntent
+                        recoveryBootstrap
+                        recoveryInput
+                        (DockerDaemonObserved "daemon-a" socketIdentity)
+                    )
+                withNewKindOperation
+                  recoveryBootstrap
+                  operation
+                  ( \stable -> do
+                      recordKindNodeCreateIntent recoveryBootstrap proposal stable `shouldReturn` NodeCreateIntentRecorded
+                      recordKindNodeCreateAttempt recoveryBootstrap proposal stable
+                        `shouldReturn` NodeCreateAttemptRecorded
+                      recordKindNodeCreateResult recoveryBootstrap proposal DockerNodeContainerCreateUnconfirmed stable
+                        `shouldReturn` NodeCreateResultRecorded
+                  )
+                  `shouldReturn` KindOperationCallbackReturned ()
+                binary <- resolveBinaryPath
+                (code, output, errors) <-
+                  readCreateProcessWithExitCode (proc binary ["--config", recoverySelected, "control", "status"]) ""
+                (code, errors) `shouldBe` (ExitSuccess, "")
+                if visible
+                  then
+                    output
+                      `shouldContain` ( "Unconfirmed node candidate: candidate "
+                                          ++ containerId
+                                          ++ "; node identity, image, network, ports and mounts match"
+                                      )
+                  else
+                    output
+                      `shouldContain` "Unconfirmed node candidate: no candidate sampled; absence and settlement unverified"
+                output `shouldContain` "node request outcome unconfirmed; settlement unverified"
+                let candidatePath = recoveryRoot </> "kind-node-create-candidate.json"
+                    createResultPath = recoveryRoot </> "kind-node-create-result.json"
+                originalResult <- BS8.readFile createResultPath
+                if visible
+                  then do
+                    withNewConnectedKindNodeCandidate recoveryBootstrap operation (replicate 64 'd')
+                      `shouldReturn` KindOperationCallbackReturned
+                        ( DockerPeerCompleted
+                            (DockerConnectedInfoCompleted (NodeCandidateActionInspectionRefused (Left DockerConnectedInfoStatus)))
+                        )
+                    doesFileExist candidatePath `shouldReturn` False
+                    withNewConnectedKindNodeCandidate recoveryBootstrap operation containerId
+                      `shouldReturn` KindOperationCallbackReturned
+                        ( DockerPeerCompleted
+                            (DockerConnectedInfoCompleted (NodeCandidateActionReturned NodeCandidateRecorded))
+                        )
+                    withRecoveredKindOperation
+                      recoveryBootstrap
+                      operation
+                      (observeRecordedKindNodeCandidate recoveryBootstrap proposal)
+                      `shouldReturn` KindOperationCallbackReturned (NodeCandidateRecordObserved containerId)
+                    withNewConnectedKindNodeCandidate recoveryBootstrap operation containerId
+                      `shouldReturn` KindOperationCallbackReturned
+                        ( DockerPeerCompleted
+                            (DockerConnectedInfoCompleted (NodeCandidateActionReturned NodeCandidateAlreadyExists))
+                        )
+                    withRecoveredKindOperation
+                      recoveryBootstrap
+                      operation
+                      (\stable -> recordKindNodeCandidate recoveryBootstrap proposal (replicate 64 'd') stable)
+                      `shouldReturn` KindOperationCallbackReturned NodeCandidateRefused
+                    (recordCode, recordOutput, recordErrors) <-
+                      readCreateProcessWithExitCode (proc binary ["--config", recoverySelected, "control", "status"]) ""
+                    (recordCode, recordErrors) `shouldBe` (ExitSuccess, "")
+                    recordOutput
+                      `shouldContain` ( "Recorded unconfirmed node candidate: candidate "
+                                          ++ containerId
+                                          ++ " recorded; ownership and settlement unverified"
+                                      )
+                    writeFile candidatePath "{\"container_id\":1,\"container_id\":1}"
+                    withRecoveredKindOperation
+                      recoveryBootstrap
+                      operation
+                      (observeRecordedKindNodeCandidate recoveryBootstrap proposal)
+                      `shouldReturn` KindOperationCallbackReturned NodeCandidateRecordInvalid
+                  else do
+                    withNewConnectedKindNodeCandidate recoveryBootstrap operation containerId
+                      `shouldReturn` KindOperationCallbackReturned
+                        ( DockerPeerCompleted
+                            ( DockerConnectedInfoCompleted
+                                ( NodeCandidateActionReturned
+                                    (NodeCandidatePositiveControlRefused (NodeRemovalReadbackSampled (NodeRemovalInventory False [] [])))
+                                )
+                            )
+                        )
+                    doesFileExist candidatePath `shouldReturn` False
+                BS8.readFile createResultPath `shouldReturn` originalResult
+
+        withSystemTempDirectory "prodbox-node-submission" $ \nodeDirectory -> do
+          let nodeSocket = nodeDirectory </> "docker.sock"
+              nodeSelected = nodeDirectory </> "selected.dhall"
+              nodeDocument = Text.unpack (Text.replace (Text.pack directory) (Text.pack nodeDirectory) (Text.pack document))
+          writeFile nodeSelected nodeDocument
+          nodeBootstrap <- readBootstrapProjection nodeSelected >>= either (fail . show) pure
+          let workerEnvironment = kindNodeWorkerEnvironment nodeBootstrap operation
+              pair key value = AesonKey.fromString key Aeson..= (value :: String)
+              doc api kind extra = Aeson.object (pair "apiVersion" api : pair "kind" kind : extra)
+              cluster =
+                doc
+                  "kubeadm.k8s.io/v1beta3"
+                  "ClusterConfiguration"
+                  [ pair "clusterName" "prodbox-t-run"
+                  , pair "kubernetesVersion" "v1.30.0"
+                  , pair "controlPlaneEndpoint" "prodbox-t-run-control-plane:6443"
+                  , AesonKey.fromString "networking"
+                      Aeson..= Aeson.object [pair "podSubnet" "10.244.0.0/16", pair "serviceSubnet" "10.96.0.0/16"]
+                  ]
+              initial =
+                doc
+                  "kubeadm.k8s.io/v1beta3"
+                  "InitConfiguration"
+                  [ AesonKey.fromString "localAPIEndpoint"
+                      Aeson..= Aeson.object
+                        [pair "advertiseAddress" "172.18.0.2", AesonKey.fromString "bindPort" Aeson..= (6443 :: Int)]
+                  ]
+              projections =
+                [ cluster
+                , initial
+                , doc "kubeadm.k8s.io/v1beta3" "JoinConfiguration" []
+                , doc "kubelet.config.k8s.io/v1beta1" "KubeletConfiguration" []
+                , doc "kubeproxy.config.k8s.io/v1alpha1" "KubeProxyConfiguration" []
+                ]
+              matches =
+                matchesKindKubeadmScope
+                  (bootstrapScope nodeBootstrap)
+                  (Text.pack "172.18.0.2")
+                  (Text.pack "v1.30.0")
+              foreignCluster = case cluster of
+                Aeson.Object fields ->
+                  Aeson.Object
+                    (AesonKeyMap.insert (AesonKey.fromString "clusterName") (Aeson.toJSON ("foreign" :: String)) fields)
+                other -> other
+          matches projections `shouldBe` True
+          matchesPinnedKindKubeadmConfig
+            (bootstrapScope nodeBootstrap)
+            (Text.pack "172.18.0.2")
+            (Text.pack "v1.30.0")
+            (Text.pack "systemd")
+            projections
+            `shouldBe` False
+          let syntheticConfig =
+                BS8.pack $
+                  unlines
+                    [ "apiVersion: kubeadm.k8s.io/v1beta3"
+                    , "kind: ClusterConfiguration"
+                    , "clusterName: prodbox-t-run"
+                    , "kubernetesVersion: v1.30.0"
+                    , "controlPlaneEndpoint: prodbox-t-run-control-plane:6443"
+                    , "networking: {podSubnet: 10.244.0.0/16, serviceSubnet: 10.96.0.0/16}"
+                    , "apiServer: {certSANs: [localhost, 127.0.0.1], extraArgs: {runtime-config: ''}}"
+                    , "controllerManager: {extraArgs: {enable-hostpath-provisioner: 'true'}}"
+                    , "scheduler: {extraArgs: null}"
+                    , "---"
+                    , "apiVersion: kubeadm.k8s.io/v1beta3"
+                    , "kind: InitConfiguration"
+                    , "bootstrapTokens: [{token: aaaaaa.bbbbbbbbbbbbbbbb}]"
+                    , "localAPIEndpoint: {advertiseAddress: 172.18.0.2, bindPort: 6443}"
+                    , "nodeRegistration: {criSocket: 'unix:///run/containerd/containerd.sock', kubeletExtraArgs: {node-ip: 172.18.0.2, node-labels: '', provider-id: 'kind://docker/prodbox-t-run/prodbox-t-run-control-plane'}}"
+                    , "skipPhases: [preflight]"
+                    , "---"
+                    , "apiVersion: kubeadm.k8s.io/v1beta3"
+                    , "kind: JoinConfiguration"
+                    , "controlPlane: {localAPIEndpoint: {advertiseAddress: 172.18.0.2, bindPort: 6443}}"
+                    , "discovery: {bootstrapToken: {apiServerEndpoint: 'prodbox-t-run-control-plane:6443', token: aaaaaa.bbbbbbbbbbbbbbbb, unsafeSkipCAVerification: true}}"
+                    , "nodeRegistration: {criSocket: 'unix:///run/containerd/containerd.sock', kubeletExtraArgs: {node-ip: 172.18.0.2, node-labels: '', provider-id: 'kind://docker/prodbox-t-run/prodbox-t-run-control-plane'}}"
+                    , "skipPhases: [preflight]"
+                    , "---"
+                    , "apiVersion: kubelet.config.k8s.io/v1beta1"
+                    , "kind: KubeletConfiguration"
+                    , "cgroupDriver: systemd"
+                    , "cgroupRoot: /kubelet"
+                    , "evictionHard: {imagefs.available: '0%', nodefs.available: '0%', nodefs.inodesFree: '0%'}"
+                    , "failSwapOn: false"
+                    , "imageGCHighThresholdPercent: 100"
+                    , "---"
+                    , "apiVersion: kubeproxy.config.k8s.io/v1alpha1"
+                    , "kind: KubeProxyConfiguration"
+                    , "conntrack: {maxPerCore: 0}"
+                    , "iptables: {minSyncPeriod: 1s}"
+                    , "mode: iptables"
+                    ]
+              exact =
+                matchesPinnedKindKubeadmConfig
+                  (bootstrapScope nodeBootstrap)
+                  (Text.pack "172.18.0.2")
+                  (Text.pack "v1.30.0")
+                  (Text.pack "systemd")
+          parsedConfig <- decodeBoundedYamlDocuments syntheticConfig
+          case parsedConfig of
+            Right docs@(first : remaining) -> do
+              exact docs `shouldBe` True
+              let altered = case first of
+                    Aeson.Object fields -> Aeson.Object (AesonKeyMap.insert (AesonKey.fromString "extraVolumes") Aeson.Null fields)
+                    other -> other
+              exact (altered : remaining) `shouldBe` False
+              case docs of
+                [firstDoc, initDoc, joinDoc, kubeletDoc, proxyDoc] -> do
+                  let update key change value = case value of
+                        Aeson.Object fields -> case AesonKeyMap.lookup (AesonKey.fromString key) fields of
+                          Just field -> Aeson.Object (AesonKeyMap.insert (AesonKey.fromString key) (change field) fields)
+                          Nothing -> value
+                        _ -> value
+                      changedToken =
+                        update
+                          "discovery"
+                          ( update
+                              "bootstrapToken"
+                              (update "token" (const (Aeson.toJSON ("cccccc.dddddddddddddddd" :: String))))
+                          )
+                          joinDoc
+                  exact [firstDoc, initDoc, changedToken, kubeletDoc, proxyDoc] `shouldBe` False
+                _ -> fail "unexpected kubeadm document count"
+              matchesPinnedKindKubeadmConfig
+                (bootstrapScope nodeBootstrap)
+                (Text.pack "172.18.0.2")
+                (Text.pack "v1.30.0")
+                (Text.pack "wrong")
+                docs
+                `shouldBe` False
+            _ -> fail "synthetic kubeadm documents refused"
+          matches (reverse projections) `shouldBe` False
+          matches (drop 1 projections) `shouldBe` False
+          matches (foreignCluster : drop 1 projections) `shouldBe` False
+          matchesKindKubeadmScope
+            (bootstrapScope nodeBootstrap)
+            (Text.pack "172.18.0.3")
+            (Text.pack "v1.30.0")
+            projections
+            `shouldBe` False
+          matchesKindKubeadmScope
+            (bootstrapScope nodeBootstrap)
+            (Text.pack "172.18.0.2")
+            (Text.pack "v1.31.0")
+            projections
+            `shouldBe` False
+          lookup "KIND_EXPERIMENTAL_DOCKER_NETWORK" workerEnvironment `shouldBe` Just "prodbox-t-run"
+          lookup "KIND_EXPERIMENTAL_PROVIDER" workerEnvironment `shouldBe` Just "docker"
+          lookup "DOCKER_HOST" workerEnvironment `shouldBe` Nothing
+          length (filter ((== "KIND_EXPERIMENTAL_DOCKER_NETWORK") . fst) workerEnvironment) `shouldBe` 1
+          prepareFreshScope (bootstrapScope nodeBootstrap) generation `shouldReturn` FreshScopePrepared
+          let selectedRoot = scopeRoot (bootstrapScope nodeBootstrap)
+              selectedArgs =
+                map
+                  ( \arg ->
+                      if arg == "--volume=" ++ rootPath ++ ":/var/lib/prodbox"
+                        then "--volume=" ++ selectedRoot ++ ":/var/lib/prodbox"
+                        else arg
+                  )
+                  nodeArgs
+              selectedInput = nodeInput {nodeCreateArguments = selectedArgs}
+              nodeBody =
+                LazyBS8.toStrict $
+                  Aeson.encode $
+                    nodeInspect image (replicate 64 'c') name "/var/lib/docker/volumes/example/_data" selectedRoot
+          withDockerNodeRunFixture nodeSocket nodeBody $ \requests -> do
+            socketIdentity <-
+              observeDockerSocketIdentity nodeSocket >>= maybe (fail "missing fixture socket") pure
+            proposal <-
+              maybe
+                (fail "invalid node intent")
+                pure
+                (mkKindNodeCreateIntent nodeBootstrap selectedInput (DockerDaemonObserved "daemon-a" socketIdentity))
+            withNewKindOperation
+              nodeBootstrap
+              operation
+              ( \stable -> do
+                  recordKindNodeCreateIntent nodeBootstrap proposal stable `shouldReturn` NodeCreateIntentRecorded
+                  recordKindNodeConfigAttempt nodeBootstrap proposal (replicate 64 'c') stable
+                    `shouldReturn` NodeConfigAttemptRefused
+                  recordKindNodeConfigResult
+                    nodeBootstrap
+                    proposal
+                    (replicate 64 'c')
+                    DockerNodeConfigWriteUnconfirmed
+                    stable
+                    `shouldReturn` NodeConfigResultRefused
+                  prepareKindDockerWorkerPaths nodeBootstrap operation stable
+              )
+              `shouldReturn` KindOperationCallbackReturned KindDockerWorkerPrepared
+            let unavailable = error "node preflight evaluated an unavailable capability"
+            preflight <-
+              runConfinedKindNodeOnHost
+                unavailable
+                unavailable
+                unavailable
+                nodeBootstrap
+                operation
+                []
+                unavailable
+                unavailable
+                unavailable
+                unavailable
+                unavailable
+                (pure True)
+                unavailable
+                unavailable
+            case preflight of
+              KindOperationCallbackReturned (KindDockerEndpointObserved ConfinedNodeToolMismatch) -> pure ()
+              other -> fail ("undeclared kind tool was not refused: " ++ show other)
+            verified <-
+              runVerifiedConfinedKindNodeOnHost
+                unavailable
+                unavailable
+                unavailable
+                nodeBootstrap
+                operation
+                "unused"
+                1
+                []
+                unavailable
+                unavailable
+                unavailable
+                (pure True)
+                unavailable
+                unavailable
+            case verified of
+              ConfinedKindNotDeclared -> pure ()
+              other -> fail ("verified node path accepted an undeclared tool: " ++ show other)
+            let admit candidate _ _ = pure (candidate == proposal)
+                admitStart candidate actual _ _ = pure (candidate == proposal && actual == replicate 64 'c')
+            result <- withRecoveredKindOperation nodeBootstrap operation $ \operationStable ->
+              withConnectedDockerInfo 30000000 nodeSocket $ \session info peerStable -> do
+                let stable = (&&) <$> operationStable <*> peerStable
+                    newBroker = do
+                      Just broker <- newKindNodeBroker nodeBootstrap operation session info stable admit admitStart
+                      pure broker
+                fresh <- newIORef True
+                Just stale <-
+                  newKindNodeBroker
+                    nodeBootstrap
+                    operation
+                    session
+                    info
+                    ((&&) <$> stable <*> readIORef fresh)
+                    admit
+                    admitStart
+                writeIORef fresh False
+                staleReply <- runKindNodeBrokerRequest stale selectedArgs
+                kindDockerReplyExit staleReply `shouldBe` 1
+                observeKindNodeBrokerResult stale `shouldReturn` Nothing
+                bad <- newBroker
+                badReply <- runKindNodeBrokerRequest bad (selectedArgs ++ ["foreign"])
+                kindDockerReplyExit badReply `shouldBe` 1
+                observeKindNodeBrokerResult bad `shouldReturn` Just NodeRunArgumentsRefused
+                runKindNodeBrokerRequest bad selectedArgs `shouldReturn` badReply
+                premature <- newBroker
+                prematureReply <- runKindNodeBrokerRequest premature ["logs", "-f", "prodbox-t-run-control-plane"]
+                kindDockerReplyExit prematureReply `shouldBe` 1
+                observeKindNodeBrokerResult premature `shouldReturn` Nothing
+                let copyArguments =
+                      [ "exec"
+                      , "--privileged"
+                      , "-i"
+                      , "prodbox-t-run-control-plane"
+                      , "cp"
+                      , "/dev/stdin"
+                      , "/kind/kubeadm.conf"
+                      ]
+                earlyInput <- newBroker
+                earlyReply <- runKindNodeBrokerInput earlyInput (KindDockerRequest copyArguments syntheticConfig)
+                kindDockerReplyExit earlyReply `shouldBe` 1
+                observeKindNodeBrokerConfigCandidate earlyInput `shouldReturn` Just NodeConfigCandidateUnobservable
+                foreignInput <- newBroker
+                foreignReply <-
+                  runKindNodeBrokerInput
+                    foreignInput
+                    (KindDockerRequest (copyArguments ++ ["foreign"]) syntheticConfig)
+                kindDockerReplyExit foreignReply `shouldBe` 1
+                observeKindNodeBrokerConfigCandidate foreignInput `shouldReturn` Just NodeConfigCandidateRejected
+                broker <- newBroker
+                held <- withScopeRootDescriptor (bootstrapScope nodeBootstrap) $ \root sameRoot ->
+                  withKindDockerWorkerRoots root operation ((&&) <$> stable <*> sameRoot) $ \roots rootsStable -> do
+                    outcome <- newEmptyMVar
+                    bracket
+                      (forkIO (try (serveKindNodeBroker (workerBridge roots) rootsStable broker) >>= putMVar outcome))
+                      killThread
+                      $ \_ -> do
+                        exchangeBoundKindDockerRead 10000000 (workerBridge roots) rootsStable selectedArgs
+                          `shouldReturn` KindDockerEndpointObserved
+                            (Right (KindDockerReply 0 (BS8.pack (replicate 64 'c' ++ "\n")) BS8.empty))
+                        (PosixFiles.fileSize <$> PosixFiles.getFdStatus (workerLock roots)) `shouldReturn` 0
+                        exchangeBoundKindDockerRead
+                          10000000
+                          (workerBridge roots)
+                          rootsStable
+                          ["logs", "-f", "prodbox-t-run-control-plane"]
+                          `shouldReturn` KindDockerEndpointObserved
+                            (Right (KindDockerReply 0 (BS8.pack "Reached target Multi-User System\n") BS8.empty))
+                        exchangeBoundKindDockerRead
+                          10000000
+                          (workerBridge roots)
+                          rootsStable
+                          [ "inspect"
+                          , "--format"
+                          , "{{ index .Config.Labels \"io.x-k8s.kind.role\"}}"
+                          , "prodbox-t-run-control-plane"
+                          ]
+                          `shouldReturn` KindDockerEndpointObserved (Right (KindDockerReply 0 (BS8.pack "control-plane\n") BS8.empty))
+                        exchangeBoundKindDockerRead
+                          10000000
+                          (workerBridge roots)
+                          rootsStable
+                          ["exec", "--privileged", "prodbox-t-run-control-plane", "cat", "/kind/version"]
+                          `shouldReturn` KindDockerEndpointObserved (Right (KindDockerReply 0 (BS8.pack "v1.30.0\n") BS8.empty))
+                        exchangeBoundKindDockerRead
+                          10000000
+                          (workerBridge roots)
+                          rootsStable
+                          [ "inspect"
+                          , "-f"
+                          , "{{range .NetworkSettings.Networks}}{{.IPAddress}},{{.GlobalIPv6Address}}{{end}}"
+                          , "prodbox-t-run-control-plane"
+                          ]
+                          `shouldReturn` KindDockerEndpointObserved (Right (KindDockerReply 0 (BS8.pack "172.18.0.2,fd00::2\n") BS8.empty))
+                        exchangeBoundKindDockerRead
+                          10000000
+                          (workerBridge roots)
+                          rootsStable
+                          ["exec", "--privileged", "prodbox-t-run-control-plane", "mkdir", "-p", "/kind"]
+                          `shouldReturn` KindDockerEndpointObserved (Right (KindDockerReply 0 BS.empty BS.empty))
+                        observeKindNodeConfigAttempt nodeBootstrap proposal (replicate 64 'c') rootsStable
+                          `shouldReturn` NodeConfigAttemptMissing
+                        recordKindNodeConfigAttempt nodeBootstrap proposal (replicate 64 'c') rootsStable
+                          `shouldReturn` NodeConfigAttemptRecorded
+                        observeKindNodeConfigAttempt nodeBootstrap proposal (replicate 64 'c') rootsStable
+                          `shouldReturn` NodeConfigAttemptMatches
+                        observeKindNodeConfigResult nodeBootstrap proposal (replicate 64 'c') rootsStable
+                          `shouldReturn` NodeConfigResultMissing
+                        recordKindNodeConfigResult
+                          nodeBootstrap
+                          proposal
+                          (replicate 64 'c')
+                          (DockerNodeConfigWriteReply 99)
+                          rootsStable
+                          `shouldReturn` NodeConfigResultRefused
+                        recordKindNodeConfigResult
+                          nodeBootstrap
+                          proposal
+                          (replicate 64 'c')
+                          DockerNodeConfigWriteUnconfirmed
+                          rootsStable
+                          `shouldReturn` NodeConfigResultRecorded
+                        observeKindNodeConfigResult nodeBootstrap proposal (replicate 64 'c') rootsStable
+                          `shouldReturn` NodeConfigResultObserved DockerNodeConfigWriteUnconfirmed
+                        recordKindNodeConfigResult
+                          nodeBootstrap
+                          proposal
+                          (replicate 64 'c')
+                          (DockerNodeConfigWriteReply 200)
+                          rootsStable
+                          `shouldReturn` NodeConfigResultAlreadyExists
+                        let removalMarker = selectedRoot </> "kind-node-remove-attempt.json"
+                        writeFile removalMarker "synthetic conflicting removal"
+                        setFileMode removalMarker 0o600
+                        observeKindNodeConfigAttempt nodeBootstrap proposal (replicate 64 'c') rootsStable
+                          `shouldReturn` NodeConfigAttemptMatches
+                        observeKindNodeConfigResult nodeBootstrap proposal (replicate 64 'c') rootsStable
+                          `shouldReturn` NodeConfigResultObserved DockerNodeConfigWriteUnconfirmed
+                        recordKindNodeConfigAttempt nodeBootstrap proposal (replicate 64 'c') rootsStable
+                          `shouldReturn` NodeConfigAttemptRefused
+                        removeFile removalMarker
+                        recordKindNodeConfigAttempt nodeBootstrap proposal (replicate 64 'c') rootsStable
+                          `shouldReturn` NodeConfigAttemptAlreadyExists
+                        recordKindNodeConfigAttempt nodeBootstrap proposal (replicate 64 'd') rootsStable
+                          `shouldReturn` NodeConfigAttemptRefused
+                        denied <-
+                          exchangeBoundKindDockerRequest
+                            10000000
+                            (workerBridge roots)
+                            rootsStable
+                            ( KindDockerRequest
+                                [ "exec"
+                                , "--privileged"
+                                , "-i"
+                                , "prodbox-t-run-control-plane"
+                                , "cp"
+                                , "/dev/stdin"
+                                , "/kind/kubeadm.conf"
+                                ]
+                                syntheticConfig
+                            )
+                        case denied of
+                          KindDockerEndpointObserved (Right reply) -> kindDockerReplyExit reply `shouldBe` 1
+                          other -> fail (show other)
+                        observeKindNodeBrokerConfigCandidate broker `shouldReturn` Just NodeConfigCandidateMatches
+                        completed <- timeout 3000000 (takeMVar outcome)
+                        case completed :: Maybe (Either SomeException (KindDockerEndpointResult KindDockerProtocolOutcome)) of
+                          Just (Right (KindDockerEndpointObserved KindDockerProtocolRejected)) -> pure ()
+                          _ -> fail "broker did not settle after refusal"
+                        (PosixFiles.fileSize <$> PosixFiles.getFdStatus (workerLock roots)) `shouldReturn` 1
+                        observeKindNodeBrokerResult broker
+                case held of
+                  Right (KindDockerEndpointObserved value) -> pure value
+                  other -> fail ("worker roots unavailable: " ++ show other)
+            result
+              `shouldBe` KindOperationCallbackReturned
+                ( DockerPeerCompleted
+                    ( DockerConnectedInfoCompleted
+                        ( Just $
+                            NodeRunStartObserved
+                              ( NodeCreateActionReturned
+                                  (DockerNodeContainerCreateReply 201 (Just (replicate 64 'c')))
+                                  NodeCreateResultRecorded
+                              )
+                              (NodeStartActionReturned (DockerNodeContainerStartReply 204) NodeStartResultRecorded)
+                        )
+                    )
+                )
+            takeMVar requests `shouldReturn` ("POST /containers/" ++ replicate 64 'c' ++ "/start HTTP/1.1")
+            withRecoveredKindOperation
+              nodeBootstrap
+              operation
+              (observeKindNodeCreateAttempt nodeBootstrap proposal)
+              `shouldReturn` KindOperationCallbackReturned NodeCreateAttemptMatches
+            withRecoveredKindOperation
+              nodeBootstrap
+              operation
+              (observeKindNodeCreateResult nodeBootstrap proposal)
+              `shouldReturn` KindOperationCallbackReturned
+                (NodeCreateResultObserved (DockerNodeContainerCreateReply 201 (Just (replicate 64 'c'))))
+          forM_ [(False, False), (True, False), (False, True)] $ \(lostReply, wrongReadback) -> withSystemTempDirectory "prodbox-config-action" $ \actionDirectory -> do
+            let actionSocket = actionDirectory </> "docker.sock"
+                actionSelected = actionDirectory </> "selected.dhall"
+                actionDocument = Text.unpack (Text.replace (Text.pack directory) (Text.pack actionDirectory) (Text.pack document))
+            writeFile actionSelected actionDocument
+            actionBootstrap <- readBootstrapProjection actionSelected >>= either (fail . show) pure
+            prepareFreshScope (bootstrapScope actionBootstrap) generation `shouldReturn` FreshScopePrepared
+            let actionRoot = scopeRoot (bootstrapScope actionBootstrap)
+                actionArgs =
+                  map
+                    ( \arg ->
+                        if arg == "--volume=" ++ rootPath ++ ":/var/lib/prodbox"
+                          then "--volume=" ++ actionRoot ++ ":/var/lib/prodbox"
+                          else arg
+                    )
+                    nodeArgs
+                actionInput = nodeInput {nodeCreateArguments = actionArgs}
+                actionBody =
+                  LazyBS8.toStrict $
+                    Aeson.encode $
+                      nodeInspect image (replicate 64 'c') name "/var/lib/docker/volumes/example/_data" actionRoot
+            withDockerNodeRunFixtureMode actionSocket actionBody lostReply wrongReadback $ \actionRequests -> do
+              actionIdentity <-
+                observeDockerSocketIdentity actionSocket >>= maybe (fail "missing action socket") pure
+              actionIntent <-
+                maybe
+                  (fail "invalid action intent")
+                  pure
+                  (mkKindNodeCreateIntent actionBootstrap actionInput (DockerDaemonObserved "daemon-a" actionIdentity))
+              withNewKindOperation
+                actionBootstrap
+                operation
+                ( \stable -> do
+                    recordKindNodeCreateIntent actionBootstrap actionIntent stable
+                      `shouldReturn` NodeCreateIntentRecorded
+                    prepareKindDockerWorkerPaths actionBootstrap operation stable
+                )
+                `shouldReturn` KindOperationCallbackReturned KindDockerWorkerPrepared
+              actionOutcome <- withRecoveredKindOperation actionBootstrap operation $ \operationStable ->
+                withConnectedDockerInfo 60000000 actionSocket $ \session info peerStable -> do
+                  let stable = (&&) <$> operationStable <*> peerStable
+                      admitCreate candidate _ _ = pure (candidate == actionIntent)
+                      admitNode candidate actual _ _ = pure (candidate == actionIntent && actual == replicate 64 'c')
+                      copyArgs =
+                        [ "exec"
+                        , "--privileged"
+                        , "-i"
+                        , "prodbox-t-run-control-plane"
+                        , "cp"
+                        , "/dev/stdin"
+                        , "/kind/kubeadm.conf"
+                        ]
+                  Just configBroker <-
+                    newKindNodeBrokerWithConfig
+                      actionBootstrap
+                      operation
+                      session
+                      info
+                      stable
+                      admitCreate
+                      admitNode
+                      admitNode
+                  started <- runKindNodeBrokerRequest configBroker actionArgs
+                  kindDockerReplyExit started `shouldBe` 0
+                  previous <- observeKindNodeBrokerResult configBroker
+                  denied <-
+                    runKindNodeConfigOnSession
+                      actionBootstrap
+                      operation
+                      session
+                      info
+                      stable
+                      previous
+                      copyArgs
+                      syntheticConfig
+                      (\_ _ _ _ -> pure False)
+                  denied `shouldBe` NodeConfigActionAdmissionRefused
+                  observeKindNodeConfigAttempt actionBootstrap actionIntent (replicate 64 'c') stable
+                    `shouldReturn` NodeConfigAttemptMissing
+                  bridge <- withScopeRootDescriptor (bootstrapScope actionBootstrap) $ \root sameRoot ->
+                    withKindDockerWorkerRoots root operation ((&&) <$> stable <*> sameRoot) $ \roots rootsStable -> do
+                      completed <- newEmptyMVar
+                      bracket
+                        ( forkIO
+                            (try (serveKindNodeBroker (workerBridge roots) rootsStable configBroker) >>= putMVar completed)
+                        )
+                        killThread
+                        $ \_ -> do
+                          first <-
+                            exchangeBoundKindDockerRequest
+                              20000000
+                              (workerBridge roots)
+                              rootsStable
+                              (KindDockerRequest copyArgs syntheticConfig)
+                          case first of
+                            KindDockerEndpointObserved (Right reply) -> kindDockerReplyExit reply `shouldBe` (if lostReply || wrongReadback then 1 else 0)
+                            other -> fail (show other)
+                          written <- observeKindNodeBrokerConfigAction configBroker
+                          if lostReply
+                            then do
+                              written
+                                `shouldBe` Just (NodeConfigActionChangedAfter DockerNodeConfigWriteUnconfirmed NodeConfigResultRecorded)
+                              observeKindNodeConfigResult actionBootstrap actionIntent (replicate 64 'c') stable
+                                `shouldReturn` NodeConfigResultObserved DockerNodeConfigWriteUnconfirmed
+                            else
+                              if wrongReadback
+                                then do
+                                  written
+                                    `shouldBe` Just
+                                      ( NodeConfigActionReturned
+                                          (DockerNodeConfigWriteReply 200)
+                                          NodeConfigResultRecorded
+                                          (Just (Right DockerNodeConfigDiffers))
+                                      )
+                                  observeKindNodeConfigResult actionBootstrap actionIntent (replicate 64 'c') stable
+                                    `shouldReturn` NodeConfigResultObserved (DockerNodeConfigWriteReply 200)
+                                else do
+                                  written
+                                    `shouldBe` Just
+                                      ( NodeConfigActionReturned
+                                          (DockerNodeConfigWriteReply 200)
+                                          NodeConfigResultRecorded
+                                          (Just (Right DockerNodeConfigMatches))
+                                      )
+                                  observeKindNodeConfigResult actionBootstrap actionIntent (replicate 64 'c') stable
+                                    `shouldReturn` NodeConfigResultObserved (DockerNodeConfigWriteReply 200)
+                                  repeated <-
+                                    exchangeBoundKindDockerRequest
+                                      20000000
+                                      (workerBridge roots)
+                                      rootsStable
+                                      (KindDockerRequest copyArgs syntheticConfig)
+                                  case repeated of
+                                    KindDockerEndpointObserved (Right reply) -> kindDockerReplyExit reply `shouldBe` 1
+                                    other -> fail (show other)
+                                  observeKindNodeBrokerConfigAction configBroker
+                                    `shouldReturn` Just (NodeConfigActionAttemptRefused NodeConfigAttemptAlreadyExists)
+                          observed <- timeout 3000000 (takeMVar completed)
+                          case observed :: Maybe (Either SomeException (KindDockerEndpointResult KindDockerProtocolOutcome)) of
+                            Just (Right (KindDockerEndpointObserved KindDockerProtocolRejected)) -> pure ()
+                            _ -> fail "config broker did not settle after refusal"
+                          (PosixFiles.fileSize <$> PosixFiles.getFdStatus (workerLock roots)) `shouldReturn` 1
+                  case bridge of
+                    Right (KindDockerEndpointObserved ()) -> pure ()
+                    other -> fail ("config bridge unavailable: " ++ show other)
+              actionOutcome
+                `shouldBe` KindOperationCallbackReturned (DockerPeerCompleted (DockerConnectedInfoCompleted ()))
+              takeMVar actionRequests
+                `shouldReturn` ("POST /containers/" ++ replicate 64 'c' ++ "/start HTTP/1.1")
+        withSystemTempDirectory "prodbox-node-submission-refused" $ \nodeDirectory -> do
+          let nodeSocket = nodeDirectory </> "docker.sock"
+              nodeSelected = nodeDirectory </> "selected.dhall"
+              nodeDocument = Text.unpack (Text.replace (Text.pack directory) (Text.pack nodeDirectory) (Text.pack document))
+          writeFile nodeSelected nodeDocument
+          nodeBootstrap <- readBootstrapProjection nodeSelected >>= either (fail . show) pure
+          prepareFreshScope (bootstrapScope nodeBootstrap) generation `shouldReturn` FreshScopePrepared
+          let selectedRoot = scopeRoot (bootstrapScope nodeBootstrap)
+              selectedArgs =
+                map
+                  ( \arg ->
+                      if arg == "--volume=" ++ rootPath ++ ":/var/lib/prodbox"
+                        then "--volume=" ++ selectedRoot ++ ":/var/lib/prodbox"
+                        else arg
+                  )
+                  nodeArgs
+              selectedInput = nodeInput {nodeCreateArguments = selectedArgs}
+          withDockerNodeContainerCreateFixture nodeSocket Nothing $ \_ -> do
+            socketIdentity <-
+              observeDockerSocketIdentity nodeSocket >>= maybe (fail "missing fixture socket") pure
+            proposal <-
+              maybe
+                (fail "invalid node intent")
+                pure
+                (mkKindNodeCreateIntent nodeBootstrap selectedInput (DockerDaemonObserved "daemon-a" socketIdentity))
+            withNewKindOperation nodeBootstrap operation (recordKindNodeCreateIntent nodeBootstrap proposal)
+              `shouldReturn` KindOperationCallbackReturned NodeCreateIntentRecorded
+            refused <- withNewConnectedKindNodeCreate nodeBootstrap operation (\_ _ _ -> pure False)
+            refused
+              `shouldBe` KindOperationCallbackReturned
+                (DockerPeerCompleted (DockerConnectedInfoCompleted NodeCreateActionAdmissionRefused))
+            withRecoveredKindOperation
+              nodeBootstrap
+              operation
+              (observeKindNodeCreateAttempt nodeBootstrap proposal)
+              `shouldReturn` KindOperationCallbackReturned NodeCreateAttemptMissing
+        withSystemTempDirectory "prodbox-node-submission-changed" $ \nodeDirectory -> do
+          let nodeSocket = nodeDirectory </> "docker.sock"
+              nodeSelected = nodeDirectory </> "selected.dhall"
+              nodeDocument = Text.unpack (Text.replace (Text.pack directory) (Text.pack nodeDirectory) (Text.pack document))
+          writeFile nodeSelected nodeDocument
+          nodeBootstrap <- readBootstrapProjection nodeSelected >>= either (fail . show) pure
+          prepareFreshScope (bootstrapScope nodeBootstrap) generation `shouldReturn` FreshScopePrepared
+          let selectedRoot = scopeRoot (bootstrapScope nodeBootstrap)
+              selectedArgs =
+                map
+                  ( \arg ->
+                      if arg == "--volume=" ++ rootPath ++ ":/var/lib/prodbox"
+                        then "--volume=" ++ selectedRoot ++ ":/var/lib/prodbox"
+                        else arg
+                  )
+                  nodeArgs
+              selectedInput = nodeInput {nodeCreateArguments = selectedArgs}
+          withDockerNodeContainerCreateFixture nodeSocket Nothing $ \_ -> do
+            socketIdentity <-
+              observeDockerSocketIdentity nodeSocket >>= maybe (fail "missing fixture socket") pure
+            proposal <-
+              maybe
+                (fail "invalid node intent")
+                pure
+                (mkKindNodeCreateIntent nodeBootstrap selectedInput (DockerDaemonObserved "daemon-a" socketIdentity))
+            withNewKindOperation nodeBootstrap operation (recordKindNodeCreateIntent nodeBootstrap proposal)
+              `shouldReturn` KindOperationCallbackReturned NodeCreateIntentRecorded
+            checks <- newIORef (0 :: Int)
+            let admit _ _ _ = atomicModifyIORef' checks (\value -> (value + 1, value == 0))
+            refused <- withNewConnectedKindNodeCreate nodeBootstrap operation admit
+            refused
+              `shouldBe` KindOperationCallbackReturned
+                ( DockerPeerCompleted
+                    (DockerConnectedInfoCompleted (NodeCreateActionResultRefused NodeCreateResultUnobservable))
+                )
+            withRecoveredKindOperation
+              nodeBootstrap
+              operation
+              (observeKindNodeCreateAttempt nodeBootstrap proposal)
+              `shouldReturn` KindOperationCallbackReturned NodeCreateAttemptMatches
+        forM_
+          [ (True, False, False, False)
+          , (False, False, False, False)
+          , (True, True, False, False)
+          , (True, False, True, False)
+          , (True, False, False, True)
+          ]
+          $ \(admitted, conflict, foreignMount, foreignPort) ->
+            withSystemTempDirectory "prodbox-node-start-operation" $ \startDirectory -> do
+              let startSocket = startDirectory </> "docker.sock"
+                  startSelected = startDirectory </> "selected.dhall"
+                  startDocument = Text.unpack (Text.replace (Text.pack directory) (Text.pack startDirectory) (Text.pack document))
+              writeFile startSelected startDocument
+              startBootstrap <- readBootstrapProjection startSelected >>= either (fail . show) pure
+              prepareFreshScope (bootstrapScope startBootstrap) generation `shouldReturn` FreshScopePrepared
+              let startRoot = scopeRoot (bootstrapScope startBootstrap)
+                  startArgs =
+                    map
+                      ( \arg ->
+                          if arg == "--volume=" ++ rootPath ++ ":/var/lib/prodbox"
+                            then "--volume=" ++ startRoot ++ ":/var/lib/prodbox"
+                            else arg
+                      )
+                      nodeArgs
+                  startInput = nodeInput {nodeCreateArguments = startArgs}
+                  containerId = replicate 64 'c'
+              withDockerNodeStartFixture
+                startSocket
+                ( pure
+                    ( LazyBS8.toStrict
+                        ( Aeson.encode
+                            ( (if foreignPort then exposeApi else id) $
+                                (if foreignMount then addForeignMount else id) $
+                                  nodeInspect
+                                    (if conflict then "foreign" else image)
+                                    (replicate 64 'c')
+                                    name
+                                    "/var/lib/docker/volumes/example/_data"
+                                    startRoot
+                            )
+                        )
+                    )
+                )
+                $ \requests -> do
+                  socketIdentity <-
+                    observeDockerSocketIdentity startSocket >>= maybe (fail "missing fixture socket") pure
+                  proposal <-
+                    maybe
+                      (fail "invalid node intent")
+                      pure
+                      (mkKindNodeCreateIntent startBootstrap startInput (DockerDaemonObserved "daemon-a" socketIdentity))
+                  withNewKindOperation
+                    startBootstrap
+                    operation
+                    ( \stable -> do
+                        recordKindNodeCreateIntent startBootstrap proposal stable `shouldReturn` NodeCreateIntentRecorded
+                        recordKindNodeCreateAttempt startBootstrap proposal stable `shouldReturn` NodeCreateAttemptRecorded
+                        recordKindNodeCreateResult
+                          startBootstrap
+                          proposal
+                          (DockerNodeContainerCreateReply 201 (Just containerId))
+                          stable
+                          `shouldReturn` NodeCreateResultRecorded
+                    )
+                    `shouldReturn` KindOperationCallbackReturned ()
+                  let admit candidate actual _ _ = pure (admitted && candidate == proposal && actual == containerId)
+                  result <- withRecoveredKindOperation startBootstrap operation $ \operationStable ->
+                    withConnectedDockerInfo 30000000 startSocket $ \session info peerStable ->
+                      runKindNodeStartOnSession
+                        startBootstrap
+                        operation
+                        session
+                        info
+                        ((&&) <$> operationStable <*> peerStable)
+                        admit
+                  if admitted && not conflict && not foreignMount && not foreignPort
+                    then do
+                      result
+                        `shouldBe` KindOperationCallbackReturned
+                          ( DockerPeerCompleted
+                              ( DockerConnectedInfoCompleted
+                                  (NodeStartActionReturned (DockerNodeContainerStartReply 204) NodeStartResultRecorded)
+                              )
+                          )
+                      request <- takeMVar requests
+                      request `shouldBe` ("POST /containers/" ++ containerId ++ "/start HTTP/1.1")
+                      withRecoveredKindOperation
+                        startBootstrap
+                        operation
+                        (observeKindNodeStartResult startBootstrap proposal containerId)
+                        `shouldReturn` KindOperationCallbackReturned (NodeStartResultObserved (DockerNodeContainerStartReply 204))
+                    else do
+                      tryReadMVar requests `shouldReturn` Nothing
+                      result
+                        `shouldBe` KindOperationCallbackReturned
+                          ( DockerPeerCompleted
+                              ( DockerConnectedInfoCompleted
+                                  ( if conflict || foreignMount || foreignPort
+                                      then NodeStartActionInspectionRefused (Right DockerNodeContainerConflict)
+                                      else NodeStartActionAdmissionRefused
+                                  )
+                              )
+                          )
+                      withRecoveredKindOperation
+                        startBootstrap
+                        operation
+                        (observeKindNodeStartAttempt startBootstrap proposal containerId)
+                        `shouldReturn` KindOperationCallbackReturned NodeStartAttemptMissing
+        forM_ [False, True] $ \changeInspection ->
+          withSystemTempDirectory "prodbox-node-start-changed" $ \startDirectory -> do
+            let startSocket = startDirectory </> "docker.sock"
+                startSelected = startDirectory </> "selected.dhall"
+                startDocument = Text.unpack (Text.replace (Text.pack directory) (Text.pack startDirectory) (Text.pack document))
+            writeFile startSelected startDocument
+            startBootstrap <- readBootstrapProjection startSelected >>= either (fail . show) pure
+            prepareFreshScope (bootstrapScope startBootstrap) generation `shouldReturn` FreshScopePrepared
+            let startRoot = scopeRoot (bootstrapScope startBootstrap)
+                startArgs =
+                  map
+                    ( \arg ->
+                        if arg == "--volume=" ++ rootPath ++ ":/var/lib/prodbox"
+                          then "--volume=" ++ startRoot ++ ":/var/lib/prodbox"
+                          else arg
+                    )
+                    nodeArgs
+                startInput = nodeInput {nodeCreateArguments = startArgs}
+                containerId = replicate 64 'c'
+            inspections <- newIORef (0 :: Int)
+            let nodeBody = do
+                  first <- atomicModifyIORef' inspections (\value -> (value + 1, value == 0))
+                  pure
+                    ( LazyBS8.toStrict
+                        ( Aeson.encode
+                            ( nodeInspect
+                                (if changeInspection && not first then "foreign" else image)
+                                (replicate 64 'c')
+                                name
+                                "/var/lib/docker/volumes/example/_data"
+                                startRoot
+                            )
+                        )
+                    )
+            withDockerNodeStartFixture startSocket nodeBody $
+              \requests -> do
+                socketIdentity <-
+                  observeDockerSocketIdentity startSocket >>= maybe (fail "missing fixture socket") pure
+                proposal <-
+                  maybe
+                    (fail "invalid node intent")
+                    pure
+                    (mkKindNodeCreateIntent startBootstrap startInput (DockerDaemonObserved "daemon-a" socketIdentity))
+                withNewKindOperation
+                  startBootstrap
+                  operation
+                  ( \stable -> do
+                      recordKindNodeCreateIntent startBootstrap proposal stable `shouldReturn` NodeCreateIntentRecorded
+                      recordKindNodeCreateAttempt startBootstrap proposal stable `shouldReturn` NodeCreateAttemptRecorded
+                      recordKindNodeCreateResult
+                        startBootstrap
+                        proposal
+                        (DockerNodeContainerCreateReply 201 (Just containerId))
+                        stable
+                        `shouldReturn` NodeCreateResultRecorded
+                  )
+                  `shouldReturn` KindOperationCallbackReturned ()
+                checks <- newIORef (0 :: Int)
+                let admit candidate actual _ _ = do
+                      first <- atomicModifyIORef' checks (\value -> (value + 1, value == 0))
+                      pure ((first || changeInspection) && candidate == proposal && actual == containerId)
+                result <- withNewConnectedKindNodeStart startBootstrap operation admit
+                tryReadMVar requests `shouldReturn` Nothing
+                result
+                  `shouldBe` KindOperationCallbackReturned
+                    ( DockerPeerCompleted
+                        ( DockerConnectedInfoCompleted
+                            (NodeStartActionResultRefused NodeStartResultUnobservable)
+                        )
+                    )
+                withRecoveredKindOperation
+                  startBootstrap
+                  operation
+                  (observeKindNodeStartAttempt startBootstrap proposal containerId)
+                  `shouldReturn` KindOperationCallbackReturned NodeStartAttemptMatches
+        withDockerNodeContainerCreateFixture
+          socketPath
+          (Just (BS8.pack ("{\"Id\":\"" ++ replicate 64 'c' ++ "\"}")))
+          $ \requests -> do
+            result <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ -> do
+              createDockerSessionKindNode
+                session
+                bootstrap
+                (nodeInput {nodeCreateGeneration = replicate 32 'e'})
+                (pure True)
+                `shouldReturn` DockerNodeContainerCreateNotStarted
+              createDockerSessionKindNode
+                session
+                bootstrap
+                (nodeInput {nodeCreateArguments = nodeArgs ++ ["--privileged"]})
+                (pure True)
+                `shouldReturn` DockerNodeContainerCreateNotStarted
+              createDockerSessionKindNode session bootstrap nodeInput (pure False)
+                `shouldReturn` DockerNodeContainerCreateNotStarted
+              createDockerSessionKindNode session bootstrap nodeInput (pure True)
+                `shouldReturn` DockerNodeContainerCreateReply 201 (Just (replicate 64 'c'))
+            result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+            payload <- takeMVar requests
+            case Aeson.eitherDecodeStrict' payload of
+              Right (Aeson.Object body) -> do
+                AesonKeyMap.lookup (AesonKey.fromString "Image") body `shouldBe` Just (Aeson.toJSON image)
+                case AesonKeyMap.lookup (AesonKey.fromString "HostConfig") body of
+                  Just (Aeson.Object host) -> do
+                    AesonKeyMap.lookup (AesonKey.fromString "NetworkMode") host
+                      `shouldBe` Just (Aeson.toJSON (replicate 64 'c'))
+                    AesonKeyMap.lookup (AesonKey.fromString "Binds") host
+                      `shouldBe` Just
+                        ( Aeson.toJSON
+                            ([name ++ ":/var", "/lib/modules:/lib/modules:ro", rootPath ++ ":/var/lib/prodbox"] :: [String])
+                        )
+                  other -> expectationFailure (show other)
+              other -> expectationFailure (show (other :: Either String Aeson.Value))
+        removeFile socketPath
+        withDockerNodeContainerCreateFixture socketPath Nothing $ \requests -> do
+          result <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ -> createDockerSessionKindNode session bootstrap nodeInput (pure True)
+          result
+            `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted DockerNodeContainerCreateUnconfirmed)
+          void (takeMVar requests)
+        removeFile socketPath
+        withDockerNodeContainerCreateFixture
+          socketPath
+          (Just (BS8.pack ("{\"Id\":\"" ++ replicate 64 'c' ++ "\"}")))
+          $ \requests -> do
+            count <- newIORef (0 :: Int)
+            let stable = atomicModifyIORef' count (\value -> (value + 1, value == 0))
+            result <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ -> createDockerSessionKindNode session bootstrap nodeInput stable
+            result
+              `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted DockerNodeContainerCreateUnconfirmed)
+            void (takeMVar requests)
+        removeFile socketPath
+        withDockerNodeContainerCreateFixture
+          socketPath
+          (Just (BS8.pack "{\"Id\":\"duplicate\",\"Id\":\"duplicate\"}"))
+          $ \requests -> do
+            result <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ -> createDockerSessionKindNode session bootstrap nodeInput (pure True)
+            result
+              `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted DockerNodeContainerCreateUnconfirmed)
+            void (takeMVar requests)
+        removeFile socketPath
+        forM_ ["remove", "blind", "deny", "start-after-remove"] $ \mode ->
+          withSystemTempDirectory "prodbox-node-remove" $ \removeDirectory -> do
+            let removeSocket = removeDirectory </> "docker.sock"
+                removeSelected = removeDirectory </> "selected.dhall"
+                removeDocument = Text.unpack (Text.replace (Text.pack directory) (Text.pack removeDirectory) (Text.pack document))
+            writeFile removeSelected removeDocument
+            removeBootstrap <- readBootstrapProjection removeSelected >>= either (fail . show) pure
+            prepareFreshScope (bootstrapScope removeBootstrap) generation `shouldReturn` FreshScopePrepared
+            let removeRoot = scopeRoot (bootstrapScope removeBootstrap)
+                removeArgs =
+                  map
+                    ( \arg ->
+                        if arg == "--volume=" ++ rootPath ++ ":/var/lib/prodbox"
+                          then "--volume=" ++ removeRoot ++ ":/var/lib/prodbox"
+                          else arg
+                    )
+                    nodeArgs
+                removeInput = nodeInput {nodeCreateArguments = removeArgs}
+                containerId = replicate 64 'c'
+                nodeBody =
+                  pure
+                    ( LazyBS8.toStrict
+                        ( Aeson.encode
+                            (nodeInspect image (replicate 64 'c') name "/var/lib/docker/volumes/example/_data" removeRoot)
+                        )
+                    )
+            body <- nodeBody
+            let listing =
+                  if mode == "blind"
+                    then BS8.pack "[]"
+                    else
+                      BS8.pack
+                        ( "[{\"Id\":\""
+                            ++ containerId
+                            ++ "\",\"Names\":[\"/prodbox-t-run-control-plane\"],\"Image\":\"example\",\"ImageID\":\"sha256:"
+                            ++ replicate 64 'a'
+                            ++ "\",\"Command\":\"\",\"Created\":1,\"Ports\":[],\"Labels\":{},\"State\":\"running\",\"Status\":\"Up\",\"HostConfig\":{},\"NetworkSettings\":{\"Networks\":{}},\"Mounts\":[]}]"
+                        )
+            withDockerDaemonFixtureControlVolumeAndNode
+              removeSocket
+              False
+              (const (pure ()))
+              (pure False)
+              listing
+              (BS8.pack "[]")
+              (pure True)
+              Nothing
+              (pure (BS8.pack "{\"Volumes\":[],\"Warnings\":[]}"))
+              (Just (containerId, body))
+              $ \requests -> do
+                let effects = filter ("DELETE /containers/" `isPrefixOf`) <$> readMVar requests
+                socketIdentity <-
+                  observeDockerSocketIdentity removeSocket >>= maybe (fail "missing fixture socket") pure
+                proposal <-
+                  maybe
+                    (fail "invalid node intent")
+                    pure
+                    (mkKindNodeCreateIntent removeBootstrap removeInput (DockerDaemonObserved "daemon-a" socketIdentity))
+                withNewKindOperation
+                  removeBootstrap
+                  operation
+                  ( \stable -> do
+                      recordKindNodeCreateIntent removeBootstrap proposal stable `shouldReturn` NodeCreateIntentRecorded
+                      recordKindNodeCreateAttempt removeBootstrap proposal stable `shouldReturn` NodeCreateAttemptRecorded
+                      recordKindNodeCreateResult
+                        removeBootstrap
+                        proposal
+                        (DockerNodeContainerCreateReply 201 (Just containerId))
+                        stable
+                        `shouldReturn` NodeCreateResultRecorded
+                      when (mode == "start-after-remove") $
+                        recordKindNodeRemoveAttempt removeBootstrap proposal containerId stable
+                          `shouldReturn` NodeRemoveAttemptRecorded
+                  )
+                  `shouldReturn` KindOperationCallbackReturned ()
+                if mode == "start-after-remove"
+                  then do
+                    result <- withNewConnectedKindNodeStart removeBootstrap operation (\_ _ _ _ -> pure True)
+                    result
+                      `shouldBe` KindOperationCallbackReturned
+                        ( DockerPeerCompleted
+                            (DockerConnectedInfoCompleted (NodeStartActionRemovalRefused NodeRemoveAttemptMatches))
+                        )
+                    effects `shouldReturn` []
+                  else do
+                    let admit candidate actual _ _ = pure (mode /= "deny" && candidate == proposal && actual == containerId)
+                    result <- withNewConnectedKindNodeRemove removeBootstrap operation admit
+                    if mode == "remove"
+                      then do
+                        result
+                          `shouldBe` KindOperationCallbackReturned
+                            ( DockerPeerCompleted
+                                ( DockerConnectedInfoCompleted
+                                    (NodeRemoveActionReturned (DockerNodeContainerRemoveReply 204) NodeRemoveResultRecorded)
+                                )
+                            )
+                        effects `shouldReturn` ["DELETE /containers/" ++ containerId ++ "?force=1&v=0 HTTP/1.1"]
+                        withRecoveredKindOperation
+                          removeBootstrap
+                          operation
+                          (observeKindNodeRemoveControl removeBootstrap proposal containerId)
+                          `shouldReturn` KindOperationCallbackReturned NodeRemoveControlMatches
+                        withRecoveredKindOperation
+                          removeBootstrap
+                          operation
+                          (observeKindNodeRemoveResult removeBootstrap proposal containerId)
+                          `shouldReturn` KindOperationCallbackReturned (NodeRemoveResultObserved (DockerNodeContainerRemoveReply 204))
+                        withRecoveredKindOperation
+                          removeBootstrap
+                          operation
+                          (\stable -> recordKindNodeRemoveAttempt removeBootstrap proposal containerId stable)
+                          `shouldReturn` KindOperationCallbackReturned NodeRemoveAttemptAlreadyExists
+                        let controlPath = removeRoot </> "kind-node-remove-positive-control.json"
+                        writeFile controlPath "{\"kind\":1,\"kind\":1}"
+                        withRecoveredKindOperation
+                          removeBootstrap
+                          operation
+                          (observeKindNodeRemoveControl removeBootstrap proposal containerId)
+                          `shouldReturn` KindOperationCallbackReturned NodeRemoveControlInvalid
+                        withRecoveredKindOperation
+                          removeBootstrap
+                          operation
+                          (observeKindNodeRemoveAttempt removeBootstrap proposal containerId)
+                          `shouldReturn` KindOperationCallbackReturned NodeRemoveAttemptMatches
+                        removeFile controlPath
+                        withRecoveredKindOperation
+                          removeBootstrap
+                          operation
+                          (observeKindNodeRemoveControl removeBootstrap proposal containerId)
+                          `shouldReturn` KindOperationCallbackReturned NodeRemoveControlMissing
+                        withRecoveredKindOperation
+                          removeBootstrap
+                          operation
+                          (observeKindNodeRemoveResult removeBootstrap proposal containerId)
+                          `shouldReturn` KindOperationCallbackReturned (NodeRemoveResultObserved (DockerNodeContainerRemoveReply 204))
+                      else do
+                        result
+                          `shouldBe` KindOperationCallbackReturned
+                            ( DockerPeerCompleted
+                                ( DockerConnectedInfoCompleted
+                                    ( if mode == "blind"
+                                        then
+                                          NodeRemoveActionPositiveControlRefused
+                                            (NodeRemovalReadbackSampled (NodeRemovalInventory False [] []))
+                                        else NodeRemoveActionAdmissionRefused
+                                    )
+                                )
+                            )
+                        effects `shouldReturn` []
+                        doesFileExist (removeRoot </> "kind-node-remove-positive-control.json") `shouldReturn` False
+                        withRecoveredKindOperation
+                          removeBootstrap
+                          operation
+                          (observeKindNodeRemoveAttempt removeBootstrap proposal containerId)
+                          `shouldReturn` KindOperationCallbackReturned NodeRemoveAttemptMissing
+        forM_
+          [ (Just 204, DockerNodeContainerRemoveReply 204)
+          , (Just 404, DockerNodeContainerRemoveReply 404)
+          , (Nothing, DockerNodeContainerRemoveUnconfirmed)
+          ]
+          $ \(reply, wanted) -> do
+            withDockerNetworkRemoveFixture socketPath reply $ \requests -> do
+              result <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ -> do
+                removeDockerSessionKindNode session "invalid" (pure True) (pure True)
+                  `shouldReturn` DockerNodeContainerRemoveNotStarted
+                removeDockerSessionKindNode session (replicate 64 'c') (pure False) (pure True)
+                  `shouldReturn` DockerNodeContainerRemoveNotStarted
+                removeDockerSessionKindNode session (replicate 64 'c') (pure True) (pure True)
+              result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted wanted)
+              takeMVar requests
+                `shouldReturn` ("DELETE /containers/" ++ replicate 64 'c' ++ "?force=1&v=0 HTTP/1.1")
+            removeFile socketPath
+        withDockerNetworkRemoveFixture socketPath (Just 204) $ \requests -> do
+          result <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ ->
+            removeDockerSessionKindNode session (replicate 64 'c') (pure True) (pure False)
+          result
+            `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted DockerNodeContainerRemoveUnconfirmed)
+          void (takeMVar requests)
+        removeFile socketPath
+        forM_
+          [ (Just 204, DockerNodeContainerStartReply 204)
+          , (Just 304, DockerNodeContainerStartReply 304)
+          , (Nothing, DockerNodeContainerStartUnconfirmed)
+          ]
+          $ \(reply, wanted) -> do
+            withDockerNetworkRemoveFixture socketPath reply $ \requests -> do
+              result <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ -> do
+                startDockerSessionKindNode session "invalid" (pure True)
+                  `shouldReturn` DockerNodeContainerStartNotStarted
+                startDockerSessionKindNode session (replicate 64 'c') (pure False)
+                  `shouldReturn` DockerNodeContainerStartNotStarted
+                startDockerSessionKindNode session (replicate 64 'c') (pure True)
+              result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted wanted)
+              request <- takeMVar requests
+              request `shouldBe` ("POST /containers/" ++ replicate 64 'c' ++ "/start HTTP/1.1")
+            removeFile socketPath
+        withDockerNetworkRemoveFixture socketPath (Just 204) $ \requests -> do
+          count <- newIORef (0 :: Int)
+          let stable = atomicModifyIORef' count (\value -> (value + 1, value == 0))
+          result <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ -> startDockerSessionKindNode session (replicate 64 'c') stable
+          result
+            `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted DockerNodeContainerStartUnconfirmed)
+          void (takeMVar requests)
+        removeFile socketPath
+        withDockerNodeVolumeCreateFixture socketPath (Just response) $ \requests -> do
+          result <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ -> do
+            createDockerSessionNodeVarVolume session bootstrap "invalid" (pure True)
+              `shouldReturn` DockerNodeVarCreateNotStarted
+            createDockerSessionNodeVarVolume session bootstrap operation (pure False)
+              `shouldReturn` DockerNodeVarCreateNotStarted
+            createDockerSessionNodeVarVolume session bootstrap operation (pure True)
+              `shouldReturn` DockerNodeVarCreateReply 201 (Just DockerNodeVarVolumeMatching)
+          result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+          payload <- takeMVar requests
+          Aeson.eitherDecodeStrict' payload
+            `shouldBe` Right
+              ( Aeson.object
+                  [ AesonKey.fromString "Name" Aeson..= name
+                  , AesonKey.fromString "Driver" Aeson..= ("local" :: String)
+                  , AesonKey.fromString "DriverOpts" Aeson..= Aeson.object []
+                  , AesonKey.fromString "Labels" Aeson..= labels
+                  ]
+              )
+        removeFile socketPath
+        withDockerNodeVolumeCreateFixture socketPath (Just (BS8.pack "{\"Name\":1,\"Name\":1}")) $ \requests -> do
+          result <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ ->
+            createDockerSessionNodeVarVolume session bootstrap operation (pure True)
+          result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted DockerNodeVarCreateUnconfirmed)
+          void (takeMVar requests)
+        removeFile socketPath
+        withDockerNodeVolumeCreateFixture socketPath Nothing $ \requests -> do
+          result <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ ->
+            createDockerSessionNodeVarVolume session bootstrap operation (pure True)
+          result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted DockerNodeVarCreateUnconfirmed)
+          void (takeMVar requests)
+        removeFile socketPath
+        withDockerNodeVolumeCreateFixture socketPath (Just response) $ \requests -> do
+          count <- newIORef (0 :: Int)
+          let stable = atomicModifyIORef' count (\value -> (value + 1, value == 0))
+          result <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ ->
+            createDockerSessionNodeVarVolume session bootstrap operation stable
+          result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted DockerNodeVarCreateUnconfirmed)
+          void (takeMVar requests)
+        removeFile socketPath
+        prepareFreshScope (bootstrapScope bootstrap) generation `shouldReturn` FreshScopePrepared
+        withDockerNodeVolumeCreateFixture socketPath (Just response) $ \requests -> do
+          socketIdentity <-
+            observeDockerSocketIdentity socketPath >>= maybe (fail "missing fixture socket") pure
+          intent <-
+            maybe
+              (fail "invalid volume intent")
+              pure
+              (mkKindNodeVolumeIntent operation (DockerDaemonObserved "daemon-a" socketIdentity))
+          withNewKindOperation bootstrap operation (recordKindNodeVolumeIntent bootstrap intent)
+            `shouldReturn` KindOperationCallbackReturned NodeVolumeIntentRecorded
+          let create session stable = createDockerSessionNodeVarVolume session bootstrap operation stable
+          sent <- withNewConnectedKindNodeVolumeAttempt bootstrap operation create
+          sent
+            `shouldBe` KindOperationCallbackReturned
+              ( DockerPeerCompleted
+                  ( DockerConnectedInfoCompleted
+                      ( NodeVolumeActionReturned
+                          (DockerNodeVarCreateReply 201 (Just DockerNodeVarVolumeMatching))
+                          NodeVolumeReceiptRecorded
+                      )
+                  )
+              )
+          void (takeMVar requests)
+          withRecoveredKindOperation bootstrap operation (observeKindNodeVolumeReceipt bootstrap intent)
+            `shouldReturn` KindOperationCallbackReturned
+              (NodeVolumeReceiptObserved (DockerNodeVarCreateReply 201 (Just DockerNodeVarVolumeMatching)))
+          let resultPath = scopeRoot (bootstrapScope bootstrap) </> "kind-node-var-volume-create-result.json"
+          writeFile resultPath "{\"kind\":1,\"kind\":1}"
+          withRecoveredKindOperation bootstrap operation (observeKindNodeVolumeReceipt bootstrap intent)
+            `shouldReturn` KindOperationCallbackReturned NodeVolumeReceiptInvalid
+          removeFile resultPath
+          writeFile (directory </> "foreign-result") "foreign"
+          createSymbolicLink (directory </> "foreign-result") resultPath
+          withRecoveredKindOperation bootstrap operation (observeKindNodeVolumeReceipt bootstrap intent)
+            `shouldReturn` KindOperationCallbackReturned NodeVolumeReceiptUnobservable
+          readFile (directory </> "foreign-result") `shouldReturn` "foreign"
+        removeFile socketPath
+        forM_
+          [ (Just 204, DockerNodeVarRemoveReply 204)
+          , (Just 404, DockerNodeVarRemoveReply 404)
+          , (Nothing, DockerNodeVarRemoveUnconfirmed)
+          ]
+          $ \(reply, wanted) -> do
+            withDockerNetworkRemoveFixture socketPath reply $ \requests -> do
+              result <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ -> do
+                removeDockerSessionNodeVarVolume session bootstrap "invalid" (pure True)
+                  `shouldReturn` DockerNodeVarRemoveNotStarted
+                removeDockerSessionNodeVarVolume session bootstrap operation (pure False)
+                  `shouldReturn` DockerNodeVarRemoveNotStarted
+                removeDockerSessionNodeVarVolume session bootstrap operation (pure True)
+              result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted wanted)
+              request <- takeMVar requests
+              request `shouldBe` ("DELETE /volumes/" ++ name ++ " HTTP/1.1")
+            removeFile socketPath
+        withDockerNetworkRemoveFixture socketPath (Just 204) $ \requests -> do
+          count <- newIORef (0 :: Int)
+          let stable = atomicModifyIORef' count (\value -> (value + 1, value == 0))
+          result <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ ->
+            removeDockerSessionNodeVarVolume session bootstrap operation stable
+          result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted DockerNodeVarRemoveUnconfirmed)
+          void (takeMVar requests)
+        withSystemTempDirectory "prodbox-volume-removal" $ \removalDirectory -> do
+          let removalSocket = removalDirectory </> "docker.sock"
+              removalSelected = removalDirectory </> "selected.dhall"
+              removalDocument =
+                Text.unpack (Text.replace (Text.pack directory) (Text.pack removalDirectory) (Text.pack document))
+          writeFile removalSelected removalDocument
+          removalBootstrap <- readBootstrapProjection removalSelected >>= either (fail . show) pure
+          prepareFreshScope (bootstrapScope removalBootstrap) generation `shouldReturn` FreshScopePrepared
+          withDockerVolumeRemovalFixture removalSocket name response $ \requests -> do
+            socketIdentity <-
+              observeDockerSocketIdentity removalSocket >>= maybe (fail "missing fixture socket") pure
+            intent <-
+              maybe
+                (fail "invalid volume intent")
+                pure
+                (mkKindNodeVolumeIntent operation (DockerDaemonObserved "daemon-a" socketIdentity))
+            prepared <- withNewKindOperation removalBootstrap operation $ \stable -> do
+              recordKindNodeVolumeIntent removalBootstrap intent stable `shouldReturn` NodeVolumeIntentRecorded
+              recordKindNodeVolumeAttempt removalBootstrap intent stable `shouldReturn` NodeVolumeAttemptRecorded
+            prepared `shouldBe` KindOperationCallbackReturned ()
+            let admit _ _ = pure True
+                remove session stable = removeDockerSessionNodeVarVolume session removalBootstrap operation stable
+            removed <- withNewConnectedKindNodeVolumeRemoval removalBootstrap operation admit remove
+            removed
+              `shouldBe` KindOperationCallbackReturned
+                ( DockerPeerCompleted
+                    ( DockerConnectedInfoCompleted
+                        (NodeVolumeRemovalActionReturned (DockerNodeVarRemoveReply 204) NodeVolumeRemovalReceiptRecorded)
+                    )
+                )
+            request <- takeMVar requests
+            request `shouldBe` ("DELETE /volumes/" ++ name ++ " HTTP/1.1")
+            withRecoveredKindOperation
+              removalBootstrap
+              operation
+              (observeKindNodeVolumeRemovalReceipt removalBootstrap intent)
+              `shouldReturn` KindOperationCallbackReturned (NodeVolumeRemovalReceiptObserved (DockerNodeVarRemoveReply 204))
+        withSystemTempDirectory "prodbox-volume-removal-refused" $ \removalDirectory -> do
+          let removalSocket = removalDirectory </> "docker.sock"
+              removalSelected = removalDirectory </> "selected.dhall"
+              removalDocument =
+                Text.unpack (Text.replace (Text.pack directory) (Text.pack removalDirectory) (Text.pack document))
+          writeFile removalSelected removalDocument
+          removalBootstrap <- readBootstrapProjection removalSelected >>= either (fail . show) pure
+          prepareFreshScope (bootstrapScope removalBootstrap) generation `shouldReturn` FreshScopePrepared
+          withDockerVolumeRemovalFixture removalSocket name response $ \_ -> do
+            socketIdentity <-
+              observeDockerSocketIdentity removalSocket >>= maybe (fail "missing fixture socket") pure
+            intent <-
+              maybe
+                (fail "invalid volume intent")
+                pure
+                (mkKindNodeVolumeIntent operation (DockerDaemonObserved "daemon-a" socketIdentity))
+            withNewKindOperation
+              removalBootstrap
+              operation
+              ( \stable -> do
+                  recordKindNodeVolumeIntent removalBootstrap intent stable `shouldReturn` NodeVolumeIntentRecorded
+                  recordKindNodeVolumeAttempt removalBootstrap intent stable `shouldReturn` NodeVolumeAttemptRecorded
+              )
+              `shouldReturn` KindOperationCallbackReturned ()
+            called <- newIORef False
+            let admit _ _ = pure False
+                remove _ _ = writeIORef called True >> pure DockerNodeVarRemoveNotStarted
+            refused <- withNewConnectedKindNodeVolumeRemoval removalBootstrap operation admit remove
+            refused
+              `shouldBe` KindOperationCallbackReturned
+                (DockerPeerCompleted (DockerConnectedInfoCompleted NodeVolumeRemovalActionAdmissionRefused))
+            readIORef called `shouldReturn` False
+            withRecoveredKindOperation
+              removalBootstrap
+              operation
+              (observeKindNodeVolumeRemoval removalBootstrap intent)
+              `shouldReturn` KindOperationCallbackReturned NodeVolumeRemovalMissing
+        withSystemTempDirectory "prodbox-volume-removal-changed" $ \removalDirectory -> do
+          let removalSocket = removalDirectory </> "docker.sock"
+              removalSelected = removalDirectory </> "selected.dhall"
+              removalDocument =
+                Text.unpack (Text.replace (Text.pack directory) (Text.pack removalDirectory) (Text.pack document))
+          writeFile removalSelected removalDocument
+          removalBootstrap <- readBootstrapProjection removalSelected >>= either (fail . show) pure
+          prepareFreshScope (bootstrapScope removalBootstrap) generation `shouldReturn` FreshScopePrepared
+          withDockerVolumeRemovalFixture removalSocket name response $ \_ -> do
+            socketIdentity <-
+              observeDockerSocketIdentity removalSocket >>= maybe (fail "missing fixture socket") pure
+            intent <-
+              maybe
+                (fail "invalid volume intent")
+                pure
+                (mkKindNodeVolumeIntent operation (DockerDaemonObserved "daemon-a" socketIdentity))
+            withNewKindOperation
+              removalBootstrap
+              operation
+              ( \stable -> do
+                  recordKindNodeVolumeIntent removalBootstrap intent stable `shouldReturn` NodeVolumeIntentRecorded
+                  recordKindNodeVolumeAttempt removalBootstrap intent stable `shouldReturn` NodeVolumeAttemptRecorded
+              )
+              `shouldReturn` KindOperationCallbackReturned ()
+            called <- newIORef False
+            checks <- newIORef (0 :: Int)
+            let admit _ _ = atomicModifyIORef' checks (\value -> (value + 1, value == 0))
+                remove _ _ = writeIORef called True >> pure DockerNodeVarRemoveNotStarted
+            changed <- withNewConnectedKindNodeVolumeRemoval removalBootstrap operation admit remove
+            changed
+              `shouldBe` KindOperationCallbackReturned
+                ( DockerPeerCompleted
+                    ( DockerConnectedInfoCompleted
+                        (NodeVolumeRemovalActionReceiptRefused NodeVolumeRemovalReceiptUnobservable)
+                    )
+                )
+            readIORef called `shouldReturn` False
+            withRecoveredKindOperation
+              removalBootstrap
+              operation
+              (observeKindNodeVolumeRemoval removalBootstrap intent)
+              `shouldReturn` KindOperationCallbackReturned NodeVolumeRemovalMatches
+
+    it "observes only the selected network and rejects ambiguous inventory" $
+      withSystemTempDirectory "prodbox-gated-network" $ \directory -> do
+        let path = directory </> "docker.sock"
+            imageId = "sha256:" ++ replicate 64 'a'
+            networkId = replicate 64 'b'
+            network name identifier =
+              Aeson.object
+                [ AesonKey.fromString "Name" Aeson..= (name :: String)
+                , AesonKey.fromString "Id" Aeson..= (identifier :: String)
+                ]
+            inventory entries = Aeson.toJSON (entries :: [Aeson.Value])
+            request = ["network", "ls", "--filter=name=^prodbox-t-run$", "--format={{.ID}}"]
+            foreignRequest = ["network", "ls", "--filter=name=^kind$", "--format={{.ID}}"]
+        scope <- either (fail . show) pure (deploymentScope directory Test "run" 26443)
+        parseDockerKindNetworks scope (inventory []) `shouldBe` Right []
+        parseDockerKindNetworks scope (inventory [network "prodbox-t-run" networkId])
+          `shouldBe` Right [networkId]
+        parseDockerKindNetworks scope (inventory [network "foreign" networkId]) `shouldSatisfy` isLeft
+        parseDockerKindNetworks scope (inventory [network "prodbox-t-run" "invalid"]) `shouldSatisfy` isLeft
+        parseDockerKindNetworks
+          scope
+          (inventory [network "prodbox-t-run" networkId, network "prodbox-t-run" networkId])
+          `shouldSatisfy` isLeft
+        withDockerDaemonFixture path False $ \requests -> do
+          result <- withConnectedDockerInfo 5000000 path $ \session (DockerConnectedInfo identifier _) _ -> do
+            Just gate <- newKindDockerReadGate scope imageId
+            runConnectedKindDockerRead gate session identifier request
+              `shouldReturn` KindDockerReadCompleted (KindDockerNetworkIds [])
+            readDockerSessionKindNetworkId session scope networkId `shouldReturn` Right False
+            readDockerSessionKindNetworkId session scope "../invalid"
+              `shouldReturn` Left DockerConnectedInfoInvalid
+            runConnectedKindDockerRead gate session identifier foreignRequest
+              `shouldReturn` KindDockerReadRefused
+            runConnectedKindDockerRead gate session identifier request `shouldReturn` KindDockerReadRefused
+          result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+          observed <- readMVar requests
+          length (filter (isInfixOf "/networks?") observed) `shouldBe` 2
+        forM_ [("prodbox-t-run", True), ("foreign", False)] $ \(name, expected) -> do
+          let body = LazyBS8.toStrict (Aeson.encode (inventory [network name networkId]))
+              fixturePath = path ++ show expected
+          withDockerDaemonFixtureNetworks fixturePath body $ \_ -> do
+            result <- withConnectedDockerInfo 5000000 fixturePath $ \session (DockerConnectedInfo identifier _) _ -> do
+              Just gate <- newKindDockerReadGate scope imageId
+              observed <- runConnectedKindDockerRead gate session identifier request
+              observed
+                `shouldBe` if expected
+                  then KindDockerReadCompleted (KindDockerNetworkIds [networkId])
+                  else KindDockerReadFailed DockerConnectedInfoInvalid
+              readDockerSessionKindNetworkId session scope networkId
+                `shouldReturn` if expected then Right True else Left DockerConnectedInfoInvalid
+              when expected $
+                readDockerSessionKindNetworkId session scope (replicate 64 'c')
+                  `shouldReturn` Left DockerConnectedInfoInvalid
+            result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+
+    it "observes only the built-in bridge MTU and rejects invalid options" $
+      withSystemTempDirectory "prodbox-gated-bridge" $ \directory -> do
+        let path = directory </> "docker.sock"
+            imageId = "sha256:" ++ replicate 64 'a'
+            bridge name driver options =
+              Aeson.object
+                [ AesonKey.fromString "Name" Aeson..= (name :: String)
+                , AesonKey.fromString "Driver" Aeson..= (driver :: String)
+                , AesonKey.fromString "Options" Aeson..= options
+                ]
+            option value = Aeson.object [AesonKey.fromString "com.docker.network.driver.mtu" Aeson..= (value :: String)]
+            request = ["network", "inspect", "bridge", "-f", "{{ index .Options \"com.docker.network.driver.mtu\" }}"]
+        scope <- either (fail . show) pure (deploymentScope directory Test "run" 26443)
+        parseDockerBridgeMtu (bridge "bridge" "bridge" (Aeson.object [])) `shouldBe` Right Nothing
+        parseDockerBridgeMtu (bridge "bridge" "bridge" (option "1500")) `shouldBe` Right (Just 1500)
+        parseDockerBridgeMtu (bridge "foreign" "bridge" (option "1500")) `shouldSatisfy` isLeft
+        parseDockerBridgeMtu (bridge "bridge" "overlay" (option "1500")) `shouldSatisfy` isLeft
+        forM_ ["0", "65536", "01500", "1e3", "-1"] $ \invalid ->
+          parseDockerBridgeMtu (bridge "bridge" "bridge" (option invalid)) `shouldSatisfy` isLeft
+        withDockerDaemonFixture path False $ \requests -> do
+          result <- withConnectedDockerInfo 5000000 path $ \session (DockerConnectedInfo identifier _) _ -> do
+            Just gate <- newKindDockerReadGate scope imageId
+            runConnectedKindDockerReply gate session identifier request
+              `shouldReturn` KindDockerReply 0 (BS8.pack "<no value>\n") BS8.empty
+            runConnectedKindDockerRead
+              gate
+              session
+              identifier
+              ["network", "inspect", "foreign", "-f", last request]
+              `shouldReturn` KindDockerReadRefused
+          result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+          observed <- readMVar requests
+          length (filter (isInfixOf "/networks/bridge") observed) `shouldBe` 1
+          observed `shouldSatisfy` all (not . isInfixOf "/networks/foreign")
+
+    it "reads exact network details without treating an absent reply as absence" $
+      withSystemTempDirectory "prodbox-network-details" $ \directory -> do
+        let path = directory </> "docker.sock"
+            networkId = replicate 64 'b'
+            decode name identifier =
+              Aeson.eitherDecodeStrict' $
+                BS8.pack $
+                  "{\"Name\":\""
+                    ++ name
+                    ++ "\",\"Id\":\""
+                    ++ identifier
+                    ++ "\",\"Driver\":\"bridge\",\"EnableIPv6\":true,\"Options\":null,\"Labels\":null,"
+                    ++ "\"IPAM\":{\"Config\":[{\"Subnet\":\"fc00:c1c8:9c54:6b75::/64\"}]}}"
+        scope <- either (fail . show) pure (deploymentScope directory Test "run" 26443)
+        value <- either fail pure (decode "prodbox-t-run" networkId)
+        foreignName <- either fail pure (decode "foreign" networkId)
+        foreignId <- either fail pure (decode "prodbox-t-run" (replicate 64 'c'))
+        parseDockerNetworkDetails scope networkId foreignName `shouldSatisfy` isLeft
+        parseDockerNetworkDetails scope networkId foreignId `shouldSatisfy` isLeft
+        details <- either fail pure (parseDockerNetworkDetails scope networkId value)
+        dockerNetworkId details `shouldBe` networkId
+        dockerNetworkSubnets details `shouldBe` ["fc00:c1c8:9c54:6b75::/64"]
+        withDockerDaemonFixture path False $ \requests -> do
+          result <- withConnectedDockerInfo 5000000 path $ \session _ _ -> do
+            inspectDockerSessionKindNetwork session scope "../bridge"
+              `shouldReturn` Left DockerConnectedInfoInvalid
+            inspectDockerSessionKindNetwork session scope networkId `shouldReturn` Right details
+            inspectDockerSessionKindNetwork session scope (replicate 64 'c')
+              `shouldReturn` Left DockerConnectedInfoStatus
+          result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+          observed <- readMVar requests
+          length (filter (isInfixOf "/networks/") observed) `shouldBe` 2
+          observed `shouldSatisfy` all (not . isInfixOf "../bridge")
+
+    it "reconnects a recorded network attempt to the selected daemon" $
+      withSystemTempDirectory "prodbox-network-recovery" $ \directory -> do
+        let path = directory </> "docker.sock"
+            selected = directory </> "selected.dhall"
+            generation = replicate 32 'a'
+            operation = replicate 32 'b'
+            networkId = replicate 64 'b'
+            body = BS8.pack ("[{\"Name\":\"prodbox-t-run\",\"Id\":\"" ++ networkId ++ "\"}]")
+            document =
+              "{ bootstrap = { schema_version = 2, project_anchor = \""
+                ++ directory
+                ++ "\", runtime_socket = \""
+                ++ path
+                ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
+                ++ generation
+                ++ "\", api_port = 26443, node_image = \"kindest/node@sha256:"
+                ++ replicate 64 'a'
+                ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, "
+                ++ "node_artifact = { path = \"artifacts/node.tar\", digest = \"sha256:"
+                ++ replicate 64 'a'
+                ++ "\", maximum_bytes = 4096 }, listen_address = \"127.0.0.1\" } }"
+        writeFile selected document
+        bootstrap <- readBootstrapProjection selected >>= either (fail . show) pure
+        prepareFreshScope (bootstrapScope bootstrap) generation `shouldReturn` FreshScopePrepared
+        daemonChanged <- newIORef False
+        controlVisible <- newIORef True
+        withDockerDaemonFixtureControl
+          path
+          False
+          (const (pure ()))
+          (readIORef daemonChanged)
+          (BS8.pack "[]")
+          body
+          (readIORef controlVisible)
+          $ \requests -> do
+            identity <- observeDockerSocketIdentity path >>= maybe (fail "missing socket") pure
+            intent <-
+              maybe (fail "invalid network intent") pure $
+                mkKindNetworkIntent
+                  operation
+                  "fc00:c1c8:9c54:6b75::/64"
+                  (Just 1500)
+                  (DockerDaemonObserved "daemon-a" identity)
+            prepared <- withNewKindOperation bootstrap operation $ \stable -> do
+              recordKindNetworkIntent bootstrap intent stable `shouldReturn` NetworkIntentRecorded
+              recordKindNetworkAttempt bootstrap intent stable `shouldReturn` NetworkAttemptRecorded
+            prepared `shouldBe` KindOperationCallbackReturned ()
+            missingReceipt <- withRecoveredKindOperation bootstrap operation $ \operationStable ->
+              withConnectedDockerInfo 5000000 path $ \session _ peerStable ->
+                observeConfinedNodeNetwork
+                  bootstrap
+                  operation
+                  networkId
+                  (DockerDaemonObserved "daemon-a" identity)
+                  session
+                  ((&&) <$> operationStable <*> peerStable)
+            missingReceipt
+              `shouldBe` KindOperationCallbackReturned
+                ( DockerPeerCompleted
+                    (DockerConnectedInfoCompleted (ConfinedNodeNetworkReceiptRefused NetworkReceiptMissing))
+                )
+            result <- observeRecoveredKindNetwork bootstrap operation
+            case result of
+              KindOperationCallbackReturned
+                (DockerPeerCompleted (DockerConnectedInfoCompleted (KindNetworkRecoverySampled sample))) -> do
+                  networkAttemptBefore sample `shouldBe` NetworkAttemptMatches
+                  networkAttemptAfter sample `shouldBe` NetworkAttemptMatches
+                  networkRemovalBefore sample `shouldBe` NetworkRemovalRecoveryMissing
+                  networkRemovalAfter sample `shouldBe` NetworkRemovalRecoveryMissing
+                  networkInventory sample `shouldBe` Right [networkId]
+                  case networkDetails sample of
+                    Just (Right details) -> do
+                      dockerNetworkId details `shouldBe` networkId
+                      networkIndependent sample `shouldBe` NetworkIndependentObserved details
+                      networkConfiguration sample `shouldBe` NetworkConfigurationDiffers
+                      let correct =
+                            details
+                              { dockerNetworkOptions =
+                                  Map.fromList
+                                    [ ("com.docker.network.bridge.enable_ip_masquerade", "true")
+                                    , ("com.docker.network.driver.mtu", "1500")
+                                    ]
+                              , dockerNetworkLabels =
+                                  Map.fromList
+                                    [ ("io.prodbox.deployment", "prodbox-t-run")
+                                    , ("io.prodbox.generation", generation)
+                                    , ("io.prodbox.operation", operation)
+                                    ]
+                              , dockerNetworkSubnets = ["172.20.0.0/16", "fc00:c1c8:9c54:6b75:0:0:0:0/64"]
+                              }
+                      compareKindNetworkConfiguration bootstrap intent correct `shouldBe` NetworkConfigurationMatches
+                      compareKindNetworkConfiguration bootstrap intent (correct {dockerNetworkLabels = Map.empty})
+                        `shouldBe` NetworkConfigurationDiffers
+                      compareKindNetworkConfiguration bootstrap intent (correct {dockerNetworkIpv6 = False})
+                        `shouldBe` NetworkConfigurationDiffers
+                      compareKindNetworkConfiguration
+                        bootstrap
+                        intent
+                        (correct {dockerNetworkSubnets = ["fc00:c1c8:9c54:6b76::/64"]})
+                        `shouldBe` NetworkConfigurationDiffers
+                      compareKindNetworkConfiguration bootstrap intent (correct {dockerNetworkOptions = Map.empty})
+                        `shouldBe` NetworkConfigurationDiffers
+                      sameKindNetworkSubnet "invalid" "invalid" `shouldBe` False
+                    other -> expectationFailure ("unexpected network details: " ++ show other)
+                  networkDaemonAfter sample `shouldBe` Right (DockerKindInfo "systemd" "2" True True True [])
+              other -> expectationFailure ("unexpected network recovery: " ++ show other)
+            observed <- readMVar requests
+            length (filter (isInfixOf "/networks?") observed) `shouldBe` 1
+            length (filter (isInfixOf ("/networks/" ++ networkId)) observed) `shouldBe` 2
+            writeIORef daemonChanged True
+            observeRecoveredKindNetwork bootstrap operation
+              `shouldReturn` KindOperationCallbackReturned
+                (DockerPeerCompleted (DockerConnectedInfoCompleted KindNetworkRecoveryDaemonMismatch))
+            afterMismatch <- readMVar requests
+            length (filter (isInfixOf "/networks?") afterMismatch) `shouldBe` 1
+            writeIORef daemonChanged False
+            called <- newIORef False
+            refused <- withNewConnectedKindNetworkAttempt bootstrap operation $ \_ _ _ -> writeIORef called True
+            refused
+              `shouldBe` KindOperationCallbackReturned
+                ( DockerPeerCompleted
+                    (DockerConnectedInfoCompleted (KindNetworkAttemptMarkerRefused NetworkAttemptAlreadyExists))
+                )
+            readIORef called `shouldReturn` False
+            removal <- withNewConnectedKindNetworkRemoval bootstrap operation networkId $ \_ _ -> writeIORef called True
+            removal
+              `shouldBe` KindOperationCallbackReturned
+                (DockerPeerCompleted (DockerConnectedInfoCompleted KindNetworkRemovalConfigurationDiffers))
+            readIORef called `shouldReturn` False
+            withRecoveredKindOperation
+              bootstrap
+              operation
+              (observeRecordedKindNetworkRemoval bootstrap operation)
+              `shouldReturn` KindOperationCallbackReturned NetworkRemovalRecoveryMissing
+            let contradictory = NetworkCreateTransport (DockerNetworkCreateReply 201 (Just (replicate 64 'c')))
+            withRecoveredKindOperation
+              bootstrap
+              operation
+              (recordNetworkReceipt bootstrap intent NetworkCreateReceipt contradictory)
+              `shouldReturn` KindOperationCallbackReturned NetworkReceiptRecorded
+            wrongReceipt <- withRecoveredKindOperation bootstrap operation $ \operationStable ->
+              withConnectedDockerInfo 5000000 path $ \session _ peerStable ->
+                observeConfinedNodeNetwork
+                  bootstrap
+                  operation
+                  networkId
+                  (DockerDaemonObserved "daemon-a" identity)
+                  session
+                  ((&&) <$> operationStable <*> peerStable)
+            wrongReceipt
+              `shouldBe` KindOperationCallbackReturned
+                ( DockerPeerCompleted
+                    ( DockerConnectedInfoCompleted
+                        (ConfinedNodeNetworkReceiptRefused (NetworkReceiptObserved contradictory))
+                    )
+                )
+            beforeContradiction <- readMVar requests
+            contradiction <- withNewConnectedKindNetworkRemoval bootstrap operation networkId $ \_ _ -> writeIORef called True
+            contradiction
+              `shouldBe` KindOperationCallbackReturned
+                ( DockerPeerCompleted
+                    ( DockerConnectedInfoCompleted $
+                        KindNetworkRemovalCreateReceiptRefused (NetworkReceiptObserved contradictory)
+                    )
+                )
+            afterContradiction <- readMVar requests
+            length (filter (isInfixOf ("/networks/" ++ networkId)) afterContradiction)
+              `shouldBe` length (filter (isInfixOf ("/networks/" ++ networkId)) beforeContradiction)
+            readIORef called `shouldReturn` False
+            let createReceiptPath = scopeRoot (bootstrapScope bootstrap) </> "kind-network-create-result.json"
+            BS8.writeFile createReceiptPath (BS8.pack "{")
+            corrupt <- withNewConnectedKindNetworkRemoval bootstrap operation networkId $ \_ _ -> writeIORef called True
+            corrupt
+              `shouldBe` KindOperationCallbackReturned
+                ( DockerPeerCompleted
+                    ( DockerConnectedInfoCompleted $
+                        KindNetworkRemovalCreateReceiptRefused NetworkReceiptInvalid
+                    )
+                )
+            readIORef called `shouldReturn` False
+            removeFile createReceiptPath
+            withRecoveredKindOperation bootstrap operation (recordKindNetworkRemoval bootstrap intent networkId)
+              `shouldReturn` KindOperationCallbackReturned NetworkRemovalRecorded
+            afterRecord <- observeRecoveredKindNetwork bootstrap operation
+            case afterRecord of
+              KindOperationCallbackReturned
+                (DockerPeerCompleted (DockerConnectedInfoCompleted (KindNetworkRecoverySampled sample))) -> do
+                  networkRemovalIdObservation sample `shouldBe` Just (Right (Just True))
+                  networkRemovalIndependentId sample `shouldBe` NetworkIndependentIdObserved True
+              other -> expectationFailure ("unexpected removal observation: " ++ show other)
+            beforeBlind <- readMVar requests
+            writeIORef controlVisible False
+            blind <- observeRecoveredKindNetwork bootstrap operation
+            case blind of
+              KindOperationCallbackReturned
+                (DockerPeerCompleted (DockerConnectedInfoCompleted (KindNetworkRecoverySampled sample))) -> do
+                  networkRemovalIdObservation sample `shouldBe` Just (Right Nothing)
+                  networkRemovalIndependentId sample `shouldBe` NetworkIndependentIdBlind
+              other -> expectationFailure ("unexpected blind observer: " ++ show other)
+            afterBlind <- readMVar requests
+            let targetQueries = filter (\line -> "/networks?" `isInfixOf` line && networkId `isInfixOf` line)
+            length (targetQueries afterBlind) `shouldBe` length (targetQueries beforeBlind)
+            writeIORef controlVisible True
+            requestsBeforeRetry <- readMVar requests
+            duplicate <- withNewConnectedKindNetworkRemoval bootstrap operation networkId $ \_ _ -> writeIORef called True
+            duplicate
+              `shouldBe` KindOperationCallbackReturned
+                (DockerPeerCompleted (DockerConnectedInfoCompleted (KindNetworkRemovalPrior NetworkRemovalMatches)))
+            readIORef called `shouldReturn` False
+            requestsAfterRetry <- readMVar requests
+            length (filter (isInfixOf ("/networks/" ++ networkId)) requestsAfterRetry)
+              `shouldBe` length (filter (isInfixOf ("/networks/" ++ networkId)) requestsBeforeRetry)
+
+    it "requires the recorded network and current matching Docker configuration for node work" $
+      withSystemTempDirectory "prodbox-node-network-binding" $ \directory -> do
+        let path = directory </> "docker.sock"
+            selected = directory </> "selected.dhall"
+            generation = replicate 32 'a'
+            operation = replicate 32 'b'
+            networkId = replicate 64 'c'
+            document =
+              "{ bootstrap = { schema_version = 1, project_anchor = \""
+                ++ directory
+                ++ "\", runtime_socket = \""
+                ++ path
+                ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
+                ++ generation
+                ++ "\", api_port = 26443, node_image = \"kindest/node@sha256:"
+                ++ replicate 64 'a'
+                ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, listen_address = \"127.0.0.1\" } }"
+        writeFile selected document
+        bootstrap <- readBootstrapProjection selected >>= either (fail . show) pure
+        prepareFreshScope (bootstrapScope bootstrap) generation `shouldReturn` FreshScopePrepared
+        changed <- newIORef False
+        withDockerNetworkBindingFixture path networkId generation operation (readIORef changed) $ do
+          identity <- observeDockerSocketIdentity path >>= maybe (fail "missing socket") pure
+          intent <-
+            maybe (fail "invalid network intent") pure $
+              mkKindNetworkIntent
+                operation
+                "fc00:c1c8:9c54:6b75::/64"
+                (Just 1500)
+                (DockerDaemonObserved "daemon-a" identity)
+          withNewKindOperation
+            bootstrap
+            operation
+            ( \stable -> do
+                recordKindNetworkIntent bootstrap intent stable `shouldReturn` NetworkIntentRecorded
+                recordKindNetworkAttempt bootstrap intent stable `shouldReturn` NetworkAttemptRecorded
+                recordNetworkReceipt
+                  bootstrap
+                  intent
+                  NetworkCreateReceipt
+                  (NetworkCreateTransport (DockerNetworkCreateReply 201 (Just networkId)))
+                  stable
+            )
+            `shouldReturn` KindOperationCallbackReturned NetworkReceiptRecorded
+          observed <- withRecoveredKindOperation bootstrap operation $ \operationStable ->
+            withConnectedDockerInfo 5000000 path $ \session _ peerStable -> do
+              let stable = (&&) <$> operationStable <*> peerStable
+                  sample =
+                    observeConfinedNodeNetwork
+                      bootstrap
+                      operation
+                      networkId
+                      (DockerDaemonObserved "daemon-a" identity)
+                      session
+                      stable
+              sample `shouldReturn` ConfinedNodeNetworkReady
+              writeIORef changed True
+              sample `shouldReturn` ConfinedNodeNetworkDetailsRefused Nothing
+          observed
+            `shouldBe` KindOperationCallbackReturned (DockerPeerCompleted (DockerConnectedInfoCompleted ()))
+
+    it "submits one scoped network request and retains a lost reply as unconfirmed" $
+      forM_ [True, False] $ \reply ->
+        withSystemTempDirectory "prodbox-network-create" $ \directory -> do
+          let path = directory </> "docker.sock"
+              selected = directory </> "selected.dhall"
+              operation = replicate 32 'b'
+              document =
+                "{ bootstrap = { schema_version = 2, project_anchor = \""
+                  ++ directory
+                  ++ "\", runtime_socket = \""
+                  ++ path
+                  ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
+                  ++ replicate 32 'a'
+                  ++ "\", api_port = 26443, node_image = \"kindest/node@sha256:"
+                  ++ replicate 64 'a'
+                  ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, "
+                  ++ "node_artifact = { path = \"artifacts/node.tar\", digest = \"sha256:"
+                  ++ replicate 64 'a'
+                  ++ "\", maximum_bytes = 4096 }, listen_address = \"127.0.0.1\" } }"
+          writeFile selected document
+          bootstrap <- readBootstrapProjection selected >>= either (fail . show) pure
+          prepareFreshScope (bootstrapScope bootstrap) (replicate 32 'a') `shouldReturn` FreshScopePrepared
+          withDockerNetworkCreateFixture path reply $ \received -> do
+            identity <- observeDockerSocketIdentity path >>= maybe (fail "missing socket") pure
+            intent <-
+              maybe (fail "invalid network intent") pure $
+                mkKindNetworkIntent
+                  operation
+                  "fc00:c1c8:9c54:6b75::/64"
+                  (Just 1500)
+                  (DockerDaemonObserved "daemon-a" identity)
+            withNewKindOperation bootstrap operation (recordKindNetworkIntent bootstrap intent)
+              `shouldReturn` KindOperationCallbackReturned NetworkIntentRecorded
+            result <- withRecoveredKindOperation bootstrap operation $ \operationStable ->
+              withConnectedDockerInfo 30000000 path $ \session info peerStable ->
+                runKindNetworkRecordedAttemptOnSession
+                  bootstrap
+                  operation
+                  session
+                  info
+                  ((&&) <$> operationStable <*> peerStable)
+                  $ \recorded held stable -> do
+                    recorded `shouldBe` intent
+                    createDockerSessionKindNetwork held bootstrap intent (pure False)
+                      `shouldReturn` DockerNetworkCreateNotStarted
+                    createDockerSessionKindNetwork held bootstrap intent stable
+            let transport =
+                  NetworkCreateTransport $
+                    if reply
+                      then DockerNetworkCreateReply 201 (Just (replicate 64 'c'))
+                      else DockerNetworkCreateUnconfirmed
+            result
+              `shouldBe` KindOperationCallbackReturned
+                ( DockerPeerCompleted
+                    ( DockerConnectedInfoCompleted
+                        ( KindNetworkAttemptReturned $
+                            KindNetworkRecordedTransport transport NetworkReceiptRecorded
+                        )
+                    )
+                )
+            withRecoveredKindOperation bootstrap operation (observeKindNetworkAttempt bootstrap intent)
+              `shouldReturn` KindOperationCallbackReturned NetworkAttemptMatches
+            withRecoveredKindOperation
+              bootstrap
+              operation
+              (observeNetworkReceipt bootstrap intent NetworkCreateReceipt)
+              `shouldReturn` KindOperationCallbackReturned (NetworkReceiptObserved transport)
+            withRecoveredKindOperation
+              bootstrap
+              operation
+              (recordNetworkReceipt bootstrap intent NetworkCreateReceipt transport)
+              `shouldReturn` KindOperationCallbackReturned NetworkReceiptAlreadyExists
+            withRecoveredKindOperation
+              bootstrap
+              operation
+              ( recordNetworkReceipt
+                  bootstrap
+                  intent
+                  NetworkCreateReceipt
+                  (NetworkCreateTransport (DockerNetworkCreateReply 201 Nothing))
+              )
+              `shouldReturn` KindOperationCallbackReturned NetworkReceiptRefused
+            let receiptPath = scopeRoot (bootstrapScope bootstrap) </> "kind-network-create-result.json"
+                receiptBackup = directory </> "network-receipt-backup"
+            receiptBytes <- BS8.readFile receiptPath
+            BS8.writeFile receiptPath (BS8.pack "{")
+            withRecoveredKindOperation
+              bootstrap
+              operation
+              (observeNetworkReceipt bootstrap intent NetworkCreateReceipt)
+              `shouldReturn` KindOperationCallbackReturned NetworkReceiptInvalid
+            BS8.writeFile receiptPath receiptBytes
+            renameFile receiptPath receiptBackup
+            createSymbolicLink receiptBackup receiptPath
+            withRecoveredKindOperation
+              bootstrap
+              operation
+              (observeNetworkReceipt bootstrap intent NetworkCreateReceipt)
+              `shouldReturn` KindOperationCallbackReturned NetworkReceiptUnobservable
+            BS8.readFile receiptBackup `shouldReturn` receiptBytes
+            removeFile receiptPath
+            renameFile receiptBackup receiptPath
+            bytes <- readMVar received
+            let expected =
+                  Aeson.object
+                    [ AesonKey.fromString "Name" Aeson..= ("prodbox-t-run" :: String)
+                    , AesonKey.fromString "CheckDuplicate" Aeson..= True
+                    , AesonKey.fromString "Driver" Aeson..= ("bridge" :: String)
+                    , AesonKey.fromString "EnableIPv6" Aeson..= True
+                    , AesonKey.fromString "Options"
+                        Aeson..= Aeson.object
+                          [ AesonKey.fromString "com.docker.network.bridge.enable_ip_masquerade" Aeson..= ("true" :: String)
+                          , AesonKey.fromString "com.docker.network.driver.mtu" Aeson..= ("1500" :: String)
+                          ]
+                    , AesonKey.fromString "Labels"
+                        Aeson..= Aeson.object
+                          [ AesonKey.fromString "io.prodbox.deployment" Aeson..= ("prodbox-t-run" :: String)
+                          , AesonKey.fromString "io.prodbox.generation" Aeson..= replicate 32 'a'
+                          , AesonKey.fromString "io.prodbox.operation" Aeson..= operation
+                          ]
+                    , AesonKey.fromString "IPAM"
+                        Aeson..= Aeson.object
+                          [ AesonKey.fromString "Config"
+                              Aeson..= [ Aeson.object
+                                           [AesonKey.fromString "Subnet" Aeson..= ("fc00:c1c8:9c54:6b75::/64" :: String)]
+                                       ]
+                          ]
+                    ]
+            Aeson.decodeStrict' bytes `shouldBe` Just expected
+
+    it "removes only a full network ID and preserves an interrupted reply" $
+      forM_ [Just 204, Just 404, Nothing] $ \reply ->
+        withSystemTempDirectory "prodbox-network-remove" $ \directory -> do
+          let path = directory </> "docker.sock"
+              identifier = replicate 64 'c'
+          withDockerNetworkRemoveFixture path reply $ \received -> do
+            result <- withConnectedDockerInfo 5000000 path $ \session _ stable -> do
+              removeDockerSessionKindNetwork session "../bridge" stable
+                `shouldReturn` DockerNetworkRemoveNotStarted
+              removeDockerSessionKindNetwork session identifier (pure False)
+                `shouldReturn` DockerNetworkRemoveNotStarted
+              removeDockerSessionKindNetwork session identifier stable
+            result
+              `shouldBe` DockerPeerCompleted
+                ( DockerConnectedInfoCompleted $
+                    maybe DockerNetworkRemoveUnconfirmed DockerNetworkRemoveReply reply
+                )
+            readMVar received `shouldReturn` ("DELETE /networks/" ++ identifier ++ " HTTP/1.1")
+
+    it "records a scoped removal before entering its connected callback" $
+      forM_ [Just 204, Nothing, Just 418] $ \reply ->
+        withSystemTempDirectory "prodbox-network-remove-bound" $ \directory -> do
+          let path = directory </> "docker.sock"
+              selected = directory </> "selected.dhall"
+              operation = replicate 32 'b'
+              networkId = replicate 64 'c'
+              generation = replicate 32 'a'
+              document =
+                "{ bootstrap = { schema_version = 2, project_anchor = \""
+                  ++ directory
+                  ++ "\", runtime_socket = \""
+                  ++ path
+                  ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
+                  ++ generation
+                  ++ "\", api_port = 26443, node_image = \"kindest/node@sha256:"
+                  ++ replicate 64 'a'
+                  ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, "
+                  ++ "node_artifact = { path = \"artifacts/node.tar\", digest = \"sha256:"
+                  ++ replicate 64 'a'
+                  ++ "\", maximum_bytes = 4096 }, listen_address = \"127.0.0.1\" } }"
+          writeFile selected document
+          bootstrap <- readBootstrapProjection selected >>= either (fail . show) pure
+          prepareFreshScope (bootstrapScope bootstrap) generation `shouldReturn` FreshScopePrepared
+          withDockerNetworkRemoveFixtureMode path reply True $ \received -> do
+            identity <- observeDockerSocketIdentity path >>= maybe (fail "missing socket") pure
+            intent <-
+              maybe (fail "invalid network intent") pure $
+                mkKindNetworkIntent
+                  operation
+                  "fc00:c1c8:9c54:6b75::/64"
+                  (Just 1500)
+                  (DockerDaemonObserved "daemon-a" identity)
+            prepared <- withNewKindOperation bootstrap operation $ \stable -> do
+              recordKindNetworkIntent bootstrap intent stable `shouldReturn` NetworkIntentRecorded
+              recordKindNetworkAttempt bootstrap intent stable `shouldReturn` NetworkAttemptRecorded
+              let createResult =
+                    if reply == Just 204
+                      then DockerNetworkCreateReply 201 (Just networkId)
+                      else DockerNetworkCreateUnconfirmed
+              recordNetworkReceipt
+                bootstrap
+                intent
+                NetworkCreateReceipt
+                (NetworkCreateTransport createResult)
+                stable
+                `shouldReturn` NetworkReceiptRecorded
+            prepared `shouldBe` KindOperationCallbackReturned ()
+            result <- withNewConnectedKindNetworkRecordedRemoval bootstrap operation networkId $ \session stable -> do
+              observeKindNetworkRemoval bootstrap intent networkId stable `shouldReturn` NetworkRemovalMatches
+              when (reply == Just 418) $
+                BS8.writeFile
+                  (scopeRoot (bootstrapScope bootstrap) </> "kind-network-create-result.json")
+                  (BS8.pack "{")
+              removeDockerSessionKindNetwork session networkId stable
+            let transport = NetworkRemovalTransport (maybe DockerNetworkRemoveUnconfirmed DockerNetworkRemoveReply reply)
+            if reply == Just 418
+              then do
+                result
+                  `shouldBe` KindOperationCallbackReturned
+                    ( DockerPeerCompleted
+                        ( DockerConnectedInfoCompleted
+                            ( KindNetworkRemovalChangedAfter $
+                                KindNetworkRecordedTransport
+                                  (NetworkRemovalTransport DockerNetworkRemoveNotStarted)
+                                  NetworkReceiptRefused
+                            )
+                        )
+                    )
+                tryReadMVar received `shouldReturn` Nothing
+              else do
+                result
+                  `shouldBe` KindOperationCallbackReturned
+                    ( DockerPeerCompleted
+                        ( DockerConnectedInfoCompleted
+                            ( KindNetworkRemovalReturned $
+                                KindNetworkRecordedTransport transport NetworkReceiptRecorded
+                            )
+                        )
+                    )
+                readMVar received `shouldReturn` ("DELETE /networks/" ++ networkId ++ " HTTP/1.1")
+            withRecoveredKindOperation
+              bootstrap
+              operation
+              (observeRecordedKindNetworkRemoval bootstrap operation)
+              `shouldReturn` KindOperationCallbackReturned (NetworkRemovalRecoveryRecorded networkId)
+            when (reply /= Just 418) $
+              withRecoveredKindOperation
+                bootstrap
+                operation
+                (observeNetworkReceipt bootstrap intent (NetworkRemovalReceipt networkId))
+                `shouldReturn` KindOperationCallbackReturned (NetworkReceiptObserved transport)
+
+    it "refuses network effects when a stale receipt predates the new marker" $
+      forM_ [False, True] $ \removal ->
+        withSystemTempDirectory "prodbox-network-stale-receipt" $ \directory -> do
+          let path = directory </> "docker.sock"
+              selected = directory </> "selected.dhall"
+              operation = replicate 32 'b'
+              networkId = replicate 64 'c'
+              generation = replicate 32 'a'
+              document =
+                "{ bootstrap = { schema_version = 2, project_anchor = \""
+                  ++ directory
+                  ++ "\", runtime_socket = \""
+                  ++ path
+                  ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
+                  ++ generation
+                  ++ "\", api_port = 26443, node_image = \"kindest/node@sha256:"
+                  ++ replicate 64 'a'
+                  ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, "
+                  ++ "node_artifact = { path = \"artifacts/node.tar\", digest = \"sha256:"
+                  ++ replicate 64 'a'
+                  ++ "\", maximum_bytes = 4096 }, listen_address = \"127.0.0.1\" } }"
+          writeFile selected document
+          bootstrap <- readBootstrapProjection selected >>= either (fail . show) pure
+          prepareFreshScope (bootstrapScope bootstrap) generation `shouldReturn` FreshScopePrepared
+          let exercise = do
+                identity <- observeDockerSocketIdentity path >>= maybe (fail "missing socket") pure
+                intent <-
+                  maybe (fail "invalid network intent") pure $
+                    mkKindNetworkIntent
+                      operation
+                      "fc00:c1c8:9c54:6b75::/64"
+                      (Just 1500)
+                      (DockerDaemonObserved "daemon-a" identity)
+                prepared <- withNewKindOperation bootstrap operation $ \stable -> do
+                  recordKindNetworkIntent bootstrap intent stable `shouldReturn` NetworkIntentRecorded
+                  when
+                    removal
+                    (recordKindNetworkAttempt bootstrap intent stable `shouldReturn` NetworkAttemptRecorded)
+                prepared `shouldBe` KindOperationCallbackReturned ()
+                let filename = if removal then "kind-network-removal-result.json" else "kind-network-create-result.json"
+                    receiptPath = scopeRoot (bootstrapScope bootstrap) </> filename
+                BS8.writeFile receiptPath (BS8.pack "{}")
+                setFileMode receiptPath 0o600
+                called <- newIORef False
+                if removal
+                  then do
+                    result <- withNewConnectedKindNetworkRemoval bootstrap operation networkId $ \_ _ -> writeIORef called True
+                    result
+                      `shouldBe` KindOperationCallbackReturned
+                        ( DockerPeerCompleted
+                            (DockerConnectedInfoCompleted (KindNetworkRemovalReceiptRefused NetworkReceiptInvalid))
+                        )
+                    withRecoveredKindOperation
+                      bootstrap
+                      operation
+                      (observeRecordedKindNetworkRemoval bootstrap operation)
+                      `shouldReturn` KindOperationCallbackReturned (NetworkRemovalRecoveryRecorded networkId)
+                  else do
+                    result <- withNewConnectedKindNetworkAttempt bootstrap operation $ \_ _ _ -> writeIORef called True
+                    result
+                      `shouldBe` KindOperationCallbackReturned
+                        ( DockerPeerCompleted
+                            (DockerConnectedInfoCompleted (KindNetworkAttemptReceiptRefused NetworkReceiptInvalid))
+                        )
+                    withRecoveredKindOperation bootstrap operation (observeKindNetworkAttempt bootstrap intent)
+                      `shouldReturn` KindOperationCallbackReturned NetworkAttemptMatches
+                readIORef called `shouldReturn` False
+                BS8.readFile receiptPath `shouldReturn` BS8.pack "{}"
+          if removal
+            then withDockerNetworkRemoveFixtureMode path (Just 204) True (const exercise)
+            else withDockerDaemonFixture path False (const exercise)
+
+    it "returns the exact selected control-plane name from held inventory" $
+      withSystemTempDirectory "prodbox-gated-session-owned-name" $ \directory -> do
+        let path = directory </> "docker.sock"
+            imageId = "sha256:" ++ replicate 64 'a'
+            listRequest = ["ps", "-a", "--filter", "label=io.x-k8s.kind.cluster=prodbox-t-run", "--format", "{{.Names}}"]
+            body =
+              BS8.pack $
+                "[{\"Id\":\""
+                  ++ replicate 64 'b'
+                  ++ "\",\"Names\":[\"/prodbox-t-run-control-plane\"],\"Labels\":{\"io.x-k8s.kind.cluster\":\"prodbox-t-run\"}}]"
+        scope <- either (fail . show) pure (deploymentScope directory Test "run" 26443)
+        withDockerDaemonFixtureContainers path body $ \_ -> do
+          result <- withConnectedDockerInfo 5000000 path $ \session (DockerConnectedInfo identifier _) _ -> do
+            Just gate <- newKindDockerReadGate scope imageId
+            runConnectedKindDockerRead gate session identifier listRequest
+              `shouldReturn` KindDockerReadCompleted (KindDockerContainerNames ["prodbox-t-run-control-plane"])
+          result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+
+    it "projects kind cluster inventory only from validated selected containers" $
+      withSystemTempDirectory "prodbox-gated-cluster-label" $ \directory -> do
+        let path = directory </> "docker.sock"
+            imageId = "sha256:" ++ replicate 64 'a'
+            request =
+              [ "ps"
+              , "-a"
+              , "--filter"
+              , "label=io.x-k8s.kind.cluster"
+              , "--format"
+              , "{{.Label \"io.x-k8s.kind.cluster\"}}"
+              ]
+            body label =
+              BS8.pack $
+                "[{\"Id\":\""
+                  ++ replicate 64 'b'
+                  ++ "\",\"Names\":[\"/prodbox-t-run-control-plane\"],\"Labels\":{\"io.x-k8s.kind.cluster\":\""
+                  ++ label
+                  ++ "\"}}]"
+        scope <- either (fail . show) pure (deploymentScope directory Test "run" 26443)
+        forM_ [(body "prodbox-t-run", True), (body "foreign", False), (BS8.pack "[]", True)] $ \(contents, valid) ->
+          withDockerDaemonFixtureContainers path contents $ \requests -> do
+            result <- withConnectedDockerInfo 5000000 path $ \session (DockerConnectedInfo identifier _) _ -> do
+              Just gate <- newKindDockerReadGate scope imageId
+              kindDockerInventoryObserved gate `shouldReturn` False
+              reply <- runConnectedKindDockerReply gate session identifier request
+              kindDockerInventoryObserved gate `shouldReturn` valid
+              if valid
+                then
+                  reply
+                    `shouldBe` KindDockerReply
+                      0
+                      (if contents == BS8.pack "[]" then BS8.empty else BS8.pack "prodbox-t-run\n")
+                      BS8.empty
+                else kindDockerReplyExit reply `shouldBe` 1
+            result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+            observed <- readMVar requests
+            observed `shouldSatisfy` any (isInfixOf "io.x-k8s.kind.cluster%3Dprodbox-t-run")
+
+    it "requires a settled broker exchange before interpreting confined kind inventory" $ do
+      let selected = "prodbox-t-run"
+          wrap broker output observed clear =
+            KindOperationCallbackReturned $
+              KindDockerEndpointObserved $
+                ConfinedKindInventoryObserved
+                  broker
+                  (KindDockerWorkerReturned (Right output))
+                  observed
+                  (if clear then KindDockerMarkerClear else KindDockerMarkerRetained)
+                  (Just KindDockerClientLinkRemoved)
+          success stdout = Subprocess.ProcessOutput ExitSuccess stdout ""
+          conclude = interpretConfinedKindInventory selected
+      conclude (wrap KindDockerBrokerCancelled (success "") True True)
+        `shouldBe` ConfinedKindInventorySelected False
+      conclude (wrap KindDockerBrokerCancelled (success (selected ++ "\n")) True True)
+        `shouldBe` ConfinedKindInventorySelected True
+      let verified = ConfinedSnapshotsReady (wrap KindDockerBrokerCancelled (success "") True True)
+      interpretVerifiedConfinedKindInventory selected (ConfinedKindSnapshotsAttempted verified True)
+        `shouldBe` ConfinedKindInventorySelected False
+      interpretVerifiedConfinedKindInventory selected (ConfinedKindSnapshotsAttempted verified False)
+        `shouldBe` ConfinedKindInventoryUnconfirmed
+      let verifiedResult = ConfinedKindSnapshotsAttempted verified True
+          connected value = DockerConnectedInfoCompleted value
+      interpretConnectedConfinedKindInventory
+        selected
+        (DockerPeerCompleted (connected (ConfinedDockerBindingObserved verifiedResult)))
+        `shouldBe` ConfinedKindInventorySelected False
+      interpretConnectedConfinedKindInventory
+        selected
+        (DockerPeerCompleted (connected (ConfinedDockerBindingChanged verifiedResult)))
+        `shouldBe` ConfinedKindInventoryUnconfirmed
+      interpretConnectedConfinedKindInventory
+        selected
+        (DockerPeerChanged (connected (ConfinedDockerBindingObserved verifiedResult)))
+        `shouldBe` ConfinedKindInventoryUnconfirmed
+      let archiveResult =
+            ConfinedArchiveInventoryObserved $
+              ConfinedImageRecordObserved $
+                DockerPeerCompleted (connected (ConfinedDockerBindingObserved verifiedResult))
+      interpretArchiveBoundConfinedKindInventory selected (InspectedArchiveCompleted archiveResult)
+        `shouldBe` ConfinedKindInventorySelected False
+      interpretArchiveBoundConfinedKindInventory selected (InspectedArchiveChanged archiveResult)
+        `shouldBe` ConfinedKindInventoryUnconfirmed
+      interpretArchiveBoundConfinedKindInventory
+        selected
+        (InspectedArchiveUnconfirmedAfter archiveResult NodeArchiveTimedOut)
+        `shouldBe` ConfinedKindInventoryUnconfirmed
+      forM_
+        [ wrap KindDockerBrokerCancelled (success "") False True
+        , wrap KindDockerBrokerCancelled (success "") True False
+        , wrap KindDockerBrokerCancelled (success "foreign\n") True True
+        , wrap KindDockerBrokerCancelled (success (selected ++ "\nforeign\n")) True True
+        , wrap KindDockerBrokerCancelled (Subprocess.ProcessOutput (ExitFailure 1) "" "") True True
+        , wrap (KindDockerBrokerReturned KindDockerEndpointRefused) (success "") True True
+        , KindOperationCallbackReturned $
+            KindDockerEndpointObserved $
+              ConfinedKindInventoryObserved
+                KindDockerBrokerCancelled
+                (KindDockerWorkerReturned (Right (success "")))
+                True
+                KindDockerMarkerClear
+                Nothing
+        ]
+        $ \outcome -> conclude outcome `shouldBe` ConfinedKindInventoryUnconfirmed
+      withSystemTempDirectory "prodbox-kind-marker-observation" $ \directory -> do
+        let path = directory </> "marker"
+        writeFile path ""
+        descriptor <- Posix.openFd path Posix.ReadOnly Posix.defaultFileFlags
+        observeKindDockerMarker descriptor `shouldReturn` KindDockerMarkerClear
+        writeFile path "in flight"
+        observeKindDockerMarker descriptor `shouldReturn` KindDockerMarkerRetained
+        Posix.closeFd descriptor
+        marker <- observeKindDockerMarker descriptor
+        case marker of
+          KindDockerMarkerUnobservable _ -> pure ()
+          other -> expectationFailure ("failed marker read was not preserved: " ++ show other)
+        let interrupted =
+              KindOperationCallbackReturned $
+                KindDockerEndpointObserved $
+                  ConfinedKindInventoryObserved
+                    KindDockerBrokerCancelled
+                    (KindDockerWorkerReturned (Right (success "")))
+                    True
+                    marker
+                    Nothing
+        conclude interrupted `shouldBe` ConfinedKindInventoryUnconfirmed
+
+    it "projects only validated kind replies and stays closed after a pull request" $
+      withSystemTempDirectory "prodbox-kind-reply" $ \directory -> do
+        let path = directory </> "docker.sock"
+            imageId = "sha256:" ++ replicate 64 'a'
+            infoRequest = ["info", "--format", "{{json .}}"]
+            imageRequest = ["inspect", "--type=image", imageId]
+            listRequest = ["ps", "-a", "--filter", "label=io.x-k8s.kind.cluster=prodbox-t-run", "--format", "{{.Names}}"]
+        scope <- either (fail . show) pure (deploymentScope directory Test "run" 26443)
+        withDockerDaemonFixture path False $ \requests -> do
+          result <- withConnectedDockerInfo 5000000 path $ \session (DockerConnectedInfo identifier _) _ -> do
+            Just gate <- newKindDockerReadGate scope imageId
+            info <- runConnectedKindDockerReply gate session identifier infoRequest
+            kindDockerReplyExit info `shouldBe` 0
+            Aeson.decodeStrict' (kindDockerReplyStdout info)
+              `shouldBe` Just
+                ( Aeson.object
+                    [ AesonKey.fromString "CgroupDriver" Aeson..= ("systemd" :: String)
+                    , AesonKey.fromString "CgroupVersion" Aeson..= ("2" :: String)
+                    , AesonKey.fromString "MemoryLimit" Aeson..= True
+                    , AesonKey.fromString "PidsLimit" Aeson..= True
+                    , AesonKey.fromString "CPUShares" Aeson..= True
+                    , AesonKey.fromString "SecurityOptions" Aeson..= ([] :: [String])
+                    ]
+                )
+            runConnectedKindDockerReply gate session identifier imageRequest
+              `shouldReturn` KindDockerReply 0 BS8.empty BS8.empty
+            runConnectedKindDockerReply gate session identifier listRequest
+              `shouldReturn` KindDockerReply 0 BS8.empty BS8.empty
+            denied <- runConnectedKindDockerReply gate session identifier ["pull", imageId]
+            kindDockerReplyExit denied `shouldBe` 1
+            kindDockerReplyStderr denied `shouldSatisfy` (not . BS8.null)
+            runConnectedKindDockerReply gate session identifier imageRequest `shouldReturn` denied
+          result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+          observed <- readMVar requests
+          length observed `shouldBe` 4
+          observed `shouldSatisfy` all (not . isInfixOf "/images/create")
+
+    it "serves bounded read frames and stops at the first refused request" $
+      withSystemTempDirectory "prodbox-kind-framed-reads" $ \directory -> do
+        let path = directory </> "docker.sock"
+            inputPath = directory </> "requests"
+            outputPath = directory </> "replies"
+            imageId = "sha256:" ++ replicate 64 'a'
+            infoRequest = ["info", "--format", "{{json .}}"]
+            imageRequest = ["inspect", "--type=image", imageId]
+            frame argv =
+              let payload = LazyBS8.toStrict (Aeson.encode (argv :: [String]))
+                  size = BS.length payload
+               in BS.pack (map (fromIntegral . (size `div`)) [16777216, 65536, 256, 1]) <> payload
+            unframe bytes
+              | BS.null bytes = Just []
+              | BS.length bytes < 4 = Nothing
+              | otherwise =
+                  let (header, rest) = BS.splitAt 4 bytes
+                      size = BS.foldl' (\value byte -> value * 256 + fromIntegral byte) 0 header
+                      (payload, remaining) = BS.splitAt size rest
+                   in if size > BS.length rest then Nothing else (payload :) <$> unframe remaining
+        scope <- either (fail . show) pure (deploymentScope directory Test "run" 26443)
+        BS.writeFile
+          inputPath
+          (BS.concat (map frame [infoRequest, imageRequest, ["pull", imageId], imageRequest]))
+        withDockerDaemonFixture path False $ \requests -> do
+          result <- withConnectedDockerInfo 5000000 path $ \session (DockerConnectedInfo identifier _) _ -> do
+            Just gate <- newKindDockerReadGate scope imageId
+            IO.withBinaryFile inputPath IO.ReadMode $ \input ->
+              IO.withBinaryFile outputPath IO.WriteMode $ \output ->
+                serveKindDockerReads gate session identifier input output `shouldReturn` KindDockerProtocolRejected
+            runConnectedKindDockerReply gate session identifier imageRequest
+              `shouldReturn` KindDockerReply 1 BS.empty (BS8.pack "Error: kind Docker request unavailable\n")
+            let malformedPath = directory </> "malformed"
+                malformedFrames =
+                  [ BS.pack [0, 1]
+                  , BS.pack [0, 0, 0, 0]
+                  , BS.pack [0, 0, 64, 1]
+                  , BS.pack [255, 255, 255, 255]
+                  , BS.pack [0, 0, 0, 2, 91]
+                  , BS.pack [0, 0, 0, 1, 91]
+                  , BS.pack [0, 0, 0, 2, 91, 93]
+                  ]
+            forM_ malformedFrames $ \bytes -> do
+              BS.writeFile malformedPath bytes
+              Just malformedGate <- newKindDockerReadGate scope imageId
+              IO.withBinaryFile malformedPath IO.ReadMode $ \input ->
+                IO.withBinaryFile (directory </> "malformed-replies") IO.WriteMode $ \output ->
+                  serveKindDockerReads malformedGate session identifier input output
+                    `shouldReturn` KindDockerProtocolMalformed
+              runConnectedKindDockerReply malformedGate session identifier imageRequest
+                `shouldReturn` KindDockerReply 1 BS.empty (BS8.pack "Error: kind Docker request unavailable\n")
+            let failingPath = directory </> "failing-output-input"
+            BS.writeFile failingPath (frame infoRequest)
+            Just failedOutputGate <- newKindDockerReadGate scope imageId
+            closedOutput <- IO.openBinaryFile (directory </> "closed-output") IO.WriteMode
+            IO.hClose closedOutput
+            outputFailure <-
+              IO.withBinaryFile failingPath IO.ReadMode $ \input ->
+                try (serveKindDockerReads failedOutputGate session identifier input closedOutput)
+            case outputFailure :: Either IOException KindDockerProtocolOutcome of
+              Left _ -> pure ()
+              Right other -> expectationFailure ("closed output did not fail: " ++ show other)
+            runConnectedKindDockerReply failedOutputGate session identifier imageRequest
+              `shouldReturn` KindDockerReply 1 BS.empty (BS8.pack "Error: kind Docker request unavailable\n")
+          result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+          replies <- maybe (fail "invalid response framing") pure . unframe =<< BS.readFile outputPath
+          length replies `shouldBe` 3
+          map (BS8.isInfixOf (BS8.pack "\"exit\":0")) replies `shouldBe` [True, True, False]
+          last replies `shouldSatisfy` BS8.isInfixOf (BS8.pack "\"exit\":1")
+          observed <- readMVar requests
+          length observed `shouldBe` 4
+          length (filter (isInfixOf "/images/") observed) `shouldBe` 1
+
+    it "exchanges kind reads over a framed duplex channel" $
+      withSystemTempDirectory "prodbox-kind-duplex" $ \directory -> do
+        let path = directory </> "docker.sock"
+            imageId = "sha256:" ++ replicate 64 'a'
+            infoRequest = ["info", "--format", "{{json .}}"]
+            imageRequest = ["inspect", "--type=image", imageId]
+            withPipe action =
+              bracket
+                ( do
+                    (readEnd, writeEnd) <- Posix.createPipe
+                    (,) <$> Posix.fdToHandle readEnd <*> Posix.fdToHandle writeEnd
+                )
+                (\(reader, writer) -> IO.hClose reader >> IO.hClose writer)
+                action
+        scope <- either (fail . show) pure (deploymentScope directory Test "run" 26443)
+        withDockerDaemonFixture path False $ \requests -> do
+          result <- withConnectedDockerInfo 5000000 path $ \session (DockerConnectedInfo identifier _) _ -> do
+            Just gate <- newKindDockerReadGate scope imageId
+            withPipe $ \(serverInput, clientOutput) ->
+              withPipe $ \(clientInput, serverOutput) -> do
+                outcome <- newEmptyMVar
+                bracket
+                  ( forkIO
+                      (try (serveKindDockerReads gate session identifier serverInput serverOutput) >>= putMVar outcome)
+                  )
+                  killThread
+                  $ \_ -> do
+                    reply <- exchangeKindDockerRead clientInput clientOutput infoRequest
+                    case reply of
+                      Right value -> kindDockerReplyExit value `shouldBe` 0
+                      Left failure -> expectationFailure (show failure)
+                    exchangeKindDockerRead clientInput clientOutput imageRequest
+                      `shouldReturn` Right (KindDockerReply 0 BS.empty BS.empty)
+                    denied <- exchangeKindDockerRead clientInput clientOutput ("run" : replicate 37 "unadmitted")
+                    case denied of
+                      Right value -> kindDockerReplyExit value `shouldBe` 1
+                      Left failure -> expectationFailure (show failure)
+                    completed <- timeout 3000000 (takeMVar outcome)
+                    case completed :: Maybe (Either SomeException KindDockerProtocolOutcome) of
+                      Just (Right KindDockerProtocolRejected) -> pure ()
+                      other -> expectationFailure ("server did not settle: " ++ show other)
+          result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+          observed <- readMVar requests
+          length observed `shouldBe` 3
+          length (filter (isInfixOf "/images/") observed) `shouldBe` 1
+
+    it "rejects malformed and ambiguous framed client replies" $
+      withSystemTempDirectory "prodbox-kind-client-replies" $ \directory -> do
+        let inputPath = directory </> "reply"
+            outputPath = directory </> "request"
+            frame body =
+              let size = BS.length body
+               in BS.pack (map (fromIntegral . (size `div`)) [16777216, 65536, 256, 1]) <> body
+            malformed =
+              [ BS.pack [0, 1]
+              , BS.pack [0, 0, 0, 0]
+              , BS.pack [0, 2, 0, 1]
+              , BS.pack [255, 255, 255, 255]
+              , BS.pack [0, 0, 0, 2, 91]
+              , frame (BS8.pack "{")
+              , frame (BS8.pack "{\"exit\":0,\"exit\":1,\"stdout\":\"\",\"stderr\":\"\"}")
+              , frame (BS8.pack "{\"exit\":2,\"stdout\":\"\",\"stderr\":\"\"}")
+              , frame (BS8.pack "{\"exit\":0,\"stdout\":\"\",\"stderr\":\"error\"}")
+              , frame (BS8.pack "{\"exit\":0,\"stdout\":\"\\u00e9\",\"stderr\":\"\"}")
+              , frame (BS8.pack "{\"exit\":0,\"stdout\":\"\",\"stderr\":\"\",\"extra\":1}")
+              ]
+        forM_ malformed $ \bytes -> do
+          BS.writeFile inputPath bytes
+          IO.withBinaryFile inputPath IO.ReadMode $ \input ->
+            IO.withBinaryFile outputPath IO.WriteMode $ \output ->
+              exchangeKindDockerRead input output ["info", "--format", "{{json .}}"]
+                `shouldReturn` Left KindDockerClientInvalidReply
+        BS.writeFile inputPath BS.empty
+        IO.withBinaryFile inputPath IO.ReadMode $ \input ->
+          IO.withBinaryFile outputPath IO.WriteMode $ \output ->
+            exchangeKindDockerRead input output [] `shouldReturn` Left KindDockerClientInvalidRequest
+        IO.withBinaryFile inputPath IO.ReadMode $ \input ->
+          IO.withBinaryFile outputPath IO.WriteMode $ \output ->
+            exchangeKindDockerRead input output (replicate 65 "x")
+              `shouldReturn` Left KindDockerClientInvalidRequest
+
+    it "bounds binary kind request input and refuses malformed frames" $
+      withSystemTempDirectory "prodbox-kind-input-frame" $ \directory -> do
+        let requestPath = directory </> "request"
+            replyPath = directory </> "reply"
+            resultPath = directory </> "result"
+            payload = BS.pack [0, 1, 127, 128, 255] <> BS.replicate 65531 42
+            frame body =
+              let size = BS.length body
+               in BS.pack (map (fromIntegral . (size `div`)) [16777216, 65536, 256, 1]) <> body
+            response = frame (BS8.pack "{\"exit\":0,\"stdout\":\"\",\"stderr\":\"\"}")
+        BS.writeFile replyPath response
+        IO.withBinaryFile replyPath IO.ReadMode $ \input ->
+          IO.withBinaryFile requestPath IO.WriteMode $ \output -> do
+            exchangeKindDockerRequest input output (KindDockerRequest ["exec", "-i"] payload)
+              `shouldReturn` Right (KindDockerReply 0 BS.empty BS.empty)
+        observed <- newIORef BS.empty
+        IO.withBinaryFile requestPath IO.ReadMode $ \input ->
+          IO.withBinaryFile resultPath IO.WriteMode $ \output ->
+            serveKindDockerInputRequestsWhile
+              (pure True)
+              ( \(KindDockerRequest argv bytes) -> do
+                  argv `shouldBe` ["exec", "-i"]
+                  writeIORef observed bytes
+                  pure (KindDockerReply 1 BS.empty (BS8.pack "refused\n"))
+              )
+              (pure ())
+              input
+              output
+              `shouldReturn` KindDockerProtocolRejected
+        readIORef observed `shouldReturn` payload
+        IO.withBinaryFile requestPath IO.ReadMode $ \input ->
+          IO.withBinaryFile resultPath IO.WriteMode $ \output ->
+            serveKindDockerRequestsWhile
+              (pure True)
+              (const (fail "read-only interpreter received input"))
+              (pure ())
+              input
+              output
+              `shouldReturn` KindDockerProtocolRejected
+        IO.withBinaryFile replyPath IO.ReadMode $ \input ->
+          IO.withBinaryFile requestPath IO.WriteMode $ \output ->
+            exchangeKindDockerRequest input output (KindDockerRequest ["exec"] (BS.replicate 65537 1))
+              `shouldReturn` Left KindDockerClientInvalidRequest
+        forM_
+          [ "{\"argv\":[\"exec\"],\"input\":\"!\"}"
+          , "{\"argv\":[\"exec\"],\"input\":\"YQ==\",\"input\":\"Yg==\"}"
+          ]
+          $ \bad -> do
+            BS.writeFile requestPath (frame (BS8.pack bad))
+            IO.withBinaryFile requestPath IO.ReadMode $ \input ->
+              IO.withBinaryFile resultPath IO.WriteMode $ \output ->
+                serveKindDockerInputRequestsWhile
+                  (pure True)
+                  (const (fail "malformed request accepted"))
+                  (pure ())
+                  input
+                  output
+                  `shouldReturn` KindDockerProtocolMalformed
+        let copyArgs = ["exec", "--privileged", "-i", "node", "cp", "/dev/stdin", "/kind/kubeadm.conf"]
+        BS.writeFile requestPath payload
+        IO.withBinaryFile requestPath IO.ReadMode $ \input -> do
+          prepared <- prepareKindDockerRequest input copyArgs
+          case prepared of
+            Just (KindDockerRequest args bytes) -> (args, bytes) `shouldBe` (copyArgs, payload)
+            Nothing -> fail "bounded input was not captured"
+        IO.withBinaryFile requestPath IO.ReadMode $ \input -> do
+          prepared <- prepareKindDockerRequest input ["info"]
+          case prepared of
+            Just (KindDockerRequest args bytes) -> (args, bytes) `shouldBe` (["info"], BS.empty)
+            Nothing -> fail "read-only arguments were refused"
+          IO.hTell input `shouldReturn` 0
+        BS.writeFile requestPath (BS.replicate 65537 42)
+        IO.withBinaryFile requestPath IO.ReadMode $ \input -> do
+          prepared <- prepareKindDockerRequest input copyArgs
+          case prepared of
+            Nothing -> pure ()
+            Just _ -> fail "oversized input was accepted"
+
+    it "bounds client lock contention and releases the lock on cancellation" $
+      withSystemTempDirectory "prodbox-kind-client-lock" $ \directory -> do
+        let lockPath = directory </> "lock"
+            emptyPath = directory </> "empty"
+            outputPath = directory </> "output"
+            request = ["info", "--format", "{{json .}}"]
+            withPipe action =
+              bracket
+                ( do
+                    (readEnd, writeEnd) <- Posix.createPipe
+                    (,) <$> Posix.fdToHandle readEnd <*> Posix.fdToHandle writeEnd
+                )
+                (\(reader, writer) -> IO.hClose reader >> IO.hClose writer)
+                action
+        BS.writeFile lockPath BS.empty
+        BS.writeFile emptyPath BS.empty
+        setFileMode lockPath 0o644
+        bracket (Posix.openFd lockPath Posix.ReadWrite Posix.defaultFileFlags) Posix.closeFd $ \unsafeLock ->
+          IO.withBinaryFile emptyPath IO.ReadMode $ \input ->
+            IO.withBinaryFile outputPath IO.WriteMode $ \output ->
+              exchangeSerializedKindDockerRead 1000000 unsafeLock input output request
+                `shouldReturn` Left KindDockerClientInvalidLock
+        setFileMode lockPath 0o600
+        bracket (Posix.openFd lockPath Posix.ReadWrite Posix.defaultFileFlags) Posix.closeFd $ \firstLock ->
+          bracket (Posix.openFd lockPath Posix.ReadWrite Posix.defaultFileFlags) Posix.closeFd $ \secondLock ->
+            withPipe $ \(clientInput, _peerOutput) ->
+              withPipe $ \(peerInput, clientOutput) -> do
+                result <- newEmptyMVar
+                bracket
+                  ( forkIO
+                      ( try (exchangeSerializedKindDockerRead 3000000 firstLock clientInput clientOutput request)
+                          >>= putMVar result
+                      )
+                  )
+                  killThread
+                  $ \worker -> do
+                    received <- timeout 1000000 (BS.hGet peerInput 4)
+                    fmap BS.length received `shouldBe` Just 4
+                    IO.withBinaryFile emptyPath IO.ReadMode $ \input ->
+                      IO.withBinaryFile outputPath IO.WriteMode $ \output ->
+                        exchangeSerializedKindDockerRead 100000 secondLock input output request
+                          `shouldReturn` Left KindDockerClientTimedOut
+                    killThread worker
+                    completed <- timeout 1000000 (takeMVar result)
+                    case completed :: Maybe (Either SomeException (Either KindDockerClientFailure KindDockerReply)) of
+                      Just (Left _) -> pure ()
+                      other -> expectationFailure ("client did not settle after cancellation: " ++ show other)
+                    IO.withBinaryFile emptyPath IO.ReadMode $ \input ->
+                      IO.withBinaryFile outputPath IO.WriteMode $ \output ->
+                        exchangeSerializedKindDockerRead 1000000 secondLock input output request
+                          `shouldReturn` Left KindDockerClientUnsettled
+
+    it "retains an in-flight marker after an unconfirmed or refused client exchange" $
+      withSystemTempDirectory "prodbox-kind-client-marker" $ \directory -> do
+        let lockPath = directory </> "lock"
+            inputPath = directory </> "reply"
+            outputPath = directory </> "request"
+            request = ["info", "--format", "{{json .}}"]
+            frame body =
+              let size = BS.length body
+               in BS.pack (map (fromIntegral . (size `div`)) [16777216, 65536, 256, 1]) <> body
+            exchange lock body = do
+              BS.writeFile inputPath (frame (BS8.pack body))
+              IO.withBinaryFile inputPath IO.ReadMode $ \input ->
+                IO.withBinaryFile outputPath IO.WriteMode $ \output ->
+                  exchangeSerializedKindDockerRead 1000000 lock input output request
+        BS.writeFile lockPath BS.empty
+        setFileMode lockPath 0o600
+        bracket (Posix.openFd lockPath Posix.ReadWrite Posix.defaultFileFlags) Posix.closeFd $ \lock -> do
+          exchange lock "{\"exit\":0,\"stdout\":\"\",\"stderr\":\"\"}"
+            `shouldReturn` Right (KindDockerReply 0 BS.empty BS.empty)
+          BS.readFile lockPath `shouldReturn` BS.empty
+          exchange lock "{\"exit\":1,\"stdout\":\"\",\"stderr\":\"refused\"}"
+            `shouldReturn` Right (KindDockerReply 1 BS.empty (BS8.pack "refused"))
+          BS.readFile lockPath `shouldReturn` BS8.pack "!"
+          exchange lock "{\"exit\":0,\"stdout\":\"\",\"stderr\":\"\"}"
+            `shouldReturn` Left KindDockerClientUnsettled
+
+    it "binds existing FIFO endpoints and preserves changed or unconfirmed outcomes" $
+      withSystemTempDirectory "prodbox-kind-endpoint" $ \directory -> do
+        let lock = directory </> "lock"
+            request = directory </> "request"
+            reply = directory </> "reply"
+        BS.writeFile lock BS.empty
+        setFileMode lock 0o600
+        PosixFiles.createNamedPipe request 0o600
+        PosixFiles.createNamedPipe reply 0o600
+        bracket (Posix.openFd directory Posix.ReadOnly Posix.defaultFileFlags) Posix.closeFd $ \root -> do
+          observed <- withKindDockerEndpoint root (pure True) $ \endpoint stable -> do
+            stable `shouldReturn` True
+            statuses <-
+              traverse
+                PosixFiles.getFdStatus
+                [endpointLock endpoint, endpointRequest endpoint, endpointReply endpoint]
+            length statuses `shouldBe` 3
+            traverse
+              (\descriptor -> Posix.queryFdOption descriptor Posix.CloseOnExec)
+              [endpointLock endpoint, endpointRequest endpoint, endpointReply endpoint]
+              `shouldReturn` [True, True, True]
+            pure ("receipt" :: String)
+          observed `shouldBe` KindDockerEndpointObserved "receipt"
+          changed <- withKindDockerEndpoint root (pure True) $ \_ stable -> do
+            renameFile request (directory </> "old-request")
+            PosixFiles.createNamedPipe request 0o600
+            stable `shouldReturn` False
+            pure ("receipt" :: String)
+          changed `shouldBe` KindDockerEndpointChanged "receipt"
+          removeFile request
+          createSymbolicLink (directory </> "old-request") request
+          withKindDockerEndpoint root (pure True) (\_ _ -> pure ()) `shouldReturn` KindDockerEndpointRefused
+          removeFile request
+          renameFile (directory </> "old-request") request
+          createLink lock (directory </> "extra-lock")
+          withKindDockerEndpoint root (pure True) (\_ _ -> pure ()) `shouldReturn` KindDockerEndpointRefused
+          removeFile (directory </> "extra-lock")
+          setFileMode directory 0o755
+          withKindDockerEndpoint root (pure True) (\_ _ -> pure ()) `shouldReturn` KindDockerEndpointRefused
+          setFileMode directory 0o700
+          unavailable <- newIORef False
+          let rootCheck = do
+                failed <- readIORef unavailable
+                if failed then ioError (userError "fixture recheck failed") else pure True
+          result <- withKindDockerEndpoint root rootCheck $ \_ _ -> do
+            writeIORef unavailable True
+            pure ("receipt" :: String)
+          result `shouldBe` KindDockerEndpointUnconfirmedAfter "receipt"
+
+    it "exchanges framed reads through the bound FIFO endpoints" $
+      withSystemTempDirectory "prodbox-kind-bound-fifos" $ \directory -> do
+        let path = directory </> "docker.sock"
+            client = directory </> "docker"
+            lock = directory </> "lock"
+            request = directory </> "request"
+            reply = directory </> "reply"
+            imageId = "sha256:" ++ replicate 64 'a'
+            infoRequest = ["info", "--format", "{{json .}}"]
+            clusterRequest =
+              [ "ps"
+              , "-a"
+              , "--filter"
+              , "label=io.x-k8s.kind.cluster"
+              , "--format"
+              , "{{.Label \"io.x-k8s.kind.cluster\"}}"
+              ]
+            pullRequest = ["pull", imageId]
+        binary <- resolveBinaryPath
+        copyFile binary client
+        setFileMode client 0o700
+        (unavailableExit, unavailableOutput, unavailableError) <-
+          readCreateProcessWithExitCode (proc client infoRequest) ""
+        (unavailableExit, unavailableOutput) `shouldBe` (ExitFailure 1, "")
+        unavailableError `shouldContain` "kind Docker bridge unavailable"
+        BS.writeFile lock BS.empty
+        setFileMode lock 0o600
+        PosixFiles.createNamedPipe request 0o600
+        PosixFiles.createNamedPipe reply 0o600
+        scope <- either (fail . show) pure (deploymentScope directory Test "run" 26443)
+        bracket (Posix.openFd directory Posix.ReadOnly Posix.defaultFileFlags) Posix.closeFd $ \root ->
+          withDockerDaemonFixture path False $ \requests -> do
+            result <- withConnectedDockerInfo 5000000 path $ \session (DockerConnectedInfo identifier _) _ -> do
+              Just gate <- newKindDockerReadGate scope imageId
+              outcome <- newEmptyMVar
+              bracket
+                ( forkIO
+                    (try (serveBoundKindDockerReads root (pure True) gate session identifier) >>= putMVar outcome)
+                )
+                killThread
+                $ \_ -> do
+                  (firstExit, firstOutput, firstError) <- readCreateProcessWithExitCode (proc client infoRequest) ""
+                  firstExit `shouldBe` ExitSuccess
+                  firstError `shouldBe` ""
+                  firstOutput `shouldContain` "CgroupDriver"
+                  (inventoryExit, inventoryOutput, inventoryError) <-
+                    readCreateProcessWithExitCode (proc client clusterRequest) ""
+                  (inventoryExit, inventoryOutput, inventoryError) `shouldBe` (ExitSuccess, "", "")
+                  (secondExit, secondOutput, secondError) <-
+                    readCreateProcessWithExitCode (proc client pullRequest) ""
+                  secondExit `shouldBe` ExitFailure 1
+                  secondOutput `shouldBe` ""
+                  secondError `shouldContain` "kind Docker request unavailable"
+                  completed <- timeout 3000000 (takeMVar outcome)
+                  case completed :: Maybe (Either SomeException (KindDockerEndpointResult KindDockerProtocolOutcome)) of
+                    Just (Right (KindDockerEndpointObserved KindDockerProtocolRejected)) -> pure ()
+                    other -> expectationFailure ("server did not settle: " ++ show other)
+            result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+            BS.readFile lock `shouldReturn` BS8.pack "!"
+            observed <- readMVar requests
+            length observed `shouldBe` 3
+            observed `shouldSatisfy` any (isInfixOf "io.x-k8s.kind.cluster%3Dprodbox-t-run")
+            observed `shouldSatisfy` all (not . isInfixOf "/images/create")
+
+    it "settles the bound broker and worker when either exits first" $
+      forM_ [False, True] $ \reject ->
+        withSystemTempDirectory "prodbox-kind-bound-worker" $ \directory -> do
+          let path = directory </> "docker.sock"
+              lock = directory </> "lock"
+              request = directory </> "request"
+              reply = directory </> "reply"
+              imageId = "sha256:" ++ replicate 64 'a'
+              command = if reject then ["pull", imageId] else ["info", "--format", "{{json .}}"]
+          BS.writeFile lock BS.empty
+          setFileMode lock 0o600
+          PosixFiles.createNamedPipe request 0o600
+          PosixFiles.createNamedPipe reply 0o600
+          scope <- either (fail . show) pure (deploymentScope directory Test "run" 26443)
+          bracket (Posix.openFd directory Posix.ReadOnly Posix.defaultFileFlags) Posix.closeFd $ \root ->
+            withDockerDaemonFixture path False $ \_ -> do
+              result <- withConnectedDockerInfo 5000000 path $ \session (DockerConnectedInfo identifier _) _ -> do
+                Just gate <- newKindDockerReadGate scope imageId
+                outcomes <- runBoundKindDockerReadWorker root (pure True) gate session identifier $ do
+                  observed <- exchangeBoundKindDockerRead 1000000 root (pure True) command
+                  case observed of
+                    KindDockerEndpointObserved (Right response) ->
+                      kindDockerReplyExit response `shouldBe` if reject then 1 else 0
+                    other -> expectationFailure ("exchange failed: " ++ show other)
+                  if reject then threadDelay 3000000 else pure ()
+                case outcomes of
+                  (KindDockerBrokerCancelled, KindDockerWorkerReturned ()) | not reject -> pure ()
+                  ( KindDockerBrokerReturned (KindDockerEndpointObserved KindDockerProtocolRejected)
+                    , KindDockerWorkerCancelled
+                    )
+                      | reject -> pure ()
+                  other -> expectationFailure ("unexpected broker or worker outcome: " ++ show other)
+              result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+              BS.readFile lock `shouldReturn` if reject then BS8.pack "!" else BS8.empty
+
+    it "stops bound FIFO reads when endpoint identity becomes unavailable" $
+      withSystemTempDirectory "prodbox-kind-bound-change" $ \directory -> do
+        let path = directory </> "docker.sock"
+            lock = directory </> "lock"
+            request = directory </> "request"
+            reply = directory </> "reply"
+            imageId = "sha256:" ++ replicate 64 'a'
+            infoRequest = ["info", "--format", "{{json .}}"]
+        BS.writeFile lock BS.empty
+        setFileMode lock 0o600
+        PosixFiles.createNamedPipe request 0o600
+        PosixFiles.createNamedPipe reply 0o600
+        scope <- either (fail . show) pure (deploymentScope directory Test "run" 26443)
+        changed <- newIORef False
+        infoCount <- newIORef (0 :: Int)
+        let rootStable = not <$> readIORef changed
+            hook requestLine = when ("GET /info " `isPrefixOf` requestLine) $ do
+              prior <- atomicModifyIORef' infoCount (\count -> (count + 1, count))
+              when (prior == 1) (writeIORef changed True)
+        bracket (Posix.openFd directory Posix.ReadOnly Posix.defaultFileFlags) Posix.closeFd $ \root ->
+          withDockerDaemonFixtureHook path False hook $ \requests -> do
+            result <- withConnectedDockerInfo 5000000 path $ \session (DockerConnectedInfo identifier _) _ -> do
+              Just gate <- newKindDockerReadGate scope imageId
+              outcome <- newEmptyMVar
+              bracket
+                (forkIO (try (serveBoundKindDockerReads root rootStable gate session identifier) >>= putMVar outcome))
+                killThread
+                $ \_ -> do
+                  exchanged <- exchangeBoundKindDockerRead 1000000 root rootStable infoRequest
+                  exchanged `shouldBe` KindDockerEndpointChanged (Left KindDockerClientTimedOut)
+                  completed <- timeout 3000000 (takeMVar outcome)
+                  case completed :: Maybe (Either SomeException (KindDockerEndpointResult KindDockerProtocolOutcome)) of
+                    Just (Right (KindDockerEndpointChanged KindDockerProtocolEndpointChanged)) -> pure ()
+                    other -> expectationFailure ("changed server did not settle: " ++ show other)
+            result `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted ())
+            BS.readFile lock `shouldReturn` BS8.pack "!"
+            observed <- readMVar requests
+            length observed `shouldBe` 2
+            observed `shouldSatisfy` all (not . isInfixOf "/images/")
+
+    it "binds worker roots beneath the supplied operation root" $
+      withSystemTempDirectory "prodbox-kind-worker-roots" $ \directory -> do
+        let operation = replicate 32 'a'
+            worker = directory </> ("kind-worker-" ++ operation)
+            scratch = worker </> "scratch"
+            bridge = worker </> "bridge"
+            lock = bridge </> "lock"
+            request = bridge </> "request"
+            reply = bridge </> "reply"
+        createDirectoryIfMissing True scratch
+        createDirectoryIfMissing True bridge
+        mapM_ (\path -> setFileMode path 0o700) [worker, scratch, bridge]
+        BS.writeFile lock BS.empty
+        setFileMode lock 0o600
+        PosixFiles.createNamedPipe request 0o600
+        PosixFiles.createNamedPipe reply 0o600
+        bracket (Posix.openFd directory Posix.ReadOnly Posix.defaultFileFlags) Posix.closeFd $ \root -> do
+          withKindDockerWorkerRoots root "invalid" (pure True) (\_ _ -> pure ())
+            `shouldReturn` KindDockerEndpointRefused
+          withKindDockerWorkerRoots root operation (pure False) (\_ _ -> pure ())
+            `shouldReturn` KindDockerEndpointRefused
+          observed <- withKindDockerWorkerRoots root operation (pure True) $ \roots stable -> do
+            stable `shouldReturn` True
+            traverse
+              (\descriptor -> Posix.queryFdOption descriptor Posix.CloseOnExec)
+              [workerScratch roots, workerBridge roots, workerLock roots, workerRequest roots, workerReply roots]
+              `shouldReturn` [True, True, True, True, True]
+            pure ("receipt" :: String)
+          observed `shouldBe` KindDockerEndpointObserved "receipt"
+          changed <- withKindDockerWorkerRoots root operation (pure True) $ \_ stable -> do
+            renameDirectory scratch (worker </> "old-scratch")
+            createDirectoryIfMissing True scratch
+            setFileMode scratch 0o700
+            observedStable <- try stable
+            case observedStable :: Either IOException Bool of
+              Right False -> pure ()
+              other -> expectationFailure ("scratch recheck: " ++ show other)
+            pure ("receipt" :: String)
+          changed `shouldBe` KindDockerEndpointChanged "receipt"
+          removeFile request
+          createSymbolicLink "/dev/null" request
+          withKindDockerWorkerRoots root operation (pure True) (\_ _ -> pure ())
+            `shouldReturn` KindDockerEndpointRefused
+
+    it "binds worker roots to the recovered scope and operation" $
+      withSystemTempDirectory "prodbox-kind-scoped-roots" $ \directory -> do
+        let selected = directory </> "selected.dhall"
+            generation = replicate 32 'a'
+            operation = replicate 32 'b'
+            otherOperation = replicate 32 'c'
+            document =
+              "{ bootstrap = { schema_version = 2, project_anchor = \""
+                ++ directory
+                ++ "\", runtime_socket = \""
+                ++ (directory </> "docker.sock")
+                ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
+                ++ generation
+                ++ "\", api_port = 26443, node_image = \"kindest/node@sha256:"
+                ++ replicate 64 'a'
+                ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, "
+                ++ "node_artifact = { path = \"artifacts/node.tar\", digest = \"sha256:"
+                ++ replicate 64 'a'
+                ++ "\", maximum_bytes = 4096 }, listen_address = \"127.0.0.1\" } }"
+        writeFile selected document
+        bootstrap <- readBootstrapProjection selected >>= either (fail . show) pure
+        prepareFreshScope (bootstrapScope bootstrap) generation `shouldReturn` FreshScopePrepared
+        withScopeRootDescriptorPreserving (bootstrapScope bootstrap) (\_ stable -> stable)
+          `shouldReturn` ScopeDescriptorReturned True
+        withScopeRootDescriptor (bootstrapScope bootstrap) (\_ stable -> stable) `shouldReturn` Right True
+        legacyFailure <-
+          try
+            ( withScopeRootDescriptor
+                (bootstrapScope bootstrap)
+                (\_ _ -> ioError (userError "nonsecret legacy callback failure"))
+            )
+            :: IO (Either IOException (Either DeploymentScopeError ()))
+        case legacyFailure of
+          Left _ -> pure ()
+          Right value -> expectationFailure ("legacy scope callback failure was swallowed: " ++ show value)
+        scopeCleanup <- withScopeRootDescriptorPreserving (bootstrapScope bootstrap) $ \rootFd _ -> do
+          Posix.closeFd rootFd
+          pure ("scope receipt" :: String)
+        case scopeCleanup of
+          ScopeDescriptorCleanupFailedAfter "scope receipt" [ScopeDescriptorCloseIo _] -> pure ()
+          other -> expectationFailure ("scope receipt or cleanup failure was lost: " ++ show other)
+        scopeBoth <- withScopeRootDescriptorPreserving (bootstrapScope bootstrap) $ \rootFd _ -> do
+          Posix.closeFd rootFd
+          ioError (userError "nonsecret scope callback failure")
+        case scopeBoth of
+          ScopeDescriptorCallbackFailed _ [ScopeDescriptorCloseIo _] -> pure ()
+          other ->
+            expectationFailure
+              ("scope callback or cleanup failure was lost: " ++ show (other :: ScopeDescriptorOutcome ()))
+        unlockAfter <- withScopeRootDescriptorPreserving (bootstrapScope bootstrap) $ \rootFd _ ->
+          withLockedKindScope rootFd (pure True) $ \_ -> do
+            Posix.closeFd rootFd
+            pure ("lease receipt" :: String)
+        case unlockAfter of
+          ScopeDescriptorCleanupFailedAfter
+            (Right (KindLeaseUnlockFailed (KindLeaseCompleted "lease receipt") 9))
+            [ScopeDescriptorCloseIo _] -> pure ()
+          other -> expectationFailure ("lease receipt or cleanup failure was lost: " ++ show other)
+        unlockBoth <- withScopeRootDescriptorPreserving (bootstrapScope bootstrap) $ \rootFd _ ->
+          withLockedKindScope rootFd (pure True) $ \_ -> do
+            Posix.closeFd rootFd
+            ioError (userError "nonsecret lease callback failure")
+        case unlockBoth of
+          ScopeDescriptorCleanupFailedAfter
+            (Left (KindLeaseCallbackAndUnlockFailed _ 9))
+            [ScopeDescriptorCloseIo _] -> pure ()
+          other ->
+            expectationFailure
+              ( "lease callback or cleanup failure was lost: "
+                  ++ show (other :: ScopeDescriptorOutcome (Either KindLeaseError (KindLeaseOutcome ())))
+              )
+        interrupted <- try $ withScopeRootDescriptorPreserving (bootstrapScope bootstrap) $ \rootFd _ ->
+          withLockedKindScope rootFd (pure True) $ \_ -> do
+            Posix.closeFd rootFd
+            throwIO ThreadKilled
+        case interrupted of
+          Left failure -> case fromException failure of
+            Just (ScopeDescriptorInterrupted leaseFailure [ScopeDescriptorCloseIo _]) ->
+              case fromException leaseFailure of
+                Just (KindLeaseInterrupted original 9) ->
+                  (fromException original :: Maybe AsyncException) `shouldBe` Just ThreadKilled
+                other -> expectationFailure ("lease interruption lost: " ++ show other)
+            other -> expectationFailure ("scope interruption lost: " ++ show other)
+          Right value ->
+            expectationFailure
+              ( "interruption swallowed: "
+                  ++ show (value :: ScopeDescriptorOutcome (Either KindLeaseError (KindLeaseOutcome ())))
+              )
+        let root = scopeRoot (bootstrapScope bootstrap)
+            worker = root </> ("kind-worker-" ++ operation)
+            scratch = worker </> "scratch"
+            bridge = worker </> "bridge"
+        withRecoveredKindDockerWorkerRoots bootstrap operation (\_ _ -> pure ())
+          `shouldReturn` KindOperationRefused (KindOperationObservationRefused KindIntentMissing)
+        prepareNewKindDockerWorker bootstrap operation
+          `shouldReturn` KindOperationCallbackReturned KindDockerWorkerPrepared
+        doesDirectoryExist scratch `shouldReturn` True
+        (PosixFiles.isNamedPipe <$> PosixFiles.getFileStatus (bridge </> "request")) `shouldReturn` True
+        (PosixFiles.isNamedPipe <$> PosixFiles.getFileStatus (bridge </> "reply")) `shouldReturn` True
+        prepareNewKindDockerWorker bootstrap operation
+          `shouldReturn` KindOperationRefused (KindOperationIntentRefused KindIntentAlreadyExists)
+        leaseCallback <- withRecoveredKindOperation bootstrap operation $ \_ ->
+          ioError (userError "nonsecret lease callback failure")
+        case leaseCallback of
+          KindOperationUnconfirmed (KindLeaseScopeCallbackFailed _ []) -> pure ()
+          other ->
+            expectationFailure
+              ("lease callback failure was not preserved: " ++ show (other :: KindOperationOutcome ()))
+        withRecoveredKindDockerWorkerRoots bootstrap operation (\_ stable -> stable)
+          `shouldReturn` KindOperationCallbackReturned (KindDockerEndpointObserved True)
+        cleanupFailure <- withRecoveredKindDockerWorkerRoots bootstrap operation $ \roots _ -> do
+          Posix.closeFd (workerScratch roots)
+          pure ("completed" :: String)
+        case cleanupFailure of
+          KindOperationCallbackReturned
+            (KindDockerEndpointRootIoFailedAfter "completed" [KindDockerRootDescriptorCloseIo _]) -> pure ()
+          other -> expectationFailure ("returned value or close failure was lost: " ++ show other)
+        primaryAndCleanup <- withRecoveredKindDockerWorkerRoots bootstrap operation $ \roots _ -> do
+          Posix.closeFd (workerScratch roots)
+          ioError (userError "nonsecret fixture failure")
+        case primaryAndCleanup of
+          KindOperationCallbackReturned
+            (KindDockerEndpointRootIoFailed [KindDockerRootCallbackIo _, KindDockerRootDescriptorCloseIo _]) -> pure ()
+          other ->
+            expectationFailure
+              ( "primary or close failure was lost: "
+                  ++ show (other :: KindOperationOutcome (KindDockerEndpointResult ()))
+              )
+        withRecoveredKindDockerWorkerRoots bootstrap operation (\_ stable -> stable)
+          `shouldReturn` KindOperationCallbackReturned (KindDockerEndpointObserved True)
+        let sourcePath = directory </> "client-fixture"
+            contents = BS8.pack "client-fixture"
+            digest = "sha256:" ++ BS8.unpack (hexSha256 contents)
+        BS.writeFile sourcePath contents
+        runtime <-
+          either
+            (fail . show)
+            pure
+            (Capacity.runtimeMemoryPlanForProfile Capacity.defaultCapacitySection (Text.pack "gateway"))
+        budget <- either (fail . show) pure (planSealedToolBudget runtime 1024 (2 * 1024 * 1024))
+        bracket (Posix.openFd sourcePath Posix.ReadOnly Posix.defaultFileFlags) Posix.closeFd $ \source -> do
+          let unused = error "refused inventory evaluated an unused capability"
+              runInventory imageId readRoots =
+                observeConfinedKindInventoryOnHost
+                  unused
+                  unused
+                  unused
+                  bootstrap
+                  operation
+                  imageId
+                  readRoots
+                  source
+                  source
+                  source
+                  unused
+                  "daemon-a"
+                  (pure True)
+          withDockerDaemonFixture (directory </> "docker.sock") False $ \requests -> do
+            beforeMissing <- readMVar requests
+            missing <-
+              observeRecordedConfinedKindInventoryOnHost
+                5000000
+                unused
+                unused
+                unused
+                bootstrap
+                operation
+                "unused"
+                1
+                "unused"
+                []
+                source
+            case missing of
+              ConfinedImageRecordRefused NodeImageIntentMissing -> pure ()
+              other -> expectationFailure ("missing image intent was not refused: " ++ show other)
+            readMVar requests `shouldReturn` beforeMissing
+            socketIdentity <-
+              observeDockerSocketIdentity (directory </> "docker.sock")
+                >>= maybe (fail "missing fixture socket") pure
+            let expected = DockerDaemonObserved "daemon-a" socketIdentity
+                connect daemon recheck =
+                  observeConnectedConfinedKindInventoryOnHost
+                    5000000
+                    unused
+                    unused
+                    unused
+                    bootstrap
+                    operation
+                    "unused"
+                    1
+                    "unused"
+                    []
+                    source
+                    daemon
+                    recheck
+            mismatched <- connect (DockerDaemonObserved "foreign" socketIdentity) (pure True)
+            case mismatched of
+              DockerPeerCompleted (DockerConnectedInfoCompleted (ConfinedDockerIdentityMismatch actual)) -> actual `shouldBe` expected
+              other -> expectationFailure ("foreign Docker identity was not refused: " ++ show other)
+            unavailable <- connect expected (pure False)
+            case unavailable of
+              DockerPeerCompleted (DockerConnectedInfoCompleted ConfinedDockerBindingUnavailable) -> pure ()
+              other -> expectationFailure ("unavailable Docker binding was not refused: " ++ show other)
+            intent <-
+              maybe (fail "invalid image intent") pure $
+                mkNodeImageIntent
+                  operation
+                  ("sha256:" ++ replicate 64 'c')
+                  ("sha256:" ++ replicate 64 'd')
+                  ("sha256:" ++ replicate 64 'e')
+                  4096
+            foreignIntent <-
+              maybe (fail "invalid foreign identity") pure $
+                bindNodeImageIntent intent (DockerDaemonObserved "foreign" socketIdentity)
+            withRecoveredKindOperation bootstrap operation (recordNodeImageIntent bootstrap foreignIntent)
+              `shouldReturn` KindOperationCallbackReturned NodeImageIntentRecorded
+            firstIdentity <- observeRecordedNodeImageIdentity bootstrap operation
+            firstDaemon <- observeRecordedNodeImageIntent bootstrap operation
+            let recordPath = root </> "node-image-intent.json"
+                originalDigest = BS8.pack ("sha256:" ++ replicate 64 'c')
+                replacementDigest = BS8.pack ("sha256:" ++ replicate 64 'b')
+            originalRecord <- BS.readFile recordPath
+            let (prefix, suffix) = BS8.breakSubstring originalDigest originalRecord
+            BS.null suffix `shouldBe` False
+            BS.writeFile recordPath (prefix <> replacementDigest <> BS.drop (BS.length originalDigest) suffix)
+            secondIdentity <- observeRecordedNodeImageIdentity bootstrap operation
+            secondDaemon <- observeRecordedNodeImageIntent bootstrap operation
+            case (firstIdentity, secondIdentity) of
+              (NodeImageIdentityObserved _ _, NodeImageIdentityObserved _ _) -> firstIdentity `shouldNotBe` secondIdentity
+              other -> expectationFailure ("image identity became unobservable: " ++ show other)
+            firstDaemon `shouldBe` NodeImageIntentBound (DockerDaemonObserved "foreign" socketIdentity)
+            firstDaemon `shouldBe` secondDaemon
+            beforeMismatch <- readMVar requests
+            configMismatch <-
+              observeRecordedConfinedKindInventoryOnHost
+                5000000
+                unused
+                unused
+                unused
+                bootstrap
+                operation
+                "unused"
+                1
+                ("sha256:" ++ replicate 64 'f')
+                []
+                source
+            case configMismatch of
+              ConfinedImageRecordConfigMismatch -> pure ()
+              other -> expectationFailure ("foreign image identity was not refused: " ++ show other)
+            readMVar requests `shouldReturn` beforeMismatch
+            recordedMismatch <-
+              observeRecordedConfinedKindInventoryOnHost
+                5000000
+                unused
+                unused
+                unused
+                bootstrap
+                operation
+                "unused"
+                1
+                ("sha256:" ++ replicate 64 'd')
+                []
+                source
+            case recordedMismatch of
+              ConfinedImageRecordObserved
+                (DockerPeerCompleted (DockerConnectedInfoCompleted (ConfinedDockerIdentityMismatch actual))) ->
+                  actual `shouldBe` expected
+              other -> expectationFailure ("recorded Docker mismatch was not refused: " ++ show other)
+          invalidSandbox <- runInventory ("sha256:" ++ replicate 64 'a') [source]
+          case invalidSandbox of
+            KindOperationCallbackReturned (KindDockerEndpointObserved ConfinedKindInventoryInvalidSandbox) -> pure ()
+            other -> expectationFailure ("invalid sandbox was not refused: " ++ show other)
+          invalidGate <- runInventory "invalid-image" []
+          case invalidGate of
+            KindOperationCallbackReturned (KindDockerEndpointObserved ConfinedKindInventoryInvalidGate) -> pure ()
+            other -> expectationFailure ("invalid gate was not refused: " ++ show other)
+          invalidDescriptors <- runInventory ("sha256:" ++ replicate 64 'a') []
+          case invalidDescriptors of
+            KindOperationCallbackReturned (KindDockerEndpointObserved ConfinedKindInventoryInvalidDescriptors) -> pure ()
+            other -> expectationFailure ("invalid descriptors were not refused: " ++ show other)
+          (sort <$> listDirectory bridge) `shouldReturn` ["lock", "reply", "request"]
+          unsealed <- withRecoveredKindDockerWorkerRoots bootstrap operation $ \roots stable ->
+            prepareKindDockerClientLink roots source stable
+          unsealed
+            `shouldBe` KindOperationCallbackReturned (KindDockerEndpointObserved KindDockerClientLinkRefused)
+          sealed <- withSealedTool budget source digest 1024 $ \client -> do
+            rejectedKind <-
+              observeConfinedKindInventoryOnHost
+                unused
+                unused
+                unused
+                bootstrap
+                operation
+                ("sha256:" ++ replicate 64 'a')
+                []
+                source
+                source
+                client
+                unused
+                "daemon-a"
+                (pure True)
+            case rejectedKind of
+              KindOperationCallbackReturned (KindDockerEndpointObserved ConfinedKindInventoryInvalidDescriptors) -> pure ()
+              other -> expectationFailure ("unsealed kind snapshot was not refused: " ++ show other)
+            (sort <$> listDirectory bridge) `shouldReturn` ["lock", "reply", "request"]
+            refused <- withRecoveredKindDockerWorkerRoots bootstrap operation $ \roots _ ->
+              prepareKindDockerClientLink roots client (pure False)
+            refused
+              `shouldBe` KindOperationCallbackReturned (KindDockerEndpointObserved KindDockerClientLinkRefused)
+            prepared <- withRecoveredKindDockerWorkerRoots bootstrap operation $ \roots stable ->
+              prepareKindDockerClientLink roots client stable
+            prepared
+              `shouldBe` KindOperationCallbackReturned (KindDockerEndpointObserved KindDockerClientLinkPrepared)
+            PosixFiles.readSymbolicLink (bridge </> "docker") `shouldReturn` ("/proc/self/fd/" ++ show client)
+            duplicate <- withRecoveredKindDockerWorkerRoots bootstrap operation $ \roots stable ->
+              prepareKindDockerClientLink roots client stable
+            duplicate
+              `shouldBe` KindOperationCallbackReturned (KindDockerEndpointObserved KindDockerClientLinkAlreadyExists)
+            notReady <- withRecoveredKindDockerWorkerRoots bootstrap operation $ \roots _ ->
+              removeKindDockerClientLink roots client (pure False)
+            notReady
+              `shouldBe` KindOperationCallbackReturned (KindDockerEndpointObserved KindDockerClientLinkRemovalRefused)
+            removed <- withRecoveredKindDockerWorkerRoots bootstrap operation $ \roots stable ->
+              removeKindDockerClientLink roots client stable
+            removed
+              `shouldBe` KindOperationCallbackReturned (KindDockerEndpointObserved KindDockerClientLinkRemoved)
+            (sort <$> listDirectory bridge) `shouldReturn` ["lock", "reply", "request"]
+            absent <- withRecoveredKindDockerWorkerRoots bootstrap operation $ \roots stable ->
+              removeKindDockerClientLink roots client stable
+            absent
+              `shouldBe` KindOperationCallbackReturned (KindDockerEndpointObserved KindDockerClientLinkAbsent)
+            createSymbolicLink "/foreign" (bridge </> "docker")
+            foreignLink <- withRecoveredKindDockerWorkerRoots bootstrap operation $ \roots stable ->
+              removeKindDockerClientLink roots client stable
+            foreignLink
+              `shouldBe` KindOperationCallbackReturned (KindDockerEndpointObserved KindDockerClientLinkRemovalRefused)
+            PosixFiles.readSymbolicLink (bridge </> "docker") `shouldReturn` "/foreign"
+          sealed `shouldBe` Right ()
+        withRecoveredKindDockerWorkerRoots bootstrap otherOperation (\_ _ -> pure ())
+          `shouldReturn` KindOperationRefused (KindOperationObservationRefused (KindIntentMatches operation))
+        let generationPath = root </> "scope-generation.json"
+        originalGeneration <- BS.readFile generationPath
+        changed <- withRecoveredKindDockerWorkerRoots bootstrap operation $ \_ stable -> do
+          BS.writeFile generationPath (BS8.pack "incomplete")
+          stable `shouldReturn` False
+          pure ("receipt" :: String)
+        changed `shouldBe` KindOperationRootChanged (Right (KindDockerEndpointChanged "receipt"))
+        BS.writeFile generationPath originalGeneration
+
+    it "retains partial worker preparation and refuses an existing directory" $
+      forM_ [False, True] $ \collision ->
+        withSystemTempDirectory "prodbox-kind-worker-incomplete" $ \directory -> do
+          let selected = directory </> "selected.dhall"
+              generation = replicate 32 'a'
+              operation = replicate 32 'b'
+              document =
+                "{ bootstrap = { schema_version = 2, project_anchor = \""
+                  ++ directory
+                  ++ "\", runtime_socket = \""
+                  ++ (directory </> "docker.sock")
+                  ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
+                  ++ generation
+                  ++ "\", api_port = 26443, node_image = \"kindest/node@sha256:"
+                  ++ replicate 64 'a'
+                  ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, "
+                  ++ "node_artifact = { path = \"artifacts/node.tar\", digest = \"sha256:"
+                  ++ replicate 64 'a'
+                  ++ "\", maximum_bytes = 4096 }, listen_address = \"127.0.0.1\" } }"
+          writeFile selected document
+          bootstrap <- readBootstrapProjection selected >>= either (fail . show) pure
+          prepareFreshScope (bootstrapScope bootstrap) generation `shouldReturn` FreshScopePrepared
+          let worker = scopeRoot (bootstrapScope bootstrap) </> ("kind-worker-" ++ operation)
+          if collision
+            then do
+              createDirectoryIfMissing True worker
+              BS.writeFile (worker </> "sentinel") (BS8.pack "untouched")
+              prepareNewKindDockerWorker bootstrap operation
+                `shouldReturn` KindOperationCallbackReturned KindDockerWorkerAlreadyExists
+              BS.readFile (worker </> "sentinel") `shouldReturn` BS8.pack "untouched"
+            else do
+              result <- withNewKindOperation bootstrap operation $ \stable -> do
+                calls <- newIORef (0 :: Int)
+                let stopAfterCreate = do
+                      ready <- stable
+                      count <- atomicModifyIORef' calls (\value -> (value + 1, value))
+                      pure (ready && count == 0)
+                prepareKindDockerWorkerPaths bootstrap operation stopAfterCreate
+              result `shouldBe` KindOperationCallbackReturned KindDockerWorkerPreparationIncomplete
+              doesDirectoryExist worker `shouldReturn` True
+              doesDirectoryExist (worker </> "scratch") `shouldReturn` False
+              withRecoveredKindDockerWorkerRoots bootstrap operation (\_ _ -> pure ())
+                `shouldReturn` KindOperationCallbackReturned KindDockerEndpointRefused
+
+    it "bounds an image error response before returning" $
+      withSystemTempDirectory "prodbox-session-image-large" $ \directory ->
+        withDockerDaemonFixture (directory </> "docker.sock") False $ \_ -> do
+          result <- withConnectedDockerInfo 5000000 (directory </> "docker.sock") $ \session _ _ ->
+            inspectDockerSessionImage session ("sha256:" ++ replicate 64 'e')
+          result
+            `shouldBe` DockerPeerCompleted (DockerConnectedInfoCompleted (Left DockerConnectedInfoTooLarge))
+
+    it "sends one bounded image archive and preserves a lost reply as unconfirmed" $
+      withSystemTempDirectory "prodbox-session-load" $ \directory -> do
+        let bytes = BS8.pack "synthetic archive bytes"
+            archive = directory </> "archive.tar"
+            socketPath = directory </> "docker.sock"
+        BS8.writeFile archive bytes
+        forM_ [True, False] $ \reply -> do
+          let path = socketPath ++ show reply
+          withDockerLoadFixture path bytes reply $ \received -> do
+            result <- withConnectedDockerInfo 5000000 path $ \session _ stable ->
+              bracket (Posix.openFd archive Posix.ReadOnly Posix.defaultFileFlags) Posix.closeFd $ \fd -> do
+                loadDockerSessionImage session fd 0 stable `shouldReturn` DockerImageLoadNotStarted
+                loadDockerSessionImage session fd (toInteger (BS8.length bytes) + 1) stable
+                  `shouldReturn` DockerImageLoadNotStarted
+                loadDockerSessionImage session fd (toInteger (BS8.length bytes)) (pure False)
+                  `shouldReturn` DockerImageLoadNotStarted
+                loadDockerSessionImage session fd (toInteger (BS8.length bytes)) stable
+            result
+              `shouldBe` DockerPeerCompleted
+                ( DockerConnectedInfoCompleted $
+                    if reply
+                      then DockerImageLoadReply 200 (DockerImageLoadMessages 1)
+                      else DockerImageLoadUnconfirmed
+                )
+            readMVar received `shouldReturn` bytes
+
+    it "distinguishes Docker progress, embedded errors and ambiguous image-load responses" $ do
+      let cases =
+            [ ("{\"stream\":\"loaded\"}\n{\"status\":\"done\"}\n", DockerImageLoadMessages 2)
+            , ("{\"stream\":\"partial\"}\n{\"error\":\"failed\"}\n", DockerImageLoadErrorMessage)
+            , ("{\"errorDetail\":{\"message\":\"failed\"}}\n", DockerImageLoadErrorMessage)
+            , ("{\"stream\":\"ok\",\"error\":null,\"errorDetail\":null}\n", DockerImageLoadMessages 1)
+            , ("", DockerImageLoadInvalidStream)
+            , ("{\"stream\":\"ok\",\"stream\":\"other\"}\n", DockerImageLoadInvalidStream)
+            , ("{\"stream\":\"ok\"}\n{bad}\n", DockerImageLoadInvalidStream)
+            , ("{\"aux\":{}}\n", DockerImageLoadInvalidStream)
+            ]
+      forM_ cases $ \(input, expected) ->
+        classifyDockerImageLoadStream (BS8.pack input) `shouldReturn` expected
+      classifyDockerImageLoadStream (BS8.replicate 65537 'x') `shouldReturn` DockerImageLoadInvalidStream
+      classifyDockerImageLoadStream (BS8.concat (replicate 1025 (BS8.pack "{\"status\":\"x\"}\n")))
+        `shouldReturn` DockerImageLoadInvalidStream
+
+    it "retains a lost load reply and a failed image read as separate observations" $
+      withSystemTempDirectory "prodbox-session-load-lost" $ \directory -> do
+        let bytes = BS8.pack "synthetic archive bytes"
+            archive = directory </> "archive.tar"
+            socketPath = directory </> "docker.sock"
+        BS8.writeFile archive bytes
+        withDockerLoadFixture socketPath bytes False $ \received -> do
+          result <- withConnectedDockerInfo 5000000 socketPath $ \session _ stable ->
+            bracket (Posix.openFd archive Posix.ReadOnly Posix.defaultFileFlags) Posix.closeFd $ \fd -> do
+              loadAndObserveDockerSessionImage session fd (toInteger (BS8.length bytes)) "invalid" stable
+                `shouldReturn` DockerImageSubmissionObservation DockerImageLoadNotStarted DockerImageReadbackSkipped
+              loadAndObserveDockerSessionImage
+                session
+                fd
+                (toInteger (BS8.length bytes))
+                ("sha256:" ++ replicate 64 'a')
+                stable
+          result
+            `shouldBe` DockerPeerCompleted
+              ( DockerConnectedInfoCompleted $
+                  DockerImageSubmissionObservation
+                    DockerImageLoadUnconfirmed
+                    (DockerImageReadbackStable (Left DockerConnectedInfoTransport))
+              )
+          readMVar received `shouldReturn` bytes
+
+    it "retains an image response as changed when the scope changes during read-back" $
+      withSystemTempDirectory "prodbox-session-load-changed" $ \directory -> do
+        let bytes = BS8.pack "synthetic archive bytes"
+            archive = directory </> "archive.tar"
+            socketPath = directory </> "docker.sock"
+            identifier = "sha256:" ++ replicate 64 'a'
+        BS8.writeFile archive bytes
+        unchanged <- newIORef True
+        let hook request = when ("GET /images/sha256:" `isPrefixOf` request) (writeIORef unchanged False)
+        withDockerDaemonFixtureHook socketPath False hook $ \_ -> do
+          result <- withConnectedDockerInfo 5000000 socketPath $ \session _ _ ->
+            bracket (Posix.openFd archive Posix.ReadOnly Posix.defaultFileFlags) Posix.closeFd $ \fd ->
+              loadAndObserveDockerSessionImage
+                session
+                fd
+                (toInteger (BS8.length bytes))
+                identifier
+                (readIORef unchanged)
+          result
+            `shouldBe` DockerPeerCompleted
+              ( DockerConnectedInfoCompleted $
+                  DockerImageSubmissionObservation
+                    (DockerImageLoadReply 200 (DockerImageLoadMessages 1))
+                    (DockerImageReadbackChanged (Right (ImageIdObserved "linux" "amd64" 0)))
+              )
+
+    it "checks the held connection against the durable image record before invoking its callback"
+      $ forM_
+        [ (True, False, False, False)
+        , (False, False, False, False)
+        , (True, True, False, False)
+        , (True, False, True, False)
+        , (True, False, False, True)
+        ]
+      $ \(matches, changeAfter, alreadyOther, timeoutAfterWrite) ->
+        withDockerInfoFixture (BS8.pack "{\"ID\":\"daemon-a\"}") False $ \path -> do
+          let anchor = takeDirectory path
+              selected = anchor </> "selected.dhall"
+              generation = replicate 32 'a'
+              operation = replicate 32 'b'
+              digest character = "sha256:" ++ replicate 64 character
+              document =
+                "{ bootstrap = { schema_version = 2, project_anchor = \""
+                  ++ anchor
+                  ++ "\", runtime_socket = \""
+                  ++ path
+                  ++ "\", environment = \"test\", deployment_id = \"run\", root_generation = \""
+                  ++ generation
+                  ++ "\", api_port = 26443, node_image = \"kindest/node@"
+                  ++ digest 'a'
+                  ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, "
+                  ++ "node_artifact = { path = \"artifacts/node.tar\", digest = \""
+                  ++ digest 'a'
+                  ++ "\", maximum_bytes = 4096 }, listen_address = \"127.0.0.1\" } }"
+          writeFile selected document
+          bootstrap <- readBootstrapProjection selected >>= either (fail . show) pure
+          prepareFreshScope (bootstrapScope bootstrap) generation `shouldReturn` FreshScopePrepared
+          socketIdentity <- observeDockerSocketIdentity path >>= maybe (fail "missing fixture socket") pure
+          intent <-
+            maybe (fail "invalid image intent") pure $
+              mkNodeImageIntent operation (digest 'c') (digest 'd') (digest 'e') 4096
+          bound <-
+            maybe (fail "invalid bound image intent") pure $
+              bindNodeImageIntent
+                intent
+                (DockerDaemonObserved (if matches then "daemon-a" else "daemon-b") socketIdentity)
+          otherBound <-
+            maybe (fail "invalid other binding") pure $
+              bindNodeImageIntent intent (DockerDaemonObserved "daemon-b" socketIdentity)
+          called <- newIORef False
+          result <- withNewKindOperation bootstrap operation $ \stable -> do
+            recordNodeImageIntent bootstrap bound stable `shouldReturn` NodeImageIntentRecorded
+            when (matches && not changeAfter && not alreadyOther && not timeoutAfterWrite) $ do
+              forM_ ["not-an-ip", "2001:db8::/64", "fc00:c1c8:9c54:6b75::1/64", "fc00::/32", "fc00:::/64"] $ \invalid ->
+                mkKindNetworkIntent operation invalid (Just 1500) (DockerDaemonObserved "daemon-a" socketIdentity)
+                  `shouldBe` Nothing
+              networkIntent <-
+                maybe (fail "invalid network intent") pure $
+                  mkKindNetworkIntent
+                    operation
+                    "fc00:c1c8:9c54:6b75::/64"
+                    (Just 1500)
+                    (DockerDaemonObserved "daemon-a" socketIdentity)
+              differentNetwork <-
+                maybe (fail "invalid alternate network intent") pure $
+                  mkKindNetworkIntent
+                    operation
+                    "fc00:c1c8:9c54:6b76::/64"
+                    (Just 1500)
+                    (DockerDaemonObserved "daemon-a" socketIdentity)
+              observeKindNetworkIntent bootstrap networkIntent stable `shouldReturn` NetworkIntentMissing
+              observeKindNetworkAttempt bootstrap networkIntent stable `shouldReturn` NetworkAttemptUnobservable
+              recordKindNetworkAttempt bootstrap networkIntent stable `shouldReturn` NetworkAttemptRefused
+              observeRecordedKindNetworkIntent bootstrap operation stable `shouldReturn` NetworkRecoveryMissing
+              observeRecordedKindNetworkIntent bootstrap (replicate 32 'c') stable
+                `shouldReturn` NetworkRecoveryUnobservable
+              recordKindNetworkIntent bootstrap networkIntent (pure False) `shouldReturn` NetworkIntentRefused
+              recordKindNetworkIntent bootstrap networkIntent stable `shouldReturn` NetworkIntentRecorded
+              observeKindNetworkIntent bootstrap networkIntent stable `shouldReturn` NetworkIntentMatches
+              observeRecordedKindNetworkIntent bootstrap operation stable
+                `shouldReturn` NetworkRecoveryRecorded networkIntent
+              observeKindNetworkIntent bootstrap differentNetwork stable `shouldReturn` NetworkIntentConflict
+              recordKindNetworkIntent bootstrap differentNetwork stable `shouldReturn` NetworkIntentAlreadyExists
+              observeKindNetworkAttempt bootstrap networkIntent stable `shouldReturn` NetworkAttemptMissing
+              recordKindNetworkRemoval bootstrap networkIntent (replicate 64 'c') stable
+                `shouldReturn` NetworkRemovalRefused
+              recordKindNetworkAttempt bootstrap networkIntent (pure False) `shouldReturn` NetworkAttemptRefused
+              recordKindNetworkAttempt bootstrap networkIntent stable `shouldReturn` NetworkAttemptRecorded
+              observeKindNetworkAttempt bootstrap networkIntent stable `shouldReturn` NetworkAttemptMatches
+              observeRecordedKindNetworkAttempt bootstrap operation stable `shouldReturn` NetworkAttemptMatches
+              recordKindNetworkAttempt bootstrap networkIntent stable `shouldReturn` NetworkAttemptAlreadyExists
+              observeKindNetworkAttempt bootstrap differentNetwork stable
+                `shouldReturn` NetworkAttemptUnobservable
+              observeKindNetworkRemoval bootstrap networkIntent (replicate 64 'c') stable
+                `shouldReturn` NetworkRemovalMissing
+              observeRecordedKindNetworkRemoval bootstrap operation stable
+                `shouldReturn` NetworkRemovalRecoveryMissing
+              recordKindNetworkRemoval bootstrap networkIntent "../invalid" stable
+                `shouldReturn` NetworkRemovalRefused
+              recordKindNetworkRemoval bootstrap networkIntent (replicate 64 'c') (pure False)
+                `shouldReturn` NetworkRemovalRefused
+              recordKindNetworkRemoval bootstrap networkIntent (replicate 64 'c') stable
+                `shouldReturn` NetworkRemovalRecorded
+              observeKindNetworkRemoval bootstrap networkIntent (replicate 64 'c') stable
+                `shouldReturn` NetworkRemovalMatches
+              observeRecordedKindNetworkRemoval bootstrap operation stable
+                `shouldReturn` NetworkRemovalRecoveryRecorded (replicate 64 'c')
+              observeKindNetworkRemoval bootstrap networkIntent (replicate 64 'd') stable
+                `shouldReturn` NetworkRemovalConflict
+              recordKindNetworkRemoval bootstrap networkIntent (replicate 64 'd') stable
+                `shouldReturn` NetworkRemovalAlreadyExists
+              let networkRemoval = scopeRoot (bootstrapScope bootstrap) </> "kind-network-removal.json"
+                  removalBackup = anchor </> "network-removal-backup"
+              removalBytes <- BS8.readFile networkRemoval
+              BS8.writeFile networkRemoval (BS8.pack "{")
+              observeKindNetworkRemoval bootstrap networkIntent (replicate 64 'c') stable
+                `shouldReturn` NetworkRemovalInvalid
+              observeRecordedKindNetworkRemoval bootstrap operation stable
+                `shouldReturn` NetworkRemovalRecoveryInvalid
+              BS8.writeFile networkRemoval removalBytes
+              renameFile networkRemoval removalBackup
+              createSymbolicLink removalBackup networkRemoval
+              observeKindNetworkRemoval bootstrap networkIntent (replicate 64 'c') stable
+                `shouldReturn` NetworkRemovalUnobservable
+              observeRecordedKindNetworkRemoval bootstrap operation stable
+                `shouldReturn` NetworkRemovalRecoveryUnobservable
+              BS8.readFile removalBackup `shouldReturn` removalBytes
+              removeFile networkRemoval
+              renameFile removalBackup networkRemoval
+              let networkAttempt = scopeRoot (bootstrapScope bootstrap) </> "kind-network-attempt.json"
+                  attemptBackup = anchor </> "network-attempt-backup"
+              attemptBytes <- BS8.readFile networkAttempt
+              BS8.writeFile networkAttempt (BS8.pack "{")
+              observeKindNetworkAttempt bootstrap networkIntent stable `shouldReturn` NetworkAttemptInvalid
+              observeKindNetworkRemoval bootstrap networkIntent (replicate 64 'c') stable
+                `shouldReturn` NetworkRemovalUnobservable
+              observeRecordedKindNetworkRemoval bootstrap operation stable
+                `shouldReturn` NetworkRemovalRecoveryUnobservable
+              BS8.writeFile networkAttempt (BS8.pack "{}")
+              observeKindNetworkAttempt bootstrap networkIntent stable `shouldReturn` NetworkAttemptConflict
+              BS8.writeFile networkAttempt attemptBytes
+              renameFile networkAttempt attemptBackup
+              createSymbolicLink attemptBackup networkAttempt
+              observeKindNetworkAttempt bootstrap networkIntent stable `shouldReturn` NetworkAttemptUnobservable
+              BS8.readFile attemptBackup `shouldReturn` attemptBytes
+              removeFile networkAttempt
+              renameFile attemptBackup networkAttempt
+              let networkPath = scopeRoot (bootstrapScope bootstrap) </> "kind-network-intent.json"
+                  networkBackup = anchor </> "network-intent-backup"
+              networkBytes <- BS8.readFile networkPath
+              BS8.writeFile networkPath (BS8.pack "{")
+              observeKindNetworkIntent bootstrap networkIntent stable `shouldReturn` NetworkIntentInvalid
+              observeRecordedKindNetworkIntent bootstrap operation stable `shouldReturn` NetworkRecoveryInvalid
+              observeKindNetworkAttempt bootstrap networkIntent stable `shouldReturn` NetworkAttemptUnobservable
+              observeRecordedKindNetworkAttempt bootstrap operation stable
+                `shouldReturn` NetworkAttemptUnobservable
+              BS8.writeFile networkPath networkBytes
+              renameFile networkPath networkBackup
+              createSymbolicLink networkBackup networkPath
+              observeKindNetworkIntent bootstrap networkIntent stable `shouldReturn` NetworkIntentUnobservable
+              observeRecordedKindNetworkIntent bootstrap operation stable
+                `shouldReturn` NetworkRecoveryUnobservable
+              BS8.readFile networkBackup `shouldReturn` networkBytes
+              removeFile networkPath
+              renameFile networkBackup networkPath
+              observeNodeImageAttempt bootstrap intent stable `shouldReturn` NodeImageAttemptUnobservable
+              recordNodeImageAttempt bootstrap intent stable `shouldReturn` NodeImageAttemptRefused
+              recordNodeImageAttempt bootstrap bound (pure False) `shouldReturn` NodeImageAttemptRefused
+              observeNodeImageAttempt bootstrap bound stable `shouldReturn` NodeImageAttemptMissing
+              checks <- newIORef (0 :: Int)
+              let changesDuringIntentRead = do
+                    count <- atomicModifyIORef' checks (\value -> (value + 1, value))
+                    if count == 0 then stable else pure False
+              recordNodeImageAttempt bootstrap bound changesDuringIntentRead
+                `shouldReturn` NodeImageAttemptRefused
+              observeNodeImageAttempt bootstrap bound stable `shouldReturn` NodeImageAttemptMissing
+              observeRecordedNodeImageAttempt bootstrap operation `shouldReturn` NodeImageAttemptMissing
+              let slowStable = threadDelay 450000 >> stable
+              recordNodeImageAttempt bootstrap bound slowStable `shouldReturn` NodeImageAttemptRecorded
+              observeNodeImageAttempt bootstrap bound stable `shouldReturn` NodeImageAttemptMatches
+              observeRecordedNodeImageAttempt bootstrap operation `shouldReturn` NodeImageAttemptMatches
+              recordNodeImageAttempt bootstrap bound stable `shouldReturn` NodeImageAttemptAlreadyExists
+              observeNodeImageAttempt bootstrap otherBound stable `shouldReturn` NodeImageAttemptUnobservable
+              let attemptPath = scopeRoot (bootstrapScope bootstrap) </> "node-image-attempt.json"
+                  backupPath = anchor </> "attempt-backup"
+              original <- BS8.readFile attemptPath
+              BS8.writeFile attemptPath (BS8.pack "invalid")
+              observeNodeImageAttempt bootstrap bound stable `shouldReturn` NodeImageAttemptInvalid
+              observeRecordedNodeImageAttempt bootstrap operation `shouldReturn` NodeImageAttemptInvalid
+              BS8.writeFile attemptPath (BS8.pack "{}")
+              observeNodeImageAttempt bootstrap bound stable `shouldReturn` NodeImageAttemptConflict
+              observeRecordedNodeImageAttempt bootstrap operation `shouldReturn` NodeImageAttemptConflict
+              BS8.writeFile attemptPath original
+              renameFile attemptPath backupPath
+              createSymbolicLink backupPath attemptPath
+              observeNodeImageAttempt bootstrap bound stable `shouldReturn` NodeImageAttemptUnobservable
+              observeRecordedNodeImageAttempt bootstrap operation `shouldReturn` NodeImageAttemptUnobservable
+              BS8.readFile backupPath `shouldReturn` original
+              removeFile attemptPath
+              renameFile backupPath attemptPath
+            when (matches && changeAfter && not alreadyOther) $ do
+              let attemptPath = scopeRoot (bootstrapScope bootstrap) </> "node-image-attempt.json"
+                  stableUntilAttempt = do
+                    ready <- stable
+                    exists <- doesFileExist attemptPath
+                    pure (ready && not exists)
+              observeNodeImageAttempt bootstrap bound stable `shouldReturn` NodeImageAttemptMissing
+              recordNodeImageAttempt bootstrap bound stableUntilAttempt `shouldReturn` NodeImageAttemptIncomplete
+              observeNodeImageAttempt bootstrap bound stable `shouldReturn` NodeImageAttemptMatches
+            when timeoutAfterWrite $ do
+              let attemptPath = scopeRoot (bootstrapScope bootstrap) </> "node-image-attempt.json"
+                  delayedAfterAttempt = do
+                    ready <- stable
+                    exists <- doesFileExist attemptPath
+                    when exists (threadDelay 12000000)
+                    pure ready
+              recordNodeImageAttempt bootstrap bound delayedAfterAttempt `shouldReturn` NodeImageAttemptIncomplete
+              observeNodeImageAttempt bootstrap bound stable `shouldReturn` NodeImageAttemptMatches
+            withConnectedNodeImageRecord bootstrap (if alreadyOther then otherBound else intent) stable $ \_ recordStable -> do
+              recordStable `shouldReturn` True
+              writeIORef called True
+              when changeAfter $ do
+                writeFile (scopeRoot (bootstrapScope bootstrap) </> "node-image-intent.json") "incomplete"
+                recordStable `shouldReturn` False
+              pure ("receipt" :: String)
+          let expected
+                | alreadyOther = NodeImageConnectionInvalid
+                | matches && changeAfter = NodeImageConnectionChangedAfter "receipt"
+                | matches = NodeImageConnectionReady "receipt"
+                | otherwise = NodeImageConnectionRecordRefused NodeImageIntentConflict
+          result
+            `shouldBe` KindOperationCallbackReturned (DockerPeerCompleted (DockerConnectedInfoCompleted expected))
+          readIORef called `shouldReturn` (matches && not alreadyOther)
+          when (matches && not changeAfter && not alreadyOther) $ do
+            recovered <-
+              withRecoveredKindOperation bootstrap operation (observeNodeImageAttempt bootstrap bound)
+            recovered `shouldBe` KindOperationCallbackReturned NodeImageAttemptMatches
+          when (matches && not changeAfter && not alreadyOther && not timeoutAfterWrite) $ do
+            networkIntent <-
+              maybe (fail "invalid recovered intent") pure $
+                mkKindNetworkIntent
+                  operation
+                  "fc00:c1c8:9c54:6b75::/64"
+                  (Just 1500)
+                  (DockerDaemonObserved "daemon-a" socketIdentity)
+            recovered <-
+              withRecoveredKindOperation
+                bootstrap
+                operation
+                (observeRecordedKindNetworkIntent bootstrap operation)
+            recovered `shouldBe` KindOperationCallbackReturned (NetworkRecoveryRecorded networkIntent)
+            attempt <-
+              withRecoveredKindOperation
+                bootstrap
+                operation
+                (observeRecordedKindNetworkAttempt bootstrap operation)
+            attempt `shouldBe` KindOperationCallbackReturned NetworkAttemptMatches
+            removal <-
+              withRecoveredKindOperation
+                bootstrap
+                operation
+                (observeRecordedKindNetworkRemoval bootstrap operation)
+            removal `shouldBe` KindOperationCallbackReturned (NetworkRemovalRecoveryRecorded (replicate 64 'c'))
+          when (matches && changeAfter && not alreadyOther) $ do
+            doesFileExist (scopeRoot (bootstrapScope bootstrap) </> "node-image-attempt.json")
+              `shouldReturn` True
+            observeRecordedNodeImageAttempt bootstrap operation `shouldReturn` NodeImageAttemptUnobservable
+
+  describe "public node image attempt status" $
+    it "reports retained marker states without claiming daemon settlement" $
+      withSystemTempDirectory "prodbox-attempt-status" $ \directory -> do
+        binary <- resolveBinaryPath >>= \path -> installOperatorBinaryInDir path directory
+        let socketPath = directory </> "docker.sock"
+            selected = directory </> ".test-data" </> "run" </> "config" </> "prodbox.dhall"
+            operation = replicate 32 'b'
+            digest character = "sha256:" ++ replicate 64 character
+            values =
+              unlines
+                [ directory
+                , socketPath
+                , "test"
+                , "run"
+                , replicate 32 'a'
+                , "26443"
+                , "kindest/node@" ++ digest 'a'
+                , "28080"
+                , "30080"
+                , "28443"
+                , "30443"
+                , "127.0.0.1"
+                , "artifacts/node.tar"
+                , digest 'a'
+                , "4096"
+                , "artifacts/kind"
+                , digest 'c'
+                , "100000"
+                , "yes"
+                ]
+            run arguments input = readCreateProcessWithExitCode (proc binary arguments) {cwd = Just directory} input
+            status expected = do
+              (code, output, errors) <- run ["--config", selected, "control", "status"] ""
+              (code, errors) `shouldBe` (ExitSuccess, "")
+              output `shouldContain` ("Node image attempt: " ++ expected)
+            networkStatus expected = do
+              (code, output, errors) <- run ["--config", selected, "control", "status"] ""
+              (code, errors) `shouldBe` (ExitSuccess, "")
+              output `shouldContain` ("Kind network recovery: " ++ expected)
+        withDockerDaemonFixture socketPath False $ \_ -> do
+          (setup, _, errors) <- run ["--config", selected, "config", "setup"] values
+          (setup, errors) `shouldBe` (ExitSuccess, "")
+          status "not observed"
+          networkStatus "not observed"
+          bootstrap <- readBootstrapProjection selected >>= either (fail . show) pure
+          socketIdentity <-
+            observeDockerSocketIdentity socketPath >>= maybe (fail "missing fixture socket") pure
+          intent <-
+            maybe (fail "invalid image intent") pure $
+              mkNodeImageIntent operation (digest 'c') (digest 'd') (digest 'e') 4096
+          bound <-
+            maybe (fail "invalid bound image intent") pure $
+              bindNodeImageIntent intent (DockerDaemonObserved "daemon-a" socketIdentity)
+          withNewKindOperation bootstrap operation (recordNodeImageIntent bootstrap bound)
+            `shouldReturn` KindOperationCallbackReturned NodeImageIntentRecorded
+          (volumeCode, volumeOutput, volumeErrors) <- run ["--config", selected, "control", "status"] ""
+          (volumeCode, volumeErrors) `shouldBe` (ExitSuccess, "")
+          volumeOutput
+            `shouldContain` "Candidate node /var volume: daemon returned 404; absence, ownership and worker settlement unverified"
+          networkStatus "proposal not found locally; network absence and worker settlement unverified"
+          networkIntent <-
+            maybe (fail "invalid network intent") pure $
+              mkKindNetworkIntent
+                operation
+                "fc00:c1c8:9c54:6b75::/64"
+                (Just 1500)
+                (DockerDaemonObserved "daemon-a" socketIdentity)
+          withRecoveredKindOperation bootstrap operation (recordKindNetworkIntent bootstrap networkIntent)
+            `shouldReturn` KindOperationCallbackReturned NetworkIntentRecorded
+          networkStatus "attempt missing locally, inventory no matches observed"
+          withRecoveredKindOperation bootstrap operation (recordKindNetworkAttempt bootstrap networkIntent)
+            `shouldReturn` KindOperationCallbackReturned NetworkAttemptRecorded
+          networkStatus "attempt recorded, inventory no matches observed"
+          let networkAttemptPath = scopeRoot (bootstrapScope bootstrap) </> "kind-network-attempt.json"
+          originalNetworkAttempt <- BS8.readFile networkAttemptPath
+          BS8.writeFile networkAttemptPath (BS8.pack "{")
+          networkStatus "attempt invalid, inventory no matches observed"
+          BS8.writeFile networkAttemptPath originalNetworkAttempt
+          withRecoveredKindOperation
+            bootstrap
+            operation
+            (recordKindNetworkRemoval bootstrap networkIntent (replicate 64 'c'))
+            `shouldReturn` KindOperationCallbackReturned NetworkRemovalRecorded
+          withRecoveredKindOperation
+            bootstrap
+            operation
+            ( recordNetworkReceipt
+                bootstrap
+                networkIntent
+                NetworkCreateReceipt
+                (NetworkCreateTransport DockerNetworkCreateUnconfirmed)
+            )
+            `shouldReturn` KindOperationCallbackReturned NetworkReceiptRecorded
+          withRecoveredKindOperation
+            bootstrap
+            operation
+            ( recordNetworkReceipt
+                bootstrap
+                networkIntent
+                (NetworkRemovalReceipt (replicate 64 'c'))
+                (NetworkRemovalTransport (DockerNetworkRemoveReply 204))
+            )
+            `shouldReturn` KindOperationCallbackReturned NetworkReceiptRecorded
+          (networkCode, networkOutput, networkErrors) <- run ["--config", selected, "control", "status"] ""
+          (networkCode, networkErrors) `shouldBe` (ExitSuccess, "")
+          networkOutput
+            `shouldContain` ("removal recorded for " ++ replicate 64 'c' ++ ", removal after recorded for " ++ replicate 64 'c')
+          networkOutput `shouldContain` "removal ID not returned by ID query"
+          networkOutput `shouldContain` "separate removal ID not returned by ID query"
+          networkOutput `shouldContain` "create receipt create unconfirmed, removal receipt removal reply 204"
+          status "not found locally; daemon effect and worker settlement unverified"
+          withRecoveredKindOperation bootstrap operation (recordNodeImageAttempt bootstrap bound)
+            `shouldReturn` KindOperationCallbackReturned NodeImageAttemptRecorded
+          status "matching local marker; daemon effect and worker settlement unverified"
+          let attemptPath = scopeRoot (bootstrapScope bootstrap) </> "node-image-attempt.json"
+              intentPath = scopeRoot (bootstrapScope bootstrap) </> "node-image-intent.json"
+              backupPath = directory </> "attempt-backup"
+          original <- BS8.readFile attemptPath
+          BS8.writeFile attemptPath (BS8.pack "incomplete")
+          status "marker is invalid or incomplete"
+          BS8.writeFile attemptPath (BS8.pack "{}")
+          status "marker conflicts with the recorded image intent"
+          BS8.writeFile attemptPath original
+          renameFile attemptPath backupPath
+          createSymbolicLink backupPath attemptPath
+          status "marker or parent intent could not be safely observed"
+          BS8.readFile backupPath `shouldReturn` original
+          removeFile attemptPath
+          renameFile backupPath attemptPath
+          BS8.writeFile intentPath (BS8.pack "invalid")
+          status "marker or parent intent could not be safely observed"
+
+  describe "selected node archive inspection" $
+    it "binds the configured OCI digest and platform to retained blob contents" $
+      withSystemTempDirectory "prodbox-node-archive" $ \tmpDir -> do
+        classifyArchiveInterruption
+          (ArchiveCallbackNotStarted :: ArchiveCallbackProgress String)
+          NodeArchiveTimedOut
+          `shouldBe` InspectedArchiveRefused NodeArchiveTimedOut
+        classifyArchiveInterruption
+          (ArchiveCallbackStarted :: ArchiveCallbackProgress String)
+          NodeArchiveTimedOut
+          `shouldBe` InspectedArchiveUnconfirmed NodeArchiveTimedOut
+        classifyArchiveInterruption (ArchiveCallbackReturned "receipt") NodeArchiveTimedOut
+          `shouldBe` InspectedArchiveUnconfirmedAfter "receipt" NodeArchiveTimedOut
+        binary <- resolveBinaryPath >>= \path -> installOperatorBinaryInDir path tmpDir
+        let architecture = case SystemInfo.arch of
+              "x86_64" -> "amd64"
+              "aarch64" -> "arm64"
+              other -> other
+            layer = BS8.pack "synthetic non-secret layer"
+            digest bytes = "sha256:" ++ BS8.unpack (hexSha256 bytes)
+            config =
+              BS8.pack
+                ( "{\"os\":\"linux\",\"architecture\":\""
+                    ++ architecture
+                    ++ "\",\"rootfs\":{\"type\":\"layers\",\"diff_ids\":[\""
+                    ++ digest layer
+                    ++ "\"]}}"
+                )
+            descriptor media bytes =
+              "{\"mediaType\":\""
+                ++ media
+                ++ "\",\"digest\":\""
+                ++ digest bytes
+                ++ "\",\"size\":"
+                ++ show (BS8.length bytes)
+                ++ "}"
+            makeManifest configMedia layerMedia =
+              BS8.pack $
+                "{\"schemaVersion\":2,\"config\":"
+                  ++ descriptor configMedia config
+                  ++ ",\"layers\":["
+                  ++ descriptor layerMedia layer
+                  ++ "]}"
+            run args input = readCreateProcessWithExitCode (proc binary args) {cwd = Just tmpDir} input
+        forM_
+          [ "match"
+          , "connected"
+          , "connected-conflict"
+          , "connected-stale"
+          , "connected-changed"
+          , "connected-old-result"
+          , "index"
+          , "foreignindex"
+          , "wrongdigest"
+          , "missing"
+          , "duplicate"
+          , "docker"
+          , "dockerindex"
+          , "dockermixed"
+          , "named"
+          , "extra"
+          , "badannotations"
+          ]
+          $ \caseName -> do
+            let anchor = tmpDir </> caseName
+                layout = anchor </> "layout"
+                blobs = layout </> "blobs" </> "sha256"
+                archive = anchor </> "node.tar"
+                selected = anchor </> ".test-data" </> caseName </> "config" </> "prodbox.dhall"
+                dockerCase = caseName `elem` ["docker", "dockerindex", "dockermixed"]
+                configMedia =
+                  if dockerCase
+                    then "application/vnd.docker.container.image.v1+json"
+                    else "application/vnd.oci.image.config.v1+json"
+                layerMedia =
+                  if dockerCase && caseName /= "dockermixed"
+                    then "application/vnd.docker.image.rootfs.diff.tar.gzip"
+                    else "application/vnd.oci.image.layer.v1.tar"
+                manifest = makeManifest configMedia layerMedia
+                platform = if caseName == "foreignindex" then "foreign" else architecture
+                manifestMedia =
+                  if dockerCase
+                    then "application/vnd.docker.distribution.manifest.v2+json"
+                    else "application/vnd.oci.image.manifest.v1+json"
+                indexMedia =
+                  if dockerCase
+                    then "application/vnd.docker.distribution.manifest.list.v2+json"
+                    else "application/vnd.oci.image.index.v1+json"
+                manifestDescriptor = descriptor manifestMedia manifest
+                nested =
+                  BS8.pack $
+                    "{\"schemaVersion\":2,\"manifests\":["
+                      ++ take (length manifestDescriptor - 1) manifestDescriptor
+                      ++ ",\"platform\":{\"os\":\"linux\",\"architecture\":\""
+                      ++ platform
+                      ++ "\"}}]}"
+                nestedCase = caseName `elem` ["index", "foreignindex", "dockerindex"]
+                rootDescriptor = if nestedCase then descriptor indexMedia nested else manifestDescriptor
+                withAnnotations value annotation =
+                  take (length value - 1) value ++ ",\"annotations\":{" ++ annotation ++ "}}"
+                namedDescriptor = withAnnotations rootDescriptor "\"io.containerd.image.name\":\"sensitive-marker\""
+                invalidDescriptor = withAnnotations rootDescriptor "\"org.opencontainers.image.ref.name\":false"
+                extraDescriptor =
+                  withAnnotations
+                    (descriptor "application/vnd.oci.image.config.v1+json" config)
+                    "\"org.opencontainers.image.ref.name\":\"foreign-marker\""
+                index =
+                  BS8.pack $
+                    "{\"schemaVersion\":2,\"manifests\":["
+                      ++ ( case caseName of
+                             "named" -> namedDescriptor
+                             "badannotations" -> invalidDescriptor
+                             _ -> rootDescriptor
+                         )
+                      ++ (if caseName == "extra" then "," ++ extraDescriptor else "")
+                      ++ "]}"
+                imageDigest =
+                  if caseName == "wrongdigest"
+                    then "sha256:" ++ replicate 64 'b'
+                    else digest (if nestedCase then nested else manifest)
+                values archiveDigest archiveSize =
+                  unlines
+                    [ anchor
+                    , if "connected" `isPrefixOf` caseName
+                        then anchor </> "docker.sock"
+                        else anchor </> "unavailable-docker.sock"
+                    , "test"
+                    , caseName
+                    , replicate 32 'a'
+                    , "26443"
+                    , "kindest/node@" ++ imageDigest
+                    , "28080"
+                    , "30080"
+                    , "28443"
+                    , "30443"
+                    , "127.0.0.1"
+                    , "artifacts/node.tar"
+                    , archiveDigest
+                    , show (archiveSize + 1)
+                    , "artifacts/kind"
+                    , "sha256:" ++ replicate 64 'c'
+                    , "100000"
+                    , "yes"
+                    ]
+            createDirectoryIfMissing True blobs
+            BS8.writeFile (layout </> "oci-layout") (BS8.pack "{\"imageLayoutVersion\":\"1.0.0\"}")
+            BS8.writeFile (layout </> "index.json") index
+            forM_ [config, manifest] $ \bytes -> BS8.writeFile (blobs </> drop 7 (digest bytes)) bytes
+            when nestedCase $ BS8.writeFile (blobs </> drop 7 (digest nested)) nested
+            when (caseName /= "missing") $ BS8.writeFile (blobs </> drop 7 (digest layer)) layer
+            entries <- Tar.pack layout ["oci-layout", "index.json", "blobs"]
+            let tarBytes = Tar.write (entries ++ if caseName == "duplicate" then take 1 entries else [])
+            LazyBS8.writeFile archive tarBytes
+            setFileMode archive 0o600
+            let strict = LazyBS8.toStrict tarBytes
+            (setupExit, _, _) <-
+              run ["--config", selected, "config", "setup"] (values (digest strict) (BS8.length strict))
+            setupExit `shouldBe` ExitSuccess
+            (importExit, _, _) <-
+              run ["--config", selected, "control", "import-artifact", "node-archive", archive] ""
+            importExit `shouldBe` ExitSuccess
+            (inspectExit, inspectOutput, _) <- run ["--config", selected, "control", "inspect-node-archive"] ""
+            if caseName
+              `elem` [ "match"
+                     , "connected"
+                     , "connected-conflict"
+                     , "connected-stale"
+                     , "connected-changed"
+                     , "connected-old-result"
+                     , "index"
+                     , "docker"
+                     , "dockerindex"
+                     , "named"
+                     , "extra"
+                     ]
+              && architecture `elem` ["amd64", "arm64"]
+              then do
+                inspectExit `shouldBe` ExitSuccess
+                inspectOutput `shouldContain` digest manifest
+                inspectOutput `shouldContain` ("Config digest: " ++ digest config)
+                inspectOutput
+                  `shouldContain` ("Archive top-level entries: " ++ if caseName == "extra" then "2" else "1")
+                inspectOutput
+                  `shouldContain` ( "entries with recognized image-name metadata: "
+                                      ++ if caseName `elem` ["named", "extra"] then "1" else "0"
+                                  )
+                inspectOutput `shouldNotContain` "sensitive-marker"
+                inspectOutput `shouldNotContain` "foreign-marker"
+                inspectOutput
+                  `shouldContain` "Local kind image configuration: matches the selected archive config ID."
+                inspectOutput `shouldContain` "Daemon image metadata:"
+                inspectOutput `shouldContain` "Config image ID: unobservable."
+                inspectOutput `shouldContain` "Manifest image ID: unobservable."
+                inspectOutput `shouldContain` "observations are not atomic"
+                when ("connected" `isPrefixOf` caseName) $ do
+                  projection <- readBootstrapProjection selected >>= either (fail . show) pure
+                  let conflict = caseName == "connected-conflict"
+                      stale = caseName == "connected-stale"
+                      changedMarker = caseName == "connected-changed"
+                      oldResult = caseName == "connected-old-result"
+                      attemptPath = scopeRoot (bootstrapScope projection) </> "node-image-attempt.json"
+                  when stale (BS8.writeFile attemptPath (BS8.pack "prior attempt"))
+                  when oldResult $ do
+                    let path = scopeRoot (bootstrapScope projection) </> "node-image-result.json"
+                    BS8.writeFile path (BS8.pack "prior result")
+                    setFileMode path 0o600
+                  changeDuringRead <- newIORef False
+                  changeOnCliRead <- newIORef False
+                  changedDaemon <- newIORef False
+                  let imageHook request = when ("/images/" `isInfixOf` request) $ do
+                        change <- atomicModifyIORef' changeDuringRead (False,)
+                        when change (BS8.writeFile attemptPath (BS8.pack "incomplete"))
+                        when ("GET /v" `isPrefixOf` request) $ do
+                          swap <- atomicModifyIORef' changeOnCliRead (False,)
+                          when swap (writeIORef changedDaemon True)
+                  withDockerDaemonFixtureHookMode
+                    (anchor </> "docker.sock")
+                    conflict
+                    imageHook
+                    (readIORef changedDaemon)
+                    $ \requests -> do
+                      called <- newIORef False
+                      socketIdentity <-
+                        observeDockerSocketIdentity (anchor </> "docker.sock")
+                          >>= maybe (fail "missing fixture socket") pure
+                      prepared <- withNewConnectedNodeImageRecordedAttempt projection (replicate 32 'b') $ \verified expected size heldFd session stable -> do
+                        writeIORef called True
+                        stable `shouldReturn` True
+                        bytes <- PosixBytes.fdRead heldFd (fromInteger size)
+                        digest bytes `shouldBe` expected
+                        inspectDockerSessionImage session (nodeConfigDigest verified)
+                          `shouldReturn` Right (ImageIdObserved "linux" "amd64" 0)
+                        intent <-
+                          maybe (fail "invalid staged intent") pure $
+                            mkNodeImageIntent
+                              (replicate 32 'b')
+                              (nodeManifestDigest verified)
+                              (nodeConfigDigest verified)
+                              expected
+                              size
+                        bound <-
+                          maybe (fail "invalid daemon binding") pure $
+                            bindNodeImageIntent intent (DockerDaemonObserved "daemon-a" socketIdentity)
+                        observeNodeImageAttempt projection bound stable `shouldReturn` NodeImageAttemptMatches
+                        recordNodeImageAttempt projection bound stable `shouldReturn` NodeImageAttemptAlreadyExists
+                        submission <-
+                          loadAndObserveDockerSessionImage session heldFd size (nodeConfigDigest verified) stable
+                        submission
+                          `shouldBe` DockerImageSubmissionObservation
+                            (DockerImageLoadReply 200 (DockerImageLoadMessages 1))
+                            (DockerImageReadbackStable (Right (ImageIdObserved "linux" "amd64" 0)))
+                        recordNodeImageResult projection bound (DockerImageLoadReply 0 (DockerImageLoadMessages 1)) stable
+                          `shouldReturn` NodeImageResultRefused
+                        pingDockerSession session `shouldReturn` Right ()
+                        when changedMarker (BS8.writeFile attemptPath (BS8.pack "changed after callback"))
+                        pure submission
+                      let expectedSubmission =
+                            NodeImageRecordedSubmission
+                              ( DockerImageSubmissionObservation
+                                  (DockerImageLoadReply 200 (DockerImageLoadMessages 1))
+                                  (DockerImageReadbackStable (Right (ImageIdObserved "linux" "amd64" 0)))
+                              )
+                              (if changedMarker then NodeImageResultRefused else NodeImageResultRecorded)
+                      prepared
+                        `shouldBe` KindOperationCallbackReturned
+                          ( InspectedArchiveCompleted
+                              ( StagedNodeCompleted
+                                  ( NodeImagePreparationCompleted
+                                      ( NodeImageConnectedObserved
+                                          ( DockerPeerCompleted
+                                              ( DockerConnectedInfoCompleted
+                                                  ( if conflict
+                                                      then NodeImageConnectionRecordRefused NodeImageIntentConflict
+                                                      else
+                                                        NodeImageConnectionReady $
+                                                          if stale
+                                                            then NodeImageAttemptActionRefused NodeImageAttemptAlreadyExists
+                                                            else
+                                                              if oldResult
+                                                                then NodeImageAttemptActionResultRefused NodeImageResultInvalid
+                                                                else
+                                                                  if changedMarker
+                                                                    then NodeImageAttemptActionChangedAfter expectedSubmission
+                                                                    else NodeImageAttemptActionReturned expectedSubmission
+                                                  )
+                                              )
+                                          )
+                                      )
+                                  )
+                              )
+                          )
+                      readIORef called `shouldReturn` not (conflict || stale || oldResult)
+                      when (caseName == "connected") $ do
+                        let unused = error "refused archive inventory evaluated an unused capability"
+                            inspectArchive =
+                              observeArchiveBoundConfinedKindInventoryOnHost
+                                5000000
+                                unused
+                                unused
+                                unused
+                                projection
+                                (replicate 32 'b')
+                                "unused"
+                                1
+                                []
+                                (Fd (-1))
+                            intentPath = scopeRoot (bootstrapScope projection) </> "node-image-intent.json"
+                            runNode =
+                              runArchiveBoundConfinedKindNodeOnHost
+                                5000000
+                                unused
+                                unused
+                                unused
+                                projection
+                                (replicate 32 'b')
+                                "unused"
+                                1
+                                []
+                                (Fd (-1))
+                                unused
+                                unused
+                        beforeNode <- readMVar requests
+                        noNode <- runNode
+                        case noNode of
+                          InspectedArchiveCompleted (ConfinedNodeProposalUnavailable NodeCreateRecoveryMissing) -> pure ()
+                          other -> expectationFailure ("missing node proposal was not refused: " ++ show other)
+                        readMVar requests `shouldReturn` beforeNode
+                        matching <- inspectArchive
+                        case matching of
+                          InspectedArchiveCompleted
+                            ( ConfinedArchiveInventoryObserved
+                                ( ConfinedImageRecordObserved
+                                    ( DockerPeerCompleted
+                                        ( DockerConnectedInfoCompleted
+                                            (ConfinedDockerBindingObserved (ConfinedKindArtifactRefused _))
+                                          )
+                                      )
+                                  )
+                              ) -> pure ()
+                          other -> expectationFailure ("matching archive did not reach artifact check: " ++ show other)
+                        original <- BS8.readFile intentPath
+                        decoded <- maybe (fail "invalid fixture image intent") pure (Aeson.decodeStrict' original)
+                        changed <- case decoded of
+                          Aeson.Object object ->
+                            pure $
+                              LazyBS8.toStrict $
+                                Aeson.encode $
+                                  Aeson.Object
+                                    ( AesonKeyMap.insert
+                                        (AesonKey.fromString "manifest_digest")
+                                        (Aeson.String (Text.pack ("sha256:" ++ replicate 64 'f')))
+                                        object
+                                    )
+                          _ -> fail "unexpected fixture image intent"
+                        ( do
+                            BS8.writeFile intentPath changed
+                            before <- readMVar requests
+                            mismatch <- inspectArchive
+                            case mismatch of
+                              InspectedArchiveCompleted ConfinedArchiveRecordMismatch -> pure ()
+                              other -> expectationFailure ("archive mismatch was not refused: " ++ show other)
+                            nodeMismatch <- runNode
+                            case nodeMismatch of
+                              InspectedArchiveCompleted ConfinedNodeImageRecordMismatch -> pure ()
+                              other -> expectationFailure ("node archive mismatch was not refused: " ++ show other)
+                            readMVar requests `shouldReturn` before
+                          )
+                          `finally` BS8.writeFile intentPath original
+                      unless (conflict || stale || oldResult || changedMarker) $ do
+                        observeRecordedNodeImageResult projection (replicate 32 'b')
+                          `shouldReturn` NodeImageResultObserved (DockerImageLoadReply 200 (DockerImageLoadMessages 1))
+                        let resultPath = scopeRoot (bootstrapScope projection) </> "node-image-result.json"
+                            resultBackup = anchor </> "image-result-backup"
+                        originalResult <- BS8.readFile resultPath
+                        when (architecture == "amd64") $ do
+                          imageCheck <- withRecoveredKindOperation projection (replicate 32 'b') $ \operationStable ->
+                            withInspectedNodeArchive projection $ \verified _ artifactStable ->
+                              withConnectedDockerInfo 5000000 (anchor </> "docker.sock") $ \session _ peerStable -> do
+                                let stable = (&&) <$> operationStable <*> ((&&) <$> artifactStable <*> peerStable)
+                                    sample candidateArchive = observeConfinedNodeImage projection (replicate 32 'b') candidateArchive session stable
+                                sample verified `shouldReturn` ConfinedNodeImageReady
+                                sample (verified {nodeArchitecture = "wrong"})
+                                  `shouldReturn` ConfinedNodeImageMetadataRefused (Right (ImageIdObserved "linux" "amd64" 0))
+                                beforeRefusals <- readMVar requests
+                                originalAttempt <- BS8.readFile attemptPath
+                                ( do
+                                    BS8.writeFile attemptPath (BS8.pack "incomplete")
+                                    sample verified `shouldReturn` ConfinedNodeImageAttemptRefused NodeImageAttemptInvalid
+                                  )
+                                  `finally` BS8.writeFile attemptPath originalAttempt
+                                ( do
+                                    BS8.writeFile resultPath (BS8.pack "incomplete")
+                                    sample verified `shouldReturn` ConfinedNodeImageResultRefused NodeImageResultInvalid
+                                  )
+                                  `finally` BS8.writeFile resultPath originalResult
+                                readMVar requests `shouldReturn` beforeRefusals
+                          imageCheck
+                            `shouldBe` KindOperationCallbackReturned
+                              (InspectedArchiveCompleted (DockerPeerCompleted (DockerConnectedInfoCompleted ())))
+                        renameFile resultPath resultBackup
+                        observeRecordedNodeImageResult projection (replicate 32 'b') `shouldReturn` NodeImageResultMissing
+                        createSymbolicLink resultBackup resultPath
+                        observeRecordedNodeImageResult projection (replicate 32 'b')
+                          `shouldReturn` NodeImageResultUnobservable
+                        removeFile resultPath
+                        renameFile resultBackup resultPath
+                        BS8.writeFile resultPath (BS8.pack "incomplete")
+                        observeRecordedNodeImageResult projection (replicate 32 'b') `shouldReturn` NodeImageResultInvalid
+                        BS8.writeFile resultPath (BS8.pack "{\"result\":{\"state\":\"unconfirmed\"}}")
+                        observeRecordedNodeImageResult projection (replicate 32 'b') `shouldReturn` NodeImageResultConflict
+                        BS8.writeFile resultPath originalResult
+                        retried <- newIORef False
+                        duplicate <- withNewConnectedNodeImageAttempt projection (replicate 32 'b') $ \_ _ _ _ _ _ ->
+                          writeIORef retried True
+                        duplicate `shouldBe` KindOperationRefused (KindOperationIntentRefused KindIntentAlreadyExists)
+                        readIORef retried `shouldReturn` False
+                        sent <- readMVar requests
+                        length (filter (isPrefixOf "POST /images/load?quiet=1 ") sent) `shouldBe` 1
+                        let expectedRecovery before after =
+                              KindOperationCallbackReturned $
+                                InspectedArchiveCompleted $
+                                  StagedNodeCompleted $
+                                    NodeImageConnectedObserved $
+                                      DockerPeerCompleted $
+                                        DockerConnectedInfoCompleted $
+                                          NodeImageConnectionReady $
+                                            NodeImageRecoveryPoint
+                                              (digest config)
+                                              before
+                                              ( if before == NodeImageAttemptMatches
+                                                  then NodeImageResultObserved (DockerImageLoadReply 200 (DockerImageLoadMessages 1))
+                                                  else NodeImageResultUnobservable
+                                              )
+                                              (Right (ImageIdObserved "linux" "amd64" 0))
+                                              (NodeImageIndependentObserved (ImageIdObserved "linux" "amd64" 0))
+                                              after
+                        recovered <- observeRecoveredConnectedNodeImage projection (replicate 32 'b')
+                        recovered `shouldBe` expectedRecovery NodeImageAttemptMatches NodeImageAttemptMatches
+                        writeIORef changeOnCliRead True
+                        changedDaemonSample <- observeRecoveredConnectedNodeImage projection (replicate 32 'b')
+                        case changedDaemonSample of
+                          KindOperationCallbackReturned
+                            ( InspectedArchiveCompleted
+                                ( StagedNodeCompleted
+                                    ( NodeImageConnectedObserved
+                                        ( DockerPeerCompleted
+                                            (DockerConnectedInfoCompleted (NodeImageConnectionReady point))
+                                          )
+                                      )
+                                  )
+                              ) ->
+                              recoveryIndependentImage point
+                                `shouldBe` NodeImageIndependentChanged (ImageIdObserved "linux" "amd64" 0)
+                          other -> expectationFailure ("unexpected changed-daemon observation: " ++ show other)
+                        writeIORef changedDaemon False
+                        (diagnosticExit, diagnosticOutput, diagnosticError) <-
+                          run ["--config", selected, "control", "inspect-image-attempt", replicate 32 'b'] ""
+                        (diagnosticExit, diagnosticError) `shouldBe` (ExitSuccess, "")
+                        diagnosticOutput `shouldContain` ("Exact image ID: " ++ digest config)
+                        diagnosticOutput `shouldContain` "Attempt before image query: matching local marker"
+                        diagnosticOutput `shouldContain` "Recorded transport observation: HTTP 200; 1 progress message"
+                        diagnosticOutput `shouldContain` "Attempt after image query: matching local marker"
+                        diagnosticOutput `shouldContain` "Image metadata: observed linux/amd64 with 0 daemon tags"
+                        diagnosticOutput
+                          `shouldContain` "Separate Docker CLI observation: observed linux/amd64 with 0 daemon tags"
+                        diagnosticOutput `shouldContain` "worker settlement are unverified"
+                        requestCount <- length <$> readMVar requests
+                        (invalidIdExit, _, _) <- run ["--config", selected, "control", "inspect-image-attempt", "../bad"] ""
+                        invalidIdExit `shouldBe` ExitFailure 1
+                        (length <$> readMVar requests) `shouldReturn` requestCount
+                        originalAttempt <- BS8.readFile attemptPath
+                        writeIORef changeDuringRead True
+                        changed <- observeRecoveredConnectedNodeImage projection (replicate 32 'b')
+                        changed `shouldBe` expectedRecovery NodeImageAttemptMatches NodeImageAttemptInvalid
+                        BS8.writeFile attemptPath originalAttempt
+                        writeIORef changeDuringRead True
+                        (changedExit, changedOutput, _) <-
+                          run ["--config", selected, "control", "inspect-image-attempt", replicate 32 'b'] ""
+                        changedExit `shouldBe` ExitSuccess
+                        changedOutput `shouldContain` "Attempt before image query: matching local marker"
+                        changedOutput `shouldContain` "Attempt after image query: invalid or incomplete local marker"
+                        BS8.writeFile attemptPath originalAttempt
+                        let backupPath = anchor </> "recovery-attempt-backup"
+                        renameFile attemptPath backupPath
+                        missing <- observeRecoveredConnectedNodeImage projection (replicate 32 'b')
+                        missing `shouldBe` expectedRecovery NodeImageAttemptMissing NodeImageAttemptMissing
+                        renameFile backupPath attemptPath
+                        BS8.writeFile attemptPath (BS8.pack "incomplete")
+                        invalid <- observeRecoveredConnectedNodeImage projection (replicate 32 'b')
+                        invalid `shouldBe` expectedRecovery NodeImageAttemptInvalid NodeImageAttemptInvalid
+                        (invalidExit, invalidOutput, _) <-
+                          run ["--config", selected, "control", "inspect-image-attempt", replicate 32 'b'] ""
+                        invalidExit `shouldBe` ExitSuccess
+                        invalidOutput `shouldContain` "Attempt before image query: invalid or incomplete local marker"
+                        invalidOutput `shouldContain` "Attempt after image query: invalid or incomplete local marker"
+                      when conflict $ do
+                        recovered <- observeRecoveredConnectedNodeImage projection (replicate 32 'b')
+                        recovered
+                          `shouldBe` KindOperationCallbackReturned
+                            ( InspectedArchiveCompleted
+                                ( StagedNodeCompleted
+                                    ( NodeImageConnectedObserved
+                                        ( DockerPeerCompleted
+                                            (DockerConnectedInfoCompleted (NodeImageConnectionRecordRefused NodeImageIntentConflict))
+                                        )
+                                    )
+                                )
+                            )
+                        (refused, _, _) <-
+                          run ["--config", selected, "control", "inspect-image-attempt", replicate 32 'b'] ""
+                        refused `shouldBe` ExitFailure 1
+                      observedRequests <- readMVar requests
+                      observedRequests `shouldSatisfy` (not . null)
+                      when conflict $ observedRequests `shouldSatisfy` all (not . isInfixOf "/images/")
+                      when stale $ observedRequests `shouldSatisfy` all (not . isPrefixOf "POST /images/load")
+                      when oldResult $ observedRequests `shouldSatisfy` all (not . isPrefixOf "POST /images/load")
+                      observedRequests `shouldSatisfy` all allowedDockerFixtureRequest
+                when (caseName `elem` ["match", "index", "docker", "dockerindex"]) $ do
+                  projection <- readBootstrapProjection selected >>= either (fail . show) pure
+                  projected <- withInspectedNodeArchive projection $ \verified _ _ -> do
+                    nodeSelectedDigest verified `shouldBe` imageDigest
+                    nodeManifestDigest verified `shouldBe` digest manifest
+                    nodeConfigDigest verified `shouldBe` digest config
+                    renderKindConfigForArchive
+                      (bootstrapKindPlan projection)
+                      verified {nodeSelectedDigest = "sha256:" ++ replicate 64 'f'}
+                      `shouldBe` Nothing
+                    renderKindConfigForArchive
+                      (bootstrapKindPlan projection)
+                      verified {nodeConfigDigest = "invalid"}
+                      `shouldBe` Nothing
+                    pure (renderKindConfigForArchive (bootstrapKindPlan projection) verified)
+                  case projected of
+                    InspectedArchiveCompleted (Just configBytes) -> do
+                      let configText = LazyBS8.unpack configBytes
+                      configText `shouldContain` digest config
+                      configText `shouldNotContain` imageDigest
+                    other -> expectationFailure (show other)
+                when (caseName `elem` ["match", "named", "extra"]) $ do
+                  projection <- readBootstrapProjection selected >>= either (fail . show) pure
+                  let outputPath = anchor </> "untagged.tar"
+                  exported <- IO.withBinaryFile outputPath IO.WriteMode $ \output ->
+                    withInspectedNodeArchive projection $ \verified heldFd recheck ->
+                      writeUntaggedDockerArchive verified heldFd recheck output
+                  output <- LazyBS8.readFile outputPath
+                  let strictOutput = LazyBS8.toStrict output
+                  exported
+                    `shouldBe` InspectedArchiveCompleted
+                      (DockerArchiveWritten (digest strictOutput) (toInteger (BS8.length strictOutput)))
+                  let collect tarEntries = case tarEntries of
+                        Tar.Done -> Right []
+                        Tar.Fail failure -> Left (show failure)
+                        Tar.Next entry rest -> case TarEntry.entryContent entry of
+                          TarEntry.NormalFile content _ -> ((TarEntry.entryPath entry, LazyBS8.toStrict content) :) <$> collect rest
+                          _ -> Left "unexpected tar entry"
+                  extracted <- either fail pure (collect (Tar.read output))
+                  let configPath = "blobs/sha256/" ++ drop 7 (digest config)
+                      layerPath = "blobs/sha256/" ++ drop 7 (digest layer)
+                      expectedManifest =
+                        BS8.pack
+                          ("[{\"Config\":\"" ++ configPath ++ "\",\"RepoTags\":[],\"Layers\":[\"" ++ layerPath ++ "\"]}]")
+                  sort (map fst extracted) `shouldBe` sort ["manifest.json", configPath, layerPath]
+                  lookup configPath extracted `shouldBe` Just config
+                  lookup layerPath extracted `shouldBe` Just layer
+                  case lookup "manifest.json" extracted of
+                    Nothing -> expectationFailure "missing Docker archive manifest"
+                    Just actual ->
+                      (Aeson.eitherDecodeStrict' actual :: Either String [Aeson.Value])
+                        `shouldBe` Aeson.eitherDecodeStrict' expectedManifest
+                  BS8.unpack strictOutput `shouldNotContain` "sensitive-marker"
+                  BS8.unpack strictOutput `shouldNotContain` "foreign-marker"
+                when (caseName == "match") $ do
+                  projection <- readBootstrapProjection selected >>= either (fail . show) pure
+                  bracket (Posix.openFd selected Posix.ReadOnly Posix.defaultFileFlags) Posix.closeFd $ \readOnly -> do
+                    reserveStage readOnly 4096 `shouldReturn` False
+                    reserveStage readOnly 0 `shouldReturn` False
+                    reserveStage readOnly (maximumDockerArchiveBytes + 1) `shouldReturn` False
+                  staged <- withStagedNodeArchive projection $ \_ expected size heldFd recheck -> do
+                    status <- PosixFiles.getFdStatus heldFd
+                    PosixFiles.linkCount status `shouldBe` 0
+                    toInteger (PosixFiles.fileSize status) `shouldBe` size
+                    recheck `shouldReturn` True
+                    bytes <- PosixBytes.fdRead heldFd (fromInteger size)
+                    digest bytes `shouldBe` expected
+                    pure heldFd
+                  case staged of
+                    InspectedArchiveCompleted (StagedNodeCompleted closedFd) -> do
+                      closed <- try (PosixFiles.getFdStatus closedFd) :: IO (Either SomeException PosixFiles.FileStatus)
+                      closed `shouldSatisfy` isLeft
+                    other -> expectationFailure ("anonymous staging failed: " ++ show other)
+                  changedStage <- withStagedNodeArchive projection $ \_ _ _ heldFd recheck -> do
+                    _ <- Posix.fdSeek heldFd IO.AbsoluteSeek 0
+                    _ <- PosixBytes.fdWrite heldFd (BS8.pack "x")
+                    recheck `shouldReturn` False
+                    pure ("receipt" :: String)
+                  changedStage `shouldBe` InspectedArchiveCompleted (StagedNodeChanged "receipt")
+                  let operation = replicate 32 'b'
+                  prepared <- withNewNodeImagePreparation projection operation $ \verified expected size heldFd stable -> do
+                    intent <-
+                      maybe (fail "invalid staged image intent") pure $
+                        mkNodeImageIntent operation (nodeManifestDigest verified) (nodeConfigDigest verified) expected size
+                    observeNodeImageIntent projection intent stable `shouldReturn` NodeImageIntentMatches
+                    stable `shouldReturn` True
+                    bytes <- PosixBytes.fdRead heldFd (fromInteger size)
+                    digest bytes `shouldBe` expected
+                    pure ("recorded before callback" :: String)
+                  prepared
+                    `shouldBe` KindOperationCallbackReturned
+                      ( InspectedArchiveCompleted
+                          (StagedNodeCompleted (NodeImagePreparationCompleted "recorded before callback"))
+                      )
+                  observeRecordedNodeImageAttempt projection operation `shouldReturn` NodeImageAttemptUnobservable
+                  recovered <- observeRecoveredNodeImagePreparation projection operation
+                  recovered
+                    `shouldBe` KindOperationCallbackReturned
+                      (InspectedArchiveCompleted (StagedNodeCompleted (NodeImageRecoveryObserved NodeImageIntentMatches)))
+                  let imageIntentPath = anchor </> ".test-data" </> caseName </> "node-image-intent.json"
+                  savedIntent <- BS8.readFile imageIntentPath
+                  BS8.writeFile imageIntentPath (BS8.pack "incomplete")
+                  invalidRecovery <- observeRecoveredNodeImagePreparation projection operation
+                  invalidRecovery
+                    `shouldBe` KindOperationCallbackReturned
+                      (InspectedArchiveCompleted (StagedNodeCompleted (NodeImageRecoveryObserved NodeImageIntentInvalid)))
+                  BS8.writeFile imageIntentPath savedIntent
+                  let refusedPath = anchor </> "refused.tar"
+                  unsupportedExport <- IO.withBinaryFile refusedPath IO.WriteMode $ \output ->
+                    withInspectedNodeArchive projection $ \verified heldFd recheck ->
+                      writeUntaggedDockerArchive (verified {nodeLoadPlan = Nothing}) heldFd recheck output
+                  unsupportedExport
+                    `shouldBe` InspectedArchiveCompleted (DockerArchiveNotStarted DockerArchiveUnsupportedConfig)
+                  BS8.readFile refusedPath `shouldReturn` BS8.empty
+                  forM_ ["media", "diff-id", "config-digest"] $ \invalidCase -> do
+                    let invalidPath = anchor </> ("invalid-" ++ invalidCase ++ ".tar")
+                        invalidate plan = case invalidCase of
+                          "media" -> plan {nodeLoadConfig = (nodeLoadConfig plan) {nodeBlobMediaType = "invalid"}}
+                          "diff-id" -> plan {nodeLoadDiffIds = ["sha256:invalid"]}
+                          _ -> plan {nodeLoadConfig = (nodeLoadConfig plan) {nodeBlobDigest = "sha256:" ++ replicate 64 'd'}}
+                    invalid <- IO.withBinaryFile invalidPath IO.WriteMode $ \output ->
+                      withInspectedNodeArchive projection $ \verified heldFd recheck ->
+                        writeUntaggedDockerArchive
+                          (verified {nodeLoadPlan = invalidate <$> nodeLoadPlan verified})
+                          heldFd
+                          recheck
+                          output
+                    invalid `shouldBe` InspectedArchiveCompleted (DockerArchiveNotStarted DockerArchiveInvalidPlan)
+                    BS8.readFile invalidPath `shouldReturn` BS8.empty
+                  let oversizedPath = anchor </> "oversized.tar"
+                      oversized plan =
+                        plan
+                          { nodeLoadConfig = (nodeLoadConfig plan) {nodeBlobSize = 0}
+                          , nodeLoadLayers =
+                              map (\blob -> blob {nodeBlobSize = maximumDockerArchiveBytes}) (take 1 (nodeLoadLayers plan))
+                          , nodeLoadDiffIds = take 1 (nodeLoadDiffIds plan)
+                          }
+                  oversizedResult <- IO.withBinaryFile oversizedPath IO.WriteMode $ \output ->
+                    withInspectedNodeArchive projection $ \verified heldFd recheck ->
+                      writeUntaggedDockerArchive
+                        (verified {nodeLoadPlan = oversized <$> nodeLoadPlan verified})
+                        heldFd
+                        recheck
+                        output
+                  oversizedResult
+                    `shouldBe` InspectedArchiveCompleted (DockerArchiveNotStarted DockerArchiveSizeLimitExceeded)
+                  BS8.readFile oversizedPath `shouldReturn` BS8.empty
+                  attempts <- newIORef (0 :: Int)
+                  let partialPath = anchor </> "partial.tar"
+                  partial <- IO.withBinaryFile partialPath IO.WriteMode $ \output ->
+                    withInspectedNodeArchive projection $ \verified heldFd recheck ->
+                      writeUntaggedDockerArchive
+                        verified
+                        heldFd
+                        ( do
+                            count <- atomicModifyIORef' attempts (\n -> (n + 1, n))
+                            if count == 0 then recheck else pure False
+                        )
+                        output
+                  partial `shouldBe` InspectedArchiveCompleted (DockerArchiveIncomplete DockerArchiveChanged)
+                  partialBytes <- BS8.readFile partialPath
+                  BS8.null partialBytes `shouldBe` False
+                  let retained = anchor </> ".test-data" </> caseName </> "artifacts" </> "node.tar"
+                  unconfirmed <- withInspectedNodeArchive projection $ \_ _ _ -> (ioError (userError "controlled observation failure") :: IO ())
+                  unconfirmed `shouldBe` InspectedArchiveUnconfirmed NodeArchiveUnobservable
+                  changed <- withInspectedNodeArchive projection $ \_ heldFd recheck -> do
+                    Posix.fdSeek heldFd IO.RelativeSeek 0 `shouldReturn` 0
+                    recheck `shouldReturn` True
+                    BS8.writeFile retained (BS8.pack "changed during observation")
+                    recheck `shouldReturn` False
+                    pure ("callback-result" :: String)
+                  changed `shouldBe` InspectedArchiveChanged "callback-result"
+                  BS8.writeFile retained strict
+                  setFileMode retained 0o600
+                  let generationPath = anchor </> ".test-data" </> caseName </> "scope-generation.json"
+                  originalGeneration <- BS8.readFile generationPath
+                  generationChanged <- withInspectedNodeArchive projection $ \_ _ _ -> do
+                    BS8.writeFile generationPath (BS8.pack "invalid")
+                    pure ("generation-result" :: String)
+                  generationChanged `shouldBe` InspectedArchiveChanged "generation-result"
+                  BS8.writeFile generationPath originalGeneration
+                  BS8.writeFile generationPath (BS8.pack "invalid")
+                  let callbackMarker = anchor </> "unexpected-callback"
+                  refused <- withInspectedNodeArchive projection $ \_ _ _ -> BS8.writeFile callbackMarker (BS8.pack "called")
+                  refused `shouldBe` InspectedArchiveRefused NodeArchiveGenerationUnavailable
+                  doesFileExist callbackMarker `shouldReturn` False
+                writeFile (anchor </> ".test-data" </> caseName </> "scope-generation.json") "invalid"
+                (generationExit, _, generationError) <-
+                  run ["--config", selected, "control", "inspect-node-archive"] ""
+                generationExit `shouldBe` ExitFailure 1
+                generationError `shouldContain` "NodeArchiveGenerationUnavailable"
+              else inspectExit `shouldBe` ExitFailure 1
+
+  describe "selected configuration validation" $
+    it "validates the selected snapshot and refuses unsupported commands and imports" $
+      withSystemTempDirectory "prodbox-selected-config" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \path -> installOperatorBinaryInDir path tmpDir
+        writeRepoMarkers tmpDir
+        let selectedDirectory = tmpDir </> "selected"
+            selectedPath = selectedDirectory </> "prodbox.dhall"
+            productionPath = tmpDir </> "prodbox.dhall"
+            configured = validConfig
+        createDirectoryIfMissing True selectedDirectory
+        writeTier0Fixture selectedDirectory (tier0FixtureWithParameters configured)
+        writeTier0Fixture
+          tmpDir
+          ( rawTier0Fixture
+              (MustNotTypeCheckAgainst "foreign marker is not a Tier-0 document")
+              "production marker"
+          )
+        let run arguments = readCreateProcessWithExitCode (proc binary arguments) {cwd = Just tmpDir} ""
+            writeSelected document =
+              writeTier0Fixture
+                selectedDirectory
+                (rawTier0Fixture (MustNotTypeCheckAgainst "legacy Tier-0 bootstrap field") document)
+        (schemaExit, schemaOutput, schemaError) <- run ["config", "schema"]
+        schemaExit `shouldBe` ExitSuccess
+        schemaOutput `shouldContain` "prodbox-bootstrap-types.dhall"
+        schemaError `shouldBe` ""
+        schema <- readFile (tmpDir </> "prodbox-bootstrap-types.dhall")
+        length schema `seq` removeFile (tmpDir </> "prodbox-bootstrap-types.dhall")
+        createSymbolicLink productionPath (tmpDir </> "prodbox-bootstrap-types.dhall")
+        (schemaLinkExit, _, _) <- run ["config", "schema"]
+        case schemaLinkExit of
+          ExitSuccess -> expectationFailure "schema writer accepted a symlink"
+          ExitFailure _ -> pure ()
+        readFile productionPath `shouldReturn` "production marker"
+        removeFile (tmpDir </> "prodbox-bootstrap-types.dhall")
+        (validExit, _, validError) <- run ["--config", selectedPath, "config", "validate"]
+        case validExit of
+          ExitSuccess -> pure ()
+          ExitFailure _ -> expectationFailure ("selected configuration validation failed: " ++ validError)
+        original <- BS8.readFile selectedPath
+        let bootstrap = bootstrapAt tmpDir
+            bootstrapAt anchor identity generation =
+              "{ schema_version = 1, project_anchor = \""
+                ++ anchor
+                ++ "\", runtime_socket = \"/var/run/docker.sock\", environment = \"test\", deployment_id = \""
+                ++ identity
+                ++ "\", root_generation = \""
+                ++ generation
+                ++ "\", api_port = 26443, node_image = \"kindest/node@sha256:"
+                ++ replicate 64 'a'
+                ++ "\", http_host_port = 28080, http_node_port = 30080, https_host_port = 28443, https_node_port = 30443, listen_address = \"127.0.0.1\" }"
+            withBootstrap identity generation = "(\n" ++ BS8.unpack original ++ "\n) // { bootstrap = " ++ bootstrap identity generation ++ " }"
+            matchingIdentity = "synthetic-test-cluster"
+        writeSelected
+          ( "{ bootstrap = ("
+              ++ bootstrap matchingIdentity (replicate 32 'a')
+              ++ " : ("
+              ++ schema
+              ++ ").Version1) }"
+          )
+        (minimalExit, minimalOutput, minimalError) <- run ["--config", selectedPath, "config", "validate"]
+        minimalExit `shouldBe` ExitSuccess
+        minimalOutput `shouldContain` "Bootstrap configuration validated"
+        minimalOutput
+          `shouldContain` "application settings, deployment root and runtime state were not checked"
+        minimalError `shouldBe` ""
+        let foreignRoot = tmpDir </> ".data" </> "production"
+        createDirectoryIfMissing True foreignRoot
+        writeFile (foreignRoot </> "marker") "production marker"
+        writeSelected
+          ("{ bootstrap = " ++ bootstrapAt foreignRoot matchingIdentity (replicate 32 'a') ++ " }")
+        forM_ [["config", "validate"], ["control", "status"], ["control", "plan"]] $ \command -> do
+          (foreignExit, _, foreignError) <- run (["--config", selectedPath] ++ command)
+          foreignExit `shouldBe` ExitFailure 1
+          foreignError `shouldContain` "InvalidProjectAnchor"
+          readFile (foreignRoot </> "marker") `shouldReturn` "production marker"
+          doesDirectoryExist (foreignRoot </> ".test-data") `shouldReturn` False
+        let artifact name =
+              "{ path = \"artifacts/"
+                ++ name
+                ++ "\", digest = \"sha256:"
+                ++ replicate 64 'b'
+                ++ "\", maximum_bytes = 1024 }"
+            typedBootstrap :: Int -> String -> String
+            typedBootstrap version suffix =
+              "{ bootstrap = (("
+                ++ bootstrap matchingIdentity (replicate 32 'a')
+                ++ ") // { schema_version = "
+                ++ show version
+                ++ suffix
+                ++ " } : ("
+                ++ schema
+                ++ ").Version"
+                ++ show version
+                ++ ") }"
+        forM_
+          [ typedBootstrap 2 (", node_artifact = " ++ artifact "node.tar")
+          , typedBootstrap
+              3
+              (", node_artifact = " ++ artifact "node.tar" ++ ", kind_tool = " ++ artifact "kind")
+          ]
+          $ \selectedDocument -> do
+            writeSelected selectedDocument
+            (typedExit, _, typedError) <- run ["--config", selectedPath, "config", "validate"]
+            case typedExit of
+              ExitSuccess -> pure ()
+              ExitFailure _ -> expectationFailure ("generated bootstrap schema did not match decoder: " ++ typedError)
+        writeSelected ("{ bootstrap = " ++ bootstrap matchingIdentity "bad" ++ " }")
+        (minimalBadExit, _, minimalBadError) <- run ["--config", selectedPath, "config", "validate"]
+        minimalBadExit `shouldBe` ExitFailure 1
+        minimalBadError `shouldContain` "BootstrapInvalidGeneration"
+        writeSelected
+          ("{ bootstrap = " ++ bootstrap matchingIdentity (replicate 32 'a') ++ ", parameters = True }")
+        (partialExit, _, partialError) <- run ["--config", selectedPath, "config", "validate"]
+        partialExit `shouldBe` ExitFailure 1
+        partialError `shouldContain` "invalid parameters or context"
+        doesDirectoryExist (tmpDir </> ".test-data") `shouldReturn` False
+        writeSelected (withBootstrap matchingIdentity (replicate 32 'a'))
+        (completeExit, _, completeError) <- run ["--config", selectedPath, "config", "validate"]
+        case completeExit of
+          ExitSuccess -> pure ()
+          ExitFailure _ -> expectationFailure ("selected bootstrap validation failed: " ++ completeError)
+        writeSelected (withBootstrap matchingIdentity "bad")
+        (badExit, _, badError) <- run ["--config", selectedPath, "config", "validate"]
+        badExit `shouldBe` ExitFailure 1
+        badError `shouldContain` "BootstrapInvalidGeneration"
+        (statusExit, _, statusError) <- run ["--config", selectedPath, "control", "status"]
+        statusExit `shouldBe` ExitFailure 1
+        statusError `shouldContain` "BootstrapInvalidGeneration"
+        doesDirectoryExist (tmpDir </> ".test-data") `shouldReturn` False
+        writeSelected (withBootstrap "foreign" (replicate 32 'a'))
+        (foreignExit, _, foreignError) <- run ["--config", selectedPath, "config", "validate"]
+        foreignExit `shouldBe` ExitFailure 1
+        foreignError `shouldContain` "BootstrapContextIdentityMismatch"
+        (foreignStatusExit, _, foreignStatusError) <- run ["--config", selectedPath, "control", "status"]
+        foreignStatusExit `shouldBe` ExitFailure 1
+        foreignStatusError `shouldContain` "BootstrapContextIdentityMismatch"
+        doesDirectoryExist (tmpDir </> ".test-data") `shouldReturn` False
+        (unsupportedExit, _, unsupportedError) <- run ["--config", selectedPath, "config", "generate"]
+        unsupportedExit `shouldBe` ExitFailure 1
+        unsupportedError `shouldContain` "selected configuration is not supported"
+        readFile productionPath `shouldReturn` "production marker"
+        let importedPath = selectedDirectory </> "imported.dhall"
+            symlinkPath = selectedDirectory </> "linked.dhall"
+        writeFile importedPath "env:PRODBOX_SELECTED_CONFIG_MUST_NOT_BE_READ"
+        (importExit, _, importError) <- run ["--config", importedPath, "config", "validate"]
+        importExit `shouldBe` ExitFailure 1
+        importError `shouldContain` "imports are not supported"
+        writeSelected ("{ bootstrap = " ++ bootstrap matchingIdentity (replicate 32 'a') ++ " }")
+        (linkBaselineExit, _, linkBaselineError) <- run ["--config", selectedPath, "config", "validate"]
+        case linkBaselineExit of
+          ExitSuccess -> pure ()
+          ExitFailure _ -> expectationFailure ("symlink target baseline failed: " ++ linkBaselineError)
+        createSymbolicLink selectedPath symlinkPath
+        (linkExit, _, _) <- run ["--config", symlinkPath, "config", "validate"]
+        linkExit `shouldBe` ExitFailure 1
+        let linkedDirectory = tmpDir </> "linked-selected"
+        createSymbolicLink selectedDirectory linkedDirectory
+        (parentLinkExit, _, _) <-
+          run ["--config", linkedDirectory </> "prodbox.dhall", "config", "validate"]
+        parentLinkExit `shouldBe` ExitFailure 1
+        (statusParentLinkExit, _, _) <-
+          run ["--config", linkedDirectory </> "prodbox.dhall", "control", "status"]
+        statusParentLinkExit `shouldBe` ExitFailure 1
+        readFile productionPath `shouldReturn` "production marker"
+
+  describe "registered local test inventory" $
+    it "lists the runnable local names without a repository or configuration" $
+      withSystemTempDirectory "prodbox-test-list" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \path -> installOperatorBinaryInDir path tmpDir
+        (result, output, errors) <-
+          readCreateProcessWithExitCode
+            (proc binary ["test", "list"])
+              { cwd = Just tmpDir
+              , env = Just [("PATH", "/usr/bin:/bin"), ("HOME", tmpDir)]
+              }
+            ""
+        result `shouldBe` ExitSuccess
+        errors `shouldBe` ""
+        output
+          `shouldBe` "Built-in local suites:\n  unit\n  env\n  cli\nLegacy topology-defined suites require a separate test topology and are not listed here.\n"
+        doesFileExist (tmpDir </> "prodbox.dhall") `shouldReturn` False
+        doesDirectoryExist (tmpDir </> ".test-data") `shouldReturn` False
+
+  describe "test configuration isolation" $
+    it "refuses unisolated topology and native suites before creating a sibling config or run root" $
+      withSystemTempDirectory "prodbox-test-config-isolation" $ \tmpDir -> do
+        sourceRoot <- getCurrentDirectory
+        binary <- resolveBinaryPath >>= \path -> installOperatorBinaryInDir path tmpDir
+        createDirectoryIfMissing True (tmpDir </> "DEVELOPMENT_PLAN")
+        writeFile (tmpDir </> "prodbox.cabal") "name: fixture\n"
+        writeFile (tmpDir </> "DEVELOPMENT_PLAN" </> "README.md") "# fixture\n"
+        writeFile
+          (tmpDir </> "prodbox.test.dhall")
+          (renderTestTopologyDhall (sourceRoot </> "dhall" </> "TestTopologySchema.dhall") defaultTestTopology)
+        let environment = [("PATH", "/usr/bin:/bin"), ("HOME", tmpDir), ("PRODBOX_TEST_RKE2_PRESENT", "0")]
+        forM_ [["test", "run", "all"], ["test", "run", "phase-01"], ["test", "run", "phase-10"]] $ \arguments -> do
+          (result, output, errors) <-
+            readCreateProcessWithExitCode
+              (proc binary arguments) {cwd = Just tmpDir, env = Just environment}
+              ""
+          result `shouldBe` ExitFailure 1
+          (output ++ errors) `shouldContain` "The cumulative scenario runner is not implemented yet"
+          doesFileExist (tmpDir </> "prodbox.dhall") `shouldReturn` False
+          doesDirectoryExist (tmpDir </> ".test-data") `shouldReturn` False
+        forM_ [["test", "integration", "aws-iam"]] $ \arguments -> do
+          (result, output, errors) <-
+            readCreateProcessWithExitCode
+              (proc binary arguments) {cwd = Just tmpDir, env = Just environment}
+              ""
+          result `shouldBe` ExitFailure 1
+          (output ++ errors) `shouldContain` "Cannot run this test until its generated configuration"
+          doesFileExist (tmpDir </> "prodbox.dhall") `shouldReturn` False
+          doesDirectoryExist (tmpDir </> ".test-data") `shouldReturn` False
+        (coverageResult, coverageOutput, coverageErrors) <-
+          readCreateProcessWithExitCode
+            (proc binary ["test", "run", "unit", "--coverage"]) {cwd = Just tmpDir, env = Just environment}
+            ""
+        coverageResult `shouldBe` ExitFailure 1
+        (coverageOutput ++ coverageErrors)
+          `shouldContain` "Coverage is not supported by the named unit runner yet"
+        doesFileExist (tmpDir </> "prodbox.dhall") `shouldReturn` False
+        doesDirectoryExist (tmpDir </> ".test-data") `shouldReturn` False
+        let productionPath = tmpDir </> "prodbox.dhall"
+        writeTier0Fixture
+          tmpDir
+          ( rawTier0Fixture
+              (MustNotTypeCheckAgainst "foreign marker is not a Tier-0 document")
+              "foreign-production-marker"
+          )
+        (result, _, _) <-
+          readCreateProcessWithExitCode
+            (proc binary ["test", "run", "unit"]) {cwd = Just tmpDir, env = Just environment}
+            ""
+        result `shouldBe` ExitFailure 1
+        readFile productionPath `shouldReturn` "foreign-production-marker"
+        doesDirectoryExist (tmpDir </> ".test-data") `shouldReturn` False
+
+  describe "named CLI suite host guard" $
+    it "treats existing markers and dangling symlinks as present" $
+      withSystemTempDirectory "prodbox-cli-host-guard" $ \directory -> do
+        let marker = directory </> "marker"
+        TestRunner.observeLegacyInstallMarkers [marker] `shouldReturn` Just False
+        writeFile marker "fixture"
+        TestRunner.observeLegacyInstallMarkers [marker] `shouldReturn` Just True
+        removeFile marker
+        createSymbolicLink (directory </> "missing-target") marker
+        TestRunner.observeLegacyInstallMarkers [marker] `shouldReturn` Just True
+
+  describe "named unit environment isolation" $
+    it "runs the named suites without passing ambient credentials or cluster selection" $
+      withSystemTempDirectory "prodbox-named-unit-environment" $ \tmpDir -> do
+        binary <- resolveBinaryPath >>= \path -> installOperatorBinaryInDir path tmpDir
+        createDirectoryIfMissing True (tmpDir </> "DEVELOPMENT_PLAN")
+        createDirectoryIfMissing True (tmpDir </> "bin")
+        createDirectoryIfMissing True (tmpDir </> ".kube")
+        writeFile (tmpDir </> ".kube" </> "config") "foreign kubeconfig marker"
+        writeFile (tmpDir </> "prodbox.cabal") "name: fixture\n"
+        writeFile (tmpDir </> "DEVELOPMENT_PLAN" </> "README.md") "# fixture\n"
+        let fakeCabal = tmpDir </> "bin" </> "cabal"
+        writeFile fakeCabal $
+          unlines
+            [ "#!/bin/sh"
+            , "[ \"$HOME\" != \"$PWD\" ] || exit 9"
+            , "[ ! -e \"$HOME/.kube/config\" ] || exit 10"
+            , "[ -z \"${AWS_ACCESS_KEY_ID+x}\" ] || exit 11"
+            , "[ -z \"${PRODBOX_GENERATE_FROZEN_V4+x}\" ] || exit 12"
+            , "[ \"$AWS_CONFIG_FILE\" = /dev/null ] || exit 13"
+            , "[ \"$AWS_SHARED_CREDENTIALS_FILE\" = /dev/null ] || exit 14"
+            , "[ \"$AWS_EC2_METADATA_DISABLED\" = true ] || exit 15"
+            , "[ \"$KUBECONFIG\" = /dev/null ] || exit 16"
+            , "[ \"$DOCKER_HOST\" = unix:///nonexistent/prodbox.sock ] || exit 17"
+            , "[ \"$DOCKER_CONFIG\" = /nonexistent ] || exit 18"
+            , "case \"$1\" in"
+            , "  list-bin) printf '%s\\n' \"$PWD/prodbox\" ;;"
+            , "  test)"
+            , "    if [ \"$3\" = test:prodbox-integration ] && [ \"$5\" != --test-option=--prodbox-suite=env ]; then exit 20; fi"
+            , "    printf '%s\\n' \"$3\" >> .build/unit-calls ;;"
+            , "  *) exit 19 ;;"
+            , "esac"
+            ]
+        setFileMode fakeCabal 0o700
+        let environment =
+              [ ("PATH", tmpDir </> "bin" ++ ":/usr/bin:/bin")
+              , ("HOME", tmpDir)
+              , ("AWS_ACCESS_KEY_ID", "fixture-not-secret")
+              , ("AWS_CONFIG_FILE", "/foreign/aws-config")
+              , ("KUBECONFIG", "/foreign/kubeconfig")
+              , ("DOCKER_HOST", "unix:///foreign/docker.sock")
+              , ("PRODBOX_GENERATE_FROZEN_V4", "/foreign/output")
+              ]
+        (result, _, errors) <-
+          readCreateProcessWithExitCode
+            (proc binary ["test", "run", "unit"]) {cwd = Just tmpDir, env = Just environment}
+            ""
+        (result, errors) `shouldBe` (ExitSuccess, "")
+        calls <- lines <$> readFile (tmpDir </> ".build" </> "unit-calls")
+        calls
+          `shouldBe` [ "test:prodbox-unit"
+                     , "test:prodbox-authority-admission-unit"
+                     , "test:prodbox-control-plane-authentication-unit"
+                     , "test:prodbox-control-plane-authenticated-transport-unit"
+                     , "test:prodbox-haskell-style"
+                     , "test:prodbox-pulumi"
+                     ]
+        (envResult, _, envErrors) <-
+          readCreateProcessWithExitCode
+            (proc binary ["test", "run", "env"]) {cwd = Just tmpDir, env = Just environment}
+            ""
+        (envResult, envErrors) `shouldBe` (ExitSuccess, "")
+        envCalls <- lines <$> readFile (tmpDir </> ".build" </> "unit-calls")
+        envCalls `shouldBe` (calls ++ ["test:prodbox-integration"])
+        doesFileExist (tmpDir </> "prodbox.dhall") `shouldReturn` False
+        doesDirectoryExist (tmpDir </> ".test-data") `shouldReturn` False
+        readFile (tmpDir </> ".kube" </> "config") `shouldReturn` "foreign kubeconfig marker"
+
+  describe "authority fixture typed failures" $
+    it "returns a reasoned 500 for malformed config and continues serving" $
+      withSystemTempDirectory "prodbox-authority-invalid-config" $ \tmpDir -> do
+        let configPath = tmpDir </> "prodbox.dhall"
+        writeTier0Fixture
+          tmpDir
+          ( rawTier0Fixture
+              (MustNotTypeCheckAgainst "malformed deployment configuration")
+              "this is not a valid deployment config"
+          )
+        withAuthorityFixtureServerForConfig configPath $ \port -> do
+          let base = "http://127.0.0.1:" ++ show port
+          forM_ ["/v1/authority/config/observe", "/v1/authority/config/propose-cas"] $ \path -> do
+            result <- httpGetText (HttpConfig 1000000) (base ++ path)
+            case result of
+              Left (HttpStatus 500 reason) -> do
+                reason `shouldContain` "fixture handler failed:"
+                reason `shouldContain` "Failed to decode Tier-0"
+                reason `shouldNotContain` "user error ("
+              other -> expectationFailure ("expected fixture refusal, received " ++ show other)
+          ready <- httpGetText (HttpConfig 1000000) (base ++ "/readyz")
+          ready `shouldBe` Right "{}"
+
   describe "native Haskell config CLI" $ do
     it "reports cluster resources from the authored configuration" $
       withSystemTempDirectory "prodbox-hs-status" $ \tmpDir -> do
@@ -2074,7 +9036,7 @@ integrationCliSuite = do
         installStdout `shouldContain` "RKE2 systemd resource guardrails: written"
         -- The first reconcile host-prep step raises the inotify limits so the
         -- systemd manager does not exhaust the per-user instance cap during RKE2
-        -- lifecycle operations (see streaming_doctrine.md § 6).
+        -- lifecycle operations (see streaming_doctrine.md at 583443f, section 6).
         installStdout `shouldContain` "Host inotify limits:"
         installStderr
           `shouldContain` "Retrying Harbor publication for mirror target 127.0.0.1:30080/prodbox/code-server-mirror:4.98.2"
@@ -2132,7 +9094,7 @@ integrationCliSuite = do
         -- The first delete host-prep step persists the inotify sysctl drop-in and
         -- applies it via `sysctl --system` before systemd unwinds the RKE2 units,
         -- so PID 1 never logs `Failed to allocate directory watch: Too many open
-        -- files` to the console (see streaming_doctrine.md § 6).
+        -- files` to the console (see streaming_doctrine.md at 583443f, section 6).
         deleteStdout `shouldContain` "Host inotify limits:"
         sudoRecord `shouldContain` "/etc/sysctl.d/99-prodbox-inotify.conf"
         sudoRecord `shouldContain` "sysctl|--system"
@@ -2767,12 +9729,8 @@ integrationCliSuite = do
         combined `shouldContain` "this cascade did not destroy"
         combined `shouldNotContain` "NOT an empty account"
 
-    -- Sprint 8.8: the operator-only `prodbox nuke` total teardown is exercised
-    -- through the same PRODBOX_ALLOW_NON_TTY_INTERACTIVE seam the other
-    -- interactive surfaces (aws setup/teardown, config setup) use, feeding the
-    -- typed confirmation on stdin. The retained public-edge certificate lives
-    -- in the long-lived `pulumi_state_backend` bucket, which only nuke's step 5
-    -- destroys; these prove the confirmation gate and that path.
+    -- The dry-run and pure confirmation decision do not enter the
+    -- operator-only decommission ceremony.
     it
       "nuke --dry-run renders the authenticated shared-bucket-terminal protocol"
       $ withSystemTempDirectory "prodbox-hs-cli"
@@ -2796,38 +9754,12 @@ integrationCliSuite = do
         stdoutText `shouldContain` "NODE=terminal-receipt (unique terminal)"
         stdoutText `shouldContain` "CONFIRMATION_LITERAL=NUKE EVERYTHING"
 
-    it "Sprint 8.8: nuke refuses the total teardown when the typed confirmation is wrong" $
-      withSystemTempDirectory "prodbox-hs-cli" $ \tmpDir -> do
-        binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
-        writeRepoMarkers tmpDir
-        writeTier0Fixture tmpDir (tier0FixtureWithParameters validConfigForNuke)
-        envVars <- fakeRke2Environment tmpDir
-        let nukeEnv = ("PRODBOX_ALLOW_NON_TTY_INTERACTIVE", "1") : envVars
-
-        (exitCode, _, stderrText) <-
-          readCreateProcessWithExitCode
-            ( proc
-                binary
-                [ "nuke"
-                , "--receipt"
-                , takeDirectory tmpDir </> "nuke-receipt.json"
-                , -- An apply refuses without an explicit disposition of the
-                  -- retained local data root, which is a gate before the
-                  -- confirmation gate this case is about.
-                  "--local-data"
-                , "retain"
-                ]
-            )
-              { cwd = Just tmpDir
-              , env = Just nukeEnv
-              }
-            "destroy please\n"
-
-        exitCode `shouldBe` ExitFailure 1
-        stderrText `shouldContain` "confirmation rejected; nothing destroyed"
-        -- Nothing was destroyed: the orchestration never shelled out to pulumi.
-        pulumiRan <- doesFileExist (tmpDir </> "fake-rke2-state" </> "pulumi.txt")
-        pulumiRan `shouldBe` False
+    it "classifies operator confirmation without invoking the ceremony" $ do
+      Nuke.confirmationAccepted "destroy please" `shouldBe` False
+      Nuke.confirmationAccepted "nuke everything" `shouldBe` False
+      Nuke.confirmationAccepted Nuke.confirmationLiteral `shouldBe` True
+      Nuke.confirmationAccepted (Nuke.confirmationLiteral ++ "  ") `shouldBe` True
+      Nuke.confirmationAccepted (" " ++ Nuke.confirmationLiteral) `shouldBe` False
 
     it
       "Vault status and initialization use the caller-bound Bootstrap Broker state"
@@ -2985,24 +9917,18 @@ integrationCliSuite = do
             `shouldContain` "reusable parent root-token and direct Vault write transport has been removed"
 
     it
-      "nuke refuses before admin/effects when the complete production decommission registry is unavailable"
+      "selected authority authentication refuses when the caller signer is unavailable"
       $ withSystemTempDirectory "prodbox-hs-cli"
       $ \tmpDir ->
         withFakeVaultServer $ \vaultPort ->
           withFakeGatewayDaemonServer
             []
             $ \gatewayPort requestsRef -> do
-              binary <- resolveBinaryPath >>= \b -> installOperatorBinaryInDir b tmpDir
-              repoRoot <- getCurrentDirectory
+              sourceBinary <- getExecutablePath
+              let fixtureBinary = tmpDir </> "selected-authority-fixture"
+              copyFile sourceBinary fixtureBinary
+              setFileMode fixtureBinary 0o700
               writeRepoMarkers tmpDir
-              writePrivateTestSecrets
-                tmpDir
-                ( testSecretsDhallWithAdmin
-                    "CONFIGADMINKEY"
-                    "config-admin-secret"
-                    (fixtureAwsRegion FixtureUsWest2)
-                    Nothing
-                )
               writeTier0Fixture
                 tmpDir
                 ( tier0FixtureWithContext
@@ -3011,46 +9937,44 @@ integrationCliSuite = do
                 )
               createDirectoryIfMissing True (tmpDir </> ".kube")
               writeFile (tmpDir </> ".kube" </> "config") "server: https://127.0.0.1:6443\n"
-              -- Step 1 (aws-ses destroy) runs `pulumi` in the aws-ses program dir;
-              -- provide it so the long-lived backend login/destroy can chdir there.
-              createDirectoryIfMissing True (tmpDir </> "pulumi" </> "aws-ses")
-              mapM_
-                ( \name ->
-                    copyFile
-                      (repoRoot </> "pulumi" </> "aws-ses" </> name)
-                      (tmpDir </> "pulumi" </> "aws-ses" </> name)
-                )
-                ["Pulumi.yaml", "Main.yaml", "Pulumi.aws-ses.yaml"]
               envVars <- fakeRke2Environment tmpDir
-              let nukeEnv =
-                    ("PRODBOX_ALLOW_NON_TTY_INTERACTIVE", "1")
+              let kubectlPath = tmpDir </> "bin" </> "kubectl"
+              kubectlScript <- readFile kubectlPath
+              length kubectlScript `seq`
+                writeFile
+                  kubectlPath
+                  ( unlines
+                      ( take 1 (lines kubectlScript)
+                          ++ ["printf '%s\\n' \"$KUBECONFIG\" >> \"$PRODBOX_FAKE_RKE2_RECORD_DIR/kubeconfig-used.txt\""]
+                          ++ drop 1 (lines kubectlScript)
+                      )
+                  )
+              let fixtureEnv =
+                    ("KUBECONFIG", tmpDir </> "foreign-kubeconfig")
                       : ("PRODBOX_TEST_GATEWAY_NODEPORT", show gatewayPort)
                       : ("PRODBOX_TEST_HOST_VAULT_TOKEN", "fake-root-token")
-                      : envVars
+                      : filter ((/= "KUBECONFIG") . fst) envVars
 
               (exitCode, stdoutText, stderrText) <-
                 readCreateProcessWithExitCode
                   ( proc
-                      binary
-                      [ "nuke"
-                      , "--receipt"
-                      , takeDirectory tmpDir </> "nuke-receipt.json"
-                      , -- An apply refuses without an explicit disposition of
-                        -- the retained local data root, which gates ahead of the
-                        -- registry refusal this case is about.
-                        "--local-data"
-                      , "retain"
+                      fixtureBinary
+                      [ "--fixture-selected-authority-refusal"
+                      , tmpDir
+                      , tmpDir </> "fake-rke2-kubeconfig"
                       ]
                   )
                     { cwd = Just tmpDir
-                    , env = Just nukeEnv
+                    , env = Just fixtureEnv
                     }
-                  "NUKE EVERYTHING\n"
+                  ""
 
               exitCode `shouldBe` ExitFailure 1
-              stdoutText `shouldNotContain` "step 1/5"
-              stderrText `shouldContain` "decommission preparation refused"
+              stdoutText `shouldBe` ""
               stderrText `shouldContain` "caller-bound Lifecycle Authority Transit signer"
+              used <- lines <$> readFile (tmpDir </> "fake-rke2-state" </> "kubeconfig-used.txt")
+              used `shouldSatisfy` (not . null)
+              used `shouldSatisfy` all (== tmpDir </> "fake-rke2-kubeconfig")
               requests <- readMVar requestsRef
               requests
                 `shouldSatisfy` all (not . ("POST /v1/object-store/pulumi/" `isInfixOf`))
@@ -3652,6 +10576,1013 @@ generationHostEnvironment capacity = do
     ( ("PRODBOX_TEST_HOST_CAPACITY", capacity)
         : filter ((/= "PRODBOX_TEST_HOST_CAPACITY") . fst) environment
     )
+
+-- One accepted Unix connection serves both requests when requested. The
+-- fixture is local and never contacts the configured Docker daemon.
+withDockerInfoFixture :: BS8.ByteString -> Bool -> (FilePath -> IO a) -> IO a
+withDockerInfoFixture body secondRequest = withDockerInfoFixtureMode body secondRequest False False BS8.empty
+
+withDockerInfoFixtureWithClose :: BS8.ByteString -> (FilePath -> IO a) -> IO a
+withDockerInfoFixtureWithClose body = withDockerInfoFixtureMode body False True False BS8.empty
+
+withDockerInfoFixtureUnframed :: BS8.ByteString -> (FilePath -> IO a) -> IO a
+withDockerInfoFixtureUnframed body = withDockerInfoFixtureMode body False False True BS8.empty
+
+withDockerInfoFixtureTrailing :: BS8.ByteString -> (FilePath -> IO a) -> IO a
+withDockerInfoFixtureTrailing body = withDockerInfoFixtureMode body True False False (BS8.pack "unexpected-buffered-bytes")
+
+withDockerInfoFixtureMode
+  :: BS8.ByteString -> Bool -> Bool -> Bool -> BS8.ByteString -> (FilePath -> IO a) -> IO a
+withDockerInfoFixtureMode body secondRequest closeHeader unframed trailing action =
+  withSystemTempDirectory "prodbox-connected-info" $ \directory -> do
+    let path = directory </> "docker.sock"
+    bracket (socket AF_UNIX Stream defaultProtocol) close $ \listener -> do
+      bind listener (SockAddrUnix path)
+      listen listener 1
+      outcome <- newEmptyMVar
+      let serve = do
+            (connection, _) <- accept listener
+            bracket (pure connection) close $ \client -> do
+              request <- readHeaders client
+              unless (BS8.pack "GET /info HTTP/1.1\r\n" `BS8.isPrefixOf` request) $
+                fail "unexpected info request"
+              sendAll
+                client
+                ( BS8.pack "HTTP/1.1 200 OK"
+                    <> (if unframed then BS8.empty else BS8.pack ("\r\nContent-Length: " ++ show (BS8.length body)))
+                    <> BS8.pack (if closeHeader then "\r\nConnection: keep-alive, ClOsE\r\n\r\n" else "\r\n\r\n")
+                    <> body
+                    <> trailing
+                )
+              when secondRequest $ do
+                next <- readHeaders client
+                unless (BS8.pack "GET /_ping HTTP/1.1\r\n" `BS8.isPrefixOf` next) $
+                  fail "unexpected second request"
+                let reply = sendAll client (BS8.pack "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nOK")
+                if BS8.null trailing
+                  then reply
+                  else void (try reply :: IO (Either SomeException ()))
+              when (not secondRequest && not closeHeader && not unframed) $ void (recv client 1)
+      bracket (forkIO (try serve >>= putMVar outcome)) killThread $ \_ -> do
+        result <- action path
+        completed <- timeout 3000000 (takeMVar outcome)
+        case completed of
+          Nothing -> expectationFailure "Docker fixture did not settle"
+          Just (Left failure) -> expectationFailure ("Docker fixture failed: " ++ show (failure :: SomeException))
+          Just (Right ()) -> pure ()
+        pure result
+ where
+  readHeaders connection = go BS8.empty
+   where
+    go bytes
+      | BS8.pack "\r\n\r\n" `BS8.isInfixOf` bytes = pure bytes
+      | BS8.length bytes >= 16384 = fail "fixture request headers too large"
+      | otherwise = do
+          more <- recv connection 4096
+          if BS8.null more then fail "fixture request ended early" else go (bytes <> more)
+
+-- One local connection accepts exactly one bounded load request. It is a
+-- protocol fixture, not an actual Docker image load or settlement witness.
+withDockerNetworkBindingFixture :: FilePath -> String -> String -> String -> IO Bool -> IO a -> IO a
+withDockerNetworkBindingFixture path networkId generation operation changed action =
+  bracket (socket AF_UNIX Stream defaultProtocol) close $ \listener -> do
+    bind listener (SockAddrUnix path)
+    listen listener 1
+    let headers connection bytes
+          | BS8.pack "\r\n\r\n" `BS8.isInfixOf` bytes = pure bytes
+          | BS8.length bytes >= 16384 = fail "fixture headers too large"
+          | otherwise = do
+              more <- recv connection 4096
+              if BS8.null more then fail "fixture request ended early" else headers connection (bytes <> more)
+        response body = BS8.pack ("HTTP/1.1 200 OK\r\nContent-Length: " ++ show (BS8.length body) ++ "\r\n\r\n") <> body
+        serve = bracket (fst <$> accept listener) close $ \connection ->
+          let
+            loop = do
+              request <- headers connection BS8.empty
+              wrong <- changed
+              let first = BS8.unpack (BS8.takeWhile (/= '\r') request)
+                  body
+                    | "GET /info " `isPrefixOf` first = BS8.pack "{\"ID\":\"daemon-a\"}"
+                    | "GET /networks?" `isPrefixOf` first =
+                        LazyBS8.toStrict $
+                          Aeson.encode
+                            [ Aeson.object
+                                [ AesonKey.fromString "Name" Aeson..= ("prodbox-t-run" :: String)
+                                , AesonKey.fromString "Id" Aeson..= networkId
+                                ]
+                            ]
+                    | first == "GET /networks/" ++ networkId ++ " HTTP/1.1" =
+                        LazyBS8.toStrict $
+                          Aeson.encode $
+                            Aeson.object
+                              [ AesonKey.fromString "Name" Aeson..= ("prodbox-t-run" :: String)
+                              , AesonKey.fromString "Id" Aeson..= networkId
+                              , AesonKey.fromString "Driver" Aeson..= ("bridge" :: String)
+                              , AesonKey.fromString "EnableIPv6" Aeson..= True
+                              , AesonKey.fromString "Options"
+                                  Aeson..= Aeson.object
+                                    [ AesonKey.fromString "com.docker.network.bridge.enable_ip_masquerade" Aeson..= ("true" :: String)
+                                    , AesonKey.fromString "com.docker.network.driver.mtu" Aeson..= ("1500" :: String)
+                                    ]
+                              , AesonKey.fromString "Labels"
+                                  Aeson..= Aeson.object
+                                    [ AesonKey.fromString "io.prodbox.deployment" Aeson..= ("prodbox-t-run" :: String)
+                                    , AesonKey.fromString "io.prodbox.generation" Aeson..= generation
+                                    , AesonKey.fromString "io.prodbox.operation" Aeson..= (if wrong then "foreign" else operation)
+                                    ]
+                              , AesonKey.fromString "IPAM"
+                                  Aeson..= Aeson.object
+                                    [ AesonKey.fromString "Config"
+                                        Aeson..= [Aeson.object [AesonKey.fromString "Subnet" Aeson..= ("fc00:c1c8:9c54:6b75::/64" :: String)]]
+                                    ]
+                              ]
+                    | otherwise = BS8.empty
+              when (BS8.null body) (fail ("unexpected network fixture request: " ++ first))
+              sendAll connection (response body)
+              loop
+           in
+            loop
+    bracket (forkIO (void (try serve :: IO (Either SomeException ())))) killThread (const action)
+
+withDockerNodeRunFixture :: FilePath -> BS8.ByteString -> (MVar String -> IO a) -> IO a
+withDockerNodeRunFixture path nodeBody = withDockerNodeRunFixtureMode path nodeBody False False
+
+withDockerNodeRunFixtureMode
+  :: FilePath -> BS8.ByteString -> Bool -> Bool -> (MVar String -> IO a) -> IO a
+withDockerNodeRunFixtureMode path nodeBody lostReply wrongReadback action =
+  bracket (socket AF_UNIX Stream defaultProtocol) close $ \listener -> do
+    bind listener (SockAddrUnix path)
+    listen listener 1
+    received <- newEmptyMVar
+    logReads <- newIORef (0 :: Int)
+    configArchive <- newIORef Nothing
+    versionPath <- either fail pure (TarEntry.toTarPath False "version")
+    configPath <- either fail pure (TarEntry.toTarPath False "kubeadm.conf")
+    let versionArchive = LazyBS8.toStrict (Tar.write [TarEntry.fileEntry versionPath (LazyBS8.pack "v1.30.0\n")])
+        differentArchive = LazyBS8.toStrict (Tar.write [TarEntry.fileEntry configPath (LazyBS8.pack "different\n")])
+    let response status payload =
+          BS8.pack
+            ("HTTP/1.1 " ++ status ++ "\r\nContent-Length: " ++ show (BS8.length payload) ++ "\r\n\r\n")
+            <> payload
+        headers connection bytes = case BS8.breakSubstring (BS8.pack "\r\n\r\n") bytes of
+          (prefix, rest) | not (BS8.null rest) -> pure (prefix, BS8.drop 4 rest)
+          _ | BS8.length bytes >= 16384 -> fail "fixture headers too large"
+          _ -> do
+            more <- recv connection 4096
+            if BS8.null more then fail "fixture request ended early" else headers connection (bytes <> more)
+        body connection size bytes
+          | BS8.length bytes == size = pure bytes
+          | BS8.length bytes > size = fail "fixture request too large"
+          | otherwise = do
+              more <- recv connection 4096
+              if BS8.null more then fail "fixture request truncated" else body connection size (bytes <> more)
+        serve = bracket (fst <$> accept listener) close $ \connection -> do
+          (info, trailing) <- headers connection BS8.empty
+          unless (BS8.pack "GET /info HTTP/1.1" `BS8.isPrefixOf` info && BS8.null trailing) $
+            fail "invalid fixture info"
+          sendAll connection (response "200 OK" (BS8.pack "{\"ID\":\"daemon-a\"}"))
+          (create, initial) <- headers connection BS8.empty
+          unless
+            (BS8.pack "POST /containers/create?name=prodbox-t-run-control-plane HTTP/1.1" `BS8.isPrefixOf` create)
+            $ fail "invalid fixture create"
+          let lengths =
+                [ BS8.dropWhile (== ' ') (BS8.drop 15 line)
+                | line <- BS8.lines create
+                , BS8.pack "content-length:" `BS8.isPrefixOf` BS8.map toLower line
+                ]
+          size <- case lengths of
+            [encoded] -> case BS8.readInt encoded of
+              Just (count, _) | count > 0 && count <= 8192 -> pure count
+              _ -> fail "invalid fixture content length"
+            _ -> fail "missing fixture content length"
+          void (body connection size initial)
+          sendAll connection (response "201 Created" (BS8.pack ("{\"Id\":\"" ++ replicate 64 'c' ++ "\"}")))
+          let loop = do
+                (request, rest) <- headers connection BS8.empty
+                if BS8.pack ("PUT /containers/" ++ replicate 64 'c' ++ "/archive?") `BS8.isPrefixOf` request
+                  then do
+                    let contentLengths =
+                          [ BS8.dropWhile (== ' ') (BS8.drop 15 line)
+                          | line <- BS8.lines request
+                          , BS8.pack "content-length:" `BS8.isPrefixOf` BS8.map toLower line
+                          ]
+                    count <- case contentLengths of
+                      [encoded] -> case BS8.readInt encoded of
+                        Just (number, _) | number > 0 && number <= 73728 -> pure number
+                        _ -> fail "invalid config fixture length"
+                      _ -> fail "missing config fixture length"
+                    archive <- body connection count rest
+                    writeIORef configArchive (Just archive)
+                    unless lostReply $ do
+                      sendAll connection (response "200 OK" BS8.empty)
+                      loop
+                  else do
+                    unless (BS8.null rest) (fail "unexpected fixture request body")
+                    respond request
+              respond request
+                | BS8.pack ("HEAD /containers/" ++ replicate 64 'c' ++ "/archive?") `BS8.isPrefixOf` request = do
+                    let stat =
+                          Base64.encode
+                            ( BS8.pack
+                                "{\"name\":\"kind\",\"size\":4096,\"mode\":2147484141,\"mtime\":\"2026-01-01T00:00:00Z\",\"linkTarget\":\"\"}"
+                            )
+                        answer =
+                          if BS8.pack "kubeadm.conf" `BS8.isInfixOf` request
+                            then BS8.pack "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"
+                            else
+                              BS8.pack "HTTP/1.1 200 OK\r\nX-Docker-Container-Path-Stat: "
+                                <> stat
+                                <> BS8.pack "\r\nContent-Length: 0\r\n\r\n"
+                    sendAll connection answer
+                    loop
+                | BS8.pack "GET /info HTTP/1.1" `BS8.isPrefixOf` request =
+                    sendAll
+                      connection
+                      ( response
+                          "200 OK"
+                          ( BS8.pack
+                              "{\"ID\":\"daemon-a\",\"CgroupDriver\":\"systemd\",\"CgroupVersion\":\"2\",\"MemoryLimit\":true,\"PidsLimit\":true,\"CPUShares\":true,\"SecurityOptions\":[]}"
+                          )
+                      )
+                      >> loop
+                | BS8.pack ("GET /containers/" ++ replicate 64 'c' ++ "/json HTTP/1.1") `BS8.isPrefixOf` request =
+                    sendAll connection (response "200 OK" nodeBody) >> loop
+                | BS8.pack ("GET /containers/" ++ replicate 64 'c' ++ "/logs?") `BS8.isPrefixOf` request = do
+                    count <- atomicModifyIORef' logReads (\value -> (value + 1, value))
+                    let line = if count == 0 then "booting\n" else "systemd: Reached target Multi-User System.\n"
+                    sendAll connection (response "200 OK" (BS8.pack line))
+                    loop
+                | BS8.pack ("GET /containers/" ++ replicate 64 'c' ++ "/archive?") `BS8.isPrefixOf` request = do
+                    current <- readIORef configArchive
+                    let archive =
+                          if BS8.pack "kubeadm.conf" `BS8.isInfixOf` request
+                            then if wrongReadback then differentArchive else maybe BS8.empty id current
+                            else versionArchive
+                    sendAll connection (response "200 OK" archive)
+                    loop
+                | otherwise = do
+                    unless
+                      (BS8.pack ("POST /containers/" ++ replicate 64 'c' ++ "/start HTTP/1.1") `BS8.isPrefixOf` request)
+                      $ fail "invalid fixture start"
+                    putMVar received (takeWhile (/= '\r') (BS8.unpack request))
+                    sendAll connection (BS8.pack "HTTP/1.1 204 No Content\r\n\r\n")
+                    loop
+          loop
+    bracket
+      (forkIO (void (try serve :: IO (Either SomeException ()))))
+      killThread
+      (const (action received))
+
+withDockerNodeStartFixture :: FilePath -> IO BS8.ByteString -> (MVar String -> IO a) -> IO a
+withDockerNodeStartFixture path nodeBody action =
+  bracket (socket AF_UNIX Stream defaultProtocol) close $ \listener -> do
+    bind listener (SockAddrUnix path)
+    listen listener 1
+    received <- newEmptyMVar
+    let headers connection bytes
+          | BS8.pack "\r\n\r\n" `BS8.isInfixOf` bytes = pure bytes
+          | BS8.length bytes >= 16384 = fail "fixture headers too large"
+          | otherwise = do
+              more <- recv connection 4096
+              if BS8.null more then fail "fixture request ended early" else headers connection (bytes <> more)
+        response body = BS8.pack ("HTTP/1.1 200 OK\r\nContent-Length: " ++ show (BS8.length body) ++ "\r\n\r\n") <> body
+        serve = bracket (fst <$> accept listener) close $ \connection -> do
+          info <- headers connection BS8.empty
+          unless (BS8.pack "GET /info HTTP/1.1\r\n" `BS8.isPrefixOf` info) $ fail "invalid fixture info"
+          sendAll connection (response (BS8.pack "{\"ID\":\"daemon-a\"}"))
+          let loop = do
+                request <- headers connection BS8.empty
+                if BS8.pack ("GET /containers/" ++ replicate 64 'c' ++ "/json HTTP/1.1\r\n") `BS8.isPrefixOf` request
+                  then nodeBody >>= sendAll connection . response
+                  else do
+                    putMVar received (takeWhile (/= '\r') (BS8.unpack request))
+                    sendAll connection (BS8.pack "HTTP/1.1 204 No Content\r\n\r\n")
+                loop
+          loop
+    bracket
+      (forkIO (void (try serve :: IO (Either SomeException ()))))
+      killThread
+      (const (action received))
+
+withDockerNetworkRemoveFixture :: FilePath -> Maybe Int -> (MVar String -> IO a) -> IO a
+withDockerNetworkRemoveFixture path reply = withDockerNetworkRemoveFixtureMode path reply False
+
+withDockerNetworkRemoveFixtureMode :: FilePath -> Maybe Int -> Bool -> (MVar String -> IO a) -> IO a
+withDockerNetworkRemoveFixtureMode path reply inspectFirst action =
+  bracket (socket AF_UNIX Stream defaultProtocol) close $ \listener -> do
+    bind listener (SockAddrUnix path)
+    listen listener 1
+    received <- newEmptyMVar
+    let headers connection bytes
+          | BS8.pack "\r\n\r\n" `BS8.isInfixOf` bytes = pure bytes
+          | BS8.length bytes >= 16384 = fail "fixture headers too large"
+          | otherwise = do
+              more <- recv connection 4096
+              if BS8.null more then fail "fixture request ended early" else headers connection (bytes <> more)
+        serve = bracket (fst <$> accept listener) close $ \connection -> do
+          info <- headers connection BS8.empty
+          unless (BS8.pack "GET /info HTTP/1.1\r\n" `BS8.isPrefixOf` info) $
+            fail "invalid fixture info request"
+          let infoBody = BS8.pack "{\"ID\":\"daemon-a\"}"
+          sendAll
+            connection
+            ( BS8.pack ("HTTP/1.1 200 OK\r\nContent-Length: " ++ show (BS8.length infoBody) ++ "\r\n\r\n")
+                <> infoBody
+            )
+          when inspectFirst $ do
+            inspected <- headers connection BS8.empty
+            unless
+              (BS8.pack ("GET /networks/" ++ replicate 64 'c' ++ " HTTP/1.1\r\n") `BS8.isPrefixOf` inspected)
+              $ fail "invalid fixture network inspection"
+            let networkBody =
+                  BS8.pack $
+                    "{\"Name\":\"prodbox-t-run\",\"Id\":\""
+                      ++ replicate 64 'c'
+                      ++ "\",\"Driver\":\"bridge\",\"EnableIPv6\":true,"
+                      ++ "\"Options\":{\"com.docker.network.bridge.enable_ip_masquerade\":\"true\",\"com.docker.network.driver.mtu\":\"1500\"},"
+                      ++ "\"Labels\":{\"io.prodbox.deployment\":\"prodbox-t-run\",\"io.prodbox.generation\":\""
+                      ++ replicate 32 'a'
+                      ++ "\",\"io.prodbox.operation\":\""
+                      ++ replicate 32 'b'
+                      ++ "\"},\"IPAM\":{\"Config\":[{\"Subnet\":\"fc00:c1c8:9c54:6b75::/64\"}]}}"
+            sendAll
+              connection
+              ( BS8.pack ("HTTP/1.1 200 OK\r\nContent-Length: " ++ show (BS8.length networkBody) ++ "\r\n\r\n")
+                  <> networkBody
+              )
+          request <- headers connection BS8.empty
+          putMVar received (takeWhile (/= '\r') (BS8.unpack request))
+          case reply of
+            Just 204 -> sendAll connection (BS8.pack "HTTP/1.1 204 No Content\r\n\r\n")
+            Just 304 -> sendAll connection (BS8.pack "HTTP/1.1 304 Not Modified\r\n\r\n")
+            Just 404 -> sendAll connection (BS8.pack "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+            _ -> pure ()
+    bracket
+      (forkIO (void (try serve :: IO (Either SomeException ()))))
+      killThread
+      (const (action received))
+
+withDockerVolumeRemovalFixture
+  :: FilePath -> String -> BS8.ByteString -> (MVar String -> IO a) -> IO a
+withDockerVolumeRemovalFixture path name volumeBody action =
+  bracket (socket AF_UNIX Stream defaultProtocol) close $ \listener -> do
+    bind listener (SockAddrUnix path)
+    listen listener 1
+    received <- newEmptyMVar
+    let headers connection bytes
+          | BS8.pack "\r\n\r\n" `BS8.isInfixOf` bytes = pure bytes
+          | BS8.length bytes >= 16384 = fail "fixture headers too large"
+          | otherwise = do
+              more <- recv connection 4096
+              if BS8.null more then fail "fixture request ended early" else headers connection (bytes <> more)
+        response body = BS8.pack ("HTTP/1.1 200 OK\r\nContent-Length: " ++ show (BS8.length body) ++ "\r\n\r\n") <> body
+        serve = bracket (fst <$> accept listener) close $ \connection -> do
+          info <- headers connection BS8.empty
+          unless (BS8.pack "GET /info HTTP/1.1\r\n" `BS8.isPrefixOf` info) $ fail "invalid fixture info"
+          sendAll connection (response (BS8.pack "{\"ID\":\"daemon-a\"}"))
+          inspected <- headers connection BS8.empty
+          unless (BS8.pack ("GET /volumes/" ++ name ++ " HTTP/1.1\r\n") `BS8.isPrefixOf` inspected) $
+            fail "invalid fixture volume read"
+          sendAll connection (response volumeBody)
+          request <- headers connection BS8.empty
+          putMVar received (takeWhile (/= '\r') (BS8.unpack request))
+          sendAll connection (BS8.pack "HTTP/1.1 204 No Content\r\n\r\n")
+    bracket
+      (forkIO (void (try serve :: IO (Either SomeException ()))))
+      killThread
+      (const (action received))
+
+withDockerNetworkCreateFixture :: FilePath -> Bool -> (MVar BS8.ByteString -> IO a) -> IO a
+withDockerNetworkCreateFixture path reply action =
+  bracket (socket AF_UNIX Stream defaultProtocol) close $ \listener -> do
+    bind listener (SockAddrUnix path)
+    listen listener 1
+    received <- newEmptyMVar
+    let response status payload =
+          BS8.pack
+            ("HTTP/1.1 " ++ status ++ "\r\nContent-Length: " ++ show (BS8.length payload) ++ "\r\n\r\n")
+            <> payload
+        headers connection bytes = case BS8.breakSubstring (BS8.pack "\r\n\r\n") bytes of
+          (prefix, rest) | not (BS8.null rest) -> pure (prefix, BS8.drop 4 rest)
+          _ | BS8.length bytes >= 16384 -> fail "fixture headers too large"
+          _ -> do
+            more <- recv connection 4096
+            if BS8.null more then fail "fixture request ended early" else headers connection (bytes <> more)
+        body connection size bytes
+          | BS8.length bytes == size = pure bytes
+          | BS8.length bytes > size = fail "fixture request too large"
+          | otherwise = do
+              more <- recv connection 4096
+              if BS8.null more then fail "fixture request truncated" else body connection size (bytes <> more)
+        serve = bracket (fst <$> accept listener) close $ \connection -> do
+          (info, trailing) <- headers connection BS8.empty
+          unless (BS8.pack "GET /info HTTP/1.1" `BS8.isPrefixOf` info && BS8.null trailing) $
+            fail "invalid fixture info request"
+          sendAll connection (response "200 OK" (BS8.pack "{\"ID\":\"daemon-a\"}"))
+          (request, initial) <- headers connection BS8.empty
+          unless (BS8.pack "POST /networks/create HTTP/1.1" `BS8.isPrefixOf` request) $
+            fail "invalid fixture network request"
+          let lengths =
+                [ BS8.dropWhile (== ' ') (BS8.drop 15 line)
+                | line <- BS8.lines request
+                , BS8.pack "content-length:" `BS8.isPrefixOf` BS8.map toLower line
+                ]
+          size <- case lengths of
+            [encoded] -> case BS8.readInt encoded of
+              Just (count, _) | count > 0 && count <= 8192 -> pure count
+              _ -> fail "invalid fixture content length"
+            _ -> fail "missing fixture content length"
+          payload <- body connection size initial
+          putMVar received payload
+          when
+            reply
+            ( sendAll
+                connection
+                (response "201 Created" (BS8.pack ("{\"Id\":\"" ++ replicate 64 'c' ++ "\",\"Warning\":\"\"}")))
+            )
+    bracket
+      (forkIO (void (try serve :: IO (Either SomeException ()))))
+      killThread
+      (const (action received))
+
+withDockerNodeInspectFixture
+  :: FilePath -> String -> Maybe BS8.ByteString -> (MVar String -> IO a) -> IO a
+withDockerNodeInspectFixture path identifier nodeBody action =
+  bracket (socket AF_UNIX Stream defaultProtocol) close $ \listener -> do
+    bind listener (SockAddrUnix path)
+    listen listener 1
+    received <- newEmptyMVar
+    let headers connection bytes
+          | BS8.pack "\r\n\r\n" `BS8.isInfixOf` bytes = pure bytes
+          | BS8.length bytes >= 16384 = fail "fixture headers too large"
+          | otherwise = do
+              more <- recv connection 4096
+              if BS8.null more then fail "fixture request ended early" else headers connection (bytes <> more)
+        response status body =
+          BS8.pack ("HTTP/1.1 " ++ status ++ "\r\nContent-Length: " ++ show (BS8.length body) ++ "\r\n\r\n")
+            <> body
+        serve = bracket (fst <$> accept listener) close $ \connection -> do
+          info <- headers connection BS8.empty
+          unless (BS8.pack "GET /info HTTP/1.1\r\n" `BS8.isPrefixOf` info) $ fail "invalid fixture info"
+          sendAll connection (response "200 OK" (BS8.pack "{\"ID\":\"daemon-a\"}"))
+          request <- headers connection BS8.empty
+          unless
+            (BS8.pack ("GET /containers/" ++ identifier ++ "/json HTTP/1.1\r\n") `BS8.isPrefixOf` request)
+            $ fail "invalid fixture node read"
+          putMVar received (takeWhile (/= '\r') (BS8.unpack request))
+          case nodeBody of
+            Just body -> sendAll connection (response "200 OK" body)
+            Nothing -> sendAll connection (response "404 Not Found" BS8.empty)
+    bracket
+      (forkIO (void (try serve :: IO (Either SomeException ()))))
+      killThread
+      (const (action received))
+
+withDockerNodeContainerCreateFixture
+  :: FilePath -> Maybe BS8.ByteString -> (MVar BS8.ByteString -> IO a) -> IO a
+withDockerNodeContainerCreateFixture path reply action =
+  bracket (socket AF_UNIX Stream defaultProtocol) close $ \listener -> do
+    bind listener (SockAddrUnix path)
+    listen listener 1
+    received <- newEmptyMVar
+    let response status payload =
+          BS8.pack
+            ("HTTP/1.1 " ++ status ++ "\r\nContent-Length: " ++ show (BS8.length payload) ++ "\r\n\r\n")
+            <> payload
+        headers connection bytes = case BS8.breakSubstring (BS8.pack "\r\n\r\n") bytes of
+          (prefix, rest) | not (BS8.null rest) -> pure (prefix, BS8.drop 4 rest)
+          _ | BS8.length bytes >= 16384 -> fail "fixture headers too large"
+          _ -> do
+            more <- recv connection 4096
+            if BS8.null more then fail "fixture request ended early" else headers connection (bytes <> more)
+        body connection size bytes
+          | BS8.length bytes == size = pure bytes
+          | BS8.length bytes > size = fail "fixture request too large"
+          | otherwise = do
+              more <- recv connection 4096
+              if BS8.null more then fail "fixture request truncated" else body connection size (bytes <> more)
+        serve = bracket (fst <$> accept listener) close $ \connection -> do
+          (info, trailing) <- headers connection BS8.empty
+          unless (BS8.pack "GET /info HTTP/1.1" `BS8.isPrefixOf` info && BS8.null trailing) $
+            fail "invalid fixture info request"
+          sendAll connection (response "200 OK" (BS8.pack "{\"ID\":\"daemon-a\"}"))
+          (request, initial) <- headers connection BS8.empty
+          unless
+            ( BS8.pack "POST /containers/create?name=prodbox-t-run-control-plane HTTP/1.1"
+                `BS8.isPrefixOf` request
+            )
+            $ fail "invalid fixture node request"
+          let lengths =
+                [ BS8.dropWhile (== ' ') (BS8.drop 15 line)
+                | line <- BS8.lines request
+                , BS8.pack "content-length:" `BS8.isPrefixOf` BS8.map toLower line
+                ]
+          size <- case lengths of
+            [encoded] -> case BS8.readInt encoded of
+              Just (count, _) | count > 0 && count <= 8192 -> pure count
+              _ -> fail "invalid fixture content length"
+            _ -> fail "missing fixture content length"
+          payload <- body connection size initial
+          putMVar received payload
+          case reply of
+            Just responseBody -> sendAll connection (response "201 Created" responseBody)
+            Nothing -> pure ()
+    bracket
+      (forkIO (void (try serve :: IO (Either SomeException ()))))
+      killThread
+      (const (action received))
+
+withDockerNodeVolumeCreateFixture
+  :: FilePath -> Maybe BS8.ByteString -> (MVar BS8.ByteString -> IO a) -> IO a
+withDockerNodeVolumeCreateFixture path reply action =
+  bracket (socket AF_UNIX Stream defaultProtocol) close $ \listener -> do
+    bind listener (SockAddrUnix path)
+    listen listener 1
+    received <- newEmptyMVar
+    let response status payload =
+          BS8.pack
+            ("HTTP/1.1 " ++ status ++ "\r\nContent-Length: " ++ show (BS8.length payload) ++ "\r\n\r\n")
+            <> payload
+        headers connection bytes = case BS8.breakSubstring (BS8.pack "\r\n\r\n") bytes of
+          (prefix, rest) | not (BS8.null rest) -> pure (prefix, BS8.drop 4 rest)
+          _ | BS8.length bytes >= 16384 -> fail "fixture headers too large"
+          _ -> do
+            more <- recv connection 4096
+            if BS8.null more then fail "fixture request ended early" else headers connection (bytes <> more)
+        body connection size bytes
+          | BS8.length bytes == size = pure bytes
+          | BS8.length bytes > size = fail "fixture request too large"
+          | otherwise = do
+              more <- recv connection 4096
+              if BS8.null more then fail "fixture request truncated" else body connection size (bytes <> more)
+        serve = bracket (fst <$> accept listener) close $ \connection -> do
+          (info, trailing) <- headers connection BS8.empty
+          unless (BS8.pack "GET /info HTTP/1.1" `BS8.isPrefixOf` info && BS8.null trailing) $
+            fail "invalid fixture info request"
+          sendAll connection (response "200 OK" (BS8.pack "{\"ID\":\"daemon-a\"}"))
+          (request, initial) <- headers connection BS8.empty
+          unless (BS8.pack "POST /volumes/create HTTP/1.1" `BS8.isPrefixOf` request) $
+            fail "invalid fixture volume request"
+          let lengths =
+                [ BS8.dropWhile (== ' ') (BS8.drop 15 line)
+                | line <- BS8.lines request
+                , BS8.pack "content-length:" `BS8.isPrefixOf` BS8.map toLower line
+                ]
+          size <- case lengths of
+            [encoded] -> case BS8.readInt encoded of
+              Just (count, _) | count > 0 && count <= 8192 -> pure count
+              _ -> fail "invalid fixture content length"
+            _ -> fail "missing fixture content length"
+          payload <- body connection size initial
+          putMVar received payload
+          case reply of
+            Just responseBody -> sendAll connection (response "201 Created" responseBody)
+            Nothing -> pure ()
+    bracket
+      (forkIO (void (try serve :: IO (Either SomeException ()))))
+      killThread
+      (const (action received))
+
+-- Controlled metadata responses only; no Docker daemon is contacted.
+withDockerConfigPathFixture :: FilePath -> String -> BS8.ByteString -> IO a -> IO a
+withDockerConfigPathFixture path status fields action =
+  bracket (socket AF_UNIX Stream defaultProtocol) close $ \listener -> do
+    bind listener (SockAddrUnix path)
+    listen listener 1
+    let headers connection bytes
+          | BS8.pack "\r\n\r\n" `BS8.isInfixOf` bytes = pure bytes
+          | BS8.length bytes >= 16384 = fail "path fixture headers too large"
+          | otherwise = do
+              more <- recv connection 4096
+              if BS8.null more then fail "path fixture request ended" else headers connection (bytes <> more)
+        serve = bracket (fst <$> accept listener) close $ \connection -> do
+          info <- headers connection BS8.empty
+          unless (BS8.pack "GET /info HTTP/1.1" `BS8.isPrefixOf` info) $ fail "invalid path fixture info"
+          let infoBody = BS8.pack "{\"ID\":\"daemon-a\"}"
+          sendAll
+            connection
+            ( BS8.pack ("HTTP/1.1 200 OK\r\nContent-Length: " ++ show (BS8.length infoBody) ++ "\r\n\r\n")
+                <> infoBody
+            )
+          request <- headers connection BS8.empty
+          unless
+            (BS8.pack ("HEAD /containers/" ++ replicate 64 'c' ++ "/archive?path=") `BS8.isPrefixOf` request)
+            $ fail "invalid path fixture request"
+          sendAll
+            connection
+            (BS8.pack ("HTTP/1.1 " ++ status ++ "\r\n") <> fields <> BS8.pack "Content-Length: 0\r\n\r\n")
+    bracket (forkIO (void (try serve :: IO (Either SomeException ())))) killThread (const action)
+
+-- Controlled transport only; no Docker daemon or container is contacted.
+withDockerConfigFixture
+  :: FilePath -> BS8.ByteString -> Bool -> (MVar BS8.ByteString -> IO a) -> IO a
+withDockerConfigFixture path expected reply action =
+  bracket (socket AF_UNIX Stream defaultProtocol) close $ \listener -> do
+    bind listener (SockAddrUnix path)
+    listen listener 1
+    received <- newEmptyMVar
+    let response payload =
+          BS8.pack ("HTTP/1.1 200 OK\r\nContent-Length: " ++ show (BS8.length payload) ++ "\r\n\r\n")
+            <> payload
+        headers connection bytes = case BS8.breakSubstring (BS8.pack "\r\n\r\n") bytes of
+          (headBytes, rest) | not (BS8.null rest) -> pure (headBytes, BS8.drop 4 rest)
+          _ | BS8.length bytes >= 16384 -> fail "config fixture headers too large"
+          _ -> do
+            more <- recv connection 4096
+            if BS8.null more then fail "config fixture request ended" else headers connection (bytes <> more)
+        body connection bytes
+          | BS8.length bytes == BS8.length expected = pure bytes
+          | BS8.length bytes > BS8.length expected = fail "config fixture body too large"
+          | otherwise = do
+              more <- recv connection 4096
+              if BS8.null more then fail "config fixture body ended" else body connection (bytes <> more)
+        serve = bracket (fst <$> accept listener) close $ \connection -> do
+          (info, trailing) <- headers connection BS8.empty
+          unless (BS8.pack "GET /info HTTP/1.1" `BS8.isPrefixOf` info && BS8.null trailing) $
+            fail "invalid config fixture info"
+          sendAll connection (response (BS8.pack "{\"ID\":\"daemon-a\"}"))
+          (submission, initial) <- headers connection BS8.empty
+          unless
+            ( BS8.pack ("PUT /containers/" ++ replicate 64 'c' ++ "/archive?") `BS8.isPrefixOf` submission
+                && BS8.pack "noOverwriteDirNonDir=true" `BS8.isInfixOf` submission
+            )
+            $ fail "invalid config fixture submission"
+          body connection initial >>= putMVar received
+          when reply $ do
+            sendAll connection (response BS8.empty)
+            (query, queryTrailing) <- headers connection BS8.empty
+            unless
+              ( BS8.pack ("GET /containers/" ++ replicate 64 'c' ++ "/archive?") `BS8.isPrefixOf` query
+                  && BS8.null queryTrailing
+              )
+              $ fail "invalid config fixture read-back"
+            sendAll connection (response expected)
+    bracket
+      (forkIO (void (try serve :: IO (Either SomeException ()))))
+      killThread
+      (const (action received))
+
+withDockerLoadFixture :: FilePath -> BS8.ByteString -> Bool -> (MVar BS8.ByteString -> IO a) -> IO a
+withDockerLoadFixture path expected reply action =
+  bracket (socket AF_UNIX Stream defaultProtocol) close $ \listener -> do
+    bind listener (SockAddrUnix path)
+    listen listener 1
+    received <- newEmptyMVar
+    let serve = bracket (fst <$> accept listener) close $ \connection -> do
+          (info, trailing) <- readHeaders connection BS8.empty
+          unless (BS8.pack "GET /info HTTP/1.1\r\n" `BS8.isPrefixOf` info && BS8.null trailing) $
+            fail "invalid fixture info request"
+          let infoBody = BS8.pack "{\"ID\":\"daemon-a\"}"
+          sendAll connection (response infoBody)
+          (headers, initial) <- readHeaders connection BS8.empty
+          unless (BS8.pack "POST /images/load?quiet=1 HTTP/1.1\r\n" `BS8.isPrefixOf` headers) $
+            fail "invalid fixture image request"
+          body <- readBody connection initial
+          putMVar received body
+          when reply (sendAll connection (response (BS8.pack "{\"stream\":\"loaded\"}\n")))
+        response body = BS8.pack ("HTTP/1.1 200 OK\r\nContent-Length: " ++ show (BS8.length body) ++ "\r\n\r\n") <> body
+        readBody connection bytes
+          | BS8.length bytes == BS8.length expected = pure bytes
+          | BS8.length bytes > BS8.length expected = fail "fixture image request too large"
+          | otherwise = do
+              more <- recv connection 4096
+              if BS8.null more
+                then fail "fixture image request truncated"
+                else readBody connection (bytes <> more)
+    bracket
+      (forkIO (void (try serve :: IO (Either SomeException ()))))
+      killThread
+      (const (action received))
+ where
+  readHeaders connection bytes =
+    case BS8.breakSubstring (BS8.pack "\r\n\r\n") bytes of
+      (headers, rest) | not (BS8.null rest) -> pure (headers <> BS8.pack "\r\n\r\n", BS8.drop 4 rest)
+      _ | BS8.length bytes >= 16384 -> fail "fixture headers too large"
+      _ -> do
+        more <- recv connection 4096
+        if BS8.null more then fail "fixture request ended early" else readHeaders connection (bytes <> more)
+
+-- Serve only the read-only Docker endpoints used by the connected preparation
+-- fixture. Each client has its own connection; the selected socket is local.
+allowedDockerFixtureRequest :: String -> Bool
+allowedDockerFixtureRequest request = case words request of
+  ["HEAD", endpoint, _] -> "/_ping" `isSuffixOf` endpoint
+  ["GET", endpoint, _] ->
+    "/info" `isSuffixOf` endpoint
+      || "/_ping" `isSuffixOf` endpoint
+      || ("/images/sha256:" `isInfixOf` endpoint && "/json" `isSuffixOf` endpoint)
+  ["POST", "/images/load?quiet=1", _] -> True
+  _ -> False
+
+withDockerDaemonFixture :: FilePath -> Bool -> (MVar [String] -> IO a) -> IO a
+withDockerDaemonFixture path conflict = withDockerDaemonFixtureHook path conflict (const (pure ()))
+
+withDockerDaemonFixtureHook
+  :: FilePath -> Bool -> (String -> IO ()) -> (MVar [String] -> IO a) -> IO a
+withDockerDaemonFixtureHook path conflict hook = withDockerDaemonFixtureHookMode path conflict hook (pure False)
+
+withDockerDaemonFixtureHookMode
+  :: FilePath -> Bool -> (String -> IO ()) -> IO Bool -> (MVar [String] -> IO a) -> IO a
+withDockerDaemonFixtureHookMode path conflict hook daemonChanged =
+  withDockerDaemonFixtureBody path conflict hook daemonChanged (BS8.pack "[]")
+
+withDockerDaemonFixtureContainers :: FilePath -> BS8.ByteString -> (MVar [String] -> IO a) -> IO a
+withDockerDaemonFixtureContainers path = withDockerDaemonFixtureBody path False (const (pure ())) (pure False)
+
+withDockerDaemonFixtureBody
+  :: FilePath
+  -> Bool
+  -> (String -> IO ())
+  -> IO Bool
+  -> BS8.ByteString
+  -> (MVar [String] -> IO a)
+  -> IO a
+withDockerDaemonFixtureBody path conflict hook daemonChanged containerBody action =
+  withDockerDaemonFixtureBodies path conflict hook daemonChanged containerBody (BS8.pack "[]") action
+
+withDockerDaemonFixtureNetworks :: FilePath -> BS8.ByteString -> (MVar [String] -> IO a) -> IO a
+withDockerDaemonFixtureNetworks path =
+  withDockerDaemonFixtureBodies path False (const (pure ())) (pure False) (BS8.pack "[]")
+
+withDockerDaemonFixtureBodies
+  :: FilePath
+  -> Bool
+  -> (String -> IO ())
+  -> IO Bool
+  -> BS8.ByteString
+  -> BS8.ByteString
+  -> (MVar [String] -> IO a)
+  -> IO a
+withDockerDaemonFixtureBodies path conflict hook daemonChanged containerBody networkBody =
+  withDockerDaemonFixtureControl
+    path
+    conflict
+    hook
+    daemonChanged
+    containerBody
+    networkBody
+    (pure True)
+
+withDockerDaemonFixtureControl
+  :: FilePath
+  -> Bool
+  -> (String -> IO ())
+  -> IO Bool
+  -> BS8.ByteString
+  -> BS8.ByteString
+  -> IO Bool
+  -> (MVar [String] -> IO a)
+  -> IO a
+withDockerDaemonFixtureControl path conflict hook daemonChanged containerBody networkBody controlVisible =
+  withDockerDaemonFixtureControlAndVolume
+    path
+    conflict
+    hook
+    daemonChanged
+    containerBody
+    networkBody
+    controlVisible
+    Nothing
+
+withDockerDaemonFixtureControlAndVolume
+  :: FilePath
+  -> Bool
+  -> (String -> IO ())
+  -> IO Bool
+  -> BS8.ByteString
+  -> BS8.ByteString
+  -> IO Bool
+  -> Maybe (String, BS8.ByteString)
+  -> (MVar [String] -> IO a)
+  -> IO a
+withDockerDaemonFixtureControlAndVolume path conflict hook daemonChanged containerBody networkBody controlVisible volumeResponse =
+  withDockerDaemonFixtureControlVolumeList
+    path
+    conflict
+    hook
+    daemonChanged
+    containerBody
+    networkBody
+    controlVisible
+    volumeResponse
+    (pure (BS8.pack "{\"Volumes\":[],\"Warnings\":[]}"))
+
+withDockerDaemonFixtureControlVolumeList
+  :: FilePath
+  -> Bool
+  -> (String -> IO ())
+  -> IO Bool
+  -> BS8.ByteString
+  -> BS8.ByteString
+  -> IO Bool
+  -> Maybe (String, BS8.ByteString)
+  -> IO BS8.ByteString
+  -> (MVar [String] -> IO a)
+  -> IO a
+withDockerDaemonFixtureControlVolumeList path conflict hook daemonChanged containerBody networkBody controlVisible volumeResponse volumeList =
+  withDockerDaemonFixtureControlVolumeAndNode
+    path
+    conflict
+    hook
+    daemonChanged
+    containerBody
+    networkBody
+    controlVisible
+    volumeResponse
+    volumeList
+    Nothing
+
+withDockerDaemonFixtureControlVolumeAndNode
+  :: FilePath
+  -> Bool
+  -> (String -> IO ())
+  -> IO Bool
+  -> BS8.ByteString
+  -> BS8.ByteString
+  -> IO Bool
+  -> Maybe (String, BS8.ByteString)
+  -> IO BS8.ByteString
+  -> Maybe (String, BS8.ByteString)
+  -> (MVar [String] -> IO a)
+  -> IO a
+withDockerDaemonFixtureControlVolumeAndNode path conflict hook daemonChanged containerBody networkBody controlVisible volumeResponse volumeList nodeResponse action =
+  bracket (socket AF_UNIX Stream defaultProtocol) close $ \listener -> do
+    bind listener (SockAddrUnix path)
+    listen listener 32
+    requests <- newMVar []
+    workers <- newMVar []
+    let serve client = bracket (pure client) close serveRequests
+        serveRequests connection = do
+          headers <- readHeaders connection BS8.empty
+          let request = takeWhile (/= '\r') (BS8.unpack headers)
+          modifyMVar_ requests (pure . (request :))
+          hook request
+          changed <- daemonChanged
+          control <- controlVisible
+          when ("POST /images/load?quiet=1 " `isPrefixOf` request) $ do
+            let (headerBytes, trailing) = BS8.breakSubstring (BS8.pack "\r\n\r\n") headers
+                contentLengths =
+                  [ BS8.dropWhile (== ' ') (BS8.drop 15 line)
+                  | line <- BS8.lines headerBytes
+                  , BS8.pack "content-length:" `BS8.isPrefixOf` BS8.map toLower line
+                  ]
+            case contentLengths of
+              [encoded] -> case BS8.readInt encoded of
+                Just (count, _) | count > 0 && count <= 1048576 -> consumeBody connection count (BS8.drop 4 trailing)
+                _ -> fail "invalid fixture image body length"
+              _ -> fail "missing fixture image body length"
+          let originalParts = words request
+              parts = case originalParts of
+                [method, endpoint, version] -> [method, unversion endpoint, version]
+                other -> other
+          listing <- case parts of
+            ["GET", endpoint, _] | endpoint == "/volumes" || "/volumes?" `isPrefixOf` endpoint -> Just <$> volumeList
+            _ -> pure Nothing
+          let response = case parts of
+                ["GET", endpoint, _] | endpoint == "/volumes" || "/volumes?" `isPrefixOf` endpoint -> (True,) <$> listing
+                ["POST", "/images/load?quiet=1", _] -> Just (True, BS8.pack "{\"stream\":\"fixture loaded\"}\n")
+                ["DELETE", endpoint, _]
+                  | Just (nodeId, _) <- nodeResponse
+                  , endpoint == "/containers/" ++ nodeId ++ "?force=1&v=0" ->
+                      Just (False, BS8.empty)
+                ["GET", endpoint, _]
+                  | Just (name, body) <- volumeResponse, endpoint == "/volumes/" ++ name -> Just (True, body)
+                ["GET", endpoint, _]
+                  | Just (nodeId, body) <- nodeResponse
+                  , endpoint == "/containers/" ++ nodeId ++ "/json" ->
+                      Just (True, body)
+                ["HEAD", endpoint, _] | "/_ping" `isSuffixOf` endpoint -> Just (False, BS8.pack "OK")
+                ["GET", endpoint, _] | "/_ping" `isSuffixOf` endpoint -> Just (True, BS8.pack "OK")
+                ["GET", endpoint, _] | "/containers/json" `isInfixOf` endpoint -> Just (True, containerBody)
+                ["GET", endpoint, _]
+                  | "/networks?" `isPrefixOf` endpoint ->
+                      Just
+                        ( True
+                        , if replicate 64 'd' `isInfixOf` endpoint
+                            then
+                              if control
+                                then BS8.pack ("[{\"Name\":\"bridge\",\"Id\":\"" ++ replicate 64 'd' ++ "\"}]")
+                                else BS8.pack "[]"
+                            else networkBody
+                        )
+                ["GET", "/networks/bridge", _] ->
+                  Just
+                    ( True
+                    , BS8.pack
+                        ("{\"Name\":\"bridge\",\"Id\":\"" ++ replicate 64 'd' ++ "\",\"Driver\":\"bridge\",\"Options\":{}}")
+                    )
+                ["GET", endpoint, _]
+                  | endpoint == "/networks/" ++ replicate 64 'b' ->
+                      Just
+                        ( True
+                        , BS8.pack
+                            ( "{\"Name\":\"prodbox-t-run\",\"Id\":\""
+                                ++ replicate 64 'b'
+                                ++ "\",\"Driver\":\"bridge\",\"EnableIPv6\":true,\"Options\":null,\"Labels\":null,"
+                                ++ "\"IPAM\":{\"Config\":[{\"Subnet\":\"fc00:c1c8:9c54:6b75::/64\"}]}}"
+                            )
+                        )
+                ["GET", endpoint, _]
+                  | "/images/sha256:" `isPrefixOf` endpoint && "/json" `isSuffixOf` endpoint ->
+                      if endpoint
+                        `elem` ["/images/sha256:" ++ replicate 64 'c' ++ "/json", "/images/sha256:" ++ replicate 64 'e' ++ "/json"]
+                        then Nothing
+                        else
+                          if endpoint == "/images/sha256:" ++ replicate 64 'd' ++ "/json"
+                            then
+                              Just
+                                ( True
+                                , BS8.pack
+                                    ( "{\"Id\":\"sha256:"
+                                        ++ replicate 64 'd'
+                                        ++ "\",\"Id\":\"sha256:"
+                                        ++ replicate 64 'd'
+                                        ++ "\",\"Os\":\"linux\",\"Architecture\":\"amd64\",\"RepoTags\":null}"
+                                    )
+                                )
+                            else
+                              let requested = take 71 (drop (length ("/images/" :: String)) endpoint)
+                                  returned = if requested == "sha256:" ++ replicate 64 'b' then "sha256:" ++ replicate 64 'a' else requested
+                               in Just
+                                    ( True
+                                    , BS8.pack
+                                        ( "{\"Id\":\""
+                                            ++ returned
+                                            ++ "\",\"Os\":\"linux\",\"Architecture\":\"amd64\",\"RepoTags\":null}"
+                                        )
+                                    )
+                ["GET", endpoint, _]
+                  | "/info" `isSuffixOf` endpoint ->
+                      let identifier =
+                            if changed || (conflict && originalParts == ["GET", "/info", "HTTP/1.1"])
+                              then "daemon-b"
+                              else "daemon-a"
+                       in Just
+                            ( True
+                            , BS8.pack
+                                ( "{\"ID\":\""
+                                    ++ identifier
+                                    ++ "\",\"CgroupDriver\":\"systemd\",\"CgroupVersion\":\"2\","
+                                    ++ "\"MemoryLimit\":true,\"PidsLimit\":true,\"CPUShares\":true,\"SecurityOptions\":[],"
+                                    ++ "\"Driver\":\"overlay2\",\"DriverStatus\":[[\"Backing Filesystem\",\"extfs\"]]}"
+                                )
+                            )
+                _ -> Nothing
+          case response of
+            Nothing -> do
+              let body =
+                    if ("/images/sha256:" ++ replicate 64 'e' ++ "/json") `isInfixOf` request
+                      then BS8.replicate 65537 'x'
+                      else BS8.empty
+              sendAll
+                connection
+                ( BS8.pack ("HTTP/1.1 404 Not Found\r\nContent-Length: " ++ show (BS8.length body) ++ "\r\n\r\n")
+                    <> body
+                )
+              serveRequests connection
+            Just (includeBody, body) -> do
+              let status = if "DELETE /containers/" `isPrefixOf` request then "204 No Content" else "200 OK"
+              sendAll connection $
+                BS8.pack
+                  ( "HTTP/1.1 "
+                      ++ status
+                      ++ "\r\nAPI-Version: 1.51\r\nContent-Length: "
+                      ++ show (BS8.length body)
+                      ++ "\r\n\r\n"
+                  )
+                  <> if includeBody then body else BS8.empty
+              serveRequests connection
+        acceptLoop = forever $ do
+          (client, _) <- accept listener
+          worker <- forkIO (void (try (serve client) :: IO (Either SomeException ())))
+          modifyMVar_ workers (pure . (worker :))
+        stop worker = do
+          killThread worker
+          readMVar workers >>= mapM_ killThread
+    bracket (forkIO acceptLoop) stop (const (action requests))
+ where
+  unversion endpoint = case stripPrefix "/v" endpoint of
+    Just versioned -> case dropWhile isVersionChar versioned of
+      '/' : rest -> '/' : rest
+      _ -> endpoint
+    Nothing -> endpoint
+  isVersionChar c = isDigit c || c == '.'
+  consumeBody connection count bytes
+    | BS8.length bytes == count = pure ()
+    | BS8.length bytes > count = fail "oversized fixture image body"
+    | otherwise = do
+        more <- recv connection (min 4096 (count - BS8.length bytes))
+        if BS8.null more
+          then fail "truncated fixture image body"
+          else consumeBody connection count (bytes <> more)
+  readHeaders connection bytes
+    | BS8.pack "\r\n\r\n" `BS8.isInfixOf` bytes = pure bytes
+    | BS8.length bytes >= 16384 = fail "Docker fixture headers too large"
+    | otherwise = do
+        more <- recv connection 4096
+        if BS8.null more
+          then fail "Docker fixture request ended early"
+          else readHeaders connection (bytes <> more)
 
 writeRepoMarkers :: FilePath -> IO ()
 writeRepoMarkers repoRoot = do
@@ -5133,7 +13064,7 @@ fakeJournalctlScript =
 -- failure. The real warning is emitted out-of-band by the systemd manager (PID 1) / journald
 -- to the console and is NOT reproduced here, so the `shouldNotContain` assertions below prove
 -- only that the quiet path hides the line when it lands on the uninstaller's own streams —
--- not that operators never see the out-of-band emission. See streaming_doctrine.md §6.
+-- not that operators never see the out-of-band emission. See streaming_doctrine.md at 583443f, section 6.
 fakeSudoScript :: String
 fakeSudoScript =
   unlines
@@ -6787,7 +14718,7 @@ testSecretsDhall = testSecretsDhallWithAdmin "" "" "" Nothing
 -- not hand-authored Dhall. They were one of four encoders of a record that has
 -- exactly one decoder, and Sprint `1.80`'s type tightening made three of them
 -- wrong rather than updating them
--- (chaos_hardening_doctrine.md section 23). Every field not named here is the
+-- (chaos_hardening_doctrine.md at revision `583443f`, section 23). Every field not named here is the
 -- production default, which also retires a second, silent drift: the fixture
 -- capacity plan had diverged from `defaultResourcePlan`.
 validConfig :: Settings.ConfigFile
@@ -7042,3 +14973,19 @@ writePrivateTestSecrets root contents = do
   writeFile path ""
   setFileMode path 0o600
   writeFile path contents
+
+-- The selected file belongs to the disposable fixture. This exercises only
+-- authentication and never enters the operator decommission ceremony.
+runSelectedAuthorityRefusalFixture :: FilePath -> FilePath -> IO ExitCode
+runSelectedAuthorityRefusalFixture repoRoot kubeconfig = do
+  result <-
+    AuthorityAuthentication.withHostLifecycleAuthorityAuthenticationAt
+      AuthorityAuthentication.LifecycleAuthorityOperator
+      repoRoot
+      kubeconfig
+      (\_ -> pure ())
+  case result of
+    Left failure -> do
+      IO.hPutStrLn IO.stderr (AuthorityAuthentication.renderLifecycleAuthorityAuthenticationError failure)
+      pure (ExitFailure 1)
+    Right () -> pure ExitSuccess

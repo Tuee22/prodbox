@@ -3,7 +3,7 @@
 
 -- | Sprint 4.86: the production reader half of Stage C.
 --
--- [Lifecycle Reconciliation Doctrine § 5b node 7](../../../../documents/engineering/lifecycle_reconciliation_doctrine.md#5b-canonical-recover-to-clean-cascade)
+-- Lifecycle Reconciliation Doctrine § 5b node 7 (historical lifecycle_reconciliation_doctrine.md at revision `583443f`, section 5b)
 -- requires the independent Backup Adapter to read back the exact pre-uninstall
 -- cleanup report the Authority committed.
 -- "Prodbox.Lifecycle.Teardown.PreUninstallReadiness" states that requirement as

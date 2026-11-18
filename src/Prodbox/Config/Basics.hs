@@ -2,12 +2,12 @@
 
 -- | Sprint 1.38: the cluster's __unencrypted basics__ — the minimal,
 -- non-revealing bootstrap a host needs to reach and unseal this cluster's
--- Vault when Vault is sealed (config_doctrine.md §1a). It carries only the
+-- Vault when Vault is sealed (config_doctrine.md at 583443f, section 1a). It carries only the
 -- cluster id, this cluster's Vault address, the seal mode, and (for a child
 -- cluster) the parent reference it auto-unseals against. It carries no
 -- workloads, no downstream clusters, and no credentials, so it is the only
 -- thing legible while Vault is sealed and the in-force config is opaque
--- ciphertext (see "Prodbox.Config.InForce").
+-- ciphertext owned by the Lifecycle Authority.
 module Prodbox.Config.Basics
   ( UnencryptedBasics (..)
   , SealMode (..)

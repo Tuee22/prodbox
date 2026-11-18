@@ -4,7 +4,7 @@
 -- Runtime's A-record lane and the Provider Worker's public-A and SES lanes —
 -- must render the same coordinate to the same request bytes. Two copies of
 -- this conversion is precisely the defect
--- @chaos_hardening_doctrine.md § 23@ names: a typed value crossing out of a
+-- @chaos_hardening_doctrine.md at 583443f, section 23@ names: a typed value crossing out of a
 -- region reconstructed by more than one encoder, so tightening the type
 -- updates one of them and silently leaves the other wrong.
 --

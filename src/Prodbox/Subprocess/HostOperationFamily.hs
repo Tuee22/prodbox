@@ -249,6 +249,7 @@ fieldUnitName (HostOperationField kind key) role = case role of
   (commandPrefix, transportPrefix) = case kind of
     Identity.RpcBirthController -> ("prodbox-owned-", "prodbox-transport-")
     Identity.OrdinaryCascadeController -> ("prodbox-cascade-owned-", "prodbox-cascade-transport-")
+    Identity.MutationController -> ("prodbox-mutation-owned-", "prodbox-mutation-transport-")
 
 hostOperationRuntimeDirectory :: HostOperationIntent -> String
 hostOperationRuntimeDirectory = hostOperationFieldRuntimeDirectory . intentField
@@ -298,6 +299,7 @@ hostOperationDescription (HostOperationIntent kind plan (HostOperationHelperBoun
   descriptionPrefix = case kind of
     Identity.RpcBirthController -> "prodbox rpc birth operation "
     Identity.OrdinaryCascadeController -> "prodbox ordinary cascade operation "
+    Identity.MutationController -> "prodbox mutation operation "
   clocks =
     [ Identity.hostExecutionOuterEnd
     , Identity.hostExecutionWorkEnd

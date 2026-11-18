@@ -265,6 +265,40 @@ tier0RpcRegistrationSuite = describe "Sprint 6.5 independent Tier-0 registration
           >>= (`shouldSatisfy` isLeft)
         BS.readFile path `shouldReturn` before
 
+  it "refuses legacy rewrites that would discard an authored bootstrap field" $
+    withSystemTempDirectory "prodbox-tier0-bootstrap-preservation" $ \directory -> do
+      let original = Text.unpack (Tier0.renderProjectConfigDhall (project registered))
+          source = "let base = (" <> original <> ") in base // { bootstrap = { schema_version = 1 } }"
+          path = tier0FixturePath directory
+          refusal = Left "existing Tier-0 contains fields that this legacy authoring path cannot preserve"
+      writeTier0Fixture
+        directory
+        (rawTier0Fixture (MustNotTypeCheckAgainst "legacy Tier-0 top-level shape") source)
+      before <- BS.readFile path
+      Tier0.writeOperatorParametersToTier0AtPath path syntheticConfigFile `shouldReturn` refusal
+      Tier0.writeOperatorDeploymentConfigToTier0AtPath
+        path
+        syntheticConfigFile
+        (input RpcBirthConfigLegacy)
+        `shouldReturn` refusal
+      Tier0.writeTier0AtPath path (project registered) `shouldReturn` refusal
+      Tier0.compareAndSwapTier0RpcRegistrationAtPath path RpcBirthConfigLegacy registered
+        `shouldReturn` refusal
+      BS.readFile path `shouldReturn` before
+
+  it "refuses legacy rewrites that would discard an unknown context field" $
+    withSystemTempDirectory "prodbox-tier0-context-preservation" $ \directory -> do
+      let original = Text.unpack (Tier0.renderProjectConfigDhall (project registered))
+          source =
+            "let base = (" <> original <> ") in base // { context = base.context // { future_field = True } }"
+          path = tier0FixturePath directory
+      writeTier0Fixture
+        directory
+        (rawTier0Fixture (MustNotTypeCheckAgainst "legacy Tier-0 context shape") source)
+      before <- BS.readFile path
+      Tier0.writeOperatorParametersToTier0AtPath path syntheticConfigFile >>= (`shouldSatisfy` isLeft)
+      BS.readFile path `shouldReturn` before
+
   it "refuses literal secret proposals before rendering or writing them" $
     withPinConfig registered $ \_ path -> do
       let previous = project registered

@@ -1,6 +1,6 @@
 -- | Sprint 4.16: typed Pulumi-stack residue status replacing the
 -- file-existence predicates that preceded
--- @documents/engineering/lifecycle_reconciliation_doctrine.md § 3@.
+-- @documents/engineering/lifecycle_reconciliation_doctrine.md at 583443f, section 3@.
 --
 -- A @ResidueStatus@ value carries one of three discoverable states for
 -- a Pulumi-managed AWS stack: 'ResidueAbsent', 'ResiduePresent' with
@@ -105,7 +105,7 @@ data ResidueStatus
 
 -- | Sprint 4.81: which authority answered a residue question.
 --
--- [chaos_hardening_doctrine.md § 24](../../../documents/engineering/chaos_hardening_doctrine.md)
+-- chaos_hardening_doctrine.md at 583443f, section 24
 -- requires that a derived value be enforced at the layer its source object is
 -- authoritative for, and that a derivation name the layer whenever it names the
 -- source. A 'ResidueStatus' alone names neither: 'ResidueAbsent' minted from a
@@ -295,7 +295,7 @@ data ResidueUnreachableReason
     -- into 'ResidueBackendMinioUnreachable', and a live cascade run printed
     -- @MinIO backend unreachable@ about a MinIO that was never dialled while
     -- naming three healthy subsystems and not the one that failed. Conversion
-    -- class, [chaos_hardening_doctrine.md § 23](../../../documents/engineering/chaos_hardening_doctrine.md).
+    -- class, chaos_hardening_doctrine.md at 583443f, section 23.
     ResidueAuthorityUnauthenticated !String
   | -- | The long-lived S3 backend could not be reached.
     ResidueBackendS3Unreachable !String

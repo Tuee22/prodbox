@@ -10,7 +10,7 @@
 -- while the interpreters emit ten. Four of them — @401@, @403@, @408@, @410@ —
 -- fell through, so the control plane was writing status lines reading
 -- @HTTP\/1.1 403 Status@. That is the /Totality/ class of
--- [chaos_hardening_doctrine.md § 21](../../../documents/engineering/chaos_hardening_doctrine.md)
+-- chaos_hardening_doctrine.md at 583443f, section 21
 -- over a raw 'Int'.
 --
 -- Two design points are decisions rather than defaults:
@@ -18,7 +18,7 @@
 --   * __'replyStatusFromCode' is derived from 'replyStatusCode', not written
 --     out.__ A hand-written inverse is a second table, and a second table is a
 --     restatement that a change makes wrong rather than updates
---     ([§ 23](../../../documents/engineering/chaos_hardening_doctrine.md)). The
+--     (§ 23 (historical chaos_hardening_doctrine.md at revision `583443f`, section 23)). The
 --     two cannot disagree because there is only one.
 --   * __Both projections are total with no wildcard arm.__ Adding a
 --     constructor is a @-Werror@ compile error at each, which is what makes the
@@ -31,7 +31,7 @@
 -- 4.66 achieved with a @dev check@ text rule is now a property of the type.
 --
 -- Two crossings still carry a number, and both are deliberate rather than
--- unfinished ([§ 22](../../../documents/engineering/chaos_hardening_doctrine.md)
+-- unfinished (§ 22 (historical chaos_hardening_doctrine.md at revision `583443f`, section 22)
 -- — a ring-2 gate bounds a process, not a protocol):
 --
 --   * __A peer's status.__ @ControlPlaneResponse@ carries the @Int@ a server
@@ -129,7 +129,7 @@ reasonPhraseForCode code = maybe unmappedReasonPhrase replyStatusReason (replySt
 -- did not. It is also unreachable on the governed namespace: the @dev check@
 -- rule fails the build if a producer under @src\/Prodbox\/ControlPlane\/@
 -- emits a code with no constructor here. Per
--- [§ 22](../../../documents/engineering/chaos_hardening_doctrine.md) that bounds
+-- § 22 (historical chaos_hardening_doctrine.md at revision `583443f`, section 22) that bounds
 -- a process and not a protocol — it says nothing about a status reaching this
 -- renderer from outside that namespace, which is why the arm exists at all
 -- rather than being an @error@.

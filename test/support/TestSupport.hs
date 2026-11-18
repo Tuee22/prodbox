@@ -3,10 +3,9 @@
 module TestSupport
   ( Expectation
   , SuiteBuilder
-  , componentsDhallFragment
-  , defaultComponentsDhallFragment
   , describe
   , expectationFailure
+  , assertMutationInvariant
   , goldenTest
   , installOperatorBinaryInDir
   , it
@@ -36,17 +35,18 @@ module TestSupport
 where
 
 import Control.Concurrent (threadDelay)
-import Control.Concurrent.STM (atomically)
+import Control.Concurrent.STM (atomically, check, readTVar)
 import Data.ByteString.Char8 qualified as StrictByteString8
 import Data.ByteString.Lazy (ByteString)
+import Data.Foldable (toList)
 import Data.List (isInfixOf)
+import Data.Proxy (Proxy (..))
 import Data.String (IsString)
 import GHC.Clock (getMonotonicTimeNSec)
 import GHC.Stack (HasCallStack)
 import Numeric.Natural (Natural)
 import Prodbox.Aws.Region (awsRegionFromParts)
 import Prodbox.Cluster.Topology qualified as ClusterTopology
-import Prodbox.Config.SchemaDhall (renderDefaultComponentGraphDhall)
 import Prodbox.Config.Tier0 qualified as Tier0
 import Prodbox.ControlPlane.CallerPrincipal (CallerPrincipal)
 import Prodbox.ControlPlane.Coordinate (mkAuthorityScope)
@@ -94,7 +94,8 @@ import System.Directory
   , setPermissions
   )
 import System.FilePath ((</>))
-import Test.Tasty (TestName, TestTree, defaultMain, testGroup)
+import System.IO (hPutStrLn, stderr)
+import Test.Tasty (TestName, TestTree, defaultIngredients, defaultMainWithIngredients, testGroup)
 import Test.Tasty.Golden (goldenVsString)
 import Test.Tasty.HUnit
   ( Assertion
@@ -103,7 +104,15 @@ import Test.Tasty.HUnit
   , assertFailure
   , testCase
   )
+import Test.Tasty.Ingredients (Ingredient (TestReporter))
+import Test.Tasty.Options (IsOption (..), OptionDescription (Option), lookupOption)
 import Test.Tasty.QuickCheck (Testable, testProperty)
+import Test.Tasty.Runners
+  ( FailureReason (..)
+  , Outcome (..)
+  , Result (resultDescription, resultOutcome)
+  , Status (..)
+  )
 
 syntheticAwsSubstrateProfileInput :: AwsProfile.AwsSubstrateProfileInput
 syntheticAwsSubstrateProfileInput =
@@ -198,44 +207,9 @@ fixtureAwsRegion region = case region of
   FixtureUsIsoEast1 -> awsRegionFromParts "us-iso" "east" 1
   FixtureUsWest2 -> awsRegionFromParts "us" "west" 2
 
--- | An empty typed @components@ list in the schema-less inline-union style the
--- fixtures use (Sprint 1.56).
-componentsDhallFragment :: String
-componentsDhallFragment = "[] : List " ++ componentNodeTypeDhall
-
--- | The production default component graph rendered through the same generic
--- Dhall encoder as the generated config schema. This keeps graph-consuming CLI
--- fixtures aligned without duplicating the graph as test-owned text.
-defaultComponentsDhallFragment :: String
-defaultComponentsDhallFragment = renderDefaultComponentGraphDhall
-
-componentIdUnionDhall :: String
-componentIdUnionDhall =
-  "< ComponentClusterBase | ComponentMinio | ComponentVaultWorkload | ComponentVaultUnsealed | ComponentRegistry"
-    ++ " | ComponentMetalLB | ComponentEnvoyGateway | ComponentCertManager"
-    ++ " | ComponentPerconaPostgresOperator | ComponentGatewayDaemonPreVault | ComponentGatewayDaemonFull | ComponentChartPulsar"
-    ++ " | ComponentChartRedis | ComponentChartKeycloakPostgres | ComponentChartKeycloak"
-    ++ " | ComponentChartVscode | ComponentChartApi | ComponentChartWebsocket"
-    ++ " | ComponentChartGateway | ComponentChartBootstrapBroker"
-    ++ " | ComponentChartLifecycleAuthority | ComponentChartProviderWorker"
-    ++ " | ComponentChartAuthorityBackup | ComponentChartTlsRetention"
-    ++ " | ComponentChartTargetSecretAgent >"
-
-componentNodeTypeDhall :: String
-componentNodeTypeDhall =
-  "{ component_id : "
-    ++ componentIdUnionDhall
-    ++ ", depends_on : List { dependency_on : "
-    ++ componentIdUnionDhall
-    ++ ", dependency_edge : < OrderingEdge | BackendWriteEdge > }"
-    ++ ", readiness : < ProbeResourceExists | ProbeFrontDoorHttp | ProbeServiceActive | ProbeRolloutComplete"
-    ++ " | ProbeOperatorAvailable | ProbeVaultUnsealed | ProbeBackendRoundTrip : "
-    ++ componentIdUnionDhall
-    ++ " > }"
-
 -- | Install the built operator binary into @dir@ and return the installed
 -- path. The host CLI resolves its Tier-0 @prodbox.dhall@ at the BINARY-SIBLING
--- path (config_doctrine.md §3), so an integration test that authors a fixture
+-- path (config_doctrine.md at 583443f, section 3), so an integration test that authors a fixture
 -- @dir\/prodbox.dhall@ must run a binary whose sibling is that fixture — i.e. a
 -- binary living in @dir@. Copies (not symlinks) because @getExecutablePath@
 -- resolves symlinks back to the real build output. Sprint 1.48.
@@ -266,7 +240,73 @@ instance Monad SuiteBuilder where
 
 mainWithSuite :: TestName -> SuiteBuilder () -> IO ()
 mainWithSuite suiteName builder =
-  defaultMain (testGroup suiteName (suiteTrees builder))
+  defaultMainWithIngredients
+    (mutationReporter : defaultIngredients)
+    (testGroup suiteName (suiteTrees builder))
+
+-- An opt-in, single-test transport for an outer mutation runner. This output
+-- is not authenticated, and does not establish source identity, isolation,
+-- settlement, or which test an untrusted launcher selected.
+newtype MutationAssertion = MutationAssertion String
+
+instance IsOption MutationAssertion where
+  defaultValue = MutationAssertion ""
+  parseValue value
+    | validMutationAssertion value = Just (MutationAssertion value)
+    | otherwise = Nothing
+  optionName = pure "mutation-assertion"
+  optionHelp = pure "Emit a single-test mutation outcome for an exact assertion marker"
+
+validMutationAssertion :: String -> Bool
+validMutationAssertion value =
+  not (null value)
+    && length value <= 128
+    && all
+      ( \character ->
+          (character >= 'a' && character <= 'z')
+            || (character >= '0' && character <= '9')
+            || character `elem` ("._-" :: String)
+      )
+      value
+
+-- Bind a reviewed assertion to its stable mutation-catalog identifier.
+-- Invalid identifiers fail as ordinary, unclassified test failures.
+assertMutationInvariant :: String -> Bool -> Expectation
+assertMutationInvariant assertion condition
+  | validMutationAssertion assertion = assertBool ("PRODBOX_ASSERTION:" ++ assertion) condition
+  | otherwise = assertFailure "invalid mutation assertion identifier"
+
+mutationReporter :: Ingredient
+mutationReporter = TestReporter [Option (Proxy :: Proxy MutationAssertion)] chooseReporter
+ where
+  chooseReporter options _ = case lookupOption options of
+    MutationAssertion "" -> Nothing
+    MutationAssertion assertion -> Just $ \statusMap -> do
+      results <- atomically $ do
+        states <- traverse readTVar (toList statusMap)
+        check (all completed states)
+        pure states
+      pure $ \_ -> do
+        let outcome = mutationOutcome assertion results
+        hPutStrLn stderr ("prodbox-mutation-test-v1:" ++ outcome)
+        pure (outcome == "passed")
+  completed (Done _) = True
+  completed _ = False
+
+mutationOutcome :: String -> [Status] -> String
+mutationOutcome assertion states = case states of
+  [Done result] -> case resultOutcome result of
+    Success -> "passed"
+    Failure TestFailed ->
+      let description = take 65537 (resultDescription result)
+          marker = "PRODBOX_ASSERTION:" ++ assertion
+       in if length description <= 65536 && length (filter (== marker) (lines description)) == 1
+            then "assertion-failed"
+            else "other-failure"
+    Failure (TestTimedOut _) -> "timeout"
+    Failure (TestThrewException _) -> "exception"
+    Failure TestDepFailed -> "dependency-failed"
+  _ -> "invalid-selection"
 
 describe :: TestName -> SuiteBuilder () -> SuiteBuilder ()
 describe groupName builder =

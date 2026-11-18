@@ -32,12 +32,12 @@
 module Prodbox.Config.SchemaDhall
   ( -- * Pure renderers (Haskell source of truth → Dhall schema text)
     renderConfigTypesDhall
-  , renderDefaultComponentGraphDhall
   , renderTestSecretsTypesDhall
 
     -- * IO: materialize the generated schema files at the repository root
   , configTypesSchemaPath
   , testSecretsTypesSchemaPath
+  , bootstrapTypesSchemaPath
   , writeSchemaFiles
   , materializeSchemaFilesIfStale
   )
@@ -48,6 +48,7 @@ import Data.Either.Validation (Validation (..))
 import Data.Functor.Identity (Identity (..))
 import Data.Text (Text)
 import Data.Text qualified as Text
+import Data.Text.Encoding qualified as TextEncoding
 import Data.Text.IO qualified as TextIO
 import Data.Void (Void)
 import Dhall qualified
@@ -55,10 +56,8 @@ import Dhall.Core (Expr)
 import Dhall.Core qualified as Core
 import Dhall.Map qualified as DhallMap
 import Dhall.Src (Src)
-import Prodbox.Config.ComponentGraph
-  ( ComponentNode
-  , defaultComponentGraph
-  )
+import Prodbox.Config.BootstrapProjection (renderBootstrapTypesDhall)
+import Prodbox.Config.Tier0File (Tier0FileUpdate (..), modifyTier0File)
 import Prodbox.Settings (ConfigFile, defaultConfigFile)
 import Prodbox.Settings.SecretRef (SecretRef)
 import Prodbox.Vault.Host (TestSecrets, defaultTestSecrets)
@@ -84,14 +83,6 @@ renderTestSecretsTypesDhall =
   testSecretsTypesHeader
     <> Core.pretty testSecretsTypesExpr
     <> "\n"
-
--- | The production default component graph encoded independently for
--- schema-less graph-consuming test fixtures. It uses the same generic encoder
--- as the ConfigFile default, so no second textual graph can drift.
-renderDefaultComponentGraphDhall :: String
-renderDefaultComponentGraphDhall =
-  Text.unpack
-    (Core.pretty (injectedValue (Dhall.inject @[ComponentNode]) defaultComponentGraph))
 
 -- | @let SecretRef = <union> in { SecretRef = SecretRef, Type = …, default = … }@.
 configTypesExpr :: DhallExpr
@@ -225,12 +216,19 @@ configTypesSchemaPath repoRoot = repoRoot </> "prodbox-config-types.dhall"
 testSecretsTypesSchemaPath :: FilePath -> FilePath
 testSecretsTypesSchemaPath repoRoot = repoRoot </> "test-secrets-types.dhall"
 
--- | Write both generated schema files to the repository root, overwriting any
+bootstrapTypesSchemaPath :: FilePath -> FilePath
+bootstrapTypesSchemaPath repoRoot = repoRoot </> "prodbox-bootstrap-types.dhall"
+
+-- | Write the generated schema files to the repository root, overwriting any
 -- stale on-disk copy. This is the @prodbox config schema@ action.
 writeSchemaFiles :: FilePath -> IO ()
 writeSchemaFiles repoRoot = do
+  bootstrap <- either (ioError . userError) pure renderBootstrapTypesDhall
   TextIO.writeFile (configTypesSchemaPath repoRoot) renderConfigTypesDhall
   TextIO.writeFile (testSecretsTypesSchemaPath repoRoot) renderTestSecretsTypesDhall
+  result <- modifyTier0File (bootstrapTypesSchemaPath repoRoot) $ \_ ->
+    pure (Right (Tier0FileReplace (TextEncoding.encodeUtf8 bootstrap) ()))
+  either (ioError . userError . show) pure result
 
 -- | Materialize the schema files whenever they are absent or differ from the
 -- current renderer output, so an operator's @import ./prodbox-config-types.dhall@

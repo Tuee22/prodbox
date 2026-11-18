@@ -17,8 +17,8 @@
 -- ('permitTier'/'isMutating'/'requiresRoundTripEvidence') are the behavioural
 -- SSoT the readiness classifier and the (deferred) graph lowering consume. The
 -- field set and rules mirror
--- [lifecycle_control_plane_architecture.md](../../../documents/engineering/lifecycle_control_plane_architecture.md)
--- and [bootstrap_readiness_doctrine.md](../../../documents/engineering/bootstrap_readiness_doctrine.md).
+-- lifecycle_control_plane_architecture.md (historical lifecycle_control_plane_architecture.md at revision `583443f`)
+-- and bootstrap_readiness_doctrine.md (historical bootstrap_readiness_doctrine.md at revision `583443f`).
 module Prodbox.ControlPlane.CapabilityKind
   ( -- * The promoted operation universe
     CapabilityKind (..)

@@ -11,6 +11,15 @@
 
 `test run NAME` selects a typed scenario from one registry; unit, CLI, integration, mutation, fault and aggregate scenarios share context/evidence/cleanup ownership. The harness drives the actual public production implementation. No second install/provision/cleanup implementation can pass while the operator command remains broken.
 
+The current named `unit`, `env`, and `cli` routes select existing local test
+suites; they do not yet implement the target cumulative scenario/evidence
+runner. The CLI suite contains legacy lifecycle fixtures and refuses to start
+when an RKE2 installation marker exists or cannot be observed. The local routes
+refuse unsupported coverage and AWS-substrate options and use a limited child
+environment; that environment is not an operating-system sandbox. `test list`
+reports these built-in local routes and identifies topology-defined suites as a
+separate legacy source; it does not yet list the target scenario catalog.
+
 Every acceptance case declares input/context, scope, real prerequisites, allowed resources, commands, expected observations, adverse cases, cleanup, numerical owner and artifact identity. Tests may use completed earlier phases and external prerequisites, never an unimplemented later feature hidden behind a fake. Planned/skipped later cases do not count as passed. [Cases](../../DEVELOPMENT_PLAN/acceptance_cases.md)
 
 Pure unit/property/protocol tests remain useful. Mock at interpreter/subprocess boundaries rather than inside the decision being tested. They do not close a real-provider, physical-worker, public TLS or persistence claim. The final campaign repeats already proven public slices; it is not their first real composition test.

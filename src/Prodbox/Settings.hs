@@ -72,6 +72,8 @@ module Prodbox.Settings
   , validateLocalConfig
   , validateAndLoadSettings
   , validateAndLoadSettingsAtPath
+  , validateSelectedSettingsAtPath
+  , SelectedSettingsValidation (..)
   , validateAndLoadBootstrapSettings
   , certDnsNamesForServedHost
   , certScopeSetForServedHost
@@ -147,6 +149,7 @@ import Prodbox.Cluster.Topology
 import Prodbox.Config.Basics
   ( UnencryptedBasics (..)
   )
+import Prodbox.Config.BootstrapProjection qualified as BootstrapProjection
 import Prodbox.Config.ComponentGraph
   ( ComponentNode
   , defaultComponentGraph
@@ -160,6 +163,7 @@ import Prodbox.Config.RetainedArtifacts
   , emptyRetainedArtifactsSection
   , renderRetainedArtifactDeclarationError
   )
+import Prodbox.Config.SelectedDhall qualified as SelectedDhall
 import Prodbox.ControlPlane.ConfigClient
   ( ConfigClient (..)
   , ConfigClientError
@@ -268,9 +272,7 @@ import System.Directory
   , doesFileExist
   , makeAbsolute
   )
-import System.FilePath
-  ( (</>)
-  )
+import System.FilePath ((</>))
 import System.IO.Temp (withSystemTempDirectory)
 
 data Credentials = Credentials
@@ -369,7 +371,7 @@ data AcmeSection = AcmeSection
 -- closable __in Dhall__ rather than merely detectable in Haskell: the generated
 -- schema carries the union, so a misspelling stops type-checking instead of
 -- reaching a Ring-2 comparison. The *Distinguishability* class of
--- [chaos_hardening_doctrine.md § 21](../../../documents/engineering/chaos_hardening_doctrine.md).
+-- chaos_hardening_doctrine.md at 583443f, section 21.
 --
 -- The @bgp ⇒ at least one peer@ rule deliberately stays in Haskell: it is a
 -- cross-field invariant, and Dhall's @assert@ operates on closed terms, so it
@@ -482,7 +484,7 @@ data ConfigFile = ConfigFile
   , components :: [ComponentNode]
   -- ^ Sprint 1.56: the Tier-0 component dependency/readiness graph that
   -- bootstrap ordering is projected from
-  -- (bootstrap_readiness_doctrine.md M2). Non-secret; validated by
+  -- (bootstrap_readiness_doctrine.md at revision `583443f` M2). Non-secret; validated by
   -- 'Prodbox.Config.ComponentGraph.validateComponentGraph' when projected.
   }
   deriving (Eq, Show, Generic, FromDhall, ToDhall)
@@ -641,7 +643,7 @@ zeroSslAcmeDirectory = "https://acme.zerossl.com/v2/DV90"
 -- config validation and its result was bound to @_@, so eight production call
 -- sites re-derived the scope set from the raw @Text@ and every consumer of the
 -- served host re-read an unparsed field. This is the /Provenance/ class of
--- [chaos_hardening_doctrine.md § 21](../../../documents/engineering/chaos_hardening_doctrine.md):
+-- chaos_hardening_doctrine.md at 583443f, section 21:
 -- the one place a real parse happened threw the proof away.
 data ValidatedServedHost = ValidatedServedHost
   { servedHostFqdn :: !Fqdn
@@ -694,6 +696,62 @@ validateAndLoadSettingsAtPath configPath repoRoot = do
       case contextResult of
         Left err -> pure (Left err)
         Right contextInput -> validateConfigWithContext repoRoot contextInput config
+
+-- | Validate one selected, self-contained source snapshot. This does not read
+-- the Authority's accepted generation and does not authorize mutations. The
+-- current selected-source lane refuses imports until they can be resolved
+-- without ambient configuration or a second, unbound file read.
+data SelectedSettingsValidation = SelectedBootstrapOnly | SelectedLegacySettings
+  deriving (Eq, Show)
+
+validateSelectedSettingsAtPath :: FilePath -> IO (Either String SelectedSettingsValidation)
+validateSelectedSettingsAtPath configPath = do
+  snapshot <- SelectedDhall.readSelectedDhall configPath
+  case snapshot of
+    Left failure -> pure (Left (renderSelectedDhallError failure))
+    Right source -> do
+      shape <-
+        LegacyCapacity.decodeDhallRecordFieldFromSource
+          (auto :: Dhall.Decoder Bool)
+          "bootstrap"
+          configPath
+          source
+      case shape of
+        Right (Just (["bootstrap"], _)) -> do
+          bootstrap <- BootstrapProjection.decodeOptionalBootstrapSource configPath source
+          pure $ case bootstrap of
+            Left failure -> Left ("Selected configuration bootstrap is invalid: " ++ show failure)
+            Right (Just _) -> Right SelectedBootstrapOnly
+            Right Nothing -> Left "Selected configuration bootstrap is missing."
+        _ -> validateLegacy source
+ where
+  validateLegacy source = do
+    let parametersSource = "(\n" <> source <> "\n).parameters"
+    parameters <-
+      LegacyCapacity.decodeDhallSourceWithLegacyPlatformDemand
+        auto
+        LegacyCapacity.StandaloneParameters
+        configPath
+        parametersSource
+    context <-
+      LegacyCapacity.decodeDhallSourceProjection auto LegacyCapacity.ContextCoordinates configPath source
+    case (parameters, context) of
+      (Right config, Right contextInput) -> case validateConfigProjection contextInput config of
+        Left failure -> pure (Left failure)
+        Right _ -> do
+          bootstrap <- BootstrapProjection.decodeOptionalBootstrapSource configPath source
+          pure $ case bootstrap of
+            Left failure -> Left ("Selected configuration bootstrap is invalid: " ++ show failure)
+            Right _ -> Right SelectedLegacySettings
+      _ -> pure (Left "Selected configuration has invalid parameters or context.")
+
+renderSelectedDhallError :: SelectedDhall.SelectedDhallError -> String
+renderSelectedDhallError failure = case failure of
+  SelectedDhall.SelectedDhallFileError cause -> "Cannot read selected configuration safely: " ++ show cause
+  SelectedDhall.SelectedDhallMissing -> "Selected configuration does not exist."
+  SelectedDhall.SelectedDhallInvalidUtf8 -> "Selected configuration is not UTF-8."
+  SelectedDhall.SelectedDhallInvalidSyntax -> "Selected configuration is not valid Dhall."
+  SelectedDhall.SelectedDhallImportsUnsupported -> "Selected configuration imports are not supported by this validation lane."
 
 -- | Lifecycle bootstrap settings are the repository Dhall seed/propose input.
 -- Use this only for the Tier-0 bootstrap steps that run before the frozen
@@ -1011,7 +1069,7 @@ loadConfigFile :: FilePath -> IO (Either String ConfigFile)
 loadConfigFile repoRoot = resolveTier0ConfigPath repoRoot >>= loadConfigFileAtPath
 
 -- | Decode and validate the executable-sibling @prodbox.test.dhall@. This is
--- the authored test-run SSoT from test_topology_doctrine.md. It is deliberately
+-- the authored test-run SSoT from test_topology_doctrine.md at revision `583443f`. It is deliberately
 -- separate from 'loadConfigFile': production fails when @prodbox.dhall@ is
 -- absent, while the test runner preflight refuses when that production sibling
 -- is present.
@@ -1558,7 +1616,7 @@ awsRegionCoordinateFor fieldName refs =
 -- order; that is why each is named after its field.
 --
 -- This is the *Totality* class of
--- [chaos_hardening_doctrine.md § 21](../../../documents/engineering/chaos_hardening_doctrine.md),
+-- chaos_hardening_doctrine.md at 583443f, section 21,
 -- and the companion to Sprint 1.79 — the same record, the other partial fold.
 --
 -- Note the bound honestly: making the fold total says every field is *visited*,
@@ -2083,7 +2141,7 @@ maskSecret value =
 -- ('requireOperationalAwsRegion', 'validateOperationalAwsCredentials', and
 -- @validateLifecycleProviderAwsRegion@) were unreachable code. The argument is
 -- gone rather than passed empty, so a seeded region is not expressible here at
--- all — the shape @config_doctrine.md@ § 0 names under "a seeded non-empty
+-- all — the shape @config_doctrine.md at 583443f, section 0 names under "a seeded non-empty
 -- default is a compiled default".
 operationalAwsCredentialsRef :: AwsCredentialsRef
 operationalAwsCredentialsRef =

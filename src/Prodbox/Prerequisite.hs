@@ -353,8 +353,7 @@ infraReady =
 -- they require an AWS-credential-free readiness rather than re-acquiring
 -- the full 'infra_ready' capability set (which still pulls in
 -- @aws_credentials_valid@). See
--- @DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md@ → Canonical Suite
--- Inventory.
+-- the historical Phase 5 canonical-suite inventory at revision @583443f@.
 publicEdgeReady :: EffectNode
 publicEdgeReady =
   EffectNode

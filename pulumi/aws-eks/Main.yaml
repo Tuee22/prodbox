@@ -279,7 +279,7 @@ resources:
       # REAL and required: OIDC federation fails unless this is the actual
       # thumbprint, so no placeholder is possible. Non-secret — it is a
       # fingerprint of a public certificate chain, computable by anyone who
-      # connects to the endpoint. Declared per vault_doctrine.md §20.1
+      # connects to the endpoint. Declared per vault_doctrine.md at revision 583443f §20.1
       # (registered real values).
       thumbprintLists:
         - 9e99a48a9960b14926bb7f3b02e22da2b0ab7280

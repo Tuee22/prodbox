@@ -7,7 +7,7 @@
 -- "a change to 'Settings.ConfigFile' cannot reach a fixture as a runtime decode
 -- failure" is a claim about the build, and its proof is a mutation — recorded
 -- under Sprint @5.30@ in
--- [phase-5-canonical-test-suite.md](../../DEVELOPMENT_PLAN/phase-5-canonical-test-suite.md)
+-- the historical Phase 5 plan at revision @583443f@
 -- — not an assertion that could live in this file. What these cases cover is
 -- the part that could still rot silently: that the rendered fixture is a
 -- document the production loader accepts, and that the escape hatch cannot

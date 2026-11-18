@@ -116,6 +116,7 @@ module Prodbox.CLI.Rke2
   , RegistryGarbageCollectionMode (..)
   , registryGarbageCollectArguments
   , rke2InstallPresent
+  , rke2InstallMarkers
   , Rke2InstallPresence (..)
   , DeleteTerminalArm (..)
   , selectDeleteEntryArm
@@ -1188,7 +1189,7 @@ runRke2Command repoRoot command =
             -- Sprint 4.26: route the destructive teardown through the
             -- Plan / Apply entrypoint so `--dry-run` renders the full
             -- destructive plan and exits 0 WITHOUT mutating, and
-            -- `--plan-file` writes the rendered plan (pure_fp_standards.md
+            -- `--plan-file` writes the rendered plan (pure_fp_standards.md at revision `583443f`
             -- § Plan / Apply). The no-RKE2-install short-circuit, the
             -- per-run refuse-gate, and the cascade orchestration all live
             -- inside the apply closure so dry-run performs none of them.
@@ -2227,7 +2228,7 @@ applyNativeInstallPlanAfterPredecessor
 applyNativeInstallPlanAfterPredecessor mode repoRoot bootstrapSettings payload = do
   -- Sprint 4.43: execution is projected from the SAME ordered step table
   -- (`nativeInstallStepOrder`) the plan narration reads, so the two cannot drift
-  -- (bootstrap_readiness_doctrine.md M1). The pre-Vault bootstrap runs the
+  -- (bootstrap_readiness_doctrine.md at revision `583443f` M1). The pre-Vault bootstrap runs the
   -- `PhaseBootstrap` steps, the Vault-init transition runs its dedicated control
   -- flow, and the post-Vault steady phase runs the `PhaseSteady` steps.
   -- Sprint 4.61: admissions are threaded across the phase boundaries rather
@@ -4278,7 +4279,7 @@ applyNativeDelete repoRoot flags = do
       -- Raise the host inotify limits BEFORE systemd unwinds the
       -- RKE2 units during teardown, so PID 1 does not log
       -- `Failed to allocate directory watch: Too many open files`
-      -- to the console (see streaming_doctrine.md § 6). Idempotent
+      -- to the console (see streaming_doctrine.md at 583443f, section 6). Idempotent
       -- and shared with reconcile; covers both delete paths.
       runSequentially
         [ ensureHostInotifyLimits repoRoot
@@ -4411,7 +4412,7 @@ data DeleteMode
 
 -- | Sprint 4.17.a + 4.40 canonical cascade order:
 -- confirm-MinIO → drain → per-run destroys → test-EBS reaper → uninstall → sweep.
--- Per @documents/engineering/lifecycle_reconciliation_doctrine.md §5b@
+-- Per @documents/engineering/lifecycle_reconciliation_doctrine.md at 583443f, section 5b@
 -- the K8s drain runs **before** any per-run Pulumi destroy so the
 -- in-cluster controllers (AWS Load Balancer Controller, EBS CSI driver,
 -- cert-manager) unwind their AWS-side ENIs / ALBs / EBS volumes while
@@ -4447,14 +4448,14 @@ data DeleteMode
 -- cascade phase order. Exposed as a top-level constant so unit tests can pin
 -- the drain-before-destroys and test-EBS-reaper order without re-implementing
 -- it. The order text must match the doctrine table at
--- @documents/engineering/lifecycle_reconciliation_doctrine.md §5b@.
+-- @documents/engineering/lifecycle_reconciliation_doctrine.md at 583443f, section 5b@.
 cascadeOrderNarration :: String
 cascadeOrderNarration =
   "rke2 delete --cascade: confirm-MinIO → drain → per-run destroys → test-EBS reaper → sweep → uninstall"
 
 -- | Sprint 4.76: one cascade phase's name and verdict. The cascade folds
 -- these rather than short-circuiting, because
--- @lifecycle_reconciliation_doctrine.md § 5b@ / § 5c require that a
+-- @lifecycle_reconciliation_doctrine.md at 583443f, section 5b@ / lifecycle_reconciliation_doctrine.md at 583443f, section 5c require that a
 -- failed or skipped earlier phase neither suppress a later independent
 -- phase's attempt nor be erased by that attempt's success — "both
 -- outcomes remain in the aggregate report".
@@ -4468,7 +4469,7 @@ data CascadePhaseOutcome = CascadePhaseOutcome
   -- peers: @Unresolved phase(s): confirm-MinIO, drain@ presents a single cause
   -- as two independent problems, and an operator cannot tell from that line
   -- whether they have one fault or two. Class-D distinguishability,
-  -- @chaos_hardening_doctrine.md § 21@ — the outcome type could not express
+  -- @chaos_hardening_doctrine.md at 583443f, section 21@ — the outcome type could not express
   -- @failed because an earlier phase could not be observed@, so it did not.
   }
   deriving (Eq, Show)
@@ -4680,7 +4681,7 @@ runAuthorizedDeleteCascade repoRoot cascadeSubstrate exactAnswers = do
 
 -- | Sprint 4.76: the confirm-MinIO phase's own verdict, distinct from the
 -- destroy fold's. An unobserved per-run stack leaves authority state
--- unresolved (@lifecycle_reconciliation_doctrine.md § 5b@ phase 1), which
+-- unresolved (@lifecycle_reconciliation_doctrine.md at 583443f, section 5b@ phase 1), which
 -- fails this phase even when nothing needed destroying.
 perRunResidueObservationExit :: ResourceRegistry.AbsentReconcileOutcome -> ExitCode
 perRunResidueObservationExit outcome
@@ -4741,7 +4742,7 @@ inferCascadeSubstrate eksStatus subzoneStatus testStatus =
 -- source of the AWS resources the per-run destroys will try to delete
 -- — skipping the drain guarantees the next phase fails with
 -- @DependencyViolation@ per
--- @documents\/engineering\/lifecycle_reconciliation_doctrine.md §5b@.
+-- @documents\/engineering\/lifecycle_reconciliation_doctrine.md at 583443f, section 5b@.
 runCascadeDrainPhase :: FilePath -> Substrate -> IO ExitCode
 runCascadeDrainPhase repoRoot substrate = do
   writeOutputLine
@@ -6438,7 +6439,7 @@ harborStorageBackendManifestItems accessKey secretKey =
                         [ "restartPolicy" .= ("OnFailure" :: String)
                         , -- Sprint 7.25 follow-up: the MinIO root credential is a fixed static
                           -- constant (Prodbox.Minio.RootCredential) — the registered
-                          -- bootstrap-floor credential of vault_doctrine.md §6.1, identical
+                          -- bootstrap-floor credential of vault_doctrine.md at 583443f, section 6.1, identical
                           -- to the @secret/minio/root@ Vault value and injected directly into the
                           -- MinIO chart. This bootstrap Job runs BEFORE the daemon-mediated Vault
                           -- init/unseal (which itself depends on Harbor via the gateway image), so
@@ -7218,7 +7219,7 @@ restoreRegistryReadWriteAfterException repoRoot = do
         "Registry manifest retention interruption recovery could not observe restored read-write service; the next supported reconcile will reapply it before publication."
 
 -- | Sprint 4.43: the deep registry→MinIO S3 storage-backend readiness gate
--- (bootstrap_readiness_doctrine.md M3). A @GET /v2/@ front-door probe is served
+-- (bootstrap_readiness_doctrine.md at revision `583443f` M3). A @GET /v2/@ front-door probe is served
 -- by @registry:2@ __without touching S3__, so it never proves the registry can
 -- reach its MinIO storage backend — the exact shallow gate that left the
 -- @dial tcp: lookup minio.prodbox.svc.cluster.local: no such host@ race open at
@@ -7298,7 +7299,7 @@ ensureRegistryStorageBackendEdgeReady repoRoot substrate =
         failWith
           ( "Failed to prove the registry->MinIO S3 storage-backend edge before continuing. "
               ++ "A GET /v2/ front-door probe does not exercise this edge "
-              ++ "(bootstrap_readiness_doctrine.md M3); last observation: "
+              ++ "(control_plane.md); last observation: "
               ++ lastDetail
           )
     | otherwise = do
@@ -10194,7 +10195,7 @@ pushCustomImageVariantsViaInClusterCrane repoRoot primaryRef taggedRefs = do
                   ExitFailure _ -> pure cpExit
                   -- No registry login: the in-cluster @registry:2@ renders no
                   -- @auth@ stanza and accepts anonymous push, exactly as the
-                  -- home substrate does (vault_doctrine.md §20.3).
+                  -- home substrate does (vault_doctrine.md at 583443f, section 20.3).
                   ExitSuccess -> do
                     pushExits <-
                       mapM
@@ -10341,7 +10342,7 @@ buildCustomImageOnce repoRoot hostArchitecture imageBuildPlan taggedRefs = do
   -- `docker/default-prodbox.dhall`. The image RUNs the binary
   -- (`prodbox config generate`) to write its binary-sibling Tier-0 config at
   -- build time, so there is nothing to regenerate into the build context before
-  -- `docker build` (config_doctrine.md §0, §3).
+  -- `docker build` (config_doctrine.md at 583443f, section 0, config_doctrine.md at 583443f, section 3).
   let arguments =
         [ "build"
         , "-f"
@@ -10414,7 +10415,7 @@ pushDockerImageWithRetry repoRoot platform imageRef description =
 
 -- | Sprint 4.43: a retry classifier that misclassifies a dependency's
 -- characteristic transient failure is a shallow gate wearing a retry's clothes
--- (bootstrap_readiness_doctrine.md §4). The registry→MinIO push edge fails
+-- (bootstrap_readiness_doctrine.md at 583443f, section 4). The registry→MinIO push edge fails
 -- transiently with __name-resolution__ errors (@no such host@ / @dial tcp@ /
 -- @lookup@ / @name resolution@) while endpoint programming settles; these are
 -- now classified retryable so residual jitter is bounded by
@@ -10823,8 +10824,8 @@ renderInotifySysctlDropIn =
     [ "# Managed by `prodbox cluster reconcile`. Raises inotify limits so the systemd"
     , "# manager (PID 1), containerd, and kubelet do not exhaust the per-user instance"
     , "# cap during RKE2 lifecycle operations. See"
-    , "# documents/engineering/lifecycle_reconciliation_doctrine.md and"
-    , "# documents/engineering/streaming_doctrine.md §6."
+    , "# documents/engineering/lifecycle.md and"
+    , "# documents/engineering/streaming_doctrine.md at 583443f, section 6."
     , "fs.inotify.max_user_instances = 8192"
     , "fs.inotify.max_user_watches = 1048576"
     ]
@@ -11002,7 +11003,7 @@ ensureRootFileContent repoRoot path expectedContent label = do
 -- @Failed to allocate directory watch: Too many open files@ directly to the
 -- console during teardown. Raising the limit durably eliminates the warning at
 -- its root rather than filtering it after the fact (see
--- @documents/engineering/streaming_doctrine.md § 6@). Modeled on
+-- @documents/engineering/streaming_doctrine.md at 583443f, section 6@). Modeled on
 -- 'ensureRke2RegistriesConfig': write only on drift, then apply live.
 ensureHostInotifyLimits :: FilePath -> IO ExitCode
 ensureHostInotifyLimits repoRoot = do
@@ -11287,7 +11288,7 @@ isIgnorableRke2DeleteNoiseLine line =
         -- manager (PID 1) / journald to the console, NOT through the uninstaller's captured
         -- stdout/stderr. This entry only catches it on the rare path where systemd routes it
         -- to the captured stderr; it cannot suppress the out-of-band console emission (which
-        -- stays benign and may still appear on a successful run). See streaming_doctrine.md §6.
+        -- stays benign and may still appear on a successful run). See streaming_doctrine.md at 583443f, section 6.
         || "failed to allocate directory watch" `isInfixOf` lowered
         || "too many open files" `isInfixOf` lowered
         || "if this cluster was upgraded from an older release of the canal cni" `isPrefixOf` lowered

@@ -6,7 +6,7 @@
 -- | Sprint 4.86: the exact host-absence read-back of the recover-to-clean
 -- cascade's terminal node.
 --
--- [Lifecycle Reconciliation Doctrine § 5b node 8](../../../documents/engineering/lifecycle_reconciliation_doctrine.md#5b-canonical-recover-to-clean-cascade)
+-- Lifecycle Reconciliation Doctrine § 5b node 8 (historical lifecycle_reconciliation_doctrine.md at revision `583443f`, section 5b)
 -- requires that the local uninstall is followed by an exact host observation,
 -- and that only that observation plus the matching completion receipt can
 -- construct completion.  Two halves of that already existed and could not be

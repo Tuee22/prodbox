@@ -289,7 +289,7 @@ substrateIdentityIssuerUrl servedHost =
 -- aws-eks-subzone Pulumi stack output — never from a
 -- @PRODBOX_AWS_SUBSTRATE_HOSTED_ZONE_ID@ environment variable. The Dhall
 -- @--config <path>@ is the sole source of binary configuration per
--- @documents/engineering/config_doctrine.md § 10@, and this module is
+-- @documents/engineering/config_doctrine.md at 583443f, section 10@, and this module is
 -- scoped by @checkEnvVarConfigReads@ so no @PRODBOX_*@ env read can
 -- reappear here.
 --

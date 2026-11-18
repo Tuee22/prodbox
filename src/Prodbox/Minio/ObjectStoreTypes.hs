@@ -54,7 +54,7 @@ minioClusterServiceEndpoint =
 --
 -- __It is not an AWS coordinate.__ MinIO requires a region in the SigV4 scope
 -- string and ignores which one; no AWS account is reached and no AWS namespace
--- is consulted. It is @config_doctrine.md@ § 0's second compiled class ("not
+-- is consulted. It is @config_doctrine.md at 583443f, section 0's second compiled class ("not
 -- AWS"), not a deployment choice, and it does not move to Dhall.
 minioSigningRegion :: String
 minioSigningRegion = awsRegionFromParts "us" "east" 1

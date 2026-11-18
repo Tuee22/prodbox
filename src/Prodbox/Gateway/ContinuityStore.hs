@@ -58,7 +58,7 @@ data ContinuityStoreMaterial = ContinuityStoreMaterial
   -- place in the daemon that knows a round trip to the shared object store
   -- actually landed, so it is the only place permitted to record the receipt
   -- the deep readiness probe later reads
-  -- (bootstrap_readiness_doctrine.md § 2.3).
+  -- (bootstrap_readiness_doctrine.md at 583443f, section 2.3).
   }
 
 -- | Injected logical Model-B boundary.  Production closes these callbacks

@@ -17,7 +17,7 @@
 -- operation-indexed reference to a live service boundary: a reference is how a
 -- run /reaches/ a boundary, a custodial capability is what a run /holds/.  The
 -- disambiguation is owned once, by
--- @documents\/engineering\/lifecycle_control_plane_architecture.md § 3.4@.
+-- @documents\/engineering\/lifecycle_control_plane_architecture.md at 583443f, section 3.4@.
 --
 -- __There is no destroy constructor.__  Four constructors sit at the retire
 -- index — the capability is already inert, it is discharged by proven absence

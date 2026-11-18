@@ -1,7 +1,7 @@
 {{- /*
 Sprint 2.22 (May 24, 2026): the gateway daemon's per-node config is rendered
 as a Dhall expression (`config.dhall`) per
-@documents/engineering/config_doctrine.md §6@. The daemon decodes this file
+@documents/engineering/config_doctrine.md at revision 583443f §6@. The daemon decodes this file
 in-process via the native Haskell `dhall` library (Sprint 2.20).
 
 This template keeps the existing JSON-rendering ConfigMap available alongside

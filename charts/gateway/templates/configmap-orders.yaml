@@ -1,7 +1,7 @@
 {{- /*
 Sprint 2.22 (May 24, 2026): the gateway Orders ConfigMap renders Dhall
 content (`orders.dhall`) per
-@documents/engineering/config_doctrine.md §6@. The daemon decodes this file
+@documents/engineering/config_doctrine.md at revision 583443f §6@. The daemon decodes this file
 through `Prodbox.Gateway.Settings.loadOrders` (Sprint 2.22), which dispatches
 by file extension; the in-cluster mount point is now
 `/etc/gateway/orders.dhall` and the daemon's Dhall config carries that path

@@ -1557,7 +1557,7 @@ runDestroyAwsSesPulumiCycle repoRoot projectDir baseEnvironment currentSnapshot 
 -- Calling that "destroyed" was the defect; calling it a failure would refuse a
 -- teardown that did in fact remove every resource.
 --
--- [lifecycle_reconciliation_doctrine.md § 3](../../../documents/engineering/lifecycle_reconciliation_doctrine.md)
+-- lifecycle_reconciliation_doctrine.md at 583443f, section 3
 -- — /Cleanup continues without lying/ — is exactly this shape.
 completeDestroy
   :: FilePath -> FilePath -> [(String, String)] -> Bool -> IO (Either String String)
